@@ -333,9 +333,19 @@
             <el-option label="Vidu 视频" value="vidu" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
+            <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
         </el-form-item>
+
+        <el-alert
+          v-if="form.service_type === 'video' && form.api_protocol === 'djpsd'"
+          type="info"
+          :closable="false"
+          show-icon
+          title="Seedance 2.0 支持 5 / 10 / 15 秒；其他时长会向上适配。连接测试只读取任务列表，不会扣费。"
+          style="margin-bottom: 18px"
+        />
 
         <!-- 接口规范帮助 Dialog -->
         <el-dialog v-model="showProtocolHelp" title="接口规范说明" width="700px" top="5vh">
@@ -581,7 +591,7 @@ input_reference = (图片文件，可选)</pre>
           title="用于创作页「角色生成 → SD2认证」"
           description="保存后，系统从此处读取网关与 Token 调用 POST /api/business/v1/assets 登记角色图；可用「列出素材」核对素材状态。角色主图需为外网可访问的 http(s) 地址（图床或本服务 storage.base_url）。"
         />
-        <template v-if="form.service_type === 'video' && form.api_protocol === 'kling_omni'">
+        <template v-if="(form.service_type === 'video' && form.api_protocol === 'kling_omni') || ((form.service_type === 'image' || form.service_type === 'storyboard_image') && form.api_protocol === 'kling')">
           <el-form-item>
             <template #label><span class="form-label-tip">AccessKey</span></template>
             <el-input
@@ -613,10 +623,15 @@ input_reference = (图片文件，可选)</pre>
               SecretKey 为 Base64 字符串（解码后的二进制再用于签名；若仍报签名无效可切换此项重试）
             </el-checkbox>
             <p class="field-tip">
-              官方域名：<code>POST {base}/v1/videos/omni-video</code>，轮询
-              <code>GET {base}/v1/videos/omni-video/{taskId}</code>；飞儿等中转仍为
-              <code>/kling/v1/videos/omni-video</code> 与
-              <code>/kling/v1/images/omni-image/{taskId}</code>。详见
+              <template v-if="form.service_type === 'image' || form.service_type === 'storyboard_image'">
+                图片接口：<code>POST {base}/v1/images/generations</code>，轮询
+                <code>GET {base}/v1/images/generations/{taskId}</code>。
+              </template>
+              <template v-else>
+                视频接口：<code>POST {base}/v1/videos/omni-video</code>，轮询
+                <code>GET {base}/v1/videos/omni-video/{taskId}</code>。
+              </template>
+              详见
               <a href="https://klingai.com/document-api/apiReference/model/OmniVideo" target="_blank" rel="noopener noreferrer">OmniVideo</a>。
             </p>
           </el-form-item>
@@ -772,6 +787,7 @@ input_reference = (图片文件，可选)</pre>
             </el-select>
           </div>
           <el-input v-model="form.modelText" type="textarea" :rows="2" placeholder="选择预设厂商后自动填入，可编辑；多个用逗号或换行分隔" />
+          <p v-if="modelIdentifierTip" class="field-tip">{{ modelIdentifierTip }}</p>
         </el-form-item>
         <el-form-item>
           <template #label>
@@ -1054,7 +1070,7 @@ input_reference = (图片文件，可选)</pre>
           v-else
           type="success"
           title="连接成功"
-          description="文本生成接口已正常响应。"
+          description="API Key 有效，网络已连通。测试不保证模型名正确、功能已开通或额度充足，实际生成结果以创作任务为准。"
           show-icon
           :closable="false"
         />
@@ -1270,7 +1286,9 @@ const rules = computed(() => ({
         const proto = form.value.api_protocol
         const ak = (form.value.kling_access_key || '').trim()
         const sk = (form.value.kling_secret_key || '').trim()
-        if (st === 'video' && proto === 'kling_omni' && ak && sk) return cb()
+        const supportsKlingAksk = (st === 'video' && proto === 'kling_omni')
+          || ((st === 'image' || st === 'storyboard_image') && proto === 'kling')
+        if (supportsKlingAksk && ak && sk) return cb()
         if (v != null && String(v).trim()) return cb()
         cb(new Error('请输入 API Key，或使用官方 AccessKey + SecretKey（可不填 API Key）'))
       },
@@ -1295,7 +1313,7 @@ const oneKeyAgnesSaving = ref(false)
 /** 预设厂商与模型（与参考前端一致） */
 const providerConfigs = {
   text: [
-    { id: 'openai', name: 'OpenAI', models: ['gpt-4o', 'gpt-4', 'gpt-3.5-turbo'] },
+    { id: 'openai', name: 'OpenAI', models: ['GPT-5.5', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo'] },
     { id: 'volcengine', name: '火山引擎', models: ['deepseek-v3-2-251201', 'doubao-1-5-pro-32k-250115', 'kimi-k2-thinking-251104'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['gemini-3-flash-preview', 'claude-sonnet-4-5-20250929', 'doubao-seed-1-8-251228'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-pro', 'gemini-3-flash-preview'] },
@@ -1309,7 +1327,7 @@ const providerConfigs = {
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
-    { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
+    { id: 'openai', name: 'OpenAI', models: ['gpt-image-2', 'dall-e-3', 'dall-e-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'qwen_image', name: '通义千问', models: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
@@ -1321,10 +1339,11 @@ const providerConfigs = {
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
-    { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
+    { id: 'openai', name: 'OpenAI', models: ['gpt-image-2', 'dall-e-3', 'dall-e-2'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
+    { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-omni-video', 'kling-video', 'kling-motion-control'] },
@@ -1376,6 +1395,7 @@ const providerProtocolMap = {
   vidu: 'vidu',
   xai: 'xai',
   grok: 'xai',
+  djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
   chatfire: 'openai',
@@ -1407,6 +1427,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'jimeng_material_api') return 'https://silvamux.tingyutech.com'
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
+  if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1468,6 +1489,19 @@ const availableModels = computed(() => {
   if (!st || !provider) return []
   const p = (providerConfigs[st] || []).find((x) => x.id === provider)
   return p?.models || []
+})
+
+/** 用户模型组的接口标识必须按供应商实际名称填写，不能使用产品展示名。 */
+const modelIdentifierTip = computed(() => {
+  const serviceType = form.value.service_type
+  const provider = String(form.value.provider || '').toLowerCase()
+  if (serviceType === 'text' && provider === 'openai') {
+    return '模型名会原样提交；推理文字模型请填写 GPT-5.5。'
+  }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'openai') {
+    return '模型名会原样提交；图片模型请填写 gpt-image-2（不要填写显示名 GPT Image 2）。'
+  }
+  return ''
 })
 
 /** 根据当前厂商/协议/base_url 推算实际将使用的接口地址，供用户核对 */
@@ -1543,6 +1577,8 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/videos'
     } else if (proto === 'xai') {
       submitPath = '/v1/videos/generations'
+    } else if (proto === 'djpsd' || p === 'djpsd') {
+      submitPath = '/api/v1/video-jobs'
     } else if (proto === 'veo3') {
       submitPath = '/v1/video/create'
     } else if (proto === 'jimeng_ai_api' || p === 'jimeng_ai_api') {
@@ -1580,6 +1616,8 @@ const endpointPreviewInfo = computed(() => {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'xai') {
       queryPath = '/v1/videos/{taskId}'
+    } else if (proto === 'djpsd' || p === 'djpsd') {
+      queryPath = '/api/v1/video-jobs/{taskId}'
     } else if (proto === 'veo3') {
       queryPath = '/v1/video/query?id={taskId}'
     } else if (proto === 'kling_omni' || p === 'ffir' || p === 'klingai') {
@@ -1653,6 +1691,15 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'agnes'
     form.value.endpoint = '/videos'
     form.value.query_endpoint = '/videos/{taskId}'
+  }
+  if (st === 'video' && providerId === 'djpsd') {
+    form.value.api_protocol = 'djpsd'
+    form.value.endpoint = '/api/v1/video-jobs'
+    form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
+  }
+  if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
+    form.value.endpoint = '/v1/images/generations'
+    form.value.query_endpoint = '/v1/images/generations/{taskId}'
   }
   if (!editingId.value) {
     form.value.name = (p.name || providerId) + ' ' + serviceTypeLabel(st)
@@ -1776,7 +1823,8 @@ function openEdit(row) {
         voice_id = s.voice_id || voice_id
         group_id = s.group_id || group_id
       }
-      if (row.service_type === 'video' && row.api_protocol === 'kling_omni') {
+      if ((row.service_type === 'video' && row.api_protocol === 'kling_omni')
+        || ((row.service_type === 'image' || row.service_type === 'storyboard_image') && row.api_protocol === 'kling')) {
         kling_access_key = s.kling_access_key || ''
         kling_secret_key = s.kling_secret_key || ''
         kling_secret_key_base64 = !!s.kling_secret_key_base64
@@ -1789,7 +1837,7 @@ function openEdit(row) {
     provider: row.provider,
     api_protocol: row.api_protocol || '',
     base_url: row.base_url,
-    api_key: row.api_key,
+    api_key: '',
     endpoint: row.endpoint || '',
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
@@ -1825,7 +1873,8 @@ async function submit() {
       if (form.value.voice_id) s.voice_id = form.value.voice_id
       if (form.value.group_id) s.group_id = form.value.group_id
       settings = Object.keys(s).length ? JSON.stringify(s) : null
-    } else if (form.value.service_type === 'video' && form.value.api_protocol === 'kling_omni') {
+    } else if ((form.value.service_type === 'video' && form.value.api_protocol === 'kling_omni')
+      || ((form.value.service_type === 'image' || form.value.service_type === 'storyboard_image') && form.value.api_protocol === 'kling')) {
       let baseS = {}
       if (editingId.value) {
         const prev = list.value.find((r) => r.id === editingId.value)
@@ -1859,7 +1908,6 @@ async function submit() {
       provider: form.value.provider,
       api_protocol: form.value.api_protocol || '',
       base_url: form.value.base_url,
-      api_key: form.value.api_key,
       endpoint: form.value.endpoint || '',
       query_endpoint: form.value.query_endpoint || '',
       model: modelList,
@@ -1867,6 +1915,9 @@ async function submit() {
       priority: form.value.priority,
       is_default: form.value.is_default,
       ...(settings !== undefined ? { settings } : {}),
+    }
+    if (!editingId.value || (form.value.api_key || '').trim()) {
+      payload.api_key = form.value.api_key
     }
     if (editingId.value) {
       await aiAPI.update(editingId.value, payload)
@@ -1968,13 +2019,7 @@ async function openTest(row) {
   testServiceType.value = row.service_type || 'text'
   try {
     await aiAPI.testConnection({
-      base_url: row.base_url,
-      api_key: row.api_key,
-      model: Array.isArray(row.model) ? row.model[0] : row.model,
-      provider: row.provider,
-      endpoint: row.endpoint,
-      service_type: row.service_type,
-      settings: row.settings
+      config_id: row.id,
     })
     testResult.value = true
   } catch (e) {

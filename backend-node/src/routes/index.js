@@ -20,7 +20,12 @@ const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const audioRoutes = require('./audio');
 const promptOverridesRoutes = require('./promptOverrides');
+const directorExportRoutes = require('./directorExport');
 const sceneModelMapRoutes = require('./sceneModelMap');
+const authRoutes = require('./auth');
+const billingRoutes = require('./billing');
+const { createRateLimitMiddleware } = require('../middleware/rateLimit');
+const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
@@ -31,22 +36,68 @@ function setupRouter(cfg, db, log) {
   const prop = propRoutes(db, log, cfg);
   const stub = stubRoutes(db, cfg, log);
   const sceneModelMap = sceneModelMapRoutes(db, log);
+  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const { createAdminAuthMiddleware } = require('../middleware/adminAuth');
+  const requireAdmin = createAdminAuthMiddleware({
+    enabled: publicPlatformEnabled,
+    token: process.env.PLATFORM_ADMIN_TOKEN,
+  });
+  const auth = authRoutes(db, {
+    registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
+    jwtSecret: process.env.PLATFORM_JWT_SECRET,
+  });
+  const billing = billingRoutes(db, log);
+  const authRateLimit = createRateLimitMiddleware(db, {
+    enabled: publicPlatformEnabled,
+    scope: 'auth',
+    limit: 10,
+    windowMs: 15 * 60 * 1000,
+  });
+  const generationRateLimit = createRateLimitMiddleware(db, {
+    enabled: publicPlatformEnabled,
+    scope: 'generation',
+    limit: 20,
+    windowMs: 60 * 1000,
+  });
+  const modelGenerationGuard = createModelGenerationGuard(generationRateLimit);
+  const { createUserAuthMiddleware } = require('../middleware/userAuth');
+  const { createResourceOwnershipMiddleware } = require('../middleware/resourceOwnership');
+  const requireUser = createUserAuthMiddleware({
+    enabled: publicPlatformEnabled,
+    secret: process.env.PLATFORM_JWT_SECRET,
+    db,
+  });
+
+  r.post('/auth/register', authRateLimit, auth.register);
+  r.post('/auth/login', authRateLimit, auth.login);
+  r.use(requireUser);
+  // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
+  r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
+  r.use(modelGenerationGuard);
+  r.get('/auth/me', auth.me);
+
+  r.get('/billing/account', billing.getAccount);
+  r.get('/billing/audit-events', billing.listAuditEvents);
+  r.use('/billing/prices', requireAdmin);
+  r.get('/billing/prices', billing.listPrices);
+  r.put('/billing/prices/:model', billing.updatePrice);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);
   const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
   const propLibrary = propLibraryRoutes(db, cfg, log);
-  const characters = characterRoutes(db, cfg, log, uploadService);
+  const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
   const uploadHandlers = uploadModule.routes(cfg, log, db);
-  const scenes = sceneRoutes(db, log, cfg);
+  const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log);
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
-  const images = imageRoutes(db, cfg, log);
-  const videos = videoRoutes(db, log);
+  const images = imageRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
+  const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const videoMerges = videoMergeRoutes(db, log);
   const assets = assetRoutes(db, log);
   const audio = audioRoutes(db, log, cfg);
   const promptOverrides = promptOverridesRoutes.routes(db, log);
+  const directorExport = directorExportRoutes(db, cfg, log);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
@@ -77,6 +128,7 @@ function setupRouter(cfg, db, log) {
       response.internalError(res, err.message);
     }
   });
+  r.post('/dramas/:id/director/export', directorExport.upload, directorExport.create);
   r.get('/dramas/examples', drama.listExamples);
   r.post('/dramas/import-example', drama.importExample);
   r.put('/dramas/:id/outline', drama.saveOutline);
@@ -91,6 +143,7 @@ function setupRouter(cfg, db, log) {
   r.delete('/dramas/:id', drama.deleteDrama);
 
   // ---------- ai-configs ----------
+  r.use('/ai-configs', requireAdmin);
   r.get('/ai-configs', aiConfig.list);
   r.post('/ai-configs', aiConfig.create);
   r.post('/ai-configs/test', aiConfig.testConnection);
@@ -124,13 +177,18 @@ function setupRouter(cfg, db, log) {
     try {
       const body = req.body || {};
       if (body.drama_id) {
-        const taskId = storyGenerationService.startStoryGeneration(db, log, body);
+        const taskId = storyGenerationService.startStoryGeneration(db, log, body, { billingEnabled: publicPlatformEnabled, userId: req.user?.id });
         return response.success(res, { task_id: taskId, status: 'pending' });
       }
-      const result = await storyGenerationService.generateStory(db, log, body);
+      const result = await storyGenerationService.generateStory(db, log, publicPlatformEnabled
+        ? { ...body, billingEnabled: true, userId: req.user?.id }
+        : body);
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
+      if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') return response.error(res, 503, err.code, err.message);
+      if (err.code === 'INSUFFICIENT_CREDITS') return response.error(res, 402, err.code, '积分不足，请充值后重试');
+      if (err.code === 'UNSUPPORTED_BILLING_MODEL') return response.badRequest(res, err.message);
       if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
         return response.badRequest(res, err.message);
       }
@@ -208,6 +266,7 @@ function setupRouter(cfg, db, log) {
 
   // ---------- upload ----------
   r.post('/upload/image', uploadModule.multerSingle, uploadHandlers.uploadImage);
+  r.post('/upload/model', uploadHandlers.multerModelSingle, uploadHandlers.uploadModel);
 
   // ---------- episodes ----------
   // 注意：drama.generateStoryboard 已处理所有逻辑（包括参数解析），这里统一使用 drama 模块的实现
@@ -239,8 +298,8 @@ function setupRouter(cfg, db, log) {
 
   // ---------- images ----------
   r.get('/images', images.list);
-  r.post('/images', images.create);
   r.get('/images/episode/:episode_id/backgrounds', images.episodeBackgrounds);
+  r.post('/images', images.create);
   r.post('/images/episode/:episode_id/backgrounds/extract', images.episodeBackgroundsExtract);
   r.post('/images/episode/:episode_id/batch', images.episodeBatch);
   r.post('/images/scene/:scene_id', images.scene);
@@ -250,8 +309,8 @@ function setupRouter(cfg, db, log) {
 
   // ---------- videos ----------
   r.get('/videos', videos.list);
-  r.post('/videos', videos.create);
   r.post('/videos/image/:image_gen_id', videos.fromImage);
+  r.post('/videos', videos.create);
   r.post('/videos/episode/:episode_id/batch', videos.episodeBatch);
   r.get('/videos/:id', videos.get);
   r.delete('/videos/:id', videos.delete);

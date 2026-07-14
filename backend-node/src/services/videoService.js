@@ -20,11 +20,20 @@ function setVideoGenFailed(db, videoGenId, errorMsg, now) {
       db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('failed', now, videoGenId);
     } else throw e;
   }
+  let row = null;
+  try {
+    row = db.prepare('SELECT id, credit_reservation_id FROM video_generations WHERE id = ?').get(Number(videoGenId));
+  } catch (_) {}
+  settleVideoCredit(db, null, row, 'failed', errorMsg);
 }
 
-function list(db, query) {
+function list(db, query, options = {}) {
   let sql = 'FROM video_generations WHERE deleted_at IS NULL';
   const params = [];
+  if (options.billingEnabled) {
+    sql += ' AND user_id = ?';
+    params.push(options.userId || '');
+  }
   if (query.drama_id) {
     sql += ' AND drama_id = ?';
     params.push(query.drama_id);
@@ -64,6 +73,10 @@ function rowToItem(r) {
     local_path: r.local_path,
     status: r.status,
     task_id: r.task_id,
+    provider_task_id: r.provider_task_id,
+    duration: r.duration,
+    aspect_ratio: r.aspect_ratio,
+    resolution: r.resolution,
     error_msg: r.error_msg,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -71,9 +84,26 @@ function rowToItem(r) {
   };
 }
 
-function getById(db, id) {
-  const r = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(id));
+function getById(db, id, options = {}) {
+  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
+  const params = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const r = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...params);
   return r ? rowToItem(r) : null;
+}
+
+function localVideoDeliveryWarning(localPath) {
+  return localPath ? '' : '视频已生成并可在线播放，但保存到本地失败；请稍后处理本地保存，不要重新生成视频';
+}
+
+function findActiveForStoryboard(db, storyboardId, options = {}) {
+  if (!storyboardId) return null;
+  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
+  const params = options.billingEnabled ? [Number(storyboardId), options.userId || ''] : [Number(storyboardId)];
+  return db.prepare(
+    `SELECT * FROM video_generations
+     WHERE storyboard_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL${ownerClause}
+     ORDER BY created_at DESC, id DESC LIMIT 1`
+  ).get(...params) || null;
 }
 
 const fs = require('fs');
@@ -83,7 +113,119 @@ const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
+const creditLedger = require('./creditLedgerService');
+const modelPrice = require('./modelPriceService');
+const auditEvent = require('./auditEventService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+
+function settleVideoCredit(db, log, row, outcome, message = '') {
+  if (!row?.credit_reservation_id) return null;
+  try {
+    const settled = creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+    auditEvent.record(db, {
+      userId: settled?.user_id,
+      eventType: outcome === 'completed' ? 'generation.video.completed' : 'generation.video.failed',
+      resourceType: 'video',
+      resourceId: row.id,
+      outcome: outcome === 'completed' ? 'success' : 'failed',
+      code: outcome === 'failed' ? 'VIDEO_GENERATION_FAILED' : null,
+    });
+    return settled;
+  } catch (error) {
+    log?.error('视频积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
+    return null;
+  }
+}
+
+function create(db, log, req, options = {}) {
+  const body = req || {};
+  const billingEnabled = Boolean(options.billingEnabled);
+  if (billingEnabled && !options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
+  const dramaId = Number(body.drama_id) || 0;
+  const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
+  const active = findActiveForStoryboard(db, storyboardId, { billingEnabled, userId: options.userId });
+  if (active) {
+    if (billingEnabled) {
+      auditEvent.record(db, {
+        userId: options.userId,
+        eventType: 'generation.video.reused',
+        resourceType: 'video',
+        resourceId: active.id,
+        outcome: 'success',
+        code: 'REUSED',
+      });
+    }
+    return { ...getById(db, active.id), reused: true };
+  }
+
+  let billingModel = body.model || null;
+  let price = null;
+  if (billingEnabled) {
+    if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
+    if (!billingModel) {
+      const config = videoClient.getDefaultVideoConfig(db, null);
+      billingModel = config?.default_model || config?.model || null;
+    }
+    billingModel = modelPrice.canonicalModel(billingModel);
+    price = modelPrice.requirePrice(db, billingModel);
+  }
+
+  const now = new Date().toISOString();
+  const result = db.transaction(() => {
+    const task = taskService.createTask(db, log, 'video_generation', String(body.drama_id || ''));
+    let prompt = body.prompt || '';
+    const style = String(body.style || '').trim();
+    if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
+      prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
+    }
+    let aspectRatio = body.aspect_ratio ? videoClient.normalizeAspectRatioForApi(body.aspect_ratio) : null;
+    if (!aspectRatio && dramaId) {
+      try {
+        const drama = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(dramaId);
+        const metadata = drama?.metadata ? JSON.parse(drama.metadata) : null;
+        if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
+      } catch (_) {}
+    }
+    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(body.reference_image_urls.slice(0, 10)) : null;
+    db.prepare(`INSERT INTO video_generations
+      (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
+       image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)`)
+      .run(
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || body.model || null, body.duration ?? null,
+        aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
+        body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
+        body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
+        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, task.id,
+        billingEnabled ? String(options.userId) : null, now, now
+      );
+    const id = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+    if (billingEnabled) {
+      const reservation = creditLedger.reserve(db, {
+        userId: options.userId,
+        operationKey: `video:${id}`,
+        amount: price,
+        model: billingModel,
+        resourceType: 'video',
+        resourceId: id,
+      });
+      db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
+      auditEvent.record(db, {
+        userId: options.userId,
+        eventType: 'generation.video.created',
+        resourceType: 'video',
+        resourceId: id,
+        outcome: 'success',
+        code: 'CREATED',
+      });
+    }
+    return { id, taskId: task.id };
+  })();
+
+  const schedule = options.schedule || ((callback) => setImmediate(callback));
+  schedule(() => processVideoGeneration(db, log, result.id));
+  return getById(db, result.id) || { id: result.id, task_id: result.taskId, status: 'processing' };
+}
 
 /** @returns {{ dir: string, relPrefix: string }} 与图片 uploads 一致的工程子目录规则 */
 function resolveVideosDir(storagePath, projectSubdir) {
@@ -222,15 +364,20 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     localPath = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
   } catch (_) {}
+  const deliveryWarning = localVideoDeliveryWarning(localPath);
   try {
     db.prepare(
-      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-    ).run('completed', videoUrl, localPath, now, now, videoGenId);
+      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    ).run('completed', videoUrl, localPath, deliveryWarning || null, now, now, videoGenId);
   } catch (e) {
     if ((e.message || '').includes('completed_at')) {
       db.prepare(
-        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
-      ).run('completed', videoUrl, localPath, now, videoGenId);
+        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = ?, updated_at = ? WHERE id = ?'
+      ).run('completed', videoUrl, localPath, deliveryWarning || null, now, videoGenId);
+    } else if ((e.message || '').includes('error_msg')) {
+      db.prepare(
+        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+      ).run('completed', videoUrl, localPath, now, now, videoGenId);
     } else throw e;
   }
   if (row.storyboard_id) {
@@ -251,6 +398,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       status: 'completed',
     });
   }
+  settleVideoCredit(db, log, row, 'completed');
   log.info('Video generation completed' + (logLabel ? ` (${logLabel})` : ''), {
     id: videoGenId,
     video_url: videoUrl,
@@ -280,6 +428,15 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
   const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
   if (polledVideo.ok) {
     await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, polledVideo.video_url, 'after poll');
+  } else if (pollResult.indeterminate) {
+    const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
+    db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+      .run('processing', message, now, videoGenId);
+    if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+    log.warn('Video generation final status indeterminate; duplicate guard remains active', {
+      id: videoGenId,
+      provider_task_id: providerTaskId,
+    });
   } else {
     setVideoGenFailed(db, videoGenId, polledVideo.error, now);
     if (row.task_id) taskService.updateTaskError(db, row.task_id, polledVideo.error);
@@ -496,16 +653,22 @@ async function processVideoGeneration(db, log, videoGenId) {
   }
 }
 
-function deleteById(db, log, id) {
+function deleteById(db, log, id, options = {}) {
   const now = new Date().toISOString();
-  const result = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, Number(id));
+  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
+  const ownerParams = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const result = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL' + ownerClause).run(now, ...ownerParams);
   return result.changes > 0;
 }
 
 module.exports = {
   list,
   getById,
+  create,
+  findActiveForStoryboard,
   deleteById,
   processVideoGeneration,
   resumeProcessingVideoGenerations,
+  localVideoDeliveryWarning,
+  settleVideoCredit,
 };

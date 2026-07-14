@@ -350,7 +350,7 @@ function deleteCharacter(db, log, characterId) {
 /**
  * 批量生成角色图片（与 Go BatchGenerateCharacterImages 对齐：为每个角色单独起一个异步任务并发生成）
  */
-function batchGenerateCharacterImages(db, log, cfg, characterIds, modelName, style) {
+function batchGenerateCharacterImages(db, log, cfg, characterIds, modelName, style, options = {}) {
   const ids = Array.isArray(characterIds) ? characterIds.map((id) => String(id)) : [];
   if (ids.length === 0) return { ok: false, error: 'character_ids 不能为空' };
   if (ids.length > 10) return { ok: false, error: '单次最多生成10个角色' };
@@ -360,7 +360,7 @@ function batchGenerateCharacterImages(db, log, cfg, characterIds, modelName, sty
     const charId = characterId;
     setImmediate(async () => {
       try {
-        const out = await generateCharacterFourViewImage(db, log, cfg, charId, modelName, style);
+        const out = await generateCharacterFourViewImage(db, log, cfg, charId, modelName, style, options);
         if (!out.ok) {
           log.warn('Batch character four-view skip', { character_id: charId, error: out.error });
           return;
@@ -529,7 +529,7 @@ async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName,
   return { ok: true, polished_prompt: polishedPrompt };
 }
 
-async function generateCharacterFourViewImage(db, log, cfg, characterId, modelName, style) {
+async function generateCharacterFourViewImage(db, log, cfg, characterId, modelName, style, options = {}) {
   const charRow = db.prepare(
     'SELECT id, drama_id, name, appearance, description, polished_prompt, negative_prompt FROM characters WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(characterId));
@@ -597,6 +597,8 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
     quality: 'standard',
     provider: 'openai',
     user_negative_prompt: userNeg || undefined,
+    billingEnabled: Boolean(options.billingEnabled),
+    userId: options.userId,
   });
 
   log.info('[四视图] Step2 图片生成任务已提交', { character_id: characterId, image_gen_id: imageGen?.id });

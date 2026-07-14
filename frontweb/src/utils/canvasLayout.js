@@ -52,6 +52,7 @@ const NON_DRAGGABLE_TYPES = new Set(['canvasLabel', 'canvasAddButton'])
 /** 从当前 Vue Flow 节点与视口构建可持久化的 canvas_layout */
 export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null) {
   const nodes = { ...(existingLayout?.nodes || {}) }
+  const base = existingLayout && typeof existingLayout === 'object' ? { ...existingLayout } : {}
   for (const node of flowNodes || []) {
     if (!node?.id || NON_DRAGGABLE_TYPES.has(node.type)) continue
     if (!node.position) continue
@@ -61,6 +62,7 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
     }
   }
   return {
+    ...base,
     version: 1,
     viewport: {
       x: Number(viewport?.x) || 0,

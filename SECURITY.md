@@ -21,7 +21,6 @@ Security fixes are only provided for the latest release.
 If you discover a security vulnerability, please contact us privately:
 
 - **GitHub Security Advisory**：点击仓库页面的 [Security](../../security/advisories/new) 标签 → Report a vulnerability
-- **微信 / WeChat**：通过 README 中的二维码添加作者微信私信
 
 ### 响应流程 / Response Process
 

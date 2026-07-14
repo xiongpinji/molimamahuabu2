@@ -1,10 +1,12 @@
 <template>
   <div class="app">
     <router-view />
+    <AccountBadge />
   </div>
 </template>
 
 <script setup lang="ts">
+import AccountBadge from '@/components/AccountBadge.vue'
 </script>
 
 <style>

@@ -840,7 +840,21 @@ ${lastCtx}
 ${originalUserPrompt}`;
 }
 
-async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null) {
+function storyboardCountMatchesTarget(storyboards, targetCount) {
+  const target = Number(targetCount);
+  return !Number.isFinite(target) || target <= 0 || (Array.isArray(storyboards) && storyboards.length === target);
+}
+
+function buildStoryboardCountCorrectionPrompt(storyboards, targetCount) {
+  const target = Math.max(1, Math.floor(Number(targetCount)));
+  return `以下分镜数量不符合用户要求。请在不得增加或遗漏剧情的前提下，通过合并相邻动作或拆分关键动作，重新整理为恰好 ${target} 个分镜。
+必须保留原有 JSON 字段结构，shot_number 从 1 连续编号；只返回 JSON 数组，不要解释。
+
+原分镜：
+${JSON.stringify(storyboards)}`;
+}
+
+async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, targetStoryboardCount = null) {
   // 增量保存状态放在 try 外，catch 里可用于部分恢复
   const episodeIdNum = Number(episodeId);
   const streamSavedNums = new Set();
@@ -1026,6 +1040,33 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       });
     }
     // ── 续写结束 ────────────────────────────────────────────────────────────
+
+    if (!storyboardCountMatchesTarget(storyboards, targetStoryboardCount)) {
+      const target = Math.floor(Number(targetStoryboardCount));
+      log.warn('Storyboard count mismatch, requesting one exact-count correction', {
+        task_id: taskId, generated_count: storyboards.length, target_count: target,
+      });
+      taskService.updateTaskStatus(db, taskId, 'processing', 65,
+        `模型返回 ${storyboards.length} 个分镜，正在校正为 ${target} 个...`);
+      // 首轮增量结果数量错误，不得在校正失败时被当作“部分成功”保留。
+      db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL')
+        .run(new Date().toISOString(), episodeIdNum);
+      streamSavedNums.clear();
+      const correctionText = await generateTextForStoryboard(
+        db,
+        log,
+        buildStoryboardCountCorrectionPrompt(storyboards, target),
+        systemPrompt,
+        { model: model || undefined }
+      );
+      const correctionMeta = {};
+      const corrected = extractFirstArray(safeParseAIJSON(correctionText, null, log, correctionMeta)) || [];
+      if (correctionMeta.truncated || !storyboardCountMatchesTarget(corrected, target)) {
+        throw new Error(`AI 未按要求生成恰好 ${target} 个分镜（实际 ${corrected.length} 个），已停止保存，请重试`);
+      }
+      storyboards = corrected;
+      log.info('Storyboard count correction succeeded', { task_id: taskId, target_count: target });
+    }
 
     const totalDuration = storyboards.reduce((sum, sb) => sum + (Number(sb.duration) || 0), 0);
     if (parseMeta.truncated) {
@@ -1310,7 +1351,8 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
       systemPrompt,
       wantNarration,
       wantUniversalOmni,
-      clipSec
+      clipSec,
+      storyboardCount
     );
   });
 
@@ -1605,4 +1647,6 @@ module.exports = {
   composeStoryboardVideoPrompt: generateVideoPrompt,
   rebuildVideoPromptForStoryboard,
   splitStoryboardByAudio,
+  storyboardCountMatchesTarget,
+  buildStoryboardCountCorrectionPrompt,
 };

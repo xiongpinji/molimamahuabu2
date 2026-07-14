@@ -3,8 +3,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="goList">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
+          <span class="brand-copy">
+            <span class="logo-main">茉莉妈妈</span>
+            <span class="logo-sub">短剧制作平台</span>
+          </span>
         </h1>
         <span class="page-title">AI 配置</span>
         <el-button class="btn-back" @click="goList">
@@ -73,11 +76,13 @@ html.light .header {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 10px;
   line-height: 1;
   transition: filter 0.3s;
 }
+.brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
+.brand-copy { display: flex; flex-direction: column; gap: 3px; }
 .logo:hover {
   filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.5));
 }

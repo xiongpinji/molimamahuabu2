@@ -6,6 +6,7 @@ const { getDb } = require('./db/index.js');
 const { loadConfig } = require('./config/index.js');
 const logger = require('./logger.js');
 const { setupRouter } = require('./routes/index.js');
+const { createStaticOwnershipMiddleware } = require('./middleware/resourceOwnership');
 
 function createApp() {
   const config = loadConfig();
@@ -49,7 +50,12 @@ function createApp() {
     : path.join(process.cwd(), 'data', 'storage');
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
-    app.use('/static', express.static(storageRoot));
+    const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+    app.use('/static', createStaticOwnershipMiddleware({
+      db,
+      enabled: publicPlatformEnabled,
+      secret: process.env.PLATFORM_JWT_SECRET,
+    }), express.static(storageRoot));
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);
   }
@@ -69,7 +75,7 @@ function createApp() {
   console.log('webDist', webDist);
   if (fs.existsSync(webDist)) {
     app.use('/assets', express.static(path.join(webDist, 'assets')));
-    // 服务 dist 根目录的静态文件（如 wx.jpg、favicon.ico 等）
+    // 服务 dist 根目录的静态文件（如 favicon.ico 等）
     app.use(express.static(webDist, { index: false }));
     app.get('/favicon.ico', (req, res) => {
       const fav = path.join(webDist, 'favicon.ico');

@@ -3,12 +3,12 @@ const imageService = require('../services/imageService');
 const taskService = require('../services/taskService');
 const backgroundExtractionService = require('../services/backgroundExtractionService');
 
-function routes(db, cfg, log) {
+function routes(db, cfg, log, options = {}) {
   return {
     list: (req, res) => {
       try {
         const query = { ...req.query };
-        const { items, total, page, pageSize } = imageService.list(db, query);
+        const { items, total, page, pageSize } = imageService.list(db, query, { billingEnabled: options.billingEnabled, userId: req.user?.id });
         response.successWithPagination(res, items, total, page, pageSize);
       } catch (err) {
         log.error('images list', { error: err.message });
@@ -18,16 +18,29 @@ function routes(db, cfg, log) {
     create: (req, res) => {
       try {
         const body = req.body || {};
-        const rec = imageService.create(db, log, body);
+        const rec = imageService.create(db, log, body, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          schedule: options.schedule,
+        });
         response.created(res, rec);
       } catch (err) {
         log.error('images create', { error: err.message });
+        if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') {
+          return response.error(res, 503, err.code, err.message);
+        }
+        if (err.code === 'INSUFFICIENT_CREDITS') {
+          return response.error(res, 402, err.code, '积分不足，请充值后重试');
+        }
+        if (err.code === 'UNSUPPORTED_BILLING_MODEL') {
+          return response.badRequest(res, err.message);
+        }
         response.internalError(res, err.message);
       }
     },
     get: (req, res) => {
       try {
-        const item = imageService.getById(db, req.params.id);
+        const item = imageService.getById(db, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
         if (!item) return response.notFound(res, '记录不存在');
         response.success(res, item);
       } catch (err) {
@@ -37,7 +50,7 @@ function routes(db, cfg, log) {
     },
     delete: (req, res) => {
       try {
-        const ok = imageService.deleteById(db, log, req.params.id);
+        const ok = imageService.deleteById(db, log, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
         if (!ok) return response.notFound(res, '记录不存在');
         response.success(res, { message: '删除成功' });
       } catch (err) {

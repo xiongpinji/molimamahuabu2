@@ -27,6 +27,8 @@ function rowToItem(r) {
     category: r.category,
     url: r.url,
     local_path: r.local_path,
+    file_size: r.file_size,
+    mime_type: r.mime_type,
     duration: r.duration,
     image_gen_id: r.image_gen_id,
     video_gen_id: r.video_gen_id,

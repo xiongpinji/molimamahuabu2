@@ -4,7 +4,7 @@ const response = require('../response');
 function list(db) {
   return (req, res) => {
     const list = aiConfigService.listConfigs(db, req.query.service_type);
-    response.success(res, list);
+    response.success(res, list.map(aiConfigService.toPublicConfig));
   };
 }
 
@@ -14,7 +14,7 @@ function get(db) {
     if (isNaN(id)) return response.badRequest(res, '无效的配置ID');
     const config = aiConfigService.getConfig(db, id);
     if (!config) return response.notFound(res, '配置不存在');
-    response.success(res, config);
+    response.success(res, aiConfigService.toPublicConfig(config));
   };
 }
 
@@ -42,7 +42,7 @@ function create(db, log, cfg) {
         ...body,
         model: body.model ?? [],
       });
-      response.created(res, config);
+      response.created(res, aiConfigService.toPublicConfig(config));
     } catch (err) {
       log.errorw('Create AI config failed', { error: err.message });
       response.internalError(res, '创建失败');
@@ -67,7 +67,7 @@ function update(db, log, cfg) {
 
     const config = aiConfigService.updateConfig(db, log, id, body);
     if (!config) return response.notFound(res, '配置不存在');
-    response.success(res, config);
+    response.success(res, aiConfigService.toPublicConfig(config));
   };
 }
 
@@ -103,11 +103,16 @@ function bulkUpdateKey(db, log, cfg) {
   };
 }
 
-function testConnection(log) {
+function testConnection(db, log) {
   return async (req, res) => {
-    const body = req.body || {};
-    if (!body.base_url || !body.api_key) {
-      return response.badRequest(res, '缺少 base_url 或 api_key');
+    let body = req.body || {};
+    if (body.config_id != null) {
+      const saved = aiConfigService.getConfig(db, Number(body.config_id));
+      if (!saved) return response.notFound(res, '配置不存在');
+      body = saved;
+    }
+    if (!body.base_url || !aiConfigService.hasConnectionCredential(body)) {
+      return response.badRequest(res, '缺少 base_url 或有效鉴权凭据');
     }
     try {
       await aiConfigService.testConnection({
@@ -116,6 +121,8 @@ function testConnection(log) {
         model: body.model,
         provider: body.provider,
         endpoint: body.endpoint,
+        query_endpoint: body.query_endpoint,
+        api_protocol: body.api_protocol,
         service_type: body.service_type,
         settings: body.settings,
       });
@@ -190,7 +197,7 @@ module.exports = function aiConfigRoutes(db, log, cfg) {
     create: create(db, log, cfg),
     update: update(db, log, cfg),
     delete: remove(db, log, cfg),
-    testConnection: testConnection(log),
+    testConnection: testConnection(db, log),
     listJimeng2MaterialAssets: listJimeng2MaterialAssets(log),
     modelArkAsset: modelArkAsset(log),
     bulkUpdateKey: bulkUpdateKey(db, log, cfg),

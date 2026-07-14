@@ -1,0 +1,62 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Database = require('better-sqlite3');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const uploadModule = require('../src/routes/upload');
+
+function captureResponse() {
+  return {
+    statusCode: null,
+    body: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
+  };
+}
+
+test('三维资源上传会落盘并注册项目资产记录', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-model-'));
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const now = new Date().toISOString();
+    const dramaId = db.prepare(
+      `INSERT INTO dramas (title, status, created_at, updated_at) VALUES ('资产上传测试', 'draft', ?, ?)`,
+    ).run(now, now).lastInsertRowid;
+    const handlers = uploadModule.routes({
+      storage: { local_path: tempRoot, base_url: 'http://localhost:5679/static' },
+    }, { info() {}, warn() {}, error() {} }, db);
+    const response = captureResponse();
+    const file = {
+      buffer: Buffer.from('glb-fixture'),
+      originalname: 'hero.glb',
+      mimetype: 'model/gltf-binary',
+      size: 11,
+    };
+
+    handlers.uploadModel({ body: { drama_id: String(dramaId) }, file }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.asset_id > 0, true);
+    assert.match(response.body.data.url, /\.glb$/);
+    assert.equal(response.body.data.filename, 'hero.glb');
+    assert.equal(fs.existsSync(path.join(tempRoot, response.body.data.local_path)), true);
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(response.body.data.asset_id);
+    assert.equal(asset.drama_id, dramaId);
+    assert.equal(asset.type, 'model');
+    assert.equal(asset.category, 'director');
+    assert.equal(asset.local_path, response.body.data.local_path);
+  } finally {
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

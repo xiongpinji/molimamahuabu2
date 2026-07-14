@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const creditLedger = require('./creditLedgerService');
 
 function createTask(db, log, taskType, resourceId) {
   const id = uuidv4();
@@ -68,6 +69,9 @@ function rowToTask(r) {
     error: r.error,
     result: r.result,
     resource_id: r.resource_id,
+    user_id: r.user_id,
+    model: r.model,
+    credit_reservation_id: r.credit_reservation_id,
     created_at: r.created_at,
     updated_at: r.updated_at,
     completed_at: r.completed_at,
@@ -87,6 +91,13 @@ function cancelTask(db, log, taskId, reason) {
     return { ok: true, already_done: true, task };
   }
   const msg = (reason || USER_CANCEL_TASK_MSG).toString().trim() || USER_CANCEL_TASK_MSG;
+  if (task.credit_reservation_id) {
+    try {
+      creditLedger.settleGeneration(db, task.credit_reservation_id, 'failed', msg);
+    } catch (error) {
+      log.warn('取消任务积分结算失败', { task_id: taskId, reservation_id: task.credit_reservation_id, error: error.message });
+    }
+  }
   updateTaskError(db, taskId, msg);
   log.info('Task cancelled by user', { task_id: taskId, type: task.type });
   return { ok: true, task: getTask(db, taskId) };
@@ -96,13 +107,29 @@ function cancelTask(db, log, taskId, reason) {
  * 进程内 setImmediate 任务在重启后会丢失；启动时将遗留的 pending/processing 标为失败，避免前端无限轮询。
  */
 function failOrphanedAsyncTasksOnStartup(db, log) {
-  const rows = db.prepare(
-    `SELECT id, type, status, resource_id FROM async_tasks
-     WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-  ).all();
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT id, type, status, resource_id, credit_reservation_id FROM async_tasks
+       WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+    ).all();
+  } catch (error) {
+    if (!String(error.message || '').includes('credit_reservation_id')) throw error;
+    rows = db.prepare(
+      `SELECT id, type, status, resource_id FROM async_tasks
+       WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+    ).all().map((row) => ({ ...row, credit_reservation_id: null }));
+  }
   if (!rows.length) return 0;
   log.warn('Failing orphaned async tasks after startup', { count: rows.length });
   for (const row of rows) {
+    if (row.credit_reservation_id) {
+      try {
+        creditLedger.settleGeneration(db, row.credit_reservation_id, 'failed', ORPHAN_ASYNC_TASK_MSG);
+      } catch (error) {
+        log.warn('遗留任务积分结算失败', { task_id: row.id, reservation_id: row.credit_reservation_id, error: error.message });
+      }
+    }
     updateTaskError(db, row.id, ORPHAN_ASYNC_TASK_MSG);
     log.info('Orphaned async task marked failed', {
       task_id: row.id,

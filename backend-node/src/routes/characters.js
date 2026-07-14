@@ -5,7 +5,7 @@ const characterLibraryService = require('../services/characterLibraryService');
 const storageLayout = require('../services/storageLayout');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
-function routes(db, cfg, log, uploadService) {
+function routes(db, cfg, log, uploadService, generationOptions = {}) {
   return {
     getOne: (req, res) => {
       try {
@@ -80,7 +80,8 @@ function routes(db, cfg, log, uploadService) {
           cfg,
           characterIds,
           body.model,
-          body.style
+          body.style,
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
         );
         if (!out.ok) {
           return response.badRequest(res, out.error);
@@ -103,7 +104,8 @@ function routes(db, cfg, log, uploadService) {
           cfg,
           req.params.id,
           body.model,
-          body.style
+          body.style,
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
         );
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
@@ -254,7 +256,7 @@ function routes(db, cfg, log, uploadService) {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await characterLibraryService.generateCharacterFourViewImage(db, log, cfg, req.params.id, modelName, style);
+        const out = await characterLibraryService.generateCharacterFourViewImage(db, log, cfg, req.params.id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id });
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');

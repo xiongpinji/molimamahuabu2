@@ -42,10 +42,11 @@ function createDrama(db, log, req) {
   }
   const metadataStr = Object.keys(meta).length ? JSON.stringify(meta) : null;
   const stmt = db.prepare(`
-    INSERT INTO dramas (title, description, genre, style, metadata, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)
+    INSERT INTO dramas (user_id, title, description, genre, style, metadata, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)
   `);
   const info = stmt.run(
+    req.user_id || req.userId || null,
     req.title || '',
     req.description || null,
     req.genre || null,
@@ -56,16 +57,19 @@ function createDrama(db, log, req) {
   );
   const id = info.lastInsertRowid;
   log.info('Drama created', { drama_id: id });
-  return getDramaById(db, id);
+  return getDramaById(db, id, req.user_id || req.userId);
 }
 
-function getDramaById(db, id) {
-  const row = db.prepare('SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL').get(id);
+function getDramaById(db, id, userId) {
+  const sql = userId == null
+    ? 'SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL'
+    : 'SELECT * FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL';
+  const row = db.prepare(sql).get(...(userId == null ? [id] : [id, userId]));
   return row ? rowToDrama(row) : null;
 }
 
-function getDrama(db, dramaId, baseUrl) {
-  const drama = getDramaById(db, Number(dramaId));
+function getDrama(db, dramaId, baseUrl, userId) {
+  const drama = getDramaById(db, Number(dramaId), userId);
   if (!drama) return null;
   // 加载 episodes、characters、scenes、props、storyboards（简化：只查当前 drama 的）
   const episodes = db.prepare(
@@ -167,6 +171,10 @@ function getDrama(db, dramaId, baseUrl) {
 function listDramas(db, query) {
   let sql = 'FROM dramas WHERE deleted_at IS NULL';
   const params = [];
+  if (query.userId != null) {
+    sql += ' AND user_id = ?';
+    params.push(query.userId);
+  }
   if (query.status) {
     sql += ' AND status = ?';
     params.push(query.status);
@@ -223,8 +231,8 @@ function listDramas(db, query) {
   return { dramas, total, page, pageSize };
 }
 
-function updateDrama(db, log, dramaId, req) {
-  const drama = getDramaById(db, Number(dramaId));
+function updateDrama(db, log, dramaId, req, userId) {
+  const drama = getDramaById(db, Number(dramaId), userId);
   if (!drama) return null;
   const updates = [];
   const params = [];
@@ -250,7 +258,7 @@ function updateDrama(db, log, dramaId, req) {
     'UPDATE dramas SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?'
   ).run(...params);
   log.info('Drama updated', { drama_id: dramaId });
-  return getDramaById(db, dramaId);
+  return getDramaById(db, dramaId, userId);
 }
 
 function generateStoryboard(db, log, episodeId, options) {
@@ -273,21 +281,26 @@ function generateStoryboard(db, log, episodeId, options) {
   );
 }
 
-function deleteDrama(db, log, dramaId) {
-  const result = db.prepare('UPDATE dramas SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(
-    new Date().toISOString(),
-    Number(dramaId)
-  );
+function deleteDrama(db, log, dramaId, userId) {
+  const sql = userId == null
+    ? 'UPDATE dramas SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'
+    : 'UPDATE dramas SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL';
+  const params = userId == null
+    ? [new Date().toISOString(), Number(dramaId)]
+    : [new Date().toISOString(), Number(dramaId), userId];
+  const result = db.prepare(sql).run(...params);
   if (result.changes === 0) return false;
   log.info('Drama deleted', { drama_id: dramaId });
   return true;
 }
 
-function getDramaStats(db) {
-  const total = db.prepare('SELECT COUNT(*) as c FROM dramas WHERE deleted_at IS NULL').get().c;
+function getDramaStats(db, userId) {
+  const suffix = userId == null ? '' : ' AND user_id = ?';
+  const params = userId == null ? [] : [userId];
+  const total = db.prepare('SELECT COUNT(*) as c FROM dramas WHERE deleted_at IS NULL' + suffix).get(...params).c;
   const byStatus = db.prepare(
-    'SELECT status, COUNT(*) as count FROM dramas WHERE deleted_at IS NULL GROUP BY status'
-  ).all();
+    'SELECT status, COUNT(*) as count FROM dramas WHERE deleted_at IS NULL' + suffix + ' GROUP BY status'
+  ).all(...params);
   return { total, by_status: byStatus };
 }
 

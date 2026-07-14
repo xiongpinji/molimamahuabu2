@@ -11,7 +11,7 @@ function createDrama(db, log) {
       return response.badRequest(res, '标题不能为空');
     }
     try {
-      const drama = dramaService.createDrama(db, log, body);
+      const drama = dramaService.createDrama(db, log, { ...body, user_id: req.user?.id });
       response.created(res, drama);
     } catch (err) {
       log.error('Create drama failed', { error: err.message, stack: err.stack });
@@ -22,7 +22,7 @@ function createDrama(db, log) {
 
 function getDrama(db, cfg) {
   return (req, res) => {
-    const drama = dramaService.getDrama(db, req.params.id, cfg?.storage?.base_url);
+    const drama = dramaService.getDrama(db, req.params.id, cfg?.storage?.base_url, req.user?.id);
     if (!drama) return response.notFound(res, '剧本不存在');
     response.success(res, drama);
   };
@@ -42,6 +42,7 @@ function listDramas(db, log) {
         status,
         genre,
         keyword,
+        userId: req.user?.id,
       });
       response.successWithPagination(res, dramas, total, p, ps);
     } catch (err) {
@@ -53,7 +54,7 @@ function listDramas(db, log) {
 
 function updateDrama(db, log) {
   return (req, res) => {
-    const drama = dramaService.updateDrama(db, log, req.params.id, req.body || {});
+    const drama = dramaService.updateDrama(db, log, req.params.id, req.body || {}, req.user?.id);
     if (!drama) return response.notFound(res, '剧本不存在');
     response.success(res, drama);
   };
@@ -61,7 +62,7 @@ function updateDrama(db, log) {
 
 function deleteDrama(db, log) {
   return (req, res) => {
-    const ok = dramaService.deleteDrama(db, log, req.params.id);
+    const ok = dramaService.deleteDrama(db, log, req.params.id, req.user?.id);
     if (!ok) return response.notFound(res, '剧本不存在');
     response.success(res, { message: '删除成功' });
   };
@@ -70,7 +71,7 @@ function deleteDrama(db, log) {
 function getDramaStats(db, log) {
   return (req, res) => {
     try {
-      const stats = dramaService.getDramaStats(db);
+      const stats = dramaService.getDramaStats(db, req.user?.id);
       response.success(res, stats);
     } catch (err) {
       log.errorw('Get drama stats failed', { error: err.message });
@@ -189,7 +190,7 @@ function importDrama(db, cfg, log) {
       if (!req.file || !req.file.buffer) {
         return response.badRequest(res, '请上传 ZIP 文件');
       }
-      const result = dramaImportService.importDrama(db, cfg, log, req.file.buffer);
+      const result = dramaImportService.importDrama(db, cfg, log, req.file.buffer, { userId: req.user?.id });
       response.created(res, result);
     } catch (err) {
       log.error('Import drama failed', { error: err.message });
@@ -246,7 +247,7 @@ function importExample(db, cfg, log) {
     if (!fs.existsSync(filePath)) return response.notFound(res, '示例文件不存在');
     try {
       const buffer = fs.readFileSync(filePath);
-      const result = dramaImportService.importDrama(db, cfg, log, buffer);
+      const result = dramaImportService.importDrama(db, cfg, log, buffer, { userId: req.user?.id });
       response.created(res, result);
     } catch (err) {
       log.error('Import example failed', { error: err.message });

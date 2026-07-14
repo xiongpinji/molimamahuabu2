@@ -23,6 +23,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'djpsd') return 'djpsd';
   if (p === 'dashscope') return 'dashscope';
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
@@ -33,6 +34,95 @@ function inferVideoProtocol(provider) {
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
+}
+
+function normalizeDjpsdBaseUrl(baseUrl) {
+  return String(baseUrl || 'https://shiping.djpsd.com')
+    .replace(/\/+$/, '')
+    .replace(/\/v1$/i, '');
+}
+
+function normalizeDjpsdDuration(duration) {
+  const value = Number(duration) || 5;
+  if (value <= 5) return 5;
+  if (value <= 10) return 10;
+  return 15;
+}
+
+function buildDjpsdVideoSubmitBody(apiKey, opts = {}) {
+  const imageUrl = String(opts.image_url || opts.first_frame_url || '').trim();
+  const body = {
+    api_key: apiKey || '',
+    prompt: opts.prompt || '',
+    task_type: 'video',
+    extra_params: JSON.stringify({
+      ratio: opts.aspect_ratio || '16:9',
+      duration: normalizeDjpsdDuration(opts.duration),
+      material_count: imageUrl ? 1 : 0,
+    }),
+  };
+  if (imageUrl) body.image_url = JSON.stringify([imageUrl]);
+  return body;
+}
+
+function parseDjpsdSubmitResponse(payload) {
+  const data = payload?.data?.data || payload?.data || payload || {};
+  const taskId = data.task_id ?? data.id ?? payload?.task_id ?? payload?.id;
+  return taskId == null ? null : String(taskId);
+}
+
+function parseDjpsdPollResponse(payload) {
+  const data = payload?.data?.data || payload?.data || payload || {};
+  const status = String(data.status || '').toLowerCase();
+  const videoUrl = data.video_url || data.result_url;
+  if (videoUrl) return { state: 'completed', videoUrl };
+  if (status === 'success' || status === 'succeeded' || status === 'completed') {
+    return { state: 'failed', error: '任务已完成但未返回视频地址' };
+  }
+  if (status === 'failed' || status === 'error') {
+    return { state: 'failed', error: data.error_message || data.message || '视频生成失败' };
+  }
+  return { state: 'processing' };
+}
+
+function formatDjpsdUnknownSubmitError(error) {
+  const detail = error?.message || String(error || '连接中断');
+  return `DJPSD 视频创建请求连接中断，供应商可能已受理或扣费，但本平台未收到任务编号（结果未知）。为避免重复扣费，请先核对供应商任务记录，不要连续重试。原始错误: ${detail}`;
+}
+
+async function callDjpsdVideoApi(config, log, opts) {
+  const url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs`;
+  const body = buildDjpsdVideoSubmitBody(config.api_key, opts);
+  log.info('[DJPSD video] 创建任务', {
+    video_gen_id: opts.video_gen_id,
+    url,
+    duration: normalizeDjpsdDuration(opts.duration),
+    aspect_ratio: opts.aspect_ratio || '16:9',
+    has_image: !!body.image_url,
+  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { error: formatDjpsdUnknownSubmitError(error) };
+  }
+  const raw = await res.text();
+  let data;
+  try { data = JSON.parse(raw); } catch (_) { data = null; }
+  if (!res.ok) {
+    const message = data?.detail || data?.message || raw || `HTTP ${res.status}`;
+    return { error: `DJPSD 创建视频任务失败: ${String(message).slice(0, 300)}` };
+  }
+  if (data?.code !== undefined && ![0, 200].includes(Number(data.code))) {
+    return { error: `DJPSD 创建视频任务被拒绝: ${String(data.message || data.msg || data.detail || `错误码 ${data.code}`).slice(0, 300)}` };
+  }
+  const taskId = parseDjpsdSubmitResponse(data);
+  if (!taskId) return { error: 'DJPSD 创建成功但未返回任务编号' };
+  return { task_id: taskId, status: 'processing' };
 }
 
 /**
@@ -3584,6 +3674,17 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'djpsd') {
+    return callDjpsdVideoApi(config, log, {
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
   const url = buildVideoUrl(config);
   const dur = duration ? Number(duration) : 5;
   const ratio = aspect_ratio || '16:9';
@@ -3740,6 +3841,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isVidu = protocol === 'vidu';
   const isSora = protocol === 'sora';
   const isAgnes = protocol === 'agnes';
+  const isDjpsd = protocol === 'djpsd';
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
@@ -3809,6 +3911,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (!qep.startsWith('/')) qep = '/' + qep;
         url = viduBase + qep;
         headers = { Authorization: (isOfficialVidu ? 'Token ' : 'Bearer ') + (config.api_key || '') };
+      } else if (isDjpsd) {
+        url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs/${encodeURIComponent(taskId)}`;
+        headers = { 'api-key': config.api_key || '' };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
@@ -3849,6 +3954,18 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           error: parseErr.message,
           body_head: raw.slice(0, 800),
         });
+        continue;
+      }
+
+      if (isDjpsd) {
+        const result = parseDjpsdPollResponse(data);
+        log.info('[DJPSD poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
         continue;
       }
 
@@ -4051,7 +4168,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       log.warn('Video poll request failed', { attempt, error: e.message });
     }
   }
-  return { error: '??????' };
+  return {
+    indeterminate: true,
+    provider_task_id: String(taskId),
+    error: `供应商任务 ${taskId} 仍可能处理中，当前未取得最终状态；为避免重复扣费，请勿重新提交`,
+  };
 }
 
 module.exports = {
@@ -4063,4 +4184,10 @@ module.exports = {
   pickProxyVideoUrl,
   buildAgnesVideoImagePayload,
   formatVideoPostBodyForLog,
+  normalizeDjpsdBaseUrl,
+  normalizeDjpsdDuration,
+  buildDjpsdVideoSubmitBody,
+  parseDjpsdSubmitResponse,
+  parseDjpsdPollResponse,
+  formatDjpsdUnknownSubmitError,
 };

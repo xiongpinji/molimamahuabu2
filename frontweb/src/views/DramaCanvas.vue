@@ -1,13 +1,17 @@
 <template>
   <div class="drama-canvas-page">
-    <header class="header">
+    <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
-        <h1 class="logo" @click="router.push('/')">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">画布模式</span>
-        </h1>
+        <div class="logo workspace-switcher" role="button" tabindex="0" @click="router.push('/')" @keydown.enter="router.push('/')">
+          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
+          <span class="brand-copy">
+            <span class="logo-main">茉莉妈妈</span>
+            <span class="logo-sub">短剧制作平台</span>
+          </span>
+        </div>
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
+        <span class="canvas-name">画布 1</span>
 
         <el-select
           v-model="filterEpisodeId"
@@ -30,21 +34,28 @@
         <span v-else-if="layoutSaveState === 'error'" class="layout-status error">保存失败</span>
 
         <div class="header-actions">
-          <el-button size="small" type="warning" plain @click="focusScriptNode">
+          <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
+            <el-icon><Share /></el-icon>
+          </el-button>
+          <el-button class="topbar-workflow-toggle" size="small" :type="showWorkflowPanel ? 'primary' : 'default'" plain @click="toggleWorkflowPanel">
+            <el-icon><Operation /></el-icon>
+            工作流
+          </el-button>
+          <el-button class="header-action-optional" size="small" type="warning" plain @click="focusScriptNode">
             剧本
           </el-button>
-          <el-button size="small" @click="openCreateDialog('storyboard')">
+          <el-button class="header-action-optional" size="small" @click="openCreateDialog('storyboard')">
             <el-icon><Plus /></el-icon>
             分镜
           </el-button>
-          <el-button size="small" @click="openCreateDialog('character')">角色</el-button>
-          <el-button size="small" @click="openCreateDialog('scene')">场景</el-button>
-          <el-button size="small" @click="openCreateDialog('prop')">道具</el-button>
-          <el-button size="small" @click="openCreateDialog('episode')">
+          <el-button class="header-action-optional" size="small" @click="openCreateDialog('character')">角色</el-button>
+          <el-button class="header-action-optional" size="small" @click="openCreateDialog('scene')">场景</el-button>
+          <el-button class="header-action-optional" size="small" @click="openCreateDialog('prop')">道具</el-button>
+          <el-button class="header-action-optional" size="small" @click="openCreateDialog('episode')">
             <el-icon><Plus /></el-icon>
             集
           </el-button>
-          <el-button size="small" :loading="aligningNodes" @click="onAlignNodes">
+          <el-button class="header-action-optional" size="small" :loading="aligningNodes" @click="onAlignNodes">
             <el-icon><Grid /></el-icon>
             对齐节点
           </el-button>
@@ -59,7 +70,7 @@
         </div>
       </div>
 
-      <div class="workflow-bar">
+      <div v-if="showWorkflowPanel" class="workflow-bar">
         <span class="wf-hint">已选 {{ selectedStoryboardIds.length }} 个分镜</span>
         <el-checkbox-group v-model="pipelineSteps" size="small" class="wf-steps">
           <el-checkbox value="image">生图</el-checkbox>
@@ -97,9 +108,9 @@
         </el-button>
       </div>
 
-      <div v-if="workflowProgress" class="workflow-progress">{{ workflowProgress }}</div>
+      <div v-if="showWorkflowPanel && workflowProgress" class="workflow-progress">{{ workflowProgress }}</div>
 
-      <div class="generate-bar">
+      <div v-if="showWorkflowPanel" class="generate-bar">
         <span class="gen-label">本集生成</span>
         <el-button
           size="small"
@@ -128,11 +139,11 @@
         </el-button>
         <span class="gen-hint" title="完整创作流水线">剧本 → 提取角色/场景/道具 → 分镜 → 生图 → 视频</span>
       </div>
-      <div v-if="episodeGenProgress" class="workflow-progress episode-gen">{{ episodeGenProgress }}</div>
+      <div v-if="showWorkflowPanel && episodeGenProgress" class="workflow-progress episode-gen">{{ episodeGenProgress }}</div>
     </header>
 
-    <div v-loading="loading" class="canvas-shell">
-      <aside v-if="drama" class="canvas-sidebar">
+    <div v-loading="loading" class="canvas-shell" :class="{ 'sidebar-open': sidebarVisible }">
+      <aside v-if="drama && sidebarVisible" class="canvas-sidebar">
         <div class="sidebar-section sidebar-script">
           <div class="sec-label sec-label-row">
             <span>📜 剧本</span>
@@ -220,8 +231,11 @@
           :nodes-connectable="false"
           :elements-selectable="true"
           :selection-key-code="true"
-          :pan-on-drag="[1, 2]"
+          :pan-on-drag="false"
+          pan-activation-key-code="Space"
+          zoom-activation-key-code="Control"
           :pan-on-scroll="true"
+          :zoom-on-scroll="false"
           :fit-view-on-init="!hasSavedViewport"
           class="vue-flow-canvas"
           @node-double-click="onNodeDoubleClick"
@@ -242,6 +256,15 @@
         <CanvasFloatingToolbar v-if="drama && nodes.length" />
       </div>
     </div>
+
+    <CanvasDirectorStage
+      v-if="directorStageVisible && drama"
+      :visible="directorStageVisible"
+      :drama="drama"
+      :initial-state="directorTimeline"
+      @close="directorStageVisible = false"
+      @state-change="onDirectorStateChange"
+    />
 
     <CanvasCreateDialog
       v-model="createDialogVisible"
@@ -265,7 +288,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { List, Moon, Plus, Sunny, Grid } from '@element-plus/icons-vue'
+import { List, Moon, Plus, Sunny, Grid, Operation, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -317,6 +340,7 @@ import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
+import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -340,6 +364,9 @@ const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
+const sidebarVisible = ref(false)
+const showWorkflowPanel = ref(false)
+const directorStageVisible = ref(false)
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
@@ -370,6 +397,7 @@ const nodeTypes = {
 
 const dramaId = computed(() => Number(route.params.id))
 const savedLayout = computed(() => layoutCache.value || parseCanvasLayout(drama.value?.metadata))
+const directorTimeline = computed(() => savedLayout.value?.director_timeline || null)
 
 const initialViewport = computed(() => {
   const v = resolveViewport(savedLayout.value)
@@ -503,6 +531,7 @@ const scriptActionsHolder = {}
 
 provide(CANVAS_CONTEXT_KEY, {
   focusedNodeId,
+  currentViewport,
   drama,
   imagesBySbId,
   videosBySbId,
@@ -523,6 +552,22 @@ provide(CANVAS_CONTEXT_KEY, {
   registerCanvasFlowApi: (api) => {
     canvasFlowApi.value = api
   },
+  sidebarVisible,
+  showWorkflowPanel,
+  directorStageVisible,
+  openDirectorStage: () => {
+    directorStageVisible.value = true
+  },
+  toggleSidebar,
+  toggleWorkflowPanel,
+  focusScript: focusScriptNode,
+  goListMode,
+  toggleTheme,
+  alignNodes: onAlignNodes,
+  fitCanvasView,
+  zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),
+  zoomOut: () => canvasFlowApi.value?.zoomOut?.({ duration: 180 }),
+  showCanvasHelp,
 })
 
 function clearAssetHighlight() {
@@ -538,6 +583,36 @@ function onSelectionChange({ nodes: selectedNodes }) {
 
 function onViewportChange(viewport) {
   currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+}
+
+function toggleSidebar() {
+  sidebarVisible.value = !sidebarVisible.value
+}
+
+function toggleWorkflowPanel() {
+  showWorkflowPanel.value = !showWorkflowPanel.value
+}
+
+async function shareCanvas() {
+  const url = window.location.href
+  try {
+    await navigator.clipboard.writeText(url)
+    ElMessage.success('画布链接已复制')
+  } catch {
+    ElMessage.info(url)
+  }
+}
+
+async function fitCanvasView() {
+  const api = canvasFlowApi.value
+  if (!api?.fitView) return
+  await api.fitView({ padding: 0.14, duration: 250, includeHiddenNodes: false })
+  const viewport = api.getViewport?.()
+  if (viewport) currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+}
+
+function showCanvasHelp() {
+  ElMessage.info('快捷键：空格拖动画布，Ctrl/⌘ + 滚轮缩放，双击节点打开编辑')
 }
 
 function scheduleLayoutSave() {
@@ -601,6 +676,15 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
     layoutSaveState.value = 'error'
     ElMessage.error(e?.message || '保存失败')
   }
+}
+
+async function onDirectorStateChange(nextState) {
+  const currentLayout = layoutCache.value || parseCanvasLayout(drama.value?.metadata) || {}
+  layoutCache.value = {
+    ...currentLayout,
+    director_timeline: nextState,
+  }
+  await persistCanvasState({ layoutOnly: true })
 }
 
 const {
@@ -993,9 +1077,12 @@ onBeforeUnmount(() => {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   line-height: 1.2;
 }
+.brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
+.brand-copy { display: flex; flex-direction: column; }
 
 .logo-main {
   font-size: 15px;
@@ -1136,6 +1223,92 @@ onBeforeUnmount(() => {
 
 :deep(.vue-flow__node.selected) {
   box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.8);
+}
+/* LibTV 风格画布工作区覆盖层 */
+.header.canvas-topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 30;
+  border-bottom: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.canvas-topbar .header-inner {
+  margin: 12px 16px 0;
+  padding: 8px 10px;
+  flex-wrap: nowrap;
+  border: 1px solid rgba(82, 82, 91, 0.7);
+  border-radius: 16px;
+  background: rgba(24, 24, 27, 0.82);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+.workspace-switcher { min-width: 156px; }
+.canvas-name {
+  padding-left: 12px;
+  border-left: 1px solid #3f3f46;
+  color: #a1a1aa;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.canvas-topbar .header-actions { gap: 6px; }
+.canvas-topbar .header-action-optional { display: none; }
+.canvas-topbar .topbar-workflow-toggle { min-width: 92px; }
+.canvas-topbar .topbar-share { width: 38px; padding: 0; }
+.canvas-topbar .el-button { min-height: 38px; }
+.canvas-topbar .workflow-bar,
+.canvas-topbar .generate-bar,
+.canvas-topbar .workflow-progress { pointer-events: auto; }
+.canvas-topbar .workflow-bar,
+.canvas-topbar .generate-bar {
+  margin: 8px 16px 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(82, 82, 91, 0.65);
+  border-radius: 14px;
+  background: rgba(24, 24, 27, 0.92);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(18px);
+}
+.canvas-topbar .workflow-progress {
+  margin: 8px 16px 0;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(24, 24, 27, 0.86);
+}
+.canvas-shell { position: relative; width: 100%; }
+.canvas-sidebar {
+  position: absolute;
+  top: 82px;
+  left: 16px;
+  bottom: 16px;
+  z-index: 20;
+  width: 248px;
+  border: 1px solid rgba(82, 82, 91, 0.72);
+  border-radius: 16px;
+  background: rgba(24, 24, 27, 0.9);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(18px);
+}
+.canvas-main { width: 100%; height: 100%; }
+.vue-flow-canvas { background: #101014; }
+.canvas-topbar .layout-status { font-size: 11px; white-space: nowrap; }
+@media (max-width: 980px) {
+  .canvas-topbar .header-inner { margin: 8px 10px 0; }
+  .canvas-topbar .btn-theme { display: none; }
+  .page-title { max-width: 160px; }
+}
+@media (max-width: 680px) {
+  .canvas-topbar .header-inner { padding: 7px 8px; }
+  .workspace-switcher { min-width: 0; }
+  .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status { display: none; }
+  .brand-logo { width: 34px; height: 34px; }
+  .page-title { max-width: 120px; }
+  .episode-select { width: 112px !important; }
+  .canvas-sidebar { top: 70px; left: 8px; right: 8px; width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-topbar .header-inner { transition: none; }
 }
 </style>
 

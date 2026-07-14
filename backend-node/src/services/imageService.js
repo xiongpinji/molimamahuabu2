@@ -1,6 +1,10 @@
-function list(db, query) {
+function list(db, query, options = {}) {
   let sql = 'FROM image_generations WHERE deleted_at IS NULL';
   const params = [];
+  if (options.billingEnabled) {
+    sql += ' AND user_id = ?';
+    params.push(options.userId || '');
+  }
   if (query.drama_id) {
     sql += ' AND drama_id = ?';
     params.push(query.drama_id);
@@ -48,8 +52,10 @@ function rowToItem(r) {
   };
 }
 
-function getById(db, id) {
-  const r = db.prepare('SELECT * FROM image_generations WHERE id = ? AND deleted_at IS NULL').get(Number(id));
+function getById(db, id, options = {}) {
+  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
+  const params = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const r = db.prepare('SELECT * FROM image_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...params);
   return r ? rowToItem(r) : null;
 }
 
@@ -61,6 +67,19 @@ const uploadService = require('./uploadService');
 const storageLayout = require('./storageLayout');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const creditLedger = require('./creditLedgerService');
+const auditEvent = require('./auditEventService');
+const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
+
+function settleImageCredit(db, log, row, outcome, message = '') {
+  if (!row?.credit_reservation_id) return null;
+  try {
+    return creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+  } catch (error) {
+    log?.error('[图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
+    return null;
+  }
+}
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame']);
 
@@ -389,6 +408,129 @@ async function splitNineGridToImages(db, log, originalRow, absLocalPath, storage
 }
 
 /**
+ * 扩展宫格适配：14 宫格采用 4×4 网格并保留最后两个空槽，16/25 宫格分别使用 4×4/5×5。
+ * 复用现有 sharp 裁剪与 image_generations 入库链路，不新增图片处理核心。
+ */
+async function splitConfiguredGridToImages(db, log, originalRow, absLocalPath, storagePath, imageUrl_) {
+  const layout = getGridLayout(originalRow?.frame_type);
+  if (!layout || layout.key === 'quad_grid' || layout.key === 'nine_grid') return;
+  if (!absLocalPath) {
+    log.warn(`[${layout.label}拆分] 缺少本地文件路径，跳过拆分`, { id: originalRow.id });
+    return;
+  }
+  let sharp;
+  try {
+    sharp = require('sharp');
+  } catch (e) {
+    log.warn(`[${layout.label}拆分] sharp 未安装，跳过拆分`, { error: e.message });
+    return;
+  }
+  try {
+    const inputBuf = fs.readFileSync(absLocalPath);
+    const meta = await sharp(inputBuf).metadata();
+    const cells = getGridCells(meta.width, meta.height, layout);
+    const absDir = path.dirname(absLocalPath);
+    const ext = path.extname(absLocalPath) || '.jpg';
+    const base = path.basename(absLocalPath, ext);
+    const now = new Date().toISOString();
+    for (const cell of cells) {
+      const panelFilename = `${base}_panel${cell.index}${ext}`;
+      const absPanelPath = path.join(absDir, panelFilename);
+      const relPanelPath = path.relative(storagePath, absPanelPath).replace(/\\/g, '/');
+      const panelBuf = await sharp(inputBuf)
+        .extract({ left: cell.left, top: cell.top, width: cell.width, height: cell.height })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      fs.writeFileSync(absPanelPath, panelBuf);
+      const panelImageUrl = imageUrl_ ? imageUrl_.replace(/[^/\\]+$/, panelFilename) : null;
+      db.prepare(
+        `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, character_id, provider, prompt, model, frame_type, image_url, local_path, status, created_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
+      ).run(
+        originalRow.storyboard_id ?? null,
+        originalRow.drama_id ?? 0,
+        originalRow.scene_id ?? null,
+        originalRow.character_id ?? null,
+        originalRow.provider || 'system',
+        `[${layout.label} ${cell.index + 1}] ${originalRow.prompt || ''}`.slice(0, 1000),
+        originalRow.model ?? null,
+        `${layout.key.replace('_grid', '')}_panel_${cell.index}`,
+        panelImageUrl,
+        relPanelPath,
+        now,
+        now,
+        now
+      );
+      log.info(`[${layout.label}拆分] 面板 ${cell.index + 1} 已保存`, { rel_path: relPanelPath });
+    }
+    log.info(`[${layout.label}拆分] 完成`, { original_id: originalRow.id, panels: cells.length });
+  } catch (err) {
+    log.warn(`[${layout.label}拆分] 整体失败`, { error: err.message });
+  }
+}
+
+const EXPANDED_GRID_ANGLES = [
+  'eye-level shot', 'low-angle shot', 'high-angle shot', 'left profile shot', 'right profile shot',
+  'rear three-quarter shot', 'front three-quarter shot', 'overhead shot', 'worm-eye shot',
+  'Dutch angle left', 'Dutch angle right', 'wide establishing shot', 'medium shot', 'close-up shot',
+  'extreme close-up shot', 'full-body shot', 'medium-wide shot', 'shoulder-level shot',
+  'low three-quarter shot', 'high three-quarter shot', 'side tracking angle', 'front centered angle',
+  'rear centered angle', 'top-down detail angle', 'low detail angle',
+];
+
+/**
+ * 扩展宫格提示词适配。只调用一次现有单帧提示词服务，再用宫格布局和机位标签展开，
+ * 避免 14/16/25 宫格把文本模型调用线性放大。
+ */
+async function buildConfiguredGridPrompt(db, log, cfg, storyboardId, model, frameType) {
+  const layout = getGridLayout(frameType);
+  if (!layout || layout.key === 'quad_grid' || layout.key === 'nine_grid') return null;
+  const framePromptService = require('./framePromptService');
+  const sb = framePromptService.loadStoryboard(db, storyboardId);
+  if (!sb) return null;
+  const scene = framePromptService.loadScene(db, sb.scene_id);
+  const characterNames = framePromptService.loadStoryboardCharacterNames(db, storyboardId);
+  const base = await framePromptService.generateSingleFrameExported(
+    db,
+    log,
+    cfg,
+    { ...sb, angle: '平视' },
+    scene,
+    characterNames,
+    model || undefined,
+    'key'
+  );
+  const rawStyle = (cfg?.style?.default_style_en || cfg?.style?.default_style || '').toString().trim();
+  const styleZhGrid = (cfg?.style?.default_style_zh || '').toString().trim();
+  const styleHead = [
+    styleZhGrid ? `【画风·最高优先级】${styleZhGrid}` : '',
+    rawStyle ? `MANDATORY ART STYLE: ${rawStyle}.` : '',
+  ].filter(Boolean).join('\n');
+  const panelDescs = Array.from({ length: layout.panelCount }, (_, index) => {
+    const row = Math.floor(index / layout.columns) + 1;
+    const column = (index % layout.columns) + 1;
+    const angle = EXPANDED_GRID_ANGLES[index] || 'cinematic angle';
+    return `[Panel ${index + 1} — row ${row}, column ${column}, ${angle}]: ${base.prompt}`;
+  });
+  const rows = [];
+  for (let row = 0; row < layout.rows; row += 1) {
+    const start = row * layout.columns;
+    const end = Math.min(start + layout.columns, layout.panelCount);
+    const rowPanels = panelDescs.slice(start, end);
+    if (rowPanels.length < layout.columns) {
+      rowPanels.push(`EMPTY CELLS: leave the remaining ${layout.columns - rowPanels.length} cells empty and seamless; do not draw extra panels.`);
+    }
+    rows.push(`ROW ${row + 1} (left to right):\n${rowPanels.join('\n')}`);
+  }
+  const emptyNote = layout.panelCount < layout.rows * layout.columns
+    ? ` The final ${layout.rows}x${layout.columns} canvas has exactly ${layout.panelCount} panels; the last ${layout.rows * layout.columns - layout.panelCount} cells are intentionally empty.`
+    : '';
+  const prompt = `${styleHead ? `${styleHead}\n\n` : ''}[GRID_LAYOUT:${layout.key}] Create a ${layout.rows}x${layout.columns} storyboard grid with EXACTLY ${layout.panelCount} equal-sized panels.${emptyNote} No borders, no dividers, no labels, no watermarks. Keep the same characters, scene, art direction and continuity across panels; vary only the camera angle.\n\n${rows.join('\n\n')}\n\nCRITICAL: panels must be seamlessly adjacent and remain individual selectable frames when cropped.`;
+  log.info(`[${layout.label}] FINAL IMAGE PROMPT（发送给图片AI）`, { storyboard_id: storyboardId, prompt_len: prompt.length });
+  return prompt;
+}
+
+/**
  * 将 aspect_ratio（如 "9:16"）转换为图片生成 size 字符串（如 "720*1280"）
  * DashScope/Wan 用 W*H 格式，OpenAI 用 WxH 格式；统一返回 W*H，callDashScopeImageApi 内部会调 dashScopeSize 做最终校验
  */
@@ -529,11 +671,56 @@ function mergePromptWithStyle(prompt, style) {
   return base + ', ' + styleText;
 }
 
-function create(db, log, req) {
+function findActiveForTarget(db, storyboardId, frameType) {
+  if (!storyboardId) return null;
+  return db.prepare(
+    `SELECT * FROM image_generations
+     WHERE storyboard_id = ?
+       AND (frame_type = ? OR (frame_type IS NULL AND ? IS NULL))
+       AND status IN ('pending', 'processing')
+       AND deleted_at IS NULL
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`
+  ).get(Number(storyboardId), frameType ?? null, frameType ?? null) || null;
+}
+
+function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
-  const task = taskService.createTask(db, log, 'image_generation', String(req.drama_id || ''));
-  const taskId = task.id;
   const frameType = req.frame_type ?? null;
+  const active = findActiveForTarget(db, req.storyboard_id, frameType);
+  if (active) {
+    log.info('Duplicate image generation prevented', {
+      storyboard_id: req.storyboard_id,
+      frame_type: frameType,
+      image_gen_id: active.id,
+    });
+    if (options.billingEnabled) {
+      auditEvent.record(db, {
+        userId: options.userId,
+        eventType: 'generation.image.reused',
+        resourceType: 'image',
+        resourceId: active.id,
+        outcome: 'success',
+        code: 'REUSED',
+      });
+    }
+    return { ...getById(db, active.id), reused: true };
+  }
+  let billedModel = null;
+  let billedCredits = null;
+  if (options.billingEnabled) {
+    if (!options.userId) {
+      const error = new Error('请先登录');
+      error.code = 'UNAUTHORIZED';
+      throw error;
+    }
+    const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
+    const config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
+    billedModel = req.model || config?.default_model || (Array.isArray(config?.model) ? config.model[0] : config?.model);
+    const modelPriceService = require('./modelPriceService');
+    billedModel = modelPriceService.canonicalModel(billedModel);
+    billedCredits = modelPriceService.requirePrice(db, billedModel);
+  }
   const sceneId = req.scene_id != null ? Number(req.scene_id) : null;
   const refImagesJson =
     req.reference_images && Array.isArray(req.reference_images)
@@ -553,30 +740,49 @@ function create(db, log, req) {
     reqSize = aspectRatioToSize(req.aspect_ratio) || null;
   }
   const useFirstFrameLayoutLock = resolveUseFirstFrameLayoutLock(req, frameType);
-  const info = db.prepare(
-    `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
-  ).run(
-    req.storyboard_id ?? null,
-    Number(req.drama_id) || 0,
-    sceneId,
-    req.provider || 'openai',
-    mergedPrompt,
-    req.negative_prompt ?? null,
-    req.model ?? null,
-    frameType,
-    refImagesJson,
-    useFirstFrameLayoutLock,
-    reqSize,
-    taskId,
-    now,
-    now
-  );
-  const imageGenId = info.lastInsertRowid;
-  if (!imageGenId) throw new Error('insert failed');
-  setImmediate(() => {
-    processImageGeneration(db, log, imageGenId);
-  });
+  const created = db.transaction(() => {
+    const task = taskService.createTask(db, log, 'image_generation', String(req.drama_id || ''));
+    const taskId = task.id;
+    const billingColumns = options.billingEnabled ? ', user_id, credit_reservation_id' : '';
+    const billingValues = options.billingEnabled ? ', ?, NULL' : '';
+    const params = [
+      req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId, req.provider || 'openai',
+      mergedPrompt, req.negative_prompt ?? null, billedModel || req.model || null, frameType,
+      refImagesJson, useFirstFrameLayoutLock, reqSize, taskId, now, now,
+    ];
+    if (options.billingEnabled) params.push(String(options.userId));
+    const info = db.prepare(
+      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at${billingColumns})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
+    ).run(...params);
+    const imageGenId = info.lastInsertRowid;
+    if (!imageGenId) throw new Error('insert failed');
+    if (options.billingEnabled) {
+      const creditLedger = require('./creditLedgerService');
+      const reservation = creditLedger.reserve(db, {
+        userId: options.userId,
+        operationKey: `image:${imageGenId}`,
+        amount: billedCredits,
+        model: billedModel,
+        resourceType: 'image',
+        resourceId: String(imageGenId),
+      });
+      db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?')
+        .run(reservation.id, imageGenId);
+      auditEvent.record(db, {
+        userId: options.userId,
+        eventType: 'generation.image.created',
+        resourceType: 'image',
+        resourceId: imageGenId,
+        outcome: 'success',
+        code: 'CREATED',
+      });
+    }
+    return { imageGenId, taskId };
+  })();
+  const { imageGenId, taskId } = created;
+  const schedule = options.schedule || ((callback) => setImmediate(callback));
+  schedule(() => processImageGeneration(db, log, imageGenId));
   return { id: imageGenId, task_id: taskId, status: 'pending', ...getById(db, imageGenId) };
 }
 
@@ -693,6 +899,33 @@ async function processImageGeneration(db, log, imageGenId) {
       }
     }
 
+    // ── 扩展宫格模式：复用现有单帧提示词服务，按配置生成 14/16/25 宫格 ──
+    if (isGridFrameType(row.frame_type) && !['quad_grid', 'nine_grid'].includes(row.frame_type) && row.storyboard_id) {
+      try {
+        const loadConfig = require('../config').loadConfig;
+        const cfg = loadConfig();
+        const layout = getGridLayout(row.frame_type);
+        const cacheMarker = `[GRID_LAYOUT:${layout.key}]`;
+        const cachedRow = db.prepare(
+          `SELECT prompt FROM image_generations
+            WHERE storyboard_id = ? AND frame_type = ?
+              AND prompt IS NOT NULL AND prompt != ''
+              AND status = 'completed'
+              AND id != ?
+            ORDER BY created_at DESC LIMIT 1`
+        ).get(Number(row.storyboard_id), row.frame_type, imageGenId);
+        let gridPrompt = cachedRow?.prompt?.includes(cacheMarker) ? cachedRow.prompt : null;
+        if (!gridPrompt) gridPrompt = await buildConfiguredGridPrompt(db, log, cfg, row.storyboard_id, row.model, row.frame_type);
+        if (gridPrompt) {
+          db.prepare('UPDATE image_generations SET prompt = ?, updated_at = ? WHERE id = ?')
+            .run(gridPrompt, new Date().toISOString(), imageGenId);
+          row.prompt = gridPrompt;
+        }
+      } catch (gridErr) {
+        log.warn('[图生] 扩展宫格提示词生成失败，使用原始提示词', { id: imageGenId, frame_type: row.frame_type, error: gridErr.message });
+      }
+    }
+
     // ── Step 1: 获取 AI 配置 ──────────────────────────────────────────
     const config = imageClient.getDefaultImageConfig(db, row.model, null, imageServiceType);
     if (!config) {
@@ -701,6 +934,7 @@ async function processImageGeneration(db, log, imageGenId) {
         'failed', '未配置图片模型', new Date().toISOString(), imageGenId
       );
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置图片模型');
+      settleImageCredit(db, log, row, 'failed', '未配置图片模型');
       return;
     }
     log.info('[图生] Step1 AI配置', {
@@ -1048,8 +1282,7 @@ async function processImageGeneration(db, log, imageGenId) {
     // 场景参考图始终保留；未被提及的角色参考图跳过，减少无关图片对模型的干扰。
     if (
       row.storyboard_id &&
-      row.frame_type !== 'quad_grid' &&
-      row.frame_type !== 'nine_grid' &&
+      !isGridFrameType(row.frame_type) &&
       !skipStep23PromptCharFilter &&
       reference_image_urls && reference_image_urls.length > 1 &&
       reference_context_note
@@ -1116,7 +1349,7 @@ async function processImageGeneration(db, log, imageGenId) {
     // ── Step 2.5: 单张分镜图 + 有参考图时，记录参考图映射（由 callGeminiImageApi 处理 parts 结构）───
     // Gemini 正确做法：文字说明→参考图→生成指令（交替结构），在 imageClient 中组装
     // 这里只记录日志，不再污染主 prompt 文本
-    if (row.storyboard_id && row.frame_type !== 'quad_grid' && row.frame_type !== 'nine_grid' && reference_image_urls && reference_image_urls.length > 0) {
+    if (row.storyboard_id && !isGridFrameType(row.frame_type) && reference_image_urls && reference_image_urls.length > 0) {
       log.info('[图生] Step2.5 参考图就绪，上传前将按体积/分辨率优化', {
         id: imageGenId,
         ref_count: reference_image_urls.length,
@@ -1157,7 +1390,7 @@ async function processImageGeneration(db, log, imageGenId) {
 
     // ── Step 3.5: 分镜 prompt 文本AI二次优化（单帧分镜；优先用 image_polish 模型，无则 fallback 默认文本模型）──
     let finalPrompt = row.prompt;
-    const isSingleStoryboard = row.storyboard_id && row.frame_type !== 'quad_grid' && row.frame_type !== 'nine_grid';
+    const isSingleStoryboard = row.storyboard_id && !isGridFrameType(row.frame_type);
     if (isSingleStoryboard && row.prompt) {
       try {
         // 若分镜已有 polished_prompt（手动编辑或上次优化结果），直接使用，不再重复调 AI
@@ -1394,6 +1627,7 @@ async function processImageGeneration(db, log, imageGenId) {
       if (row.storyboard_id != null) {
         try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, row.storyboard_id); } catch (_) {}
       }
+      settleImageCredit(db, log, row, 'failed', result.error);
       return;
     }
 
@@ -1426,8 +1660,7 @@ async function processImageGeneration(db, log, imageGenId) {
       if (
         localPath &&
         imageSize &&
-        row.frame_type !== 'quad_grid' &&
-        row.frame_type !== 'nine_grid'
+        !isGridFrameType(row.frame_type)
       ) {
         const absNorm = path.join(storagePath, localPath);
         await normalizeSavedImageToTargetPixels(absNorm, imageSize, log, { id: imageGenId, size: imageSize });
@@ -1453,6 +1686,7 @@ async function processImageGeneration(db, log, imageGenId) {
         status: 'completed',
       });
     }
+    settleImageCredit(db, log, row, 'completed');
     
     if (row.scene_id != null && row.storyboard_id == null) {
       // 旧图追加到 extra_images，与上传逻辑保持一致
@@ -1500,7 +1734,7 @@ async function processImageGeneration(db, log, imageGenId) {
       } catch (_) {}
     }
 
-    if (row.storyboard_id && effectiveFrameTypeForBind !== 'quad_grid' && effectiveFrameTypeForBind !== 'nine_grid') {
+    if (row.storyboard_id && !isGridFrameType(effectiveFrameTypeForBind)) {
       try {
         const { bindStoryboardFrameImage } = require('./storyboardFrameBinding');
         bindStoryboardFrameImage(
@@ -1538,6 +1772,16 @@ async function processImageGeneration(db, log, imageGenId) {
       });
     }
 
+    if (isGridFrameType(row.frame_type) && !['quad_grid', 'nine_grid'].includes(row.frame_type) && localPath) {
+      const storagePath2 = path.isAbsolute(cfg.storage?.local_path)
+        ? cfg.storage.local_path
+        : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+      const absLocalPath = path.join(storagePath2, localPath);
+      splitConfiguredGridToImages(db, log, row, absLocalPath, storagePath2, persistedImageUrl).catch((e) => {
+        log.warn('[图生] Step7 扩展宫格拆分异常', { id: imageGenId, frame_type: row.frame_type, error: e.message });
+      });
+    }
+
   } catch (err) {
     const now2 = new Date().toISOString();
     db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
@@ -1551,15 +1795,18 @@ async function processImageGeneration(db, log, imageGenId) {
     if (row.storyboard_id != null) {
       try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(err.message, now2, row.storyboard_id); } catch (_) {}
     }
+    settleImageCredit(db, log, row, 'failed', err.message);
   }
 }
 
-function deleteById(db, log, id) {
+function deleteById(db, log, id, options = {}) {
   const numId = Number(id);
   const now = new Date().toISOString();
+  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
+  const ownerParams = options.billingEnabled ? [numId, options.userId || ''] : [numId];
   // 若该图当前绑定为某分镜的首/尾帧，解除绑定（避免悬空引用）
   try {
-    const row = db.prepare('SELECT storyboard_id FROM image_generations WHERE id = ? AND deleted_at IS NULL').get(numId);
+    const row = db.prepare('SELECT storyboard_id FROM image_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...ownerParams);
     if (row && row.storyboard_id != null) {
       const sid = Number(row.storyboard_id);
       db.prepare(`UPDATE storyboards SET first_frame_image_id = NULL, image_url = NULL, local_path = NULL, updated_at = ? WHERE id = ? AND first_frame_image_id = ?`).run(now, sid, numId);
@@ -1568,7 +1815,7 @@ function deleteById(db, log, id) {
   } catch (e) {
     try { log?.warn?.('[image delete] 清除分镜绑定失败', { id: numId, err: e.message }); } catch (_) {}
   }
-  const result = db.prepare('UPDATE image_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, numId);
+  const result = db.prepare('UPDATE image_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL' + ownerClause).run(now, ...ownerParams);
   return result.changes > 0;
 }
 
@@ -1684,4 +1931,8 @@ module.exports = {
   processImageGeneration,
   aspectRatioToSize,
   syncStoryboardCharacters,
+  findActiveForTarget,
+  settleImageCredit,
+  splitConfiguredGridToImages,
+  buildConfiguredGridPrompt,
 };

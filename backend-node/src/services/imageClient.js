@@ -9,6 +9,9 @@ const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 const { postJSONWithTimeout } = require('./aiClient');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
+const { resolveKlingBearerToken } = require('./klingJwt');
+const creditLedger = require('./creditLedgerService');
+const auditEvent = require('./auditEventService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -147,6 +150,39 @@ function getModelFromConfig(config, preferredModel) {
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || 'dall-e-3';
+}
+
+/** GPT Image 同步返回 base64；压缩 JPEG 与低质量档可缩短供应端同步处理时间。 */
+function getOpenAIImageOutputOptions(model, requestedQuality) {
+  if (!/^gpt-image-/i.test(String(model || ''))) return {};
+  return {
+    output_format: 'jpeg',
+    output_compression: 85,
+    ...(!requestedQuality ? { quality: 'low' } : {}),
+  };
+}
+
+/** GPT Image 仅使用其支持的三档像素尺寸；保存后仍由本地流程适配回项目画幅。 */
+function normalizeGptImageSize(size) {
+  const match = String(size || '').trim().toLowerCase().replace(/\*/g, 'x').match(/^(\d+)x(\d+)$/);
+  if (!match) return '1024x1024';
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width > height) return '1536x1024';
+  if (height > width) return '1024x1536';
+  return '1024x1024';
+}
+
+function imageMimeFromOutputFormat(format) {
+  const normalized = String(format || 'png').toLowerCase();
+  if (normalized === 'jpg' || normalized === 'jpeg') return 'image/jpeg';
+  if (normalized === 'webp') return 'image/webp';
+  return 'image/png';
+}
+
+function formatGptImageUnknownResultError(error) {
+  const detail = error?.message || String(error || '连接中断');
+  return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
 }
 
 // 通义万象 size：格式 "宽*高"，总像素须在 589824(768*768)～1638400(1280*1280) 之间
@@ -377,6 +413,33 @@ function klingImageAspectRatio(size) {
   return '9:16';
 }
 
+function buildKlingImageQueryUrl(baseUrl, endpoint, queryEndpoint, taskId) {
+  const base = String(baseUrl || '').replace(/\/$/, '');
+  const ep = String(endpoint || '/v1/images/generations');
+  const configured = String(queryEndpoint || '').trim();
+  const queryPath = configured || `${ep.replace(/\/$/, '')}/{taskId}`;
+  const normalizedPath = queryPath.startsWith('/') ? queryPath : '/' + queryPath;
+  const encodedTaskId = encodeURIComponent(String(taskId));
+  return base + normalizedPath
+    .replace(/\{taskId\}/gi, encodedTaskId)
+    .replace(/\{task_id\}/gi, encodedTaskId)
+    .replace(/\{id\}/gi, encodedTaskId);
+}
+
+function parseKlingImagePollResult(data) {
+  const status = data?.data?.task_status;
+  if (status === 'succeed') {
+    const imageUrl = data?.data?.task_result?.images?.[0]?.url;
+    return imageUrl
+      ? { state: 'completed', imageUrl }
+      : { state: 'failed', error: '可灵未返回图片地址' };
+  }
+  if (status === 'failed') {
+    return { state: 'failed', error: data?.data?.task_status_msg || '任务失败' };
+  }
+  return { state: status || 'processing' };
+}
+
 /**
  * 调用可灵（Kling AI）图片生成 API（异步任务轮询）
  * 支持模型：kling-image / kling-omni-image（以及其他 kling-* 模型）
@@ -386,7 +449,7 @@ function klingImageAspectRatio(size) {
 async function callKlingImageApi(config, log, opts) {
   const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
   const base = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
-  const apiKey = config.api_key || '';
+  const apiKey = resolveKlingBearerToken(config);
   const headers = {
     'Content-Type': 'application/json',
     Authorization: 'Bearer ' + apiKey,
@@ -478,35 +541,27 @@ async function callKlingImageApi(config, log, opts) {
   }
 
   // 构建轮询 URL
-  const cfgQEp = config.query_endpoint
-    ? (config.query_endpoint.startsWith('/') ? config.query_endpoint : '/' + config.query_endpoint)
-    : '';
-  function buildKlingQueryUrl(tid) {
-    if (cfgQEp) return base + cfgQEp.replace(/\{taskId\}/gi, encodeURIComponent(tid)).replace(/\{task_id\}/gi, encodeURIComponent(tid)).replace(/\{id\}/gi, encodeURIComponent(tid));
-    return base + ep + '/' + encodeURIComponent(tid);
-  }
-
   log.info('[Kling图生] 任务已提交，开始轮询', { image_gen_id, task_id: taskId });
   const maxAttempts = 60;
   const intervalMs = 4000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
-      const queryRes = await fetch(buildKlingQueryUrl(taskId), { method: 'GET', headers });
+      const queryUrl = buildKlingImageQueryUrl(base, ep, config.query_endpoint, taskId);
+      const queryRes = await fetch(queryUrl, { method: 'GET', headers });
       if (!queryRes.ok) continue;
       const queryData = JSON.parse(await queryRes.text());
-      const status = queryData?.data?.task_status;
-      log.info('[Kling图生] 轮询状态', { image_gen_id, task_id: taskId, attempt, status });
-      if (status === 'succeed') {
-        const imgUrl = queryData?.data?.task_result?.images?.[0]?.url;
-        if (imgUrl) {
+      const pollResult = parseKlingImagePollResult(queryData);
+      log.info('[Kling图生] 轮询状态', { image_gen_id, task_id: taskId, attempt, status: pollResult.state });
+      if (pollResult.state === 'completed') {
+        if (pollResult.imageUrl) {
           log.info('[Kling图生] 生成完成', { image_gen_id, task_id: taskId });
-          return { image_url: imgUrl };
+          return { image_url: pollResult.imageUrl };
         }
         return { error: '可灵未返回图片地址' };
       }
-      if (status === 'failed') {
-        const errMsg = queryData?.data?.task_status_msg || '任务失败';
+      if (pollResult.state === 'failed') {
+        const errMsg = pollResult.error || '任务失败';
         log.warn('[Kling图生] 任务失败', { image_gen_id, task_id: taskId, error: errMsg });
         return { error: '可灵生成失败: ' + errMsg };
       }
@@ -1411,6 +1466,9 @@ async function callImageApi(db, log, opts) {
     storage_local_path,
     system_prompt,
     user_negative_prompt,
+    billingEnabled = false,
+    userId,
+    schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
   const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -1521,6 +1579,12 @@ async function callImageApi(db, log, opts) {
   if (isSeedream && size) effectiveSize = fixSeedreamSize(size);
   else if (isAgnes && size) effectiveSize = fixAgnesImageSize(size);
 
+  const isGptImage = protocol === 'openai' && !isAgnes && /^gpt-image-/i.test(String(model || ''));
+  const outputOptions = isGptImage
+    ? getOpenAIImageOutputOptions(model, quality)
+    : {};
+  if (isGptImage) effectiveSize = normalizeGptImageSize(effectiveSize);
+
   const body = {
     model,
     prompt: effectivePrompt,
@@ -1528,6 +1592,7 @@ async function callImageApi(db, log, opts) {
     ...(!isSeedream ? { n: 1 } : {}),
     ...(effectiveSize ? { size: effectiveSize } : {}),
     ...(quality ? { quality } : {}),
+    ...outputOptions,
     // volcengine 原生或 doubao-seedream 模型均需关闭水印（默认为 true）
     ...((isVolc || isSeedream) ? { watermark: false } : {}),
     // 多张参考图时加 negative_prompt，防止模型把参考图拼成左右分割的合图
@@ -1546,6 +1611,7 @@ async function callImageApi(db, log, opts) {
     size: effectiveSize,
     original_size: size !== effectiveSize ? size : undefined,
     is_agnes: isAgnes,
+    output_format: outputOptions.output_format,
   });
   const openaiCompatHeaders = {
     'Content-Type': 'application/json',
@@ -1559,6 +1625,7 @@ async function callImageApi(db, log, opts) {
     raw = out.raw;
   } catch (e) {
     log.error('Image API network error', { image_gen_id, error: e.message, url: url.slice(0, 80) });
+    if (isGptImage) return { error: formatGptImageUnknownResultError(e) };
     return { error: e.message && e.message.includes('timeout')
       ? e.message
       : ('图片生成网络请求失败: ' + e.message) };
@@ -1587,7 +1654,8 @@ async function callImageApi(db, log, opts) {
   const item = data.data && data.data[0];
   let imageUrl = item && (item.url || item.image_url);
   if (!imageUrl && item?.b64_json) {
-    imageUrl = `data:image/png;base64,${String(item.b64_json).replace(/\s/g, '')}`;
+    const mimeType = imageMimeFromOutputFormat(outputOptions.output_format);
+    imageUrl = `data:${mimeType};base64,${String(item.b64_json).replace(/\s/g, '')}`;
   }
   if (!imageUrl && Array.isArray(data.images) && data.images.length > 0) {
     const first = data.images[0];
@@ -1613,6 +1681,35 @@ async function callImageApi(db, log, opts) {
  * 创建 image_generation 记录并异步调用 API，完成后更新记录与角色 image_url。
  * 与场景图一致：创建 task 并写入 task_id，便于前端轮询 /tasks/:task_id 获知完成或报错。
  */
+function findActiveAssetImage(db, characterId, sceneId, userId = null) {
+  const ownerClause = userId == null ? '' : ' AND user_id = ?';
+  const ownerValue = userId == null ? [] : [String(userId)];
+  if (characterId != null) {
+    return db.prepare(
+      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(characterId), ...ownerValue) || null;
+  }
+  if (sceneId != null) {
+    return db.prepare(
+      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(sceneId), ...ownerValue) || null;
+  }
+  return null;
+}
+
+function settleImageCredit(db, log, imageGenId, outcome, message = '') {
+  const row = typeof imageGenId === 'object'
+    ? imageGenId
+    : db.prepare('SELECT id, credit_reservation_id FROM image_generations WHERE id = ?').get(Number(imageGenId));
+  if (!row?.credit_reservation_id) return null;
+  try {
+    return creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
+  } catch (error) {
+    log?.error('[资产图生] 积分结算失败，保留原预扣状态', { id: row.id, error: error.message });
+    return null;
+  }
+}
+
 function createAndGenerateImage(db, log, opts) {
   const {
     drama_id,
@@ -1625,6 +1722,9 @@ function createAndGenerateImage(db, log, opts) {
     quality,
     provider,
     user_negative_prompt,
+    billingEnabled = false,
+    userId,
+    schedule,
   } = opts;
   const negRow = (user_negative_prompt && String(user_negative_prompt).trim()) || null;
   const now = new Date().toISOString();
@@ -1632,46 +1732,72 @@ function createAndGenerateImage(db, log, opts) {
   const charIdNum = character_id != null ? Number(character_id) : null;
   const sceneIdNum = scene_id != null ? Number(scene_id) : null;
 
+  let billedModel = null;
+  let billedCredits = null;
+  if (billingEnabled) {
+    if (!userId) {
+      const error = new Error('请先登录');
+      error.code = 'UNAUTHORIZED';
+      throw error;
+    }
+    const modelPriceService = require('./modelPriceService');
+    billedModel = modelPriceService.canonicalModel(model || '');
+    billedCredits = modelPriceService.requirePrice(db, billedModel);
+  }
+  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null);
+  if (active) {
+    if (billingEnabled) {
+      auditEvent.record(db, {
+        userId,
+        eventType: 'generation.image.reused',
+        resourceType: 'image',
+        resourceId: active.id,
+        outcome: 'success',
+        code: 'REUSED',
+      });
+    }
+    return { ...rowToItem(active), reused: true };
+  }
+
   let resourceId;
   if (charIdNum != null) resourceId = `character_${charIdNum}`;
   else if (sceneIdNum != null) resourceId = `scene_${sceneIdNum}`;
   else resourceId = String(dramaIdNum);
-  const task = taskService.createTask(db, log, 'image_generation', resourceId);
-  const taskId = task.id;
-
-  let imageGenId;
-  try {
-    const info = db.prepare(
-      `INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
-    ).run(
-      dramaIdNum,
-      charIdNum,
-      sceneIdNum,
-      provider || 'openai',
-      prompt || '',
-      negRow,
-      model || null,
-      size || null,
-      quality || null,
-      taskId,
-      now,
-      now
-    );
-    imageGenId = info.lastInsertRowid;
-  } catch (e) {
-    if ((e.message || '').includes('scene_id') || (e.message || '').includes('character_id')) {
-      const info = db.prepare(
-        `INSERT INTO image_generations (drama_id, provider, prompt, model, size, quality, status, task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
-      ).run(dramaIdNum, provider || 'openai', prompt || '', model || null, size || null, quality || null, taskId, now, now);
-      imageGenId = info.lastInsertRowid;
-    } else {
-      throw e;
+  const created = db.transaction(() => {
+    const task = taskService.createTask(db, log, 'image_generation', resourceId);
+    const taskId = task.id;
+    const billingColumns = billingEnabled ? ', user_id, credit_reservation_id' : '';
+    const billingValues = billingEnabled ? ', ?, NULL' : '';
+    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
+    const values = [dramaIdNum, charIdNum, sceneIdNum, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    if (billingEnabled) values.push(String(userId));
+    const info = db.prepare(sql).run(...values);
+    const imageGenId = info.lastInsertRowid;
+    if (billingEnabled) {
+      const reservation = creditLedger.reserve(db, {
+        userId,
+        operationKey: 'image:' + imageGenId,
+        amount: billedCredits,
+        model: billedModel,
+        resourceType: 'image',
+        resourceId: String(imageGenId),
+      });
+      db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, imageGenId);
+      auditEvent.record(db, {
+        userId,
+        eventType: 'generation.image.created',
+        resourceType: 'image',
+        resourceId: imageGenId,
+        outcome: 'success',
+        code: 'CREATED',
+      });
     }
-  }
+    return { imageGenId, taskId };
+  })();
+  const { imageGenId, taskId } = created;
 
-  setImmediate(async () => {
+  const scheduleTask = typeof schedule === 'function' ? schedule : (callback) => setImmediate(callback);
+  scheduleTask(async () => {
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
       const result = await callImageApi(db, log, {
@@ -1691,6 +1817,7 @@ function createAndGenerateImage(db, log, opts) {
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
         ).run('failed', result.error, now2, imageGenId);
         taskService.updateTaskError(db, taskId, result.error);
+        settleImageCredit(db, log, imageGenId, 'failed', result.error);
         if (charIdNum != null) {
           try {
             db.prepare('UPDATE characters SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, charIdNum);
@@ -1737,6 +1864,7 @@ function createAndGenerateImage(db, log, opts) {
         }
       }
       taskService.updateTaskResult(db, taskId, { image_generation_id: imageGenId, image_url: result.image_url, local_path: localPath, status: 'completed' });
+      settleImageCredit(db, log, imageGenId, 'completed');
       if (charIdNum != null) {
         try {
           // 旧图追加到 extra_images，与上传逻辑保持一致
@@ -1821,6 +1949,7 @@ function createAndGenerateImage(db, log, opts) {
           db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(errMsg, now2, sceneIdNum);
         } catch (_) {}
       }
+      settleImageCredit(db, log, imageGenId, 'failed', errMsg);
       log.error('Image generation error', { image_gen_id: imageGenId, task_id: taskId, error: err.message });
     }
   });
@@ -1909,8 +2038,15 @@ function refListHasCanonical(list, ref) {
 
 module.exports = {
   getDefaultImageConfig,
+  getOpenAIImageOutputOptions,
+  normalizeGptImageSize,
+  imageMimeFromOutputFormat,
+  formatGptImageUnknownResultError,
+  buildKlingImageQueryUrl,
+  parseKlingImagePollResult,
   callImageApi,
   createAndGenerateImage,
+  settleImageCredit,
   resolveAssetUserNegativeForApi,
   getStoryboardReferenceLimits,
   canAddStoryboardCharacterRef,

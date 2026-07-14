@@ -4,8 +4,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo" @click="goList">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
+          <span class="brand-copy">
+            <span class="logo-main">茉莉妈妈</span>
+            <span class="logo-sub">短剧制作平台</span>
+          </span>
         </h1>
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ dramaId ? (store.drama?.title || '项目') : '新建故事' }}</span>
@@ -822,10 +825,9 @@
             <span class="sb-config-label">序列图模式</span>
             <el-select v-model="gridMode" size="small" style="width:110px" :disabled="storyboardUseFirstLastFrame">
               <el-option label="单张" value="single" />
-              <el-option label="四宫格" value="quad_grid" />
-              <el-option label="九宫格" value="nine_grid" />
+              <el-option v-for="layout in GRID_LAYOUTS" :key="layout.value" :label="layout.label" :value="layout.value" />
             </el-select>
-            <span class="sb-config-hint">四/九宫格自动按视角拆分</span>
+            <span class="sb-config-hint">按配置自动拆分为独立面板</span>
           </label>
         </div>
         <div class="sb-config-row sb-narration-export-row" style="margin-top:10px;flex-wrap:wrap;align-items:center;gap:12px">
@@ -1296,7 +1298,7 @@
                         {{ getSbFirstImage(sb.id).prompt }}
                       </div>
                       <div class="sb-fl-slot-actions">
-                        <el-button type="primary" size="small" :loading="generatingSbFirstImageIds.has(sb.id)" @click="onGenerateSbFrameImage(sb, 'first')">生成</el-button>
+                        <el-button type="primary" size="small" :loading="generatingSbFirstImageIds.has(sb.id)" :disabled="generatingSbFirstImageIds.has(sb.id)" @click="onGenerateSbFrameImage(sb, 'first')">生成</el-button>
                         <el-tooltip v-if="canUsePrevTailAsFirst(sb)" content="直接使用上一分镜的尾帧图片（高清原图）替换本首帧，画面更清晰" placement="top">
                           <el-button size="small" :loading="usingPrevTailAsFirstIds.has(sb.id)" @click="onUsePrevTailAsFirst(sb)">上镜尾帧</el-button>
                         </el-tooltip>
@@ -1325,7 +1327,7 @@
                         {{ getSbLastImage(sb.id).prompt }}
                       </div>
                       <div class="sb-fl-slot-actions">
-                        <el-button type="primary" size="small" :loading="generatingSbLastImageIds.has(sb.id)" @click="onGenerateSbFrameImage(sb, 'last')">生成</el-button>
+                        <el-button type="primary" size="small" :loading="generatingSbLastImageIds.has(sb.id)" :disabled="generatingSbLastImageIds.has(sb.id)" @click="onGenerateSbFrameImage(sb, 'last')">生成</el-button>
                         <el-checkbox
                           v-model="lastFrameUseFirstLayoutLock"
                           class="sb-fl-first-lock-opt"
@@ -1383,14 +1385,14 @@
                   </template>
                   <template v-else-if="sb.error_msg || sb.errorMsg">
                     <div class="sb-image-error" :title="sb.error_msg || sb.errorMsg">{{ sb.error_msg || sb.errorMsg }}</div>
-                    <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
+                    <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" :disabled="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
                       <el-icon><Refresh /></el-icon>
                       重试
                     </el-button>
                     <el-button size="small" :loading="uploadingSbImageId === sb.id" @click="onUploadSbImageClick(sb)">上传</el-button>
                   </template>
                   <template v-else>
-                    <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
+                    <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" :disabled="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
                       <el-icon><MagicStick /></el-icon>
                       生成分镜参考图
                     </el-button>
@@ -1421,7 +1423,7 @@
               </div>
               <div v-if="hasSbImage(sb) || storyboardUseFirstLastFrame" class="sb-image-actions">
                 <template v-if="storyboardUseFirstLastFrame">
-                  <el-button size="small" :loading="generatingSbFirstImageIds.has(sb.id) || generatingSbLastImageIds.has(sb.id)" @click="onGenerateSbFramePair(sb)">{{ hasSbFirstLastPair(sb) ? '重新生成首尾帧' : '一键生成首尾帧' }}</el-button>
+                  <el-button size="small" :loading="generatingSbFirstImageIds.has(sb.id) || generatingSbLastImageIds.has(sb.id)" :disabled="generatingSbFirstImageIds.has(sb.id) || generatingSbLastImageIds.has(sb.id)" @click="onGenerateSbFramePair(sb)">{{ hasSbFirstLastPair(sb) ? '重新生成首尾帧' : '一键生成首尾帧' }}</el-button>
                   <el-tooltip content="高清放大仅作用于首帧" placement="top">
                     <el-button size="small" :loading="upscalingSbIds.has(sb.id)" :disabled="!getSbLocalImage(sb)" @click="onUpscaleSbImage(sb)">
                       <el-icon><ZoomIn /></el-icon>超分(首帧)
@@ -1429,7 +1431,7 @@
                   </el-tooltip>
                 </template>
                 <template v-else>
-                <el-button size="small" :loading="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">重新生成</el-button>
+                <el-button size="small" :loading="generatingSbImageIds.has(sb.id)" :disabled="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">重新生成</el-button>
                 <el-button size="small" :loading="uploadingSbImageId === sb.id" @click="onUploadSbImageClick(sb)">上传</el-button>
                 <el-tooltip content="高清放大（2x超分辨率）" placement="top">
                   <el-button
@@ -1467,11 +1469,17 @@
                   <el-icon class="is-loading"><Loading /></el-icon>
                   正在重新生成...
                 </span>
+                <div v-if="getSbVideoWarning(sb.id)" class="sb-video-error">
+                  {{ getSbVideoWarning(sb.id) }}
+                </div>
               </div>
               <div v-else class="sb-video-area sb-video-placeholder">
                 <span v-if="isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
                   <el-icon class="is-loading"><Loading /></el-icon>
                   正在生成视频...
+                  <small v-if="getSbProviderTaskId(sb.id)">
+                    供应商任务：{{ getSbProviderTaskId(sb.id) }}（请勿重复提交）
+                  </small>
                 </span>
                 <template v-else>
                   <div v-if="getSbVideoError(sb.id)" class="sb-video-error">
@@ -2632,6 +2640,15 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
+import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
+import { confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
+import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
+import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
+import {
+  latestVideoGenerationError,
+  latestVideoGenerationRecord,
+  latestVideoGenerationWarning,
+} from '@/utils/videoGenerationStatus'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -3257,7 +3274,7 @@ const storyboardUseFirstLastFrame = ref(false)
 const exportingStoryboardSheet = ref(false)
 /** 生成尾帧时是否注入首帧作站位/构图参考（默认开启） */
 const lastFrameUseFirstLayoutLock = ref(true)
-const gridMode = ref('single') // 序列图模式：single / quad_grid / nine_grid
+const gridMode = ref('single') // 序列图模式：single / quad_grid / nine_grid / fourteen_grid / sixteen_grid / twentyfive_grid
 
 // ── 剧本长度 → 估算总时长；自动分镜数与项目「每段秒数」(videoClipDuration) 对齐 ──
 
@@ -3669,7 +3686,7 @@ function hasSbFirstLastPair(sb) {
 function getSbAllImages(storyboardId) {
   const list = sbImages.value[storyboardId]
   if (!Array.isArray(list)) return []
-  return list.filter((i) => i.status === 'completed' && i.frame_type !== 'quad_grid' && i.frame_type !== 'nine_grid' && (i.image_url || i.local_path))
+  return list.filter((i) => i.status === 'completed' && !isGridFrameType(i.frame_type) && (i.image_url || i.local_path))
 }
 /** 取当前主图（首尾帧模式下等同首帧） */
 function getSbImage(storyboardId) {
@@ -3688,7 +3705,7 @@ function getSbImage(storyboardId) {
 function getQuadGridImage(storyboardId) {
   const list = sbImages.value[storyboardId]
   if (!Array.isArray(list)) return null
-  return list.find((i) => i.status === 'completed' && (i.frame_type === 'quad_grid' || i.frame_type === 'nine_grid') && (i.image_url || i.local_path)) || null
+  return list.find((i) => i.status === 'completed' && isGridFrameType(i.frame_type) && (i.image_url || i.local_path)) || null
 }
 /** 取该分镜所有已完成的视频记录 */
 function getSbAllVideos(storyboardId) {
@@ -3755,6 +3772,8 @@ function getSbVideoError(storyboardId) {
   if (sbVideoErrors.value[storyboardId]) return sbVideoErrors.value[storyboardId]
   const list = sbVideos.value[storyboardId]
   if (!Array.isArray(list) || list.length === 0) return ''
+  const latestError = latestVideoGenerationError(list)
+  if (latestError) return latestError
   const hasCompleted = list.some((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
   if (hasCompleted) return ''
   const bogusCompleted = list.find(
@@ -3768,6 +3787,15 @@ function getSbVideoError(storyboardId) {
   const failed = list.filter((i) => i.status === 'failed' && i.error_msg)
   if (failed.length === 0) return ''
   return failed[0].error_msg
+}
+
+function getSbProviderTaskId(storyboardId) {
+  const latest = latestVideoGenerationRecord(sbVideos.value[storyboardId])
+  return latest?.status === 'processing' ? String(latest.provider_task_id || '') : ''
+}
+
+function getSbVideoWarning(storyboardId) {
+  return latestVideoGenerationWarning(sbVideos.value[storyboardId])
 }
 
 async function loadStoryboardMedia() {
@@ -4205,8 +4233,24 @@ const showSbFramePromptPreview = openFramePromptEditor
 
 async function onGenerateSbFrameImage(sb, slot) {
   if (!dramaId.value || !sb?.id) return
+  const retryAllowed = await confirmUnknownResultRetry(sb.errorMsg || sb.error_msg, () =>
+    ElMessageBox.confirm(
+      '上一次图片请求连接中断，供应商可能已经受理或扣费，但平台未收到结果。请先核对生成记录或供应商账单。仍要再次提交吗？',
+      '结果未知，可能重复扣费',
+      {
+        confirmButtonText: '仍要重新生成',
+        cancelButtonText: '暂不重试',
+        type: 'warning',
+      }
+    )
+  )
+  if (!retryAllowed) return
   const isLast = slot === 'last'
   const loadingSet = isLast ? generatingSbLastImageIds : generatingSbFirstImageIds
+  if (!tryAcquireGenerationLock(loadingSet, sb.id)) {
+    ElMessage.info(isLast ? '尾帧正在生成，请勿重复点击' : '首帧正在生成，请勿重复点击')
+    return
+  }
   const meta = buildSbGenMeta(
     sb,
     isLast ? GEN_RESOURCE.SB_LAST_IMAGE : GEN_RESOURCE.SB_FIRST_IMAGE,
@@ -4214,7 +4258,6 @@ async function onGenerateSbFrameImage(sb, slot) {
   )
   sb.errorMsg = ''
   sb.error_msg = ''
-  loadingSet.add(sb.id)
   genStore.markRunning(meta)
   try {
     let idsToSave = sbCharacterIds.value[sb.id]
@@ -4299,7 +4342,7 @@ async function onGenerateSbFrameImage(sb, slot) {
     sb.errorMsg = e.message || '生成失败'
     ElMessage.error(e.message || '生成失败')
   } finally {
-    loadingSet.delete(sb.id)
+    releaseGenerationLock(loadingSet, sb.id)
     genStore.markDone(meta)
   }
 }
@@ -4317,10 +4360,25 @@ async function onGenerateSbFramePair(sb) {
 
 async function onGenerateSbImage(sb) {
   if (!dramaId.value || !sb?.id) return
+  const retryAllowed = await confirmUnknownResultRetry(sb.errorMsg || sb.error_msg, () =>
+    ElMessageBox.confirm(
+      '上一次图片请求连接中断，供应商可能已经受理或扣费，但平台未收到结果。请先核对生成记录或供应商账单。仍要再次提交吗？',
+      '结果未知，可能重复扣费',
+      {
+        confirmButtonText: '仍要重新生成',
+        cancelButtonText: '暂不重试',
+        type: 'warning',
+      }
+    )
+  )
+  if (!retryAllowed) return
+  if (!tryAcquireGenerationLock(generatingSbImageIds, sb.id)) {
+    ElMessage.info('分镜图正在生成，请勿重复点击')
+    return
+  }
   sb.errorMsg = ''
   sb.error_msg = ''
   const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_IMAGE, '分镜图')
-  generatingSbImageIds.add(sb.id)
   genStore.markRunning(meta)
   try {
     let idsToSave = sbCharacterIds.value[sb.id]
@@ -4362,7 +4420,7 @@ async function onGenerateSbImage(sb) {
     sb.errorMsg = e.message || '生成失败'
     ElMessage.error(e.message || '生成失败')
   } finally {
-    generatingSbImageIds.delete(sb.id)
+    releaseGenerationLock(generatingSbImageIds, sb.id)
     genStore.markDone(meta)
   }
 }
@@ -6464,6 +6522,18 @@ async function onRegenerateLayoutDescription(sb) {
 
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
+  const retryAllowed = await confirmUnknownResultRetry(getSbVideoError(sb.id), () =>
+    ElMessageBox.confirm(
+      '上一次 Seedance 创建请求连接中断，供应商可能已经受理或扣费，但平台未收到任务编号。请先核对供应商任务记录。仍要再次提交吗？',
+      '结果未知，可能重复扣费',
+      {
+        confirmButtonText: '仍要重新生成',
+        cancelButtonText: '暂不重试',
+        type: 'warning',
+      }
+    )
+  )
+  if (!retryAllowed) return
   const universal = isSbUniversalMode(sb.id)
   let universalOmniApi = universal
   if (universal) {
@@ -7232,7 +7302,14 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
       return true
     } catch (e) {
       lastErr = e
-      if (r < maxRetries - 1) await pipelineRest()
+      const message = e?.message || String(e)
+      const decision = decidePipelineRetry(message, r, maxRetries)
+      if (decision.pause) {
+        addPipelineError(stepName, '生成结果未知，已暂停且不会自动重试。请先核对生成记录或供应商账单：' + message)
+        pipelinePaused.value = true
+        return { paused: true, indeterminate: true }
+      }
+      if (decision.retry) await pipelineRest()
     }
   }
   addPipelineError(stepName, '重试3次均失败: ' + (lastErr?.message || String(lastErr)))
@@ -8268,11 +8345,14 @@ html.light .header {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 10px;
   line-height: 1;
   transition: filter 0.3s;
 }
+
+.brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
+.brand-copy { display: flex; flex-direction: column; gap: 3px; }
 .logo:hover { filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.5)); }
 .logo-main {
   font-size: 1.05rem;

@@ -2,12 +2,25 @@
 const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
+const { resolveKlingBearerToken } = require('./klingJwt');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
     return normalizeMaterialHubToken(apiKey);
   }
   return apiKey;
+}
+
+function hasConnectionCredential(opts = {}) {
+  if (String(opts.api_key || '').trim()) return true;
+  if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
+  try {
+    const settings = typeof opts.settings === 'object' ? opts.settings : JSON.parse(opts.settings || '{}');
+    return !!String(settings.kling_access_key || settings.access_key || '').trim()
+      && !!String(settings.kling_secret_key || settings.secret_key || '').trim();
+  } catch (_) {
+    return false;
+  }
 }
 const { applyDeepSeekConnectivityOptions } = require('./deepseekConfig');
 function modelToDb(model) {
@@ -243,6 +256,36 @@ function rowToConfig(r) {
   return cfg;
 }
 
+const SENSITIVE_SETTING_KEYS = new Set([
+  'api_key', 'token', 'access_token', 'refresh_token', 'session_token',
+  'kling_access_key', 'kling_secret_key', 'access_key_id', 'secret_access_key',
+]);
+
+function redactSettings(settings) {
+  if (!settings) return settings;
+  try {
+    const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return settings;
+    const safe = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!SENSITIVE_SETTING_KEYS.has(key.toLowerCase())) safe[key] = value;
+    }
+    return typeof settings === 'string' ? JSON.stringify(safe) : safe;
+  } catch (_) {
+    return null;
+  }
+}
+
+function toPublicConfig(config) {
+  if (!config) return config;
+  const { api_key, ...safe } = config;
+  return {
+    ...safe,
+    has_api_key: !!String(api_key || '').trim(),
+    settings: redactSettings(config.settings),
+  };
+}
+
 /**
  * 测试连接：与 Go AIService.TestConnection 对齐，根据 provider 发最小请求验证 base_url + api_key
  * @param opts { base_url, api_key, model (string|string[]), provider?, endpoint?, settings? }
@@ -251,13 +294,71 @@ function rowToConfig(r) {
 async function testConnection(opts) {
   const base = (opts.base_url || '').replace(/\/$/, '');
   if (!base) throw new Error('base_url 必填');
-  if (!opts.api_key) throw new Error('api_key 必填');
   const models = Array.isArray(opts.model) ? opts.model : opts.model != null ? [opts.model] : [];
   const model = models[0] || '';
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
+
+  // 可灵图片：查询一个不存在的任务即可验证鉴权，禁止连接测试创建付费图片任务。
+  if (provider === 'kling' && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    const bearer = resolveKlingBearerToken(opts);
+    if (!bearer) throw new Error('请填写 API Key，或官方 AccessKey + SecretKey');
+    const queryPath = String(opts.query_endpoint || '/v1/images/generations/{taskId}')
+      .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
+    const url = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + bearer },
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    const message = String(data.message || data.msg || '').toLowerCase();
+    const authFailed = res.status === 401 || res.status === 403
+      || [1000, 1001, 1002, 1003].includes(Number(data.code))
+      || message.includes('authorization') || message.includes('unauthorized');
+    if (authFailed) throw new Error(data.message || data.msg || `可灵鉴权失败 (${res.status})`);
+    return;
+  }
+
+  if (!opts.api_key) throw new Error('api_key 必填');
+
+  // 用户指定的 Rehdasu OpenAI 兼容服务：只读模型列表验证网络与密钥。
+  // 文本/图片生成都可能计费，连接测试不得提交生成请求。
+  let isRehdasu = false;
+  try { isRehdasu = new URL(base).hostname.toLowerCase() === 'rehdasu.cn'; } catch (_) {}
+  if (provider === 'openai' && isRehdasu) {
+    const res = await fetch(base + '/models', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + opts.api_key },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let errMsg = `Rehdasu 连接失败 (${res.status})`;
+      try {
+        const data = JSON.parse(text);
+        errMsg = data.error?.message || data.message || errMsg;
+      } catch (_) {}
+      throw new Error(errMsg);
+    }
+    return;
+  }
+
+  // DJPSD 视频：只读列表可同时验证网络和密钥，避免连接测试创建付费任务。
+  if (provider === 'djpsd') {
+    const root = base.replace(/\/v1$/i, '');
+    const res = await fetch(root + '/api/v1/video-jobs?page=1&page_size=1', {
+      method: 'GET',
+      headers: { 'api-key': opts.api_key || '' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || (data.code !== undefined && Number(data.code) !== 0)) {
+      throw new Error(data.message || data.detail || `DJPSD 连接失败 (${res.status})`);
+    }
+    return;
+  }
 
   // --- NanoBanana ---
   if (provider === 'nano_banana') {
@@ -579,4 +680,6 @@ module.exports = {
   getVendorLockStatus,
   applyVendorLock,
   bulkUpdateApiKey,
+  hasConnectionCredential,
+  toPublicConfig,
 };

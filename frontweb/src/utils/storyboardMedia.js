@@ -1,5 +1,6 @@
 import { assetImageUrl } from './mediaUrl'
 import { parseDramaMetadata } from './canvasLayout'
+import { isGridFrameType } from './gridLayout'
 
 export function dramaUsesFirstLastFrame(drama) {
   const meta = parseDramaMetadata(drama?.metadata)
@@ -14,8 +15,7 @@ function isHttpVideoUrl(url) {
 
 function isCompletedImage(i) {
   return i?.status === 'completed'
-    && i.frame_type !== 'quad_grid'
-    && i.frame_type !== 'nine_grid'
+    && !isGridFrameType(i.frame_type)
     && (i.image_url || i.local_path)
 }
 

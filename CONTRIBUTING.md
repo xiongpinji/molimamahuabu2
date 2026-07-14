@@ -156,5 +156,5 @@ docs: 更新 AI 配置指南中的火山引擎配置说明
 
 ---
 
-再次感谢你的贡献！有任何疑问欢迎在 Issue 中提问或加入微信群交流。  
-Thanks again for contributing! Feel free to open an issue or join the WeChat group if you have any questions.
+再次感谢你的贡献！有任何疑问欢迎在 Issue 中提问。
+Thanks again for contributing! Feel free to open an issue if you have any questions.

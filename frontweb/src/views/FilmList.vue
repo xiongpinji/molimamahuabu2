@@ -3,8 +3,11 @@
     <header class="header">
       <div class="header-inner">
         <h1 class="logo">
-          <span class="logo-main">本地短剧助手</span>
-          <span class="logo-sub">LocalMiniDrama</span>
+          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
+          <span class="brand-copy">
+            <span class="logo-main">茉莉妈妈</span>
+            <span class="logo-sub">短剧制作平台</span>
+          </span>
         </h1>
         <!-- 公共资源库（左侧，靛紫调） -->
         <div class="header-library">
@@ -27,9 +30,6 @@
           <el-button class="btn-library" title="媒体素材库" @click="$router.push('/media-library')">
             <el-icon><Files /></el-icon>素材库
           </el-button> -->
-          <el-button v-if="!vendorLockEnabled" class="btn-wechat" title="扫码联系作者" @click="showWechat = true">
-            <el-icon><ChatDotSquare /></el-icon>微信我
-          </el-button>
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -313,14 +313,6 @@
       </template>
     </el-dialog>
 
-    <!-- 微信二维码 -->
-    <el-dialog v-if="!vendorLockEnabled" v-model="showWechat" title="微信联系作者" width="320px" align-center>
-      <div style="text-align:center;padding:8px 0 4px">
-        <img src="/wx.jpg" alt="微信二维码" style="width:240px;height:240px;object-fit:contain;border-radius:8px;" />
-        <p style="margin:12px 0 0;font-size:13px;color:var(--text-secondary,#a1a1aa);">扫码添加微信，欢迎交流</p>
-      </div>
-    </el-dialog>
-
     <!-- 图片放大预览 -->
     <Teleport to="body">
       <div v-if="previewImageUrl" class="image-preview-overlay" @click="previewImageUrl = null">
@@ -356,7 +348,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, ChatDotSquare, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files } from '@element-plus/icons-vue'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -364,7 +356,6 @@ import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { propLibraryAPI } from '@/api/propLibrary'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import { uploadAPI } from '@/api/upload'
-import { aiAPI } from '@/api/ai'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 
@@ -432,8 +423,6 @@ const dramas = ref([])
 const total = ref(0)
 
 const showAiConfigDialog = ref(false)
-const showWechat = ref(false)
-const vendorLockEnabled = ref(false)
 
 // 图片预览
 const previewImageUrl = ref(null)
@@ -821,13 +810,9 @@ async function onDelete(d) {
   }
 }
 
-onMounted(async () => {
+onMounted(() => {
   loadList()
   loadExamples()
-  try {
-    const lock = await aiAPI.getVendorLock()
-    vendorLockEnabled.value = !!lock?.enabled
-  } catch (_) {}
 })
 </script>
 
@@ -864,10 +849,12 @@ onMounted(async () => {
   margin: 0;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 10px;
   line-height: 1;
 }
+.brand-logo { width: 42px; height: 42px; object-fit: cover; border-radius: 12px; flex: 0 0 auto; }
+.brand-copy { display: flex; flex-direction: column; gap: 3px; }
 .logo-main {
   font-size: 1.1rem;
   font-weight: 700;
@@ -942,25 +929,6 @@ html.light .btn-theme {
   --el-button-hover-bg-color: rgba(99, 102, 241, 0.15);
   --el-button-hover-border-color: rgba(99, 102, 241, 0.5);
   --el-button-hover-text-color: #4f46e5;
-}
-
-/* 微信我按钮 —— 绿调 */
-.btn-wechat {
-  --el-button-bg-color: rgba(34, 197, 94, 0.1);
-  --el-button-border-color: rgba(34, 197, 94, 0.3);
-  --el-button-text-color: #22c55e;
-  --el-button-hover-bg-color: rgba(34, 197, 94, 0.2);
-  --el-button-hover-border-color: rgba(34, 197, 94, 0.5);
-  --el-button-hover-text-color: #16a34a;
-  transition: all 0.2s;
-}
-html.light .btn-wechat {
-  --el-button-bg-color: rgba(21, 128, 61, 0.08);
-  --el-button-border-color: rgba(21, 128, 61, 0.3);
-  --el-button-text-color: #166534;
-  --el-button-hover-bg-color: rgba(21, 128, 61, 0.14);
-  --el-button-hover-border-color: rgba(21, 128, 61, 0.5);
-  --el-button-hover-text-color: #14532d;
 }
 
 /* AI配置按钮 —— 琥珀调 */

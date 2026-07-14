@@ -1,8 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { readSession } from '@/utils/authSession'
+import { authRedirect } from '@/utils/authGuard'
+
+const publicPlatformMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/Login.vue'),
+      meta: { title: '登录' }
+    },
     {
       path: '/',
       name: 'list',
@@ -34,6 +44,12 @@ const router = createRouter({
       meta: { title: 'AI 配置' }
     },
     {
+      path: '/billing-admin',
+      name: 'billing-admin',
+      component: () => import('@/views/BillingAdmin.vue'),
+      meta: { title: '模型积分定价' }
+    },
+    {
       path: '/free-create',
       name: 'free-create',
       component: () => import('@/views/FreeCreate.vue'),
@@ -50,9 +66,9 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   if (to.meta.title) {
-    document.title = `${to.meta.title} - LocalMiniDrama`
+    document.title = `${to.meta.title} - 茉莉妈妈短剧制作平台`
   }
-  return true
+  return authRedirect(publicPlatformMode, to, readSession()) || true
 })
 
 export default router

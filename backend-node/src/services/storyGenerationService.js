@@ -5,6 +5,50 @@ const taskService = require('./taskService');
 const dramaService = require('./dramaService');
 const { safeParseAIJSON } = require('../utils/safeJson');
 const loadConfig = require('../config').loadConfig;
+const { randomUUID } = require('crypto');
+const creditLedger = require('./creditLedgerService');
+const modelPrice = require('./modelPriceService');
+const auditEvent = require('./auditEventService');
+
+function reserveStoryCredit(db, { userId, resourceId, operationKey, model }) {
+  const canonicalModel = modelPrice.canonicalModel(model || 'GPT-5.5');
+  const amount = modelPrice.requirePrice(db, canonicalModel);
+  const reservation = creditLedger.reserve(db, {
+    userId,
+    operationKey,
+    model: canonicalModel,
+    resourceType: 'text',
+    resourceId,
+    amount,
+  });
+  auditEvent.record(db, {
+    userId,
+    eventType: 'generation.text.created',
+    resourceType: 'text',
+    resourceId,
+    outcome: 'success',
+  });
+  return { reservation, model: canonicalModel, amount };
+}
+
+function settleStoryCredit(db, log, reservationId, outcome, message = '') {
+  if (!reservationId) return null;
+  try {
+    const settled = creditLedger.settleGeneration(db, reservationId, outcome, message);
+    auditEvent.record(db, {
+      userId: settled?.user_id,
+      eventType: outcome === 'completed' ? 'generation.text.completed' : 'generation.text.failed',
+      resourceType: 'text',
+      resourceId: settled?.resource_id,
+      outcome: outcome === 'completed' ? 'success' : 'failed',
+      code: outcome === 'failed' ? 'TEXT_GENERATION_FAILED' : null,
+    });
+    return settled;
+  } catch (error) {
+    log?.error?.('文本生成积分结算失败，保留原预扣状态', { reservation_id: reservationId, error: error.message });
+    return null;
+  }
+}
 
 async function generateStory(db, log, body) {
   const premise = (body.premise || body.prompt || body.text || '').trim();
@@ -25,12 +69,35 @@ async function generateStory(db, log, body) {
 
   // 注意：不使用 json_mode=true，因为 response_format:json_object 要求返回 JSON 对象而非数组，
   // 会导致模型将数组包成 {"episodes":[...]} 对象，破坏解析逻辑。依靠 prompt 本身约束格式即可。
-  const rawText = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
-    scene_key: 'story_generation',
-    model: body.model || undefined,
-    temperature: 0.8,
-    min_max_tokens: minTokensNeeded,
-  });
+  let billingReservationId = body.billingReservationId || null;
+  let billingModel = body.model || undefined;
+  if (body.billingEnabled) {
+    if (!body.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
+    const prepared = billingReservationId
+      ? { model: modelPrice.canonicalModel(body.model || 'GPT-5.5') }
+      : reserveStoryCredit(db, {
+        userId: body.userId,
+        resourceId: body.billingResourceId || body.billingOperationKey || randomUUID(),
+        operationKey: body.billingOperationKey || ('story_sync:' + body.userId + ':' + randomUUID()),
+        model: body.model || 'GPT-5.5',
+      });
+    billingReservationId = billingReservationId || prepared.reservation.id;
+    billingModel = prepared.model;
+  }
+
+  let rawText;
+  try {
+    rawText = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
+      scene_key: 'story_generation',
+      model: billingModel,
+      temperature: 0.8,
+      min_max_tokens: minTokensNeeded,
+    });
+    if (billingReservationId) settleStoryCredit(db, log, billingReservationId, 'completed');
+  } catch (error) {
+    if (billingReservationId) settleStoryCredit(db, log, billingReservationId, 'failed', error.message);
+    throw error;
+  }
 
   log && log.info && log.info('Story raw response', {
     text_length: (rawText || '').length,
@@ -138,27 +205,46 @@ async function processStoryGeneration(db, log, taskId, req) {
   }
 }
 
-function startStoryGeneration(db, log, req) {
+function startStoryGeneration(db, log, req, options = {}) {
   const dramaId = String(req.drama_id || '');
   if (!dramaId) throw new Error('drama_id 必填');
+  const billingEnabled = Boolean(options.billingEnabled);
+  const userId = options.userId ? String(options.userId) : '';
+  if (billingEnabled && !userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
   if (!dramaService.getDramaById(db, Number(dramaId))) {
     throw new Error('项目不存在');
   }
 
-  const existing = db.prepare(
-    `SELECT id FROM async_tasks
+  const existingSql = `SELECT id FROM async_tasks
      WHERE resource_id = ? AND type = 'story_generation'
-       AND status IN ('pending', 'processing') AND deleted_at IS NULL
-     ORDER BY created_at DESC LIMIT 1`
-  ).get(dramaId);
+       AND status IN ('pending', 'processing') AND deleted_at IS NULL${billingEnabled ? ' AND user_id = ?' : ''}
+     ORDER BY created_at DESC LIMIT 1`;
+  const existing = db.prepare(existingSql).get(...(billingEnabled ? [dramaId, userId] : [dramaId]));
   if (existing) {
     log.info('Story generation already running', { task_id: existing.id, drama_id: dramaId });
     return existing.id;
   }
 
   const task = taskService.createTask(db, log, 'story_generation', dramaId);
+  let taskRequest = req;
+  if (billingEnabled) {
+    try {
+      const prepared = reserveStoryCredit(db, {
+        userId,
+        resourceId: task.id,
+        operationKey: 'story_task:' + task.id,
+        model: req.model || 'GPT-5.5',
+      });
+      db.prepare('UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ? WHERE id = ?')
+        .run(userId, prepared.model, prepared.reservation.id, task.id);
+      taskRequest = { ...req, billingEnabled: true, userId, billingReservationId: prepared.reservation.id, billingResourceId: task.id, model: prepared.model };
+    } catch (error) {
+      taskService.updateTaskError(db, task.id, error.message || '积分预扣失败');
+      throw error;
+    }
+  }
   setImmediate(() => {
-    processStoryGeneration(db, log, task.id, req).catch((err) => {
+    processStoryGeneration(db, log, task.id, taskRequest).catch((err) => {
       log.error('processStoryGeneration fatal', { error: err.message, task_id: task.id });
       taskService.updateTaskError(db, task.id, err.message || '故事生成失败');
     });
@@ -169,4 +255,6 @@ function startStoryGeneration(db, log, req) {
 module.exports = {
   generateStory,
   startStoryGeneration,
+  reserveStoryCredit,
+  settleStoryCredit,
 };

@@ -3,7 +3,7 @@ const sceneService = require('../services/sceneService');
 const sceneLibraryService = require('../services/sceneLibraryService');
 const imageService = require('../services/imageService');
 
-function routes(db, log, cfg) {
+function routes(db, log, cfg, generationOptions = {}) {
   return {
     getOne: (req, res) => {
       try {
@@ -92,7 +92,7 @@ function routes(db, log, cfg) {
         const sceneId = body.scene_id != null ? Number(body.scene_id) : null;
         if (sceneId == null) return response.badRequest(res, '缺少 scene_id');
         const out = await sceneService.generateSceneFourViewImage(
-          db, log, cfg, sceneId, body.model || undefined, body.style || undefined
+          db, log, cfg, sceneId, body.model || undefined, body.style || undefined, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
         );
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
@@ -140,7 +140,7 @@ function routes(db, log, cfg) {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await sceneService.generateSceneFourViewImage(db, log, cfg, req.params.scene_id, modelName, style);
+        const out = await sceneService.generateSceneFourViewImage(db, log, cfg, req.params.scene_id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id });
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');

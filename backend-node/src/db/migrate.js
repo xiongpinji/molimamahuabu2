@@ -99,6 +99,7 @@ function ensureColumns(database, table, columns) {
 function ensureAllColumns(database) {
   // --- dramas ---
   ensureColumns(database, 'dramas', [
+    { name: 'user_id',         type: 'TEXT' },
     { name: 'title',          type: 'TEXT NOT NULL DEFAULT \'\'' },
     { name: 'description',    type: 'TEXT' },
     { name: 'genre',          type: 'TEXT' },
@@ -306,6 +307,9 @@ function ensureAllColumns(database) {
     { name: 'created_at',   type: 'TEXT' },
     { name: 'updated_at',   type: 'TEXT' },
     { name: 'deleted_at',   type: 'TEXT' },
+    { name: 'user_id',      type: 'TEXT' },
+    { name: 'model',        type: 'TEXT' },
+    { name: 'credit_reservation_id', type: 'TEXT' },
   ]);
 
   // --- image_generations ---

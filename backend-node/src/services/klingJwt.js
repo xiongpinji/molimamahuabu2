@@ -75,9 +75,32 @@ function jwtPartLengths(token) {
   return { header: parts[0].length, payload: parts[1].length, signature: parts[2].length };
 }
 
+function parseKlingSettings(config) {
+  const raw = config?.settings;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try { return raw ? JSON.parse(raw) : {}; } catch (_) { return {}; }
+}
+
+/** 官方 AK/SK 生成 JWT；中转配置继续使用 api_key Bearer Token。 */
+function resolveKlingBearerToken(config = {}) {
+  const settings = parseKlingSettings(config);
+  const accessKey = normalizeKlingCredential(settings.kling_access_key || settings.access_key || '');
+  const secretKey = normalizeKlingCredential(settings.kling_secret_key || settings.secret_key || '');
+  if (accessKey && secretKey) {
+    const useBase64 = settings.kling_secret_key_base64 === true
+      || settings.kling_secret_key_base64 === 1
+      || String(settings.kling_secret_key_base64 || '').toLowerCase() === 'true';
+    return signKlingOfficialJwt(accessKey, secretKey, {
+      secretEncoding: useBase64 ? 'base64' : 'utf8',
+    });
+  }
+  return normalizeKlingCredential(config.api_key || '').replace(/^bearer\s+/i, '');
+}
+
 module.exports = {
   signKlingOfficialJwt,
   normalizeKlingCredential,
   unsafeDecodeKlingJwtPayload,
   jwtPartLengths,
+  resolveKlingBearerToken,
 };
