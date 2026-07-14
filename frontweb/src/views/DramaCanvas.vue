@@ -85,7 +85,7 @@
           <el-option
             v-for="g in workflowGroups"
             :key="g.id"
-            :label="`${g.title} (${(g.storyboard_ids || []).length}镜)`"
+            :label="`${g.title} (${workflowStoryboardCountLabel(g)})`"
             :value="g.id"
           />
         </el-select>
@@ -212,7 +212,7 @@
             @click="selectWorkflowGroup(g.id)"
           >
             <div class="wf-item-title">{{ g.title }}</div>
-            <div class="wf-item-meta">{{ (g.storyboard_ids || []).length }} 镜 · {{ (g.pipeline || []).join('→') }}</div>
+            <div class="wf-item-meta">{{ workflowStoryboardCountLabel(g) }} · {{ (g.pipeline || []).join('→') }}</div>
           </div>
           <div v-if="!workflowGroups.length" class="sidebar-empty">框选分镜后点「创建工作流」</div>
         </div>
@@ -404,6 +404,11 @@ const nodeTypes = {
 const dramaId = computed(() => Number(route.params.id))
 const savedLayout = computed(() => layoutCache.value || parseCanvasLayout(drama.value?.metadata))
 const directorTimeline = computed(() => savedLayout.value?.director_timeline || null)
+const visibleStoryboardIds = computed(() => new Set(
+  nodes.value
+    .filter((node) => node.type === 'canvasStoryboard' && node.data?.storyboard?.id)
+    .map((node) => Number(node.data.storyboard.id))
+))
 
 const initialViewport = computed(() => {
   const v = resolveViewport(savedLayout.value)
@@ -441,6 +446,23 @@ function rebuildGraph() {
   }
   nodes.value = nextNodes
   edges.value = nextEdges
+  const selectedIds = new Set(selectedStoryboardIds.value.map(Number))
+  if (selectedIds.size) {
+    nodes.value = nodes.value.map((node) => {
+      if (node.type !== 'canvasStoryboard') return node
+      return {
+        ...node,
+        selected: selectedIds.has(Number(node.data?.storyboard?.id)),
+      }
+    })
+  }
+}
+
+function workflowStoryboardCountLabel(group) {
+  const total = (group?.storyboard_ids || []).length
+  if (filterEpisodeId.value == null) return `${total}镜`
+  const visible = (group?.storyboard_ids || []).filter((id) => visibleStoryboardIds.value.has(Number(id))).length
+  return `${visible}/${total}镜`
 }
 
 function applyHighlight() {
@@ -606,7 +628,9 @@ function onSelectionChange({ nodes: selectedNodes }) {
 function selectWorkflowGroup(groupId) {
   activeGroupId.value = groupId || null
   const group = workflowGroups.value.find((item) => item.id === groupId)
-  const storyboardIds = group ? (group.storyboard_ids || []).map(Number) : []
+  const storyboardIds = group
+    ? (group.storyboard_ids || []).map(Number).filter((id) => visibleStoryboardIds.value.has(id))
+    : []
   const selectedIds = new Set(storyboardIds)
   selectedStoryboardIds.value = storyboardIds
   nodes.value = nodes.value.map((node) => {
@@ -1087,6 +1111,13 @@ function onNodeClick({ node, event }) {
 watch(filterEpisodeId, async (val) => {
   if (drama.value) await loadForDrama(drama.value, val)
   rebuildGraph()
+  selectedStoryboardIds.value = selectedStoryboardIds.value.filter((id) => visibleStoryboardIds.value.has(Number(id)))
+  if (activeGroupId.value) {
+    const activeGroup = workflowGroups.value.find((group) => group.id === activeGroupId.value)
+    const hasVisibleStoryboards = activeGroup
+      && activeGroup.storyboard_ids.some((id) => visibleStoryboardIds.value.has(Number(id)))
+    if (!hasVisibleStoryboards) activeGroupId.value = null
+  }
   const query = { ...route.query }
   if (val != null) query.episode = String(val)
   else delete query.episode
