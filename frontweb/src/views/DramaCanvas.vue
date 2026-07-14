@@ -67,7 +67,11 @@
           <el-checkbox value="video">生视频</el-checkbox>
           <el-checkbox value="audio">配音</el-checkbox>
         </el-checkbox-group>
-        <el-button size="small" :disabled="selectedStoryboardIds.length === 0" @click="onCreateWorkflowGroup">
+        <el-button
+          size="small"
+          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveState === 'saving'"
+          @click="onCreateWorkflowGroup"
+        >
           创建工作流
         </el-button>
         <el-select
@@ -88,12 +92,18 @@
           size="small"
           type="primary"
           :loading="workflowRunning"
-          :disabled="!activeGroupId"
+          :disabled="!activeGroupId || layoutSaveState === 'saving'"
           @click="onRunActiveGroup"
         >
           整组重跑
         </el-button>
-        <el-button size="small" type="danger" plain :disabled="!activeGroupId" @click="onDeleteActiveGroup">
+        <el-button
+          size="small"
+          type="danger"
+          plain
+          :disabled="!activeGroupId || workflowRunning || layoutSaveState === 'saving'"
+          @click="onDeleteActiveGroup"
+        >
           删除工作流
         </el-button>
       </div>
@@ -667,9 +677,11 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
     savedHintTimer = setTimeout(() => {
       if (layoutSaveState.value === 'saved') layoutSaveState.value = 'idle'
     }, 2000)
+    return true
   } catch (e) {
     layoutSaveState.value = 'error'
     ElMessage.error(e?.message || '保存失败')
+    return false
   }
 }
 
@@ -809,6 +821,8 @@ async function onCreateWorkflowGroup() {
     ElMessage.warning('请先框选或 Ctrl 点击选择分镜节点')
     return
   }
+  const previousGroups = workflowGroups.value
+  const previousActiveGroupId = activeGroupId.value
   try {
     const { value } = await ElMessageBox.prompt('工作流名称', '创建工作流', {
       confirmButtonText: '创建',
@@ -821,7 +835,13 @@ async function onCreateWorkflowGroup() {
       pipeline: normalizePipeline(pipelineSteps.value),
     })
     activeGroupId.value = workflowGroups.value[workflowGroups.value.length - 1]?.id || null
-    await persistCanvasState({ groupsOnly: true })
+    const saved = await persistCanvasState({ groupsOnly: true })
+    if (!saved) {
+      workflowGroups.value = previousGroups
+      activeGroupId.value = previousActiveGroupId
+      rebuildGraph()
+      return
+    }
     rebuildGraph()
     ElMessage.success('工作流已创建')
   } catch (_) {}
@@ -829,11 +849,19 @@ async function onCreateWorkflowGroup() {
 
 async function onDeleteActiveGroup() {
   if (!activeGroupId.value) return
+  const previousGroups = workflowGroups.value
+  const previousActiveGroupId = activeGroupId.value
   try {
     await ElMessageBox.confirm('确定删除该工作流？', '删除工作流', { type: 'warning' })
     workflowGroups.value = deleteWorkflowGroup(workflowGroups.value, activeGroupId.value)
     activeGroupId.value = workflowGroups.value[0]?.id || null
-    await persistCanvasState({ groupsOnly: true })
+    const saved = await persistCanvasState({ groupsOnly: true })
+    if (!saved) {
+      workflowGroups.value = previousGroups
+      activeGroupId.value = previousActiveGroupId
+      rebuildGraph()
+      return
+    }
     rebuildGraph()
     ElMessage.success('已删除')
   } catch (_) {}
