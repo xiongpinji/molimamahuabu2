@@ -31,10 +31,7 @@
           <el-icon><Setting /></el-icon>
           AI 配置
         </el-button>
-        <el-button v-if="dramaId" type="primary" plain class="btn-canvas-mode" @click="goCanvasMode">
-          <el-icon><Grid /></el-icon>
-          画布模式
-        </el-button>
+        <CanvasModeSwitch v-if="dramaId" mode="production" :drama-id="dramaId" :episode-id="selectedEpisodeId" />
       </template>
     </PlatformHeader>
 
@@ -2607,8 +2604,9 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } 
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowRight, Plus, Minus, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Grid, Setting, Close } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, ArrowRight, Plus, Minus, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Setting, Close } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
+import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { syncGeneratingSetsFromStore, buildEpisodeContext, buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
@@ -2666,13 +2664,6 @@ const { navCollapsed, storyboardMenuExpanded, toggleNav, scrollToTop, scrollToAn
 function goList() {
   router.push('/')
 }
-
-function goCanvasMode() {
-  if (!dramaId.value) return
-  const query = selectedEpisodeId.value ? { episode: String(selectedEpisodeId.value) } : {}
-  router.push({ path: `/film/${dramaId.value}/canvas`, query })
-}
-
 
 const showAiConfigDialog = ref(false)
 watch(showAiConfigDialog, (open) => {

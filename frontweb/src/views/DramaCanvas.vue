@@ -52,10 +52,7 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-button class="topbar-list-mode" type="primary" plain @click="goListMode">
-            <el-icon><List /></el-icon>
-            <span>列表模式</span>
-          </el-button>
+          <CanvasModeSwitch mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
           <el-button class="btn-theme" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -281,7 +278,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { List, Moon, MoreFilled, Plus, Sunny, Operation, Share } from '@element-plus/icons-vue'
+import { Moon, MoreFilled, Plus, Sunny, Operation, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -335,6 +332,7 @@ import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolba
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
+import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1315,8 +1313,6 @@ onBeforeUnmount(() => {
   .canvas-topbar .topbar-more-label { display: none; }
   .canvas-topbar .topbar-more-trigger { width: 42px; padding: 0; }
   .canvas-topbar .header-actions { gap: 4px; }
-  .canvas-topbar .topbar-list-mode { min-width: 42px; width: 42px; padding: 0; font-size: 0; }
-  .canvas-topbar .topbar-list-mode .el-icon { margin: 0; font-size: 16px; }
   .canvas-sidebar { top: 70px; left: 8px; right: 8px; width: auto; }
 }
 @media (max-width: 480px) {
