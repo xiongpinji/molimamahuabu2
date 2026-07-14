@@ -23,10 +23,31 @@
       </template>
 
       <template v-else-if="kind === 'universal'">
-        <p class="summary">{{ summary || '暂无全能分镜词' }}</p>
+        <el-input
+          v-model="universalText"
+          class="universal-editor"
+          type="textarea"
+          :rows="5"
+          resize="vertical"
+          placeholder="编辑全能分镜词，或使用生成/润色"
+          @click.stop
+        />
         <div class="panel-actions">
-          <el-button size="small" plain @click.stop="focusStoryboard">编辑</el-button>
-          <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
+          <el-button
+            size="small"
+            :loading="universalBusy === 'generate'"
+            :disabled="Boolean(universalBusy)"
+            @click.stop="runUniversalPrompt('generate')"
+          >生成全能词</el-button>
+          <el-button
+            size="small"
+            :loading="universalBusy === 'polish'"
+            :disabled="Boolean(universalBusy) || !universalText.trim()"
+            @click.stop="runUniversalPrompt('polish')"
+          >流式润色</el-button>
+          <el-button size="small" :loading="universalBusy === 'save'" :disabled="Boolean(universalBusy)" @click.stop="saveUniversalText">保存</el-button>
+          <el-button size="small" plain @click.stop="focusStoryboard">编辑字段</el-button>
+          <el-button size="small" type="primary" :loading="busy" :disabled="Boolean(universalBusy)" @click.stop="runStep('video')">重新生视频</el-button>
         </div>
       </template>
 
@@ -69,12 +90,18 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { storyboardsAPI } from '@/api/storyboards'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 import { runImageStep, runVideoStep, runAudioStep } from '@/composables/useCanvasWorkflowRunner'
-import { findStoryboardInDrama, getDramaGenerationOptions } from '@/utils/canvasWorkflow'
+import {
+  buildUniversalPromptFieldOverrides,
+  findStoryboardInDrama,
+  getDramaGenerationOptions,
+  universalPromptDuration,
+} from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 
@@ -90,6 +117,8 @@ const props = defineProps({
 
 const ctx = useCanvasContext()
 const busy = ref(false)
+const universalBusy = ref('')
+const universalText = ref('')
 
 const sbNodeId = computed(() => (props.storyboard?.id ? `sb:${props.storyboard.id}` : ''))
 
@@ -106,12 +135,89 @@ const busyLabel = computed(() => {
   return id && map ? map[id]?.message : ''
 })
 
+watch(
+  () => [props.summary, props.storyboard?.universal_segment_text],
+  ([summaryValue, storyboardValue]) => {
+    if (!universalBusy.value) universalText.value = storyboardValue || summaryValue || ''
+  },
+  { immediate: true }
+)
+
 function focusStoryboard() {
   if (sbNodeId.value) ctx?.setFocusedNode?.(sbNodeId.value)
 }
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+async function runUniversalPrompt(mode) {
+  const drama = ctx?.drama?.value
+  const sbId = props.storyboard?.id
+  if (!drama || !sbId || universalBusy.value) return
+  const draft = universalText.value.trim()
+  if (mode === 'polish' && !draft) {
+    ElMessage.warning('请先填写或生成全能分镜词')
+    return
+  }
+  const found = findStoryboardInDrama(drama, sbId)
+  const sb = found?.storyboard || props.storyboard
+  const statusStep = mode === 'polish' ? 'polish' : 'save'
+  universalBusy.value = mode
+  const statusMessage = mode === 'polish' ? '全能词润色中…' : '全能词生成中…'
+  ctx?.nodeStatus?.set(props.nodeId, { step: statusStep, message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: statusStep, message: statusMessage })
+  universalText.value = ''
+  try {
+    const body = {
+      duration: universalPromptDuration(sb),
+      field_overrides: buildUniversalPromptFieldOverrides(sb),
+    }
+    let response
+    const onDelta = (delta) => {
+      universalText.value += delta || ''
+    }
+    if (mode === 'polish') {
+      response = await storyboardsAPI.polishUniversalSegmentPromptStream(sbId, {
+        ...body,
+        draft_universal_segment_text: draft,
+      }, onDelta)
+    } else {
+      response = await storyboardsAPI.generateUniversalSegmentPromptStream(sbId, body, onDelta)
+    }
+    const nextText = String(response?.universal_segment_text || universalText.value).trim()
+    if (!nextText) throw new Error('未生成有效的全能分镜词')
+    universalText.value = nextText
+    ElMessage.success(mode === 'polish' ? '全能词润色完成' : '全能词生成完成')
+    await ctx?.refreshDrama?.(true)
+  } catch (e) {
+    universalText.value = draft
+    ElMessage.error(e?.message || '全能词处理失败')
+  } finally {
+    universalBusy.value = ''
+    ctx?.nodeStatus?.clear(props.nodeId)
+    ctx?.nodeStatus?.clear(sbNodeId.value)
+  }
+}
+
+async function saveUniversalText() {
+  const sbId = props.storyboard?.id
+  if (!sbId || universalBusy.value) return
+  universalBusy.value = 'save'
+  const statusMessage = '全能词保存中…'
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: statusMessage })
+  try {
+    await storyboardsAPI.update(sbId, { universal_segment_text: universalText.value.trim() })
+    ElMessage.success('全能词已保存')
+    await ctx?.refreshDrama?.(true)
+  } catch (e) {
+    ElMessage.error(e?.message || '全能词保存失败')
+  } finally {
+    universalBusy.value = ''
+    ctx?.nodeStatus?.clear(props.nodeId)
+    ctx?.nodeStatus?.clear(sbNodeId.value)
+  }
 }
 
 async function runStep(step) {
@@ -250,7 +356,11 @@ async function runStep(step) {
 }
 .panel-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+.universal-editor {
+  width: 100%;
 }
 .kind-video { border-color: rgba(244, 114, 182, 0.45); }
 .kind-universal { border-color: rgba(167, 139, 250, 0.45); }

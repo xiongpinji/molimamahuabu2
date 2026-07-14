@@ -92,6 +92,20 @@ export function getStoryboardImageFrameType(frameKind) {
   return undefined
 }
 
+export function universalPromptDuration(storyboard) {
+  const duration = Number(storyboard?.duration)
+  return Number.isFinite(duration) && duration > 0 ? duration : 5
+}
+
+export function buildUniversalPromptFieldOverrides(storyboard) {
+  const fields = [
+    'title', 'description', 'location', 'time', 'action', 'dialogue',
+    'narration', 'result', 'atmosphere', 'shot_type', 'movement',
+    'layout_description',
+  ]
+  return Object.fromEntries(fields.map((field) => [field, storyboard?.[field] || '']))
+}
+
 /** 返回当前分镜已关联且有图片的参考资产，顺序与列表模式一致：场景、角色、道具。 */
 export function collectStoryboardReferenceAssets(drama, sb, options = {}) {
   const max = Number.isFinite(Number(options.max)) ? Math.max(1, Number(options.max)) : 10
