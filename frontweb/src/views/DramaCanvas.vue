@@ -31,10 +31,12 @@
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
-          <el-button class="topbar-workflow-toggle" size="small" :type="showWorkflowPanel ? 'primary' : 'default'" plain @click="toggleWorkflowPanel">
-            <el-icon><Operation /></el-icon>
-            工作流
-          </el-button>
+          <el-tooltip content="工作流：框选分镜后创建，可拖拽排序并按步骤整组重跑" placement="bottom">
+            <el-button class="topbar-workflow-toggle" size="small" :type="showWorkflowPanel ? 'primary' : 'default'" plain @click="toggleWorkflowPanel">
+              <el-icon><Operation /></el-icon>
+              工作流
+            </el-button>
+          </el-tooltip>
           <el-dropdown class="topbar-more" trigger="click" placement="bottom-end" @command="onTopbarMoreCommand">
             <el-button class="topbar-more-trigger" size="small" aria-label="更多画布操作" title="更多画布操作">
               <el-icon><MoreFilled /></el-icon>
@@ -61,7 +63,9 @@
       </div>
 
       <div v-if="showWorkflowPanel" class="workflow-bar">
-        <span class="wf-hint">已选 {{ selectedStoryboardIds.length }} 个分镜</span>
+        <el-tooltip content="在画布空白处拖拽框选分镜，或按住 Ctrl 逐个多选" placement="bottom-start">
+          <span class="wf-hint">已选 {{ selectedStoryboardIds.length }} 个分镜</span>
+        </el-tooltip>
         <CanvasGenerationOptions />
         <el-checkbox-group v-model="pipelineSteps" size="small" class="wf-steps">
           <el-checkbox value="image">生图</el-checkbox>
