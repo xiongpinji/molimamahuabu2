@@ -1,6 +1,10 @@
 <template>
   <div class="canvas-node-stack">
-    <div class="canvas-media-node" :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel, processing: isNodeBusy }]">
+    <div
+      class="canvas-media-node"
+      :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel, processing: isProcessing }]"
+      :title="nodeTitle"
+    >
       <Handle type="target" :position="Position.Left" />
       <Handle v-if="data.kind !== 'video' && data.kind !== 'audio'" type="source" :position="Position.Right" />
       <CanvasNodeStatusOverlay :node-id="id" />
@@ -25,6 +29,10 @@
           <span>{{ data.audioType === 'narration' ? '旁白' : '对白' }}</span>
         </div>
       </template>
+      <div class="node-footer">
+        <span class="result-state" :class="'state-' + resultState.key">{{ resultState.label }}</span>
+        <span class="hint">单击查看与重试</span>
+      </div>
     </div>
     <CanvasMediaPanel
       v-if="showPanel"
@@ -56,6 +64,20 @@ const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
   return map ? !!map[props.id] : false
+})
+
+const isProcessing = computed(() => isNodeBusy.value || props.data.storyboard?.status === 'processing')
+
+const resultState = computed(() => {
+  if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
+  if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
+  if (props.data.url) return { key: 'ready', label: '已生成' }
+  return { key: 'empty', label: '待生成' }
+})
+
+const nodeTitle = computed(() => {
+  if (props.data.kind === 'text') return '单击查看脚本摘要并编辑'
+  return props.data.url ? '单击预览结果或重新生成' : '单击查看生成选项'
 })
 
 const kindLabel = computed(() => {
@@ -141,4 +163,30 @@ const kindLabel = computed(() => {
 .canvas-media-node.processing { border-color: #60a5fa; }
 .highlighted { box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.55); }
 .dimmed { opacity: 0.28; }
+.node-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+}
+.result-state {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+}
+.state-busy { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+.state-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.state-editable { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: #52525b;
+}
 </style>
