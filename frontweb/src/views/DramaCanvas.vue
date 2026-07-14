@@ -673,7 +673,19 @@ async function fitCanvasView() {
 }
 
 function showCanvasHelp() {
-  ElMessage.info('快捷键：空格拖动画布，Ctrl/⌘ + 滚轮缩放，双击节点打开编辑')
+  ElMessageBox.alert(
+    [
+      '空格 + 鼠标左键拖动：平移画布',
+      '普通滚轮：上下滚动画布',
+      'Ctrl/⌘ + 滚轮：放大或缩小画布',
+      '拖动画布空白区域：框选节点',
+      'Ctrl/⌘ + 点击：多选节点',
+      '右键画布：添加节点',
+      '双击节点：打开对应制作入口',
+    ].join('\n'),
+    '画布操作指南',
+    { confirmButtonText: '知道了', type: 'info' },
+  )
 }
 
 function scheduleLayoutSave() {
