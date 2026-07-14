@@ -38,6 +38,12 @@ const router = createRouter({
       meta: { title: '画布模式' }
     },
     {
+      path: '/canvas',
+      name: 'home-canvas',
+      component: () => import('@/views/HomeCanvas.vue'),
+      meta: { title: '首页自由画布' }
+    },
+    {
       path: '/ai-config',
       name: 'ai-config',
       component: () => import('@/views/AiConfig.vue'),

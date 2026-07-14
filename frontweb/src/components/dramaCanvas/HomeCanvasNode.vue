@@ -1,0 +1,54 @@
+<template>
+  <div class="home-canvas-node" :class="`kind-${data.kind}`">
+    <Handle type="target" :position="Position.Left" />
+    <Handle type="source" :position="Position.Right" />
+    <div class="node-heading">
+      <span class="node-icon">{{ kindIcon }}</span>
+      <span class="node-title">{{ data.title || '未命名节点' }}</span>
+    </div>
+    <p v-if="data.kind === 'text'" class="node-content">{{ data.content || '双击节点编辑内容' }}</p>
+    <img v-else-if="data.kind === 'image' && data.url" :src="data.url" alt="" class="node-media" />
+    <div v-else-if="data.kind === 'image'" class="node-empty">填写图片地址后显示预览</div>
+    <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
+    <div v-else class="node-empty">填写视频地址后显示预览</div>
+    <div class="node-hint">双击编辑</div>
+  </div>
+</template>
+
+<script setup>
+import { computed } from 'vue'
+import { Handle, Position } from '@vue-flow/core'
+
+const props = defineProps({
+  data: { type: Object, required: true },
+})
+
+const kindIcon = computed(() => ({ text: '☷', image: '▧', video: '▶' }[props.data.kind] || '◈'))
+</script>
+
+<style scoped>
+.home-canvas-node {
+  position: relative;
+  width: 250px;
+  min-height: 118px;
+  padding: 14px;
+  border: 1px solid rgba(129, 140, 248, 0.55);
+  border-radius: 14px;
+  background: rgba(24, 24, 27, 0.94);
+  color: #e4e4e7;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+.home-canvas-node:hover { border-color: #a5b4fc; }
+.node-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.node-icon { color: #c4b5fd; font-size: 18px; }
+.node-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+.node-content { margin: 0; color: #c4c4cc; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.node-media { display: block; width: 100%; height: 126px; border-radius: 8px; background: #09090b; object-fit: cover; }
+.node-empty { min-height: 60px; display: flex; align-items: center; justify-content: center; color: #71717a; font-size: 11px; text-align: center; }
+.node-hint { margin-top: 10px; color: #52525b; font-size: 10px; }
+.kind-image { border-color: rgba(96, 165, 250, 0.55); }
+.kind-image .node-icon { color: #93c5fd; }
+.kind-video { border-color: rgba(244, 114, 182, 0.55); }
+.kind-video .node-icon { color: #f9a8d4; }
+</style>

@@ -23,6 +23,9 @@
         </div>
         <!-- 右侧操作区 -->
         <div class="header-actions">
+          <el-button class="btn-library" title="首页自由画布" @click="goHomeCanvas">
+            <el-icon><Grid /></el-icon>首页画布
+          </el-button>
           <!-- 暂时隐藏，功能待完善 -->
           <!-- <el-button class="btn-library" title="自由创作" @click="$router.push('/free-create')">
             <el-icon><MagicStick /></el-icon>自由创作
@@ -61,6 +64,9 @@
                 </el-button>
                 <el-button size="large" class="action-btn action-btn-import" :loading="importing" @click="triggerImport">
                   <el-icon><Upload /></el-icon>导入短剧项目
+                </el-button>
+                <el-button size="large" class="action-btn action-btn-canvas" @click="goHomeCanvas">
+                  <el-icon><Grid /></el-icon>首页自由画布
                 </el-button>
               </div>
               <div v-if="exampleList.length > 0" class="action-card-example">
@@ -348,7 +354,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files } from '@element-plus/icons-vue'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files, Grid } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -694,6 +700,10 @@ function totalStoryboards(d) {
 
 function goNewProject() {
   showNewDialog.value = true
+}
+
+function goHomeCanvas() {
+  router.push('/canvas')
 }
 
 function resetNewForm() {
@@ -1067,6 +1077,14 @@ html.light .btn-import {
   --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
   --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
   --el-button-hover-text-color: #c7d2fe;
+}
+.action-btn-canvas {
+  --el-button-bg-color: rgba(52, 211, 153, 0.12);
+  --el-button-border-color: rgba(52, 211, 153, 0.35);
+  --el-button-text-color: #6ee7b7;
+  --el-button-hover-bg-color: rgba(52, 211, 153, 0.22);
+  --el-button-hover-border-color: rgba(52, 211, 153, 0.55);
+  --el-button-hover-text-color: #a7f3d0;
 }
 .action-card-example {
   width: 100%;
