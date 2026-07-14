@@ -918,12 +918,16 @@ function goListMode() {
   router.push({ path: `/film/${dramaId.value}`, query })
 }
 
-function navigateToStoryboard(episodeId, storyboardId) {
+function navigateToProduction(episodeId, hash) {
   router.push({
     path: `/film/${dramaId.value}`,
     query: episodeId ? { episode: String(episodeId) } : {},
-    hash: storyboardId ? `#sb-${storyboardId}` : undefined,
+    hash: hash ? `#${hash}` : undefined,
   })
+}
+
+function navigateToStoryboard(episodeId, storyboardId) {
+  navigateToProduction(episodeId, storyboardId ? `sb-${storyboardId}` : undefined)
 }
 
 function onNodeDoubleClick({ node }) {
@@ -931,6 +935,27 @@ function onNodeDoubleClick({ node }) {
     navigateToStoryboard(node.data.episodeId || node.data.storyboard?.episode_id, node.data.storyboard?.id)
     return
   }
+
+  if (node.type === 'canvasScript') {
+    navigateToProduction(node.data.episode?.id, 'anchor-script')
+    return
+  }
+
+  if (node.type === 'canvasEpisode') {
+    navigateToProduction(node.data.episode?.id, 'anchor-storyboard')
+    return
+  }
+
+  if (node.type === 'canvasAsset') {
+    const anchor = {
+      character: 'anchor-characters',
+      scene: 'anchor-scenes',
+      prop: 'anchor-props',
+    }[node.data?.kind]
+    navigateToProduction(filterEpisodeId.value, anchor)
+    return
+  }
+
   const ref = getStoryboardRefFromNode(node)
   if (ref?.storyboardId) navigateToStoryboard(ref.episodeId, ref.storyboardId)
 }

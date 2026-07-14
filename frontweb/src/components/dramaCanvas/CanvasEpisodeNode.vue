@@ -1,5 +1,5 @@
 <template>
-  <div class="canvas-episode-node">
+  <div class="canvas-episode-node" title="双击进入本集制作页">
     <Handle type="target" :position="Position.Left" />
     <span class="badge">第 {{ data.episode?.episode_number ?? '?' }} 集</span>
     <span class="title">{{ data.episode?.title || '未命名集' }}</span>

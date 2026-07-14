@@ -18,7 +18,7 @@
         <span v-if="data.storyboard?.duration">{{ data.storyboard.duration }}s</span>
         <span :class="'st-' + (data.storyboard?.status || 'pending')">{{ statusLabel }}</span>
       </div>
-      <div class="hint">{{ showPanel ? '下方可编辑与生成' : '单击展开操作 · 双击进列表' }}</div>
+      <div class="hint">{{ showPanel ? '下方可编辑与生成' : '单击展开操作 · 双击进制作' }}</div>
     </div>
     <CanvasStoryboardPanel
       v-if="showPanel"

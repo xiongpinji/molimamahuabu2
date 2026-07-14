@@ -20,7 +20,7 @@
         <span>{{ sceneCount }} 场景</span>
         <span>{{ propCount }} 道具</span>
       </div>
-      <div class="hint">{{ showPanel ? '下方可编辑与提取' : '单击展开 · 创作起点' }}</div>
+      <div class="hint">{{ showPanel ? '下方可编辑与提取' : '单击展开 · 双击进制作' }}</div>
     </div>
     <CanvasScriptPanel
       v-if="showPanel"

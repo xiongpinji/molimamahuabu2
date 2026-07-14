@@ -24,6 +24,7 @@
           <span v-if="statusChip" class="status-chip" :class="'st-' + statusChip.key">{{ statusChip.label }}</span>
         </div>
         <div class="kind">{{ kindLabel }}</div>
+        <div class="hint">单击展开编辑 · 双击进制作</div>
       </div>
     </div>
     <CanvasAssetPanel
@@ -162,6 +163,11 @@ const statusChip = computed(() => {
   font-size: 11px;
   color: var(--text-subtle, #71717a);
   margin-top: 2px;
+}
+.hint {
+  margin-top: 4px;
+  color: #52525b;
+  font-size: 10px;
 }
 .kind-character { border-color: rgba(52, 211, 153, 0.45); }
 .kind-scene { border-color: rgba(96, 165, 250, 0.45); }
