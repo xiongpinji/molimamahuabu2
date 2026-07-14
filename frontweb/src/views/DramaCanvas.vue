@@ -80,6 +80,7 @@
           placeholder="选择工作流"
           clearable
           style="width: 160px"
+          @change="selectWorkflowGroup"
         >
           <el-option
             v-for="g in workflowGroups"
@@ -208,7 +209,7 @@
             :key="g.id"
             class="sidebar-item workflow-item"
             :class="{ active: activeGroupId === g.id }"
-            @click="activeGroupId = g.id"
+            @click="selectWorkflowGroup(g.id)"
           >
             <div class="wf-item-title">{{ g.title }}</div>
             <div class="wf-item-meta">{{ (g.storyboard_ids || []).length }} 镜 · {{ (g.pipeline || []).join('→') }}</div>
@@ -581,9 +582,40 @@ function clearAssetHighlight() {
 }
 
 function onSelectionChange({ nodes: selectedNodes }) {
-  selectedStoryboardIds.value = (selectedNodes || [])
+  const ids = (selectedNodes || [])
     .filter((n) => n.type === 'canvasStoryboard' && n.data?.storyboard?.id)
     .map((n) => n.data.storyboard.id)
+  selectedStoryboardIds.value = ids
+
+  if (!ids.length) {
+    activeGroupId.value = null
+    return
+  }
+
+  const containingGroups = workflowGroups.value.filter((group) => {
+    const groupIds = new Set((group.storyboard_ids || []).map(Number))
+    return ids.every((id) => groupIds.has(Number(id)))
+  })
+  if (containingGroups.length === 1 && (ids.length > 1 || !activeGroupId.value)) {
+    activeGroupId.value = containingGroups[0].id
+  } else if (ids.length > 1 && containingGroups.length !== 1) {
+    activeGroupId.value = null
+  }
+}
+
+function selectWorkflowGroup(groupId) {
+  activeGroupId.value = groupId || null
+  const group = workflowGroups.value.find((item) => item.id === groupId)
+  const storyboardIds = group ? (group.storyboard_ids || []).map(Number) : []
+  const selectedIds = new Set(storyboardIds)
+  selectedStoryboardIds.value = storyboardIds
+  nodes.value = nodes.value.map((node) => {
+    if (node.type !== 'canvasStoryboard') return node
+    return {
+      ...node,
+      selected: selectedIds.has(Number(node.data?.storyboard?.id)),
+    }
+  })
 }
 
 function onViewportChange(viewport) {
@@ -863,6 +895,7 @@ async function onDeleteActiveGroup() {
       return
     }
     rebuildGraph()
+    selectedStoryboardIds.value = []
     ElMessage.success('已删除')
   } catch (_) {}
 }
@@ -1027,6 +1060,7 @@ function onPaneClick(event) {
     return
   }
   focusedNodeId.value = null
+  activeGroupId.value = null
   closeContextMenu()
 }
 
