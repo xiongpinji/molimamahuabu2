@@ -38,7 +38,9 @@
         </div>
         <CanvasGenerationOptions mode="image" compact />
         <div class="panel-actions">
-          <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">重新生图</el-button>
+          <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">
+            {{ frameKind === 'first' ? '生成首帧' : frameKind === 'last' ? '生成尾帧' : '重新生图' }}
+          </el-button>
           <CanvasStoryboardImageUpload
             :storyboard="storyboard"
             :node-id="nodeId"
@@ -92,6 +94,8 @@ const busy = ref(false)
 const sbNodeId = computed(() => (props.storyboard?.id ? `sb:${props.storyboard.id}` : ''))
 
 const kindTitle = computed(() => {
+  if (props.kind === 'image' && props.frameKind === 'first') return '首帧图'
+  if (props.kind === 'image' && props.frameKind === 'last') return '尾帧图'
   const map = { text: '脚本摘要', universal: '全能分镜词', image: '分镜图', video: '视频', audio: '音频' }
   return map[props.kind] || '媒体'
 })
@@ -115,14 +119,18 @@ async function runStep(step) {
   const sbId = props.storyboard?.id
   if (!drama || !sbId) return
   busy.value = true
-  const statusMsg = CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
+  const statusMsg = step === 'image' && props.frameKind === 'first'
+    ? '首帧生成中…'
+    : step === 'image' && props.frameKind === 'last'
+      ? '尾帧生成中…'
+      : CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
   ctx?.nodeStatus?.set(props.nodeId, { step, message: statusMsg })
   ctx?.nodeStatus?.set(sbNodeId.value, { step, message: statusMsg })
   try {
     const found = findStoryboardInDrama(drama, sbId)
     const sb = found?.storyboard || props.storyboard
     const genOpts = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)
-    if (step === 'image') await runImageStep(drama, sb, genOpts)
+    if (step === 'image') await runImageStep(drama, sb, genOpts, props.frameKind)
     else if (step === 'video') await runVideoStep(drama, sb, genOpts)
     else if (step === 'audio') {
       const res = await runAudioStep(sb)

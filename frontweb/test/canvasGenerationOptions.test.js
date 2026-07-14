@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getDramaGenerationOptions } from '../src/utils/canvasWorkflow.js'
+import { getDramaGenerationOptions, getStoryboardImageFrameType } from '../src/utils/canvasWorkflow.js'
 
 test('画布生成参数从项目元数据读取模型、画幅和清晰度', () => {
   const options = getDramaGenerationOptions({
@@ -21,4 +21,10 @@ test('画布生成参数从项目元数据读取模型、画幅和清晰度', ()
     imageModel: 'image-model-a',
     videoModel: 'video-model-b',
   })
+})
+
+test('画布首尾帧节点映射到独立图片生成类型', () => {
+  assert.equal(getStoryboardImageFrameType('first'), 'storyboard_first')
+  assert.equal(getStoryboardImageFrameType('last'), 'storyboard_last')
+  assert.equal(getStoryboardImageFrameType(''), undefined)
 })

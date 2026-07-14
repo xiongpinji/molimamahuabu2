@@ -86,6 +86,12 @@ export function getDramaGenerationOptions(drama) {
   }
 }
 
+export function getStoryboardImageFrameType(frameKind) {
+  if (frameKind === 'first') return 'storyboard_first'
+  if (frameKind === 'last') return 'storyboard_last'
+  return undefined
+}
+
 /** 返回当前分镜已关联且有图片的参考资产，顺序与列表模式一致：场景、角色、道具。 */
 export function collectStoryboardReferenceAssets(drama, sb, options = {}) {
   const max = Number.isFinite(Number(options.max)) ? Math.max(1, Number(options.max)) : 10

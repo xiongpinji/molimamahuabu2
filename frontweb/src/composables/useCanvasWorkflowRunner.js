@@ -1,5 +1,6 @@
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
+import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
 import request from '@/utils/request'
 import { storyboardImageUrl } from '@/utils/mediaUrl'
@@ -8,6 +9,7 @@ import {
   collectStoryboardReferenceAssets,
   findStoryboardInDrama,
   getDramaGenerationOptions,
+  getStoryboardImageFrameType,
   toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
@@ -31,9 +33,40 @@ async function pollTaskSimple(taskId, options = {}) {
   return { status: 'timeout', error: '任务超时' }
 }
 
-export async function runImageStep(drama, sb, genOpts) {
-  const prompt = sb.polished_prompt || sb.image_prompt || sb.description || sb.action || ''
+async function resolveCanvasFramePrompt(sb, frameKind) {
+  const frameType = frameKind === 'last' ? 'last' : 'first'
+  const fallback = frameKind === 'last'
+    ? (sb.video_prompt || sb.result || sb.action || sb.description || '')
+    : (sb.polished_prompt || sb.image_prompt || sb.description || sb.action || '')
+  if (!sb?.id || !frameKind) return fallback
+
+  try {
+    const cached = await storyboardsAPI.getFramePrompts(sb.id)
+    const prompt = (cached?.frame_prompts || []).find((item) => item.frame_type === frameType)?.prompt
+    if (prompt?.trim()) return prompt.trim()
+
+    const generated = await storyboardsAPI.generateFramePrompt(sb.id, { frame_type: frameType })
+    if (generated?.task_id) {
+      const task = await pollTaskSimple(generated.task_id)
+      const fromTask = task.result?.response?.single_frame?.prompt
+      if (task.status === 'completed' && fromTask?.trim()) return fromTask.trim()
+    }
+    const refreshed = await storyboardsAPI.getFramePrompts(sb.id)
+    const refreshedPrompt = (refreshed?.frame_prompts || []).find((item) => item.frame_type === frameType)?.prompt
+    return refreshedPrompt?.trim() || fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+export async function runImageStep(drama, sb, genOpts, frameKind = '') {
+  const prompt = await resolveCanvasFramePrompt(sb, frameKind)
   if (!prompt.trim()) throw new Error(`分镜 #${sb.storyboard_number ?? sb.id} 缺少图片提示词`)
+  const frameType = getStoryboardImageFrameType(frameKind)
+  const referenceImages = frameType
+    ? collectStoryboardReferenceAssets(drama, sb).map((ref) => ref.absoluteUrl).filter(Boolean)
+    : []
+  const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
     storyboard_id: sb.id,
     drama_id: drama.id,
@@ -41,6 +74,9 @@ export async function runImageStep(drama, sb, genOpts) {
     model: genOpts.imageModel || undefined,
     style: genOpts.style || undefined,
     aspect_ratio: genOpts.aspectRatio,
+    frame_type: frameType,
+    reference_images: referenceImages.length ? referenceImages : undefined,
+    use_first_frame_layout_lock: isLastFrame ? true : undefined,
   })
   if (res?.task_id) {
     const polled = await pollTaskSimple(res.task_id)

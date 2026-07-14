@@ -138,9 +138,9 @@ function appendUniversalNode(nodes, edges, ctx) {
 
 function appendMediaImageNode(nodes, edges, ctx) {
   const {
-    savedLayout, sb, sbId, fromId, mediaX, mediaY, imgId, url, frameKind, frameLabel,
+    savedLayout, sb, sbId, fromId, mediaX, mediaY, imgId, url, frameKind, frameLabel, allowEmpty,
   } = ctx
-  if (!url) return fromId
+  if (!url && !allowEmpty) return fromId
   nodes.push(makeNode({
     id: imgId,
     type: 'canvasMedia',
@@ -251,23 +251,19 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
 
       if (useFirstLast) {
         const firstUrl = imageRecordUrl(resolveSbFirstImageRecord(sb, imagesBySbId))
-        if (firstUrl) {
-          const imgId = `sbimg-first:${sb.id}`
-          pipelineTailId = appendMediaImageNode(nodes, edges, {
-            savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId, url: firstUrl,
-            frameKind: 'first', frameLabel: '首帧',
-          })
-          mediaX += MEDIA_GAP_X
-        }
+        const firstImgId = `sbimg-first:${sb.id}`
+        pipelineTailId = appendMediaImageNode(nodes, edges, {
+          savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId: firstImgId, url: firstUrl,
+          frameKind: 'first', frameLabel: '首帧', allowEmpty: true,
+        })
+        mediaX += MEDIA_GAP_X
         const lastUrl = imageRecordUrl(resolveSbLastImageRecord(sb, imagesBySbId))
-        if (lastUrl) {
-          const imgId = `sbimg-last:${sb.id}`
-          pipelineTailId = appendMediaImageNode(nodes, edges, {
-            savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId, url: lastUrl,
-            frameKind: 'last', frameLabel: '尾帧',
-          })
-          mediaX += MEDIA_GAP_X
-        }
+        const lastImgId = `sbimg-last:${sb.id}`
+        pipelineTailId = appendMediaImageNode(nodes, edges, {
+          savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId: lastImgId, url: lastUrl,
+          frameKind: 'last', frameLabel: '尾帧', allowEmpty: true,
+        })
+        mediaX += MEDIA_GAP_X
       } else {
         const mainUrl = imageRecordUrl(resolveSbMainImageRecord(sb, imagesBySbId)) || storyboardImageUrl(sb)
         if (mainUrl) {
