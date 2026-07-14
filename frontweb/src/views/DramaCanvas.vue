@@ -62,6 +62,7 @@
 
       <div v-if="showWorkflowPanel" class="workflow-bar">
         <span class="wf-hint">已选 {{ selectedStoryboardIds.length }} 个分镜</span>
+        <CanvasGenerationOptions />
         <el-checkbox-group v-model="pipelineSteps" size="small" class="wf-steps">
           <el-checkbox value="image">生图</el-checkbox>
           <el-checkbox value="video">生视频</el-checkbox>
@@ -345,6 +346,7 @@ import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vu
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
+import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 
@@ -366,6 +368,7 @@ const selectedStoryboardIds = ref([])
 const pipelineSteps = ref(['image', 'video', 'audio'])
 const workflowRunning = ref(false)
 const workflowProgress = ref('')
+const generationOverrides = ref({})
 const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
@@ -551,8 +554,37 @@ async function onCreateSubmit(form) {
 function getCanvasGenerationOptions() {
   return {
     ...getDramaGenerationOptions(drama.value),
+    ...generationOverrides.value,
     imagesBySbId: imagesBySbId.value,
   }
+}
+
+let generationSaveTimer = null
+function updateGenerationOptions(patch = {}) {
+  generationOverrides.value = { ...generationOverrides.value, ...patch }
+  const current = getCanvasGenerationOptions()
+  if (drama.value) {
+    const metadata = parseDramaMetadata(drama.value.metadata) || {}
+    const nextMetadata = {
+      ...metadata,
+      aspect_ratio: current.aspectRatio || '16:9',
+      video_resolution: current.videoResolution || '480p',
+    }
+    if (Object.hasOwn(patch, 'imageModel')) nextMetadata.image_model = current.imageModel || null
+    if (Object.hasOwn(patch, 'videoModel')) nextMetadata.video_model = current.videoModel || null
+    drama.value = { ...drama.value, metadata: nextMetadata }
+  }
+  if (generationSaveTimer) clearTimeout(generationSaveTimer)
+  generationSaveTimer = setTimeout(async () => {
+    generationSaveTimer = null
+    if (!dramaId.value) return
+    const metadata = parseDramaMetadata(drama.value?.metadata) || {}
+    try {
+      await dramaAPI.saveOutline(dramaId.value, { metadata })
+    } catch (e) {
+      ElMessage.error(e?.message || '生成参数保存失败')
+    }
+  }, 450)
 }
 
 const scriptActionsHolder = {}
@@ -563,6 +595,8 @@ provide(CANVAS_CONTEXT_KEY, {
   drama,
   imagesBySbId,
   videosBySbId,
+  generationOptions: computed(() => getCanvasGenerationOptions()),
+  updateGenerationOptions,
   getGenerationOptions: getCanvasGenerationOptions,
   setFocusedNode: (nodeId) => {
     focusedNodeId.value = nodeId
@@ -1142,6 +1176,7 @@ watch(() => route.params.id, () => {
   activeGroupId.value = null
   selectedStoryboardIds.value = []
   focusedNodeId.value = null
+  generationOverrides.value = {}
   loadDrama()
 }, { immediate: true })
 
@@ -1151,6 +1186,7 @@ onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
+  if (generationSaveTimer) clearTimeout(generationSaveTimer)
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })

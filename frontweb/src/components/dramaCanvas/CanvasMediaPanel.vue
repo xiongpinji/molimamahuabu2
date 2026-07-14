@@ -36,6 +36,7 @@
           <div v-else-if="!busy" class="preview-empty">无分镜图</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生图中…</div>
         </div>
+        <CanvasGenerationOptions mode="image" compact />
         <div class="panel-actions">
           <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">重新生图</el-button>
           <CanvasStoryboardImageUpload
@@ -52,6 +53,7 @@
           <div v-else-if="!busy" class="preview-empty">无视频</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生视频中…</div>
         </div>
+        <CanvasGenerationOptions mode="video" compact />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
       </template>
 
@@ -72,6 +74,7 @@ import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 import { runImageStep, runVideoStep, runAudioStep } from '@/composables/useCanvasWorkflowRunner'
 import { findStoryboardInDrama, getDramaGenerationOptions } from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
+import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 
 const props = defineProps({
   nodeId: { type: String, default: '' },

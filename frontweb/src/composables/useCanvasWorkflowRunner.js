@@ -38,6 +38,7 @@ export async function runImageStep(drama, sb, genOpts) {
     storyboard_id: sb.id,
     drama_id: drama.id,
     prompt,
+    model: genOpts.imageModel || undefined,
     style: genOpts.style || undefined,
     aspect_ratio: genOpts.aspectRatio,
   })
@@ -70,6 +71,7 @@ export async function runVideoStep(drama, sb, genOpts) {
     drama_id: drama.id,
     storyboard_id: sb.id,
     prompt,
+    model: genOpts.videoModel || undefined,
     image_url: absoluteFirst || undefined,
     first_frame_url: absoluteFirst || undefined,
     last_frame_url: absoluteLast,

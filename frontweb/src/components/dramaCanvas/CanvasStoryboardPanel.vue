@@ -180,6 +180,8 @@
       </template>
     </el-form>
 
+    <CanvasGenerationOptions compact />
+
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveFields">保存</el-button>
       <el-button v-if="!isUniversal" size="small" :loading="busyStep === 'polish'" @click.stop="polishPrompt">润色</el-button>
@@ -212,6 +214,7 @@ import {
   getDramaGenerationOptions,
 } from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
+import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 
 const props = defineProps({
   storyboard: { type: Object, required: true },
