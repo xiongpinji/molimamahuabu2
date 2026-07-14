@@ -2,11 +2,11 @@
   <div class="drama-detail">
     <PlatformHeader :title="drama?.title || '剧集管理'" back-to="/" back-label="返回列表" :show-home-canvas="true">
       <template #actions>
-        <el-button type="primary" @click="goCreate">
-          <el-icon><VideoPlay /></el-icon>进入制作
+        <el-button type="primary" class="btn-canvas-mode" @click="goCanvasMode">
+          <el-icon><Grid /></el-icon>打开画布
         </el-button>
-        <el-button type="primary" plain @click="goCanvasMode">
-          <el-icon><Grid /></el-icon>画布模式
+        <el-button type="primary" plain class="btn-production-mode" @click="goCreate">
+          <el-icon><VideoPlay /></el-icon>进入制作
         </el-button>
       </template>
     </PlatformHeader>
@@ -106,20 +106,30 @@
             v-for="ep in episodes"
             :key="ep.id"
             class="episode-card"
+            role="button"
+            tabindex="0"
+            :aria-label="`打开第 ${ep.episode_number ?? ep.number ?? '?'} 集制作页`"
             title="点击进入制作页"
             @click="goEpisode(ep.id)"
+            @keydown.enter="goEpisode(ep.id)"
+            @keydown.space.prevent="goEpisode(ep.id)"
           >
             <div class="episode-card-header">
               <span class="episode-num">第 {{ ep.episode_number ?? ep.number ?? '?' }} 集</span>
-              <el-button
-                size="small"
-                type="danger"
-                plain
-                circle
-                :icon="Delete"
-                :loading="deletingEpisodeId === ep.id"
-                @click.stop="onDeleteEpisode(ep)"
-              />
+              <div class="episode-card-header-actions">
+                <el-button link size="small" type="primary" title="打开本集画布" aria-label="打开本集画布" @click.stop="goEpisodeCanvas(ep.id)">
+                  <el-icon><Grid /></el-icon>
+                </el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  circle
+                  :icon="Delete"
+                  :loading="deletingEpisodeId === ep.id"
+                  @click.stop="onDeleteEpisode(ep)"
+                />
+              </div>
             </div>
             <div class="episode-title">{{ ep.title || '未命名' }}</div>
             <div class="episode-preview">{{ (ep.script_content || '').slice(0, 20) || '暂无剧本' }}</div>
@@ -931,6 +941,10 @@ function goEpisode(epId) {
   router.push(`/film/${dramaId}?episode=${epId}`)
 }
 
+function goEpisodeCanvas(epId) {
+  router.push(`/film/${dramaId}/canvas?episode=${epId}`)
+}
+
 function epStatusLabel(status) {
   const map = { draft: '草稿', processing: '生成中', completed: '已完成', failed: '失败' }
   return map[status] || status
@@ -1382,6 +1396,7 @@ html.light .section-title { color: #18181b; }
   transition: transform 0.2s;
 }
 .episode-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.episode-card-header-actions { display: flex; align-items: center; gap: 4px; }
 .episode-num { font-size: 0.8rem; color: #71717a; }
 .episode-title { font-weight: 500; color: #fafafa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .episode-preview { font-size: 0.78rem; color: #71717a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
