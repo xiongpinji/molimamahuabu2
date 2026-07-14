@@ -1,12 +1,12 @@
 <template>
   <main class="billing-page">
+    <PlatformHeader title="模型积分定价" back-to="/" back-label="返回" :show-home-canvas="true" />
     <section class="billing-card">
       <header>
         <div>
           <h1>模型积分定价</h1>
           <p>仅管理平台允许的三个模型。未定价的模型会被禁止生成。</p>
         </div>
-        <el-button @click="$router.push('/')">返回项目</el-button>
       </header>
 
       <div class="admin-auth">
@@ -33,6 +33,7 @@
 <script setup>
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { listModelPrices, updateModelPrice } from '@/api/billing'
 import { saveAdminToken } from '@/utils/authSession'
 

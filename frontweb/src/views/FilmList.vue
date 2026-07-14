@@ -1,15 +1,7 @@
 <template>
   <div class="film-list">
-    <header class="header">
-      <div class="header-inner">
-        <h1 class="logo">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </h1>
-        <!-- 公共资源库（左侧，靛紫调） -->
+    <PlatformHeader :show-home-canvas="true">
+      <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
             <el-icon><User /></el-icon>素材角色
@@ -21,35 +13,20 @@
             <el-icon><Box /></el-icon>素材道具
           </el-button>
         </div>
-        <!-- 右侧操作区 -->
-        <div class="header-actions">
-          <el-button class="btn-library" title="首页自由画布" @click="goHomeCanvas">
-            <el-icon><Grid /></el-icon>首页画布
-          </el-button>
-          <!-- 暂时隐藏，功能待完善 -->
-          <!-- <el-button class="btn-library" title="自由创作" @click="$router.push('/free-create')">
-            <el-icon><MagicStick /></el-icon>自由创作
-          </el-button>
-          <el-button class="btn-library" title="媒体素材库" @click="$router.push('/media-library')">
-            <el-icon><Files /></el-icon>素材库
-          </el-button> -->
-          <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button>
-          <el-button class="btn-settings" @click="showAiConfigDialog = true">
-            <el-icon><Setting /></el-icon>AI配置
-          </el-button>
-          <el-button class="btn-import" :loading="importing" @click="triggerImport">
-            <el-icon><Upload /></el-icon>导入项目
-          </el-button>
-          <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
-          <el-button type="primary" class="btn-new" @click="goNewProject">
-            <el-icon><Plus /></el-icon>新建项目
-          </el-button>
-        </div>
-      </div>
-    </header>
+      </template>
+      <template #actions>
+        <el-button class="btn-settings" @click="showAiConfigDialog = true">
+          <el-icon><Setting /></el-icon>AI配置
+        </el-button>
+        <el-button class="btn-import" :loading="importing" @click="triggerImport">
+          <el-icon><Upload /></el-icon>导入项目
+        </el-button>
+        <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
+        <el-button type="primary" class="btn-new" @click="goNewProject">
+          <el-icon><Plus /></el-icon>新建项目
+        </el-button>
+      </template>
+    </PlatformHeader>
 
     <main class="main">
       <div v-loading="loading" class="projects-wrap">
@@ -354,8 +331,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files, Grid } from '@element-plus/icons-vue'
-import { useTheme } from '@/composables/useTheme'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
@@ -366,7 +343,6 @@ import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 
 const router = useRouter()
-const { isDark, toggle: toggleTheme } = useTheme()
 
 // 库编辑图片 – 文件输入 refs
 const charLibFileRef  = ref(null)

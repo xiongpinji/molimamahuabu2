@@ -1,21 +1,6 @@
 <template>
   <div class="ai-config">
-    <header class="header">
-      <div class="header-inner">
-        <h1 class="logo" @click="goList">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </h1>
-        <span class="page-title">AI 配置</span>
-        <el-button class="btn-back" @click="goList">
-          <el-icon><ArrowLeft /></el-icon>
-          返回
-        </el-button>
-      </div>
-    </header>
+    <PlatformHeader title="AI 配置" back-to="/" back-label="返回" :show-home-canvas="true" />
 
     <main class="main">
       <AIConfigContent />
@@ -24,15 +9,8 @@
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
-import { ArrowLeft } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
-
-const router = useRouter()
-
-function goList() {
-  router.push({ name: 'list' })
-}
 </script>
 
 <style scoped>

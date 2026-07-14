@@ -1,33 +1,15 @@
 <template>
   <div class="drama-detail">
-    <header class="header">
-      <div class="header-inner">
-        <h1 class="logo" @click="router.push('/')">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </h1>
-        <span class="breadcrumb-sep">›</span>
-        <span class="page-title">{{ drama?.title || '剧集管理' }}</span>
-        <el-button class="btn-back-list" @click="router.push('/')">
-          <el-icon><ArrowLeft /></el-icon>返回列表
+    <PlatformHeader :title="drama?.title || '剧集管理'" back-to="/" back-label="返回列表" :show-home-canvas="true">
+      <template #actions>
+        <el-button type="primary" @click="goCreate">
+          <el-icon><VideoPlay /></el-icon>进入制作
         </el-button>
-        <div class="header-actions">
-          <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button>
-          <el-button type="primary" @click="goCreate">
-            <el-icon><VideoPlay /></el-icon>进入制作
-          </el-button>
-          <el-button type="primary" plain @click="goCanvasMode">
-            <el-icon><Grid /></el-icon>画布模式
-          </el-button>
-        </div>
-      </div>
-    </header>
+        <el-button type="primary" plain @click="goCanvasMode">
+          <el-icon><Grid /></el-icon>画布模式
+        </el-button>
+      </template>
+    </PlatformHeader>
 
     <main class="main" v-loading="loading">
       <!-- 基本信息 + 设置 -->
@@ -566,9 +548,9 @@
 import { ref, reactive, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, VideoPlay, Plus, Delete, Sunny, Moon, PictureFilled, Grid } from '@element-plus/icons-vue'
+import { VideoPlay, Plus, Delete, PictureFilled, Grid } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import EpisodeBatchImportDialog from '@/components/EpisodeBatchImportDialog.vue'
-import { useTheme } from '@/composables/useTheme'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
@@ -582,7 +564,6 @@ import { propAPI } from '@/api/props'
 import { stylePromptMetadataForSave, backfillDramaStylePromptMetadataIfNeeded } from '@/constants/styleOptions'
 
 const route = useRoute()
-const { isDark, toggle: toggleTheme } = useTheme()
 const router = useRouter()
 const dramaId = Number(route.params.id)
 

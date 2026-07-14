@@ -1,21 +1,14 @@
 <template>
   <div class="media-library-page">
-    <div class="page-header">
-      <div class="header-left">
-        <el-button text @click="$router.back()">
-          <el-icon><ArrowLeft /></el-icon>
-          返回
-        </el-button>
-        <h2 class="page-title">媒体素材库</h2>
-      </div>
-      <div class="header-actions">
+    <PlatformHeader title="媒体素材库" back-to="/" back-label="返回" :show-home-canvas="true">
+      <template #actions>
         <el-button type="primary" plain @click="triggerUpload">
           <el-icon><Upload /></el-icon>
           上传素材
         </el-button>
         <input ref="uploadInput" type="file" accept="image/*,video/*" multiple style="display:none" @change="onUpload" />
-      </div>
-    </div>
+      </template>
+    </PlatformHeader>
 
     <!-- 筛选栏 -->
     <div class="filter-bar">
@@ -130,9 +123,10 @@
 import { ref, onMounted, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ArrowLeft, Upload, Search, Loading, CircleCheck,
+  Upload, Search, Loading, CircleCheck,
   ZoomIn, Delete, Files
 } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { uploadAPI } from '@/api/upload'
 import request from '@/utils/request'
 

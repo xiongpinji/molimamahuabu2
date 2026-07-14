@@ -1,17 +1,13 @@
 <template>
   <div class="film-create" :class="{ 'sidebar-collapsed': navCollapsed }">
     <!-- 顶部 -->
-    <header class="header">
-      <div class="header-inner">
-        <h1 class="logo" @click="goList">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </h1>
-        <span class="breadcrumb-sep">›</span>
-        <span class="page-title">{{ dramaId ? (store.drama?.title || '项目') : '新建故事' }}</span>
+    <PlatformHeader
+      :title="dramaId ? (store.drama?.title || '项目') : '新建故事'"
+      :back-to="dramaId ? '/drama/' + dramaId : '/'"
+      back-label="返回剧集"
+      :show-home-canvas="true"
+    >
+      <template #leading>
         <el-select
           v-if="dramaId"
           v-model="selectedEpisodeId"
@@ -29,25 +25,18 @@
             :value="ep.id"
           />
         </el-select>
-        <el-button v-if="dramaId" class="btn-back-drama" @click="router.push('/drama/' + dramaId)">
-          <el-icon><ArrowLeft /></el-icon>
-          返回剧集
+      </template>
+      <template #actions>
+        <el-button class="btn-settings" @click="showAiConfigDialog = true">
+          <el-icon><Setting /></el-icon>
+          AI 配置
         </el-button>
         <el-button v-if="dramaId" type="primary" plain class="btn-canvas-mode" @click="goCanvasMode">
           <el-icon><Grid /></el-icon>
           画布模式
         </el-button>
-        <div class="header-actions">
-          <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button><el-button class="btn-ai-config" @click="showAiConfigDialog = true">
-            <el-icon><Setting /></el-icon>
-            AI配置
-          </el-button>
-        </div>
-      </div>
-    </header>
+      </template>
+    </PlatformHeader>
 
     <!-- 左侧固定侧边栏 -->
     <nav class="quick-nav" :class="{ collapsed: navCollapsed }" aria-label="快捷导航">
@@ -2618,8 +2607,8 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } 
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Grid, Close } from '@element-plus/icons-vue'
-import { useTheme } from '@/composables/useTheme'
+import { ArrowUp, ArrowDown, ArrowRight, Plus, Minus, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Grid, Setting, Close } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { syncGeneratingSetsFromStore, buildEpisodeContext, buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
@@ -2669,7 +2658,6 @@ const route = useRoute()
 const router = useRouter()
 const store = useFilmStore()
 const genStore = useGenerationTaskStore()
-const { isDark, toggle: toggleTheme } = useTheme()
 const { videoResolution: storeVideoResolution } = storeToRefs(store)
 
 // ── Composable: Navigation ─────────────────────────────
