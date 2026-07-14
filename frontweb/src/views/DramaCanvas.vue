@@ -112,6 +112,14 @@
 
       <div v-if="showWorkflowPanel && workflowProgress" class="workflow-progress">{{ workflowProgress }}</div>
 
+      <CanvasWorkflowOrderPanel
+        v-if="showWorkflowPanel && activeWorkflowGroup"
+        :group="activeWorkflowGroup"
+        :storyboards="allStoryboards"
+        :disabled="workflowRunning || layoutSaveState === 'saving'"
+        @change="onWorkflowOrderChange"
+      />
+
       <div v-if="showWorkflowPanel" class="generate-bar">
         <span class="gen-label">本集生成</span>
         <el-button
@@ -329,6 +337,7 @@ import {
   findStoryboardInDrama,
   normalizePipeline,
   parseWorkflowGroups,
+  reorderWorkflowGroup,
   storyboardIdFromNodeId,
   getDramaGenerationOptions,
 } from '@/utils/canvasWorkflow'
@@ -347,6 +356,7 @@ import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolba
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
 import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
+import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 
@@ -419,6 +429,21 @@ const initialViewport = computed(() => {
 })
 
 const hasSavedViewport = computed(() => Boolean(savedLayout.value?.viewport))
+const activeWorkflowGroup = computed(() => (
+  workflowGroups.value.find((group) => group.id === activeGroupId.value) || null
+))
+const allStoryboards = computed(() => {
+  const list = []
+  for (const episode of drama.value?.episodes || []) {
+    for (const storyboard of episode.storyboards || []) {
+      list.push({
+        ...storyboard,
+        episode_title: episode.title || `第${episode.episode_number || 0}集`,
+      })
+    }
+  }
+  return list
+})
 
 function syncWorkflowFromDrama() {
   workflowGroups.value = parseWorkflowGroups(drama.value?.metadata)
@@ -968,6 +993,25 @@ async function onDeleteActiveGroup() {
     selectedStoryboardIds.value = []
     ElMessage.success('已删除')
   } catch (_) {}
+}
+
+async function onWorkflowOrderChange(storyboardIds) {
+  if (!activeGroupId.value || workflowRunning.value || layoutSaveState.value === 'saving') return
+  const previousGroups = workflowGroups.value
+  const nextGroups = reorderWorkflowGroup(workflowGroups.value, activeGroupId.value, storyboardIds)
+  const previousIds = previousGroups.find((group) => group.id === activeGroupId.value)?.storyboard_ids || []
+  const nextIds = nextGroups.find((group) => group.id === activeGroupId.value)?.storyboard_ids || []
+  if (JSON.stringify(previousIds) === JSON.stringify(nextIds)) return
+
+  workflowGroups.value = nextGroups
+  rebuildGraph()
+  const saved = await persistCanvasState({ groupsOnly: true })
+  if (!saved) {
+    workflowGroups.value = previousGroups
+    rebuildGraph()
+    return
+  }
+  ElMessage.success('工作流执行顺序已保存')
 }
 
 async function onRunActiveGroup() {

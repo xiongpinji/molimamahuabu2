@@ -52,6 +52,15 @@ export function deleteWorkflowGroup(existingGroups, groupId) {
   return (existingGroups || []).filter((g) => g.id !== groupId)
 }
 
+export function reorderWorkflowGroup(existingGroups, groupId, storyboardIds) {
+  const ids = [...new Set((storyboardIds || []).map(Number).filter(Number.isFinite))]
+  return (existingGroups || []).map((group) => (
+    group.id === groupId
+      ? { ...group, storyboard_ids: ids }
+      : group
+  ))
+}
+
 export function normalizePipeline(pipeline) {
   const allowed = ['image', 'video', 'audio']
   const list = Array.isArray(pipeline) ? pipeline.filter((s) => allowed.includes(s)) : []
