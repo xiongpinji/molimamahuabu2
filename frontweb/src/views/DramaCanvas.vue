@@ -35,24 +35,23 @@
             <el-icon><Operation /></el-icon>
             工作流
           </el-button>
-          <el-button class="header-action-optional" size="small" type="warning" plain @click="focusScriptNode">
-            剧本
-          </el-button>
-          <el-button class="header-action-optional" size="small" @click="openCreateDialog('storyboard')">
-            <el-icon><Plus /></el-icon>
-            分镜
-          </el-button>
-          <el-button class="header-action-optional" size="small" @click="openCreateDialog('character')">角色</el-button>
-          <el-button class="header-action-optional" size="small" @click="openCreateDialog('scene')">场景</el-button>
-          <el-button class="header-action-optional" size="small" @click="openCreateDialog('prop')">道具</el-button>
-          <el-button class="header-action-optional" size="small" @click="openCreateDialog('episode')">
-            <el-icon><Plus /></el-icon>
-            集
-          </el-button>
-          <el-button class="header-action-optional" size="small" :loading="aligningNodes" @click="onAlignNodes">
-            <el-icon><Grid /></el-icon>
-            对齐节点
-          </el-button>
+          <el-dropdown class="topbar-more" trigger="click" placement="bottom-end" @command="onTopbarMoreCommand">
+            <el-button class="topbar-more-trigger" size="small" aria-label="更多画布操作" title="更多画布操作">
+              <el-icon><MoreFilled /></el-icon>
+              <span class="topbar-more-label">更多</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
+                <el-dropdown-item command="storyboard">添加分镜</el-dropdown-item>
+                <el-dropdown-item command="character">添加角色</el-dropdown-item>
+                <el-dropdown-item command="scene">添加场景</el-dropdown-item>
+                <el-dropdown-item command="prop">添加道具</el-dropdown-item>
+                <el-dropdown-item command="episode">添加集数</el-dropdown-item>
+                <el-dropdown-item command="align" :disabled="aligningNodes">自动对齐节点</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button type="primary" plain @click="goListMode">
             <el-icon><List /></el-icon>
             列表模式
@@ -282,7 +281,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { List, Moon, Plus, Sunny, Grid, Operation, Share } from '@element-plus/icons-vue'
+import { List, Moon, MoreFilled, Plus, Sunny, Operation, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -734,6 +733,12 @@ function focusScriptNode() {
   }
   if (!filterEpisodeId.value) filterEpisodeId.value = epId
   focusedNodeId.value = scriptNodeId(epId)
+}
+
+function onTopbarMoreCommand(command) {
+  if (command === 'script') focusScriptNode()
+  else if (command === 'align') onAlignNodes()
+  else openCreateDialog(command)
 }
 
 async function onAlignNodes() {
@@ -1248,9 +1253,11 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .canvas-topbar .header-actions { gap: 6px; }
-.canvas-topbar .header-action-optional { display: none; }
 .canvas-topbar .topbar-workflow-toggle { min-width: 92px; }
 .canvas-topbar .topbar-share { width: 38px; padding: 0; }
+.canvas-topbar .topbar-more { flex: 0 0 auto; }
+.canvas-topbar .topbar-more-trigger { min-width: 42px; padding: 0 10px; }
+.canvas-topbar .topbar-more-label { margin-left: 4px; }
 .canvas-topbar .el-button { min-height: 38px; }
 .canvas-topbar .workflow-bar,
 .canvas-topbar .generate-bar,
@@ -1292,6 +1299,7 @@ onBeforeUnmount(() => {
   .canvas-topbar .header-inner { margin: 8px 10px 0; }
   .canvas-topbar .btn-theme { display: none; }
   .page-title { max-width: 160px; }
+  .canvas-topbar .episode-select { width: 130px !important; }
 }
 @media (max-width: 680px) {
   .canvas-topbar .header-inner { padding: 7px 8px; }
@@ -1300,6 +1308,11 @@ onBeforeUnmount(() => {
   .brand-logo { width: 34px; height: 34px; }
   .page-title { max-width: 120px; }
   .episode-select { width: 112px !important; }
+  .canvas-topbar .topbar-workflow-toggle { min-width: 42px; padding: 0 10px; }
+  .canvas-topbar .topbar-workflow-toggle .el-icon + span { display: none; }
+  .canvas-topbar .topbar-more-label { display: none; }
+  .canvas-topbar .topbar-more-trigger { width: 42px; padding: 0; }
+  .canvas-topbar .header-actions { gap: 4px; }
   .canvas-sidebar { top: 70px; left: 8px; right: 8px; width: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
