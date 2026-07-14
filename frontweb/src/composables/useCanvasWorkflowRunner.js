@@ -5,6 +5,7 @@ import request from '@/utils/request'
 import { storyboardImageUrl } from '@/utils/mediaUrl'
 import {
   DEFAULT_PIPELINE,
+  collectStoryboardReferenceAssets,
   findStoryboardInDrama,
   getDramaGenerationOptions,
   toAbsoluteMediaUrl,
@@ -56,6 +57,14 @@ export async function runVideoStep(drama, sb, genOpts) {
   }
   const absoluteFirst = toAbsoluteMediaUrl(imgPath)
   const absoluteLast = last ? toAbsoluteMediaUrl(last) : undefined
+  const selectedReferenceUrls = collectStoryboardReferenceAssets(drama, sb)
+    .map((ref) => ref.absoluteUrl)
+    .filter(Boolean)
+  const referenceUrls = [...new Set([
+    absoluteFirst,
+    ...selectedReferenceUrls,
+    absoluteLast,
+  ].filter(Boolean))].slice(0, 10)
   const prompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
   const res = await videosAPI.create({
     drama_id: drama.id,
@@ -64,6 +73,7 @@ export async function runVideoStep(drama, sb, genOpts) {
     image_url: absoluteFirst || undefined,
     first_frame_url: absoluteFirst || undefined,
     last_frame_url: absoluteLast,
+    reference_image_urls: referenceUrls.length ? referenceUrls : undefined,
     style: genOpts.style || undefined,
     aspect_ratio: genOpts.aspectRatio,
     resolution: genOpts.videoResolution || undefined,

@@ -1,4 +1,10 @@
-import { parseDramaMetadata } from './canvasLayout'
+import { parseDramaMetadata } from './canvasLayout.js'
+import {
+  parseStoryboardCharacterIds,
+  parseStoryboardPropIds,
+  parseStoryboardSceneId,
+} from './canvasEntityIds.js'
+import { assetImageUrl } from './mediaUrl.js'
 
 export const DEFAULT_PIPELINE = ['image', 'video', 'audio']
 
@@ -67,6 +73,44 @@ export function getDramaGenerationOptions(drama) {
     style: meta.style_prompt_en || meta.style_prompt_zh || drama?.style || '',
     videoResolution: meta.video_resolution || '480p',
   }
+}
+
+/** 返回当前分镜已关联且有图片的参考资产，顺序与列表模式一致：场景、角色、道具。 */
+export function collectStoryboardReferenceAssets(drama, sb, options = {}) {
+  const max = Number.isFinite(Number(options.max)) ? Math.max(1, Number(options.max)) : 10
+  const refs = []
+  const seen = new Set()
+  const add = (kind, item) => {
+    const url = assetImageUrl(item)
+    if (!url) return
+    const absoluteUrl = toAbsoluteMediaUrl(url)
+    const key = absoluteUrl || url
+    if (seen.has(key) || refs.length >= max) return
+    seen.add(key)
+    refs.push({
+      key: `${kind}:${item.id ?? refs.length}`,
+      kind,
+      id: item.id ?? null,
+      name: (item.name || item.location || (kind === 'character' ? '角色' : kind === 'scene' ? '场景' : '道具')).toString(),
+      url,
+      absoluteUrl,
+    })
+  }
+
+  const sceneId = parseStoryboardSceneId(sb)
+  const scene = (drama?.scenes || []).find((item) => Number(item?.id) === sceneId)
+  if (scene) add('scene', scene)
+
+  const characterIds = new Set(parseStoryboardCharacterIds(sb))
+  for (const character of drama?.characters || []) {
+    if (characterIds.has(Number(character?.id))) add('character', character)
+  }
+
+  const propIds = new Set(parseStoryboardPropIds(sb))
+  for (const prop of drama?.props || []) {
+    if (propIds.has(Number(prop?.id))) add('prop', prop)
+  }
+  return refs
 }
 
 export function toAbsoluteMediaUrl(url) {

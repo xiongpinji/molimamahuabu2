@@ -90,6 +90,25 @@
         <el-button link type="primary" size="small" @click.stop="createAsset('prop')">+道具</el-button>
       </div>
 
+      <div class="reference-strip">
+        <div class="reference-head">
+          <span>参考图</span>
+          <span class="reference-count">{{ referenceAssets.length }}/10</span>
+        </div>
+        <div v-if="referenceAssets.length" class="reference-list">
+          <span
+            v-for="reference in referenceAssets"
+            :key="reference.key"
+            class="reference-chip"
+            :title="`${reference.kind === 'scene' ? '场景' : reference.kind === 'character' ? '角色' : '道具'}：${reference.name}`"
+          >
+            <img :src="reference.url" alt="" />
+            <span>{{ reference.name }}</span>
+          </span>
+        </div>
+        <span v-else class="reference-empty">选择角色、场景或道具后自动带入生成</span>
+      </div>
+
       <div class="meta-row">
         <el-form-item label="景别" class="meta-item">
           <el-input v-model="form.shot_type" placeholder="特写" @blur="saveMeta" />
@@ -187,7 +206,11 @@ import {
   parseStoryboardSceneId,
 } from '@/utils/canvasEntityIds'
 import { runImageStep, runVideoStep, runAudioStep } from '@/composables/useCanvasWorkflowRunner'
-import { findStoryboardInDrama, getDramaGenerationOptions } from '@/utils/canvasWorkflow'
+import {
+  collectStoryboardReferenceAssets,
+  findStoryboardInDrama,
+  getDramaGenerationOptions,
+} from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 
 const props = defineProps({
@@ -220,6 +243,12 @@ const isUniversal = computed(() => props.storyboard?.creation_mode === 'universa
 const characters = computed(() => ctx?.drama?.value?.characters || [])
 const scenes = computed(() => ctx?.drama?.value?.scenes || [])
 const propsList = computed(() => ctx?.drama?.value?.props || [])
+const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.drama?.value, {
+  ...props.storyboard,
+  characters: characterIds.value,
+  scene_id: sceneId.value,
+  prop_ids: propIds.value,
+}))
 
 const busyLabel = computed(() => {
   const map = ctx?.nodeStatus?.map
@@ -474,6 +503,55 @@ async function runStep(step) {
   display: flex;
   gap: 10px;
   margin: 0 0 8px 36px;
+}
+.reference-strip {
+  margin: 0 0 8px 36px;
+  padding: 6px 8px;
+  border: 1px solid rgba(63, 63, 70, 0.8);
+  border-radius: 7px;
+  background: rgba(24, 24, 27, 0.7);
+}
+.reference-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  font-size: 10px;
+  color: #a1a1aa;
+}
+.reference-count { color: #818cf8; }
+.reference-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.reference-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 132px;
+  padding: 2px 5px 2px 2px;
+  border-radius: 999px;
+  background: rgba(129, 140, 248, 0.12);
+  color: #d4d4d8;
+  font-size: 10px;
+}
+.reference-chip img {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #09090b;
+}
+.reference-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-empty {
+  font-size: 10px;
+  color: #71717a;
 }
 .meta-row {
   display: flex;
