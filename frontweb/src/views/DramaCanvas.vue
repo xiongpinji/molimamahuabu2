@@ -52,9 +52,9 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-button type="primary" plain @click="goListMode">
+          <el-button class="topbar-list-mode" type="primary" plain @click="goListMode">
             <el-icon><List /></el-icon>
-            列表模式
+            <span>列表模式</span>
           </el-button>
           <el-button class="btn-theme" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
@@ -1236,6 +1236,7 @@ onBeforeUnmount(() => {
 .canvas-topbar .header-inner {
   margin: 12px 16px 0;
   padding: 8px 10px;
+  min-width: 0;
   flex-wrap: nowrap;
   border: 1px solid rgba(82, 82, 91, 0.7);
   border-radius: 16px;
@@ -1252,7 +1253,8 @@ onBeforeUnmount(() => {
   font-size: 12px;
   white-space: nowrap;
 }
-.canvas-topbar .header-actions { gap: 6px; }
+.canvas-topbar .header-actions { gap: 6px; min-width: 0; flex: 0 0 auto; }
+.canvas-topbar .page-title { min-width: 0; flex: 0 1 auto; }
 .canvas-topbar .topbar-workflow-toggle { min-width: 92px; }
 .canvas-topbar .topbar-share { width: 38px; padding: 0; }
 .canvas-topbar .topbar-more { flex: 0 0 auto; }
@@ -1313,7 +1315,14 @@ onBeforeUnmount(() => {
   .canvas-topbar .topbar-more-label { display: none; }
   .canvas-topbar .topbar-more-trigger { width: 42px; padding: 0; }
   .canvas-topbar .header-actions { gap: 4px; }
+  .canvas-topbar .topbar-list-mode { min-width: 42px; width: 42px; padding: 0; font-size: 0; }
+  .canvas-topbar .topbar-list-mode .el-icon { margin: 0; font-size: 16px; }
   .canvas-sidebar { top: 70px; left: 8px; right: 8px; width: auto; }
+}
+@media (max-width: 480px) {
+  .canvas-topbar .page-title { display: none; }
+  .canvas-topbar .header-inner { gap: 6px; margin-left: 8px; margin-right: 8px; }
+  .canvas-topbar .episode-select { width: 96px !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-topbar .header-inner { transition: none; }

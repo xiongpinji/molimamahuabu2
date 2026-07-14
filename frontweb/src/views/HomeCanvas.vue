@@ -12,13 +12,13 @@
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
-          <el-button type="primary" plain @click="openNodeEditor('text')">
+          <el-button class="topbar-add-node" type="primary" plain @click="openNodeEditor('text')">
             <el-icon><Plus /></el-icon>
-            添加节点
+            <span>添加节点</span>
           </el-button>
-          <el-button plain @click="router.push('/')">
+          <el-button class="topbar-home" plain @click="router.push('/')">
             <el-icon><List /></el-icon>
-            返回首页
+            <span>返回首页</span>
           </el-button>
           <el-button class="btn-theme" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
@@ -361,16 +361,16 @@ onBeforeUnmount(() => {
 .home-canvas-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-page, #0f0f12); color: var(--text-primary, #e4e4e7); }
 .header { flex-shrink: 0; border-bottom: 1px solid var(--border-color, #27272a); background: var(--bg-card, #18181b); }
 .canvas-topbar { position: absolute; inset: 0 0 auto; z-index: 30; border-bottom: 0; background: transparent; pointer-events: none; }
-.header-inner { display: flex; align-items: center; gap: 12px; margin: 12px 16px 0; padding: 8px 10px; flex-wrap: nowrap; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 16px; background: rgba(24, 24, 27, 0.82); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28); backdrop-filter: blur(18px); pointer-events: auto; }
+.header-inner { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 12px 16px 0; padding: 8px 10px; flex-wrap: nowrap; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 16px; background: rgba(24, 24, 27, 0.82); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28); backdrop-filter: blur(18px); pointer-events: auto; }
 .logo { cursor: pointer; display: flex; align-items: center; gap: 10px; line-height: 1.2; }
 .brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
 .brand-copy { display: flex; flex-direction: column; }
 .logo-main { font-size: 15px; font-weight: 700; color: var(--text-bright, #fafafa); }
 .logo-sub { font-size: 11px; color: #818cf8; }
 .breadcrumb-sep { color: var(--text-faint, #52525b); }
-.page-title { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--text-muted, #a1a1aa); }
+.page-title { max-width: 220px; min-width: 0; overflow: hidden; flex: 0 1 auto; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--text-muted, #a1a1aa); }
 .canvas-name { padding-left: 12px; border-left: 1px solid #3f3f46; color: #a1a1aa; font-size: 12px; white-space: nowrap; }
-.header-actions { margin-left: auto; display: flex; gap: 6px; }
+.header-actions { min-width: 0; margin-left: auto; display: flex; flex: 0 0 auto; gap: 6px; }
 .topbar-share { width: 38px; padding: 0; }
 .layout-status { font-size: 11px; white-space: nowrap; }
 .layout-status.saving { color: #60a5fa; }
@@ -411,6 +411,15 @@ onBeforeUnmount(() => {
   .toolbar-button { width: 42px; padding: 0; font-size: 0; }
   .home-floating-toolbar { gap: 2px; }
   .zoom-label { display: none; }
+}
+@media (max-width: 480px) {
+  .page-title { display: none; }
+  .header-inner { gap: 6px; margin-left: 8px; margin-right: 8px; }
+  .header-actions { gap: 4px; }
+  .topbar-add-node,
+  .topbar-home { width: 42px; padding: 0; font-size: 0; }
+  .topbar-add-node .el-icon,
+  .topbar-home .el-icon { margin: 0; font-size: 16px; }
 }
 </style>
 
