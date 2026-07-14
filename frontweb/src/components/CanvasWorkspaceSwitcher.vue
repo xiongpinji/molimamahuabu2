@@ -16,7 +16,7 @@
 
     <template #dropdown>
       <el-dropdown-menu class="canvas-workspace-menu">
-        <el-dropdown-item command="/">
+        <el-dropdown-item :command="homeTo">
           <el-icon><List /></el-icon>
           项目列表
         </el-dropdown-item>
@@ -46,6 +46,12 @@ import { useRouter } from 'vue-router'
 import { ArrowDown, Files, Grid, List, MagicStick, Setting } from '@element-plus/icons-vue'
 
 const router = useRouter()
+
+const props = defineProps({
+  homeTo: { type: [String, Object], default: '/' }
+})
+
+const homeTo = props.homeTo
 
 function navigate(path) {
   router.push(path)

@@ -1,18 +1,7 @@
 <template>
   <header class="platform-header">
     <div class="platform-header__inner">
-      <button
-        type="button"
-        class="platform-header__brand"
-        aria-label="返回项目首页"
-        @click="goHome"
-      >
-        <img class="platform-header__logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-        <span class="platform-header__brand-copy">
-          <span class="platform-header__brand-name">茉莉妈妈</span>
-          <span class="platform-header__brand-subtitle">短剧制作平台</span>
-        </span>
-      </button>
+      <CanvasWorkspaceSwitcher :home-to="homeTo" />
 
       <span v-if="title" class="platform-header__separator" aria-hidden="true">›</span>
       <div v-if="title" class="platform-header__title" :title="title">{{ title }}</div>
@@ -68,6 +57,7 @@
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Grid, Moon, Setting, Sunny } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
+import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 
 const props = defineProps({
   title: { type: String, default: '' },
@@ -81,10 +71,6 @@ const props = defineProps({
 
 const router = useRouter()
 const { isDark, toggle: toggleTheme } = useTheme()
-
-function goHome() {
-  router.push(props.homeTo)
-}
 
 function goBack() {
   router.push(props.backTo)
@@ -122,49 +108,6 @@ function goHomeCanvas() {
   box-shadow: 0 12px 28px rgba(0, 0, 0, .28);
   backdrop-filter: blur(18px);
   pointer-events: auto;
-}
-
-.platform-header__brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 2px 6px 2px 2px;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-}
-
-.platform-header__logo {
-  width: 38px;
-  height: 38px;
-  flex: 0 0 auto;
-  border-radius: 10px;
-  object-fit: cover;
-}
-
-.platform-header__brand-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.platform-header__brand-name {
-  color: #f4f4f5;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.1;
-  white-space: nowrap;
-}
-
-.platform-header__brand-subtitle {
-  color: #a1a1aa;
-  font-size: 10px;
-  line-height: 1.1;
-  white-space: nowrap;
 }
 
 .platform-header__separator {
@@ -231,12 +174,10 @@ function goHomeCanvas() {
   box-shadow: 0 12px 28px rgba(24, 24, 27, .12);
 }
 
-:global(html.light) .platform-header__brand-name,
 :global(html.light) .platform-header__title {
   color: #18181b;
 }
 
-:global(html.light) .platform-header__brand-subtitle,
 :global(html.light) .platform-header__separator {
   color: #71717a;
 }
@@ -257,7 +198,6 @@ function goHomeCanvas() {
 @media (max-width: 860px) {
   .platform-header { padding: 8px 10px 0; }
   .platform-header__inner { gap: 8px; }
-  .platform-header__brand-subtitle,
   .platform-header__separator,
   .platform-header__button-label { display: none; }
   .platform-header__title { max-width: 34vw; }
