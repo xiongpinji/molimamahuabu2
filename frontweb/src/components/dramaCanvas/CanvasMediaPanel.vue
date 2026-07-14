@@ -36,7 +36,14 @@
           <div v-else-if="!busy" class="preview-empty">无分镜图</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生图中…</div>
         </div>
-        <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">重新生图</el-button>
+        <div class="panel-actions">
+          <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">重新生图</el-button>
+          <CanvasStoryboardImageUpload
+            :storyboard="storyboard"
+            :node-id="nodeId"
+            :frame-kind="frameKind"
+          />
+        </div>
       </template>
 
       <template v-else-if="kind === 'video'">
@@ -64,6 +71,7 @@ import { useCanvasContext } from '@/composables/useCanvasContext'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 import { runImageStep, runVideoStep, runAudioStep } from '@/composables/useCanvasWorkflowRunner'
 import { findStoryboardInDrama, getDramaGenerationOptions } from '@/utils/canvasWorkflow'
+import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 
 const props = defineProps({
   nodeId: { type: String, default: '' },
@@ -72,6 +80,7 @@ const props = defineProps({
   summary: { type: String, default: '' },
   url: { type: String, default: '' },
   audioType: { type: String, default: 'dialogue' },
+  frameKind: { type: String, default: '' },
 })
 
 const ctx = useCanvasContext()

@@ -42,6 +42,7 @@
       :summary="data.summary"
       :url="data.url"
       :audio-type="data.audioType"
+      :frame-kind="data.frameKind"
     />
   </div>
 </template>
