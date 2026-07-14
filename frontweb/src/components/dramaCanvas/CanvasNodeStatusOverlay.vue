@@ -1,6 +1,7 @@
 <template>
   <div v-if="status" class="node-status-overlay" :class="'step-' + status.step">
-    <span class="spinner" />
+    <span v-if="status.step === 'failed'" class="error-mark">!</span>
+    <span v-else class="spinner" />
     <span class="msg">{{ status.message }}</span>
   </div>
 </template>
@@ -52,6 +53,18 @@ const status = computed(() => {
 .step-save_script .spinner { border-top-color: #fbbf24; }
 .step-video .spinner { border-top-color: #f472b6; }
 .step-audio .spinner { border-top-color: #fbbf24; }
+.step-failed { background: rgba(127, 29, 29, 0.82); }
+.error-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #fca5a5;
+  border-radius: 50%;
+  color: #fee2e2;
+  font-weight: 700;
+}
 .msg {
   font-size: 10px;
   color: #e4e4e7;

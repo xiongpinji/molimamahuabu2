@@ -294,7 +294,10 @@ import { useCanvasStoryboardMedia } from '@/composables/useCanvasStoryboardMedia
 import { useCanvasCrud } from '@/composables/useCanvasCrud'
 import { useCanvasEpisodeGenerate } from '@/composables/useCanvasEpisodeGenerate'
 import { useCanvasScript, scriptNodeId } from '@/composables/useCanvasScript'
-import { createCanvasNodeStatusStore } from '@/composables/useCanvasNodeStatus'
+import {
+  CANVAS_NODE_STATUS_LABELS,
+  createCanvasNodeStatusStore,
+} from '@/composables/useCanvasNodeStatus'
 import {
   applyCanvasHighlight,
   buildDramaCanvasGraph,
@@ -852,23 +855,52 @@ async function onRunActiveGroup() {
     return
   }
 
+  const runGroup = {
+    ...group,
+    pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
+  }
+  const storyboardIds = runGroup.storyboard_ids || []
+  const total = storyboardIds.length
+  let currentIndex = 0
+
+  storyboardIds.forEach((storyboardId) => nodeStatus.clear(`sb:${storyboardId}`))
   workflowRunning.value = true
   workflowProgress.value = '准备执行…'
   try {
-    const summary = await runWorkflowGroup(drama.value, {
-      ...group,
-      pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
-    }, {
+    const summary = await runWorkflowGroup(drama.value, runGroup, {
       stopOnError: true,
       generationOptions: getCanvasGenerationOptions(),
       reloadStoryboard: async (storyboardId) => {
         await loadDrama(true)
         return findStoryboardInDrama(drama.value, storyboardId)?.storyboard
       },
+      onStoryboardStart: ({ storyboardId }) => {
+        currentIndex = Math.max(storyboardIds.indexOf(storyboardId) + 1, currentIndex + 1)
+        nodeStatus.set(`sb:${storyboardId}`, {
+          step: 'workflow',
+          message: `工作流 ${currentIndex}/${total}`,
+        })
+        workflowProgress.value = `${runGroup.title} · ${currentIndex}/${total} · 准备执行…`
+      },
       onStepStart: ({ storyboardId, step }) => {
-        workflowProgress.value = `分镜 #${storyboardId}：${step === 'image' ? '生图' : step === 'video' ? '生视频' : '配音'}…`
+        const label = CANVAS_NODE_STATUS_LABELS[step] || step
+        nodeStatus.set(`sb:${storyboardId}`, { step, message: label })
+        workflowProgress.value = `${runGroup.title} · ${currentIndex}/${total} · 分镜 #${storyboardId}：${label}`
+      },
+      onStoryboardComplete: ({ storyboardId }) => {
+        nodeStatus.clear(`sb:${storyboardId}`)
+      },
+      onStepError: ({ storyboardId, step, error }) => {
+        nodeStatus.set(`sb:${storyboardId}`, {
+          step: 'failed',
+          message: `${CANVAS_NODE_STATUS_LABELS[step] || step}失败：${error?.message || error}`,
+        })
       },
       onStoryboardError: ({ storyboardId, error }) => {
+        nodeStatus.set(`sb:${storyboardId}`, {
+          step: 'failed',
+          message: `工作流失败：${error?.message || error}`,
+        })
         ElMessage.error(`分镜 #${storyboardId} 失败：${error?.message || error}`)
       },
     })
