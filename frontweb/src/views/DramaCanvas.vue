@@ -2,13 +2,7 @@
   <div class="drama-canvas-page">
     <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
-        <div class="logo workspace-switcher" role="button" tabindex="0" @click="router.push('/')" @keydown.enter="router.push('/')">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </div>
+        <CanvasWorkspaceSwitcher />
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
         <span class="canvas-name">画布 1</span>
@@ -341,6 +335,7 @@ import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vu
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
+import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()

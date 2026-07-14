@@ -2,13 +2,7 @@
   <div class="home-canvas-page">
     <header class="header canvas-topbar">
       <div class="header-inner">
-        <div class="logo workspace-switcher" role="button" tabindex="0" @click="router.push('/')" @keydown.enter="router.push('/')">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </div>
+        <CanvasWorkspaceSwitcher />
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">首页自由画布</span>
         <span class="canvas-name">画布 1</span>
@@ -158,6 +152,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { useTheme } from '@/composables/useTheme'
+import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
 import {
