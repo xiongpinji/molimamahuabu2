@@ -16,6 +16,7 @@ test('covers GPT, image, and video generation routes', () => {
     ['POST', '/images/episode/3/batch'],
     ['POST', '/videos/image/12'],
     ['POST', '/storyboards/8/polish-prompt'],
+    ['POST', '/scenes/8/generate-panorama-image'],
     ['GET', '/storyboards/episode/3/generate'],
   ];
   for (const [method, path] of guarded) {

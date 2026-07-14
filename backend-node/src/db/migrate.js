@@ -223,6 +223,8 @@ function ensureAllColumns(database) {
     { name: 'polished_prompt',  type: 'TEXT' },  // 文字AI润色后的完整四视图图片提示词，生图时直接使用
     { name: 'image_url',        type: 'TEXT' },
     { name: 'local_path',       type: 'TEXT' },
+    { name: 'panorama_image_url', type: 'TEXT' },
+    { name: 'panorama_local_path', type: 'TEXT' },
     { name: 'extra_images',     type: 'TEXT' },
     { name: 'ref_image',        type: 'TEXT' },  // 用户上传的参考图（本地相对路径或 URL）
     { name: 'negative_prompt',  type: 'TEXT' },
@@ -320,6 +322,7 @@ function ensureAllColumns(database) {
     { name: 'scene_id',         type: 'INTEGER' },
     { name: 'character_id',     type: 'INTEGER' },
     { name: 'provider',         type: 'TEXT' },
+    { name: 'image_type',       type: 'TEXT' },
     { name: 'prompt',           type: 'TEXT' },
     { name: 'negative_prompt',  type: 'TEXT' },
     { name: 'model',            type: 'TEXT' },

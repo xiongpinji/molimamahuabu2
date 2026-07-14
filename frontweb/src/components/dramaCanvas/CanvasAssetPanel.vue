@@ -24,6 +24,10 @@
           </div>
         </div>
         <div v-if="entityStatus" class="entity-status" :class="'st-' + entityStatus">{{ entityStatusLabel }}</div>
+        <div v-if="kind === 'scene' && panoramaUrl" class="panorama-preview">
+          <img :src="panoramaUrl" alt="场景全景图" />
+          <span>全景图</span>
+        </div>
       </div>
 
       <div class="form-col">
@@ -125,6 +129,16 @@
       >
         生成参考图
       </el-button>
+      <el-button
+        v-if="kind === 'scene'"
+        size="small"
+        type="success"
+        :loading="panoramaGenerating"
+        :disabled="generating"
+        @click.stop="generatePanorama"
+      >
+        生成全景图
+      </el-button>
       <el-button size="small" plain @click.stop="highlightRelated">关联分镜</el-button>
       <el-button size="small" type="danger" plain @click.stop="deleteAsset">删除</el-button>
     </div>
@@ -138,7 +152,10 @@ import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
 import { propAPI } from '@/api/props'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
+import {
+  generateAssetReferenceImage,
+  generateScenePanoramaImage,
+} from '@/composables/useCanvasAssetGenerate'
 import { assetImageUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
@@ -150,6 +167,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const saving = ref(false)
 const generating = ref(false)
+const panoramaGenerating = ref(false)
 const form = reactive({
   name: '',
   role: '',
@@ -171,6 +189,10 @@ const kindIcon = computed(() => {
 })
 
 const previewUrl = computed(() => assetImageUrl(props.entity))
+const panoramaUrl = computed(() => assetImageUrl({
+  image_url: props.entity?.panorama_image_url,
+  local_path: props.entity?.panorama_local_path,
+}))
 const canGenerate = computed(() => !previewUrl.value)
 const entityStatus = computed(() => props.entity?.status || '')
 const entityStatusLabel = computed(() => {
@@ -293,6 +315,21 @@ async function generateImage() {
   }
 }
 
+async function generatePanorama() {
+  panoramaGenerating.value = true
+  try {
+    await generateScenePanoramaImage(ctx, {
+      entity: props.entity,
+      nodeId: props.nodeId,
+    })
+    ElMessage.success('场景全景图已生成')
+  } catch (e) {
+    ElMessage.error(e?.message || '全景图生成失败')
+  } finally {
+    panoramaGenerating.value = false
+  }
+}
+
 function highlightRelated() {
   ctx?.setHighlightAsset?.(props.nodeId)
 }
@@ -380,6 +417,26 @@ function highlightRelated() {
 .entity-status.st-processing { color: #60a5fa; }
 .entity-status.st-completed { color: #34d399; }
 .entity-status.st-failed { color: #f87171; }
+.panorama-preview {
+  margin-top: 6px;
+  width: 108px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #09090b;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+.panorama-preview img {
+  display: block;
+  width: 100%;
+  height: 42px;
+  object-fit: cover;
+}
+.panorama-preview span {
+  display: block;
+  padding: 2px 5px;
+  font-size: 9px;
+  color: #6ee7b7;
+}
 .form-col {
   flex: 1;
   min-width: 0;

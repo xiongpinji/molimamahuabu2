@@ -292,6 +292,7 @@ function setupRouter(cfg, db, log) {
   r.post('/scenes/generate-image', scenes.generateImage);
   r.post('/scenes', scenes.create);
   r.post('/scenes/:scene_id/generate-four-view-image', scenes.generateFourViewImage);
+  r.post('/scenes/:scene_id/generate-panorama-image', scenes.generatePanoramaImage);
   r.post('/scenes/:scene_id/add-to-library', scenes.addToLibrary);
   r.post('/scenes/:scene_id/add-to-material-library', scenes.addToMaterialLibrary);
   r.post('/scenes/:scene_id/extract-from-image', scenes.extractFromImage);

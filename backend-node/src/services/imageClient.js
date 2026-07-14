@@ -1681,18 +1681,20 @@ async function callImageApi(db, log, opts) {
  * 创建 image_generation 记录并异步调用 API，完成后更新记录与角色 image_url。
  * 与场景图一致：创建 task 并写入 task_id，便于前端轮询 /tasks/:task_id 获知完成或报错。
  */
-function findActiveAssetImage(db, characterId, sceneId, userId = null) {
+function findActiveAssetImage(db, characterId, sceneId, userId = null, imageType = null) {
   const ownerClause = userId == null ? '' : ' AND user_id = ?';
   const ownerValue = userId == null ? [] : [String(userId)];
+  const typeClause = imageType ? ' AND image_type = ?' : '';
+  const typeValue = imageType ? [String(imageType)] : [];
   if (characterId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
-    ).get(Number(characterId), ...ownerValue) || null;
+      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(characterId), ...ownerValue, ...typeValue) || null;
   }
   if (sceneId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
-    ).get(Number(sceneId), ...ownerValue) || null;
+      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(sceneId), ...ownerValue, ...typeValue) || null;
   }
   return null;
 }
@@ -1726,6 +1728,7 @@ function createAndGenerateImage(db, log, opts) {
     userId,
     schedule,
   } = opts;
+  const imageType = String(image_type || '').trim() || null;
   const negRow = (user_negative_prompt && String(user_negative_prompt).trim()) || null;
   const now = new Date().toISOString();
   const dramaIdNum = Number(drama_id) || 0;
@@ -1744,7 +1747,7 @@ function createAndGenerateImage(db, log, opts) {
     billedModel = modelPriceService.canonicalModel(model || '');
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
-  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null);
+  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null, imageType);
   if (active) {
     if (billingEnabled) {
       auditEvent.record(db, {
@@ -1768,8 +1771,8 @@ function createAndGenerateImage(db, log, opts) {
     const taskId = task.id;
     const billingColumns = billingEnabled ? ', user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, NULL' : '';
-    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -1899,21 +1902,23 @@ function createAndGenerateImage(db, log, opts) {
       }
       if (sceneIdNum != null) {
         try {
-          // 旧图追加到 extra_images，与上传逻辑保持一致
-          const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(sceneIdNum);
-          const oldPath = oldScene?.local_path || oldScene?.image_url || '';
-          let extras = [];
-          try { extras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
-          if (!Array.isArray(extras)) extras = [];
-          if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
-          const extraJson = extras.length ? JSON.stringify(extras) : null;
-          db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
-            result.image_url,
-            localPath,
-            extraJson,
-            now2,
-            sceneIdNum
-          );
+          if (imageType === 'scene_panorama') {
+            db.prepare('UPDATE scenes SET panorama_image_url = ?, panorama_local_path = ?, updated_at = ? WHERE id = ?').run(
+              result.image_url, localPath, now2, sceneIdNum
+            );
+          } else {
+            // 旧图追加到 extra_images，与上传逻辑保持一致
+            const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(sceneIdNum);
+            const oldPath = oldScene?.local_path || oldScene?.image_url || '';
+            let extras = [];
+            try { extras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
+            if (!Array.isArray(extras)) extras = [];
+            if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
+            const extraJson = extras.length ? JSON.stringify(extras) : null;
+            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+              result.image_url, localPath, extraJson, now2, sceneIdNum
+            );
+          }
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
             db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
@@ -1971,6 +1976,7 @@ function rowToItem(r) {
     quality: r.quality,
     image_url: r.image_url,
     local_path: r.local_path,
+    image_type: r.image_type,
     status: r.status,
     task_id: r.task_id,
     error_msg: r.error_msg,

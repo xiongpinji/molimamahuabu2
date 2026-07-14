@@ -271,7 +271,7 @@ backend-node/src/services/
 
 ### 场景与素材
 
-- [ ] **场景图 → 全景图**：基于已有场景参考图/背景图，AI 扩展或生成超宽/360° 全景图；可用于场景库展示、分镜大景别运镜参考，以及全能模式 `@图片N` 的环境图；需评估与现有 `scenes` 表、`generateImage` / 四视图流程的衔接方式
+- [x] **场景图 → 全景图**：已接入独立 `scene_panorama` 任务和 `panorama_image_url` / `panorama_local_path` 字段，不覆盖场景主参考图；当前产物是超宽全景环境参考图，非可直接投影的 equirectangular 360 贴图
 
 ### 其他
 

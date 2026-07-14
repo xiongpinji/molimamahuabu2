@@ -23,13 +23,38 @@ async function pollTask(taskId, onTick, maxAttempts = 450, interval = 2000) {
   return { status: 'timeout', error: '任务超时' }
 }
 
-async function pollUntilHasImage(findEntity, maxAttempts = 120, interval = 2000) {
+async function pollUntilHasImage(findEntity, getImage = assetImageUrl, maxAttempts = 120, interval = 2000) {
   for (let i = 0; i < maxAttempts; i++) {
     const entity = findEntity()
-    if (entity && assetImageUrl(entity)) return true
+    if (entity && getImage(entity)) return true
     await new Promise((r) => setTimeout(r, interval))
   }
   return false
+}
+
+export async function generateScenePanoramaImage(ctx, { entity, nodeId }) {
+  const nodeStatus = ctx?.nodeStatus
+  nodeStatus?.set(nodeId, { step: 'panorama', message: '全景图生成中…' })
+  try {
+    const res = await sceneAPI.generatePanoramaImage(entity.id)
+    const taskId = res?.image_generation?.task_id ?? res?.task_id
+    if (taskId) {
+      const polled = await pollTask(taskId, () => ctx?.refreshDrama?.(true))
+      if (polled.status !== 'completed') throw new Error(polled.error || '全景图生成失败')
+      await ctx?.refreshDrama?.(true)
+    } else {
+      await ctx?.refreshDrama?.(true)
+      const ok = await pollUntilHasImage(
+        () => (ctx?.drama?.value?.scenes || []).find((x) => Number(x.id) === Number(entity.id)),
+        (item) => item?.panorama_image_url || item?.panorama_local_path
+      )
+      if (!ok) throw new Error('全景图生成超时，请稍后刷新查看')
+    }
+    await ctx?.refresh?.(true)
+    return { ok: true }
+  } finally {
+    nodeStatus?.clear(nodeId)
+  }
 }
 
 /**
