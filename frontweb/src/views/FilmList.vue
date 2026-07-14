@@ -70,7 +70,12 @@
             v-for="d in dramas"
             :key="d.id"
             class="project-card"
+            role="button"
+            tabindex="0"
+            :aria-label="`打开项目详情：${d.title || '未命名项目'}`"
             @click="openProject(d.id)"
+            @keydown.enter="openProject(d.id)"
+            @keydown.space.prevent="openProject(d.id)"
           >
             <div class="project-card-actions" @click.stop>
               <el-button size="small" circle :icon="Download" title="导出项目" :loading="exportingId === d.id" @click="onExport(d)" />
@@ -88,7 +93,13 @@
                 <span v-if="d.style" class="badge badge-style">{{ formatStyle(d.style) }}</span>
                 <span v-if="d.genre" class="badge badge-genre">{{ formatGenre(d.genre) }}</span>
               </div>
-              <p class="project-meta">{{ formatDate(d.updated_at) }}</p>
+              <div class="project-card-footer">
+                <p class="project-meta">{{ formatDate(d.updated_at) }}</p>
+                <el-button size="small" type="primary" plain class="project-open-canvas" @click.stop="openCanvas(d.id)">
+                  <el-icon><Grid /></el-icon>
+                  打开画布
+                </el-button>
+              </div>
             </div>
           </div>
         </div>
@@ -682,6 +693,10 @@ function goHomeCanvas() {
   router.push('/canvas')
 }
 
+function openCanvas(id) {
+  router.push('/film/' + id + '/canvas')
+}
+
 function resetNewForm() {
   newForm.value = { title: '', description: '', aspect_ratio: '16:9' }
 }
@@ -1183,6 +1198,16 @@ html.light .btn-import {
   font-size: 0.75rem;
   color: #71717a;
   margin: 0;
+}
+.project-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+.project-open-canvas {
+  flex: 0 0 auto;
 }
 .project-card-actions {
   position: absolute;
