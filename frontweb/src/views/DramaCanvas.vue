@@ -6,6 +6,13 @@
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
         <span class="canvas-name">画布 1</span>
+        <span
+          v-if="canvasVirtualized"
+          class="canvas-virtualization-status"
+          :title="`多集画布仅渲染视口附近节点：${nodes.length}/${allGraphNodes.length}`"
+        >
+          视口渲染 {{ nodes.length }}/{{ allGraphNodes.length }}
+        </span>
 
         <el-select
           v-model="filterEpisodeId"
@@ -235,7 +242,7 @@
 
       <div ref="canvasMainRef" class="canvas-main">
         <VueFlow
-          v-if="nodes.length"
+          v-if="allGraphNodes.length"
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
@@ -256,7 +263,7 @@
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
-          @node-drag-stop="scheduleLayoutSave"
+          @node-drag-stop="onNodeDragStop"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
           @selection-change="onSelectionChange"
@@ -267,7 +274,7 @@
           <MiniMap pannable zoomable />
         </VueFlow>
         <el-empty v-else-if="!loading" description="暂无画布数据" />
-        <CanvasFloatingToolbar v-if="drama && nodes.length" />
+        <CanvasFloatingToolbar v-if="drama && allGraphNodes.length" />
       </div>
     </div>
 
@@ -296,7 +303,7 @@
 </template>
 
 <script setup>
-import { computed, markRaw, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -329,6 +336,7 @@ import {
   getStoryboardRefFromNode,
   stampEdgeBaseStyles,
 } from '@/utils/dramaCanvasAdapter'
+import { virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
   buildCanvasLayoutPayload,
   parseCanvasLayout,
@@ -373,6 +381,9 @@ const loading = ref(false)
 const drama = ref(null)
 const nodes = ref([])
 const edges = ref([])
+const allGraphNodes = ref([])
+const allGraphEdges = ref([])
+const canvasVirtualized = ref(false)
 const filterEpisodeId = ref(null)
 const highlightAssetId = ref(null)
 const layoutCache = ref(null)
@@ -406,6 +417,7 @@ let saveTimer = null
 let savedHintTimer = null
 let pollTimer = null
 let paneClickSuppressTimer = null
+let virtualizationFrame = null
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
@@ -458,6 +470,9 @@ function syncWorkflowFromDrama() {
 
 function rebuildGraph() {
   if (!drama.value) {
+    allGraphNodes.value = []
+    allGraphEdges.value = []
+    canvasVirtualized.value = false
     nodes.value = []
     edges.value = []
     return
@@ -476,17 +491,80 @@ function rebuildGraph() {
     nextNodes = highlighted.nodes
     nextEdges = highlighted.edges
   }
-  nodes.value = nextNodes
-  edges.value = nextEdges
   const selectedIds = new Set(selectedStoryboardIds.value.map(Number))
   if (selectedIds.size) {
-    nodes.value = nodes.value.map((node) => {
+    nextNodes = nextNodes.map((node) => {
       if (node.type !== 'canvasStoryboard') return node
       return {
         ...node,
         selected: selectedIds.has(Number(node.data?.storyboard?.id)),
       }
     })
+  }
+  allGraphNodes.value = nextNodes
+  allGraphEdges.value = nextEdges
+  applyVirtualizedGraph()
+}
+
+function canvasViewportSize() {
+  return {
+    width: canvasMainRef.value?.clientWidth || 0,
+    height: canvasMainRef.value?.clientHeight || 0,
+  }
+}
+
+function syncRenderedNodesToGraph() {
+  if (!allGraphNodes.value.length || !nodes.value.length) return
+  const renderedById = new Map(nodes.value.map((node) => [String(node.id), node]))
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
+    const rendered = renderedById.get(String(node.id))
+    if (!rendered) return node
+    return {
+      ...node,
+      position: rendered.position || node.position,
+      selected: rendered.selected,
+      class: rendered.class,
+      data: rendered.data || node.data,
+    }
+  })
+}
+
+function applyVirtualizedGraph() {
+  if (!allGraphNodes.value.length) {
+    nodes.value = []
+    edges.value = []
+    canvasVirtualized.value = false
+    return
+  }
+  const result = virtualizeCanvasGraph(
+    allGraphNodes.value,
+    allGraphEdges.value,
+    currentViewport.value,
+    canvasViewportSize(),
+    {
+      minNodes: 80,
+      overscan: 360,
+      pinnedIds: focusedNodeId.value ? [focusedNodeId.value] : [],
+    },
+  )
+  nodes.value = result.nodes
+  edges.value = result.edges
+  canvasVirtualized.value = result.virtualized
+}
+
+function scheduleVirtualization() {
+  if (virtualizationFrame != null) {
+    if (typeof window !== 'undefined' && window.cancelAnimationFrame) window.cancelAnimationFrame(virtualizationFrame)
+    else clearTimeout(virtualizationFrame)
+  }
+  const run = () => {
+    virtualizationFrame = null
+    applyVirtualizedGraph()
+  }
+  if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+    virtualizationFrame = window.requestAnimationFrame(run)
+  } else {
+    virtualizationFrame = setTimeout(run, 0)
   }
 }
 
@@ -498,15 +576,16 @@ function workflowStoryboardCountLabel(group) {
 }
 
 function applyHighlight() {
-  if (!nodes.value.length) return
+  if (!allGraphNodes.value.length) return
   const highlighted = applyCanvasHighlight(
-    nodes.value.map((n) => ({ ...n, class: undefined, data: { ...n.data, highlighted: false, dimmed: false } })),
-    edges.value,
+    allGraphNodes.value.map((n) => ({ ...n, class: undefined, data: { ...n.data, highlighted: false, dimmed: false } })),
+    allGraphEdges.value,
     highlightAssetId.value,
     drama.value
   )
-  nodes.value = highlighted.nodes
-  edges.value = highlighted.edges
+  allGraphNodes.value = highlighted.nodes
+  allGraphEdges.value = highlighted.edges
+  applyVirtualizedGraph()
 }
 
 function selectSidebarAsset(assetNodeId) {
@@ -667,6 +746,7 @@ function clearAssetHighlight() {
 }
 
 function onSelectionChange({ nodes: selectedNodes }) {
+  syncRenderedNodesToGraph()
   const ids = (selectedNodes || [])
     .filter((n) => n.type === 'canvasStoryboard' && n.data?.storyboard?.id)
     .map((n) => n.data.storyboard.id)
@@ -692,21 +772,25 @@ function selectWorkflowGroup(groupId) {
   activeGroupId.value = groupId || null
   const group = workflowGroups.value.find((item) => item.id === groupId)
   const storyboardIds = group
-    ? (group.storyboard_ids || []).map(Number).filter((id) => visibleStoryboardIds.value.has(id))
+    ? (group.storyboard_ids || []).map(Number).filter((id) => allGraphNodes.value.some(
+      (node) => node.type === 'canvasStoryboard' && Number(node.data?.storyboard?.id) === id,
+    ))
     : []
   const selectedIds = new Set(storyboardIds)
   selectedStoryboardIds.value = storyboardIds
-  nodes.value = nodes.value.map((node) => {
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
     if (node.type !== 'canvasStoryboard') return node
     return {
       ...node,
       selected: selectedIds.has(Number(node.data?.storyboard?.id)),
     }
   })
+  applyVirtualizedGraph()
 }
 
 function onViewportChange(viewport) {
   currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+  scheduleVirtualization()
 }
 
 function toggleSidebar() {
@@ -732,7 +816,10 @@ async function fitCanvasView() {
   if (!api?.fitView) return
   await api.fitView({ padding: 0.14, duration: 250, includeHiddenNodes: false })
   const viewport = api.getViewport?.()
-  if (viewport) currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+  if (viewport) {
+    currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+    scheduleVirtualization()
+  }
 }
 
 function showCanvasHelp() {
@@ -760,11 +847,17 @@ function scheduleLayoutSave() {
   }, 700)
 }
 
+function onNodeDragStop() {
+  syncRenderedNodesToGraph()
+  scheduleLayoutSave()
+}
+
 async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
   if (!dramaId.value) return
 
   let layoutPayload = null
   if (!groupsOnly) {
+    syncRenderedNodesToGraph()
     layoutPayload = buildCanvasLayoutPayload(nodes.value, currentViewport.value, layoutCache.value)
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
@@ -886,7 +979,7 @@ function onTopbarMoreCommand(command) {
 }
 
 async function onAlignNodes() {
-  if (!drama.value || !nodes.value.length || aligningNodes.value) return
+  if (!drama.value || !allGraphNodes.value.length || aligningNodes.value) return
   aligningNodes.value = true
   focusedNodeId.value = null
   try {
@@ -896,10 +989,11 @@ async function onAlignNodes() {
       imagesBySbId: imagesBySbId.value,
       videosBySbId: videosBySbId.value,
     })
-    nodes.value = nodes.value.map((n) => {
+    allGraphNodes.value = allGraphNodes.value.map((n) => {
       const pos = positions[n.id]
       return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n
     })
+    applyVirtualizedGraph()
     layoutCache.value = {
       version: 1,
       nodes: { ...positions },
@@ -917,6 +1011,7 @@ async function onAlignNodes() {
       const vp = flowApi.getViewport?.()
       if (vp) {
         currentViewport.value = { x: vp.x, y: vp.y, zoom: vp.zoom }
+        scheduleVirtualization()
       }
     }
     await persistCanvasState({ layoutOnly: true })
@@ -1191,6 +1286,7 @@ function onNodeClick({ node, event }) {
 
   if (PANEL_NODE_TYPES.has(node.type)) {
     focusedNodeId.value = node.id
+    scheduleVirtualization()
   }
 
   if (node.type === 'canvasAsset') {
@@ -1218,6 +1314,8 @@ watch(filterEpisodeId, async (val) => {
   router.replace({ query }).catch(() => {})
 })
 
+watch(focusedNodeId, () => scheduleVirtualization())
+
 watch(() => route.params.id, () => {
   highlightAssetId.value = null
   layoutCache.value = null
@@ -1230,11 +1328,22 @@ watch(() => route.params.id, () => {
 
 watch(drama, () => startStatusPoll())
 
+onMounted(() => {
+  scheduleVirtualization()
+  if (typeof window !== 'undefined') window.addEventListener('resize', scheduleVirtualization)
+})
+
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   if (generationSaveTimer) clearTimeout(generationSaveTimer)
+  if (virtualizationFrame != null) {
+    if (typeof window !== 'undefined' && window.cancelAnimationFrame) window.cancelAnimationFrame(virtualizationFrame)
+    else clearTimeout(virtualizationFrame)
+    virtualizationFrame = null
+  }
+  if (typeof window !== 'undefined') window.removeEventListener('resize', scheduleVirtualization)
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })
@@ -1354,6 +1463,15 @@ onBeforeUnmount(() => {
 .layout-status.saving { color: #60a5fa; }
 .layout-status.saved { color: #34d399; }
 .layout-status.error { color: #f87171; }
+.canvas-virtualization-status {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 999px;
+  color: #93c5fd;
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 .header-actions {
   margin-left: auto;
@@ -1550,7 +1668,7 @@ onBeforeUnmount(() => {
 @media (max-width: 680px) {
   .canvas-topbar .header-inner { padding: 7px 8px; }
   .workspace-switcher { min-width: 0; }
-  .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status { display: none; }
+  .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status, .canvas-virtualization-status { display: none; }
   .brand-logo { width: 34px; height: 34px; }
   .page-title { max-width: 120px; }
   .episode-select { width: 112px !important; }
