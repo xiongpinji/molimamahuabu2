@@ -41,3 +41,22 @@ test('首页画布状态可以序列化后恢复', () => {
   assert.equal(restored.nodes.at(-1).data.title, '镜头一')
   assert.deepEqual(restored.nodes.at(-1).position, { x: 100, y: 80 })
 })
+
+test('首页画布只恢复连接现有节点的有效边并去重', () => {
+  const state = normalizeHomeCanvasState({
+    nodes: [
+      { id: 'a', position: { x: 0, y: 0 }, data: { kind: 'text', title: 'A' } },
+      { id: 'b', position: { x: 100, y: 0 }, data: { kind: 'text', title: 'B' } },
+    ],
+    edges: [
+      { id: 'edge-1', source: 'a', target: 'b' },
+      { id: 'edge-duplicate', source: 'a', target: 'b' },
+      { id: 'self', source: 'a', target: 'a' },
+      { id: 'missing', source: 'a', target: 'unknown' },
+      null,
+    ],
+  })
+  assert.equal(state.edges.length, 1)
+  assert.equal(state.edges[0].id, 'edge-1')
+  assert.equal(state.edges[0].type, 'smoothstep')
+})

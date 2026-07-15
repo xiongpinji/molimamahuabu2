@@ -67,6 +67,24 @@ function normalizeNode(node, index) {
   }
 }
 
+function normalizeEdge(edge, index, nodeIds) {
+  if (!edge || typeof edge !== 'object') return null
+  const source = String(edge.source || '')
+  const target = String(edge.target || '')
+  if (!source || !target || source === target || !nodeIds.has(source) || !nodeIds.has(target)) return null
+  const sourceHandle = edge.sourceHandle ? String(edge.sourceHandle) : undefined
+  const targetHandle = edge.targetHandle ? String(edge.targetHandle) : undefined
+  return {
+    ...edge,
+    id: String(edge.id || `home:edge:${source}:${target}:${index}`),
+    source,
+    target,
+    ...(sourceHandle ? { sourceHandle } : {}),
+    ...(targetHandle ? { targetHandle } : {}),
+    type: String(edge.type || 'smoothstep'),
+  }
+}
+
 export function normalizeHomeCanvasState(raw) {
   const parsed = parseRawState(raw)
   const fallback = createHomeCanvasState()
@@ -75,7 +93,19 @@ export function normalizeHomeCanvasState(raw) {
   const nodes = Array.isArray(parsed.nodes)
     ? parsed.nodes.map(normalizeNode).filter(Boolean)
     : fallback.nodes
-  const edges = Array.isArray(parsed.edges) ? parsed.edges : []
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const seenEdges = new Set()
+  const edges = Array.isArray(parsed.edges)
+    ? parsed.edges
+      .map((edge, index) => normalizeEdge(edge, index, nodeIds))
+      .filter((edge) => {
+        if (!edge) return false
+        const key = `${edge.source}|${edge.target}|${edge.sourceHandle || ''}|${edge.targetHandle || ''}`
+        if (seenEdges.has(key)) return false
+        seenEdges.add(key)
+        return true
+      })
+    : []
   return {
     version: 1,
     nodes,

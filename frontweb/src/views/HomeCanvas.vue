@@ -42,7 +42,8 @@
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
-          :nodes-connectable="false"
+          :nodes-connectable="true"
+          :edges-updatable="true"
           :elements-selectable="true"
           :selection-key-code="true"
           :pan-on-drag="false"
@@ -56,6 +57,7 @@
           @node-double-click="onNodeDoubleClick"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
+          @connect="onConnect"
           @node-drag-stop="scheduleSave"
           @viewport-change="onViewportChange"
           @move-end="scheduleSave"
@@ -269,6 +271,33 @@ function onCanvasWheel(event) {
   event.stopPropagation()
   if (event.deltaY < 0) canvasFlowApi.value?.zoomIn?.({ duration: 0 })
   if (event.deltaY > 0) canvasFlowApi.value?.zoomOut?.({ duration: 0 })
+}
+
+function onConnect(connection) {
+  const source = String(connection?.source || '')
+  const target = String(connection?.target || '')
+  if (!source || !target || source === target) return
+  const sourceHandle = connection?.sourceHandle ? String(connection.sourceHandle) : undefined
+  const targetHandle = connection?.targetHandle ? String(connection.targetHandle) : undefined
+  const exists = edges.value.some((edge) => (
+    edge.source === source
+    && edge.target === target
+    && (edge.sourceHandle || '') === (sourceHandle || '')
+    && (edge.targetHandle || '') === (targetHandle || '')
+  ))
+  if (exists) return
+  edges.value = [
+    ...edges.value,
+    {
+      id: String(connection.id || `home:edge:${source}:${target}:${Date.now()}`),
+      source,
+      target,
+      ...(sourceHandle ? { sourceHandle } : {}),
+      ...(targetHandle ? { targetHandle } : {}),
+      type: 'smoothstep',
+    },
+  ]
+  scheduleSave()
 }
 
 function registerCanvasFlowApi(api) {
