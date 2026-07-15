@@ -19,22 +19,32 @@
         <el-dropdown-item :command="homeTo">
           <el-icon><List /></el-icon>
           项目列表
+          <span v-if="isActive('list')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/canvas">
           <el-icon><Grid /></el-icon>
           首页自由画布
+          <span v-if="isActive('canvas')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/free-create">
           <el-icon><MagicStick /></el-icon>
           自由创作
+          <span v-if="isActive('free-create')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/media-library">
           <el-icon><Files /></el-icon>
           媒体素材库
+          <span v-if="isActive('media-library')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/ai-config">
           <el-icon><Setting /></el-icon>
           AI 配置
+          <span v-if="isActive('ai-config')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
+        </el-dropdown-item>
+        <el-dropdown-item command="/film/new" divided>
+          <el-icon><Plus /></el-icon>
+          开始创作
+          <span v-if="isActive('create')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
       </el-dropdown-menu>
     </template>
@@ -42,16 +52,30 @@
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
-import { ArrowDown, Files, Grid, List, MagicStick, Setting } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowDown, Files, Grid, List, MagicStick, Plus, Setting } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const props = defineProps({
   homeTo: { type: [String, Object], default: '/' }
 })
 
 const homeTo = props.homeTo
+
+const routeName = computed(() => route.name)
+
+function isActive(target) {
+  const name = routeName.value
+  if (target === 'list') {
+    return ['list', 'drama-detail', 'film-canvas'].includes(name)
+      || (name === 'film' && String(route.params.id) !== 'new')
+  }
+  if (target === 'create') return name === 'film' && String(route.params.id) === 'new'
+  return name === target
+}
 
 function navigate(path) {
   router.push(path)
@@ -87,6 +111,12 @@ function navigate(path) {
 
 .canvas-workspace-switcher:active {
   transform: translateY(1px);
+}
+
+:global(.canvas-workspace-menu__current) {
+  margin-left: auto;
+  color: #a78bfa;
+  font-size: 11px;
 }
 
 .canvas-workspace-switcher__logo {
