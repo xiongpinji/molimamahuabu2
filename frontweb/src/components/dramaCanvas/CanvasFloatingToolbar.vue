@@ -1,6 +1,6 @@
 <template>
-  <div class="canvas-floating-toolbar nodrag nopan" @mousedown.stop>
-    <div v-if="addMenuVisible" class="canvas-add-menu" role="menu">
+  <div ref="toolbarRef" class="canvas-floating-toolbar nodrag nopan" @mousedown.stop>
+    <div v-if="addMenuVisible" class="canvas-add-menu" role="menu" aria-label="添加节点菜单">
       <div class="add-menu-title">添加节点</div>
       <button v-for="item in addItems" :key="item.type" type="button" class="add-menu-item" role="menuitem" @click="create(item.type)">
         <el-icon><component :is="item.icon" /></el-icon>
@@ -52,12 +52,13 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const ctx = useCanvasContext()
 const addMenuVisible = ref(false)
+const toolbarRef = ref(null)
 
 const addItems = [
   { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
@@ -79,6 +80,16 @@ function toggleAddMenu() {
   addMenuVisible.value = !addMenuVisible.value
 }
 
+function closeAddMenuOnOutside(event) {
+  if (!addMenuVisible.value || toolbarRef.value?.contains(event.target)) return
+  addMenuVisible.value = false
+}
+
+function closeAddMenuOnEscape(event) {
+  if (event.key !== 'Escape' || !addMenuVisible.value) return
+  addMenuVisible.value = false
+}
+
 function create(type) {
   addMenuVisible.value = false
   ctx?.openCreateDialog?.(type)
@@ -94,6 +105,16 @@ function goList() { ctx?.goListMode?.() }
 function zoomIn() { ctx?.zoomIn?.() }
 function zoomOut() { ctx?.zoomOut?.() }
 function fitView() { ctx?.fitCanvasView?.() }
+
+onMounted(() => {
+  document.addEventListener('pointerdown', closeAddMenuOnOutside)
+  document.addEventListener('keydown', closeAddMenuOnEscape)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeAddMenuOnOutside)
+  document.removeEventListener('keydown', closeAddMenuOnEscape)
+})
 </script>
 
 <style scoped>
