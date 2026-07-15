@@ -339,11 +339,28 @@ function showHelp() {
 
 async function shareCanvas() {
   const url = window.location.href
+  if (typeof navigator.share === 'function') {
+    try {
+      await navigator.share({
+        title: '茉莉妈妈 · 首页自由画布',
+        url,
+      })
+      ElMessage.success('分享面板已打开')
+      return
+    } catch (error) {
+      // 用户主动关闭系统分享面板时不再弹出复制失败提示。
+      if (error?.name === 'AbortError') return
+    }
+  }
   try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
     await navigator.clipboard.writeText(url)
     ElMessage.success('画布链接已复制')
   } catch {
-    ElMessage.info(url)
+    ElMessageBox.alert(url, '画布链接（请手动复制）', {
+      confirmButtonText: '关闭',
+      type: 'info',
+    })
   }
 }
 
