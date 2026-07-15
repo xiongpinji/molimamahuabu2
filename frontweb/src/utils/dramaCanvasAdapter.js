@@ -10,6 +10,7 @@ import {
   resolveSbVideoRecord,
   videoRecordUrl,
 } from './storyboardMedia'
+import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
 
 const ASSET_X = 48
 const SCRIPT_OFFSET_X = 248
@@ -69,15 +70,15 @@ function makeNode(base) {
   return { ...base, draggable }
 }
 
-function buildAssetNodes(drama, savedLayout, startY) {
+function buildAssetNodes(drama, savedLayout, startY, episodeContext) {
   const nodes = []
   const edges = []
   let y = startY
 
   const sections = [
-    { key: 'characters', label: '👤 角色', hint: '从剧本提取', items: drama.characters || [], kind: 'character', prefix: 'char' },
-    { key: 'scenes', label: '🏞 场景', hint: '从剧本提取', items: drama.scenes || [], kind: 'scene', prefix: 'scene' },
-    { key: 'props', label: '🎭 道具', hint: '从剧本提取', items: drama.props || [], kind: 'prop', prefix: 'prop' },
+    { key: 'characters', label: '👤 角色', hint: '从剧本提取', items: filterCanvasAssets(drama.characters, 'character', episodeContext), kind: 'character', prefix: 'char' },
+    { key: 'scenes', label: '🏞 场景', hint: '从剧本提取', items: filterCanvasAssets(drama.scenes, 'scene', episodeContext), kind: 'scene', prefix: 'scene' },
+    { key: 'props', label: '🎭 道具', hint: '从剧本提取', items: filterCanvasAssets(drama.props, 'prop', episodeContext), kind: 'prop', prefix: 'prop' },
   ]
 
   for (const sec of sections) {
@@ -385,8 +386,9 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   )
   const useFirstLastFrame = options.useFirstLastFrame ?? dramaUsesFirstLastFrame(drama)
   const episodeId = options.episodeId ?? null
+  const episodeContext = getCanvasEpisodeContext(drama, episodeId)
   const episodes = episodeId
-    ? (drama.episodes || []).filter((ep) => ep.id === episodeId)
+    ? episodeContext.episodes
     : (drama.episodes || [])
 
   const nodes = []
@@ -400,7 +402,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     data: { drama },
   }))
 
-  const assetBlock = buildAssetNodes(drama, savedLayout, 80)
+  const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
   let pipelineY = 88

@@ -176,13 +176,16 @@
           素材库
           <el-button v-if="highlightAssetId" link size="small" @click="clearAssetHighlight">清除</el-button>
         </div>
+        <div class="sidebar-context">
+          {{ episodeContext.isFiltered ? `${selectedEpisodeLabel}引用素材` : '项目全部素材' }}
+        </div>
         <div class="sidebar-section">
           <div class="sec-label sec-label-row">
-            <span>角色 {{ (drama.characters || []).length }}</span>
+            <span>角色 {{ sidebarCharacters.length }}</span>
             <el-button link size="small" type="primary" @click="openCreateDialog('character')">+</el-button>
           </div>
           <div
-            v-for="c in (drama.characters || [])"
+            v-for="c in sidebarCharacters"
             :key="'c-' + c.id"
             class="sidebar-item"
             :class="{ active: highlightAssetId === 'char:' + c.id }"
@@ -190,14 +193,15 @@
           >
             {{ c.name || '未命名' }}
           </div>
+          <div v-if="episodeContext.isFiltered && !sidebarCharacters.length" class="sidebar-empty">本集未引用角色</div>
         </div>
         <div class="sidebar-section">
           <div class="sec-label sec-label-row">
-            <span>场景 {{ (drama.scenes || []).length }}</span>
+            <span>场景 {{ sidebarScenes.length }}</span>
             <el-button link size="small" type="primary" @click="openCreateDialog('scene')">+</el-button>
           </div>
           <div
-            v-for="s in (drama.scenes || [])"
+            v-for="s in sidebarScenes"
             :key="'s-' + s.id"
             class="sidebar-item"
             :class="{ active: highlightAssetId === 'scene:' + s.id }"
@@ -205,14 +209,15 @@
           >
             {{ s.location || '未命名' }}
           </div>
+          <div v-if="episodeContext.isFiltered && !sidebarScenes.length" class="sidebar-empty">本集未引用场景</div>
         </div>
         <div class="sidebar-section">
           <div class="sec-label sec-label-row">
-            <span>道具 {{ (drama.props || []).length }}</span>
+            <span>道具 {{ sidebarProps.length }}</span>
             <el-button link size="small" type="primary" @click="openCreateDialog('prop')">+</el-button>
           </div>
           <div
-            v-for="p in (drama.props || [])"
+            v-for="p in sidebarProps"
             :key="'p-' + p.id"
             class="sidebar-item"
             :class="{ active: highlightAssetId === 'prop:' + p.id }"
@@ -220,6 +225,7 @@
           >
             {{ p.name || '未命名' }}
           </div>
+          <div v-if="episodeContext.isFiltered && !sidebarProps.length" class="sidebar-empty">本集未引用道具</div>
         </div>
 
         <div class="sidebar-section workflow-list">
@@ -353,6 +359,11 @@ import {
   storyboardIdFromNodeId,
   getDramaGenerationOptions,
 } from '@/utils/canvasWorkflow'
+import {
+  filterCanvasAssets,
+  getCanvasEpisodeContext,
+  isCanvasAssetVisible,
+} from '@/utils/canvasEpisodeContext'
 
 import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
 import CanvasDramaHeaderNode from '@/components/dramaCanvas/CanvasDramaHeaderNode.vue'
@@ -460,6 +471,14 @@ const allStoryboards = computed(() => {
   }
   return list
 })
+const episodeContext = computed(() => getCanvasEpisodeContext(drama.value, filterEpisodeId.value))
+const selectedEpisodeLabel = computed(() => {
+  const episode = episodeContext.value.episode
+  return episode?.title || `第${episode?.episode_number || 0}集`
+})
+const sidebarCharacters = computed(() => filterCanvasAssets(drama.value?.characters, 'character', episodeContext.value))
+const sidebarScenes = computed(() => filterCanvasAssets(drama.value?.scenes, 'scene', episodeContext.value))
+const sidebarProps = computed(() => filterCanvasAssets(drama.value?.props, 'prop', episodeContext.value))
 
 function syncWorkflowFromDrama() {
   workflowGroups.value = parseWorkflowGroups(drama.value?.metadata)
@@ -1300,6 +1319,9 @@ function onNodeClick({ node, event }) {
 
 watch(filterEpisodeId, async (val) => {
   if (drama.value) await loadForDrama(drama.value, val)
+  if (highlightAssetId.value && !isCanvasAssetVisible(highlightAssetId.value, episodeContext.value)) {
+    highlightAssetId.value = null
+  }
   rebuildGraph()
   selectedStoryboardIds.value = selectedStoryboardIds.value.filter((id) => visibleStoryboardIds.value.has(Number(id)))
   if (activeGroupId.value) {
@@ -1502,6 +1524,12 @@ onBeforeUnmount(() => {
   font-weight: 700;
   margin-bottom: 12px;
   color: var(--text-bright, #fafafa);
+}
+
+.sidebar-context {
+  margin: -6px 0 12px;
+  font-size: 10px;
+  color: var(--text-faint, #52525b);
 }
 
 .sidebar-section { margin-bottom: 14px; }
