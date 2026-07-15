@@ -4,7 +4,7 @@
       v-if="visible"
       ref="menuRef"
       class="canvas-context-menu"
-      :style="{ left: x + 'px', top: y + 'px' }"
+      :style="menuStyle"
       role="menu"
       aria-label="添加画布节点"
       tabindex="-1"
@@ -41,6 +41,7 @@ const props = defineProps({
 
 const emit = defineEmits(['select', 'close'])
 const menuRef = ref(null)
+const menuStyle = ref({ left: '8px', top: '8px' })
 
 const addItems = [
   { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
@@ -49,9 +50,23 @@ const addItems = [
   { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
 ]
 
-watch(() => props.visible, async (visible) => {
-  if (!visible) return
+async function updateMenuPosition() {
+  if (!props.visible || typeof window === 'undefined') return
   await nextTick()
+  const menu = menuRef.value
+  if (!menu) return
+  const gap = 8
+  const maxLeft = Math.max(gap, window.innerWidth - menu.offsetWidth - gap)
+  const maxTop = Math.max(gap, window.innerHeight - menu.offsetHeight - gap)
+  menuStyle.value = {
+    left: `${Math.min(Math.max(props.x, gap), maxLeft)}px`,
+    top: `${Math.min(Math.max(props.y, gap), maxTop)}px`,
+  }
+}
+
+watch(() => [props.visible, props.x, props.y], async ([visible]) => {
+  if (!visible) return
+  await updateMenuPosition()
   menuRef.value?.focus()
 })
 
