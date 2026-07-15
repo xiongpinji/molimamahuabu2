@@ -272,7 +272,7 @@
           @node-drag-stop="onNodeDragStop"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
-          @selection-change="onSelectionChange"
+          @nodes-change="onNodesChange"
         >
           <CanvasFlowAligner />
           <Background pattern-color="#3f3f46" :gap="20" />
@@ -757,6 +757,7 @@ provide(CANVAS_CONTEXT_KEY, {
   zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),
   zoomOut: () => canvasFlowApi.value?.zoomOut?.({ duration: 180 }),
   showCanvasHelp,
+  selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
 })
 
 function clearAssetHighlight() {
@@ -764,27 +765,61 @@ function clearAssetHighlight() {
   applyHighlight()
 }
 
-function onSelectionChange({ nodes: selectedNodes }) {
-  syncRenderedNodesToGraph()
-  const ids = (selectedNodes || [])
-    .filter((n) => n.type === 'canvasStoryboard' && n.data?.storyboard?.id)
-    .map((n) => n.data.storyboard.id)
-  selectedStoryboardIds.value = ids
+function applySelectedStoryboardIds(ids = []) {
+  const normalizedIds = [...new Set(ids.map(Number).filter(Number.isFinite))]
+  selectedStoryboardIds.value = normalizedIds
+  const selectedIds = new Set(normalizedIds)
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
+    if (node.type !== 'canvasStoryboard') return node
+    return { ...node, selected: selectedIds.has(Number(node.data?.storyboard?.id)) }
+  })
+  nodes.value = nodes.value.map((node) => {
+    if (node.type !== 'canvasStoryboard') return node
+    return { ...node, selected: selectedIds.has(Number(node.data?.storyboard?.id)) }
+  })
 
-  if (!ids.length) {
+  if (!normalizedIds.length) {
     activeGroupId.value = null
     return
   }
 
   const containingGroups = workflowGroups.value.filter((group) => {
     const groupIds = new Set((group.storyboard_ids || []).map(Number))
-    return ids.every((id) => groupIds.has(Number(id)))
+    return normalizedIds.every((id) => groupIds.has(Number(id)))
   })
-  if (containingGroups.length === 1 && (ids.length > 1 || !activeGroupId.value)) {
+  if (containingGroups.length === 1 && (normalizedIds.length > 1 || !activeGroupId.value)) {
     activeGroupId.value = containingGroups[0].id
-  } else if (ids.length > 1 && containingGroups.length !== 1) {
+  } else if (normalizedIds.length > 1 && containingGroups.length !== 1) {
     activeGroupId.value = null
   }
+}
+
+function onNodesChange(changes = []) {
+  const selectionChanges = changes.filter((change) => change?.type === 'select')
+  if (!selectionChanges.length) return
+
+  const selectedIds = new Set(selectedStoryboardIds.value.map(Number))
+  for (const change of selectionChanges) {
+    const storyboardId = storyboardIdFromNodeId(change.id)
+    if (!storyboardId) continue
+    if (change.selected) selectedIds.add(Number(storyboardId))
+    else selectedIds.delete(Number(storyboardId))
+  }
+  applySelectedStoryboardIds([...selectedIds])
+}
+
+function selectStoryboard(storyboardId, event) {
+  const normalizedId = Number(storyboardId)
+  if (!Number.isFinite(normalizedId)) return
+  const selectedIds = new Set(selectedStoryboardIds.value.map(Number))
+  if (event?.ctrlKey || event?.metaKey) {
+    if (selectedIds.has(normalizedId)) selectedIds.delete(normalizedId)
+    else selectedIds.add(normalizedId)
+  } else {
+    selectedIds.clear()
+    selectedIds.add(normalizedId)
+  }
+  applySelectedStoryboardIds([...selectedIds])
 }
 
 function selectWorkflowGroup(groupId) {
@@ -1331,7 +1366,9 @@ function onNodeClick({ node, event }) {
     return
   }
   const sbId = storyboardIdFromNodeId(node.id)
-  if (sbId) activeGroupId.value = workflowGroups.value.find((g) => (g.storyboard_ids || []).includes(sbId))?.id || activeGroupId.value
+  if (sbId) {
+    selectStoryboard(sbId, event)
+  }
 }
 
 watch(filterEpisodeId, async (val) => {

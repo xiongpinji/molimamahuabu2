@@ -1,6 +1,6 @@
 <template>
   <div class="canvas-node-stack">
-    <div class="canvas-sb-node" :class="{ selected: selected, highlighted: data.highlighted, dimmed: data.dimmed, processing: isProcessing || isNodeBusy, focused: showPanel }">
+    <div class="canvas-sb-node" :class="{ selected: selected, highlighted: data.highlighted, dimmed: data.dimmed, processing: isProcessing || isNodeBusy, focused: showPanel }" @click.stop="onSelect">
     <Handle id="chain-in" type="target" :position="Position.Top" />
     <Handle type="target" :position="Position.Left" />
     <Handle type="source" :position="Position.Right" />
@@ -57,6 +57,10 @@ const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
   return map ? !!map[props.id] : false
 })
+
+function onSelect(event) {
+  ctx?.selectStoryboard?.(props.data.storyboard?.id, event)
+}
 </script>
 
 <style scoped>
