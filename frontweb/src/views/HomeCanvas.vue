@@ -29,7 +29,7 @@
     </header>
 
     <div class="canvas-shell">
-      <div ref="canvasMainRef" class="canvas-main">
+      <div ref="canvasMainRef" class="canvas-main" :class="{ 'quick-start-visible': showStarterPanel }">
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
@@ -61,10 +61,34 @@
           <MiniMap pannable zoomable />
         </VueFlow>
 
-        <div v-if="!nodes.length" class="home-empty">
+        <div v-if="!showStarterPanel && !nodes.length" class="home-empty">
           <strong>这是一个独立画布</strong>
           <span>不绑定项目，右键空白处或点击底部“+”开始创作。</span>
         </div>
+
+        <section v-if="showStarterPanel" class="home-starter-panel" aria-label="快速开始">
+          <div class="starter-heading">
+            <strong>快速开始</strong>
+            <span>选择一个入口，先把创作素材放进独立画布</span>
+          </div>
+          <div class="starter-grid">
+            <button
+              v-for="preset in starterPresets"
+              :key="preset.id"
+              type="button"
+              class="starter-card"
+              :aria-label="`快速开始：${preset.title}`"
+              @click="openStarter(preset)"
+            >
+              <span class="starter-icon" aria-hidden="true">{{ preset.icon }}</span>
+              <span class="starter-copy">
+                <strong>{{ preset.title }}</strong>
+                <small>{{ preset.description }}</small>
+              </span>
+            </button>
+          </div>
+          <span class="starter-note">快速入口只创建画布节点，不绑定项目；后续可继续编辑或接入生成流程。</span>
+        </section>
 
         <div class="home-floating-toolbar nodrag nopan" @mousedown.stop>
           <button type="button" class="toolbar-primary" aria-label="添加节点" title="添加节点" @click="openNodeEditor('text')">
@@ -180,12 +204,23 @@ const editorVisible = ref(false)
 const editingNodeId = ref(null)
 const editorKind = ref('text')
 const editorForm = ref({ title: '', content: '', url: '' })
+const activeStarterId = ref(null)
 let saveTimer = null
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
 const initialViewport = computed(() => currentViewport.value)
 const zoomLabel = computed(() => `${Math.round(Number(currentViewport.value.zoom || 0.75) * 100)}%`)
 const layoutStatusLabel = computed(() => ({ saving: '保存中…', saved: '已保存', error: '保存失败' }[layoutSaveState.value] || '本地画布'))
+const starterPresets = Object.freeze([
+  { id: 'script', icon: '☷', title: '故事脚本生成', description: '先写下故事梗概与角色设定', kind: 'text', nodeTitle: '故事脚本', nodeContent: '输入故事梗概、人物关系和场景目标。' },
+  { id: 'character', icon: '♙', title: '角色三视图', description: '整理角色参考图和视觉设定', kind: 'image', nodeTitle: '角色三视图', nodeContent: '填写角色参考图地址，补充服装、动作和镜头备注。' },
+  { id: 'first-frame', icon: '▧', title: '首帧图生视频', description: '从首帧画面继续整理视频素材', kind: 'video', nodeTitle: '首帧图生视频', nodeContent: '先记录首帧画面要求，再补充视频地址或生成结果。' },
+  { id: 'audio-video', icon: '▶', title: '音频生视频', description: '把音频、画面和节奏放在一起', kind: 'video', nodeTitle: '音频生视频', nodeContent: '记录音频内容、画面节奏和视频地址。' },
+])
+const showStarterPanel = computed(() => {
+  if (!nodes.value.length) return true
+  return nodes.value.length === 1 && nodes.value[0]?.id === 'home:welcome'
+})
 
 function loadState() {
   const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(HOME_CANVAS_STORAGE_KEY)
@@ -259,13 +294,22 @@ function closeContextMenu() {
   pendingFlowPosition.value = null
 }
 
-function openNodeEditor(kind, position = null) {
+function openNodeEditor(kind, position = null, initial = null) {
   closeContextMenu()
   editorKind.value = kind
   editingNodeId.value = null
   pendingFlowPosition.value = position || centerFlowPosition()
-  editorForm.value = { title: '', content: '', url: '' }
+  editorForm.value = initial || { title: '', content: '', url: '' }
   editorVisible.value = true
+}
+
+function openStarter(preset) {
+  activeStarterId.value = preset.id
+  openNodeEditor(preset.kind, centerFlowPosition(), {
+    title: preset.nodeTitle,
+    content: preset.nodeContent,
+    url: '',
+  })
 }
 
 function onNodeDoubleClick({ node }) {
@@ -288,6 +332,9 @@ function submitNode() {
       ? { ...node, data: { ...node.data, kind: editorKind.value, title, content: editorForm.value.content, url: editorForm.value.url } }
       : node)
   } else {
+    if (activeStarterId.value) {
+      nodes.value = nodes.value.filter((node) => node.id !== 'home:welcome')
+    }
     nodes.value.push({
       id: `home:${editorKind.value}:${Date.now()}`,
       type: 'homeCanvasNode',
@@ -301,6 +348,7 @@ function submitNode() {
     })
   }
   editorVisible.value = false
+  activeStarterId.value = null
   pendingFlowPosition.value = null
   scheduleSave()
   ElMessage.success(editingNodeId.value ? '节点已更新' : '节点已添加')
@@ -367,6 +415,9 @@ async function shareCanvas() {
 loadState()
 
 watch([nodes, edges], scheduleSave, { deep: true })
+watch(editorVisible, (visible) => {
+  if (!visible) activeStarterId.value = null
+})
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
@@ -402,6 +453,20 @@ onBeforeUnmount(() => {
 .home-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none; color: #a1a1aa; }
 .home-empty strong { color: #e4e4e7; font-size: 16px; }
 .home-empty span { font-size: 12px; color: #71717a; }
+.quick-start-visible :deep(.vue-flow__node) { opacity: 0; pointer-events: none; }
+.home-starter-panel { position: absolute; top: 50%; left: 50%; z-index: 20; width: min(900px, calc(100% - 36px)); padding: 22px; border: 1px solid rgba(82, 82, 91, 0.78); border-radius: 18px; background: rgba(24, 24, 27, 0.86); box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4); backdrop-filter: blur(20px); transform: translate(-50%, -42%); }
+.starter-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.starter-heading strong { color: #f4f4f5; font-size: 18px; }
+.starter-heading span { color: #a1a1aa; font-size: 12px; }
+.starter-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.starter-card { min-height: 112px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #3f3f46; border-radius: 14px; background: linear-gradient(145deg, rgba(39, 39, 42, 0.96), rgba(24, 24, 27, 0.96)); color: #e4e4e7; text-align: left; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease, background 160ms ease; }
+.starter-card:hover { border-color: #818cf8; background: linear-gradient(145deg, rgba(67, 56, 202, 0.32), rgba(24, 24, 27, 0.96)); transform: translateY(-2px); }
+.starter-card:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+.starter-icon { color: #c4b5fd; font-size: 24px; line-height: 1; }
+.starter-copy { display: flex; flex-direction: column; gap: 5px; }
+.starter-copy strong { font-size: 13px; }
+.starter-copy small { color: #a1a1aa; font-size: 11px; line-height: 1.45; }
+.starter-note { display: block; margin-top: 14px; color: #71717a; font-size: 11px; }
 .home-floating-toolbar { position: absolute; left: 50%; bottom: 18px; z-index: 25; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 28px); padding: 6px 10px; border: 1px solid rgba(82, 82, 91, 0.72); border-radius: 17px; background: rgba(24, 24, 27, 0.92); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4); backdrop-filter: blur(18px); transform: translateX(-50%); }
 .toolbar-primary, .toolbar-button, .toolbar-icon { min-width: 42px; min-height: 42px; border: 0; border-radius: 10px; background: transparent; color: #d4d4d8; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .toolbar-primary { width: 46px; background: #f4f4f5; color: #18181b; font-size: 21px; }
@@ -422,12 +487,16 @@ onBeforeUnmount(() => {
   .brand-logo { width: 34px; height: 34px; }
   .header-actions .el-button { min-height: 34px; }
   .toolbar-button { padding: 0 7px; }
+  .starter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
   .page-title { max-width: 120px; }
   .toolbar-button { width: 42px; padding: 0; font-size: 0; }
   .home-floating-toolbar { gap: 2px; }
   .zoom-label { display: none; }
+  .home-starter-panel { width: min(420px, calc(100% - 20px)); padding: 16px; }
+  .starter-heading { display: block; }
+  .starter-heading span { display: block; margin-top: 5px; }
 }
 @media (max-width: 480px) {
   .page-title { display: none; }
@@ -437,6 +506,7 @@ onBeforeUnmount(() => {
   .topbar-home { width: 42px; padding: 0; font-size: 0; }
   .topbar-add-node .el-icon,
   .topbar-home .el-icon { margin: 0; font-size: 16px; }
+  .starter-grid { grid-template-columns: 1fr; }
 }
 </style>
 
