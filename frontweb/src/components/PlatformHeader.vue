@@ -89,7 +89,7 @@ function goHomeCanvas() {
 .platform-header {
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 220;
   padding: 10px 16px 0;
   pointer-events: none;
 }
