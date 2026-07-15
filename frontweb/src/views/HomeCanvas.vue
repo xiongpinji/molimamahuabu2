@@ -29,7 +29,12 @@
     </header>
 
     <div class="canvas-shell">
-      <div ref="canvasMainRef" class="canvas-main" :class="{ 'quick-start-visible': showStarterPanel }">
+      <div
+        ref="canvasMainRef"
+        class="canvas-main"
+        :class="{ 'quick-start-visible': showStarterPanel }"
+        @wheel.capture="onCanvasWheel"
+      >
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
@@ -256,6 +261,14 @@ function scheduleSave() {
 
 function onViewportChange(viewport) {
   currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+}
+
+function onCanvasWheel(event) {
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.deltaY < 0) canvasFlowApi.value?.zoomIn?.({ duration: 0 })
+  if (event.deltaY > 0) canvasFlowApi.value?.zoomOut?.({ duration: 0 })
 }
 
 function registerCanvasFlowApi(api) {

@@ -246,7 +246,7 @@
         <p class="sidebar-tip">经典模式流水线：分镜 → 脚本摘要 → 分镜图 → 视频。摘要节点是画布可视化，列表里合并在分镜编辑区。顶栏「本集生成」可 AI 批量操作；单击分镜可单镜生图/生视频。</p>
       </aside>
 
-      <div ref="canvasMainRef" class="canvas-main">
+      <div ref="canvasMainRef" class="canvas-main" @wheel.capture="onCanvasWheel">
         <VueFlow
           v-if="allGraphNodes.length"
           v-model:nodes="nodes"
@@ -845,6 +845,14 @@ function selectWorkflowGroup(groupId) {
 function onViewportChange(viewport) {
   currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
   scheduleVirtualization()
+}
+
+function onCanvasWheel(event) {
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.deltaY < 0) canvasFlowApi.value?.zoomIn?.({ duration: 0 })
+  if (event.deltaY > 0) canvasFlowApi.value?.zoomOut?.({ duration: 0 })
 }
 
 function toggleSidebar() {
