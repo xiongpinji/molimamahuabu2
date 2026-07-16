@@ -41,6 +41,19 @@ npm run test:e2e
 
 回归覆盖首页自由画布的右键添加、删除/撤销/重做、Ctrl/Cmd+C/V 复制粘贴、边目标重连与持久化，以及 Ctrl + 滚轮缩放和普通滚轮平移。该回归只依赖前端 localStorage，不需要启动后端。
 
+3D 导演台的模型/动作资源地址归一化、加载状态重试、WebM 编码器选择和 MP4 任务结果解析使用 Node 单测覆盖：
+
+```bash
+node --test test/*.test.js
+```
+
+服务端真实上传与 FFmpeg MP4 转码链路使用隔离存储和 SQLite 回归：
+
+```bash
+cd ../backend-node
+node --test test/directorAssetUpload.test.js test/directorExport.test.js
+```
+
 ## 技术栈
 
 - Vue 3 + Vite

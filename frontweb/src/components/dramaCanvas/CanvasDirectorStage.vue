@@ -139,6 +139,14 @@
           <label>模型缩放
             <input type="number" min="0.01" max="100" step="0.01" :value="selectedCharacterAsset.scale" @change="updateCharacterAsset('scale', $event.target.value)" />
           </label>
+          <div class="resource-status resource-status--row" :data-status="selectedModelResourceState.status">
+            <span>模型：{{ directorResourceStatusLabel(selectedModelResourceState) }}<template v-if="selectedModelResourceState.message"> · {{ selectedModelResourceState.message }}</template></span>
+            <button v-if="selectedModelResourceState.status === 'error'" type="button" class="small-button" :disabled="modelLoading" @click="loadSelectedCharacterModel">重试</button>
+          </div>
+          <div class="resource-status resource-status--row" :data-status="selectedActionResourceState.status">
+            <span>动作：{{ directorResourceStatusLabel(selectedActionResourceState) }}<template v-if="selectedActionResourceState.message"> · {{ selectedActionResourceState.message }}</template></span>
+            <button v-if="selectedActionResourceState.status === 'error'" type="button" class="small-button" @click="retrySelectedActionResource">重试</button>
+          </div>
           <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
         </section>
       </aside>
@@ -251,6 +259,18 @@ import {
   findActiveShot,
   normalizeDirectorTimeline,
 } from '@/utils/directorTimeline'
+import {
+  createDirectorResourceState,
+  directorResourceStatusLabel,
+  isDirectorAnimationCompatible,
+  resolveDirectorAssetUrl,
+  updateDirectorResourceState,
+} from '@/utils/director-assets'
+import {
+  directorExportFilename,
+  parseDirectorExportResult,
+  pickDirectorRecordingMimeType,
+} from '@/utils/director-export-support'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -278,6 +298,7 @@ const modelLoading = ref(false)
 const libraryAssets = ref([])
 const libraryLoading = ref(false)
 const selectedLibraryAssetId = ref('')
+const resourceStates = ref({})
 
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
@@ -293,6 +314,8 @@ const selectedShot = computed(() => shots.value.find((shot) => shot.id === selec
 const selectedCharacter = computed(() => characterEntries.value.find((character) => character.id === selectedCharacterId.value) || characterEntries.value[0] || null)
 const selectedCharacterAsset = computed(() => timeline.value.characterAssets?.[selectedCharacter.value?.id] || { modelUrl: '', scale: 1, actions: {} })
 const selectedActionAsset = computed(() => selectedCharacterAsset.value.actions?.[actionToAdd.value] || { url: '' })
+const selectedModelResourceState = computed(() => resourceStates.value[resourceStateKey('model', selectedCharacter.value?.id)] || createDirectorResourceState('model', selectedCharacterAsset.value.modelUrl))
+const selectedActionResourceState = computed(() => resourceStates.value[resourceStateKey('action', selectedCharacter.value?.id, actionToAdd.value)] || createDirectorResourceState('action', selectedActionAsset.value.url))
 const selectedLibraryAsset = computed(() => libraryAssets.value.find((asset) => String(asset.id) === String(selectedLibraryAssetId.value)) || null)
 const activeShot = computed(() => findActiveShot(timeline.value, currentTime.value))
 const stageObjects = new Map()
@@ -300,7 +323,8 @@ const characterObjects = new Map()
 const characterModels = new Map()
 const characterPlaceholders = new Map()
 const actionResourceCache = new Map()
-const actionResourceLoading = new Set()
+const actionResourceRequests = new Map()
+const actionResourceGenerations = new Map()
 let stageRoot = null
 let disposed = false
 let animationFrame = 0
@@ -335,6 +359,22 @@ function cloneTimeline(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function resourceStateKey(kind, characterId, action = '') {
+  return `${kind}:${String(characterId || '')}:${String(action || '')}`
+}
+
+function setResourceState(kind, characterId, asset, patch = {}, action = '') {
+  const key = resourceStateKey(kind, characterId, action)
+  const current = resourceStates.value[key] || createDirectorResourceState(kind, asset)
+  resourceStates.value = {
+    ...resourceStates.value,
+    [key]: updateDirectorResourceState(current, {
+      ...patch,
+      url: patch.url === undefined ? asset : patch.url,
+    }),
+  }
+}
+
 function updateCharacterAsset(field, value) {
   if (!selectedCharacter.value) return
   const characterId = selectedCharacter.value.id
@@ -351,8 +391,8 @@ function updateCharacterAsset(field, value) {
   }
   mutateTimeline({ ...timeline.value, characterAssets: assets })
   if (field === 'modelUrl') {
-    if (assets[characterId].modelUrl) void loadCharacterModel(characterId)
-    else buildStage()
+    setResourceState('model', characterId, assets[characterId].modelUrl, { status: 'idle', message: '' })
+    buildStage()
   }
 }
 
@@ -361,6 +401,16 @@ function updateActionAssetUrl(action, value, assetId = null) {
   const characterId = selectedCharacter.value.id
   const assets = cloneTimeline(timeline.value.characterAssets || {})
   const current = assets[characterId] || { modelUrl: '', scale: 1, actions: {} }
+  const previousActionUrl = resolveDirectorAssetUrl(current.actions?.[action]?.url)
+  const modelState = characterModels.get(String(characterId))
+  const requestKey = resourceStateKey('action', characterId, action)
+  actionResourceGenerations.set(requestKey, (actionResourceGenerations.get(requestKey) || 0) + 1)
+  actionResourceRequests.delete(requestKey)
+  if (modelState) {
+    delete modelState.actionClips[action]
+    modelState.activeClipKey = ''
+  }
+  actionResourceCache.delete(previousActionUrl)
   const actionAsset = { ...(current.actions?.[action] || {}), url: String(value || '').trim() }
   if (assetId !== null && assetId !== undefined) actionAsset.assetId = Number(assetId) > 0 ? Number(assetId) : null
   assets[characterId] = {
@@ -371,7 +421,10 @@ function updateActionAssetUrl(action, value, assetId = null) {
     },
   }
   mutateTimeline({ ...timeline.value, characterAssets: assets })
-  actionResourceCache.delete(String(value || '').trim())
+  const url = resolveDirectorAssetUrl(value)
+  actionResourceCache.delete(url)
+  setResourceState('action', characterId, url, { status: 'idle', message: '' }, action)
+  applyTimelineFrame()
 }
 
 async function uploadModelAsset(file, kind) {
@@ -379,7 +432,7 @@ async function uploadModelAsset(file, kind) {
   assetStatus.value = '正在上传三维资源…'
   try {
     const result = await uploadAPI.uploadModel(file, { dramaId: props.drama?.id })
-    const url = result?.url || (result?.local_path ? `/static/${result.local_path}` : '')
+    const url = resolveDirectorAssetUrl(result)
     if (!url) throw new Error('上传成功但没有返回资源地址')
     const assetId = result?.asset_id || result?.asset?.id || null
     if (kind === 'model') {
@@ -415,12 +468,13 @@ async function loadProjectAssets() {
 
 function applyLibraryAsset(kind) {
   const asset = selectedLibraryAsset.value
-  if (!asset?.url) return
+  if (!resolveDirectorAssetUrl(asset)) return
+  const url = resolveDirectorAssetUrl(asset)
   if (kind === 'model') {
-    updateCharacterAsset('modelUrl', asset.url)
+    updateCharacterAsset('modelUrl', url)
     updateCharacterAsset('modelAssetId', asset.id)
   } else {
-    updateActionAssetUrl(actionToAdd.value, asset.url, asset.id)
+    updateActionAssetUrl(actionToAdd.value, url, asset.id)
   }
   assetStatus.value = `${asset.name || '项目资产'}已应用为${kind === 'model' ? '角色模型' : '动作资源'}`
 }
@@ -439,6 +493,21 @@ function onActionFileChange(event) {
 
 function loadSelectedCharacterModel() {
   if (selectedCharacter.value) void loadCharacterModel(selectedCharacter.value.id)
+}
+
+function retrySelectedActionResource() {
+  if (!selectedCharacter.value) return
+  const characterId = selectedCharacter.value.id
+  const modelState = characterModels.get(String(characterId))
+  const resource = timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionToAdd.value]
+  const url = resolveDirectorAssetUrl(resource)
+  if (!url || !modelState) return
+  actionResourceCache.delete(url)
+  const requestKey = resourceStateKey('action', characterId, actionToAdd.value)
+  actionResourceGenerations.set(requestKey, (actionResourceGenerations.get(requestKey) || 0) + 1)
+  actionResourceRequests.delete(requestKey)
+  delete modelState.actionClips[actionToAdd.value]
+  void loadActionResource(characterId, actionToAdd.value, modelState)
 }
 
 function applyTimelineState(nextState, { emitChange = true } = {}) {
@@ -529,12 +598,7 @@ function stopPlayback() {
 }
 
 function recordingMimeType() {
-  const candidates = [
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
-    'video/webm',
-  ]
-  return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || ''
+  return pickDirectorRecordingMimeType((type) => window.MediaRecorder?.isTypeSupported?.(type))
 }
 
 async function recordTimelineBlob() {
@@ -595,7 +659,7 @@ async function exportTimelineVideo() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${String(props.drama?.title || '导演台镜头序列').replace(/[\\/:*?"<>|]/g, '_')}.webm`
+    link.download = directorExportFilename(props.drama?.title, 'webm')
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
     assetStatus.value = '视频已导出（WebM）'
@@ -622,15 +686,12 @@ async function exportTimelineMp4() {
       exportProgress.value = Math.max(1, Math.min(99, Number(task?.progress) || 1))
       if (task?.status === 'failed') throw new Error(task.error || '服务端转码失败')
       if (task?.status !== 'completed') continue
-      let result = task.result
-      if (typeof result === 'string') {
-        try { result = JSON.parse(result) } catch (_) {}
-      }
+      const result = parseDirectorExportResult(task.result)
       const url = result?.url
       if (!url) throw new Error('导出任务完成但没有下载地址')
       const link = document.createElement('a')
       link.href = url
-      link.download = `${String(props.drama?.title || '导演台镜头序列').replace(/[\\/:*?"<>|]/g, '_')}.mp4`
+      link.download = directorExportFilename(props.drama?.title, 'mp4')
       link.click()
       assetStatus.value = '视频已导出（MP4）'
       exportProgress.value = 100
@@ -677,6 +738,7 @@ function clearStageObjects() {
   characterObjects.clear()
   characterModels.clear()
   characterPlaceholders.clear()
+  actionResourceRequests.clear()
   stageRoot?.parent?.remove?.(stageRoot)
   stageRoot?.dispose?.()
   stageRoot = null
@@ -781,11 +843,12 @@ function removeCharacterPlaceholder(characterId) {
 async function loadCharacterModel(characterId, expectedBuildToken = stageBuildToken) {
   const normalizedId = String(characterId)
   const asset = timeline.value.characterAssets?.[normalizedId]
-  const url = String(asset?.modelUrl || '').trim()
+  const url = resolveDirectorAssetUrl(asset?.modelUrl)
   if (!url || !viewer.value || !stageRoot || expectedBuildToken !== stageBuildToken) return
   const existing = characterModels.get(normalizedId)
   if (existing?.url === url) return
   modelLoading.value = true
+  setResourceState('model', normalizedId, url, { status: 'loading', message: '正在加载角色模型…' })
   assetStatus.value = '正在加载角色模型…'
   try {
     const loader = new GLTFLoader()
@@ -817,9 +880,13 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
       activeClipKey: '',
     })
     assetStatus.value = `${characterName(normalizedId)}模型已加载`
+    setResourceState('model', normalizedId, url, { status: 'ready', message: `${characterName(normalizedId)}模型已加载` })
     applyTimelineFrame()
   } catch (error) {
-    assetStatus.value = `模型加载失败：${error?.message || '资源不可用'}`
+    if (disposed || expectedBuildToken !== stageBuildToken) return
+    const message = `模型加载失败：${error?.message || '资源不可用'}`
+    assetStatus.value = message
+    setResourceState('model', normalizedId, url, { status: 'error', message })
   } finally {
     modelLoading.value = false
   }
@@ -827,26 +894,60 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
 
 async function loadActionResource(characterId, actionName, modelState) {
   const resource = timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionName]
-  const url = String(resource?.url || '').trim()
+  const url = resolveDirectorAssetUrl(resource)
   if (!url) return
+  const requestKey = resourceStateKey('action', characterId, actionName)
+  const existingRequest = actionResourceRequests.get(requestKey)
+  if (existingRequest?.url === url) return
+  const requestToken = (actionResourceGenerations.get(requestKey) || 0) + 1
+  actionResourceGenerations.set(requestKey, requestToken)
+  actionResourceRequests.set(requestKey, { url, token: requestToken })
+  const isCurrentRequest = () => {
+    const currentRequest = actionResourceRequests.get(requestKey)
+    const currentUrl = resolveDirectorAssetUrl(timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionName])
+    return currentRequest?.url === url
+      && currentRequest?.token === requestToken
+      && characterModels.get(String(characterId)) === modelState
+      && currentUrl === url
+  }
+  setResourceState('action', characterId, url, { status: 'loading', message: `正在加载动作资源：${actionName}` }, actionName)
   if (actionResourceCache.has(url)) {
-    modelState.actionClips[actionName] = actionResourceCache.get(url)
+    const cachedAnimations = actionResourceCache.get(url)
+    if (!isDirectorAnimationCompatible(modelState?.root, cachedAnimations)) {
+      const message = '动作资源与当前角色模型骨架不兼容'
+      modelState.actionClips[actionName] = []
+      modelState.activeClipKey = ''
+      setResourceState('action', characterId, url, { status: 'error', message }, actionName)
+      actionResourceRequests.delete(requestKey)
+      return
+    }
+    modelState.actionClips[actionName] = Array.isArray(cachedAnimations) ? cachedAnimations : []
+    setResourceState('action', characterId, url, { status: 'ready', message: `${characterName(characterId)}动作资源已加载：${actionName}` }, actionName)
+    actionResourceRequests.delete(requestKey)
     return
   }
-  if (actionResourceLoading.has(url)) return
-  actionResourceLoading.add(url)
   try {
     const loader = new GLTFLoader()
     const gltf = await loader.loadAsync(url)
-    actionResourceCache.set(url, Array.isArray(gltf.animations) ? gltf.animations : [])
+    if (!isCurrentRequest()) return
+    const animations = Array.isArray(gltf.animations) ? gltf.animations : []
+    if (!isDirectorAnimationCompatible(modelState?.root, animations)) {
+      throw new Error('动作资源与当前角色模型骨架不兼容')
+    }
+    actionResourceCache.set(url, animations)
     if (modelState) modelState.actionClips[actionName] = actionResourceCache.get(url)
     assetStatus.value = `${characterName(characterId)}动作资源已加载：${actionName}`
+    setResourceState('action', characterId, url, { status: 'ready', message: `${characterName(characterId)}动作资源已加载：${actionName}` }, actionName)
     applyTimelineFrame()
   } catch (error) {
-    assetStatus.value = `动作资源加载失败：${error?.message || '资源不可用'}`
+    if (!isCurrentRequest()) return
+    const message = `动作资源加载失败：${error?.message || '资源不可用'}`
+    assetStatus.value = message
+    setResourceState('action', characterId, url, { status: 'error', message }, actionName)
+    if (modelState) modelState.actionClips[actionName] = []
     actionResourceCache.set(url, [])
   } finally {
-    actionResourceLoading.delete(url)
+    if (actionResourceRequests.get(requestKey)?.token === requestToken) actionResourceRequests.delete(requestKey)
   }
 }
 
@@ -1039,6 +1140,10 @@ onBeforeUnmount(() => {
 .resource-upload-row input[type="file"] { min-width: 0; flex: 1; color: #a1a1aa; font-size: 10px; }
 .resource-character, .resource-tip, .resource-status { color: #71717a; font-size: 10px; }
 .resource-status { color: #34d399; }
+.resource-status--row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.resource-status[data-status='loading'] { color: #fbbf24; }
+.resource-status[data-status='error'] { color: #fca5a5; }
+.resource-status--row .small-button { min-height: 44px; }
 .director-stage__viewport { position: relative; flex: 1; min-width: 0; min-height: 0; padding-bottom: 224px; background: #0f172a; }
 .director-stage__canvas { width: 100%; height: 100%; display: block; outline: none; }
 .director-stage__legend { position: absolute; right: 16px; top: 16px; display: flex; gap: 12px; padding: 8px 10px; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 9px; background: rgba(24, 24, 27, 0.82); color: #a1a1aa; font-size: 11px; }
