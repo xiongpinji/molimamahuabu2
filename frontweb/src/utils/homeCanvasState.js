@@ -117,3 +117,47 @@ export function normalizeHomeCanvasState(raw) {
 export function serializeHomeCanvasState(state) {
   return JSON.stringify(normalizeHomeCanvasState(state))
 }
+
+function cloneState(state) {
+  return normalizeHomeCanvasState(JSON.parse(JSON.stringify(state)))
+}
+
+export function createHomeCanvasHistory(state, limit = 50) {
+  const safeLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : 50
+  const present = cloneState(state)
+  return { past: [], present, future: [], limit: safeLimit }
+}
+
+export function commitHomeCanvasHistory(history, previousState, nextState) {
+  const previous = cloneState(previousState)
+  const present = cloneState(nextState)
+  if (serializeHomeCanvasState(previous) === serializeHomeCanvasState(present)) return history
+  return {
+    past: [...history.past, previous].slice(-history.limit),
+    present,
+    future: [],
+    limit: history.limit,
+  }
+}
+
+export function undoHomeCanvasHistory(history) {
+  if (!history.past.length) return history
+  const present = history.past.at(-1)
+  return {
+    past: history.past.slice(0, -1),
+    present,
+    future: [history.present, ...history.future].slice(0, history.limit),
+    limit: history.limit,
+  }
+}
+
+export function redoHomeCanvasHistory(history) {
+  if (!history.future.length) return history
+  const present = history.future[0]
+  return {
+    past: [...history.past, history.present].slice(-history.limit),
+    present,
+    future: history.future.slice(1),
+    limit: history.limit,
+  }
+}

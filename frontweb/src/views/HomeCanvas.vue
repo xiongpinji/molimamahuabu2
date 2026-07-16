@@ -45,7 +45,10 @@
           :nodes-connectable="true"
           :edges-updatable="true"
           :elements-selectable="true"
+          :select-nodes-on-drag="true"
+          selection-mode="partial"
           :selection-key-code="true"
+          :delete-key-code="null"
           :pan-on-drag="false"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
@@ -58,7 +61,13 @@
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
           @connect="onConnect"
-          @node-drag-stop="scheduleSave"
+          @nodes-change="onNodesChange"
+          @edges-change="onEdgesChange"
+          @node-drag-start="onNodeDragStart"
+          @node-drag-stop="onNodeDragStop"
+          @edge-update-start="onEdgeUpdateStart"
+          @edge-update="onEdgeUpdate"
+          @edge-update-end="onEdgeUpdateEnd"
           @viewport-change="onViewportChange"
           @move-end="scheduleSave"
         >
@@ -105,6 +114,13 @@
           <button type="button" class="toolbar-button" @click="openNodeEditor('text')">文本</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('image')">图片</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('video')">视频</button>
+          <span class="toolbar-divider" />
+          <button type="button" class="toolbar-icon" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
+            <el-icon><RefreshLeft /></el-icon>
+          </button>
+          <button type="button" class="toolbar-icon" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redoCanvas">
+            <el-icon><RefreshRight /></el-icon>
+          </button>
           <span class="toolbar-divider" />
           <button type="button" class="toolbar-icon" aria-label="画布帮助" title="帮助" @click="showHelp">
             <el-icon><QuestionFilled /></el-icon>
@@ -168,13 +184,13 @@
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { Delete, FullScreen, List, Moon, Plus, QuestionFilled, Share, Sunny, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Delete, FullScreen, List, Moon, Plus, QuestionFilled, RefreshLeft, RefreshRight, Share, Sunny, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -189,8 +205,12 @@ import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligne
 import {
   HOME_CANVAS_STORAGE_KEY,
   createHomeCanvasState,
+  createHomeCanvasHistory,
+  commitHomeCanvasHistory,
   normalizeHomeCanvasState,
+  redoHomeCanvasHistory,
   serializeHomeCanvasState,
+  undoHomeCanvasHistory,
 } from '@/utils/homeCanvasState'
 
 const router = useRouter()
@@ -212,12 +232,17 @@ const editingNodeId = ref(null)
 const editorKind = ref('text')
 const editorForm = ref({ title: '', content: '', url: '' })
 const activeStarterId = ref(null)
+const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
+const dragHistorySnapshot = ref(null)
+const edgeHistorySnapshot = ref(null)
 let saveTimer = null
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
 const initialViewport = computed(() => currentViewport.value)
 const zoomLabel = computed(() => `${Math.round(Number(currentViewport.value.zoom || 0.75) * 100)}%`)
 const layoutStatusLabel = computed(() => ({ saving: '保存中…', saved: '已保存', error: '保存失败' }[layoutSaveState.value] || '本地画布'))
+const canUndo = computed(() => historyState.value.past.length > 0)
+const canRedo = computed(() => historyState.value.future.length > 0)
 const starterPresets = Object.freeze([
   { id: 'script', icon: '☷', title: '故事脚本生成', description: '先写下故事梗概与角色设定', kind: 'text', nodeTitle: '故事脚本', nodeContent: '输入故事梗概、人物关系和场景目标。' },
   { id: 'character', icon: '♙', title: '角色三视图', description: '整理角色参考图和视觉设定', kind: 'image', nodeTitle: '角色三视图', nodeContent: '填写角色参考图地址，补充服装、动作和镜头备注。' },
@@ -236,6 +261,26 @@ function loadState() {
   edges.value = state.edges
   currentViewport.value = state.viewport
   hasSavedViewport.value = Boolean(raw)
+  historyState.value = createHomeCanvasHistory(state)
+}
+
+function currentCanvasState() {
+  return normalizeHomeCanvasState(serializeHomeCanvasState({
+    nodes: nodes.value,
+    edges: edges.value,
+    viewport: currentViewport.value,
+  }))
+}
+
+function commitHistory(previousState) {
+  historyState.value = commitHomeCanvasHistory(historyState.value, previousState, currentCanvasState())
+}
+
+function applyCanvasState(state) {
+  const next = normalizeHomeCanvasState(state)
+  nodes.value = next.nodes
+  edges.value = next.edges
+  currentViewport.value = next.viewport
 }
 
 function persistState() {
@@ -286,6 +331,7 @@ function onConnect(connection) {
     && (edge.targetHandle || '') === (targetHandle || '')
   ))
   if (exists) return
+  const previousState = currentCanvasState()
   edges.value = [
     ...edges.value,
     {
@@ -297,7 +343,58 @@ function onConnect(connection) {
       type: 'smoothstep',
     },
   ]
+  commitHistory(previousState)
   scheduleSave()
+}
+
+function onNodesChange(changes = []) {
+  if (changes.some((change) => change.type !== 'select')) scheduleSave()
+}
+
+function onEdgesChange(changes = []) {
+  if (changes.some((change) => change.type !== 'select')) scheduleSave()
+}
+
+function onNodeDragStart() {
+  dragHistorySnapshot.value = currentCanvasState()
+}
+
+function onNodeDragStop() {
+  if (dragHistorySnapshot.value) commitHistory(dragHistorySnapshot.value)
+  dragHistorySnapshot.value = null
+  scheduleSave()
+}
+
+function onEdgeUpdateStart() {
+  edgeHistorySnapshot.value = currentCanvasState()
+}
+
+function onEdgeUpdate({ edge, connection } = {}) {
+  const source = String(connection?.source || '')
+  const target = String(connection?.target || '')
+  if (!edge?.id || !source || !target || source === target) return
+  const duplicate = edges.value.some((item) => item.id !== edge.id && item.source === source && item.target === target)
+  if (duplicate) {
+    ElMessage.warning('该连接已存在')
+    return
+  }
+  const previousState = edgeHistorySnapshot.value || currentCanvasState()
+  edges.value = edges.value.map((item) => {
+    if (item.id !== edge.id) return item
+    const updated = { ...item, source, target }
+    if (connection.sourceHandle) updated.sourceHandle = String(connection.sourceHandle)
+    else delete updated.sourceHandle
+    if (connection.targetHandle) updated.targetHandle = String(connection.targetHandle)
+    else delete updated.targetHandle
+    return updated
+  })
+  edgeHistorySnapshot.value = null
+  commitHistory(previousState)
+  scheduleSave()
+}
+
+function onEdgeUpdateEnd() {
+  edgeHistorySnapshot.value = null
 }
 
 function registerCanvasFlowApi(api) {
@@ -369,6 +466,7 @@ function onNodeDoubleClick({ node }) {
 function submitNode() {
   const title = editorForm.value.title.trim()
   if (!title) return
+  const previousState = currentCanvasState()
   if (editingNodeId.value) {
     nodes.value = nodes.value.map((node) => node.id === editingNodeId.value
       ? { ...node, data: { ...node.data, kind: editorKind.value, title, content: editorForm.value.content, url: editorForm.value.url } }
@@ -392,6 +490,7 @@ function submitNode() {
   editorVisible.value = false
   activeStarterId.value = null
   pendingFlowPosition.value = null
+  commitHistory(previousState)
   scheduleSave()
   ElMessage.success(editingNodeId.value ? '节点已更新' : '节点已添加')
 }
@@ -406,8 +505,10 @@ async function clearCanvas() {
   } catch {
     return
   }
+  const previousState = currentCanvasState()
   nodes.value = []
   edges.value = []
+  commitHistory(previousState)
   scheduleSave()
 }
 
@@ -422,6 +523,54 @@ async function fitCanvasView() {
 
 function zoomIn() { canvasFlowApi.value?.zoomIn?.({ duration: 180 }) }
 function zoomOut() { canvasFlowApi.value?.zoomOut?.({ duration: 180 }) }
+
+function undoCanvas() {
+  const nextHistory = undoHomeCanvasHistory(historyState.value)
+  if (nextHistory === historyState.value) return
+  historyState.value = nextHistory
+  applyCanvasState(nextHistory.present)
+  scheduleSave()
+}
+
+function redoCanvas() {
+  const nextHistory = redoHomeCanvasHistory(historyState.value)
+  if (nextHistory === historyState.value) return
+  historyState.value = nextHistory
+  applyCanvasState(nextHistory.present)
+  scheduleSave()
+}
+
+function isEditableTarget(target) {
+  const element = target instanceof HTMLElement ? target : null
+  return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable))
+}
+
+function onCanvasKeydown(event) {
+  if (isEditableTarget(event.target)) return
+  const key = String(event.key || '').toLowerCase()
+  const modifier = event.ctrlKey || event.metaKey
+  if (modifier && !event.altKey && key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) redoCanvas()
+    else undoCanvas()
+    return
+  }
+  if (modifier && !event.altKey && key === 'y') {
+    event.preventDefault()
+    redoCanvas()
+    return
+  }
+  if ((event.key !== 'Delete' && event.key !== 'Backspace') || modifier || event.altKey) return
+  const selectedNodeIds = new Set(nodes.value.filter((node) => node.selected).map((node) => node.id))
+  const selectedEdgeIds = new Set(edges.value.filter((edge) => edge.selected).map((edge) => edge.id))
+  if (!selectedNodeIds.size && !selectedEdgeIds.size) return
+  event.preventDefault()
+  const previousState = currentCanvasState()
+  nodes.value = nodes.value.filter((node) => !selectedNodeIds.has(node.id))
+  edges.value = edges.value.filter((edge) => !selectedEdgeIds.has(edge.id) && !selectedNodeIds.has(edge.source) && !selectedNodeIds.has(edge.target))
+  commitHistory(previousState)
+  scheduleSave()
+}
 
 function showHelp() {
   ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；右键添加节点。')
@@ -456,12 +605,15 @@ async function shareCanvas() {
 
 loadState()
 
+onMounted(() => window.addEventListener('keydown', onCanvasKeydown))
+
 watch([nodes, edges], scheduleSave, { deep: true })
 watch(editorVisible, (visible) => {
   if (!visible) activeStarterId.value = null
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onCanvasKeydown)
   if (saveTimer) clearTimeout(saveTimer)
   persistState()
 })
@@ -514,6 +666,8 @@ onBeforeUnmount(() => {
 .toolbar-primary { width: 46px; background: #f4f4f5; color: #18181b; font-size: 21px; }
 .toolbar-button { padding: 0 10px; font-size: 12px; }
 .toolbar-icon { width: 42px; font-size: 17px; }
+.toolbar-icon:disabled { opacity: 0.38; cursor: not-allowed; }
+.toolbar-icon:disabled:hover { background: transparent; color: #d4d4d8; }
 .toolbar-button:hover, .toolbar-icon:hover { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; }
 .toolbar-icon.danger:hover { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
 .toolbar-divider { width: 1px; height: 24px; margin: 0 4px; background: #3f3f46; }

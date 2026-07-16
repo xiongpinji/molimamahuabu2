@@ -3,8 +3,12 @@ import assert from 'node:assert/strict'
 
 import {
   createHomeCanvasState,
+  createHomeCanvasHistory,
+  commitHomeCanvasHistory,
   normalizeHomeCanvasState,
+  redoHomeCanvasHistory,
   serializeHomeCanvasState,
+  undoHomeCanvasHistory,
 } from '../src/utils/homeCanvasState.js'
 
 test('首页画布默认状态不包含项目标识', () => {
@@ -59,4 +63,29 @@ test('首页画布只恢复连接现有节点的有效边并去重', () => {
   assert.equal(state.edges.length, 1)
   assert.equal(state.edges[0].id, 'edge-1')
   assert.equal(state.edges[0].type, 'smoothstep')
+})
+
+test('首页画布历史支持撤销和重做并清空重做分支', () => {
+  const initial = createHomeCanvasState()
+  const first = structuredClone(initial)
+  first.nodes[0].data.title = '第一次编辑'
+  const second = structuredClone(first)
+  second.nodes[0].data.title = '第二次编辑'
+
+  let history = createHomeCanvasHistory(initial)
+  history = commitHomeCanvasHistory(history, initial, first)
+  history = commitHomeCanvasHistory(history, first, second)
+  assert.equal(history.present.nodes[0].data.title, '第二次编辑')
+
+  history = undoHomeCanvasHistory(history)
+  assert.equal(history.present.nodes[0].data.title, '第一次编辑')
+  history = undoHomeCanvasHistory(history)
+  assert.equal(history.present.nodes[0].data.title, '首页自由画布')
+  history = redoHomeCanvasHistory(history)
+  assert.equal(history.present.nodes[0].data.title, '第一次编辑')
+
+  const branch = structuredClone(history.present)
+  branch.nodes[0].data.title = '新分支'
+  history = commitHomeCanvasHistory(history, history.present, branch)
+  assert.equal(history.future.length, 0)
 })
