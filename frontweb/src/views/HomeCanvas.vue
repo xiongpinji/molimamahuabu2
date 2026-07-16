@@ -237,6 +237,8 @@ const activeStarterId = ref(null)
 const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
 const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
+const canvasClipboard = ref(null)
+let canvasPasteSequence = 0
 let saveTimer = null
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
@@ -543,6 +545,70 @@ function redoCanvas() {
   scheduleSave()
 }
 
+function cloneCanvasValue(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function copySelectedCanvasElements() {
+  const state = currentCanvasState()
+  const selectedNodes = state.nodes.filter((node) => node.selected)
+  if (!selectedNodes.length) return
+  const selectedIds = new Set(selectedNodes.map((node) => node.id))
+  canvasClipboard.value = {
+    nodes: cloneCanvasValue(selectedNodes).map((node) => {
+      delete node.selected
+      delete node.dragging
+      return node
+    }),
+    edges: cloneCanvasValue(state.edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))).map((edge) => {
+      delete edge.selected
+      return edge
+    }),
+  }
+  ElMessage.success(`已复制 ${selectedNodes.length} 个节点`)
+}
+
+function pasteCanvasElements() {
+  const clipboard = canvasClipboard.value
+  if (!clipboard?.nodes?.length) return
+  const previousState = currentCanvasState()
+  const pasteStamp = `${Date.now()}:${canvasPasteSequence++}`
+  const idMap = new Map()
+  const pastedNodes = clipboard.nodes.map((node, index) => {
+    const nextId = `${node.id}:copy:${pasteStamp}:${index}`
+    idMap.set(node.id, nextId)
+    return {
+      ...cloneCanvasValue(node),
+      id: nextId,
+      position: {
+        x: Number(node.position?.x || 0) + 40,
+        y: Number(node.position?.y || 0) + 40,
+      },
+      selected: true,
+    }
+  })
+  const pastedEdges = clipboard.edges
+    .filter((edge) => idMap.has(edge.source) && idMap.has(edge.target))
+    .map((edge, index) => ({
+      ...cloneCanvasValue(edge),
+      id: `${edge.id}:copy:${pasteStamp}:${index}`,
+      source: idMap.get(edge.source),
+      target: idMap.get(edge.target),
+      selected: false,
+    }))
+  nodes.value = [
+    ...nodes.value.map((node) => ({ ...node, selected: false })),
+    ...pastedNodes,
+  ]
+  edges.value = [
+    ...edges.value.map((edge) => ({ ...edge, selected: false })),
+    ...pastedEdges,
+  ]
+  commitHistory(previousState)
+  scheduleSave()
+  ElMessage.success(`已粘贴 ${pastedNodes.length} 个节点`)
+}
+
 function isEditableTarget(target) {
   const element = target instanceof HTMLElement ? target : null
   return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable))
@@ -552,6 +618,16 @@ function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
   const modifier = event.ctrlKey || event.metaKey
+  if (modifier && !event.altKey && !event.shiftKey && key === 'c') {
+    event.preventDefault()
+    copySelectedCanvasElements()
+    return
+  }
+  if (modifier && !event.altKey && !event.shiftKey && key === 'v') {
+    event.preventDefault()
+    pasteCanvasElements()
+    return
+  }
   if (modifier && !event.altKey && key === 'z') {
     event.preventDefault()
     if (event.shiftKey) redoCanvas()
@@ -574,7 +650,7 @@ function onCanvasKeydown(event) {
 }
 
 function showHelp() {
-  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；右键添加节点。')
+  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；Ctrl/Cmd+C/V 复制粘贴；右键添加节点。')
 }
 
 async function shareCanvas() {
