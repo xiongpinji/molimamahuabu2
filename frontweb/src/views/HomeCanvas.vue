@@ -207,7 +207,9 @@ import {
   createHomeCanvasState,
   createHomeCanvasHistory,
   commitHomeCanvasHistory,
+  hasDuplicateHomeCanvasEdge,
   normalizeHomeCanvasState,
+  removeSelectedHomeCanvasElements,
   redoHomeCanvasHistory,
   serializeHomeCanvasState,
   undoHomeCanvasHistory,
@@ -324,12 +326,7 @@ function onConnect(connection) {
   if (!source || !target || source === target) return
   const sourceHandle = connection?.sourceHandle ? String(connection.sourceHandle) : undefined
   const targetHandle = connection?.targetHandle ? String(connection.targetHandle) : undefined
-  const exists = edges.value.some((edge) => (
-    edge.source === source
-    && edge.target === target
-    && (edge.sourceHandle || '') === (sourceHandle || '')
-    && (edge.targetHandle || '') === (targetHandle || '')
-  ))
+  const exists = hasDuplicateHomeCanvasEdge(edges.value, { source, target, sourceHandle, targetHandle })
   if (exists) return
   const previousState = currentCanvasState()
   edges.value = [
@@ -373,7 +370,13 @@ function onEdgeUpdate({ edge, connection } = {}) {
   const source = String(connection?.source || '')
   const target = String(connection?.target || '')
   if (!edge?.id || !source || !target || source === target) return
-  const duplicate = edges.value.some((item) => item.id !== edge.id && item.source === source && item.target === target)
+  const duplicate = hasDuplicateHomeCanvasEdge(edges.value, {
+    id: edge.id,
+    source,
+    target,
+    sourceHandle: connection.sourceHandle,
+    targetHandle: connection.targetHandle,
+  })
   if (duplicate) {
     ElMessage.warning('该连接已存在')
     return
@@ -561,13 +564,11 @@ function onCanvasKeydown(event) {
     return
   }
   if ((event.key !== 'Delete' && event.key !== 'Backspace') || modifier || event.altKey) return
-  const selectedNodeIds = new Set(nodes.value.filter((node) => node.selected).map((node) => node.id))
-  const selectedEdgeIds = new Set(edges.value.filter((edge) => edge.selected).map((edge) => edge.id))
-  if (!selectedNodeIds.size && !selectedEdgeIds.size) return
-  event.preventDefault()
   const previousState = currentCanvasState()
-  nodes.value = nodes.value.filter((node) => !selectedNodeIds.has(node.id))
-  edges.value = edges.value.filter((edge) => !selectedEdgeIds.has(edge.id) && !selectedNodeIds.has(edge.source) && !selectedNodeIds.has(edge.target))
+  const nextState = removeSelectedHomeCanvasElements(previousState)
+  if (serializeHomeCanvasState(previousState) === serializeHomeCanvasState(nextState)) return
+  event.preventDefault()
+  applyCanvasState(nextState)
   commitHistory(previousState)
   scheduleSave()
 }

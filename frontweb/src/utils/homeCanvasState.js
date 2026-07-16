@@ -85,6 +85,20 @@ function normalizeEdge(edge, index, nodeIds) {
   }
 }
 
+function edgeConnectionKey(edge) {
+  const source = String(edge?.source || '')
+  const target = String(edge?.target || '')
+  if (!source || !target) return ''
+  return `${source}|${target}|${edge?.sourceHandle ? String(edge.sourceHandle) : ''}|${edge?.targetHandle ? String(edge.targetHandle) : ''}`
+}
+
+export function hasDuplicateHomeCanvasEdge(edges, candidate) {
+  const candidateKey = edgeConnectionKey(candidate)
+  if (!candidateKey || !Array.isArray(edges)) return false
+  const excludedId = candidate?.id ? String(candidate.id) : ''
+  return edges.some((edge) => edgeConnectionKey(edge) === candidateKey && (!excludedId || String(edge?.id || '') !== excludedId))
+}
+
 export function normalizeHomeCanvasState(raw) {
   const parsed = parseRawState(raw)
   const fallback = createHomeCanvasState()
@@ -100,7 +114,7 @@ export function normalizeHomeCanvasState(raw) {
       .map((edge, index) => normalizeEdge(edge, index, nodeIds))
       .filter((edge) => {
         if (!edge) return false
-        const key = `${edge.source}|${edge.target}|${edge.sourceHandle || ''}|${edge.targetHandle || ''}`
+        const key = edgeConnectionKey(edge)
         if (seenEdges.has(key)) return false
         seenEdges.add(key)
         return true
@@ -111,6 +125,22 @@ export function normalizeHomeCanvasState(raw) {
     nodes,
     edges,
     viewport: normalizeViewport(parsed.viewport),
+  }
+}
+
+export function removeSelectedHomeCanvasElements(state) {
+  const normalized = normalizeHomeCanvasState(state)
+  const selectedNodeIds = new Set(normalized.nodes.filter((node) => node.selected).map((node) => node.id))
+  const selectedEdgeIds = new Set(normalized.edges.filter((edge) => edge.selected).map((edge) => edge.id))
+  if (!selectedNodeIds.size && !selectedEdgeIds.size) return normalized
+  return {
+    ...normalized,
+    nodes: normalized.nodes.filter((node) => !selectedNodeIds.has(node.id)),
+    edges: normalized.edges.filter((edge) => (
+      !selectedEdgeIds.has(edge.id)
+      && !selectedNodeIds.has(edge.source)
+      && !selectedNodeIds.has(edge.target)
+    )),
   }
 }
 
