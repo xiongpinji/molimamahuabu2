@@ -1,6 +1,6 @@
 <template>
   <div class="film-list">
-    <PlatformHeader :show-home-canvas="true">
+    <PlatformHeader>
       <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
@@ -41,9 +41,6 @@
                 </el-button>
                 <el-button size="large" class="action-btn action-btn-import" :loading="importing" @click="triggerImport">
                   <el-icon><Upload /></el-icon>导入短剧项目
-                </el-button>
-                <el-button size="large" class="action-btn action-btn-canvas" @click="goHomeCanvas">
-                  <el-icon><Grid /></el-icon>首页自由画布
                 </el-button>
               </div>
               <div v-if="exampleList.length > 0" class="action-card-example">
@@ -689,10 +686,6 @@ function goNewProject() {
   showNewDialog.value = true
 }
 
-function goHomeCanvas() {
-  router.push('/canvas')
-}
-
 function openCanvas(id) {
   router.push('/film/' + id + '/canvas')
 }
@@ -1068,14 +1061,6 @@ html.light .btn-import {
   --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
   --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
   --el-button-hover-text-color: #c7d2fe;
-}
-.action-btn-canvas {
-  --el-button-bg-color: rgba(52, 211, 153, 0.12);
-  --el-button-border-color: rgba(52, 211, 153, 0.35);
-  --el-button-text-color: #6ee7b7;
-  --el-button-hover-bg-color: rgba(52, 211, 153, 0.22);
-  --el-button-hover-border-color: rgba(52, 211, 153, 0.55);
-  --el-button-hover-text-color: #a7f3d0;
 }
 .action-card-example {
   width: 100%;

@@ -1,6 +1,6 @@
 <template>
   <div class="free-create-page">
-    <PlatformHeader title="自由创作" back-to="/" back-label="返回" :show-home-canvas="true">
+    <PlatformHeader title="自由创作" back-to="/" back-label="返回">
       <template #leading>
         <p class="page-desc">不绑定剧集，直接输入文字生成图片或视频</p>
       </template>

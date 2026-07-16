@@ -5,7 +5,6 @@
       :title="dramaId ? (store.drama?.title || '项目') : '新建故事'"
       :back-to="dramaId ? '/drama/' + dramaId : '/'"
       back-label="返回剧集"
-      :show-home-canvas="true"
     >
       <template #leading>
         <el-select

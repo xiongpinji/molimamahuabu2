@@ -1,6 +1,6 @@
 <template>
   <main class="billing-page">
-    <PlatformHeader title="模型积分定价" back-to="/" back-label="返回" :show-home-canvas="true" />
+    <PlatformHeader title="模型积分定价" back-to="/" back-label="返回" />
     <section class="billing-card">
       <header>
         <div>

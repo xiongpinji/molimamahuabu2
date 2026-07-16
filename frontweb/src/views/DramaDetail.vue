@@ -1,6 +1,6 @@
 <template>
   <div class="drama-detail">
-    <PlatformHeader :title="drama?.title || '剧集管理'" back-to="/" back-label="返回列表" :show-home-canvas="true">
+    <PlatformHeader :title="drama?.title || '剧集管理'" back-to="/" back-label="返回列表">
       <template #actions>
         <el-button type="primary" class="btn-canvas-mode" @click="goCanvasMode">
           <el-icon><Grid /></el-icon>打开画布

@@ -1,6 +1,6 @@
 <template>
   <div class="media-library-page">
-    <PlatformHeader title="媒体素材库" back-to="/" back-label="返回" :show-home-canvas="true">
+    <PlatformHeader title="媒体素材库" back-to="/" back-label="返回">
       <template #actions>
         <el-button type="primary" plain @click="triggerUpload">
           <el-icon><Upload /></el-icon>

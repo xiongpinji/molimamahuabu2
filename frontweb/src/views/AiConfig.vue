@@ -1,6 +1,6 @@
 <template>
   <div class="ai-config">
-    <PlatformHeader title="AI 配置" back-to="/" back-label="返回" :show-home-canvas="true" />
+    <PlatformHeader title="AI 配置" back-to="/" back-label="返回" />
 
     <main class="main">
       <AIConfigContent />
