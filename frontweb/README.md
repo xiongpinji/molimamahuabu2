@@ -30,6 +30,17 @@ npm run build
 
 请先启动 `backend-node`（如 `http://localhost:5679`），并确保 `vite.config.js` 中 proxy 的 target 与后端一致。
 
+## 画布交互回归
+
+首次运行浏览器回归前安装 Chromium：
+
+```bash
+npm run test:e2e:install
+npm run test:e2e
+```
+
+回归覆盖首页自由画布的右键添加、删除/撤销/重做，以及 Ctrl + 滚轮缩放和普通滚轮平移。
+
 ## 技术栈
 
 - Vue 3 + Vite
