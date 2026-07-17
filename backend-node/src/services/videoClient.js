@@ -31,6 +31,7 @@ function inferVideoProtocol(provider) {
   if (p === 'ffir') return 'kling_omni';
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
+  if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -133,12 +134,15 @@ function resolveVideoProtocol(config, modelHint) {
   const provider = (config.provider || '').toLowerCase();
   const explicit = String(config.api_protocol || '').trim();
   let protocol = explicit.toLowerCase() || inferVideoProtocol(provider);
+  if (provider === 'deepwl' || provider === 'deepwl_grok' || provider === 'deepwl-grok') {
+    if (!explicit || /deepwl|grok|unified|imagine|multipart|openai/.test(protocol)) protocol = 'deepwl_grok';
+  }
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
   if (!explicit && protocol === 'openai') {
     if (/api\.x\.ai(\/|$)/.test(baseLower)) protocol = 'xai';
     else if (/grok-imagine|grok.*video/.test(modelLower)) protocol = 'xai';
-    else if (p === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
+    else if (provider === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
   }
   return protocol;
 }
@@ -1027,16 +1031,27 @@ function buildQueryUrl(config, taskId) {
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
   const isSora = proto === 'sora';
   if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_QUERY_PATH + '/' + encodeURIComponent(taskId);
-  const base = (config.base_url || '').replace(/\/$/, '');
+  const base = (config.base_url || (proto === 'deepwl_grok' ? 'https://zx1.deepwl.net' : '')).replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
+  else if (proto === 'deepwl_grok') {
+    const mode = resolveDeepwlGrokMode(config);
+    defaultEp = mode === 'unified' ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}';
+  }
   else if (proto === 'veo3') defaultEp = '/v1/video/query?id={taskId}';
   else if (isDashScope) defaultEp = '/api/v1/tasks/{taskId}';
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
+  if (
+    proto === 'deepwl_grok' &&
+    resolveDeepwlGrokMode(config) !== 'unified' &&
+    /\/v1\/video\/query\?id=\{task[_-]?id\}/i.test(String(ep))
+  ) {
+    ep = defaultEp;
+  }
   ep = String(ep).replace(/\{taskId\}/gi, encodeURIComponent(taskId)).replace(/\{task_id\}/gi, encodeURIComponent(taskId)).replace(/\{id\}/gi, encodeURIComponent(taskId));
   if (!ep.startsWith('/')) ep = '/' + ep;
   return base + ep;
@@ -1067,6 +1082,151 @@ function getModelFromConfig(config, preferredModel) {
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || '';
+}
+
+/** DeepWL Grok 同时提供统一 JSON、Imagine JSON 和 OpenAI multipart 三种视频协议。 */
+function resolveDeepwlGrokMode(config = {}, modelHint) {
+  const explicit = String(config.api_protocol || '').toLowerCase();
+  if (explicit.includes('unified')) return 'unified';
+  if (explicit.includes('imagine')) return 'imagine';
+  if (explicit.includes('multipart') || explicit.includes('openai')) return 'openai';
+
+  // DeepWL 的 endpoint 是第二层契约信号：显式端点优先于模型名推断，
+  // 这样默认 /v1/video/create 不会因为模型名含 grok-video 被误切到 multipart。
+  const endpoint = String(config.endpoint || '').toLowerCase();
+  if (endpoint.includes('/v1/video/create')) return 'unified';
+  if (endpoint.includes('/v1/videos')) return 'openai';
+
+  const models = Array.isArray(config.model) ? config.model : [config.model || config.default_model || modelHint || ''];
+  const model = String(modelHint || config.default_model || models[0] || '').toLowerCase();
+  if (/grok[-_ ]*imagine/.test(model)) return 'imagine';
+  if (/grok/.test(model) && /video/.test(model)) return 'openai';
+  return 'unified';
+}
+
+function normalizeDeepwlUnifiedDuration(duration) {
+  const n = Number(duration);
+  if (!Number.isFinite(n)) return 10;
+  if (n <= 6) return 6;
+  if (n <= 10) return 10;
+  return 15;
+}
+
+function clampDeepwlImagineSeconds(duration) {
+  const n = Math.round(Number(duration));
+  if (!Number.isFinite(n)) return 8;
+  return Math.min(15, Math.max(1, n));
+}
+
+function normalizeDeepwlOpenaiSeconds(duration, model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('grok-1.5-video-15s')) return 15;
+  if (m.includes('grok-video-3-pro')) return 10;
+  if (m.includes('grok-video-3-max')) return 15;
+  return clampDeepwlImagineSeconds(duration);
+}
+
+function formatDeepwlSize(resolution) {
+  return String(resolution || '').toLowerCase().includes('1080') ? '1080P' : '720P';
+}
+
+function formatDeepwlResolution(resolution) {
+  // Imagine API 只接受 480P / 720P；不支持的值回退到合法的 720P。
+  return String(resolution || '').toLowerCase().includes('480') ? '480P' : '720P';
+}
+
+function buildDeepwlGrokVideoBody({
+  mode,
+  model,
+  prompt,
+  duration,
+  aspect_ratio,
+  resolution,
+  images = [],
+} = {}) {
+  const refs = Array.isArray(images) ? images.filter(Boolean) : [];
+  const ratio = normalizeAspectRatioForApi(aspect_ratio) || aspect_ratio || '16:9';
+  if (mode === 'imagine') {
+    const body = {
+      model: model || 'grok-imagine-video',
+      prompt: prompt || '',
+      seconds: String(clampDeepwlImagineSeconds(duration)),
+      aspect_ratio: ratio,
+      resolution: formatDeepwlResolution(resolution),
+    };
+    if (refs.length === 1) body.image = refs[0];
+    else if (refs.length > 1) body.images = refs.slice(0, 6);
+    return body;
+  }
+  return {
+    model: model || 'grok-video-3',
+    prompt: prompt || '',
+    images: refs.slice(0, 6),
+    aspect_ratio: ratio,
+    size: formatDeepwlSize(resolution),
+    duration: normalizeDeepwlUnifiedDuration(duration),
+  };
+}
+
+function collectDeepwlGrokImageInputs(opts = {}) {
+  const candidates = [];
+  const add = (value) => {
+    const s = String(value || '').trim();
+    if (s && !candidates.includes(s)) candidates.push(s);
+  };
+  add(opts.first_frame_url);
+  add(opts.last_frame_url);
+  add(opts.image_url);
+  for (const value of Array.isArray(opts.reference_urls) ? opts.reference_urls : []) add(value);
+  return candidates;
+}
+
+async function resolveDeepwlGrokImages(opts, log) {
+  const rawImages = collectDeepwlGrokImageInputs(opts);
+  const resolved = [];
+  for (let i = 0; i < rawImages.length; i++) {
+    const image = await resolveVeo3ImageForApi(
+      rawImages[i],
+      opts.storage_local_path,
+      log,
+      `${opts.video_gen_id || 0}_deepwl_${i}`
+    );
+    if (image?.value) resolved.push(image.value);
+  }
+  return resolved.slice(0, 6);
+}
+
+function pickDeepwlGrokVideoUrl(data) {
+  if (!data || typeof data !== 'object') return null;
+  const candidates = [
+    data.output?.url,
+    data.output?.video_url,
+    data.output?.detail?.url,
+    data.video_url,
+    data.url,
+    data.detail?.url,
+    data.data?.output?.url,
+    data.data?.output?.video_url,
+    data.data?.video_url,
+    data.data?.url,
+  ];
+  for (const value of candidates) {
+    const url = coerceHttpVideoUrl(value);
+    if (url) return url;
+  }
+  return pickProxyVideoUrl(data);
+}
+
+function parseDeepwlGrokSubmitResponse(payload) {
+  const direct = pickDeepwlGrokVideoUrl(payload);
+  if (direct) return { video_url: direct };
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload || {};
+  const taskId = payload?.id ?? payload?.task_id ?? data.id ?? data.task_id;
+  if (taskId == null || String(taskId).trim() === '') return null;
+  return {
+    task_id: String(taskId),
+    status: payload?.status || payload?.state || data.status || data.state || 'processing',
+  };
 }
 
 /** 仅把 http(s) 当作可下载直链，避免方舟/中转让 result_url 填入错误文案 */
@@ -3238,6 +3398,179 @@ async function callXaiVideoApi(config, log, opts) {
   return { error: 'xAI 未返回 request_id 或视频地址: ' + JSON.stringify(data).slice(0, 300) };
 }
 
+function buildDeepwlGrokEndpoint(config, mode) {
+  const base = (config.base_url || 'https://zx1.deepwl.net').replace(/\/$/, '');
+  let endpoint = String(config.endpoint || '').trim();
+  if (!endpoint || (mode !== 'unified' && /\/v1\/video\/create$/i.test(endpoint))) {
+    endpoint = mode === 'unified' ? '/v1/video/create' : '/v1/videos';
+  }
+  if (!endpoint.startsWith('/')) endpoint = '/' + endpoint;
+  return base + endpoint;
+}
+
+function buildDeepwlGrokContentEndpoint(config, taskId) {
+  const base = (config.base_url || 'https://zx1.deepwl.net').replace(/\/$/, '');
+  return `${base}/v1/videos/${encodeURIComponent(taskId)}/content`;
+}
+
+async function fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId) {
+  const url = buildDeepwlGrokContentEndpoint(config, taskId);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + (config.api_key || '') },
+    });
+    if (!response.ok) {
+      log?.warn?.('[DeepWL Grok] content 回退失败', {
+        video_gen_id: videoGenId,
+        task_id: taskId,
+        status: response.status,
+      });
+      return null;
+    }
+    // DeepWL 文档通常通过 302 返回短期签名地址；fetch 会跟随跳转，
+    // 同时兼容服务端直接返回 Location 的实现。
+    const finalUrl = coerceHttpVideoUrl(response.url);
+    const location = coerceHttpVideoUrl(response.headers?.get?.('location'));
+    if (finalUrl && finalUrl !== url) return finalUrl;
+    if (location) return location;
+    return null;
+  } catch (error) {
+    log?.warn?.('[DeepWL Grok] content 回退请求异常', {
+      video_gen_id: videoGenId,
+      task_id: taskId,
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+async function deepwlImageValueToDataUri(value, log, videoGenId) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('data:')) return raw;
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  try {
+    const response = await fetch(raw);
+    if (!response.ok) return raw;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers?.get?.('content-type') || 'image/jpeg';
+    const mime = contentType.startsWith('image/') ? contentType.split(';')[0] : 'image/jpeg';
+    return `data:${mime};base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    log?.warn?.('[DeepWL Grok] 参考图转 data URI 失败，保留原值', {
+      video_gen_id: videoGenId,
+      error: error.message,
+    });
+    return raw;
+  }
+}
+
+function dataUriToBlob(value, index) {
+  const match = String(value || '').match(/^data:([^;,]+);base64,(.+)$/is);
+  if (!match) return null;
+  const mime = match[1] || 'image/jpeg';
+  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  const extension = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+  return {
+    blob: new Blob([bytes], { type: mime }),
+    filename: `reference-${index + 1}.${extension}`,
+  };
+}
+
+async function deepwlImageValueToBlob(value, index) {
+  const raw = String(value || '').trim();
+  const dataBlob = dataUriToBlob(raw, index);
+  if (dataBlob) return dataBlob;
+  if (!/^https?:\/\//i.test(raw)) return null;
+  try {
+    const response = await fetch(raw);
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    const contentType = response.headers?.get?.('content-type') || 'image/jpeg';
+    const mime = contentType.startsWith('image/') ? contentType.split(';')[0] : 'image/jpeg';
+    const extension = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    return {
+      blob: new Blob([bytes], { type: mime }),
+      filename: `reference-${index + 1}.${extension}`,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function callDeepwlGrokVideoApi(config, log, opts = {}) {
+  const mode = resolveDeepwlGrokMode(config, opts.model);
+  const model = opts.model || (mode === 'imagine' ? 'grok-imagine-video' : 'grok-video-3');
+  if (mode !== 'unified' && String(opts.prompt || '').length > 4096) {
+    return { error: 'DeepWL Grok prompt 最多支持 4096 个字符' };
+  }
+  const url = buildDeepwlGrokEndpoint(config, mode);
+  const resolvedImages = await resolveDeepwlGrokImages(opts, log);
+  const ratio = normalizeAspectRatioForApi(opts.aspect_ratio) || opts.aspect_ratio || '16:9';
+  const headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+
+  let fetchOptions;
+  if (mode === 'openai') {
+    const form = new FormData();
+    form.append('model', model);
+    form.append('prompt', opts.prompt || '');
+    form.append('aspect_ratio', ratio);
+    form.append('seconds', String(normalizeDeepwlOpenaiSeconds(opts.duration, model)));
+    form.append('size', formatDeepwlSize(opts.resolution));
+    for (let i = 0; i < resolvedImages.length; i++) {
+      const file = await deepwlImageValueToBlob(resolvedImages[i], i);
+      if (file) form.append('input_reference', file.blob, file.filename);
+    }
+    fetchOptions = { method: 'POST', headers, body: form };
+  } else {
+    const images = mode === 'imagine'
+      ? await Promise.all(resolvedImages.map((image) => deepwlImageValueToDataUri(image, log, opts.video_gen_id)))
+      : resolvedImages;
+    const body = buildDeepwlGrokVideoBody({
+      mode,
+      model,
+      prompt: opts.prompt,
+      duration: opts.duration,
+      aspect_ratio: opts.aspect_ratio,
+      resolution: opts.resolution,
+      images,
+    });
+    fetchOptions = {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  }
+
+  log?.info?.('[DeepWL Grok] 提交视频任务', {
+    video_gen_id: opts.video_gen_id,
+    mode,
+    url,
+    model,
+    image_count: resolvedImages.length,
+  });
+  let response;
+  try {
+    response = await fetch(url, fetchOptions);
+  } catch (error) {
+    return { error: `DeepWL Grok 请求失败: ${error.message}` };
+  }
+  const raw = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    return { error: `DeepWL Grok 响应非 JSON (${response.status}): ${raw.slice(0, 300)}` };
+  }
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || payload?.detail || raw;
+    return { error: `DeepWL Grok 创建任务失败 (${response.status}): ${String(message).slice(0, 400)}` };
+  }
+  const result = parseDeepwlGrokSubmitResponse(payload);
+  if (result) return result;
+  return { error: 'DeepWL Grok 创建成功但未返回任务编号或视频地址' };
+}
+
 const VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME = new Set([
   'volcengine_omni',
   'volcengine',
@@ -3545,6 +3878,23 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'deepwl_grok') {
+    return callDeepwlGrokVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
   if (protocol === 'dashscope') {
     return callDashScopeVideoApi(config, log, {
       prompt,
@@ -3845,6 +4195,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
+  const isDeepwlGrok = protocol === 'deepwl_grok';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -3914,6 +4265,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       } else if (isDjpsd) {
         url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs/${encodeURIComponent(taskId)}`;
         headers = { 'api-key': config.api_key || '' };
+      } else if (isDeepwlGrok) {
+        url = queryUrl();
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
@@ -3966,6 +4320,45 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isDeepwlGrok) {
+        const status = extractPollTaskStatus(data);
+        const videoUrl = pickDeepwlGrokVideoUrl(data);
+        log.info('[DeepWL Grok poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (status === 'unknown') {
+          return {
+            indeterminate: true,
+            provider_task_id: String(taskId),
+            error: `DeepWL Grok 返回 unknown，暂不重提任务 ${taskId}`,
+          };
+        }
+        if (isPollTaskFailed(status) || data.error) {
+          const message = extractPollFailureMessage(data) || data.error?.message || data.error || status || '任务失败';
+          return { error: String(message).slice(0, 500) };
+        }
+        if (status === 'succeeded' || status === 'completed' || status === 'done') {
+          const mode = resolveDeepwlGrokMode(config);
+          if (mode !== 'unified') {
+            const contentUrl = await fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId);
+            if (contentUrl) {
+              log.info('[DeepWL Grok poll] 通过 content 回退取得视频地址', {
+                video_gen_id: videoGenId,
+                task_id: taskId,
+                video_url: contentUrl,
+              });
+              return { video_url: contentUrl };
+            }
+          }
+          return { error: 'DeepWL Grok 任务完成但未返回可下载的视频地址' };
+        }
         continue;
       }
 
@@ -4190,4 +4583,9 @@ module.exports = {
   parseDjpsdSubmitResponse,
   parseDjpsdPollResponse,
   formatDjpsdUnknownSubmitError,
+  callDeepwlGrokVideoApi,
+  buildDeepwlGrokVideoBody,
+  resolveDeepwlGrokMode,
+  normalizeDeepwlUnifiedDuration,
+  pickDeepwlGrokVideoUrl,
 };

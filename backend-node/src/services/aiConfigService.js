@@ -122,6 +122,11 @@ function createConfig(db, log, req) {
         endpoint = '/videos';
         queryEndpoint = '/videos/{taskId}';
       }
+    } else if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') {
+      if (st === 'video') {
+        endpoint = '/v1/video/create';
+        queryEndpoint = '/v1/video/query?id={taskId}';
+      }
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -324,6 +329,33 @@ async function testConnection(opts) {
   }
 
   if (!opts.api_key) throw new Error('api_key 必填');
+
+  // DeepWL Grok 没有 chat/completions 入口。连接测试只读查询一个不存在的任务，
+  // 401/403 明确表示密钥无效，400/404 表示查询路由已连通，其他状态按真实失败处理。
+  if ((provider === 'deepwl' || provider === 'deepwl_grok' || provider === 'deepwl-grok') && serviceType === 'video') {
+    const protocol = String(opts.api_protocol || '').toLowerCase();
+    const defaultQuery = protocol.includes('openai') || protocol.includes('imagine')
+      ? '/v1/videos/{taskId}'
+      : '/v1/video/query?id={taskId}';
+    const queryPath = String(opts.query_endpoint || defaultQuery)
+      .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
+    const queryUrl = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
+    const res = await fetch(queryUrl, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + opts.api_key },
+    });
+    if (res.status === 401 || res.status === 403) {
+      const text = await res.text();
+      let message = `DeepWL API Key 无效 (${res.status})`;
+      try {
+        const data = JSON.parse(text);
+        message = data.error?.message || data.message || data.detail || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+    if (res.status === 400 || res.status === 404 || res.ok) return;
+    throw new Error(`DeepWL 连接失败 (${res.status})`);
+  }
 
   // 用户指定的 Rehdasu OpenAI 兼容服务：只读模型列表验证网络与密钥。
   // 文本/图片生成都可能计费，连接测试不得提交生成请求。

@@ -333,6 +333,7 @@
             <el-option label="Vidu 视频" value="vidu" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
+            <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1367,6 +1368,7 @@ const providerConfigs = {
     },
     { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
     { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
+    { id: 'deepwl', name: 'DeepWL Grok 视频', models: ['grok-video-3', 'grok-video-3-pro', 'grok-video-3-max', 'grok-imagine-video', 'grok-imagine-video-1.5-preview'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
   ],
   tts: [
@@ -1395,6 +1397,8 @@ const providerProtocolMap = {
   vidu: 'vidu',
   xai: 'xai',
   grok: 'xai',
+  deepwl: 'deepwl_grok',
+  deepwl_grok: 'deepwl_grok',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1426,6 +1430,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'jimeng_ai_api') return 'http://127.0.0.1:8000'
   if (p === 'jimeng_material_api') return 'https://silvamux.tingyutech.com'
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
+  if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1577,6 +1582,12 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/videos'
     } else if (proto === 'xai') {
       submitPath = '/v1/videos/generations'
+    } else if (proto === 'deepwl_grok' || p === 'deepwl' || p === 'deepwl_grok') {
+      const model = String(form.value.default_model || '').toLowerCase()
+      const isUnified = endpoint
+        ? /\/v1\/video\/create/i.test(endpoint)
+        : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
+      submitPath = isUnified ? '/v1/video/create' : '/v1/videos'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       submitPath = '/api/v1/video-jobs'
     } else if (proto === 'veo3') {
@@ -1616,6 +1627,12 @@ const endpointPreviewInfo = computed(() => {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'xai') {
       queryPath = '/v1/videos/{taskId}'
+    } else if (proto === 'deepwl_grok' || p === 'deepwl' || p === 'deepwl_grok') {
+      const model = String(form.value.default_model || '').toLowerCase()
+      const isUnified = endpoint
+        ? /\/v1\/video\/create/i.test(endpoint)
+        : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
+      queryPath = isUnified ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       queryPath = '/api/v1/video-jobs/{taskId}'
     } else if (proto === 'veo3') {
@@ -1696,6 +1713,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'djpsd'
     form.value.endpoint = '/api/v1/video-jobs'
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
+  }
+  if (st === 'video' && (providerId === 'deepwl' || providerId === 'deepwl_grok')) {
+    form.value.api_protocol = 'deepwl_grok'
+    form.value.endpoint = '/v1/video/create'
+    form.value.query_endpoint = '/v1/video/query?id={taskId}'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
