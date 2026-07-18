@@ -6215,6 +6215,7 @@ function canUseUniversalOmniVideoApi(cfg) {
   const provider = String(cfg.provider || '').toLowerCase()
   const model = videoModelNameFromAiConfig(cfg).toLowerCase()
   if (proto === 'kling_omni') return true
+  if (proto === 'icreat_task' || provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') return true
   if (proto === 'volcengine_omni') {
     return isSeedance2VideoModel(model)
   }
