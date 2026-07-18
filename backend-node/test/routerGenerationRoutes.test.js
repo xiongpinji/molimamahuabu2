@@ -19,6 +19,7 @@ test('keeps primary image and video generation endpoints registered', () => {
     const routes = routeSet(router);
     assert.equal(routes.has('POST /images'), true);
     assert.equal(routes.has('POST /videos'), true);
+    assert.equal(routes.has('GET /video-models'), true);
   } finally {
     db.close();
   }

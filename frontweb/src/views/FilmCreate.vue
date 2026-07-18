@@ -1503,6 +1503,14 @@
                 <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                   <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
                 </el-tooltip>
+                <el-button
+                  size="small"
+                  :loading="extractingVoiceSbIds.has(sb.id)"
+                  :disabled="isSbVideoGenerating(sb.id)"
+                  @click="onExtractSbVoice(sb)"
+                >
+                  提取音色
+                </el-button>
                 <el-tooltip v-if="sb.dialogue" content="对白配音（TTS）" placement="top">
                   <el-button size="small" :loading="ttsSbIds.has(sb.id)" @click="onTtsSbDialogue(sb)">
                     对白配音
@@ -2585,6 +2593,19 @@
       <AIConfigContent v-if="showAiConfigDialog" />
     </el-dialog>
 
+    <el-dialog v-model="showVoiceExtractDialog" title="选择要绑定的角色音色" width="440px">
+      <p class="voice-extract-dialog-hint">本分镜包含多个角色。视频中的对白可能混合多个音色，请选择本次提取要写入的角色。</p>
+      <el-radio-group v-model="voiceExtractCharacterId" class="voice-extract-character-list">
+        <el-radio v-for="char in voiceExtractCandidates" :key="char.id" :value="char.id" border>
+          {{ char.name || `角色${char.id}` }}
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="showVoiceExtractDialog = false">取消</el-button>
+        <el-button type="primary" :loading="voiceExtractDialogLoading" @click="submitVoiceExtract">提取并绑定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 图片放大预览：点击遮罩或图片关闭 -->
     <Teleport to="body">
       <div
@@ -3201,6 +3222,14 @@ const upscalingSbIds = reactive(new Set())
 // P2-4: TTS 状态
 const ttsSbIds = reactive(new Set())
 const ttsSbNarrationIds = reactive(new Set())
+// 从已完成分镜视频提取角色音色
+const extractingVoiceSbIds = reactive(new Set())
+const showVoiceExtractDialog = ref(false)
+const voiceExtractDialogLoading = ref(false)
+const voiceExtractTarget = ref(null)
+const voiceExtractVideo = ref(null)
+const voiceExtractCandidates = ref([])
+const voiceExtractCharacterId = ref(null)
 // 尾帧衔接 loading 状态
 const linkingTailFrameIds = reactive(new Set())
 // “上镜尾帧”（将上一分镜尾帧图片直接设为当前首帧）loading 状态
@@ -3702,6 +3731,51 @@ function getSbVideo(storyboardId) {
     if (found) return found
   }
   return all[0]
+}
+
+/** 从当前已完成分镜视频提取音色；单角色自动绑定，多角色先让用户选择。 */
+async function onExtractSbVoice(sb) {
+  const video = getSbVideo(sb?.id)
+  if (!video) return ElMessage.warning('请先生成并选中一条已完成的分镜视频')
+  const candidates = getSbSelectedCharacters(sb?.id).map((char) => ({ id: Number(char.id), name: char.name || `角色${char.id}` }))
+  if (!candidates.length) return ElMessage.warning('请先为本分镜选择角色')
+  if (candidates.length > 1) {
+    voiceExtractTarget.value = sb
+    voiceExtractVideo.value = video
+    voiceExtractCandidates.value = candidates
+    voiceExtractCharacterId.value = candidates[0].id
+    showVoiceExtractDialog.value = true
+    return
+  }
+  await submitStoryboardVoiceExtraction(sb, video, candidates[0].id)
+}
+
+async function submitStoryboardVoiceExtraction(sb, video, characterId) {
+  if (!sb?.id || !video?.id || !characterId) return
+  extractingVoiceSbIds.add(sb.id)
+  try {
+    const result = await storyboardsAPI.extractVoice(sb.id, { video_id: video.id, character_id: characterId })
+    ElMessage.success(`已将视频音色绑定到${result.character_name || '当前角色'}`)
+    showVoiceExtractDialog.value = false
+    await loadDrama()
+  } catch (e) {
+    ElMessage.error(e?.message || '提取音色失败')
+  } finally {
+    extractingVoiceSbIds.delete(sb.id)
+  }
+}
+
+async function submitVoiceExtract() {
+  voiceExtractDialogLoading.value = true
+  try {
+    await submitStoryboardVoiceExtraction(
+      voiceExtractTarget.value,
+      voiceExtractVideo.value,
+      voiceExtractCharacterId.value,
+    )
+  } finally {
+    voiceExtractDialogLoading.value = false
+  }
 }
 /** 取下一个分镜（按 storyboard_number 顺序） */
 function getNextStoryboard(storyboardId) {
@@ -10284,6 +10358,21 @@ html.light .sb-video-placeholder {
   margin-top: 8px;
   flex-shrink: 0;
   padding-top: 6px;
+}
+.voice-extract-dialog-hint {
+  margin: 0 0 14px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.voice-extract-character-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.voice-extract-character-list .el-radio {
+  margin-right: 0;
 }
 .sb-video-regenerating-overlay {
   display: flex;

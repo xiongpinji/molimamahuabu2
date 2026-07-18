@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const aiAPI = {
+  listVideoModels() {
+    return request.get('/video-models')
+  },
   list(serviceType) {
     return request.get('/ai-configs', { params: serviceType ? { service_type: serviceType } : {} })
   },

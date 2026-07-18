@@ -7,6 +7,7 @@ import { generationAPI } from '@/api/generation'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
+import { buildMaterialLibraryQuery } from '@/utils/materialLibraryQuery'
 
 /**
  * 角色管理 Composable
@@ -87,7 +88,7 @@ export function useCharacters(deps) {
   const addingCharFromLibraryId = ref(null)
   let charLibraryKeywordTimer = null
 
-  /** 角色库弹窗 Tab：library | drama | team */
+  /** 角色库弹窗 Tab：library | global | drama */
   const charLibraryTab = ref('library')
   const dramaAllCharList = ref([])
   const dramaAllCharLoading = ref(false)
@@ -371,12 +372,13 @@ export function useCharacters(deps) {
   async function loadCharLibraryList() {
     charLibraryLoading.value = true
     try {
-      const res = await characterLibraryAPI.list({
-        drama_id: dramaId.value,
-        page: charLibraryPage.value,
-        page_size: charLibraryPageSize.value,
-        keyword: charLibraryKeyword.value || undefined
-      })
+      const res = await characterLibraryAPI.list(buildMaterialLibraryQuery(
+        charLibraryTab.value,
+        dramaId.value,
+        charLibraryPage.value,
+        charLibraryPageSize.value,
+        charLibraryKeyword.value,
+      ))
       charLibraryList.value = res?.items ?? []
       const pagination = res?.pagination ?? {}
       charLibraryTotal.value = pagination.total ?? 0
@@ -436,12 +438,12 @@ export function useCharacters(deps) {
   }
 
   function onCharLibraryDialogOpen() {
-    if (charLibraryTab.value === 'library') loadCharLibraryList()
+    if (charLibraryTab.value === 'library' || charLibraryTab.value === 'global') loadCharLibraryList()
     else if (charLibraryTab.value === 'drama') loadDramaAllCharList()
   }
 
   function onCharLibraryTabChange() {
-    if (charLibraryTab.value === 'library') {
+    if (charLibraryTab.value === 'library' || charLibraryTab.value === 'global') {
       charLibraryPage.value = 1
       loadCharLibraryList()
     } else if (charLibraryTab.value === 'drama') {

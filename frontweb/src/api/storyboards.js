@@ -124,6 +124,10 @@ export const storyboardsAPI = {
   upscale(id) {
     return request.post(`/storyboards/${id}/upscale`, {})
   },
+  /** 从已完成分镜视频提取短音频，并绑定到当前分镜角色 */
+  extractVoice(id, data = {}) {
+    return request.post(`/storyboards/${id}/extract-voice`, data)
+  },
   /** 尾帧衔接：提取当前分镜视频最后一帧，设为下一个分镜的首帧 */
   linkTailFrame(id, data) {
     return request.post(`/storyboards/${id}/link-tail-frame`, data || {})

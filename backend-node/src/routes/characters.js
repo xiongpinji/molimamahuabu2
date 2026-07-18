@@ -348,7 +348,9 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
             : path.join(process.cwd(), storageLocalPath)
           : path.join(process.cwd(), 'data', 'storage');
 
-        const relDir = `drama_${charRow.drama_id}/characters/voice`;
+        // 使用工程目录，和 /static 公共平台归属校验保持一致；旧版 drama_* 路径在公开模式下无法播放。
+        const projectSubdir = storageLayout.getProjectStorageSubdir(db, charRow.drama_id);
+        const relDir = `${projectSubdir}/characters/voice`;
         const absDir = path.join(storageRoot, relDir);
         if (!fs.existsSync(absDir)) fs.mkdirSync(absDir, { recursive: true });
 
@@ -366,6 +368,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
           certified_at: now,
           duration: null,
           format: ext.replace('.', ''),
+          source: 'user_upload',
         };
 
         db.prepare('UPDATE characters SET seedance2_voice_asset = ?, updated_at = ? WHERE id = ?').run(

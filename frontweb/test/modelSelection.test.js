@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getSelectableModels } from '../src/utils/modelSelection.js'
+import { getModelsFromAiConfig, getSelectableModels } from '../src/utils/modelSelection.js'
 
 const configs = [
   {
@@ -31,4 +31,15 @@ test('uses default active config models when no config is selected', () => {
 
 test('uses selected config models when config is selected', () => {
   assert.deepEqual(getSelectableModels(configs, 'text', 2), ['qwen-plus'])
+})
+
+test('normalizes a video AI config for option loading', () => {
+  assert.deepEqual(getModelsFromAiConfig({
+    model: ['grok-video-3', 'grok-video-3-fast'],
+    default_model: 'grok-video-3',
+  }), ['grok-video-3', 'grok-video-3-fast'])
+  assert.deepEqual(getModelsFromAiConfig({ model: 'grok-video-3\ngrok-video-3-fast' }), [
+    'grok-video-3',
+    'grok-video-3-fast',
+  ])
 })

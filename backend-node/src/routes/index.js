@@ -78,6 +78,7 @@ function setupRouter(cfg, db, log) {
 
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
+  r.get('/video-models', aiConfig.listPublicVideoModels);
   r.use('/billing/prices', requireAdmin);
   r.get('/billing/prices', billing.listPrices);
   r.put('/billing/prices/:model', billing.updatePrice);
@@ -350,6 +351,7 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/universal-segment-prompt', storyboards.generateUniversalSegmentPrompt);
   r.post('/storyboards/batch-infer-params', storyboards.batchInferParams);
   r.post('/storyboards/:id/upscale', storyboards.upscale);
+  r.post('/storyboards/:id/extract-voice', storyboards.extractVoice);
   r.post('/storyboards/:id/regenerate-layout-description', storyboards.regenerateLayoutDescription);
   r.post('/storyboards/:id/rebuild-video-prompt', storyboards.rebuildVideoPrompt);
   r.post('/storyboards/:id/split-by-audio', storyboards.splitByAudio);

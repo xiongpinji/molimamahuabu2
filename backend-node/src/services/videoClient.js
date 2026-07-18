@@ -3889,8 +3889,8 @@ function collectActiveCharacterVoiceRefs(db, dramaId) {
   if (!db || !dramaId) return map;
   try {
     const rows = db.prepare(
-      'SELECT id, seedance2_voice_asset FROM characters WHERE drama_id = ? AND deleted_at IS NULL'
-    ).all(Number(dramaId));
+      'SELECT id, seedance2_voice_asset FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC'
+    ).all(Number(dramaId)).sort((a, b) => Number(a.id) - Number(b.id));
     for (const row of rows) {
       const asset = parseJsonColumnForVideo(row.seedance2_voice_asset);
       if (!asset || String(asset.status || '').toLowerCase() !== 'active') continue;
@@ -3899,6 +3899,59 @@ function collectActiveCharacterVoiceRefs(db, dramaId) {
     }
   } catch (_) {}
   return map;
+}
+
+/**
+ * 选择本剧固定的 Seedance 2.0 音色参考。
+ * 作为没有分镜角色音色时的稳定回退，避免请求里出现伪造 URL。
+ */
+function selectStableCharacterVoiceRef(db, dramaId) {
+  const voiceMap = collectActiveCharacterVoiceRefs(db, dramaId);
+  return voiceMap.values().next().value || null;
+}
+
+function parseStoryboardVoiceCharacterIds(raw) {
+  if (raw == null || raw === '') return [];
+  let value = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); } catch (_) { return []; }
+  }
+  if (!Array.isArray(value)) value = [value];
+  return [...new Set(value
+    .map((item) => Number(item && typeof item === 'object' ? item.id : item))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+/**
+ * 当前分镜优先选择已绑定的角色音色；分镜没有可用角色音色时回退到本剧
+ * 按角色 ID 固定的第一条音色。这样同一角色跨分镜保持一致，同时不会把
+ * 某个无关角色的音色强行覆盖到有明确角色绑定的分镜上。
+ */
+function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
+  const voiceMap = collectActiveCharacterVoiceRefs(db, dramaId);
+  if (!voiceMap.size) return null;
+
+  const sid = Number(storyboardId);
+  if (Number.isInteger(sid) && sid > 0) {
+    let ids = [];
+    try {
+      const row = db.prepare(
+        'SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+      ).get(sid);
+      ids = parseStoryboardVoiceCharacterIds(row?.characters);
+    } catch (_) {}
+    if (!ids.length) {
+      try {
+        ids = db.prepare(
+          'SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC'
+        ).all(sid).map((row) => Number(row.character_id)).filter((id) => Number.isInteger(id) && id > 0);
+      } catch (_) {}
+    }
+    for (const id of ids) {
+      if (voiceMap.has(id)) return voiceMap.get(id);
+    }
+  }
+  return voiceMap.values().next().value || null;
 }
 
 function applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts) {
@@ -4012,40 +4065,14 @@ async function callVideoApi(db, log, opts) {
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
   const isSeedance2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(String(model || ''));
   if (isSeedance2 && db && opts.drama_id && !opts.voice_reference_url) {
-    const voiceMap = collectActiveCharacterVoiceRefs(db, opts.drama_id);
-    if (voiceMap.size > 0) {
-      // 优先使用分镜显式指定的角色（如果有），否则取第一个
-      let chosen = null;
-      if (opts.storyboard_id) {
-        try {
-          const sbRow = db.prepare('SELECT characters FROM storyboards WHERE id = ?').get(opts.storyboard_id);
-          if (sbRow && sbRow.characters) {
-            const charList = typeof sbRow.characters === 'string' ? JSON.parse(sbRow.characters) : sbRow.characters;
-            const ids = Array.isArray(charList) ? charList.map(c => Number(c?.id || c)).filter(Boolean) : [];
-            for (const cid of ids) {
-              if (voiceMap.has(cid)) { chosen = voiceMap.get(cid); break; }
-            }
-          }
-        } catch (_) {}
-      }
-      if (!chosen) {
-        // 取 Map 中的第一个
-        chosen = voiceMap.values().next().value;
-      }
-      if (chosen) {
-        opts.voice_reference_url = chosen;
-        log.info('[视频][SD2][全能] 自动为 Seedance 2.0 注入角色音色参考（来自角色 seedance2_voice_asset）', {
-          video_gen_id,
-          storyboard_id: opts.storyboard_id,
-          voice_ref_url: String(chosen).slice(0, 100)
-        });
-      } else {
-        log.info('[视频][SD2][全能] 检测到活跃音色参考但未匹配到当前分镜角色', {
-          video_gen_id,
-          storyboard_id: opts.storyboard_id,
-          available_voice_char_ids: Array.from(voiceMap.keys())
-        });
-      }
+    const chosen = selectStoryboardCharacterVoiceRef(db, opts.drama_id, opts.storyboard_id);
+    if (chosen) {
+      opts.voice_reference_url = chosen;
+      log.info('[视频][SD2][全能] 已注入当前分镜角色音色（无匹配时回退本剧固定音色）', {
+        video_gen_id,
+        storyboard_id: opts.storyboard_id,
+        voice_ref_url: String(chosen).slice(0, 100)
+      });
     } else {
       log.info('[视频][SD2][全能] Seedance 2.0 模型但本剧暂无 active 音色参考', { video_gen_id, drama_id: opts.drama_id });
     }
@@ -4870,4 +4897,7 @@ module.exports = {
   buildIcreatVideoBody,
   callIcreatVideoApi,
   pickIcreatVideoUrl,
+  collectActiveCharacterVoiceRefs,
+  selectStableCharacterVoiceRef,
+  selectStoryboardCharacterVoiceRef,
 };

@@ -5,6 +5,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
+import { buildMaterialLibraryQuery } from '@/utils/materialLibraryQuery'
 
 /**
  * 道具管理 Composable
@@ -333,12 +334,13 @@ export function useProps(deps) {
   async function loadPropLibraryList() {
     propLibraryLoading.value = true
     try {
-      const res = await propLibraryAPI.list({
-        drama_id: dramaId.value,
-        page: propLibraryPage.value,
-        page_size: propLibraryPageSize.value,
-        keyword: propLibraryKeyword.value || undefined
-      })
+      const res = await propLibraryAPI.list(buildMaterialLibraryQuery(
+        propLibraryTab.value,
+        dramaId.value,
+        propLibraryPage.value,
+        propLibraryPageSize.value,
+        propLibraryKeyword.value,
+      ))
       propLibraryList.value = res?.items ?? []
       const pagination = res?.pagination ?? {}
       propLibraryTotal.value = pagination.total ?? 0
@@ -398,13 +400,13 @@ export function useProps(deps) {
   }
 
   function onPropLibraryDialogOpen() {
-    if (propLibraryTab.value === 'library') loadPropLibraryList()
+    if (propLibraryTab.value === 'library' || propLibraryTab.value === 'global') loadPropLibraryList()
     else if (propLibraryTab.value === 'drama') loadDramaAllPropList()
     
   }
 
   function onPropLibraryTabChange() {
-    if (propLibraryTab.value === 'library') {
+    if (propLibraryTab.value === 'library' || propLibraryTab.value === 'global') {
       propLibraryPage.value = 1
       loadPropLibraryList()
     } else if (propLibraryTab.value === 'drama') {

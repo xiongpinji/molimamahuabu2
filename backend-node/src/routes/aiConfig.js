@@ -8,6 +8,24 @@ function list(db) {
   };
 }
 
+function listPublicVideoModels(db) {
+  return (req, res) => {
+    const list = aiConfigService.listConfigs(db, 'video')
+      .filter((config) => config.is_active !== false)
+      .map((config) => ({
+        id: config.id,
+        name: config.name,
+        provider: config.provider,
+        api_protocol: config.api_protocol,
+        model: config.model,
+        default_model: config.default_model,
+        is_active: config.is_active,
+        is_default: config.is_default,
+      }));
+    response.success(res, list);
+  };
+}
+
 function get(db) {
   return (req, res) => {
     const id = parseInt(req.params.id, 10);
@@ -192,6 +210,7 @@ function listJimeng2MaterialAssets(log) {
 module.exports = function aiConfigRoutes(db, log, cfg) {
   return {
     list: list(db),
+    listPublicVideoModels: listPublicVideoModels(db),
     get: get(db),
     vendorLock: vendorLock(cfg),
     create: create(db, log, cfg),
