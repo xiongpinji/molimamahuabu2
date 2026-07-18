@@ -3655,7 +3655,10 @@ function buildIcreatVideoBody({
     const value = String(url || '').trim();
     if (!value || seen.has(value)) return;
     seen.add(value);
-    content.push({ type: 'image_url', image_url: { url: value }, role });
+    // iCreat requires moderation acknowledgement for references that may contain
+    // faces or copyrighted characters. Local drama references are not reliably
+    // classifiable here, so opt into the documented review path for every image.
+    content.push({ type: 'image_url', image_url: { url: value }, role, need_review: true });
   };
   addImage(first_frame_url || image_url, 'first_frame');
   addImage(last_frame_url, 'last_frame');
@@ -4609,7 +4612,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         });
         if (videoUrl) return { video_url: videoUrl };
         if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED', 'NOT_FOUND'].includes(status)) {
-          return { error: `iCreat 任务失败或不存在: ${status}` };
+          const providerMessage = data?.error_message || data?.error?.message || data?.message || data?.error;
+          const detail = providerMessage ? `: ${String(providerMessage).slice(0, 300)}` : '';
+          return { error: `iCreat 任务失败或不存在: ${status}${detail}` };
         }
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
           const settings = parseConfigSettingsJson(config);

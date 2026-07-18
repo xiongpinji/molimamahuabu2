@@ -35,8 +35,8 @@ describe('iCreat Seedance video protocol', () => {
     assert.deepEqual(body, {
       content: [
         { type: 'text', text: '母女在花园里慢慢走近镜头' },
-        { type: 'image_url', image_url: { url: 'https://cdn.example/first.png' }, role: 'first_frame' },
-        { type: 'image_url', image_url: { url: 'https://cdn.example/last.png' }, role: 'last_frame' },
+        { type: 'image_url', image_url: { url: 'https://cdn.example/first.png' }, role: 'first_frame', need_review: true },
+        { type: 'image_url', image_url: { url: 'https://cdn.example/last.png' }, role: 'last_frame', need_review: true },
       ],
       ratio: '9:16',
       resolution: '1080p',
@@ -91,6 +91,27 @@ describe('iCreat Seedance video protocol', () => {
     assert.equal(requests[1].url, 'https://api.icreat.ai/v1/task/get-result');
     assert.deepEqual(requests[1].body, { task_id: 'icreat-task-1' });
     assert.deepEqual(result, { video_url: 'https://cdn.example/result.mp4' });
+  });
+
+  it('preserves the provider failure detail instead of returning only FAILED', async () => {
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        status: 'FAILED',
+        error_code: 'http_400',
+        error_message: 'request failed with HTTP 400',
+      }),
+    });
+
+    const result = await pollVideoTask(null, log, 1, 'icreat-task-failed', {
+      provider: 'icreat',
+      api_protocol: 'icreat_task',
+      base_url: 'https://api.icreat.ai',
+      api_key: 'secret',
+    }, 1, 0);
+
+    assert.equal(result.error, 'iCreat 任务失败或不存在: FAILED: request failed with HTTP 400');
   });
 
   it('routes an iCreat config through the production callVideoApi entry point', async () => {
