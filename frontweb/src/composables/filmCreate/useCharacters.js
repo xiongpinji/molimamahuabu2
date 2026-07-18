@@ -71,7 +71,10 @@ export function useCharacters(deps) {
   const showCharSd2Cert = ref(false)
   const charSd2CertPayload = ref(null)
   const sd2VoiceUploadingId = ref(null)
-
+  const builtinVoiceLoadingId = ref(null)
+  const showBuiltinVoiceDialog = ref(false)
+  const builtinVoiceTarget = ref(null)
+  const builtinVoiceCatalog = ref([])
   // ── 角色库状态 ────────────────────────────────────────
   const showCharLibrary = ref(false)
   const charLibraryList = ref([])
@@ -786,6 +789,46 @@ export function useCharacters(deps) {
     }
   }
 
+  async function openBuiltinVoiceCatalog(char) {
+    if (!char?.id) return
+    builtinVoiceTarget.value = char
+    builtinVoiceLoadingId.value = char.id
+    try {
+      const result = await characterAPI.listBuiltinVoices()
+      builtinVoiceCatalog.value = result?.items || []
+      showBuiltinVoiceDialog.value = true
+    } catch (e) {
+      ElMessage.error(e?.message || '内置音色目录加载失败')
+    } finally {
+      builtinVoiceLoadingId.value = null
+    }
+  }
+  async function bindBuiltinVoice(voice) {
+    const char = builtinVoiceTarget.value
+    if (!char?.id || !voice?.can_bind) return
+    builtinVoiceLoadingId.value = char.id
+    try {
+      await characterAPI.bindBuiltinVoice(char.id, voice.id)
+      showBuiltinVoiceDialog.value = false
+      await loadDrama()
+      ElMessage.success(`已绑定${voice.label}，仅 Seedance 2.0 模型生效`)
+    } catch (e) {
+      ElMessage.error(e?.message || '内置音色绑定失败')
+    } finally {
+      builtinVoiceLoadingId.value = null
+    }
+  }
+  function playBuiltinVoice(voice) {
+    const url = voice?.preview_url
+    if (!url) return ElMessage.info('该音色尚未生成本地试听文件')
+    try {
+      const audio = new Audio(url)
+      audio.play().catch(() => ElMessage.error('试听播放失败'))
+    } catch (_) {
+      ElMessage.error('试听播放失败')
+    }
+  }
+
   return {
     // 弹窗状态
     showEditCharacter,
@@ -803,6 +846,10 @@ export function useCharacters(deps) {
     showCharSd2Cert,
     charSd2CertPayload,
     sd2VoiceUploadingId,
+    builtinVoiceLoadingId,
+    showBuiltinVoiceDialog,
+    builtinVoiceTarget,
+    builtinVoiceCatalog,
     // 库状态
     showCharLibrary,
     charLibraryList,
@@ -856,6 +903,9 @@ export function useCharacters(deps) {
     onSd2VoiceReplace,
     sd2VoiceActionLabel,
     playSd2Voice,
+    openBuiltinVoiceCatalog,
+    bindBuiltinVoice,
+    playBuiltinVoice,
     loadCharLibraryList,
     debouncedLoadCharLibrary,
     loadDramaAllCharList,

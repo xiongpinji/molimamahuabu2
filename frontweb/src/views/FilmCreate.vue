@@ -484,6 +484,15 @@
 
                     <!-- Seedance 2.0 音色参考（仅该模型有效，其他模型不生效） -->
                     <div class="sd2-voice-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                      <el-button
+                        size="small"
+                        type="primary"
+                        plain
+                        :loading="builtinVoiceLoadingId === char.id"
+                        @click="openBuiltinVoiceCatalog(char)"
+                      >
+                        内置音色
+                      </el-button>
                       <template v-if="char.seedance2_voice_asset?.status === 'active'">
                         <!-- 音色参考已设置：显示试听 + 更换 -->
                         <el-button
@@ -2606,6 +2615,30 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="showBuiltinVoiceDialog" title="MeloTTS 内置音色" width="560px" destroy-on-close>
+      <p class="voice-extract-dialog-hint">
+        目录仅展示 MeloTTS 的开源音色元数据。只有服务器已生成并放入音色目录的本地音频才可绑定，避免把第三方演示音频直接用于生产。
+      </p>
+      <div v-for="voice in builtinVoiceCatalog" :key="voice.id" class="builtin-voice-item">
+        <div class="builtin-voice-main">
+          <div>
+            <strong>{{ voice.label }}</strong>
+            <span class="builtin-voice-meta">{{ voice.language }} · {{ voice.voice_id }} · {{ voice.license }}</span>
+          </div>
+          <div class="builtin-voice-actions">
+            <el-button size="small" :disabled="!voice.preview_url" @click="playBuiltinVoice(voice)">试听</el-button>
+            <el-button size="small" type="primary" :disabled="!voice.can_bind" :loading="builtinVoiceLoadingId === builtinVoiceTarget?.id" @click="bindBuiltinVoice(voice)">
+              {{ voice.can_bind ? '绑定' : '待生成' }}
+            </el-button>
+          </div>
+        </div>
+        <div class="builtin-voice-description">{{ voice.description }}</div>
+        <div v-if="!voice.can_bind" class="builtin-voice-hint">{{ voice.setup_hint }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="showBuiltinVoiceDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
     <!-- 图片放大预览：点击遮罩或图片关闭 -->
     <Teleport to="body">
       <div
@@ -2880,6 +2913,7 @@ const {
   extractingCharAppearance, extractingAnchors, addCharRefImage, addCharRefFileInput,
   charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
   sd2VoiceUploadingId,
+  builtinVoiceLoadingId, showBuiltinVoiceDialog, builtinVoiceTarget, builtinVoiceCatalog,
   showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage, charLibraryPageSize,
   charLibraryTotal, charLibraryKeyword, charLibraryTab,
   dramaAllCharList, dramaAllCharLoading, dramaAllCharPage, dramaAllCharPageSize, dramaAllCharTotal, dramaAllCharKeyword,
@@ -2889,6 +2923,7 @@ const {
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
   extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
   onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
+  openBuiltinVoiceCatalog, bindBuiltinVoice, playBuiltinVoice,
   loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
   onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
   openEditCharLibrary, submitEditCharLibrary,
@@ -10364,6 +10399,32 @@ html.light .sb-video-placeholder {
   color: var(--el-text-color-secondary);
   font-size: 13px;
   line-height: 1.6;
+}
+.builtin-voice-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.builtin-voice-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.builtin-voice-meta,
+.builtin-voice-description,
+.builtin-voice-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.builtin-voice-hint {
+  color: var(--el-color-warning);
+}
+.builtin-voice-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .voice-extract-character-list {
   display: flex;

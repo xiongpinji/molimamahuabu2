@@ -19,6 +19,7 @@ const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const audioRoutes = require('./audio');
+const voiceCatalogRoutes = require('./voiceCatalog');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
 const sceneModelMapRoutes = require('./sceneModelMap');
@@ -67,9 +68,12 @@ function setupRouter(cfg, db, log) {
     secret: process.env.PLATFORM_JWT_SECRET,
     db,
   });
+  const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
 
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
+  // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
+  r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
@@ -99,6 +103,7 @@ function setupRouter(cfg, db, log) {
   const audio = audioRoutes(db, log, cfg);
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
+  r.get('/voice-catalog', voiceCatalog.list);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
@@ -235,6 +240,7 @@ function setupRouter(cfg, db, log) {
   r.post('/characters/:id/sd2-certify/refresh', characters.sd2CertifyRefresh);
   r.post('/characters/:id/sd2-voice-upload', uploadModule.multerAudioSingle, characters.sd2VoiceUpload);
   r.post('/characters/:id/sd2-voice-refresh', characters.sd2VoiceRefresh);
+  r.post('/characters/:id/sd2-voice-catalog', voiceCatalog.bind);
   r.post('/characters/:id/extract-from-image', characters.extractFromImage);
   r.post('/characters/:id/extract-anchors', characters.extractAnchors);
 
