@@ -2627,7 +2627,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
-import { confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
+import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
 import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
@@ -6534,7 +6534,20 @@ async function onRegenerateLayoutDescription(sb) {
 
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
-  const retryAllowed = await confirmUnknownResultRetry(getSbVideoError(sb.id), () =>
+  const lastVideoError = getSbVideoError(sb.id)
+  const balanceRetryAllowed = await confirmProviderBalanceRetry(lastVideoError, () =>
+    ElMessageBox.confirm(
+      `上一次视频任务被供应商拒绝：${lastVideoError}。请先充值或切换低价模型；只有确认余额已补足后才继续提交。`,
+      '供应商余额不足',
+      {
+        confirmButtonText: '我已充值，继续提交',
+        cancelButtonText: '暂不重试',
+        type: 'warning',
+      }
+    )
+  )
+  if (!balanceRetryAllowed) return
+  const retryAllowed = await confirmUnknownResultRetry(lastVideoError, () =>
     ElMessageBox.confirm(
       '上一次 Seedance 创建请求连接中断，供应商可能已经受理或扣费，但平台未收到任务编号。请先核对供应商任务记录。仍要再次提交吗？',
       '结果未知，可能重复扣费',
