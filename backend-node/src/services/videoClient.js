@@ -32,6 +32,7 @@ function inferVideoProtocol(provider) {
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
   if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
+  if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -136,6 +137,9 @@ function resolveVideoProtocol(config, modelHint) {
   let protocol = explicit.toLowerCase() || inferVideoProtocol(provider);
   if (provider === 'deepwl' || provider === 'deepwl_grok' || provider === 'deepwl-grok') {
     if (!explicit || /deepwl|grok|unified|imagine|multipart|openai/.test(protocol)) protocol = 'deepwl_grok';
+  }
+  if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
+    protocol = 'icreat_task';
   }
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -1043,6 +1047,7 @@ function buildQueryUrl(config, taskId) {
   else if (isDashScope) defaultEp = '/api/v1/tasks/{taskId}';
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
+  else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -3571,6 +3576,211 @@ async function callDeepwlGrokVideoApi(config, log, opts = {}) {
   return { error: 'DeepWL Grok 创建成功但未返回任务编号或视频地址' };
 }
 
+const ICREAT_MODEL_ALIASES = {
+  'seedance 2.0 fast': 'bytedance/seedance-2-0-fast',
+  'seedance 2.0 mini': 'bytedance/seedance-2-0-mini',
+  'seedance-2.0-fast': 'bytedance/seedance-2-0-fast',
+  'seedance-2.0-mini': 'bytedance/seedance-2-0-mini',
+  'seedance-2-0-fast': 'bytedance/seedance-2-0-fast',
+  'seedance-2-0-mini': 'bytedance/seedance-2-0-mini',
+};
+
+function normalizeIcreatBaseUrl(baseUrl) {
+  const raw = String(baseUrl || 'https://api.icreat.ai').trim().replace(/\/+$/, '');
+  try {
+    const url = new URL(raw);
+    if (url.hostname.toLowerCase() === 'zh.icreat.ai') url.hostname = 'api.icreat.ai';
+    if (url.pathname === '/v1') url.pathname = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch (_) {
+    return raw.replace(/^https:\/\/zh\.icreat\.ai/i, 'https://api.icreat.ai').replace(/\/v1$/i, '');
+  }
+}
+
+function normalizeIcreatModel(model) {
+  const raw = String(model || '').trim();
+  if (!raw) return 'bytedance/seedance-2-0-mini';
+  if (/^bytedance\/seedance-2-0-(?:fast|mini)$/i.test(raw)) return raw.toLowerCase();
+  return ICREAT_MODEL_ALIASES[raw.toLowerCase()] || raw;
+}
+
+function normalizeIcreatDuration(duration) {
+  const n = Math.round(Number(duration));
+  if (!Number.isFinite(n)) return 5;
+  return Math.min(15, Math.max(4, n));
+}
+
+function normalizeIcreatResolution(resolution, model) {
+  const value = String(resolution || '').toLowerCase().replace(/\s/g, '');
+  if (!value) return '720p';
+  const normalized = value === '480' ? '480p' : value === '720' ? '720p' : value === '1080' ? '1080p' : value;
+  if ((/seedance-2-0-(?:fast|mini)/i.test(String(model || '')) || /seedance 2\.0 (?:fast|mini)/i.test(String(model || ''))) && !['480p', '720p'].includes(normalized)) {
+    return '720p';
+  }
+  return ['480p', '720p', '1080p', '4k'].includes(normalized) ? normalized : '720p';
+}
+
+function normalizeIcreatEndpoint(endpoint, fallback) {
+  const value = String(endpoint || fallback).trim();
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
+function buildIcreatTaskUrl(config, endpoint, taskId) {
+  const base = normalizeIcreatBaseUrl(config?.base_url);
+  let ep = normalizeIcreatEndpoint(endpoint, '/v1/task/query-status');
+  ep = ep
+    .replace(/\{taskId\}/gi, encodeURIComponent(taskId))
+    .replace(/\{task_id\}/gi, encodeURIComponent(taskId))
+    .replace(/\{id\}/gi, encodeURIComponent(taskId));
+  return /^https?:\/\//i.test(ep) ? ep : base + ep;
+}
+
+function buildIcreatVideoBody({
+  prompt,
+  duration,
+  aspect_ratio,
+  resolution,
+  model,
+  first_frame_url,
+  last_frame_url,
+  image_url,
+  reference_urls,
+  generate_audio,
+  watermark,
+  tools,
+} = {}) {
+  const content = [{ type: 'text', text: String(prompt || '') }];
+  const seen = new Set();
+  const addImage = (url, role) => {
+    const value = String(url || '').trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    content.push({ type: 'image_url', image_url: { url: value }, role });
+  };
+  addImage(first_frame_url || image_url, 'first_frame');
+  addImage(last_frame_url, 'last_frame');
+  for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
+
+  const body = {
+    content,
+    ratio: normalizeAspectRatioForApi(aspect_ratio) || aspect_ratio || '16:9',
+    resolution: normalizeIcreatResolution(resolution, model),
+    duration: normalizeIcreatDuration(duration),
+  };
+  if (generate_audio != null) body.generate_audio = Boolean(generate_audio);
+  if (watermark != null) body.watermark = Boolean(watermark);
+  if (Array.isArray(tools) && tools.length) body.tools = tools;
+  return body;
+}
+
+async function resolveIcreatImages(opts, log) {
+  const fields = [
+    ['first_frame_url', 'first_frame_url'],
+    ['last_frame_url', 'last_frame_url'],
+    ['image_url', 'image_url'],
+  ];
+  const resolved = {};
+  for (const [field, role] of fields) {
+    const raw = String(opts[field] || '').trim();
+    if (!raw) continue;
+    const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_${role}`);
+    if (image?.value) resolved[field] = image.value;
+  }
+  const refs = [];
+  for (let i = 0; i < (Array.isArray(opts.reference_urls) ? opts.reference_urls.length : 0); i++) {
+    const raw = String(opts.reference_urls[i] || '').trim();
+    if (!raw) continue;
+    const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_ref${i}`);
+    if (image?.value && !refs.includes(image.value)) refs.push(image.value);
+  }
+  resolved.reference_urls = refs;
+  return resolved;
+}
+
+function pickIcreatVideoUrl(payload) {
+  if (!payload) return null;
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = pickIcreatVideoUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof payload !== 'object') return coerceHttpVideoUrl(payload);
+  const direct = [
+    payload.video_url,
+    payload.videoUrl,
+    payload.url,
+    payload.output?.video_url,
+    payload.output?.videoUrl,
+    payload.output?.url,
+    payload.data?.video_url,
+    payload.data?.videoUrl,
+    payload.data?.url,
+    payload.result?.video_url,
+    payload.result?.videoUrl,
+    payload.result?.url,
+  ];
+  for (const candidate of direct) {
+    const url = coerceHttpVideoUrl(candidate);
+    if (url) return url;
+  }
+  for (const nested of [payload.data, payload.result, payload.output]) {
+    const found = pickIcreatVideoUrl(nested);
+    if (found) return found;
+  }
+  return null;
+}
+
+function parseIcreatTaskResponse(payload) {
+  const direct = pickIcreatVideoUrl(payload);
+  if (direct) return { video_url: direct };
+  const data = payload?.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? payload.data : payload || {};
+  const taskId = payload?.taskId ?? payload?.task_id ?? payload?.id ?? data.taskId ?? data.task_id ?? data.id;
+  if (taskId == null || String(taskId).trim() === '') return null;
+  return {
+    task_id: String(taskId),
+    status: payload?.status || payload?.state || data.status || data.state || 'processing',
+  };
+}
+
+async function callIcreatVideoApi(config, log, opts = {}) {
+  const model = normalizeIcreatModel(opts.model || config.default_model || (Array.isArray(config.model) ? config.model[0] : config.model));
+  const encodedModel = model.split('/').map((part) => encodeURIComponent(part)).join('/');
+  let endpoint = normalizeIcreatEndpoint(config.endpoint, '/v1/task/submit/{model}');
+  endpoint = endpoint.replace(/\{model\}/gi, encodedModel);
+  if (!endpoint.includes(encodedModel) && /\/v1\/task\/submit\/?$/i.test(endpoint)) endpoint += `/${encodedModel}`;
+  const url = /^https?:\/\//i.test(endpoint) ? endpoint : normalizeIcreatBaseUrl(config.base_url) + endpoint;
+  const images = await resolveIcreatImages(opts, log);
+  const settings = parseConfigSettingsJson(config);
+  const body = buildIcreatVideoBody({
+    ...opts,
+    ...images,
+    model,
+    resolution: normalizeIcreatResolution(opts.resolution, model),
+  });
+  const headers = {
+    Authorization: `Bearer ${config.api_key || ''}`,
+    'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+    'Content-Type': 'application/json',
+  };
+  let response;
+  try {
+    response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (error) {
+    return { error: `iCreat 视频请求失败: ${error.message}` };
+  }
+  const raw = await response.text();
+  let payload;
+  try { payload = JSON.parse(raw); } catch (_) { payload = null; }
+  if (!response.ok) {
+    const message = payload?.message || payload?.detail || payload?.error?.message || raw || `HTTP ${response.status}`;
+    return { error: `iCreat 创建任务失败 (${response.status}): ${String(message).slice(0, 400)}` };
+  }
+  const result = parseIcreatTaskResponse(payload);
+  return result || { error: 'iCreat 创建成功但未返回任务编号或视频地址' };
+}
+
 const VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME = new Set([
   'volcengine_omni',
   'volcengine',
@@ -3895,6 +4105,21 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'icreat_task') {
+    return callIcreatVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url,
+      first_frame_url,
+      last_frame_url,
+      video_gen_id,
+    });
+  }
+
   if (protocol === 'dashscope') {
     return callDashScopeVideoApi(config, log, {
       prompt,
@@ -4196,6 +4421,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
   const isDeepwlGrok = protocol === 'deepwl_grok';
+  const isIcreat = protocol === 'icreat_task';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -4218,7 +4444,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
-      let url, headers;
+      let url, headers, method = 'GET', requestBody;
       if (isKling) {
         // task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx`
         const klingBase = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
@@ -4268,13 +4494,23 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       } else if (isDeepwlGrok) {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+      } else if (isIcreat) {
+        const settings = parseConfigSettingsJson(config);
+        url = buildIcreatTaskUrl(config, config.query_endpoint || '/v1/task/query-status', taskId);
+        method = 'POST';
+        requestBody = JSON.stringify({ task_id: String(taskId) });
+        headers = {
+          Authorization: 'Bearer ' + (config.api_key || ''),
+          'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+          'Content-Type': 'application/json',
+        };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       }
       const pollRound = attempt + 1;
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
-      const res = await fetch(url, { method: 'GET', headers });
+      const res = await fetch(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
       const raw = await res.text();
       const bodyLogged =
         pollLogBodyMax === Infinity
@@ -4358,6 +4594,42 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             }
           }
           return { error: 'DeepWL Grok 任务完成但未返回可下载的视频地址' };
+        }
+        continue;
+      }
+
+      if (isIcreat) {
+        const status = String(data?.status || data?.state || data?.data?.status || data?.data?.state || '').toUpperCase();
+        const videoUrl = pickIcreatVideoUrl(data);
+        log.info('[iCreat poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED', 'NOT_FOUND'].includes(status)) {
+          return { error: `iCreat 任务失败或不存在: ${status}` };
+        }
+        if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
+          const settings = parseConfigSettingsJson(config);
+          const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
+          const resultResponse = await fetch(resultUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer ' + (config.api_key || ''),
+              'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ task_id: String(taskId) }),
+          });
+          const resultRaw = await resultResponse.text();
+          let resultData;
+          try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
+          if (!resultResponse.ok) return { error: `iCreat 获取结果失败 (${resultResponse.status})` };
+          const resultVideoUrl = pickIcreatVideoUrl(resultData);
+          if (resultVideoUrl) return { video_url: resultVideoUrl };
+          return { error: 'iCreat 任务完成但未返回视频地址' };
         }
         continue;
       }
@@ -4588,4 +4860,9 @@ module.exports = {
   resolveDeepwlGrokMode,
   normalizeDeepwlUnifiedDuration,
   pickDeepwlGrokVideoUrl,
+  normalizeIcreatBaseUrl,
+  normalizeIcreatModel,
+  buildIcreatVideoBody,
+  callIcreatVideoApi,
+  pickIcreatVideoUrl,
 };

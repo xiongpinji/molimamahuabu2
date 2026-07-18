@@ -127,6 +127,11 @@ function createConfig(db, log, req) {
         endpoint = '/v1/video/create';
         queryEndpoint = '/v1/video/query?id={taskId}';
       }
+    } else if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') {
+      if (st === 'video') {
+        endpoint = '/v1/task/submit/{model}';
+        queryEndpoint = '/v1/task/query-status';
+      }
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -329,6 +334,36 @@ async function testConnection(opts) {
   }
 
   if (!opts.api_key) throw new Error('api_key 必填');
+
+  // iCreat 采用三段式任务接口；连接测试只查询不存在的任务，避免提交计费任务。
+  if ((provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') && serviceType === 'video') {
+    let icreatBase = base;
+    try {
+      const url = new URL(base);
+      if (url.hostname.toLowerCase() === 'zh.icreat.ai') url.hostname = 'api.icreat.ai';
+      if (url.pathname === '/v1') url.pathname = '';
+      icreatBase = url.toString().replace(/\/+$/, '');
+    } catch (_) {
+      icreatBase = base.replace(/^https:\/\/zh\.icreat\.ai/i, 'https://api.icreat.ai').replace(/\/v1$/i, '');
+    }
+    const settings = (() => {
+      if (!opts.settings) return {};
+      if (typeof opts.settings === 'object') return opts.settings;
+      try { return JSON.parse(opts.settings) || {}; } catch (_) { return {}; }
+    })();
+    const res = await fetch(`${icreatBase}/v1/task/query-status`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + opts.api_key,
+        'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ task_id: 'codex-connectivity-check' }),
+    });
+    if (res.status === 401 || res.status === 403) throw new Error(`iCreat API Key 无效 (${res.status})`);
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(`iCreat 连接失败 (${res.status})`);
+  }
 
   // DeepWL Grok 没有 chat/completions 入口。连接测试只读查询一个不存在的任务，
   // 401/403 明确表示密钥无效，400/404 表示查询路由已连通，其他状态按真实失败处理。

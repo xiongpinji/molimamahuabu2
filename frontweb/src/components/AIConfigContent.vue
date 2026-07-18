@@ -334,6 +334,7 @@
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
+            <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -490,6 +491,15 @@ input_reference = (图片文件，可选)</pre>
   "watermark": false
 }</pre>
                   <b>注意：</b>官方 api.vidu.cn 用 <code>Token</code> 认证，中转站用 <code>Bearer</code>，系统自动识别。localhost 图片自动上传图床。
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="icreat-vid">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> iCreat Seedance — 三段式任务接口</template>
+                <div class="ph-body">
+                  <b>Base URL：</b><code>https://api.icreat.ai</code>（网页域名 <code>zh.icreat.ai</code> 仅用于文档）<br>
+                  <b>创建：</b><code>POST /v1/task/submit/{model}</code>；<b>查询：</b><code>POST /v1/task/query-status</code>；<b>取结果：</b><code>POST /v1/task/get-result</code><br>
+                  <b>模型：</b><code>bytedance/seedance-2-0-fast</code>、<code>bytedance/seedance-2-0-mini</code><br>
+                  <b>认证：</b><code>Authorization: Bearer {api_key}</code>，并发送 <code>X-ICREAT-AI-GROUP: default</code>。连接测试只查询不存在的任务，不会提交计费任务。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="jimeng-ai-api-vid">
@@ -1344,6 +1354,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
+    { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1399,6 +1410,8 @@ const providerProtocolMap = {
   grok: 'xai',
   deepwl: 'deepwl_grok',
   deepwl_grok: 'deepwl_grok',
+  icreat: 'icreat_task',
+  icreat_task: 'icreat_task',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1431,6 +1444,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'jimeng_material_api') return 'https://silvamux.tingyutech.com'
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
+  if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1557,8 +1571,10 @@ const endpointPreviewInfo = computed(() => {
     } else {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
-    } else if (service_type === 'video') {
-    if (endpoint) {
+  } else if (service_type === 'video') {
+    if (proto === 'icreat_task' || p === 'icreat') {
+      submitPath = endpoint || '/v1/task/submit/{model}'
+    } else if (endpoint) {
       submitPath = endpoint
     } else if (proto === 'volcengine_omni') {
       submitPath = '/contents/generations/tasks'
@@ -1613,6 +1629,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'icreat_task' || p === 'icreat') {
+      queryPath = '/v1/task/query-status'
     } else if (proto === 'volcengine_omni') {
       queryPath = '/contents/generations/tasks/{taskId}'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
@@ -1718,6 +1736,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'deepwl_grok'
     form.value.endpoint = '/v1/video/create'
     form.value.query_endpoint = '/v1/video/query?id={taskId}'
+  }
+  if (st === 'video' && (providerId === 'icreat' || providerId === 'icreat_task')) {
+    form.value.api_protocol = 'icreat_task'
+    form.value.endpoint = '/v1/task/submit/{model}'
+    form.value.query_endpoint = '/v1/task/query-status'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
