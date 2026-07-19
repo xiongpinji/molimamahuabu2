@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const videoService = require('../src/services/videoService');
+const videoClient = require('../src/services/videoClient');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -110,4 +111,48 @@ test('视频请求缺少提示词和模型时读取分镜持久化配置并固�
   assert.equal(explicit.model, 'explicit-video-model');
   assert.equal(explicit.prompt, '显式覆盖后的镜头动作');
   db.close();
+});
+
+test('持久化分镜提示词和模型会传入实际视频供应商请求', async () => {
+  const db = setup();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO characters (drama_id, name, voice_style, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(1, '小狐狸', 'bright youthful voice, clear diction', now, now);
+  const characterId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+  db.prepare(
+    `UPDATE storyboards
+     SET characters = ?, dialogue = ?, video_prompt = ?, video_model = ?
+     WHERE id = 1`
+  ).run(
+    JSON.stringify([characterId]),
+    '小狐狸：我们继续往前走。',
+    '雨后森林，镜头跟随小狐狸向前走。',
+    'grok-video-3'
+  );
+
+  const callbacks = [];
+  let captured = null;
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  videoClient.callVideoApi = async (_db, _log, payload) => {
+    captured = payload;
+    return { error: 'capture-only: do not send provider request' };
+  };
+  videoClient.getDefaultVideoConfig = () => ({ model: 'grok-video-3', api_url: 'https://example.com' });
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+    }, { billingEnabled: false, schedule(callback) { callbacks.push(callback); } });
+    await callbacks[0]();
+    assert.equal(created.model, 'grok-video-3');
+    assert.equal(captured.model, 'grok-video-3');
+    assert.match(captured.prompt, /雨后森林/);
+    assert.match(captured.prompt, /VOICE CONTINUITY/);
+    assert.match(captured.prompt, /bright youthful voice, clear diction/);
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
 });
