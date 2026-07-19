@@ -1,5 +1,6 @@
 // 分镜：create, update, delete；帧提示词 get/save
 const storyboardVoiceLockService = require('./storyboardVoiceLockService');
+const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 
 /**
  * 将分镜勾选的角色（dramas.characters 表 id）同步到 storyboard_characters（角色库 id），
@@ -61,8 +62,8 @@ function createStoryboard(db, log, req) {
   const episodeId = Number(req.episode_id);
   const num = Number(req.storyboard_number ?? 0) || 0;
   const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
     episodeId,
     req.scene_id ?? null,
@@ -78,10 +79,14 @@ function createStoryboard(db, log, req) {
     req.atmosphere ?? null,
     req.image_prompt ?? null,
     req.video_prompt ?? null,
+    req.characters != null
+      ? (Array.isArray(req.characters) ? JSON.stringify(req.characters) : String(req.characters))
+      : '[]',
     now,
     now
   );
   storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, info.lastInsertRowid);
+  storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, info.lastInsertRowid);
   log.info('Storyboard created', { id: info.lastInsertRowid, episode_id: episodeId });
   return getStoryboardById(db, info.lastInsertRowid);
 }
@@ -124,6 +129,7 @@ function updateStoryboard(db, log, id, req) {
     }
     storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, id);
   }
+  storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, id);
   // 道具关联：写入 storyboard_props 表
   if (req.prop_ids !== undefined) {
     const propIds = Array.isArray(req.prop_ids) ? req.prop_ids : [];

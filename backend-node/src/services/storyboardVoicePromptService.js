@@ -101,6 +101,57 @@ function supportsPromptAudio(protocol, model) {
   return !isSilentModel(protocol, model);
 }
 
+function buildVoiceContinuityBlock(characters) {
+  const lines = characters.map((row) => {
+    const explicit = String(row.voice_style || '').trim();
+    const style = explicit || generatedVoiceStyle(row);
+    return `- ${row.name}: ${style}. Keep this voice distinct and consistent across shots.`;
+  });
+  return [
+    'VOICE CONTINUITY (text guidance only; do not imitate a named person):',
+    ...lines,
+    'Dialogue must be spoken by the named character. Keep dialogue, ambience, and music separated; do not merge character voices.',
+  ].join('\n');
+}
+
+function appendVoiceContinuityBlock(prompt, characters) {
+  const base = String(prompt || '').trim();
+  if (!base || !characters.length || /(^|\n)VOICE CONTINUITY\b/i.test(base)) return base;
+  const block = buildVoiceContinuityBlock(characters);
+  // Veo 3 documents a 1,024-token prompt limit; reserve most of the budget for
+  // the actual shot description and keep this fallback block compact.
+  const maxPromptChars = 3800;
+  const baseText = base.slice(0, maxPromptChars);
+  const room = Math.max(0, maxPromptChars - baseText.length - 2);
+  return room > 0 ? `${baseText}\n\n${block.slice(0, room)}` : baseText;
+}
+
+/** 将固定角色声线持久化到分镜 video_prompt，供后续所有模型/重试复用。 */
+function ensureStoryboardVoicePrompt(db, storyboardId) {
+  const sid = Number(storyboardId);
+  if (!db || !Number.isInteger(sid) || sid <= 0) return null;
+  let row;
+  try {
+    row = db.prepare(
+      `SELECT s.video_prompt, s.dialogue, s.characters, e.drama_id
+       FROM storyboards s
+       JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
+       WHERE s.id = ? AND s.deleted_at IS NULL`
+    ).get(sid);
+  } catch (_) {
+    return null;
+  }
+  const base = String(row?.video_prompt || '').trim();
+  if (!base || !String(row?.dialogue || '').trim()) return base;
+  const characters = resolveCharacters(db, row.drama_id, sid);
+  const prompt = appendVoiceContinuityBlock(base, characters);
+  if (prompt !== base) {
+    db.prepare('UPDATE storyboards SET video_prompt = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .run(prompt, new Date().toISOString(), sid);
+  }
+  return prompt;
+}
+
 /** 返回追加后的提示词；无对白、静音模型或无角色时保持原文。 */
 function appendVoiceAnchors({ db, dramaId, storyboardId, prompt, protocol, model }) {
   const base = String(prompt || '').trim();
@@ -112,27 +163,14 @@ function appendVoiceAnchors({ db, dramaId, storyboardId, prompt, protocol, model
     return base;
   }
   const characters = resolveCharacters(db, dramaId, storyboardId);
-  if (!characters.length) return base;
-  const lines = characters.map((row) => {
-    const explicit = String(row.voice_style || '').trim();
-    const style = explicit || generatedVoiceStyle(row);
-    return `- ${row.name}: ${style}. Keep this voice distinct and consistent across shots.`;
-  });
-  const block = [
-    'VOICE CONTINUITY (text guidance only; do not imitate a named person):',
-    ...lines,
-    'Dialogue must be spoken by the named character. Keep dialogue, ambience, and music separated; do not merge character voices.',
-  ].join('\n');
-  // Veo 3 documents a 1,024-token prompt limit; reserve most of the budget for
-  // the actual shot description and keep this fallback block compact.
-  const maxPromptChars = 3800;
-  const baseText = base.slice(0, maxPromptChars);
-  const room = Math.max(0, maxPromptChars - baseText.length - 2);
-  return room > 0 ? `${baseText}\n\n${block.slice(0, room)}` : baseText;
+  return appendVoiceContinuityBlock(base, characters);
 }
 
 module.exports = {
   appendVoiceAnchors,
+  appendVoiceContinuityBlock,
+  buildVoiceContinuityBlock,
+  ensureStoryboardVoicePrompt,
   generatedVoiceStyle,
   isSilentModel,
   parseRefs,

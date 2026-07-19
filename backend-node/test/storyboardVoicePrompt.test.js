@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const voicePrompt = require('../src/services/storyboardVoicePromptService');
+const episodeStoryboardService = require('../src/services/episodeStoryboardService');
+const storyboardService = require('../src/services/storyboardService');
 const { callVideoApi } = require('../src/services/videoClient');
 
 function createDb() {
@@ -102,6 +104,83 @@ test('部分角色有音频快照时仍为分镜全部角色生成文字声线',
   });
   assert.match(prompt, /小狐狸:/);
   assert.match(prompt, /林岚:/);
+  db.close();
+});
+
+test('生成后的分镜 video_prompt 自动挂载固定角色声线，且重复刷新不会重复追加', () => {
+  const db = createDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO dramas (title, created_at, updated_at) VALUES (?, ?, ?)').run('persisted voice prompt', now, now);
+  const dramaId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, created_at, updated_at) VALUES (?, 1, ?, ?)').run(dramaId, now, now);
+  const episodeId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const insertCharacter = db.prepare(
+    'INSERT INTO characters (drama_id, name, voice_style, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+  );
+  insertCharacter.run(dramaId, '小狐狸', 'bright youthful voice, clear diction', now, now);
+  const foxId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  insertCharacter.run(dramaId, '林岚', 'warm low voice, calm pace', now, now);
+  const linlanId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const firstId = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    episodeId,
+    JSON.stringify([foxId]),
+    '小狐狸：别怕。',
+    '场景：森林。动作：小狐狸抬头。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+  const secondId = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, 2, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    episodeId,
+    JSON.stringify([foxId, linlanId]),
+    '小狐狸：我找到路了。\n林岚：跟紧我。',
+    '场景：林间小路。动作：两人向前走。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+
+  const { ensureStoryboardVoicePrompt } = voicePrompt;
+  const first = ensureStoryboardVoicePrompt(db, firstId);
+  const second = ensureStoryboardVoicePrompt(db, secondId);
+  const firstAgain = ensureStoryboardVoicePrompt(db, firstId);
+
+  assert.match(first, /VOICE CONTINUITY/);
+  assert.match(first, /bright youthful voice, clear diction/);
+  assert.doesNotMatch(first, /warm low voice, calm pace/);
+  assert.match(second, /bright youthful voice, clear diction/);
+  assert.match(second, /warm low voice, calm pace/);
+  assert.equal(firstAgain, first);
+  assert.equal((first.match(/VOICE CONTINUITY/g) || []).length, 1);
+  assert.equal((second.match(/VOICE CONTINUITY/g) || []).length, 1);
+
+  const legacyId = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, 3, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    episodeId,
+    JSON.stringify([foxId]),
+    '小狐狸：继续前进。',
+    '场景：溪边。动作：小狐狸向前走。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+  const listed = episodeStoryboardService.getStoryboardsForEpisode(db, episodeId);
+  assert.match(listed.find((item) => item.id === legacyId).video_prompt, /bright youthful voice, clear diction/);
+
+  const created = storyboardService.createStoryboard(db, { info() {} }, {
+    episode_id: episodeId,
+    storyboard_number: 4,
+    characters: [foxId],
+    dialogue: '小狐狸：我们走。',
+    video_prompt: '场景：林间。动作：小狐狸转身。',
+  });
+  assert.deepEqual(created.characters, [foxId]);
+  assert.match(created.video_prompt, /bright youthful voice, clear diction/);
   db.close();
 });
 

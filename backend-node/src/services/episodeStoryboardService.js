@@ -8,6 +8,7 @@ const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extract
 const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
 const storyboardVoiceLockService = require('./storyboardVoiceLockService');
+const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 
 /**
  * 分镜专用 generateText 包装：
@@ -225,6 +226,11 @@ function buildFallbackUniversalSeedanceLine(sb, d, styleHint) {
 }
 
 function getStoryboardsForEpisode(db, episodeId) {
+  // 读取分镜时顺手补齐旧数据，保证历史分镜也遵循当前角色声线策略；已存在锚点时不会写库。
+  const ids = db.prepare(
+    'SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL'
+  ).all(episodeId);
+  for (const row of ids) storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, row.id);
   const rows = dedupeStoryboardRowsByNumber(
     db.prepare(
       'SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC, id ASC'
@@ -523,6 +529,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
     episodeIdNum
   );
   storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, existingId);
+  storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, existingId);
   try {
     db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(existingId);
     if (d.propIds.length > 0) {
@@ -556,6 +563,7 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
     );
     const newId = db.prepare('SELECT last_insert_rowid() as id').get().id;
     storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, newId);
+    storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, newId);
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -752,6 +760,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
     }
     const id = db.prepare('SELECT last_insert_rowid() as id').get().id;
     storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, id);
+    storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, id);
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -1397,43 +1406,16 @@ function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
 
   const videoRatio = dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
 
-  let charNames = [];
-  if (row.characters) {
-    try {
-      const arr = typeof row.characters === 'string' ? JSON.parse(row.characters) : row.characters;
-      if (Array.isArray(arr)) {
-        charNames = arr
-          .map((c) => {
-            if (typeof c === 'string') return c;
-            if (c && typeof c === 'object') return c.name;
-            return null;
-          })
-          .filter(Boolean);
-      }
-    } catch (_) {}
-  }
-
-  const charRows = loadCharactersForStoryboardPrompt(db, sbId, charNames);
-  const characterAppearances = buildCharacterAppearanceText(db, sbId, charNames);
-  const characterVoiceMap = buildVoiceAnchorMap(charRows);
-  const characterVoiceAnchors = buildCharacterVoiceAnchors(db, sbId, charNames);
-
-  const sbForPrompt = {
-    ...row,
-    character_appearances: characterAppearances,
-    character_voice_map: characterVoiceMap,
-    character_voice_anchors: characterVoiceAnchors,
-  };
-
-  const videoPrompt = generateVideoPrompt(sbForPrompt, finalStyle, videoRatio);
+  const videoPrompt = generateVideoPrompt(row, finalStyle, videoRatio);
   const now = new Date().toISOString();
   db.prepare('UPDATE storyboards SET video_prompt = ?, updated_at = ? WHERE id = ?').run(videoPrompt, now, sbId);
+  const persistedPrompt = storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, sbId) || videoPrompt;
 
   if (log?.info) {
     log.info('[分镜] 已按最新规则重建 video_prompt', {
       id: sbId,
-      len: videoPrompt.length,
-      has_voice_anchors: !!characterVoiceAnchors,
+      len: persistedPrompt.length,
+      has_voice_anchors: /VOICE CONTINUITY\b/i.test(persistedPrompt),
     });
   }
 

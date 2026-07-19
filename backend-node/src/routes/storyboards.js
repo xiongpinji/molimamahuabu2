@@ -10,6 +10,7 @@ const angleService = require('../services/angleService');
 const { buildUniversalSegmentUserPromptBundle } = require('../services/universalSegmentPromptBundle');
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
 const storyboardVoiceExtractionService = require('../services/storyboardVoiceExtractionService');
+const storyboardVoicePromptService = require('../services/storyboardVoicePromptService');
 
 /** 润色接口：邻镜结构化摘要（含全能片段与其它提示词字段） */
 function formatNeighborShotPolishContext(row) {
@@ -1021,8 +1022,9 @@ function routes(db, log) {
         nowIso,
         sbId
       );
-      log.info('[分镜] polishClassicVideoPromptStream 完成', { id: sbId, len: text.length });
-      writeNd({ type: 'done', video_prompt: text });
+      const persistedPrompt = storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, sbId) || text;
+      log.info('[分镜] polishClassicVideoPromptStream 完成', { id: sbId, len: persistedPrompt.length });
+      writeNd({ type: 'done', video_prompt: persistedPrompt });
       res.end();
     },
 
