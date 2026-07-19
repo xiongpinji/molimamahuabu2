@@ -1579,6 +1579,14 @@
                     <pre>{{ getStoryboardVoicePromptPreview(sb) }}</pre>
                   </div>
                 </el-popover>
+                <el-button
+                  size="small"
+                  link
+                  type="primary"
+                  :loading="sbVideoRequestAuditLoading && sbVideoRequestAuditTarget?.id === sb.id"
+                  :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)"
+                  @click="onPreviewSbVideoRequest(sb)"
+                >请求审计</el-button>
               </div>
               <div class="sb-video-prompt-label">
                 <span class="sb-dot"></span>
@@ -2394,6 +2402,50 @@
       </template>
     </el-dialog>
 
+    <!-- 分镜视频请求审计（只读，不创建任务、不扣费） -->
+    <el-dialog
+      v-model="showSbVideoRequestAudit"
+      :title="`分镜 ${sbVideoRequestAuditTarget?.storyboard_number ?? ''} · 视频请求审计`"
+      width="900px"
+      destroy-on-close
+      @close="sbVideoRequestAuditTarget = null"
+    >
+      <div v-if="sbVideoRequestAudit" class="sb-video-request-audit">
+        <el-alert
+          title="这是只读预览，不会调用视频供应商，也不会扣费。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <el-descriptions :column="2" border size="small" style="margin-top:12px">
+          <el-descriptions-item label="模型">{{ sbVideoRequestAudit.model || '未选择' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商协议">{{ sbVideoRequestAudit.provider || '—' }} / {{ sbVideoRequestAudit.protocol || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="声音策略">{{ sbVideoRequestAudit.voice_policy?.label || '未加载' }}</el-descriptions-item>
+          <el-descriptions-item label="参考音频处理">{{ sbVideoRequestAudit.reference_audio.mode }}</el-descriptions-item>
+        </el-descriptions>
+        <div class="sb-video-request-audit-section">
+          <div class="sb-video-request-audit-title">角色声线提示（后端最终会按分镜追加或按策略处理）</div>
+          <pre>{{ sbVideoRequestAudit.voice_prompt_preview || '无角色声线提示' }}</pre>
+        </div>
+        <div class="sb-video-request-audit-section">
+          <div class="sb-video-request-audit-title">参考音频候选</div>
+          <pre>{{ JSON.stringify(sbVideoRequestAudit.reference_audio, null, 2) }}</pre>
+        </div>
+        <div class="sb-video-request-audit-section">
+          <div class="sb-video-request-audit-title">首尾帧与参考图</div>
+          <pre>{{ JSON.stringify(sbVideoRequestAudit.frame_inputs, null, 2) }}</pre>
+        </div>
+        <div class="sb-video-request-audit-section">
+          <div class="sb-video-request-audit-title">发送给 /api/v1/videos 的请求体</div>
+          <pre>{{ JSON.stringify(sbVideoRequestAudit.payload, null, 2) }}</pre>
+        </div>
+      </div>
+      <el-empty v-else description="正在组装请求审计信息…" />
+      <template #footer>
+        <el-button @click="showSbVideoRequestAudit = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 分镜视频参数编辑弹窗 -->
     <el-dialog
       v-model="showVideoParamsDialog"
@@ -2747,6 +2799,7 @@ import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
+import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 import {
   latestVideoGenerationError,
   latestVideoGenerationRecord,
@@ -3312,6 +3365,11 @@ const inferringParams = ref(false)
 const showVideoParamsDialog = ref(false)
 const videoParamsTarget = ref(null)
 const videoParamsSaving = ref(false)
+/** 分镜视频请求审计（只组装请求，不创建任务、不扣费） */
+const showSbVideoRequestAudit = ref(false)
+const sbVideoRequestAuditLoading = ref(false)
+const sbVideoRequestAuditTarget = ref(null)
+const sbVideoRequestAudit = ref(null)
 const splitByAudioLoading = ref(false)
 const batchImageErrors = ref([])
 // 批量生成分镜视频
@@ -6451,6 +6509,143 @@ function getStoryboardVoicePromptPreview(sb) {
   return buildVoicePromptPreview({ policy, characters: charactersForStoryboard })
 }
 
+function getStoryboardVoiceReferences(sb) {
+  const snapshot = Array.isArray(sb?.voice_snapshot?.characters)
+    ? sb.voice_snapshot.characters
+    : []
+  if (snapshot.length) {
+    return snapshot
+      .filter((item) => item?.url)
+      .map((item) => ({
+        id: item.id ?? null,
+        name: item.name || '',
+        url: item.url,
+        source: item.source || 'character_voice',
+      }))
+  }
+  return getSbSelectedCharacters(sb?.id)
+    .map((character) => {
+      const asset = character?.seedance2_voice_asset
+      if (String(asset?.status || '').toLowerCase() !== 'active' || !asset?.url) return null
+      return {
+        id: character.id ?? null,
+        name: character.name || '',
+        url: asset.url,
+        source: asset.source || 'character_voice',
+      }
+    })
+    .filter(Boolean)
+}
+
+function getNonMutatingMainImageUrlForVideo(sb) {
+  return getSbFirstFrameUrl(sb)
+}
+
+function getNonMutatingContinuityFirstFrameUrl(sb, fallbackUrl = '') {
+  if (!videoFrameContiguity.value || !sb?.id) return fallbackUrl || ''
+  const previous = getPrevStoryboard(sb.id)
+  if (!canChainStoryboardFrames(sb, previous)) return fallbackUrl || ''
+  const previousLastFrame = getSbLastFrameUrl(previous)
+  return previousLastFrame ? toAbsoluteImageUrl(previousLastFrame) : (fallbackUrl || '')
+}
+
+/** 组装真实提交与只读审计共用的分镜视频请求；审计模式不触发选格位/上传尾帧等写操作。 */
+async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSelection = false } = {}) {
+  const sbModel = getStoryboardVideoModel(sb)
+  const universal = isSbUniversalMode(sb.id)
+  const useOmni = universalOmniApi == null ? universal : universalOmniApi
+  const omniRefs = useOmni ? collectSbOmniReferenceAbsoluteUrls(sb, sbModel) : []
+  const sceneOnlyRefs = universal && !useOmni ? collectSbSceneOnlyReferenceAbsoluteUrls(sb) : []
+  let absoluteUrl = ''
+  let referenceUrls
+  if (useOmni) {
+    referenceUrls = omniRefs.length ? omniRefs : undefined
+    absoluteUrl = omniRefs[0] || ''
+  } else if (universal) {
+    const firstFrameUrl = persistGridSelection
+      ? await getMainImageUrlForVideo(sb)
+      : getNonMutatingMainImageUrlForVideo(sb)
+    absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
+    if (absoluteUrl) {
+      referenceUrls = sceneOnlyRefs.length ? sceneOnlyRefs : [absoluteUrl]
+    } else {
+      referenceUrls = sceneOnlyRefs.length ? sceneOnlyRefs : undefined
+      absoluteUrl = sceneOnlyRefs[0] || ''
+    }
+  } else {
+    const firstFrameUrl = persistGridSelection
+      ? await getMainImageUrlForVideo(sb)
+      : getNonMutatingMainImageUrlForVideo(sb)
+    absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
+    referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
+  }
+
+  const continuityFirstFrameUrl = persistGridSelection
+    ? await resolveContinuityFirstFrameUrl(sb, '')
+    : getNonMutatingContinuityFirstFrameUrl(sb, '')
+  const { first: firstFrameUrl, last: lastFrameUrl } = useOmni
+    ? { first: continuityFirstFrameUrl || undefined, last: undefined }
+    : sbVideoFirstLastUrls(sb, false, continuityFirstFrameUrl || absoluteUrl || undefined)
+  if (useOmni && firstFrameUrl && referenceUrls && !referenceUrls.includes(firstFrameUrl)) {
+    referenceUrls = [firstFrameUrl, ...referenceUrls]
+  }
+  if (!useOmni && lastFrameUrl && referenceUrls && !referenceUrls.includes(lastFrameUrl)) {
+    referenceUrls = [...referenceUrls, lastFrameUrl]
+  }
+  const preferClassicPrompt = universal && !useOmni
+  const payload = buildVideoGenerationRequest({
+    dramaId: dramaId.value,
+    storyboardId: sb.id,
+    prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
+    model: sbModel || undefined,
+    imageUrl: firstFrameUrl || (!useOmni ? (absoluteUrl || undefined) : undefined),
+    firstFrameUrl,
+    lastFrameUrl,
+    referenceImageUrls: referenceUrls,
+    style: getSelectedStyle(),
+    aspectRatio: projectAspectRatio.value || '16:9',
+    resolution: videoResolution.value || undefined,
+    duration: getSbVideoDurationForApi(sb),
+  })
+  return {
+    payload,
+    model: sbModel,
+    universal,
+    universalOmniApi: useOmni,
+    config: await getActiveVideoAiConfig(sbModel),
+    voicePolicy: getStoryboardVoicePolicy(sb),
+    voicePrompt: getStoryboardVoicePromptPreview(sb),
+    voiceReferences: getStoryboardVoiceReferences(sb),
+  }
+}
+
+async function onPreviewSbVideoRequest(sb) {
+  if (!sb?.id || !sbCanSubmitVideo(sb)) {
+    ElMessage.warning('请先补充分镜视频提示词')
+    return
+  }
+  sbVideoRequestAuditLoading.value = true
+  sbVideoRequestAuditTarget.value = sb
+  try {
+    const model = getStoryboardVideoModel(sb)
+    const config = await getActiveVideoAiConfig(model)
+    const universalOmniApi = isSbUniversalMode(sb.id) && canUseUniversalOmniVideoApi(config)
+    const context = await buildSbVideoRequestContext(sb, { universalOmniApi })
+    sbVideoRequestAudit.value = buildVideoGenerationAudit({
+      payload: context.payload,
+      config: context.config,
+      voicePolicy: context.voicePolicy,
+      voicePrompt: context.voicePrompt,
+      voiceReferences: context.voiceReferences,
+    })
+    showSbVideoRequestAudit.value = true
+  } catch (e) {
+    ElMessage.error(e.message || '请求审计组装失败')
+  } finally {
+    sbVideoRequestAuditLoading.value = false
+  }
+}
+
 async function onStoryboardVideoModelChange(sb) {
   if (!sb?.id) return
   const model = String(sbVideoModel.value[sb.id] || '').trim()
@@ -6875,50 +7070,11 @@ async function onGenerateSbVideo(sb) {
   }
   storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   try {
-    let absoluteUrl = ''
-    let referenceUrls = undefined
-    if (universalOmniApi) {
-      referenceUrls = omniRefs.length ? omniRefs : undefined
-      absoluteUrl = omniRefs[0] || ''
-    } else if (universal) {
-      const firstFrameUrl = await getMainImageUrlForVideo(sb)
-      absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
-      if (absoluteUrl) {
-        referenceUrls = sceneOnlyRefs.length ? sceneOnlyRefs : [absoluteUrl]
-      } else {
-        referenceUrls = sceneOnlyRefs.length ? sceneOnlyRefs : undefined
-        absoluteUrl = sceneOnlyRefs[0] || ''
-      }
-    } else {
-      const firstFrameUrl = await getMainImageUrlForVideo(sb)
-      absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
-      referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
-    }
-    const continuityFirstFrameUrl = await resolveContinuityFirstFrameUrl(sb, '')
-    const { first: vFirst, last: vLast } = universalOmniApi
-      ? { first: continuityFirstFrameUrl || undefined, last: undefined }
-      : sbVideoFirstLastUrls(sb, false, continuityFirstFrameUrl || absoluteUrl || undefined)
-    if (universalOmniApi && vFirst && referenceUrls && !referenceUrls.includes(vFirst)) {
-      referenceUrls = [vFirst, ...referenceUrls]
-    }
-    if (!universalOmniApi && vLast && referenceUrls && !referenceUrls.includes(vLast)) {
-      referenceUrls = [...referenceUrls, vLast]
-    }
-    const preferClassicPrompt = universal && !universalOmniApi
-    const res = await videosAPI.create({
-      drama_id: dramaId.value,
-      storyboard_id: sb.id,
-      prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
-      model: sbModel || undefined,
-      image_url: vFirst || (!universalOmniApi ? (absoluteUrl || undefined) : undefined),
-      first_frame_url: vFirst,
-      last_frame_url: vLast,
-      reference_image_urls: referenceUrls,
-      style: getSelectedStyle(),
-      aspect_ratio: projectAspectRatio.value || '16:9',
-      resolution: videoResolution.value || undefined,
-      duration: getSbVideoDurationForApi(sb),
+    const requestContext = await buildSbVideoRequestContext(sb, {
+      universalOmniApi,
+      persistGridSelection: true,
     })
+    const res = await videosAPI.create(requestContext.payload)
     if (res?.task_id) {
       const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
       if (pollRes?.status === 'failed') {
@@ -10672,6 +10828,27 @@ html.light .sb-video-placeholder {
   word-break: break-word;
   color: #606266;
   font: 12px/1.6 var(--el-font-family, sans-serif);
+}
+.sb-video-request-audit-section {
+  margin-top: 14px;
+}
+.sb-video-request-audit-title {
+  margin-bottom: 6px;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sb-video-request-audit pre {
+  max-height: 210px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .sb-dot {
   display: inline-block;
