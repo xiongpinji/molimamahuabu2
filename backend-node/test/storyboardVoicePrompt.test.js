@@ -184,6 +184,39 @@ test('生成后的分镜 video_prompt 自动挂载固定角色声线，且重复
   db.close();
 });
 
+test('对白中出现但未写入角色引用的角色也会补齐声线', () => {
+  const db = createDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO dramas (title, created_at, updated_at) VALUES (?, ?, ?)').run('dialogue role fallback', now, now);
+  const dramaId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, created_at, updated_at) VALUES (?, 1, ?, ?)').run(dramaId, now, now);
+  const episodeId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const insertCharacter = db.prepare(
+    'INSERT INTO characters (drama_id, name, voice_style, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+  );
+  insertCharacter.run(dramaId, '小狐狸', 'bright youthful voice', now, now);
+  const foxId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  insertCharacter.run(dramaId, '林岚', 'warm low voice', now, now);
+  const linlanId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const storyboardId = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    episodeId,
+    JSON.stringify([foxId]),
+    '小狐狸：我先走。\n林岚：我跟上。',
+    '场景：林间。动作：两人并肩前行。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+
+  const prompt = voicePrompt.ensureStoryboardVoicePrompt(db, storyboardId);
+  assert.match(prompt, /bright youthful voice/);
+  assert.match(prompt, /warm low voice/);
+  assert.equal((prompt.match(/VOICE CONTINUITY/g) || []).length, 1);
+  db.close();
+});
+
 test('生产视频入口把非克隆模型的角色声线锚点传给供应商', async () => {
   const db = createDb();
   const now = new Date().toISOString();

@@ -42,6 +42,7 @@ function hashNumber(value) {
 const PITCHES = ['medium-low pitch', 'mid-range pitch', 'medium-high pitch'];
 const TIMBRES = ['warm clear timbre', 'soft breathy timbre', 'bright focused timbre', 'deep textured timbre'];
 const PACES = ['measured pace', 'natural conversational pace', 'slightly brisk pace'];
+const VOICE_CONTINUITY_MARKER = /(^|\n)VOICE CONTINUITY\b/i;
 
 function generatedVoiceStyle(row) {
   const key = row.id || row.name || 'character';
@@ -80,10 +81,13 @@ function resolveCharacters(db, dramaId, storyboardId) {
     seen.add(Number(row.id));
     out.push(row);
   }
-  // AI 生成的旧分镜可能未保存 characters，但对白仍带“角色名：对白”。
-  if (!out.length && storyboard.dialogue) {
+  // AI 生成的旧分镜可能未保存 characters；即使已有部分引用，也要把对白中的其它角色补齐。
+  const dialogue = String(storyboard.dialogue || '');
+  if (dialogue) {
     for (const row of rows) {
-      if (String(storyboard.dialogue).includes(`${row.name}：`) || String(storyboard.dialogue).includes(`${row.name}:`)) {
+      if (seen.has(Number(row.id))) continue;
+      if (dialogue.includes(`${row.name}：`) || dialogue.includes(`${row.name}:`)) {
+        seen.add(Number(row.id));
         out.push(row);
       }
     }
@@ -116,7 +120,7 @@ function buildVoiceContinuityBlock(characters) {
 
 function appendVoiceContinuityBlock(prompt, characters) {
   const base = String(prompt || '').trim();
-  if (!base || !characters.length || /(^|\n)VOICE CONTINUITY\b/i.test(base)) return base;
+  if (!base || !characters.length || VOICE_CONTINUITY_MARKER.test(base)) return base;
   const block = buildVoiceContinuityBlock(characters);
   // Veo 3 documents a 1,024-token prompt limit; reserve most of the budget for
   // the actual shot description and keep this fallback block compact.
@@ -133,7 +137,7 @@ function ensureStoryboardVoicePrompt(db, storyboardId) {
   let row;
   try {
     row = db.prepare(
-      `SELECT s.video_prompt, s.dialogue, s.characters, e.drama_id
+      `SELECT s.video_prompt, s.dialogue, e.drama_id
        FROM storyboards s
        JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
        WHERE s.id = ? AND s.deleted_at IS NULL`
@@ -143,6 +147,7 @@ function ensureStoryboardVoicePrompt(db, storyboardId) {
   }
   const base = String(row?.video_prompt || '').trim();
   if (!base || !String(row?.dialogue || '').trim()) return base;
+  if (VOICE_CONTINUITY_MARKER.test(base)) return base;
   const characters = resolveCharacters(db, row.drama_id, sid);
   const prompt = appendVoiceContinuityBlock(base, characters);
   if (prompt !== base) {

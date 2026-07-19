@@ -228,7 +228,11 @@ function buildFallbackUniversalSeedanceLine(sb, d, styleHint) {
 function getStoryboardsForEpisode(db, episodeId) {
   // 读取分镜时顺手补齐旧数据，保证历史分镜也遵循当前角色声线策略；已存在锚点时不会写库。
   const ids = db.prepare(
-    'SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL'
+    `SELECT id FROM storyboards
+     WHERE episode_id = ? AND deleted_at IS NULL
+       AND TRIM(COALESCE(video_prompt, '')) <> ''
+       AND TRIM(COALESCE(dialogue, '')) <> ''
+       AND LOWER(video_prompt) NOT LIKE '%voice continuity%'`
   ).all(episodeId);
   for (const row of ids) storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, row.id);
   const rows = dedupeStoryboardRowsByNumber(
