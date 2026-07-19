@@ -33,6 +33,12 @@
       <button type="button" class="toolbar-icon" aria-label="画布帮助" title="帮助" @click="showHelp">
         <el-icon><QuestionFilled /></el-icon>
       </button>
+      <button type="button" class="toolbar-icon" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undo">
+        <el-icon><RefreshLeft /></el-icon>
+      </button>
+      <button type="button" class="toolbar-icon" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redo">
+        <el-icon><RefreshRight /></el-icon>
+      </button>
       <button type="button" class="toolbar-icon" aria-label="返回列表模式" title="列表模式" @click="goList">
         <el-icon><List /></el-icon>
       </button>
@@ -53,7 +59,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const ctx = useCanvasContext()
@@ -71,6 +77,8 @@ const addItems = [
 const workflowOpen = computed(() => Boolean(ctx?.showWorkflowPanel?.value))
 const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))
 const directorOpen = computed(() => Boolean(ctx?.directorStageVisible?.value))
+const canUndo = computed(() => Boolean(ctx?.canUndo?.value))
+const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
@@ -101,6 +109,8 @@ function focusScript() { ctx?.focusScript?.() }
 function alignNodes() { ctx?.alignNodes?.() }
 function openDirectorStage() { ctx?.openDirectorStage?.() }
 function showHelp() { ctx?.showCanvasHelp?.() }
+function undo() { ctx?.undoCanvas?.() }
+function redo() { ctx?.redoCanvas?.() }
 function goList() { ctx?.goListMode?.() }
 function zoomIn() { ctx?.zoomIn?.() }
 function zoomOut() { ctx?.zoomOut?.() }

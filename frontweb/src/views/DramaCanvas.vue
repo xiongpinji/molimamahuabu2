@@ -257,7 +257,9 @@
           :max-zoom="2"
           :nodes-connectable="false"
           :elements-selectable="true"
-          :selection-key-code="true"
+          :select-nodes-on-drag="true"
+          selection-mode="partial"
+          selection-key-code="Control"
           :pan-on-drag="false"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
@@ -269,6 +271,7 @@
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
+          @node-drag-start="onNodeDragStart"
           @node-drag-stop="onNodeDragStop"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
@@ -351,6 +354,13 @@ import {
   parseDramaMetadata,
   resolveViewport,
 } from '@/utils/canvasLayout'
+import {
+  commitCanvasInteractionHistory,
+  createCanvasInteractionHistory,
+  createCanvasInteractionState,
+  redoCanvasInteractionHistory,
+  undoCanvasInteractionHistory,
+} from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
   createWorkflowGroup,
@@ -430,6 +440,8 @@ const paneClickSuppressed = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
 const aligningNodes = ref(false)
 const canvasFlowApi = ref(null)
+const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
+const dragHistorySnapshot = ref(null)
 
 function openDirectorStage() {
   directorReturnFocus = document.activeElement
@@ -481,6 +493,8 @@ const hasSavedViewport = computed(() => Boolean(savedLayout.value?.viewport))
 const activeWorkflowGroup = computed(() => (
   workflowGroups.value.find((group) => group.id === activeGroupId.value) || null
 ))
+const canUndo = computed(() => interactionHistory.value.past.length > 0)
+const canRedo = computed(() => interactionHistory.value.future.length > 0)
 const allStoryboards = computed(() => {
   const list = []
   for (const episode of drama.value?.episodes || []) {
@@ -546,6 +560,30 @@ function rebuildGraph() {
   allGraphNodes.value = nextNodes
   allGraphEdges.value = nextEdges
   applyVirtualizedGraph()
+  interactionHistory.value = createCanvasInteractionHistory(currentInteractionState())
+}
+
+function currentInteractionState() {
+  return createCanvasInteractionState(allGraphNodes.value, currentViewport.value)
+}
+
+function commitInteractionHistory(previousState) {
+  interactionHistory.value = commitCanvasInteractionHistory(
+    interactionHistory.value,
+    previousState,
+    currentInteractionState(),
+  )
+}
+
+function applyInteractionState(state) {
+  const positions = state?.nodes || {}
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
+    const position = positions[String(node.id)]
+    return position ? { ...node, position: { ...position } } : node
+  })
+  currentViewport.value = { ...(state?.viewport || currentViewport.value) }
+  applyVirtualizedGraph()
+  scheduleLayoutSave()
 }
 
 function canvasViewportSize() {
@@ -767,6 +805,8 @@ provide(CANVAS_CONTEXT_KEY, {
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
+  canUndo,
+  canRedo,
   openDirectorStage,
   toggleSidebar,
   toggleWorkflowPanel,
@@ -775,6 +815,8 @@ provide(CANVAS_CONTEXT_KEY, {
   toggleTheme,
   alignNodes: onAlignNodes,
   fitCanvasView,
+  undoCanvas,
+  redoCanvas,
   zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),
   zoomOut: () => canvasFlowApi.value?.zoomOut?.({ duration: 180 }),
   showCanvasHelp,
@@ -947,9 +989,52 @@ function scheduleLayoutSave() {
   }, 700)
 }
 
+function onNodeDragStart() {
+  syncRenderedNodesToGraph()
+  dragHistorySnapshot.value = currentInteractionState()
+}
+
 function onNodeDragStop() {
   syncRenderedNodesToGraph()
+  if (dragHistorySnapshot.value) commitInteractionHistory(dragHistorySnapshot.value)
+  dragHistorySnapshot.value = null
   scheduleLayoutSave()
+}
+
+function isEditableTarget(target) {
+  const element = target instanceof HTMLElement ? target : null
+  return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable))
+}
+
+function undoCanvas() {
+  const next = undoCanvasInteractionHistory(interactionHistory.value)
+  if (next === interactionHistory.value) return
+  interactionHistory.value = next
+  applyInteractionState(next.present)
+  ElMessage.info('已撤销画布布局操作')
+}
+
+function redoCanvas() {
+  const next = redoCanvasInteractionHistory(interactionHistory.value)
+  if (next === interactionHistory.value) return
+  interactionHistory.value = next
+  applyInteractionState(next.present)
+  ElMessage.info('已重做画布布局操作')
+}
+
+function onCanvasKeydown(event) {
+  if (isEditableTarget(event.target)) return
+  const key = String(event.key || '').toLowerCase()
+  const modifier = event.ctrlKey || event.metaKey
+  if (!modifier || event.altKey) return
+  if (key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) redoCanvas()
+    else undoCanvas()
+  } else if (key === 'y') {
+    event.preventDefault()
+    redoCanvas()
+  }
 }
 
 async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
@@ -1459,7 +1544,10 @@ watch(drama, () => startStatusPoll())
 
 onMounted(() => {
   scheduleVirtualization()
-  if (typeof window !== 'undefined') window.addEventListener('resize', scheduleVirtualization)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', scheduleVirtualization)
+    window.addEventListener('keydown', onCanvasKeydown)
+  }
 })
 
 onBeforeUnmount(() => {
@@ -1472,7 +1560,10 @@ onBeforeUnmount(() => {
     else clearTimeout(virtualizationFrame)
     virtualizationFrame = null
   }
-  if (typeof window !== 'undefined') window.removeEventListener('resize', scheduleVirtualization)
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('resize', scheduleVirtualization)
+    window.removeEventListener('keydown', onCanvasKeydown)
+  }
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })
