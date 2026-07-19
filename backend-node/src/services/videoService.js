@@ -116,7 +116,23 @@ const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
+const storyboardVoicePrompt = require('./storyboardVoicePromptService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+
+function loadStoryboardVideoDefaults(db, storyboardId) {
+  const sid = Number(storyboardId);
+  if (!db || !Number.isInteger(sid) || sid <= 0) return null;
+  try {
+    return db.prepare(
+      `SELECT s.video_prompt, s.video_model, e.drama_id
+       FROM storyboards s
+       LEFT JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
+       WHERE s.id = ? AND s.deleted_at IS NULL`
+    ).get(sid) || null;
+  } catch (_) {
+    return null;
+  }
+}
 
 function settleVideoCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
@@ -141,8 +157,10 @@ function create(db, log, req, options = {}) {
   const body = req || {};
   const billingEnabled = Boolean(options.billingEnabled);
   if (billingEnabled && !options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
-  const dramaId = Number(body.drama_id) || 0;
+  let dramaId = Number(body.drama_id) || 0;
   const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
+  const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
+  if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const active = findActiveForStoryboard(db, storyboardId, { billingEnabled, userId: options.userId });
   if (active) {
     if (billingEnabled) {
@@ -158,7 +176,7 @@ function create(db, log, req, options = {}) {
     return { ...getById(db, active.id), reused: true };
   }
 
-  let billingModel = body.model || null;
+  let billingModel = body.model || storyboardDefaults?.video_model || null;
   let price = null;
   if (billingEnabled) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
@@ -170,10 +188,16 @@ function create(db, log, req, options = {}) {
     price = modelPrice.requirePrice(db, billingModel);
   }
 
+  const persistedPrompt = storyboardId
+    ? storyboardVoicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
+    : null;
+  const storyboardPrompt = String(persistedPrompt || storyboardDefaults?.video_prompt || '').trim();
+
   const now = new Date().toISOString();
   const result = db.transaction(() => {
-    const task = taskService.createTask(db, log, 'video_generation', String(body.drama_id || ''));
-    let prompt = body.prompt || '';
+    const task = taskService.createTask(db, log, 'video_generation', String(dramaId || ''));
+    let prompt = String(body.prompt ?? '').trim();
+    if (!prompt) prompt = storyboardPrompt;
     const style = String(body.style || '').trim();
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
@@ -192,7 +216,7 @@ function create(db, log, req, options = {}) {
        image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || body.model || null, body.duration ?? null,
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || body.model || storyboardDefaults?.video_model || null, body.duration ?? null,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
