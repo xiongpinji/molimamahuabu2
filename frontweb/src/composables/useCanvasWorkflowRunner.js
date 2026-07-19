@@ -7,12 +7,15 @@ import { storyboardImageUrl } from '@/utils/mediaUrl'
 import {
   DEFAULT_PIPELINE,
   collectStoryboardReferenceAssets,
+  getAdjacentStoryboards,
   findStoryboardInDrama,
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
+  getStoryboardVideoModel,
   toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
+import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
 
 async function pollTaskSimple(taskId, options = {}) {
   if (!taskId) return { status: 'failed', error: '缺少 task_id' }
@@ -102,12 +105,21 @@ export async function runVideoStep(drama, sb, genOpts) {
     ...selectedReferenceUrls,
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
-  const prompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
+  const basePrompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
+  const found = findStoryboardInDrama(drama, sb.id)
+  const { previous, next } = getAdjacentStoryboards(found?.episode, sb.id)
+  const prompt = buildStoryboardContinuityPrompt({
+    prompt: basePrompt,
+    current: sb,
+    previous,
+    next,
+  })
+  const model = getStoryboardVideoModel(sb, genOpts)
   const res = await videosAPI.create({
     drama_id: drama.id,
     storyboard_id: sb.id,
     prompt,
-    model: genOpts.videoModel || undefined,
+    model: model || undefined,
     image_url: absoluteFirst || undefined,
     first_frame_url: absoluteFirst || undefined,
     last_frame_url: absoluteLast,

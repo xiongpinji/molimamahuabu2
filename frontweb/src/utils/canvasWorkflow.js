@@ -75,6 +75,27 @@ export function findStoryboardInDrama(drama, storyboardId) {
   return null
 }
 
+/** 分镜级模型优先，未设置时回退到项目画布默认模型。 */
+export function getStoryboardVideoModel(storyboard, generationOptions = {}) {
+  const override = String(storyboard?.video_model || '').trim()
+  return override || String(generationOptions?.videoModel || '').trim()
+}
+
+/** 返回同一剧集中的前后分镜，按分镜编号保持稳定顺序。 */
+export function getAdjacentStoryboards(episode, storyboardId) {
+  const storyboards = Array.isArray(episode?.storyboards) ? [...episode.storyboards] : []
+  storyboards.sort((a, b) => (
+    Number(a?.storyboard_number || 0) - Number(b?.storyboard_number || 0)
+    || Number(a?.id || 0) - Number(b?.id || 0)
+  ))
+  const index = storyboards.findIndex((item) => Number(item?.id) === Number(storyboardId))
+  if (index < 0) return { previous: null, next: null }
+  return {
+    previous: storyboards[index - 1] || null,
+    next: storyboards[index + 1] || null,
+  }
+}
+
 export function getDramaGenerationOptions(drama) {
   const meta = parseDramaMetadata(drama?.metadata)
   return {

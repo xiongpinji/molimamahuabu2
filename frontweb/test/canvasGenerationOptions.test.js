@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 
 import {
   buildUniversalPromptFieldOverrides,
+  getAdjacentStoryboards,
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
+  getStoryboardVideoModel,
   universalPromptDuration,
 } from '../src/utils/canvasWorkflow.js'
 
@@ -32,6 +34,36 @@ test('画布首尾帧节点映射到独立图片生成类型', () => {
   assert.equal(getStoryboardImageFrameType('first'), 'storyboard_first')
   assert.equal(getStoryboardImageFrameType('last'), 'storyboard_last')
   assert.equal(getStoryboardImageFrameType(''), undefined)
+})
+
+test('分镜视频模型覆盖项目默认模型', () => {
+  assert.equal(
+    getStoryboardVideoModel({ video_model: 'storyboard-video' }, { videoModel: 'project-video' }),
+    'storyboard-video',
+  )
+  assert.equal(
+    getStoryboardVideoModel({ video_model: '  ' }, { videoModel: 'project-video' }),
+    'project-video',
+  )
+})
+
+test('画布工作流按分镜编号提供相邻镜头', () => {
+  const episode = {
+    storyboards: [
+      { id: 3, storyboard_number: 3, title: '第三镜' },
+      { id: 1, storyboard_number: 1, title: '第一镜' },
+      { id: 2, storyboard_number: 2, title: '第二镜' },
+    ],
+  }
+
+  assert.deepEqual(getAdjacentStoryboards(episode, 2), {
+    previous: { id: 1, storyboard_number: 1, title: '第一镜' },
+    next: { id: 3, storyboard_number: 3, title: '第三镜' },
+  })
+  assert.deepEqual(getAdjacentStoryboards(episode, 1), {
+    previous: null,
+    next: { id: 2, storyboard_number: 2, title: '第二镜' },
+  })
 })
 
 test('全能词流式请求使用分镜时长和结构化字段覆盖', () => {
