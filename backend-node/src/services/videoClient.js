@@ -6,6 +6,8 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
+const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -4029,6 +4031,7 @@ function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
   if (Number.isInteger(sid) && sid > 0) {
     let ids = [];
     let dialogue = '';
+    let lockedVoiceMap = new Map();
     try {
       const row = db.prepare(
         'SELECT characters, dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL'
@@ -4036,6 +4039,14 @@ function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
       ids = parseStoryboardVoiceCharacterIds(row?.characters);
       dialogue = row?.dialogue || '';
     } catch (_) {}
+    try {
+      const row = db.prepare(
+        'SELECT voice_snapshot FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+      ).get(sid);
+      lockedVoiceMap = snapshotVoiceMap(row?.voice_snapshot);
+    } catch (_) {}
+    // 分镜生成时已固定音色时，只使用该快照，避免角色后来更换音频导致旧分镜漂移。
+    const candidateMap = lockedVoiceMap.size ? lockedVoiceMap : voiceMap;
     if (!ids.length) {
       try {
         ids = db.prepare(
@@ -4056,18 +4067,19 @@ function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
         const names = new Map(rows.map((row) => [Number(row.id), row.name]));
         let selected = null;
         for (const id of ids) {
-          if (!voiceMap.has(id)) continue;
+          if (!candidateMap.has(id)) continue;
           const position = findDialogueSpeakerPosition(dialogue, names.get(id));
           if (position >= 0 && (!selected || position < selected.position)) {
             selected = { id, position };
           }
         }
-        if (selected) return voiceMap.get(selected.id);
+        if (selected) return candidateMap.get(selected.id);
       } catch (_) {}
     }
     for (const id of ids) {
-      if (voiceMap.has(id)) return voiceMap.get(id);
+      if (candidateMap.has(id)) return candidateMap.get(id);
     }
+    if (lockedVoiceMap.size) return lockedVoiceMap.values().next().value || null;
   }
   return voiceMap.values().next().value || null;
 }
@@ -4208,7 +4220,7 @@ async function callAihubccVideoApi(config, log, opts = {}) {
  */
 async function callVideoApi(db, log, opts) {
   const {
-    prompt,
+    prompt: inputPrompt,
     model: preferredModel,
     duration,
     aspect_ratio,
@@ -4232,6 +4244,7 @@ async function callVideoApi(db, log, opts) {
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
+  let prompt = inputPrompt;
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
   }
@@ -4249,6 +4262,27 @@ async function callVideoApi(db, log, opts) {
       });
     } else {
       log.info('[视频][SD2][全能] Seedance 2.0 模型但本剧暂无 active 音色参考', { video_gen_id, drama_id: opts.drama_id });
+    }
+  }
+  // 参考音频只对少数模型生效；其余模型用稳定的角色级文字声音锚点，避免同一角色跨分镜漂移。
+  if (!(isSeedance2 && opts.voice_reference_url) && db && opts.drama_id && opts.storyboard_id) {
+    const anchoredPrompt = storyboardVoicePromptService.appendVoiceAnchors({
+      db,
+      dramaId: opts.drama_id,
+      storyboardId: opts.storyboard_id,
+      prompt,
+      protocol,
+      model,
+    });
+    if (anchoredPrompt !== prompt) {
+      prompt = anchoredPrompt;
+      log.info('[视频][角色音色提示] 已追加稳定声音锚点', {
+        video_gen_id,
+        storyboard_id: opts.storyboard_id,
+        protocol,
+        model,
+        prompt_len: prompt.length,
+      });
     }
   }
   log.info('[视频] 路由协议', {

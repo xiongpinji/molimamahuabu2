@@ -92,10 +92,24 @@ describe('storyboardVoiceExtractionService', () => {
       assert.equal(result.asset.source, 'storyboard_video');
       assert.equal(result.asset.source_video_id, videoId);
       assert.equal(result.asset.source_storyboard_id, storyboardId);
+      assert.equal(result.library_asset.type, 'audio');
+      assert.equal(result.library_asset.category, 'voice');
+      assert.equal(result.library_asset.metadata.source, 'storyboard_voice_extraction');
+      assert.equal(result.library_asset.metadata.character_id, characterId);
       assert.equal(fs.existsSync(path.join(root, result.asset.local_path)), true);
       const saved = JSON.parse(db.prepare('SELECT seedance2_voice_asset FROM characters WHERE id = ?').get(characterId).seedance2_voice_asset);
       assert.equal(saved.url, result.asset.url);
       assert.equal(saved.status, 'active');
+
+      const duplicate = await voiceService.extractStoryboardVoice({
+        db,
+        cfg: { storage: { local_path: root } },
+        log: { info() {}, warn() {}, error() {} },
+        storyboardId,
+        videoId,
+      });
+      assert.equal(duplicate.ok, true, duplicate.error);
+      assert.equal(db.prepare("SELECT COUNT(*) AS total FROM assets WHERE type = 'audio' AND category = 'voice'").get().total, 1);
     } finally {
       db.close();
       fs.rmSync(root, { recursive: true, force: true });

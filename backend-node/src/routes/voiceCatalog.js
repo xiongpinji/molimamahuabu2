@@ -19,9 +19,13 @@ function routes(db, cfg, log) {
         return response.internalError(res, '音色试听失败');
       }
     },
-    list: (_req, res) => {
+    list: (req, res) => {
       try {
-        response.success(res, { items: voiceCatalogService.listBuiltinVoices(cfg) });
+        const items = [
+          ...voiceCatalogService.listBuiltinVoices(cfg),
+          ...voiceCatalogService.listProjectVoiceAssets(db, req.query?.drama_id),
+        ];
+        response.success(res, { items });
       } catch (err) {
         log.error('voice catalog list', { error: err.message });
         response.internalError(res, '音色目录读取失败');
@@ -36,7 +40,7 @@ function routes(db, cfg, log) {
           voiceId: req.body?.voice_id || req.body?.catalog_id,
         });
         if (result.ok) return response.success(res, { message: '内置音色已绑定', seedance2_voice_asset: result.asset });
-        if (result.code === 'CHARACTER_NOT_FOUND' || result.code === 'BUILTIN_VOICE_NOT_FOUND') {
+        if (result.code === 'CHARACTER_NOT_FOUND' || result.code === 'BUILTIN_VOICE_NOT_FOUND' || result.code === 'VOICE_ASSET_NOT_FOUND') {
           return response.notFound(res, result.error);
         }
         return response.badRequest(res, result.error);

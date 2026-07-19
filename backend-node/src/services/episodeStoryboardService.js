@@ -7,6 +7,7 @@ const safeJson = require('../utils/safeJson');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = safeJson;
 const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
+const storyboardVoiceLockService = require('./storyboardVoiceLockService');
 
 /**
  * 分镜专用 generateText 包装：
@@ -262,6 +263,9 @@ function getStoryboardsForEpisode(db, episodeId) {
       segment_title: r.segment_title ?? null,
       creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
       universal_segment_text: r.universal_segment_text ?? null,
+      voice_snapshot: (() => {
+        try { return r.voice_snapshot ? JSON.parse(r.voice_snapshot) : null; } catch (_) { return null; }
+      })(),
       characters: (() => {
         if (!r.characters) return [];
         if (typeof r.characters !== 'string') return Array.isArray(r.characters) ? r.characters : [];
@@ -518,6 +522,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
     existingId,
     episodeIdNum
   );
+  storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, existingId);
   try {
     db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(existingId);
     if (d.propIds.length > 0) {
@@ -550,6 +555,7 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
       now, now
     );
     const newId = db.prepare('SELECT last_insert_rowid() as id').get().id;
+    storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, newId);
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -745,6 +751,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
       }
     }
     const id = db.prepare('SELECT last_insert_rowid() as id').get().id;
+    storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, id);
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -1557,6 +1564,7 @@ function persistSplitStoryboardRow(db, episodeId, storyboardNumber, baseRow, pla
     now,
     now
   );
+  storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, info.lastInsertRowid);
   return info.lastInsertRowid;
 }
 
@@ -1580,6 +1588,7 @@ function updateStoryboardAsSplitSegment(db, sbId, baseRow, plan, now) {
     now,
     sbId
   );
+  storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, sbId);
 }
 
 /**

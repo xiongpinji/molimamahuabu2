@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const storageLayout = require('./storageLayout');
+const assetService = require('./assetService');
 
 const CATALOG = [
   {
@@ -102,7 +103,44 @@ function getBuiltinVoice(id, cfg = {}) {
   };
 }
 
+function listProjectVoiceAssets(db, dramaId) {
+  const id = Number(dramaId);
+  if (!Number.isInteger(id) || id <= 0) return [];
+  return assetService.list(db, { drama_id: id, type: 'audio', category: 'voice', page: 1, page_size: 100 }).items
+    .map((asset) => {
+      const metadata = asset.metadata || {};
+      const voiceAsset = metadata.voice_asset || {};
+      return {
+        id: `asset-${asset.id}`,
+        asset_id: asset.id,
+        engine: 'audio-library',
+        voice_id: `asset-${asset.id}`,
+        language: '项目音色',
+        label: asset.name || `${metadata.character_name || '角色'} · 提取音色`,
+        description: `来源：${metadata.character_name || '角色'}，分镜 ${metadata.storyboard_id || '-'}；可复用于本项目角色`,
+        license: '项目素材',
+        license_url: null,
+        source_url: null,
+        available: Boolean(asset.url || asset.local_path),
+        can_bind: Boolean(asset.url || asset.local_path),
+        preview_url: asset.url || (asset.local_path ? `/static/${String(asset.local_path).replace(/^\//, '')}` : null),
+        source: 'extracted_voice_asset',
+        duration: asset.duration ?? voiceAsset.duration ?? null,
+        metadata,
+      };
+    });
+}
+
 function bindBuiltinVoice({ db, cfg = {}, characterId, voiceId }) {
+  const rawVoiceId = String(voiceId || '');
+  if (rawVoiceId.startsWith('asset-')) {
+    return assetService.bindVoiceAsset({
+      db,
+      cfg,
+      characterId,
+      assetId: rawVoiceId.slice('asset-'.length),
+    });
+  }
   const id = Number(characterId);
   const character = db.prepare(
     'SELECT id, drama_id FROM characters WHERE id = ? AND deleted_at IS NULL'
@@ -152,5 +190,6 @@ module.exports = {
   voiceRoot,
   listBuiltinVoices,
   getBuiltinVoice,
+  listProjectVoiceAssets,
   bindBuiltinVoice,
 };

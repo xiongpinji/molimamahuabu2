@@ -16,6 +16,7 @@
         <el-radio-button value="all">全部</el-radio-button>
         <el-radio-button value="image">图片</el-radio-button>
         <el-radio-button value="video">视频</el-radio-button>
+        <el-radio-button value="audio">音频</el-radio-button>
       </el-radio-group>
       <el-input
         v-model="keyword"
@@ -45,6 +46,7 @@
       >
         <div class="media-thumb">
           <video v-if="item.type === 'video'" :src="itemUrl(item)" class="thumb-video" muted />
+          <audio v-else-if="item.type === 'audio'" :src="itemUrl(item)" controls class="thumb-audio" @click.stop />
           <img v-else :src="itemUrl(item)" class="thumb-img" />
           <div class="media-overlay">
             <el-icon v-if="selectedIds.has(item.id)" class="check-icon"><CircleCheck /></el-icon>
@@ -70,7 +72,7 @@
         </div>
         <div class="media-info">
           <span class="media-name" :title="item.name">{{ item.name || '未命名' }}</span>
-          <span class="media-meta">{{ formatSize(item.size) }}</span>
+          <span class="media-meta">{{ formatSize(item.file_size) }}<template v-if="item.type === 'audio' && item.duration"> · {{ formatDuration(item.duration) }}</template></span>
         </div>
       </div>
 
@@ -108,11 +110,12 @@
           class="preview-video"
           autoplay
         />
+        <audio v-else-if="previewItem?.type === 'audio'" :src="itemUrl(previewItem)" controls autoplay class="preview-audio" />
         <img v-else-if="previewItem" :src="itemUrl(previewItem)" class="preview-image" />
       </div>
       <div class="preview-meta">
         <div class="meta-row"><span>名称：</span>{{ previewItem?.name || '未命名' }}</div>
-        <div class="meta-row"><span>大小：</span>{{ formatSize(previewItem?.size) }}</div>
+        <div class="meta-row"><span>大小：</span>{{ formatSize(previewItem?.file_size) }}</div>
         <div class="meta-row"><span>创建时间：</span>{{ previewItem?.created_at }}</div>
       </div>
     </el-dialog>
@@ -183,10 +186,13 @@ async function loadMedia() {
     if (mediaType.value !== 'all') params.type = mediaType.value
     if (keyword.value) params.keyword = keyword.value
     const res = await request.get('/assets', { params })
+    const pagination = res?.pagination || {}
     mediaItems.value = (res?.items || []).map(normalizeItem)
-    total.value = res?.total || 0
+    total.value = Number(pagination.total) || 0
+    page.value = Number(pagination.page) || page.value
   } catch (err) {
     mediaItems.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -194,10 +200,11 @@ async function loadMedia() {
 
 function normalizeItem(item) {
   const url = item.url || item.image_url || item.video_url || ''
-  const isVideo = url.match(/\.(mp4|webm|mov)$/i) || item.type === 'video'
+  const isAudio = item.type === 'audio' || String(item.mime_type || '').startsWith('audio/') || Boolean(url.match(/\.(mp3|wav|m4a|ogg|aac)$/i))
+  const isVideo = !isAudio && (url.match(/\.(mp4|webm|mov)$/i) || item.type === 'video')
   return {
     ...item,
-    type: isVideo ? 'video' : 'image',
+    type: isAudio ? 'audio' : (isVideo ? 'video' : 'image'),
     name: item.name || item.filename || (url.split('/').pop()),
   }
 }
@@ -214,6 +221,11 @@ function formatSize(size) {
   if (size > 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB'
   if (size > 1024) return (size / 1024).toFixed(0) + ' KB'
   return size + ' B'
+}
+
+function formatDuration(duration) {
+  const seconds = Math.max(0, Math.round(Number(duration) || 0))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 function toggleSelect(item) {
@@ -345,6 +357,11 @@ onMounted(loadMedia)
   object-fit: cover;
 }
 
+.thumb-audio {
+  width: calc(100% - 16px);
+  margin: 58px 8px 0;
+}
+
 .media-overlay {
   position: absolute;
   inset: 0;
@@ -453,6 +470,10 @@ onMounted(loadMedia)
 .preview-video {
   max-width: 100%;
   max-height: 60vh;
+}
+
+.preview-audio {
+  width: min(560px, 100%);
 }
 
 .preview-meta {

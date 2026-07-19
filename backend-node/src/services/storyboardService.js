@@ -1,4 +1,5 @@
 // 分镜：create, update, delete；帧提示词 get/save
+const storyboardVoiceLockService = require('./storyboardVoiceLockService');
 
 /**
  * 将分镜勾选的角色（dramas.characters 表 id）同步到 storyboard_characters（角色库 id），
@@ -80,6 +81,7 @@ function createStoryboard(db, log, req) {
     now,
     now
   );
+  storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, info.lastInsertRowid);
   log.info('Storyboard created', { id: info.lastInsertRowid, episode_id: episodeId });
   return getStoryboardById(db, info.lastInsertRowid);
 }
@@ -87,7 +89,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'video_model', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'main_panel_indices', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -103,7 +105,7 @@ function updateStoryboard(db, log, id, req) {
     if (key === 'characters') continue;
     if (req[key] !== undefined) {
       updates.push(key + ' = ?');
-      const val = req[key];
+      const val = key === 'main_panel_indices' && Array.isArray(req[key]) ? JSON.stringify(req[key]) : req[key];
       params.push(val);
     }
   }
@@ -120,6 +122,7 @@ function updateStoryboard(db, log, id, req) {
     } catch (e) {
       log.warn('syncStoryboardCharacterLinks failed', { id, message: e.message });
     }
+    storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, id);
   }
   // 道具关联：写入 storyboard_props 表
   if (req.prop_ids !== undefined) {
@@ -172,6 +175,7 @@ function getStoryboardById(db, id) {
     image_prompt: r.image_prompt,
     polished_prompt: r.polished_prompt ?? null,
     video_prompt: r.video_prompt,
+    video_model: r.video_model ?? null,
     shot_type: r.shot_type,
     angle: r.angle,
     angle_h: r.angle_h ?? null,
@@ -182,6 +186,9 @@ function getStoryboardById(db, id) {
     segment_title: r.segment_title ?? null,
     creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
     universal_segment_text: r.universal_segment_text ?? null,
+    voice_snapshot: (() => {
+      try { return r.voice_snapshot ? JSON.parse(r.voice_snapshot) : null; } catch (_) { return null; }
+    })(),
     layout_description: r.layout_description ?? null,
     first_frame_image_id: r.first_frame_image_id ?? null,
     last_frame_image_id: r.last_frame_image_id ?? null,
@@ -193,6 +200,7 @@ function getStoryboardById(db, id) {
     image_url: r.image_url ?? null,
     local_path: r.local_path ?? null,
     main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
+    main_panel_indices: (() => { try { return JSON.parse(r.main_panel_indices || '[]'); } catch (_) { return []; } })(),
     video_url: r.video_url,
     audio_local_path: r.audio_local_path ?? null,
     narration_audio_local_path: r.narration_audio_local_path ?? null,

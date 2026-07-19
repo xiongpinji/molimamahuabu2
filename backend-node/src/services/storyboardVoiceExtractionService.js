@@ -5,6 +5,7 @@ const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 const storageLayout = require('./storageLayout');
+const assetService = require('./assetService');
 
 const MAX_REMOTE_VIDEO_BYTES = 200 * 1024 * 1024;
 const MIN_SPEECH_SEGMENT_SECONDS = 0.25;
@@ -407,6 +408,14 @@ async function extractStoryboardVoice({ db, cfg, log, storyboardId, videoId, cha
     const now = new Date().toISOString();
     db.prepare('UPDATE characters SET seedance2_voice_asset = ?, updated_at = ? WHERE id = ? AND drama_id = ? AND deleted_at IS NULL')
       .run(JSON.stringify(asset), now, target.character.id, Number(storyboard.drama_id));
+    const libraryAsset = assetService.saveExtractedVoice(db, log, {
+      dramaId: storyboard.drama_id,
+      characterId: target.character.id,
+      characterName: target.character.name,
+      storyboardId: sid,
+      videoId: vid,
+      voiceAsset: asset,
+    });
     log?.info?.('[音色提取] 已从分镜视频提取角色音色', {
       storyboard_id: sid,
       video_id: vid,
@@ -415,7 +424,14 @@ async function extractStoryboardVoice({ db, cfg, log, storyboardId, videoId, cha
       segment_count: plan.targetSegments.length,
       separation_method: asset.extraction_method,
     });
-    return { ok: true, character_id: target.character.id, character_name: target.character.name, video_id: vid, asset };
+    return {
+      ok: true,
+      character_id: target.character.id,
+      character_name: target.character.name,
+      video_id: vid,
+      asset,
+      library_asset: libraryAsset,
+    };
   } catch (error) {
     try { if (generatedPath && fs.existsSync(generatedPath)) fs.unlinkSync(generatedPath); } catch (_) {}
     log?.error?.('[音色提取] 失败', { storyboard_id: sid, video_id: vid, error: error.message });
