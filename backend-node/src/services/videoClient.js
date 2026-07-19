@@ -4007,6 +4007,15 @@ function parseStoryboardVoiceCharacterIds(raw) {
     .filter((id) => Number.isInteger(id) && id > 0))];
 }
 
+function findDialogueSpeakerPosition(dialogue, characterName) {
+  const text = String(dialogue || '');
+  const name = String(characterName || '').trim();
+  if (!text || !name) return -1;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = text.match(new RegExp(`(?:^|[\\n\\r/|；;])\\s*[“"「『']?${escaped}[”"」』']?\\s*[:：]`));
+  return match ? match.index + match[0].lastIndexOf(name) : -1;
+}
+
 /**
  * 当前分镜优先选择已绑定的角色音色；分镜没有可用角色音色时回退到本剧
  * 按角色 ID 固定的第一条音色。这样同一角色跨分镜保持一致，同时不会把
@@ -4019,17 +4028,41 @@ function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
   const sid = Number(storyboardId);
   if (Number.isInteger(sid) && sid > 0) {
     let ids = [];
+    let dialogue = '';
     try {
       const row = db.prepare(
-        'SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+        'SELECT characters, dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL'
       ).get(sid);
       ids = parseStoryboardVoiceCharacterIds(row?.characters);
+      dialogue = row?.dialogue || '';
     } catch (_) {}
     if (!ids.length) {
       try {
         ids = db.prepare(
           'SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC'
         ).all(sid).map((row) => Number(row.character_id)).filter((id) => Number.isInteger(id) && id > 0);
+      } catch (_) {}
+    }
+
+    // 一条分镜可能同时包含多个角色，而参考音色字段只能传一个音频。
+    // 优先使用对白中最先开口且已绑定 active 音色的角色，避免按 ID 排序
+    // 把“林岚”的音色误传给“小狐狸”的分镜。
+    if (dialogue && ids.length > 1) {
+      try {
+        const placeholders = ids.map(() => '?').join(',');
+        const rows = db.prepare(
+          `SELECT id, name FROM characters WHERE drama_id = ? AND id IN (${placeholders}) AND deleted_at IS NULL`
+        ).all(Number(dramaId), ...ids);
+        const names = new Map(rows.map((row) => [Number(row.id), row.name]));
+        let selected = null;
+        for (const id of ids) {
+          if (!voiceMap.has(id)) continue;
+          const position = findDialogueSpeakerPosition(dialogue, names.get(id));
+          if (position >= 0 && (!selected || position < selected.position)) {
+            selected = { id, position };
+          }
+        }
+        if (selected) return voiceMap.get(selected.id);
       } catch (_) {}
     }
     for (const id of ids) {

@@ -226,12 +226,20 @@ describe('iCreat Seedance video protocol', () => {
           all() {
             if (sql.includes('ai_service_configs')) return [configRow];
             if (sql.includes('SELECT id, seedance2_voice_asset FROM characters')) {
-              return [{ id: 7, seedance2_voice_asset: JSON.stringify({ status: 'active', url: 'https://cdn.example/fox-voice.mp3' }) }];
+              return [
+                { id: 29, seedance2_voice_asset: JSON.stringify({ status: 'active', url: 'https://cdn.example/linlan-voice.mp3' }) },
+                { id: 30, seedance2_voice_asset: JSON.stringify({ status: 'active', url: 'https://cdn.example/fox-voice.mp3' }) },
+              ];
+            }
+            if (sql.includes('SELECT id, name FROM characters')) {
+              return [{ id: 29, name: '林岚' }, { id: 30, name: '小狐狸' }];
             }
             return [];
           },
           get() {
-            if (sql.includes('SELECT characters FROM storyboards')) return { characters: JSON.stringify([7]) };
+            if (sql.includes('SELECT characters, dialogue FROM storyboards')) {
+              return { characters: JSON.stringify([29, 30]), dialogue: '小狐狸：森林知道。 / 林岚：你怎么知道？' };
+            }
             return null;
           },
           run() { return { changes: 0 }; },
