@@ -21,7 +21,7 @@ function createDb() {
     `INSERT INTO episodes (drama_id, episode_number, title, status, created_at, updated_at) VALUES (?, 1, '第1集', 'draft', ?, ?)`
   ).run(dramaId, now, now).lastInsertRowid;
   const storyboardId = db.prepare(
-    `INSERT INTO storyboards (episode_id, storyboard_number, characters, status, created_at, updated_at) VALUES (?, 1, '[]', 'completed', ?, ?)`
+    `INSERT INTO storyboards (episode_id, storyboard_number, dialogue, characters, status, created_at, updated_at) VALUES (?, 1, '小岚：你好', '[]', 'completed', ?, ?)`
   ).run(episodeId, now, now).lastInsertRowid;
   const characterId = db.prepare(
     `INSERT INTO characters (drama_id, name, created_at, updated_at) VALUES (?, '小岚', ?, ?)`
@@ -40,6 +40,29 @@ function makeVideo(storageRoot, db, dramaId, storyboardId) {
     '-f', 'lavfi', '-i', 'color=c=black:s=160x90:r=12',
     '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=16000',
     '-t', '0.6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-shortest', absPath,
+  ], { encoding: 'utf8' });
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const now = new Date().toISOString();
+  const videoId = db.prepare(
+    `INSERT INTO video_generations (drama_id, storyboard_id, video_url, local_path, status, created_at, updated_at) VALUES (?, ?, '', ?, 'completed', ?, ?)`
+  ).run(dramaId, storyboardId, relPath, now, now).lastInsertRowid;
+  return { videoId, relPath };
+}
+
+function makeSplitRoleVideo(storageRoot, db, dramaId, storyboardId) {
+  const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaId);
+  const relPath = `${projectSubdir}/videos/test-split-role-audio.mp4`;
+  const absPath = path.join(storageRoot, relPath);
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  const generated = spawnSync(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=black:s=160x90:r=12:d=1.4',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=16000:duration=0.45',
+    '-f', 'lavfi', '-i', 'anullsrc=channel_layout=mono:sample_rate=16000:duration=0.35',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000:duration=0.45',
+    '-filter_complex', '[1:a][2:a][3:a]concat=n=3:v=0:a=1[a]',
+    '-map', '0:v', '-map', '[a]', '-t', '1.25', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-shortest', absPath,
   ], { encoding: 'utf8' });
   assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
@@ -118,5 +141,69 @@ describe('storyboardVoiceExtractionService', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('parses dialogue speakers and only plans the selected role segments', () => {
+    const extractArgs = voiceService.buildExtractArgs('input.mp4', 'output.mp3', 10, {
+      segments: [{ start: 0, end: 1 }, { start: 2, end: 3 }],
+    });
+    assert.equal(extractArgs.includes('-filter_complex'), true);
+    assert.equal(extractArgs.includes('-af'), false);
+    const entries = voiceService.parseDialogueSpeakerEntries('小岚：你好/阿澈：“等等”', ['小岚', '阿澈']);
+    assert.deepEqual(entries, [
+      { speaker: '小岚', text: '你好' },
+      { speaker: '阿澈', text: '等等' },
+    ]);
+    const plan = voiceService.buildRoleExtractionPlan({
+      dialogue: '小岚：你好/阿澈：等等',
+      targetCharacter: { id: 1, name: '小岚' },
+      candidates: [{ id: 1, name: '小岚' }, { id: 2, name: '阿澈' }],
+      speechSegments: [{ start: 0, end: 1 }, { start: 2, end: 3 }],
+    });
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.targetSegments, [{ start: 0, end: 1 }]);
+    assert.equal(plan.entries[1].character_id, 2);
+  });
+
+  it('extracts only the selected role when speech has separate cut points', async (t) => {
+    if (!hasLocalFfmpeg()) return t.skip('ffmpeg unavailable');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-voice-split-test-'));
+    const { db, dramaId, storyboardId, characterId } = createDb();
+    try {
+      const second = db.prepare(
+        `INSERT INTO characters (drama_id, name, created_at, updated_at)
+         SELECT drama_id, '阿澈', created_at, updated_at FROM characters WHERE id = ?`
+      ).run(characterId).lastInsertRowid;
+      db.prepare('UPDATE storyboards SET dialogue = ?, characters = ? WHERE id = ?')
+        .run('小岚：你好/阿澈：等等', JSON.stringify([characterId, second]), storyboardId);
+      const { videoId } = makeSplitRoleVideo(root, db, dramaId, storyboardId);
+      const result = await voiceService.extractStoryboardVoice({
+        db,
+        cfg: { storage: { local_path: root } },
+        log: { info() {}, warn() {}, error() {} },
+        storyboardId,
+        videoId,
+        characterId,
+      });
+      assert.equal(result.ok, true, result.error);
+      assert.equal(result.asset.role_segments.length, 2);
+      assert.equal(result.asset.role_segments[0].character_id, characterId);
+      assert.equal(result.asset.role_segments[1].character_id, second);
+      assert.ok(result.asset.duration < 0.8, `selected role duration should be isolated, got ${result.asset.duration}`);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to bind mixed audio when multiple roles have no reliable cut points', () => {
+    const plan = voiceService.buildRoleExtractionPlan({
+      dialogue: '小岚：你好/阿澈：等等',
+      targetCharacter: { id: 1, name: '小岚' },
+      candidates: [{ id: 1, name: '小岚' }, { id: 2, name: '阿澈' }],
+      speechSegments: [{ start: 0, end: 3 }],
+    });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.code, 'VOICE_ROLE_SEPARATION_UNAVAILABLE');
   });
 });
