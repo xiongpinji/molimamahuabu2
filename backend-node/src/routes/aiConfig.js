@@ -1,5 +1,6 @@
 const aiConfigService = require('../services/aiConfigService');
 const response = require('../response');
+const { enrichVideoConfig } = require('../services/videoVoicePolicyService');
 
 function list(db) {
   return (req, res) => {
@@ -12,7 +13,7 @@ function listPublicVideoModels(db) {
   return (req, res) => {
     const list = aiConfigService.listConfigs(db, 'video')
       .filter((config) => config.is_active !== false)
-      .map((config) => ({
+      .map((config) => enrichVideoConfig({
         id: config.id,
         name: config.name,
         provider: config.provider,

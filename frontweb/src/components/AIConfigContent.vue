@@ -96,6 +96,18 @@
                 </span>
               </template>
             </el-table-column>
+            <el-table-column label="声音策略" min-width="150">
+              <template #default="{ row }">
+                <template v-if="row.service_type === 'video'">
+                  <el-tooltip :content="voicePolicyDescription(row)" placement="top">
+                    <el-tag size="small" effect="plain" :type="videoVoicePolicyForConfig(row)?.type || 'info'">
+                      {{ videoVoicePolicyForConfig(row)?.label || '未识别' }}
+                    </el-tag>
+                  </el-tooltip>
+                </template>
+                <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="is_default" label="默认" width="60">
               <template #default="{ row }">
                 <el-tag v-if="row.is_default" type="success" size="small">✓</el-tag>
@@ -1125,6 +1137,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
+import { videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
@@ -1806,6 +1819,14 @@ function serviceTypeLabel(t) {
     model_ark_asset: 'SD2 资产库',
   }
   return map[t] || t
+}
+
+function voicePolicyDescription(row) {
+  const policy = videoVoicePolicyForConfig(row)
+  if (!policy) return '未识别模型能力，请在配置中填写视频模型。'
+  if (policy.key === 'reference_audio') return '优先使用分镜锁定的角色参考音频。'
+  if (policy.key === 'silent') return '模型不生成原生音频，需要使用 TTS 或后期混音。'
+  return '模型生成原生音频，使用角色级文字声线提示；不等同于音色克隆。'
 }
 
 function onRowEdit(row) {
