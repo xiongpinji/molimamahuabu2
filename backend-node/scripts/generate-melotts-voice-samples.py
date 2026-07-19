@@ -2,6 +2,8 @@
 
 Install MeloTTS in an isolated Python environment before running this script:
   python -m pip install git+https://github.com/myshell-ai/MeloTTS.git
+  python -m pip install "setuptools<81" eunjeon
+  python -m unidic download
 
 The generated files are intentionally written under backend-node/data/storage,
 which is local runtime data and is not committed to Git.
@@ -9,6 +11,7 @@ which is local runtime data and is not committed to Git.
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 
@@ -19,6 +22,14 @@ VOICES = {
     "melotts-jp": ("JP", "JP", "これはショートドラマ制作プラットフォームの音声サンプルです。"),
     "melotts-kr": ("KR", "KR", "숏드라마 제작 플랫폼의 캐릭터 음성 샘플입니다."),
 }
+
+
+def configure_stdio():
+    """Keep MeloTTS logs printable on Windows consoles using a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def default_output_dir() -> Path:
@@ -35,6 +46,7 @@ def default_output_dir() -> Path:
 
 
 def main():
+    configure_stdio()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output",
