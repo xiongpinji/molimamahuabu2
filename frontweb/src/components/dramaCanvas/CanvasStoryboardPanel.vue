@@ -180,7 +180,63 @@
       </template>
     </el-form>
 
-    <CanvasGenerationOptions compact />
+    <CanvasGenerationOptions
+      compact
+      :storyboard="storyboard"
+      @storyboard-video-model-change="onStoryboardVideoModelChange"
+    />
+
+    <div class="storyboard-control-strip">
+      <div class="control-head">
+        <span>视频模型与声音</span>
+        <el-tag v-if="voicePolicy" :type="voicePolicy.type" size="small" effect="plain">
+          {{ voicePolicy.label }}
+        </el-tag>
+        <el-tag v-else size="small" type="info" effect="plain">策略待加载</el-tag>
+      </div>
+      <div class="control-meta">
+        当前模型：{{ effectiveVideoModel || '跟随项目默认' }}
+        <span v-if="voicePolicy?.key === 'silent'"> · 需后期对白配音</span>
+        <span v-else-if="voicePolicy?.key === 'reference_audio'"> · 优先使用角色参考音频</span>
+        <span v-else> · 使用角色级文字声线提示</span>
+      </div>
+      <el-popover placement="top-start" :width="420" trigger="click">
+        <template #reference>
+          <el-button link type="primary" size="small">声音提示预览</el-button>
+        </template>
+        <pre class="prompt-preview">{{ voicePromptPreview }}</pre>
+      </el-popover>
+    </div>
+
+    <div class="continuity-strip">
+      <div class="control-head">
+        <span>镜头连续性</span>
+        <el-tag size="small" :type="usesFirstLastFrame ? 'success' : 'info'" effect="plain">
+          {{ usesFirstLastFrame ? '首尾帧模式' : '剧情提示模式' }}
+        </el-tag>
+      </div>
+      <div class="continuity-meta">
+        <span>上一镜：{{ storyboardNeighbors.previous?.title || '无' }}</span>
+        <span>下一镜：{{ storyboardNeighbors.next?.title || '无' }}</span>
+      </div>
+      <div class="continuity-actions">
+        <el-button
+          v-if="canLinkTail"
+          size="small"
+          type="primary"
+          plain
+          :loading="tailLinking"
+          @click.stop="linkTailFrame"
+        >尾帧衔接</el-button>
+        <span v-else-if="storyboardNeighbors.next" class="continuity-muted">跨场景不自动锁定尾帧</span>
+        <el-popover placement="top-start" :width="520" trigger="click">
+          <template #reference>
+            <el-button link type="primary" size="small">连续性提示预览</el-button>
+          </template>
+          <pre class="prompt-preview">{{ continuityPrompt || '暂无相邻镜头' }}</pre>
+        </el-popover>
+      </div>
+    </div>
 
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveFields">保存</el-button>
@@ -195,9 +251,10 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { aiAPI } from '@/api/ai'
 import { storyboardsAPI } from '@/api/storyboards'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
@@ -211,8 +268,12 @@ import { runImageStep, runVideoStep, runAudioStep } from '@/composables/useCanva
 import {
   collectStoryboardReferenceAssets,
   findStoryboardInDrama,
+  getAdjacentStoryboards,
   getDramaGenerationOptions,
 } from '@/utils/canvasWorkflow'
+import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
+import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
+import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 
@@ -229,6 +290,8 @@ const busyStep = ref('')
 const characterIds = ref([])
 const sceneId = ref(null)
 const propIds = ref([])
+const videoConfigs = ref([])
+const tailLinking = ref(false)
 const form = reactive({
   title: '',
   action: '',
@@ -253,6 +316,55 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
   prop_ids: propIds.value,
 }))
 
+const effectiveVideoModel = computed(() => String(
+  props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
+).trim())
+const storyboardCharacters = computed(() => {
+  const ids = new Set(characterIds.value.map((id) => Number(id)))
+  return characters.value.filter((character) => ids.has(Number(character?.id)))
+})
+const voicePolicy = computed(() => {
+  const model = effectiveVideoModel.value
+  if (!model) return null
+  for (const config of videoConfigs.value) {
+    const policies = Array.isArray(config?.voice_policies) ? config.voice_policies : []
+    const exact = policies.find((policy) => String(policy?.model || '').trim() === model)
+    if (exact) return { ...exact, type: exact.type || exact.tone || 'info', label: exact.label || exact.name || '声音策略' }
+    const fallback = videoVoicePolicyForConfig(config)
+    if (fallback?.model === model) return fallback
+  }
+  return null
+})
+const voicePromptPreview = computed(() => buildVoicePromptPreview({
+  policy: voicePolicy.value,
+  characters: storyboardCharacters.value,
+}))
+const currentEpisode = computed(() => {
+  const drama = ctx?.drama?.value
+  const byProp = (drama?.episodes || []).find((episode) => Number(episode?.id) === Number(props.episodeId))
+  if (byProp) return byProp
+  return findStoryboardInDrama(drama, Number(props.storyboard?.id))?.episode || null
+})
+const storyboardNeighbors = computed(() => getAdjacentStoryboards(currentEpisode.value, props.storyboard?.id))
+const usesFirstLastFrame = computed(() => dramaUsesFirstLastFrame(ctx?.drama?.value))
+const canLinkTail = computed(() => canChainStoryboardFrames(
+  storyboardNeighbors.value.next,
+  props.storyboard,
+))
+const continuityPrompt = computed(() => {
+  const base = props.storyboard?.video_prompt
+    || props.storyboard?.universal_segment_text
+    || props.storyboard?.description
+    || props.storyboard?.action
+    || ''
+  return buildStoryboardContinuityPrompt({
+    prompt: base,
+    current: props.storyboard,
+    previous: storyboardNeighbors.value.previous,
+    next: storyboardNeighbors.value.next,
+  })
+})
+
 const busyLabel = computed(() => {
   const map = ctx?.nodeStatus?.map
   const st = map && sbNodeId.value ? map[sbNodeId.value] : null
@@ -274,6 +386,15 @@ function syncForm(sb) {
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
+
+onMounted(async () => {
+  try {
+    const rows = await aiAPI.listVideoModels()
+    videoConfigs.value = Array.isArray(rows) ? rows.filter((row) => row?.is_active !== false) : []
+  } catch (_) {
+    videoConfigs.value = []
+  }
+})
 
 function onSelectVisibleChange(open) {
   if (open) ctx?.suppressPaneClick?.()
@@ -347,6 +468,33 @@ async function persistForm(silent = false) {
       }
   await storyboardsAPI.update(props.storyboard.id, payload)
   if (!silent) ElMessage.success('已保存')
+}
+
+async function onStoryboardVideoModelChange(value) {
+  if (!props.storyboard?.id) return
+  const model = String(value || '').trim()
+  try {
+    await storyboardsAPI.update(props.storyboard.id, { video_model: model || null })
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success(model ? `已为本分镜设置模型：${model}` : '已恢复跟随项目默认模型')
+  } catch (e) {
+    ElMessage.error(e?.message || '保存分镜模型失败')
+  }
+}
+
+async function linkTailFrame() {
+  const dramaId = ctx?.drama?.value?.id
+  if (!props.storyboard?.id || !dramaId || !canLinkTail.value) return
+  tailLinking.value = true
+  try {
+    const result = await storyboardsAPI.linkTailFrame(props.storyboard.id, { drama_id: dramaId })
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success(`已衔接到分镜 #${result?.next_storyboard_id || storyboardNeighbors.value.next?.storyboard_number || ''}`)
+  } catch (e) {
+    ElMessage.error(e?.message || '尾帧衔接失败')
+  } finally {
+    tailLinking.value = false
+  }
 }
 
 async function saveFields() {
@@ -507,6 +655,7 @@ async function runStep(step) {
   gap: 10px;
   margin: 0 0 8px 36px;
 }
+
 .reference-strip {
   margin: 0 0 8px 36px;
   padding: 6px 8px;
@@ -555,6 +704,56 @@ async function runStep(step) {
 .reference-empty {
   font-size: 10px;
   color: #71717a;
+}
+.storyboard-control-strip,
+.continuity-strip {
+  margin: 8px 0 0 36px;
+  padding: 7px 9px;
+  border: 1px solid rgba(63, 63, 70, 0.8);
+  border-radius: 7px;
+  background: rgba(24, 24, 27, 0.72);
+}
+.continuity-strip { border-color: rgba(99, 102, 241, 0.38); }
+.control-head,
+.continuity-meta,
+.continuity-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.control-head {
+  color: #d4d4d8;
+  font-size: 11px;
+  font-weight: 600;
+}
+.control-meta,
+.continuity-meta,
+.continuity-muted {
+  margin-top: 4px;
+  color: #a1a1aa;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.continuity-meta {
+  justify-content: space-between;
+  gap: 12px;
+}
+.continuity-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.continuity-actions { margin-top: 4px; }
+.continuity-muted { margin-top: 0; color: #71717a; }
+.prompt-preview {
+  max-width: 500px;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #27272a;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .meta-row {
   display: flex;

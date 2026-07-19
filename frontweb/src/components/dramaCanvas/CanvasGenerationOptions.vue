@@ -14,13 +14,14 @@
     </el-select>
     <el-select
       v-if="mode !== 'image'"
-      :model-value="options.videoModel || ''"
+      :model-value="selectedVideoModel"
       size="small"
       class="model-select"
       :disabled="!videoModelOptions.length"
       :placeholder="videoModelOptions.length ? '视频模型' : 'AI 配置默认'"
       @change="update('videoModel', $event)"
     >
+      <el-option v-if="storyboard" label="跟随项目默认" value="" />
       <el-option v-for="model in videoModelOptions" :key="`video-${model}`" :label="model" :value="model" />
     </el-select>
     <el-select
@@ -62,7 +63,10 @@ import { getSelectableModels } from '@/utils/modelSelection'
 const props = defineProps({
   mode: { type: String, default: 'both' },
   compact: { type: Boolean, default: false },
+  storyboard: { type: Object, default: null },
 })
+
+const emit = defineEmits(['storyboard-video-model-change'])
 
 const ctx = useCanvasContext()
 const imageConfigs = ref([])
@@ -75,8 +79,11 @@ const imageModelOptions = computed(() => withCurrent(
 ))
 const videoModelOptions = computed(() => withCurrent(
   getSelectableModels(videoConfigs.value, 'video'),
-  options.value.videoModel,
+  props.storyboard?.video_model || options.value.videoModel,
 ))
+const selectedVideoModel = computed(() => props.storyboard
+  ? String(props.storyboard.video_model || '')
+  : String(options.value.videoModel || ''))
 
 function withCurrent(models, current) {
   const value = String(current || '').trim()
@@ -85,6 +92,10 @@ function withCurrent(models, current) {
 }
 
 function update(field, value) {
+  if (props.storyboard && field === 'videoModel') {
+    emit('storyboard-video-model-change', value)
+    return
+  }
   ctx?.updateGenerationOptions?.({ [field]: value })
 }
 

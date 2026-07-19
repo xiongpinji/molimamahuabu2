@@ -60,6 +60,7 @@ const isNodeBusy = computed(() => {
 
 function onSelect(event) {
   ctx?.selectStoryboard?.(props.data.storyboard?.id, event)
+  ctx?.setFocusedNode?.(props.id)
 }
 </script>
 
