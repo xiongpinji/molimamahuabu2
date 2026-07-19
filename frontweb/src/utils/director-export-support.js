@@ -24,3 +24,22 @@ export function parseDirectorExportResult(result) {
     return {}
   }
 }
+
+export function directorExportDownloadUrl(result) {
+  const localPath = String(result?.local_path || '').replace(/^\/+/, '')
+  if (localPath) return `/static/${localPath.split('/').map(encodeURIComponent).join('/')}`
+  return String(result?.url || '')
+}
+
+export async function waitForDirectorExportTask({ getTask, taskId, maxAttempts = 180, delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), isCancelled = () => false }) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (isCancelled()) throw new Error('已取消视频导出')
+    await delay(1000)
+    if (isCancelled()) throw new Error('已取消视频导出')
+    const task = await getTask(taskId)
+    if (task?.status === 'failed') throw new Error(task.error || '服务端转码失败')
+    if (task?.status === 'cancelled') throw new Error('已取消视频导出')
+    if (task?.status === 'completed') return task
+  }
+  throw new Error('服务端转码超时')
+}

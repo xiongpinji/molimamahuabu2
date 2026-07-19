@@ -405,6 +405,20 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
+  const projectAssets = (options.projectAssets || []).filter((asset) => asset?.type === 'image')
+  if (projectAssets.length) {
+    nodes.push(sectionLabel('label:project-assets', `🖼 项目截图 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
+    projectAssets.forEach((asset, index) => {
+      const id = `project-asset:${asset.id}`
+      nodes.push(makeNode({
+        id,
+        type: 'canvasProjectAsset',
+        position: resolveNodePosition(savedLayout, id, { x: ASSET_X, y: assetBlock.nextY + 36 + index * ASSET_ROW_H }),
+        data: { asset },
+      }))
+    })
+  }
+
   let pipelineY = 88
   let maxPipelineX = PIPELINE_X
 
@@ -430,7 +444,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     savedLayout,
     bounds: {
       width: Math.max(maxPipelineX + SCRIPT_OFFSET_X + 200, 1200),
-      height: Math.max(pipelineY + 80, assetBlock.nextY, 600),
+      height: Math.max(pipelineY + 80, assetBlock.nextY + projectAssets.length * ASSET_ROW_H + 80, 600),
     },
   }
 }

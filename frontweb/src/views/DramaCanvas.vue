@@ -289,8 +289,9 @@
       :visible="directorStageVisible"
       :drama="drama"
       :initial-state="directorTimeline"
-      @close="directorStageVisible = false"
+      @close="closeDirectorStage"
       @state-change="onDirectorStateChange"
+      @asset-created="onDirectorAssetCreated"
     />
 
     <CanvasCreateDialog
@@ -324,6 +325,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
+import { assetsAPI } from '@/api/assets'
 import { useTheme } from '@/composables/useTheme'
 import { runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
@@ -349,6 +351,7 @@ import {
   parseDramaMetadata,
   resolveViewport,
 } from '@/utils/canvasLayout'
+import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
   createWorkflowGroup,
   deleteWorkflowGroup,
@@ -372,6 +375,7 @@ import CanvasEpisodeNode from '@/components/dramaCanvas/CanvasEpisodeNode.vue'
 import CanvasScriptNode from '@/components/dramaCanvas/CanvasScriptNode.vue'
 import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.vue'
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
+import CanvasProjectAssetNode from '@/components/dramaCanvas/CanvasProjectAssetNode.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
@@ -394,6 +398,7 @@ const nodes = ref([])
 const edges = ref([])
 const allGraphNodes = ref([])
 const allGraphEdges = ref([])
+const projectImageAssets = ref([])
 const canvasVirtualized = ref(false)
 const filterEpisodeId = ref(null)
 const highlightAssetId = ref(null)
@@ -407,11 +412,15 @@ const workflowProgress = ref('')
 const generationOverrides = ref({})
 const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
+const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
+  dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups)
+))
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
+let directorReturnFocus = null
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
@@ -421,6 +430,18 @@ const paneClickSuppressed = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
 const aligningNodes = ref(false)
 const canvasFlowApi = ref(null)
+
+function openDirectorStage() {
+  directorReturnFocus = document.activeElement
+  directorStageVisible.value = true
+}
+
+async function closeDirectorStage() {
+  directorStageVisible.value = false
+  await nextTick()
+  directorReturnFocus?.focus?.()
+  directorReturnFocus = null
+}
 
 const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript'])
 
@@ -438,6 +459,7 @@ const nodeTypes = {
   canvasScript: markRaw(CanvasScriptNode),
   canvasStoryboard: markRaw(CanvasStoryboardNode),
   canvasMedia: markRaw(CanvasMediaNode),
+  canvasProjectAsset: markRaw(CanvasProjectAssetNode),
   canvasAddButton: markRaw(CanvasAddButtonNode),
 }
 
@@ -502,6 +524,7 @@ function rebuildGraph() {
     workflowGroups: workflowGroups.value,
     imagesBySbId: imagesBySbId.value,
     videosBySbId: videosBySbId.value,
+    projectAssets: projectImageAssets.value,
   })
   let nextNodes = graph.nodes
   let nextEdges = stampEdgeBaseStyles(graph.edges)
@@ -744,9 +767,7 @@ provide(CANVAS_CONTEXT_KEY, {
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
-  openDirectorStage: () => {
-    directorStageVisible.value = true
-  },
+  openDirectorStage,
   toggleSidebar,
   toggleWorkflowPanel,
   focusScript: focusScriptNode,
@@ -944,7 +965,10 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
 
   layoutSaveState.value = 'saving'
   try {
-    const updated = await dramaAPI.saveCanvasLayout(dramaId.value, layoutPayload, groupsPayload)
+    const updated = await layoutPersistence.update({
+      ...(layoutPayload !== null ? { canvasLayout: layoutPayload } : {}),
+      ...(groupsPayload !== undefined ? { workflowGroups: groupsPayload } : {}),
+    })
     const meta = parseDramaMetadata(updated.metadata)
     if (meta.canvas_layout) layoutCache.value = meta.canvas_layout
     if (meta.workflow_groups) workflowGroups.value = meta.workflow_groups
@@ -988,13 +1012,33 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
   }
 }
 
-async function onDirectorStateChange(nextState) {
+async function onDirectorStateChange(nextState, acknowledge) {
   const currentLayout = layoutCache.value || parseCanvasLayout(drama.value?.metadata) || {}
   layoutCache.value = {
     ...currentLayout,
     director_timeline: nextState,
   }
-  await persistCanvasState({ layoutOnly: true })
+  const saved = await persistCanvasState({ layoutOnly: true })
+  acknowledge?.(saved)
+}
+
+async function loadProjectImageAssets() {
+  if (!dramaId.value) {
+    projectImageAssets.value = []
+    return
+  }
+  const result = await assetsAPI.list({ drama_id: dramaId.value, type: 'image', page_size: 100 })
+  projectImageAssets.value = Array.isArray(result) ? result : (result?.items || [])
+}
+
+async function onDirectorAssetCreated(asset) {
+  await loadProjectImageAssets()
+  rebuildGraph()
+  const nodeId = `project-asset:${asset.id}`
+  focusedNodeId.value = nodeId
+  await nextTick()
+  canvasFlowApi.value?.fitView?.({ nodes: [{ id: nodeId }], padding: 0.5, duration: 350 })
+  ElMessage.success('导演截图已写入项目资产并定位到画布')
 }
 
 const {
@@ -1107,6 +1151,7 @@ async function loadDrama(silent = false) {
   if (!silent) loading.value = true
   try {
     drama.value = await dramaAPI.get(dramaId.value)
+    await loadProjectImageAssets()
     layoutCache.value = parseCanvasLayout(drama.value.metadata)
     syncWorkflowFromDrama()
     const vp = resolveViewport(layoutCache.value)

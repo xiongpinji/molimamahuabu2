@@ -70,3 +70,31 @@ export function isDirectorAnimationCompatible(root, animations) {
     return Boolean(target) && (objectNames.has(target) || target === String(root.name || ''))
   })
 }
+
+const GLTF_MIME_TYPES = ['model/gltf-binary', 'model/gltf+json', 'application/octet-stream', 'application/json']
+
+export async function loadDirectorGltf(loader, url, fetchImpl = fetch) {
+  const response = await fetchImpl(url)
+  if (response.status === 401 || response.status === 403) throw new Error(`无权限访问三维资源（${response.status}）`)
+  if (response.status === 404) throw new Error('三维资源不存在（404）')
+  if (!response.ok) throw new Error(`三维资源请求失败（${response.status}）`)
+  const contentType = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase()
+  if (contentType && !GLTF_MIME_TYPES.includes(contentType)) throw new Error(`三维资源 MIME 类型错误：${contentType}`)
+  const buffer = await response.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  const isGlb = bytes.length >= 12 && bytes[0] === 0x67 && bytes[1] === 0x6c && bytes[2] === 0x54 && bytes[3] === 0x46
+  let isJson = false
+  if (!isGlb) {
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(bytes))
+      isJson = parsed?.asset?.version != null
+    } catch (_) {}
+  }
+  if (!isGlb && !isJson) throw new Error('三维资源文件损坏或格式无效')
+  const baseUrl = String(url).replace(/[^/]*([?#].*)?$/, '')
+  try {
+    return await loader.parseAsync(buffer, baseUrl)
+  } catch (error) {
+    throw new Error(`三维资源文件损坏或格式无效：${error?.message || '解析失败'}`)
+  }
+}

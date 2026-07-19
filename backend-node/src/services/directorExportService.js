@@ -59,6 +59,7 @@ function buildFfmpegArgs(inputPath, outputPath) {
     '-i', inputPath,
     '-map', '0:v:0',
     '-map', '0:a?',
+    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
     '-c:v', 'libx264',
     '-pix_fmt', 'yuv420p',
     '-c:a', 'aac',

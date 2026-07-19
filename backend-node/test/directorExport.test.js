@@ -25,7 +25,7 @@ describe('directorExportService', () => {
     const inputPath = path.join(tempRoot, 'input.webm');
     const generated = spawnSync(getFfmpegPath(), [
       '-hide_banner', '-loglevel', 'error',
-      '-f', 'lavfi', '-i', 'color=c=black:s=160x90:r=12',
+      '-f', 'lavfi', '-i', 'color=c=black:s=161x91:r=12',
       '-t', '0.25', '-c:v', 'libvpx-vp9', '-an', '-y', inputPath,
     ], { encoding: 'utf8' });
     assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
@@ -57,5 +57,12 @@ describe('directorExportService', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM assets WHERE type = 'video' AND category = 'director'").get().count, 1);
     db.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('normalizes odd browser canvas dimensions for H.264', () => {
+    const args = directorExport.buildFfmpegArgs('input.webm', 'output.mp4');
+    assert.deepEqual(args.slice(args.indexOf('-vf'), args.indexOf('-vf') + 2), [
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+    ]);
   });
 });

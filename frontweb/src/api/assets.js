@@ -7,4 +7,7 @@ export const assetsAPI = {
   get(id) {
     return request.get(`/assets/${id}`)
   },
+  create(payload) {
+    return request.post('/assets', payload)
+  },
 }
