@@ -1333,6 +1333,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-2.0-flash'] }
   ],
   image: [
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1344,6 +1345,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1354,6 +1356,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
+    { id: 'aihubcc', name: 'AIHubCC 图片/视频', models: ['omni-fast', 'omni-fast-v2v', 'omni-fast-no-water', 'omni-fast-v2v-no-water', 'Seedance-2.0-mini-480p', 'Seedance-2.0-fast-480p', 'Seedance-2.0-480p', 'Seedance-2.0-mini-720p', 'Seedance-2.0-fast-720p', 'Seedance-2.0-720p', 'Seedance-2.0-1080p', 'Seedance-2.0-4k'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1392,6 +1395,7 @@ const providerConfigs = {
 
 /** 厂商 id → 默认接口规范（api_protocol） */
 const providerProtocolMap = {
+  aihubcc: 'aihubcc',
   // image / storyboard_image
   volcengine: 'volcengine',
   volces: 'volcengine',
@@ -1427,6 +1431,7 @@ const providerProtocolMap = {
 function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
+  if (p === 'aihubcc') return 'https://aihubcc.cc/v1'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
   if (p === 'volces' || p === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3'
@@ -1556,6 +1561,8 @@ const endpointPreviewInfo = computed(() => {
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
     if (endpoint) {
       submitPath = endpoint
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      submitPath = '/images/generations'
     } else if (proto === 'volcengine' || p === 'volcengine' || p === 'volces') {
       submitPath = '/images/generations'
     } else if (proto === 'dashscope' || p === 'dashscope' || p === 'qwen_image') {
@@ -1574,6 +1581,8 @@ const endpointPreviewInfo = computed(() => {
   } else if (service_type === 'video') {
     if (proto === 'icreat_task' || p === 'icreat') {
       submitPath = endpoint || '/v1/task/submit/{model}'
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      submitPath = endpoint || '/videos'
     } else if (endpoint) {
       submitPath = endpoint
     } else if (proto === 'volcengine_omni') {
@@ -1629,6 +1638,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      queryPath = '/videos/{taskId}'
     } else if (proto === 'icreat_task' || p === 'icreat') {
       queryPath = '/v1/task/query-status'
     } else if (proto === 'volcengine_omni') {
@@ -1709,6 +1720,14 @@ function onProviderChange(providerId) {
   }
   // 自动填充接口规范
   form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
+  if (providerId === 'aihubcc' && (st === 'image' || st === 'storyboard_image')) {
+    form.value.endpoint = '/images/generations'
+    form.value.query_endpoint = '/videos/{taskId}'
+  }
+  if (providerId === 'aihubcc' && st === 'video') {
+    form.value.endpoint = '/videos'
+    form.value.query_endpoint = '/videos/{taskId}'
+  }
   if (st === 'video' && providerId === 'jimeng_ai_api') {
     form.value.endpoint = ''
     form.value.query_endpoint = ''

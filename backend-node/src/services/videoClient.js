@@ -5,6 +5,7 @@ const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
+const aihubccClient = require('./aihubccClient');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -23,6 +24,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
   if (p === 'djpsd') return 'djpsd';
   if (p === 'dashscope') return 'dashscope';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -141,6 +143,7 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
     protocol = 'icreat_task';
   }
+  if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
   if (!explicit && protocol === 'openai') {
@@ -1034,6 +1037,7 @@ function buildQueryUrl(config, taskId) {
   const isDashScope = proto === 'dashscope' || p === 'dashscope';
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
   const isSora = proto === 'sora';
+  if (proto === 'aihubcc') return aihubccClient.getQueryUrl(config, taskId);
   if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_QUERY_PATH + '/' + encodeURIComponent(taskId);
   const base = (config.base_url || (proto === 'deepwl_grok' ? 'https://zx1.deepwl.net' : '')).replace(/\/$/, '');
   let defaultEp;
@@ -4028,6 +4032,62 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
   return u;
 }
 
+async function callAihubccVideoApi(config, log, opts = {}) {
+  const model = String(opts.model || '').trim();
+  const resolve = async (value, suffix) => {
+    const result = await resolveVeo3ImageForApi(value, opts.storage_local_path, log, `${opts.video_gen_id || 0}_${suffix}`);
+    return result?.value || null;
+  };
+  const first = await resolve(opts.first_frame_url || opts.image_url, 'first');
+  const last = await resolve(opts.last_frame_url, 'last');
+  const refs = [];
+  for (let i = 0; i < (Array.isArray(opts.reference_urls) ? opts.reference_urls.length : 0); i += 1) {
+    const value = await resolve(opts.reference_urls[i], `ref${i}`);
+    if (value && !refs.includes(value)) refs.push(value);
+  }
+  const body = aihubccClient.buildVideoBody({
+    model,
+    prompt: opts.prompt,
+    duration: opts.duration,
+    aspect_ratio: opts.aspect_ratio,
+    image_url: first,
+    first_image_url: first,
+    last_image_url: last,
+    reference_urls: refs,
+    video_url: opts.video_url,
+  });
+  const url = aihubccClient.getSubmitUrl(config, config.endpoint || '/videos');
+  log.info('[AIHubCC video] 提交', {
+    video_gen_id: opts.video_gen_id,
+    model,
+    endpoint: url,
+    duration: body.seconds || body.duration,
+    aspect_ratio: body.aspect_ratio,
+    has_first_frame: !!first,
+    has_last_frame: !!last,
+    reference_count: refs.length,
+  });
+  let result;
+  try {
+    result = await aihubccClient.requestJson(url, {
+      method: 'POST',
+      headers: aihubccClient.authHeaders(config, true),
+      body: JSON.stringify(body),
+      timeoutMs: 600000,
+    });
+  } catch (error) {
+    return { error: `AIHubCC 视频请求失败: ${error.message}` };
+  }
+  if (!result.response.ok) {
+    return { error: `AIHubCC 视频请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+  }
+  const direct = aihubccClient.extractMediaUrl(result.data, config);
+  if (direct) return { video_url: direct };
+  const taskId = aihubccClient.extractTaskId(result.data);
+  if (!taskId) return { error: 'AIHubCC 视频接口未返回视频地址或任务编号' };
+  return { task_id: taskId, status: aihubccClient.extractStatus(result.data) || 'processing' };
+}
+
 /**
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
@@ -4085,6 +4145,19 @@ async function callVideoApi(db, log, opts) {
     model,
     endpoint: config.endpoint || '(auto)',
   });
+
+  if (protocol === 'aihubcc') {
+    return callAihubccVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration,
+      aspect_ratio,
+      image_url,
+      first_frame_url,
+      last_frame_url,
+    });
+  }
 
   if (protocol === 'jimeng_ai_api') {
     return callJimengAiApiVideo(config, log, {
@@ -4451,6 +4524,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
   const isDeepwlGrok = protocol === 'deepwl_grok';
+  const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
@@ -4624,6 +4698,33 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             }
           }
           return { error: 'DeepWL Grok 任务完成但未返回可下载的视频地址' };
+        }
+        continue;
+      }
+
+      if (isAihubcc) {
+        const status = aihubccClient.extractStatus(data);
+        const videoUrl = aihubccClient.extractMediaUrl(data, config);
+        log.info('[AIHubCC poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (aihubccClient.isFailedStatus(status) || data.error) {
+          return { error: aihubccClient.extractError(data) || `AIHubCC 任务失败: ${status || 'unknown'}` };
+        }
+        if (aihubccClient.isDoneStatus(status)) {
+          const contentResponse = await fetch(aihubccClient.getContentUrl(config, taskId), {
+            headers: aihubccClient.authHeaders(config),
+          });
+          const contentRaw = await contentResponse.text();
+          let contentData = {};
+          try { contentData = contentRaw ? JSON.parse(contentRaw) : {}; } catch (_) {}
+          const contentUrl = aihubccClient.extractMediaUrl(contentData, config);
+          if (contentUrl) return { video_url: contentUrl };
+          return { error: 'AIHubCC 任务完成但未返回可下载的视频地址' };
         }
         continue;
       }
@@ -4874,6 +4975,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
 
 module.exports = {
   getDefaultVideoConfig,
+  callAihubccVideoApi,
   callVideoApi,
   pollVideoTask,
   normalizeAspectRatioForApi,

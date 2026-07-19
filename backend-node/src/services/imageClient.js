@@ -12,6 +12,7 @@ const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
+const aihubccClient = require('./aihubccClient');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -93,6 +94,7 @@ function getProxyExpireHours() {
  */
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -102,6 +104,58 @@ function inferProtocol(provider, model) {
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
   return 'openai';
+}
+
+async function callAihubccImageApi(config, log, opts = {}) {
+  const model = String(opts.model || 'gpt-image-2').trim();
+  const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
+  const refs = rawRefs
+    .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
+    .filter(Boolean)
+    .slice(0, 6);
+  const asyncModel = aihubccClient.isAsyncImageModel(model);
+  const endpoint = asyncModel ? '/videos' : (config.endpoint || '/images/generations');
+  const body = aihubccClient.buildImageBody({
+    model,
+    prompt: opts.prompt,
+    size: opts.size,
+    quality: opts.quality,
+    referenceUrls: refs,
+  });
+  const url = aihubccClient.getSubmitUrl(config, endpoint);
+  log.info('[AIHubCC image] 提交', {
+    image_gen_id: opts.image_gen_id,
+    model,
+    endpoint: url,
+    async: asyncModel,
+    ref_count: refs.length,
+  });
+  let result;
+  try {
+    result = await aihubccClient.requestJson(url, {
+      method: 'POST',
+      headers: aihubccClient.authHeaders(config, true),
+      body: JSON.stringify(body),
+      timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
+    });
+  } catch (error) {
+    return { error: `AIHubCC 图片请求失败: ${error.message}` };
+  }
+  if (!result.response.ok) {
+    return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+  }
+  const direct = aihubccClient.extractMediaUrl(result.data, config);
+  if (direct) return { image_url: direct };
+  const b64 = result.data?.data?.[0]?.b64_json;
+  if (b64) return { image_url: `data:image/png;base64,${String(b64).replace(/\s/g, '')}` };
+  const taskId = aihubccClient.extractTaskId(result.data);
+  if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
+  return aihubccClient.pollTask(config, taskId, {
+    mediaType: 'image',
+    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 180),
+    intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
+    log,
+  });
 }
 
 /**
@@ -1511,6 +1565,19 @@ async function callImageApi(db, log, opts) {
     ref_label_injected: effectivePrompt !== (prompt || ''),
     effectivePrompt
   });
+
+  if (protocol === 'aihubcc') {
+    return callAihubccImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      quality,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
 
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;

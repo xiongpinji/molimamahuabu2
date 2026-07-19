@@ -122,6 +122,12 @@ function createConfig(db, log, req) {
         endpoint = '/videos';
         queryEndpoint = '/videos/{taskId}';
       }
+    } else if (p === 'aihubcc' || p === 'aihubcc_image' || p === 'aihubcc_video') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
+      else if (st === 'video') {
+        endpoint = '/videos';
+        queryEndpoint = '/videos/{taskId}';
+      }
     } else if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') {
       if (st === 'video') {
         endpoint = '/v1/video/create';
@@ -310,6 +316,23 @@ async function testConnection(opts) {
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
+
+  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video') {
+    if (!opts.api_key) throw new Error('api_key 必填');
+    const queryPath = String(opts.query_endpoint || '/videos/{taskId}')
+      .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
+    const url = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + opts.api_key },
+    });
+    if (res.status === 401 || res.status === 403) {
+      const text = await res.text();
+      throw new Error(`AIHubCC API Key 无效 (${res.status})${text ? `: ${text.slice(0, 160)}` : ''}`);
+    }
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(`AIHubCC 连接失败 (${res.status})`);
+  }
 
   // 可灵图片：查询一个不存在的任务即可验证鉴权，禁止连接测试创建付费图片任务。
   if (provider === 'kling' && (serviceType === 'image' || serviceType === 'storyboard_image')) {
