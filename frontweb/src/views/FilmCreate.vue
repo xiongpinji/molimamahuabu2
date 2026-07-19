@@ -6583,9 +6583,10 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
   const continuityFirstFrameUrl = persistGridSelection
     ? await resolveContinuityFirstFrameUrl(sb, '')
     : getNonMutatingContinuityFirstFrameUrl(sb, '')
+  const firstLast = sbVideoFirstLastUrls(sb, universalOmniApi, absoluteUrl || undefined)
   const { first: firstFrameUrl, last: lastFrameUrl } = useOmni
     ? { first: continuityFirstFrameUrl || undefined, last: undefined }
-    : sbVideoFirstLastUrls(sb, false, continuityFirstFrameUrl || absoluteUrl || undefined)
+    : { first: continuityFirstFrameUrl || firstLast.first, last: firstLast.last }
   if (useOmni && firstFrameUrl && referenceUrls && !referenceUrls.includes(firstFrameUrl)) {
     referenceUrls = [firstFrameUrl, ...referenceUrls]
   }
