@@ -689,7 +689,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
   }
 
   // Seedance 2.0 音色参考音频支持（仅 Seedance 2.x 模型有效）
-  const isSeedance2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(finalModel);
+  const isSeedance2 = isSeedance2ModelName(finalModel);
   if (isSeedance2 && opts.voice_reference_url) {
     let voiceUrl = String(opts.voice_reference_url).trim();
     if (voiceUrl) {
@@ -3608,6 +3608,10 @@ function normalizeIcreatModel(model) {
   return ICREAT_MODEL_ALIASES[raw.toLowerCase()] || raw;
 }
 
+function isSeedance2ModelName(model) {
+  return /seedance[\s._-]*2(?:[\s._-]*0)?/i.test(String(model || ''));
+}
+
 function normalizeIcreatDuration(duration) {
   const n = Math.round(Number(duration));
   if (!Number.isFinite(n)) return 5;
@@ -3649,6 +3653,7 @@ function buildIcreatVideoBody({
   last_frame_url,
   image_url,
   reference_urls,
+  voice_reference_url,
   generate_audio,
   watermark,
   tools,
@@ -3667,6 +3672,14 @@ function buildIcreatVideoBody({
   addImage(first_frame_url || image_url, 'first_frame');
   addImage(last_frame_url, 'last_frame');
   for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
+  const voiceUrl = String(voice_reference_url || '').trim();
+  if (voiceUrl) {
+    content.push({
+      type: 'audio_url',
+      audio_url: { url: voiceUrl },
+      role: 'reference_audio',
+    });
+  }
 
   const body = {
     content,
@@ -3702,6 +3715,67 @@ async function resolveIcreatImages(opts, log) {
   }
   resolved.reference_urls = refs;
   return resolved;
+}
+
+function audioMimeType(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac',
+  }[ext] || 'audio/mpeg';
+}
+
+function resolveStorageAudioFile(rawUrl, storageLocalPath) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw || !storageLocalPath) return null;
+  let relative = '';
+  if (raw.includes('/static/')) {
+    relative = (raw.split('/static/')[1] || '').split(/[?#]/)[0].replace(/^\/+/, '');
+  } else if (!/^https?:\/\//i.test(raw)) {
+    relative = raw.replace(/^[\\/]+/, '').split(/[?#]/)[0];
+  }
+  if (!relative) return null;
+  const baseResolved = path.resolve(storageLocalPath);
+  const localFile = path.resolve(path.join(baseResolved, relative));
+  if (!localFile.startsWith(baseResolved + path.sep) || !fs.existsSync(localFile)) return null;
+  return localFile;
+}
+
+async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, log, videoGenId) {
+  const raw = String(rawAudioUrl || '').trim();
+  if (!raw) return null;
+  if (/^data:audio\//i.test(raw)) return { kind: 'data', value: raw };
+
+  const localFile = resolveStorageAudioFile(raw, storageLocalPath);
+  if (localFile) {
+    try {
+      const buf = fs.readFileSync(localFile);
+      const value = `data:${audioMimeType(localFile)};base64,${buf.toString('base64')}`;
+      log?.info?.('[iCreat] 已将本地角色音色转换为音频引用', {
+        video_gen_id: videoGenId,
+        local_path: path.relative(storageLocalPath, localFile).replace(/\\/g, '/'),
+      });
+      return { kind: 'data', value };
+    } catch (error) {
+      log?.warn?.('[iCreat] 读取本地角色音色失败', { video_gen_id: videoGenId, error: error.message });
+    }
+  }
+  return { kind: 'url', value: raw };
+}
+
+async function resolveIcreatAudioReference(opts, log) {
+  if (!opts.voice_reference_url) return {};
+  const resolved = await resolveIcreatAudio(
+    opts.voice_reference_url,
+    opts.storage_local_path,
+    log,
+    opts.video_gen_id
+  );
+  return resolved?.value ? { voice_reference_url: resolved.value } : {};
 }
 
 function pickIcreatVideoUrl(payload) {
@@ -3759,12 +3833,19 @@ async function callIcreatVideoApi(config, log, opts = {}) {
   if (!endpoint.includes(encodedModel) && /\/v1\/task\/submit\/?$/i.test(endpoint)) endpoint += `/${encodedModel}`;
   const url = /^https?:\/\//i.test(endpoint) ? endpoint : normalizeIcreatBaseUrl(config.base_url) + endpoint;
   const images = await resolveIcreatImages(opts, log);
+  const audio = await resolveIcreatAudioReference(opts, log);
   const settings = parseConfigSettingsJson(config);
   const body = buildIcreatVideoBody({
     ...opts,
     ...images,
+    ...audio,
     model,
     resolution: normalizeIcreatResolution(opts.resolution, model),
+  });
+  log?.info?.('[iCreat video] 提交', {
+    video_gen_id: opts.video_gen_id,
+    model,
+    has_voice_reference: body.content.some((part) => part.role === 'reference_audio'),
   });
   const headers = {
     Authorization: `Bearer ${config.api_key || ''}`,
@@ -4123,7 +4204,7 @@ async function callVideoApi(db, log, opts) {
   }
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
-  const isSeedance2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(String(model || ''));
+  const isSeedance2 = isSeedance2ModelName(model);
   if (isSeedance2 && db && opts.drama_id && !opts.voice_reference_url) {
     const chosen = selectStoryboardCharacterVoiceRef(db, opts.drama_id, opts.storyboard_id);
     if (chosen) {
@@ -4996,6 +5077,7 @@ module.exports = {
   pickDeepwlGrokVideoUrl,
   normalizeIcreatBaseUrl,
   normalizeIcreatModel,
+  isSeedance2ModelName,
   buildIcreatVideoBody,
   callIcreatVideoApi,
   pickIcreatVideoUrl,

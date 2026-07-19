@@ -1,5 +1,8 @@
 const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
   buildIcreatVideoBody,
   normalizeIcreatModel,
@@ -44,6 +47,20 @@ describe('iCreat Seedance video protocol', () => {
     });
   });
 
+  it('adds a character voice as the documented reference audio content item', () => {
+    const body = buildIcreatVideoBody({
+      prompt: '小狐狸抬头说话',
+      first_frame_url: 'https://cdn.example/first.png',
+      voice_reference_url: 'https://cdn.example/fox-voice.mp3',
+    });
+
+    assert.deepEqual(body.content.at(-1), {
+      type: 'audio_url',
+      audio_url: { url: 'https://cdn.example/fox-voice.mp3' },
+      role: 'reference_audio',
+    });
+  });
+
   it('submits to the iCreat capability-code endpoint and returns the task id', async () => {
     let request;
     global.fetch = async (url, options) => {
@@ -67,6 +84,41 @@ describe('iCreat Seedance video protocol', () => {
     assert.equal(request.body.content[0].text, 'test');
     assert.equal(request.body.duration, 5);
     assert.deepEqual(result, { task_id: 'icreat-task-1', status: 'SUBMITTED' });
+  });
+
+  it('converts an extracted local voice file into an audio data reference', async () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'icreat-voice-'));
+    const relative = 'projects/demo/characters/voice/fox.mp3';
+    const localFile = path.join(storage, relative);
+    fs.mkdirSync(path.dirname(localFile), { recursive: true });
+    fs.writeFileSync(localFile, Buffer.from('fake-mp3'));
+    let request;
+    global.fetch = async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ taskId: 'icreat-local-voice' }) };
+    };
+
+    try {
+      await callIcreatVideoApi({
+        provider: 'icreat',
+        api_protocol: 'icreat_task',
+        base_url: 'https://api.icreat.ai',
+        api_key: 'secret',
+        endpoint: '/v1/task/submit/{model}',
+      }, log, {
+        model: 'Seedance 2.0 Mini',
+        prompt: '小狐狸说话',
+        first_frame_url: 'https://cdn.example/first.png',
+        voice_reference_url: `/static/${relative}`,
+        storage_local_path: storage,
+      });
+      const audio = request.body.content.at(-1);
+      assert.equal(audio.type, 'audio_url');
+      assert.match(audio.audio_url.url, /^data:audio\/mpeg;base64,/);
+      assert.equal(Buffer.from(audio.audio_url.url.split(',')[1], 'base64').toString(), 'fake-mp3');
+    } finally {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
   });
 
   it('polls status with POST and fetches the result only after SUCCEEDED', async () => {
@@ -145,6 +197,62 @@ describe('iCreat Seedance video protocol', () => {
 
     assert.equal(requestedUrl, 'https://api.icreat.ai/v1/task/submit/bytedance/seedance-2-0-fast');
     assert.deepEqual(result, { task_id: 'icreat-routed-1', status: 'processing' });
+  });
+
+  it('automatically carries the storyboard character voice into iCreat generation', async () => {
+    let request;
+    global.fetch = async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ taskId: 'icreat-voice-1' }) };
+    };
+    const configRow = {
+      id: 10,
+      service_type: 'video',
+      provider: 'icreat',
+      api_protocol: 'icreat_task',
+      base_url: 'https://api.icreat.ai',
+      api_key: 'secret',
+      model: JSON.stringify(['bytedance/seedance-2-0-mini']),
+      default_model: 'bytedance/seedance-2-0-mini',
+      endpoint: '/v1/task/submit/{model}',
+      query_endpoint: '/v1/task/query-status',
+      settings: null,
+      is_default: 1,
+      is_active: 1,
+    };
+    const db = {
+      prepare(sql) {
+        return {
+          all() {
+            if (sql.includes('ai_service_configs')) return [configRow];
+            if (sql.includes('SELECT id, seedance2_voice_asset FROM characters')) {
+              return [{ id: 7, seedance2_voice_asset: JSON.stringify({ status: 'active', url: 'https://cdn.example/fox-voice.mp3' }) }];
+            }
+            return [];
+          },
+          get() {
+            if (sql.includes('SELECT characters FROM storyboards')) return { characters: JSON.stringify([7]) };
+            return null;
+          },
+          run() { return { changes: 0 }; },
+        };
+      },
+    };
+
+    const result = await callVideoApi(db, log, {
+      model: 'Seedance 2.0 Mini',
+      drama_id: 3,
+      storyboard_id: 11,
+      prompt: '小狐狸抬头说话',
+      duration: 5,
+    });
+
+    assert.deepEqual(result, { task_id: 'icreat-voice-1', status: 'processing' });
+    assert.deepEqual(request.body.content.at(-1), {
+      type: 'audio_url',
+      audio_url: { url: 'https://cdn.example/fox-voice.mp3' },
+      role: 'reference_audio',
+    });
   });
 });
 
