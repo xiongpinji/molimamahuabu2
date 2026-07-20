@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getModelsFromAiConfig, getSelectableModels } from '../src/utils/modelSelection.js'
+import {
+  getModelsFromAiConfig,
+  getSelectableModels,
+  isConfigForServiceType,
+} from '../src/utils/modelSelection.js'
 
 const configs = [
   {
@@ -31,6 +35,37 @@ test('uses default active config models when no config is selected', () => {
 
 test('uses selected config models when config is selected', () => {
   assert.deepEqual(getSelectableModels(configs, 'text', 2), ['qwen-plus'])
+})
+
+test('falls back to an active image config for storyboard image selection', () => {
+  assert.deepEqual(getSelectableModels([{
+    id: 3,
+    service_type: 'image',
+    is_active: true,
+    is_default: true,
+    model: ['gpt-image-2'],
+  }], 'storyboard_image', null), ['gpt-image-2'])
+})
+
+test('prefers an exact storyboard image config over the image fallback', () => {
+  const exactConfig = {
+    id: 4,
+    service_type: 'storyboard_image',
+    is_active: true,
+    is_default: true,
+    model: ['storyboard-pro'],
+  }
+  const fallbackConfig = {
+    id: 5,
+    service_type: 'image',
+    is_active: true,
+    is_default: true,
+    model: ['gpt-image-2'],
+  }
+  assert.equal(isConfigForServiceType(exactConfig, 'storyboard_image'), true)
+  assert.deepEqual(getSelectableModels([fallbackConfig, exactConfig], 'storyboard_image', null), [
+    'storyboard-pro',
+  ])
 })
 
 test('normalizes a video AI config for option loading', () => {
