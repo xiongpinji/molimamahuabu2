@@ -11,6 +11,8 @@ import {
   findStoryboardInDrama,
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
+  getStoryboardGridFrameType,
+  getStoryboardImageModel,
   getStoryboardVideoModel,
   toAbsoluteMediaUrl,
   buildCanvasPhotographyPrompt,
@@ -63,20 +65,38 @@ async function resolveCanvasFramePrompt(sb, frameKind) {
   }
 }
 
+async function hydrateStoryboardSettings(storyboard) {
+  if (!storyboard?.id) return storyboard
+  const hasImageSettings = Object.prototype.hasOwnProperty.call(storyboard, 'image_model')
+    && Object.prototype.hasOwnProperty.call(storyboard, 'grid_frame_type')
+  const hasVideoModel = Object.prototype.hasOwnProperty.call(storyboard, 'video_model')
+  if (hasImageSettings && hasVideoModel) return storyboard
+  try {
+    const detail = await storyboardsAPI.get(storyboard.id)
+    if (Number(detail?.id) === Number(storyboard.id)) return { ...storyboard, ...detail }
+  } catch (_) {
+    // 兼容尚未部署新分镜字段的服务，继续使用当前对象和项目默认配置。
+  }
+  return storyboard
+}
+
 export async function runImageStep(drama, sb, genOpts, frameKind = '', options = {}) {
-  const basePrompt = await resolveCanvasFramePrompt(sb, frameKind)
-  const prompt = buildCanvasPhotographyPrompt(basePrompt, sb)
-  if (!prompt.trim()) throw new Error(`分镜 #${sb.storyboard_number ?? sb.id} 缺少图片提示词`)
-  const frameType = options.frameType || getStoryboardImageFrameType(frameKind)
+  const effectiveStoryboard = await hydrateStoryboardSettings(sb)
+  const basePrompt = await resolveCanvasFramePrompt(effectiveStoryboard, frameKind)
+  const prompt = buildCanvasPhotographyPrompt(basePrompt, effectiveStoryboard)
+  if (!prompt.trim()) throw new Error(`分镜 #${effectiveStoryboard.storyboard_number ?? effectiveStoryboard.id} 缺少图片提示词`)
+  const frameType = options.frameType
+    || getStoryboardImageFrameType(frameKind)
+    || (!frameKind ? getStoryboardGridFrameType(effectiveStoryboard) : undefined)
   const referenceImages = frameType
-    ? collectStoryboardReferenceAssets(drama, sb).map((ref) => ref.absoluteUrl).filter(Boolean)
+    ? collectStoryboardReferenceAssets(drama, effectiveStoryboard).map((ref) => ref.absoluteUrl).filter(Boolean)
     : []
   const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
-    storyboard_id: sb.id,
+    storyboard_id: effectiveStoryboard.id,
     drama_id: drama.id,
     prompt,
-    model: genOpts.imageModel || undefined,
+    model: getStoryboardImageModel(effectiveStoryboard, genOpts) || undefined,
     style: genOpts.style || undefined,
     aspect_ratio: genOpts.aspectRatio,
     frame_type: frameType,
@@ -90,6 +110,7 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
 }
 
 export async function runVideoStep(drama, sb, genOpts) {
+  sb = await hydrateStoryboardSettings(sb)
   const useFirstLast = dramaUsesFirstLastFrame(drama)
   const imagesBySbId = genOpts?.imagesBySbId || {}
   const { first, last } = sbVideoFirstLastUrls(sb, imagesBySbId, useFirstLast)
@@ -167,7 +188,9 @@ export async function runStoryboardPipeline(drama, storyboardId, pipeline, hooks
     hooks.onStepStart?.({ storyboardId, step, sb })
     try {
       if (step === 'image') {
-        await runImageStep(drama, sb, genOpts)
+        await runImageStep(drama, sb, genOpts, '', {
+          frameType: getStoryboardGridFrameType(sb),
+        })
         if (hooks.reloadStoryboard) {
           sb = (await hooks.reloadStoryboard(storyboardId)) || sb
         }

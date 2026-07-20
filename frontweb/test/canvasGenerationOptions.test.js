@@ -7,6 +7,8 @@ import {
   getAdjacentStoryboards,
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
+  getStoryboardGridFrameType,
+  getStoryboardImageModel,
   getStoryboardVideoModel,
   universalPromptDuration,
 } from '../src/utils/canvasWorkflow.js'
@@ -46,6 +48,20 @@ test('分镜视频模型覆盖项目默认模型', () => {
     getStoryboardVideoModel({ video_model: '  ' }, { videoModel: 'project-video' }),
     'project-video',
   )
+})
+
+test('分镜图模型与宫格版式覆盖项目默认设置', () => {
+  assert.equal(
+    getStoryboardImageModel({ image_model: 'storyboard-image' }, { imageModel: 'project-image' }),
+    'storyboard-image',
+  )
+  assert.equal(
+    getStoryboardImageModel({ image_model: '  ' }, { imageModel: 'project-image' }),
+    'project-image',
+  )
+  assert.equal(getStoryboardGridFrameType({ grid_frame_type: 'nine_grid' }), 'nine_grid')
+  assert.equal(getStoryboardGridFrameType({ grid_frame_type: 'single' }), undefined)
+  assert.equal(getStoryboardGridFrameType({}), undefined)
 })
 
 test('画布工作流按分镜编号提供相邻镜头', () => {

@@ -136,7 +136,7 @@
           <el-select v-model="lightingStyle" size="small" clearable placeholder="灯光风格" @change="savePhotography">
             <el-option v-for="item in LIGHTING_STYLES" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
-          <el-select v-model="gridFrameType" size="small" placeholder="分镜图版式">
+          <el-select v-model="gridFrameType" size="small" placeholder="分镜图版式" @change="savePhotography">
             <el-option label="单张" value="single" />
             <el-option v-for="layout in GRID_LAYOUTS" :key="layout.value" :label="layout.label" :value="layout.value" />
           </el-select>
@@ -208,7 +208,8 @@
 
     <CanvasGenerationOptions
       compact
-      :storyboard="storyboard"
+      :storyboard="storyboardGenerationOptions"
+      @storyboard-image-model-change="onStoryboardImageModelChange"
       @storyboard-video-model-change="onStoryboardVideoModelChange"
     />
 
@@ -322,6 +323,7 @@ const angleV = ref('')
 const angleS = ref('')
 const lightingStyle = ref('')
 const gridFrameType = ref('single')
+const imageModel = ref('')
 const videoConfigs = ref([])
 const tailLinking = ref(false)
 const form = reactive({
@@ -351,6 +353,10 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
 const effectiveVideoModel = computed(() => String(
   props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
 ).trim())
+const storyboardGenerationOptions = computed(() => ({
+  ...props.storyboard,
+  image_model: imageModel.value,
+}))
 const storyboardCharacters = computed(() => {
   const ids = new Set(characterIds.value.map((id) => Number(id)))
   return characters.value.filter((character) => ids.has(Number(character?.id)))
@@ -453,18 +459,47 @@ function syncForm(sb) {
   angleV.value = sb?.angle_v || ''
   angleS.value = sb?.angle_s || ''
   lightingStyle.value = sb?.lighting_style || ''
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'image_model')) imageModel.value = sb?.image_model || ''
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'grid_frame_type')) gridFrameType.value = sb?.grid_frame_type || 'single'
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
+watch(() => props.storyboard?.id, (id, previousId) => {
+  if (id && id !== previousId) {
+    imageModel.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'image_model')
+      ? props.storyboard.image_model || ''
+      : ''
+    gridFrameType.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'grid_frame_type')
+      ? props.storyboard.grid_frame_type || 'single'
+      : 'single'
+    loadStoredImageSettings()
+  }
+})
 
 onMounted(async () => {
+  await Promise.all([loadVideoModels(), loadStoredImageSettings()])
+})
+
+async function loadVideoModels() {
   try {
     const rows = await aiAPI.listVideoModels()
     videoConfigs.value = Array.isArray(rows) ? rows.filter((row) => row?.is_active !== false) : []
   } catch (_) {
     videoConfigs.value = []
   }
-})
+}
+
+async function loadStoredImageSettings() {
+  if (!props.storyboard?.id) return
+  try {
+    const detail = await storyboardsAPI.get(props.storyboard.id)
+    if (Number(detail?.id) !== Number(props.storyboard.id)) return
+    imageModel.value = detail.image_model || ''
+    gridFrameType.value = detail.grid_frame_type || 'single'
+  } catch (_) {
+    // 旧服务未部署新列时保留当前面板默认值，生成仍可继续使用项目默认模型。
+  }
+}
 
 function onSelectVisibleChange(open) {
   if (open) ctx?.suppressPaneClick?.()
@@ -548,11 +583,19 @@ async function savePhotography() {
       angle_v: angleV.value || null,
       angle_s: angleS.value || null,
       lighting_style: lightingStyle.value || null,
+      image_model: imageModel.value || null,
+      grid_frame_type: gridFrameType.value || 'single',
     })
     await ctx?.refreshDrama?.(true)
   } catch (e) {
     ElMessage.error(e?.message || '摄影参数保存失败')
   }
+}
+
+async function onStoryboardImageModelChange(value) {
+  imageModel.value = String(value || '').trim()
+  await savePhotography()
+  ElMessage.success(imageModel.value ? `已为本分镜设置图像模型：${imageModel.value}` : '已恢复跟随项目默认图像模型')
 }
 
 async function onStoryboardVideoModelChange(value) {
@@ -656,7 +699,10 @@ async function runStep(step) {
     const sb = found?.storyboard || props.storyboard
     const genOpts = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)
     if (step === 'image') {
-      await runImageStep(drama, sb, genOpts, '', {
+      await runImageStep(drama, sb, {
+        ...genOpts,
+        imageModel: imageModel.value || genOpts.imageModel,
+      }, '', {
         frameType: gridFrameType.value === 'single' ? undefined : gridFrameType.value,
       })
     }

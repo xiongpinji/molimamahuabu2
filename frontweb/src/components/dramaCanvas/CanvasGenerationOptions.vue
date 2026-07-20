@@ -3,13 +3,14 @@
     <span class="options-label">生成参数</span>
     <el-select
       v-if="mode !== 'video'"
-      :model-value="options.imageModel || ''"
+      :model-value="selectedImageModel"
       size="small"
       class="model-select"
       :disabled="!imageModelOptions.length"
       :placeholder="imageModelOptions.length ? '图像模型' : 'AI 配置默认'"
       @change="update('imageModel', $event)"
     >
+      <el-option v-if="storyboard" label="跟随项目默认" value="" />
       <el-option v-for="model in imageModelOptions" :key="`image-${model}`" :label="model" :value="model" />
     </el-select>
     <el-select
@@ -66,16 +67,19 @@ const props = defineProps({
   storyboard: { type: Object, default: null },
 })
 
-const emit = defineEmits(['storyboard-video-model-change'])
+const emit = defineEmits(['storyboard-video-model-change', 'storyboard-image-model-change'])
 
 const ctx = useCanvasContext()
 const imageConfigs = ref([])
 const videoConfigs = ref([])
 const options = computed(() => ctx?.generationOptions?.value || {})
+const selectedImageModel = computed(() => props.storyboard
+  ? String(props.storyboard.image_model || '')
+  : String(options.value.imageModel || ''))
 
 const imageModelOptions = computed(() => withCurrent(
   getSelectableModels(imageConfigs.value, 'image'),
-  options.value.imageModel,
+  selectedImageModel.value,
 ))
 const videoModelOptions = computed(() => withCurrent(
   getSelectableModels(videoConfigs.value, 'video'),
@@ -92,6 +96,10 @@ function withCurrent(models, current) {
 }
 
 function update(field, value) {
+  if (props.storyboard && field === 'imageModel') {
+    emit('storyboard-image-model-change', value)
+    return
+  }
   if (props.storyboard && field === 'videoModel') {
     emit('storyboard-video-model-change', value)
     return

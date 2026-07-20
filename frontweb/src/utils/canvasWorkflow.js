@@ -81,6 +81,18 @@ export function getStoryboardVideoModel(storyboard, generationOptions = {}) {
   return override || String(generationOptions?.videoModel || '').trim()
 }
 
+/** 分镜级图像模型优先，未设置时回退到项目画布默认模型。 */
+export function getStoryboardImageModel(storyboard, generationOptions = {}) {
+  const override = String(storyboard?.image_model || '').trim()
+  return override || String(generationOptions?.imageModel || '').trim()
+}
+
+/** 分镜图版式为单张时不传 frame_type，保持后端默认行为。 */
+export function getStoryboardGridFrameType(storyboard) {
+  const value = String(storyboard?.grid_frame_type || '').trim()
+  return value && value !== 'single' ? value : undefined
+}
+
 /** 返回同一剧集中的前后分镜，按分镜编号保持稳定顺序。 */
 export function getAdjacentStoryboards(episode, storyboardId) {
   const storyboards = Array.isArray(episode?.storyboards) ? [...episode.storyboards] : []
