@@ -127,6 +127,36 @@ export function buildUniversalPromptFieldOverrides(storyboard) {
   return Object.fromEntries(fields.map((field) => [field, storyboard?.[field] || '']))
 }
 
+const PHOTOGRAPHY_LABELS = Object.freeze({
+  angle_h: Object.freeze({
+    front: '正面', front_left: '前左45度', left: '左侧', back_left: '后左135度',
+    back: '背面', back_right: '后右135度', right: '右侧', front_right: '前右45度',
+  }),
+  angle_v: Object.freeze({ worm: '虫眼仰拍', low: '低角度仰拍', eye_level: '平视', high: '高角度俯拍' }),
+  angle_s: Object.freeze({ close_up: '近景特写', medium: '中景', wide: '远景全景' }),
+  lighting_style: Object.freeze({
+    natural: '自然光', front: '顺光', side: '侧光', backlit: '逆光', soft: '柔光',
+    dramatic: '戏剧光', golden_hour: '黄金时段光', blue_hour: '蓝调时刻光', night: '夜景低调光', neon: '霓虹光',
+  }),
+})
+
+/** 把画布摄影控件转成一次生图可读的指令，避免参数只保存不生效。 */
+export function buildCanvasPhotographyPrompt(prompt, storyboard) {
+  const base = String(prompt || '').trim()
+  const labels = [
+    ['angle_h', '水平机位'],
+    ['angle_v', '垂直机位'],
+    ['angle_s', '景别'],
+    ['lighting_style', '灯光'],
+  ].flatMap(([field, name]) => {
+    const value = String(storyboard?.[field] || '').trim()
+    const label = PHOTOGRAPHY_LABELS[field]?.[value]
+    return label ? [`${name}${label}`] : []
+  })
+  if (!labels.length || base.includes('画布摄影控制：')) return base
+  return `${base}${base.endsWith('。') ? '' : '。'}画布摄影控制：${labels.join('，')}。`
+}
+
 /** 返回当前分镜已关联且有图片的参考资产，顺序与列表模式一致：场景、角色、道具。 */
 export function collectStoryboardReferenceAssets(drama, sb, options = {}) {
   const max = Number.isFinite(Number(options.max)) ? Math.max(1, Number(options.max)) : 10

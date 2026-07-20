@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   buildUniversalPromptFieldOverrides,
+  buildCanvasPhotographyPrompt,
   getAdjacentStoryboards,
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
@@ -92,4 +93,19 @@ test('全能词流式请求使用分镜时长和结构化字段覆盖', () => {
     layout_description: '',
   })
   assert.equal(universalPromptDuration({ duration: 0 }), 5)
+})
+
+test('画布摄影参数会追加到生图提示词且不重复追加', () => {
+  const storyboard = {
+    angle_h: 'front_left',
+    angle_v: 'high',
+    angle_s: 'medium',
+    lighting_style: 'golden_hour',
+  }
+  const prompt = buildCanvasPhotographyPrompt('林中人物回头', storyboard)
+  assert.match(prompt, /水平机位前左45度/)
+  assert.match(prompt, /垂直机位高角度俯拍/)
+  assert.match(prompt, /景别中景/)
+  assert.match(prompt, /灯光黄金时段光/)
+  assert.equal(buildCanvasPhotographyPrompt(prompt, storyboard), prompt)
 })

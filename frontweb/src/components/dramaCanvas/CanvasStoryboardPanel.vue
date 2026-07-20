@@ -118,6 +118,32 @@
         </el-form-item>
       </div>
 
+      <div class="camera-control-strip">
+        <div class="control-head">
+          <span>摄影控制</span>
+          <el-tag size="small" type="info" effect="plain">角度 · 灯光 · 宫格</el-tag>
+        </div>
+        <div class="camera-control-grid">
+          <el-select v-model="angleH" size="small" clearable placeholder="水平角度" @change="savePhotography">
+            <el-option v-for="item in HORIZONTAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="angleV" size="small" clearable placeholder="俯仰角度" @change="savePhotography">
+            <el-option v-for="item in VERTICAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="angleS" size="small" clearable placeholder="景别" @change="savePhotography">
+            <el-option v-for="item in SHOT_SIZES" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="lightingStyle" size="small" clearable placeholder="灯光风格" @change="savePhotography">
+            <el-option v-for="item in LIGHTING_STYLES" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="gridFrameType" size="small" placeholder="分镜图版式">
+            <el-option label="单张" value="single" />
+            <el-option v-for="layout in GRID_LAYOUTS" :key="layout.value" :label="layout.label" :value="layout.value" />
+          </el-select>
+        </div>
+        <div class="camera-control-hint">保存后会写入分镜提示词；生成分镜图时按所选版式提交。</div>
+      </div>
+
       <template v-if="isUniversal">
         <el-form-item label="全能词">
           <el-input
@@ -274,6 +300,7 @@ import {
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
+import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 
@@ -290,6 +317,11 @@ const busyStep = ref('')
 const characterIds = ref([])
 const sceneId = ref(null)
 const propIds = ref([])
+const angleH = ref('')
+const angleV = ref('')
+const angleS = ref('')
+const lightingStyle = ref('')
+const gridFrameType = ref('single')
 const videoConfigs = ref([])
 const tailLinking = ref(false)
 const form = reactive({
@@ -323,6 +355,40 @@ const storyboardCharacters = computed(() => {
   const ids = new Set(characterIds.value.map((id) => Number(id)))
   return characters.value.filter((character) => ids.has(Number(character?.id)))
 })
+
+const HORIZONTAL_ANGLES = [
+  { value: 'front', label: '正面' },
+  { value: 'front_left', label: '前左 45°' },
+  { value: 'left', label: '左侧' },
+  { value: 'back_left', label: '后左 135°' },
+  { value: 'back', label: '背面' },
+  { value: 'back_right', label: '后右 135°' },
+  { value: 'right', label: '右侧' },
+  { value: 'front_right', label: '前右 45°' },
+]
+const VERTICAL_ANGLES = [
+  { value: 'worm', label: '虫眼仰拍' },
+  { value: 'low', label: '低角度仰拍' },
+  { value: 'eye_level', label: '平视' },
+  { value: 'high', label: '高角度俯拍' },
+]
+const SHOT_SIZES = [
+  { value: 'close_up', label: '近景/特写' },
+  { value: 'medium', label: '中景' },
+  { value: 'wide', label: '远景/全景' },
+]
+const LIGHTING_STYLES = [
+  { value: 'natural', label: '自然光' },
+  { value: 'front', label: '顺光' },
+  { value: 'side', label: '侧光' },
+  { value: 'backlit', label: '逆光' },
+  { value: 'soft', label: '柔光' },
+  { value: 'dramatic', label: '戏剧光' },
+  { value: 'golden_hour', label: '黄金时段' },
+  { value: 'blue_hour', label: '蓝调时刻' },
+  { value: 'night', label: '夜景低调光' },
+  { value: 'neon', label: '霓虹' },
+]
 const voicePolicy = computed(() => {
   const model = effectiveVideoModel.value
   if (!model) return null
@@ -383,6 +449,10 @@ function syncForm(sb) {
   characterIds.value = parseStoryboardCharacterIds(sb)
   sceneId.value = parseStoryboardSceneId(sb)
   propIds.value = parseStoryboardPropIds(sb)
+  angleH.value = sb?.angle_h || ''
+  angleV.value = sb?.angle_v || ''
+  angleS.value = sb?.angle_s || ''
+  lightingStyle.value = sb?.lighting_style || ''
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
@@ -468,6 +538,21 @@ async function persistForm(silent = false) {
       }
   await storyboardsAPI.update(props.storyboard.id, payload)
   if (!silent) ElMessage.success('已保存')
+}
+
+async function savePhotography() {
+  if (!props.storyboard?.id) return
+  try {
+    await storyboardsAPI.update(props.storyboard.id, {
+      angle_h: angleH.value || null,
+      angle_v: angleV.value || null,
+      angle_s: angleS.value || null,
+      lighting_style: lightingStyle.value || null,
+    })
+    await ctx?.refreshDrama?.(true)
+  } catch (e) {
+    ElMessage.error(e?.message || '摄影参数保存失败')
+  }
 }
 
 async function onStoryboardVideoModelChange(value) {
@@ -570,7 +655,11 @@ async function runStep(step) {
     const found = findStoryboardInDrama(drama, sbId)
     const sb = found?.storyboard || props.storyboard
     const genOpts = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)
-    if (step === 'image') await runImageStep(drama, sb, genOpts)
+    if (step === 'image') {
+      await runImageStep(drama, sb, genOpts, '', {
+        frameType: gridFrameType.value === 'single' ? undefined : gridFrameType.value,
+      })
+    }
     else if (step === 'video') await runVideoStep(drama, sb, genOpts)
     else if (step === 'audio') {
       const res = await runAudioStep(sb)
@@ -714,6 +803,24 @@ async function runStep(step) {
   background: rgba(24, 24, 27, 0.72);
 }
 .continuity-strip { border-color: rgba(99, 102, 241, 0.38); }
+.camera-control-strip {
+  margin: 8px 0 0 36px;
+  padding: 7px 9px;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  border-radius: 7px;
+  background: rgba(24, 24, 27, 0.72);
+}
+.camera-control-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+.camera-control-hint {
+  margin-top: 5px;
+  color: #71717a;
+  font-size: 10px;
+}
 .control-head,
 .continuity-meta,
 .continuity-actions {

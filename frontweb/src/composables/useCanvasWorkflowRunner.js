@@ -13,6 +13,7 @@ import {
   getStoryboardImageFrameType,
   getStoryboardVideoModel,
   toAbsoluteMediaUrl,
+  buildCanvasPhotographyPrompt,
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
 import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
@@ -62,10 +63,11 @@ async function resolveCanvasFramePrompt(sb, frameKind) {
   }
 }
 
-export async function runImageStep(drama, sb, genOpts, frameKind = '') {
-  const prompt = await resolveCanvasFramePrompt(sb, frameKind)
+export async function runImageStep(drama, sb, genOpts, frameKind = '', options = {}) {
+  const basePrompt = await resolveCanvasFramePrompt(sb, frameKind)
+  const prompt = buildCanvasPhotographyPrompt(basePrompt, sb)
   if (!prompt.trim()) throw new Error(`分镜 #${sb.storyboard_number ?? sb.id} 缺少图片提示词`)
-  const frameType = getStoryboardImageFrameType(frameKind)
+  const frameType = options.frameType || getStoryboardImageFrameType(frameKind)
   const referenceImages = frameType
     ? collectStoryboardReferenceAssets(drama, sb).map((ref) => ref.absoluteUrl).filter(Boolean)
     : []

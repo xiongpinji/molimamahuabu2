@@ -28,6 +28,10 @@
           <img :src="panoramaUrl" alt="场景全景图" />
           <span>全景图</span>
         </div>
+        <div v-if="kind === 'character' && multiViewUrl" class="panorama-preview multi-view-preview">
+          <img :src="multiViewUrl" alt="角色三视图" />
+          <span>三视图参考</span>
+        </div>
       </div>
 
       <div class="form-col">
@@ -139,6 +143,17 @@
       >
         生成全景图
       </el-button>
+      <el-button
+        v-if="kind === 'character' || kind === 'scene'"
+        size="small"
+        type="warning"
+        plain
+        :loading="multiViewGenerating"
+        :disabled="generating || panoramaGenerating"
+        @click.stop="generateMultiView"
+      >
+        {{ kind === 'character' ? '角色三视图' : '场景多视图' }}
+      </el-button>
       <el-button size="small" plain @click.stop="highlightRelated">关联分镜</el-button>
       <el-button size="small" type="danger" plain @click.stop="deleteAsset">删除</el-button>
     </div>
@@ -154,6 +169,7 @@ import { propAPI } from '@/api/props'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import {
   generateAssetReferenceImage,
+  generateAssetMultiViewImage,
   generateScenePanoramaImage,
 } from '@/composables/useCanvasAssetGenerate'
 import { assetImageUrl } from '@/utils/mediaUrl'
@@ -167,6 +183,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const saving = ref(false)
 const generating = ref(false)
+const multiViewGenerating = ref(false)
 const panoramaGenerating = ref(false)
 const form = reactive({
   name: '',
@@ -193,6 +210,9 @@ const panoramaUrl = computed(() => assetImageUrl({
   image_url: props.entity?.panorama_image_url,
   local_path: props.entity?.panorama_local_path,
 }))
+const multiViewUrl = computed(() => props.kind === 'character'
+  ? assetImageUrl({ image_url: props.entity?.four_view_image_url })
+  : '')
 const canGenerate = computed(() => !previewUrl.value)
 const entityStatus = computed(() => props.entity?.status || '')
 const entityStatusLabel = computed(() => {
@@ -327,6 +347,22 @@ async function generatePanorama() {
     ElMessage.error(e?.message || '全景图生成失败')
   } finally {
     panoramaGenerating.value = false
+  }
+}
+
+async function generateMultiView() {
+  multiViewGenerating.value = true
+  try {
+    await generateAssetMultiViewImage(ctx, {
+      kind: props.kind,
+      entity: props.entity,
+      nodeId: props.nodeId,
+    })
+    ElMessage.success(props.kind === 'character' ? '角色三视图已生成' : '场景多视图已生成')
+  } catch (e) {
+    ElMessage.error(e?.message || '多视图生成失败')
+  } finally {
+    multiViewGenerating.value = false
   }
 }
 

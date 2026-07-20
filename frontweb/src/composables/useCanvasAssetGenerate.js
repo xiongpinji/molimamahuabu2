@@ -97,3 +97,24 @@ export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId })
     nodeStatus?.clear(nodeId)
   }
 }
+
+/** 复用角色/场景已有多视图接口，并把任务状态映射到画布节点。 */
+export async function generateAssetMultiViewImage(ctx, { kind, entity, nodeId }) {
+  const nodeStatus = ctx?.nodeStatus
+  nodeStatus?.set(nodeId, { step: 'multi_view', message: kind === 'character' ? '角色三视图生成中…' : '场景多视图生成中…' })
+  try {
+    const res = kind === 'character'
+      ? await characterAPI.generateFourViewImage(entity.id)
+      : await sceneAPI.generateFourViewImage(entity.id)
+    const taskId = res?.image_generation?.task_id ?? res?.task_id
+    if (taskId) {
+      const polled = await pollTask(taskId, () => ctx?.refreshDrama?.(true))
+      if (polled.status !== 'completed') throw new Error(polled.error || '多视图生成失败')
+    }
+    await ctx?.refreshDrama?.(true)
+    await ctx?.refresh?.(true)
+    return { ok: true }
+  } finally {
+    nodeStatus?.clear(nodeId)
+  }
+}
