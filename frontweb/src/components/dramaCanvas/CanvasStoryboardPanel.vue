@@ -246,11 +246,11 @@
         <small>模型 / 画幅 / 清晰度</small>
       </div>
     <CanvasGenerationOptions
+      :model-value="storyboardGenerationOptions"
+      label="本镜模型"
       compact
-      :storyboard="storyboardGenerationOptions"
-      image-service-type="storyboard_image"
-      @storyboard-image-model-change="onStoryboardImageModelChange"
-      @storyboard-video-model-change="onStoryboardVideoModelChange"
+      models-only
+      @change="saveStoryboardGenerationOptions"
     />
     </section>
 
@@ -369,6 +369,8 @@ import {
   findStoryboardInDrama,
   getAdjacentStoryboards,
   getDramaGenerationOptions,
+  getStoryboardImageModel,
+  getStoryboardVideoModel,
 } from '@/utils/canvasWorkflow'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
@@ -427,8 +429,9 @@ const effectiveVideoModel = computed(() => String(
   props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
 ).trim())
 const storyboardGenerationOptions = computed(() => ({
-  ...props.storyboard,
-  image_model: imageModel.value,
+  ...getDramaGenerationOptions(ctx?.drama?.value),
+  imageModel: getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
+  videoModel: getStoryboardVideoModel(props.storyboard, ctx?.drama?.value),
 }))
 const storyboardCharacters = computed(() => {
   const ids = new Set(characterIds.value.map((id) => Number(id)))
@@ -671,19 +674,22 @@ async function savePhotography() {
   }
 }
 
-async function onStoryboardImageModelChange(value) {
-  imageModel.value = String(value || '').trim()
-  await savePhotography()
-  ElMessage.success(imageModel.value ? `已为本分镜设置图像模型：${imageModel.value}` : '已恢复跟随项目默认图像模型')
-}
 
-async function onStoryboardVideoModelChange(value) {
+async function saveStoryboardGenerationOptions(patch, next) {
   if (!props.storyboard?.id) return
-  const model = String(value || '').trim()
+  const payload = {}
+  if (Object.hasOwn(patch, 'imageModel')) {
+    imageModel.value = String(next.imageModel || '').trim()
+    payload.image_model = imageModel.value || null
+  }
+  if (Object.hasOwn(patch, 'videoModel')) {
+    payload.video_model = String(next.videoModel || '').trim() || null
+  }
+  if (!Object.keys(payload).length) return
   try {
-    await storyboardsAPI.update(props.storyboard.id, { video_model: model || null })
+    await storyboardsAPI.update(props.storyboard.id, payload)
     await ctx?.refreshDrama?.(true)
-    ElMessage.success(model ? `已为本分镜设置模型：${model}` : '已恢复跟随项目默认模型')
+    ElMessage.success('本镜模型已保存')
   } catch (e) {
     ElMessage.error(e?.message || '保存分镜模型失败')
   }
