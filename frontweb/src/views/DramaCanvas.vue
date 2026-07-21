@@ -284,6 +284,27 @@
           <MiniMap pannable zoomable />
         </VueFlow>
         <el-empty v-else-if="!loading" description="暂无画布数据" />
+        <div v-if="runQueueItems.length" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
+          <div class="run-queue-head">
+            <span>运行队列</span>
+            <small>{{ runningQueueCount }} 进行中 · {{ failedQueueCount }} 异常</small>
+          </div>
+          <button
+            v-for="item in runQueueItems"
+            :key="item.key"
+            type="button"
+            class="run-queue-item"
+            :class="'tone-' + item.tone"
+            @click="focusQueueItem(item)"
+          >
+            <span class="run-dot" />
+            <span class="run-info">
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.message }}</small>
+            </span>
+            <span class="run-action">定位</span>
+          </button>
+        </div>
         <CanvasFloatingToolbar v-if="drama && allGraphNodes.length" />
       </div>
     </div>
@@ -523,6 +544,60 @@ const selectedEpisodeLabel = computed(() => {
 const sidebarCharacters = computed(() => filterCanvasAssets(drama.value?.characters, 'character', episodeContext.value))
 const sidebarScenes = computed(() => filterCanvasAssets(drama.value?.scenes, 'scene', episodeContext.value))
 const sidebarProps = computed(() => filterCanvasAssets(drama.value?.props, 'prop', episodeContext.value))
+const runQueueItems = computed(() => {
+  const items = []
+  const seen = new Set()
+  for (const [nodeId, status] of Object.entries(nodeStatus.map)) {
+    if (!nodeId || !status) continue
+    const key = `active:${nodeId}`
+    seen.add(nodeId)
+    items.push({
+      key,
+      nodeId,
+      tone: status.step === 'failed' ? 'failed' : 'running',
+      label: queueNodeLabel(nodeId),
+      message: status.message || '处理中…',
+    })
+  }
+  for (const node of allGraphNodes.value) {
+    const failure = queueNodeFailure(node)
+    if (!failure || seen.has(String(node.id))) continue
+    seen.add(String(node.id))
+    items.push({
+      key: `failed:${node.id}`,
+      nodeId: node.id,
+      tone: 'failed',
+      label: canvasNodeLabel(node),
+      message: failure,
+    })
+  }
+  return items.slice(0, 8)
+})
+const runningQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'running').length)
+const failedQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'failed').length)
+
+function queueNodeLabel(nodeId) {
+  const node = findGraphNode(nodeId)
+  if (node) return canvasNodeLabel(node)
+  const sbId = storyboardIdFromNodeId(nodeId)
+  return sbId ? `分镜 #${sbId}` : String(nodeId)
+}
+
+function queueNodeFailure(node) {
+  const data = node?.data || {}
+  if (data.generationError) return data.generationError
+  const sb = data.storyboard || {}
+  if (sb.error_msg || sb.error_message || sb.generation_error) {
+    return sb.error_msg || sb.error_message || sb.generation_error
+  }
+  if (sb.status === 'failed') return '节点任务失败，可定位后重试'
+  return ''
+}
+
+async function focusQueueItem(item) {
+  if (!item?.nodeId) return
+  await focusCanvasNode(item.nodeId)
+}
 
 function syncWorkflowFromDrama() {
   workflowGroups.value = parseWorkflowGroups(drama.value?.metadata)
@@ -2131,6 +2206,97 @@ onBeforeUnmount(() => {
 .canvas-main { width: 100%; height: 100%; }
 .vue-flow-canvas { background: #101014; }
 .canvas-topbar .layout-status { font-size: 11px; white-space: nowrap; }
+.canvas-run-queue {
+  position: absolute;
+  left: 18px;
+  bottom: 22px;
+  z-index: 24;
+  width: min(360px, calc(100% - 36px));
+  padding: 9px;
+  border: 1px solid rgba(82, 82, 91, 0.72);
+  border-radius: 14px;
+  background: rgba(24, 24, 27, 0.92);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+.run-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 3px 7px;
+  color: #e4e4e7;
+  font-size: 12px;
+  font-weight: 700;
+}
+.run-queue-head small {
+  color: #71717a;
+  font-size: 10px;
+  font-weight: 400;
+}
+.run-queue-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  padding: 7px 8px;
+  border: 1px solid rgba(63, 63, 70, 0.8);
+  border-radius: 10px;
+  background: rgba(9, 9, 11, 0.44);
+  color: #d4d4d8;
+  text-align: left;
+  cursor: pointer;
+}
+.run-queue-item:hover {
+  border-color: rgba(129, 140, 248, 0.62);
+  background: rgba(129, 140, 248, 0.12);
+}
+.run-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #60a5fa;
+}
+.tone-running .run-dot {
+  animation: queue-pulse 1.2s ease-in-out infinite;
+}
+.tone-failed .run-dot {
+  background: #f87171;
+}
+.run-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-info strong,
+.run-info small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-info strong {
+  font-size: 11px;
+  font-weight: 700;
+}
+.run-info small {
+  color: #a1a1aa;
+  font-size: 10px;
+}
+.tone-failed .run-info small {
+  color: #fca5a5;
+}
+.run-action {
+  color: #a5b4fc;
+  font-size: 10px;
+}
+@keyframes queue-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
 @media (max-width: 980px) {
   .canvas-topbar .header-inner { margin: 8px 10px 0; }
   .canvas-topbar .btn-theme { display: none; }
