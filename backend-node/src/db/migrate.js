@@ -408,6 +408,7 @@ function ensureAllColumns(database) {
     { name: 'width',        type: 'INTEGER' },
     { name: 'height',       type: 'INTEGER' },
     { name: 'duration',     type: 'REAL' },
+    { name: 'metadata',     type: 'TEXT' },
     { name: 'image_gen_id', type: 'INTEGER' },
     { name: 'video_gen_id', type: 'INTEGER' },
     { name: 'created_at',   type: 'TEXT' },
