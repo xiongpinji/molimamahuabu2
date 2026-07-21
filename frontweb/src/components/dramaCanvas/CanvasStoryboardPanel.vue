@@ -19,12 +19,21 @@
     <el-form label-position="left" label-width="36px" size="small" class="panel-form compact-form">
       <section class="panel-section">
         <div class="section-head">
-          <span>基础信息</span>
-          <small>分镜标题</small>
+          <span>分镜信息</span>
+          <small>标题 / 景别 / 时长</small>
         </div>
-      <el-form-item label="标题">
-        <el-input v-model="form.title" placeholder="分镜标题" @blur="saveMeta" />
-      </el-form-item>
+        <el-form-item label="标题">
+          <el-input v-model="form.title" placeholder="分镜标题" @blur="saveMeta" />
+        </el-form-item>
+
+        <div class="meta-row">
+          <el-form-item label="景别" class="meta-item">
+            <el-input v-model="form.shot_type" placeholder="特写" @blur="saveMeta" />
+          </el-form-item>
+          <el-form-item label="时长" class="meta-item narrow">
+            <el-input-number v-model="form.duration" :min="1" :max="120" controls-position="right" @change="saveMeta" />
+          </el-form-item>
+        </div>
       </section>
 
       <section class="panel-section">
@@ -32,113 +41,96 @@
           <span>引用素材</span>
           <small>角色 / 场景 / 道具 / 素材库</small>
         </div>
-
-      <div class="relation-row">
-        <el-form-item label="角色" class="rel-item">
-          <el-select
-            v-model="characterIds"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            filterable
-            placeholder="角色"
-            teleported
-            popper-class="canvas-panel-popper"
-            @visible-change="onSelectVisibleChange"
-            @change="onRelationChange"
-          >
-            <el-option
-              v-for="c in characters"
-              :key="c.id"
-              :label="c.name || '未命名'"
-              :value="normalizeEntityId(c.id)"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="场景" class="rel-item">
-          <el-select
-            v-model="sceneId"
-            clearable
-            filterable
-            placeholder="场景"
-            teleported
-            popper-class="canvas-panel-popper"
-            @visible-change="onSelectVisibleChange"
-            @change="onRelationChange"
-          >
-            <el-option
-              v-for="s in scenes"
-              :key="s.id"
-              :label="s.location || '未命名'"
-              :value="normalizeEntityId(s.id)"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="道具" class="rel-item">
-          <el-select
-            v-model="propIds"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            filterable
-            placeholder="道具"
-            teleported
-            popper-class="canvas-panel-popper"
-            @visible-change="onSelectVisibleChange"
-            @change="onRelationChange"
-          >
-            <el-option
-              v-for="p in propsList"
-              :key="p.id"
-              :label="p.name || '未命名'"
-              :value="normalizeEntityId(p.id)"
-            />
-          </el-select>
-        </el-form-item>
-      </div>
-      <div class="inline-add-row">
-        <el-button link type="primary" size="small" @click.stop="createAsset('character')">+角色</el-button>
-        <el-button link type="primary" size="small" @click.stop="createAsset('scene')">+场景</el-button>
-        <el-button link type="primary" size="small" @click.stop="createAsset('prop')">+道具</el-button>
-        <el-button link type="primary" size="small" :loading="assetAssigning" :disabled="!storyboard?.id" @click.stop="openAssetLibrary">+素材库</el-button>
-      </div>
-
-      <div class="reference-strip">
-        <div class="reference-head">
-          <span>参考图</span>
-          <span class="reference-count">{{ allReferenceAssets.length }}/10</span>
+        <div class="relation-row">
+          <el-form-item label="角色" class="rel-item">
+            <el-select
+              v-model="characterIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              placeholder="角色"
+              teleported
+              popper-class="canvas-panel-popper"
+              @visible-change="onSelectVisibleChange"
+              @change="onRelationChange"
+            >
+              <el-option
+                v-for="c in characters"
+                :key="c.id"
+                :label="c.name || '未命名'"
+                :value="normalizeEntityId(c.id)"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="场景" class="rel-item">
+            <el-select
+              v-model="sceneId"
+              clearable
+              filterable
+              placeholder="场景"
+              teleported
+              popper-class="canvas-panel-popper"
+              @visible-change="onSelectVisibleChange"
+              @change="onRelationChange"
+            >
+              <el-option
+                v-for="s in scenes"
+                :key="s.id"
+                :label="s.location || '未命名'"
+                :value="normalizeEntityId(s.id)"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="道具" class="rel-item">
+            <el-select
+              v-model="propIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              placeholder="道具"
+              teleported
+              popper-class="canvas-panel-popper"
+              @visible-change="onSelectVisibleChange"
+              @change="onRelationChange"
+            >
+              <el-option
+                v-for="p in propsList"
+                :key="p.id"
+                :label="p.name || '未命名'"
+                :value="normalizeEntityId(p.id)"
+              />
+            </el-select>
+          </el-form-item>
         </div>
-        <div v-if="allReferenceAssets.length" class="reference-list">
-          <span
-            v-for="reference in allReferenceAssets"
-            :key="reference.key"
-            class="reference-chip"
-            :title="`${refKindLabel(reference)}：${reference.name}`"
-          >
-            <img :src="reference.url" alt="" />
-            <span>{{ reference.name }}</span>
-            <i v-if="reference.kind === 'asset'" class="chip-remove" title="移除指派" @click.stop="removeAssignedAsset(reference)">×</i>
-          </span>
+        <div class="inline-add-row">
+          <el-button link type="primary" size="small" @click.stop="createAsset('character')">+角色</el-button>
+          <el-button link type="primary" size="small" @click.stop="createAsset('scene')">+场景</el-button>
+          <el-button link type="primary" size="small" @click.stop="createAsset('prop')">+道具</el-button>
+          <el-button link type="primary" size="small" :loading="assetAssigning" :disabled="!storyboard?.id" @click.stop="openAssetLibrary">+素材库</el-button>
         </div>
-        <span v-else class="reference-empty">选择角色/场景/道具自动带入，或从素材库指派到本镜</span>
-      </div>
 
-      </section>
-
-      <section class="panel-section">
-        <div class="section-head">
-          <span>镜头参数</span>
-          <small>景别 / 时长</small>
+        <div class="reference-strip">
+          <div class="reference-head">
+            <span>参考图</span>
+            <span class="reference-count">{{ allReferenceAssets.length }}/10</span>
+          </div>
+          <div v-if="allReferenceAssets.length" class="reference-list">
+            <span
+              v-for="reference in allReferenceAssets"
+              :key="reference.key"
+              class="reference-chip"
+              :class="{ assigned: reference.kind === 'asset' }"
+              :title="`${refKindLabel(reference)}：${reference.name}`"
+            >
+              <img :src="reference.url" alt="" />
+              <span>{{ reference.name }}</span>
+              <i v-if="reference.kind === 'asset'" class="chip-remove" title="移除指派" @click.stop="removeAssignedAsset(reference)">×</i>
+            </span>
+          </div>
+          <span v-else class="reference-empty">选择角色/场景/道具自动带入，或从素材库指派到本镜</span>
         </div>
-      <div class="meta-row">
-        <el-form-item label="景别" class="meta-item">
-          <el-input v-model="form.shot_type" placeholder="特写" @blur="saveMeta" />
-        </el-form-item>
-        <el-form-item label="时长" class="meta-item narrow">
-          <el-input-number v-model="form.duration" :min="1" :max="120" controls-position="right" @change="saveMeta" />
-        </el-form-item>
-      </div>
-
       </section>
 
       <section class="panel-section">
@@ -146,32 +138,31 @@
           <span>摄影控制</span>
           <small>角度 / 灯光 / 宫格</small>
         </div>
-      <div class="camera-control-strip">
-        <div class="control-head">
-          <span>摄影控制</span>
-          <el-tag size="small" type="info" effect="plain">角度 · 灯光 · 宫格</el-tag>
+        <div class="camera-control-strip">
+          <div class="control-head">
+            <span>摄影控制</span>
+            <el-tag size="small" type="info" effect="plain">角度 · 灯光 · 宫格</el-tag>
+          </div>
+          <div class="camera-control-grid">
+            <el-select v-model="angleH" size="small" clearable placeholder="水平角度" @change="savePhotography">
+              <el-option v-for="item in HORIZONTAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="angleV" size="small" clearable placeholder="俯仰角度" @change="savePhotography">
+              <el-option v-for="item in VERTICAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="angleS" size="small" clearable placeholder="景别" @change="savePhotography">
+              <el-option v-for="item in SHOT_SIZES" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="lightingStyle" size="small" clearable placeholder="灯光风格" @change="savePhotography">
+              <el-option v-for="item in LIGHTING_STYLES" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="gridFrameType" size="small" placeholder="分镜图版式" @change="savePhotography">
+              <el-option label="单张" value="single" />
+              <el-option v-for="layout in GRID_LAYOUTS" :key="layout.value" :label="layout.label" :value="layout.value" />
+            </el-select>
+          </div>
+          <div class="camera-control-hint">保存后会写入分镜提示词；生成分镜图时按所选版式提交。</div>
         </div>
-        <div class="camera-control-grid">
-          <el-select v-model="angleH" size="small" clearable placeholder="水平角度" @change="savePhotography">
-            <el-option v-for="item in HORIZONTAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="angleV" size="small" clearable placeholder="俯仰角度" @change="savePhotography">
-            <el-option v-for="item in VERTICAL_ANGLES" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="angleS" size="small" clearable placeholder="景别" @change="savePhotography">
-            <el-option v-for="item in SHOT_SIZES" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="lightingStyle" size="small" clearable placeholder="灯光风格" @change="savePhotography">
-            <el-option v-for="item in LIGHTING_STYLES" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="gridFrameType" size="small" placeholder="分镜图版式" @change="savePhotography">
-            <el-option label="单张" value="single" />
-            <el-option v-for="layout in GRID_LAYOUTS" :key="layout.value" :label="layout.label" :value="layout.value" />
-          </el-select>
-        </div>
-        <div class="camera-control-hint">保存后会写入分镜提示词；生成分镜图时按所选版式提交。</div>
-      </div>
-
       </section>
 
       <section class="panel-section">
@@ -247,13 +238,13 @@
         <span>生成参数</span>
         <small>模型 / 画幅 / 清晰度</small>
       </div>
-    <CanvasGenerationOptions
-      :model-value="storyboardGenerationOptions"
-      label="本镜模型"
-      compact
-      models-only
-      @change="saveStoryboardGenerationOptions"
-    />
+      <CanvasGenerationOptions
+        :model-value="storyboardGenerationOptions"
+        label="本镜模型"
+        compact
+        models-only
+        @change="saveStoryboardGenerationOptions"
+      />
     </section>
 
     <section class="panel-section">
@@ -261,27 +252,27 @@
         <span>视频模型与声音</span>
         <small>角色音色 / 模型策略</small>
       </div>
-    <div class="storyboard-control-strip">
-      <div class="control-head">
-        <span>视频模型与声音</span>
-        <el-tag v-if="voicePolicy" :type="voicePolicy.type" size="small" effect="plain">
-          {{ voicePolicy.label }}
-        </el-tag>
-        <el-tag v-else size="small" type="info" effect="plain">策略待加载</el-tag>
+      <div class="storyboard-control-strip">
+        <div class="control-head">
+          <span>视频模型与声音</span>
+          <el-tag v-if="voicePolicy" :type="voicePolicy.type" size="small" effect="plain">
+            {{ voicePolicy.label }}
+          </el-tag>
+          <el-tag v-else size="small" type="info" effect="plain">策略待加载</el-tag>
+        </div>
+        <div class="control-meta">
+          当前模型：{{ effectiveVideoModel || '跟随项目默认' }}
+          <span v-if="voicePolicy?.key === 'silent'"> · 需后期对白配音</span>
+          <span v-else-if="voicePolicy?.key === 'reference_audio'"> · 优先使用角色参考音频</span>
+          <span v-else> · 使用角色级文字声线提示</span>
+        </div>
+        <el-popover placement="top-start" :width="420" trigger="click">
+          <template #reference>
+            <el-button link type="primary" size="small">声音提示预览</el-button>
+          </template>
+          <pre class="prompt-preview">{{ voicePromptPreview }}</pre>
+        </el-popover>
       </div>
-      <div class="control-meta">
-        当前模型：{{ effectiveVideoModel || '跟随项目默认' }}
-        <span v-if="voicePolicy?.key === 'silent'"> · 需后期对白配音</span>
-        <span v-else-if="voicePolicy?.key === 'reference_audio'"> · 优先使用角色参考音频</span>
-        <span v-else> · 使用角色级文字声线提示</span>
-      </div>
-      <el-popover placement="top-start" :width="420" trigger="click">
-        <template #reference>
-          <el-button link type="primary" size="small">声音提示预览</el-button>
-        </template>
-        <pre class="prompt-preview">{{ voicePromptPreview }}</pre>
-      </el-popover>
-    </div>
     </section>
 
     <section class="panel-section">
@@ -289,35 +280,35 @@
         <span>镜头连续性</span>
         <small>首尾帧 / 相邻镜头</small>
       </div>
-    <div class="continuity-strip">
-      <div class="control-head">
-        <span>镜头连续性</span>
-        <el-tag size="small" :type="usesFirstLastFrame ? 'success' : 'info'" effect="plain">
-          {{ usesFirstLastFrame ? '首尾帧模式' : '剧情提示模式' }}
-        </el-tag>
+      <div class="continuity-strip">
+        <div class="control-head">
+          <span>镜头连续性</span>
+          <el-tag size="small" :type="usesFirstLastFrame ? 'success' : 'info'" effect="plain">
+            {{ usesFirstLastFrame ? '首尾帧模式' : '剧情提示模式' }}
+          </el-tag>
+        </div>
+        <div class="continuity-meta">
+          <span>上一镜：{{ storyboardNeighbors.previous?.title || '无' }}</span>
+          <span>下一镜：{{ storyboardNeighbors.next?.title || '无' }}</span>
+        </div>
+        <div class="continuity-actions">
+          <el-button
+            v-if="canLinkTail"
+            size="small"
+            type="primary"
+            plain
+            :loading="tailLinking"
+            @click.stop="linkTailFrame"
+          >尾帧衔接</el-button>
+          <span v-else-if="storyboardNeighbors.next" class="continuity-muted">跨场景不自动锁定尾帧</span>
+          <el-popover placement="top-start" :width="520" trigger="click">
+            <template #reference>
+              <el-button link type="primary" size="small">连续性提示预览</el-button>
+            </template>
+            <pre class="prompt-preview">{{ continuityPrompt || '暂无相邻镜头' }}</pre>
+          </el-popover>
+        </div>
       </div>
-      <div class="continuity-meta">
-        <span>上一镜：{{ storyboardNeighbors.previous?.title || '无' }}</span>
-        <span>下一镜：{{ storyboardNeighbors.next?.title || '无' }}</span>
-      </div>
-      <div class="continuity-actions">
-        <el-button
-          v-if="canLinkTail"
-          size="small"
-          type="primary"
-          plain
-          :loading="tailLinking"
-          @click.stop="linkTailFrame"
-        >尾帧衔接</el-button>
-        <span v-else-if="storyboardNeighbors.next" class="continuity-muted">跨场景不自动锁定尾帧</span>
-        <el-popover placement="top-start" :width="520" trigger="click">
-          <template #reference>
-            <el-button link type="primary" size="small">连续性提示预览</el-button>
-          </template>
-          <pre class="prompt-preview">{{ continuityPrompt || '暂无相邻镜头' }}</pre>
-        </el-popover>
-      </div>
-    </div>
     </section>
 
     <div class="panel-actions fixed-action-bar" :class="{ busy: isActionBusy }">
@@ -433,43 +424,10 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
   scene_id: sceneId.value,
   prop_ids: propIds.value,
 }))
+
+// 素材库中指派给本镜的素材（storyboard_id 关联）
 const assignedAssets = ref([])
 const allReferenceAssets = computed(() => [...referenceAssets.value, ...assignedAssets.value].slice(0, 10))
-
-function assetThumbUrl(asset) {
-  const localPath = asset.local_path || asset.image_local_path || asset.video_local_path
-  if (localPath) return '/static/' + String(localPath).replace(/^\/+/, '').replace(/^static\//, '')
-  return asset.url || asset.image_url || asset.video_url || ''
-}
-
-async function loadAssignedAssets() {
-  const storyboardId = props.storyboard?.id
-  if (!storyboardId) {
-    assignedAssets.value = []
-    return
-  }
-  try {
-    const result = await assetsAPI.list({ storyboard_id: storyboardId, type: 'image', page: 1, page_size: 20 })
-    assignedAssets.value = (result?.items || []).map((asset) => ({
-      key: `asset:${asset.id}`,
-      kind: 'asset',
-      id: asset.id,
-      name: asset.name || '素材库参考图',
-      url: assetThumbUrl(asset),
-      absoluteUrl: toAbsoluteMediaUrl(assetThumbUrl(asset)),
-    }))
-  } catch (_) {
-    assignedAssets.value = []
-  }
-}
-
-function refKindLabel(reference) {
-  if (reference.kind === 'scene') return '场景'
-  if (reference.kind === 'character') return '角色'
-  if (reference.kind === 'prop') return '道具'
-  if (reference.kind === 'asset') return '素材库指派'
-  return '参考'
-}
 
 const effectiveVideoModel = computed(() => String(
   props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
@@ -559,6 +517,54 @@ const continuityPrompt = computed(() => {
   })
 })
 
+function assetThumbUrl(a) {
+  const lp = a.local_path || a.image_local_path || a.video_local_path
+  if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
+  return a.display_url || a.asset_url || a.preview_url || a.url || a.image_url || a.video_url || ''
+}
+
+function normalizeAssignedAsset(asset) {
+  return {
+    key: `asset:${asset.id || asset.raw_id || asset.url || asset.local_path}`,
+    kind: 'asset',
+    id: asset.id || asset.raw_id,
+    name: asset.name || '素材库参考图',
+    url: assetThumbUrl(asset),
+    absoluteUrl: toAbsoluteMediaUrl(assetThumbUrl(asset)),
+  }
+}
+
+async function loadAssignedAssets() {
+  const sbId = props.storyboard?.id
+  if (!sbId) { assignedAssets.value = []; return }
+  try {
+    const res = await assetsAPI.list({ storyboard_id: sbId, type: 'image', page: 1, page_size: 20 })
+    assignedAssets.value = (res?.items || []).map(normalizeAssignedAsset)
+  } catch (_) {
+    assignedAssets.value = []
+  }
+}
+
+async function removeAssignedAsset(reference) {
+  if (!reference?.id) return
+  try {
+    await assetsAPI.update(reference.id, { storyboard_id: null })
+    await loadAssignedAssets()
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success('已移除本镜素材')
+  } catch (e) {
+    ElMessage.error(e?.message || '移除失败')
+  }
+}
+
+function refKindLabel(reference) {
+  if (reference.kind === 'scene') return '场景'
+  if (reference.kind === 'character') return '角色'
+  if (reference.kind === 'prop') return '道具'
+  if (reference.kind === 'asset') return '素材库指派'
+  return '参考'
+}
+
 const busyLabel = computed(() => {
   const map = ctx?.nodeStatus?.map
   const st = map && sbNodeId.value ? map[sbNodeId.value] : null
@@ -598,6 +604,7 @@ function resetFields() {
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
+
 watch(() => props.storyboard?.id, () => loadAssignedAssets(), { immediate: true })
 watch(() => props.storyboard?.id, (id, previousId) => {
   if (id && id !== previousId) {
@@ -662,16 +669,18 @@ async function onAssetLibraryPick(asset) {
   if (!dramaId || !storyboardId || !asset) return
   assetAssigning.value = true
   try {
+    let savedAsset = asset
     if (asset.source_kind === 'project') {
       await assetsAPI.update(projectAssetId(asset), { drama_id: dramaId, storyboard_id: storyboardId })
+      savedAsset = { ...asset, id: projectAssetId(asset) }
     } else {
-      await assetsAPI.create({
+      const created = await assetsAPI.create({
         drama_id: dramaId,
         storyboard_id: storyboardId,
         type: 'image',
         category: 'storyboard_reference',
         name: asset.name || '素材库参考图',
-        url: asset.url || '',
+        url: asset.asset_url || asset.display_url || asset.url || '',
         local_path: asset.local_path || null,
         metadata: {
           source_kind: asset.source_kind || 'library',
@@ -679,26 +688,18 @@ async function onAssetLibraryPick(asset) {
           source_label: asset.source_label || null,
         },
       })
+      savedAsset = created?.id ? created : { ...asset, id: created?.id || asset.id }
     }
     await loadAssignedAssets()
+    if (!assignedAssets.value.some((item) => String(item.id) === String(savedAsset.id))) {
+      assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)].slice(0, 10)
+    }
     await ctx?.refreshDrama?.(true)
     ElMessage.success('已指派素材到本镜参考图')
   } catch (e) {
     ElMessage.error(e?.message || '素材指派失败')
   } finally {
     assetAssigning.value = false
-  }
-}
-
-async function removeAssignedAsset(reference) {
-  if (!reference?.id) return
-  try {
-    await assetsAPI.update(reference.id, { storyboard_id: null })
-    await loadAssignedAssets()
-    await ctx?.refreshDrama?.(true)
-    ElMessage.success('已移除本镜素材')
-  } catch (e) {
-    ElMessage.error(e?.message || '移除失败')
   }
 }
 
@@ -784,42 +785,6 @@ async function savePhotography() {
   }
 }
 
-
-async function saveStoryboardGenerationOptions(patch, next) {
-  if (!props.storyboard?.id) return
-  const payload = {}
-  if (Object.hasOwn(patch, 'imageModel')) {
-    imageModel.value = String(next.imageModel || '').trim()
-    payload.image_model = imageModel.value || null
-  }
-  if (Object.hasOwn(patch, 'videoModel')) {
-    payload.video_model = String(next.videoModel || '').trim() || null
-  }
-  if (!Object.keys(payload).length) return
-  try {
-    await storyboardsAPI.update(props.storyboard.id, payload)
-    await ctx?.refreshDrama?.(true)
-    ElMessage.success('本镜模型已保存')
-  } catch (e) {
-    ElMessage.error(e?.message || '保存分镜模型失败')
-  }
-}
-
-async function linkTailFrame() {
-  const dramaId = ctx?.drama?.value?.id
-  if (!props.storyboard?.id || !dramaId || !canLinkTail.value) return
-  tailLinking.value = true
-  try {
-    const result = await storyboardsAPI.linkTailFrame(props.storyboard.id, { drama_id: dramaId })
-    await ctx?.refreshDrama?.(true)
-    ElMessage.success(`已衔接到分镜 #${result?.next_storyboard_id || storyboardNeighbors.value.next?.storyboard_number || ''}`)
-  } catch (e) {
-    ElMessage.error(e?.message || '尾帧衔接失败')
-  } finally {
-    tailLinking.value = false
-  }
-}
-
 async function saveFields() {
   if (!props.storyboard?.id) return
   saving.value = true
@@ -855,6 +820,41 @@ async function deleteStoryboard() {
     if (e === 'cancel') return
     actionStatus.value = { type: 'error', message: e?.message || '删除失败' }
     ElMessage.error(e?.message || '删除失败')
+  }
+}
+
+async function saveStoryboardGenerationOptions(patch, next) {
+  if (!props.storyboard?.id) return
+  const payload = {}
+  if (Object.hasOwn(patch, 'imageModel')) {
+    imageModel.value = String(next.imageModel || '').trim()
+    payload.image_model = imageModel.value || null
+  }
+  if (Object.hasOwn(patch, 'videoModel')) {
+    payload.video_model = String(next.videoModel || '').trim() || null
+  }
+  if (!Object.keys(payload).length) return
+  try {
+    await storyboardsAPI.update(props.storyboard.id, payload)
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success('本镜模型已保存')
+  } catch (e) {
+    ElMessage.error(e?.message || '保存分镜模型失败')
+  }
+}
+
+async function linkTailFrame() {
+  const dramaId = ctx?.drama?.value?.id
+  if (!props.storyboard?.id || !dramaId || !canLinkTail.value) return
+  tailLinking.value = true
+  try {
+    const result = await storyboardsAPI.linkTailFrame(props.storyboard.id, { drama_id: dramaId })
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success(`已衔接到分镜 #${result?.next_storyboard_id || storyboardNeighbors.value.next?.storyboard_number || ''}`)
+  } catch (e) {
+    ElMessage.error(e?.message || '尾帧衔接失败')
+  } finally {
+    tailLinking.value = false
   }
 }
 
@@ -1010,9 +1010,6 @@ async function runStep(step) {
   font-weight: 400;
   white-space: nowrap;
 }
-.generation-section {
-  margin-top: 8px;
-}
 .relation-row {
   display: flex;
   gap: 8px;
@@ -1028,9 +1025,8 @@ async function runStep(step) {
   gap: 10px;
   margin: 0 0 8px 36px;
 }
-
 .reference-strip {
-  margin: 0 0 8px 36px;
+  margin: 0 0 0 36px;
   padding: 6px 8px;
   border: 1px solid rgba(63, 63, 70, 0.8);
   border-radius: 7px;
@@ -1181,6 +1177,9 @@ async function runStep(step) {
   align-items: flex-start;
 }
 .flex-1 { flex: 1; min-width: 0; }
+.generation-section {
+  margin-top: 8px;
+}
 .panel-actions {
   display: flex;
   flex-direction: column;
