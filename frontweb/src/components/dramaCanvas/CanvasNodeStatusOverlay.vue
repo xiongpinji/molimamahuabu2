@@ -20,7 +20,7 @@
       <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
         {{ savingAsset ? '保存中…' : '存入素材库' }}
       </button>
-      <button v-if="savedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
+      <button v-if="effectiveSavedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('main')">设为本镜图</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('first')">设为首帧</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('last')">设为尾帧</button>
@@ -139,6 +139,17 @@ const retryLabel = computed(() => status.value?.retryLabel || '重试')
 const canAttachImage = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachVideo = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultLocalPath()) && Boolean(resultStoryboardId(runtimeNode())))
+const statusSavedAsset = computed(() => {
+  if (!status.value?.savedAssetId) return null
+  return {
+    id: status.value.savedAssetId,
+    name: status.value.savedAssetName || '素材',
+    url: status.value.savedAssetUrl || status.value.resultUrl || '',
+    local_path: status.value.savedAssetLocalPath || '',
+    duration: status.value.savedAssetDuration ?? undefined,
+  }
+})
+const effectiveSavedAsset = computed(() => savedAsset.value || statusSavedAsset.value)
 
 const statusTitle = computed(() => {
   const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, status.value?.resultUrl].filter(Boolean)
@@ -188,10 +199,11 @@ function copyResultLink() {
 }
 
 function copyAssetReference() {
-  if (!savedAsset.value) return
-  const name = savedAsset.value.name || '素材'
-  const url = savedAsset.value.url || status.value?.resultUrl || ''
-  const reference = `@素材(${name}#${savedAsset.value.id}) ${url}`.trim()
+  const asset = effectiveSavedAsset.value
+  if (!asset) return
+  const name = asset.name || '素材'
+  const url = asset.url || status.value?.resultUrl || ''
+  const reference = `@素材(${name}#${asset.id}) ${url}`.trim()
   copyText(reference, '素材引用已复制', '素材引用（请手动复制）')
 }
 
@@ -213,7 +225,8 @@ function resultAssetName(node) {
 }
 
 function resultLocalPath() {
-  const url = String(savedAsset.value?.local_path ? `/static/${savedAsset.value.local_path}` : (status.value?.resultUrl || ''))
+  const asset = effectiveSavedAsset.value
+  const url = String(asset?.local_path ? `/static/${asset.local_path}` : (status.value?.resultUrl || ''))
   const marker = '/static/'
   const index = url.indexOf(marker)
   if (index < 0) return null
@@ -225,7 +238,7 @@ function resultStoryboardId(node) {
 }
 
 function resultUrl() {
-  return savedAsset.value?.url || status.value?.resultUrl || ''
+  return effectiveSavedAsset.value?.url || status.value?.resultUrl || ''
 }
 
 async function refreshCanvasAfterAttach() {
@@ -258,7 +271,25 @@ async function saveResultAsset() {
         prompt_text: status.value?.promptText || '',
       },
     })
-    savedAsset.value = asset || null
+    const normalizedAsset = asset ? {
+      id: asset.id,
+      name: asset.name || resultAssetName(node),
+      url: asset.url || status.value.resultUrl || '',
+      local_path: asset.local_path || '',
+      duration: asset.duration ?? null,
+    } : null
+    savedAsset.value = normalizedAsset
+    if (normalizedAsset) {
+      ctx?.nodeStatus?.success?.(props.nodeId, {
+        ...status.value,
+        savedAssetId: normalizedAsset.id,
+        savedAssetName: normalizedAsset.name,
+        savedAssetUrl: normalizedAsset.url,
+        savedAssetLocalPath: normalizedAsset.local_path,
+        savedAssetDuration: normalizedAsset.duration,
+        autoClear: false,
+      })
+    }
     ElMessage.success('结果已存入素材库')
     await ctx?.refreshDrama?.(true)
   } catch (error) {
@@ -303,7 +334,7 @@ async function attachVideoResult() {
       drama_id: dramaId,
       video_url: resultUrl(),
       local_path: resultLocalPath() || undefined,
-      duration: savedAsset.value?.duration ?? undefined,
+      duration: effectiveSavedAsset.value?.duration ?? undefined,
     })
     ElMessage.success('已设为本镜视频')
     await refreshCanvasAfterAttach()

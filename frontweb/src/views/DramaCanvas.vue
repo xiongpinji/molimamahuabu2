@@ -906,6 +906,7 @@ function canvasNodeActions(node) {
     actions.unshift('open-node-result', 'copy-node-result')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
+  if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
   }
@@ -1058,6 +1059,17 @@ async function copyNodeResult(node) {
     return
   }
   await copyCanvasText(url, '结果链接已复制', '结果链接（请手动复制）')
+}
+
+async function copyNodeAssetReference(node) {
+  const status = nodeRuntimeStatus(node)
+  if (!status?.savedAssetId) {
+    ElMessage.warning('该节点结果尚未存入素材库')
+    return
+  }
+  const name = status.savedAssetName || '素材'
+  const url = status.savedAssetUrl || status.resultUrl || ''
+  await copyCanvasText(`@素材(${name}#${status.savedAssetId}) ${url}`.trim(), '素材引用已复制', '素材引用（请手动复制）')
 }
 
 async function focusNodeResult(node) {
@@ -1240,6 +1252,8 @@ async function runNodeMenuAction(type, node) {
     openNodeResult(node)
   } else if (type === 'copy-node-result') {
     await copyNodeResult(node)
+  } else if (type === 'copy-node-asset-ref') {
+    await copyNodeAssetReference(node)
   } else if (type === 'focus-node-result') {
     await focusNodeResult(node)
   } else if (type === 'retry-node-failed') {
