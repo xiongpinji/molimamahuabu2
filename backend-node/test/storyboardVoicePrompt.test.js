@@ -5,6 +5,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const voicePrompt = require('../src/services/storyboardVoicePromptService');
 const episodeStoryboardService = require('../src/services/episodeStoryboardService');
 const storyboardService = require('../src/services/storyboardService');
+const videoService = require('../src/services/videoService');
 const { callVideoApi } = require('../src/services/videoClient');
 
 function createDb() {
@@ -259,4 +260,50 @@ test('生产视频入口把非克隆模型的角色声线锚点传给供应商',
     global.fetch = originalFetch;
     db.close();
   }
+});
+
+test('创建视频任务时保留模型首尾帧参考图，并把前端传入提示词补齐角色声线', () => {
+  const db = createDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO dramas (title, created_at, updated_at) VALUES (?, ?, ?)').run('video create prompt', now, now);
+  const dramaId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, created_at, updated_at) VALUES (?, 1, ?, ?)').run(dramaId, now, now);
+  const episodeId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO characters (drama_id, name, voice_style, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(dramaId, '小狐狸', 'bright youthful voice, clear diction', now, now);
+  const foxId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const storyboardId = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    episodeId,
+    JSON.stringify([foxId]),
+    '小狐狸：继续走。',
+    '默认分镜提示词',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+
+  const created = videoService.create(db, { info() {}, warn() {}, error() {} }, {
+    drama_id: dramaId,
+    storyboard_id: storyboardId,
+    prompt: '前端节点生成的提示词。小狐狸："继续走。"',
+    model: 'grok-video-3',
+    first_frame_url: 'https://cdn.example/first.png',
+    last_frame_url: 'https://cdn.example/last.png',
+    reference_image_urls: ['https://cdn.example/role.png', 'https://cdn.example/scene.png'],
+    aspect_ratio: '16:9',
+    resolution: '720p',
+    duration: 5,
+  }, { schedule() {} });
+
+  const row = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.model, 'grok-video-3');
+  assert.equal(row.first_frame_url, 'https://cdn.example/first.png');
+  assert.equal(row.last_frame_url, 'https://cdn.example/last.png');
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['https://cdn.example/role.png', 'https://cdn.example/scene.png']);
+  assert.match(row.prompt, /前端节点生成的提示词/);
+  assert.match(row.prompt, /VOICE CONTINUITY/);
+  assert.match(row.prompt, /bright youthful voice, clear diction/);
+  db.close();
 });

@@ -116,7 +116,7 @@ const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
-const storyboardVoicePrompt = require('./storyboardVoicePromptService');
+const voicePrompt = require('./storyboardVoicePromptService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
 function loadStoryboardVideoDefaults(db, storyboardId) {
@@ -189,7 +189,7 @@ function create(db, log, req, options = {}) {
   }
 
   const persistedPrompt = storyboardId
-    ? storyboardVoicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
+    ? voicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
     : null;
   const storyboardPrompt = String(persistedPrompt || storyboardDefaults?.video_prompt || '').trim();
 
@@ -202,6 +202,15 @@ function create(db, log, req, options = {}) {
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
     }
+    const model = body.model || storyboardDefaults?.video_model || null;
+    prompt = voicePrompt.appendVoiceAnchors({
+      db,
+      dramaId,
+      storyboardId,
+      prompt,
+      protocol: body.api_protocol,
+      model,
+    });
     let aspectRatio = body.aspect_ratio ? videoClient.normalizeAspectRatioForApi(body.aspect_ratio) : null;
     if (!aspectRatio && dramaId) {
       try {
@@ -216,7 +225,7 @@ function create(db, log, req, options = {}) {
        image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || body.model || storyboardDefaults?.video_model || null, body.duration ?? null,
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, body.duration ?? null,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
