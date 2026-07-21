@@ -7,6 +7,7 @@ const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanva
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 const storyboardPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardPanel.vue', import.meta.url)), 'utf8')
 const assetPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetPanel.vue', import.meta.url)), 'utf8')
+const mediaPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaPanel.vue', import.meta.url)), 'utf8')
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
@@ -47,4 +48,18 @@ test('资产配置面板从项目素材库选图后写回画布资产绑定', ()
   assert.match(assetPanelSource, /entity_id: props\.entity\.id/)
   assert.match(assetPanelSource, /node_id: props\.nodeId/)
   assert.match(assetPanelSource, /await bindPickedProjectAsset\(asset\)/)
+})
+
+test('媒体配置面板支持从素材库复用视频和音频', () => {
+  assert.match(mediaPanelSource, /从素材库选用成片/)
+  assert.match(mediaPanelSource, /from '@\/components\/AssetPickerDialog\.vue'/)
+  assert.match(mediaPanelSource, /asset\.asset_url \|\| asset\.display_url \|\| asset\.url/)
+  assert.match(mediaPanelSource, /async function onLibraryAudioPick\(asset\)/)
+  assert.match(mediaPanelSource, /从素材库选用音频/)
+  assert.match(mediaPanelSource, /type="audio"/)
+  assert.match(mediaPanelSource, /素材库音频挂载中/)
+  assert.match(mediaPanelSource, /storyboardsAPI\.update\(sbId, \{/)
+  assert.match(mediaPanelSource, /audio_local_path: localPath \|\| undefined/)
+  assert.match(mediaPanelSource, /audio_url: localPath \? undefined : audioUrl/)
+  assert.match(mediaPanelSource, /已将素材库音频设为该分镜音频/)
 })

@@ -126,6 +126,14 @@
         <div class="audio-label">{{ audioType === 'narration' ? '旁白音频' : '对白音频' }}</div>
         <audio v-if="url" :src="url" controls class="preview-aud" />
         <el-button size="small" type="warning" :loading="busy" @click.stop="runStep('audio')">重新配音</el-button>
+        <el-button size="small" :loading="attachBusy" @click.stop="audioLibraryVisible = true">从素材库选用音频</el-button>
+        <AssetPickerDialog
+          v-model="audioLibraryVisible"
+          type="audio"
+          title="从素材库选用音频"
+          :drama-id="ctx?.drama?.value?.id"
+          @pick="onLibraryAudioPick"
+        />
       </template>
     </div>
   </div>
@@ -169,6 +177,7 @@ const busy = ref(false)
 const universalBusy = ref('')
 const universalText = ref('')
 const videoLibraryVisible = ref(false)
+const audioLibraryVisible = ref(false)
 const libraryPreviewVisible = ref(false)
 const attachBusy = ref(false)
 const attachedLibraryAssetName = ref('')
@@ -187,7 +196,7 @@ async function onLibraryVideoPick(asset) {
   const drama = ctx?.drama?.value
   const sbId = props.storyboard?.id
   if (!drama?.id || !sbId) return
-  const videoUrl = asset.display_url || asset.url || ''
+  const videoUrl = asset.asset_url || asset.display_url || asset.url || ''
   const localPath = asset.local_path || ''
   if (!videoUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
   attachBusy.value = true
@@ -211,6 +220,36 @@ async function onLibraryVideoPick(asset) {
     else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
     ElMessage.error(e?.message || '复用失败')
+  } finally {
+    attachBusy.value = false
+    ctx?.nodeStatus?.clear(focusNodeId)
+    ctx?.nodeStatus?.clear(sbNodeId.value)
+  }
+}
+
+/** 素材库音频直接复用为该分镜音频（不重新配音） */
+async function onLibraryAudioPick(asset) {
+  const sbId = props.storyboard?.id
+  if (!sbId) return
+  const audioUrl = asset.asset_url || asset.display_url || asset.url || asset.audio_url || asset.voice_url || ''
+  const localPath = asset.local_path || ''
+  if (!audioUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
+  attachBusy.value = true
+  const focusNodeId = props.nodeId || sbNodeId.value
+  const statusMessage = '素材库音频挂载中…'
+  ctx?.nodeStatus?.set(focusNodeId, { step: 'audio', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'audio', message: statusMessage })
+  try {
+    await storyboardsAPI.update(sbId, {
+      audio_local_path: localPath || undefined,
+      audio_url: localPath ? undefined : audioUrl,
+    })
+    ElMessage.success('已将素材库音频设为该分镜音频')
+    await ctx?.refreshDrama?.(true)
+    if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
+    else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
+  } catch (e) {
+    ElMessage.error(e?.message || '复用音频失败')
   } finally {
     attachBusy.value = false
     ctx?.nodeStatus?.clear(focusNodeId)
