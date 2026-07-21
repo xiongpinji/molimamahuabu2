@@ -11,6 +11,10 @@
     >
       {{ labelFor(slot) }}
     </el-button>
+    <el-button size="small" :disabled="!!uploadingSlot" @click.stop="openLibrary">
+      素材库
+    </el-button>
+    <AssetPickerDialog v-model="libraryVisible" type="image" title="从素材库选首帧/图片" @pick="onLibraryPick" />
   </span>
 </template>
 
@@ -21,6 +25,7 @@ import { imagesAPI } from '@/api/images'
 import { uploadAPI } from '@/api/upload'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const props = defineProps({
   storyboard: { type: Object, required: true },
@@ -32,6 +37,7 @@ const ctx = useCanvasContext()
 const fileInput = ref(null)
 const uploadingSlot = ref('')
 const activeSlot = ref('')
+const libraryVisible = ref(false)
 
 const useFirstLast = computed(() => (
   props.storyboard?.creation_mode !== 'universal'
@@ -53,6 +59,42 @@ function triggerUpload(slot) {
   if (fileInput.value) {
     fileInput.value.value = ''
     fileInput.value.click()
+  }
+}
+
+function openLibrary() {
+  // 单槽位直接用该槽位；多槽位默认首帧（用户可先点对应上传按钮切换槽位语义，此处取第一个）
+  activeSlot.value = slots.value[0] || 'main'
+  libraryVisible.value = true
+}
+
+/** 素材库选图：与文件上传同一通路（imagesAPI.upload），零重新上传 */
+async function onLibraryPick(asset) {
+  const drama = ctx?.drama?.value
+  const storyboardId = props.storyboard?.id
+  const slot = activeSlot.value || 'main'
+  if (!drama?.id || !storyboardId) return
+  const url = asset.display_url || asset.url || ''
+  const localPath = asset.local_path || ''
+  if (!url && !localPath) return ElMessage.error('该素材缺少可用地址')
+  uploadingSlot.value = slot
+  const statusIds = [props.nodeId, `sb:${storyboardId}`].filter(Boolean)
+  statusIds.forEach((id) => ctx?.nodeStatus?.set(id, { step: 'upload', message: `素材库引用中…` }))
+  try {
+    await imagesAPI.upload({
+      storyboard_id: storyboardId,
+      drama_id: drama.id,
+      image_url: url,
+      local_path: localPath || undefined,
+      frame_type: slot === 'first' ? 'storyboard_first' : slot === 'last' ? 'storyboard_last' : undefined,
+    })
+    ElMessage.success('已从素材库引用图片')
+    await ctx?.refresh?.()
+  } catch (e) {
+    ElMessage.error(e?.message || '引用失败')
+  } finally {
+    statusIds.forEach((id) => ctx?.nodeStatus?.clear(id))
+    uploadingSlot.value = ''
   }
 }
 

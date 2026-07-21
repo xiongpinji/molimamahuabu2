@@ -80,6 +80,8 @@
         <div v-else-if="generationWarning" class="generation-alert generation-alert-warn">{{ generationWarning }}</div>
         <CanvasGenerationOptions mode="video" compact />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
+        <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
+        <AssetPickerDialog v-model="videoLibraryVisible" type="video" title="从素材库选用成片" @pick="onLibraryVideoPick" />
       </template>
 
       <template v-else-if="kind === 'audio'">
@@ -106,6 +108,8 @@ import {
 } from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
+import { videosAPI } from '@/api/videos'
 
 const props = defineProps({
   nodeId: { type: String, default: '' },
@@ -123,6 +127,34 @@ const ctx = useCanvasContext()
 const busy = ref(false)
 const universalBusy = ref('')
 const universalText = ref('')
+const videoLibraryVisible = ref(false)
+const attachBusy = ref(false)
+
+/** 素材库视频直接复用为该分镜成片（不生成、不计费） */
+async function onLibraryVideoPick(asset) {
+  const drama = ctx?.drama?.value
+  const sbId = props.storyboard?.id
+  if (!drama?.id || !sbId) return
+  const videoUrl = asset.display_url || asset.url || ''
+  const localPath = asset.local_path || ''
+  if (!videoUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
+  attachBusy.value = true
+  try {
+    await videosAPI.attach({
+      storyboard_id: sbId,
+      drama_id: drama.id,
+      video_url: videoUrl,
+      local_path: localPath || undefined,
+      duration: asset.duration ?? undefined,
+    })
+    ElMessage.success('已将素材库视频设为该分镜成片')
+    await ctx?.refresh?.()
+  } catch (e) {
+    ElMessage.error(e?.message || '复用失败')
+  } finally {
+    attachBusy.value = false
+  }
+}
 
 const sbNodeId = computed(() => (props.storyboard?.id ? `sb:${props.storyboard.id}` : ''))
 

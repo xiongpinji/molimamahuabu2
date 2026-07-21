@@ -685,10 +685,49 @@ function deleteById(db, log, id, options = {}) {
   return result.changes > 0;
 }
 
+/**
+ * 素材库视频复用：把已有视频（素材库/本地文件）直接挂到分镜作为成片。
+ * 插入 status='completed' 的 video_generations 行（provider='library'），不走计费、不生成任务。
+ * 画布视频节点按 storyboard_id 取最新 completed，即显示该视频。
+ */
+function attach(db, log, body) {
+  const storyboardId = Number(body.storyboard_id);
+  if (!storyboardId) throw new Error('storyboard_id 必填');
+  const sb = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+  if (!sb) throw new Error('分镜不存在');
+  const videoUrl = String(body.video_url || '').trim();
+  const localPath = String(body.local_path || '').trim();
+  if (!videoUrl && !localPath) throw new Error('video_url / local_path 至少提供一个');
+  const dramaId = Number(body.drama_id) || null;
+  const now = new Date().toISOString();
+  const info = db.prepare(`INSERT INTO video_generations
+    (drama_id, storyboard_id, provider, prompt, model, duration, video_url, local_path, status, completed_at, created_at, updated_at)
+    VALUES (?, ?, 'library', ?, 'library-reuse', ?, ?, ?, 'completed', ?, ?, ?)`).run(
+      dramaId,
+      storyboardId,
+      body.prompt || '素材库复用',
+      body.duration ?? null,
+      videoUrl || null,
+      localPath || null,
+      now,
+      now,
+      now
+    );
+  const id = info.lastInsertRowid;
+  try {
+    db.prepare('UPDATE storyboards SET video_url = ?, updated_at = ? WHERE id = ?')
+      .run(videoUrl || ('/static/' + localPath.replace(/^\/static\//, '')), now, storyboardId);
+  } catch (_) {
+    // 历史库列不一致时忽略；video_generations 仍保留可读取成片。
+  }
+  log?.info?.('[Library] 视频复用到分镜', { storyboard_id: storyboardId, video_gen_id: id });
+  return getById(db, id);
+}
 module.exports = {
   list,
   getById,
   create,
+  attach,
   findActiveForStoryboard,
   deleteById,
   processVideoGeneration,

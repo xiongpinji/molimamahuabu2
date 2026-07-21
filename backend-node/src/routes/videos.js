@@ -66,6 +66,16 @@ function routes(db, log, options = {}) {
         response.internalError(res, err.message);
       }
     },
+    attach: (req, res) => {
+      try {
+        const item = videoService.attach(db, log, req.body || {});
+        response.created(res, item);
+      } catch (err) {
+        log.error('videos attach', { error: err.message });
+        if (/必填|不存在|至少提供/.test(err.message)) return response.badRequest(res, err.message);
+        response.internalError(res, err.message);
+      }
+    },
     episodeBatch: (req, res) => {
       try {
         response.success(res, []);
