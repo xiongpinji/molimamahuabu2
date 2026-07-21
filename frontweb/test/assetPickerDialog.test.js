@@ -49,3 +49,14 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /voice_local_path/)
   assert.match(source, /mp3\|wav\|m4a\|aac\|ogg\|flac/)
 })
+
+test('素材选择弹窗选中素材时输出统一复用字段', () => {
+  assert.match(source, /function normalizePickedAsset\(item\)/)
+  assert.match(source, /display_url: displayUrl/)
+  assert.match(source, /asset_url: displayUrl/)
+  assert.match(source, /preview_url: displayUrl/)
+  assert.match(source, /local_path: localPath/)
+  assert.match(source, /reference_text: `@素材\(\$\{name\}#\$\{item\.raw_id \|\| item\.id\}\) \$\{displayUrl\}`\.trim\(\)/)
+  assert.match(source, /picker_source: item\.source_kind \|\| 'library'/)
+  assert.match(source, /emit\('pick', normalizePickedAsset\(item\)\)/)
+})

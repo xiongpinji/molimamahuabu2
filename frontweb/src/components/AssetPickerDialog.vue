@@ -332,6 +332,22 @@ function itemUrl(item) {
   return item.url || item.audio_url || item.voice_url || ''
 }
 
+function normalizePickedAsset(item) {
+  const displayUrl = itemUrl(item)
+  const localPath = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path || ''
+  const name = item.name || item.title || item.filename || '素材'
+  return {
+    ...item,
+    name,
+    display_url: displayUrl,
+    asset_url: displayUrl,
+    preview_url: displayUrl,
+    local_path: localPath,
+    reference_text: `@素材(${name}#${item.raw_id || item.id}) ${displayUrl}`.trim(),
+    picker_source: item.source_kind || 'library',
+  }
+}
+
 function formatSize(size) {
   const n = Number(size) || 0
   if (!n) return '未知大小'
@@ -352,7 +368,7 @@ function openPreview(item) {
 
 function onPick(item) {
   if (!item) return
-  emit('pick', { ...item, display_url: itemUrl(item) })
+  emit('pick', normalizePickedAsset(item))
   previewVisible.value = false
   visible.value = false
 }
