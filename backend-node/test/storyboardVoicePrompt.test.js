@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const fs = require('fs');
+const path = require('path');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const voicePrompt = require('../src/services/storyboardVoicePromptService');
 const episodeStoryboardService = require('../src/services/episodeStoryboardService');
@@ -13,6 +15,19 @@ function createDb() {
   runMigrationsAndEnsure(db);
   return db;
 }
+
+test('分镜生成保存路径会在入库后固化角色声线提示词', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/services/episodeStoryboardService.js'),
+    'utf8'
+  );
+
+  assert.match(source, /function\s+saveStoryboards\(/);
+  assert.match(source, /function\s+insertOneStoryboard\(/);
+  assert.match(source, /ensureStoryboardVoicePrompt\(db,\s*newId\)/);
+  assert.match(source, /ensureStoryboardVoicePrompt\(db,\s*id\)/);
+  assert.match(source, /ensureStoryboardVoicePrompt\(db,\s*row\.id\)|ensureStoryboardVoicePrompt\(db,\s*r\.id\)/);
+});
 
 test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   const db = createDb();
