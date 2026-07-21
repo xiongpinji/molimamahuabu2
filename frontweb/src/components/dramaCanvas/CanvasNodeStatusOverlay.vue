@@ -16,6 +16,9 @@
       <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
       <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
       <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
+      <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
+        {{ savingAsset ? '保存中…' : '存入素材库' }}
+      </button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
@@ -33,6 +36,8 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { assetsAPI } from '@/api/assets'
+import { storyboardIdFromNodeId } from '@/utils/canvasWorkflow'
 
 const props = defineProps({
   nodeId: { type: String, required: true },
@@ -40,6 +45,7 @@ const props = defineProps({
 
 const ctx = useCanvasContext()
 const now = ref(Date.now())
+const savingAsset = ref(false)
 let timer = null
 
 const status = computed(() => {
@@ -167,6 +173,57 @@ function dismissStatus() {
 
 function runtimeNode() {
   return ctx?.findCanvasNode?.(props.nodeId) || { id: props.nodeId, data: {} }
+}
+
+function resultAssetName(node) {
+  const label = node?.data?.label || node?.data?.title || status.value?.resultLabel || '节点结果'
+  return `${label}-${resultFilename()}`
+}
+
+function resultLocalPath() {
+  const url = String(status.value?.resultUrl || '')
+  const marker = '/static/'
+  const index = url.indexOf(marker)
+  if (index < 0) return null
+  return url.slice(index + marker.length).split(/[?#]/)[0] || null
+}
+
+function resultStoryboardId(node) {
+  return Number(status.value?.storyboardId || node?.data?.storyboard?.id || storyboardIdFromNodeId(props.nodeId)) || null
+}
+
+async function saveResultAsset() {
+  if (!status.value?.resultUrl || savingAsset.value) return
+  const node = runtimeNode()
+  const dramaId = Number(status.value?.dramaId || ctx?.drama?.value?.id || node?.data?.dramaId)
+  if (!Number.isFinite(dramaId) || dramaId <= 0) {
+    ElMessage.warning('缺少项目 ID，无法存入素材库')
+    return
+  }
+  savingAsset.value = true
+  try {
+    await assetsAPI.create({
+      drama_id: dramaId,
+      storyboard_id: resultStoryboardId(node),
+      name: resultAssetName(node),
+      type: resultPreviewType.value,
+      category: 'canvas-result',
+      url: status.value.resultUrl,
+      local_path: resultLocalPath(),
+      metadata: {
+        source: 'canvas_node_result',
+        canvas_node_id: props.nodeId,
+        result_label: status.value?.resultLabel || '',
+        prompt_text: status.value?.promptText || '',
+      },
+    })
+    ElMessage.success('结果已存入素材库')
+    await ctx?.refreshDrama?.(true)
+  } catch (error) {
+    ElMessage.error(error?.message || '存入素材库失败')
+  } finally {
+    savingAsset.value = false
+  }
 }
 
 async function runNextStep() {
