@@ -30,7 +30,7 @@
       <section class="panel-section">
         <div class="section-head">
           <span>引用素材</span>
-          <small>角色 / 场景 / 道具</small>
+          <small>角色 / 场景 / 道具 / 素材库</small>
         </div>
 
       <div class="relation-row">
@@ -100,25 +100,27 @@
         <el-button link type="primary" size="small" @click.stop="createAsset('character')">+角色</el-button>
         <el-button link type="primary" size="small" @click.stop="createAsset('scene')">+场景</el-button>
         <el-button link type="primary" size="small" @click.stop="createAsset('prop')">+道具</el-button>
+        <el-button link type="primary" size="small" :loading="assetAssigning" :disabled="!storyboard?.id" @click.stop="openAssetLibrary">+素材库</el-button>
       </div>
 
       <div class="reference-strip">
         <div class="reference-head">
           <span>参考图</span>
-          <span class="reference-count">{{ referenceAssets.length }}/10</span>
+          <span class="reference-count">{{ allReferenceAssets.length }}/10</span>
         </div>
-        <div v-if="referenceAssets.length" class="reference-list">
+        <div v-if="allReferenceAssets.length" class="reference-list">
           <span
-            v-for="reference in referenceAssets"
+            v-for="reference in allReferenceAssets"
             :key="reference.key"
             class="reference-chip"
-            :title="`${reference.kind === 'scene' ? '场景' : reference.kind === 'character' ? '角色' : '道具'}：${reference.name}`"
+            :title="`${refKindLabel(reference)}：${reference.name}`"
           >
             <img :src="reference.url" alt="" />
             <span>{{ reference.name }}</span>
+            <i v-if="reference.kind === 'asset'" class="chip-remove" title="移除指派" @click.stop="removeAssignedAsset(reference)">×</i>
           </span>
         </div>
-        <span v-else class="reference-empty">选择角色、场景或道具后自动带入生成</span>
+        <span v-else class="reference-empty">选择角色/场景/道具自动带入，或从素材库指派到本镜</span>
       </div>
 
       </section>
@@ -346,6 +348,7 @@
         </div>
       </div>
     </div>
+    <AssetPickerDialog v-model="assetLibraryVisible" type="image" title="从素材库指派参考图" @pick="onAssetLibraryPick" />
   </div>
 </template>
 
@@ -355,6 +358,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiAPI } from '@/api/ai'
 import { storyboardsAPI } from '@/api/storyboards'
+import { assetsAPI } from '@/api/assets'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 import {
@@ -371,6 +375,7 @@ import {
   getDramaGenerationOptions,
   getStoryboardImageModel,
   getStoryboardVideoModel,
+  toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
@@ -378,6 +383,7 @@ import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const props = defineProps({
   storyboard: { type: Object, required: true },
@@ -401,6 +407,8 @@ const gridFrameType = ref('single')
 const imageModel = ref('')
 const videoConfigs = ref([])
 const tailLinking = ref(false)
+const assetLibraryVisible = ref(false)
+const assetAssigning = ref(false)
 const form = reactive({
   title: '',
   action: '',
@@ -424,6 +432,43 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
   scene_id: sceneId.value,
   prop_ids: propIds.value,
 }))
+const assignedAssets = ref([])
+const allReferenceAssets = computed(() => [...referenceAssets.value, ...assignedAssets.value].slice(0, 10))
+
+function assetThumbUrl(asset) {
+  const localPath = asset.local_path || asset.image_local_path || asset.video_local_path
+  if (localPath) return '/static/' + String(localPath).replace(/^\/+/, '').replace(/^static\//, '')
+  return asset.url || asset.image_url || asset.video_url || ''
+}
+
+async function loadAssignedAssets() {
+  const storyboardId = props.storyboard?.id
+  if (!storyboardId) {
+    assignedAssets.value = []
+    return
+  }
+  try {
+    const result = await assetsAPI.list({ storyboard_id: storyboardId, type: 'image', page: 1, page_size: 20 })
+    assignedAssets.value = (result?.items || []).map((asset) => ({
+      key: `asset:${asset.id}`,
+      kind: 'asset',
+      id: asset.id,
+      name: asset.name || '素材库参考图',
+      url: assetThumbUrl(asset),
+      absoluteUrl: toAbsoluteMediaUrl(assetThumbUrl(asset)),
+    }))
+  } catch (_) {
+    assignedAssets.value = []
+  }
+}
+
+function refKindLabel(reference) {
+  if (reference.kind === 'scene') return '场景'
+  if (reference.kind === 'character') return '角色'
+  if (reference.kind === 'prop') return '道具'
+  if (reference.kind === 'asset') return '素材库指派'
+  return '参考'
+}
 
 const effectiveVideoModel = computed(() => String(
   props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
@@ -546,6 +591,7 @@ function syncForm(sb) {
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
+watch(() => props.storyboard?.id, () => loadAssignedAssets(), { immediate: true })
 watch(() => props.storyboard?.id, (id, previousId) => {
   if (id && id !== previousId) {
     imageModel.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'image_model')
@@ -590,6 +636,63 @@ function onSelectVisibleChange(open) {
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+function openAssetLibrary() {
+  if (!props.storyboard?.id) return ElMessage.warning('请先保存分镜')
+  assetLibraryVisible.value = true
+}
+
+function projectAssetId(asset) {
+  if (asset?.raw_id) return asset.raw_id
+  const id = String(asset?.id || '')
+  return id.startsWith('project:') ? id.slice('project:'.length) : id
+}
+
+async function onAssetLibraryPick(asset) {
+  const dramaId = ctx?.drama?.value?.id
+  const storyboardId = props.storyboard?.id
+  if (!dramaId || !storyboardId || !asset) return
+  assetAssigning.value = true
+  try {
+    if (asset.source_kind === 'project') {
+      await assetsAPI.update(projectAssetId(asset), { drama_id: dramaId, storyboard_id: storyboardId })
+    } else {
+      await assetsAPI.create({
+        drama_id: dramaId,
+        storyboard_id: storyboardId,
+        type: 'image',
+        category: 'storyboard_reference',
+        name: asset.name || '素材库参考图',
+        url: asset.url || '',
+        local_path: asset.local_path || null,
+        metadata: {
+          source_kind: asset.source_kind || 'library',
+          source_id: asset.raw_id || asset.id || null,
+          source_label: asset.source_label || null,
+        },
+      })
+    }
+    await loadAssignedAssets()
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success('已指派素材到本镜参考图')
+  } catch (e) {
+    ElMessage.error(e?.message || '素材指派失败')
+  } finally {
+    assetAssigning.value = false
+  }
+}
+
+async function removeAssignedAsset(reference) {
+  if (!reference?.id) return
+  try {
+    await assetsAPI.update(reference.id, { storyboard_id: null })
+    await loadAssignedAssets()
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success('已移除本镜素材')
+  } catch (e) {
+    ElMessage.error(e?.message || '移除失败')
+  }
 }
 
 function createAsset(type) {
@@ -963,6 +1066,29 @@ async function runStep(step) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.reference-chip.assigned {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+.chip-remove {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1;
+  color: #a1a1aa;
+  cursor: pointer;
+  transition: all .15s;
+}
+.chip-remove:hover {
+  background: rgba(244, 63, 94, 0.25);
+  color: #fda4af;
 }
 .reference-empty {
   font-size: 10px;
