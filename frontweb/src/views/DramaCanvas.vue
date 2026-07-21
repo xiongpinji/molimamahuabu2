@@ -815,6 +815,7 @@ provide(CANVAS_CONTEXT_KEY, {
   toggleTheme,
   alignNodes: onAlignNodes,
   fitCanvasView,
+  focusCanvasNode,
   undoCanvas,
   redoCanvas,
   zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),
@@ -957,6 +958,21 @@ async function fitCanvasView() {
   const api = canvasFlowApi.value
   if (!api?.fitView) return
   await api.fitView({ padding: 0.14, duration: 250, includeHiddenNodes: false })
+  const viewport = api.getViewport?.()
+  if (viewport) {
+    currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+    scheduleVirtualization()
+  }
+}
+
+async function focusCanvasNode(nodeId) {
+  if (!nodeId) return
+  focusedNodeId.value = nodeId
+  scheduleVirtualization()
+  await nextTick()
+  const api = canvasFlowApi.value
+  if (!api?.fitView) return
+  await api.fitView({ nodes: [{ id: nodeId }], padding: 0.55, duration: 320, includeHiddenNodes: false })
   const viewport = api.getViewport?.()
   if (viewport) {
     currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }

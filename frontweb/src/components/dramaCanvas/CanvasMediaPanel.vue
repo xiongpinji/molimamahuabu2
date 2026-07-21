@@ -177,8 +177,8 @@ async function onLibraryVideoPick(asset) {
     attachedLibraryAssetUrl.value = videoUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : '')
     ElMessage.success('已将素材库视频设为该分镜成片')
     await ctx?.refresh?.()
-    if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
-    ctx?.fitCanvasView?.()
+    if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
+    else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
     ElMessage.error(e?.message || '复用失败')
   } finally {
