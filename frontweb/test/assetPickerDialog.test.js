@@ -26,3 +26,14 @@ test('素材选择弹窗支持按素材来源筛选并显示可见数量', () =>
   assert.match(source, /v-for="item in visibleItems"/)
   assert.match(source, /显示 \$\{visibleItems\.length\}\/\$\{items\.length\} 个可用素材/)
 })
+
+test('素材选择弹窗支持音频/音色素材选择与预览', () => {
+  assert.match(source, /image \| video \| audio/)
+  assert.match(source, /const typeDisplayName = computed/)
+  assert.match(source, /item\.type === 'audio'/)
+  assert.match(source, /class="picker-thumb audio-thumb"/)
+  assert.match(source, /<audio[\s\S]*previewItem\?\.type === 'audio'[\s\S]*controls/)
+  assert.match(source, /audio_local_path/)
+  assert.match(source, /voice_local_path/)
+  assert.match(source, /mp3\|wav\|m4a\|aac\|ogg\|flac/)
+})

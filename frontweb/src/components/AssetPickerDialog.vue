@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     v-model="visible"
-    :title="title || `从素材库选择${type === 'video' ? '视频' : '图片'}`"
+    :title="title || `从素材库选择${typeDisplayName}`"
     width="760px"
     destroy-on-close
     append-to-body
@@ -59,8 +59,9 @@
       >
         <button class="thumb-button" type="button" @click="openPreview(item)">
           <video v-if="item.type === 'video'" :src="itemUrl(item)" class="picker-thumb" muted preload="metadata" />
+          <div v-else-if="item.type === 'audio'" class="picker-thumb audio-thumb">♪</div>
           <img v-else :src="itemUrl(item)" class="picker-thumb" />
-          <span class="thumb-badge">{{ item.type === 'video' ? '视频' : '图片' }}</span>
+          <span class="thumb-badge">{{ itemTypeName(item) }}</span>
         </button>
         <div class="picker-info">
           <div class="picker-name" :title="item.name">{{ item.name || '未命名' }}</div>
@@ -76,7 +77,7 @@
         </div>
       </div>
       <div v-if="!loading && !visibleItems.length" class="picker-empty">
-        <div>素材库暂无可用{{ type === 'video' ? '视频' : '图片' }}</div>
+        <div>素材库暂无可用{{ typeDisplayName }}</div>
         <el-button size="small" text @click="load">重新加载</el-button>
       </div>
     </div>
@@ -95,6 +96,12 @@
           class="preview-media"
           controls
           autoplay
+        />
+        <audio
+          v-else-if="previewItem?.type === 'audio'"
+          :src="itemUrl(previewItem)"
+          class="preview-audio"
+          controls
         />
         <img v-else-if="previewItem" :src="itemUrl(previewItem)" class="preview-media" />
       </div>
@@ -116,7 +123,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
-  type: { type: String, default: 'image' }, // image | video
+  type: { type: String, default: 'image' }, // image | video | audio
   title: { type: String, default: '' },
   dramaId: { type: [Number, String], default: '' },
 })
@@ -139,7 +146,8 @@ const previewVisible = ref(false)
 const previewItem = ref(null)
 let timer = null
 
-const typeLabel = computed(() => props.type === 'video' ? '视频素材' : '图片素材')
+const typeDisplayName = computed(() => itemTypeName({ type: props.type }))
+const typeLabel = computed(() => `${typeDisplayName.value}素材`)
 const sourceOptions = computed(() => {
   const options = [{ label: '全部来源', value: 'all' }]
   const seen = new Set()
@@ -236,9 +244,9 @@ function normalizeAssetItems(res, source) {
 }
 
 function normalizeAssetItem(it, source) {
-  const url = it.url || it.image_url || it.ref_image || ''
-  const localPath = it.local_path || it.image_local_path || it.video_local_path || ''
-  const itemType = it.type || (String(url || localPath).match(/\.(mp4|webm|mov)$/i) ? 'video' : 'image')
+  const url = it.url || it.image_url || it.ref_image || it.audio_url || it.voice_url || ''
+  const localPath = it.local_path || it.image_local_path || it.video_local_path || it.audio_local_path || it.voice_local_path || ''
+  const itemType = it.type || inferAssetType(url || localPath)
   return {
     ...it,
     id: `${source}:${it.id || url || localPath || it.name}`,
@@ -250,6 +258,21 @@ function normalizeAssetItem(it, source) {
     source_kind: source,
     source_label: sourceLabel(source),
   }
+}
+
+function inferAssetType(value) {
+  const target = String(value || '')
+  if (target.match(/\.(mp4|webm|mov)$/i)) return 'video'
+  if (target.match(/\.(mp3|wav|m4a|aac|ogg|flac)$/i)) return 'audio'
+  return 'image'
+}
+
+function itemTypeName(item) {
+  return {
+    video: '视频',
+    audio: '音频',
+    image: '图片',
+  }[item?.type] || '图片'
 }
 
 function sourceLabel(source) {
@@ -274,9 +297,9 @@ function dedupeItems(list) {
 /** 展示/使用地址：优先本地持久路径，规避过期远程 URL */
 function itemUrl(item) {
   if (!item) return ''
-  const lp = item.local_path || item.image_local_path || item.video_local_path
+  const lp = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path
   if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
-  return item.url || ''
+  return item.url || item.audio_url || item.voice_url || ''
 }
 
 function formatSize(size) {
@@ -319,6 +342,7 @@ function onPick(item) {
 .picker-card:hover { border-color: #8b5cf6; }
 .thumb-button { position: relative; display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .picker-thumb { width: 100%; height: 96px; object-fit: cover; display: block; background: #09090b; }
+.audio-thumb { display: flex; align-items: center; justify-content: center; color: #c4b5fd; font-size: 34px; }
 .thumb-badge { position: absolute; left: 6px; top: 6px; padding: 2px 6px; border-radius: 999px; background: rgba(0,0,0,.58); color: #fff; font-size: 11px; }
 .picker-info { padding: 6px; }
 .picker-name { font-size: 12px; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -328,4 +352,5 @@ function onPick(item) {
 .picker-empty { grid-column: 1 / -1; text-align: center; color: #71717a; padding: 40px 0; }
 .preview-body { display: flex; justify-content: center; background: #09090b; border-radius: 8px; overflow: hidden; }
 .preview-media { max-width: 100%; max-height: 520px; object-fit: contain; }
+.preview-audio { width: 100%; margin: 40px 24px; }
 </style>
