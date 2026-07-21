@@ -12,7 +12,10 @@
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
-    <span v-if="isFailed" class="failed-hint">右键节点可重试</span>
+    <span v-if="isFailed" class="failed-actions">
+      <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
+      <button type="button" @click.stop="dismissStatus">收起</button>
+    </span>
   </div>
 </template>
 
@@ -85,6 +88,8 @@ const resultText = computed(() => {
   return [label, urlHint].filter(Boolean).join(' · ')
 })
 
+const retryLabel = computed(() => status.value?.retryLabel || '重试')
+
 const statusTitle = computed(() => {
   const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, status.value?.resultUrl].filter(Boolean)
   return parts.join('\n')
@@ -103,6 +108,12 @@ async function runNextStep() {
   if (!status.value?.nextStep) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
   await ctx?.runNodeStep?.({ id: props.nodeId, data: {} }, status.value.nextStep)
+}
+
+async function retryFailed() {
+  if (!status.value?.retryStep) return
+  ctx?.nodeStatus?.clear?.(props.nodeId)
+  await ctx?.runNodeStep?.({ id: props.nodeId, data: {} }, status.value.retryStep)
 }
 
 watch(status, (value) => {
@@ -217,7 +228,13 @@ onBeforeUnmount(() => {
   gap: 6px;
   pointer-events: auto;
 }
-.success-actions button {
+.failed-actions {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+.success-actions button,
+.failed-actions button {
   padding: 3px 7px;
   border: 1px solid rgba(187, 247, 208, 0.45);
   border-radius: 999px;
@@ -226,12 +243,19 @@ onBeforeUnmount(() => {
   font-size: 9px;
   cursor: pointer;
 }
-.success-actions button:hover {
+.failed-actions button {
+  border-color: rgba(254, 202, 202, 0.45);
+  background: rgba(127, 29, 29, 0.72);
+  color: #fee2e2;
+}
+.success-actions button:hover,
+.failed-actions button:hover {
   border-color: rgba(187, 247, 208, 0.85);
   background: rgba(5, 150, 105, 0.78);
 }
-.failed-hint {
-  color: #fecaca;
+.failed-actions button:hover {
+  border-color: rgba(254, 202, 202, 0.85);
+  background: rgba(185, 28, 28, 0.78);
 }
 @keyframes spin {
   to { transform: rotate(360deg); }

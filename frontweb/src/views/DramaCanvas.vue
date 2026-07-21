@@ -1059,8 +1059,9 @@ async function runCanvasNodeStep(node, step) {
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
-    if (nodeId) nodeStatus.fail(nodeId, { message: errorMessage })
-    nodeStatus.fail(sbNodeId, { message: errorMessage })
+    const retryPayload = { message: errorMessage, retryStep: step, retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}` }
+    if (nodeId) nodeStatus.fail(nodeId, retryPayload)
+    nodeStatus.fail(sbNodeId, retryPayload)
     ElMessage.error(errorMessage)
     await refreshDrama(true)
   } finally {

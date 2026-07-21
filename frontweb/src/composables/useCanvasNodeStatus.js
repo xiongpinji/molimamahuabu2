@@ -17,6 +17,8 @@ export function createCanvasNodeStatusStore() {
       resultLabel: payload.resultLabel || payload.result_label || '',
       nextStep: payload.nextStep || payload.next_step || '',
       nextLabel: payload.nextLabel || payload.next_label || '',
+      retryStep: payload.retryStep || payload.retry_step || '',
+      retryLabel: payload.retryLabel || payload.retry_label || '',
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
   }

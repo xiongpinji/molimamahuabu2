@@ -25,6 +25,8 @@ test('画布节点状态快照可恢复结果和耗时', () => {
       resultUrl: '/static/image.png',
       resultType: 'image',
       nextStep: 'video',
+      retryStep: 'image',
+      retryLabel: '重试生图',
       at: 12345,
     },
   })
@@ -40,6 +42,8 @@ test('画布节点状态快照可恢复结果和耗时', () => {
     resultLabel: '',
     nextStep: 'video',
     nextLabel: '',
+    retryStep: 'image',
+    retryLabel: '重试生图',
     at: 12345,
   })
 })
