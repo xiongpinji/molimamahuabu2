@@ -54,6 +54,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 import { audioUrl } from '@/utils/mediaUrl'
 import {
   imageRecordUrl,
@@ -83,8 +84,7 @@ const isProcessing = computed(() => props.data.storyboard?.status === 'processin
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  const status = map?.[props.id]
-  return status ? !['failed', 'success'].includes(status.step) : false
+  return isCanvasNodeBusyStatus(map?.[props.id])
 })
 
 const imagesBySbId = computed(() => ctx?.imagesBySbId?.value || {})

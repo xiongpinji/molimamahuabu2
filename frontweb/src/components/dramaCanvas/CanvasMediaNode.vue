@@ -70,6 +70,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 import CanvasMediaPanel from './CanvasMediaPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -83,8 +84,7 @@ const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  const status = map?.[props.id]
-  return status ? !['failed', 'success'].includes(status.step) : false
+  return isCanvasNodeBusyStatus(map?.[props.id])
 })
 
 const nodeFailed = computed(() => ctx?.nodeStatus?.map?.[props.id]?.step === 'failed')
