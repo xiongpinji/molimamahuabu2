@@ -76,6 +76,7 @@
           <div v-else-if="!busy" class="preview-empty">无视频</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生视频中…</div>
         </div>
+        <div v-if="libraryVideoLabel" class="library-attach-tag">{{ libraryVideoLabel }}</div>
         <div v-if="generationError" class="generation-alert generation-alert-error">{{ generationError }}</div>
         <div v-else-if="generationWarning" class="generation-alert generation-alert-warn">{{ generationWarning }}</div>
         <CanvasGenerationOptions mode="video" compact />
@@ -117,6 +118,7 @@ const props = defineProps({
   storyboard: { type: Object, default: null },
   summary: { type: String, default: '' },
   url: { type: String, default: '' },
+  videoRecord: { type: Object, default: null },
   audioType: { type: String, default: 'dialogue' },
   frameKind: { type: String, default: '' },
   generationError: { type: String, default: '' },
@@ -129,6 +131,7 @@ const universalBusy = ref('')
 const universalText = ref('')
 const videoLibraryVisible = ref(false)
 const attachBusy = ref(false)
+const attachedLibraryAssetName = ref('')
 
 /** 素材库视频直接复用为该分镜成片（不生成、不计费） */
 async function onLibraryVideoPick(asset) {
@@ -139,6 +142,10 @@ async function onLibraryVideoPick(asset) {
   const localPath = asset.local_path || ''
   if (!videoUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
   attachBusy.value = true
+  const focusNodeId = props.nodeId || sbNodeId.value
+  const statusMessage = '素材库成片挂载中…'
+  ctx?.nodeStatus?.set(focusNodeId, { step: 'video', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'video', message: statusMessage })
   try {
     await videosAPI.attach({
       storyboard_id: sbId,
@@ -147,12 +154,16 @@ async function onLibraryVideoPick(asset) {
       local_path: localPath || undefined,
       duration: asset.duration ?? undefined,
     })
+    attachedLibraryAssetName.value = asset.name || asset.filename || `素材 #${asset.id || ''}`.trim()
     ElMessage.success('已将素材库视频设为该分镜成片')
     await ctx?.refresh?.()
+    if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
     ElMessage.error(e?.message || '复用失败')
   } finally {
     attachBusy.value = false
+    ctx?.nodeStatus?.clear(focusNodeId)
+    ctx?.nodeStatus?.clear(sbNodeId.value)
   }
 }
 
@@ -169,6 +180,12 @@ const busyLabel = computed(() => {
   const map = ctx?.nodeStatus?.map
   const id = props.nodeId || sbNodeId.value
   return id && map ? map[id]?.message : ''
+})
+
+const libraryVideoLabel = computed(() => {
+  if (props.videoRecord?.provider !== 'library' && !attachedLibraryAssetName.value) return ''
+  const name = attachedLibraryAssetName.value || props.videoRecord?.model || ''
+  return name && name !== 'library-reuse' ? `素材库复用成片：${name}` : '素材库复用成片'
 })
 
 watch(
@@ -408,6 +425,16 @@ async function runStep(step) {
   border-radius: 6px;
   font-size: 11px;
   line-height: 1.35;
+}
+.library-attach-tag {
+  flex-basis: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #99f6e4;
+  background: rgba(20, 184, 166, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.22);
 }
 .generation-alert-error {
   color: #fecaca;

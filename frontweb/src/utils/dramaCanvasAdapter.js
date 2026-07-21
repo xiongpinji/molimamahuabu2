@@ -282,14 +282,15 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
     const sbVideos = videosBySbId?.[sb.id] || []
     const videoError = latestVideoGenerationError(sbVideos)
     const videoWarning = latestVideoGenerationWarning(sbVideos)
-    const vidUrl = videoRecordUrl(resolveSbVideoRecord(sb, videosBySbId)) || storyboardVideoUrl(sb)
+    const videoRecord = resolveSbVideoRecord(sb, videosBySbId)
+    const vidUrl = videoRecordUrl(videoRecord) || storyboardVideoUrl(sb)
     if (vidUrl || videoError) {
       const vidId = `sbvid:${sb.id}`
       nodes.push(makeNode({
         id: vidId,
         type: 'canvasMedia',
         position: resolveNodePosition(savedLayout, vidId, { x: mediaX, y: mediaY }),
-        data: { kind: 'video', storyboard: sb, url: vidUrl, generationError: videoError, generationWarning: videoWarning },
+        data: { kind: 'video', storyboard: sb, url: vidUrl, videoRecord, generationError: videoError, generationWarning: videoWarning },
       }))
       edges.push(makeEdge({
         id: `e-${pipelineTailId}-${vidId}`,

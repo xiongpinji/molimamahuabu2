@@ -41,6 +41,7 @@
       :storyboard="data.storyboard"
       :summary="data.summary"
       :url="data.url"
+      :video-record="data.videoRecord"
       :audio-type="data.audioType"
       :frame-kind="data.frameKind"
       :generation-error="data.generationError"
@@ -75,6 +76,7 @@ const resultState = computed(() => {
   if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
   if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
   if (props.data.generationError) return { key: 'failed', label: '生成失败' }
+  if (props.data.kind === 'video' && props.data.videoRecord?.provider === 'library') return { key: 'library', label: '素材库' }
   if (props.data.url) return { key: 'ready', label: '已生成' }
   if (props.data.generationWarning) return { key: 'warn', label: '需检查' }
   return { key: 'empty', label: '待生成' }
@@ -187,6 +189,7 @@ const kindLabel = computed(() => {
 }
 .state-busy { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
 .state-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.state-library { color: #2dd4bf; background: rgba(45, 212, 191, 0.14); }
 .state-editable { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
 .state-failed { color: #f87171; background: rgba(248, 113, 113, 0.14); }
 .state-warn { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
