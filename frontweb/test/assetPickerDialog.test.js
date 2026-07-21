@@ -18,3 +18,11 @@ test('素材选择弹窗暴露部分素材源加载失败，而不是静默吞�
   assert.match(source, /Promise\.allSettled\(sources\.map\(\(source\) => source\.run\(\)\)\)/)
   assert.match(source, /failedSources\.join\('、'\).*加载失败，已显示其他可用素材/)
 })
+
+test('素材选择弹窗支持按素材来源筛选并显示可见数量', () => {
+  assert.match(source, /const sourceFilter = ref\('all'\)/)
+  assert.match(source, /const sourceOptions = computed\(\(\) => \{/)
+  assert.match(source, /const visibleItems = computed\(\(\) =>/)
+  assert.match(source, /v-for="item in visibleItems"/)
+  assert.match(source, /显示 \$\{visibleItems\.length\}\/\$\{items\.length\} 个可用素材/)
+})

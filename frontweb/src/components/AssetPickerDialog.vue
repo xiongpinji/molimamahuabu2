@@ -16,9 +16,22 @@
       >
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
+      <el-select
+        v-model="sourceFilter"
+        size="small"
+        class="source-filter"
+        placeholder="素材来源"
+      >
+        <el-option
+          v-for="option in sourceOptions"
+          :key="option.value"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
       <div class="picker-summary">
         <el-tag size="small" effect="plain">{{ typeLabel }}</el-tag>
-        <span>{{ loading ? '加载中…' : `共 ${items.length} 个可用素材` }}</span>
+        <span>{{ loading ? '加载中…' : `显示 ${visibleItems.length}/${items.length} 个可用素材` }}</span>
       </div>
       <el-button size="small" :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
     </div>
@@ -40,7 +53,7 @@
     />
     <div v-loading="loading" class="picker-grid">
       <div
-        v-for="item in items"
+        v-for="item in visibleItems"
         :key="item.id"
         class="picker-card"
       >
@@ -62,7 +75,7 @@
           <el-button size="small" type="primary" :disabled="!itemUrl(item)" @click="onPick(item)">选用</el-button>
         </div>
       </div>
-      <div v-if="!loading && !items.length" class="picker-empty">
+      <div v-if="!loading && !visibleItems.length" class="picker-empty">
         <div>素材库暂无可用{{ type === 'video' ? '视频' : '图片' }}</div>
         <el-button size="small" text @click="load">重新加载</el-button>
       </div>
@@ -119,6 +132,7 @@ watch(visible, (v) => emit('update:modelValue', v))
 const loading = ref(false)
 const items = ref([])
 const keyword = ref('')
+const sourceFilter = ref('all')
 const loadError = ref('')
 const loadWarning = ref('')
 const previewVisible = ref(false)
@@ -126,6 +140,26 @@ const previewItem = ref(null)
 let timer = null
 
 const typeLabel = computed(() => props.type === 'video' ? '视频素材' : '图片素材')
+const sourceOptions = computed(() => {
+  const options = [{ label: '全部来源', value: 'all' }]
+  const seen = new Set()
+  for (const item of items.value) {
+    const value = item.source_kind || 'library'
+    if (seen.has(value)) continue
+    seen.add(value)
+    options.push({ label: item.source_label || sourceLabel(value), value })
+  }
+  return options
+})
+const visibleItems = computed(() => (
+  sourceFilter.value === 'all'
+    ? items.value
+    : items.value.filter((item) => item.source_kind === sourceFilter.value)
+))
+
+watch(() => props.type, () => {
+  sourceFilter.value = 'all'
+})
 
 function debouncedLoad() {
   clearTimeout(timer)
@@ -167,6 +201,9 @@ async function load() {
       .filter((res) => res.status === 'fulfilled')
       .flatMap((res) => res.value)
     items.value = dedupeItems(loadedItems)
+    if (!sourceOptions.value.some((option) => option.value === sourceFilter.value)) {
+      sourceFilter.value = 'all'
+    }
     const failedSources = results
       .map((res, index) => res.status === 'rejected' ? sources[index].label : '')
       .filter(Boolean)
@@ -270,7 +307,8 @@ function onPick(item) {
 
 <style scoped>
 .picker-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.picker-search { width: 260px; }
+.picker-search { width: 240px; }
+.source-filter { width: 116px; flex-shrink: 0; }
 .picker-summary { display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; flex: 1; }
 .picker-alert { margin-bottom: 12px; }
 .picker-grid {
