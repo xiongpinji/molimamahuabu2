@@ -42,7 +42,9 @@
       show-icon
       :closable="false"
       class="picker-alert"
-    />
+    >
+      <el-button size="small" text class="picker-alert-action" :loading="loading" @click="load">重试加载</el-button>
+    </el-alert>
     <el-alert
       v-if="loadWarning"
       :title="loadWarning"
@@ -334,6 +336,7 @@ function onPick(item) {
 .source-filter { width: 116px; flex-shrink: 0; }
 .picker-summary { display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; flex: 1; }
 .picker-alert { margin-bottom: 12px; }
+.picker-alert-action { margin-left: 8px; }
 .picker-grid {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
   max-height: 420px; overflow-y: auto; min-height: 120px;

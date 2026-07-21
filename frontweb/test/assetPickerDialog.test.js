@@ -19,6 +19,13 @@ test('素材选择弹窗暴露部分素材源加载失败，而不是静默吞�
   assert.match(source, /failedSources\.join\('、'\).*加载失败，已显示其他可用素材/)
 })
 
+test('素材选择弹窗全量加载失败时提供重试入口', () => {
+  assert.match(source, /v-if="loadError"/)
+  assert.match(source, />重试加载</)
+  assert.match(source, /class="picker-alert-action"/)
+  assert.match(source, /@click="load"/)
+})
+
 test('素材选择弹窗支持按素材来源筛选并显示可见数量', () => {
   assert.match(source, /const sourceFilter = ref\('all'\)/)
   assert.match(source, /const sourceOptions = computed\(\(\) => \{/)
