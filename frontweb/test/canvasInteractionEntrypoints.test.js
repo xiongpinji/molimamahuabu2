@@ -25,3 +25,12 @@ test('悬浮工具栏暴露撤销和重做操作', () => {
   assert.match(toolbarSource, /function undo\(\) \{ ctx\?\.undoCanvas\?\.\(\) \}/)
   assert.match(toolbarSource, /function redo\(\) \{ ctx\?\.redoCanvas\?\.\(\) \}/)
 })
+
+test('画布工作流支持直接运行所选分镜', () => {
+  assert.match(canvasSource, />\s*运行所选\s*</)
+  assert.match(canvasSource, /@click="onRunSelectedStoryboards"/)
+  assert.match(canvasSource, /async function onRunSelectedStoryboards\(\)/)
+  assert.match(canvasSource, /title: '所选分镜'/)
+  assert.match(canvasSource, /async function runWorkflowWithConfirm\(runGroup, confirmTitle\)/)
+  assert.match(canvasSource, /await runWorkflowWithConfirm\(\{\s*\.\.\.group,/)
+})

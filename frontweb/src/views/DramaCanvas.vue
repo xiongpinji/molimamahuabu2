@@ -86,6 +86,16 @@
         >
           创建工作流
         </el-button>
+        <el-button
+          size="small"
+          type="primary"
+          plain
+          :loading="workflowRunning"
+          :disabled="selectedStoryboardIds.length === 0 || workflowRunning || layoutSaveState === 'saving'"
+          @click="onRunSelectedStoryboards"
+        >
+          运行所选
+        </el-button>
         <el-select
           v-model="activeGroupId"
           size="small"
@@ -1849,20 +1859,42 @@ async function onRunActiveGroup() {
     ElMessage.warning('请先选择工作流')
     return
   }
+
+  await runWorkflowWithConfirm({
+    ...group,
+    pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
+  }, '整组重跑')
+}
+
+async function onRunSelectedStoryboards() {
+  const storyboardIds = selectedStoryboardIds.value
+    .map(Number)
+    .filter((id) => visibleStoryboardIds.value.has(id))
+
+  if (!storyboardIds.length) {
+    ElMessage.warning('请先框选或 Ctrl 点击选择分镜节点')
+    return
+  }
+
+  await runWorkflowWithConfirm({
+    id: 'selected-storyboards',
+    title: '所选分镜',
+    storyboard_ids: storyboardIds,
+    pipeline: normalizePipeline(pipelineSteps.value),
+  }, '运行所选分镜')
+}
+
+async function runWorkflowWithConfirm(runGroup, confirmTitle) {
   try {
     await ElMessageBox.confirm(
-      `将对 ${(group.storyboard_ids || []).length} 个分镜依次执行：${(group.pipeline || pipelineSteps.value).join(' → ')}\n耗时可能较长，是否继续？`,
-      '整组重跑',
+      `将对 ${(runGroup.storyboard_ids || []).length} 个分镜依次执行：${(runGroup.pipeline || pipelineSteps.value).join(' → ')}\n耗时可能较长，是否继续？`,
+      confirmTitle,
       { type: 'warning', confirmButtonText: '开始执行' }
     )
   } catch {
     return
   }
 
-  const runGroup = {
-    ...group,
-    pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
-  }
   const storyboardIds = runGroup.storyboard_ids || []
   const total = storyboardIds.length
   let currentIndex = 0
