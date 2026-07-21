@@ -1282,6 +1282,7 @@ provide(CANVAS_CONTEXT_KEY, {
   alignNodes: onAlignNodes,
   fitCanvasView,
   focusCanvasNode,
+  findCanvasNode: findGraphNode,
   undoCanvas,
   redoCanvas,
   zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),

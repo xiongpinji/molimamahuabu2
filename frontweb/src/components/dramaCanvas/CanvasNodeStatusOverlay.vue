@@ -104,16 +104,20 @@ function dismissStatus() {
   ctx?.nodeStatus?.clear?.(props.nodeId)
 }
 
+function runtimeNode() {
+  return ctx?.findCanvasNode?.(props.nodeId) || { id: props.nodeId, data: {} }
+}
+
 async function runNextStep() {
   if (!status.value?.nextStep) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
-  await ctx?.runNodeStep?.({ id: props.nodeId, data: {} }, status.value.nextStep)
+  await ctx?.runNodeStep?.(runtimeNode(), status.value.nextStep)
 }
 
 async function retryFailed() {
   if (!status.value?.retryStep) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
-  await ctx?.runNodeStep?.({ id: props.nodeId, data: {} }, status.value.retryStep)
+  await ctx?.runNodeStep?.(runtimeNode(), status.value.retryStep)
 }
 
 watch(status, (value) => {
