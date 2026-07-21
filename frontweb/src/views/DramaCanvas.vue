@@ -333,7 +333,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { useTheme } from '@/composables/useTheme'
-import { runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
+import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { useCanvasStoryboardMedia } from '@/composables/useCanvasStoryboardMedia'
 import { useCanvasCrud } from '@/composables/useCanvasCrud'
@@ -812,6 +812,89 @@ async function copyNodeReference(node) {
   }
 }
 
+
+function nodeStepStatusLabel(step, node) {
+  if (step === 'image' && node?.data?.frameKind === 'first') return '首帧生成中…'
+  if (step === 'image' && node?.data?.frameKind === 'last') return '尾帧生成中…'
+  return CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
+}
+
+async function runCanvasNodeStep(node, step) {
+  const sb = storyboardForNode(node)
+  if (!drama.value || !sb?.id) {
+    ElMessage.warning('该节点没有绑定分镜，无法执行生成')
+    return
+  }
+  const nodeId = node?.id
+  const sbNodeId = `sb:${sb.id}`
+  const statusMessage = nodeStepStatusLabel(step, node)
+  if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage })
+  nodeStatus.set(sbNodeId, { step, message: statusMessage })
+  try {
+    const found = findStoryboardInDrama(drama.value, sb.id)
+    const latestSb = found?.storyboard || sb
+    const genOpts = getCanvasGenerationOptions()
+    if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '')
+    else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts)
+    else if (step === 'audio') {
+      const res = await runAudioStep(latestSb)
+      if (res?.skipped) {
+        ElMessage.info(res.reason || '已跳过')
+        return
+      }
+    }
+    ElMessage.success('节点生成完成')
+    await refreshDrama(true)
+    if (nodeId) await focusCanvasNode(nodeId)
+  } catch (e) {
+    ElMessage.error(e?.message || '节点生成失败')
+    await refreshDrama(true)
+  } finally {
+    nodeStatus.clear(nodeId)
+    nodeStatus.clear(sbNodeId)
+  }
+}
+
+function videoUrlFromNode(node) {
+  if (node?.data?.url) return node.data.url
+  const localPath = node?.data?.videoRecord?.local_path
+  if (localPath) return `/static/${String(localPath).replace(/^\/+/, '')}`
+  if (node?.data?.videoRecord?.video_url) return node.data.videoRecord.video_url
+  const sb = storyboardForNode(node)
+  const videoNode = sb?.id ? findGraphNode(`sbvid:${sb.id}`) : null
+  if (!videoNode || videoNode === node) return ''
+  return videoUrlFromNode(videoNode)
+}
+
+function previewNodeVideo(node) {
+  const url = videoUrlFromNode(node)
+  if (!url) {
+    ElMessage.warning('该视频节点暂无可预览地址')
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function runNodeMenuAction(type, node) {
+  if (type === 'open-node-config') {
+    onNodeDoubleClick({ node })
+  } else if (type === 'run-node-image') {
+    await runCanvasNodeStep(node, 'image')
+  } else if (type === 'run-node-video') {
+    await runCanvasNodeStep(node, 'video')
+  } else if (type === 'run-node-audio') {
+    await runCanvasNodeStep(node, 'audio')
+  } else if (type === 'preview-node-video') {
+    previewNodeVideo(node)
+  } else if (type === 'focus-upstream') {
+    await focusUpstreamAsset(node)
+  } else if (type === 'focus-downstream-video') {
+    await focusDownstreamVideo(node)
+  } else if (type === 'copy-node-ref') {
+    await copyNodeReference(node)
+  }
+}
+
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   if (event?.preventDefault) event.preventDefault()
@@ -844,9 +927,7 @@ async function onContextMenuSelect(type) {
   const node = contextMenuNode.value
   if (node) {
     closeContextMenu()
-    if (type === 'focus-upstream') await focusUpstreamAsset(node)
-    else if (type === 'focus-downstream-video') await focusDownstreamVideo(node)
-    else if (type === 'copy-node-ref') await copyNodeReference(node)
+    await runNodeMenuAction(type, node)
     return
   }
   pendingFlowPosition.value = contextMenuFlowPos.value
