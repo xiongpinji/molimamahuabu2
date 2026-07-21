@@ -221,14 +221,20 @@ async function onLibraryVideoPick(asset) {
     attachedLibraryAssetUrl.value = videoUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : '')
     ElMessage.success('已将素材库视频设为该分镜成片')
     await ctx?.refresh?.()
+    markNodeSuccess('素材库视频已挂载', {
+      resultUrl: attachedLibraryAssetUrl.value,
+      resultType: 'video',
+      resultLabel: attachedLibraryAssetName.value || '素材库视频',
+      autoClear: false,
+    })
     if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
     else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
     ElMessage.error(e?.message || '复用失败')
   } finally {
     attachBusy.value = false
-    ctx?.nodeStatus?.clear(focusNodeId)
-    ctx?.nodeStatus?.clear(sbNodeId.value)
+    clearRunningStatus(focusNodeId)
+    clearRunningStatus(sbNodeId.value)
   }
 }
 
@@ -251,14 +257,20 @@ async function onLibraryAudioPick(asset) {
     })
     ElMessage.success('已将素材库音频设为该分镜音频')
     await ctx?.refreshDrama?.(true)
+    markNodeSuccess('素材库音频已挂载', {
+      resultUrl: audioUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : ''),
+      resultType: 'audio',
+      resultLabel: asset.name || '素材库音频',
+      autoClear: false,
+    })
     if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
     else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
     ElMessage.error(e?.message || '复用音频失败')
   } finally {
     attachBusy.value = false
-    ctx?.nodeStatus?.clear(focusNodeId)
-    ctx?.nodeStatus?.clear(sbNodeId.value)
+    clearRunningStatus(focusNodeId)
+    clearRunningStatus(sbNodeId.value)
   }
 }
 
@@ -369,13 +381,18 @@ async function runUniversalPrompt(mode) {
     universalText.value = nextText
     ElMessage.success(mode === 'polish' ? '全能词润色完成' : '全能词生成完成')
     await ctx?.refreshDrama?.(true)
+    markNodeSuccess(mode === 'polish' ? '全能词润色完成' : '全能词生成完成', {
+      resultType: 'text',
+      resultLabel: '全能分镜词',
+      promptText: nextText,
+    })
   } catch (e) {
     universalText.value = draft
     ElMessage.error(e?.message || '全能词处理失败')
   } finally {
     universalBusy.value = ''
-    ctx?.nodeStatus?.clear(props.nodeId)
-    ctx?.nodeStatus?.clear(sbNodeId.value)
+    clearRunningStatus(props.nodeId)
+    clearRunningStatus(sbNodeId.value)
   }
 }
 
@@ -390,12 +407,17 @@ async function saveUniversalText() {
     await storyboardsAPI.update(sbId, { universal_segment_text: universalText.value.trim() })
     ElMessage.success('全能词已保存')
     await ctx?.refreshDrama?.(true)
+    markNodeSuccess('全能词已保存', {
+      resultType: 'text',
+      resultLabel: '全能分镜词',
+      promptText: universalText.value.trim(),
+    })
   } catch (e) {
     ElMessage.error(e?.message || '全能词保存失败')
   } finally {
     universalBusy.value = ''
-    ctx?.nodeStatus?.clear(props.nodeId)
-    ctx?.nodeStatus?.clear(sbNodeId.value)
+    clearRunningStatus(props.nodeId)
+    clearRunningStatus(sbNodeId.value)
   }
 }
 
@@ -426,6 +448,12 @@ async function runStep(step) {
     }
     ElMessage.success('生成完成')
     await ctx?.refresh?.()
+    markNodeSuccess(`${CANVAS_NODE_STATUS_LABELS[step] || '节点任务'}完成`, {
+      resultUrl: currentResultUrl(step),
+      resultType: step,
+      resultLabel: step === 'image' ? '分镜图' : step === 'video' ? '分镜视频' : step === 'audio' ? '分镜音频' : '节点结果',
+      retryStep: step,
+    })
   } catch (e) {
     const errorMessage = e?.message || '生成失败'
     const retryLabel = step === 'image' && props.frameKind === 'first'
@@ -450,8 +478,8 @@ async function runStep(step) {
     await ctx?.refresh?.()
   } finally {
     busy.value = false
-    if (ctx?.nodeStatus?.get(props.nodeId)?.step !== 'failed') ctx?.nodeStatus?.clear(props.nodeId)
-    if (ctx?.nodeStatus?.get(sbNodeId.value)?.step !== 'failed') ctx?.nodeStatus?.clear(sbNodeId.value)
+    clearRunningStatus(props.nodeId)
+    clearRunningStatus(sbNodeId.value)
   }
 }
 
@@ -461,6 +489,28 @@ async function retryFailedStep() {
   ctx?.nodeStatus?.clear(props.nodeId)
   ctx?.nodeStatus?.clear(sbNodeId.value)
   await runStep(step)
+}
+
+function markNodeSuccess(message, payload = {}) {
+  const status = {
+    message,
+    storyboardId: props.storyboard?.id || undefined,
+    autoClear: payload.autoClear ?? false,
+    ...payload,
+  }
+  ctx?.nodeStatus?.success(props.nodeId, status)
+  ctx?.nodeStatus?.success(sbNodeId.value, status)
+}
+
+function clearRunningStatus(nodeId) {
+  const status = ctx?.nodeStatus?.get(nodeId)
+  if (status && !['failed', 'success'].includes(status.step)) ctx?.nodeStatus?.clear(nodeId)
+}
+
+function currentResultUrl(step) {
+  if (step === 'video') return libraryPreviewUrl.value || props.url || ''
+  if (step === 'audio') return props.url || ''
+  return props.url || ''
 }
 </script>
 

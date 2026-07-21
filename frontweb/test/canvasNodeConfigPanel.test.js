@@ -76,3 +76,18 @@ test('媒体配置面板失败后保留原因和重试入口', () => {
   assert.match(mediaPanelSource, /async function retryFailedStep\(\)/)
   assert.match(mediaPanelSource, /await runStep\(step\)/)
 })
+
+test('媒体配置面板成功后保留节点结果回显', () => {
+  assert.match(mediaPanelSource, /function markNodeSuccess\(message, payload = \{\}\)/)
+  assert.match(mediaPanelSource, /ctx\?\.nodeStatus\?\.success\(props\.nodeId, status\)/)
+  assert.match(mediaPanelSource, /ctx\?\.nodeStatus\?\.success\(sbNodeId\.value, status\)/)
+  assert.match(mediaPanelSource, /autoClear: payload\.autoClear \?\? false/)
+  assert.match(mediaPanelSource, /resultType: 'video'/)
+  assert.match(mediaPanelSource, /resultType: 'audio'/)
+  assert.match(mediaPanelSource, /resultType: 'text'/)
+  assert.match(mediaPanelSource, /promptText: nextText/)
+  assert.match(mediaPanelSource, /promptText: universalText\.value\.trim\(\)/)
+  assert.match(mediaPanelSource, /function clearRunningStatus\(nodeId\)/)
+  assert.match(mediaPanelSource, /!\['failed', 'success'\]\.includes\(status\.step\)/)
+  assert.match(mediaPanelSource, /function currentResultUrl\(step\)/)
+})
