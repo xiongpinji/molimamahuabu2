@@ -125,6 +125,15 @@
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveAsset">保存</el-button>
       <el-button
+        size="small"
+        plain
+        :loading="libraryApplying"
+        :disabled="generating || panoramaGenerating"
+        @click.stop="libraryVisible = true"
+      >
+        素材库选图
+      </el-button>
+      <el-button
         v-if="canGenerate || generating"
         size="small"
         type="primary"
@@ -157,12 +166,20 @@
       <el-button size="small" plain @click.stop="highlightRelated">关联分镜</el-button>
       <el-button size="small" type="danger" plain @click.stop="deleteAsset">删除</el-button>
     </div>
+
+    <AssetPickerDialog
+      v-model="libraryVisible"
+      type="image"
+      :title="`从素材库选择${kindLabel}参考图`"
+      @pick="applyLibraryImage"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
 import { propAPI } from '@/api/props'
@@ -185,6 +202,8 @@ const saving = ref(false)
 const generating = ref(false)
 const multiViewGenerating = ref(false)
 const panoramaGenerating = ref(false)
+const libraryVisible = ref(false)
+const libraryApplying = ref(false)
 const form = reactive({
   name: '',
   role: '',
@@ -293,6 +312,41 @@ async function saveAsset() {
   }
 }
 
+function buildLibraryImagePayload(asset) {
+  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const displayUrl = asset?.display_url || asset?.url || ''
+  const ref = localPath || displayUrl
+  if (!ref) throw new Error('该素材缺少可用图片地址')
+  const payload = { ref_image: ref }
+  if (localPath) {
+    payload.local_path = localPath
+  } else {
+    payload.image_url = displayUrl
+  }
+  return payload
+}
+
+async function applyLibraryImage(asset) {
+  libraryApplying.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'library', message: '引用素材库图片…' })
+  try {
+    const payload = buildLibraryImagePayload(asset)
+    if (props.kind === 'character') {
+      await characterAPI.putImage(props.entity.id, payload)
+    } else if (props.kind === 'scene') {
+      await sceneAPI.update(props.entity.id, payload)
+    } else {
+      await propAPI.update(props.entity.id, payload)
+    }
+    ElMessage.success('已引用素材库图片')
+    await ctx?.refreshDrama?.(true)
+  } catch (e) {
+    ElMessage.error(e?.message || '引用素材库图片失败')
+  } finally {
+    libraryApplying.value = false
+    if (!generating.value && !saving.value && !panoramaGenerating.value) ctx?.nodeStatus?.clear(props.nodeId)
+  }
+}
 async function deleteAsset() {
   const label = props.kind === 'scene'
     ? (props.entity.location || '未命名')
