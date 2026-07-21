@@ -82,7 +82,24 @@
         <CanvasGenerationOptions mode="video" compact />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
+        <el-button v-if="libraryVideoLabel" size="small" text @click.stop="libraryPreviewVisible = true">查看素材</el-button>
         <AssetPickerDialog v-model="videoLibraryVisible" type="video" title="从素材库选用成片" @pick="onLibraryVideoPick" />
+        <el-dialog
+          v-model="libraryPreviewVisible"
+          title="素材库复用成片"
+          width="720px"
+          append-to-body
+          destroy-on-close
+        >
+          <div class="library-preview">
+            <video v-if="libraryPreviewUrl" :src="libraryPreviewUrl" class="library-preview-video" controls autoplay />
+            <div v-else class="preview-empty">暂无可预览地址</div>
+          </div>
+          <div class="library-preview-meta">
+            <span>{{ libraryVideoLabel }}</span>
+            <span v-if="props.videoRecord?.duration">时长：{{ props.videoRecord.duration }} 秒</span>
+          </div>
+        </el-dialog>
       </template>
 
       <template v-else-if="kind === 'audio'">
@@ -130,8 +147,10 @@ const busy = ref(false)
 const universalBusy = ref('')
 const universalText = ref('')
 const videoLibraryVisible = ref(false)
+const libraryPreviewVisible = ref(false)
 const attachBusy = ref(false)
 const attachedLibraryAssetName = ref('')
+const attachedLibraryAssetUrl = ref('')
 
 /** 素材库视频直接复用为该分镜成片（不生成、不计费） */
 async function onLibraryVideoPick(asset) {
@@ -155,9 +174,11 @@ async function onLibraryVideoPick(asset) {
       duration: asset.duration ?? undefined,
     })
     attachedLibraryAssetName.value = asset.name || asset.filename || `素材 #${asset.id || ''}`.trim()
+    attachedLibraryAssetUrl.value = videoUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : '')
     ElMessage.success('已将素材库视频设为该分镜成片')
     await ctx?.refresh?.()
     if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
+    ctx?.fitCanvasView?.()
   } catch (e) {
     ElMessage.error(e?.message || '复用失败')
   } finally {
@@ -186,6 +207,13 @@ const libraryVideoLabel = computed(() => {
   if (props.videoRecord?.provider !== 'library' && !attachedLibraryAssetName.value) return ''
   const name = attachedLibraryAssetName.value || props.videoRecord?.model || ''
   return name && name !== 'library-reuse' ? `素材库复用成片：${name}` : '素材库复用成片'
+})
+
+const libraryPreviewUrl = computed(() => {
+  if (attachedLibraryAssetUrl.value) return attachedLibraryAssetUrl.value
+  const lp = props.videoRecord?.local_path && String(props.videoRecord.local_path).trim()
+  if (lp) return '/static/' + lp.replace(/^\/+/, '')
+  return props.videoRecord?.video_url || props.url || ''
 })
 
 watch(
@@ -435,6 +463,26 @@ async function runStep(step) {
   color: #99f6e4;
   background: rgba(20, 184, 166, 0.12);
   border: 1px solid rgba(45, 212, 191, 0.22);
+}
+.library-preview {
+  display: flex;
+  justify-content: center;
+  background: #09090b;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.library-preview-video {
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+}
+.library-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #a1a1aa;
 }
 .generation-alert-error {
   color: #fecaca;
