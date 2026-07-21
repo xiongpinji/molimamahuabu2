@@ -328,6 +328,7 @@
       <div class="action-groups">
         <div class="action-group">
           <el-button size="small" :loading="saving" :disabled="isActionBusy && !saving" @click.stop="saveFields">保存</el-button>
+          <el-button size="small" plain :disabled="isActionBusy" @click.stop="resetFields">恢复</el-button>
           <el-button v-if="!isUniversal" size="small" :loading="busyStep === 'polish'" :disabled="isActionBusy && busyStep !== 'polish'" @click.stop="polishPrompt">润色</el-button>
         </div>
         <div v-if="!isUniversal" class="action-group">
@@ -588,6 +589,12 @@ function syncForm(sb) {
   lightingStyle.value = sb?.lighting_style || ''
   if (Object.prototype.hasOwnProperty.call(sb || {}, 'image_model')) imageModel.value = sb?.image_model || ''
   if (Object.prototype.hasOwnProperty.call(sb || {}, 'grid_frame_type')) gridFrameType.value = sb?.grid_frame_type || 'single'
+}
+
+function resetFields() {
+  syncForm(props.storyboard)
+  actionStatus.value = { type: 'idle', message: '已恢复到上次保存' }
+  ElMessage.info('已恢复到上次保存')
 }
 
 watch(() => props.storyboard, (sb) => syncForm(sb), { immediate: true, deep: true })
