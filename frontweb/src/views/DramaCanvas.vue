@@ -269,6 +269,7 @@
           class="vue-flow-canvas"
           @node-double-click="onNodeDoubleClick"
           @node-click="onNodeClick"
+          @node-context-menu="onNodeContextMenu"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
           @node-drag-start="onNodeDragStart"
@@ -306,6 +307,8 @@
       :visible="contextMenuVisible"
       :x="contextMenuX"
       :y="contextMenuY"
+      :mode="contextMenuNode ? 'node' : 'create'"
+      :node-label="contextMenuNodeLabel"
       @select="onContextMenuSelect"
       @close="closeContextMenu"
     />
@@ -436,6 +439,7 @@ const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuFlowPos = ref(null)
+const contextMenuNode = ref(null)
 const paneClickSuppressed = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
 const aligningNodes = ref(false)
@@ -456,6 +460,8 @@ async function closeDirectorStage() {
 }
 
 const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript'])
+
+const contextMenuNodeLabel = computed(() => canvasNodeLabel(contextMenuNode.value))
 
 let saveTimer = null
 let savedHintTimer = null
@@ -710,11 +716,119 @@ function screenToFlowPosition(clientX, clientY) {
   }
 }
 
+function canvasNodeLabel(node) {
+  if (!node) return ''
+  if (node.data?.label) return node.data.label
+  if (node.data?.entity) return node.data.entity.name || node.data.entity.location || node.id
+  if (node.data?.storyboard) return node.data.storyboard.shot_title || `分镜 ${node.data.storyboard.shot_number || node.data.storyboard.id}`
+  if (node.data?.episode) return node.data.episode.title || `第 ${node.data.episode.episode_number || node.data.episode.id} 集`
+  return String(node.id || '未命名节点')
+}
+
+function findGraphNode(nodeId) {
+  return allGraphNodes.value.find((node) => String(node.id) === String(nodeId))
+}
+
+function storyboardUsesAsset(storyboard, kind, assetId) {
+  const id = Number(assetId)
+  if (!storyboard || !Number.isFinite(id)) return false
+  if (kind === 'character') return (storyboard.characters || []).some((item) => Number(item?.id ?? item) === id)
+  if (kind === 'scene') return Number(storyboard.scene_id) === id || Number(storyboard.scene?.id) === id
+  if (kind === 'prop') return (storyboard.prop_ids || storyboard.props || []).some((item) => Number(item?.id ?? item) === id)
+  return false
+}
+
+function storyboardForNode(node) {
+  if (node?.data?.storyboard) return node.data.storyboard
+  const sbId = storyboardIdFromNodeId(node?.id)
+  if (!sbId) return null
+  for (const ep of drama.value?.episodes || []) {
+    const sb = (ep.storyboards || []).find((item) => Number(item.id) === Number(sbId))
+    if (sb) return sb
+  }
+  return null
+}
+
+function firstAssetNodeForStoryboard(storyboard) {
+  const characterId = storyboard?.characters?.[0]?.id ?? storyboard?.characters?.[0]
+  const sceneId = storyboard?.scene_id || storyboard?.scene?.id
+  const propId = storyboard?.prop_ids?.[0] ?? storyboard?.props?.[0]?.id ?? storyboard?.props?.[0]
+  const candidates = [
+    characterId ? `char:${characterId}` : null,
+    sceneId ? `scene:${sceneId}` : null,
+    propId ? `prop:${propId}` : null,
+  ].filter(Boolean)
+  return candidates.find((id) => findGraphNode(id))
+}
+
+function firstStoryboardForAssetNode(node) {
+  const match = String(node?.id || '').match(/^(char|scene|prop):(\d+)$/)
+  if (!match) return null
+  const kind = { char: 'character', scene: 'scene', prop: 'prop' }[match[1]]
+  for (const ep of drama.value?.episodes || []) {
+    const sb = (ep.storyboards || []).find((item) => storyboardUsesAsset(item, kind, match[2]))
+    if (sb) return sb
+  }
+  return null
+}
+
+async function focusNodeOrWarn(nodeId, warning) {
+  if (!findGraphNode(nodeId)) {
+    ElMessage.warning(warning)
+    return false
+  }
+  await focusCanvasNode(nodeId)
+  return true
+}
+
+async function focusUpstreamAsset(node) {
+  if (node?.type === 'canvasAsset') {
+    await focusCanvasNode(node.id)
+    setHighlightAsset(node.id)
+    return
+  }
+  const assetNodeId = firstAssetNodeForStoryboard(storyboardForNode(node))
+  if (!assetNodeId) {
+    ElMessage.warning('该节点暂无可定位的上游素材')
+    return
+  }
+  setHighlightAsset(assetNodeId)
+  await focusCanvasNode(assetNodeId)
+}
+
+async function focusDownstreamVideo(node) {
+  const storyboard = node?.type === 'canvasAsset' ? firstStoryboardForAssetNode(node) : storyboardForNode(node)
+  const targetId = storyboard ? `sbvid:${storyboard.id}` : null
+  await focusNodeOrWarn(targetId, '该节点下游暂无视频节点')
+}
+
+async function copyNodeReference(node) {
+  const text = `${canvasNodeLabel(node)} · ${node?.id || ''}`
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('节点引用已复制')
+  } catch {
+    ElMessageBox.alert(text, '节点引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   if (event?.preventDefault) event.preventDefault()
   const flowPos = payload?.flowPosition || screenToFlowPosition(event.clientX, event.clientY)
   contextMenuFlowPos.value = flowPos
+  contextMenuNode.value = null
+  contextMenuX.value = event.clientX
+  contextMenuY.value = event.clientY
+  contextMenuVisible.value = true
+}
+
+function onNodeContextMenu(payload) {
+  const event = payload?.event || payload
+  if (event?.preventDefault) event.preventDefault()
+  event?.stopPropagation?.()
+  contextMenuNode.value = payload?.node || null
+  contextMenuFlowPos.value = contextMenuNode.value?.position || screenToFlowPosition(event.clientX, event.clientY)
   contextMenuX.value = event.clientX
   contextMenuY.value = event.clientY
   contextMenuVisible.value = true
@@ -723,9 +837,18 @@ function onPaneContextMenu(payload) {
 function closeContextMenu() {
   contextMenuVisible.value = false
   contextMenuFlowPos.value = null
+  contextMenuNode.value = null
 }
 
-function onContextMenuSelect(type) {
+async function onContextMenuSelect(type) {
+  const node = contextMenuNode.value
+  if (node) {
+    closeContextMenu()
+    if (type === 'focus-upstream') await focusUpstreamAsset(node)
+    else if (type === 'focus-downstream-video') await focusDownstreamVideo(node)
+    else if (type === 'copy-node-ref') await copyNodeReference(node)
+    return
+  }
   pendingFlowPosition.value = contextMenuFlowPos.value
   openCreateDialog(type, contextMenuFlowPos.value)
   closeContextMenu()

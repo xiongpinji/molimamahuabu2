@@ -6,12 +6,21 @@
       class="canvas-context-menu"
       :style="menuStyle"
       role="menu"
-      aria-label="添加画布节点"
+      :aria-label="mode === 'node' ? '节点操作' : '添加画布节点'"
       tabindex="-1"
       @mousedown.stop
       @contextmenu.prevent
       @keydown.esc="close"
     >
+      <template v-if="mode === 'node'">
+        <div class="ctx-title">节点操作 · {{ nodeLabel }}</div>
+        <button v-for="item in nodeItems" :key="item.type" type="button" class="ctx-item" role="menuitem" @click="pick(item.type)">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+          <small>{{ item.hint }}</small>
+        </button>
+      </template>
+      <template v-else>
       <div class="ctx-title">在此添加节点</div>
       <button v-for="item in addItems" :key="item.type" type="button" class="ctx-item" role="menuitem" @click="pick(item.type)">
         <el-icon><component :is="item.icon" /></el-icon>
@@ -24,6 +33,7 @@
         <span>新集</span>
         <small>从剧本开始</small>
       </button>
+      </template>
     </div>
     <div v-if="visible" class="canvas-context-backdrop" @mousedown="close" @contextmenu.prevent="close" />
   </Teleport>
@@ -37,6 +47,8 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   x: { type: Number, default: 0 },
   y: { type: Number, default: 0 },
+  mode: { type: String, default: 'create' },
+  nodeLabel: { type: String, default: '' },
 })
 
 const emit = defineEmits(['select', 'close'])
@@ -48,6 +60,12 @@ const addItems = [
   { type: 'character', label: '角色', hint: '角色设定', icon: FolderOpened },
   { type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
   { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
+]
+
+const nodeItems = [
+  { type: 'focus-upstream', label: '定位到上游素材', hint: '角色 / 场景 / 道具', icon: FolderOpened },
+  { type: 'focus-downstream-video', label: '定位到下游视频', hint: '当前分镜视频', icon: FullScreen },
+  { type: 'copy-node-ref', label: '复制节点引用', hint: '名称与 ID', icon: Document },
 ]
 
 async function updateMenuPosition() {
