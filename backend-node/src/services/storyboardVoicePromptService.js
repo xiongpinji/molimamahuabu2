@@ -50,6 +50,22 @@ function generatedVoiceStyle(row) {
   return `${PITCHES[hash % PITCHES.length]}, ${TIMBRES[(hash >>> 3) % TIMBRES.length]}, ${PACES[(hash >>> 6) % PACES.length]}, clear diction`;
 }
 
+function ensureCharacterVoiceStyle(db, row) {
+  const explicit = String(row?.voice_style || '').trim();
+  if (explicit || !db || !Number.isInteger(Number(row?.id)) || Number(row.id) <= 0) return row;
+  const voiceStyle = generatedVoiceStyle(row);
+  try {
+    db.prepare(
+      `UPDATE characters
+       SET voice_style = ?, updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL AND (voice_style IS NULL OR trim(voice_style) = '')`
+    ).run(voiceStyle, new Date().toISOString(), Number(row.id));
+  } catch (_) {
+    return row;
+  }
+  return { ...row, voice_style: voiceStyle };
+}
+
 function resolveCharacters(db, dramaId, storyboardId) {
   if (!db || !Number.isInteger(Number(dramaId)) || Number(dramaId) <= 0) return [];
   let storyboard;
@@ -79,7 +95,7 @@ function resolveCharacters(db, dramaId, storyboardId) {
     const row = (ref.id && byId.get(ref.id)) || (ref.name && byName.get(normalizeName(ref.name)));
     if (!row || seen.has(Number(row.id))) continue;
     seen.add(Number(row.id));
-    out.push(row);
+    out.push(ensureCharacterVoiceStyle(db, row));
   }
   // AI 生成的旧分镜可能未保存 characters；即使已有部分引用，也要把对白中的其它角色补齐。
   const dialogue = String(storyboard.dialogue || '');
@@ -88,7 +104,7 @@ function resolveCharacters(db, dramaId, storyboardId) {
       if (seen.has(Number(row.id))) continue;
       if (dialogue.includes(`${row.name}：`) || dialogue.includes(`${row.name}:`)) {
         seen.add(Number(row.id));
-        out.push(row);
+        out.push(ensureCharacterVoiceStyle(db, row));
       }
     }
   }
@@ -176,6 +192,7 @@ module.exports = {
   appendVoiceContinuityBlock,
   buildVoiceContinuityBlock,
   ensureStoryboardVoicePrompt,
+  ensureCharacterVoiceStyle,
   generatedVoiceStyle,
   isSilentModel,
   parseRefs,

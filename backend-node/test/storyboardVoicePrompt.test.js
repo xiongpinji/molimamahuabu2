@@ -85,6 +85,50 @@ test('没有声线描述时按角色 ID 生成可重复的描述', () => {
   db.close();
 });
 
+test('缺省角色声线会写回角色库并跨分镜复用', () => {
+  const db = createDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO dramas (title, created_at, updated_at) VALUES (?, ?, ?)').run('voice style persistence', now, now);
+  const dramaId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, created_at, updated_at) VALUES (?, 1, ?, ?)').run(dramaId, now, now);
+  const episodeId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO characters (drama_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)').run(dramaId, '小狐狸', now, now);
+  const characterId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const insertStoryboard = db.prepare(
+    'INSERT INTO storyboards (episode_id, storyboard_number, characters, dialogue, video_prompt, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  const firstId = insertStoryboard.run(
+    episodeId,
+    1,
+    JSON.stringify([characterId]),
+    '小狐狸：我听见风声。',
+    '场景：林间。动作：小狐狸停步倾听。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+  const secondId = insertStoryboard.run(
+    episodeId,
+    2,
+    JSON.stringify([characterId]),
+    '小狐狸：继续向前。',
+    '场景：溪边。动作：小狐狸越过石头。',
+    'pending',
+    now,
+    now
+  ).lastInsertRowid;
+
+  const first = voicePrompt.ensureStoryboardVoicePrompt(db, firstId);
+  const persisted = db.prepare('SELECT voice_style FROM characters WHERE id = ?').get(characterId).voice_style;
+  const second = voicePrompt.ensureStoryboardVoicePrompt(db, secondId);
+
+  assert.ok(persisted);
+  assert.match(first, new RegExp(persisted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(second, new RegExp(persisted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(db.prepare('SELECT voice_style FROM characters WHERE id = ?').get(characterId).voice_style, persisted);
+  db.close();
+});
+
 test('部分角色有音频快照时仍为分镜全部角色生成文字声线', () => {
   const db = createDb();
   const now = new Date().toISOString();
