@@ -30,6 +30,14 @@
       :closable="false"
       class="picker-alert"
     />
+    <el-alert
+      v-if="loadWarning"
+      :title="loadWarning"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="picker-alert"
+    />
     <div v-loading="loading" class="picker-grid">
       <div
         v-for="item in items"
@@ -112,6 +120,7 @@ const loading = ref(false)
 const items = ref([])
 const keyword = ref('')
 const loadError = ref('')
+const loadWarning = ref('')
 const previewVisible = ref(false)
 const previewItem = ref(null)
 let timer = null
@@ -126,32 +135,52 @@ function debouncedLoad() {
 async function load() {
   loading.value = true
   loadError.value = ''
+  loadWarning.value = ''
   try {
     const params = { page: 1, page_size: 100, type: props.type }
     if (props.dramaId) params.drama_id = props.dramaId
     if (keyword.value) params.keyword = keyword.value
-    const tasks = [
-      assetsAPI.list(params).then((res) => normalizeAssetItems(res, 'project')),
+    const sources = [
+      {
+        label: '项目资产',
+        run: () => assetsAPI.list(params).then((res) => normalizeAssetItems(res, 'project')),
+      },
     ]
     if (props.type === 'image') {
       const libraryParams = { page: 1, page_size: 100 }
       if (keyword.value) libraryParams.keyword = keyword.value
-      tasks.push(characterLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'character')))
-      tasks.push(sceneLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'scene')))
-      tasks.push(propLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'prop')))
+      sources.push({
+        label: '角色库',
+        run: () => characterLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'character')),
+      })
+      sources.push({
+        label: '场景库',
+        run: () => sceneLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'scene')),
+      })
+      sources.push({
+        label: '道具库',
+        run: () => propLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'prop')),
+      })
     }
-    const results = await Promise.allSettled(tasks)
+    const results = await Promise.allSettled(sources.map((source) => source.run()))
     const loadedItems = results
       .filter((res) => res.status === 'fulfilled')
       .flatMap((res) => res.value)
     items.value = dedupeItems(loadedItems)
-    if (!items.value.length && results.some((res) => res.status === 'rejected')) {
+    const failedSources = results
+      .map((res, index) => res.status === 'rejected' ? sources[index].label : '')
+      .filter(Boolean)
+    if (failedSources.length && items.value.length) {
+      loadWarning.value = `${failedSources.join('、')}加载失败，已显示其他可用素材`
+    }
+    if (!items.value.length && failedSources.length) {
       const firstError = results.find((res) => res.status === 'rejected')?.reason
-      loadError.value = firstError?.message || '素材库加载失败'
+      loadError.value = `${failedSources.join('、')}加载失败：${firstError?.message || '素材库加载失败'}`
     }
   } catch (e) {
     items.value = []
     loadError.value = e?.message || '素材库加载失败'
+    loadWarning.value = ''
   } finally {
     loading.value = false
   }
