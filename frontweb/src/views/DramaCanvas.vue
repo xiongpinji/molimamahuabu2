@@ -901,6 +901,14 @@ function canvasNodeActions(node) {
   if (!node) return []
   const actions = ['copy-node-ref']
   const sb = storyboardForNode(node)
+  const runtimeStatus = nodeRuntimeStatus(node)
+  if (nodeResultUrl(node, runtimeStatus)) {
+    actions.unshift('open-node-result', 'copy-node-result')
+    if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
+  }
+  if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
+    actions.unshift('retry-node-failed')
+  }
   if (PANEL_NODE_TYPES.has(node.type)) actions.unshift('open-node-config')
   if (node.type === 'canvasAsset') {
     return [...actions, 'focus-downstream-video']
@@ -999,12 +1007,77 @@ async function focusDownstreamVideo(node) {
 
 async function copyNodeReference(node) {
   const text = `${canvasNodeLabel(node)} · ${node?.id || ''}`
+  await copyCanvasText(text, '节点引用已复制', '节点引用（请手动复制）')
+}
+
+async function copyCanvasText(text, successMessage, fallbackTitle) {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('节点引用已复制')
+    ElMessage.success(successMessage)
   } catch {
-    ElMessageBox.alert(text, '节点引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+    ElMessageBox.alert(text, fallbackTitle, { confirmButtonText: '关闭', type: 'info' })
   }
+}
+
+function nodeRuntimeStatus(node) {
+  if (!node) return null
+  const direct = nodeStatus.get(String(node.id || ''))
+  if (direct) return direct
+  const sb = storyboardForNode(node)
+  return sb?.id ? nodeStatus.get(`sb:${sb.id}`) : null
+}
+
+function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
+  if (status?.resultUrl) return status.resultUrl
+  if (node?.data?.url) return node.data.url
+  return videoUrlFromNode(node)
+}
+
+function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
+  const sb = storyboardForNode(node)
+  if (!sb?.id || !status?.resultType) return ''
+  if (status.resultType === 'image') return `sbimg:${sb.id}`
+  if (status.resultType === 'video') return `sbvid:${sb.id}`
+  if (status.resultType === 'audio') return `sbaud:${sb.id}:dialogue`
+  return ''
+}
+
+function openNodeResult(node) {
+  const url = nodeResultUrl(node)
+  if (!url) {
+    ElMessage.warning('该节点暂无可打开的结果')
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function copyNodeResult(node) {
+  const url = nodeResultUrl(node)
+  if (!url) {
+    ElMessage.warning('该节点暂无可复制的结果链接')
+    return
+  }
+  await copyCanvasText(url, '结果链接已复制', '结果链接（请手动复制）')
+}
+
+async function focusNodeResult(node) {
+  const resultNodeId = resultNodeIdFromStatus(node)
+  if (!resultNodeId) {
+    ElMessage.warning('该节点暂无可定位的结果节点')
+    return
+  }
+  await focusNodeOrWarn(resultNodeId, '该节点暂无可定位的结果节点')
+}
+
+async function retryFailedNode(node) {
+  const status = nodeRuntimeStatus(node)
+  const retryStep = status?.retryStep || queueNodeRetryStep(node)
+  if (!retryStep) {
+    ElMessage.warning('该节点暂无可重试步骤')
+    return
+  }
+  await focusCanvasNode(node.id)
+  await runCanvasNodeStep(node, retryStep)
 }
 
 
@@ -1163,6 +1236,14 @@ async function runWorkflowFromNode(node) {
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     onNodeDoubleClick({ node })
+  } else if (type === 'open-node-result') {
+    openNodeResult(node)
+  } else if (type === 'copy-node-result') {
+    await copyNodeResult(node)
+  } else if (type === 'focus-node-result') {
+    await focusNodeResult(node)
+  } else if (type === 'retry-node-failed') {
+    await retryFailedNode(node)
   } else if (type === 'run-node-image') {
     await runCanvasNodeStep(node, 'image')
   } else if (type === 'run-node-video') {

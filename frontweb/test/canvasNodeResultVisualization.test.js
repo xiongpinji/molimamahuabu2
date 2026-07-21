@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const overlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
+const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -55,4 +56,23 @@ test('画布节点运行状态会携带当前节点提示词', () => {
   assert.match(canvasSource, /nodeStatus\.set\(nodeId, \{ step, message: statusMessage, promptText/)
   assert.match(canvasSource, /const resultInfo = \{ \.\.\.nodeStepResultInfo\(node, step, sb\.id\), promptText \}/)
   assert.match(canvasSource, /errorDetail: errorMessage/)
+})
+
+test('右键节点菜单可直接处理结果和失败重试', () => {
+  assert.match(contextMenuSource, /title: '结果'/)
+  assert.match(contextMenuSource, /type: 'open-node-result'/)
+  assert.match(contextMenuSource, /type: 'copy-node-result'/)
+  assert.match(contextMenuSource, /type: 'focus-node-result'/)
+  assert.match(contextMenuSource, /type: 'retry-node-failed'/)
+  assert.match(canvasSource, /function nodeRuntimeStatus\(node\)/)
+  assert.match(canvasSource, /function nodeResultUrl\(node, status = nodeRuntimeStatus\(node\)\)/)
+  assert.match(canvasSource, /function resultNodeIdFromStatus\(node, status = nodeRuntimeStatus\(node\)\)/)
+  assert.match(canvasSource, /actions\.unshift\('open-node-result', 'copy-node-result'\)/)
+  assert.match(canvasSource, /actions\.unshift\('retry-node-failed'\)/)
+  assert.match(canvasSource, /function openNodeResult\(node\)/)
+  assert.match(canvasSource, /function copyNodeResult\(node\)/)
+  assert.match(canvasSource, /function focusNodeResult\(node\)/)
+  assert.match(canvasSource, /function retryFailedNode\(node\)/)
+  assert.match(canvasSource, /if \(type === 'open-node-result'\)/)
+  assert.match(canvasSource, /await retryFailedNode\(node\)/)
 })

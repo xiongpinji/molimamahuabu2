@@ -99,6 +99,15 @@ const nodeGroups = [
     ],
   },
   {
+    title: '结果',
+    items: [
+      { type: 'open-node-result', label: '打开结果', hint: '查看生成结果', icon: View },
+      { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
+      { type: 'focus-node-result', label: '定位结果节点', hint: '跳到图片/视频/音频节点', icon: FullScreen },
+      { type: 'retry-node-failed', label: '重试失败节点', hint: '按失败步骤重跑', icon: VideoPlay },
+    ],
+  },
+  {
     title: '生成',
     items: [
       { type: 'run-node-image', label: '生成 / 重跑图片', hint: '当前分镜图', icon: Picture },
