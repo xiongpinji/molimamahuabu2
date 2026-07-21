@@ -17,9 +17,21 @@
     </div>
 
     <el-form label-position="left" label-width="36px" size="small" class="panel-form compact-form">
+      <section class="panel-section">
+        <div class="section-head">
+          <span>基础信息</span>
+          <small>分镜标题</small>
+        </div>
       <el-form-item label="标题">
         <el-input v-model="form.title" placeholder="分镜标题" @blur="saveMeta" />
       </el-form-item>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-head">
+          <span>引用素材</span>
+          <small>角色 / 场景 / 道具</small>
+        </div>
 
       <div class="relation-row">
         <el-form-item label="角色" class="rel-item">
@@ -109,6 +121,13 @@
         <span v-else class="reference-empty">选择角色、场景或道具后自动带入生成</span>
       </div>
 
+      </section>
+
+      <section class="panel-section">
+        <div class="section-head">
+          <span>镜头参数</span>
+          <small>景别 / 时长</small>
+        </div>
       <div class="meta-row">
         <el-form-item label="景别" class="meta-item">
           <el-input v-model="form.shot_type" placeholder="特写" @blur="saveMeta" />
@@ -118,6 +137,13 @@
         </el-form-item>
       </div>
 
+      </section>
+
+      <section class="panel-section">
+        <div class="section-head">
+          <span>摄影控制</span>
+          <small>角度 / 灯光 / 宫格</small>
+        </div>
       <div class="camera-control-strip">
         <div class="control-head">
           <span>摄影控制</span>
@@ -144,6 +170,13 @@
         <div class="camera-control-hint">保存后会写入分镜提示词；生成分镜图时按所选版式提交。</div>
       </div>
 
+      </section>
+
+      <section class="panel-section">
+        <div class="section-head">
+          <span>脚本提示词</span>
+          <small>动作 / 对白 / 生图词 / 视频词</small>
+        </div>
       <template v-if="isUniversal">
         <el-form-item label="全能词">
           <el-input
@@ -204,8 +237,14 @@
           />
         </el-form-item>
       </template>
+      </section>
     </el-form>
 
+    <section class="panel-section generation-section">
+      <div class="section-head">
+        <span>生成参数</span>
+        <small>模型 / 画幅 / 清晰度</small>
+      </div>
     <CanvasGenerationOptions
       compact
       :storyboard="storyboardGenerationOptions"
@@ -213,7 +252,13 @@
       @storyboard-image-model-change="onStoryboardImageModelChange"
       @storyboard-video-model-change="onStoryboardVideoModelChange"
     />
+    </section>
 
+    <section class="panel-section">
+      <div class="section-head">
+        <span>视频模型与声音</span>
+        <small>角色音色 / 模型策略</small>
+      </div>
     <div class="storyboard-control-strip">
       <div class="control-head">
         <span>视频模型与声音</span>
@@ -235,7 +280,13 @@
         <pre class="prompt-preview">{{ voicePromptPreview }}</pre>
       </el-popover>
     </div>
+    </section>
 
+    <section class="panel-section">
+      <div class="section-head">
+        <span>镜头连续性</span>
+        <small>首尾帧 / 相邻镜头</small>
+      </div>
     <div class="continuity-strip">
       <div class="control-head">
         <span>镜头连续性</span>
@@ -265,6 +316,7 @@
         </el-popover>
       </div>
     </div>
+    </section>
 
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveFields">保存</el-button>
@@ -775,6 +827,32 @@ async function runStep(step) {
   resize: vertical;
   min-height: 52px;
   line-height: 1.45;
+}
+.panel-section {
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid rgba(63, 63, 70, 0.72);
+  border-radius: 10px;
+  background: rgba(24, 24, 27, 0.54);
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: #e4e4e7;
+  font-size: 12px;
+  font-weight: 700;
+}
+.section-head small {
+  color: #71717a;
+  font-size: 10px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.generation-section {
+  margin-top: 8px;
 }
 .relation-row {
   display: flex;
