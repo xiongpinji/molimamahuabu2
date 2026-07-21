@@ -57,7 +57,13 @@
           <div v-else-if="!busy" class="preview-empty">无分镜图</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生图中…</div>
         </div>
-        <CanvasGenerationOptions mode="image" compact />
+        <CanvasGenerationOptions
+          mode="image"
+          compact
+          :storyboard="storyboard"
+          image-service-type="storyboard_image"
+          @storyboard-image-model-change="onStoryboardImageModelChange"
+        />
         <div class="panel-actions">
           <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">
             {{ frameKind === 'first' ? '生成首帧' : frameKind === 'last' ? '生成尾帧' : '重新生图' }}
@@ -79,7 +85,12 @@
         <div v-if="libraryVideoLabel" class="library-attach-tag">{{ libraryVideoLabel }}</div>
         <div v-if="generationError" class="generation-alert generation-alert-error">{{ generationError }}</div>
         <div v-else-if="generationWarning" class="generation-alert generation-alert-warn">{{ generationWarning }}</div>
-        <CanvasGenerationOptions mode="video" compact />
+        <CanvasGenerationOptions
+          mode="video"
+          compact
+          :storyboard="storyboard"
+          @storyboard-video-model-change="onStoryboardVideoModelChange"
+        />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
         <el-button v-if="libraryVideoLabel" size="small" text @click.stop="libraryPreviewVisible = true">查看素材</el-button>
@@ -230,6 +241,34 @@ function focusStoryboard() {
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+async function saveStoryboardModelPatch(payload, successMessage) {
+  const sbId = props.storyboard?.id
+  if (!sbId) return
+  try {
+    await storyboardsAPI.update(sbId, payload)
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success(successMessage)
+  } catch (e) {
+    ElMessage.error(e?.message || '模型保存失败')
+  }
+}
+
+async function onStoryboardImageModelChange(value) {
+  const model = String(value || '').trim()
+  await saveStoryboardModelPatch(
+    { image_model: model || null },
+    model ? `已为本镜设置图像模型：${model}` : '已恢复跟随项目默认图像模型',
+  )
+}
+
+async function onStoryboardVideoModelChange(value) {
+  const model = String(value || '').trim()
+  await saveStoryboardModelPatch(
+    { video_model: model || null },
+    model ? `已为本镜设置视频模型：${model}` : '已恢复跟随项目默认视频模型',
+  )
 }
 
 async function runUniversalPrompt(mode) {

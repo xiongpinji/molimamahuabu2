@@ -148,6 +148,8 @@ function ensureAllColumns(database) {
     { name: 'atmosphere',        type: 'TEXT' },
     { name: 'image_prompt',      type: 'TEXT' },
     { name: 'video_prompt',      type: 'TEXT' },
+    { name: 'image_model',       type: 'TEXT' },               // 分镜级图片模型覆盖，NULL/空值表示跟随项目默认
+    { name: 'video_model',       type: 'TEXT' },               // 分镜级视频模型覆盖，NULL/空值表示跟随项目默认
     { name: 'characters',        type: 'TEXT' },
     { name: 'shot_type',         type: 'TEXT' },
     { name: 'angle',             type: 'TEXT' },
