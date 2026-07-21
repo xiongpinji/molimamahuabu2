@@ -259,7 +259,7 @@
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
-          selection-key-code="Control"
+          :selection-key-code="true"
           :pan-on-drag="false"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
