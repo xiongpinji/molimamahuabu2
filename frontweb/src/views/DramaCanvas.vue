@@ -474,6 +474,7 @@ const paneClickSuppressed = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
 const aligningNodes = ref(false)
 const canvasFlowApi = ref(null)
+const NODE_STATUS_STORAGE_PREFIX = 'moli_canvas_node_status'
 const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
 const dragHistorySnapshot = ref(null)
 
@@ -533,6 +534,36 @@ const activeWorkflowGroup = computed(() => (
 ))
 const canUndo = computed(() => interactionHistory.value.past.length > 0)
 const canRedo = computed(() => interactionHistory.value.future.length > 0)
+
+function nodeStatusStorageKey() {
+  return Number.isFinite(dramaId.value) && dramaId.value > 0
+    ? `${NODE_STATUS_STORAGE_PREFIX}:${dramaId.value}`
+    : ''
+}
+
+function restoreNodeStatusSnapshot() {
+  const key = nodeStatusStorageKey()
+  nodeStatus.restore({})
+  if (!key || typeof window === 'undefined') return
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw) nodeStatus.restore(JSON.parse(raw))
+  } catch {
+    window.localStorage.removeItem(key)
+  }
+}
+
+function persistNodeStatusSnapshot() {
+  const key = nodeStatusStorageKey()
+  if (!key || typeof window === 'undefined') return
+  const snapshot = nodeStatus.snapshot()
+  try {
+    if (Object.keys(snapshot).length) window.localStorage.setItem(key, JSON.stringify(snapshot))
+    else window.localStorage.removeItem(key)
+  } catch {
+    // localStorage may be unavailable or full; node overlays can still work in memory.
+  }
+}
 const allStoryboards = computed(() => {
   const list = []
   for (const episode of drama.value?.episodes || []) {
@@ -1969,6 +2000,14 @@ watch(filterEpisodeId, async (val) => {
 })
 
 watch(focusedNodeId, () => scheduleVirtualization())
+
+watch(() => dramaId.value, () => {
+  restoreNodeStatusSnapshot()
+}, { immediate: true })
+
+watch(nodeStatus.map, () => {
+  persistNodeStatusSnapshot()
+}, { deep: true })
 
 watch(() => route.params.id, () => {
   highlightAssetId.value = null

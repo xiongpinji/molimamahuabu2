@@ -5,17 +5,8 @@ export function createCanvasNodeStatusStore() {
   const map = reactive({})
   const clearTimers = new Map()
 
-  function set(nodeId, payload) {
-    if (!nodeId) return
-    if (clearTimers.has(nodeId)) {
-      clearTimeout(clearTimers.get(nodeId))
-      clearTimers.delete(nodeId)
-    }
-    if (!payload) {
-      delete map[nodeId]
-      return
-    }
-    map[nodeId] = {
+  function normalizePayload(payload) {
+    return {
       step: payload.step || 'busy',
       message: payload.message || '处理中…',
       detail: payload.detail || '',
@@ -26,8 +17,21 @@ export function createCanvasNodeStatusStore() {
       resultLabel: payload.resultLabel || payload.result_label || '',
       nextStep: payload.nextStep || payload.next_step || '',
       nextLabel: payload.nextLabel || payload.next_label || '',
-      at: Date.now(),
+      at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
+  }
+
+  function set(nodeId, payload) {
+    if (!nodeId) return
+    if (clearTimers.has(nodeId)) {
+      clearTimeout(clearTimers.get(nodeId))
+      clearTimers.delete(nodeId)
+    }
+    if (!payload) {
+      delete map[nodeId]
+      return
+    }
+    map[nodeId] = normalizePayload(payload)
   }
 
   function fail(nodeId, payload = {}) {
@@ -69,7 +73,20 @@ export function createCanvasNodeStatusStore() {
     return !!status && !['failed', 'success'].includes(status.step)
   }
 
-  return { map, set, fail, success, clear, get, isBusy }
+  function snapshot() {
+    return Object.fromEntries(Object.entries(map).map(([nodeId, status]) => [nodeId, { ...status }]))
+  }
+
+  function restore(snapshotMap = {}) {
+    for (const timer of clearTimers.values()) clearTimeout(timer)
+    clearTimers.clear()
+    for (const nodeId of Object.keys(map)) delete map[nodeId]
+    for (const [nodeId, status] of Object.entries(snapshotMap || {})) {
+      if (nodeId && status?.step) map[nodeId] = normalizePayload(status)
+    }
+  }
+
+  return { map, set, fail, success, clear, get, isBusy, snapshot, restore }
 }
 
 export const CANVAS_NODE_STATUS_LABELS = {
