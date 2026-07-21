@@ -1051,6 +1051,7 @@ provide(CANVAS_CONTEXT_KEY, {
   zoomOut: () => canvasFlowApi.value?.zoomOut?.({ duration: 180 }),
   showCanvasHelp,
   selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
+  runNodeStep: runCanvasNodeStep,
 })
 
 function clearAssetHighlight() {

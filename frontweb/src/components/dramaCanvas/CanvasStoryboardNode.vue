@@ -18,6 +18,20 @@
         <span v-if="data.storyboard?.duration">{{ data.storyboard.duration }}s</span>
         <span :class="'st-' + (data.storyboard?.status || 'pending')">{{ statusLabel }}</span>
       </div>
+      <div v-if="hasResultState || failureReason" class="result-rail">
+        <span v-if="imageUrl" class="result-pill ready">图</span>
+        <span v-if="videoUrl" class="result-pill ready">视频</span>
+        <span v-if="audioPath" class="result-pill ready">音频</span>
+        <span v-if="failureReason" class="result-pill failed" :title="failureReason">失败</span>
+      </div>
+      <div v-if="failureReason" class="failure-line" :title="failureReason">
+        {{ failureReason }}
+      </div>
+      <div class="retry-row">
+        <button type="button" :disabled="isNodeBusy" @click.stop="retryStep('image')">重试生图</button>
+        <button type="button" :disabled="isNodeBusy" @click.stop="retryStep('video')">重试视频</button>
+        <button type="button" :disabled="isNodeBusy" @click.stop="retryStep('audio')">重试配音</button>
+      </div>
       <div class="hint">{{ showPanel ? '下方可编辑与生成' : '单击展开操作 · 双击进制作' }}</div>
     </div>
     <CanvasStoryboardPanel
@@ -33,6 +47,13 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { audioUrl } from '@/utils/mediaUrl'
+import {
+  imageRecordUrl,
+  resolveSbMainImageRecord,
+  resolveSbVideoRecord,
+  videoRecordUrl,
+} from '@/utils/storyboardMedia'
 import CanvasStoryboardPanel from './CanvasStoryboardPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -58,9 +79,26 @@ const isNodeBusy = computed(() => {
   return map ? !!map[props.id] : false
 })
 
+const imagesBySbId = computed(() => ctx?.imagesBySbId?.value || {})
+const videosBySbId = computed(() => ctx?.videosBySbId?.value || {})
+
+const imageUrl = computed(() => imageRecordUrl(resolveSbMainImageRecord(props.data.storyboard, imagesBySbId.value)))
+const videoUrl = computed(() => videoRecordUrl(resolveSbVideoRecord(props.data.storyboard, videosBySbId.value)))
+const audioPath = computed(() => audioUrl(props.data.storyboard?.audio_local_path || props.data.storyboard?.narration_audio_local_path))
+const failureReason = computed(() => {
+  const sb = props.data.storyboard || {}
+  return sb.error_msg || sb.error_message || sb.generation_error || ''
+})
+const hasResultState = computed(() => Boolean(imageUrl.value || videoUrl.value || audioPath.value))
+
 function onSelect(event) {
   ctx?.selectStoryboard?.(props.data.storyboard?.id, event)
   ctx?.setFocusedNode?.(props.id)
+}
+
+function retryStep(step) {
+  if (isNodeBusy.value) return
+  ctx?.runNodeStep?.({ id: props.id, type: 'canvasStoryboard', data: props.data }, step)
 }
 </script>
 
@@ -145,6 +183,58 @@ function onSelect(event) {
 .st-completed { color: #34d399 !important; background: rgba(52, 211, 153, 0.12) !important; }
 .st-processing { color: #60a5fa !important; }
 .st-failed { color: #f87171 !important; }
+.result-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+.result-pill {
+  padding: 2px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1;
+}
+.result-pill.ready {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+.result-pill.failed {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+.failure-line {
+  margin-bottom: 5px;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.retry-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.retry-row button {
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: rgba(129, 140, 248, 0.14);
+  color: #c7d2fe;
+  font-size: 9px;
+  cursor: pointer;
+}
+.retry-row button:hover:not(:disabled) {
+  background: rgba(129, 140, 248, 0.25);
+}
+.retry-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .processing {
   animation: sb-pulse 1.4s ease-in-out infinite;
   border-color: #60a5fa;

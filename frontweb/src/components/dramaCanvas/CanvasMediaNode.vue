@@ -27,11 +27,22 @@
         <div class="audio-wrap">
           <span>🎵</span>
           <span>{{ data.audioType === 'narration' ? '旁白' : '对白' }}</span>
+          <span v-if="data.url" class="audio-ready">已生成</span>
         </div>
       </template>
+      <div v-if="data.generationError" class="node-error" :title="data.generationError">
+        {{ data.generationError }}
+      </div>
       <div class="node-footer">
         <span class="result-state" :class="'state-' + resultState.key">{{ resultState.label }}</span>
-        <span class="hint">单击查看与重试</span>
+        <button
+          v-if="canRetry"
+          class="retry-btn"
+          type="button"
+          :disabled="isNodeBusy"
+          @click.stop="retryNode"
+        >{{ retryLabel }}</button>
+        <span v-else class="hint">单击查看</span>
       </div>
     </div>
     <CanvasMediaPanel
@@ -94,6 +105,20 @@ const kindLabel = computed(() => {
   const map = { text: '脚本摘要', universal: '全能分镜词', image: '分镜图', video: '视频', audio: '音频' }
   return map[props.data.kind] || props.data.kind
 })
+
+const canRetry = computed(() => ['image', 'video', 'audio'].includes(props.data.kind))
+
+const retryLabel = computed(() => {
+  if (props.data.kind === 'image' && props.data.frameKind === 'first') return '重试首帧'
+  if (props.data.kind === 'image' && props.data.frameKind === 'last') return '重试尾帧'
+  const map = { image: '重试生图', video: '重试视频', audio: '重试配音' }
+  return map[props.data.kind] || '重试'
+})
+
+function retryNode() {
+  if (!canRetry.value || isNodeBusy.value) return
+  ctx?.runNodeStep?.({ id: props.id, data: props.data }, props.data.kind)
+}
 </script>
 
 <style scoped>
@@ -150,10 +175,31 @@ const kindLabel = computed(() => {
 .audio-wrap {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 24px 8px;
   font-size: 12px;
   color: #fbbf24;
+}
+.audio-ready {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  font-size: 9px;
+}
+.node-error {
+  margin-top: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: rgba(127, 29, 29, 0.42);
+  color: #fecaca;
+  font-size: 10px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .empty {
   font-size: 11px;
@@ -200,5 +246,22 @@ const kindLabel = computed(() => {
   white-space: nowrap;
   font-size: 9px;
   color: #52525b;
+}
+.retry-btn {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 6px;
+  background: rgba(129, 140, 248, 0.16);
+  color: #c7d2fe;
+  font-size: 9px;
+  cursor: pointer;
+}
+.retry-btn:hover:not(:disabled) {
+  background: rgba(129, 140, 248, 0.28);
+}
+.retry-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 </style>
