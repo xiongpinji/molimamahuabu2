@@ -69,17 +69,8 @@ const addGroups = [
   {
     title: '创作',
     items: [
+      { key: 'script', type: 'focus-script', label: '故事脚本', hint: '定位脚本节点', icon: List },
       { key: 'storyboard', type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
-      { key: 'text', type: 'storyboard', label: '文本', hint: '写镜头脚本', icon: Document },
-      { key: 'script', type: 'storyboard', label: '脚本', hint: '生成分镜脚本', icon: List },
-    ],
-  },
-  {
-    title: '生成',
-    items: [
-      { key: 'image', type: 'storyboard', label: '图片', hint: '分镜图节点', icon: Picture },
-      { key: 'video', type: 'storyboard', label: '视频', hint: '分镜视频节点', icon: VideoPlay },
-      { key: 'audio', type: 'storyboard', label: '音频', hint: '对白配音节点', icon: Microphone },
     ],
   },
   {
@@ -89,6 +80,12 @@ const addGroups = [
       { key: 'scene', type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
       { key: 'prop', type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
       { key: 'episode', type: 'episode', label: '新集', hint: '从剧本开始', icon: List },
+    ],
+  },
+  {
+    title: '素材',
+    items: [
+      { key: 'media-library', type: 'open-media-library', label: '素材库', hint: '上传 / 管理素材', icon: FolderOpened },
     ],
   },
 ]

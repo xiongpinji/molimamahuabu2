@@ -1181,8 +1181,19 @@ async function onContextMenuSelect(type) {
     await runNodeMenuAction(type, node)
     return
   }
-  pendingFlowPosition.value = contextMenuFlowPos.value
-  openCreateDialog(type, contextMenuFlowPos.value)
+  const flowPosition = contextMenuFlowPos.value
+  if (type === 'focus-script') {
+    closeContextMenu()
+    await focusScriptNode(flowPosition)
+    return
+  }
+  if (type === 'open-media-library') {
+    closeContextMenu()
+    router.push({ name: 'media-library' })
+    return
+  }
+  pendingFlowPosition.value = flowPosition
+  openCreateDialog(type, flowPosition)
   closeContextMenu()
 }
 
@@ -1638,7 +1649,7 @@ Object.assign(
   })
 )
 
-function focusScriptNode() {
+async function focusScriptNode(flowPosition = null) {
   let epId = filterEpisodeId.value
   if (!epId) {
     const eps = drama.value?.episodes || []
@@ -1649,7 +1660,22 @@ function focusScriptNode() {
     return
   }
   if (!filterEpisodeId.value) filterEpisodeId.value = epId
-  focusedNodeId.value = scriptNodeId(epId)
+  const nodeId = scriptNodeId(epId)
+  if (flowPosition) {
+    allGraphNodes.value = allGraphNodes.value.map((node) => (
+      node.id === nodeId ? { ...node, position: { x: flowPosition.x, y: flowPosition.y } } : node
+    ))
+    layoutCache.value = {
+      ...(layoutCache.value || { version: 1 }),
+      nodes: {
+        ...(layoutCache.value?.nodes || {}),
+        [nodeId]: { x: flowPosition.x, y: flowPosition.y },
+      },
+    }
+    applyVirtualizedGraph()
+    await persistCanvasState({ layoutOnly: true })
+  }
+  await focusCanvasNode(nodeId)
 }
 
 function onTopbarMoreCommand(command) {
