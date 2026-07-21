@@ -20,6 +20,11 @@
         {{ savingAsset ? '保存中…' : '存入素材库' }}
       </button>
       <button v-if="savedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
+      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('main')">设为本镜图</button>
+      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('first')">设为首帧</button>
+      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('last')">设为尾帧</button>
+      <button v-if="canAttachVideo" type="button" :disabled="attachingResult" @click.stop="attachVideoResult">设为本镜视频</button>
+      <button v-if="canAttachAudio" type="button" :disabled="attachingResult" @click.stop="attachAudioResult">设为本镜音频</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
@@ -38,6 +43,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetsAPI } from '@/api/assets'
+import { imagesAPI } from '@/api/images'
+import { storyboardsAPI } from '@/api/storyboards'
+import { videosAPI } from '@/api/videos'
 import { storyboardIdFromNodeId } from '@/utils/canvasWorkflow'
 
 const props = defineProps({
@@ -48,6 +56,7 @@ const ctx = useCanvasContext()
 const now = ref(Date.now())
 const savingAsset = ref(false)
 const savedAsset = ref(null)
+const attachingResult = ref(false)
 let timer = null
 
 const status = computed(() => {
@@ -117,6 +126,9 @@ const resultPreviewType = computed(() => {
 })
 
 const retryLabel = computed(() => status.value?.retryLabel || '重试')
+const canAttachImage = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
+const canAttachVideo = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
+const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultLocalPath()) && Boolean(resultStoryboardId(runtimeNode())))
 
 const statusTitle = computed(() => {
   const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, status.value?.resultUrl].filter(Boolean)
@@ -191,7 +203,7 @@ function resultAssetName(node) {
 }
 
 function resultLocalPath() {
-  const url = String(status.value?.resultUrl || '')
+  const url = String(savedAsset.value?.local_path ? `/static/${savedAsset.value.local_path}` : (status.value?.resultUrl || ''))
   const marker = '/static/'
   const index = url.indexOf(marker)
   if (index < 0) return null
@@ -200,6 +212,15 @@ function resultLocalPath() {
 
 function resultStoryboardId(node) {
   return Number(status.value?.storyboardId || node?.data?.storyboard?.id || storyboardIdFromNodeId(props.nodeId)) || null
+}
+
+function resultUrl() {
+  return savedAsset.value?.url || status.value?.resultUrl || ''
+}
+
+async function refreshCanvasAfterAttach() {
+  if (ctx?.refresh) await ctx.refresh()
+  else await ctx?.refreshDrama?.(true)
 }
 
 async function saveResultAsset() {
@@ -237,6 +258,68 @@ async function saveResultAsset() {
   }
 }
 
+async function attachImageResult(slot = 'main') {
+  const node = runtimeNode()
+  const storyboardId = resultStoryboardId(node)
+  const dramaId = Number(status.value?.dramaId || ctx?.drama?.value?.id || node?.data?.dramaId)
+  if (!storyboardId || !Number.isFinite(dramaId) || dramaId <= 0 || attachingResult.value) return
+  attachingResult.value = true
+  try {
+    await imagesAPI.upload({
+      storyboard_id: storyboardId,
+      drama_id: dramaId,
+      image_url: resultUrl(),
+      local_path: resultLocalPath() || undefined,
+      frame_type: slot === 'first' ? 'storyboard_first' : slot === 'last' ? 'storyboard_last' : undefined,
+    })
+    ElMessage.success(slot === 'first' ? '已设为首帧' : slot === 'last' ? '已设为尾帧' : '已设为本镜图')
+    await refreshCanvasAfterAttach()
+  } catch (error) {
+    ElMessage.error(error?.message || '图片挂载失败')
+  } finally {
+    attachingResult.value = false
+  }
+}
+
+async function attachVideoResult() {
+  const node = runtimeNode()
+  const storyboardId = resultStoryboardId(node)
+  const dramaId = Number(status.value?.dramaId || ctx?.drama?.value?.id || node?.data?.dramaId)
+  if (!storyboardId || !Number.isFinite(dramaId) || dramaId <= 0 || attachingResult.value) return
+  attachingResult.value = true
+  try {
+    await videosAPI.attach({
+      storyboard_id: storyboardId,
+      drama_id: dramaId,
+      video_url: resultUrl(),
+      local_path: resultLocalPath() || undefined,
+      duration: savedAsset.value?.duration ?? undefined,
+    })
+    ElMessage.success('已设为本镜视频')
+    await refreshCanvasAfterAttach()
+  } catch (error) {
+    ElMessage.error(error?.message || '视频挂载失败')
+  } finally {
+    attachingResult.value = false
+  }
+}
+
+async function attachAudioResult() {
+  const storyboardId = resultStoryboardId(runtimeNode())
+  const localPath = resultLocalPath()
+  if (!storyboardId || !localPath || attachingResult.value) return
+  attachingResult.value = true
+  try {
+    await storyboardsAPI.update(storyboardId, { audio_local_path: localPath })
+    ElMessage.success('已设为本镜音频')
+    await refreshCanvasAfterAttach()
+  } catch (error) {
+    ElMessage.error(error?.message || '音频挂载失败')
+  } finally {
+    attachingResult.value = false
+  }
+}
+
 async function runNextStep() {
   if (!status.value?.nextStep) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
@@ -251,6 +334,7 @@ async function retryFailed() {
 
 watch(status, (value) => {
   savedAsset.value = null
+  attachingResult.value = false
   if (value && !timer) {
     now.value = Date.now()
     timer = setInterval(() => {
