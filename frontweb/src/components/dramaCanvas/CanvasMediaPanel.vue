@@ -58,11 +58,12 @@
           <div v-if="busy" class="preview-loading"><span class="spinner" />生图中…</div>
         </div>
         <CanvasGenerationOptions
+          :model-value="storyboardGenerationOptions"
           mode="image"
+          label="本镜模型"
           compact
-          :storyboard="storyboard"
-          image-service-type="storyboard_image"
-          @storyboard-image-model-change="onStoryboardImageModelChange"
+          models-only
+          @change="saveStoryboardGenerationOptions"
         />
         <div class="panel-actions">
           <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">
@@ -86,10 +87,12 @@
         <div v-if="generationError" class="generation-alert generation-alert-error">{{ generationError }}</div>
         <div v-else-if="generationWarning" class="generation-alert generation-alert-warn">{{ generationWarning }}</div>
         <CanvasGenerationOptions
+          :model-value="storyboardGenerationOptions"
           mode="video"
+          label="本镜模型"
           compact
-          :storyboard="storyboard"
-          @storyboard-video-model-change="onStoryboardVideoModelChange"
+          models-only
+          @change="saveStoryboardGenerationOptions"
         />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
@@ -133,6 +136,8 @@ import {
   buildUniversalPromptFieldOverrides,
   findStoryboardInDrama,
   getDramaGenerationOptions,
+  getStoryboardImageModel,
+  getStoryboardVideoModel,
   universalPromptDuration,
 } from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
@@ -162,6 +167,14 @@ const libraryPreviewVisible = ref(false)
 const attachBusy = ref(false)
 const attachedLibraryAssetName = ref('')
 const attachedLibraryAssetUrl = ref('')
+const storyboardGenerationOptions = computed(() => {
+  const defaults = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(ctx?.drama?.value)
+  return {
+    ...defaults,
+    imageModel: getStoryboardImageModel(props.storyboard, defaults),
+    videoModel: getStoryboardVideoModel(props.storyboard, defaults),
+  }
+})
 
 /** 素材库视频直接复用为该分镜成片（不生成、不计费） */
 async function onLibraryVideoPick(asset) {
@@ -243,32 +256,20 @@ function closePanel() {
   ctx?.clearFocusedNode?.()
 }
 
-async function saveStoryboardModelPatch(payload, successMessage) {
+async function saveStoryboardGenerationOptions(patch, next) {
   const sbId = props.storyboard?.id
   if (!sbId) return
+  const payload = {}
+  if (Object.hasOwn(patch, 'imageModel')) payload.image_model = next.imageModel || null
+  if (Object.hasOwn(patch, 'videoModel')) payload.video_model = next.videoModel || null
+  if (!Object.keys(payload).length) return
   try {
     await storyboardsAPI.update(sbId, payload)
     await ctx?.refreshDrama?.(true)
-    ElMessage.success(successMessage)
+    ElMessage.success('本镜模型已保存')
   } catch (e) {
     ElMessage.error(e?.message || '模型保存失败')
   }
-}
-
-async function onStoryboardImageModelChange(value) {
-  const model = String(value || '').trim()
-  await saveStoryboardModelPatch(
-    { image_model: model || null },
-    model ? `已为本镜设置图像模型：${model}` : '已恢复跟随项目默认图像模型',
-  )
-}
-
-async function onStoryboardVideoModelChange(value) {
-  const model = String(value || '').trim()
-  await saveStoryboardModelPatch(
-    { video_model: model || null },
-    model ? `已为本镜设置视频模型：${model}` : '已恢复跟随项目默认视频模型',
-  )
 }
 
 async function runUniversalPrompt(mode) {
