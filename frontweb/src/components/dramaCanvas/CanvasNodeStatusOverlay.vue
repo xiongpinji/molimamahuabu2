@@ -6,6 +6,7 @@
     <span class="step-label">{{ stepLabel }}</span>
     <span class="msg">{{ status.message }}</span>
     <span v-if="metaText" class="meta">{{ metaText }}</span>
+    <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
     <div v-if="isSuccess && status.resultUrl" class="result-preview" :class="'result-' + resultPreviewType">
       <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
@@ -102,10 +103,19 @@ const elapsedText = computed(() => {
 
 const metaText = computed(() => {
   const parts = []
+  if (status.value?.queueLabel) parts.push(status.value.queueLabel)
+  if (status.value?.stepIndex && status.value?.stepTotal) parts.push(`步骤 ${status.value.stepIndex}/${status.value.stepTotal}`)
+  if (status.value?.restored) parts.push(status.value?.stale ? '已恢复中断状态' : '已恢复运行状态')
   if (elapsedText.value) parts.push(`耗时 ${elapsedText.value}`)
   if (Number.isFinite(Number(status.value?.progress))) parts.push(`${Number(status.value.progress)}%`)
   if (status.value?.taskId) parts.push(`任务 ${status.value.taskId}`)
   return parts.join(' · ')
+})
+
+const failedHint = computed(() => {
+  if (!isFailed.value) return ''
+  if (status.value?.recoverable || status.value?.retryStep) return '可点击重试继续执行'
+  return ''
 })
 
 const resultText = computed(() => {
