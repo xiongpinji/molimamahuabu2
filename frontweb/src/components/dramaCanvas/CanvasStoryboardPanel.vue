@@ -209,6 +209,7 @@
     <CanvasGenerationOptions
       compact
       :storyboard="storyboardGenerationOptions"
+      image-service-type="storyboard_image"
       @storyboard-image-model-change="onStoryboardImageModelChange"
       @storyboard-video-model-change="onStoryboardVideoModelChange"
     />

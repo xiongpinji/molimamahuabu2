@@ -65,6 +65,7 @@ const props = defineProps({
   mode: { type: String, default: 'both' },
   compact: { type: Boolean, default: false },
   storyboard: { type: Object, default: null },
+  imageServiceType: { type: String, default: 'image' },
 })
 
 const emit = defineEmits(['storyboard-video-model-change', 'storyboard-image-model-change'])
@@ -78,7 +79,7 @@ const selectedImageModel = computed(() => props.storyboard
   : String(options.value.imageModel || ''))
 
 const imageModelOptions = computed(() => withCurrent(
-  getSelectableModels(imageConfigs.value, 'image'),
+  getSelectableModels(imageConfigs.value, props.imageServiceType),
   selectedImageModel.value,
 ))
 const videoModelOptions = computed(() => withCurrent(
@@ -109,8 +110,8 @@ function update(field, value) {
 
 onMounted(async () => {
   const [images, videos] = await Promise.allSettled([
-    aiAPI.list('image'),
-    aiAPI.list('video'),
+    aiAPI.listImageModels(),
+    aiAPI.listVideoModels(),
   ])
   if (images.status === 'fulfilled') imageConfigs.value = Array.isArray(images.value) ? images.value : []
   if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []

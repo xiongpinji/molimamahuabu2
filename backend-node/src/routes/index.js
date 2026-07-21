@@ -83,6 +83,7 @@ function setupRouter(cfg, db, log) {
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
   r.get('/video-models', aiConfig.listPublicVideoModels);
+  r.get('/image-models', aiConfig.listPublicImageModels);
   r.use('/billing/prices', requireAdmin);
   r.get('/billing/prices', billing.listPrices);
   r.put('/billing/prices/:model', billing.updatePrice);

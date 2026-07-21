@@ -18,6 +18,27 @@ function listPublicVideoModels(db) {
         name: config.name,
         provider: config.provider,
         api_protocol: config.api_protocol,
+        service_type: config.service_type,
+        model: config.model,
+        default_model: config.default_model,
+        is_active: config.is_active,
+        is_default: config.is_default,
+      }));
+    response.success(res, list);
+  };
+}
+
+function listPublicImageModels(db) {
+  return (req, res) => {
+    const list = aiConfigService.listConfigs(db)
+      .filter((config) => config.service_type === 'image' || config.service_type === 'storyboard_image')
+      .filter((config) => config.is_active !== false)
+      .map((config) => ({
+        id: config.id,
+        name: config.name,
+        provider: config.provider,
+        api_protocol: config.api_protocol,
+        service_type: config.service_type,
         model: config.model,
         default_model: config.default_model,
         is_active: config.is_active,
@@ -212,6 +233,7 @@ module.exports = function aiConfigRoutes(db, log, cfg) {
   return {
     list: list(db),
     listPublicVideoModels: listPublicVideoModels(db),
+    listPublicImageModels: listPublicImageModels(db),
     get: get(db),
     vendorLock: vendorLock(cfg),
     create: create(db, log, cfg),

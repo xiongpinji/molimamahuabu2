@@ -4,6 +4,9 @@ export const aiAPI = {
   listVideoModels() {
     return request.get('/video-models')
   },
+  listImageModels() {
+    return request.get('/image-models')
+  },
   list(serviceType) {
     return request.get('/ai-configs', { params: serviceType ? { service_type: serviceType } : {} })
   },

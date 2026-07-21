@@ -20,6 +20,7 @@ test('keeps primary image and video generation endpoints registered', () => {
     assert.equal(routes.has('POST /images'), true);
     assert.equal(routes.has('POST /videos'), true);
     assert.equal(routes.has('GET /video-models'), true);
+    assert.equal(routes.has('GET /image-models'), true);
     assert.equal(routes.has('GET /voice-catalog'), true);
     assert.equal(routes.has('GET /voice-catalog/:id/preview'), true);
     assert.equal(routes.has('POST /characters/:id/sd2-voice-catalog'), true);
