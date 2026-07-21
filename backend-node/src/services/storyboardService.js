@@ -61,6 +61,11 @@ function createStoryboard(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = Number(req.episode_id);
   const num = Number(req.storyboard_number ?? 0) || 0;
+  const charactersValue = req.character_ids !== undefined ? req.character_ids : req.characters;
+  const charactersJson = charactersValue != null
+    ? (Array.isArray(charactersValue) ? JSON.stringify(charactersValue) : String(charactersValue))
+    : '[]';
+  const parsedDramaCharIdsForSync = charactersValue === undefined ? null : (parseDramaCharacterIds(charactersValue) ?? []);
   const info = db.prepare(
     `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, status, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
@@ -79,12 +84,17 @@ function createStoryboard(db, log, req) {
     req.atmosphere ?? null,
     req.image_prompt ?? null,
     req.video_prompt ?? null,
-    req.characters != null
-      ? (Array.isArray(req.characters) ? JSON.stringify(req.characters) : String(req.characters))
-      : '[]',
+    charactersJson,
     now,
     now
   );
+  if (parsedDramaCharIdsForSync !== null) {
+    try {
+      syncStoryboardCharacterLinks(db, info.lastInsertRowid, parsedDramaCharIdsForSync);
+    } catch (e) {
+      log.warn('syncStoryboardCharacterLinks failed', { id: info.lastInsertRowid, message: e.message });
+    }
+  }
   storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, info.lastInsertRowid);
   storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, info.lastInsertRowid);
   log.info('Storyboard created', { id: info.lastInsertRowid, episode_id: episodeId });

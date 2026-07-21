@@ -160,7 +160,7 @@ function ensureStoryboardVoicePrompt(db, storyboardId) {
 /** 返回追加后的提示词；无对白、静音模型或无角色时保持原文。 */
 function appendVoiceAnchors({ db, dramaId, storyboardId, prompt, protocol, model }) {
   const base = String(prompt || '').trim();
-  if (!base || !supportsPromptAudio(protocol, model) || !/[：:]|"|“|「|『/.test(base)) return base;
+  if (!base || !supportsPromptAudio(protocol, model)) return base;
   try {
     const row = db.prepare('SELECT dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboardId));
     if (!String(row?.dialogue || '').trim()) return base;

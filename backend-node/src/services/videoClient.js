@@ -4009,13 +4009,44 @@ function parseStoryboardVoiceCharacterIds(raw) {
     .filter((id) => Number.isInteger(id) && id > 0))];
 }
 
-function findDialogueSpeakerPosition(dialogue, characterName) {
+function normalizeStoryboardVoiceName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[\s　]+/g, '');
+}
+
+function parseStoryboardVoiceRefs(raw) {
+  if (raw == null || raw === '') return [];
+  let value = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); } catch (_) { return []; }
+  }
+  if (!Array.isArray(value)) value = [value];
+  const seen = new Set();
+  return value.map((item) => {
+    const object = item && typeof item === 'object' ? item : null;
+    const id = Number(object ? object.id : item);
+    const name = String(object?.name || object?.character_name || (typeof item === 'string' && !/^\d+$/.test(item) ? item : '')).trim();
+    const key = Number.isInteger(id) && id > 0 ? `id:${id}` : name ? `name:${name}` : '';
+    if (!key || seen.has(key)) return null;
+    seen.add(key);
+    return { id: Number.isInteger(id) && id > 0 ? id : null, name };
+  }).filter(Boolean);
+}
+
+function firstDialogueSpeakerId(dialogue, characterRows) {
   const text = String(dialogue || '');
-  const name = String(characterName || '').trim();
-  if (!text || !name) return -1;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = text.match(new RegExp(`(?:^|[\\n\\r/|；;])\\s*[“"「『']?${escaped}[”"」』']?\\s*[:：]`));
-  return match ? match.index + match[0].lastIndexOf(name) : -1;
+  if (!text) return null;
+  let best = null;
+  for (const row of characterRows || []) {
+    const name = String(row.name || '').trim();
+    if (!name) continue;
+    const indexes = [`${name}：`, `${name}:`]
+      .map((token) => text.indexOf(token))
+      .filter((idx) => idx >= 0);
+    if (!indexes.length) continue;
+    const index = Math.min(...indexes);
+    if (!best || index < best.index) best = { index, id: Number(row.id) };
+  }
+  return best?.id || null;
 }
 
 /**
@@ -4029,57 +4060,45 @@ function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
 
   const sid = Number(storyboardId);
   if (Number.isInteger(sid) && sid > 0) {
-    let ids = [];
-    let dialogue = '';
-    let lockedVoiceMap = new Map();
+    let storyboard = null;
+    let refs = [];
+    let rows = [];
     try {
-      const row = db.prepare(
+      storyboard = db.prepare(
         'SELECT characters, dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL'
       ).get(sid);
-      ids = parseStoryboardVoiceCharacterIds(row?.characters);
-      dialogue = row?.dialogue || '';
     } catch (_) {}
+    let voiceSnapshot = null;
     try {
-      const row = db.prepare(
+      voiceSnapshot = db.prepare(
         'SELECT voice_snapshot FROM storyboards WHERE id = ? AND deleted_at IS NULL'
-      ).get(sid);
-      lockedVoiceMap = snapshotVoiceMap(row?.voice_snapshot);
+      ).get(sid)?.voice_snapshot;
     } catch (_) {}
-    // 分镜生成时已固定音色时，只使用该快照，避免角色后来更换音频导致旧分镜漂移。
-    const candidateMap = lockedVoiceMap.size ? lockedVoiceMap : voiceMap;
-    if (!ids.length) {
+    const snapshotMap = snapshotVoiceMap(voiceSnapshot);
+    try {
+      rows = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(Number(dramaId));
+    } catch (_) {}
+    const byName = new Map(rows.map((row) => [normalizeStoryboardVoiceName(row.name), Number(row.id)]));
+    refs = parseStoryboardVoiceRefs(storyboard?.characters);
+    if (!refs.length) refs = parseStoryboardVoiceCharacterIds(storyboard?.characters).map((id) => ({ id, name: '' }));
+    const firstSpeakerId = firstDialogueSpeakerId(storyboard?.dialogue, rows);
+    const orderedIds = [];
+    if (firstSpeakerId) orderedIds.push(firstSpeakerId);
+    for (const ref of refs) {
+      const id = ref.id || (ref.name ? byName.get(normalizeStoryboardVoiceName(ref.name)) : null);
+      if (id) orderedIds.push(id);
+    }
+    if (!orderedIds.length) {
       try {
-        ids = db.prepare(
+        orderedIds.push(...db.prepare(
           'SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC'
-        ).all(sid).map((row) => Number(row.character_id)).filter((id) => Number.isInteger(id) && id > 0);
+        ).all(sid).map((row) => Number(row.character_id)).filter((id) => Number.isInteger(id) && id > 0));
       } catch (_) {}
     }
-
-    // 一条分镜可能同时包含多个角色，而参考音色字段只能传一个音频。
-    // 优先使用对白中最先开口且已绑定 active 音色的角色，避免按 ID 排序
-    // 把“林岚”的音色误传给“小狐狸”的分镜。
-    if (dialogue && ids.length > 1) {
-      try {
-        const placeholders = ids.map(() => '?').join(',');
-        const rows = db.prepare(
-          `SELECT id, name FROM characters WHERE drama_id = ? AND id IN (${placeholders}) AND deleted_at IS NULL`
-        ).all(Number(dramaId), ...ids);
-        const names = new Map(rows.map((row) => [Number(row.id), row.name]));
-        let selected = null;
-        for (const id of ids) {
-          if (!candidateMap.has(id)) continue;
-          const position = findDialogueSpeakerPosition(dialogue, names.get(id));
-          if (position >= 0 && (!selected || position < selected.position)) {
-            selected = { id, position };
-          }
-        }
-        if (selected) return candidateMap.get(selected.id);
-      } catch (_) {}
+    for (const id of [...new Set(orderedIds)]) {
+      if (snapshotMap.has(id)) return snapshotMap.get(id);
+      if (voiceMap.has(id)) return voiceMap.get(id);
     }
-    for (const id of ids) {
-      if (candidateMap.has(id)) return candidateMap.get(id);
-    }
-    if (lockedVoiceMap.size) return lockedVoiceMap.values().next().value || null;
   }
   return voiceMap.values().next().value || null;
 }
