@@ -83,7 +83,8 @@ const isProcessing = computed(() => props.data.storyboard?.status === 'processin
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  return map ? !!map[props.id] : false
+  const status = map?.[props.id]
+  return status ? status.step !== 'failed' : false
 })
 
 const imagesBySbId = computed(() => ctx?.imagesBySbId?.value || {})

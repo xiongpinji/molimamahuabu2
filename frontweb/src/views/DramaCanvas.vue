@@ -566,8 +566,9 @@ const runQueueItems = computed(() => {
       nodeId,
       tone: status.step === 'failed' ? 'failed' : 'running',
       label: queueNodeLabel(nodeId),
-      message: queueRunningMessage(status),
+      message: status.step === 'failed' ? (status.message || '节点执行失败') : queueRunningMessage(status),
       elapsedText: formatQueueElapsed(status.at),
+      retryStep: status.step === 'failed' ? queueNodeRetryStep(findGraphNode(nodeId)) : '',
     })
   }
   for (const node of allGraphNodes.value) {
@@ -993,11 +994,14 @@ async function runCanvasNodeStep(node, step) {
     await refreshDrama(true)
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
-    ElMessage.error(e?.message || '节点生成失败')
+    const errorMessage = e?.message || '节点生成失败'
+    if (nodeId) nodeStatus.fail(nodeId, { message: errorMessage })
+    nodeStatus.fail(sbNodeId, { message: errorMessage })
+    ElMessage.error(errorMessage)
     await refreshDrama(true)
   } finally {
-    nodeStatus.clear(nodeId)
-    nodeStatus.clear(sbNodeId)
+    if (nodeStatus.get(nodeId)?.step !== 'failed') nodeStatus.clear(nodeId)
+    if (nodeStatus.get(sbNodeId)?.step !== 'failed') nodeStatus.clear(sbNodeId)
   }
 }
 

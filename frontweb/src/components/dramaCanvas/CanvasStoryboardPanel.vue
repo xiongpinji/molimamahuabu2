@@ -808,13 +808,17 @@ async function runStep(step) {
     ElMessage.success(successMsg)
     await ctx?.refresh?.()
   } catch (e) {
-    actionStatus.value = { type: 'error', message: e?.message || '生成失败' }
-    ElMessage.error(e?.message || '生成失败')
+    const errorMessage = e?.message || '生成失败'
+    actionStatus.value = { type: 'error', message: errorMessage }
+    ctx?.nodeStatus?.fail(sbNodeId.value, { message: errorMessage })
+    if (step === 'image') ctx?.nodeStatus?.fail(`sbimg:${sbId}`, { message: errorMessage })
+    if (step === 'video') ctx?.nodeStatus?.fail(`sbvid:${sbId}`, { message: errorMessage })
+    ElMessage.error(errorMessage)
   } finally {
     busyStep.value = ''
-    ctx?.nodeStatus?.clear(sbNodeId.value)
-    if (step === 'image') ctx?.nodeStatus?.clear(`sbimg:${sbId}`)
-    if (step === 'video') ctx?.nodeStatus?.clear(`sbvid:${sbId}`)
+    if (ctx?.nodeStatus?.get(sbNodeId.value)?.step !== 'failed') ctx?.nodeStatus?.clear(sbNodeId.value)
+    if (step === 'image' && ctx?.nodeStatus?.get(`sbimg:${sbId}`)?.step !== 'failed') ctx?.nodeStatus?.clear(`sbimg:${sbId}`)
+    if (step === 'video' && ctx?.nodeStatus?.get(`sbvid:${sbId}`)?.step !== 'failed') ctx?.nodeStatus?.clear(`sbvid:${sbId}`)
   }
 }
 </script>

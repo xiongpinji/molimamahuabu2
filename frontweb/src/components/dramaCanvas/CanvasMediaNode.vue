@@ -83,12 +83,16 @@ const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  return map ? !!map[props.id] : false
+  const status = map?.[props.id]
+  return status ? status.step !== 'failed' : false
 })
+
+const nodeFailed = computed(() => ctx?.nodeStatus?.map?.[props.id]?.step === 'failed')
 
 const isProcessing = computed(() => isNodeBusy.value || props.data.storyboard?.status === 'processing')
 
 const resultState = computed(() => {
+  if (nodeFailed.value) return { key: 'failed', label: '生成失败' }
   if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
   if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
   if (props.data.generationError) return { key: 'failed', label: '生成失败' }

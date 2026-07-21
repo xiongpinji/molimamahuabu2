@@ -329,12 +329,15 @@ async function runStep(step) {
     ElMessage.success('生成完成')
     await ctx?.refresh?.()
   } catch (e) {
-    ElMessage.error(e?.message || '生成失败')
+    const errorMessage = e?.message || '生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, { message: errorMessage })
+    ctx?.nodeStatus?.fail(sbNodeId.value, { message: errorMessage })
+    ElMessage.error(errorMessage)
     await ctx?.refresh?.()
   } finally {
     busy.value = false
-    ctx?.nodeStatus?.clear(props.nodeId)
-    ctx?.nodeStatus?.clear(sbNodeId.value)
+    if (ctx?.nodeStatus?.get(props.nodeId)?.step !== 'failed') ctx?.nodeStatus?.clear(props.nodeId)
+    if (ctx?.nodeStatus?.get(sbNodeId.value)?.step !== 'failed') ctx?.nodeStatus?.clear(sbNodeId.value)
   }
 }
 </script>

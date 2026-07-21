@@ -72,12 +72,14 @@ const entityStatus = computed(() => props.data.entity?.status || '')
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  return map ? !!map[props.id] : false
+  const status = map?.[props.id]
+  return status ? status.step !== 'failed' : false
 })
 
 const statusChip = computed(() => {
   const map = ctx?.nodeStatus?.map
   const busy = map?.[props.id]
+  if (busy?.step === 'failed') return { key: 'failed', label: '失败' }
   if (busy) return { key: 'busy', label: busy.message?.slice(0, 8) || '处理中' }
   const s = entityStatus.value
   if (s === 'processing') return { key: 'processing', label: '生成中' }

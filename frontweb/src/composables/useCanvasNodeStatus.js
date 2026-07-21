@@ -17,6 +17,14 @@ export function createCanvasNodeStatusStore() {
     }
   }
 
+  function fail(nodeId, payload = {}) {
+    set(nodeId, {
+      ...payload,
+      step: 'failed',
+      message: payload.message || '节点执行失败',
+    })
+  }
+
   function clear(nodeId) {
     if (nodeId) delete map[nodeId]
   }
@@ -29,7 +37,7 @@ export function createCanvasNodeStatusStore() {
     return !!get(nodeId)
   }
 
-  return { map, set, clear, get, isBusy }
+  return { map, set, fail, clear, get, isBusy }
 }
 
 export const CANVAS_NODE_STATUS_LABELS = {

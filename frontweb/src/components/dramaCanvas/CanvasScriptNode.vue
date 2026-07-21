@@ -57,7 +57,8 @@ const propCount = computed(() => (ctx?.drama?.value?.props || []).length)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
-  return map ? !!map[props.id] : false
+  const status = map?.[props.id]
+  return status ? status.step !== 'failed' : false
 })
 </script>
 
