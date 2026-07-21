@@ -10,6 +10,7 @@ import {
   getStoryboardGridFrameType,
   getStoryboardImageModel,
   getStoryboardVideoModel,
+  storyboardIdFromNodeId,
   universalPromptDuration,
 } from '../src/utils/canvasWorkflow.js'
 
@@ -37,6 +38,16 @@ test('画布首尾帧节点映射到独立图片生成类型', () => {
   assert.equal(getStoryboardImageFrameType('first'), 'storyboard_first')
   assert.equal(getStoryboardImageFrameType('last'), 'storyboard_last')
   assert.equal(getStoryboardImageFrameType(''), undefined)
+})
+
+test('画布分镜 ID 可从分镜与媒体节点 ID 提取', () => {
+  assert.equal(storyboardIdFromNodeId('sb:301'), 301)
+  assert.equal(storyboardIdFromNodeId('sbimg:301'), 301)
+  assert.equal(storyboardIdFromNodeId('sbimg-first:301'), 301)
+  assert.equal(storyboardIdFromNodeId('sbimg-last:301'), 301)
+  assert.equal(storyboardIdFromNodeId('sbvid:301'), 301)
+  assert.equal(storyboardIdFromNodeId('sbaud:301:dialogue'), 301)
+  assert.equal(storyboardIdFromNodeId('char:1'), null)
 })
 
 test('分镜视频模型覆盖项目默认模型', () => {

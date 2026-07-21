@@ -16,8 +16,8 @@ export function parseWorkflowGroups(metadata) {
 
 export function storyboardIdFromNodeId(nodeId) {
   if (!nodeId || typeof nodeId !== 'string') return null
-  if (!nodeId.startsWith('sb:')) return null
-  const id = Number(nodeId.slice(3))
+  const match = nodeId.match(/^sb(?:img(?:-(?:first|last))?|vid|aud)?:([0-9]+)/)
+  const id = match ? Number(match[1]) : null
   return Number.isFinite(id) ? id : null
 }
 

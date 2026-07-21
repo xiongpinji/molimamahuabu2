@@ -980,10 +980,15 @@ function nodeStepResultInfo(node, step, storyboardId) {
   const resultNode = findGraphNode(resultNodeId) || findGraphNode(id) || node
   const resultType = step === 'audio' ? 'audio' : step
   const labelMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成' }
+  const nextMap = {
+    image: { nextStep: 'video', nextLabel: '继续生成视频' },
+    video: { nextStep: 'audio', nextLabel: '继续配音' },
+  }
   return {
     resultUrl: resultNode?.data?.url || '',
     resultType,
     resultLabel: labelMap[resultType] || '结果已生成',
+    ...(nextMap[resultType] || {}),
   }
 }
 

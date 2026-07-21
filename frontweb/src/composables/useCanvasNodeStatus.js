@@ -24,6 +24,8 @@ export function createCanvasNodeStatusStore() {
       resultUrl: payload.resultUrl || payload.result_url || '',
       resultType: payload.resultType || payload.result_type || '',
       resultLabel: payload.resultLabel || payload.result_label || '',
+      nextStep: payload.nextStep || payload.next_step || '',
+      nextLabel: payload.nextLabel || payload.next_label || '',
       at: Date.now(),
     }
   }

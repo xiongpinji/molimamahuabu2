@@ -9,6 +9,7 @@
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
     <span v-if="isSuccess" class="success-actions">
       <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+      <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
     <span v-if="isFailed" class="failed-hint">右键节点可重试</span>
@@ -96,6 +97,12 @@ function openResult() {
 
 function dismissStatus() {
   ctx?.nodeStatus?.clear?.(props.nodeId)
+}
+
+async function runNextStep() {
+  if (!status.value?.nextStep) return
+  ctx?.nodeStatus?.clear?.(props.nodeId)
+  await ctx?.runNodeStep?.({ id: props.nodeId, data: {} }, status.value.nextStep)
 }
 
 watch(status, (value) => {
