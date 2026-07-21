@@ -967,6 +967,30 @@ function nodeStepStatusLabel(step, node) {
   return CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
 }
 
+function nodeStepResultInfo(node, step, storyboardId) {
+  const id = String(node?.id || '')
+  const frameKind = node?.data?.frameKind
+  const resultNodeId = step === 'image'
+    ? (frameKind ? `sbimg-${frameKind}:${storyboardId}` : (id.startsWith('sbimg') ? id : `sbimg:${storyboardId}`))
+    : step === 'video'
+      ? (id.startsWith('sbvid:') ? id : `sbvid:${storyboardId}`)
+      : step === 'audio'
+        ? (id.startsWith('sbaud:') ? id : `sbaud:${storyboardId}:dialogue`)
+        : id
+  const resultNode = findGraphNode(resultNodeId) || findGraphNode(id) || node
+  const resultType = step === 'audio' ? 'audio' : step
+  const labelMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成' }
+  return {
+    resultUrl: resultNode?.data?.url || '',
+    resultType,
+    resultLabel: labelMap[resultType] || '结果已生成',
+  }
+}
+
+function shouldKeepNodeStatus(nodeId) {
+  return ['failed', 'success'].includes(nodeStatus.get(nodeId)?.step)
+}
+
 async function runCanvasNodeStep(node, step) {
   const sb = storyboardForNode(node)
   if (!drama.value || !sb?.id) {
@@ -993,6 +1017,9 @@ async function runCanvasNodeStep(node, step) {
     }
     ElMessage.success('节点生成完成')
     await refreshDrama(true)
+    const resultInfo = nodeStepResultInfo(node, step, sb.id)
+    if (nodeId) nodeStatus.success(nodeId, { ...resultInfo, autoClear: false })
+    nodeStatus.success(sbNodeId, { ...resultInfo, autoClear: false })
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
@@ -1001,8 +1028,8 @@ async function runCanvasNodeStep(node, step) {
     ElMessage.error(errorMessage)
     await refreshDrama(true)
   } finally {
-    if (nodeStatus.get(nodeId)?.step !== 'failed') nodeStatus.clear(nodeId)
-    if (nodeStatus.get(sbNodeId)?.step !== 'failed') nodeStatus.clear(sbNodeId)
+    if (!shouldKeepNodeStatus(nodeId)) nodeStatus.clear(nodeId)
+    if (!shouldKeepNodeStatus(sbNodeId)) nodeStatus.clear(sbNodeId)
   }
 }
 
