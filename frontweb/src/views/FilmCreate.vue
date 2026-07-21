@@ -488,10 +488,10 @@
                         size="small"
                         type="primary"
                         plain
-                        :loading="builtinVoiceLoadingId === char.id"
-                        @click="openBuiltinVoiceCatalog(char)"
+                        :loading="voiceCatalogLoading && voiceCatalogTarget?.id === char.id"
+                        @click="openVoiceCatalog(char)"
                       >
-                        内置音色
+                        音色库
                       </el-button>
                       <template v-if="char.seedance2_voice_asset?.status === 'active'">
                         <!-- 音色参考已设置：显示试听 + 更换 -->
@@ -2727,28 +2727,30 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBuiltinVoiceDialog" title="音色库" width="560px" destroy-on-close>
+    <el-dialog v-model="showVoiceCatalog" title="音色库" width="680px" destroy-on-close>
       <p class="voice-extract-dialog-hint">
         可选择 MeloTTS 内置音色，或复用本项目从分镜视频提取并保存的角色音色。
       </p>
-      <div v-for="voice in builtinVoiceCatalog" :key="voice.id" class="builtin-voice-item">
-        <div class="builtin-voice-main">
+      <div v-loading="voiceCatalogLoading" class="voice-catalog-list">
+        <div v-for="voice in voiceCatalogList" :key="voice.id" class="voice-catalog-item">
           <div>
-            <strong>{{ voice.label }}</strong>
-            <span class="builtin-voice-meta">{{ voice.language }} · {{ voice.voice_id }} · {{ voice.license }}</span>
+            <strong>{{ voice.label || voice.id }}</strong>
+            <el-tag size="small" effect="plain">{{ voice.source === 'extracted_voice_asset' ? '项目音色' : '内置音色' }}</el-tag>
+            <span class="voice-catalog-meta">{{ voice.language }} · {{ voice.voice_id }} · {{ voice.license }}</span>
           </div>
-          <div class="builtin-voice-actions">
-            <el-button size="small" :disabled="!voice.preview_url" @click="playBuiltinVoice(voice)">试听</el-button>
-            <el-button size="small" type="primary" :disabled="!voice.can_bind" :loading="builtinVoiceLoadingId === builtinVoiceTarget?.id" @click="bindBuiltinVoice(voice)">
+          <div class="voice-catalog-actions">
+            <el-button size="small" :disabled="!voice.preview_url" @click="playVoiceCatalogPreview(voice)">试听</el-button>
+            <el-button size="small" type="primary" :disabled="!voice.can_bind" :loading="voiceCatalogBindingId === voice.id" @click="bindVoiceCatalog(voice)">
               {{ voice.can_bind ? '绑定' : '待生成' }}
             </el-button>
           </div>
+          <div class="voice-catalog-description">{{ voice.description }}</div>
+          <div v-if="!voice.can_bind" class="voice-catalog-hint">{{ voice.setup_hint }}</div>
         </div>
-        <div class="builtin-voice-description">{{ voice.description }}</div>
-        <div v-if="!voice.can_bind" class="builtin-voice-hint">{{ voice.setup_hint }}</div>
+        <div v-if="!voiceCatalogLoading && voiceCatalogList.length === 0" class="library-empty">暂无可用音色</div>
       </div>
       <template #footer>
-        <el-button @click="showBuiltinVoiceDialog = false">关闭</el-button>
+        <el-button @click="showVoiceCatalog = false">关闭</el-button>
       </template>
     </el-dialog>
     <!-- 图片放大预览：点击遮罩或图片关闭 -->
@@ -3034,7 +3036,7 @@ const {
   extractingCharAppearance, extractingAnchors, addCharRefImage, addCharRefFileInput,
   charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
   sd2VoiceUploadingId,
-  builtinVoiceLoadingId, showBuiltinVoiceDialog, builtinVoiceTarget, builtinVoiceCatalog,
+  showVoiceCatalog, voiceCatalogTarget, voiceCatalogList, voiceCatalogLoading, voiceCatalogBindingId,
   showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage, charLibraryPageSize,
   charLibraryTotal, charLibraryKeyword, charLibraryTab,
   dramaAllCharList, dramaAllCharLoading, dramaAllCharPage, dramaAllCharPageSize, dramaAllCharTotal, dramaAllCharKeyword,
@@ -3044,7 +3046,7 @@ const {
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
   extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
   onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
-  openBuiltinVoiceCatalog, bindBuiltinVoice, playBuiltinVoice,
+  openVoiceCatalog, bindVoiceCatalog, playVoiceCatalogPreview,
   loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
   onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
   openEditCharLibrary, submitEditCharLibrary,
@@ -10711,28 +10713,30 @@ html.light .sb-video-placeholder {
   font-size: 13px;
   line-height: 1.6;
 }
-.builtin-voice-item {
-  padding: 10px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+.voice-catalog-list {
+  min-height: 180px;
 }
-.builtin-voice-main {
+.voice-catalog-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.builtin-voice-meta,
-.builtin-voice-description,
-.builtin-voice-hint {
+.voice-catalog-meta,
+.voice-catalog-description,
+.voice-catalog-hint {
   display: block;
   margin-top: 4px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }
-.builtin-voice-hint {
+.voice-catalog-hint {
   color: var(--el-color-warning);
 }
-.builtin-voice-actions {
+.voice-catalog-actions {
   display: flex;
   gap: 6px;
   flex-shrink: 0;

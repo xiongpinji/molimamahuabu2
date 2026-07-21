@@ -71,10 +71,11 @@ export function useCharacters(deps) {
   const showCharSd2Cert = ref(false)
   const charSd2CertPayload = ref(null)
   const sd2VoiceUploadingId = ref(null)
-  const builtinVoiceLoadingId = ref(null)
-  const showBuiltinVoiceDialog = ref(false)
-  const builtinVoiceTarget = ref(null)
-  const builtinVoiceCatalog = ref([])
+  const showVoiceCatalog = ref(false)
+  const voiceCatalogTarget = ref(null)
+  const voiceCatalogList = ref([])
+  const voiceCatalogLoading = ref(false)
+  const voiceCatalogBindingId = ref(null)
   // ── 角色库状态 ────────────────────────────────────────
   const showCharLibrary = ref(false)
   const charLibraryList = ref([])
@@ -789,40 +790,52 @@ export function useCharacters(deps) {
     }
   }
 
-  async function openBuiltinVoiceCatalog(char) {
+  async function openVoiceCatalog(char) {
     if (!char?.id) return
-    builtinVoiceTarget.value = char
-    builtinVoiceLoadingId.value = char.id
+    voiceCatalogTarget.value = char
+    showVoiceCatalog.value = true
+    await loadVoiceCatalog()
+  }
+
+  async function loadVoiceCatalog() {
+    voiceCatalogLoading.value = true
     try {
-      const result = await characterAPI.listBuiltinVoices()
-      builtinVoiceCatalog.value = result?.items || []
-      showBuiltinVoiceDialog.value = true
+      const result = await characterAPI.listVoiceCatalog({ drama_id: dramaId.value })
+      voiceCatalogList.value = Array.isArray(result) ? result : (result?.items || [])
     } catch (e) {
-      ElMessage.error(e?.message || '内置音色目录加载失败')
+      voiceCatalogList.value = []
+      ElMessage.error(e?.message || '音色库加载失败')
     } finally {
-      builtinVoiceLoadingId.value = null
+      voiceCatalogLoading.value = false
     }
   }
-  async function bindBuiltinVoice(voice) {
-    const char = builtinVoiceTarget.value
-    if (!char?.id || !voice?.can_bind) return
-    builtinVoiceLoadingId.value = char.id
+
+  async function bindVoiceCatalog(voice) {
+    const char = voiceCatalogTarget.value
+    if (!char?.id || !voice?.id) return
+    if (!voice.can_bind) {
+      ElMessage.warning(voice.setup_hint || '该音色暂不可绑定')
+      return
+    }
+    voiceCatalogBindingId.value = voice.id
     try {
-      await characterAPI.bindBuiltinVoice(char.id, voice.id)
-      showBuiltinVoiceDialog.value = false
+      const result = await characterAPI.bindVoiceCatalog(char.id, voice.id)
       await loadDrama()
-      ElMessage.success(`已绑定${voice.label}，仅 Seedance 2.0 模型生效`)
+      ElMessage.success(result?.message || `已绑定${voice.label || '音色'}，仅 Seedance 2.0 模型生效`)
+      showVoiceCatalog.value = false
     } catch (e) {
-      ElMessage.error(e?.message || '内置音色绑定失败')
+      ElMessage.error(e?.message || '音色绑定失败')
     } finally {
-      builtinVoiceLoadingId.value = null
+      voiceCatalogBindingId.value = null
     }
   }
-  function playBuiltinVoice(voice) {
+
+  function playVoiceCatalogPreview(voice) {
     const url = voice?.preview_url
     if (!url) return ElMessage.info('该音色尚未生成本地试听文件')
     try {
       const audio = new Audio(url)
+      audio.onerror = () => ElMessage.error('试听播放失败')
       audio.play().catch(() => ElMessage.error('试听播放失败'))
     } catch (_) {
       ElMessage.error('试听播放失败')
@@ -846,10 +859,11 @@ export function useCharacters(deps) {
     showCharSd2Cert,
     charSd2CertPayload,
     sd2VoiceUploadingId,
-    builtinVoiceLoadingId,
-    showBuiltinVoiceDialog,
-    builtinVoiceTarget,
-    builtinVoiceCatalog,
+    showVoiceCatalog,
+    voiceCatalogTarget,
+    voiceCatalogList,
+    voiceCatalogLoading,
+    voiceCatalogBindingId,
     // 库状态
     showCharLibrary,
     charLibraryList,
@@ -903,9 +917,10 @@ export function useCharacters(deps) {
     onSd2VoiceReplace,
     sd2VoiceActionLabel,
     playSd2Voice,
-    openBuiltinVoiceCatalog,
-    bindBuiltinVoice,
-    playBuiltinVoice,
+    openVoiceCatalog,
+    loadVoiceCatalog,
+    bindVoiceCatalog,
+    playVoiceCatalogPreview,
     loadCharLibraryList,
     debouncedLoadCharLibrary,
     loadDramaAllCharList,
