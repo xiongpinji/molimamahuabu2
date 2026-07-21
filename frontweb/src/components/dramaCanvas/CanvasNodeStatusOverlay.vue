@@ -14,6 +14,8 @@
     </div>
     <span v-if="isSuccess" class="success-actions">
       <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+      <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
+      <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
@@ -118,6 +120,24 @@ function openResult() {
   window.open(status.value.resultUrl, '_blank', 'noopener,noreferrer')
 }
 
+function resultFilename() {
+  const type = resultPreviewType.value
+  const extensionMap = { image: 'png', video: 'mp4', audio: 'mp3' }
+  const rawName = String(status.value?.resultUrl || '').split(/[?#]/)[0].split('/').pop()
+  return rawName || `canvas-node-result.${extensionMap[type] || 'dat'}`
+}
+
+function downloadResult() {
+  if (!status.value?.resultUrl) return
+  const link = document.createElement('a')
+  link.href = status.value.resultUrl
+  link.download = resultFilename()
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 async function copyText(text, successMessage, fallbackTitle) {
   if (!text) return
   try {
@@ -131,6 +151,10 @@ async function copyText(text, successMessage, fallbackTitle) {
 
 function copyPrompt() {
   copyText(status.value?.promptText || '', '提示词已复制', '提示词（请手动复制）')
+}
+
+function copyResultLink() {
+  copyText(status.value?.resultUrl || '', '结果链接已复制', '结果链接（请手动复制）')
 }
 
 function copyError() {

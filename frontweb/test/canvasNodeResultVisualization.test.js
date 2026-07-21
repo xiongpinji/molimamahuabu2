@@ -8,6 +8,8 @@ const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanva
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
+  assert.match(overlaySource, /复制链接/)
+  assert.match(overlaySource, /下载结果/)
   assert.match(overlaySource, /复制提示词/)
   assert.match(overlaySource, /复制原因/)
   assert.match(overlaySource, /class="result-preview"/)
@@ -15,6 +17,9 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /<video v-else-if="resultPreviewType === 'video'"/)
   assert.match(overlaySource, /<audio v-else-if="resultPreviewType === 'audio'"/)
   assert.match(overlaySource, /function copyPrompt\(\)/)
+  assert.match(overlaySource, /function copyResultLink\(\)/)
+  assert.match(overlaySource, /function downloadResult\(\)/)
+  assert.match(overlaySource, /link\.download = resultFilename\(\)/)
   assert.match(overlaySource, /function copyError\(\)/)
 })
 
