@@ -5,8 +5,12 @@ export function createCanvasNodeStatusStore() {
   const map = reactive({})
   const clearTimers = new Map()
 
+  function assignIfDefined(target, key, value) {
+    if (value !== undefined && value !== null && value !== '') target[key] = value
+  }
+
   function normalizePayload(payload) {
-    return {
+    const status = {
       step: payload.step || 'busy',
       message: payload.message || '处理中…',
       detail: payload.detail || '',
@@ -23,6 +27,15 @@ export function createCanvasNodeStatusStore() {
       retryLabel: payload.retryLabel || payload.retry_label || '',
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
+    assignIfDefined(status, 'workflowId', payload.workflowId || payload.workflow_id)
+    assignIfDefined(status, 'queueLabel', payload.queueLabel || payload.queue_label)
+    assignIfDefined(status, 'storyboardId', payload.storyboardId || payload.storyboard_id)
+    assignIfDefined(status, 'stepIndex', payload.stepIndex ?? payload.step_index)
+    assignIfDefined(status, 'stepTotal', payload.stepTotal ?? payload.step_total)
+    assignIfDefined(status, 'recoverable', payload.recoverable)
+    assignIfDefined(status, 'restored', payload.restored)
+    assignIfDefined(status, 'stale', payload.stale)
+    return status
   }
 
   function set(nodeId, payload) {
@@ -77,16 +90,40 @@ export function createCanvasNodeStatusStore() {
     return !!status && !['failed', 'success'].includes(status.step)
   }
 
+  function isTerminalStep(step) {
+    return ['failed', 'success'].includes(step)
+  }
+
   function snapshot() {
     return Object.fromEntries(Object.entries(map).map(([nodeId, status]) => [nodeId, { ...status }]))
   }
 
-  function restore(snapshotMap = {}) {
+  function restore(snapshotMap = {}, options = {}) {
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now()
+    const staleMs = Number.isFinite(Number(options.staleMs)) ? Number(options.staleMs) : 30 * 60 * 1000
     for (const timer of clearTimers.values()) clearTimeout(timer)
     clearTimers.clear()
     for (const nodeId of Object.keys(map)) delete map[nodeId]
     for (const [nodeId, status] of Object.entries(snapshotMap || {})) {
-      if (nodeId && status?.step) map[nodeId] = normalizePayload(status)
+      if (!nodeId || !status?.step) continue
+      const normalized = normalizePayload({ ...status, restored: true })
+      const age = now - normalized.at
+      if (!isTerminalStep(normalized.step) && age > staleMs) {
+        const retryStep = normalized.retryStep || normalized.step
+        map[nodeId] = normalizePayload({
+          ...normalized,
+          step: 'failed',
+          message: '节点任务已中断，可重试',
+          errorDetail: normalized.errorDetail || '页面刷新或任务超时导致运行状态中断，请点击重试继续。',
+          retryStep,
+          retryLabel: normalized.retryLabel || `重试${CANVAS_NODE_STATUS_LABELS[retryStep] || '节点'}`,
+          recoverable: true,
+          restored: true,
+          stale: true,
+        })
+        continue
+      }
+      map[nodeId] = normalized
     }
   }
 
