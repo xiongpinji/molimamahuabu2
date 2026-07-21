@@ -25,18 +25,23 @@
         </template>
       </template>
       <template v-else>
-      <div class="ctx-title">在此添加节点</div>
-      <button v-for="item in addItems" :key="item.type" type="button" class="ctx-item" role="menuitem" @click="pick(item.type)">
-        <el-icon><component :is="item.icon" /></el-icon>
-        <span>{{ item.label }}</span>
-        <small>{{ item.hint }}</small>
-      </button>
-      <div class="ctx-divider" />
-      <button type="button" class="ctx-item" role="menuitem" @click="pick('episode')">
-        <el-icon><List /></el-icon>
-        <span>新集</span>
-        <small>从剧本开始</small>
-      </button>
+        <div class="ctx-title">添加节点</div>
+        <template v-for="(group, groupIndex) in addGroups" :key="group.title">
+          <div class="ctx-group">{{ group.title }}</div>
+          <button
+            v-for="item in group.items"
+            :key="item.key"
+            type="button"
+            class="ctx-item"
+            role="menuitem"
+            @click="pick(item.type)"
+          >
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+            <small>{{ item.hint }}</small>
+          </button>
+          <div v-if="groupIndex < addGroups.length - 1" class="ctx-divider" />
+        </template>
       </template>
     </div>
     <div v-if="visible" class="canvas-context-backdrop" @mousedown="close" @contextmenu.prevent="close" />
@@ -60,11 +65,32 @@ const emit = defineEmits(['select', 'close'])
 const menuRef = ref(null)
 const menuStyle = ref({ left: '8px', top: '8px' })
 
-const addItems = [
-  { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
-  { type: 'character', label: '角色', hint: '角色设定', icon: FolderOpened },
-  { type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
-  { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
+const addGroups = [
+  {
+    title: '创作',
+    items: [
+      { key: 'storyboard', type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
+      { key: 'text', type: 'storyboard', label: '文本', hint: '写镜头脚本', icon: Document },
+      { key: 'script', type: 'storyboard', label: '脚本', hint: '生成分镜脚本', icon: List },
+    ],
+  },
+  {
+    title: '生成',
+    items: [
+      { key: 'image', type: 'storyboard', label: '图片', hint: '分镜图节点', icon: Picture },
+      { key: 'video', type: 'storyboard', label: '视频', hint: '分镜视频节点', icon: VideoPlay },
+      { key: 'audio', type: 'storyboard', label: '音频', hint: '对白配音节点', icon: Microphone },
+    ],
+  },
+  {
+    title: '资产',
+    items: [
+      { key: 'character', type: 'character', label: '角色', hint: '角色设定', icon: FolderOpened },
+      { key: 'scene', type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
+      { key: 'prop', type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
+      { key: 'episode', type: 'episode', label: '新集', hint: '从剧本开始', icon: List },
+    ],
+  },
 ]
 
 const nodeGroups = [
