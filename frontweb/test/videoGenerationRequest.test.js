@@ -18,16 +18,24 @@ test('请求审计保留分镜模型、参考图和首尾帧字段', () => {
     referenceImageUrls: [
       'http://localhost:3014/static/refs/scene.jpg',
       'http://localhost:3014/static/refs/scene.jpg',
+      '  ',
     ],
+    style: 'cinematic',
     aspectRatio: '16:9',
+    resolution: '720p',
     duration: 5,
   })
 
   assert.equal(payload.model, 'grok-video-3')
   assert.equal(payload.storyboard_id, 216)
+  assert.equal(payload.prompt, '角色A：继续向前走。')
   assert.equal(payload.first_frame_url.endsWith('/first.jpg'), true)
   assert.equal(payload.last_frame_url.endsWith('/last.jpg'), true)
   assert.deepEqual(payload.reference_image_urls, ['http://localhost:3014/static/refs/scene.jpg'])
+  assert.equal(payload.style, 'cinematic')
+  assert.equal(payload.aspect_ratio, '16:9')
+  assert.equal(payload.resolution, '720p')
+  assert.equal(payload.duration, 5)
 })
 
 test('请求审计区分参考音频候选与实际视频请求体', () => {
