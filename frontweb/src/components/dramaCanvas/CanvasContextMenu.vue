@@ -14,11 +14,15 @@
     >
       <template v-if="mode === 'node'">
         <div class="ctx-title">节点操作 · {{ nodeLabel }}</div>
-        <button v-for="item in nodeItems" :key="item.type" type="button" class="ctx-item" role="menuitem" @click="pick(item.type)">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-          <small>{{ item.hint }}</small>
-        </button>
+        <template v-for="(group, groupIndex) in visibleNodeGroups" :key="group.title">
+          <div class="ctx-group">{{ group.title }}</div>
+          <button v-for="item in group.items" :key="item.type" type="button" class="ctx-item" role="menuitem" @click="pick(item.type)">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+            <small>{{ item.hint }}</small>
+          </button>
+          <div v-if="groupIndex < visibleNodeGroups.length - 1" class="ctx-divider" />
+        </template>
       </template>
       <template v-else>
       <div class="ctx-title">在此添加节点</div>
@@ -40,7 +44,7 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -49,6 +53,7 @@ const props = defineProps({
   y: { type: Number, default: 0 },
   mode: { type: String, default: 'create' },
   nodeLabel: { type: String, default: '' },
+  nodeActions: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['select', 'close'])
@@ -62,16 +67,38 @@ const addItems = [
   { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
 ]
 
-const nodeItems = [
-  { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
-  { type: 'run-node-image', label: '生成 / 重跑图片', hint: '当前分镜图', icon: Picture },
-  { type: 'run-node-video', label: '生成 / 重跑视频', hint: '当前分镜视频', icon: VideoPlay },
-  { type: 'run-node-audio', label: '生成 / 重跑音频', hint: '对白配音', icon: Microphone },
-  { type: 'preview-node-video', label: '预览视频', hint: '打开成片', icon: View },
-  { type: 'focus-upstream', label: '定位到上游素材', hint: '角色 / 场景 / 道具', icon: FolderOpened },
-  { type: 'focus-downstream-video', label: '定位到下游视频', hint: '当前分镜视频', icon: FullScreen },
-  { type: 'copy-node-ref', label: '复制节点引用', hint: '名称与 ID', icon: Document },
+const nodeGroups = [
+  {
+    title: '编辑',
+    items: [
+      { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
+      { type: 'preview-node-video', label: '预览视频', hint: '打开成片', icon: View },
+    ],
+  },
+  {
+    title: '生成',
+    items: [
+      { type: 'run-node-image', label: '生成 / 重跑图片', hint: '当前分镜图', icon: Picture },
+      { type: 'run-node-video', label: '生成 / 重跑视频', hint: '当前分镜视频', icon: VideoPlay },
+      { type: 'run-node-audio', label: '生成 / 重跑音频', hint: '对白配音', icon: Microphone },
+    ],
+  },
+  {
+    title: '定位',
+    items: [
+      { type: 'focus-upstream', label: '定位到上游素材', hint: '角色 / 场景 / 道具', icon: FolderOpened },
+      { type: 'focus-downstream-video', label: '定位到下游视频', hint: '当前分镜视频', icon: FullScreen },
+      { type: 'copy-node-ref', label: '复制节点引用', hint: '名称与 ID', icon: Document },
+    ],
+  },
 ]
+
+const visibleNodeGroups = computed(() => {
+  const allowed = new Set(props.nodeActions || [])
+  return nodeGroups
+    .map((group) => ({ ...group, items: group.items.filter((item) => allowed.has(item.type)) }))
+    .filter((group) => group.items.length)
+})
 
 async function updateMenuPosition() {
   if (!props.visible || typeof window === 'undefined') return
@@ -140,6 +167,11 @@ function close() {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+}
+.ctx-group {
+  padding: 6px 12px 3px;
+  font-size: 10px;
+  color: #a1a1aa;
 }
 .ctx-item .el-icon { font-size: 15px; }
 .ctx-item span { min-width: 0; }

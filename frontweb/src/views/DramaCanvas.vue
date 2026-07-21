@@ -309,6 +309,7 @@
       :y="contextMenuY"
       :mode="contextMenuNode ? 'node' : 'create'"
       :node-label="contextMenuNodeLabel"
+      :node-actions="contextMenuNodeActions"
       @select="onContextMenuSelect"
       @close="closeContextMenu"
     />
@@ -462,6 +463,7 @@ async function closeDirectorStage() {
 const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript'])
 
 const contextMenuNodeLabel = computed(() => canvasNodeLabel(contextMenuNode.value))
+const contextMenuNodeActions = computed(() => canvasNodeActions(contextMenuNode.value))
 
 let saveTimer = null
 let savedHintTimer = null
@@ -723,6 +725,29 @@ function canvasNodeLabel(node) {
   if (node.data?.storyboard) return node.data.storyboard.shot_title || `分镜 ${node.data.storyboard.shot_number || node.data.storyboard.id}`
   if (node.data?.episode) return node.data.episode.title || `第 ${node.data.episode.episode_number || node.data.episode.id} 集`
   return String(node.id || '未命名节点')
+}
+
+
+function canvasNodeActions(node) {
+  if (!node) return []
+  const actions = ['copy-node-ref']
+  const sb = storyboardForNode(node)
+  if (PANEL_NODE_TYPES.has(node.type)) actions.unshift('open-node-config')
+  if (node.type === 'canvasAsset') {
+    return [...actions, 'focus-downstream-video']
+  }
+  if (sb) {
+    actions.push('focus-upstream', 'focus-downstream-video')
+    if (node.type === 'canvasStoryboard') {
+      actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
+    } else if (node.type === 'canvasMedia') {
+      if (node.data?.kind === 'image') actions.push('run-node-image', 'run-node-video')
+      else if (node.data?.kind === 'video') actions.push('preview-node-video', 'run-node-video')
+      else if (node.data?.kind === 'audio') actions.push('run-node-audio')
+      else if (node.data?.kind === 'text' || node.data?.kind === 'universal') actions.push('run-node-image', 'run-node-video', 'run-node-audio')
+    }
+  }
+  return [...new Set(actions)]
 }
 
 function findGraphNode(nodeId) {
