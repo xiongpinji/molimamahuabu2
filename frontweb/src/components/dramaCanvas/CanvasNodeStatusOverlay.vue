@@ -7,6 +7,11 @@
     <span class="msg">{{ status.message }}</span>
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <div v-if="isSuccess && status.resultUrl" class="result-preview" :class="'result-' + resultPreviewType">
+      <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
+      <video v-else-if="resultPreviewType === 'video'" :src="status.resultUrl" muted controls playsinline />
+      <audio v-else-if="resultPreviewType === 'audio'" :src="status.resultUrl" controls />
+    </div>
     <span v-if="isSuccess" class="success-actions">
       <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
@@ -90,6 +95,15 @@ const resultText = computed(() => {
   const label = status.value?.resultLabel || typeMap[status.value?.resultType] || ''
   const urlHint = status.value?.resultUrl ? '可在节点卡片预览' : ''
   return [label, urlHint].filter(Boolean).join(' · ')
+})
+
+const resultPreviewType = computed(() => {
+  const type = String(status.value?.resultType || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  const url = String(status.value?.resultUrl || '').toLowerCase()
+  if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
+  return 'image'
 })
 
 const retryLabel = computed(() => status.value?.retryLabel || '重试')
@@ -249,6 +263,24 @@ onBeforeUnmount(() => {
 }
 .result-text {
   color: #bbf7d0;
+}
+.result-preview {
+  width: min(84%, 220px);
+  max-height: 120px;
+  pointer-events: auto;
+}
+.result-preview img,
+.result-preview video {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.result-preview audio {
+  width: 100%;
+  height: 28px;
 }
 .success-actions {
   display: flex;
