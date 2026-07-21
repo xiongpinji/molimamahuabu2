@@ -63,10 +63,16 @@ export const characterAPI = {
   sd2VoiceRefresh(characterId) {
     return request.post(`/characters/${characterId}/sd2-voice-refresh`, {})
   },
+  listVoiceCatalog(params) {
+    return request.get('/voice-catalog', { params: params || {} })
+  },
+  bindVoiceCatalog(characterId, voiceId) {
+    return request.post(`/characters/${characterId}/sd2-voice-catalog`, { voice_id: voiceId })
+  },
   listBuiltinVoices(dramaId) {
-    return request.get('/voice-catalog', { params: dramaId ? { drama_id: dramaId } : {} })
+    return this.listVoiceCatalog(dramaId ? { drama_id: dramaId } : {})
   },
   bindBuiltinVoice(characterId, catalogId) {
-    return request.post(`/characters/${characterId}/sd2-voice-catalog`, { catalog_id: catalogId })
+    return this.bindVoiceCatalog(characterId, catalogId)
   }
 }
