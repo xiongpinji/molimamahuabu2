@@ -84,7 +84,7 @@ const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
   const status = map?.[props.id]
-  return status ? status.step !== 'failed' : false
+  return status ? !['failed', 'success'].includes(status.step) : false
 })
 
 const nodeFailed = computed(() => ctx?.nodeStatus?.map?.[props.id]?.step === 'failed')
