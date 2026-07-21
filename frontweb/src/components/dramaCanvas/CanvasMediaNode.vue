@@ -43,6 +43,8 @@
       :url="data.url"
       :audio-type="data.audioType"
       :frame-kind="data.frameKind"
+      :generation-error="data.generationError"
+      :generation-warning="data.generationWarning"
     />
   </div>
 </template>
@@ -72,12 +74,16 @@ const isProcessing = computed(() => isNodeBusy.value || props.data.storyboard?.s
 const resultState = computed(() => {
   if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
   if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
+  if (props.data.generationError) return { key: 'failed', label: '生成失败' }
   if (props.data.url) return { key: 'ready', label: '已生成' }
+  if (props.data.generationWarning) return { key: 'warn', label: '需检查' }
   return { key: 'empty', label: '待生成' }
 })
 
 const nodeTitle = computed(() => {
   if (props.data.kind === 'text') return '单击查看脚本摘要并编辑'
+  if (props.data.generationError) return props.data.generationError
+  if (props.data.generationWarning) return props.data.generationWarning
   return props.data.url ? '单击预览结果或重新生成' : '单击查看生成选项'
 })
 
@@ -182,6 +188,8 @@ const kindLabel = computed(() => {
 .state-busy { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
 .state-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
 .state-editable { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.state-failed { color: #f87171; background: rgba(248, 113, 113, 0.14); }
+.state-warn { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
 .hint {
   min-width: 0;
   overflow: hidden;

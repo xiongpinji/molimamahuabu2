@@ -10,6 +10,7 @@ import {
   resolveSbVideoRecord,
   videoRecordUrl,
 } from './storyboardMedia'
+import { latestVideoGenerationError, latestVideoGenerationWarning } from './videoGenerationStatus'
 import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
 
 const ASSET_X = 48
@@ -278,14 +279,17 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
       }
     }
 
+    const sbVideos = videosBySbId?.[sb.id] || []
+    const videoError = latestVideoGenerationError(sbVideos)
+    const videoWarning = latestVideoGenerationWarning(sbVideos)
     const vidUrl = videoRecordUrl(resolveSbVideoRecord(sb, videosBySbId)) || storyboardVideoUrl(sb)
-    if (vidUrl) {
+    if (vidUrl || videoError) {
       const vidId = `sbvid:${sb.id}`
       nodes.push(makeNode({
         id: vidId,
         type: 'canvasMedia',
         position: resolveNodePosition(savedLayout, vidId, { x: mediaX, y: mediaY }),
-        data: { kind: 'video', storyboard: sb, url: vidUrl },
+        data: { kind: 'video', storyboard: sb, url: vidUrl, generationError: videoError, generationWarning: videoWarning },
       }))
       edges.push(makeEdge({
         id: `e-${pipelineTailId}-${vidId}`,

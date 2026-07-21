@@ -76,6 +76,8 @@
           <div v-else-if="!busy" class="preview-empty">无视频</div>
           <div v-if="busy" class="preview-loading"><span class="spinner" />生视频中…</div>
         </div>
+        <div v-if="generationError" class="generation-alert generation-alert-error">{{ generationError }}</div>
+        <div v-else-if="generationWarning" class="generation-alert generation-alert-warn">{{ generationWarning }}</div>
         <CanvasGenerationOptions mode="video" compact />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
       </template>
@@ -113,6 +115,8 @@ const props = defineProps({
   url: { type: String, default: '' },
   audioType: { type: String, default: 'dialogue' },
   frameKind: { type: String, default: '' },
+  generationError: { type: String, default: '' },
+  generationWarning: { type: String, default: '' },
 })
 
 const ctx = useCanvasContext()
@@ -249,6 +253,7 @@ async function runStep(step) {
     await ctx?.refresh?.()
   } catch (e) {
     ElMessage.error(e?.message || '生成失败')
+    await ctx?.refresh?.()
   } finally {
     busy.value = false
     ctx?.nodeStatus?.clear(props.nodeId)
@@ -365,6 +370,23 @@ async function runStep(step) {
 .kind-video { border-color: rgba(244, 114, 182, 0.45); }
 .kind-universal { border-color: rgba(167, 139, 250, 0.45); }
 .kind-audio { border-color: rgba(251, 191, 36, 0.45); }
+.generation-alert {
+  flex-basis: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.generation-alert-error {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.42);
+  border: 1px solid rgba(248, 113, 113, 0.22);
+}
+.generation-alert-warn {
+  color: #fde68a;
+  background: rgba(113, 63, 18, 0.36);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
