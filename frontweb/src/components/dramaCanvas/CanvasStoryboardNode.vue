@@ -27,6 +27,12 @@
       <div v-if="failureReason" class="failure-line" :title="failureReason">
         {{ failureReason }}
       </div>
+      <div v-if="hasResultState" class="result-actions">
+        <button v-if="imageUrl" type="button" @click.stop="openResult(imageUrl)">预览图</button>
+        <button v-if="videoUrl" type="button" @click.stop="openResult(videoUrl)">预览视频</button>
+        <button v-if="audioPath" type="button" @click.stop="openResult(audioPath)">播放音频</button>
+        <button type="button" @click.stop="copyResultLink">复制结果</button>
+      </div>
       <div class="retry-row">
         <button type="button" :disabled="isNodeBusy" @click.stop="retryStep('image')">重试生图</button>
         <button type="button" :disabled="isNodeBusy" @click.stop="retryStep('video')">重试视频</button>
@@ -46,6 +52,7 @@
 <script setup>
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { audioUrl } from '@/utils/mediaUrl'
 import {
@@ -85,6 +92,7 @@ const videosBySbId = computed(() => ctx?.videosBySbId?.value || {})
 const imageUrl = computed(() => imageRecordUrl(resolveSbMainImageRecord(props.data.storyboard, imagesBySbId.value)))
 const videoUrl = computed(() => videoRecordUrl(resolveSbVideoRecord(props.data.storyboard, videosBySbId.value)))
 const audioPath = computed(() => audioUrl(props.data.storyboard?.audio_local_path || props.data.storyboard?.narration_audio_local_path))
+const primaryResultUrl = computed(() => videoUrl.value || imageUrl.value || audioPath.value)
 const failureReason = computed(() => {
   const sb = props.data.storyboard || {}
   return sb.error_msg || sb.error_message || sb.generation_error || ''
@@ -99,6 +107,23 @@ function onSelect(event) {
 function retryStep(step) {
   if (isNodeBusy.value) return
   ctx?.runNodeStep?.({ id: props.id, type: 'canvasStoryboard', data: props.data }, step)
+}
+
+function openResult(url) {
+  if (!url) return
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+async function copyResultLink() {
+  const url = primaryResultUrl.value
+  if (!url) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(url)
+    ElMessage.success('结果链接已复制')
+  } catch {
+    ElMessageBox.alert(url, '结果链接（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
 }
 </script>
 
@@ -212,6 +237,24 @@ function retryStep(step) {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.result-actions button {
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: rgba(52, 211, 153, 0.12);
+  color: #86efac;
+  font-size: 9px;
+  cursor: pointer;
+}
+.result-actions button:hover {
+  background: rgba(52, 211, 153, 0.22);
 }
 .retry-row {
   display: flex;

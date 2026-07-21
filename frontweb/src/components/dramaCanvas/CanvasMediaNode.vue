@@ -33,6 +33,10 @@
       <div v-if="data.generationError" class="node-error" :title="data.generationError">
         {{ data.generationError }}
       </div>
+      <div v-if="resultUrl" class="result-actions">
+        <button type="button" @click.stop="openResult">{{ previewLabel }}</button>
+        <button type="button" @click.stop="copyResultLink">复制</button>
+      </div>
       <div class="node-footer">
         <span class="result-state" :class="'state-' + resultState.key">{{ resultState.label }}</span>
         <button
@@ -64,6 +68,7 @@
 <script setup>
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import CanvasMediaPanel from './CanvasMediaPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
@@ -107,6 +112,13 @@ const kindLabel = computed(() => {
 })
 
 const canRetry = computed(() => ['image', 'video', 'audio'].includes(props.data.kind))
+const resultUrl = computed(() => props.data.url || '')
+const previewLabel = computed(() => {
+  if (props.data.kind === 'image') return '预览图'
+  if (props.data.kind === 'video') return '预览视频'
+  if (props.data.kind === 'audio') return '播放音频'
+  return '预览'
+})
 
 const retryLabel = computed(() => {
   if (props.data.kind === 'image' && props.data.frameKind === 'first') return '重试首帧'
@@ -118,6 +130,22 @@ const retryLabel = computed(() => {
 function retryNode() {
   if (!canRetry.value || isNodeBusy.value) return
   ctx?.runNodeStep?.({ id: props.id, data: props.data }, props.data.kind)
+}
+
+function openResult() {
+  if (!resultUrl.value) return
+  window.open(resultUrl.value, '_blank', 'noopener,noreferrer')
+}
+
+async function copyResultLink() {
+  if (!resultUrl.value) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(resultUrl.value)
+    ElMessage.success('结果链接已复制')
+  } catch {
+    ElMessageBox.alert(resultUrl.value, '结果链接（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
 }
 </script>
 
@@ -200,6 +228,24 @@ function retryNode() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.result-actions button {
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 6px;
+  background: rgba(52, 211, 153, 0.12);
+  color: #86efac;
+  font-size: 9px;
+  cursor: pointer;
+}
+.result-actions button:hover {
+  background: rgba(52, 211, 153, 0.22);
 }
 .empty {
   font-size: 11px;
