@@ -1515,7 +1515,7 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
   let layoutPayload = null
   if (!groupsOnly) {
     syncRenderedNodesToGraph()
-    layoutPayload = buildCanvasLayoutPayload(nodes.value, currentViewport.value, layoutCache.value)
+    layoutPayload = buildCanvasLayoutPayload(allGraphNodes.value, currentViewport.value, layoutCache.value)
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
   const groupsPayload = groupsOnly || !layoutOnly ? workflowGroups.value : undefined
