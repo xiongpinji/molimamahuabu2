@@ -43,7 +43,11 @@
         </button>
         <div class="picker-info">
           <div class="picker-name" :title="item.name">{{ item.name || '未命名' }}</div>
-          <div class="picker-meta">{{ formatSize(item.file_size || item.size) }}<template v-if="item.duration"> · {{ formatDuration(item.duration) }}</template></div>
+          <div class="picker-meta">
+            <span v-if="item.source_label" class="source-badge">{{ item.source_label }}</span>
+            <span>{{ formatSize(item.file_size || item.size) }}</span>
+            <template v-if="item.duration"> · {{ formatDuration(item.duration) }}</template>
+          </div>
         </div>
         <div class="picker-actions">
           <el-button size="small" text @click="openPreview(item)">预览</el-button>
@@ -85,6 +89,9 @@
 import { computed, ref, watch } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { assetsAPI } from '@/api/assets'
+import { characterLibraryAPI } from '@/api/characterLibrary'
+import { sceneLibraryAPI } from '@/api/sceneLibrary'
+import { propLibraryAPI } from '@/api/propLibrary'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -121,18 +128,79 @@ async function load() {
   try {
     const params = { page: 1, page_size: 100, type: props.type }
     if (keyword.value) params.keyword = keyword.value
-    const res = await assetsAPI.list(params)
-    items.value = (res?.items || []).map((it) => ({
-      ...it,
-      type: it.type || (String(it.url || '').match(/\.(mp4|webm|mov)$/i) ? 'video' : 'image'),
-      name: it.name || String(it.url || '').split('/').pop(),
-    }))
+    const tasks = [
+      assetsAPI.list(params).then((res) => normalizeAssetItems(res, 'project')),
+    ]
+    if (props.type === 'image') {
+      const libraryParams = { page: 1, page_size: 100 }
+      if (keyword.value) libraryParams.keyword = keyword.value
+      tasks.push(characterLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'character')))
+      tasks.push(sceneLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'scene')))
+      tasks.push(propLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'prop')))
+    }
+    const results = await Promise.allSettled(tasks)
+    const loadedItems = results
+      .filter((res) => res.status === 'fulfilled')
+      .flatMap((res) => res.value)
+    items.value = dedupeItems(loadedItems)
+    if (!items.value.length && results.some((res) => res.status === 'rejected')) {
+      const firstError = results.find((res) => res.status === 'rejected')?.reason
+      loadError.value = firstError?.message || '素材库加载失败'
+    }
   } catch (e) {
     items.value = []
     loadError.value = e?.message || '素材库加载失败'
   } finally {
     loading.value = false
   }
+}
+
+function resultItems(res) {
+  if (Array.isArray(res)) return res
+  if (Array.isArray(res?.items)) return res.items
+  if (Array.isArray(res?.data)) return res.data
+  if (Array.isArray(res?.data?.items)) return res.data.items
+  return []
+}
+
+function normalizeAssetItems(res, source) {
+  return resultItems(res).map((it) => normalizeAssetItem(it, source)).filter((it) => itemUrl(it))
+}
+
+function normalizeAssetItem(it, source) {
+  const url = it.url || it.image_url || it.ref_image || ''
+  const localPath = it.local_path || it.image_local_path || it.video_local_path || ''
+  const itemType = it.type || (String(url || localPath).match(/\.(mp4|webm|mov)$/i) ? 'video' : 'image')
+  return {
+    ...it,
+    id: `${source}:${it.id || url || localPath || it.name}`,
+    raw_id: it.id,
+    type: itemType,
+    name: it.name || it.title || String(url || localPath).split('/').pop(),
+    url,
+    local_path: localPath,
+    source_kind: source,
+    source_label: sourceLabel(source),
+  }
+}
+
+function sourceLabel(source) {
+  return {
+    project: '项目资产',
+    character: '角色库',
+    scene: '场景库',
+    prop: '道具库',
+  }[source] || '素材库'
+}
+
+function dedupeItems(list) {
+  const seen = new Set()
+  return list.filter((item) => {
+    const key = itemUrl(item) || item.id
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 /** 展示/使用地址：优先本地持久路径，规避过期远程 URL */
@@ -186,6 +254,7 @@ function onPick(item) {
 .picker-info { padding: 6px; }
 .picker-name { font-size: 12px; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .picker-meta { margin-top: 3px; font-size: 11px; color: #71717a; }
+.source-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 999px; background: rgba(139,92,246,.16); color: #c4b5fd; }
 .picker-actions { display: flex; justify-content: flex-end; gap: 4px; padding: 0 6px 6px; }
 .picker-empty { grid-column: 1 / -1; text-align: center; color: #71717a; padding: 40px 0; }
 .preview-body { display: flex; justify-content: center; background: #09090b; border-radius: 8px; overflow: hidden; }
