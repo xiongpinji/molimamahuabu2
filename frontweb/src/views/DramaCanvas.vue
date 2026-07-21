@@ -289,10 +289,9 @@
             <span>运行队列</span>
             <small>{{ runningQueueCount }} 进行中 · {{ failedQueueCount }} 异常</small>
           </div>
-          <button
+          <div
             v-for="item in runQueueItems"
             :key="item.key"
-            type="button"
             class="run-queue-item"
             :class="'tone-' + item.tone"
             @click="focusQueueItem(item)"
@@ -302,8 +301,17 @@
               <strong>{{ item.label }}</strong>
               <small>{{ item.message }}</small>
             </span>
-            <span class="run-action">定位</span>
-          </button>
+            <span v-if="item.tone === 'running'" class="run-action">{{ item.elapsedText }}</span>
+            <button
+              v-else-if="item.retryStep"
+              type="button"
+              class="run-retry"
+              @click.stop="retryQueueItem(item)"
+            >
+              重试
+            </button>
+            <span v-else class="run-action">定位</span>
+          </div>
         </div>
         <CanvasFloatingToolbar v-if="drama && allGraphNodes.length" />
       </div>
@@ -491,6 +499,7 @@ let savedHintTimer = null
 let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
+let runQueueTimer = null
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
@@ -544,6 +553,7 @@ const selectedEpisodeLabel = computed(() => {
 const sidebarCharacters = computed(() => filterCanvasAssets(drama.value?.characters, 'character', episodeContext.value))
 const sidebarScenes = computed(() => filterCanvasAssets(drama.value?.scenes, 'scene', episodeContext.value))
 const sidebarProps = computed(() => filterCanvasAssets(drama.value?.props, 'prop', episodeContext.value))
+const queueNow = ref(Date.now())
 const runQueueItems = computed(() => {
   const items = []
   const seen = new Set()
@@ -556,7 +566,8 @@ const runQueueItems = computed(() => {
       nodeId,
       tone: status.step === 'failed' ? 'failed' : 'running',
       label: queueNodeLabel(nodeId),
-      message: status.message || '处理中…',
+      message: queueRunningMessage(status),
+      elapsedText: formatQueueElapsed(status.at),
     })
   }
   for (const node of allGraphNodes.value) {
@@ -569,6 +580,7 @@ const runQueueItems = computed(() => {
       tone: 'failed',
       label: canvasNodeLabel(node),
       message: failure,
+      retryStep: queueNodeRetryStep(node),
     })
   }
   return items.slice(0, 8)
@@ -594,9 +606,43 @@ function queueNodeFailure(node) {
   return ''
 }
 
+function queueNodeRetryStep(node) {
+  if (!node) return ''
+  const id = String(node.id || '')
+  const kind = node.data?.kind
+  if (id.startsWith('sbimg:') || kind === 'image' || node.data?.frameKind) return 'image'
+  if (id.startsWith('sbvid:') || kind === 'video') return 'video'
+  if (id.startsWith('sbaud:') || kind === 'audio') return 'audio'
+  if (node.type === 'canvasStoryboard') return 'video'
+  return ''
+}
+
+function queueRunningMessage(status) {
+  const elapsed = formatQueueElapsed(status?.at)
+  return `${status?.message || '处理中…'} · ${elapsed}，刷新后可恢复查看`
+}
+
+function formatQueueElapsed(startedAt) {
+  const start = Number(startedAt)
+  if (!Number.isFinite(start)) return '刚刚开始'
+  const seconds = Math.max(0, Math.floor((queueNow.value - start) / 1000))
+  if (seconds < 60) return `${seconds}秒`
+  return `${Math.floor(seconds / 60)}分${seconds % 60}秒`
+}
+
 async function focusQueueItem(item) {
   if (!item?.nodeId) return
   await focusCanvasNode(item.nodeId)
+}
+
+async function retryQueueItem(item) {
+  const node = findGraphNode(item?.nodeId)
+  if (!node || !item?.retryStep) {
+    ElMessage.warning('未找到可重试节点')
+    return
+  }
+  await focusCanvasNode(item.nodeId)
+  await runCanvasNodeStep(node, item.retryStep)
 }
 
 function syncWorkflowFromDrama() {
@@ -1865,6 +1911,9 @@ watch(drama, () => startStatusPoll())
 
 onMounted(() => {
   scheduleVirtualization()
+  runQueueTimer = setInterval(() => {
+    queueNow.value = Date.now()
+  }, 1000)
   if (typeof window !== 'undefined') {
     window.addEventListener('resize', scheduleVirtualization)
     window.addEventListener('keydown', onCanvasKeydown)
@@ -1876,6 +1925,7 @@ onBeforeUnmount(() => {
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   if (generationSaveTimer) clearTimeout(generationSaveTimer)
+  if (runQueueTimer) clearInterval(runQueueTimer)
   if (virtualizationFrame != null) {
     if (typeof window !== 'undefined' && window.cancelAnimationFrame) window.cancelAnimationFrame(virtualizationFrame)
     else clearTimeout(virtualizationFrame)
@@ -2292,6 +2342,19 @@ onBeforeUnmount(() => {
 .run-action {
   color: #a5b4fc;
   font-size: 10px;
+}
+.run-retry {
+  padding: 3px 7px;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.32);
+  color: #fecaca;
+  font-size: 10px;
+  cursor: pointer;
+}
+.run-retry:hover {
+  border-color: rgba(248, 113, 113, 0.9);
+  background: rgba(185, 28, 28, 0.45);
 }
 @keyframes queue-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.92); }
