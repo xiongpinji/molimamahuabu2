@@ -5,11 +5,16 @@ import { fileURLToPath } from 'node:url'
 
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const toolbarSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFloatingToolbar.vue', import.meta.url)), 'utf8')
+const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
   assert.match(canvasSource, /zoom-activation-key-code="Control"/)
   assert.match(canvasSource, /:zoom-on-scroll="false"/)
+  assert.match(canvasSource, /:pan-on-drag="spacePanning"/)
+  assert.match(canvasSource, /function onCanvasKeyup\(event\)/)
+  assert.match(canvasSource, /window\.addEventListener\('keyup', onCanvasKeyup\)/)
+  assert.match(canvasSource, /window\.removeEventListener\('keyup', onCanvasKeyup\)/)
   assert.match(canvasSource, /:select-nodes-on-drag="true"/)
   assert.match(canvasSource, /selection-mode="partial"/)
   assert.match(canvasSource, /@node-drag-start="onNodeDragStart"/)
@@ -33,4 +38,18 @@ test('画布工作流支持直接运行所选分镜', () => {
   assert.match(canvasSource, /title: '所选分镜'/)
   assert.match(canvasSource, /async function runWorkflowWithConfirm\(runGroup, confirmTitle\)/)
   assert.match(canvasSource, /await runWorkflowWithConfirm\(\{\s*\.\.\.group,/)
+})
+
+test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置', () => {
+  assert.match(contextMenuSource, /'添加画布节点'/)
+  assert.match(contextMenuSource, /<div class="ctx-title">添加节点<\/div>/)
+  assert.match(contextMenuSource, /label: '故事脚本'/)
+  assert.match(contextMenuSource, /label: '分镜'/)
+  assert.match(contextMenuSource, /label: '角色'/)
+  assert.match(contextMenuSource, /label: '场景'/)
+  assert.match(contextMenuSource, /label: '道具'/)
+  assert.match(contextMenuSource, /label: '素材库'/)
+  assert.match(canvasSource, /contextMenuFlowPos\.value = flowPos/)
+  assert.match(canvasSource, /pendingFlowPosition\.value = flowPosition/)
+  assert.match(canvasSource, /openCreateDialog\(type, flowPosition\)/)
 })

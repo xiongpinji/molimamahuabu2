@@ -256,7 +256,12 @@
         <p class="sidebar-tip">经典模式流水线：分镜 → 脚本摘要 → 分镜图 → 视频。摘要节点是画布可视化，列表里合并在分镜编辑区。顶栏「本集生成」可 AI 批量操作；单击分镜可单镜生图/生视频。</p>
       </aside>
 
-      <div ref="canvasMainRef" class="canvas-main" @wheel.capture="onCanvasWheel">
+      <div
+        ref="canvasMainRef"
+        class="canvas-main"
+        :class="{ 'space-panning': spacePanning }"
+        @wheel.capture="onCanvasWheel"
+      >
         <VueFlow
           v-if="allGraphNodes.length"
           v-model:nodes="nodes"
@@ -270,7 +275,7 @@
           :select-nodes-on-drag="true"
           selection-mode="partial"
           :selection-key-code="true"
-          :pan-on-drag="false"
+          :pan-on-drag="spacePanning"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
           :pan-on-scroll="true"
@@ -481,6 +486,7 @@ const contextMenuY = ref(0)
 const contextMenuFlowPos = ref(null)
 const contextMenuNode = ref(null)
 const paneClickSuppressed = ref(false)
+const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
 const aligningNodes = ref(false)
 const canvasFlowApi = ref(null)
@@ -1522,6 +1528,10 @@ function isEditableTarget(target) {
   return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable))
 }
 
+function setSpacePanning(active) {
+  spacePanning.value = active
+}
+
 function undoCanvas() {
   const next = undoCanvasInteractionHistory(interactionHistory.value)
   if (next === interactionHistory.value) return
@@ -1541,6 +1551,11 @@ function redoCanvas() {
 function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
+  if (key === ' ' || key === 'spacebar') {
+    event.preventDefault()
+    setSpacePanning(true)
+    return
+  }
   const modifier = event.ctrlKey || event.metaKey
   if (!modifier || event.altKey) return
   if (key === 'z') {
@@ -1551,6 +1566,18 @@ function onCanvasKeydown(event) {
     event.preventDefault()
     redoCanvas()
   }
+}
+
+function onCanvasKeyup(event) {
+  const key = String(event.key || '').toLowerCase()
+  if (key === ' ' || key === 'spacebar') {
+    event.preventDefault()
+    setSpacePanning(false)
+  }
+}
+
+function onCanvasBlur() {
+  setSpacePanning(false)
 }
 
 async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
@@ -2111,6 +2138,8 @@ onMounted(() => {
   if (typeof window !== 'undefined') {
     window.addEventListener('resize', scheduleVirtualization)
     window.addEventListener('keydown', onCanvasKeydown)
+    window.addEventListener('keyup', onCanvasKeyup)
+    window.addEventListener('blur', onCanvasBlur)
   }
 })
 
@@ -2128,6 +2157,8 @@ onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('resize', scheduleVirtualization)
     window.removeEventListener('keydown', onCanvasKeydown)
+    window.removeEventListener('keyup', onCanvasKeyup)
+    window.removeEventListener('blur', onCanvasBlur)
   }
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
@@ -2350,6 +2381,14 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   position: relative;
+}
+
+.canvas-main.space-panning :deep(.vue-flow__pane) {
+  cursor: grab;
+}
+
+.canvas-main.space-panning :deep(.vue-flow__pane:active) {
+  cursor: grabbing;
 }
 
 .vue-flow-canvas {
