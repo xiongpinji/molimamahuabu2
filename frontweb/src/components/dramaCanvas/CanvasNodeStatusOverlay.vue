@@ -7,6 +7,10 @@
     <span class="msg">{{ status.message }}</span>
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <span v-if="isSuccess" class="success-actions">
+      <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+      <button type="button" @click.stop="dismissStatus">收起</button>
+    </span>
     <span v-if="isFailed" class="failed-hint">右键节点可重试</span>
   </div>
 </template>
@@ -84,6 +88,15 @@ const statusTitle = computed(() => {
   const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, status.value?.resultUrl].filter(Boolean)
   return parts.join('\n')
 })
+
+function openResult() {
+  if (!status.value?.resultUrl) return
+  window.open(status.value.resultUrl, '_blank', 'noopener,noreferrer')
+}
+
+function dismissStatus() {
+  ctx?.nodeStatus?.clear?.(props.nodeId)
+}
 
 watch(status, (value) => {
   if (value && !timer) {
@@ -191,6 +204,24 @@ onBeforeUnmount(() => {
 }
 .result-text {
   color: #bbf7d0;
+}
+.success-actions {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+.success-actions button {
+  padding: 3px 7px;
+  border: 1px solid rgba(187, 247, 208, 0.45);
+  border-radius: 999px;
+  background: rgba(6, 95, 70, 0.72);
+  color: #dcfce7;
+  font-size: 9px;
+  cursor: pointer;
+}
+.success-actions button:hover {
+  border-color: rgba(187, 247, 208, 0.85);
+  background: rgba(5, 150, 105, 0.78);
 }
 .failed-hint {
   color: #fecaca;
