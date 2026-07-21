@@ -40,6 +40,7 @@ const stepLabel = computed(() => {
     polish: '润色任务',
     ref_image: '参考图任务',
     panorama: '全景任务',
+    multi_view: '多视图任务',
     upload: '上传任务',
     save: '保存任务',
     library: '素材库',

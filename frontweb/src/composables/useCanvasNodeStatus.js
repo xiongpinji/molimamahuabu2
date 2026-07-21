@@ -86,6 +86,7 @@ export const CANVAS_NODE_STATUS_LABELS = {
   library: '引用素材库',
   workflow: '工作流执行',
   panorama: '生成全景图',
+  multi_view: '生成多视图',
   upload: '上传中',
   failed: '执行失败',
   success: '执行完成',
