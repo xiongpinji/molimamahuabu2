@@ -58,4 +58,45 @@ describe('voice library assets', () => {
       db.close();
     }
   });
+
+  it('filters reusable voice assets by category and keyword', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const voice = assetService.saveExtractedVoice(db, null, {
+        dramaId,
+        characterId: 1,
+        characterName: '小狐狸',
+        storyboardId: 12,
+        videoId: 34,
+        voiceAsset: {
+          url: '/static/projects/demo/fox.mp3',
+          local_path: 'projects/demo/fox.mp3',
+          duration: 2.4,
+          format: 'mp3',
+        },
+      });
+      assetService.create(db, null, {
+        drama_id: dramaId,
+        name: '环境雨声',
+        type: 'audio',
+        category: 'sfx',
+        url: '/static/projects/demo/rain.mp3',
+      });
+
+      const result = assetService.list(db, {
+        drama_id: dramaId,
+        type: 'audio',
+        category: 'voice',
+        keyword: '小狐狸',
+        page: 1,
+        page_size: 20,
+      });
+
+      assert.equal(result.total, 1);
+      assert.equal(result.items[0].id, voice.id);
+      assert.equal(result.items[0].metadata.character_name, '小狐狸');
+    } finally {
+      db.close();
+    }
+  });
 });

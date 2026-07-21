@@ -13,10 +13,14 @@ function list(db, query) {
     sql += ' AND category = ?';
     params.push(query.category);
   }
+  if (query.storyboard_id) {
+    sql += ' AND storyboard_id = ?';
+    params.push(query.storyboard_id);
+  }
   if (query.keyword) {
-    sql += ' AND (name LIKE ? OR category LIKE ? OR metadata LIKE ?)';
+    sql += ' AND (name LIKE ? OR category LIKE ? OR url LIKE ? OR local_path LIKE ? OR metadata LIKE ?)';
     const keyword = `%${String(query.keyword).trim()}%`;
-    params.push(keyword, keyword, keyword);
+    params.push(keyword, keyword, keyword, keyword, keyword);
   }
   const countRow = db.prepare('SELECT COUNT(*) as total ' + sql).get(...params);
   const total = countRow.total || 0;
@@ -31,6 +35,7 @@ function rowToItem(r) {
   return {
     id: r.id,
     drama_id: r.drama_id,
+    storyboard_id: r.storyboard_id,
     name: r.name,
     type: r.type,
     category: r.category,
@@ -66,10 +71,11 @@ function getById(db, id) {
 function create(db, log, req) {
   const now = new Date().toISOString();
   const info = db.prepare(
-    `INSERT INTO assets (drama_id, name, type, category, url, local_path, file_size, mime_type, width, height, duration, image_gen_id, video_gen_id, metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO assets (drama_id, storyboard_id, name, type, category, url, local_path, file_size, mime_type, width, height, duration, image_gen_id, video_gen_id, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     req.drama_id ?? null,
+    req.storyboard_id ?? null,
     req.name || '未命名',
     req.type || 'image',
     req.category ?? null,
@@ -94,7 +100,7 @@ function update(db, log, id, req) {
   if (!row) return null;
   const updates = [];
   const params = [];
-  ['name', 'description', 'type', 'category', 'url', 'local_path', 'thumbnail_url', 'file_size', 'mime_type', 'width', 'height', 'duration', 'is_favorite', 'metadata'].forEach((key) => {
+  ['name', 'description', 'type', 'category', 'url', 'local_path', 'thumbnail_url', 'file_size', 'mime_type', 'width', 'height', 'duration', 'is_favorite', 'metadata', 'drama_id', 'storyboard_id'].forEach((key) => {
     if (req[key] !== undefined) {
       updates.push(key + ' = ?');
       params.push(key === 'metadata' && req[key] != null ? JSON.stringify(req[key]) : req[key]);

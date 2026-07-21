@@ -14,7 +14,13 @@
     <el-button size="small" :disabled="disabled || !!uploadingSlot" @click.stop="openLibrary">
       素材库
     </el-button>
-    <AssetPickerDialog v-model="libraryVisible" type="image" title="从素材库选首帧/图片" @pick="onLibraryPick" />
+    <AssetPickerDialog
+      v-model="libraryVisible"
+      type="image"
+      title="从素材库选首帧/图片"
+      :drama-id="ctx?.drama?.value?.id"
+      @pick="onLibraryPick"
+    />
   </span>
 </template>
 

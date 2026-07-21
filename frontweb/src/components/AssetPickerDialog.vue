@@ -97,6 +97,7 @@ const props = defineProps({
   modelValue: { type: Boolean, default: false },
   type: { type: String, default: 'image' }, // image | video
   title: { type: String, default: '' },
+  dramaId: { type: [Number, String], default: '' },
 })
 const emit = defineEmits(['update:modelValue', 'pick'])
 
@@ -127,6 +128,7 @@ async function load() {
   loadError.value = ''
   try {
     const params = { page: 1, page_size: 100, type: props.type }
+    if (props.dramaId) params.drama_id = props.dramaId
     if (keyword.value) params.keyword = keyword.value
     const tasks = [
       assetsAPI.list(params).then((res) => normalizeAssetItems(res, 'project')),

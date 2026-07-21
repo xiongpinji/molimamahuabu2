@@ -171,6 +171,7 @@
       v-model="libraryVisible"
       type="image"
       :title="`从素材库选择${kindLabel}参考图`"
+      :drama-id="ctx?.drama?.value?.id"
       @pick="applyLibraryImage"
     />
   </div>

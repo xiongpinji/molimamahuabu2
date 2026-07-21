@@ -97,7 +97,13 @@
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
         <el-button v-if="libraryVideoLabel" size="small" text @click.stop="libraryPreviewVisible = true">查看素材</el-button>
-        <AssetPickerDialog v-model="videoLibraryVisible" type="video" title="从素材库选用成片" @pick="onLibraryVideoPick" />
+        <AssetPickerDialog
+          v-model="videoLibraryVisible"
+          type="video"
+          title="从素材库选用成片"
+          :drama-id="ctx?.drama?.value?.id"
+          @pick="onLibraryVideoPick"
+        />
         <el-dialog
           v-model="libraryPreviewVisible"
           title="素材库复用成片"
