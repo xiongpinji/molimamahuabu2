@@ -19,6 +19,7 @@
       <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
         {{ savingAsset ? '保存中…' : '存入素材库' }}
       </button>
+      <button v-if="savedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
@@ -46,6 +47,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const now = ref(Date.now())
 const savingAsset = ref(false)
+const savedAsset = ref(null)
 let timer = null
 
 const status = computed(() => {
@@ -163,6 +165,14 @@ function copyResultLink() {
   copyText(status.value?.resultUrl || '', '结果链接已复制', '结果链接（请手动复制）')
 }
 
+function copyAssetReference() {
+  if (!savedAsset.value) return
+  const name = savedAsset.value.name || '素材'
+  const url = savedAsset.value.url || status.value?.resultUrl || ''
+  const reference = `@素材(${name}#${savedAsset.value.id}) ${url}`.trim()
+  copyText(reference, '素材引用已复制', '素材引用（请手动复制）')
+}
+
 function copyError() {
   copyText(status.value?.errorDetail || status.value?.message || '', '失败原因已复制', '失败原因（请手动复制）')
 }
@@ -202,7 +212,7 @@ async function saveResultAsset() {
   }
   savingAsset.value = true
   try {
-    await assetsAPI.create({
+    const asset = await assetsAPI.create({
       drama_id: dramaId,
       storyboard_id: resultStoryboardId(node),
       name: resultAssetName(node),
@@ -217,6 +227,7 @@ async function saveResultAsset() {
         prompt_text: status.value?.promptText || '',
       },
     })
+    savedAsset.value = asset || null
     ElMessage.success('结果已存入素材库')
     await ctx?.refreshDrama?.(true)
   } catch (error) {
@@ -239,6 +250,7 @@ async function retryFailed() {
 }
 
 watch(status, (value) => {
+  savedAsset.value = null
   if (value && !timer) {
     now.value = Date.now()
     timer = setInterval(() => {

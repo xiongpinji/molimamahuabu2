@@ -11,6 +11,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /复制链接/)
   assert.match(overlaySource, /下载结果/)
   assert.match(overlaySource, /存入素材库/)
+  assert.match(overlaySource, /复制素材引用/)
   assert.match(overlaySource, /复制提示词/)
   assert.match(overlaySource, /复制原因/)
   assert.match(overlaySource, /class="result-preview"/)
@@ -25,6 +26,9 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /category: 'canvas-result'/)
   assert.match(overlaySource, /source: 'canvas_node_result'/)
   assert.match(overlaySource, /function saveResultAsset\(\)/)
+  assert.match(overlaySource, /savedAsset\.value = asset \|\| null/)
+  assert.match(overlaySource, /function copyAssetReference\(\)/)
+  assert.match(overlaySource, /@素材\(\$\{name\}#\$\{savedAsset\.value\.id\}\)/)
   assert.match(overlaySource, /function copyError\(\)/)
 })
 
