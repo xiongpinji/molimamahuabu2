@@ -1023,6 +1023,18 @@ function nodeStepResultInfo(node, step, storyboardId) {
   }
 }
 
+function nodeStepPromptText(step, sb, node) {
+  if (!sb) return ''
+  if (step === 'image') {
+    const frameKind = node?.data?.frameKind
+    if (frameKind === 'last') return sb.video_prompt || sb.result || sb.action || sb.description || ''
+    return sb.polished_prompt || sb.image_prompt || sb.description || sb.action || ''
+  }
+  if (step === 'video') return sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
+  if (step === 'audio') return sb.dialogue || ''
+  return ''
+}
+
 function shouldKeepNodeStatus(nodeId) {
   return ['failed', 'success'].includes(nodeStatus.get(nodeId)?.step)
 }
@@ -1036,11 +1048,15 @@ async function runCanvasNodeStep(node, step) {
   const nodeId = node?.id
   const sbNodeId = `sb:${sb.id}`
   const statusMessage = nodeStepStatusLabel(step, node)
-  if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage })
-  nodeStatus.set(sbNodeId, { step, message: statusMessage })
+  const initialPromptText = nodeStepPromptText(step, sb, node)
+  if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage, promptText: initialPromptText })
+  nodeStatus.set(sbNodeId, { step, message: statusMessage, promptText: initialPromptText })
   try {
     const found = findStoryboardInDrama(drama.value, sb.id)
     const latestSb = found?.storyboard || sb
+    const promptText = nodeStepPromptText(step, latestSb, node)
+    if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage, promptText })
+    nodeStatus.set(sbNodeId, { step, message: statusMessage, promptText })
     const genOpts = getCanvasGenerationOptions()
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '')
     else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts)
@@ -1053,13 +1069,19 @@ async function runCanvasNodeStep(node, step) {
     }
     ElMessage.success('节点生成完成')
     await refreshDrama(true)
-    const resultInfo = nodeStepResultInfo(node, step, sb.id)
+    const resultInfo = { ...nodeStepResultInfo(node, step, sb.id), promptText }
     if (nodeId) nodeStatus.success(nodeId, { ...resultInfo, autoClear: false })
     nodeStatus.success(sbNodeId, { ...resultInfo, autoClear: false })
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
-    const retryPayload = { message: errorMessage, retryStep: step, retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}` }
+    const retryPayload = {
+      message: errorMessage,
+      errorDetail: errorMessage,
+      promptText: nodeStepPromptText(step, sb, node),
+      retryStep: step,
+      retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}`,
+    }
     if (nodeId) nodeStatus.fail(nodeId, retryPayload)
     nodeStatus.fail(sbNodeId, retryPayload)
     ElMessage.error(errorMessage)

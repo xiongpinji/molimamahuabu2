@@ -9,10 +9,13 @@
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
     <span v-if="isSuccess" class="success-actions">
       <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+      <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
     <span v-if="isFailed" class="failed-actions">
+      <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
+      <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
@@ -21,6 +24,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const props = defineProps({
@@ -98,6 +102,25 @@ const statusTitle = computed(() => {
 function openResult() {
   if (!status.value?.resultUrl) return
   window.open(status.value.resultUrl, '_blank', 'noopener,noreferrer')
+}
+
+async function copyText(text, successMessage, fallbackTitle) {
+  if (!text) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(successMessage)
+  } catch {
+    ElMessageBox.alert(text, fallbackTitle, { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+function copyPrompt() {
+  copyText(status.value?.promptText || '', '提示词已复制', '提示词（请手动复制）')
+}
+
+function copyError() {
+  copyText(status.value?.errorDetail || status.value?.message || '', '失败原因已复制', '失败原因（请手动复制）')
 }
 
 function dismissStatus() {
