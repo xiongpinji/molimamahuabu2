@@ -36,8 +36,13 @@ test('素材选择弹窗支持按素材来源筛选并显示可见数量', () =>
 
 test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /image \| video \| audio/)
+  assert.match(source, /import \{ characterAPI \} from '@\/api\/characters'/)
   assert.match(source, /const typeDisplayName = computed/)
   assert.match(source, /item\.type === 'audio'/)
+  assert.match(source, /if \(props\.type === 'audio'\)/)
+  assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams\)/)
+  assert.match(source, /normalizeVoiceCatalogItems/)
+  assert.match(source, /voice_catalog: '音色库'/)
   assert.match(source, /class="picker-thumb audio-thumb"/)
   assert.match(source, /<audio[\s\S]*previewItem\?\.type === 'audio'[\s\S]*controls/)
   assert.match(source, /audio_local_path/)

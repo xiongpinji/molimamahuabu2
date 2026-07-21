@@ -119,6 +119,7 @@
 import { computed, ref, watch } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { assetsAPI } from '@/api/assets'
+import { characterAPI } from '@/api/characters'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { propLibraryAPI } from '@/api/propLibrary'
@@ -206,6 +207,14 @@ async function load() {
         run: () => propLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'prop')),
       })
     }
+    if (props.type === 'audio') {
+      const voiceParams = {}
+      if (props.dramaId) voiceParams.drama_id = props.dramaId
+      sources.push({
+        label: '音色库',
+        run: () => characterAPI.listVoiceCatalog(voiceParams).then(normalizeVoiceCatalogItems),
+      })
+    }
     const results = await Promise.allSettled(sources.map((source) => source.run()))
     const loadedItems = results
       .filter((res) => res.status === 'fulfilled')
@@ -243,6 +252,24 @@ function resultItems(res) {
 
 function normalizeAssetItems(res, source) {
   return resultItems(res).map((it) => normalizeAssetItem(it, source)).filter((it) => itemUrl(it))
+}
+
+function normalizeVoiceCatalogItems(res) {
+  return resultItems(res)
+    .filter((it) => it.available !== false && (it.preview_url || it.url || it.audio_url))
+    .map((it) => normalizeAssetItem({
+      ...it,
+      id: it.asset_id || it.id || it.voice_id,
+      name: it.label || it.name || it.voice_id,
+      type: 'audio',
+      url: it.preview_url || it.url || it.audio_url || '',
+      audio_url: it.preview_url || it.url || it.audio_url || '',
+      metadata: {
+        ...(it.metadata || {}),
+        voice_catalog: it,
+      },
+    }, 'voice_catalog'))
+    .filter((it) => itemUrl(it))
 }
 
 function normalizeAssetItem(it, source) {
@@ -283,6 +310,7 @@ function sourceLabel(source) {
     character: '角色库',
     scene: '场景库',
     prop: '道具库',
+    voice_catalog: '音色库',
   }[source] || '素材库'
 }
 
