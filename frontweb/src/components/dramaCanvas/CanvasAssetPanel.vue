@@ -184,6 +184,7 @@ import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
 import { propAPI } from '@/api/props'
+import { assetsAPI } from '@/api/assets'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import {
   generateAssetReferenceImage,
@@ -327,6 +328,21 @@ function buildLibraryImagePayload(asset) {
   return payload
 }
 
+async function bindPickedProjectAsset(asset) {
+  if (asset?.source_kind !== 'project' || !asset?.raw_id) return
+  await assetsAPI.update(asset.raw_id, {
+    metadata: {
+      ...(asset.metadata || {}),
+      canvas_asset_binding: {
+        kind: props.kind,
+        entity_id: props.entity.id,
+        node_id: props.nodeId,
+        drama_id: ctx?.drama?.value?.id || null,
+      },
+    },
+  })
+}
+
 async function applyLibraryImage(asset) {
   libraryApplying.value = true
   ctx?.nodeStatus?.set(props.nodeId, { step: 'library', message: '引用素材库图片…' })
@@ -338,6 +354,11 @@ async function applyLibraryImage(asset) {
       await sceneAPI.update(props.entity.id, payload)
     } else {
       await propAPI.update(props.entity.id, payload)
+    }
+    try {
+      await bindPickedProjectAsset(asset)
+    } catch (e) {
+      ElMessage.warning(e?.message || '素材关联写回失败，图片已引用')
     }
     ElMessage.success('已引用素材库图片')
     await ctx?.refreshDrama?.(true)
