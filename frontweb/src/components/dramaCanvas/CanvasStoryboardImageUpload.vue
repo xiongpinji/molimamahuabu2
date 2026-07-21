@@ -6,12 +6,12 @@
       :key="slot"
       size="small"
       :loading="uploadingSlot === slot"
-      :disabled="!!uploadingSlot"
+      :disabled="disabled || !!uploadingSlot"
       @click.stop="triggerUpload(slot)"
     >
       {{ labelFor(slot) }}
     </el-button>
-    <el-button size="small" :disabled="!!uploadingSlot" @click.stop="openLibrary">
+    <el-button size="small" :disabled="disabled || !!uploadingSlot" @click.stop="openLibrary">
       素材库
     </el-button>
     <AssetPickerDialog v-model="libraryVisible" type="image" title="从素材库选首帧/图片" @pick="onLibraryPick" />
@@ -31,7 +31,9 @@ const props = defineProps({
   storyboard: { type: Object, required: true },
   nodeId: { type: String, default: '' },
   frameKind: { type: String, default: '' },
+  disabled: { type: Boolean, default: false },
 })
+const emit = defineEmits(['status'])
 
 const ctx = useCanvasContext()
 const fileInput = ref(null)
@@ -55,6 +57,7 @@ function labelFor(slot) {
 }
 
 function triggerUpload(slot) {
+  if (props.disabled) return
   activeSlot.value = slot
   if (fileInput.value) {
     fileInput.value.value = ''
@@ -63,6 +66,7 @@ function triggerUpload(slot) {
 }
 
 function openLibrary() {
+  if (props.disabled) return
   // 单槽位直接用该槽位；多槽位默认首帧（用户可先点对应上传按钮切换槽位语义，此处取第一个）
   activeSlot.value = slots.value[0] || 'main'
   libraryVisible.value = true
@@ -78,6 +82,7 @@ async function onLibraryPick(asset) {
   const localPath = asset.local_path || ''
   if (!url && !localPath) return ElMessage.error('该素材缺少可用地址')
   uploadingSlot.value = slot
+  emit('status', { type: 'busy', message: '素材库引用中…' })
   const statusIds = [props.nodeId, `sb:${storyboardId}`].filter(Boolean)
   statusIds.forEach((id) => ctx?.nodeStatus?.set(id, { step: 'upload', message: `素材库引用中…` }))
   try {
@@ -88,9 +93,11 @@ async function onLibraryPick(asset) {
       local_path: localPath || undefined,
       frame_type: slot === 'first' ? 'storyboard_first' : slot === 'last' ? 'storyboard_last' : undefined,
     })
+    emit('status', { type: 'success', message: '素材库图片引用完成' })
     ElMessage.success('已从素材库引用图片')
     await ctx?.refresh?.()
   } catch (e) {
+    emit('status', { type: 'error', message: e?.message || '引用失败' })
     ElMessage.error(e?.message || '引用失败')
   } finally {
     statusIds.forEach((id) => ctx?.nodeStatus?.clear(id))
@@ -106,6 +113,7 @@ async function onFileChange(event) {
   if (!file || !drama?.id || !storyboardId) return
 
   uploadingSlot.value = slot
+  emit('status', { type: 'busy', message: `${labelFor(slot)}中…` })
   const statusIds = [props.nodeId, `sb:${storyboardId}`].filter(Boolean)
   statusIds.forEach((id) => ctx?.nodeStatus?.set(id, { step: 'upload', message: `${labelFor(slot)}中…` }))
   try {
@@ -121,9 +129,11 @@ async function onFileChange(event) {
       local_path: localPath || undefined,
       frame_type: slot === 'first' ? 'storyboard_first' : slot === 'last' ? 'storyboard_last' : undefined,
     })
+    emit('status', { type: 'success', message: `${labelFor(slot)}成功` })
     ElMessage.success(`${labelFor(slot)}成功`)
     await ctx?.refresh?.()
   } catch (e) {
+    emit('status', { type: 'error', message: e?.message || '上传失败' })
     ElMessage.error(e?.message || '上传失败')
   } finally {
     statusIds.forEach((id) => ctx?.nodeStatus?.clear(id))

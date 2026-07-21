@@ -318,14 +318,33 @@
     </div>
     </section>
 
-    <div class="panel-actions">
-      <el-button size="small" :loading="saving" @click.stop="saveFields">保存</el-button>
-      <el-button v-if="!isUniversal" size="small" :loading="busyStep === 'polish'" @click.stop="polishPrompt">润色</el-button>
-      <el-button v-if="!isUniversal" size="small" type="primary" :loading="busyStep === 'image'" @click.stop="runStep('image')">生图</el-button>
-      <CanvasStoryboardImageUpload v-if="!isUniversal" :storyboard="storyboard" :node-id="sbNodeId" />
-      <el-button size="small" type="primary" :loading="busyStep === 'video'" @click.stop="runStep('video')">生视频</el-button>
-      <el-button size="small" type="warning" :loading="busyStep === 'audio'" @click.stop="runStep('audio')">配音</el-button>
-      <el-button size="small" type="danger" plain @click.stop="deleteStoryboard">删除</el-button>
+    <div class="panel-actions fixed-action-bar" :class="{ busy: isActionBusy }">
+      <div class="action-status" :class="actionStatus.type">
+        <span class="status-dot" />
+        <span>{{ actionStatusLabel }}</span>
+      </div>
+      <div class="action-groups">
+        <div class="action-group">
+          <el-button size="small" :loading="saving" :disabled="isActionBusy && !saving" @click.stop="saveFields">保存</el-button>
+          <el-button v-if="!isUniversal" size="small" :loading="busyStep === 'polish'" :disabled="isActionBusy && busyStep !== 'polish'" @click.stop="polishPrompt">润色</el-button>
+        </div>
+        <div v-if="!isUniversal" class="action-group">
+          <el-button size="small" type="primary" :loading="busyStep === 'image'" :disabled="isActionBusy && busyStep !== 'image'" @click.stop="runStep('image')">生图</el-button>
+          <CanvasStoryboardImageUpload
+            :storyboard="storyboard"
+            :node-id="sbNodeId"
+            :disabled="isActionBusy"
+            @status="setActionStatus"
+          />
+        </div>
+        <div class="action-group">
+          <el-button size="small" type="primary" :loading="busyStep === 'video'" :disabled="isActionBusy && busyStep !== 'video'" @click.stop="runStep('video')">生视频</el-button>
+          <el-button size="small" type="warning" :loading="busyStep === 'audio'" :disabled="isActionBusy && busyStep !== 'audio'" @click.stop="runStep('audio')">配音</el-button>
+        </div>
+        <div class="action-group danger-group">
+          <el-button size="small" type="danger" plain :disabled="isActionBusy" @click.stop="deleteStoryboard">删除</el-button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -368,6 +387,7 @@ const router = useRouter()
 const ctx = useCanvasContext()
 const saving = ref(false)
 const busyStep = ref('')
+const actionStatus = ref({ type: 'idle', message: '准备就绪' })
 const characterIds = ref([])
 const sceneId = ref(null)
 const propIds = ref([])
@@ -495,6 +515,12 @@ const busyLabel = computed(() => {
   const st = map && sbNodeId.value ? map[sbNodeId.value] : null
   return st?.message || (busyStep.value ? CANVAS_NODE_STATUS_LABELS[busyStep.value] : '')
 })
+const isActionBusy = computed(() => saving.value || !!busyLabel.value)
+const actionStatusLabel = computed(() => busyLabel.value || actionStatus.value.message || '准备就绪')
+
+function setActionStatus(status) {
+  actionStatus.value = status || { type: 'idle', message: '准备就绪' }
+}
 
 function syncForm(sb) {
   form.title = sb?.title || ''
@@ -681,11 +707,14 @@ async function linkTailFrame() {
 async function saveFields() {
   if (!props.storyboard?.id) return
   saving.value = true
+  actionStatus.value = { type: 'busy', message: '保存中…' }
   ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: CANVAS_NODE_STATUS_LABELS.save })
   try {
     await persistForm(false)
     await ctx?.refreshDrama?.(true)
+    actionStatus.value = { type: 'success', message: '保存完成' }
   } catch (e) {
+    actionStatus.value = { type: 'error', message: e?.message || '保存失败' }
     ElMessage.error(e?.message || '保存失败')
   } finally {
     saving.value = false
@@ -703,10 +732,12 @@ async function deleteStoryboard() {
     })
     await storyboardsAPI.delete(props.storyboard.id)
     ctx?.clearFocusedNode?.()
+    actionStatus.value = { type: 'success', message: '分镜已删除' }
     ElMessage.success('分镜已删除')
     await ctx?.refresh?.()
   } catch (e) {
     if (e === 'cancel') return
+    actionStatus.value = { type: 'error', message: e?.message || '删除失败' }
     ElMessage.error(e?.message || '删除失败')
   }
 }
@@ -714,13 +745,16 @@ async function deleteStoryboard() {
 async function polishPrompt() {
   if (!props.storyboard?.id) return
   busyStep.value = 'polish'
+  actionStatus.value = { type: 'busy', message: CANVAS_NODE_STATUS_LABELS.polish }
   ctx?.nodeStatus?.set(sbNodeId.value, { step: 'polish', message: CANVAS_NODE_STATUS_LABELS.polish })
   try {
     const res = await storyboardsAPI.polishPrompt(props.storyboard.id)
     if (res?.polished_prompt) form.image_prompt = res.polished_prompt
+    actionStatus.value = { type: 'success', message: '提示词润色完成' }
     ElMessage.success('提示词已润色')
     await ctx?.refreshDrama?.(true)
   } catch (e) {
+    actionStatus.value = { type: 'error', message: e?.message || '润色失败' }
     ElMessage.error(e?.message || '润色失败')
   } finally {
     busyStep.value = ''
@@ -744,6 +778,7 @@ async function runStep(step) {
 
   busyStep.value = step
   const statusMsg = CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
+  actionStatus.value = { type: 'busy', message: statusMsg }
   ctx?.nodeStatus?.set(sbNodeId.value, { step, message: statusMsg })
   if (step === 'image') ctx?.nodeStatus?.set(`sbimg:${sbId}`, { step, message: statusMsg })
   if (step === 'video') ctx?.nodeStatus?.set(`sbvid:${sbId}`, { step, message: statusMsg })
@@ -763,13 +798,17 @@ async function runStep(step) {
     else if (step === 'audio') {
       const res = await runAudioStep(sb)
       if (res?.skipped) {
+        actionStatus.value = { type: 'idle', message: res.reason || '已跳过' }
         ElMessage.info(res.reason || '已跳过')
         return
       }
     }
-    ElMessage.success(step === 'image' ? '生图完成' : step === 'video' ? '视频生成完成' : '配音完成')
+    const successMsg = step === 'image' ? '生图完成' : step === 'video' ? '视频生成完成' : '配音完成'
+    actionStatus.value = { type: 'success', message: successMsg }
+    ElMessage.success(successMsg)
     await ctx?.refresh?.()
   } catch (e) {
+    actionStatus.value = { type: 'error', message: e?.message || '生成失败' }
     ElMessage.error(e?.message || '生成失败')
   } finally {
     busyStep.value = ''
@@ -1001,11 +1040,64 @@ async function runStep(step) {
 .flex-1 { flex: 1; min-width: 0; }
 .panel-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 7px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(63, 63, 70, 0.8);
+}
+.fixed-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  margin: 10px -4px 0;
+  padding: 8px;
+  border: 1px solid rgba(63, 63, 70, 0.88);
+  border-radius: 11px;
+  background: rgba(15, 15, 18, 0.98);
+  box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.32);
+}
+.action-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #71717a;
+}
+.action-status.busy .status-dot {
+  background: #60a5fa;
+  animation: pulse-tag 1.2s ease-in-out infinite;
+}
+.action-status.success .status-dot { background: #22c55e; }
+.action-status.error {
+  color: #fca5a5;
+}
+.action-status.error .status-dot { background: #ef4444; }
+.action-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  border-right: 1px solid rgba(63, 63, 70, 0.72);
+}
+.action-group:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+.danger-group {
+  margin-left: auto;
 }
 .panel-actions :deep(.el-button) {
   margin: 0;
