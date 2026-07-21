@@ -63,3 +63,16 @@ test('媒体配置面板支持从素材库复用视频和音频', () => {
   assert.match(mediaPanelSource, /audio_url: localPath \? undefined : audioUrl/)
   assert.match(mediaPanelSource, /已将素材库音频设为该分镜音频/)
 })
+
+test('媒体配置面板失败后保留原因和重试入口', () => {
+  assert.match(mediaPanelSource, /v-if="failedStatus"/)
+  assert.match(mediaPanelSource, /failedStatus\.errorDetail \|\| failedStatus\.message/)
+  assert.match(mediaPanelSource, /@click\.stop="retryFailedStep"/)
+  assert.match(mediaPanelSource, /const activeNodeStatus = computed/)
+  assert.match(mediaPanelSource, /activeNodeStatus\.value\?\.step === 'failed'/)
+  assert.match(mediaPanelSource, /retryStep: step/)
+  assert.match(mediaPanelSource, /retryLabel/)
+  assert.match(mediaPanelSource, /recoverable: true/)
+  assert.match(mediaPanelSource, /async function retryFailedStep\(\)/)
+  assert.match(mediaPanelSource, /await runStep\(step\)/)
+})

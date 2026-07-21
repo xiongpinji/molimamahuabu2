@@ -17,6 +17,11 @@
     </div>
 
     <div class="panel-body">
+      <div v-if="failedStatus" class="generation-alert generation-alert-error">
+        <span>{{ failedStatus.errorDetail || failedStatus.message || '节点执行失败' }}</span>
+        <el-button size="small" type="danger" plain @click.stop="retryFailedStep">重试</el-button>
+      </div>
+
       <template v-if="kind === 'text'">
         <p class="summary">{{ summary || '暂无脚本内容' }}</p>
         <el-button size="small" type="primary" plain @click.stop="focusStoryboard">编辑脚本</el-button>
@@ -267,10 +272,18 @@ const kindTitle = computed(() => {
 })
 
 const busyLabel = computed(() => {
-  const map = ctx?.nodeStatus?.map
-  const id = props.nodeId || sbNodeId.value
-  return id && map ? map[id]?.message : ''
+  return activeNodeStatus.value?.message || ''
 })
+
+const activeNodeStatus = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  if (!map) return null
+  return map[props.nodeId] || map[sbNodeId.value] || null
+})
+
+const failedStatus = computed(() => (
+  activeNodeStatus.value?.step === 'failed' ? activeNodeStatus.value : null
+))
 
 const libraryVideoLabel = computed(() => {
   if (props.videoRecord?.provider !== 'library' && !attachedLibraryAssetName.value) return ''
@@ -415,8 +428,24 @@ async function runStep(step) {
     await ctx?.refresh?.()
   } catch (e) {
     const errorMessage = e?.message || '生成失败'
-    ctx?.nodeStatus?.fail(props.nodeId, { message: errorMessage })
-    ctx?.nodeStatus?.fail(sbNodeId.value, { message: errorMessage })
+    const retryLabel = step === 'image' && props.frameKind === 'first'
+      ? '重试生成首帧'
+      : step === 'image' && props.frameKind === 'last'
+        ? '重试生成尾帧'
+        : step === 'video'
+          ? '重试生视频'
+          : step === 'audio'
+            ? '重试配音'
+            : '重试'
+    const failurePayload = {
+      message: errorMessage,
+      errorDetail: errorMessage,
+      retryStep: step,
+      retryLabel,
+      recoverable: true,
+    }
+    ctx?.nodeStatus?.fail(props.nodeId, failurePayload)
+    ctx?.nodeStatus?.fail(sbNodeId.value, failurePayload)
     ElMessage.error(errorMessage)
     await ctx?.refresh?.()
   } finally {
@@ -424,6 +453,14 @@ async function runStep(step) {
     if (ctx?.nodeStatus?.get(props.nodeId)?.step !== 'failed') ctx?.nodeStatus?.clear(props.nodeId)
     if (ctx?.nodeStatus?.get(sbNodeId.value)?.step !== 'failed') ctx?.nodeStatus?.clear(sbNodeId.value)
   }
+}
+
+async function retryFailedStep() {
+  const step = failedStatus.value?.retryStep
+  if (!step) return
+  ctx?.nodeStatus?.clear(props.nodeId)
+  ctx?.nodeStatus?.clear(sbNodeId.value)
+  await runStep(step)
 }
 </script>
 
