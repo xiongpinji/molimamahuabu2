@@ -862,6 +862,7 @@ function canvasNodeActions(node) {
     actions.push('focus-upstream', 'focus-downstream-video')
     if (node.type === 'canvasStoryboard') {
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
+      actions.push('create-workflow-from-node', 'run-node-workflow')
     } else if (node.type === 'canvasMedia') {
       if (node.data?.kind === 'image') actions.push('run-node-image', 'run-node-video')
       else if (node.data?.kind === 'video') actions.push('preview-node-video', 'run-node-video')
@@ -1025,6 +1026,38 @@ function previewNodeVideo(node) {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+async function createWorkflowFromNode(node) {
+  const storyboard = storyboardForNode(node)
+  const storyboardId = Number(storyboard?.id)
+  if (!Number.isFinite(storyboardId)) {
+    ElMessage.warning('只有分镜节点可以创建工作流')
+    return
+  }
+  const selectedIds = selectedStoryboardIds.value.map(Number)
+  if (!selectedIds.includes(storyboardId)) applySelectedStoryboardIds([storyboardId])
+  await onCreateWorkflowGroup()
+}
+
+async function runWorkflowFromNode(node) {
+  const storyboard = storyboardForNode(node)
+  const storyboardId = Number(storyboard?.id)
+  if (!Number.isFinite(storyboardId)) {
+    ElMessage.warning('只有分镜节点可以运行工作流')
+    return
+  }
+  const containingGroups = workflowGroups.value.filter((group) => (
+    (group.storyboard_ids || []).map(Number).includes(storyboardId)
+  ))
+  if (!containingGroups.length) {
+    ElMessage.warning('该分镜尚未加入工作流，请先创建工作流')
+    return
+  }
+  if (!activeGroupId.value || !containingGroups.some((group) => group.id === activeGroupId.value)) {
+    activeGroupId.value = containingGroups[0].id
+  }
+  await onRunActiveGroup()
+}
+
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     onNodeDoubleClick({ node })
@@ -1042,6 +1075,10 @@ async function runNodeMenuAction(type, node) {
     await focusDownstreamVideo(node)
   } else if (type === 'copy-node-ref') {
     await copyNodeReference(node)
+  } else if (type === 'create-workflow-from-node') {
+    await createWorkflowFromNode(node)
+  } else if (type === 'run-node-workflow') {
+    await runWorkflowFromNode(node)
   }
 }
 

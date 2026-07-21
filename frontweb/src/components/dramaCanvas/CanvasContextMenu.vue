@@ -50,7 +50,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, VideoPlay, View } from '@element-plus/icons-vue'
+import { Connection, Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -115,6 +115,13 @@ const nodeGroups = [
       { type: 'focus-upstream', label: '定位到上游素材', hint: '角色 / 场景 / 道具', icon: FolderOpened },
       { type: 'focus-downstream-video', label: '定位到下游视频', hint: '当前分镜视频', icon: FullScreen },
       { type: 'copy-node-ref', label: '复制节点引用', hint: '名称与 ID', icon: Document },
+    ],
+  },
+  {
+    title: '工作流',
+    items: [
+      { type: 'create-workflow-from-node', label: '创建工作流', hint: '用选中分镜成组', icon: Connection },
+      { type: 'run-node-workflow', label: '运行所在工作流', hint: '整组重跑', icon: VideoPlay },
     ],
   },
 ]
