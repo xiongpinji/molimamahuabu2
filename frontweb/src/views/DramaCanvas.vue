@@ -674,6 +674,66 @@ function taskResultUrl(task) {
     || ''
 }
 
+function firstTaskResultValue(result, response, fields) {
+  for (const field of fields) {
+    const value = result?.[field] ?? response?.[field]
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return ''
+}
+
+function taskSavedAssetInfo(task) {
+  const result = taskResultObject(task)
+  const response = result.response || result.data || {}
+  const asset = result.asset
+    || result.saved_asset
+    || result.savedAsset
+    || response.asset
+    || response.saved_asset
+    || response.savedAsset
+    || {}
+  const savedAssetId = asset.id || firstTaskResultValue(result, response, [
+    'savedAssetId',
+    'saved_asset_id',
+    'assetId',
+    'asset_id',
+  ])
+  if (!savedAssetId) return null
+  const savedAssetUrl = asset.url
+    || asset.asset_url
+    || asset.display_url
+    || asset.preview_url
+    || firstTaskResultValue(result, response, [
+      'savedAssetUrl',
+      'saved_asset_url',
+      'asset_url',
+      'display_url',
+      'preview_url',
+      'url',
+    ])
+  return {
+    savedAssetId,
+    savedAssetName: asset.name || firstTaskResultValue(result, response, [
+      'savedAssetName',
+      'saved_asset_name',
+      'assetName',
+      'asset_name',
+    ]) || '素材',
+    savedAssetUrl: savedAssetUrl || '',
+    savedAssetLocalPath: asset.local_path || firstTaskResultValue(result, response, [
+      'savedAssetLocalPath',
+      'saved_asset_local_path',
+      'local_path',
+    ]) || '',
+    savedAssetDuration: asset.duration
+      ?? result.savedAssetDuration
+      ?? result.saved_asset_duration
+      ?? response.savedAssetDuration
+      ?? response.saved_asset_duration
+      ?? null,
+  }
+}
+
 function taskRequestPayload(task, status) {
   const result = taskResultObject(task)
   const response = result.response || result.data || {}
@@ -709,6 +769,7 @@ function restoredTaskResultInfo(node, status, task, resultUrl) {
   const base = storyboardId ? nodeStepResultInfo(node, step, storyboardId, storyboard) : {}
   const result = taskResultObject(task)
   const response = result.response || result.data || {}
+  const savedAssetInfo = taskSavedAssetInfo(task) || {}
   return {
     ...base,
     resultUrl,
@@ -716,6 +777,11 @@ function restoredTaskResultInfo(node, status, task, resultUrl) {
     resultNodeId: status?.resultNodeId || base.resultNodeId || node?.id || '',
     resultLabel: status?.resultLabel || base.resultLabel || result.label || '结果已生成',
     promptText: status?.promptText || result.prompt || '',
+    savedAssetId: status?.savedAssetId || savedAssetInfo.savedAssetId || '',
+    savedAssetName: status?.savedAssetName || savedAssetInfo.savedAssetName || '',
+    savedAssetUrl: status?.savedAssetUrl || savedAssetInfo.savedAssetUrl || '',
+    savedAssetLocalPath: status?.savedAssetLocalPath || savedAssetInfo.savedAssetLocalPath || '',
+    savedAssetDuration: status?.savedAssetDuration ?? savedAssetInfo.savedAssetDuration ?? null,
     requestPayload: taskRequestPayload(task, status),
     requestAudit: taskRequestAudit(task, status),
     model: status?.model || result.model || response.model || '',
@@ -733,7 +799,7 @@ async function syncRestoredNodeTasks() {
         const resultUrl = taskResultUrl(task) || status.resultUrl || status.savedAssetUrl || ''
         const storyboardId = restoredNodeStoryboardId(node, status)
         const resultInfo = restoredTaskResultInfo(node, status, task, resultUrl)
-        const savedAssetInfo = !status.savedAssetId && resultUrl && storyboardId
+        const savedAssetInfo = !status.savedAssetId && !resultInfo.savedAssetId && resultUrl && storyboardId
           ? await saveNodeResultAsset(node, resultInfo, resultInfo.promptText || '', storyboardId)
           : null
         if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
