@@ -36,6 +36,9 @@
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
     <span v-if="isFailed" class="failed-actions">
+      <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+      <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
+      <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
       <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>

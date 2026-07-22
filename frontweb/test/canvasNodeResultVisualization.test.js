@@ -54,6 +54,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /<img v-if="resultPreviewType === 'image'"/)
   assert.match(overlaySource, /<video v-else-if="resultPreviewType === 'video'"/)
   assert.match(overlaySource, /<audio v-else-if="resultPreviewType === 'audio'"/)
+  assert.match(overlaySource, /<span v-if="isFailed" class="failed-actions">[\s\S]*打开结果[\s\S]*复制链接[\s\S]*下载结果/)
   assert.match(overlaySource, /function copyPrompt\(\)/)
   assert.match(overlaySource, /function copyResultLink\(\)/)
   assert.match(overlaySource, /function copyUpstreamReferences\(\)/)
