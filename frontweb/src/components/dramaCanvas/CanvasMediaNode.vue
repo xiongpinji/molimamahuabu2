@@ -38,6 +38,11 @@
         <button type="button" @click.stop="openResult">{{ previewLabel }}</button>
         <button type="button" @click.stop="copyResultLink">复制</button>
         <button type="button" @click.stop="downloadResult">下载</button>
+        <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位</button>
+        <button v-if="savedAssetReferenceText" type="button" @click.stop="copyAssetReference">素材引用</button>
+        <button v-if="savedAsset" type="button" :disabled="assigningAsset" @click.stop="assignSavedAssetToSelectedStoryboard">
+          {{ assigningAsset ? '回填中…' : '回填' }}
+        </button>
       </div>
       <div class="node-footer">
         <span class="result-state" :class="'state-' + resultState.key">{{ resultState.label }}</span>
@@ -68,12 +73,12 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
-import { audioUrl } from '@/utils/mediaUrl'
+import { assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
 import {
   imageRecordUrl,
   resolveSbFirstImageRecord,
@@ -92,6 +97,7 @@ const props = defineProps({
 
 const ctx = useCanvasContext()
 const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
+const assigningAsset = ref(false)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
@@ -157,6 +163,25 @@ const kindLabel = computed(() => {
 
 const canRetry = computed(() => Boolean(runtimeStatus.value?.retryStep) || ['image', 'video', 'audio'].includes(props.data.kind))
 const resultUrl = computed(() => runtimeStatus.value?.resultUrl || props.data.url || fallbackResultUrl.value)
+const resultNodeId = computed(() => runtimeStatus.value?.resultNodeId || '')
+const savedAsset = computed(() => {
+  const status = runtimeStatus.value
+  if (!status?.savedAssetId) return null
+  return {
+    id: status.savedAssetId,
+    name: status.savedAssetName || `${kindLabel.value}结果`,
+    type: status.resultType || props.data.kind,
+    url: status.savedAssetUrl || status.resultUrl || resultUrl.value || '',
+    local_path: status.savedAssetLocalPath || '',
+    duration: status.savedAssetDuration ?? undefined,
+  }
+})
+const savedAssetReferenceText = computed(() => {
+  const asset = savedAsset.value
+  if (!asset?.id) return ''
+  const url = assetMediaUrl(asset) || asset.url || ''
+  return `@素材(${asset.name || '素材'}#${asset.id}) ${url}`.trim()
+})
 const previewLabel = computed(() => {
   if (props.data.kind === 'image') return '预览图'
   if (props.data.kind === 'video') return '预览视频'
@@ -193,6 +218,40 @@ async function copyResultLink() {
     ElMessage.success('结果链接已复制')
   } catch {
     ElMessageBox.alert(resultUrl.value, '结果链接（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function copyAssetReference() {
+  if (!savedAssetReferenceText.value) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(savedAssetReferenceText.value)
+    ElMessage.success('素材引用已复制')
+  } catch {
+    ElMessageBox.alert(savedAssetReferenceText.value, '素材引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function focusResultNode() {
+  if (!resultNodeId.value) return
+  if (!ctx?.focusCanvasNode) {
+    ElMessage.warning('当前画布暂不支持定位结果节点')
+    return
+  }
+  if (ctx?.findCanvasNode && !ctx.findCanvasNode(resultNodeId.value)) {
+    ElMessage.warning('结果节点不在当前画布，可刷新后重试')
+    return
+  }
+  await ctx.focusCanvasNode(resultNodeId.value)
+}
+
+async function assignSavedAssetToSelectedStoryboard() {
+  if (!savedAsset.value || assigningAsset.value) return
+  assigningAsset.value = true
+  try {
+    await ctx?.assignProjectAssetToSelectedStoryboard?.(savedAsset.value)
+  } finally {
+    assigningAsset.value = false
   }
 }
 
