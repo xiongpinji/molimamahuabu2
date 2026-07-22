@@ -1447,14 +1447,21 @@ function mediaTypeFromFile(file) {
   return 'image'
 }
 
-function mediaTypeFromUrl(url) {
+function mediaTypeFromUrl(url, fallback = 'image') {
   const value = String(url || '').toLowerCase().split('?')[0]
   if (/\.(mp4|webm|mov|m4v)$/.test(value)) return 'video'
   if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(value)) return 'audio'
-  return 'image'
+  return fallback || 'image'
 }
 
-async function ensureProjectImageAsset(asset) {
+function normalizePickedAssetType(asset) {
+  const type = String(asset?.type || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  const url = assetDisplayUrl(asset) || assetLocalPath(asset)
+  return mediaTypeFromUrl(url, 'image')
+}
+
+async function ensureProjectMediaAsset(asset) {
   const assetId = projectAssetId(asset)
   if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
   if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
@@ -1464,7 +1471,7 @@ async function ensureProjectImageAsset(asset) {
   return assetsAPI.create({
     drama_id: drama.value.id,
     name: asset?.name || asset?.title || asset?.filename || '素材库素材',
-    type: asset?.type || 'image',
+    type: normalizePickedAssetType(asset),
     category: 'canvas-library-pick',
     url,
     local_path: localPath || undefined,
@@ -1791,7 +1798,7 @@ async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
   try {
-    projectAsset = await ensureProjectImageAsset(asset)
+    projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (selectedStoryboardIds.value.length === 1) {
       await assignProjectAssetToSelectedStoryboard(projectAsset)
