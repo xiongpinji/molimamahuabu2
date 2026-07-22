@@ -77,7 +77,7 @@ const videoConfigs = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
 
 const imageModelOptions = computed(() => withCurrent(
-  getSelectableModels(imageConfigs.value, 'image'),
+  getSelectableModels(imageConfigs.value, 'storyboard_image'),
   options.value.imageModel,
 ))
 const videoModelOptions = computed(() => withCurrent(
@@ -104,11 +104,14 @@ function update(field, value) {
 }
 
 onMounted(async () => {
-  const [images, videos] = await Promise.allSettled([
+  const [images, storyboardImages, videos] = await Promise.allSettled([
     aiAPI.list('image'),
+    aiAPI.list('storyboard_image'),
     aiAPI.list('video'),
   ])
-  if (images.status === 'fulfilled') imageConfigs.value = Array.isArray(images.value) ? images.value : []
+  const imageList = images.status === 'fulfilled' && Array.isArray(images.value) ? images.value : []
+  const storyboardImageList = storyboardImages.status === 'fulfilled' && Array.isArray(storyboardImages.value) ? storyboardImages.value : []
+  imageConfigs.value = [...storyboardImageList, ...imageList]
   if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []
 })
 </script>

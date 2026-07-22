@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   buildUniversalPromptFieldOverrides,
@@ -13,6 +16,12 @@ import {
   storyboardIdFromNodeId,
   universalPromptDuration,
 } from '../src/utils/canvasWorkflow.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const generationOptionsSource = fs.readFileSync(
+  path.join(__dirname, '../src/components/dramaCanvas/CanvasGenerationOptions.vue'),
+  'utf8',
+)
 
 test('画布生成参数从项目元数据读取模型、画幅和清晰度', () => {
   const options = getDramaGenerationOptions({
@@ -135,4 +144,10 @@ test('画布摄影参数会追加到生图提示词且不重复追加', () => {
   assert.match(prompt, /景别中景/)
   assert.match(prompt, /灯光黄金时段光/)
   assert.equal(buildCanvasPhotographyPrompt(prompt, storyboard), prompt)
+})
+
+test('画布模型选择包含分镜图片专用配置并保留图片模型兜底', () => {
+  assert.match(generationOptionsSource, /getSelectableModels\(imageConfigs\.value,\s*'storyboard_image'\)/)
+  assert.match(generationOptionsSource, /aiAPI\.list\('storyboard_image'\)/)
+  assert.match(generationOptionsSource, /imageConfigs\.value\s*=\s*\[\.\.\.storyboardImageList,\s*\.\.\.imageList\]/)
 })
