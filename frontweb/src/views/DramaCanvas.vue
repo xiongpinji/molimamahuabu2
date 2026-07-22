@@ -1142,6 +1142,7 @@ function canvasNodeActions(node) {
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
   if (nodeAssignedAssets(node).length) actions.unshift(
+    'set-assigned-asset-main-image',
     'set-assigned-asset-first-frame',
     'set-assigned-asset-last-frame',
     'copy-node-assigned-asset-ref',
@@ -1544,7 +1545,7 @@ async function setNodeAssignedAssetFrame(node, frameType) {
     ElMessage.warning('该分镜暂无可回填的指派素材')
     return false
   }
-  const label = frameType === 'storyboard_last' ? '尾帧' : '首帧'
+  const label = frameType === 'storyboard_last' ? '尾帧' : frameType === 'storyboard_first' ? '首帧' : '分镜图'
   await imagesAPI.upload({
     storyboard_id: sb.id,
     drama_id: drama.value.id,
@@ -2078,6 +2079,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeAssignedAssetReference(node)
   } else if (type === 'unbind-node-assigned-asset') {
     await unbindNodeAssignedAsset(node)
+  } else if (type === 'set-assigned-asset-main-image') {
+    await setNodeAssignedAssetFrame(node)
   } else if (type === 'set-assigned-asset-first-frame') {
     await setNodeAssignedAssetFrame(node, 'storyboard_first')
   } else if (type === 'set-assigned-asset-last-frame') {

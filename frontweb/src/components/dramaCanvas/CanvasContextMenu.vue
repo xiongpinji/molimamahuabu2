@@ -105,6 +105,7 @@ const nodeGroups = [
       { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
       { type: 'copy-node-asset-ref', label: '复制素材引用', hint: '@素材(...)', icon: Document },
       { type: 'copy-node-assigned-asset-ref', label: '复制指派素材', hint: '本镜参考素材', icon: Document },
+      { type: 'set-assigned-asset-main-image', label: '设为分镜图', hint: '回填本镜主图', icon: Picture },
       { type: 'set-assigned-asset-first-frame', label: '设为首帧', hint: '使用指派素材', icon: Picture },
       { type: 'set-assigned-asset-last-frame', label: '设为尾帧', hint: '用于视频衔接', icon: Picture },
       { type: 'unbind-node-assigned-asset', label: '解绑指派素材', hint: '移出当前分镜', icon: Connection },
