@@ -1119,6 +1119,7 @@ function canvasNodeActions(node) {
   }
   if (sb) {
     actions.push('focus-upstream', 'focus-downstream-video')
+    actions.push('append-downstream-storyboard')
     if (node.type === 'canvasStoryboard') {
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
       actions.push('create-workflow-from-node', 'run-node-workflow')
@@ -1207,6 +1208,63 @@ async function focusDownstreamVideo(node) {
   const storyboard = node?.type === 'canvasAsset' ? firstStoryboardForAssetNode(node) : storyboardForNode(node)
   const targetId = storyboard ? `sbvid:${storyboard.id}` : null
   await focusNodeOrWarn(targetId, '该节点下游暂无视频节点')
+}
+
+async function appendDownstreamStoryboard(node) {
+  if (!node) return
+  const sourceStoryboard = storyboardForNode(node)
+  let episodeId = sourceStoryboard?.episode_id || node.data?.episodeId || filterEpisodeId.value
+  if (!episodeId) {
+    const eps = drama.value?.episodes || []
+    if (eps.length === 1) episodeId = eps[0].id
+  }
+  if (!episodeId) {
+    ElMessage.warning('请先选择集数，再追加下游分镜')
+    return
+  }
+
+  const episode = (drama.value?.episodes || []).find((ep) => Number(ep.id) === Number(episodeId))
+  const boards = episode?.storyboards || []
+  const maxNum = boards.reduce((max, sb) => Math.max(max, Number(sb.storyboard_number || sb.shot_number || 0)), 0)
+  const created = await storyboardsAPI.create({
+    episode_id: episodeId,
+    storyboard_number: maxNum + 1,
+    title: `下游分镜 ${maxNum + 1}`,
+    description: sourceStoryboard?.description ? `承接：${sourceStoryboard.description}` : '',
+  })
+  const storyboard = created?.data ?? created
+  const storyboardId = storyboard?.id ?? storyboard?.storyboard?.id
+  if (!storyboardId) throw new Error('追加下游分镜失败：未返回分镜 ID')
+
+  const targetNodeId = `sb:${storyboardId}`
+  const sourcePosition = node.position || { x: 0, y: 0 }
+  const targetPosition = { x: sourcePosition.x + 420, y: sourcePosition.y }
+  const edge = {
+    id: manualEdgeId({ source: node.id, target: targetNodeId }),
+    source: node.id,
+    target: targetNodeId,
+    sourceHandle: null,
+    targetHandle: null,
+    type: 'smoothstep',
+    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
+    data: { manual: true },
+  }
+
+  layoutCache.value = {
+    ...(layoutCache.value || { version: 1 }),
+    nodes: {
+      ...(layoutCache.value?.nodes || {}),
+      [targetNodeId]: targetPosition,
+    },
+  }
+  if (!hasSameEdgeConnection(edge)) {
+    allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
+  }
+  await persistCanvasState({ layoutOnly: true })
+  if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
+  await refreshCanvas(false)
+  await focusCanvasNode(targetNodeId)
+  ElMessage.success('已追加下游分镜并连线')
 }
 
 async function copyNodeReference(node) {
@@ -1900,6 +1958,8 @@ async function runNodeMenuAction(type, node) {
     await focusUpstreamAsset(node)
   } else if (type === 'focus-downstream-video') {
     await focusDownstreamVideo(node)
+  } else if (type === 'append-downstream-storyboard') {
+    await appendDownstreamStoryboard(node)
   } else if (type === 'copy-node-ref') {
     await copyNodeReference(node)
   } else if (type === 'create-workflow-from-node') {

@@ -106,3 +106,16 @@ test('画布支持手动节点连线并持久化到布局', () => {
   assert.match(canvasSource, /scheduleLayoutSave\(\)/)
   assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value\s*\)/)
 })
+
+test('右键节点支持追加下游分镜并自动创建手动连线', () => {
+  assert.match(contextMenuSource, /type: 'append-downstream-storyboard'/)
+  assert.match(contextMenuSource, /追加下游分镜/)
+  assert.match(canvasSource, /actions\.push\('append-downstream-storyboard'\)/)
+  assert.match(canvasSource, /async function appendDownstreamStoryboard\(node\)/)
+  assert.match(canvasSource, /await storyboardsAPI\.create\(\{/)
+  assert.match(canvasSource, /\[targetNodeId\]: targetPosition/)
+  assert.match(canvasSource, /id: manualEdgeId\(\{ source: node\.id, target: targetNodeId \}\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
+  assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
+  assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
+})
