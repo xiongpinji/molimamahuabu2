@@ -1370,16 +1370,21 @@ async function setNodeAssignedAssetFrame(node, frameType) {
   return true
 }
 
-async function assignProjectAssetToSelectedStoryboard(asset) {
+async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
+  const silent = options.silent === true
+  const returnDetail = options.returnDetail === true
+  const fail = (message) => {
+    if (!silent) ElMessage.warning(message)
+    return returnDetail ? { ok: false, message } : false
+  }
+  const success = () => returnDetail ? { ok: true, message: '已指派素材到选中分镜' } : true
   const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
   if (selectedIds.length !== 1) {
-    ElMessage.warning(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
-    return false
+    return fail(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
   }
   const assetId = projectAssetId(asset)
   if (!drama.value?.id || !assetId) {
-    ElMessage.warning('素材信息不完整，无法指派')
-    return false
+    return fail(!assetId ? '素材信息不完整，无法指派' : '缺少项目 ID，无法指派素材')
   }
   const storyboardId = selectedIds[0]
   await assetsAPI.update(assetId, { drama_id: drama.value.id, storyboard_id: storyboardId })
@@ -1387,7 +1392,49 @@ async function assignProjectAssetToSelectedStoryboard(asset) {
   rebuildGraph()
   await focusCanvasNode(`sb:${storyboardId}`)
   ElMessage.success('已指派素材到选中分镜')
-  return true
+  return success()
+}
+
+async function runCanvasProjectAssetNodeStep(node, step) {
+  if (step !== 'library') {
+    ElMessage.warning('该项目素材节点暂不支持该操作')
+    return
+  }
+  const nodeId = String(node?.id || '')
+  const asset = node?.data?.asset
+  const assetId = projectAssetId(asset)
+  const resultUrl = assetDisplayUrl(asset)
+  const retryPayload = {
+    retryStep: 'library',
+    retryLabel: '重试指派素材',
+    resultUrl,
+    resultType: asset?.type || 'image',
+    savedAssetId: assetId,
+    savedAssetName: asset?.name || '项目素材',
+    autoClear: false,
+  }
+  if (!nodeId) return
+  nodeStatus.set(nodeId, {
+    step: 'library',
+    message: '指派素材到分镜中…',
+    ...retryPayload,
+  })
+  try {
+    const result = await assignProjectAssetToSelectedStoryboard(asset, { silent: true, returnDetail: true })
+    if (!result?.ok) throw new Error(result?.message || '素材未指派，请选中一个分镜后重试')
+    nodeStatus.success(nodeId, {
+      message: '已指派素材到选中分镜',
+      ...retryPayload,
+    })
+  } catch (error) {
+    const message = error?.message || '素材指派失败'
+    nodeStatus.fail(nodeId, {
+      message,
+      errorDetail: message,
+      ...retryPayload,
+    })
+    ElMessage.error(message)
+  }
 }
 
 function openCanvasAssetLibrary(flowPosition = null) {
@@ -1601,6 +1648,10 @@ function nodeStepTaskStatusOptions(statusIds, basePayload) {
 }
 
 async function runCanvasNodeStep(node, step) {
+  if (node?.type === 'canvasProjectAsset') {
+    await runCanvasProjectAssetNodeStep(node, step)
+    return
+  }
   if (node?.type === 'canvasAsset') {
     await runCanvasAssetNodeStep(node, step)
     return
@@ -1773,7 +1824,7 @@ async function runNodeMenuAction(type, node) {
   } else if (type === 'set-assigned-asset-last-frame') {
     await setNodeAssignedAssetFrame(node, 'storyboard_last')
   } else if (type === 'assign-project-asset-selected') {
-    await assignProjectAssetToSelectedStoryboard(node.data?.asset)
+    await runCanvasNodeStep(node, 'library')
   } else if (type === 'focus-node-result') {
     await focusNodeResult(node)
   } else if (type === 'retry-node-failed') {

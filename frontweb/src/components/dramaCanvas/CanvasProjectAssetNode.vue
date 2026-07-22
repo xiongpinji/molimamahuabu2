@@ -1,5 +1,6 @@
 <template>
   <div class="project-asset-node" :class="{ focused: data.focused }">
+    <CanvasNodeStatusOverlay :node-id="id" />
     <div class="tag">{{ typeLabel }}</div>
     <video v-if="assetType === 'video' && url" :src="url" class="asset-media" muted controls preload="metadata" />
     <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio" controls />
@@ -41,8 +42,12 @@ import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetMediaUrl } from '@/utils/mediaUrl'
+import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
-const props = defineProps({ data: { type: Object, required: true } })
+const props = defineProps({
+  id: { type: String, required: true },
+  data: { type: Object, required: true },
+})
 const ctx = useCanvasContext()
 const assigning = ref(false)
 const assetType = computed(() => props.data.asset?.type || 'image')
@@ -76,7 +81,7 @@ async function assignToSelectedStoryboard() {
   if (!assetId.value || assigning.value) return
   assigning.value = true
   try {
-    await ctx?.assignProjectAssetToSelectedStoryboard?.(props.data.asset)
+    await ctx?.runNodeStep?.({ id: props.id, type: 'canvasProjectAsset', data: props.data }, 'library')
   } finally {
     assigning.value = false
   }
@@ -88,7 +93,7 @@ function closePanel() {
 </script>
 
 <style scoped>
-.project-asset-node { width: 190px; overflow: hidden; border: 1px solid #3f3f46; border-radius: 12px; padding: 9px; background: #18181b; color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
+.project-asset-node { position: relative; width: 190px; overflow: hidden; border: 1px solid #3f3f46; border-radius: 12px; padding: 9px; background: #18181b; color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
 .project-asset-node.focused { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.25); }
 .project-asset-node img,
 .asset-media,

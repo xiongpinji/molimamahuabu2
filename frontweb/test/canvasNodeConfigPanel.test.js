@@ -167,6 +167,6 @@ test('项目素材节点聚焦后提供配置面板和挂载动作', () => {
   assert.match(projectAssetNodeSource, /closePanel/)
   assert.match(projectAssetNodeSource, /复制到提示词/)
   assert.match(projectAssetNodeSource, /指派到选中分镜/)
-  assert.match(projectAssetNodeSource, /ctx\?\.assignProjectAssetToSelectedStoryboard\?\.\(props\.data\.asset\)/)
+  assert.match(projectAssetNodeSource, /ctx\?\.runNodeStep\?\.\(\{ id: props\.id, type: 'canvasProjectAsset', data: props\.data \}, 'library'\)/)
   assert.match(projectAssetNodeSource, /ctx\?\.clearFocusedNode\?\.\(\)/)
 })

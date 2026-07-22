@@ -10,7 +10,7 @@
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
     <span v-if="actionErrorText" class="action-error">{{ actionErrorText }}</span>
-    <div v-if="isSuccess && status.resultUrl" class="result-preview" :class="'result-' + resultPreviewType">
+    <div v-if="hasResultPreview" class="result-preview" :class="'result-' + resultPreviewType">
       <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
       <video v-else-if="resultPreviewType === 'video'" :src="status.resultUrl" muted controls playsinline />
       <audio v-else-if="resultPreviewType === 'audio'" :src="status.resultUrl" controls />
@@ -76,6 +76,7 @@ const status = computed(() => {
 
 const isFailed = computed(() => status.value?.step === 'failed')
 const isSuccess = computed(() => status.value?.step === 'success')
+const hasResultPreview = computed(() => Boolean(status.value?.resultUrl) && (isSuccess.value || isFailed.value))
 
 const stepLabel = computed(() => {
   const map = {
