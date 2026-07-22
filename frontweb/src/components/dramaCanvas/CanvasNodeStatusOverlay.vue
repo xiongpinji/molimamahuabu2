@@ -373,6 +373,10 @@ async function saveResultAsset() {
         canvas_node_id: props.nodeId,
         result_label: status.value?.resultLabel || '',
         prompt_text: status.value?.promptText || '',
+        model: status.value?.model || '',
+        task_id: status.value?.taskId || '',
+        video_generation_id: status.value?.videoGenerationId || '',
+        request_payload: status.value?.requestPayload || null,
       },
     })
     const normalizedAsset = asset ? {

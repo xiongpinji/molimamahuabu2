@@ -1990,6 +1990,10 @@ async function saveNodeResultAsset(node, resultInfo, promptText, storyboardId) {
         canvas_node_id: node?.id || '',
         result_label: resultInfo.resultLabel || '',
         prompt_text: promptText || '',
+        model: resultInfo.model || '',
+        task_id: resultInfo.taskId || '',
+        video_generation_id: resultInfo.videoGenerationId || '',
+        request_payload: resultInfo.requestPayload || null,
         auto_saved: true,
       },
     })
