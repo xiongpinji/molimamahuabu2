@@ -1008,6 +1008,21 @@ async function focusQueueItem(item) {
 async function retryQueueItem(item) {
   const node = findGraphNode(item?.nodeId)
   if (!node || !item?.retryStep) {
+    if (item?.retryStep === 'library') {
+      canvasAssetPickerRetryNodeId.value = item?.nodeId || ''
+      canvasAssetPickerFlowPos.value = null
+      canvasAssetPickerVisible.value = true
+      if (item?.nodeId) {
+        nodeStatus.set(item.nodeId, {
+          step: 'library',
+          message: '请在素材库中重新选择素材…',
+          retryStep: 'library',
+          retryLabel: '重新打开素材库',
+          autoClear: false,
+        })
+      }
+      return
+    }
     ElMessage.warning('未找到可重试节点')
     return
   }
@@ -1704,6 +1719,36 @@ function normalizePickedAssetType(asset) {
   return mediaTypeFromUrl(url, 'image')
 }
 
+function selectedStoryboardIdForAssetAttach() {
+  const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
+  return selectedIds.length === 1 ? selectedIds[0] : null
+}
+
+function assetAttachSlot(asset) {
+  const type = normalizePickedAssetType(asset)
+  if (type === 'video') return 'video'
+  if (type === 'audio') return 'audio'
+  return 'image'
+}
+
+function canvasAssetStatusPayload(asset, overrides = {}) {
+  const url = assetDisplayUrl(asset)
+  const localPath = assetLocalPath(asset)
+  return {
+    resultUrl: url,
+    resultType: normalizePickedAssetType(asset),
+    savedAssetId: projectAssetId(asset),
+    savedAssetName: asset?.name || asset?.title || asset?.filename || '项目素材',
+    savedAssetUrl: url,
+    savedAssetLocalPath: localPath,
+    libraryAsset: asset || null,
+    retryStep: 'library',
+    retryLabel: '重试指派素材',
+    autoClear: false,
+    ...overrides,
+  }
+}
+
 function canvasAssetFailureNode(message, flowPosition = null, asset = null) {
   const id = `asset-failure:${Date.now()}`
   const name = asset?.name || asset?.title || asset?.filename || '素材库调用失败'
@@ -1733,11 +1778,12 @@ function canvasAssetFailureNode(message, flowPosition = null, asset = null) {
   nodeStatus.fail(nodeId, {
     message,
     errorDetail: message,
-    retryStep: 'library',
+    ...canvasAssetStatusPayload(asset || node, {
+      retryStep: 'library',
+      resultType: node.type,
+      savedAssetName: name,
+    }),
     retryLabel: '重新打开素材库',
-    resultType: node.type,
-    savedAssetName: name,
-    autoClear: false,
   })
   focusedNodeId.value = nodeId
   return nodeId
@@ -1953,17 +1999,11 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     })
     return
   }
-  const assetId = projectAssetId(asset)
-  const resultUrl = assetDisplayUrl(asset)
-  const retryPayload = {
-    retryStep: 'library',
-    retryLabel: '重试指派素材',
-    resultUrl,
-    resultType: normalizePickedAssetType(asset),
-    savedAssetId: assetId,
-    savedAssetName: asset?.name || '项目素材',
-    autoClear: false,
-  }
+  const targetStoryboardId = selectedStoryboardIdForAssetAttach()
+  const retryPayload = canvasAssetStatusPayload(asset, {
+    attachedSlot: assetAttachSlot(asset),
+    attachedToStoryboardId: targetStoryboardId,
+  })
   if (!nodeId) return
   nodeStatus.set(nodeId, {
     step: 'library',
@@ -1974,7 +2014,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     const result = await assignProjectAssetToSelectedStoryboard(asset, { silent: true, returnDetail: true })
     if (!result?.ok) throw new Error(result?.message || '素材未指派，请选中一个分镜后重试')
     nodeStatus.success(nodeId, {
-      message: '已指派素材到选中分镜',
+      message: result.message || '已指派素材到选中分镜',
       ...retryPayload,
     })
   } catch (error) {
@@ -2110,26 +2150,27 @@ async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
   const retryNodeId = canvasAssetPickerRetryNodeId.value
+  const targetStoryboardId = selectedStoryboardIdForAssetAttach()
   try {
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (retryNodeId) clearCanvasAssetFailureNode(retryNodeId)
-    if (selectedStoryboardIds.value.length === 1) {
-      await assignProjectAssetToSelectedStoryboard(projectAsset)
+    let resultMessage = nodeId ? '已从素材库加入画布' : '素材已加入项目素材库'
+    if (targetStoryboardId) {
+      const assignResult = await assignProjectAssetToSelectedStoryboard(projectAsset, { silent: true, returnDetail: true })
+      if (!assignResult?.ok) throw new Error(assignResult?.message || '素材未指派，请选中一个分镜后重试')
+      resultMessage = '已加入画布并指派到分镜'
     } else {
-      ElMessage.success(nodeId ? '已从素材库加入画布' : '素材已加入项目素材库')
+      ElMessage.success(resultMessage)
     }
     if (nodeId) {
       nodeStatus.success(nodeId, {
-        message: selectedStoryboardIds.value.length === 1 ? '已加入画布并指派到分镜' : '已从素材库加入画布',
-        resultUrl: assetDisplayUrl(projectAsset),
-        resultType: normalizePickedAssetType(projectAsset || asset),
-        savedAssetId: projectAssetId(projectAsset),
-        savedAssetName: projectAsset?.name || asset?.name || '项目素材',
-        savedAssetUrl: assetDisplayUrl(projectAsset),
-        retryStep: 'library',
-        retryLabel: '重新指派素材',
-        autoClear: false,
+        ...canvasAssetStatusPayload(projectAsset || asset, {
+          message: resultMessage,
+          retryLabel: '重新指派素材',
+          attachedSlot: targetStoryboardId ? assetAttachSlot(projectAsset || asset) : '',
+          attachedToStoryboardId: targetStoryboardId,
+        }),
       })
     }
   } catch (e) {
@@ -2137,15 +2178,14 @@ async function onCanvasAssetLibraryPick(asset) {
     if (nodeId) {
       const message = e?.message || '素材库素材加入画布失败'
       nodeStatus.fail(nodeId, {
-        message,
-        errorDetail: message,
-        resultUrl: projectAsset ? assetDisplayUrl(projectAsset) : '',
-        resultType: normalizePickedAssetType(projectAsset || asset),
-        savedAssetId: projectAsset ? projectAssetId(projectAsset) : '',
-        savedAssetName: projectAsset?.name || asset?.name || '项目素材',
+        ...canvasAssetStatusPayload(projectAsset || asset, {
+          message,
+          errorDetail: message,
+          attachedSlot: targetStoryboardId ? assetAttachSlot(projectAsset || asset) : '',
+          attachedToStoryboardId: targetStoryboardId,
+        }),
         retryStep: 'library',
         retryLabel: '重试指派素材',
-        autoClear: false,
       })
     }
     ElMessage.error(e?.message || '素材库素材加入画布失败')
