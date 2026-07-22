@@ -50,6 +50,16 @@ function episodeScriptContent(drama, episodeId) {
   return ep?.script_content || ''
 }
 
+function firstExtractResultNodeId(drama, step) {
+  if (step === 'extract_chars') return drama?.characters?.[0]?.id ? `char:${drama.characters[0].id}` : ''
+  if (step === 'extract_scenes') return drama?.scenes?.[0]?.id ? `scene:${drama.scenes[0].id}` : ''
+  if (step === 'extract_props') return drama?.props?.[0]?.id ? `prop:${drama.props[0].id}` : ''
+  if (step !== 'extract_all') return ''
+  return firstExtractResultNodeId(drama, 'extract_chars')
+    || firstExtractResultNodeId(drama, 'extract_scenes')
+    || firstExtractResultNodeId(drama, 'extract_props')
+}
+
 /** 画布：剧本编辑 + 从剧本提取角色/场景/道具 */
 export function useCanvasScript(deps) {
   const { drama, dramaId, refreshCanvas, nodeStatus } = deps
@@ -84,6 +94,7 @@ export function useCanvasScript(deps) {
       message,
       resultType: 'text',
       resultLabel: message,
+      resultNodeId: firstExtractResultNodeId(drama.value, step),
       promptText: scriptContent || '',
       retryStep: step,
       retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '脚本任务'}`,
