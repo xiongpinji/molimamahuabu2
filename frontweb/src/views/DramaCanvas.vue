@@ -1116,7 +1116,7 @@ function canvasNodeActions(node) {
     return [...new Set(actions)]
   }
   if (node.type === 'canvasAsset') {
-    return [...actions, 'focus-downstream-video']
+    return [...new Set([...actions, 'append-downstream-storyboard', 'focus-downstream-video'])]
   }
   if (sb) {
     actions.push('focus-upstream', 'focus-downstream-video')
@@ -1213,7 +1213,7 @@ async function focusDownstreamVideo(node) {
 
 async function appendDownstreamStoryboard(node) {
   if (!node) return
-  const sourceStoryboard = storyboardForNode(node)
+  const sourceStoryboard = storyboardForNode(node) || (node.type === 'canvasAsset' ? firstStoryboardForAssetNode(node) : null)
   let episodeId = sourceStoryboard?.episode_id || node.data?.episodeId || filterEpisodeId.value
   if (!episodeId) {
     const eps = drama.value?.episodes || []
@@ -1231,7 +1231,11 @@ async function appendDownstreamStoryboard(node) {
     episode_id: episodeId,
     storyboard_number: maxNum + 1,
     title: `下游分镜 ${maxNum + 1}`,
-    description: sourceStoryboard?.description ? `承接：${sourceStoryboard.description}` : '',
+    description: sourceStoryboard?.description
+      ? `承接：${sourceStoryboard.description}`
+      : node.type === 'canvasAsset'
+        ? `围绕${canvasNodeLabel(node)}设计新分镜`
+        : '',
   })
   const storyboard = created?.data ?? created
   const storyboardId = storyboard?.id ?? storyboard?.storyboard?.id
