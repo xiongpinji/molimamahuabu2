@@ -264,6 +264,14 @@ function copyResultLink() {
 
 async function focusResultNode() {
   if (!resultNodeId.value) return
+  if (!ctx?.focusCanvasNode) {
+    ElMessage.warning('当前画布暂不支持定位结果节点')
+    return
+  }
+  if (ctx?.findCanvasNode && !ctx.findCanvasNode(resultNodeId.value)) {
+    ElMessage.warning('结果节点不在当前画布，可刷新后重试')
+    return
+  }
   await ctx?.focusCanvasNode?.(resultNodeId.value)
 }
 
