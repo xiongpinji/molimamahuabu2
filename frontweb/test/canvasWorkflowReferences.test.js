@@ -27,3 +27,21 @@ test('参考资产最多返回十张并支持 local_path', () => {
   assert.equal(refs.length, 10)
   assert.equal(refs[0].url, '/static/characters/0.png')
 })
+
+test('参考资产支持角色场景道具的 ref_image 和素材库 URL 字段', () => {
+  const refs = collectStoryboardReferenceAssets({
+    scenes: [{ id: 2, location: '雨林', ref_image: 'scenes/rainforest.png' }],
+    characters: [{ id: 1, name: '小狐', display_url: 'https://cdn.example.com/fox.png' }],
+    props: [{ id: 5, name: '木牌', asset_url: '/uploads/wood-sign.png' }],
+  }, {
+    scene_id: 2,
+    characters: [1],
+    prop_ids: [5],
+  })
+
+  assert.deepEqual(refs.map((ref) => ref.url), [
+    '/static/scenes/rainforest.png',
+    'https://cdn.example.com/fox.png',
+    '/uploads/wood-sign.png',
+  ])
+})

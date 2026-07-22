@@ -1,9 +1,30 @@
-/** 统一媒体 URL：优先 local_path，其次 image_url / video_url */
+function staticMediaUrl(value) {
+  const p = String(value || '').trim()
+  if (!p) return ''
+  if (/^(https?:|data:|blob:)/i.test(p)) return p
+  return '/static/' + p.replace(/^\/+/, '').replace(/^static\//, '')
+}
+
+function referenceMediaUrl(value) {
+  const p = String(value || '').trim()
+  if (!p) return ''
+  if (/^(https?:|data:|blob:)/i.test(p) || p.startsWith('/')) return p
+  return staticMediaUrl(p)
+}
+
+/** 统一媒体 URL：优先本地路径，其次素材/参考图常见远程字段 */
 export function assetImageUrl(item) {
   if (!item) return ''
-  const lp = item.local_path && String(item.local_path).trim()
-  if (lp) return '/static/' + lp.replace(/^\//, '')
-  return item.image_url || ''
+  const localPath = item.local_path || item.image_local_path || item.thumbnail_local_path
+  if (localPath) return staticMediaUrl(localPath)
+  const remote = item.image_url
+    || item.ref_image
+    || item.thumbnail_url
+    || item.display_url
+    || item.asset_url
+    || item.preview_url
+    || item.url
+  return remote ? referenceMediaUrl(remote) : ''
 }
 
 export function storyboardImageUrl(sb) {
