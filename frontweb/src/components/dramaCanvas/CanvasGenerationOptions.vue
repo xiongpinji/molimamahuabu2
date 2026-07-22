@@ -2,7 +2,7 @@
   <div class="generation-options" :class="{ compact }">
     <span class="options-label">{{ label }}</span>
     <el-select
-      v-if="mode !== 'video'"
+      v-if="mode === 'image' || mode === 'both'"
       :model-value="options.imageModel || ''"
       size="small"
       class="model-select"
@@ -14,7 +14,7 @@
       <el-option v-for="model in imageModelOptions" :key="`image-${model}`" :label="model" :value="model" />
     </el-select>
     <el-select
-      v-if="mode !== 'image'"
+      v-if="mode === 'video' || mode === 'both'"
       :model-value="options.videoModel || ''"
       size="small"
       class="model-select"
@@ -26,7 +26,7 @@
       <el-option v-for="model in videoModelOptions" :key="`video-${model}`" :label="model" :value="model" />
     </el-select>
     <el-select
-      v-if="!modelsOnly"
+      v-if="!modelsOnly && mode !== 'audio'"
       :model-value="options.aspectRatio || '16:9'"
       size="small"
       class="ratio-select"
@@ -41,7 +41,7 @@
       <el-option label="21:9 宽银幕" value="21:9" />
     </el-select>
     <el-select
-      v-if="!modelsOnly && mode !== 'image'"
+      v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
       :model-value="options.videoResolution || '480p'"
       size="small"
       class="resolution-select"
@@ -53,7 +53,7 @@
       <el-option label="1080p 超清" value="1080p" />
     </el-select>
     <el-input-number
-      v-if="!modelsOnly && mode !== 'image'"
+      v-if="!modelsOnly && (mode === 'video' || mode === 'both' || mode === 'audio')"
       :model-value="Number(options.videoDuration || 5)"
       size="small"
       class="duration-input"

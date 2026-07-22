@@ -159,3 +159,11 @@ test('视频生成参数组件提供单镜时长配置', () => {
   assert.match(generationOptionsSource, /:min="1"/)
   assert.match(generationOptionsSource, /:max="120"/)
 })
+
+test('生成参数组件显式区分音频模式，避免暴露不适用的视频配置', () => {
+  assert.match(generationOptionsSource, /v-if="mode === 'image' \|\| mode === 'both'"/)
+  assert.match(generationOptionsSource, /v-if="mode === 'video' \|\| mode === 'both'"/)
+  assert.match(generationOptionsSource, /v-if="!modelsOnly && mode !== 'audio'"/)
+  assert.match(generationOptionsSource, /v-if="!modelsOnly && \(mode === 'video' \|\| mode === 'both'\)"/)
+  assert.match(generationOptionsSource, /v-if="!modelsOnly && \(mode === 'video' \|\| mode === 'both' \|\| mode === 'audio'\)"/)
+})

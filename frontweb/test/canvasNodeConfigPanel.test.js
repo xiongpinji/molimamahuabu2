@@ -108,6 +108,7 @@ test('节点配置面板支持完整生成参数而非只改模型', () => {
   assert.match(mediaPanelSource, /payload\.duration = Number\(next\.videoDuration\) \|\| 5/)
   assert.match(mediaPanelSource, /videoDuration: universalPromptDuration\(props\.storyboard\)/)
   assert.match(mediaPanelSource, /ctx\?\.updateGenerationOptions\?\.\(/)
+  assert.match(mediaPanelSource, /kind === 'audio'[\s\S]*<CanvasGenerationOptions[\s\S]*mode="audio"[\s\S]*@change="saveStoryboardGenerationOptions"/)
 })
 
 test('分镜配置面板保留素材库指派、摄影控制、声音策略和连续性入口', () => {

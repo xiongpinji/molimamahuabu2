@@ -138,6 +138,13 @@
       <template v-else-if="kind === 'audio'">
         <div class="audio-label">{{ audioType === 'narration' ? '旁白音频' : '对白音频' }}</div>
         <audio v-if="url" :src="url" controls class="preview-aud" />
+        <CanvasGenerationOptions
+          :model-value="storyboardGenerationOptions"
+          mode="audio"
+          label="生成参数"
+          compact
+          @change="saveStoryboardGenerationOptions"
+        />
         <el-button size="small" type="warning" :loading="busy" @click.stop="runStep('audio')">重新配音</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="audioLibraryVisible = true">从素材库选用音频</el-button>
         <AssetPickerDialog
