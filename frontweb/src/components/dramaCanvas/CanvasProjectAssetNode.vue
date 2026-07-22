@@ -8,10 +8,11 @@
     <div v-else class="empty">素材不可用</div>
     <strong>{{ data.asset?.name || '未命名截图' }}</strong>
     <span>{{ assignmentLabel }}</span>
+    <p v-if="isFailureAsset" class="asset-failure">{{ failureLabel }}</p>
     <div class="asset-actions">
       <button type="button" :disabled="!url" @click.stop="openAsset">预览</button>
       <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制引用</button>
-      <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">指派</button>
+      <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">{{ assignButtonLabel }}</button>
     </div>
     <div
       v-if="data.focused"
@@ -32,11 +33,12 @@
       />
       <p class="asset-ref">{{ referenceText || '该素材缺少可复制引用' }}</p>
       <p class="asset-assignment">{{ assignmentLabel }}</p>
+      <p v-if="isFailureAsset" class="asset-failure panel-failure">{{ failureLabel }}</p>
       <div class="panel-actions">
         <button type="button" :disabled="!url" @click.stop="openAsset">打开预览</button>
         <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制到提示词</button>
         <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">
-          {{ assigning ? '指派中…' : '指派到选中分镜' }}
+          {{ assigning ? '指派中…' : assignButtonLabel }}
         </button>
       </div>
     </div>
@@ -64,9 +66,16 @@ const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.a
 const assetId = computed(() => referenceAssetId.value)
 const activeNodeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
 const assignedStoryboardId = computed(() => Number(props.data.asset?.storyboard_id || props.data.asset?.metadata?.storyboard_id || 0))
+const statusStoryboardId = computed(() => Number(activeNodeStatus.value?.attachedToStoryboardId || activeNodeStatus.value?.storyboardId || 0))
 const assignmentLabel = computed(() => Number.isFinite(assignedStoryboardId.value) && assignedStoryboardId.value > 0
   ? `已指派到分镜 #${assignedStoryboardId.value}`
+  : Number.isFinite(statusStoryboardId.value) && statusStoryboardId.value > 0
+    ? `目标分镜 #${statusStoryboardId.value}`
   : '未指派到分镜')
+const isFailureAsset = computed(() => props.data.asset?.category === 'canvas-asset-failure')
+const failureReason = computed(() => activeNodeStatus.value?.errorDetail || activeNodeStatus.value?.message || props.data.asset?.metadata?.error || '')
+const failureLabel = computed(() => `素材库挂载失败${failureReason.value ? `：${failureReason.value}` : ''}`)
+const assignButtonLabel = computed(() => isFailureAsset.value ? '重新选择' : '指派')
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
   const id = referenceAssetId.value
@@ -131,6 +140,8 @@ function closePanel() {
 .panel-head button { border: 0; background: transparent; color: #7dd3fc; font-size: 10px; cursor: pointer; }
 .asset-ref { margin: 8px 0; max-height: 52px; overflow: auto; color: #a1a1aa; font-size: 10px; line-height: 1.4; word-break: break-all; }
 .asset-assignment { margin: 0 0 8px; color: #7dd3fc; font-size: 10px; }
+.asset-failure { margin: 6px 0 0; color: #fecaca; font-size: 10px; line-height: 1.4; word-break: break-word; }
+.panel-failure { margin: 0 0 8px; }
 .panel-actions { display: grid; gap: 6px; }
 .panel-actions button { border: 1px solid rgba(125,211,252,.32); border-radius: 7px; background: rgba(14,165,233,.13); color: #e0f2fe; font-size: 10px; line-height: 24px; cursor: pointer; }
 .panel-actions button:disabled { opacity: .5; cursor: not-allowed; }
