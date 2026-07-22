@@ -332,6 +332,8 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
+              <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
+              <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
             </span>
@@ -880,6 +882,11 @@ const runQueueItems = computed(() => {
       resultUrl: statusResultUrl(status),
       resultNodeId: status.resultNodeId || '',
       resultType: status.resultType || '',
+      savedAssetId: status.savedAssetId || '',
+      savedAssetName: status.savedAssetName || '',
+      savedAssetUrl: status.savedAssetUrl || '',
+      savedAssetLocalPath: status.savedAssetLocalPath || '',
+      savedAssetDuration: status.savedAssetDuration ?? null,
       errorDetail: isFailed ? (status.errorDetail || status.detail || status.message || '') : '',
     })
   }
@@ -933,6 +940,11 @@ function mergeRunQueueItem(grouped, item) {
   if (!current.resultUrl && item.resultUrl) current.resultUrl = item.resultUrl
   if (!current.resultNodeId && item.resultNodeId) current.resultNodeId = item.resultNodeId
   if (!current.resultType && item.resultType) current.resultType = item.resultType
+  if (!current.savedAssetId && item.savedAssetId) current.savedAssetId = item.savedAssetId
+  if (!current.savedAssetName && item.savedAssetName) current.savedAssetName = item.savedAssetName
+  if (!current.savedAssetUrl && item.savedAssetUrl) current.savedAssetUrl = item.savedAssetUrl
+  if (!current.savedAssetLocalPath && item.savedAssetLocalPath) current.savedAssetLocalPath = item.savedAssetLocalPath
+  if (current.savedAssetDuration == null && item.savedAssetDuration != null) current.savedAssetDuration = item.savedAssetDuration
   if (!current.retryStep && item.retryStep) current.retryStep = item.retryStep
   if (!current.errorDetail && item.errorDetail) current.errorDetail = item.errorDetail
   if (queueToneRank(item.tone) > queueToneRank(current.tone)) {
@@ -1072,6 +1084,36 @@ async function copyQueueItemError(item) {
     return
   }
   await copyCanvasText(text, '队列失败原因已复制', '队列失败原因（请手动复制）')
+}
+
+function queueItemSavedAsset(item) {
+  if (!item?.savedAssetId) return null
+  return {
+    id: item.savedAssetId,
+    name: item.savedAssetName || item.label || '队列结果素材',
+    type: item.resultType || queueResultPreviewType(item),
+    url: item.savedAssetUrl || item.resultUrl || '',
+    local_path: item.savedAssetLocalPath || '',
+    duration: item.savedAssetDuration ?? undefined,
+  }
+}
+
+async function copyQueueItemAssetReference(item) {
+  const text = assetReferenceText(queueItemSavedAsset(item))
+  if (!text) {
+    ElMessage.warning('该队列项结果尚未存入素材库')
+    return
+  }
+  await copyCanvasText(text, '队列素材引用已复制', '队列素材引用（请手动复制）')
+}
+
+async function assignQueueItemAssetToSelectedStoryboard(item) {
+  const asset = queueItemSavedAsset(item)
+  if (!asset) {
+    ElMessage.warning('该队列项结果尚未存入素材库')
+    return
+  }
+  await assignProjectAssetToSelectedStoryboard(asset)
 }
 
 async function focusQueueItemResult(item) {
