@@ -694,17 +694,62 @@ function projectAssetId(asset) {
   return id.startsWith('project:') ? id.slice('project:'.length) : id
 }
 
+function assetAttachResultType(target, asset) {
+  if (target === 'video') return 'video'
+  if (target === 'audio') return 'audio'
+  return asset?.type || 'image'
+}
+
+function assetAttachStatusIds(target, storyboardId) {
+  const ids = [sbNodeId.value]
+  if (target === 'first_frame') ids.push(`sbimg-first:${storyboardId}`)
+  else if (target === 'last_frame') ids.push(`sbimg-last:${storyboardId}`)
+  else if (target === 'video') ids.push(`sbvid:${storyboardId}`)
+  else if (target === 'audio') ids.push(`sbaud:${storyboardId}:dialogue`)
+  return [...new Set(ids.filter(Boolean))]
+}
+
+function setAssetAttachStatus(target, storyboardId, payload, mode = 'set') {
+  assetAttachStatusIds(target, storyboardId).forEach((id) => {
+    const action = ctx?.nodeStatus?.[mode] || ctx?.nodeStatus?.set
+    action?.(id, payload)
+  })
+}
+
+function assetAttachStatusPayload(target, asset, message) {
+  const assetId = projectAssetId(asset)
+  const resultUrl = assetThumbUrl(asset)
+  const savedAssetId = target === 'reference' || asset?.source_kind === 'project' || String(asset?.id || '').startsWith('project:')
+    ? assetId
+    : ''
+  return {
+    step: 'library',
+    message,
+    storyboardId: props.storyboard?.id,
+    resultUrl,
+    resultType: assetAttachResultType(target, asset),
+    resultLabel: asset?.name || ASSET_ATTACH_TARGETS[target]?.title || '素材库素材',
+    savedAssetId: savedAssetId || undefined,
+    savedAssetName: asset?.name || '素材库素材',
+    savedAssetUrl: resultUrl || undefined,
+    autoClear: false,
+  }
+}
+
 async function onAssetLibraryPick(asset) {
   const dramaId = ctx?.drama?.value?.id
   const storyboardId = props.storyboard?.id
   if (!dramaId || !storyboardId || !asset) return
   assetAssigning.value = true
+  const target = assetAttachTarget.value
+  setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, asset, '素材库挂载中…'))
   try {
-    const target = assetAttachTarget.value
     if (target !== 'reference') {
       await attachPickedAssetToStoryboard(target, asset)
       await ctx?.refreshDrama?.(true)
-      ElMessage.success(ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材')
+      const message = ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材'
+      setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, asset, message), 'success')
+      ElMessage.success(message)
       return
     }
     let savedAsset = asset
@@ -733,9 +778,15 @@ async function onAssetLibraryPick(asset) {
       assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)].slice(0, 10)
     }
     await ctx?.refreshDrama?.(true)
+    setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, savedAsset, ASSET_ATTACH_TARGETS.reference.message), 'success')
     ElMessage.success(ASSET_ATTACH_TARGETS.reference.message)
   } catch (e) {
-    ElMessage.error(e?.message || '素材指派失败')
+    const message = e?.message || '素材指派失败'
+    setAssetAttachStatus(target, storyboardId, {
+      ...assetAttachStatusPayload(target, asset, message),
+      errorDetail: message,
+    }, 'fail')
+    ElMessage.error(message)
   } finally {
     assetAssigning.value = false
   }
