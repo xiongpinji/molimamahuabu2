@@ -968,7 +968,7 @@ function canvasNodeActions(node) {
     actions.unshift('open-node-result', 'copy-node-result')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
-  if (nodeAssignedAssets(node).length) actions.unshift('copy-node-assigned-asset-ref')
+  if (nodeAssignedAssets(node).length) actions.unshift('copy-node-assigned-asset-ref', 'unbind-node-assigned-asset')
   if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
@@ -1169,6 +1169,20 @@ async function copyNodeAssignedAssetReference(node) {
     return
   }
   await copyCanvasText(text, '指派素材引用已复制', '指派素材引用（请手动复制）')
+}
+
+async function unbindNodeAssignedAsset(node) {
+  const firstAsset = nodeAssignedAssets(node)[0]
+  const assetId = projectAssetId(firstAsset)
+  if (!assetId) {
+    ElMessage.warning('该分镜暂无可解绑的指派素材')
+    return false
+  }
+  await assetsAPI.update(assetId, { storyboard_id: null })
+  await loadProjectImageAssets()
+  rebuildGraph()
+  ElMessage.success('已解绑当前分镜素材')
+  return true
 }
 
 async function assignProjectAssetToSelectedStoryboard(asset) {
@@ -1456,6 +1470,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeAssetReference(node)
   } else if (type === 'copy-node-assigned-asset-ref') {
     await copyNodeAssignedAssetReference(node)
+  } else if (type === 'unbind-node-assigned-asset') {
+    await unbindNodeAssignedAsset(node)
   } else if (type === 'assign-project-asset-selected') {
     await assignProjectAssetToSelectedStoryboard(node.data?.asset)
   } else if (type === 'focus-node-result') {
