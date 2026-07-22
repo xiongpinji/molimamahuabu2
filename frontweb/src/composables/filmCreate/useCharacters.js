@@ -776,12 +776,13 @@ export function useCharacters(deps) {
     }
     voiceCatalogBindingId.value = item.id
     try {
-      const res = await characterAPI.bindVoiceCatalog(char.id, item.id)
+      const res = await characterAPI.bindVoiceCatalog(char.id, item.id, { silentError: true })
       await loadDrama()
       ElMessage.success(res?.message || '音色已绑定')
       showVoiceCatalog.value = false
     } catch (e) {
-      ElMessage.error(e?.message || '音色绑定失败')
+      const status = e?.response?.status
+      ElMessage.error(status === 404 ? '音色绑定接口暂不可用，请确认后端已更新并重启' : (e?.message || '音色绑定失败'))
     } finally {
       voiceCatalogBindingId.value = null
     }

@@ -112,8 +112,8 @@ export const characterAPI = {
       }
     }
   },
-  bindVoiceCatalog(characterId, voiceId) {
-    return request.post(`/characters/${characterId}/sd2-voice-catalog`, { voice_id: voiceId })
+  bindVoiceCatalog(characterId, voiceId, config = {}) {
+    return request.post(`/characters/${characterId}/sd2-voice-catalog`, { voice_id: voiceId }, config)
   },
   listBuiltinVoices(dramaId) {
     return this.listVoiceCatalog(dramaId ? { drama_id: dramaId } : {})

@@ -18,6 +18,8 @@ test('素材和音色 API 列表方法可透传请求配置', () => {
   assert.match(charactersApiSource, /listVoiceCatalog\(params, config = \{\}\)/)
   assert.match(charactersApiSource, /const requestConfig = \{ silentError: true, \.\.\.config, params: params \|\| \{\} \}/)
   assert.match(charactersApiSource, /request\.get\('\/voice-catalog', requestConfig\)/)
+  assert.match(charactersApiSource, /bindVoiceCatalog\(characterId, voiceId, config = \{\}\)/)
+  assert.match(charactersApiSource, /request\.post\(`\/characters\/\$\{characterId\}\/sd2-voice-catalog`, \{ voice_id: voiceId \}, config\)/)
 })
 
 test('音色目录 404 时静默降级读取项目已提取音色素材', () => {
@@ -38,4 +40,10 @@ test('音色目录和旧素材接口均 404 时返回空列表而不是触发全
 test('角色页打开音色库时显式静默探测并降级提示', () => {
   assert.match(useCharactersSource, /characterAPI\.listVoiceCatalog\(\{ drama_id: dramaId\.value \}, \{ silentError: true \}\)/)
   assert.match(useCharactersSource, /if \(res\?\.unavailable\) ElMessage\.warning\(res\.message \|\| '音色库接口暂不可用'\)/)
+})
+
+test('角色页绑定音色时静默处理 404 并给出后端更新提示', () => {
+  assert.match(useCharactersSource, /characterAPI\.bindVoiceCatalog\(char\.id, item\.id, \{ silentError: true \}\)/)
+  assert.match(useCharactersSource, /const status = e\?\.response\?\.status/)
+  assert.match(useCharactersSource, /status === 404 \? '音色绑定接口暂不可用，请确认后端已更新并重启'/)
 })
