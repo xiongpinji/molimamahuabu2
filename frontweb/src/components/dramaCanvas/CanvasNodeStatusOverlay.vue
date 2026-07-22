@@ -76,6 +76,7 @@ import { imagesAPI } from '@/api/images'
 import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
 import { storyboardIdFromNodeId } from '@/utils/canvasWorkflow'
+import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
   nodeId: { type: String, required: true },
@@ -210,7 +211,7 @@ const statusSavedAsset = computed(() => {
   }
 })
 const effectiveSavedAsset = computed(() => savedAsset.value || statusSavedAsset.value)
-const effectiveResultUrl = computed(() => effectiveSavedAsset.value?.url || status.value?.resultUrl || '')
+const effectiveResultUrl = computed(() => assetMediaUrl(effectiveSavedAsset.value) || status.value?.resultUrl || '')
 const resultNodeId = computed(() => status.value?.resultNodeId || '')
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
