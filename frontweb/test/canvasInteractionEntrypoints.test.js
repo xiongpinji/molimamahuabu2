@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const toolbarSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFloatingToolbar.vue', import.meta.url)), 'utf8')
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
+const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
@@ -80,6 +81,12 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /async function onCanvasAssetLibraryPick\(asset\)/)
   assert.match(canvasSource, /await assignProjectAssetToSelectedStoryboard\(projectAsset\)/)
+})
+
+test('项目图片素材缺少 type 时仍可进入画布素材节点', () => {
+  assert.match(adapterSource, /function isProjectImageAsset\(asset\)/)
+  assert.match(adapterSource, /asset\?\.type === 'image' \|\| Boolean\(assetImageUrl\(asset\)\)/)
+  assert.match(adapterSource, /filter\(isProjectImageAsset\)/)
 })
 
 test('画布支持手动节点连线并持久化到布局', () => {

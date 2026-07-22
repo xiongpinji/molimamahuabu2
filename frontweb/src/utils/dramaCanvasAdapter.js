@@ -72,6 +72,10 @@ function makeNode(base) {
   return { ...base, draggable }
 }
 
+function isProjectImageAsset(asset) {
+  return asset?.type === 'image' || Boolean(assetImageUrl(asset))
+}
+
 function appendManualEdges(edges, savedLayout, nodes) {
   const nodeIds = new Set(nodes.map((node) => String(node.id)))
   const existing = new Set(edges.map((edge) => (
@@ -432,7 +436,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
-  const projectAssets = (options.projectAssets || []).filter((asset) => asset?.type === 'image')
+  const projectAssets = (options.projectAssets || []).filter(isProjectImageAsset)
   if (projectAssets.length) {
     nodes.push(sectionLabel('label:project-assets', `🖼 项目截图 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
     projectAssets.forEach((asset, index) => {
