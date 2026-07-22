@@ -249,7 +249,7 @@
     <section class="panel-section generation-section">
       <div class="section-head">
         <span>生成参数</span>
-        <small>模型 / 画幅 / 清晰度</small>
+        <small>模型 / 画幅 / 清晰度 / 时长</small>
       </div>
       <CanvasGenerationOptions
         :model-value="storyboardGenerationOptions"
@@ -466,6 +466,7 @@ const storyboardGenerationOptions = computed(() => ({
   ...projectGenerationOptions.value,
   imageModel: imageModel.value || getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
   videoModel: videoModel.value || projectGenerationOptions.value.videoModel || '',
+  videoDuration: form.duration || 5,
 }))
 const storyboardCharacters = computed(() => {
   const ids = new Set(characterIds.value.map((id) => Number(id)))
@@ -951,6 +952,10 @@ async function saveStoryboardGenerationOptions(patch, next) {
     videoModel.value = String(next.videoModel || '').trim()
     payload.video_model = videoModel.value || null
   }
+  if (Object.hasOwn(patch, 'videoDuration')) {
+    form.duration = Number(next.videoDuration) || 5
+    payload.duration = form.duration
+  }
   if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
     ctx?.updateGenerationOptions?.({
       ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
@@ -961,9 +966,9 @@ async function saveStoryboardGenerationOptions(patch, next) {
   try {
     await storyboardsAPI.update(props.storyboard.id, payload)
     await ctx?.refreshDrama?.(true)
-    ElMessage.success('本镜模型已保存')
+    ElMessage.success('本镜生成参数已保存')
   } catch (e) {
-    ElMessage.error(e?.message || '保存分镜模型失败')
+    ElMessage.error(e?.message || '保存分镜生成参数失败')
   }
 }
 

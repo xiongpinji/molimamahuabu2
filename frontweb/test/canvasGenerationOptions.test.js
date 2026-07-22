@@ -151,3 +151,11 @@ test('画布模型选择包含分镜图片专用配置并保留图片模型兜�
   assert.match(generationOptionsSource, /aiAPI\.list\('storyboard_image'\)/)
   assert.match(generationOptionsSource, /imageConfigs\.value\s*=\s*\[\.\.\.storyboardImageList,\s*\.\.\.imageList\]/)
 })
+
+test('视频生成参数组件提供单镜时长配置', () => {
+  assert.match(generationOptionsSource, /class="duration-input"/)
+  assert.match(generationOptionsSource, /Number\(options\.videoDuration \|\| 5\)/)
+  assert.match(generationOptionsSource, /@change="update\('videoDuration', \$event\)"/)
+  assert.match(generationOptionsSource, /:min="1"/)
+  assert.match(generationOptionsSource, /:max="120"/)
+})

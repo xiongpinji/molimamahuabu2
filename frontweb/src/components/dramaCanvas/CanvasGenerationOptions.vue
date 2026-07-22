@@ -52,6 +52,16 @@
       <el-option label="720p 高清" value="720p" />
       <el-option label="1080p 超清" value="1080p" />
     </el-select>
+    <el-input-number
+      v-if="!modelsOnly && mode !== 'image'"
+      :model-value="Number(options.videoDuration || 5)"
+      size="small"
+      class="duration-input"
+      :min="1"
+      :max="120"
+      controls-position="right"
+      @change="update('videoDuration', $event)"
+    />
     <span v-if="!compact" class="options-hint">单镜与批量生成共用</span>
   </div>
 </template>
@@ -132,6 +142,7 @@ onMounted(async () => {
 .generation-options :deep(.ratio-select) { width: 116px; }
 .generation-options :deep(.resolution-select) { width: 124px; }
 .generation-options :deep(.model-select) { width: 140px; }
+.generation-options :deep(.duration-input) { width: 104px; }
 .options-hint {
   color: #52525b;
   font-size: 10px;
@@ -141,4 +152,5 @@ onMounted(async () => {
 .compact .options-label { color: #71717a; }
 .compact :deep(.el-select) { width: 112px; }
 .compact :deep(.model-select) { width: 128px; }
+.compact :deep(.duration-input) { width: 96px; }
 </style>

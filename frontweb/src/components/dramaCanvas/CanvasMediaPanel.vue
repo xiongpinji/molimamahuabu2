@@ -200,6 +200,7 @@ const storyboardGenerationOptions = computed(() => {
     ...defaults,
     imageModel: getStoryboardImageModel(props.storyboard, defaults),
     videoModel: getStoryboardVideoModel(props.storyboard, defaults),
+    videoDuration: universalPromptDuration(props.storyboard),
   }
 })
 
@@ -429,6 +430,7 @@ async function saveStoryboardGenerationOptions(patch, next) {
   const payload = {}
   if (Object.hasOwn(patch, 'imageModel')) payload.image_model = next.imageModel || null
   if (Object.hasOwn(patch, 'videoModel')) payload.video_model = next.videoModel || null
+  if (Object.hasOwn(patch, 'videoDuration')) payload.duration = Number(next.videoDuration) || 5
   if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
     ctx?.updateGenerationOptions?.({
       ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
@@ -439,9 +441,9 @@ async function saveStoryboardGenerationOptions(patch, next) {
   try {
     await storyboardsAPI.update(sbId, payload)
     await ctx?.refreshDrama?.(true)
-    ElMessage.success('本镜模型已保存')
+    ElMessage.success('本镜生成参数已保存')
   } catch (e) {
-    ElMessage.error(e?.message || '模型保存失败')
+    ElMessage.error(e?.message || '生成参数保存失败')
   }
 }
 
