@@ -24,6 +24,16 @@
           <span v-if="statusChip" class="status-chip" :class="'st-' + statusChip.key">{{ statusChip.label }}</span>
         </div>
         <div class="kind">{{ kindLabel }}</div>
+        <div v-if="failureReason" class="asset-error" :title="failureReason">
+          {{ failureReason }}
+        </div>
+        <button
+          v-if="canRetry"
+          class="retry-btn"
+          type="button"
+          :disabled="isNodeBusy"
+          @click.stop="retryAsset"
+        >{{ retryLabel }}</button>
         <div class="hint">单击展开编辑 · 双击进制作</div>
       </div>
     </div>
@@ -41,6 +51,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { assetImageUrl } from '@/utils/mediaUrl'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 import CanvasAssetPanel from './CanvasAssetPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -69,24 +80,44 @@ const displayName = computed(() => {
 
 const thumbUrl = computed(() => assetImageUrl(props.data.entity))
 const entityStatus = computed(() => props.data.entity?.status || '')
+const runtimeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
 
 const isNodeBusy = computed(() => {
-  const map = ctx?.nodeStatus?.map
-  const status = map?.[props.id]
-  return status ? status.step !== 'failed' : false
+  return isCanvasNodeBusyStatus(runtimeStatus.value)
 })
 
+const nodeFailed = computed(() => runtimeStatus.value?.step === 'failed')
+const failureReason = computed(() => {
+  const status = runtimeStatus.value
+  const entity = props.data.entity || {}
+  return status?.errorDetail
+    || status?.detail
+    || (nodeFailed.value ? status?.message : '')
+    || entity.error_msg
+    || entity.error_message
+    || entity.generation_error
+    || ''
+})
+const retryStep = computed(() => runtimeStatus.value?.retryStep || 'ref_image')
+const canRetry = computed(() => Boolean(failureReason.value && ctx?.runNodeStep))
+const retryLabel = computed(() => runtimeStatus.value?.retryLabel || '重试参考图')
+
 const statusChip = computed(() => {
-  const map = ctx?.nodeStatus?.map
-  const busy = map?.[props.id]
+  const busy = runtimeStatus.value
   if (busy?.step === 'failed') return { key: 'failed', label: '失败' }
-  if (busy) return { key: 'busy', label: busy.message?.slice(0, 8) || '处理中' }
+  if (isNodeBusy.value) return { key: 'busy', label: busy?.message?.slice(0, 8) || '处理中' }
+  if (busy?.step === 'success') return { key: 'ready', label: '已生成' }
   const s = entityStatus.value
   if (s === 'processing') return { key: 'processing', label: '生成中' }
   if (s === 'failed') return { key: 'failed', label: '失败' }
   if (thumbUrl.value) return { key: 'ready', label: '有图' }
   return null
 })
+
+function retryAsset() {
+  if (!canRetry.value || isNodeBusy.value) return
+  ctx?.runNodeStep?.({ id: props.id, type: 'canvasAsset', data: props.data }, retryStep.value)
+}
 </script>
 
 <style scoped>
@@ -165,6 +196,31 @@ const statusChip = computed(() => {
   font-size: 11px;
   color: var(--text-subtle, #71717a);
   margin-top: 2px;
+}
+.asset-error {
+  margin-top: 5px;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.retry-btn {
+  margin-top: 6px;
+  width: 100%;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
+  font-size: 10px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.retry-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .hint {
   margin-top: 4px;

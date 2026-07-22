@@ -8,6 +8,8 @@ const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanva
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
 const mediaNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaNode.vue', import.meta.url)), 'utf8')
+const assetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetNode.vue', import.meta.url)), 'utf8')
+const assetGenerateSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasAssetGenerate.js', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -152,4 +154,24 @@ test('媒体节点卡片从运行状态恢复结果、失败原因和重试步�
   assert.match(mediaNodeSource, /<img v-if="resultUrl" :src="resultUrl"/)
   assert.match(mediaNodeSource, /<video v-if="resultUrl" :src="resultUrl"/)
   assert.match(mediaNodeSource, /:generation-error="failureReason"/)
+})
+
+test('资产节点卡片显示参考图失败原因并可重试', () => {
+  assert.match(assetNodeSource, /import \{ isCanvasNodeBusyStatus \} from '@\/utils\/canvasNodeStatus'/)
+  assert.match(assetNodeSource, /const runtimeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)
+  assert.match(assetNodeSource, /isCanvasNodeBusyStatus\(runtimeStatus\.value\)/)
+  assert.match(assetNodeSource, /const failureReason = computed/)
+  assert.match(assetNodeSource, /status\?\.errorDetail/)
+  assert.match(assetNodeSource, /entity\.generation_error/)
+  assert.match(assetNodeSource, /class="asset-error"/)
+  assert.match(assetNodeSource, /const retryStep = computed\(\(\) => runtimeStatus\.value\?\.retryStep \|\| 'ref_image'\)/)
+  assert.match(assetNodeSource, /function retryAsset\(\)/)
+  assert.match(assetNodeSource, /ctx\?\.runNodeStep\?\.\(\{ id: props\.id, type: 'canvasAsset', data: props\.data \}, retryStep\.value\)/)
+  assert.match(canvasSource, /if \(node\?\.type === 'canvasAsset'\) \{[\s\S]*await runCanvasAssetNodeStep\(node, step\)/)
+  assert.match(canvasSource, /async function runCanvasAssetNodeStep\(node, step\)/)
+  assert.match(canvasSource, /await generateAssetReferenceImage\([\s\S]*\{ nodeStatus, drama, refreshDrama, refresh: refreshCanvas \}/)
+  assert.match(assetGenerateSource, /retryStep: step/)
+  assert.match(assetGenerateSource, /retryLabel: '重试参考图'/)
+  assert.match(assetGenerateSource, /nodeStatus\?\.fail\(nodeId, \{/)
+  assert.match(assetGenerateSource, /errorDetail: message/)
 })

@@ -63,7 +63,13 @@ export async function generateScenePanoramaImage(ctx, { entity, nodeId }) {
 export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId }) {
   const nodeStatus = ctx?.nodeStatus
   const drama = ctx?.drama?.value
-  nodeStatus?.set(nodeId, { step: 'ref_image', message: CANVAS_NODE_STATUS_LABELS.ref_image })
+  const step = 'ref_image'
+  nodeStatus?.set(nodeId, {
+    step,
+    message: CANVAS_NODE_STATUS_LABELS.ref_image,
+    retryStep: step,
+    retryLabel: '重试参考图',
+  })
 
   try {
     let res
@@ -92,9 +98,24 @@ export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId })
       if (!ok) throw new Error('生成超时，请稍后刷新查看')
     }
     await ctx?.refresh?.(true)
+    nodeStatus?.success(nodeId, {
+      step: 'success',
+      message: '参考图已生成',
+      retryStep: step,
+      retryLabel: '重试参考图',
+    })
     return { ok: true }
+  } catch (e) {
+    const message = e?.message || '参考图生成失败'
+    nodeStatus?.fail(nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: step,
+      retryLabel: '重试参考图',
+    })
+    throw e
   } finally {
-    nodeStatus?.clear(nodeId)
+    if (!['failed', 'success'].includes(nodeStatus?.get?.(nodeId)?.step)) nodeStatus?.clear(nodeId)
   }
 }
 

@@ -385,6 +385,7 @@ import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
+import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { useCanvasStoryboardMedia } from '@/composables/useCanvasStoryboardMedia'
 import { useCanvasCrud } from '@/composables/useCanvasCrud'
@@ -1275,6 +1276,11 @@ function shouldKeepNodeStatus(nodeId) {
 }
 
 async function runCanvasNodeStep(node, step) {
+  if (node?.type === 'canvasAsset') {
+    await runCanvasAssetNodeStep(node, step)
+    return
+  }
+
   const sb = storyboardForNode(node)
   if (!drama.value || !sb?.id) {
     ElMessage.warning('该节点没有绑定分镜，无法执行生成')
@@ -1327,6 +1333,31 @@ async function runCanvasNodeStep(node, step) {
   } finally {
     if (!shouldKeepNodeStatus(nodeId)) nodeStatus.clear(nodeId)
     if (!shouldKeepNodeStatus(sbNodeId)) nodeStatus.clear(sbNodeId)
+  }
+}
+
+async function runCanvasAssetNodeStep(node, step) {
+  if (step !== 'ref_image') {
+    ElMessage.warning('该素材节点暂不支持该操作')
+    return
+  }
+  const entity = node?.data?.entity
+  const kind = node?.data?.kind
+  if (!entity?.id || !kind) {
+    ElMessage.warning('该素材节点缺少素材信息，无法执行生成')
+    return
+  }
+  try {
+    await generateAssetReferenceImage(
+      { nodeStatus, drama, refreshDrama, refresh: refreshCanvas },
+      { kind, entity, nodeId: node.id }
+    )
+    ElMessage.success('素材参考图已生成')
+    await refreshDrama(true)
+    await focusCanvasNode(node.id)
+  } catch (e) {
+    ElMessage.error(e?.message || '素材参考图生成失败')
+    await refreshDrama(true)
   }
 }
 
