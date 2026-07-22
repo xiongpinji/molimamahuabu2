@@ -310,7 +310,7 @@
             v-for="item in runQueueItems"
             :key="item.key"
             class="run-queue-item"
-            :class="'tone-' + item.tone"
+            :class="['tone-' + item.tone, item.resultUrl ? 'queue-preview-' + queueResultPreviewType(item) : 'queue-preview-empty']"
             @click="focusQueueItem(item)"
           >
             <span class="run-dot" />
@@ -321,7 +321,7 @@
             >
               <img v-if="item.resultUrl && queueResultPreviewType(item) === 'image'" :src="item.resultUrl" alt="队列结果预览" />
               <video v-else-if="item.resultUrl && queueResultPreviewType(item) === 'video'" :src="item.resultUrl" muted playsinline />
-              <span v-else-if="item.resultUrl" class="audio-preview">🎵</span>
+              <audio v-else-if="item.resultUrl" :src="item.resultUrl" controls preload="metadata" @click.stop />
             </span>
             <span class="run-info">
               <strong>{{ item.label }}</strong>
@@ -4264,6 +4264,9 @@ onBeforeUnmount(() => {
   border-color: rgba(129, 140, 248, 0.62);
   background: rgba(129, 140, 248, 0.12);
 }
+.run-queue-item.queue-preview-audio {
+  grid-template-columns: 10px 112px minmax(0, 1fr) auto;
+}
 .run-dot {
   width: 8px;
   height: 8px;
@@ -4301,8 +4304,13 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 112px;
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.12);
+}
+.run-result-preview.preview-audio audio {
+  width: 104px;
+  height: 24px;
 }
 .run-result-preview.preview-empty {
   opacity: 0.28;
