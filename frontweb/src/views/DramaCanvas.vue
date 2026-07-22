@@ -1786,7 +1786,21 @@ function assetAttachSlot(asset) {
   const type = normalizePickedAssetType(asset)
   if (type === 'video') return 'video'
   if (type === 'audio') return 'audio'
-  return 'image'
+  return 'main'
+}
+
+function assetAttachRetryAction(asset) {
+  const type = normalizePickedAssetType(asset)
+  if (type === 'video') return 'attach_library_video'
+  if (type === 'audio') return 'attach_library_audio'
+  return 'attach_library_image'
+}
+
+function assetAttachRetryLabel(asset) {
+  const type = normalizePickedAssetType(asset)
+  if (type === 'video') return '重试挂载素材库视频'
+  if (type === 'audio') return '重试挂载素材库音频'
+  return '重试挂载素材库图片'
 }
 
 function canvasAssetStatusPayload(asset, overrides = {}) {
@@ -1805,6 +1819,25 @@ function canvasAssetStatusPayload(asset, overrides = {}) {
     autoClear: false,
     ...overrides,
   }
+}
+
+function canvasAssetAttachStatusPayload(asset, storyboardId, overrides = {}) {
+  return canvasAssetStatusPayload(asset, {
+    storyboardId: storyboardId || undefined,
+    dramaId: drama.value?.id || undefined,
+    attachedSlot: storyboardId ? assetAttachSlot(asset) : '',
+    attachedToStoryboardId: storyboardId || null,
+    ...overrides,
+  })
+}
+
+function canvasAssetAttachFailurePayload(asset, storyboardId, overrides = {}) {
+  return canvasAssetAttachStatusPayload(asset, storyboardId, {
+    retryAction: storyboardId ? assetAttachRetryAction(asset) : '',
+    retryActionLabel: storyboardId ? assetAttachRetryLabel(asset) : '',
+    recoverable: true,
+    ...overrides,
+  })
 }
 
 function canvasAssetFailureNode(message, flowPosition = null, asset = null) {
@@ -2058,10 +2091,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     return
   }
   const targetStoryboardId = selectedStoryboardIdForAssetAttach()
-  const retryPayload = canvasAssetStatusPayload(asset, {
-    attachedSlot: assetAttachSlot(asset),
-    attachedToStoryboardId: targetStoryboardId,
-  })
+  const retryPayload = canvasAssetAttachStatusPayload(asset, targetStoryboardId)
   if (!nodeId) return
   nodeStatus.set(nodeId, {
     step: 'library',
@@ -2080,7 +2110,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     nodeStatus.fail(nodeId, {
       message,
       errorDetail: message,
-      ...retryPayload,
+      ...canvasAssetAttachFailurePayload(asset, targetStoryboardId),
     })
     ElMessage.error(message)
   }
@@ -2223,11 +2253,9 @@ async function onCanvasAssetLibraryPick(asset) {
     }
     if (nodeId) {
       nodeStatus.success(nodeId, {
-        ...canvasAssetStatusPayload(projectAsset || asset, {
+        ...canvasAssetAttachStatusPayload(projectAsset || asset, targetStoryboardId, {
           message: resultMessage,
           retryLabel: '重新指派素材',
-          attachedSlot: targetStoryboardId ? assetAttachSlot(projectAsset || asset) : '',
-          attachedToStoryboardId: targetStoryboardId,
         }),
       })
     }
@@ -2236,14 +2264,12 @@ async function onCanvasAssetLibraryPick(asset) {
     if (nodeId) {
       const message = e?.message || '素材库素材加入画布失败'
       nodeStatus.fail(nodeId, {
-        ...canvasAssetStatusPayload(projectAsset || asset, {
+        ...canvasAssetAttachFailurePayload(projectAsset || asset, targetStoryboardId, {
           message,
           errorDetail: message,
-          attachedSlot: targetStoryboardId ? assetAttachSlot(projectAsset || asset) : '',
-          attachedToStoryboardId: targetStoryboardId,
         }),
         retryStep: 'library',
-        retryLabel: '重试指派素材',
+        retryLabel: targetStoryboardId ? '重新选择素材' : '重试指派素材',
       })
     }
     ElMessage.error(e?.message || '素材库素材加入画布失败')
