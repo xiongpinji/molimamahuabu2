@@ -19,7 +19,7 @@ import {
   buildCanvasPhotographyPrompt,
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
-import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
+import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import {
   appendVoicePromptToVideoPrompt,
   buildVoicePromptPreview,
@@ -109,6 +109,28 @@ async function hydrateStoryboardSettings(storyboard) {
     // 兼容尚未部署新分镜字段的服务，继续使用当前对象和项目默认配置。
   }
   return storyboard
+}
+
+async function autoLinkTailFrameAfterVideo(drama, storyboard, found) {
+  const current = found?.storyboard || storyboard
+  const { next } = getAdjacentStoryboards(found?.episode, current?.id)
+  if (!drama?.id || !current?.id || !next || !canChainStoryboardFrames(next, current)) return null
+  try {
+    const result = await storyboardsAPI.linkTailFrame(current.id, { drama_id: drama.id })
+    return {
+      tailFrameLinked: true,
+      tailFrameNextStoryboardId: result?.next_storyboard_id || next.id,
+      tailFrameLinkMessage: result?.message || '尾帧已自动衔接到下一镜首帧',
+      nextStep: 'audio',
+      nextLabel: '继续配音',
+    }
+  } catch (error) {
+    return {
+      tailFrameLinked: false,
+      tailFrameLinkError: error?.message || '尾帧衔接失败',
+      actionError: `尾帧自动衔接失败：${error?.message || '尾帧衔接失败'}`,
+    }
+  }
 }
 
 export async function runImageStep(drama, sb, genOpts, frameKind = '', options = {}) {
@@ -209,6 +231,9 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
     const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '视频生成失败')
+    const tailFrameResult = genOpts.autoLinkTailFrame === false
+      ? null
+      : await autoLinkTailFrameAfterVideo(drama, sb, found)
     return {
       taskId: res.task_id,
       videoGenerationId: res.id || null,
@@ -217,9 +242,13 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
       resultLabel: '视频已生成',
       requestPayload: payload,
       requestAudit,
+      ...(tailFrameResult || {}),
       task: polled,
     }
   }
+  const tailFrameResult = genOpts.autoLinkTailFrame === false
+    ? null
+    : await autoLinkTailFrameAfterVideo(drama, sb, found)
   return {
     taskId: res?.task_id || '',
     videoGenerationId: res?.id || null,
@@ -228,6 +257,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     resultLabel: '视频已生成',
     requestPayload: payload,
     requestAudit,
+    ...(tailFrameResult || {}),
   }
 }
 
