@@ -545,6 +545,7 @@ const contextMenuNode = ref(null)
 const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
+const canvasAssetPickerTargetStoryboardId = ref(null)
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
@@ -2047,20 +2048,26 @@ async function setNodeAssignedAssetFrame(node, frameType) {
 async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   const silent = options.silent === true
   const returnDetail = options.returnDetail === true
+  const explicitStoryboardId = Number(options.storyboardId || options.targetStoryboardId || 0)
   const fail = (message) => {
     if (!silent) ElMessage.warning(message)
     return returnDetail ? { ok: false, message } : false
   }
   const success = (message = '已指派素材到选中分镜') => returnDetail ? { ok: true, message } : true
   const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
-  if (selectedIds.length !== 1) {
+  if (!Number.isFinite(explicitStoryboardId) || explicitStoryboardId <= 0) {
+    if (selectedIds.length !== 1) {
+      return fail(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
+    }
+  }
+  const storyboardId = Number.isFinite(explicitStoryboardId) && explicitStoryboardId > 0 ? explicitStoryboardId : selectedIds[0]
+  if (!storyboardId) {
     return fail(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
   }
   const assetId = projectAssetId(asset)
   if (!drama.value?.id || !assetId) {
     return fail(!assetId ? '素材信息不完整，无法指派' : '缺少项目 ID，无法指派素材')
   }
-  const storyboardId = selectedIds[0]
   const mediaPayload = selectedStoryboardMediaAssetPayload(asset)
   let resultMessage = '已指派素材到选中分镜'
   await assetsAPI.update(assetId, { drama_id: drama.value.id, storyboard_id: storyboardId })
@@ -2099,12 +2106,16 @@ async function runCanvasProjectAssetNodeStep(node, step) {
   const asset = node?.data?.asset
   if (asset?.category === 'canvas-asset-failure') {
     const currentNode = findGraphNode(nodeId)
+    const status = nodeStatus.get(nodeId)
     canvasAssetPickerRetryNodeId.value = nodeId
     canvasAssetPickerFlowPos.value = currentNode?.position || null
+    canvasAssetPickerTargetStoryboardId.value = Number(status?.attachedToStoryboardId || status?.storyboardId || asset?.metadata?.storyboard_id || 0) || null
     canvasAssetPickerVisible.value = true
     nodeStatus.set(nodeId, {
       step: 'library',
       message: '请在素材库中重新选择素材…',
+      storyboardId: canvasAssetPickerTargetStoryboardId.value || undefined,
+      attachedToStoryboardId: canvasAssetPickerTargetStoryboardId.value || null,
       retryStep: 'library',
       retryLabel: '重新打开素材库',
       autoClear: false,
@@ -2140,6 +2151,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
 function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerFlowPos.value = flowPosition
   canvasAssetPickerRetryNodeId.value = ''
+  canvasAssetPickerTargetStoryboardId.value = selectedStoryboardIdForAssetAttach()
   canvasAssetPickerVisible.value = true
 }
 
@@ -2259,14 +2271,14 @@ async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
   const retryNodeId = canvasAssetPickerRetryNodeId.value
-  const targetStoryboardId = selectedStoryboardIdForAssetAttach()
+  const targetStoryboardId = canvasAssetPickerTargetStoryboardId.value || selectedStoryboardIdForAssetAttach()
   try {
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (retryNodeId) clearCanvasAssetFailureNode(retryNodeId)
     let resultMessage = nodeId ? '已从素材库加入画布' : '素材已加入项目素材库'
     if (targetStoryboardId) {
-      const assignResult = await assignProjectAssetToSelectedStoryboard(projectAsset, { silent: true, returnDetail: true })
+      const assignResult = await assignProjectAssetToSelectedStoryboard(projectAsset, { silent: true, returnDetail: true, storyboardId: targetStoryboardId })
       if (!assignResult?.ok) throw new Error(assignResult?.message || '素材未指派，请选中一个分镜后重试')
       resultMessage = '已加入画布并指派到分镜'
     } else {
@@ -2297,6 +2309,7 @@ async function onCanvasAssetLibraryPick(asset) {
   } finally {
     canvasAssetPickerFlowPos.value = null
     canvasAssetPickerRetryNodeId.value = ''
+    canvasAssetPickerTargetStoryboardId.value = null
   }
 }
 
