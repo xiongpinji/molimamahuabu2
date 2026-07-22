@@ -334,14 +334,14 @@
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
             </span>
-            <button
-              v-else-if="item.retryStep"
-              type="button"
-              class="run-retry"
-              @click.stop="retryQueueItem(item)"
-            >
-              重试
-            </button>
+            <span v-else-if="item.tone === 'failed'" class="run-failed-actions">
+              <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
+              <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
+              <button v-if="item.errorDetail || item.message" type="button" @click.stop="copyQueueItemError(item)">原因</button>
+              <button v-if="item.retryStep" type="button" @click.stop="retryQueueItem(item)">重试</button>
+              <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
+            </span>
             <span v-else class="run-action">定位</span>
           </div>
         </div>
@@ -757,6 +757,7 @@ const runQueueItems = computed(() => {
       resultUrl: status.resultUrl || status.savedAssetUrl || '',
       resultNodeId: status.resultNodeId || '',
       resultType: status.resultType || '',
+      errorDetail: isFailed ? (status.errorDetail || status.detail || status.message || '') : '',
     })
   }
   for (const node of allGraphNodes.value) {
@@ -771,6 +772,7 @@ const runQueueItems = computed(() => {
       label: canvasNodeLabel(node),
       message: failure,
       retryStep: queueNodeRetryStep(node),
+      errorDetail: failure,
     })
   }
   return Array.from(grouped.values()).slice(0, 8)
@@ -809,6 +811,7 @@ function mergeRunQueueItem(grouped, item) {
   if (!current.resultNodeId && item.resultNodeId) current.resultNodeId = item.resultNodeId
   if (!current.resultType && item.resultType) current.resultType = item.resultType
   if (!current.retryStep && item.retryStep) current.retryStep = item.retryStep
+  if (!current.errorDetail && item.errorDetail) current.errorDetail = item.errorDetail
   if (queueToneRank(item.tone) > queueToneRank(current.tone)) current.tone = item.tone
   if (item.tone === current.tone && item.message) current.message = item.message
 }
@@ -891,6 +894,15 @@ async function copyQueueItemResult(item) {
     return
   }
   await copyCanvasText(item.resultUrl, '队列结果链接已复制', '队列结果链接（请手动复制）')
+}
+
+async function copyQueueItemError(item) {
+  const text = item?.errorDetail || item?.message || ''
+  if (!text) {
+    ElMessage.warning('该队列项暂无失败原因')
+    return
+  }
+  await copyCanvasText(text, '队列失败原因已复制', '队列失败原因（请手动复制）')
 }
 
 async function focusQueueItemResult(item) {
@@ -3644,7 +3656,8 @@ onBeforeUnmount(() => {
   color: #a5b4fc;
   font-size: 10px;
 }
-.run-success-actions {
+.run-success-actions,
+.run-failed-actions {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3662,7 +3675,7 @@ onBeforeUnmount(() => {
   border-color: rgba(52, 211, 153, 0.9);
   background: rgba(6, 95, 70, 0.48);
 }
-.run-retry {
+.run-failed-actions button {
   padding: 3px 7px;
   border: 1px solid rgba(248, 113, 113, 0.55);
   border-radius: 999px;
@@ -3671,7 +3684,7 @@ onBeforeUnmount(() => {
   font-size: 10px;
   cursor: pointer;
 }
-.run-retry:hover {
+.run-failed-actions button:hover {
   border-color: rgba(248, 113, 113, 0.9);
   background: rgba(185, 28, 28, 0.45);
 }

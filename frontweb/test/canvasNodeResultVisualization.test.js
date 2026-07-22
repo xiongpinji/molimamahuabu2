@@ -302,11 +302,17 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /status\.retryStep \|\| queueNodeRetryStep\(findGraphNode\(sourceNodeId\)\)/)
   assert.match(canvasSource, /function openQueueItemResult\(item\)/)
   assert.match(canvasSource, /function copyQueueItemResult\(item\)/)
+  assert.match(canvasSource, /function copyQueueItemError\(item\)/)
   assert.match(canvasSource, /function focusQueueItemResult\(item\)/)
   assert.match(canvasSource, /function dismissQueueItem\(item\)/)
   assert.match(canvasSource, /const ids = item\?\.statusIds\?\.length \? item\.statusIds : \[item\?\.nodeId\]/)
   assert.match(canvasSource, /ids\.filter\(Boolean\)\.forEach\(\(id\) => nodeStatus\.clear\(id\)\)/)
   assert.match(canvasSource, /class="run-success-actions"/)
+  assert.match(canvasSource, /class="run-failed-actions"/)
+  assert.match(canvasSource, /errorDetail: isFailed \? \(status\.errorDetail \|\| status\.detail \|\| status\.message \|\| ''\) : ''/)
+  assert.match(canvasSource, /if \(!current\.errorDetail && item\.errorDetail\) current\.errorDetail = item\.errorDetail/)
+  assert.match(canvasSource, /@click\.stop="copyQueueItemError\(item\)">原因/)
+  assert.match(canvasSource, /队列失败原因已复制/)
 })
 
 test('媒体节点卡片从运行状态恢复结果、失败原因和重试步骤', () => {
