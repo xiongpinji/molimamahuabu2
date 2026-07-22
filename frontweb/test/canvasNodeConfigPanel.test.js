@@ -33,6 +33,10 @@ test('分镜配置面板保留保存、回显刷新和单镜模型配置', () =>
   assert.match(storyboardPanelSource, /已恢复到上次保存/)
   assert.match(storyboardPanelSource, /CanvasGenerationOptions/)
   assert.match(storyboardPanelSource, /function saveStoryboardGenerationOptions\(patch, next\)/)
+  assert.match(storyboardPanelSource, /const videoModel = ref\(''\)/)
+  assert.match(storyboardPanelSource, /videoModel\.value \|\| projectGenerationOptions\.value\.videoModel/)
+  assert.match(storyboardPanelSource, /videoModel\.value = Object\.prototype\.hasOwnProperty\.call\(sb \|\| \{\}, 'video_model'\) \? sb\?\.video_model \|\| '' : ''/)
+  assert.match(storyboardPanelSource, /videoModel\.value = String\(next\.videoModel \|\| ''\)\.trim\(\)/)
 })
 
 test('节点配置面板支持完整生成参数而非只改模型', () => {

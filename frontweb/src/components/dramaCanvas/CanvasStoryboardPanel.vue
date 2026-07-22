@@ -385,7 +385,6 @@ import {
   getAdjacentStoryboards,
   getDramaGenerationOptions,
   getStoryboardImageModel,
-  getStoryboardVideoModel,
   toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
@@ -416,6 +415,7 @@ const angleS = ref('')
 const lightingStyle = ref('')
 const gridFrameType = ref('single')
 const imageModel = ref('')
+const videoModel = ref('')
 const videoConfigs = ref([])
 const tailLinking = ref(false)
 const assetLibraryVisible = ref(false)
@@ -458,13 +458,14 @@ const ASSET_ATTACH_TARGETS = {
 const assetLibraryType = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.type || 'image')
 const assetLibraryTitle = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.title || '从素材库选择素材')
 
+const projectGenerationOptions = computed(() => getDramaGenerationOptions(ctx?.drama?.value))
 const effectiveVideoModel = computed(() => String(
-  props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
+  videoModel.value || projectGenerationOptions.value.videoModel || '',
 ).trim())
 const storyboardGenerationOptions = computed(() => ({
-  ...getDramaGenerationOptions(ctx?.drama?.value),
-  imageModel: getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
-  videoModel: getStoryboardVideoModel(props.storyboard, ctx?.drama?.value),
+  ...projectGenerationOptions.value,
+  imageModel: imageModel.value || getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
+  videoModel: videoModel.value || projectGenerationOptions.value.videoModel || '',
 }))
 const storyboardCharacters = computed(() => {
   const ids = new Set(characterIds.value.map((id) => Number(id)))
@@ -624,6 +625,7 @@ function syncForm(sb) {
   angleS.value = sb?.angle_s || ''
   lightingStyle.value = sb?.lighting_style || ''
   if (Object.prototype.hasOwnProperty.call(sb || {}, 'image_model')) imageModel.value = sb?.image_model || ''
+  videoModel.value = Object.prototype.hasOwnProperty.call(sb || {}, 'video_model') ? sb?.video_model || '' : ''
   if (Object.prototype.hasOwnProperty.call(sb || {}, 'grid_frame_type')) gridFrameType.value = sb?.grid_frame_type || 'single'
 }
 
@@ -640,6 +642,9 @@ watch(() => props.storyboard?.id, (id, previousId) => {
   if (id && id !== previousId) {
     imageModel.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'image_model')
       ? props.storyboard.image_model || ''
+      : ''
+    videoModel.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'video_model')
+      ? props.storyboard.video_model || ''
       : ''
     gridFrameType.value = Object.prototype.hasOwnProperty.call(props.storyboard || {}, 'grid_frame_type')
       ? props.storyboard.grid_frame_type || 'single'
@@ -943,7 +948,8 @@ async function saveStoryboardGenerationOptions(patch, next) {
     payload.image_model = imageModel.value || null
   }
   if (Object.hasOwn(patch, 'videoModel')) {
-    payload.video_model = String(next.videoModel || '').trim() || null
+    videoModel.value = String(next.videoModel || '').trim()
+    payload.video_model = videoModel.value || null
   }
   if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
     ctx?.updateGenerationOptions?.({
