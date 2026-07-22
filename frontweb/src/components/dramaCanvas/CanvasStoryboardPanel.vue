@@ -340,6 +340,7 @@
         :status="activeNodeStatus"
         :disabled="saving"
         @retry="retryPanelFailedStep"
+        @retry-action="retryPanelFailedAction"
         @continue="continuePanelNextStep"
       />
       <div class="action-groups">
@@ -727,6 +728,27 @@ async function retryPanelFailedStep() {
   if (!step) return
   ctx?.nodeStatus?.clear?.(sbNodeId.value)
   await ctx?.runNodeStep?.(panelRuntimeNode(), step)
+}
+
+async function retryPanelFailedAction() {
+  const status = activeNodeStatus.value
+  const target = panelRetryActionTarget(status?.retryAction, status?.attachedSlot)
+  if (!target || !status?.libraryAsset) {
+    ElMessage.warning('该失败操作缺少可重试素材')
+    return
+  }
+  assetAttachTarget.value = target
+  ctx?.nodeStatus?.clear?.(sbNodeId.value)
+  await onAssetLibraryPick(status.libraryAsset)
+}
+
+function panelRetryActionTarget(action, slot) {
+  if (action === 'attach_library_video') return 'video'
+  if (action === 'attach_library_audio') return 'audio'
+  if (action !== 'attach_library_image') return ''
+  if (slot === 'first') return 'first_frame'
+  if (slot === 'last') return 'last_frame'
+  return ''
 }
 
 async function continuePanelNextStep() {

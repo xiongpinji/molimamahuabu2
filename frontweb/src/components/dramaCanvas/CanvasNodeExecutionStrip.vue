@@ -53,6 +53,14 @@
       @click.stop="$emit('retry')"
     >{{ status.retryLabel || '重试失败步骤' }}</el-button>
     <el-button
+      v-if="status.step === 'failed' && status.retryAction"
+      link
+      size="small"
+      type="danger"
+      :disabled="disabled"
+      @click.stop="$emit('retry-action')"
+    >{{ status.retryActionLabel || '重试操作' }}</el-button>
+    <el-button
       v-if="status.nextStep"
       link
       size="small"
@@ -73,7 +81,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
 })
 
-defineEmits(['retry', 'continue'])
+defineEmits(['retry', 'retry-action', 'continue'])
 
 const statusSavedAsset = computed(() => {
   if (!props.status?.savedAssetId) return null
