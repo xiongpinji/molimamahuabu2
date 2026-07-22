@@ -538,6 +538,8 @@ const contextMenuFlowPos = ref(null)
 const contextMenuNode = ref(null)
 const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
+const canvasAssetPickerRetryNodeId = ref('')
+const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
 const paneClickSuppressed = ref(false)
@@ -993,7 +995,7 @@ function rebuildGraph() {
     workflowGroups: workflowGroups.value,
     imagesBySbId: imagesBySbId.value,
     videosBySbId: videosBySbId.value,
-    projectAssets: projectImageAssets.value,
+    projectAssets: [...projectImageAssets.value, ...canvasAssetFailureNodes.value],
   })
   let nextNodes = graph.nodes.map((node) => {
     const storyboardId = node.type === 'canvasStoryboard' ? Number(node.data?.storyboard?.id) : null
@@ -1585,6 +1587,53 @@ function normalizePickedAssetType(asset) {
   return mediaTypeFromUrl(url, 'image')
 }
 
+function canvasAssetFailureNode(message, flowPosition = null, asset = null) {
+  const id = `asset-failure:${Date.now()}`
+  const name = asset?.name || asset?.title || asset?.filename || '素材库调用失败'
+  const node = {
+    id,
+    raw_id: id,
+    name,
+    type: normalizePickedAssetType(asset || { type: 'image' }),
+    category: 'canvas-asset-failure',
+    metadata: {
+      source: 'canvas_asset_picker_failure',
+      error: message,
+    },
+  }
+  canvasAssetFailureNodes.value = [...canvasAssetFailureNodes.value, node]
+  if (flowPosition) {
+    layoutCache.value = {
+      ...(layoutCache.value || { version: 1 }),
+      nodes: {
+        ...(layoutCache.value?.nodes || {}),
+        [`project-asset:${id}`]: { x: flowPosition.x, y: flowPosition.y },
+      },
+    }
+  }
+  rebuildGraph()
+  const nodeId = `project-asset:${id}`
+  nodeStatus.fail(nodeId, {
+    message,
+    errorDetail: message,
+    retryStep: 'library',
+    retryLabel: '重新打开素材库',
+    resultType: node.type,
+    savedAssetName: name,
+    autoClear: false,
+  })
+  focusedNodeId.value = nodeId
+  return nodeId
+}
+
+function clearCanvasAssetFailureNode(nodeId) {
+  const id = String(nodeId || '').replace(/^project-asset:/, '')
+  if (!id) return
+  canvasAssetFailureNodes.value = canvasAssetFailureNodes.value.filter((node) => String(node.id) !== id)
+  nodeStatus.clear(`project-asset:${id}`)
+  rebuildGraph()
+}
+
 async function ensureProjectMediaAsset(asset) {
   const assetId = projectAssetId(asset)
   if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
@@ -1766,6 +1815,20 @@ async function runCanvasProjectAssetNodeStep(node, step) {
   }
   const nodeId = String(node?.id || '')
   const asset = node?.data?.asset
+  if (asset?.category === 'canvas-asset-failure') {
+    const currentNode = findGraphNode(nodeId)
+    canvasAssetPickerRetryNodeId.value = nodeId
+    canvasAssetPickerFlowPos.value = currentNode?.position || null
+    canvasAssetPickerVisible.value = true
+    nodeStatus.set(nodeId, {
+      step: 'library',
+      message: '请在素材库中重新选择素材…',
+      retryStep: 'library',
+      retryLabel: '重新打开素材库',
+      autoClear: false,
+    })
+    return
+  }
   const assetId = projectAssetId(asset)
   const resultUrl = assetDisplayUrl(asset)
   const retryPayload = {
@@ -1803,6 +1866,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
 
 function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerFlowPos.value = flowPosition
+  canvasAssetPickerRetryNodeId.value = ''
   canvasAssetPickerVisible.value = true
 }
 
@@ -1921,9 +1985,11 @@ async function pasteCanvasClipboard(flowPosition = null) {
 async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
+  const retryNodeId = canvasAssetPickerRetryNodeId.value
   try {
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
+    if (retryNodeId) clearCanvasAssetFailureNode(retryNodeId)
     if (selectedStoryboardIds.value.length === 1) {
       await assignProjectAssetToSelectedStoryboard(projectAsset)
     } else {
@@ -1943,6 +2009,7 @@ async function onCanvasAssetLibraryPick(asset) {
       })
     }
   } catch (e) {
+    if (!nodeId) nodeId = canvasAssetFailureNode(e?.message || '素材库素材加入画布失败', canvasAssetPickerFlowPos.value, asset)
     if (nodeId) {
       const message = e?.message || '素材库素材加入画布失败'
       nodeStatus.fail(nodeId, {
@@ -1960,6 +2027,7 @@ async function onCanvasAssetLibraryPick(asset) {
     ElMessage.error(e?.message || '素材库素材加入画布失败')
   } finally {
     canvasAssetPickerFlowPos.value = null
+    canvasAssetPickerRetryNodeId.value = ''
   }
 }
 
