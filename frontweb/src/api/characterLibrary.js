@@ -1,8 +1,8 @@
 import request from '@/utils/request'
 
 export const characterLibraryAPI = {
-  list(params) {
-    return request.get('/character-library', { params })
+  list(params, config = {}) {
+    return request.get('/character-library', { ...config, params })
   },
   get(id) {
     return request.get(`/character-library/${id}`)

@@ -6,17 +6,25 @@ import { fileURLToPath } from 'node:url'
 const source = readFileSync(fileURLToPath(new URL('../src/components/AssetPickerDialog.vue', import.meta.url)), 'utf8')
 
 test('素材选择弹窗按项目范围加载项目素材，并合并角色/场景/道具库图片', () => {
-  assert.match(source, /assetsAPI\.list\(params\)/)
+  assert.match(source, /assetsAPI\.list\(params, \{ silentError: true \}\)/)
   assert.match(source, /if \(props\.dramaId\) params\.drama_id = props\.dramaId/)
-  assert.match(source, /characterLibraryAPI\.list\(libraryParams\)/)
-  assert.match(source, /sceneLibraryAPI\.list\(libraryParams\)/)
-  assert.match(source, /propLibraryAPI\.list\(libraryParams\)/)
+  assert.match(source, /characterLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
+  assert.match(source, /sceneLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
+  assert.match(source, /propLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
 })
 
 test('素材选择弹窗暴露部分素材源加载失败，而不是静默吞掉 404', () => {
   assert.match(source, /const loadWarning = ref\(''\)/)
   assert.match(source, /Promise\.allSettled\(sources\.map\(\(source\) => source\.run\(\)\)\)/)
   assert.match(source, /failedSources\.join\('、'\).*加载失败，已显示其他可用素材/)
+})
+
+test('素材选择弹窗加载多来源素材时静默接口错误，避免全局 404 连续弹窗', () => {
+  assert.match(source, /assetsAPI\.list\(params, \{ silentError: true \}\)/)
+  assert.match(source, /characterLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
+  assert.match(source, /sceneLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
+  assert.match(source, /propLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
+  assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams, \{ silentError: true \}\)/)
 })
 
 test('素材选择弹窗全量加载失败时提供重试入口', () => {
@@ -40,8 +48,9 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /const typeDisplayName = computed/)
   assert.match(source, /item\.type === 'audio'/)
   assert.match(source, /if \(props\.type === 'audio'\)/)
-  assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams\)/)
+  assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams, \{ silentError: true \}\)/)
   assert.match(source, /normalizeVoiceCatalogItems/)
+  assert.match(source, /it\.available !== false && it\.can_bind !== false/)
   assert.match(source, /voice_catalog: '音色库'/)
   assert.match(source, /class="picker-thumb audio-thumb"/)
   assert.match(source, /<audio[\s\S]*previewItem\?\.type === 'audio'[\s\S]*controls/)

@@ -1,8 +1,8 @@
 import request from '@/utils/request'
 
 export const propLibraryAPI = {
-  list(params) {
-    return request.get('/prop-library', { params })
+  list(params, config = {}) {
+    return request.get('/prop-library', { ...config, params })
   },
   get(id) {
     return request.get(`/prop-library/${id}`)

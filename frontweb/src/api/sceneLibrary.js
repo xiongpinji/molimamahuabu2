@@ -1,8 +1,8 @@
 import request from '@/utils/request'
 
 export const sceneLibraryAPI = {
-  list(params) {
-    return request.get('/scene-library', { params })
+  list(params, config = {}) {
+    return request.get('/scene-library', { ...config, params })
   },
   get(id) {
     return request.get(`/scene-library/${id}`)

@@ -188,7 +188,7 @@ async function load() {
     const sources = [
       {
         label: '项目资产',
-        run: () => assetsAPI.list(params).then((res) => normalizeAssetItems(res, 'project')),
+        run: () => assetsAPI.list(params, { silentError: true }).then((res) => normalizeAssetItems(res, 'project')),
       },
     ]
     if (props.type === 'image') {
@@ -196,15 +196,15 @@ async function load() {
       if (keyword.value) libraryParams.keyword = keyword.value
       sources.push({
         label: '角色库',
-        run: () => characterLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'character')),
+        run: () => characterLibraryAPI.list(libraryParams, { silentError: true }).then((res) => normalizeAssetItems(res, 'character')),
       })
       sources.push({
         label: '场景库',
-        run: () => sceneLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'scene')),
+        run: () => sceneLibraryAPI.list(libraryParams, { silentError: true }).then((res) => normalizeAssetItems(res, 'scene')),
       })
       sources.push({
         label: '道具库',
-        run: () => propLibraryAPI.list(libraryParams).then((res) => normalizeAssetItems(res, 'prop')),
+        run: () => propLibraryAPI.list(libraryParams, { silentError: true }).then((res) => normalizeAssetItems(res, 'prop')),
       })
     }
     if (props.type === 'audio') {
@@ -212,7 +212,7 @@ async function load() {
       if (props.dramaId) voiceParams.drama_id = props.dramaId
       sources.push({
         label: '音色库',
-        run: () => characterAPI.listVoiceCatalog(voiceParams).then(normalizeVoiceCatalogItems),
+        run: () => characterAPI.listVoiceCatalog(voiceParams, { silentError: true }).then(normalizeVoiceCatalogItems),
       })
     }
     const results = await Promise.allSettled(sources.map((source) => source.run()))
@@ -256,7 +256,7 @@ function normalizeAssetItems(res, source) {
 
 function normalizeVoiceCatalogItems(res) {
   return resultItems(res)
-    .filter((it) => it.available !== false && (it.preview_url || it.url || it.audio_url))
+    .filter((it) => it.available !== false && it.can_bind !== false && (it.preview_url || it.url || it.audio_url))
     .map((it) => normalizeAssetItem({
       ...it,
       id: it.asset_id || it.id || it.voice_id,
