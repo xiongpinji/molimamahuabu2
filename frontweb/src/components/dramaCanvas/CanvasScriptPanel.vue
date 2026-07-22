@@ -97,13 +97,30 @@ async function onSave() {
     return
   }
   saving.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: '剧本保存中…' })
   try {
     await getScriptApi()?.saveScript?.(props.episode.id, {
       scriptContent: form.scriptContent,
       title: form.title,
     })
+    await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '剧本已保存',
+      resultType: 'text',
+      resultLabel: '剧本已保存',
+      promptText: form.scriptContent,
+      autoClear: false,
+    })
   } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
+    const message = e?.message || '保存失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'save',
+      retryLabel: '重试保存剧本',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     saving.value = false
   }

@@ -13,6 +13,7 @@ const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/componen
 const mediaNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaNode.vue', import.meta.url)), 'utf8')
 const assetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetNode.vue', import.meta.url)), 'utf8')
 const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptNode.vue', import.meta.url)), 'utf8')
+const scriptPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptPanel.vue', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 
@@ -39,6 +40,21 @@ test('脚本素材媒体节点支持单击聚焦并打开配置面板', () => {
   assert.match(mediaNodeSource, /<CanvasMediaPanel[\s\S]*v-if="showPanel"/)
   assert.match(assetNodeSource, /<CanvasAssetPanel[\s\S]*v-if="showPanel"/)
   assert.match(scriptNodeSource, /<CanvasScriptPanel[\s\S]*v-if="showPanel"/)
+})
+
+test('脚本配置面板保存后保留节点状态和失败重试', () => {
+  assert.match(scriptPanelSource, /ctx\?\.nodeStatus\?\.set\(props\.nodeId, \{ step: 'save', message: '剧本保存中…' \}\)/)
+  assert.match(scriptPanelSource, /await ctx\?\.refreshDrama\?\.\(true\)/)
+  assert.match(scriptPanelSource, /ctx\?\.nodeStatus\?\.success\(props\.nodeId, \{/)
+  assert.match(scriptPanelSource, /resultType: 'text'/)
+  assert.match(scriptPanelSource, /resultLabel: '剧本已保存'/)
+  assert.match(scriptPanelSource, /promptText: form\.scriptContent/)
+  assert.match(scriptPanelSource, /autoClear: false/)
+  assert.match(scriptPanelSource, /ctx\?\.nodeStatus\?\.fail\(props\.nodeId, \{/)
+  assert.match(scriptPanelSource, /errorDetail: message/)
+  assert.match(scriptPanelSource, /retryStep: 'save'/)
+  assert.match(scriptPanelSource, /retryLabel: '重试保存剧本'/)
+  assert.match(scriptPanelSource, /recoverable: true/)
 })
 
 test('分镜配置面板保留保存、回显刷新和单镜模型配置', () => {
