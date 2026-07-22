@@ -197,12 +197,18 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
 export async function runAudioStep(sb) {
   const text = (sb.dialogue || '').trim()
   if (!text) return { skipped: true, reason: '无对白' }
-  await request.post('/audio/extract', {
+  const res = await request.post('/audio/extract', {
     storyboard_id: sb.id,
     text,
     tts_kind: 'dialogue',
   })
-  return { skipped: false }
+  return {
+    skipped: false,
+    resultUrl: res?.url || '',
+    resultLocalPath: res?.local_path || '',
+    resultType: 'audio',
+    resultLabel: '音频已生成',
+  }
 }
 
 /**

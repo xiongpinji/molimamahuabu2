@@ -44,6 +44,14 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'video', response: res \}\)/)
 })
 
+test('画布音频节点把同步提取结果写入节点成功结果', () => {
+  assert.match(runnerSource, /const res = await request\.post\('\/audio\/extract', \{[\s\S]*tts_kind: 'dialogue'/)
+  assert.match(runnerSource, /resultUrl: res\?\.url \|\| ''/)
+  assert.match(runnerSource, /resultLocalPath: res\?\.local_path \|\| ''/)
+  assert.match(runnerSource, /resultType: 'audio'/)
+  assert.match(canvasSource, /const res = await runAudioStep\(latestSb\)[\s\S]*operationResult = res/)
+})
+
 test('分镜面板直接生视频补传画布媒体映射给首尾帧链路', () => {
   assert.match(storyboardPanelSource, /imagesBySbId:\s*ctx\?\.imagesBySbId\?\.value \|\| \{\}/)
   assert.match(storyboardPanelSource, /videosBySbId:\s*ctx\?\.videosBySbId\?\.value \|\| \{\}/)

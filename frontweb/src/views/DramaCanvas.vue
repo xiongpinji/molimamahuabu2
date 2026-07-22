@@ -1696,6 +1696,7 @@ async function runCanvasNodeStep(node, step) {
         ElMessage.info(res.reason || '已跳过')
         return
       }
+      operationResult = res
     }
     else if (step === 'link_tail_frame') operationResult = await linkStoryboardTailFrameFromNode(latestSb)
     else throw new Error(`暂不支持该节点步骤：${step}`)
