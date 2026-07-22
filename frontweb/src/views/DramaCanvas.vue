@@ -302,7 +302,7 @@
         <div v-if="runQueueItems.length" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
           <div class="run-queue-head">
             <span>运行队列</span>
-            <small>{{ runningQueueCount }} 进行中 · {{ failedQueueCount }} 异常</small>
+            <small>{{ runningQueueCount }} 进行中 · {{ successQueueCount }} 完成 · {{ failedQueueCount }} 异常</small>
           </div>
           <div
             v-for="item in runQueueItems"
@@ -317,6 +317,12 @@
               <small>{{ item.message }}</small>
             </span>
             <span v-if="item.tone === 'running'" class="run-action">{{ item.elapsedText }}</span>
+            <span v-else-if="item.tone === 'success'" class="run-success-actions">
+              <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
+              <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
+              <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
+            </span>
             <button
               v-else-if="item.retryStep"
               type="button"
@@ -608,15 +614,24 @@ const runQueueItems = computed(() => {
   for (const [nodeId, status] of Object.entries(nodeStatus.map)) {
     if (!nodeId || !status) continue
     const key = `active:${nodeId}`
+    const isFailed = status.step === 'failed'
+    const isSuccess = status.step === 'success'
     seen.add(nodeId)
     items.push({
       key,
       nodeId,
-      tone: status.step === 'failed' ? 'failed' : 'running',
+      tone: isFailed ? 'failed' : isSuccess ? 'success' : 'running',
       label: queueNodeLabel(nodeId),
-      message: status.step === 'failed' ? (status.message || '节点执行失败') : queueRunningMessage(status),
+      message: isFailed
+        ? (status.message || '节点执行失败')
+        : isSuccess
+          ? queueSuccessMessage(status)
+          : queueRunningMessage(status),
       elapsedText: formatQueueElapsed(status.at),
-      retryStep: status.step === 'failed' ? queueNodeRetryStep(findGraphNode(nodeId)) : '',
+      retryStep: isFailed ? (status.retryStep || queueNodeRetryStep(findGraphNode(nodeId))) : '',
+      resultUrl: status.resultUrl || status.savedAssetUrl || '',
+      resultNodeId: status.resultNodeId || '',
+      resultType: status.resultType || '',
     })
   }
   for (const node of allGraphNodes.value) {
@@ -635,6 +650,7 @@ const runQueueItems = computed(() => {
   return items.slice(0, 8)
 })
 const runningQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'running').length)
+const successQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'success').length)
 const failedQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'failed').length)
 
 function queueNodeLabel(nodeId) {
@@ -671,6 +687,11 @@ function queueRunningMessage(status) {
   return `${status?.message || '处理中…'} · ${elapsed}，刷新后可恢复查看`
 }
 
+function queueSuccessMessage(status) {
+  const typeMap = { image: '图片结果可复用', video: '视频结果可复用', audio: '音频结果可复用' }
+  return status?.resultLabel || typeMap[status?.resultType] || status?.message || '节点执行完成'
+}
+
 function formatQueueElapsed(startedAt) {
   const start = Number(startedAt)
   if (!Number.isFinite(start)) return '刚刚开始'
@@ -692,6 +713,34 @@ async function retryQueueItem(item) {
   }
   await focusCanvasNode(item.nodeId)
   await runCanvasNodeStep(node, item.retryStep)
+}
+
+function openQueueItemResult(item) {
+  if (!item?.resultUrl) {
+    ElMessage.warning('该队列项暂无可打开的结果')
+    return
+  }
+  window.open(item.resultUrl, '_blank', 'noopener,noreferrer')
+}
+
+async function copyQueueItemResult(item) {
+  if (!item?.resultUrl) {
+    ElMessage.warning('该队列项暂无可复制的结果')
+    return
+  }
+  await copyCanvasText(item.resultUrl, '队列结果链接已复制', '队列结果链接（请手动复制）')
+}
+
+async function focusQueueItemResult(item) {
+  if (!item?.resultNodeId) {
+    ElMessage.warning('该队列项暂无可定位的结果节点')
+    return
+  }
+  await focusNodeOrWarn(item.resultNodeId, '该队列项暂无可定位的结果节点')
+}
+
+function dismissQueueItem(item) {
+  if (item?.nodeId) nodeStatus.clear(item.nodeId)
 }
 
 function syncWorkflowFromDrama() {
@@ -2750,6 +2799,9 @@ onBeforeUnmount(() => {
 .tone-failed .run-dot {
   background: #f87171;
 }
+.tone-success .run-dot {
+  background: #34d399;
+}
 .run-info {
   min-width: 0;
   display: flex;
@@ -2773,9 +2825,30 @@ onBeforeUnmount(() => {
 .tone-failed .run-info small {
   color: #fca5a5;
 }
+.tone-success .run-info small {
+  color: #bbf7d0;
+}
 .run-action {
   color: #a5b4fc;
   font-size: 10px;
+}
+.run-success-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.run-success-actions button {
+  padding: 3px 7px;
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  border-radius: 999px;
+  background: rgba(6, 78, 59, 0.32);
+  color: #bbf7d0;
+  font-size: 10px;
+  cursor: pointer;
+}
+.run-success-actions button:hover {
+  border-color: rgba(52, 211, 153, 0.9);
+  background: rgba(6, 95, 70, 0.48);
 }
 .run-retry {
   padding: 3px 7px;

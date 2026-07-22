@@ -160,6 +160,16 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
   await expect(completedNode).toContainText('图片已生成')
   await expect(completedNode.getByRole('button', { name: '复制素材引用' })).toBeVisible()
 
+  const runQueue = page.getByLabel('画布节点运行队列')
+  await expect(runQueue).toContainText('0 进行中 · 1 完成 · 1 异常')
+  const successQueueItem = runQueue.locator('.run-queue-item', { hasText: '已完成镜头' })
+  await expect(successQueueItem).toContainText('图片已生成')
+  await expect(successQueueItem.getByRole('button', { name: '复制' })).toBeVisible()
+  await successQueueItem.getByRole('button', { name: '复制' }).click()
+  await expect.poll(() => page.evaluate(() => window.__copiedText || '')).toBe('/static/generated-main.png')
+  await successQueueItem.getByRole('button', { name: '定位' }).click()
+  await expect(page.locator('.vue-flow__node[data-id="sbimg:301"]')).toBeVisible()
+
   await completedNode.click({ button: 'right' })
   await expect(page.getByRole('menu', { name: '节点操作' })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: /复制素材引用/ })).toBeVisible()

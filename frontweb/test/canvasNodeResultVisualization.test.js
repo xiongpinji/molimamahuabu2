@@ -123,3 +123,16 @@ test('画布节点结果定位和工作流失败状态可恢复重试', () => {
   assert.match(canvasSource, /nodeStatus\.fail\(`sb:\$\{storyboardId\}`, \{[\s\S]*retryStep: step[\s\S]*retryLabel: `重试\$\{CANVAS_NODE_STATUS_LABELS\[step\] \|\| step\}`/)
   assert.match(canvasSource, /retryStep: queueNodeRetryStep\(findGraphNode\(`sb:\$\{storyboardId\}`\)\) \|\| 'video'/)
 })
+
+test('运行队列区分成功状态并提供结果操作', () => {
+  assert.match(canvasSource, /successQueueCount/)
+  assert.match(canvasSource, /\{\{ runningQueueCount \}\} 进行中 · \{\{ successQueueCount \}\} 完成 · \{\{ failedQueueCount \}\} 异常/)
+  assert.match(canvasSource, /tone: isFailed \? 'failed' : isSuccess \? 'success' : 'running'/)
+  assert.match(canvasSource, /function queueSuccessMessage\(status\)/)
+  assert.match(canvasSource, /status\.retryStep \|\| queueNodeRetryStep\(findGraphNode\(nodeId\)\)/)
+  assert.match(canvasSource, /function openQueueItemResult\(item\)/)
+  assert.match(canvasSource, /function copyQueueItemResult\(item\)/)
+  assert.match(canvasSource, /function focusQueueItemResult\(item\)/)
+  assert.match(canvasSource, /function dismissQueueItem\(item\)/)
+  assert.match(canvasSource, /class="run-success-actions"/)
+})
