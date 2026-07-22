@@ -545,7 +545,7 @@ async function closeDirectorStage() {
   directorReturnFocus = null
 }
 
-const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript'])
+const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript', 'canvasProjectAsset'])
 
 const contextMenuNodeLabel = computed(() => canvasNodeLabel(contextMenuNode.value))
 const contextMenuNodeActions = computed(() => canvasNodeActions(contextMenuNode.value))
@@ -1711,7 +1711,7 @@ async function runWorkflowFromNode(node) {
 
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
-    onNodeDoubleClick({ node })
+    openNodeConfig(node)
   } else if (type === 'open-node-result') {
     openNodeResult(node)
   } else if (type === 'copy-node-result') {
@@ -1751,6 +1751,16 @@ async function runNodeMenuAction(type, node) {
   } else if (type === 'run-node-workflow') {
     await runWorkflowFromNode(node)
   }
+}
+
+function openNodeConfig(node) {
+  if (!node) return
+  if (PANEL_NODE_TYPES.has(node.type)) {
+    focusedNodeId.value = node.id
+    scheduleVirtualization()
+    return
+  }
+  onNodeDoubleClick({ node })
 }
 
 function onPaneContextMenu(payload) {

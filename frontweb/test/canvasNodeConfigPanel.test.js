@@ -10,12 +10,16 @@ const assetPanelSource = readFileSync(fileURLToPath(new URL('../src/components/d
 const mediaPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaPanel.vue', import.meta.url)), 'utf8')
 const dramaCanvasAdapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
+const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
   assert.match(contextMenuSource, /打开节点配置/)
   assert.match(canvasSource, /if \(type === 'open-node-config'\) \{/)
-  assert.match(canvasSource, /onNodeDoubleClick\(\{ node \}\)/)
+  assert.match(canvasSource, /openNodeConfig\(node\)/)
+  assert.match(canvasSource, /function openNodeConfig\(node\)/)
+  assert.match(canvasSource, /PANEL_NODE_TYPES\.has\(node\.type\)[\s\S]*focusedNodeId\.value = node\.id/)
+  assert.match(canvasSource, /'canvasProjectAsset'/)
 })
 
 test('分镜配置面板保留保存、回显刷新和单镜模型配置', () => {
@@ -136,4 +140,14 @@ test('媒体配置面板成功后保留节点结果回显', () => {
   assert.match(mediaPanelSource, /function clearRunningStatus\(nodeId\)/)
   assert.match(mediaPanelSource, /!\['failed', 'success'\]\.includes\(status\.step\)/)
   assert.match(mediaPanelSource, /function currentResultUrl\(step\)/)
+})
+
+test('项目素材节点聚焦后提供配置面板和挂载动作', () => {
+  assert.match(projectAssetNodeSource, /v-if="data\.focused"/)
+  assert.match(projectAssetNodeSource, /素材配置/)
+  assert.match(projectAssetNodeSource, /closePanel/)
+  assert.match(projectAssetNodeSource, /复制到提示词/)
+  assert.match(projectAssetNodeSource, /指派到选中分镜/)
+  assert.match(projectAssetNodeSource, /ctx\?\.assignProjectAssetToSelectedStoryboard\?\.\(props\.data\.asset\)/)
+  assert.match(projectAssetNodeSource, /ctx\?\.clearFocusedNode\?\.\(\)/)
 })

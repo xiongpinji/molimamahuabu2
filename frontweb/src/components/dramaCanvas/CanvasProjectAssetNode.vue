@@ -10,6 +10,27 @@
       <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制引用</button>
       <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">指派</button>
     </div>
+    <div
+      v-if="data.focused"
+      class="project-asset-panel nodrag nopan nowheel"
+      @pointerdown.stop
+      @mousedown.stop
+      @click.stop
+      @wheel.stop
+    >
+      <div class="panel-head">
+        <span>素材配置</span>
+        <button type="button" @click.stop="closePanel">收起</button>
+      </div>
+      <p class="asset-ref">{{ referenceText || '该素材缺少可复制引用' }}</p>
+      <div class="panel-actions">
+        <button type="button" :disabled="!url" @click.stop="openAsset">打开预览</button>
+        <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制到提示词</button>
+        <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">
+          {{ assigning ? '指派中…' : '指派到选中分镜' }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -56,6 +77,10 @@ async function assignToSelectedStoryboard() {
     assigning.value = false
   }
 }
+
+function closePanel() {
+  ctx?.clearFocusedNode?.()
+}
 </script>
 
 <style scoped>
@@ -69,4 +94,11 @@ async function assignToSelectedStoryboard() {
 .asset-actions { display: flex; gap: 6px; margin-top: 8px; }
 .asset-actions button { flex: 1; border: 1px solid rgba(56,189,248,.35); border-radius: 6px; background: rgba(56,189,248,.12); color: #bae6fd; font-size: 10px; line-height: 22px; cursor: pointer; }
 .asset-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.project-asset-panel { margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(56,189,248,.22); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 700; color: #bae6fd; }
+.panel-head button { border: 0; background: transparent; color: #7dd3fc; font-size: 10px; cursor: pointer; }
+.asset-ref { margin: 8px 0; max-height: 52px; overflow: auto; color: #a1a1aa; font-size: 10px; line-height: 1.4; word-break: break-all; }
+.panel-actions { display: grid; gap: 6px; }
+.panel-actions button { border: 1px solid rgba(125,211,252,.32); border-radius: 7px; background: rgba(14,165,233,.13); color: #e0f2fe; font-size: 10px; line-height: 24px; cursor: pointer; }
+.panel-actions button:disabled { opacity: .5; cursor: not-allowed; }
 </style>
