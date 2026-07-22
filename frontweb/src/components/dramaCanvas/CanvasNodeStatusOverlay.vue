@@ -53,6 +53,7 @@
       <span class="action-group action-group-flow" aria-label="失败流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+        <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
         <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
         <button type="button" @click.stop="dismissStatus">收起</button>
       </span>
@@ -471,7 +472,9 @@ async function retryAction() {
   if (action === 'attach_image_first') return attachImageResult('first')
   if (action === 'attach_image_last') return attachImageResult('last')
   if (action === 'attach_video') return attachVideoResult()
+  if (action === 'attach_library_video') return attachVideoResult()
   if (action === 'attach_audio') return attachAudioResult()
+  if (action === 'attach_library_audio') return attachAudioResult()
 }
 
 async function runNextStep() {

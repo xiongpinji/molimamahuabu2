@@ -228,7 +228,9 @@ async function onLibraryVideoPick(asset) {
     if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
     else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
-    ElMessage.error(e?.message || '复用失败')
+    const message = e?.message || '复用失败'
+    markLibraryAttachFailure(focusNodeId, 'video', asset, message)
+    ElMessage.error(message)
   } finally {
     attachBusy.value = false
     clearRunningStatus(focusNodeId)
@@ -264,7 +266,9 @@ async function onLibraryAudioPick(asset) {
     if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
     else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
   } catch (e) {
-    ElMessage.error(e?.message || '复用音频失败')
+    const message = e?.message || '复用音频失败'
+    markLibraryAttachFailure(focusNodeId, 'audio', asset, message)
+    ElMessage.error(message)
   } finally {
     attachBusy.value = false
     clearRunningStatus(focusNodeId)
@@ -488,10 +492,21 @@ async function runStep(step) {
 }
 
 async function retryFailedStep() {
+  const retryAction = failedStatus.value?.retryAction
+  const asset = failedStatus.value?.libraryAsset
+  if (retryAction === 'attach_library_video' && asset) {
+    clearFailedStatus()
+    await onLibraryVideoPick(asset)
+    return
+  }
+  if (retryAction === 'attach_library_audio' && asset) {
+    clearFailedStatus()
+    await onLibraryAudioPick(asset)
+    return
+  }
   const step = failedStatus.value?.retryStep
   if (!step) return
-  ctx?.nodeStatus?.clear(props.nodeId)
-  ctx?.nodeStatus?.clear(sbNodeId.value)
+  clearFailedStatus()
   await runStep(step)
 }
 
@@ -504,6 +519,35 @@ function markNodeSuccess(message, payload = {}) {
   }
   ctx?.nodeStatus?.success(props.nodeId, status)
   ctx?.nodeStatus?.success(sbNodeId.value, status)
+}
+
+function markLibraryAttachFailure(nodeId, resultType, asset, message) {
+  const localPath = asset?.local_path || ''
+  const resultUrl = asset?.asset_url || asset?.display_url || asset?.url || asset?.video_url || asset?.audio_url || asset?.voice_url || ''
+  const status = {
+    message,
+    errorDetail: message,
+    storyboardId: props.storyboard?.id || undefined,
+    dramaId: ctx?.drama?.value?.id || undefined,
+    resultUrl: resultUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : ''),
+    resultType,
+    resultLabel: asset?.name || (resultType === 'video' ? '素材库视频' : '素材库音频'),
+    savedAssetId: asset?.raw_id || asset?.id || '',
+    savedAssetName: asset?.name || '',
+    savedAssetLocalPath: localPath,
+    retryAction: resultType === 'video' ? 'attach_library_video' : 'attach_library_audio',
+    retryActionLabel: resultType === 'video' ? '重试挂载素材库视频' : '重试挂载素材库音频',
+    libraryAsset: asset,
+    recoverable: true,
+    autoClear: false,
+  }
+  ctx?.nodeStatus?.fail(nodeId, status)
+  ctx?.nodeStatus?.fail(sbNodeId.value, status)
+}
+
+function clearFailedStatus() {
+  ctx?.nodeStatus?.clear(props.nodeId)
+  ctx?.nodeStatus?.clear(sbNodeId.value)
 }
 
 function clearRunningStatus(nodeId) {
