@@ -285,6 +285,13 @@
           </template>
           <pre class="prompt-preview">{{ voicePromptPreview }}</pre>
         </el-popover>
+        <el-button
+          link
+          type="primary"
+          size="small"
+          :disabled="!canApplyVoicePrompt"
+          @click.stop="applyVoicePromptToVideoPrompt"
+        >固化到视频词</el-button>
       </div>
     </section>
 
@@ -388,7 +395,7 @@ import {
   toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
-import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
+import { appendVoicePromptToVideoPrompt, buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
@@ -522,6 +529,14 @@ const voicePromptPreview = computed(() => buildVoicePromptPreview({
   policy: voicePolicy.value,
   characters: storyboardCharacters.value,
 }))
+const canApplyVoicePrompt = computed(() => {
+  const next = appendVoicePromptToVideoPrompt({
+    prompt: form.video_prompt || form.universal_segment_text || form.image_prompt || form.action || '',
+    policy: voicePolicy.value,
+    characters: storyboardCharacters.value,
+  })
+  return Boolean(next && next !== String(form.video_prompt || '').trim())
+})
 const currentEpisode = computed(() => {
   const drama = ctx?.drama?.value
   const byProp = (drama?.episodes || []).find((episode) => Number(episode?.id) === Number(props.episodeId))
@@ -884,6 +899,27 @@ async function persistForm(silent = false) {
       }
   await storyboardsAPI.update(props.storyboard.id, payload)
   if (!silent) ElMessage.success('已保存')
+}
+
+async function applyVoicePromptToVideoPrompt() {
+  if (!props.storyboard?.id) return
+  const nextPrompt = appendVoicePromptToVideoPrompt({
+    prompt: form.video_prompt || form.universal_segment_text || form.image_prompt || form.action || '',
+    policy: voicePolicy.value,
+    characters: storyboardCharacters.value,
+  })
+  if (!nextPrompt || nextPrompt === String(form.video_prompt || '').trim()) {
+    ElMessage.info('视频词已包含角色声线锚点')
+    return
+  }
+  form.video_prompt = nextPrompt
+  try {
+    await storyboardsAPI.update(props.storyboard.id, { video_prompt: nextPrompt })
+    await ctx?.refreshDrama?.(true)
+    ElMessage.success('已将角色声线固化到视频词')
+  } catch (e) {
+    ElMessage.error(e?.message || '声线提示保存失败')
+  }
 }
 
 async function savePhotography() {
