@@ -270,7 +270,7 @@
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
-          :nodes-connectable="false"
+          :nodes-connectable="true"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -292,6 +292,8 @@
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
           @nodes-change="onNodesChange"
+          @edges-change="onEdgesChange"
+          @connect="onConnect"
         >
           <CanvasFlowAligner />
           <Background pattern-color="#3f3f46" :gap="20" />
@@ -1939,6 +1941,64 @@ function onNodesChange(changes = []) {
   applySelectedStoryboardIds([...selectedIds])
 }
 
+function manualEdgeId(connection) {
+  return [
+    'manual',
+    connection.source,
+    connection.sourceHandle || 'out',
+    connection.target,
+    connection.targetHandle || 'in',
+  ].join(':')
+}
+
+function hasSameEdgeConnection(candidate, edgeList = allGraphEdges.value) {
+  return edgeList.some((edge) => (
+    String(edge.source) === String(candidate.source)
+    && String(edge.target) === String(candidate.target)
+    && String(edge.sourceHandle || '') === String(candidate.sourceHandle || '')
+    && String(edge.targetHandle || '') === String(candidate.targetHandle || '')
+  ))
+}
+
+function onConnect(connection) {
+  if (!connection?.source || !connection?.target) return
+  if (String(connection.source) === String(connection.target)) {
+    ElMessage.warning('不能连接到同一个节点')
+    return
+  }
+  if (hasSameEdgeConnection(connection)) {
+    ElMessage.info('该连线已存在')
+    return
+  }
+
+  const edge = {
+    id: manualEdgeId(connection),
+    source: connection.source,
+    target: connection.target,
+    sourceHandle: connection.sourceHandle || null,
+    targetHandle: connection.targetHandle || null,
+    type: 'smoothstep',
+    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
+    data: { manual: true },
+  }
+  allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
+  applyVirtualizedGraph()
+  scheduleLayoutSave()
+  ElMessage.success('已添加画布连线')
+}
+
+function onEdgesChange(changes = []) {
+  const removedManualIds = changes
+    .filter((change) => change?.type === 'remove' && String(change.id || '').startsWith('manual:'))
+    .map((change) => String(change.id))
+  if (!removedManualIds.length) return
+
+  const removed = new Set(removedManualIds)
+  allGraphEdges.value = allGraphEdges.value.filter((edge) => !removed.has(String(edge.id)))
+  applyVirtualizedGraph()
+  scheduleLayoutSave()
+}
+
 function selectStoryboard(storyboardId, event) {
   const normalizedId = Number(storyboardId)
   if (!Number.isFinite(normalizedId)) return
@@ -2159,7 +2219,12 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
   let layoutPayload = null
   if (!groupsOnly) {
     syncRenderedNodesToGraph()
-    layoutPayload = buildCanvasLayoutPayload(allGraphNodes.value, currentViewport.value, layoutCache.value)
+    layoutPayload = buildCanvasLayoutPayload(
+      allGraphNodes.value,
+      currentViewport.value,
+      layoutCache.value,
+      allGraphEdges.value
+    )
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
   const groupsPayload = groupsOnly || !layoutOnly ? workflowGroups.value : undefined

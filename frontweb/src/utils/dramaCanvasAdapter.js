@@ -1,4 +1,4 @@
-import { parseCanvasLayout, resolveNodePosition } from './canvasLayout'
+import { normalizeManualCanvasEdges, parseCanvasLayout, resolveNodePosition } from './canvasLayout'
 import { getStoryboardGroupMap, parseWorkflowGroups } from './canvasWorkflow'
 import { assetImageUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
 import {
@@ -29,6 +29,7 @@ const ASSET_EDGE_STYLE = { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray:
 const SCRIPT_EDGE_STYLE = { stroke: '#fbbf24', strokeWidth: 2, strokeDasharray: '8 4' }
 const PIPELINE_EDGE_STYLE = { stroke: '#818cf8', strokeWidth: 2 }
 const CHAIN_EDGE_STYLE = { stroke: '#a78bfa', strokeWidth: 1.5, strokeDasharray: '4 3' }
+const MANUAL_EDGE_STYLE = { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' }
 
 /** Vue Flow 贝塞尔曲线（curvature 越大弧线越明显） */
 function makeEdge(props) {
@@ -69,6 +70,26 @@ function makeNode(base) {
   const fixed = base.type === 'canvasLabel' || base.type === 'canvasAddButton'
   const draggable = base.draggable ?? !fixed
   return { ...base, draggable }
+}
+
+function appendManualEdges(edges, savedLayout, nodes) {
+  const nodeIds = new Set(nodes.map((node) => String(node.id)))
+  const existing = new Set(edges.map((edge) => (
+    `${edge.source}|${edge.sourceHandle || ''}|${edge.target}|${edge.targetHandle || ''}`
+  )))
+
+  for (const edge of normalizeManualCanvasEdges(savedLayout?.manual_edges)) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue
+    const key = `${edge.source}|${edge.sourceHandle || ''}|${edge.target}|${edge.targetHandle || ''}`
+    if (existing.has(key)) continue
+    existing.add(key)
+    edges.push(makeEdge({
+      ...edge,
+      type: edge.type || 'smoothstep',
+      style: MANUAL_EDGE_STYLE,
+      data: { ...(edge.data || {}), manual: true },
+    }))
+  }
 }
 
 function buildAssetNodes(drama, savedLayout, startY, episodeContext) {
@@ -443,6 +464,8 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   if (!episodes.length) {
     nodes.push(sectionLabel('label:empty', '暂无剧集，可点顶栏「+ 集」或右键空白处新建', PIPELINE_X, pipelineY))
   }
+
+  appendManualEdges(edges, savedLayout, nodes)
 
   return {
     nodes,
