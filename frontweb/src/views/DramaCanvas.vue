@@ -1014,7 +1014,7 @@ function formatQueueElapsed(startedAt) {
 
 async function focusQueueItem(item) {
   if (!item?.nodeId) return
-  await focusCanvasNode(item.nodeId)
+  await focusCanvasNodeWithConfig(item.nodeId)
 }
 
 async function retryQueueItem(item) {
@@ -1446,11 +1446,17 @@ function firstStoryboardForAssetNode(node) {
 }
 
 async function focusNodeOrWarn(nodeId, warning) {
-  if (!findGraphNode(nodeId)) {
-    ElMessage.warning(warning)
+  return focusCanvasNodeWithConfig(nodeId, warning)
+}
+
+async function focusCanvasNodeWithConfig(nodeId, warning = '') {
+  const node = findGraphNode(nodeId)
+  if (!node) {
+    if (warning) ElMessage.warning(warning)
     return false
   }
   await focusCanvasNode(nodeId)
+  if (PANEL_NODE_TYPES.has(node.type)) openNodeConfig(node)
   return true
 }
 

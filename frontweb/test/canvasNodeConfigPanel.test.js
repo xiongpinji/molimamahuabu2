@@ -32,6 +32,12 @@ test('右键节点菜单保留配置面板入口', () => {
   assert.match(canvasSource, /function openNodeConfig\(node\)/)
   assert.match(canvasSource, /PANEL_NODE_TYPES\.has\(node\.type\)[\s\S]*focusedNodeId\.value = node\.id/)
   assert.match(canvasSource, /'canvasProjectAsset'/)
+  assert.match(canvasSource, /async function focusCanvasNodeWithConfig\(nodeId, warning = ''\)/)
+  assert.match(canvasSource, /const node = findGraphNode\(nodeId\)/)
+  assert.match(canvasSource, /await focusCanvasNode\(nodeId\)/)
+  assert.match(canvasSource, /if \(PANEL_NODE_TYPES\.has\(node\.type\)\) openNodeConfig\(node\)/)
+  assert.match(canvasSource, /async function focusQueueItem\(item\) \{[\s\S]*await focusCanvasNodeWithConfig\(item\.nodeId\)/)
+  assert.match(canvasSource, /async function focusNodeOrWarn\(nodeId, warning\) \{[\s\S]*return focusCanvasNodeWithConfig\(nodeId, warning\)/)
 })
 
 test('脚本素材媒体节点支持单击聚焦并打开配置面板', () => {
