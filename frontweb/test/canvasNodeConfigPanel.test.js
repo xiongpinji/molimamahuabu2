@@ -11,6 +11,7 @@ const mediaPanelSource = readFileSync(fileURLToPath(new URL('../src/components/d
 const dramaCanvasAdapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
+const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
@@ -246,6 +247,28 @@ test('媒体配置面板成功后保留节点结果回显', () => {
   assert.match(mediaPanelSource, /function clearRunningStatus\(nodeId\)/)
   assert.match(mediaPanelSource, /!\['failed', 'success'\]\.includes\(status\.step\)/)
   assert.match(mediaPanelSource, /function currentResultUrl\(step\)/)
+})
+
+test('节点运行结果浮层提供成功和失败后的闭环操作', () => {
+  assert.match(nodeStatusOverlaySource, /<div v-if="hasResultPreview" class="result-preview"/)
+  assert.match(nodeStatusOverlaySource, /节点生成结果预览/)
+  assert.match(nodeStatusOverlaySource, /<video v-else-if="resultPreviewType === 'video'"/)
+  assert.match(nodeStatusOverlaySource, /<audio v-else-if="resultPreviewType === 'audio'"/)
+  assert.match(nodeStatusOverlaySource, /aria-label="结果操作"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="openResult"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="copyResultLink"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="downloadResult"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="saveResultAsset"/)
+  assert.match(nodeStatusOverlaySource, /存入素材库/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="attachImageResult\('main'\)"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="attachVideoResult"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="attachAudioResult"/)
+  assert.match(nodeStatusOverlaySource, /aria-label="失败结果操作"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="copyError"/)
+  assert.match(nodeStatusOverlaySource, /@click\.stop="retryFailed"/)
+  assert.match(nodeStatusOverlaySource, /function markActionFailure\(message, retryActionName, retryActionLabel\)/)
+  assert.match(nodeStatusOverlaySource, /retryAction: retryActionName/)
+  assert.match(nodeStatusOverlaySource, /async function retryAction\(\)/)
 })
 
 test('项目素材节点聚焦后提供配置面板和挂载动作', () => {
