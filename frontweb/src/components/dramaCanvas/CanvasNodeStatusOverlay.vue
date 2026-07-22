@@ -322,6 +322,7 @@ function resultAssetName(node) {
 }
 
 function resultLocalPath() {
+  if (status.value?.savedAssetLocalPath) return status.value.savedAssetLocalPath
   const asset = effectiveSavedAsset.value
   const url = String(asset?.local_path ? `/static/${asset.local_path}` : (status.value?.resultUrl || ''))
   const marker = '/static/'

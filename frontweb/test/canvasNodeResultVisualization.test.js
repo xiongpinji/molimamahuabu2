@@ -102,6 +102,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /video_generation_id: status\.value\?\.videoGenerationId \|\| ''/)
   assert.match(overlaySource, /request_payload: status\.value\?\.requestPayload \|\| null/)
   assert.match(overlaySource, /request_audit: status\.value\?\.requestAudit \|\| null/)
+  assert.match(overlaySource, /if \(status\.value\?\.savedAssetLocalPath\) return status\.value\.savedAssetLocalPath/)
   assert.match(overlaySource, /function saveResultAsset\(\)/)
   assert.match(overlaySource, /const effectiveSavedAsset = computed/)
   assert.match(overlaySource, /const resultNodeId = computed\(\(\) => status\.value\?\.resultNodeId \|\| ''\)/)
