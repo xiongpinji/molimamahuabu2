@@ -88,18 +88,28 @@ export const characterAPI = {
     } catch (e) {
       const status = e?.response?.status
       if (status !== 404) throw e
-      const fallback = await request.get('/assets', {
-        silentError: true,
-        params: {
-          drama_id: params?.drama_id,
-          type: 'audio',
-          category: 'voice',
-          page: 1,
-          page_size: 100,
+      try {
+        const fallback = await request.get('/assets', {
+          silentError: true,
+          params: {
+            drama_id: params?.drama_id,
+            type: 'audio',
+            category: 'voice',
+            page: 1,
+            page_size: 100,
+          }
+        })
+        const items = Array.isArray(fallback) ? fallback : (fallback?.items || [])
+        return { items: normalizeVoiceAssetCatalog(items), degraded: true }
+      } catch (fallbackError) {
+        if (fallbackError?.response?.status !== 404) throw fallbackError
+        return {
+          items: [],
+          degraded: true,
+          unavailable: true,
+          message: '音色库接口暂不可用，请确认后端已更新并重启',
         }
-      })
-      const items = Array.isArray(fallback) ? fallback : (fallback?.items || [])
-      return { items: normalizeVoiceAssetCatalog(items), degraded: true }
+      }
     }
   },
   bindVoiceCatalog(characterId, voiceId) {

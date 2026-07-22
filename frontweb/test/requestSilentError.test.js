@@ -25,3 +25,11 @@ test('音色目录 404 时静默降级读取项目已提取音色素材', () => 
   assert.match(charactersApiSource, /normalizeVoiceAssetCatalog\(items\)/)
   assert.match(charactersApiSource, /source: 'extracted_voice_asset'/)
 })
+
+test('音色目录和旧素材接口均 404 时返回空列表而不是触发全局错误', () => {
+  assert.match(charactersApiSource, /catch \(fallbackError\) \{/)
+  assert.match(charactersApiSource, /if \(fallbackError\?\.response\?\.status !== 404\) throw fallbackError/)
+  assert.match(charactersApiSource, /items: \[\]/)
+  assert.match(charactersApiSource, /unavailable: true/)
+  assert.match(charactersApiSource, /音色库接口暂不可用，请确认后端已更新并重启/)
+})
