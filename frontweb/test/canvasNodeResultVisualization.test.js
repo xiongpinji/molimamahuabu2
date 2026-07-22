@@ -62,7 +62,11 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /function attachVideoResult\(\)/)
   assert.match(overlaySource, /videosAPI\.attach\(\{/)
   assert.match(overlaySource, /function attachAudioResult\(\)/)
-  assert.match(overlaySource, /storyboardsAPI\.update\(storyboardId, \{ audio_local_path: localPath \}\)/)
+  assert.match(overlaySource, /const canAttachAudio = computed\(\(\) => isSuccess\.value && resultPreviewType\.value === 'audio' && Boolean\(resultUrl\(\)\)/)
+  assert.match(overlaySource, /audio_url: localPath \? undefined : audioUrl/)
+  assert.match(overlaySource, /function markAttachSuccess\(message, extra = \{\}\)/)
+  assert.match(overlaySource, /attachedToStoryboardId: resultStoryboardId\(runtimeNode\(\)\)/)
+  assert.match(overlaySource, /markAttachSuccess\('已设为本镜音频'/)
   assert.match(overlaySource, /function copyError\(\)/)
 })
 
@@ -155,6 +159,8 @@ test('画布节点生成成功后自动存入素材库并回填素材引用', ()
   assert.match(canvasSource, /successNodeStepStatus\(statusIds, successPayload\)/)
   assert.match(canvasSource, /savedAssetId: asset\.id/)
   assert.match(canvasSource, /savedAssetName: asset\.name \|\| nodeResultAssetName\(node, resultInfo\)/)
+  assert.match(canvasSource, /refreshProjectAssets: async \(\) => \{[\s\S]*await loadProjectImageAssets\(\)[\s\S]*rebuildGraph\(\)/)
+  assert.match(overlaySource, /if \(ctx\?\.refreshProjectAssets\) await ctx\.refreshProjectAssets\(\)/)
 })
 
 test('画布节点结果定位和工作流失败状态可恢复重试', () => {

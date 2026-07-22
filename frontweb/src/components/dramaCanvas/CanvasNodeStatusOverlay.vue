@@ -141,7 +141,7 @@ const resultPreviewType = computed(() => {
 const retryLabel = computed(() => status.value?.retryLabel || '重试')
 const canAttachImage = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachVideo = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
-const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultLocalPath()) && Boolean(resultStoryboardId(runtimeNode())))
+const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultUrl()) && Boolean(resultStoryboardId(runtimeNode())))
 const statusSavedAsset = computed(() => {
   if (!status.value?.savedAssetId) return null
   return {
@@ -261,6 +261,16 @@ async function refreshCanvasAfterAttach() {
   else await ctx?.refreshDrama?.(true)
 }
 
+function markAttachSuccess(message, extra = {}) {
+  ctx?.nodeStatus?.success?.(props.nodeId, {
+    ...status.value,
+    message,
+    attachedToStoryboardId: resultStoryboardId(runtimeNode()),
+    autoClear: false,
+    ...extra,
+  })
+}
+
 async function saveResultAsset() {
   if (!status.value?.resultUrl || savingAsset.value) return
   const node = runtimeNode()
@@ -306,7 +316,8 @@ async function saveResultAsset() {
       })
     }
     ElMessage.success('结果已存入素材库')
-    await ctx?.refreshDrama?.(true)
+    if (ctx?.refreshProjectAssets) await ctx.refreshProjectAssets()
+    else await ctx?.refreshDrama?.(true)
   } catch (error) {
     ElMessage.error(error?.message || '存入素材库失败')
   } finally {
@@ -329,6 +340,10 @@ async function attachImageResult(slot = 'main') {
       frame_type: slot === 'first' ? 'storyboard_first' : slot === 'last' ? 'storyboard_last' : undefined,
     })
     ElMessage.success(slot === 'first' ? '已设为首帧' : slot === 'last' ? '已设为尾帧' : '已设为本镜图')
+    markAttachSuccess(slot === 'first' ? '已设为首帧' : slot === 'last' ? '已设为尾帧' : '已设为本镜图', {
+      attachedSlot: slot,
+      resultType: 'image',
+    })
     await refreshCanvasAfterAttach()
   } catch (error) {
     ElMessage.error(error?.message || '图片挂载失败')
@@ -352,6 +367,10 @@ async function attachVideoResult() {
       duration: effectiveSavedAsset.value?.duration ?? undefined,
     })
     ElMessage.success('已设为本镜视频')
+    markAttachSuccess('已设为本镜视频', {
+      attachedSlot: 'video',
+      resultType: 'video',
+    })
     await refreshCanvasAfterAttach()
   } catch (error) {
     ElMessage.error(error?.message || '视频挂载失败')
@@ -363,11 +382,19 @@ async function attachVideoResult() {
 async function attachAudioResult() {
   const storyboardId = resultStoryboardId(runtimeNode())
   const localPath = resultLocalPath()
-  if (!storyboardId || !localPath || attachingResult.value) return
+  const audioUrl = resultUrl()
+  if (!storyboardId || !audioUrl || attachingResult.value) return
   attachingResult.value = true
   try {
-    await storyboardsAPI.update(storyboardId, { audio_local_path: localPath })
+    await storyboardsAPI.update(storyboardId, {
+      audio_local_path: localPath || undefined,
+      audio_url: localPath ? undefined : audioUrl,
+    })
     ElMessage.success('已设为本镜音频')
+    markAttachSuccess('已设为本镜音频', {
+      attachedSlot: 'audio',
+      resultType: 'audio',
+    })
     await refreshCanvasAfterAttach()
   } catch (error) {
     ElMessage.error(error?.message || '音频挂载失败')

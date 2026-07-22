@@ -1830,6 +1830,10 @@ provide(CANVAS_CONTEXT_KEY, {
   setHighlightAsset,
   refresh: refreshCanvas,
   refreshDrama,
+  refreshProjectAssets: async () => {
+    await loadProjectImageAssets()
+    rebuildGraph()
+  },
   suppressPaneClick,
   nodeStatus,
   openCreateDialog: (...args) => openCreateDialog(...args),
