@@ -1061,6 +1061,7 @@ function assetReferenceText(asset) {
 }
 
 function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
+  if (status?.resultNodeId) return status.resultNodeId
   const sb = storyboardForNode(node)
   if (!sb?.id || !status?.resultType) return ''
   if (status.resultType === 'image') return `sbimg:${sb.id}`
@@ -1154,6 +1155,7 @@ function nodeStepResultInfo(node, step, storyboardId) {
   }
   return {
     resultUrl: resultNode?.data?.url || '',
+    resultNodeId,
     resultType,
     resultLabel: labelMap[resultType] || '结果已生成',
     ...(nextMap[resultType] || {}),
@@ -2140,22 +2142,28 @@ async function runWorkflowWithConfirm(runGroup, confirmTitle) {
       },
       onStepStart: ({ storyboardId, step }) => {
         const label = CANVAS_NODE_STATUS_LABELS[step] || step
-        nodeStatus.set(`sb:${storyboardId}`, { step, message: label })
+        nodeStatus.set(`sb:${storyboardId}`, { step, message: label, storyboardId, retryStep: step })
         workflowProgress.value = `${runGroup.title} · ${currentIndex}/${total} · 分镜 #${storyboardId}：${label}`
       },
       onStoryboardComplete: ({ storyboardId }) => {
         nodeStatus.clear(`sb:${storyboardId}`)
       },
       onStepError: ({ storyboardId, step, error }) => {
-        nodeStatus.set(`sb:${storyboardId}`, {
-          step: 'failed',
+        nodeStatus.fail(`sb:${storyboardId}`, {
           message: `${CANVAS_NODE_STATUS_LABELS[step] || step}失败：${error?.message || error}`,
+          errorDetail: error?.message || String(error || ''),
+          storyboardId,
+          retryStep: step,
+          retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || step}`,
         })
       },
       onStoryboardError: ({ storyboardId, error }) => {
-        nodeStatus.set(`sb:${storyboardId}`, {
-          step: 'failed',
+        nodeStatus.fail(`sb:${storyboardId}`, {
           message: `工作流失败：${error?.message || error}`,
+          errorDetail: error?.message || String(error || ''),
+          storyboardId,
+          retryStep: queueNodeRetryStep(findGraphNode(`sb:${storyboardId}`)) || 'video',
+          retryLabel: '重试当前分镜',
         })
         ElMessage.error(`分镜 #${storyboardId} 失败：${error?.message || error}`)
       },

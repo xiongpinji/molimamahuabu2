@@ -17,6 +17,7 @@ export function createCanvasNodeStatusStore() {
       taskId: payload.taskId || payload.task_id || '',
       progress: payload.progress ?? null,
       resultUrl: payload.resultUrl || payload.result_url || '',
+      resultNodeId: payload.resultNodeId || payload.result_node_id || '',
       resultType: payload.resultType || payload.result_type || '',
       resultLabel: payload.resultLabel || payload.result_label || '',
       savedAssetId: payload.savedAssetId || payload.saved_asset_id || '',

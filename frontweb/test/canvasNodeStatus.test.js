@@ -40,6 +40,7 @@ test('画布节点状态快照可恢复结果和耗时', () => {
     taskId: '',
     progress: null,
     resultUrl: '/static/image.png',
+    resultNodeId: '',
     resultType: 'image',
     resultLabel: '',
     savedAssetId: '',
@@ -80,6 +81,7 @@ test('画布节点状态恢复会保留队列元数据', () => {
     taskId: '',
     progress: null,
     resultUrl: '',
+    resultNodeId: '',
     resultType: '',
     resultLabel: '',
     savedAssetId: '',
@@ -120,6 +122,7 @@ test('画布节点恢复过期运行态会转为可重试失败态', () => {
     taskId: '',
     progress: null,
     resultUrl: '',
+    resultNodeId: '',
     resultType: '',
     resultLabel: '',
     savedAssetId: '',
@@ -145,6 +148,7 @@ test('画布节点状态快照可恢复已保存素材引用', () => {
   store.success('sbvid:401', {
     message: '视频已生成',
     resultUrl: '/static/video.mp4',
+    resultNodeId: '',
     resultType: 'video',
     savedAssetId: 77,
     savedAssetName: '镜头视频',
@@ -162,6 +166,7 @@ test('画布节点状态快照可恢复已保存素材引用', () => {
     taskId: '',
     progress: null,
     resultUrl: '/static/video.mp4',
+    resultNodeId: '',
     resultType: 'video',
     resultLabel: '',
     savedAssetId: 77,
@@ -177,4 +182,18 @@ test('画布节点状态快照可恢复已保存素材引用', () => {
     retryLabel: '',
     at: 30000,
   })
+})
+
+test('画布节点状态快照可恢复结果节点定位', () => {
+  const store = createCanvasNodeStatusStore()
+  store.success('sb:501', {
+    message: '尾帧已生成',
+    resultUrl: '/static/last.png',
+    resultNodeId: 'sbimg-last:501',
+    resultType: 'image',
+    autoClear: false,
+    at: 40000,
+  })
+
+  assert.equal(store.snapshot()['sb:501'].resultNodeId, 'sbimg-last:501')
 })

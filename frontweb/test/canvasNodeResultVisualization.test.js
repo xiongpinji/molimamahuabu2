@@ -115,3 +115,11 @@ test('画布节点生成成功后自动存入素材库并回填素材引用', ()
   assert.match(canvasSource, /savedAssetId: asset\.id/)
   assert.match(canvasSource, /savedAssetName: asset\.name \|\| nodeResultAssetName\(node, resultInfo\)/)
 })
+
+test('画布节点结果定位和工作流失败状态可恢复重试', () => {
+  assert.match(canvasSource, /if \(status\?\.resultNodeId\) return status\.resultNodeId/)
+  assert.match(canvasSource, /resultNodeId,/)
+  assert.match(canvasSource, /nodeStatus\.set\(`sb:\$\{storyboardId\}`, \{ step, message: label, storyboardId, retryStep: step \}\)/)
+  assert.match(canvasSource, /nodeStatus\.fail\(`sb:\$\{storyboardId\}`, \{[\s\S]*retryStep: step[\s\S]*retryLabel: `重试\$\{CANVAS_NODE_STATUS_LABELS\[step\] \|\| step\}`/)
+  assert.match(canvasSource, /retryStep: queueNodeRetryStep\(findGraphNode\(`sb:\$\{storyboardId\}`\)\) \|\| 'video'/)
+})
