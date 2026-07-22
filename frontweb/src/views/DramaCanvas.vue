@@ -353,6 +353,13 @@
       :type="createDialogType"
       :on-submit="onCreateSubmit"
     />
+    <AssetPickerDialog
+      v-model="canvasAssetPickerVisible"
+      type="image"
+      title="从素材库加入画布"
+      :drama-id="dramaId"
+      @pick="onCanvasAssetLibraryPick"
+    />
     <CanvasContextMenu
       :visible="contextMenuVisible"
       :x="contextMenuX"
@@ -453,6 +460,7 @@ import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOp
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -495,6 +503,8 @@ const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuFlowPos = ref(null)
 const contextMenuNode = ref(null)
+const canvasAssetPickerVisible = ref(false)
+const canvasAssetPickerFlowPos = ref(null)
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
@@ -1175,6 +1185,61 @@ function projectAssetId(asset) {
   return id.startsWith('project:') ? id.slice('project:'.length) : id
 }
 
+function assetDisplayUrl(asset) {
+  return assetImageUrl(asset)
+    || asset?.display_url
+    || asset?.asset_url
+    || asset?.preview_url
+    || asset?.url
+    || asset?.image_url
+    || ''
+}
+
+async function ensureProjectImageAsset(asset) {
+  const assetId = projectAssetId(asset)
+  if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
+  if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
+  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const url = assetDisplayUrl(asset)
+  if (!url && !localPath) throw new Error('该素材缺少可用图片地址')
+  return assetsAPI.create({
+    drama_id: drama.value.id,
+    name: asset?.name || asset?.title || asset?.filename || '素材库图片',
+    type: 'image',
+    category: 'canvas-library-pick',
+    url,
+    local_path: localPath || undefined,
+    metadata: {
+      source: 'canvas_asset_picker',
+      picker_source: asset?.picker_source || asset?.source_kind || 'library',
+      source_asset_id: asset?.raw_id || asset?.id || null,
+      reference_text: asset?.reference_text || '',
+    },
+  })
+}
+
+async function placeProjectAssetNode(asset, flowPosition = null) {
+  const assetId = projectAssetId(asset)
+  if (!assetId) return ''
+  await loadProjectImageAssets()
+  const nodeId = `project-asset:${assetId}`
+  if (flowPosition) {
+    layoutCache.value = {
+      ...(layoutCache.value || { version: 1 }),
+      nodes: {
+        ...(layoutCache.value?.nodes || {}),
+        [nodeId]: { x: flowPosition.x, y: flowPosition.y },
+      },
+    }
+  }
+  rebuildGraph()
+  focusedNodeId.value = nodeId
+  await nextTick()
+  if (flowPosition) await persistCanvasState({ layoutOnly: true })
+  await focusCanvasNode(nodeId)
+  return nodeId
+}
+
 function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
   if (status?.resultNodeId) return status.resultNodeId
   const sb = storyboardForNode(node)
@@ -1276,6 +1341,27 @@ async function assignProjectAssetToSelectedStoryboard(asset) {
   await focusCanvasNode(`sb:${storyboardId}`)
   ElMessage.success('已指派素材到选中分镜')
   return true
+}
+
+function openCanvasAssetLibrary(flowPosition = null) {
+  canvasAssetPickerFlowPos.value = flowPosition
+  canvasAssetPickerVisible.value = true
+}
+
+async function onCanvasAssetLibraryPick(asset) {
+  try {
+    const projectAsset = await ensureProjectImageAsset(asset)
+    const nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
+    if (selectedStoryboardIds.value.length === 1) {
+      await assignProjectAssetToSelectedStoryboard(projectAsset)
+    } else {
+      ElMessage.success(nodeId ? '已从素材库加入画布' : '素材已加入项目素材库')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '素材库素材加入画布失败')
+  } finally {
+    canvasAssetPickerFlowPos.value = null
+  }
 }
 
 async function focusNodeResult(node) {
@@ -1672,7 +1758,7 @@ async function onContextMenuSelect(type) {
   }
   if (type === 'open-media-library') {
     closeContextMenu()
-    router.push({ name: 'media-library' })
+    openCanvasAssetLibrary(flowPosition)
     return
   }
   pendingFlowPosition.value = flowPosition
