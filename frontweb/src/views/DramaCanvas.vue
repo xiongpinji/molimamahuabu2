@@ -1420,6 +1420,26 @@ function clearTransientNodeStepStatus(statusIds) {
   })
 }
 
+function nodeStepTaskStatusOptions(statusIds, basePayload) {
+  return {
+    onTask(task) {
+      setNodeStepStatus(statusIds, {
+        ...basePayload,
+        taskId: task?.taskId || '',
+        message: `${basePayload.message || '处理中…'} · 任务已创建`,
+      })
+    },
+    onPoll(task) {
+      setNodeStepStatus(statusIds, {
+        ...basePayload,
+        taskId: task?.id || task?.task_id || basePayload.taskId || '',
+        progress: task?.progress ?? null,
+        message: task?.message || task?.status_message || basePayload.message,
+      })
+    },
+  }
+}
+
 async function runCanvasNodeStep(node, step) {
   if (node?.type === 'canvasAsset') {
     await runCanvasAssetNodeStep(node, step)
@@ -1436,15 +1456,17 @@ async function runCanvasNodeStep(node, step) {
   const runKey = `storyboard:${sb.id}:${step}:${Date.now()}`
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
-  setNodeStepStatus(statusIds, { step, message: statusMessage, promptText: initialPromptText, runKey, sourceNodeId: nodeId })
+  const baseStatusPayload = { step, message: statusMessage, promptText: initialPromptText, runKey, sourceNodeId: nodeId }
+  setNodeStepStatus(statusIds, baseStatusPayload)
   try {
     const found = findStoryboardInDrama(drama.value, sb.id)
     const latestSb = found?.storyboard || sb
     const promptText = nodeStepPromptText(step, latestSb, node)
-    setNodeStepStatus(statusIds, { step, message: statusMessage, promptText, runKey, sourceNodeId: nodeId })
+    const taskStatusOptions = nodeStepTaskStatusOptions(statusIds, { ...baseStatusPayload, promptText })
+    setNodeStepStatus(statusIds, { ...baseStatusPayload, promptText })
     const genOpts = getCanvasGenerationOptions()
-    if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '')
-    else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts)
+    if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
+    else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts, taskStatusOptions)
     else if (step === 'audio') {
       const res = await runAudioStep(latestSb)
       if (res?.skipped) {

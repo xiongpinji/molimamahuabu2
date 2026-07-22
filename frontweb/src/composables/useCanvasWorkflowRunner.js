@@ -45,6 +45,7 @@ async function pollTaskSimple(taskId, options = {}) {
     await new Promise((r) => setTimeout(r, interval))
     try {
       const t = await taskAPI.get(taskId)
+      options.onPoll?.(t)
       if (t.status === 'completed') return { status: 'completed', result: t.result }
       if (t.status === 'failed') {
         return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
@@ -123,12 +124,13 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
     use_first_frame_layout_lock: isLastFrame ? true : undefined,
   })
   if (res?.task_id) {
-    const polled = await pollTaskSimple(res.task_id)
+    options.onTask?.({ taskId: res.task_id, step: 'image', response: res })
+    const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '分镜图生成失败')
   }
 }
 
-export async function runVideoStep(drama, sb, genOpts) {
+export async function runVideoStep(drama, sb, genOpts, options = {}) {
   sb = await hydrateStoryboardSettings(sb)
   const useFirstLast = dramaUsesFirstLastFrame(drama)
   const imagesBySbId = genOpts?.imagesBySbId || {}
@@ -174,7 +176,8 @@ export async function runVideoStep(drama, sb, genOpts) {
     duration: sb.duration || undefined,
   })
   if (res?.task_id) {
-    const polled = await pollTaskSimple(res.task_id)
+    options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
+    const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '视频生成失败')
   }
 }
