@@ -126,7 +126,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
-  type: { type: String, default: 'image' }, // image | video | audio
+  type: { type: String, default: 'image' }, // image | video | audio | all
   title: { type: String, default: '' },
   dramaId: { type: [Number, String], default: '' },
 })
@@ -180,9 +180,11 @@ function debouncedLoad() {
 async function load() {
   loading.value = true
   loadError.value = ''
-  loadWarning.value = ''
+    loadWarning.value = ''
   try {
-    const params = { page: 1, page_size: 100, type: props.type }
+    const wantsAll = props.type === 'all'
+    const params = { page: 1, page_size: 100 }
+    if (!wantsAll) params.type = props.type
     if (props.dramaId) params.drama_id = props.dramaId
     if (keyword.value) params.keyword = keyword.value
     const sources = [
@@ -191,7 +193,7 @@ async function load() {
         run: () => assetsAPI.list(params, { silentError: true }).then((res) => normalizeAssetItems(res, 'project')),
       },
     ]
-    if (props.type === 'image') {
+    if (props.type === 'image' || wantsAll) {
       const libraryParams = { page: 1, page_size: 100 }
       if (keyword.value) libraryParams.keyword = keyword.value
       sources.push({
@@ -207,7 +209,7 @@ async function load() {
         run: () => propLibraryAPI.list(libraryParams, { silentError: true }).then((res) => normalizeAssetItems(res, 'prop')),
       })
     }
-    if (props.type === 'audio') {
+    if (props.type === 'audio' || wantsAll) {
       const voiceParams = {}
       if (props.dramaId) voiceParams.drama_id = props.dramaId
       sources.push({
@@ -316,6 +318,7 @@ function inferAssetType(value) {
 
 function itemTypeName(item) {
   return {
+    all: '素材',
     video: '视频',
     audio: '音频',
     image: '图片',

@@ -1,6 +1,6 @@
 import { normalizeManualCanvasEdges, parseCanvasLayout, resolveNodePosition } from './canvasLayout'
 import { getStoryboardGroupMap, parseWorkflowGroups } from './canvasWorkflow'
-import { assetImageUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
+import { assetImageUrl, assetMediaUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
 import {
   dramaUsesFirstLastFrame,
   imageRecordUrl,
@@ -72,8 +72,8 @@ function makeNode(base) {
   return { ...base, draggable }
 }
 
-function isProjectImageAsset(asset) {
-  return asset?.type === 'image' || Boolean(assetImageUrl(asset))
+function isProjectMediaAsset(asset) {
+  return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
 }
 
 function appendManualEdges(edges, savedLayout, nodes) {
@@ -436,9 +436,9 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
-  const projectAssets = (options.projectAssets || []).filter(isProjectImageAsset)
+  const projectAssets = (options.projectAssets || []).filter(isProjectMediaAsset)
   if (projectAssets.length) {
-    nodes.push(sectionLabel('label:project-assets', `🖼 项目截图 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
+    nodes.push(sectionLabel('label:project-assets', `🗂 项目素材 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
     projectAssets.forEach((asset, index) => {
       const id = `project-asset:${asset.id}`
       nodes.push(makeNode({

@@ -27,6 +27,29 @@ export function assetImageUrl(item) {
   return remote ? referenceMediaUrl(remote) : ''
 }
 
+/** 统一素材媒体 URL：图片/视频/音频均可用于画布节点预览和上游引用 */
+export function assetMediaUrl(item) {
+  if (!item) return ''
+  const localPath = item.local_path
+    || item.image_local_path
+    || item.video_local_path
+    || item.audio_local_path
+    || item.voice_local_path
+    || item.thumbnail_local_path
+  if (localPath) return staticMediaUrl(localPath)
+  const remote = item.url
+    || item.asset_url
+    || item.display_url
+    || item.preview_url
+    || item.image_url
+    || item.video_url
+    || item.audio_url
+    || item.voice_url
+    || item.ref_image
+    || item.thumbnail_url
+  return remote ? referenceMediaUrl(remote) : ''
+}
+
 export function storyboardImageUrl(sb) {
   if (!sb) return ''
   return assetImageUrl(sb)

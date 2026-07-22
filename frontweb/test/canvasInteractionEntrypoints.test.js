@@ -68,6 +68,7 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
 test('右键素材库在画布内弹窗选用并定位项目素材节点', () => {
   assert.match(canvasSource, /import AssetPickerDialog from '@\/components\/AssetPickerDialog\.vue'/)
   assert.match(canvasSource, /v-model="canvasAssetPickerVisible"/)
+  assert.match(canvasSource, /type="all"/)
   assert.match(canvasSource, /title="从素材库加入画布"/)
   assert.match(canvasSource, /function openCanvasAssetLibrary\(flowPosition = null\)/)
   assert.match(canvasSource, /canvasAssetPickerFlowPos\.value = flowPosition/)
@@ -84,9 +85,10 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
 })
 
 test('项目图片素材缺少 type 时仍可进入画布素材节点', () => {
-  assert.match(adapterSource, /function isProjectImageAsset\(asset\)/)
-  assert.match(adapterSource, /asset\?\.type === 'image' \|\| Boolean\(assetImageUrl\(asset\)\)/)
-  assert.match(adapterSource, /filter\(isProjectImageAsset\)/)
+  assert.match(adapterSource, /function isProjectMediaAsset\(asset\)/)
+  assert.match(adapterSource, /\['image', 'video', 'audio'\]\.includes\(asset\?\.type\) \|\| Boolean\(assetMediaUrl\(asset\)\)/)
+  assert.match(adapterSource, /filter\(isProjectMediaAsset\)/)
+  assert.match(adapterSource, /项目素材 \$\{projectAssets\.length\}/)
 })
 
 test('画布支持手动节点连线并持久化到布局', () => {

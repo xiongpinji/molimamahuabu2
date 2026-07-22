@@ -1,8 +1,10 @@
 <template>
   <div class="project-asset-node" :class="{ focused: data.focused }">
-    <div class="tag">导演截图</div>
-    <img v-if="url" :src="url" :alt="data.asset?.name || '导演截图'" />
-    <div v-else class="empty">图片不可用</div>
+    <div class="tag">{{ typeLabel }}</div>
+    <video v-if="assetType === 'video' && url" :src="url" class="asset-media" muted controls preload="metadata" />
+    <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio" controls />
+    <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" />
+    <div v-else class="empty">素材不可用</div>
     <strong>{{ data.asset?.name || '未命名截图' }}</strong>
     <span>项目领域资产</span>
     <div class="asset-actions">
@@ -38,12 +40,14 @@
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { assetImageUrl } from '@/utils/mediaUrl'
+import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({ data: { type: Object, required: true } })
 const ctx = useCanvasContext()
 const assigning = ref(false)
-const url = computed(() => assetImageUrl(props.data.asset))
+const assetType = computed(() => props.data.asset?.type || 'image')
+const typeLabel = computed(() => ({ image: '图片素材', video: '视频素材', audio: '音频素材' }[assetType.value] || '项目素材'))
+const url = computed(() => assetMediaUrl(props.data.asset))
 const assetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
@@ -86,7 +90,11 @@ function closePanel() {
 <style scoped>
 .project-asset-node { width: 190px; overflow: hidden; border: 1px solid #3f3f46; border-radius: 12px; padding: 9px; background: #18181b; color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
 .project-asset-node.focused { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.25); }
-.project-asset-node img, .empty { width: 100%; height: 108px; margin: 6px 0; border-radius: 8px; object-fit: cover; background: #09090b; }
+.project-asset-node img,
+.asset-media,
+.asset-audio,
+.empty { width: 100%; height: 108px; margin: 6px 0; border-radius: 8px; object-fit: cover; background: #09090b; }
+.asset-audio { height: 42px; }
 .empty { display: grid; place-items: center; color: #71717a; font-size: 11px; }
 .tag { color: #38bdf8; font-size: 10px; font-weight: 700; }
 .project-asset-node strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

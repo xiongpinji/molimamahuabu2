@@ -43,11 +43,11 @@ test('素材选择弹窗支持按素材来源筛选并显示可见数量', () =>
 })
 
 test('素材选择弹窗支持音频/音色素材选择与预览', () => {
-  assert.match(source, /image \| video \| audio/)
+  assert.match(source, /image \| video \| audio \| all/)
   assert.match(source, /import \{ characterAPI \} from '@\/api\/characters'/)
   assert.match(source, /const typeDisplayName = computed/)
   assert.match(source, /item\.type === 'audio'/)
-  assert.match(source, /if \(props\.type === 'audio'\)/)
+  assert.match(source, /if \(props\.type === 'audio' \|\| wantsAll\)/)
   assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams, \{ silentError: true \}\)/)
   assert.match(source, /normalizeVoiceCatalogItems/)
   assert.match(source, /it\.available !== false && it\.can_bind !== false/)
@@ -57,6 +57,14 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /audio_local_path/)
   assert.match(source, /voice_local_path/)
   assert.match(source, /mp3\|wav\|m4a\|aac\|ogg\|flac/)
+})
+
+test('素材选择弹窗支持全类型素材入口', () => {
+  assert.match(source, /const wantsAll = props\.type === 'all'/)
+  assert.match(source, /if \(!wantsAll\) params\.type = props\.type/)
+  assert.match(source, /if \(props\.type === 'image' \|\| wantsAll\)/)
+  assert.match(source, /if \(props\.type === 'audio' \|\| wantsAll\)/)
+  assert.match(source, /all: '素材'/)
 })
 
 test('素材选择弹窗选中素材时输出统一复用字段', () => {

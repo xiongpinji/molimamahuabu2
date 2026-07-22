@@ -179,7 +179,7 @@ test('手动连线的上游节点结果会作为下游生成参考输入', () =>
 })
 
 test('节点成功状态从刷新后的分镜媒体兜底解析结果地址', () => {
-  assert.match(canvasSource, /import \{ assetImageUrl, audioUrl \} from '@\/utils\/mediaUrl'/)
+  assert.match(canvasSource, /import \{ assetImageUrl, assetMediaUrl, audioUrl \} from '@\/utils\/mediaUrl'/)
   assert.match(canvasSource, /resolveSbFirstImageRecord/)
   assert.match(canvasSource, /resolveSbLastImageRecord/)
   assert.match(canvasSource, /resolveSbMainImageRecord/)
@@ -298,6 +298,10 @@ test('项目素材节点卡片可预览并复制素材引用', () => {
   assert.match(projectAssetNodeSource, /@click\.stop="openAsset"/)
   assert.match(projectAssetNodeSource, /@click\.stop="copyReference"/)
   assert.match(projectAssetNodeSource, /@click\.stop="assignToSelectedStoryboard"/)
+  assert.match(projectAssetNodeSource, /import \{ assetMediaUrl \} from '@\/utils\/mediaUrl'/)
+  assert.match(projectAssetNodeSource, /assetType === 'video'/)
+  assert.match(projectAssetNodeSource, /assetType === 'audio'/)
+  assert.match(projectAssetNodeSource, /const url = computed\(\(\) => assetMediaUrl\(props\.data\.asset\)\)/)
   assert.match(projectAssetNodeSource, /const referenceText = computed/)
   assert.match(projectAssetNodeSource, /const assetId = computed/)
   assert.match(projectAssetNodeSource, /@素材\(\$\{name\}#\$\{asset\.id\}\)/)
@@ -308,6 +312,8 @@ test('项目素材节点卡片可预览并复制素材引用', () => {
   assert.match(projectAssetNodeSource, /function assignToSelectedStoryboard\(\)/)
   assert.match(projectAssetNodeSource, /ctx\?\.assignProjectAssetToSelectedStoryboard\?\.\(props\.data\.asset\)/)
   assert.match(canvasSource, /function assetReferenceText\(asset\)/)
+  assert.match(canvasSource, /assetMediaUrl\(node\.data\?\.asset\)/)
+  assert.match(canvasSource, /function assetDisplayUrl\(asset\)/)
   assert.match(canvasSource, /@素材\(\$\{name\}#\$\{asset\.id\}\)/)
 })
 

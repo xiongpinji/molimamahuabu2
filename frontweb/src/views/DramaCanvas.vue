@@ -366,7 +366,7 @@
     />
     <AssetPickerDialog
       v-model="canvasAssetPickerVisible"
-      type="image"
+      type="all"
       title="从素材库加入画布"
       :drama-id="dramaId"
       @pick="onCanvasAssetLibraryPick"
@@ -437,7 +437,7 @@ import {
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
-import { assetImageUrl, audioUrl } from '@/utils/mediaUrl'
+import { assetImageUrl, assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
 import {
   imageRecordUrl,
   resolveSbFirstImageRecord,
@@ -1176,7 +1176,7 @@ function nodeRuntimeStatus(node) {
 function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
   if (status?.resultUrl) return status.resultUrl
   if (node?.data?.url) return node.data.url
-  if (node?.type === 'canvasProjectAsset') return assetImageUrl(node.data?.asset)
+  if (node?.type === 'canvasProjectAsset') return assetMediaUrl(node.data?.asset)
   return videoUrlFromNode(node)
 }
 
@@ -1204,7 +1204,7 @@ function nodeAssignedAssets(node) {
 function assetReferenceText(asset) {
   if (!asset?.id) return ''
   const name = asset.name || asset.title || asset.filename || '素材'
-  const url = assetImageUrl(asset) || asset.local_path || ''
+  const url = assetDisplayUrl(asset) || asset.local_path || ''
   return `@素材(${name}#${asset.id}) ${url}`.trim()
 }
 
@@ -1231,12 +1231,14 @@ function projectAssetId(asset) {
 }
 
 function assetDisplayUrl(asset) {
-  return assetImageUrl(asset)
+  return assetMediaUrl(asset)
     || asset?.display_url
     || asset?.asset_url
     || asset?.preview_url
     || asset?.url
     || asset?.image_url
+    || asset?.video_url
+    || asset?.audio_url
     || ''
 }
 
@@ -1244,13 +1246,13 @@ async function ensureProjectImageAsset(asset) {
   const assetId = projectAssetId(asset)
   if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
   if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
-  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const localPath = asset?.local_path || asset?.image_local_path || asset?.video_local_path || asset?.audio_local_path || asset?.voice_local_path || ''
   const url = assetDisplayUrl(asset)
-  if (!url && !localPath) throw new Error('该素材缺少可用图片地址')
+  if (!url && !localPath) throw new Error('该素材缺少可用媒体地址')
   return assetsAPI.create({
     drama_id: drama.value.id,
-    name: asset?.name || asset?.title || asset?.filename || '素材库图片',
-    type: 'image',
+    name: asset?.name || asset?.title || asset?.filename || '素材库素材',
+    type: asset?.type || 'image',
     category: 'canvas-library-pick',
     url,
     local_path: localPath || undefined,
@@ -2366,7 +2368,7 @@ async function loadProjectImageAssets() {
     storyboardAssignedAssets.value = {}
     return
   }
-  const result = await assetsAPI.list({ drama_id: dramaId.value, type: 'image', page_size: 100 })
+  const result = await assetsAPI.list({ drama_id: dramaId.value, page_size: 100 })
   const assets = Array.isArray(result) ? result : (result?.items || [])
   projectImageAssets.value = assets
   storyboardAssignedAssets.value = assets.reduce((map, asset) => {
