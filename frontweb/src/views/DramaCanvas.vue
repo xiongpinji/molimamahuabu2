@@ -314,6 +314,15 @@
             @click="focusQueueItem(item)"
           >
             <span class="run-dot" />
+            <span
+              class="run-result-preview"
+              :class="[item.resultUrl ? 'preview-' + queueResultPreviewType(item) : 'preview-empty']"
+              @click.stop="item.resultUrl && openQueueItemResult(item)"
+            >
+              <img v-if="item.resultUrl && queueResultPreviewType(item) === 'image'" :src="item.resultUrl" alt="队列结果预览" />
+              <video v-else-if="item.resultUrl && queueResultPreviewType(item) === 'video'" :src="item.resultUrl" muted playsinline />
+              <span v-else-if="item.resultUrl" class="audio-preview">🎵</span>
+            </span>
             <span class="run-info">
               <strong>{{ item.label }}</strong>
               <small>{{ item.message }}</small>
@@ -743,6 +752,15 @@ function queueRunningMessage(status) {
 function queueSuccessMessage(status) {
   const typeMap = { image: '图片结果可复用', video: '视频结果可复用', audio: '音频结果可复用' }
   return status?.resultLabel || typeMap[status?.resultType] || status?.message || '节点执行完成'
+}
+
+function queueResultPreviewType(item) {
+  const type = String(item?.resultType || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  const url = String(item?.resultUrl || '').toLowerCase()
+  if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
+  return 'image'
 }
 
 function formatQueueElapsed(startedAt) {
@@ -3179,7 +3197,7 @@ onBeforeUnmount(() => {
 .run-queue-item {
   width: 100%;
   display: grid;
-  grid-template-columns: 10px 1fr auto;
+  grid-template-columns: 10px 42px 1fr auto;
   align-items: center;
   gap: 8px;
   margin-top: 5px;
@@ -3209,6 +3227,34 @@ onBeforeUnmount(() => {
 }
 .tone-success .run-dot {
   background: #34d399;
+}
+.run-result-preview {
+  width: 42px;
+  height: 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(63, 63, 70, 0.8);
+  background: rgba(39, 39, 42, 0.72);
+}
+.run-result-preview:not(.preview-empty) {
+  cursor: zoom-in;
+}
+.run-result-preview img,
+.run-result-preview video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.run-result-preview.preview-audio {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+}
+.run-result-preview.preview-empty {
+  opacity: 0.28;
 }
 .run-info {
   min-width: 0;
