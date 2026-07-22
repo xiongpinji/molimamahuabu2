@@ -84,6 +84,12 @@ async function resolveCanvasFramePrompt(sb, frameKind) {
   }
 }
 
+function upstreamReferenceUrls(genOpts = {}) {
+  return (Array.isArray(genOpts.upstreamReferenceUrls) ? genOpts.upstreamReferenceUrls : [])
+    .map((url) => toAbsoluteMediaUrl(url))
+    .filter(Boolean)
+}
+
 async function hydrateStoryboardSettings(storyboard) {
   if (!storyboard?.id) return storyboard
   const hasImageSettings = Object.prototype.hasOwnProperty.call(storyboard, 'image_model')
@@ -111,7 +117,7 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
     ? collectStoryboardReferenceAssets(drama, effectiveStoryboard).map((ref) => ref.absoluteUrl).filter(Boolean)
     : []
   const assignedRefs = await fetchAssignedAssetUrls(effectiveStoryboard.id)
-  const referenceImages = [...new Set([...entityRefs, ...assignedRefs])].slice(0, 10)
+  const referenceImages = [...new Set([...entityRefs, ...assignedRefs, ...upstreamReferenceUrls(genOpts)])].slice(0, 10)
   const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
     storyboard_id: effectiveStoryboard.id,
@@ -150,6 +156,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     absoluteFirst,
     ...selectedReferenceUrls,
     ...assignedRefs,
+    ...upstreamReferenceUrls(genOpts),
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
   const basePrompt = appendVoicePromptToVideoPrompt({

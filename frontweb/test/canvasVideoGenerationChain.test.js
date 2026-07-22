@@ -27,6 +27,8 @@ test('画布视频节点把模型、首尾帧和素材引用传给视频创建�
   assert.match(runnerSource, /storyboardVoiceCharacters\(drama,\s*sb\)/)
   assert.match(runnerSource, /buildStoryboardContinuityPrompt\(\{/)
   assert.match(runnerSource, /fetchAssignedAssetUrls\(sb\.id\)/)
+  assert.match(runnerSource, /function upstreamReferenceUrls\(genOpts = \{\}\)/)
+  assert.match(runnerSource, /\.\.\.upstreamReferenceUrls\(genOpts\),[\s\S]*absoluteLast/)
   assert.match(runnerSource, /getStoryboardVideoModel\(sb,\s*genOpts\)/)
   assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*model:\s*model\s*\|\|\s*undefined/)
   assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*first_frame_url:\s*absoluteFirst\s*\|\|\s*undefined/)

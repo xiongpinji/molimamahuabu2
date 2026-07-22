@@ -163,6 +163,14 @@ test('画布节点生成成功后自动存入素材库并回填素材引用', ()
   assert.match(overlaySource, /if \(ctx\?\.refreshProjectAssets\) await ctx\.refreshProjectAssets\(\)/)
 })
 
+test('手动连线的上游节点结果会作为下游生成参考输入', () => {
+  assert.match(canvasSource, /function nodeInputReferenceUrls\(node\)/)
+  assert.match(canvasSource, /String\(edge\?\.target \|\| ''\) !== targetId/)
+  assert.match(canvasSource, /const sourceNode = findGraphNode\(edge\.source\)/)
+  assert.match(canvasSource, /nodeResultUrl\(sourceNode\)/)
+  assert.match(canvasSource, /upstreamReferenceUrls: nodeInputReferenceUrls\(node\)/)
+})
+
 test('节点成功状态从刷新后的分镜媒体兜底解析结果地址', () => {
   assert.match(canvasSource, /import \{ assetImageUrl, audioUrl \} from '@\/utils\/mediaUrl'/)
   assert.match(canvasSource, /resolveSbFirstImageRecord/)

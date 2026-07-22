@@ -1180,6 +1180,20 @@ function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
   return videoUrlFromNode(node)
 }
 
+function nodeInputReferenceUrls(node) {
+  const targetId = String(node?.id || '')
+  if (!targetId) return []
+  const urls = []
+  for (const edge of allGraphEdges.value) {
+    if (String(edge?.target || '') !== targetId) continue
+    const sourceNode = findGraphNode(edge.source)
+    const url = nodeResultUrl(sourceNode)
+      || (sourceNode?.type === 'canvasProjectAsset' ? assetDisplayUrl(sourceNode.data?.asset) : '')
+    if (url) urls.push(url)
+  }
+  return [...new Set(urls)]
+}
+
 function nodeAssignedAssets(node) {
   const fromNode = Array.isArray(node?.data?.assignedAssets) ? node.data.assignedAssets : []
   if (fromNode.length) return fromNode
@@ -1608,7 +1622,10 @@ async function runCanvasNodeStep(node, step) {
     const promptText = nodeStepPromptText(step, latestSb, node)
     const taskStatusOptions = nodeStepTaskStatusOptions(statusIds, { ...baseStatusPayload, promptText })
     setNodeStepStatus(statusIds, { ...baseStatusPayload, promptText })
-    const genOpts = getCanvasGenerationOptions()
+    const genOpts = {
+      ...getCanvasGenerationOptions(),
+      upstreamReferenceUrls: nodeInputReferenceUrls(node),
+    }
     let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
     else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts, taskStatusOptions)
