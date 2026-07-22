@@ -20,6 +20,8 @@ test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /@node-drag-start="onNodeDragStart"/)
   assert.match(canvasSource, /function onCanvasWheel\(event\)/)
   assert.match(canvasSource, /function onCanvasKeydown\(event\)/)
+  assert.match(canvasSource, /'Ctrl\/⌘ \+ G：将已选分镜创建为工作流'/)
+  assert.match(canvasSource, /'Esc：清空选择、焦点和右键菜单'/)
 })
 
 test('悬浮工具栏暴露撤销和重做操作', () => {
@@ -38,6 +40,14 @@ test('画布工作流支持直接运行所选分镜', () => {
   assert.match(canvasSource, /title: '所选分镜'/)
   assert.match(canvasSource, /async function runWorkflowWithConfirm\(runGroup, confirmTitle\)/)
   assert.match(canvasSource, /await runWorkflowWithConfirm\(\{\s*\.\.\.group,/)
+})
+
+test('画布支持 LibTV 式键盘完成选择清理和工作流分组', () => {
+  assert.match(canvasSource, /function clearCanvasInteractionState\(\)/)
+  assert.match(canvasSource, /closeContextMenu\(\)\s*\n\s*focusedNodeId\.value = null\s*\n\s*activeGroupId\.value = null\s*\n\s*applySelectedStoryboardIds\(\[\]\)/)
+  assert.match(canvasSource, /if \(key === 'escape' \|\| key === 'esc'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*clearCanvasInteractionState\(\)/)
+  assert.match(canvasSource, /if \(key === 'g'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*void onCreateWorkflowGroup\(\)/)
+  assert.match(canvasSource, /if \(workflowRunning\.value \|\| layoutSaveState\.value === 'saving'\)/)
 })
 
 test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置', () => {

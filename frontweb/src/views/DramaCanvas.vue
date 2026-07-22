@@ -1446,6 +1446,13 @@ function closeContextMenu() {
   contextMenuNode.value = null
 }
 
+function clearCanvasInteractionState() {
+  closeContextMenu()
+  focusedNodeId.value = null
+  activeGroupId.value = null
+  applySelectedStoryboardIds([])
+}
+
 async function onContextMenuSelect(type) {
   const node = contextMenuNode.value
   if (node) {
@@ -1728,6 +1735,8 @@ function showCanvasHelp() {
       'Ctrl/⌘ + 滚轮：放大或缩小画布',
       '拖动画布空白区域：框选节点',
       'Ctrl/⌘ + 点击：多选节点',
+      'Ctrl/⌘ + G：将已选分镜创建为工作流',
+      'Esc：清空选择、焦点和右键菜单',
       '右键画布：添加节点',
       '双击节点：打开对应制作入口',
     ].join('\n'),
@@ -1785,6 +1794,11 @@ function redoCanvas() {
 function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
+  if (key === 'escape' || key === 'esc') {
+    event.preventDefault()
+    clearCanvasInteractionState()
+    return
+  }
   if (key === ' ' || key === 'spacebar') {
     event.preventDefault()
     setSpacePanning(true)
@@ -1792,6 +1806,11 @@ function onCanvasKeydown(event) {
   }
   const modifier = event.ctrlKey || event.metaKey
   if (!modifier || event.altKey) return
+  if (key === 'g') {
+    event.preventDefault()
+    void onCreateWorkflowGroup()
+    return
+  }
   if (key === 'z') {
     event.preventDefault()
     if (event.shiftKey) redoCanvas()
@@ -2054,6 +2073,10 @@ async function loadDrama(silent = false) {
 }
 
 async function onCreateWorkflowGroup() {
+  if (workflowRunning.value || layoutSaveState.value === 'saving') {
+    ElMessage.warning('请等待当前画布任务完成后再创建工作流')
+    return
+  }
   if (!selectedStoryboardIds.value.length) {
     ElMessage.warning('请先框选或 Ctrl 点击选择分镜节点')
     return
