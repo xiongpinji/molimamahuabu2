@@ -29,6 +29,18 @@ test('分镜生成保存路径会在入库后固化角色声线提示词', () =>
   assert.match(source, /ensureStoryboardVoicePrompt\(db,\s*row\.id\)|ensureStoryboardVoicePrompt\(db,\s*r\.id\)/);
 });
 
+test('视频提示词润色完成后会重新固化角色声线提示词', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/routes/storyboards.js'),
+    'utf8'
+  );
+
+  assert.match(source, /storyboardVoicePromptService\s*=\s*require\('\.\.\/services\/storyboardVoicePromptService'\)/);
+  assert.match(source, /UPDATE storyboards SET video_prompt = \?/);
+  assert.match(source, /ensureStoryboardVoicePrompt\(db,\s*sbId\)/);
+  assert.match(source, /writeNd\(\{\s*type:\s*'done',\s*video_prompt:\s*persistedPrompt\s*\}\)/);
+});
+
 test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   const db = createDb();
   const now = new Date().toISOString();
