@@ -11,12 +11,12 @@
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
     <span v-if="actionErrorText" class="action-error">{{ actionErrorText }}</span>
     <div v-if="hasResultPreview" class="result-preview" :class="'result-' + resultPreviewType">
-      <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
-      <video v-else-if="resultPreviewType === 'video'" :src="status.resultUrl" muted controls playsinline />
-      <audio v-else-if="resultPreviewType === 'audio'" :src="status.resultUrl" controls />
+      <img v-if="resultPreviewType === 'image'" :src="effectiveResultUrl" alt="节点生成结果预览" />
+      <video v-else-if="resultPreviewType === 'video'" :src="effectiveResultUrl" muted controls playsinline />
+      <audio v-else-if="resultPreviewType === 'audio'" :src="effectiveResultUrl" controls />
     </div>
     <span v-if="isSuccess" class="success-actions">
-      <span v-if="status.resultUrl" class="action-group action-group-primary" aria-label="结果操作">
+      <span v-if="effectiveResultUrl" class="action-group action-group-primary" aria-label="结果操作">
         <button type="button" @click.stop="openResult">打开结果</button>
         <button type="button" @click.stop="copyResultLink">复制链接</button>
         <button type="button" @click.stop="downloadResult">下载结果</button>
@@ -45,9 +45,9 @@
     </span>
     <span v-if="isFailed" class="failed-actions">
       <span class="action-group action-group-primary" aria-label="失败结果操作">
-        <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
-        <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
-        <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
+        <button v-if="effectiveResultUrl" type="button" @click.stop="openResult">打开结果</button>
+        <button v-if="effectiveResultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
+        <button v-if="effectiveResultUrl" type="button" @click.stop="downloadResult">下载结果</button>
         <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       </span>
       <span class="action-group action-group-flow" aria-label="失败流程操作">
@@ -92,7 +92,6 @@ const status = computed(() => {
 
 const isFailed = computed(() => status.value?.step === 'failed')
 const isSuccess = computed(() => status.value?.step === 'success')
-const hasResultPreview = computed(() => Boolean(status.value?.resultUrl) && (isSuccess.value || isFailed.value))
 
 const stepLabel = computed(() => {
   const map = {
@@ -147,7 +146,7 @@ const resultText = computed(() => {
   if (!isSuccess.value) return ''
   const typeMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成' }
   const label = status.value?.resultLabel || typeMap[status.value?.resultType] || ''
-  const urlHint = status.value?.resultUrl ? '可在节点卡片预览' : ''
+  const urlHint = effectiveResultUrl.value ? '可在节点卡片预览' : ''
   return [label, urlHint].filter(Boolean).join(' · ')
 })
 
@@ -164,15 +163,15 @@ const actionErrorText = computed(() => {
 const resultPreviewType = computed(() => {
   const type = String(status.value?.resultType || '').toLowerCase()
   if (['image', 'video', 'audio'].includes(type)) return type
-  const url = String(status.value?.resultUrl || '').toLowerCase()
+  const url = String(effectiveResultUrl.value).toLowerCase()
   if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
   if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
   return 'image'
 })
 
 const retryLabel = computed(() => status.value?.retryLabel || '重试')
-const canAttachImage = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
-const canAttachVideo = computed(() => isSuccess.value && status.value?.resultUrl && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
+const canAttachImage = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
+const canAttachVideo = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultUrl()) && Boolean(resultStoryboardId(runtimeNode())))
 const statusSavedAsset = computed(() => {
   if (!status.value?.savedAssetId) return null
@@ -185,28 +184,30 @@ const statusSavedAsset = computed(() => {
   }
 })
 const effectiveSavedAsset = computed(() => savedAsset.value || statusSavedAsset.value)
+const effectiveResultUrl = computed(() => effectiveSavedAsset.value?.url || status.value?.resultUrl || '')
+const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, upstreamReferenceText.value, status.value?.resultUrl].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
   return parts.join('\n')
 })
 
 function openResult() {
-  if (!status.value?.resultUrl) return
-  window.open(status.value.resultUrl, '_blank', 'noopener,noreferrer')
+  if (!effectiveResultUrl.value) return
+  window.open(effectiveResultUrl.value, '_blank', 'noopener,noreferrer')
 }
 
 function resultFilename() {
   const type = resultPreviewType.value
   const extensionMap = { image: 'png', video: 'mp4', audio: 'mp3' }
-  const rawName = String(status.value?.resultUrl || '').split(/[?#]/)[0].split('/').pop()
+  const rawName = String(effectiveResultUrl.value).split(/[?#]/)[0].split('/').pop()
   return rawName || `canvas-node-result.${extensionMap[type] || 'dat'}`
 }
 
 function downloadResult() {
-  if (!status.value?.resultUrl) return
+  if (!effectiveResultUrl.value) return
   const link = document.createElement('a')
-  link.href = status.value.resultUrl
+  link.href = effectiveResultUrl.value
   link.download = resultFilename()
   link.rel = 'noopener'
   document.body.appendChild(link)
@@ -230,7 +231,7 @@ function copyPrompt() {
 }
 
 function copyResultLink() {
-  copyText(status.value?.resultUrl || '', '结果链接已复制', '结果链接（请手动复制）')
+  copyText(effectiveResultUrl.value, '结果链接已复制', '结果链接（请手动复制）')
 }
 
 function copyUpstreamReferences() {
