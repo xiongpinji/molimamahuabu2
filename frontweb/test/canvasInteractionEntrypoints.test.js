@@ -67,6 +67,7 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
 
 test('右键素材库在画布内弹窗选用并定位项目素材节点', () => {
   assert.match(canvasSource, /import AssetPickerDialog from '@\/components\/AssetPickerDialog\.vue'/)
+  assert.match(canvasSource, /import \{ videosAPI \} from '@\/api\/videos'/)
   assert.match(canvasSource, /v-model="canvasAssetPickerVisible"/)
   assert.match(canvasSource, /type="all"/)
   assert.match(canvasSource, /title="从素材库加入画布"/)
@@ -75,6 +76,7 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /openCanvasAssetLibrary\(flowPosition\)/)
   assert.doesNotMatch(canvasSource, /router\.push\(\{ name: 'media-library' \}\)/)
   assert.match(canvasSource, /async function ensureProjectImageAsset\(asset\)/)
+  assert.match(canvasSource, /function selectedStoryboardMediaAssetPayload\(asset\)/)
   assert.match(canvasSource, /category: 'canvas-library-pick'/)
   assert.match(canvasSource, /source: 'canvas_asset_picker'/)
   assert.match(canvasSource, /async function placeProjectAssetNode\(asset, flowPosition = null\)/)
@@ -82,6 +84,8 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /async function onCanvasAssetLibraryPick\(asset\)/)
   assert.match(canvasSource, /await assignProjectAssetToSelectedStoryboard\(projectAsset\)/)
+  assert.match(canvasSource, /if \(mediaPayload\?\.type === 'video'\) \{[\s\S]*await videosAPI\.attach\(\{[\s\S]*storyboard_id: storyboardId,[\s\S]*video_url: mediaPayload\.url,[\s\S]*local_path: mediaPayload\.localPath \|\| undefined/)
+  assert.match(canvasSource, /else if \(mediaPayload\?\.type === 'audio'\) \{[\s\S]*await storyboardsAPI\.update\(storyboardId, \{[\s\S]*audio_local_path: mediaPayload\.localPath \|\| undefined,[\s\S]*audio_url: mediaPayload\.localPath \? undefined : mediaPayload\.url/)
   assert.match(canvasSource, /nodeStatus\.success\(nodeId, \{[\s\S]*已从素材库加入画布[\s\S]*savedAssetId: projectAssetId\(projectAsset\)[\s\S]*retryStep: 'library'/)
   assert.match(canvasSource, /nodeStatus\.fail\(nodeId, \{[\s\S]*素材库素材加入画布失败[\s\S]*retryLabel: '重试指派素材'/)
 })

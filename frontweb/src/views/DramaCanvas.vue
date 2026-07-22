@@ -404,6 +404,7 @@ import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
+import { videosAPI } from '@/api/videos'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
@@ -1358,11 +1359,29 @@ function assetDisplayUrl(asset) {
     || ''
 }
 
+function assetLocalPath(asset) {
+  return asset?.local_path
+    || asset?.image_local_path
+    || asset?.video_local_path
+    || asset?.audio_local_path
+    || asset?.voice_local_path
+    || ''
+}
+
+function selectedStoryboardMediaAssetPayload(asset) {
+  const type = String(asset?.type || '').toLowerCase()
+  if (!['video', 'audio'].includes(type)) return null
+  const url = assetDisplayUrl(asset)
+  const localPath = assetLocalPath(asset)
+  if (!url && !localPath) return null
+  return { type, url, localPath }
+}
+
 async function ensureProjectImageAsset(asset) {
   const assetId = projectAssetId(asset)
   if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
   if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
-  const localPath = asset?.local_path || asset?.image_local_path || asset?.video_local_path || asset?.audio_local_path || asset?.voice_local_path || ''
+  const localPath = assetLocalPath(asset)
   const url = assetDisplayUrl(asset)
   if (!url && !localPath) throw new Error('该素材缺少可用媒体地址')
   return assetsAPI.create({
@@ -1493,7 +1512,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
     if (!silent) ElMessage.warning(message)
     return returnDetail ? { ok: false, message } : false
   }
-  const success = () => returnDetail ? { ok: true, message: '已指派素材到选中分镜' } : true
+  const success = (message = '已指派素材到选中分镜') => returnDetail ? { ok: true, message } : true
   const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
   if (selectedIds.length !== 1) {
     return fail(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
@@ -1503,12 +1522,33 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
     return fail(!assetId ? '素材信息不完整，无法指派' : '缺少项目 ID，无法指派素材')
   }
   const storyboardId = selectedIds[0]
+  const mediaPayload = selectedStoryboardMediaAssetPayload(asset)
+  let resultMessage = '已指派素材到选中分镜'
   await assetsAPI.update(assetId, { drama_id: drama.value.id, storyboard_id: storyboardId })
-  await loadProjectImageAssets()
-  rebuildGraph()
+  if (mediaPayload?.type === 'video') {
+    await videosAPI.attach({
+      storyboard_id: storyboardId,
+      drama_id: drama.value.id,
+      video_url: mediaPayload.url,
+      local_path: mediaPayload.localPath || undefined,
+      duration: asset?.duration ?? undefined,
+    })
+    resultMessage = '已指派素材并设为分镜成片'
+    await refreshDrama(true)
+  } else if (mediaPayload?.type === 'audio') {
+    await storyboardsAPI.update(storyboardId, {
+      audio_local_path: mediaPayload.localPath || undefined,
+      audio_url: mediaPayload.localPath ? undefined : mediaPayload.url,
+    })
+    resultMessage = '已指派素材并设为分镜音频'
+    await refreshDrama(true)
+  } else {
+    await loadProjectImageAssets()
+    rebuildGraph()
+  }
   await focusCanvasNode(`sb:${storyboardId}`)
-  ElMessage.success('已指派素材到选中分镜')
-  return success()
+  ElMessage.success(resultMessage)
+  return success(resultMessage)
 }
 
 async function runCanvasProjectAssetNodeStep(node, step) {
