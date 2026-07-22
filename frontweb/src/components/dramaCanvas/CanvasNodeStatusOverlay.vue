@@ -16,34 +16,46 @@
       <audio v-else-if="resultPreviewType === 'audio'" :src="status.resultUrl" controls />
     </div>
     <span v-if="isSuccess" class="success-actions">
-      <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
-      <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
-      <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
-      <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
-        {{ savingAsset ? '保存中…' : '存入素材库' }}
-      </button>
-      <button v-if="effectiveSavedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
-      <button v-if="effectiveSavedAsset" type="button" @click.stop="viewSavedAsset">查看素材</button>
-      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('main')">设为本镜图</button>
-      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('first')">设为首帧</button>
-      <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('last')">设为尾帧</button>
-      <button v-if="canAttachVideo" type="button" :disabled="attachingResult" @click.stop="attachVideoResult">设为本镜视频</button>
-      <button v-if="canAttachAudio" type="button" :disabled="attachingResult" @click.stop="attachAudioResult">设为本镜音频</button>
-      <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
-      <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
-      <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
-      <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
-      <button type="button" @click.stop="dismissStatus">收起</button>
+      <span v-if="status.resultUrl" class="action-group action-group-primary" aria-label="结果操作">
+        <button type="button" @click.stop="openResult">打开结果</button>
+        <button type="button" @click.stop="copyResultLink">复制链接</button>
+        <button type="button" @click.stop="downloadResult">下载结果</button>
+      </span>
+      <span v-if="status.resultUrl || effectiveSavedAsset" class="action-group action-group-asset" aria-label="素材操作">
+        <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
+          {{ savingAsset ? '保存中…' : '存入素材库' }}
+        </button>
+        <button v-if="effectiveSavedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
+        <button v-if="effectiveSavedAsset" type="button" @click.stop="viewSavedAsset">查看素材</button>
+      </span>
+      <span v-if="canAttachImage || canAttachVideo || canAttachAudio" class="action-group action-group-attach" aria-label="挂载操作">
+        <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('main')">设为本镜图</button>
+        <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('first')">设为首帧</button>
+        <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('last')">设为尾帧</button>
+        <button v-if="canAttachVideo" type="button" :disabled="attachingResult" @click.stop="attachVideoResult">设为本镜视频</button>
+        <button v-if="canAttachAudio" type="button" :disabled="attachingResult" @click.stop="attachAudioResult">设为本镜音频</button>
+      </span>
+      <span class="action-group action-group-flow" aria-label="流程操作">
+        <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
+        <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+        <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
+        <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
+        <button type="button" @click.stop="dismissStatus">收起</button>
+      </span>
     </span>
     <span v-if="isFailed" class="failed-actions">
-      <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
-      <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
-      <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
-      <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
-      <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
-      <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
-      <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
-      <button type="button" @click.stop="dismissStatus">收起</button>
+      <span class="action-group action-group-primary" aria-label="失败结果操作">
+        <button v-if="status.resultUrl" type="button" @click.stop="openResult">打开结果</button>
+        <button v-if="status.resultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
+        <button v-if="status.resultUrl" type="button" @click.stop="downloadResult">下载结果</button>
+        <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
+      </span>
+      <span class="action-group action-group-flow" aria-label="失败流程操作">
+        <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
+        <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+        <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
+        <button type="button" @click.stop="dismissStatus">收起</button>
+      </span>
     </span>
   </div>
 </template>
@@ -505,6 +517,9 @@ onBeforeUnmount(() => {
   gap: 6px;
   background: rgba(9, 9, 11, 0.72);
   border-radius: inherit;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 8px;
   pointer-events: none;
 }
 .spinner {
@@ -611,13 +626,44 @@ onBeforeUnmount(() => {
 }
 .success-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
+  max-width: calc(100% - 14px);
   pointer-events: auto;
 }
 .failed-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
+  max-width: calc(100% - 14px);
   pointer-events: auto;
+}
+.action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.38);
+}
+.action-group-asset {
+  background: rgba(6, 78, 59, 0.26);
+  border-color: rgba(134, 239, 172, 0.26);
+}
+.action-group-attach {
+  background: rgba(37, 99, 235, 0.18);
+  border-color: rgba(96, 165, 250, 0.32);
+}
+.action-group-flow {
+  background: rgba(76, 29, 149, 0.18);
+  border-color: rgba(167, 139, 250, 0.32);
 }
 .success-actions button,
 .failed-actions button {
@@ -627,7 +673,13 @@ onBeforeUnmount(() => {
   background: rgba(6, 95, 70, 0.72);
   color: #dcfce7;
   font-size: 9px;
+  white-space: nowrap;
   cursor: pointer;
+}
+.success-actions button:disabled,
+.failed-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .failed-actions button {
   border-color: rgba(254, 202, 202, 0.45);
