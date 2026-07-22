@@ -58,6 +58,29 @@ export function useCanvasScript(deps) {
     nodeStatus?.clear(scriptNodeId(episodeId))
   }
 
+  function keepOrClearScriptStatus(episodeId) {
+    const current = nodeStatus?.get?.(scriptNodeId(episodeId))
+    if (!['failed', 'success'].includes(current?.step)) clearScriptBusy(episodeId)
+  }
+
+  function failScriptStatus(episodeId, step, error) {
+    const message = error?.message || '脚本任务失败'
+    nodeStatus?.fail(scriptNodeId(episodeId), {
+      message,
+      errorDetail: message,
+      retryStep: step,
+      retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '脚本任务'}`,
+    })
+  }
+
+  function successScriptStatus(episodeId, step, message) {
+    nodeStatus?.success(scriptNodeId(episodeId), {
+      message,
+      retryStep: step,
+      retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '脚本任务'}`,
+    })
+  }
+
   async function runExtractTask(taskId, label) {
     if (!taskId) {
       await refreshCanvas(true)
@@ -84,10 +107,14 @@ export function useCanvasScript(deps) {
       })
       await dramaAPI.saveEpisodes(did, payload)
       await refreshCanvas(true)
+      successScriptStatus(episodeId, 'save_script', '剧本已保存')
       ElMessage.success('剧本已保存')
+    } catch (e) {
+      failScriptStatus(episodeId, 'save_script', e)
+      throw e
     } finally {
       scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      keepOrClearScriptStatus(episodeId)
     }
   }
 
@@ -122,10 +149,14 @@ export function useCanvasScript(deps) {
     setScriptBusy(episodeId, 'extract_chars', CANVAS_NODE_STATUS_LABELS.extract_chars)
     try {
       await _extractCharacters(episodeId, scriptContent)
+      successScriptStatus(episodeId, 'extract_chars', '角色提取完成')
       ElMessage.success('角色提取完成')
+    } catch (e) {
+      failScriptStatus(episodeId, 'extract_chars', e)
+      throw e
     } finally {
       scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      keepOrClearScriptStatus(episodeId)
     }
   }
 
@@ -135,10 +166,14 @@ export function useCanvasScript(deps) {
     setScriptBusy(episodeId, 'extract_scenes', CANVAS_NODE_STATUS_LABELS.extract_scenes)
     try {
       await _extractScenes(episodeId)
+      successScriptStatus(episodeId, 'extract_scenes', '场景提取完成')
       ElMessage.success('场景提取完成')
+    } catch (e) {
+      failScriptStatus(episodeId, 'extract_scenes', e)
+      throw e
     } finally {
       scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      keepOrClearScriptStatus(episodeId)
     }
   }
 
@@ -148,10 +183,14 @@ export function useCanvasScript(deps) {
     setScriptBusy(episodeId, 'extract_props', CANVAS_NODE_STATUS_LABELS.extract_props)
     try {
       await _extractProps(episodeId)
+      successScriptStatus(episodeId, 'extract_props', '道具提取完成')
       ElMessage.success('道具提取完成')
+    } catch (e) {
+      failScriptStatus(episodeId, 'extract_props', e)
+      throw e
     } finally {
       scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      keepOrClearScriptStatus(episodeId)
     }
   }
 
@@ -182,16 +221,18 @@ export function useCanvasScript(deps) {
       if (!didWork) {
         ElMessage.info('角色、场景、道具均已存在，无需重复提取')
       } else {
+        successScriptStatus(episodeId, 'extract_all', '一键提取完成')
         ElMessage.success(
           `提取完成：${(drama.value?.characters || []).length} 角色 · ${(drama.value?.scenes || []).length} 场景 · ${(drama.value?.props || []).length} 道具`
         )
       }
     } catch (e) {
+      failScriptStatus(episodeId, 'extract_all', e)
       ElMessage.error(e?.message || '提取失败')
       throw e
     } finally {
       scriptBusy.value = false
-      clearScriptBusy(episodeId)
+      keepOrClearScriptStatus(episodeId)
     }
   }
 
