@@ -383,6 +383,7 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
+import { imagesAPI } from '@/api/images'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
@@ -968,7 +969,12 @@ function canvasNodeActions(node) {
     actions.unshift('open-node-result', 'copy-node-result')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
-  if (nodeAssignedAssets(node).length) actions.unshift('copy-node-assigned-asset-ref', 'unbind-node-assigned-asset')
+  if (nodeAssignedAssets(node).length) actions.unshift(
+    'set-assigned-asset-first-frame',
+    'set-assigned-asset-last-frame',
+    'copy-node-assigned-asset-ref',
+    'unbind-node-assigned-asset',
+  )
   if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
@@ -1116,6 +1122,22 @@ function assetReferenceText(asset) {
   return `@素材(${name}#${asset.id}) ${url}`.trim()
 }
 
+function assignedAssetImagePayload(asset) {
+  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const imageUrl = assetImageUrl(asset)
+    || asset?.display_url
+    || asset?.asset_url
+    || asset?.preview_url
+    || asset?.url
+    || asset?.image_url
+    || ''
+  if (!localPath && !imageUrl) return null
+  return {
+    image_url: imageUrl,
+    local_path: localPath || undefined,
+  }
+}
+
 function projectAssetId(asset) {
   if (asset?.raw_id) return asset.raw_id
   const id = String(asset?.id || '')
@@ -1182,6 +1204,26 @@ async function unbindNodeAssignedAsset(node) {
   await loadProjectImageAssets()
   rebuildGraph()
   ElMessage.success('已解绑当前分镜素材')
+  return true
+}
+
+async function setNodeAssignedAssetFrame(node, frameType) {
+  const sb = storyboardForNode(node)
+  const firstAsset = nodeAssignedAssets(node)[0]
+  const payload = assignedAssetImagePayload(firstAsset)
+  if (!sb?.id || !drama.value?.id || !payload) {
+    ElMessage.warning('该分镜暂无可回填的指派素材')
+    return false
+  }
+  const label = frameType === 'storyboard_last' ? '尾帧' : '首帧'
+  await imagesAPI.upload({
+    storyboard_id: sb.id,
+    drama_id: drama.value.id,
+    frame_type: frameType,
+    ...payload,
+  })
+  await refreshDrama(true)
+  ElMessage.success(`已将指派素材设为${label}`)
   return true
 }
 
@@ -1472,6 +1514,10 @@ async function runNodeMenuAction(type, node) {
     await copyNodeAssignedAssetReference(node)
   } else if (type === 'unbind-node-assigned-asset') {
     await unbindNodeAssignedAsset(node)
+  } else if (type === 'set-assigned-asset-first-frame') {
+    await setNodeAssignedAssetFrame(node, 'storyboard_first')
+  } else if (type === 'set-assigned-asset-last-frame') {
+    await setNodeAssignedAssetFrame(node, 'storyboard_last')
   } else if (type === 'assign-project-asset-selected') {
     await assignProjectAssetToSelectedStoryboard(node.data?.asset)
   } else if (type === 'focus-node-result') {
