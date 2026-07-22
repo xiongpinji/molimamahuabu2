@@ -8,17 +8,22 @@
     <div class="asset-actions">
       <button type="button" :disabled="!url" @click.stop="openAsset">预览</button>
       <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制引用</button>
+      <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">指派</button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetImageUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({ data: { type: Object, required: true } })
+const ctx = useCanvasContext()
+const assigning = ref(false)
 const url = computed(() => assetImageUrl(props.data.asset))
+const assetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
   if (!asset.id) return ''
@@ -39,6 +44,16 @@ async function copyReference() {
     ElMessage.success('素材引用已复制')
   } catch {
     ElMessageBox.alert(referenceText.value, '素材引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function assignToSelectedStoryboard() {
+  if (!assetId.value || assigning.value) return
+  assigning.value = true
+  try {
+    await ctx?.assignProjectAssetToSelectedStoryboard?.(props.data.asset)
+  } finally {
+    assigning.value = false
   }
 }
 </script>

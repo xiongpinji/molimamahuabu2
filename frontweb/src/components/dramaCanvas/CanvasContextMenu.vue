@@ -105,6 +105,7 @@ const nodeGroups = [
       { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
       { type: 'copy-node-asset-ref', label: '复制素材引用', hint: '@素材(...)', icon: Document },
       { type: 'copy-node-assigned-asset-ref', label: '复制指派素材', hint: '本镜参考素材', icon: Document },
+      { type: 'assign-project-asset-selected', label: '指派到选中分镜', hint: '作为参考素材', icon: Connection },
       { type: 'focus-node-result', label: '定位结果节点', hint: '跳到图片/视频/音频节点', icon: FullScreen },
       { type: 'retry-node-failed', label: '重试失败节点', hint: '按失败步骤重跑', icon: VideoPlay },
     ],

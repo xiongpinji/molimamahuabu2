@@ -417,6 +417,7 @@ import {
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
+import { assetImageUrl } from '@/utils/mediaUrl'
 import {
   createWorkflowGroup,
   deleteWorkflowGroup,
@@ -973,6 +974,10 @@ function canvasNodeActions(node) {
     actions.unshift('retry-node-failed')
   }
   if (PANEL_NODE_TYPES.has(node.type)) actions.unshift('open-node-config')
+  if (node.type === 'canvasProjectAsset') {
+    actions.unshift('assign-project-asset-selected')
+    return [...new Set(actions)]
+  }
   if (node.type === 'canvasAsset') {
     return [...actions, 'focus-downstream-video']
   }
@@ -1093,6 +1098,7 @@ function nodeRuntimeStatus(node) {
 function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
   if (status?.resultUrl) return status.resultUrl
   if (node?.data?.url) return node.data.url
+  if (node?.type === 'canvasProjectAsset') return assetImageUrl(node.data?.asset)
   return videoUrlFromNode(node)
 }
 
@@ -1106,8 +1112,14 @@ function nodeAssignedAssets(node) {
 function assetReferenceText(asset) {
   if (!asset?.id) return ''
   const name = asset.name || asset.title || asset.filename || '素材'
-  const url = asset.asset_url || asset.display_url || asset.url || asset.local_path || ''
+  const url = assetImageUrl(asset) || asset.local_path || ''
   return `@素材(${name}#${asset.id}) ${url}`.trim()
+}
+
+function projectAssetId(asset) {
+  if (asset?.raw_id) return asset.raw_id
+  const id = String(asset?.id || '')
+  return id.startsWith('project:') ? id.slice('project:'.length) : id
 }
 
 function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
@@ -1157,6 +1169,26 @@ async function copyNodeAssignedAssetReference(node) {
     return
   }
   await copyCanvasText(text, '指派素材引用已复制', '指派素材引用（请手动复制）')
+}
+
+async function assignProjectAssetToSelectedStoryboard(asset) {
+  const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
+  if (selectedIds.length !== 1) {
+    ElMessage.warning(selectedIds.length ? '请只选中一个分镜后再指派素材' : '请先选中一个分镜')
+    return false
+  }
+  const assetId = projectAssetId(asset)
+  if (!drama.value?.id || !assetId) {
+    ElMessage.warning('素材信息不完整，无法指派')
+    return false
+  }
+  const storyboardId = selectedIds[0]
+  await assetsAPI.update(assetId, { drama_id: drama.value.id, storyboard_id: storyboardId })
+  await loadProjectImageAssets()
+  rebuildGraph()
+  await focusCanvasNode(`sb:${storyboardId}`)
+  ElMessage.success('已指派素材到选中分镜')
+  return true
 }
 
 async function focusNodeResult(node) {
@@ -1424,6 +1456,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeAssetReference(node)
   } else if (type === 'copy-node-assigned-asset-ref') {
     await copyNodeAssignedAssetReference(node)
+  } else if (type === 'assign-project-asset-selected') {
+    await assignProjectAssetToSelectedStoryboard(node.data?.asset)
   } else if (type === 'focus-node-result') {
     await focusNodeResult(node)
   } else if (type === 'retry-node-failed') {
@@ -1599,6 +1633,7 @@ provide(CANVAS_CONTEXT_KEY, {
   zoomOut: () => canvasFlowApi.value?.zoomOut?.({ duration: 180 }),
   showCanvasHelp,
   selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
+  assignProjectAssetToSelectedStoryboard,
   runNodeStep: runCanvasNodeStep,
 })
 
