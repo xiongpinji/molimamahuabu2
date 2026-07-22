@@ -1640,14 +1640,15 @@ function nodeAssignedAssets(node) {
 }
 
 function assetReferenceText(asset) {
-  if (!asset?.id) return ''
+  const id = projectAssetId(asset)
+  if (!id) return ''
   const name = asset.name || asset.title || asset.filename || '素材'
-  const url = assetDisplayUrl(asset) || asset.local_path || ''
-  return `@素材(${name}#${asset.id}) ${url}`.trim()
+  const url = assetDisplayUrl(asset) || assetLocalPath(asset) || ''
+  return `@素材(${name}#${id}) ${url}`.trim()
 }
 
 function assignedAssetImagePayload(asset) {
-  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const localPath = assetLocalPath(asset)
   const imageUrl = assetImageUrl(asset)
     || asset?.display_url
     || asset?.asset_url

@@ -53,12 +53,14 @@ const assigning = ref(false)
 const assetType = computed(() => props.data.asset?.type || 'image')
 const typeLabel = computed(() => ({ image: '图片素材', video: '视频素材', audio: '音频素材' }[assetType.value] || '项目素材'))
 const url = computed(() => assetMediaUrl(props.data.asset))
-const assetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
+const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
+const assetId = computed(() => referenceAssetId.value)
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
-  if (!asset.id) return ''
+  const id = referenceAssetId.value
+  if (!id) return ''
   const name = asset.name || asset.title || asset.filename || '素材'
-  return `@素材(${name}#${asset.id}) ${url.value || asset.local_path || ''}`.trim()
+  return `@素材(${name}#${id}) ${url.value || asset.local_path || ''}`.trim()
 })
 
 function openAsset() {
