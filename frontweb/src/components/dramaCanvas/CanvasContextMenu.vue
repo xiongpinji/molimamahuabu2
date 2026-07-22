@@ -50,7 +50,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Connection, Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, VideoPlay, View } from '@element-plus/icons-vue'
+import { Connection, Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -86,6 +86,8 @@ const addGroups = [
     title: '素材',
     items: [
       { key: 'media-library', type: 'open-media-library', label: '素材库', hint: '上传 / 管理素材', icon: FolderOpened },
+      { key: 'upload', type: 'upload-media', label: '上传', hint: '本地文件加入画布', icon: Upload },
+      { key: 'paste', type: 'paste-media', label: '粘贴', hint: '剪贴板素材加入画布', icon: Document },
     ],
   },
 ]

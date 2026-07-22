@@ -371,6 +371,14 @@
       :drama-id="dramaId"
       @pick="onCanvasAssetLibraryPick"
     />
+    <input
+      ref="canvasUploadInput"
+      class="canvas-upload-input"
+      type="file"
+      accept="image/*,video/*,audio/*"
+      multiple
+      @change="onCanvasUpload"
+    />
     <CanvasContextMenu
       :visible="contextMenuVisible"
       :x="contextMenuX"
@@ -405,6 +413,7 @@ import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
+import { uploadAPI } from '@/api/upload'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
@@ -529,6 +538,8 @@ const contextMenuFlowPos = ref(null)
 const contextMenuNode = ref(null)
 const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
+const canvasUploadInput = ref(null)
+const canvasUploadFlowPos = ref(null)
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
@@ -1429,6 +1440,20 @@ function selectedStoryboardMediaAssetPayload(asset) {
   return { type, url, localPath }
 }
 
+function mediaTypeFromFile(file) {
+  const mime = String(file?.type || '').toLowerCase()
+  if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('audio/')) return 'audio'
+  return 'image'
+}
+
+function mediaTypeFromUrl(url) {
+  const value = String(url || '').toLowerCase().split('?')[0]
+  if (/\.(mp4|webm|mov|m4v)$/.test(value)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(value)) return 'audio'
+  return 'image'
+}
+
 async function ensureProjectImageAsset(asset) {
   const assetId = projectAssetId(asset)
   if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
@@ -1648,6 +1673,118 @@ async function runCanvasProjectAssetNodeStep(node, step) {
 function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerFlowPos.value = flowPosition
   canvasAssetPickerVisible.value = true
+}
+
+function openCanvasUpload(flowPosition = null) {
+  canvasUploadFlowPos.value = flowPosition
+  canvasUploadInput.value?.click()
+}
+
+async function createCanvasProjectAssetFromUpload(file, flowPosition = null, offsetIndex = 0) {
+  if (!drama.value?.id) throw new Error('项目信息不完整，无法上传素材')
+  const uploaded = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  const localPath = uploaded?.local_path || uploaded?.path || ''
+  const url = uploaded?.url || uploaded?.display_url || ''
+  const asset = await assetsAPI.create({
+    drama_id: drama.value.id,
+    name: file.name || '上传素材',
+    type: mediaTypeFromFile(file),
+    category: 'canvas-upload',
+    url,
+    local_path: localPath || undefined,
+    file_size: file.size || undefined,
+    mime_type: file.type || undefined,
+    metadata: { source: 'canvas_context_upload' },
+  })
+  const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
+  const nodeId = await placeProjectAssetNode(asset, targetPos)
+  if (selectedStoryboardIds.value.length === 1) {
+    await assignProjectAssetToSelectedStoryboard(asset)
+  }
+  if (nodeId) {
+    nodeStatus.success(nodeId, {
+      message: selectedStoryboardIds.value.length === 1 ? '已上传并指派到分镜' : '已上传并加入画布',
+      resultUrl: assetDisplayUrl(asset),
+      resultType: asset.type || mediaTypeFromFile(file),
+      savedAssetId: projectAssetId(asset),
+      savedAssetName: asset.name || file.name || '上传素材',
+      savedAssetUrl: assetDisplayUrl(asset),
+      retryStep: 'library',
+      retryLabel: '重新指派素材',
+      autoClear: false,
+    })
+  }
+  return asset
+}
+
+async function onCanvasUpload(event) {
+  const files = Array.from(event?.target?.files || [])
+  if (!files.length) return
+  const flowPosition = canvasUploadFlowPos.value
+  let ok = 0
+  for (const [index, file] of files.entries()) {
+    try {
+      await createCanvasProjectAssetFromUpload(file, flowPosition, index)
+      ok += 1
+    } catch (error) {
+      ElMessage.warning(`${file.name || '素材'} 上传失败：${error?.message || '未知错误'}`)
+    }
+  }
+  if (ok) ElMessage.success(`已上传 ${ok} 个素材到画布`)
+  canvasUploadFlowPos.value = null
+  if (event?.target) event.target.value = ''
+}
+
+async function createCanvasProjectAssetFromUrl(url, flowPosition = null) {
+  if (!drama.value?.id) throw new Error('项目信息不完整，无法粘贴素材')
+  const asset = await assetsAPI.create({
+    drama_id: drama.value.id,
+    name: '粘贴素材',
+    type: mediaTypeFromUrl(url),
+    category: 'canvas-paste',
+    url,
+    metadata: { source: 'canvas_context_paste' },
+  })
+  const nodeId = await placeProjectAssetNode(asset, flowPosition)
+  if (selectedStoryboardIds.value.length === 1) {
+    await assignProjectAssetToSelectedStoryboard(asset)
+  }
+  if (nodeId) {
+    nodeStatus.success(nodeId, {
+      message: selectedStoryboardIds.value.length === 1 ? '已粘贴并指派到分镜' : '已粘贴素材到画布',
+      resultUrl: assetDisplayUrl(asset),
+      resultType: asset.type || 'image',
+      savedAssetId: projectAssetId(asset),
+      savedAssetName: asset.name || '粘贴素材',
+      savedAssetUrl: assetDisplayUrl(asset),
+      retryStep: 'library',
+      retryLabel: '重新指派素材',
+      autoClear: false,
+    })
+  }
+}
+
+async function pasteCanvasClipboard(flowPosition = null) {
+  try {
+    if (navigator.clipboard?.read) {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        const type = item.types.find((value) => /^(image|video|audio)\//.test(value))
+        if (!type) continue
+        const blob = await item.getType(type)
+        const file = new File([blob], `clipboard.${type.split('/')[1] || 'bin'}`, { type })
+        await createCanvasProjectAssetFromUpload(file, flowPosition)
+        ElMessage.success('已粘贴剪贴板素材到画布')
+        return
+      }
+    }
+    const text = (await navigator.clipboard?.readText?.())?.trim()
+    if (!/^https?:\/\//i.test(text || '')) throw new Error('剪贴板没有可用的媒体文件或链接')
+    await createCanvasProjectAssetFromUrl(text, flowPosition)
+    ElMessage.success('已粘贴媒体链接到画布')
+  } catch (error) {
+    ElMessage.warning(error?.message || '读取剪贴板失败')
+  }
 }
 
 async function onCanvasAssetLibraryPick(asset) {
@@ -2177,6 +2314,16 @@ async function onContextMenuSelect(type) {
   if (type === 'open-media-library') {
     closeContextMenu()
     openCanvasAssetLibrary(flowPosition)
+    return
+  }
+  if (type === 'upload-media') {
+    closeContextMenu()
+    openCanvasUpload(flowPosition)
+    return
+  }
+  if (type === 'paste-media') {
+    closeContextMenu()
+    await pasteCanvasClipboard(flowPosition)
     return
   }
   pendingFlowPosition.value = flowPosition
@@ -3444,6 +3591,10 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   background: #0c0c0f;
+}
+
+.canvas-upload-input {
+  display: none;
 }
 
 :deep(.vue-flow__minimap) {
