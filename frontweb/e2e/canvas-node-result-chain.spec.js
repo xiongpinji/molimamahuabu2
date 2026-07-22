@@ -137,7 +137,11 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
       return
     }
     if (path === '/api/v1/assets' && method === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items: [] } }) })
+      const type = url.searchParams.get('type')
+      const items = type === 'image'
+        ? [{ id: 77, name: '已完成镜头结果', type: 'image', url: '/static/generated-main.png', category: 'canvas-result' }]
+        : []
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items, total: items.length } }) })
       return
     }
     if (path === '/api/v1/assets' && method === 'POST') {
@@ -213,6 +217,7 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
     assetId: '77',
     type: 'image',
   })
+  await expect(page.locator('.media-card.targeted', { hasText: '已完成镜头结果' })).toContainText('画布结果定位')
 })
 
 test('CV-ASSET-LIB-001 分镜面板从当前项目素材库指派参考图并回显', async ({ page }) => {

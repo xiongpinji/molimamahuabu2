@@ -41,13 +41,14 @@
         v-for="item in mediaItems"
         :key="item.id"
         class="media-card"
-        :class="{ selected: selectedIds.has(item.id) }"
+        :class="{ selected: selectedIds.has(item.id), targeted: isTargetAsset(item) }"
         @click="toggleSelect(item)"
       >
         <div class="media-thumb">
           <video v-if="item.type === 'video'" :src="itemUrl(item)" class="thumb-video" muted />
           <audio v-else-if="item.type === 'audio'" :src="itemUrl(item)" controls class="thumb-audio" @click.stop />
           <img v-else :src="itemUrl(item)" class="thumb-img" />
+          <span v-if="isTargetAsset(item)" class="locate-badge">画布结果定位</span>
           <div class="media-overlay">
             <el-icon v-if="selectedIds.has(item.id)" class="check-icon"><CircleCheck /></el-icon>
             <div class="overlay-actions" @click.stop>
@@ -123,7 +124,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Upload, Search, Loading, CircleCheck,
@@ -133,6 +135,7 @@ import PlatformHeader from '@/components/PlatformHeader.vue'
 import { uploadAPI } from '@/api/upload'
 import request from '@/utils/request'
 
+const route = useRoute()
 const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref({ current: 0, total: 0 })
@@ -146,7 +149,16 @@ const selectedIds = reactive(new Set())
 const showPreview = ref(false)
 const previewItem = ref(null)
 const uploadInput = ref(null)
+const highlightedAssetId = ref(null)
 let keywordTimer = null
+
+function applyRouteAssetFocus() {
+  const id = Number(route.query.assetId)
+  highlightedAssetId.value = Number.isFinite(id) && id > 0 ? id : null
+  const type = String(route.query.type || '')
+  if (['image', 'video', 'audio'].includes(type)) mediaType.value = type
+  page.value = 1
+}
 
 function triggerUpload() {
   uploadInput.value?.click()
@@ -236,6 +248,10 @@ function toggleSelect(item) {
   }
 }
 
+function isTargetAsset(item) {
+  return Boolean(highlightedAssetId.value && Number(item?.id) === highlightedAssetId.value)
+}
+
 function openPreview(item) {
   previewItem.value = item
   showPreview.value = true
@@ -267,7 +283,15 @@ async function batchDelete() {
   loadMedia()
 }
 
-onMounted(loadMedia)
+watch(() => [route.query.assetId, route.query.type], async () => {
+  applyRouteAssetFocus()
+  await loadMedia()
+})
+
+onMounted(() => {
+  applyRouteAssetFocus()
+  loadMedia()
+})
 </script>
 
 <style scoped>
@@ -343,11 +367,29 @@ onMounted(loadMedia)
   border-color: #409eff;
 }
 
+.media-card.targeted {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .18), 0 8px 24px rgba(80, 53, 150, .18);
+}
+
 .media-thumb {
   aspect-ratio: 1;
   background: #f3f4f6;
   overflow: hidden;
   position: relative;
+}
+
+.locate-badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(109, 40, 217, .92);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .thumb-img,
