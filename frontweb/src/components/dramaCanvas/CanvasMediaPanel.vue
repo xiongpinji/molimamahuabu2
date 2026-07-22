@@ -21,6 +21,7 @@
         :status="activeNodeStatus"
         :disabled="busy || attachBusy || Boolean(universalBusy)"
         @retry="retryFailedStep"
+        @retry-action="retryFailedStep"
         @continue="continueMediaNextStep"
       />
 

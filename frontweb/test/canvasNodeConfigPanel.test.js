@@ -325,6 +325,7 @@ test('媒体配置面板失败后保留原因和重试入口', () => {
   assert.match(mediaPanelSource, /<CanvasNodeExecutionStrip/)
   assert.match(mediaPanelSource, /:status="activeNodeStatus"/)
   assert.match(mediaPanelSource, /@retry="retryFailedStep"/)
+  assert.match(mediaPanelSource, /@retry-action="retryFailedStep"/)
   assert.match(mediaPanelSource, /@continue="continueMediaNextStep"/)
   assert.match(mediaPanelSource, /const activeNodeStatus = computed/)
   assert.match(mediaPanelSource, /activeNodeStatus\.value\?\.step === 'failed'/)
