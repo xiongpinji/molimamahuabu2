@@ -8,6 +8,7 @@
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <span v-if="failedResultText" class="failed-result-text">{{ failedResultText }}</span>
     <span v-if="assetResultText" class="asset-result-text">{{ assetResultText }}</span>
     <span v-if="generationAuditText" class="generation-audit">{{ generationAuditText }}</span>
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
@@ -178,6 +179,15 @@ const resultText = computed(() => {
   return [label, urlHint].filter(Boolean).join(' · ')
 })
 
+const failedResultText = computed(() => {
+  if (!isFailed.value) return ''
+  const parts = []
+  if (effectiveResultUrl.value) parts.push('已保留失败前结果，可预览/下载')
+  const asset = effectiveSavedAsset.value
+  if (asset?.id) parts.push(`已保留素材：${asset.name || '素材'}#${asset.id}`)
+  return parts.join(' · ')
+})
+
 const assetResultText = computed(() => {
   if (!isSuccess.value) return ''
   const parts = []
@@ -230,7 +240,7 @@ const resultNodeId = computed(() => status.value?.resultNodeId || '')
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, assetResultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, failedResultText.value, assetResultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
   return parts.join('\n')
 })
 
@@ -662,6 +672,7 @@ onBeforeUnmount(() => {
 }
 .meta,
 .result-text,
+.failed-result-text,
 .asset-result-text,
 .generation-audit,
 .reference-text,
@@ -676,6 +687,9 @@ onBeforeUnmount(() => {
 }
 .result-text {
   color: #bbf7d0;
+}
+.failed-result-text {
+  color: #fed7aa;
 }
 .asset-result-text {
   color: #a7f3d0;
