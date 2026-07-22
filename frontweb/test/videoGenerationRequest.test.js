@@ -65,3 +65,40 @@ test('请求审计区分参考音频候选与实际视频请求体', () => {
   assert.equal(audit.payload.storyboard_id, 216)
   assert.equal(Object.hasOwn(audit.payload, 'voice_reference_url'), false)
 })
+
+test('请求审计保存角色声线快照但不污染真实 provider payload', () => {
+  const payload = buildVideoGenerationRequest({
+    dramaId: 14,
+    storyboardId: 216,
+    prompt: '小狐狸：别怕。',
+    model: 'grok-video-3',
+  })
+  const audit = buildVideoGenerationAudit({
+    payload,
+    voicePolicy: { key: 'native_audio_prompt', label: '文字声线提示' },
+    voicePrompt: 'VOICE CONTINUITY\n- 小狐狸 [voice-card:character-1]: 清亮。',
+    voiceSnapshot: {
+      version: 1,
+      storyboard_id: 216,
+      characters: [
+        {
+          id: 1,
+          name: '小狐狸',
+          voice_card: 'voice-card:character-1',
+          voice_style: '清亮、少年感、语速轻快',
+          source: 'character_voice_style',
+        },
+      ],
+    },
+  })
+
+  assert.equal(audit.voice_snapshot.storyboard_id, 216)
+  assert.deepEqual(audit.voice_snapshot.characters[0], {
+    id: 1,
+    name: '小狐狸',
+    voice_card: 'voice-card:character-1',
+    voice_style: '清亮、少年感、语速轻快',
+    source: 'character_voice_style',
+  })
+  assert.equal(Object.hasOwn(audit.payload, 'voice_snapshot'), false)
+})

@@ -53,6 +53,7 @@ function buildVideoGenerationAudit({
   voicePolicy = null,
   voicePrompt = '',
   voiceReferences = [],
+  voiceSnapshot = null,
 } = {}) {
   const candidates = (Array.isArray(voiceReferences) ? voiceReferences : [])
     .filter((item) => item && item.url)
@@ -71,6 +72,21 @@ function buildVideoGenerationAudit({
       ? { key: voicePolicy.key || null, label: voicePolicy.label || '' }
       : null,
     voice_prompt_preview: String(voicePrompt || ''),
+    voice_snapshot: voiceSnapshot
+      ? {
+          version: voiceSnapshot.version || 1,
+          storyboard_id: voiceSnapshot.storyboard_id ?? payload.storyboard_id ?? null,
+          characters: (Array.isArray(voiceSnapshot.characters) ? voiceSnapshot.characters : [])
+            .map((item) => ({
+              id: item.id ?? null,
+              name: item.name || '',
+              voice_card: item.voice_card || '',
+              voice_style: item.voice_style || '',
+              source: item.source || 'unknown',
+            }))
+            .filter((item) => item.name && item.voice_card && item.voice_style),
+        }
+      : null,
     reference_audio: {
       mode: policyKey === 'reference_audio' ? 'backend_auto_injection' : 'not_in_request',
       candidates,

@@ -22,9 +22,9 @@ import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboar
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import {
   appendVoicePromptToVideoPrompt,
+  buildStoryboardVoiceSnapshot,
   buildVoicePromptPreview,
   classifyVideoVoicePolicy,
-  storyboardVoiceCharacters,
 } from '@/utils/videoVoicePolicy'
 import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 
@@ -188,7 +188,8 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
   const model = getStoryboardVideoModel(sb, genOpts)
-  const voiceCharacters = storyboardVoiceCharacters(drama, sb)
+  const voiceSnapshot = buildStoryboardVoiceSnapshot(drama, sb)
+  const voiceCharacters = voiceSnapshot.characters
   const voicePolicy = genOpts.voicePolicy || classifyVideoVoicePolicy({ model })
   const voicePromptPreview = buildVoicePromptPreview({
     policy: voicePolicy,
@@ -225,6 +226,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     payload,
     voicePolicy,
     voicePrompt: voicePromptPreview,
+    voiceSnapshot,
   })
   const res = await videosAPI.create(payload)
   if (res?.task_id) {

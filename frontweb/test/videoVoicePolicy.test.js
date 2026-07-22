@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 
 import {
   appendVoicePromptToVideoPrompt,
+  buildStoryboardVoiceSnapshot,
   buildVoicePromptPreview,
+  characterVoiceCard,
   characterVoiceAnchor,
   classifyVideoVoicePolicy,
   generatedVoiceStyle,
@@ -38,6 +40,18 @@ test('角色没有显式声线时生成稳定的角色级提示', () => {
   const first = generatedVoiceStyle({ id: 7, name: '小狐狸' })
   assert.equal(first, generatedVoiceStyle({ id: 7, name: '小狐狸' }))
   assert.match(first, /clear diction/)
+})
+
+test('角色 voice-card 记录声线来源，便于请求审计追踪', () => {
+  const explicit = characterVoiceCard({ id: 1, name: '小狐狸', voice_style: '清亮、少年感' })
+  assert.equal(explicit.voice_card, 'voice-card:character-1')
+  assert.equal(explicit.source, 'character_voice_style')
+  assert.equal(explicit.voice_style, '清亮、少年感')
+
+  const generated = characterVoiceCard({ id: 2, name: '白狐' })
+  assert.equal(generated.voice_card, 'voice-card:character-2')
+  assert.equal(generated.source, 'generated_stable_voice_style')
+  assert.match(generated.voice_style, /clear diction/)
 })
 
 test('声音预览区分静音后期配音与原生音频模型', () => {
@@ -104,4 +118,24 @@ test('从分镜绑定角色和对白中提取声线角色', () => {
     dialogue: '刻纹木牌：你终于来了。',
   })
   assert.deepEqual(characters.map((item) => item.name), ['小狐狸', '刻纹木牌'])
+})
+
+test('分镜声线快照固化所有已绑定角色的 voice-card', () => {
+  const drama = {
+    characters: [
+      { id: 1, name: '小狐狸', voice_style: '清亮、少年感、语速轻快' },
+      { id: 2, name: '刻纹木牌' },
+    ],
+  }
+  const snapshot = buildStoryboardVoiceSnapshot(drama, {
+    id: 216,
+    characters: JSON.stringify([{ id: 1 }]),
+    dialogue: '刻纹木牌：你终于来了。',
+  })
+  assert.equal(snapshot.version, 1)
+  assert.equal(snapshot.storyboard_id, 216)
+  assert.deepEqual(snapshot.characters.map((item) => item.name), ['小狐狸', '刻纹木牌'])
+  assert.deepEqual(snapshot.characters.map((item) => item.voice_card), ['voice-card:character-1', 'voice-card:character-2'])
+  assert.equal(snapshot.characters[0].source, 'character_voice_style')
+  assert.equal(snapshot.characters[1].source, 'generated_stable_voice_style')
 })

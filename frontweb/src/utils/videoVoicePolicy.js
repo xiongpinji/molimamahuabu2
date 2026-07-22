@@ -54,11 +54,24 @@ function generatedVoiceStyle(character = {}) {
   return `${VOICE_PITCHES[hash % VOICE_PITCHES.length]}, ${VOICE_TIMBRES[(hash >>> 3) % VOICE_TIMBRES.length]}, ${VOICE_PACES[(hash >>> 6) % VOICE_PACES.length]}, clear diction`
 }
 
-function characterVoiceAnchor(character = {}) {
+function characterVoiceCard(character = {}) {
   const name = String(character.name || `角色${character.id || ''}`).trim()
-  const style = String(character.voice_style || '').trim() || generatedVoiceStyle(character)
+  const explicitStyle = String(character.voice_style || '').trim()
+  const style = explicitStyle || generatedVoiceStyle(character)
   const key = character.id != null ? `character-${character.id}` : `character-${stableVoiceHash(name)}`
-  return `- ${name} [voice-card:${key}]: ${style}. Use this exact voice card for this character in every storyboard shot; never swap it with another character.`
+  return {
+    id: character.id ?? null,
+    name,
+    key,
+    voice_style: style,
+    source: explicitStyle ? 'character_voice_style' : 'generated_stable_voice_style',
+    voice_card: `voice-card:${key}`,
+  }
+}
+
+function characterVoiceAnchor(character = {}) {
+  const card = characterVoiceCard(character)
+  return `- ${card.name} [${card.voice_card}]: ${card.voice_style}. Use this exact voice card for this character in every storyboard shot; never swap it with another character.`
 }
 
 function buildVoicePromptPreview({ policy, characters = [] } = {}) {
@@ -142,6 +155,23 @@ function storyboardVoiceCharacters(drama = {}, storyboard = {}) {
   return out.slice(0, 6)
 }
 
+function buildStoryboardVoiceSnapshot(drama = {}, storyboard = {}) {
+  const seen = new Set()
+  const characters = storyboardVoiceCharacters(drama, storyboard)
+    .map((character) => characterVoiceCard(character))
+    .filter((card) => {
+      const key = card.id != null ? `id:${card.id}` : `name:${normalizeCharacterName(card.name)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  return {
+    version: 1,
+    storyboard_id: storyboard?.id ?? null,
+    characters,
+  }
+}
+
 function appendVoicePromptToVideoPrompt({ prompt, policy, characters = [] } = {}) {
   const base = String(prompt || '').trim()
   if (!base || /(^|\n)VOICE CONTINUITY\b/i.test(base)) return base
@@ -156,7 +186,9 @@ function appendVoicePromptToVideoPrompt({ prompt, policy, characters = [] } = {}
 export {
   POLICIES,
   appendVoicePromptToVideoPrompt,
+  buildStoryboardVoiceSnapshot,
   buildVoicePromptPreview,
+  characterVoiceCard,
   characterVoiceAnchor,
   classifyVideoVoicePolicy,
   generatedVoiceStyle,
