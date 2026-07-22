@@ -256,3 +256,58 @@ test('画布节点成功状态会保留结果操作失败和重试动作', () =>
   assert.equal(restored.snapshot()['sbimg:701'].retryAction, 'attach_image_first')
   assert.equal(restored.snapshot()['sbimg:701'].retryActionLabel, '重试设为首帧')
 })
+
+test('画布节点状态快照会保留真实请求审计和模型元数据', () => {
+  const store = createCanvasNodeStatusStore()
+  store.success('sbvid:801', {
+    message: '视频已生成',
+    resultUrl: '/static/video.mp4',
+    resultType: 'video',
+    dramaId: 12,
+    storyboardId: 801,
+    model: 'grok-imagine-video',
+    videoGenerationId: 99,
+    requestPayload: { prompt: '小狐狸穿过雨林', model: 'grok-imagine-video' },
+    requestAudit: { voice_policy: { label: '小狐狸声线' } },
+    autoClear: false,
+    at: 70000,
+  })
+
+  const snapshot = store.snapshot()['sbvid:801']
+  assert.equal(snapshot.dramaId, 12)
+  assert.equal(snapshot.model, 'grok-imagine-video')
+  assert.equal(snapshot.videoGenerationId, 99)
+  assert.deepEqual(snapshot.requestPayload, { prompt: '小狐狸穿过雨林', model: 'grok-imagine-video' })
+  assert.deepEqual(snapshot.requestAudit, { voice_policy: { label: '小狐狸声线' } })
+
+  const restored = createCanvasNodeStatusStore()
+  restored.restore(store.snapshot(), { now: 71000 })
+  assert.equal(restored.snapshot()['sbvid:801'].model, 'grok-imagine-video')
+  assert.deepEqual(restored.snapshot()['sbvid:801'].requestAudit, { voice_policy: { label: '小狐狸声线' } })
+})
+
+test('画布节点状态快照会保留素材挂载失败重试上下文', () => {
+  const store = createCanvasNodeStatusStore()
+  const libraryAsset = { id: 'asset-1', name: '首帧参考', type: 'image' }
+  store.success('sbimg:802', {
+    message: '图片已生成',
+    resultUrl: '/static/result.png',
+    resultType: 'image',
+    actionError: '素材库首帧挂载失败',
+    retryAction: 'attach_library_image',
+    retryActionLabel: '重试设为首帧',
+    attachedSlot: 'first',
+    attachedToStoryboardId: 802,
+    libraryAsset,
+    autoClear: false,
+    at: 72000,
+  })
+
+  const restored = createCanvasNodeStatusStore()
+  restored.restore(store.snapshot(), { now: 73000 })
+  const snapshot = restored.snapshot()['sbimg:802']
+  assert.equal(snapshot.retryAction, 'attach_library_image')
+  assert.equal(snapshot.attachedSlot, 'first')
+  assert.equal(snapshot.attachedToStoryboardId, 802)
+  assert.deepEqual(snapshot.libraryAsset, libraryAsset)
+})
