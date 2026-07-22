@@ -97,7 +97,7 @@ function retryScript() {
   const scriptContent = episode?.script_content || ''
   const title = episode?.title || ''
   if (!episodeId) return
-  if (retryStep.value === 'save_script') {
+  if (retryStep.value === 'save_script' || retryStep.value === 'save') {
     api?.saveScript?.(episodeId, { scriptContent, title })
   } else if (retryStep.value === 'extract_chars') {
     api?.extractCharacters?.(episodeId, scriptContent)
