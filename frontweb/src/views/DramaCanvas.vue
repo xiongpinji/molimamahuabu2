@@ -425,7 +425,15 @@ import {
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
-import { assetImageUrl } from '@/utils/mediaUrl'
+import { assetImageUrl, audioUrl } from '@/utils/mediaUrl'
+import {
+  imageRecordUrl,
+  resolveSbFirstImageRecord,
+  resolveSbLastImageRecord,
+  resolveSbMainImageRecord,
+  resolveSbVideoRecord,
+  videoRecordUrl,
+} from '@/utils/storyboardMedia'
 import {
   createWorkflowGroup,
   deleteWorkflowGroup,
@@ -1391,7 +1399,22 @@ function nodeStepStatusLabel(step, node) {
   return CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
 }
 
-function nodeStepResultInfo(node, step, storyboardId) {
+function nodeStepResultUrl(node, step, storyboard) {
+  const nodeUrl = node?.data?.url || ''
+  if (nodeUrl) return nodeUrl
+  if (!storyboard) return ''
+  if (step === 'image') {
+    const frameKind = node?.data?.frameKind
+    if (frameKind === 'first') return imageRecordUrl(resolveSbFirstImageRecord(storyboard, imagesBySbId.value))
+    if (frameKind === 'last') return imageRecordUrl(resolveSbLastImageRecord(storyboard, imagesBySbId.value))
+    return imageRecordUrl(resolveSbMainImageRecord(storyboard, imagesBySbId.value))
+  }
+  if (step === 'video') return videoRecordUrl(resolveSbVideoRecord(storyboard, videosBySbId.value))
+  if (step === 'audio') return audioUrl(storyboard.audio_local_path || storyboard.audio_url || '')
+  return ''
+}
+
+function nodeStepResultInfo(node, step, storyboardId, storyboard = null) {
   const id = String(node?.id || '')
   const frameKind = node?.data?.frameKind
   const resultNodeId = step === 'image'
@@ -1409,7 +1432,7 @@ function nodeStepResultInfo(node, step, storyboardId) {
     video: { nextStep: 'audio', nextLabel: '继续配音' },
   }
   return {
-    resultUrl: resultNode?.data?.url || '',
+    resultUrl: nodeStepResultUrl(resultNode, step, storyboard),
     resultNodeId,
     resultType,
     resultLabel: labelMap[resultType] || '结果已生成',
@@ -1562,7 +1585,9 @@ async function runCanvasNodeStep(node, step) {
     }
     ElMessage.success('节点生成完成')
     await refreshDrama(true)
-    const resultInfo = { ...nodeStepResultInfo(node, step, sb.id), promptText }
+    const refreshed = findStoryboardInDrama(drama.value, sb.id)
+    const refreshedSb = refreshed?.storyboard || latestSb
+    const resultInfo = { ...nodeStepResultInfo(node, step, sb.id, refreshedSb), promptText }
     const savedAssetInfo = await saveNodeResultAsset(node, resultInfo, promptText, sb.id)
     if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
     const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), runKey, sourceNodeId: nodeId, autoClear: false }

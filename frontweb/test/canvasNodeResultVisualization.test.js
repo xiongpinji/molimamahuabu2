@@ -87,7 +87,7 @@ test('画布节点运行状态会携带当前节点提示词', () => {
   assert.match(canvasSource, /setNodeStepStatus\(statusIds, \{ \.\.\.baseStatusPayload, promptText \}\)/)
   assert.match(canvasSource, /runImageStep\(drama\.value, latestSb, genOpts, node\?\.data\?\.frameKind \|\| '', taskStatusOptions\)/)
   assert.match(canvasSource, /runVideoStep\(drama\.value, latestSb, genOpts, taskStatusOptions\)/)
-  assert.match(canvasSource, /const resultInfo = \{ \.\.\.nodeStepResultInfo\(node, step, sb\.id\), promptText \}/)
+  assert.match(canvasSource, /const resultInfo = \{ \.\.\.nodeStepResultInfo\(node, step, sb\.id, refreshedSb\), promptText \}/)
   assert.match(canvasSource, /errorDetail: errorMessage/)
 })
 
@@ -161,6 +161,21 @@ test('画布节点生成成功后自动存入素材库并回填素材引用', ()
   assert.match(canvasSource, /savedAssetName: asset\.name \|\| nodeResultAssetName\(node, resultInfo\)/)
   assert.match(canvasSource, /refreshProjectAssets: async \(\) => \{[\s\S]*await loadProjectImageAssets\(\)[\s\S]*rebuildGraph\(\)/)
   assert.match(overlaySource, /if \(ctx\?\.refreshProjectAssets\) await ctx\.refreshProjectAssets\(\)/)
+})
+
+test('节点成功状态从刷新后的分镜媒体兜底解析结果地址', () => {
+  assert.match(canvasSource, /import \{ assetImageUrl, audioUrl \} from '@\/utils\/mediaUrl'/)
+  assert.match(canvasSource, /resolveSbFirstImageRecord/)
+  assert.match(canvasSource, /resolveSbLastImageRecord/)
+  assert.match(canvasSource, /resolveSbMainImageRecord/)
+  assert.match(canvasSource, /resolveSbVideoRecord/)
+  assert.match(canvasSource, /function nodeStepResultUrl\(node, step, storyboard\)/)
+  assert.match(canvasSource, /if \(frameKind === 'first'\) return imageRecordUrl\(resolveSbFirstImageRecord\(storyboard, imagesBySbId\.value\)\)/)
+  assert.match(canvasSource, /if \(frameKind === 'last'\) return imageRecordUrl\(resolveSbLastImageRecord\(storyboard, imagesBySbId\.value\)\)/)
+  assert.match(canvasSource, /if \(step === 'video'\) return videoRecordUrl\(resolveSbVideoRecord\(storyboard, videosBySbId\.value\)\)/)
+  assert.match(canvasSource, /if \(step === 'audio'\) return audioUrl\(storyboard\.audio_local_path \|\| storyboard\.audio_url \|\| ''\)/)
+  assert.match(canvasSource, /const refreshed = findStoryboardInDrama\(drama\.value, sb\.id\)/)
+  assert.match(canvasSource, /const refreshedSb = refreshed\?\.storyboard \|\| latestSb/)
 })
 
 test('画布节点结果定位和工作流失败状态可恢复重试', () => {
