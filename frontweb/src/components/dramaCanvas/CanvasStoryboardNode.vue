@@ -99,7 +99,12 @@ const videosBySbId = computed(() => ctx?.videosBySbId?.value || {})
 
 const imageUrl = computed(() => imageRecordUrl(resolveSbMainImageRecord(props.data.storyboard, imagesBySbId.value)))
 const videoUrl = computed(() => videoRecordUrl(resolveSbVideoRecord(props.data.storyboard, videosBySbId.value)))
-const audioPath = computed(() => audioUrl(props.data.storyboard?.audio_local_path || props.data.storyboard?.narration_audio_local_path))
+const audioPath = computed(() => audioUrl(
+  props.data.storyboard?.audio_local_path
+  || props.data.storyboard?.audio_url
+  || props.data.storyboard?.narration_audio_local_path
+  || props.data.storyboard?.narration_audio_url
+))
 const primaryResultUrl = computed(() => videoUrl.value || imageUrl.value || audioPath.value)
 const assignedAssets = computed(() => Array.isArray(props.data.assignedAssets) ? props.data.assignedAssets : [])
 const failureReason = computed(() => {

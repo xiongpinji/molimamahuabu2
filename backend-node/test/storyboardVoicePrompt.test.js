@@ -41,6 +41,32 @@ test('视频提示词润色完成后会重新固化角色声线提示词', () =>
   assert.match(source, /writeNd\(\{\s*type:\s*'done',\s*video_prompt:\s*persistedPrompt\s*\}\)/);
 });
 
+test('素材库远程音频 URL 会保存并随分镜恢复', () => {
+  const db = createDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO dramas (title, created_at, updated_at) VALUES (?, ?, ?)').run('audio url', now, now);
+  const dramaId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  db.prepare('INSERT INTO episodes (drama_id, episode_number, created_at, updated_at) VALUES (?, 1, ?, ?)').run(dramaId, now, now);
+  const episodeId = db.prepare('SELECT last_insert_rowid() id').get().id;
+  const created = storyboardService.createStoryboard(db, { info() {} }, {
+    episode_id: episodeId,
+    storyboard_number: 1,
+    dialogue: '小狐狸：继续走。',
+  });
+
+  const saved = storyboardService.updateStoryboard(db, { info() {} }, created.id, {
+    audio_url: 'https://cdn.example/voice/fox.mp3',
+    audio_local_path: null,
+  });
+  const listed = episodeStoryboardService.getStoryboardsForEpisode(db, episodeId);
+
+  assert.equal(saved.audio_url, 'https://cdn.example/voice/fox.mp3');
+  assert.equal(saved.audio_local_path, null);
+  assert.equal(storyboardService.getStoryboardById(db, created.id).audio_url, 'https://cdn.example/voice/fox.mp3');
+  assert.equal(listed.find((item) => item.id === created.id).audio_url, 'https://cdn.example/voice/fox.mp3');
+  db.close();
+});
+
 test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   const db = createDb();
   const now = new Date().toISOString();

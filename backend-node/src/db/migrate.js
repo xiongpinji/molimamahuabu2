@@ -173,7 +173,9 @@ function ensureAllColumns(database) {
     { name: 'polished_prompt',        type: 'TEXT' },               // 文字AI润色后的图片生成提示词（可编辑，生图时优先使用）
     { name: 'continuity_snapshot',   type: 'TEXT' },               // JSON: 连戏状态快照 {characters:{name:{position,clothing,expression,props}},lighting}
     { name: 'audio_local_path',      type: 'TEXT' },               // 对白 TTS 本地路径
+    { name: 'audio_url',             type: 'TEXT' },               // 对白远程音频素材 URL
     { name: 'narration_audio_local_path', type: 'TEXT' },         // 解说旁白 TTS 本地路径
+    { name: 'narration_audio_url',   type: 'TEXT' },               // 解说旁白远程音频素材 URL
     { name: 'creation_mode',     type: 'TEXT DEFAULT \'classic\'' }, // classic | universal
     { name: 'universal_segment_text', type: 'TEXT' },              // 全能模式片段描述（@ 引用等）
     { name: 'first_frame_image_id', type: 'INTEGER' },

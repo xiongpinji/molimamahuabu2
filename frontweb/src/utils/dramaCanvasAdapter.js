@@ -301,13 +301,14 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
       mediaX += MEDIA_GAP_X
     }
 
-    if (sb.audio_local_path) {
+    const dialogueAudio = sb.audio_local_path || sb.audio_url
+    if (dialogueAudio) {
       const audId = `sbaud:${sb.id}:dialogue`
       nodes.push(makeNode({
         id: audId,
         type: 'canvasMedia',
         position: resolveNodePosition(savedLayout, audId, { x: mediaX, y: mediaY }),
-        data: { kind: 'audio', storyboard: sb, url: audioUrl(sb.audio_local_path), audioType: 'dialogue' },
+        data: { kind: 'audio', storyboard: sb, url: audioUrl(dialogueAudio), audioType: 'dialogue' },
       }))
       edges.push(makeEdge({
         id: `e-sb-aud-${sb.id}`,
@@ -488,7 +489,7 @@ export function getAssetRelationHighlight(drama, assetNodeId) {
       nodeIds.add(`sbimg-first:${sb.id}`)
       nodeIds.add(`sbimg-last:${sb.id}`)
       if (storyboardVideoUrl(sb)) nodeIds.add(`sbvid:${sb.id}`)
-      if (sb.audio_local_path) nodeIds.add(`sbaud:${sb.id}:dialogue`)
+      if (sb.audio_local_path || sb.audio_url) nodeIds.add(`sbaud:${sb.id}:dialogue`)
 
       if (prefix === 'char') edgeIds.add(`e-char-${entityId}-sb-${sb.id}`)
       if (prefix === 'scene') edgeIds.add(`e-scene-${entityId}-sb-${sb.id}`)

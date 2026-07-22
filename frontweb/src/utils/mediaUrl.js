@@ -22,5 +22,6 @@ export function audioUrl(localPath) {
   if (!localPath) return ''
   const p = String(localPath).trim()
   if (!p) return ''
+  if (/^(https?:|data:|blob:)/i.test(p)) return p
   return '/static/' + p.replace(/^\//, '')
 }

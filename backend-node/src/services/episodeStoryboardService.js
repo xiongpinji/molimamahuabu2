@@ -284,7 +284,9 @@ function getStoryboardsForEpisode(db, episodeId) {
       composed_image: r.composed_image,
       video_url: r.video_url,
       audio_local_path: r.audio_local_path ?? null,
+      audio_url: r.audio_url ?? null,
       narration_audio_local_path: r.narration_audio_local_path ?? null,
+      narration_audio_url: r.narration_audio_url ?? null,
       status: r.status || 'pending',
       created_at: r.created_at,
       updated_at: r.updated_at,
@@ -1559,8 +1561,8 @@ function updateStoryboardAsSplitSegment(db, sbId, baseRow, plan, now) {
     `UPDATE storyboards SET
       title = ?, duration = ?, dialogue = ?, narration = ?, action = ?, result = ?,
       shot_type = ?, movement = ?, universal_segment_text = NULL,
-      video_prompt = NULL, video_url = NULL, audio_local_path = NULL,
-      narration_audio_local_path = NULL, status = 'pending', updated_at = ?
+      video_prompt = NULL, video_url = NULL, audio_local_path = NULL, audio_url = NULL,
+      narration_audio_local_path = NULL, narration_audio_url = NULL, status = 'pending', updated_at = ?
      WHERE id = ? AND deleted_at IS NULL`
   ).run(
     plan.title,

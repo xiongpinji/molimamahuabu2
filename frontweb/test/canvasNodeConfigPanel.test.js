@@ -8,6 +8,8 @@ const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/
 const storyboardPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardPanel.vue', import.meta.url)), 'utf8')
 const assetPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetPanel.vue', import.meta.url)), 'utf8')
 const mediaPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaPanel.vue', import.meta.url)), 'utf8')
+const dramaCanvasAdapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
+const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
@@ -79,6 +81,9 @@ test('媒体配置面板支持从素材库复用视频和音频', () => {
   assert.match(mediaPanelSource, /audio_local_path: localPath \|\| undefined/)
   assert.match(mediaPanelSource, /audio_url: localPath \? undefined : audioUrl/)
   assert.match(mediaPanelSource, /已将素材库音频设为该分镜音频/)
+  assert.match(dramaCanvasAdapterSource, /const dialogueAudio = sb\.audio_local_path \|\| sb\.audio_url/)
+  assert.match(dramaCanvasAdapterSource, /url: audioUrl\(dialogueAudio\)/)
+  assert.match(storyboardNodeSource, /props\.data\.storyboard\?\.audio_url/)
 })
 
 test('媒体配置面板失败后保留原因和重试入口', () => {
