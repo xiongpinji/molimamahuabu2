@@ -56,6 +56,11 @@ test('分镜配置面板保留素材库指派、摄影控制、声音策略和�
   assert.match(storyboardPanelSource, /buildVoicePromptPreview/)
   assert.match(storyboardPanelSource, /镜头连续性/)
   assert.match(storyboardPanelSource, /function linkTailFrame\(\)/)
+  assert.match(storyboardPanelSource, /ctx\?\.nodeStatus\?\.set\(sbNodeId\.value, \{ step: 'link_tail_frame', message: '尾帧衔接中…' \}\)/)
+  assert.match(storyboardPanelSource, /ctx\?\.nodeStatus\?\.fail\(sbNodeId\.value, \{[\s\S]*retryStep: 'link_tail_frame'[\s\S]*retryLabel: '重试尾帧衔接'/)
+  assert.match(storyboardPanelSource, /errorDetail: errorMessage/)
+  assert.match(storyboardPanelSource, /imagesBySbId: ctx\?\.imagesBySbId\?\.value \|\| \{\}/)
+  assert.match(storyboardPanelSource, /videosBySbId: ctx\?\.videosBySbId\?\.value \|\| \{\}/)
 })
 
 test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {

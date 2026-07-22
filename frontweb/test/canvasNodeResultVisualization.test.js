@@ -87,7 +87,7 @@ test('画布节点运行状态会携带当前节点提示词', () => {
   assert.match(canvasSource, /setNodeStepStatus\(statusIds, \{ \.\.\.baseStatusPayload, promptText \}\)/)
   assert.match(canvasSource, /runImageStep\(drama\.value, latestSb, genOpts, node\?\.data\?\.frameKind \|\| '', taskStatusOptions\)/)
   assert.match(canvasSource, /runVideoStep\(drama\.value, latestSb, genOpts, taskStatusOptions\)/)
-  assert.match(canvasSource, /const resultInfo = \{ \.\.\.nodeStepResultInfo\(node, step, sb\.id, refreshedSb\), promptText \}/)
+  assert.match(canvasSource, /const resultInfo = \{ \.\.\.nodeStepResultInfo\(node, step, sb\.id, refreshedSb\), \.\.\.\(operationResult \|\| \{\}\), promptText \}/)
   assert.match(canvasSource, /errorDetail: errorMessage/)
 })
 

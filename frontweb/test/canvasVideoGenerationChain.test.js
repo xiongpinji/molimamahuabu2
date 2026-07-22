@@ -9,6 +9,14 @@ const runnerSource = readFileSync(
   resolve(__dirname, '../src/composables/useCanvasWorkflowRunner.js'),
   'utf8'
 )
+const canvasSource = readFileSync(
+  resolve(__dirname, '../src/views/DramaCanvas.vue'),
+  'utf8'
+)
+const storyboardPanelSource = readFileSync(
+  resolve(__dirname, '../src/components/dramaCanvas/CanvasStoryboardPanel.vue'),
+  'utf8'
+)
 
 test('画布视频节点把模型、首尾帧和素材引用传给视频创建接口', () => {
   assert.match(runnerSource, /export\s+async\s+function\s+runVideoStep\(drama, sb, genOpts, options = \{\}\)/)
@@ -30,4 +38,22 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'image', response: res \}\)/)
   assert.match(runnerSource, /pollTaskSimple\(res\.task_id, options\)/)
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'video', response: res \}\)/)
+})
+
+test('分镜面板直接生视频补传画布媒体映射给首尾帧链路', () => {
+  assert.match(storyboardPanelSource, /imagesBySbId:\s*ctx\?\.imagesBySbId\?\.value \|\| \{\}/)
+  assert.match(storyboardPanelSource, /videosBySbId:\s*ctx\?\.videosBySbId\?\.value \|\| \{\}/)
+  assert.match(storyboardPanelSource, /else if \(step === 'video'\) await runVideoStep\(drama, sb, genOpts\)/)
+})
+
+test('画布节点重试支持真实尾帧衔接且未知步骤不误报成功', () => {
+  assert.match(canvasSource, /import \{ storyboardsAPI \} from '@\/api\/storyboards'/)
+  assert.match(canvasSource, /import \{ canChainStoryboardFrames \} from '@\/utils\/videoContinuity'/)
+  assert.match(canvasSource, /function nodeStepStatusLabel\(step, node\)[\s\S]*if \(step === 'link_tail_frame'\) return '尾帧衔接中…'/)
+  assert.match(canvasSource, /async function linkStoryboardTailFrameFromNode\(storyboard\)/)
+  assert.match(canvasSource, /getAdjacentStoryboards\(found\?\.episode, current\.id\)/)
+  assert.match(canvasSource, /canChainStoryboardFrames\(next, current\)/)
+  assert.match(canvasSource, /storyboardsAPI\.linkTailFrame\(current\.id, \{ drama_id: drama\.value\.id \}\)/)
+  assert.match(canvasSource, /else if \(step === 'link_tail_frame'\) operationResult = await linkStoryboardTailFrameFromNode\(latestSb\)/)
+  assert.match(canvasSource, /else throw new Error\(`暂不支持该节点步骤：\$\{step\}`\)/)
 })

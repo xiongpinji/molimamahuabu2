@@ -905,12 +905,27 @@ async function linkTailFrame() {
   const dramaId = ctx?.drama?.value?.id
   if (!props.storyboard?.id || !dramaId || !canLinkTail.value) return
   tailLinking.value = true
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'link_tail_frame', message: '尾帧衔接中…' })
   try {
     const result = await storyboardsAPI.linkTailFrame(props.storyboard.id, { drama_id: dramaId })
     await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(sbNodeId.value, {
+      step: 'link_tail_frame',
+      message: '尾帧衔接完成',
+      autoClear: false,
+    })
     ElMessage.success(`已衔接到分镜 #${result?.next_storyboard_id || storyboardNeighbors.value.next?.storyboard_number || ''}`)
   } catch (e) {
-    ElMessage.error(e?.message || '尾帧衔接失败')
+    const errorMessage = e?.message || '尾帧衔接失败'
+    actionStatus.value = { type: 'error', message: errorMessage }
+    ctx?.nodeStatus?.fail(sbNodeId.value, {
+      message: errorMessage,
+      errorDetail: errorMessage,
+      retryStep: 'link_tail_frame',
+      retryLabel: '重试尾帧衔接',
+      recoverable: true,
+    })
+    ElMessage.error(errorMessage)
   } finally {
     tailLinking.value = false
   }
@@ -959,7 +974,11 @@ async function runStep(step) {
   try {
     const found = findStoryboardInDrama(drama, sbId)
     const sb = found?.storyboard || props.storyboard
-    const genOpts = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)
+    const genOpts = {
+      ...(ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)),
+      imagesBySbId: ctx?.imagesBySbId?.value || {},
+      videosBySbId: ctx?.videosBySbId?.value || {},
+    }
     if (step === 'image') {
       await runImageStep(drama, sb, {
         ...genOpts,
@@ -984,9 +1003,16 @@ async function runStep(step) {
   } catch (e) {
     const errorMessage = e?.message || '生成失败'
     actionStatus.value = { type: 'error', message: errorMessage }
-    ctx?.nodeStatus?.fail(sbNodeId.value, { message: errorMessage })
-    if (step === 'image') ctx?.nodeStatus?.fail(`sbimg:${sbId}`, { message: errorMessage })
-    if (step === 'video') ctx?.nodeStatus?.fail(`sbvid:${sbId}`, { message: errorMessage })
+    const failPayload = {
+      message: errorMessage,
+      errorDetail: errorMessage,
+      retryStep: step,
+      retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '生成'}`,
+      recoverable: true,
+    }
+    ctx?.nodeStatus?.fail(sbNodeId.value, failPayload)
+    if (step === 'image') ctx?.nodeStatus?.fail(`sbimg:${sbId}`, failPayload)
+    if (step === 'video') ctx?.nodeStatus?.fail(`sbvid:${sbId}`, failPayload)
     ElMessage.error(errorMessage)
   } finally {
     busyStep.value = ''

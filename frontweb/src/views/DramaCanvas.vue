@@ -402,6 +402,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
+import { storyboardsAPI } from '@/api/storyboards'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
@@ -449,12 +450,14 @@ import {
   createWorkflowGroup,
   deleteWorkflowGroup,
   findStoryboardInDrama,
+  getAdjacentStoryboards,
   normalizePipeline,
   parseWorkflowGroups,
   reorderWorkflowGroup,
   storyboardIdFromNodeId,
   getDramaGenerationOptions,
 } from '@/utils/canvasWorkflow'
+import { canChainStoryboardFrames } from '@/utils/videoContinuity'
 import {
   filterCanvasAssets,
   getCanvasEpisodeContext,
@@ -1416,6 +1419,7 @@ async function retryFailedNode(node) {
 function nodeStepStatusLabel(step, node) {
   if (step === 'image' && node?.data?.frameKind === 'first') return '首帧生成中…'
   if (step === 'image' && node?.data?.frameKind === 'last') return '尾帧生成中…'
+  if (step === 'link_tail_frame') return '尾帧衔接中…'
   return CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
 }
 
@@ -1445,8 +1449,8 @@ function nodeStepResultInfo(node, step, storyboardId, storyboard = null) {
         ? (id.startsWith('sbaud:') ? id : `sbaud:${storyboardId}:dialogue`)
         : id
   const resultNode = findGraphNode(resultNodeId) || findGraphNode(id) || node
-  const resultType = step === 'audio' ? 'audio' : step
-  const labelMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成' }
+  const resultType = step === 'audio' ? 'audio' : step === 'link_tail_frame' ? 'text' : step
+  const labelMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成', text: '尾帧衔接完成' }
   const nextMap = {
     image: { nextStep: 'video', nextLabel: '继续生成视频' },
     video: { nextStep: 'audio', nextLabel: '继续配音' },
@@ -1517,6 +1521,17 @@ function nodeStepPromptText(step, sb, node) {
   if (step === 'video') return sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
   if (step === 'audio') return sb.dialogue || ''
   return ''
+}
+
+async function linkStoryboardTailFrameFromNode(storyboard) {
+  if (!drama.value?.id || !storyboard?.id) throw new Error('项目信息不完整，无法尾帧衔接')
+  const found = findStoryboardInDrama(drama.value, storyboard.id)
+  const current = found?.storyboard || storyboard
+  const { next } = getAdjacentStoryboards(found?.episode, current.id)
+  if (!next) throw new Error('当前分镜没有下一镜，无法尾帧衔接')
+  if (!canChainStoryboardFrames(next, current)) throw new Error('跨场景不自动锁定尾帧')
+  const result = await storyboardsAPI.linkTailFrame(current.id, { drama_id: drama.value.id })
+  return { nextStoryboardId: result?.next_storyboard_id || next.id }
 }
 
 function shouldKeepNodeStatus(nodeId) {
@@ -1594,6 +1609,7 @@ async function runCanvasNodeStep(node, step) {
     const taskStatusOptions = nodeStepTaskStatusOptions(statusIds, { ...baseStatusPayload, promptText })
     setNodeStepStatus(statusIds, { ...baseStatusPayload, promptText })
     const genOpts = getCanvasGenerationOptions()
+    let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
     else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts, taskStatusOptions)
     else if (step === 'audio') {
@@ -1603,11 +1619,13 @@ async function runCanvasNodeStep(node, step) {
         return
       }
     }
-    ElMessage.success('节点生成完成')
+    else if (step === 'link_tail_frame') operationResult = await linkStoryboardTailFrameFromNode(latestSb)
+    else throw new Error(`暂不支持该节点步骤：${step}`)
+    ElMessage.success(step === 'link_tail_frame' ? '尾帧衔接完成' : '节点生成完成')
     await refreshDrama(true)
     const refreshed = findStoryboardInDrama(drama.value, sb.id)
     const refreshedSb = refreshed?.storyboard || latestSb
-    const resultInfo = { ...nodeStepResultInfo(node, step, sb.id, refreshedSb), promptText }
+    const resultInfo = { ...nodeStepResultInfo(node, step, sb.id, refreshedSb), ...(operationResult || {}), promptText }
     const savedAssetInfo = await saveNodeResultAsset(node, resultInfo, promptText, sb.id)
     if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
     const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), runKey, sourceNodeId: nodeId, autoClear: false }
