@@ -1160,6 +1160,53 @@ function nodeStepResultInfo(node, step, storyboardId) {
   }
 }
 
+function resultLocalPathFromUrl(url) {
+  const value = String(url || '')
+  const marker = '/static/'
+  const index = value.indexOf(marker)
+  if (index < 0) return ''
+  return value.slice(index + marker.length).split(/[?#]/)[0] || ''
+}
+
+function nodeResultAssetName(node, resultInfo) {
+  const label = node?.data?.label || node?.data?.title || resultInfo?.resultLabel || '节点结果'
+  const filename = String(resultInfo?.resultUrl || '').split(/[?#]/)[0].split('/').pop()
+  return filename ? `${label}-${filename}` : label
+}
+
+async function saveNodeResultAsset(node, resultInfo, promptText, storyboardId) {
+  if (!resultInfo?.resultUrl || !drama.value?.id) return null
+  try {
+    const asset = await assetsAPI.create({
+      drama_id: drama.value.id,
+      storyboard_id: storyboardId,
+      name: nodeResultAssetName(node, resultInfo),
+      type: resultInfo.resultType || 'image',
+      category: 'canvas-result',
+      url: resultInfo.resultUrl,
+      local_path: resultLocalPathFromUrl(resultInfo.resultUrl) || undefined,
+      metadata: {
+        source: 'canvas_node_result',
+        canvas_node_id: node?.id || '',
+        result_label: resultInfo.resultLabel || '',
+        prompt_text: promptText || '',
+        auto_saved: true,
+      },
+    })
+    if (!asset?.id) return null
+    return {
+      savedAssetId: asset.id,
+      savedAssetName: asset.name || nodeResultAssetName(node, resultInfo),
+      savedAssetUrl: asset.url || resultInfo.resultUrl,
+      savedAssetLocalPath: asset.local_path || '',
+      savedAssetDuration: asset.duration ?? null,
+    }
+  } catch (error) {
+    console.warn('auto save canvas node result asset failed', error)
+    return null
+  }
+}
+
 function nodeStepPromptText(step, sb, node) {
   if (!sb) return ''
   if (step === 'image') {
@@ -1207,8 +1254,11 @@ async function runCanvasNodeStep(node, step) {
     ElMessage.success('节点生成完成')
     await refreshDrama(true)
     const resultInfo = { ...nodeStepResultInfo(node, step, sb.id), promptText }
-    if (nodeId) nodeStatus.success(nodeId, { ...resultInfo, autoClear: false })
-    nodeStatus.success(sbNodeId, { ...resultInfo, autoClear: false })
+    const savedAssetInfo = await saveNodeResultAsset(node, resultInfo, promptText, sb.id)
+    if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
+    const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), autoClear: false }
+    if (nodeId) nodeStatus.success(nodeId, successPayload)
+    nodeStatus.success(sbNodeId, successPayload)
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
@@ -1793,6 +1843,7 @@ async function loadProjectImageAssets() {
   const assets = Array.isArray(result) ? result : (result?.items || [])
   projectImageAssets.value = assets
   storyboardAssignedAssets.value = assets.reduce((map, asset) => {
+    if (asset?.category === 'canvas-result') return map
     const storyboardId = Number(asset?.storyboard_id)
     if (!Number.isFinite(storyboardId)) return map
     if (!map[storyboardId]) map[storyboardId] = []
