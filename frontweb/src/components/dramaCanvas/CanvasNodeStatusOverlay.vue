@@ -44,6 +44,7 @@
         <button v-if="resultReferencesText" type="button" @click.stop="copyResultReferences">复制结果引用</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
         <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
+        <button v-if="canUseResultAsDownstreamReference" type="button" :disabled="attachingResult" @click.stop="useResultAsDownstreamReference">作为下游参考</button>
         <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
         <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
         <button type="button" @click.stop="dismissStatus">收起</button>
@@ -231,6 +232,7 @@ const retryLabel = computed(() => status.value?.retryLabel || '重试')
 const canAttachImage = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachVideo = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultUrl()) && Boolean(resultStoryboardId(runtimeNode())))
+const canUseResultAsDownstreamReference = computed(() => isSuccess.value && Boolean(effectiveResultUrl.value) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const statusSavedAsset = computed(() => {
   if (!status.value?.savedAssetId) return null
   return {
@@ -552,6 +554,31 @@ async function attachAudioResult() {
   }
 }
 
+async function useResultAsDownstreamReference() {
+  if (!canUseResultAsDownstreamReference.value || attachingResult.value) return
+  attachingResult.value = true
+  try {
+    await ctx.useNodeResultAsDownstreamReference(runtimeNode(), {
+      resultUrl: resultUrl(),
+      resultType: resultPreviewType.value,
+      savedAssetId: effectiveSavedAsset.value?.id || status.value?.savedAssetId || '',
+    })
+    ctx?.nodeStatus?.success?.(props.nodeId, {
+      ...status.value,
+      actionError: '',
+      retryAction: '',
+      retryActionLabel: '',
+      autoClear: false,
+    })
+  } catch (error) {
+    const message = error?.message || '作为下游参考失败'
+    ElMessage.error(message)
+    markActionFailure(message, 'use_downstream_reference', '重试作为下游参考')
+  } finally {
+    attachingResult.value = false
+  }
+}
+
 async function retryAction() {
   const action = status.value?.retryAction
   if (action === 'save_result_asset') return saveResultAsset()
@@ -563,6 +590,7 @@ async function retryAction() {
   if (action === 'attach_library_video') return attachVideoResult()
   if (action === 'attach_audio') return attachAudioResult()
   if (action === 'attach_library_audio') return attachAudioResult()
+  if (action === 'use_downstream_reference') return useResultAsDownstreamReference()
 }
 
 function libraryImageRetrySlot() {

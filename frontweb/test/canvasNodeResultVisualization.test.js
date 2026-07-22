@@ -44,6 +44,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /复制提示词/)
   assert.match(overlaySource, /复制结果引用/)
   assert.match(overlaySource, /复制上游引用/)
+  assert.match(overlaySource, /作为下游参考/)
   assert.match(overlaySource, /复制请求/)
   assert.match(overlaySource, /class="generation-audit"/)
   assert.match(overlaySource, /const requestPayloadText = computed/)
@@ -82,6 +83,13 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /action === 'attach_library_video'/)
   assert.match(overlaySource, /action === 'attach_audio'/)
   assert.match(overlaySource, /action === 'attach_library_audio'/)
+  assert.match(overlaySource, /action === 'use_downstream_reference'/)
+  assert.match(overlaySource, /const canUseResultAsDownstreamReference = computed/)
+  assert.match(overlaySource, /Boolean\(ctx\?\.useNodeResultAsDownstreamReference\)/)
+  assert.match(overlaySource, /function useResultAsDownstreamReference\(\)/)
+  assert.match(overlaySource, /await ctx\.useNodeResultAsDownstreamReference\(runtimeNode\(\), \{/)
+  assert.match(overlaySource, /resultUrl: resultUrl\(\)/)
+  assert.match(overlaySource, /markActionFailure\(message, 'use_downstream_reference', '重试作为下游参考'\)/)
   assert.match(overlaySource, /复制原因/)
   assert.match(overlaySource, /已引用 \$\{upstreamReferenceUrls\.value\.length\} 个上游结果/)
   assert.match(overlaySource, /import \{ assetMediaUrl \} from '@\/utils\/mediaUrl'/)
@@ -232,6 +240,16 @@ test('右键节点菜单可直接处理结果和失败重试', () => {
   assert.match(canvasSource, /await copyNodeAssetReference\(node\)/)
   assert.match(canvasSource, /await retryFailedNode\(node\)/)
   assert.match(canvasSource, /type === 'continue-node-next-step'[\s\S]*await continueNodeNextStep\(node\)/)
+})
+
+test('节点结果可一键作为下游分镜参考', () => {
+  assert.match(canvasSource, /async function useNodeResultAsDownstreamReference\(node, result = \{\}\)/)
+  assert.match(canvasSource, /const url = result\?\.resultUrl \|\| nodeResultUrl\(node\)/)
+  assert.match(canvasSource, /throw new Error\('该节点暂无可作为下游参考的结果'\)/)
+  assert.match(canvasSource, /return appendDownstreamStoryboard\(node\)/)
+  assert.match(canvasSource, /ElMessage\.success\('已追加下游分镜并连线'\)[\s\S]*return targetNodeId/)
+  assert.match(canvasSource, /useNodeResultAsDownstreamReference,/)
+  assert.match(canvasSource, /function nodeInputReferenceUrls\(node\) \{[\s\S]*for \(const edge of allGraphEdges\.value\)[\s\S]*const sourceNode = findGraphNode\(edge\.source\)[\s\S]*const url = nodeResultUrl\(sourceNode\)/)
 })
 
 test('画布分镜节点回显并复制已指派素材库参考', () => {

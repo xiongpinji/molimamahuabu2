@@ -1492,6 +1492,15 @@ async function appendDownstreamStoryboard(node) {
   await refreshCanvas(false)
   await focusCanvasNode(targetNodeId)
   ElMessage.success('已追加下游分镜并连线')
+  return targetNodeId
+}
+
+async function useNodeResultAsDownstreamReference(node, result = {}) {
+  const url = result?.resultUrl || nodeResultUrl(node)
+  if (!node?.id || !url) {
+    throw new Error('该节点暂无可作为下游参考的结果')
+  }
+  return appendDownstreamStoryboard(node)
 }
 
 function firstManualDownstreamStoryboardEdge(node) {
@@ -2824,6 +2833,7 @@ provide(CANVAS_CONTEXT_KEY, {
   fitCanvasView,
   focusCanvasNode,
   findCanvasNode: findGraphNode,
+  useNodeResultAsDownstreamReference,
   undoCanvas,
   redoCanvas,
   zoomIn: () => canvasFlowApi.value?.zoomIn?.({ duration: 180 }),
