@@ -331,12 +331,14 @@
             <span v-else-if="item.tone === 'success'" class="run-success-actions">
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
             </span>
             <span v-else-if="item.tone === 'failed'" class="run-failed-actions">
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button v-if="item.errorDetail || item.message" type="button" @click.stop="copyQueueItemError(item)">原因</button>
               <button v-if="item.retryStep" type="button" @click.stop="retryQueueItem(item)">重试</button>
@@ -943,6 +945,25 @@ function openQueueItemResult(item) {
   window.open(item.resultUrl, '_blank', 'noopener,noreferrer')
 }
 
+function downloadCanvasResult(url, fallbackName = 'canvas-result') {
+  if (!url) return false
+  const link = document.createElement('a')
+  const rawName = String(url).split(/[?#]/)[0].split('/').pop()
+  link.href = url
+  link.download = rawName || fallbackName
+  link.rel = 'noopener noreferrer'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  return true
+}
+
+function downloadQueueItemResult(item) {
+  if (!downloadCanvasResult(item?.resultUrl, item?.label || 'queue-result')) {
+    ElMessage.warning('该队列项暂无可下载的结果')
+  }
+}
+
 async function copyQueueItemResult(item) {
   if (!item?.resultUrl) {
     ElMessage.warning('该队列项暂无可复制的结果')
@@ -1193,7 +1214,7 @@ function canvasNodeActions(node) {
   const sb = storyboardForNode(node)
   const runtimeStatus = nodeRuntimeStatus(node)
   if (nodeResultUrl(node, runtimeStatus)) {
-    actions.unshift('open-node-result', 'copy-node-result')
+    actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
   if (nodeAssignedAssets(node).length) actions.unshift(
@@ -1703,6 +1724,13 @@ function openNodeResult(node) {
     return
   }
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function downloadNodeResult(node) {
+  const url = nodeResultUrl(node)
+  if (!downloadCanvasResult(url, canvasNodeLabel(node) || 'node-result')) {
+    ElMessage.warning('该节点暂无可下载的结果')
+  }
 }
 
 async function copyNodeResult(node) {
@@ -2423,6 +2451,8 @@ async function runNodeMenuAction(type, node) {
     openNodeResult(node)
   } else if (type === 'copy-node-result') {
     await copyNodeResult(node)
+  } else if (type === 'download-node-result') {
+    downloadNodeResult(node)
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
   } else if (type === 'copy-node-assigned-asset-ref') {

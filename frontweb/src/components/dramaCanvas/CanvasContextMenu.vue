@@ -50,7 +50,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Connection, Document, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
+import { Connection, Document, Download, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -106,6 +106,7 @@ const nodeGroups = [
     items: [
       { type: 'open-node-result', label: '打开结果', hint: '查看生成结果', icon: View },
       { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
+      { type: 'download-node-result', label: '下载结果', hint: '保存到本地', icon: Download },
       { type: 'copy-node-asset-ref', label: '复制素材引用', hint: '@素材(...)', icon: Document },
       { type: 'copy-node-assigned-asset-ref', label: '复制指派素材', hint: '本镜参考素材', icon: Document },
       { type: 'set-assigned-asset-main-image', label: '设为分镜图', hint: '回填本镜主图', icon: Picture },
