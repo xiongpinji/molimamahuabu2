@@ -1361,7 +1361,7 @@ function canvasNodeActions(node) {
     'copy-node-assigned-asset-ref',
     'unbind-node-assigned-asset',
   )
-  if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
+  if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref', 'assign-node-asset-selected')
   if (runtimeStatus?.nextStep) actions.unshift('continue-node-next-step')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
@@ -1970,15 +1970,34 @@ async function copyNodeResult(node) {
   await copyCanvasText(url, '结果链接已复制', '结果链接（请手动复制）')
 }
 
+function nodeSavedAsset(node, status = nodeRuntimeStatus(node)) {
+  if (!status?.savedAssetId) return null
+  return {
+    id: status.savedAssetId,
+    name: status.savedAssetName || canvasNodeLabel(node) || '节点结果素材',
+    type: status.resultType || 'image',
+    url: status.savedAssetUrl || status.resultUrl || '',
+    local_path: status.savedAssetLocalPath || '',
+    duration: status.savedAssetDuration ?? undefined,
+  }
+}
+
 async function copyNodeAssetReference(node) {
-  const status = nodeRuntimeStatus(node)
-  if (!status?.savedAssetId) {
+  const text = assetReferenceText(nodeSavedAsset(node))
+  if (!text) {
     ElMessage.warning('该节点结果尚未存入素材库')
     return
   }
-  const name = status.savedAssetName || '素材'
-  const url = status.savedAssetUrl || status.resultUrl || ''
-  await copyCanvasText(`@素材(${name}#${status.savedAssetId}) ${url}`.trim(), '素材引用已复制', '素材引用（请手动复制）')
+  await copyCanvasText(text, '素材引用已复制', '素材引用（请手动复制）')
+}
+
+async function assignNodeAssetToSelectedStoryboard(node) {
+  const asset = nodeSavedAsset(node)
+  if (!asset) {
+    ElMessage.warning('该节点结果尚未存入素材库')
+    return
+  }
+  await assignProjectAssetToSelectedStoryboard(asset)
 }
 
 async function copyNodeAssignedAssetReference(node) {
@@ -2719,6 +2738,8 @@ async function runNodeMenuAction(type, node) {
     downloadNodeResult(node)
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
+  } else if (type === 'assign-node-asset-selected') {
+    await assignNodeAssetToSelectedStoryboard(node)
   } else if (type === 'copy-node-assigned-asset-ref') {
     await copyNodeAssignedAssetReference(node)
   } else if (type === 'unbind-node-assigned-asset') {
