@@ -327,7 +327,7 @@ function resultStoryboardId(node) {
 }
 
 function resultUrl() {
-  return effectiveSavedAsset.value?.url || status.value?.resultUrl || ''
+  return effectiveResultUrl.value
 }
 
 async function refreshCanvasAfterAttach() {

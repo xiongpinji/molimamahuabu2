@@ -127,6 +127,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /function attachAudioResult\(\)/)
   assert.match(overlaySource, /const canAttachAudio = computed\(\(\) => isSuccess\.value && resultPreviewType\.value === 'audio' && Boolean\(resultUrl\(\)\)/)
   assert.match(overlaySource, /audio_url: localPath \? undefined : audioUrl/)
+  assert.match(overlaySource, /function resultUrl\(\) \{[\s\S]*return effectiveResultUrl\.value[\s\S]*\}/)
   assert.match(overlaySource, /markActionFailure\(message, 'attach_audio', '重试设为本镜音频'\)/)
   assert.match(overlaySource, /function markAttachSuccess\(message, extra = \{\}\)/)
   assert.match(overlaySource, /attachedToStoryboardId: resultStoryboardId\(runtimeNode\(\)\)/)
