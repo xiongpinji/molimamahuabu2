@@ -472,10 +472,16 @@ async function retryAction() {
   if (action === 'attach_image_main') return attachImageResult('main')
   if (action === 'attach_image_first') return attachImageResult('first')
   if (action === 'attach_image_last') return attachImageResult('last')
+  if (action === 'attach_library_image') return attachImageResult(libraryImageRetrySlot())
   if (action === 'attach_video') return attachVideoResult()
   if (action === 'attach_library_video') return attachVideoResult()
   if (action === 'attach_audio') return attachAudioResult()
   if (action === 'attach_library_audio') return attachAudioResult()
+}
+
+function libraryImageRetrySlot() {
+  const slot = String(status.value?.attachedSlot || '').trim()
+  return ['first', 'last', 'main'].includes(slot) ? slot : 'main'
 }
 
 async function runNextStep() {

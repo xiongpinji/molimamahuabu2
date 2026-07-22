@@ -359,6 +359,7 @@ async function onLibraryImagePick(asset) {
       resultUrl,
       resultType: 'image',
       resultLabel: imageAttachResultLabel(asset),
+      attachedSlot: imageAttachSlot(),
       autoClear: false,
     })
     if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
@@ -406,6 +407,12 @@ function imageAttachResultLabel(asset) {
   if (props.frameKind === 'first') return `首帧：${name}`
   if (props.frameKind === 'last') return `尾帧：${name}`
   return name
+}
+
+function imageAttachSlot() {
+  if (props.frameKind === 'first') return 'first'
+  if (props.frameKind === 'last') return 'last'
+  return 'main'
 }
 
 function focusStoryboard() {
@@ -653,6 +660,7 @@ function markLibraryAttachFailure(nodeId, resultType, asset, message) {
     savedAssetId: asset?.raw_id || asset?.id || '',
     savedAssetName: asset?.name || '',
     savedAssetLocalPath: localPath,
+    attachedSlot: libraryAttachSlot(resultType),
     retryAction: libraryAttachRetryAction(resultType),
     retryActionLabel: libraryAttachRetryLabel(resultType),
     libraryAsset: asset,
@@ -679,6 +687,11 @@ function libraryAttachDefaultLabel(resultType) {
   if (resultType === 'image') return '素材库图片'
   if (resultType === 'video') return '素材库视频'
   return '素材库音频'
+}
+
+function libraryAttachSlot(resultType) {
+  if (resultType !== 'image') return resultType
+  return imageAttachSlot()
 }
 
 function clearFailedStatus() {
