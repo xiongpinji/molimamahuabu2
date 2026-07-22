@@ -10,6 +10,9 @@ const assetPanelSource = readFileSync(fileURLToPath(new URL('../src/components/d
 const mediaPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaPanel.vue', import.meta.url)), 'utf8')
 const dramaCanvasAdapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
+const mediaNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaNode.vue', import.meta.url)), 'utf8')
+const assetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetNode.vue', import.meta.url)), 'utf8')
+const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptNode.vue', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 
@@ -21,6 +24,16 @@ test('右键节点菜单保留配置面板入口', () => {
   assert.match(canvasSource, /function openNodeConfig\(node\)/)
   assert.match(canvasSource, /PANEL_NODE_TYPES\.has\(node\.type\)[\s\S]*focusedNodeId\.value = node\.id/)
   assert.match(canvasSource, /'canvasProjectAsset'/)
+})
+
+test('脚本素材媒体节点支持单击聚焦并打开配置面板', () => {
+  for (const source of [mediaNodeSource, assetNodeSource, scriptNodeSource]) {
+    assert.match(source, /@click\.stop="onSelect"/)
+    assert.match(source, /function onSelect\(\) \{[\s\S]*ctx\?\.setFocusedNode\?\.\(props\.id\)[\s\S]*\}/)
+  }
+  assert.match(mediaNodeSource, /<CanvasMediaPanel[\s\S]*v-if="showPanel"/)
+  assert.match(assetNodeSource, /<CanvasAssetPanel[\s\S]*v-if="showPanel"/)
+  assert.match(scriptNodeSource, /<CanvasScriptPanel[\s\S]*v-if="showPanel"/)
 })
 
 test('分镜配置面板保留保存、回显刷新和单镜模型配置', () => {

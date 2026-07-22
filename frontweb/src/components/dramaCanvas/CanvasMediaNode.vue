@@ -4,6 +4,7 @@
       class="canvas-media-node"
       :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel, processing: isProcessing }]"
       :title="nodeTitle"
+      @click.stop="onSelect"
     >
       <Handle type="target" :position="Position.Left" />
       <Handle v-if="data.kind !== 'video' && data.kind !== 'audio'" type="source" :position="Position.Right" />
@@ -172,6 +173,10 @@ const retryLabel = computed(() => {
 function retryNode() {
   if (!canRetry.value || isNodeBusy.value) return
   ctx?.runNodeStep?.({ id: props.id, data: props.data }, runtimeStatus.value?.retryStep || props.data.kind)
+}
+
+function onSelect() {
+  ctx?.setFocusedNode?.(props.id)
 }
 
 function openResult() {

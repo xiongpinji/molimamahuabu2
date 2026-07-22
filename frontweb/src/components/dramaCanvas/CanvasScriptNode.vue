@@ -7,6 +7,7 @@
         empty: !hasScript,
         processing: isNodeBusy,
       }"
+      @click.stop="onSelect"
     >
       <Handle type="source" :position="Position.Right" />
       <CanvasNodeStatusOverlay :node-id="id" />
@@ -107,6 +108,10 @@ function retryScript() {
   } else if (retryStep.value === 'extract_all') {
     api?.extractAll?.(episodeId, scriptContent)
   }
+}
+
+function onSelect() {
+  ctx?.setFocusedNode?.(props.id)
 }
 </script>
 

@@ -11,6 +11,7 @@
           processing: isNodeBusy || entityStatus === 'processing',
         },
       ]"
+      @click.stop="onSelect"
     >
       <Handle type="source" :position="Position.Right" />
       <div class="cover">
@@ -117,6 +118,10 @@ const statusChip = computed(() => {
 function retryAsset() {
   if (!canRetry.value || isNodeBusy.value) return
   ctx?.runNodeStep?.({ id: props.id, type: 'canvasAsset', data: props.data }, retryStep.value)
+}
+
+function onSelect() {
+  ctx?.setFocusedNode?.(props.id)
 }
 </script>
 
