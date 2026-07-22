@@ -55,7 +55,7 @@ test('画布音频节点把同步提取结果写入节点成功结果', () => {
 test('分镜面板直接生视频补传画布媒体映射给首尾帧链路', () => {
   assert.match(storyboardPanelSource, /imagesBySbId:\s*ctx\?\.imagesBySbId\?\.value \|\| \{\}/)
   assert.match(storyboardPanelSource, /videosBySbId:\s*ctx\?\.videosBySbId\?\.value \|\| \{\}/)
-  assert.match(storyboardPanelSource, /else if \(step === 'video'\) await runVideoStep\(drama, sb, genOpts\)/)
+  assert.match(storyboardPanelSource, /else if \(step === 'video'\) \{[\s\S]*runVideoStep\(drama, sb, \{[\s\S]*\.\.\.genOpts,[\s\S]*videoModel: videoModel\.value \|\| genOpts\.videoModel/)
 })
 
 test('画布节点重试支持真实尾帧衔接且未知步骤不误报成功', () => {

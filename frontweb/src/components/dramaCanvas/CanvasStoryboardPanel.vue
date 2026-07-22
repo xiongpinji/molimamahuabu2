@@ -1053,7 +1053,12 @@ async function runStep(step) {
         frameType: gridFrameType.value === 'single' ? undefined : gridFrameType.value,
       })
     }
-    else if (step === 'video') await runVideoStep(drama, sb, genOpts)
+    else if (step === 'video') {
+      await runVideoStep(drama, sb, {
+        ...genOpts,
+        videoModel: videoModel.value || genOpts.videoModel,
+      })
+    }
     else if (step === 'audio') {
       const res = await runAudioStep(sb)
       if (res?.skipped) {
