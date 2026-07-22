@@ -2104,12 +2104,12 @@ async function runCanvasProjectAssetNodeStep(node, step) {
   }
   const nodeId = String(node?.id || '')
   const asset = node?.data?.asset
+  const existingStatus = nodeStatus.get(nodeId)
   if (asset?.category === 'canvas-asset-failure') {
     const currentNode = findGraphNode(nodeId)
-    const status = nodeStatus.get(nodeId)
     canvasAssetPickerRetryNodeId.value = nodeId
     canvasAssetPickerFlowPos.value = currentNode?.position || null
-    canvasAssetPickerTargetStoryboardId.value = Number(status?.attachedToStoryboardId || status?.storyboardId || asset?.metadata?.storyboard_id || 0) || null
+    canvasAssetPickerTargetStoryboardId.value = Number(existingStatus?.attachedToStoryboardId || existingStatus?.storyboardId || asset?.metadata?.storyboard_id || 0) || null
     canvasAssetPickerVisible.value = true
     nodeStatus.set(nodeId, {
       step: 'library',
@@ -2123,6 +2123,8 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     return
   }
   const targetStoryboardId = selectedStoryboardIdForAssetAttach()
+    || Number(existingStatus?.attachedToStoryboardId || existingStatus?.storyboardId || 0)
+    || null
   const retryPayload = canvasAssetAttachStatusPayload(asset, targetStoryboardId)
   if (!nodeId) return
   nodeStatus.set(nodeId, {

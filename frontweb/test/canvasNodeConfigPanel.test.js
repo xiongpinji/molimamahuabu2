@@ -431,4 +431,6 @@ test('项目素材节点聚焦后提供配置面板和挂载动作', () => {
   assert.match(projectAssetNodeSource, /assignButtonLabel/)
   assert.match(projectAssetNodeSource, /ctx\?\.runNodeStep\?\.\(\{ id: props\.id, type: 'canvasProjectAsset', data: props\.data \}, 'library'\)/)
   assert.match(projectAssetNodeSource, /ctx\?\.clearFocusedNode\?\.\(\)/)
+  assert.match(canvasSource, /const existingStatus = nodeStatus\.get\(nodeId\)/)
+  assert.match(canvasSource, /selectedStoryboardIdForAssetAttach\(\)[\s\S]*existingStatus\?\.attachedToStoryboardId \|\| existingStatus\?\.storyboardId/)
 })
