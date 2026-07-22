@@ -8,6 +8,7 @@
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <span v-if="assetResultText" class="asset-result-text">{{ assetResultText }}</span>
     <span v-if="generationAuditText" class="generation-audit">{{ generationAuditText }}</span>
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
     <span v-if="actionErrorText" class="action-error">{{ actionErrorText }}</span>
@@ -177,6 +178,19 @@ const resultText = computed(() => {
   return [label, urlHint].filter(Boolean).join(' · ')
 })
 
+const assetResultText = computed(() => {
+  if (!isSuccess.value) return ''
+  const parts = []
+  const asset = effectiveSavedAsset.value
+  if (asset?.id) parts.push(`已入库：${asset.name || '素材'}#${asset.id}`)
+  if (status.value?.attachedToStoryboardId) {
+    const slotMap = { first: '首帧', last: '尾帧', main: '本镜图', video: '本镜视频', audio: '本镜音频' }
+    const slot = slotMap[status.value?.attachedSlot] || '分镜素材'
+    parts.push(`已挂载：${slot} -> 分镜 ${status.value.attachedToStoryboardId}`)
+  }
+  return parts.join(' · ')
+})
+
 const upstreamReferenceUrls = computed(() => {
   const urls = Array.isArray(status.value?.upstreamReferenceUrls) ? status.value.upstreamReferenceUrls : []
   return [...new Set(urls.map((url) => String(url || '').trim()).filter(Boolean))]
@@ -216,7 +230,7 @@ const resultNodeId = computed(() => status.value?.resultNodeId || '')
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, assetResultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
   return parts.join('\n')
 })
 
@@ -648,6 +662,7 @@ onBeforeUnmount(() => {
 }
 .meta,
 .result-text,
+.asset-result-text,
 .generation-audit,
 .reference-text,
 .action-error,
@@ -661,6 +676,9 @@ onBeforeUnmount(() => {
 }
 .result-text {
   color: #bbf7d0;
+}
+.asset-result-text {
+  color: #a7f3d0;
 }
 .reference-text {
   color: #c7d2fe;
