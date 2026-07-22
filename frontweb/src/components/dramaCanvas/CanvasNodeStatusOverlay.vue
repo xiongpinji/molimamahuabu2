@@ -8,6 +8,7 @@
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
     <div v-if="isSuccess && status.resultUrl" class="result-preview" :class="'result-' + resultPreviewType">
       <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
       <video v-else-if="resultPreviewType === 'video'" :src="status.resultUrl" muted controls playsinline />
@@ -28,12 +29,14 @@
       <button v-if="canAttachVideo" type="button" :disabled="attachingResult" @click.stop="attachVideoResult">设为本镜视频</button>
       <button v-if="canAttachAudio" type="button" :disabled="attachingResult" @click.stop="attachAudioResult">设为本镜音频</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
+      <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
     <span v-if="isFailed" class="failed-actions">
       <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
+      <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
       <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
@@ -129,6 +132,12 @@ const resultText = computed(() => {
   return [label, urlHint].filter(Boolean).join(' · ')
 })
 
+const upstreamReferenceUrls = computed(() => {
+  const urls = Array.isArray(status.value?.upstreamReferenceUrls) ? status.value.upstreamReferenceUrls : []
+  return [...new Set(urls.map((url) => String(url || '').trim()).filter(Boolean))]
+})
+const upstreamReferenceText = computed(() => upstreamReferenceUrls.value.length ? `已引用 ${upstreamReferenceUrls.value.length} 个上游结果` : '')
+
 const resultPreviewType = computed(() => {
   const type = String(status.value?.resultType || '').toLowerCase()
   if (['image', 'video', 'audio'].includes(type)) return type
@@ -155,7 +164,7 @@ const statusSavedAsset = computed(() => {
 const effectiveSavedAsset = computed(() => savedAsset.value || statusSavedAsset.value)
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, status.value?.resultUrl].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, upstreamReferenceText.value, status.value?.resultUrl].filter(Boolean)
   return parts.join('\n')
 })
 
@@ -199,6 +208,10 @@ function copyPrompt() {
 
 function copyResultLink() {
   copyText(status.value?.resultUrl || '', '结果链接已复制', '结果链接（请手动复制）')
+}
+
+function copyUpstreamReferences() {
+  copyText(upstreamReferenceUrls.value.join('\n'), '上游引用已复制', '上游引用（请手动复制）')
 }
 
 function copyAssetReference() {
@@ -513,6 +526,7 @@ onBeforeUnmount(() => {
 }
 .meta,
 .result-text,
+.reference-text,
 .failed-hint {
   max-width: calc(100% - 18px);
   overflow: hidden;
@@ -523,6 +537,9 @@ onBeforeUnmount(() => {
 }
 .result-text {
   color: #bbf7d0;
+}
+.reference-text {
+  color: #c7d2fe;
 }
 .result-preview {
   width: min(84%, 220px);

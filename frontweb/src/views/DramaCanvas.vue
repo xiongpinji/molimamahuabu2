@@ -1614,7 +1614,15 @@ async function runCanvasNodeStep(node, step) {
   const runKey = `storyboard:${sb.id}:${step}:${Date.now()}`
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
-  const baseStatusPayload = { step, message: statusMessage, promptText: initialPromptText, runKey, sourceNodeId: nodeId }
+  const upstreamReferenceUrlsForNode = nodeInputReferenceUrls(node)
+  const baseStatusPayload = {
+    step,
+    message: statusMessage,
+    promptText: initialPromptText,
+    runKey,
+    sourceNodeId: nodeId,
+    upstreamReferenceUrls: upstreamReferenceUrlsForNode,
+  }
   setNodeStepStatus(statusIds, baseStatusPayload)
   try {
     const found = findStoryboardInDrama(drama.value, sb.id)
@@ -1624,7 +1632,7 @@ async function runCanvasNodeStep(node, step) {
     setNodeStepStatus(statusIds, { ...baseStatusPayload, promptText })
     const genOpts = {
       ...getCanvasGenerationOptions(),
-      upstreamReferenceUrls: nodeInputReferenceUrls(node),
+      upstreamReferenceUrls: upstreamReferenceUrlsForNode,
     }
     let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
@@ -1658,6 +1666,7 @@ async function runCanvasNodeStep(node, step) {
       retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}`,
       runKey,
       sourceNodeId: nodeId,
+      upstreamReferenceUrls: upstreamReferenceUrlsForNode,
     }
     failNodeStepStatus(statusIds, retryPayload)
     ElMessage.error(errorMessage)
