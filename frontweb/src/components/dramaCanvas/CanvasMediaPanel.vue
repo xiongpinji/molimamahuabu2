@@ -199,8 +199,8 @@ async function onLibraryVideoPick(asset) {
   const drama = ctx?.drama?.value
   const sbId = props.storyboard?.id
   if (!drama?.id || !sbId) return
-  const videoUrl = asset.asset_url || asset.display_url || asset.url || ''
-  const localPath = asset.local_path || ''
+  const videoUrl = libraryAssetUrl(asset, 'video')
+  const localPath = libraryAssetLocalPath(asset, 'video')
   if (!videoUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
   attachBusy.value = true
   const focusNodeId = props.nodeId || sbNodeId.value
@@ -220,6 +220,7 @@ async function onLibraryVideoPick(asset) {
     ElMessage.success('已将素材库视频设为该分镜成片')
     await ctx?.refresh?.()
     markNodeSuccess('素材库视频已挂载', {
+      ...libraryAssetStatusPayload(asset, 'video'),
       resultUrl: attachedLibraryAssetUrl.value,
       resultType: 'video',
       resultLabel: attachedLibraryAssetName.value || '素材库视频',
@@ -242,8 +243,8 @@ async function onLibraryVideoPick(asset) {
 async function onLibraryAudioPick(asset) {
   const sbId = props.storyboard?.id
   if (!sbId) return
-  const audioUrl = asset.asset_url || asset.display_url || asset.url || asset.audio_url || asset.voice_url || ''
-  const localPath = asset.local_path || ''
+  const audioUrl = libraryAssetUrl(asset, 'audio')
+  const localPath = libraryAssetLocalPath(asset, 'audio')
   if (!audioUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
   attachBusy.value = true
   const focusNodeId = props.nodeId || sbNodeId.value
@@ -258,6 +259,7 @@ async function onLibraryAudioPick(asset) {
     ElMessage.success('已将素材库音频设为该分镜音频')
     await ctx?.refreshDrama?.(true)
     markNodeSuccess('素材库音频已挂载', {
+      ...libraryAssetStatusPayload(asset, 'audio'),
       resultUrl: audioUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : ''),
       resultType: 'audio',
       resultLabel: asset.name || '素材库音频',
@@ -521,9 +523,32 @@ function markNodeSuccess(message, payload = {}) {
   ctx?.nodeStatus?.success(sbNodeId.value, status)
 }
 
+function libraryAssetLocalPath(asset, resultType) {
+  if (resultType === 'audio') return asset?.local_path || asset?.audio_local_path || asset?.voice_local_path || ''
+  if (resultType === 'video') return asset?.local_path || asset?.video_local_path || ''
+  return asset?.local_path || ''
+}
+
+function libraryAssetUrl(asset, resultType) {
+  if (resultType === 'audio') return asset?.asset_url || asset?.display_url || asset?.url || asset?.audio_url || asset?.voice_url || ''
+  if (resultType === 'video') return asset?.asset_url || asset?.display_url || asset?.url || asset?.video_url || ''
+  return asset?.asset_url || asset?.display_url || asset?.url || ''
+}
+
+function libraryAssetStatusPayload(asset, resultType) {
+  const localPath = libraryAssetLocalPath(asset, resultType)
+  const resultUrl = libraryAssetUrl(asset, resultType)
+  return {
+    savedAssetId: asset?.raw_id || asset?.id || '',
+    savedAssetName: asset?.name || '',
+    savedAssetLocalPath: localPath,
+    savedAssetUrl: resultUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : ''),
+  }
+}
+
 function markLibraryAttachFailure(nodeId, resultType, asset, message) {
-  const localPath = asset?.local_path || ''
-  const resultUrl = asset?.asset_url || asset?.display_url || asset?.url || asset?.video_url || asset?.audio_url || asset?.voice_url || ''
+  const localPath = libraryAssetLocalPath(asset, resultType)
+  const resultUrl = libraryAssetUrl(asset, resultType)
   const status = {
     message,
     errorDetail: message,
