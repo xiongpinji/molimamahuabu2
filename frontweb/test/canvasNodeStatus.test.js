@@ -201,3 +201,20 @@ test('画布节点状态快照可恢复结果节点定位', () => {
 
   assert.equal(store.snapshot()['sb:501'].resultNodeId, 'sbimg-last:501')
 })
+
+test('画布节点状态会保留上游引用结果用于覆盖层和重试恢复', () => {
+  const store = createCanvasNodeStatusStore()
+  store.set('sbvid:601', {
+    step: 'video',
+    message: '视频生成中',
+    upstreamReferenceUrls: ['/static/a.png', ' ', '/static/a.png', '/static/b.mp4'],
+    at: 50000,
+  })
+
+  assert.deepEqual(store.snapshot()['sbvid:601'].upstreamReferenceUrls, ['/static/a.png', '/static/b.mp4'])
+
+  const restored = createCanvasNodeStatusStore()
+  restored.restore(store.snapshot(), { now: 51000 })
+
+  assert.deepEqual(restored.snapshot()['sbvid:601'].upstreamReferenceUrls, ['/static/a.png', '/static/b.mp4'])
+})

@@ -10,6 +10,11 @@ export function createCanvasNodeStatusStore() {
   }
 
   function normalizePayload(payload) {
+    const upstreamReferenceUrls = Array.isArray(payload.upstreamReferenceUrls || payload.upstream_reference_urls)
+      ? [...new Set((payload.upstreamReferenceUrls || payload.upstream_reference_urls)
+        .map((url) => String(url || '').trim())
+        .filter(Boolean))]
+      : []
     const status = {
       step: payload.step || 'busy',
       message: payload.message || '处理中…',
@@ -33,6 +38,7 @@ export function createCanvasNodeStatusStore() {
       retryLabel: payload.retryLabel || payload.retry_label || '',
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
+    if (upstreamReferenceUrls.length) status.upstreamReferenceUrls = upstreamReferenceUrls
     assignIfDefined(status, 'workflowId', payload.workflowId || payload.workflow_id)
     assignIfDefined(status, 'runKey', payload.runKey || payload.run_key)
     assignIfDefined(status, 'sourceNodeId', payload.sourceNodeId || payload.source_node_id)
