@@ -877,7 +877,7 @@ const runQueueItems = computed(() => {
           : queueRunningMessage(status),
       elapsedText: formatQueueElapsed(status.at),
       retryStep: isFailed ? (status.retryStep || queueNodeRetryStep(findGraphNode(sourceNodeId))) : '',
-      resultUrl: status.resultUrl || status.savedAssetUrl || '',
+      resultUrl: statusResultUrl(status),
       resultNodeId: status.resultNodeId || '',
       resultType: status.resultType || '',
       errorDetail: isFailed ? (status.errorDetail || status.detail || status.message || '') : '',
@@ -941,6 +941,14 @@ function mergeRunQueueItem(grouped, item) {
     if (item.elapsedText) current.elapsedText = item.elapsedText
   }
   if (item.tone === current.tone && item.message) current.message = item.message
+}
+
+function statusResultUrl(status) {
+  if (!status) return ''
+  return assetMediaUrl({
+    local_path: status.savedAssetLocalPath || '',
+    url: status.savedAssetUrl || status.resultUrl || '',
+  }) || status.savedAssetUrl || status.resultUrl || ''
 }
 
 function queueNodeFailure(node) {
@@ -1575,8 +1583,8 @@ function nodeRuntimeStatus(node) {
 }
 
 function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
-  if (status?.savedAssetUrl) return status.savedAssetUrl
-  if (status?.resultUrl) return status.resultUrl
+  const statusUrl = statusResultUrl(status)
+  if (statusUrl) return statusUrl
   if (node?.data?.url) return node.data.url
   if (node?.type === 'canvasProjectAsset') return assetMediaUrl(node.data?.asset)
   return videoUrlFromNode(node)
