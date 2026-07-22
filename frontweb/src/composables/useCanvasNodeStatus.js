@@ -36,6 +36,9 @@ export function createCanvasNodeStatusStore() {
       nextLabel: payload.nextLabel || payload.next_label || '',
       retryStep: payload.retryStep || payload.retry_step || '',
       retryLabel: payload.retryLabel || payload.retry_label || '',
+      actionError: payload.actionError || payload.action_error || '',
+      retryAction: payload.retryAction || payload.retry_action || '',
+      retryActionLabel: payload.retryActionLabel || payload.retry_action_label || '',
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
     if (upstreamReferenceUrls.length) status.upstreamReferenceUrls = upstreamReferenceUrls

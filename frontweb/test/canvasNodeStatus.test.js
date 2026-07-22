@@ -54,6 +54,9 @@ test('画布节点状态快照可恢复结果和耗时', () => {
     nextLabel: '',
     retryStep: 'image',
     retryLabel: '重试生图',
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
     at: 12345,
     restored: true,
   })
@@ -97,6 +100,9 @@ test('画布节点状态恢复会保留队列元数据', () => {
     nextLabel: '',
     retryStep: '',
     retryLabel: '',
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
     at: 20000,
     workflowId: 'wf-1',
     runKey: 'storyboard:301:video:20000',
@@ -140,6 +146,9 @@ test('画布节点恢复过期运行态会转为可重试失败态', () => {
     nextLabel: '',
     retryStep: 'video',
     retryLabel: '重试生视频中',
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
     at: 1000,
     recoverable: true,
     restored: true,
@@ -184,6 +193,9 @@ test('画布节点状态快照可恢复已保存素材引用', () => {
     nextLabel: '',
     retryStep: '',
     retryLabel: '',
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
     at: 30000,
   })
 })
@@ -217,4 +229,30 @@ test('画布节点状态会保留上游引用结果用于覆盖层和重试恢�
   restored.restore(store.snapshot(), { now: 51000 })
 
   assert.deepEqual(restored.snapshot()['sbvid:601'].upstreamReferenceUrls, ['/static/a.png', '/static/b.mp4'])
+})
+
+test('画布节点成功状态会保留结果操作失败和重试动作', () => {
+  const store = createCanvasNodeStatusStore()
+  store.success('sbimg:701', {
+    message: '图片已生成',
+    resultUrl: '/static/result.png',
+    resultType: 'image',
+    actionError: '设为首帧失败',
+    retryAction: 'attach_image_first',
+    retryActionLabel: '重试设为首帧',
+    autoClear: false,
+    at: 60000,
+  })
+
+  const snapshot = store.snapshot()['sbimg:701']
+  assert.equal(snapshot.actionError, '设为首帧失败')
+  assert.equal(snapshot.retryAction, 'attach_image_first')
+  assert.equal(snapshot.retryActionLabel, '重试设为首帧')
+
+  const restored = createCanvasNodeStatusStore()
+  restored.restore(store.snapshot(), { now: 61000 })
+
+  assert.equal(restored.snapshot()['sbimg:701'].actionError, '设为首帧失败')
+  assert.equal(restored.snapshot()['sbimg:701'].retryAction, 'attach_image_first')
+  assert.equal(restored.snapshot()['sbimg:701'].retryActionLabel, '重试设为首帧')
 })

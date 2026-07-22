@@ -9,6 +9,7 @@
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
+    <span v-if="actionErrorText" class="action-error">{{ actionErrorText }}</span>
     <div v-if="isSuccess && status.resultUrl" class="result-preview" :class="'result-' + resultPreviewType">
       <img v-if="resultPreviewType === 'image'" :src="status.resultUrl" alt="节点生成结果预览" />
       <video v-else-if="resultPreviewType === 'video'" :src="status.resultUrl" muted controls playsinline />
@@ -30,6 +31,7 @@
       <button v-if="canAttachAudio" type="button" :disabled="attachingResult" @click.stop="attachAudioResult">设为本镜音频</button>
       <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
       <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+      <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
       <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
       <button type="button" @click.stop="dismissStatus">收起</button>
     </span>
@@ -137,6 +139,10 @@ const upstreamReferenceUrls = computed(() => {
   return [...new Set(urls.map((url) => String(url || '').trim()).filter(Boolean))]
 })
 const upstreamReferenceText = computed(() => upstreamReferenceUrls.value.length ? `已引用 ${upstreamReferenceUrls.value.length} 个上游结果` : '')
+const actionErrorText = computed(() => {
+  if (!isSuccess.value) return ''
+  return status.value?.actionError || ''
+})
 
 const resultPreviewType = computed(() => {
   const type = String(status.value?.resultType || '').toLowerCase()
@@ -279,8 +285,23 @@ function markAttachSuccess(message, extra = {}) {
     ...status.value,
     message,
     attachedToStoryboardId: resultStoryboardId(runtimeNode()),
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
     autoClear: false,
     ...extra,
+  })
+}
+
+function markActionFailure(message, retryActionName, retryActionLabel) {
+  const text = message || '结果操作失败'
+  ctx?.nodeStatus?.success?.(props.nodeId, {
+    ...status.value,
+    message: status.value?.message || '节点执行完成',
+    actionError: text,
+    retryAction: retryActionName,
+    retryActionLabel,
+    autoClear: false,
   })
 }
 
@@ -325,6 +346,9 @@ async function saveResultAsset() {
         savedAssetUrl: normalizedAsset.url,
         savedAssetLocalPath: normalizedAsset.local_path,
         savedAssetDuration: normalizedAsset.duration,
+        actionError: '',
+        retryAction: '',
+        retryActionLabel: '',
         autoClear: false,
       })
     }
@@ -332,7 +356,9 @@ async function saveResultAsset() {
     if (ctx?.refreshProjectAssets) await ctx.refreshProjectAssets()
     else await ctx?.refreshDrama?.(true)
   } catch (error) {
-    ElMessage.error(error?.message || '存入素材库失败')
+    const message = error?.message || '存入素材库失败'
+    ElMessage.error(message)
+    markActionFailure(message, 'save_result_asset', '重试存入素材库')
   } finally {
     savingAsset.value = false
   }
@@ -359,7 +385,9 @@ async function attachImageResult(slot = 'main') {
     })
     await refreshCanvasAfterAttach()
   } catch (error) {
-    ElMessage.error(error?.message || '图片挂载失败')
+    const message = error?.message || '图片挂载失败'
+    ElMessage.error(message)
+    markActionFailure(message, `attach_image_${slot}`, slot === 'first' ? '重试设为首帧' : slot === 'last' ? '重试设为尾帧' : '重试设为本镜图')
   } finally {
     attachingResult.value = false
   }
@@ -386,7 +414,9 @@ async function attachVideoResult() {
     })
     await refreshCanvasAfterAttach()
   } catch (error) {
-    ElMessage.error(error?.message || '视频挂载失败')
+    const message = error?.message || '视频挂载失败'
+    ElMessage.error(message)
+    markActionFailure(message, 'attach_video', '重试设为本镜视频')
   } finally {
     attachingResult.value = false
   }
@@ -410,10 +440,22 @@ async function attachAudioResult() {
     })
     await refreshCanvasAfterAttach()
   } catch (error) {
-    ElMessage.error(error?.message || '音频挂载失败')
+    const message = error?.message || '音频挂载失败'
+    ElMessage.error(message)
+    markActionFailure(message, 'attach_audio', '重试设为本镜音频')
   } finally {
     attachingResult.value = false
   }
+}
+
+async function retryAction() {
+  const action = status.value?.retryAction
+  if (action === 'save_result_asset') return saveResultAsset()
+  if (action === 'attach_image_main') return attachImageResult('main')
+  if (action === 'attach_image_first') return attachImageResult('first')
+  if (action === 'attach_image_last') return attachImageResult('last')
+  if (action === 'attach_video') return attachVideoResult()
+  if (action === 'attach_audio') return attachAudioResult()
 }
 
 async function runNextStep() {
@@ -527,6 +569,7 @@ onBeforeUnmount(() => {
 .meta,
 .result-text,
 .reference-text,
+.action-error,
 .failed-hint {
   max-width: calc(100% - 18px);
   overflow: hidden;
@@ -540,6 +583,9 @@ onBeforeUnmount(() => {
 }
 .reference-text {
   color: #c7d2fe;
+}
+.action-error {
+  color: #fecaca;
 }
 .result-preview {
   width: min(84%, 220px);
