@@ -21,6 +21,7 @@
         {{ savingAsset ? '保存中…' : '存入素材库' }}
       </button>
       <button v-if="effectiveSavedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
+      <button v-if="effectiveSavedAsset" type="button" @click.stop="viewSavedAsset">查看素材</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('main')">设为本镜图</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('first')">设为首帧</button>
       <button v-if="canAttachImage" type="button" :disabled="attachingResult" @click.stop="attachImageResult('last')">设为尾帧</button>
@@ -41,6 +42,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetsAPI } from '@/api/assets'
@@ -53,6 +55,7 @@ const props = defineProps({
   nodeId: { type: String, required: true },
 })
 
+const router = useRouter()
 const ctx = useCanvasContext()
 const now = ref(Date.now())
 const savingAsset = ref(false)
@@ -205,6 +208,18 @@ function copyAssetReference() {
   const url = asset.url || status.value?.resultUrl || ''
   const reference = `@素材(${name}#${asset.id}) ${url}`.trim()
   copyText(reference, '素材引用已复制', '素材引用（请手动复制）')
+}
+
+function viewSavedAsset() {
+  const asset = effectiveSavedAsset.value
+  if (!asset?.id) return
+  router.push({
+    name: 'media-library',
+    query: {
+      assetId: String(asset.id),
+      type: resultPreviewType.value,
+    },
+  })
 }
 
 function copyError() {

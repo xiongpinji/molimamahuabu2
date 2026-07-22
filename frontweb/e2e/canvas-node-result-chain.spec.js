@@ -159,6 +159,7 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
   await expect(completedNode).toBeVisible()
   await expect(completedNode).toContainText('图片已生成')
   await expect(completedNode.getByRole('button', { name: '复制素材引用' })).toBeVisible()
+  await expect(completedNode.getByRole('button', { name: '查看素材' })).toBeVisible()
 
   const runQueue = page.getByLabel('画布节点运行队列')
   await expect(runQueue).toContainText('0 进行中 · 1 完成 · 1 异常')
@@ -201,6 +202,17 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
   })
   await expect(failedNode).toContainText('图片已生成')
   await expect(failedNode.getByRole('button', { name: '复制素材引用' })).toBeVisible()
+
+  await completedNode.getByRole('button', { name: '查看素材' }).click()
+  await expect.poll(() => page.evaluate(() => ({
+    pathname: window.location.pathname,
+    assetId: new URLSearchParams(window.location.search).get('assetId'),
+    type: new URLSearchParams(window.location.search).get('type'),
+  }))).toEqual({
+    pathname: '/media-library',
+    assetId: '77',
+    type: 'image',
+  })
 })
 
 test('CV-ASSET-LIB-001 分镜面板从当前项目素材库指派参考图并回显', async ({ page }) => {
