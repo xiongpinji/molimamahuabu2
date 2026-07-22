@@ -65,7 +65,7 @@
         <CanvasGenerationOptions
           :model-value="storyboardGenerationOptions"
           mode="image"
-          label="本镜模型"
+          label="生成参数"
           compact
           @change="saveStoryboardGenerationOptions"
         />
@@ -93,7 +93,7 @@
         <CanvasGenerationOptions
           :model-value="storyboardGenerationOptions"
           mode="video"
-          label="本镜模型"
+          label="生成参数"
           compact
           @change="saveStoryboardGenerationOptions"
         />

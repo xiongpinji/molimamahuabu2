@@ -251,7 +251,7 @@
       </div>
       <CanvasGenerationOptions
         :model-value="storyboardGenerationOptions"
-        label="本镜模型"
+        label="生成参数"
         compact
         @change="saveStoryboardGenerationOptions"
       />
