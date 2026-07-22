@@ -402,6 +402,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
+import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
@@ -605,7 +606,10 @@ function restoreNodeStatusSnapshot() {
   if (!key || typeof window === 'undefined') return
   try {
     const raw = window.localStorage.getItem(key)
-    if (raw) nodeStatus.restore(JSON.parse(raw))
+    if (raw) {
+      nodeStatus.restore(JSON.parse(raw))
+      void syncRestoredNodeTasks()
+    }
   } catch {
     window.localStorage.removeItem(key)
   }
@@ -620,6 +624,60 @@ function persistNodeStatusSnapshot() {
     else window.localStorage.removeItem(key)
   } catch {
     // localStorage may be unavailable or full; node overlays can still work in memory.
+  }
+}
+
+function isRestoredPendingNodeStatus(status) {
+  return Boolean(status?.restored && status?.taskId && !['failed', 'success'].includes(status.step))
+}
+
+function taskResultUrl(task) {
+  const result = task?.result || {}
+  const response = result.response || result.data || {}
+  return result.video_url
+    || result.image_url
+    || result.audio_url
+    || result.url
+    || response.video_url
+    || response.image_url
+    || response.audio_url
+    || response.url
+    || ''
+}
+
+async function syncRestoredNodeTasks() {
+  const entries = Object.entries(nodeStatus.map).filter(([, status]) => isRestoredPendingNodeStatus(status))
+  for (const [nodeId, status] of entries) {
+    try {
+      const task = await taskAPI.get(status.taskId)
+      if (task?.status === 'completed') {
+        nodeStatus.success(nodeId, {
+          ...status,
+          message: '恢复的任务已完成',
+          resultUrl: taskResultUrl(task) || status.resultUrl || status.savedAssetUrl || '',
+          autoClear: false,
+        })
+      } else if (task?.status === 'failed') {
+        const message = task?.error?.message || task?.error || '恢复的任务已失败'
+        nodeStatus.fail(nodeId, {
+          ...status,
+          message,
+          errorDetail: message,
+          retryStep: status.retryStep || status.step,
+          retryLabel: status.retryLabel || `重试${CANVAS_NODE_STATUS_LABELS[status.retryStep || status.step] || '节点'}`,
+          recoverable: true,
+        })
+      }
+    } catch {
+      // 任务回读失败时保持恢复态，避免误清除用户可重试信息。
+    }
+  }
+  if (entries.length) {
+    try {
+      await refreshDrama(true)
+    } catch {
+      // 恢复任务刷新失败时保留当前节点状态，等待用户手动刷新或重试。
+    }
   }
 }
 const allStoryboards = computed(() => {
