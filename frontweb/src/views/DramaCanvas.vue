@@ -1243,6 +1243,7 @@ function canvasNodeActions(node) {
     actions.push('append-downstream-storyboard')
     if (node.type === 'canvasStoryboard') {
       actions.push('insert-downstream-storyboard')
+      if (workflowGroupForNode(node)) actions.push('select-node-workflow')
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
       actions.push('create-workflow-from-node', 'run-node-workflow')
     } else if (node.type === 'canvasMedia') {
@@ -2442,6 +2443,25 @@ async function runWorkflowFromNode(node) {
   await onRunActiveGroup()
 }
 
+function workflowGroupForNode(node) {
+  const storyboard = storyboardForNode(node)
+  const storyboardId = Number(storyboard?.id)
+  if (!Number.isFinite(storyboardId)) return null
+  return workflowGroups.value.find((group) => (
+    (group.storyboard_ids || []).map(Number).includes(storyboardId)
+  )) || null
+}
+
+function selectWorkflowGroupFromNode(node) {
+  const group = workflowGroupForNode(node)
+  if (!group) {
+    ElMessage.warning('该分镜尚未加入工作流')
+    return
+  }
+  selectWorkflowGroup(group.id)
+  ElMessage.success('已选中所在工作流')
+}
+
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     openNodeConfig(node)
@@ -2493,6 +2513,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeReference(node)
   } else if (type === 'create-workflow-from-node') {
     await createWorkflowFromNode(node)
+  } else if (type === 'select-node-workflow') {
+    selectWorkflowGroupFromNode(node)
   } else if (type === 'run-node-workflow') {
     await runWorkflowFromNode(node)
   }

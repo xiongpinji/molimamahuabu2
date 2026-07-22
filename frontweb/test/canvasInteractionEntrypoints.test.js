@@ -180,3 +180,16 @@ test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(canvasSource, /已插入下游分镜并重连/)
   assert.match(canvasSource, /type === 'insert-downstream-storyboard'[\s\S]*await insertDownstreamStoryboard\(node\)/)
 })
+
+test('右键分镜节点可快速选中其所在工作流', () => {
+  assert.match(contextMenuSource, /type: 'select-node-workflow'/)
+  assert.match(contextMenuSource, /选中所在工作流/)
+  assert.match(contextMenuSource, /框选同组分镜/)
+  assert.match(canvasSource, /if \(workflowGroupForNode\(node\)\) actions\.push\('select-node-workflow'\)/)
+  assert.match(canvasSource, /function workflowGroupForNode\(node\)/)
+  assert.match(canvasSource, /\(group\.storyboard_ids \|\| \[\]\)\.map\(Number\)\.includes\(storyboardId\)/)
+  assert.match(canvasSource, /function selectWorkflowGroupFromNode\(node\)/)
+  assert.match(canvasSource, /selectWorkflowGroup\(group\.id\)/)
+  assert.match(canvasSource, /已选中所在工作流/)
+  assert.match(canvasSource, /type === 'select-node-workflow'[\s\S]*selectWorkflowGroupFromNode\(node\)/)
+})
