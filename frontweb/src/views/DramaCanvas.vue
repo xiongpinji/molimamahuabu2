@@ -3255,7 +3255,9 @@ function isEditableTarget(target) {
 }
 
 function setSpacePanning(active) {
+  if (spacePanning.value === active) return
   spacePanning.value = active
+  if (!active) suppressPaneClick()
 }
 
 function undoCanvas() {

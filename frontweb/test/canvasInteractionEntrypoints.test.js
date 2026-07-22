@@ -30,6 +30,13 @@ test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /'Esc：清空选择、焦点和右键菜单'/)
 })
 
+test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', () => {
+  assert.match(canvasSource, /function setSpacePanning\(active\) \{\s*\n\s*if \(spacePanning\.value === active\) return\s*\n\s*spacePanning\.value = active\s*\n\s*if \(!active\) suppressPaneClick\(\)/)
+  assert.match(canvasSource, /function onCanvasKeyup\(event\) \{[\s\S]*setSpacePanning\(false\)/)
+  assert.match(canvasSource, /function onCanvasBlur\(\) \{[\s\S]*setSpacePanning\(false\)/)
+  assert.match(canvasSource, /function onPaneClick\(event\) \{\s*\n\s*if \(paneClickSuppressed\.value\) return/)
+})
+
 test('悬浮工具栏暴露撤销和重做操作', () => {
   assert.match(toolbarSource, /aria-label="撤销"/)
   assert.match(toolbarSource, /aria-label="重做"/)
