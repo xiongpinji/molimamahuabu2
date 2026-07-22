@@ -336,6 +336,26 @@
         <span class="status-dot" />
         <span>{{ actionStatusLabel }}</span>
       </div>
+      <div v-if="activeNodeStatus" class="node-execution-strip">
+        <span class="node-execution-label">节点执行</span>
+        <span class="node-execution-message">{{ activeNodeStatus.message || activeNodeStatus.step }}</span>
+        <el-button
+          v-if="activeNodeStatus.step === 'failed' && activeNodeStatus.retryStep"
+          link
+          size="small"
+          type="danger"
+          :disabled="saving"
+          @click.stop="retryPanelFailedStep"
+        >{{ activeNodeStatus.retryLabel || '重试失败步骤' }}</el-button>
+        <el-button
+          v-if="activeNodeStatus.nextStep"
+          link
+          size="small"
+          type="primary"
+          :disabled="saving"
+          @click.stop="continuePanelNextStep"
+        >{{ activeNodeStatus.nextLabel || '继续下游' }}</el-button>
+      </div>
       <div class="action-groups">
         <div class="action-group">
           <el-button size="small" :loading="saving" :disabled="isActionBusy && !saving" @click.stop="saveFields">保存</el-button>
@@ -621,6 +641,10 @@ const busyLabel = computed(() => {
   const st = map && sbNodeId.value ? map[sbNodeId.value] : null
   return st?.message || (busyStep.value ? CANVAS_NODE_STATUS_LABELS[busyStep.value] : '')
 })
+const activeNodeStatus = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  return map && sbNodeId.value ? map[sbNodeId.value] : null
+})
 const isActionBusy = computed(() => saving.value || !!busyLabel.value)
 const actionStatusLabel = computed(() => busyLabel.value || actionStatus.value.message || '准备就绪')
 
@@ -705,6 +729,24 @@ function onSelectVisibleChange(open) {
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+function panelRuntimeNode() {
+  return { id: sbNodeId.value, type: 'canvasStoryboard', data: { storyboard: props.storyboard } }
+}
+
+async function retryPanelFailedStep() {
+  const step = activeNodeStatus.value?.retryStep
+  if (!step) return
+  ctx?.nodeStatus?.clear?.(sbNodeId.value)
+  await ctx?.runNodeStep?.(panelRuntimeNode(), step)
+}
+
+async function continuePanelNextStep() {
+  const step = activeNodeStatus.value?.nextStep
+  if (!step) return
+  ctx?.nodeStatus?.clear?.(sbNodeId.value)
+  await ctx?.runNodeStep?.(panelRuntimeNode(), step)
 }
 
 function openAssetLibrary(target = 'reference') {
@@ -1560,6 +1602,29 @@ async function runStep(step) {
   color: #fca5a5;
 }
 .action-status.error .status-dot { background: #ef4444; }
+.node-execution-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 4px 7px;
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 8px;
+  background: rgba(30, 27, 75, 0.3);
+  color: #c7d2fe;
+  font-size: 11px;
+}
+.node-execution-label {
+  color: #93c5fd;
+  font-weight: 700;
+}
+.node-execution-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .action-groups {
   display: flex;
   flex-wrap: wrap;
