@@ -477,6 +477,9 @@ test('媒体节点卡片从运行状态恢复结果、失败原因和重试步�
   assert.match(mediaNodeSource, /runtimeStatus\.value\?\.retryStep \|\| props\.data\.kind/)
   assert.match(mediaNodeSource, /<img v-if="resultUrl" :src="resultUrl"/)
   assert.match(mediaNodeSource, /<video v-if="resultUrl" :src="resultUrl"/)
+  assert.match(mediaNodeSource, /@click\.stop="downloadResult">下载/)
+  assert.match(mediaNodeSource, /function downloadResult\(\)/)
+  assert.match(mediaNodeSource, /link\.download = rawName \|\| `\$\{props\.data\.kind \|\| 'media'\}-result`/)
   assert.match(mediaNodeSource, /:generation-error="failureReason"/)
 })
 

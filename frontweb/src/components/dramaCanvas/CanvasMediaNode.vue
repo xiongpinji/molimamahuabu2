@@ -37,6 +37,7 @@
       <div v-if="resultUrl" class="result-actions">
         <button type="button" @click.stop="openResult">{{ previewLabel }}</button>
         <button type="button" @click.stop="copyResultLink">复制</button>
+        <button type="button" @click.stop="downloadResult">下载</button>
       </div>
       <div class="node-footer">
         <span class="result-state" :class="'state-' + resultState.key">{{ resultState.label }}</span>
@@ -193,6 +194,18 @@ async function copyResultLink() {
   } catch {
     ElMessageBox.alert(resultUrl.value, '结果链接（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
   }
+}
+
+function downloadResult() {
+  if (!resultUrl.value) return
+  const link = document.createElement('a')
+  const rawName = String(resultUrl.value).split(/[?#]/)[0].split('/').pop()
+  link.href = resultUrl.value
+  link.download = rawName || `${props.data.kind || 'media'}-result`
+  link.rel = 'noopener noreferrer'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 </script>
 
