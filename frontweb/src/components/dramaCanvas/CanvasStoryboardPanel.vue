@@ -564,9 +564,13 @@ const continuityPrompt = computed(() => {
 })
 
 function assetThumbUrl(a) {
-  const lp = a.local_path || a.image_local_path || a.video_local_path || a.audio_local_path || a.voice_local_path
+  const lp = assetLocalPath(a)
   if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
   return a.display_url || a.asset_url || a.preview_url || a.url || a.image_url || a.video_url || a.audio_url || a.voice_url || ''
+}
+
+function assetLocalPath(a) {
+  return a?.local_path || a?.path || a?.file_path || a?.image_local_path || a?.video_local_path || a?.audio_local_path || a?.voice_local_path || a?.thumbnail_local_path || ''
 }
 
 function normalizeAssignedAsset(asset) {
@@ -740,12 +744,14 @@ function setAssetAttachStatus(target, storyboardId, payload, mode = 'set') {
 function assetAttachStatusPayload(target, asset, message) {
   const assetId = projectAssetId(asset)
   const resultUrl = assetThumbUrl(asset)
+  const localPath = assetLocalPath(asset)
   const savedAssetId = target === 'reference' || asset?.source_kind === 'project' || String(asset?.id || '').startsWith('project:')
     ? assetId
     : ''
   return {
     step: 'library',
     message,
+    dramaId: ctx?.drama?.value?.id || undefined,
     storyboardId: props.storyboard?.id,
     resultUrl,
     resultType: assetAttachResultType(target, asset),
@@ -753,8 +759,49 @@ function assetAttachStatusPayload(target, asset, message) {
     savedAssetId: savedAssetId || undefined,
     savedAssetName: asset?.name || '素材库素材',
     savedAssetUrl: resultUrl || undefined,
+    savedAssetLocalPath: localPath || undefined,
     autoClear: false,
   }
+}
+
+function assetAttachFailurePayload(target, asset, message) {
+  const resultType = assetAttachResultType(target, asset)
+  const retryAction = assetAttachRetryAction(target, resultType)
+  return {
+    ...assetAttachStatusPayload(target, asset, message),
+    errorDetail: message,
+    attachedSlot: assetAttachSlot(target),
+    retryStep: '',
+    retryLabel: '',
+    retryAction,
+    retryActionLabel: retryAction ? assetAttachRetryLabel(target) : '',
+    libraryAsset: asset,
+    recoverable: true,
+  }
+}
+
+function assetAttachRetryAction(target, resultType) {
+  if (target === 'reference') return ''
+  if (resultType === 'image') return 'attach_library_image'
+  if (resultType === 'video') return 'attach_library_video'
+  if (resultType === 'audio') return 'attach_library_audio'
+  return ''
+}
+
+function assetAttachRetryLabel(target) {
+  if (target === 'first_frame') return '重试设为首帧'
+  if (target === 'last_frame') return '重试设为尾帧'
+  if (target === 'video') return '重试设为本镜视频'
+  if (target === 'audio') return '重试设为本镜音频'
+  return '重试挂载素材'
+}
+
+function assetAttachSlot(target) {
+  if (target === 'first_frame') return 'first'
+  if (target === 'last_frame') return 'last'
+  if (target === 'video') return 'video'
+  if (target === 'audio') return 'audio'
+  return 'reference'
 }
 
 async function onAssetLibraryPick(asset) {
@@ -803,10 +850,7 @@ async function onAssetLibraryPick(asset) {
     ElMessage.success(ASSET_ATTACH_TARGETS.reference.message)
   } catch (e) {
     const message = e?.message || '素材指派失败'
-    setAssetAttachStatus(target, storyboardId, {
-      ...assetAttachStatusPayload(target, asset, message),
-      errorDetail: message,
-    }, 'fail')
+    setAssetAttachStatus(target, storyboardId, assetAttachFailurePayload(target, asset, message), 'fail')
     ElMessage.error(message)
   } finally {
     assetAssigning.value = false
@@ -817,7 +861,7 @@ async function attachPickedAssetToStoryboard(target, asset) {
   const storyboardId = props.storyboard?.id
   if (!storyboardId) return
   const url = assetThumbUrl(asset)
-  const localPath = asset.local_path || asset.image_local_path || asset.video_local_path || asset.audio_local_path || asset.voice_local_path || ''
+  const localPath = assetLocalPath(asset)
   const payload = {}
   if (target === 'first_frame') {
     payload.first_frame_image_id = null
