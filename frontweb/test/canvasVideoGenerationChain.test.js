@@ -30,11 +30,11 @@ test('画布视频节点把模型、首尾帧和素材引用传给视频创建�
   assert.match(runnerSource, /function upstreamReferenceUrls\(genOpts = \{\}\)/)
   assert.match(runnerSource, /\.\.\.upstreamReferenceUrls\(genOpts\),[\s\S]*absoluteLast/)
   assert.match(runnerSource, /getStoryboardVideoModel\(sb,\s*genOpts\)/)
-  assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*model:\s*model\s*\|\|\s*undefined/)
-  assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*first_frame_url:\s*absoluteFirst\s*\|\|\s*undefined/)
-  assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*last_frame_url:\s*absoluteLast/)
-  assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*reference_image_urls:\s*referenceUrls\.length\s*\?\s*referenceUrls\s*:\s*undefined/)
-  assert.match(runnerSource, /videosAPI\.create\(\{[\s\S]*resolution:\s*genOpts\.videoResolution\s*\|\|\s*undefined/)
+  assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*model,[\s\S]*firstFrameUrl:\s*absoluteFirst/)
+  assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*lastFrameUrl:\s*absoluteLast/)
+  assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*referenceImageUrls:\s*referenceUrls/)
+  assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*resolution:\s*genOpts\.videoResolution/)
+  assert.match(runnerSource, /videosAPI\.create\(payload\)/)
 })
 
 test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列', () => {
@@ -42,6 +42,8 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'image', response: res \}\)/)
   assert.match(runnerSource, /pollTaskSimple\(res\.task_id, options\)/)
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'video', response: res \}\)/)
+  assert.match(runnerSource, /return \{[\s\S]*taskId: res\.task_id,[\s\S]*requestPayload: payload,[\s\S]*task: polled/)
+  assert.match(canvasSource, /else if \(step === 'video'\) operationResult = await runVideoStep/)
 })
 
 test('画布音频节点把同步提取结果写入节点成功结果', () => {

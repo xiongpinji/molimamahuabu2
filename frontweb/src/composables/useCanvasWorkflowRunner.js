@@ -21,6 +21,7 @@ import {
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
 import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
 import { appendVoicePromptToVideoPrompt, storyboardVoiceCharacters } from '@/utils/videoVoicePolicy'
+import { buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 
 /** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
 async function fetchAssignedAssetUrls(storyboardId) {
@@ -173,24 +174,42 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     next,
   })
   const model = getStoryboardVideoModel(sb, genOpts)
-  const res = await videosAPI.create({
-    drama_id: drama.id,
-    storyboard_id: sb.id,
+  const payload = buildVideoGenerationRequest({
+    dramaId: drama.id,
+    storyboardId: sb.id,
     prompt,
-    model: model || undefined,
-    image_url: absoluteFirst || undefined,
-    first_frame_url: absoluteFirst || undefined,
-    last_frame_url: absoluteLast,
-    reference_image_urls: referenceUrls.length ? referenceUrls : undefined,
-    style: genOpts.style || undefined,
-    aspect_ratio: genOpts.aspectRatio,
-    resolution: genOpts.videoResolution || undefined,
+    model,
+    imageUrl: absoluteFirst,
+    firstFrameUrl: absoluteFirst,
+    lastFrameUrl: absoluteLast,
+    referenceImageUrls: referenceUrls,
+    style: genOpts.style,
+    aspectRatio: genOpts.aspectRatio,
+    resolution: genOpts.videoResolution,
     duration: sb.duration || undefined,
   })
+  const res = await videosAPI.create(payload)
   if (res?.task_id) {
     options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
     const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '视频生成失败')
+    return {
+      taskId: res.task_id,
+      videoGenerationId: res.id || null,
+      model: payload.model || null,
+      resultType: 'video',
+      resultLabel: '视频已生成',
+      requestPayload: payload,
+      task: polled,
+    }
+  }
+  return {
+    taskId: res?.task_id || '',
+    videoGenerationId: res?.id || null,
+    model: payload.model || null,
+    resultType: 'video',
+    resultLabel: '视频已生成',
+    requestPayload: payload,
   }
 }
 

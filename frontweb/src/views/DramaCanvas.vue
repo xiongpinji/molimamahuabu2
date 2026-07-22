@@ -2085,7 +2085,7 @@ async function runCanvasNodeStep(node, step) {
     }
     let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
-    else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts, taskStatusOptions)
+    else if (step === 'video') operationResult = await runVideoStep(drama.value, latestSb, genOpts, taskStatusOptions)
     else if (step === 'audio') {
       const res = await runAudioStep(latestSb)
       if (res?.skipped) {
