@@ -193,3 +193,13 @@ test('右键分镜节点可快速选中其所在工作流', () => {
   assert.match(canvasSource, /已选中所在工作流/)
   assert.match(canvasSource, /type === 'select-node-workflow'[\s\S]*selectWorkflowGroupFromNode\(node\)/)
 })
+
+test('框选多个分镜后右键节点可直接运行所选分镜', () => {
+  assert.match(contextMenuSource, /type: 'run-selected-storyboards'/)
+  assert.match(contextMenuSource, /运行所选分镜/)
+  assert.match(contextMenuSource, /批量生成当前框选/)
+  assert.match(canvasSource, /function isSelectedStoryboardNode\(node\)/)
+  assert.match(canvasSource, /selectedStoryboardIds\.value\.map\(Number\)\.includes\(storyboardId\)/)
+  assert.match(canvasSource, /if \(isSelectedStoryboardNode\(node\) && selectedStoryboardIds\.value\.length > 1\) actions\.push\('run-selected-storyboards'\)/)
+  assert.match(canvasSource, /type === 'run-selected-storyboards'[\s\S]*await onRunSelectedStoryboards\(\)/)
+})

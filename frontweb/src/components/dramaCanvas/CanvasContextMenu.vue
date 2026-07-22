@@ -142,6 +142,7 @@ const nodeGroups = [
       { type: 'append-downstream-storyboard', label: '追加下游分镜', hint: '右侧生成并连线', icon: Document },
       { type: 'select-node-workflow', label: '选中所在工作流', hint: '框选同组分镜', icon: Connection },
       { type: 'create-workflow-from-node', label: '创建工作流', hint: '用选中分镜成组', icon: Connection },
+      { type: 'run-selected-storyboards', label: '运行所选分镜', hint: '批量生成当前框选', icon: VideoPlay },
       { type: 'run-node-workflow', label: '运行所在工作流', hint: '整组重跑', icon: VideoPlay },
     ],
   },

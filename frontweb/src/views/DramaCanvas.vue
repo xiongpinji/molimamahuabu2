@@ -1246,6 +1246,7 @@ function canvasNodeActions(node) {
       if (workflowGroupForNode(node)) actions.push('select-node-workflow')
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
       actions.push('create-workflow-from-node', 'run-node-workflow')
+      if (isSelectedStoryboardNode(node) && selectedStoryboardIds.value.length > 1) actions.push('run-selected-storyboards')
     } else if (node.type === 'canvasMedia') {
       if (node.data?.kind === 'image') actions.push('run-node-image', 'run-node-video')
       else if (node.data?.kind === 'video') actions.push('preview-node-video', 'run-node-video')
@@ -2452,6 +2453,12 @@ function workflowGroupForNode(node) {
   )) || null
 }
 
+function isSelectedStoryboardNode(node) {
+  const storyboard = storyboardForNode(node)
+  const storyboardId = Number(storyboard?.id)
+  return Number.isFinite(storyboardId) && selectedStoryboardIds.value.map(Number).includes(storyboardId)
+}
+
 function selectWorkflowGroupFromNode(node) {
   const group = workflowGroupForNode(node)
   if (!group) {
@@ -2515,6 +2522,8 @@ async function runNodeMenuAction(type, node) {
     await createWorkflowFromNode(node)
   } else if (type === 'select-node-workflow') {
     selectWorkflowGroupFromNode(node)
+  } else if (type === 'run-selected-storyboards') {
+    await onRunSelectedStoryboards()
   } else if (type === 'run-node-workflow') {
     await runWorkflowFromNode(node)
   }
