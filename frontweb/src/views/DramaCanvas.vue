@@ -1363,6 +1363,32 @@ function shouldKeepNodeStatus(nodeId) {
   return ['failed', 'success'].includes(nodeStatus.get(nodeId)?.step)
 }
 
+function nodeStepStatusIds(node, step, storyboardId) {
+  return [...new Set([
+    node?.id,
+    `sb:${storyboardId}`,
+    nodeStepResultInfo(node, step, storyboardId).resultNodeId,
+  ].filter(Boolean))]
+}
+
+function setNodeStepStatus(statusIds, payload) {
+  statusIds.forEach((id) => nodeStatus.set(id, payload))
+}
+
+function successNodeStepStatus(statusIds, payload) {
+  statusIds.forEach((id) => nodeStatus.success(id, payload))
+}
+
+function failNodeStepStatus(statusIds, payload) {
+  statusIds.forEach((id) => nodeStatus.fail(id, payload))
+}
+
+function clearTransientNodeStepStatus(statusIds) {
+  statusIds.forEach((id) => {
+    if (!shouldKeepNodeStatus(id)) nodeStatus.clear(id)
+  })
+}
+
 async function runCanvasNodeStep(node, step) {
   if (node?.type === 'canvasAsset') {
     await runCanvasAssetNodeStep(node, step)
@@ -1375,17 +1401,15 @@ async function runCanvasNodeStep(node, step) {
     return
   }
   const nodeId = node?.id
-  const sbNodeId = `sb:${sb.id}`
+  const statusIds = nodeStepStatusIds(node, step, sb.id)
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
-  if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage, promptText: initialPromptText })
-  nodeStatus.set(sbNodeId, { step, message: statusMessage, promptText: initialPromptText })
+  setNodeStepStatus(statusIds, { step, message: statusMessage, promptText: initialPromptText })
   try {
     const found = findStoryboardInDrama(drama.value, sb.id)
     const latestSb = found?.storyboard || sb
     const promptText = nodeStepPromptText(step, latestSb, node)
-    if (nodeId) nodeStatus.set(nodeId, { step, message: statusMessage, promptText })
-    nodeStatus.set(sbNodeId, { step, message: statusMessage, promptText })
+    setNodeStepStatus(statusIds, { step, message: statusMessage, promptText })
     const genOpts = getCanvasGenerationOptions()
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '')
     else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts)
@@ -1402,8 +1426,7 @@ async function runCanvasNodeStep(node, step) {
     const savedAssetInfo = await saveNodeResultAsset(node, resultInfo, promptText, sb.id)
     if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
     const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), autoClear: false }
-    if (nodeId) nodeStatus.success(nodeId, successPayload)
-    nodeStatus.success(sbNodeId, successPayload)
+    successNodeStepStatus(statusIds, successPayload)
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
@@ -1414,13 +1437,11 @@ async function runCanvasNodeStep(node, step) {
       retryStep: step,
       retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}`,
     }
-    if (nodeId) nodeStatus.fail(nodeId, retryPayload)
-    nodeStatus.fail(sbNodeId, retryPayload)
+    failNodeStepStatus(statusIds, retryPayload)
     ElMessage.error(errorMessage)
     await refreshDrama(true)
   } finally {
-    if (!shouldKeepNodeStatus(nodeId)) nodeStatus.clear(nodeId)
-    if (!shouldKeepNodeStatus(sbNodeId)) nodeStatus.clear(sbNodeId)
+    clearTransientNodeStepStatus(statusIds)
   }
 }
 
