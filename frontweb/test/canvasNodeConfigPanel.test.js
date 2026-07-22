@@ -14,6 +14,7 @@ const mediaNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dr
 const assetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAssetNode.vue', import.meta.url)), 'utf8')
 const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptNode.vue', import.meta.url)), 'utf8')
 const scriptPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptPanel.vue', import.meta.url)), 'utf8')
+const storyboardImageUploadSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardImageUpload.vue', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 const nodeExecutionStripSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeExecutionStrip.vue', import.meta.url)), 'utf8')
@@ -188,6 +189,22 @@ test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {
   assert.match(storyboardPanelSource, /payload\.audio_local_path = localPath \|\| undefined/)
   assert.match(storyboardPanelSource, /payload\.audio_url = localPath \? undefined : url/)
   assert.match(storyboardPanelSource, /await storyboardsAPI\.update\(storyboardId, payload\)/)
+})
+
+test('分镜首尾帧素材库引用兼容统一素材字段并保留失败状态', () => {
+  assert.match(storyboardImageUploadSource, /function libraryAssetUrl\(asset\)/)
+  assert.match(storyboardImageUploadSource, /asset\?\.asset_url/)
+  assert.match(storyboardImageUploadSource, /asset\?\.image_url/)
+  assert.match(storyboardImageUploadSource, /asset\?\.ref_image/)
+  assert.match(storyboardImageUploadSource, /asset\?\.thumbnail_url/)
+  assert.match(storyboardImageUploadSource, /function libraryAssetLocalPath\(asset\)/)
+  assert.match(storyboardImageUploadSource, /asset\?\.image_local_path/)
+  assert.match(storyboardImageUploadSource, /asset\?\.thumbnail_local_path/)
+  assert.match(storyboardImageUploadSource, /const url = libraryAssetUrl\(asset\)/)
+  assert.match(storyboardImageUploadSource, /const localPath = libraryAssetLocalPath\(asset\)/)
+  assert.match(storyboardImageUploadSource, /retryAction: 'attach_library_image'/)
+  assert.match(storyboardImageUploadSource, /attachedSlot: slot === 'first' \? 'first' : slot === 'last' \? 'last' : 'image'/)
+  assert.match(storyboardImageUploadSource, /if \(!failed\) statusIds\.forEach\(\(id\) => ctx\?\.nodeStatus\?\.clear\(id\)\)/)
 })
 
 test('分镜配置面板生成成功后保留节点结果回显', () => {

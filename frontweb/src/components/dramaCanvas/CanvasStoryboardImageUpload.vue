@@ -84,13 +84,14 @@ async function onLibraryPick(asset) {
   const storyboardId = props.storyboard?.id
   const slot = activeSlot.value || 'main'
   if (!drama?.id || !storyboardId) return
-  const url = asset.display_url || asset.url || ''
-  const localPath = asset.local_path || ''
+  const url = libraryAssetUrl(asset)
+  const localPath = libraryAssetLocalPath(asset)
   if (!url && !localPath) return ElMessage.error('该素材缺少可用地址')
   uploadingSlot.value = slot
   emit('status', { type: 'busy', message: '素材库引用中…' })
   const statusIds = [props.nodeId, `sb:${storyboardId}`].filter(Boolean)
   statusIds.forEach((id) => ctx?.nodeStatus?.set(id, { step: 'upload', message: `素材库引用中…` }))
+  let failed = false
   try {
     await imagesAPI.upload({
       storyboard_id: storyboardId,
@@ -103,12 +104,58 @@ async function onLibraryPick(asset) {
     ElMessage.success('已从素材库引用图片')
     await ctx?.refresh?.()
   } catch (e) {
-    emit('status', { type: 'error', message: e?.message || '引用失败' })
-    ElMessage.error(e?.message || '引用失败')
+    failed = true
+    const message = e?.message || '引用失败'
+    emit('status', { type: 'error', message })
+    statusIds.forEach((id) => ctx?.nodeStatus?.fail?.(id, {
+      step: 'failed',
+      message,
+      errorDetail: message,
+      retryAction: 'attach_library_image',
+      retryActionLabel: '重试引用素材库图片',
+      retryLabel: '重试引用素材库图片',
+      attachedSlot: slot === 'first' ? 'first' : slot === 'last' ? 'last' : 'image',
+      libraryAsset: asset,
+      recoverable: true,
+    }))
+    ElMessage.error(message)
   } finally {
-    statusIds.forEach((id) => ctx?.nodeStatus?.clear(id))
+    if (!failed) statusIds.forEach((id) => ctx?.nodeStatus?.clear(id))
     uploadingSlot.value = ''
   }
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function libraryAssetUrl(asset) {
+  return firstString(
+    asset?.display_url,
+    asset?.asset_url,
+    asset?.preview_url,
+    asset?.url,
+    asset?.image_url,
+    asset?.ref_image,
+    asset?.thumbnail_url,
+    asset?.file_url,
+    asset?.cover_url,
+    asset?.poster_url,
+  )
+}
+
+function libraryAssetLocalPath(asset) {
+  return firstString(
+    asset?.local_path,
+    asset?.path,
+    asset?.file_path,
+    asset?.image_local_path,
+    asset?.thumbnail_local_path,
+  )
 }
 
 async function onFileChange(event) {
