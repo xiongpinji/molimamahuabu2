@@ -59,7 +59,7 @@
         :key="item.id"
         class="picker-card"
       >
-        <button class="thumb-button" type="button" @click="openPreview(item)">
+        <button class="thumb-button" type="button" :disabled="!itemUrl(item)" @click="openPreview(item)">
           <video v-if="item.type === 'video'" :src="itemUrl(item)" class="picker-thumb" muted preload="metadata" />
           <div v-else-if="item.type === 'audio'" class="picker-thumb audio-thumb">♪</div>
           <img v-else :src="itemUrl(item)" class="picker-thumb" />
@@ -71,11 +71,12 @@
             <span v-if="item.source_label" class="source-badge">{{ item.source_label }}</span>
             <span>{{ formatSize(item.file_size || item.size) }}</span>
             <template v-if="item.duration"> · {{ formatDuration(item.duration) }}</template>
+            <template v-if="item.setup_hint"> · {{ item.setup_hint }}</template>
           </div>
         </div>
         <div class="picker-actions">
-          <el-button size="small" text @click="openPreview(item)">预览</el-button>
-          <el-button size="small" type="primary" :disabled="!itemUrl(item)" @click="onPick(item)">选用</el-button>
+          <el-button size="small" text :disabled="!itemUrl(item)" @click="openPreview(item)">预览</el-button>
+          <el-button size="small" type="primary" :disabled="!itemUrl(item) || item.selectable === false" @click="onPick(item)">选用</el-button>
         </div>
       </div>
       <div v-if="!loading && !visibleItems.length" class="picker-empty">
@@ -261,7 +262,7 @@ function normalizeAssetItems(res, source) {
 
 function normalizeVoiceCatalogItems(res) {
   return resultItems(res)
-    .filter((it) => it.available !== false && it.can_bind !== false && (it.preview_url || it.url || it.audio_url))
+    .filter((it) => it.available !== false || it.setup_hint)
     .map((it) => normalizeAssetItem({
       ...it,
       id: it.asset_id || it.id || it.voice_id,
@@ -269,12 +270,12 @@ function normalizeVoiceCatalogItems(res) {
       type: 'audio',
       url: it.preview_url || it.url || it.audio_url || '',
       audio_url: it.preview_url || it.url || it.audio_url || '',
+      selectable: Boolean(it.preview_url || it.url || it.audio_url),
       metadata: {
         ...(it.metadata || {}),
         voice_catalog: it,
       },
     }, 'voice_catalog'))
-    .filter((it) => itemUrl(it))
 }
 
 function normalizeAssetItem(it, source) {
@@ -312,6 +313,8 @@ function normalizeAssetItem(it, source) {
     name: it.name || it.title || String(url || localPath).split('/').pop(),
     url,
     local_path: localPath,
+    setup_hint: it.setup_hint || '',
+    selectable: it.selectable ?? true,
     source_kind: source,
     source_label: sourceLabel(source),
   }

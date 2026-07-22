@@ -51,13 +51,23 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /if \(props\.type === 'audio' \|\| wantsAll\)/)
   assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams, \{ silentError: true \}\)/)
   assert.match(source, /normalizeVoiceCatalogItems/)
-  assert.match(source, /it\.available !== false && it\.can_bind !== false/)
+  assert.match(source, /it\.available !== false \|\| it\.setup_hint/)
+  assert.doesNotMatch(source, /can_bind !== false/)
   assert.match(source, /voice_catalog: '音色库'/)
   assert.match(source, /class="picker-thumb audio-thumb"/)
   assert.match(source, /<audio[\s\S]*previewItem\?\.type === 'audio'[\s\S]*controls/)
   assert.match(source, /audio_local_path/)
   assert.match(source, /voice_local_path/)
   assert.match(source, /mp3\|wav\|m4a\|aac\|ogg\|flac/)
+})
+
+test('素材选择弹窗显示未就绪音色目录但禁用不可用音频操作', () => {
+  assert.match(source, /<template v-if="item\.setup_hint"> · \{\{ item\.setup_hint \}\}<\/template>/)
+  assert.match(source, /selectable: Boolean\(it\.preview_url \|\| it\.url \|\| it\.audio_url\)/)
+  assert.match(source, /setup_hint: it\.setup_hint \|\| ''/)
+  assert.match(source, /selectable: it\.selectable \?\? true/)
+  assert.match(source, /:disabled="!itemUrl\(item\)"/)
+  assert.match(source, /:disabled="!itemUrl\(item\) \|\| item\.selectable === false"/)
 })
 
 test('素材选择弹窗支持全类型素材入口', () => {
