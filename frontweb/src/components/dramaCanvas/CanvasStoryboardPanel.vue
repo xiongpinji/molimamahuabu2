@@ -124,7 +124,7 @@
 
         <div class="reference-strip">
           <div class="reference-head">
-            <span>参考图</span>
+            <span>引用素材</span>
             <span class="reference-count">{{ allReferenceAssets.length }}/10</span>
           </div>
           <div v-if="allReferenceAssets.length" class="reference-list">
@@ -135,7 +135,9 @@
               :class="{ assigned: reference.kind === 'asset' }"
               :title="`${refKindLabel(reference)}：${reference.name}`"
             >
-              <img :src="reference.url" alt="" />
+              <video v-if="reference.type === 'video'" :src="reference.url" muted preload="metadata" />
+              <span v-else-if="reference.type === 'audio'" class="reference-media-icon">♪</span>
+              <img v-else :src="reference.url" alt="" />
               <span>{{ reference.name }}</span>
               <i v-if="reference.kind === 'asset'" class="chip-remove" title="移除指派" @click.stop="removeAssignedAsset(reference)">×</i>
             </span>
@@ -555,6 +557,7 @@ function normalizeAssignedAsset(asset) {
     key: `asset:${asset.id || asset.raw_id || asset.url || asset.local_path}`,
     kind: 'asset',
     id: asset.id || asset.raw_id,
+    type: asset.type || 'image',
     name: asset.name || '素材库参考图',
     url: assetThumbUrl(asset),
     absoluteUrl: toAbsoluteMediaUrl(assetThumbUrl(asset)),
@@ -565,7 +568,7 @@ async function loadAssignedAssets() {
   const sbId = props.storyboard?.id
   if (!sbId) { assignedAssets.value = []; return }
   try {
-    const res = await assetsAPI.list({ storyboard_id: sbId, type: 'image', page: 1, page_size: 20 })
+    const res = await assetsAPI.list({ storyboard_id: sbId, page: 1, page_size: 20 })
     assignedAssets.value = (res?.items || []).map(normalizeAssignedAsset)
   } catch (_) {
     assignedAssets.value = []
@@ -1153,13 +1156,25 @@ async function runStep(step) {
   color: #d4d4d8;
   font-size: 10px;
 }
-.reference-chip img {
+.reference-chip img,
+.reference-chip video,
+.reference-media-icon {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
   border-radius: 50%;
-  object-fit: cover;
   background: #09090b;
+}
+.reference-chip img,
+.reference-chip video {
+  object-fit: cover;
+}
+.reference-media-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fbbf24;
+  font-weight: 700;
 }
 .reference-chip span {
   overflow: hidden;
