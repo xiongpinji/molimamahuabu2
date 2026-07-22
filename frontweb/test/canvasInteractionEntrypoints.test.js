@@ -82,6 +82,8 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /async function onCanvasAssetLibraryPick\(asset\)/)
   assert.match(canvasSource, /await assignProjectAssetToSelectedStoryboard\(projectAsset\)/)
+  assert.match(canvasSource, /nodeStatus\.success\(nodeId, \{[\s\S]*已从素材库加入画布[\s\S]*savedAssetId: projectAssetId\(projectAsset\)[\s\S]*retryStep: 'library'/)
+  assert.match(canvasSource, /nodeStatus\.fail\(nodeId, \{[\s\S]*素材库素材加入画布失败[\s\S]*retryLabel: '重试指派素材'/)
 })
 
 test('项目图片素材缺少 type 时仍可进入画布素材节点', () => {

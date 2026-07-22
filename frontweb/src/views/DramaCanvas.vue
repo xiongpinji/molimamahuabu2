@@ -1559,15 +1559,44 @@ function openCanvasAssetLibrary(flowPosition = null) {
 }
 
 async function onCanvasAssetLibraryPick(asset) {
+  let nodeId = ''
+  let projectAsset = null
   try {
-    const projectAsset = await ensureProjectImageAsset(asset)
-    const nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
+    projectAsset = await ensureProjectImageAsset(asset)
+    nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (selectedStoryboardIds.value.length === 1) {
       await assignProjectAssetToSelectedStoryboard(projectAsset)
     } else {
       ElMessage.success(nodeId ? '已从素材库加入画布' : '素材已加入项目素材库')
     }
+    if (nodeId) {
+      nodeStatus.success(nodeId, {
+        message: selectedStoryboardIds.value.length === 1 ? '已加入画布并指派到分镜' : '已从素材库加入画布',
+        resultUrl: assetDisplayUrl(projectAsset),
+        resultType: projectAsset?.type || asset?.type || 'image',
+        savedAssetId: projectAssetId(projectAsset),
+        savedAssetName: projectAsset?.name || asset?.name || '项目素材',
+        savedAssetUrl: assetDisplayUrl(projectAsset),
+        retryStep: 'library',
+        retryLabel: '重新指派素材',
+        autoClear: false,
+      })
+    }
   } catch (e) {
+    if (nodeId) {
+      const message = e?.message || '素材库素材加入画布失败'
+      nodeStatus.fail(nodeId, {
+        message,
+        errorDetail: message,
+        resultUrl: projectAsset ? assetDisplayUrl(projectAsset) : '',
+        resultType: projectAsset?.type || asset?.type || 'image',
+        savedAssetId: projectAsset ? projectAssetId(projectAsset) : '',
+        savedAssetName: projectAsset?.name || asset?.name || '项目素材',
+        retryStep: 'library',
+        retryLabel: '重试指派素材',
+        autoClear: false,
+      })
+    }
     ElMessage.error(e?.message || '素材库素材加入画布失败')
   } finally {
     canvasAssetPickerFlowPos.value = null
