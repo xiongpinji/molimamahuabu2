@@ -869,7 +869,11 @@ function mergeRunQueueItem(grouped, item) {
   if (!current.resultType && item.resultType) current.resultType = item.resultType
   if (!current.retryStep && item.retryStep) current.retryStep = item.retryStep
   if (!current.errorDetail && item.errorDetail) current.errorDetail = item.errorDetail
-  if (queueToneRank(item.tone) > queueToneRank(current.tone)) current.tone = item.tone
+  if (queueToneRank(item.tone) > queueToneRank(current.tone)) {
+    current.tone = item.tone
+    if (item.message) current.message = item.message
+    if (item.elapsedText) current.elapsedText = item.elapsedText
+  }
   if (item.tone === current.tone && item.message) current.message = item.message
 }
 

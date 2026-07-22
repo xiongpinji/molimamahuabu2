@@ -372,6 +372,7 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /@click\.stop="downloadQueueItemResult\(item\)">下载/)
   assert.match(canvasSource, /errorDetail: isFailed \? \(status\.errorDetail \|\| status\.detail \|\| status\.message \|\| ''\) : ''/)
   assert.match(canvasSource, /if \(!current\.errorDetail && item\.errorDetail\) current\.errorDetail = item\.errorDetail/)
+  assert.match(canvasSource, /if \(queueToneRank\(item\.tone\) > queueToneRank\(current\.tone\)\) \{[\s\S]*current\.tone = item\.tone[\s\S]*if \(item\.message\) current\.message = item\.message[\s\S]*if \(item\.elapsedText\) current\.elapsedText = item\.elapsedText[\s\S]*\}/)
   assert.match(canvasSource, /@click\.stop="copyQueueItemError\(item\)">原因/)
   assert.match(canvasSource, /队列失败原因已复制/)
 })
