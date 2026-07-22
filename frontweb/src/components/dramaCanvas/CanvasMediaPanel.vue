@@ -73,10 +73,18 @@
           <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">
             {{ frameKind === 'first' ? '生成首帧' : frameKind === 'last' ? '生成尾帧' : '重新生图' }}
           </el-button>
+          <el-button size="small" :loading="attachBusy" @click.stop="imageLibraryVisible = true">从素材库选用图片</el-button>
           <CanvasStoryboardImageUpload
             :storyboard="storyboard"
             :node-id="nodeId"
             :frame-kind="frameKind"
+          />
+          <AssetPickerDialog
+            v-model="imageLibraryVisible"
+            type="image"
+            :title="imageLibraryTitle"
+            :drama-id="ctx?.drama?.value?.id"
+            @pick="onLibraryImagePick"
           />
         </div>
       </template>
@@ -179,6 +187,7 @@ const ctx = useCanvasContext()
 const busy = ref(false)
 const universalBusy = ref('')
 const universalText = ref('')
+const imageLibraryVisible = ref(false)
 const videoLibraryVisible = ref(false)
 const audioLibraryVisible = ref(false)
 const libraryPreviewVisible = ref(false)
@@ -314,6 +323,12 @@ const libraryPreviewUrl = computed(() => {
   return props.videoRecord?.video_url || props.url || ''
 })
 
+const imageLibraryTitle = computed(() => {
+  if (props.frameKind === 'first') return '从素材库选择首帧图'
+  if (props.frameKind === 'last') return '从素材库选择尾帧图'
+  return '从素材库选择分镜图'
+})
+
 watch(
   () => [props.summary, props.storyboard?.universal_segment_text],
   ([summaryValue, storyboardValue]) => {
@@ -321,6 +336,77 @@ watch(
   },
   { immediate: true }
 )
+
+/** 素材库图片直接复用为该分镜图、首帧或尾帧（不生成、不计费） */
+async function onLibraryImagePick(asset) {
+  const sbId = props.storyboard?.id
+  if (!sbId) return
+  const imageUrl = libraryAssetUrl(asset, 'image')
+  const localPath = libraryAssetLocalPath(asset, 'image')
+  if (!imageUrl && !localPath) return ElMessage.error('该素材缺少可用地址')
+  attachBusy.value = true
+  const focusNodeId = props.nodeId || sbNodeId.value
+  const statusMessage = imageAttachStatusMessage()
+  ctx?.nodeStatus?.set(focusNodeId, { step: 'image', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'image', message: statusMessage })
+  try {
+    await storyboardsAPI.update(sbId, imageAttachPayload(imageUrl, localPath))
+    const resultUrl = imageUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : '')
+    ElMessage.success(imageAttachSuccessMessage())
+    await ctx?.refreshDrama?.(true)
+    markNodeSuccess(imageAttachSuccessMessage(), {
+      ...libraryAssetStatusPayload(asset, 'image'),
+      resultUrl,
+      resultType: 'image',
+      resultLabel: imageAttachResultLabel(asset),
+      autoClear: false,
+    })
+    if (ctx?.focusCanvasNode) await ctx.focusCanvasNode(focusNodeId)
+    else if (focusNodeId) ctx?.setFocusedNode?.(focusNodeId)
+  } catch (e) {
+    const message = e?.message || '复用图片失败'
+    markLibraryAttachFailure(focusNodeId, 'image', asset, message)
+    ElMessage.error(message)
+  } finally {
+    attachBusy.value = false
+    clearRunningStatus(focusNodeId)
+    clearRunningStatus(sbNodeId.value)
+  }
+}
+
+function imageAttachPayload(imageUrl, localPath) {
+  if (props.frameKind === 'last') {
+    return {
+      last_frame_image_id: null,
+      last_frame_image_url: localPath ? null : imageUrl,
+      last_frame_local_path: localPath || null,
+    }
+  }
+  return {
+    ...(props.frameKind === 'first' ? { first_frame_image_id: null } : {}),
+    image_url: localPath ? null : imageUrl,
+    local_path: localPath || null,
+  }
+}
+
+function imageAttachStatusMessage() {
+  if (props.frameKind === 'first') return '素材库首帧挂载中…'
+  if (props.frameKind === 'last') return '素材库尾帧挂载中…'
+  return '素材库分镜图挂载中…'
+}
+
+function imageAttachSuccessMessage() {
+  if (props.frameKind === 'first') return '已将素材库图片设为本镜首帧'
+  if (props.frameKind === 'last') return '已将素材库图片设为本镜尾帧'
+  return '已将素材库图片设为本镜分镜图'
+}
+
+function imageAttachResultLabel(asset) {
+  const name = asset?.name || '素材库图片'
+  if (props.frameKind === 'first') return `首帧：${name}`
+  if (props.frameKind === 'last') return `尾帧：${name}`
+  return name
+}
 
 function focusStoryboard() {
   if (sbNodeId.value) ctx?.setFocusedNode?.(sbNodeId.value)
@@ -496,6 +582,11 @@ async function runStep(step) {
 async function retryFailedStep() {
   const retryAction = failedStatus.value?.retryAction
   const asset = failedStatus.value?.libraryAsset
+  if (retryAction === 'attach_library_image' && asset) {
+    clearFailedStatus()
+    await onLibraryImagePick(asset)
+    return
+  }
   if (retryAction === 'attach_library_video' && asset) {
     clearFailedStatus()
     await onLibraryVideoPick(asset)
@@ -524,12 +615,14 @@ function markNodeSuccess(message, payload = {}) {
 }
 
 function libraryAssetLocalPath(asset, resultType) {
+  if (resultType === 'image') return asset?.local_path || asset?.image_local_path || ''
   if (resultType === 'audio') return asset?.local_path || asset?.audio_local_path || asset?.voice_local_path || ''
   if (resultType === 'video') return asset?.local_path || asset?.video_local_path || ''
   return asset?.local_path || ''
 }
 
 function libraryAssetUrl(asset, resultType) {
+  if (resultType === 'image') return asset?.asset_url || asset?.display_url || asset?.url || asset?.image_url || ''
   if (resultType === 'audio') return asset?.asset_url || asset?.display_url || asset?.url || asset?.audio_url || asset?.voice_url || ''
   if (resultType === 'video') return asset?.asset_url || asset?.display_url || asset?.url || asset?.video_url || ''
   return asset?.asset_url || asset?.display_url || asset?.url || ''
@@ -556,18 +649,36 @@ function markLibraryAttachFailure(nodeId, resultType, asset, message) {
     dramaId: ctx?.drama?.value?.id || undefined,
     resultUrl: resultUrl || (localPath ? `/static/${String(localPath).replace(/^\/+/, '')}` : ''),
     resultType,
-    resultLabel: asset?.name || (resultType === 'video' ? '素材库视频' : '素材库音频'),
+    resultLabel: asset?.name || libraryAttachDefaultLabel(resultType),
     savedAssetId: asset?.raw_id || asset?.id || '',
     savedAssetName: asset?.name || '',
     savedAssetLocalPath: localPath,
-    retryAction: resultType === 'video' ? 'attach_library_video' : 'attach_library_audio',
-    retryActionLabel: resultType === 'video' ? '重试挂载素材库视频' : '重试挂载素材库音频',
+    retryAction: libraryAttachRetryAction(resultType),
+    retryActionLabel: libraryAttachRetryLabel(resultType),
     libraryAsset: asset,
     recoverable: true,
     autoClear: false,
   }
   ctx?.nodeStatus?.fail(nodeId, status)
   ctx?.nodeStatus?.fail(sbNodeId.value, status)
+}
+
+function libraryAttachRetryAction(resultType) {
+  if (resultType === 'image') return 'attach_library_image'
+  if (resultType === 'video') return 'attach_library_video'
+  return 'attach_library_audio'
+}
+
+function libraryAttachRetryLabel(resultType) {
+  if (resultType === 'image') return '重试挂载素材库图片'
+  if (resultType === 'video') return '重试挂载素材库视频'
+  return '重试挂载素材库音频'
+}
+
+function libraryAttachDefaultLabel(resultType) {
+  if (resultType === 'image') return '素材库图片'
+  if (resultType === 'video') return '素材库视频'
+  return '素材库音频'
 }
 
 function clearFailedStatus() {
