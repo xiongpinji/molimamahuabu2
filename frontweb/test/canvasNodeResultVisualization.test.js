@@ -286,7 +286,17 @@ test('运行队列区分成功状态并提供结果操作', () => {
 
 test('媒体节点卡片从运行状态恢复结果、失败原因和重试步骤', () => {
   assert.match(mediaNodeSource, /const runtimeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)
-  assert.match(mediaNodeSource, /runtimeStatus\.value\?\.resultUrl/)
+  assert.match(mediaNodeSource, /const imagesBySbId = computed\(\(\) => ctx\?\.imagesBySbId\?\.value \|\| \{\}\)/)
+  assert.match(mediaNodeSource, /const videosBySbId = computed\(\(\) => ctx\?\.videosBySbId\?\.value \|\| \{\}\)/)
+  assert.match(mediaNodeSource, /const fallbackResultUrl = computed\(\(\) => \{/)
+  assert.match(mediaNodeSource, /props\.data\.frameKind === 'first'[\s\S]*resolveSbFirstImageRecord\(sb, imagesBySbId\.value\)/)
+  assert.match(mediaNodeSource, /props\.data\.frameKind === 'last'[\s\S]*resolveSbLastImageRecord\(sb, imagesBySbId\.value\)/)
+  assert.match(mediaNodeSource, /resolveSbMainImageRecord\(sb, imagesBySbId\.value\)/)
+  assert.match(mediaNodeSource, /videoRecordUrl\(props\.data\.videoRecord \|\| resolveSbVideoRecord\(sb, videosBySbId\.value\)\)/)
+  assert.match(mediaNodeSource, /sb\.audio_local_path[\s\S]*sb\.audio_url[\s\S]*sb\.narration_audio_local_path[\s\S]*sb\.narration_audio_url/)
+  assert.match(mediaNodeSource, /const resultUrl = computed\(\(\) => runtimeStatus\.value\?\.resultUrl \|\| props\.data\.url \|\| fallbackResultUrl\.value\)/)
+  assert.match(mediaNodeSource, /const isRecoveredResult = computed/)
+  assert.match(mediaNodeSource, /key: 'recovered', label: '已恢复'/)
   assert.match(mediaNodeSource, /status\?\.errorDetail \|\| status\?\.detail/)
   assert.match(mediaNodeSource, /failureReason\.value/)
   assert.match(mediaNodeSource, /runtimeStatus\.value\?\.retryStep \|\| props\.data\.kind/)

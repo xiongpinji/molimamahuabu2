@@ -71,6 +71,15 @@ import { Handle, Position } from '@vue-flow/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
+import { audioUrl } from '@/utils/mediaUrl'
+import {
+  imageRecordUrl,
+  resolveSbFirstImageRecord,
+  resolveSbLastImageRecord,
+  resolveSbMainImageRecord,
+  resolveSbVideoRecord,
+  videoRecordUrl,
+} from '@/utils/storyboardMedia'
 import CanvasMediaPanel from './CanvasMediaPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -88,11 +97,35 @@ const isNodeBusy = computed(() => {
 })
 
 const runtimeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
+const imagesBySbId = computed(() => ctx?.imagesBySbId?.value || {})
+const videosBySbId = computed(() => ctx?.videosBySbId?.value || {})
 const nodeFailed = computed(() => runtimeStatus.value?.step === 'failed')
 const failureReason = computed(() => {
   const status = runtimeStatus.value
   return status?.errorDetail || status?.detail || (nodeFailed.value ? status?.message : '') || props.data.generationError || ''
 })
+
+const fallbackResultUrl = computed(() => {
+  const sb = props.data.storyboard || {}
+  if (props.data.kind === 'image') {
+    if (props.data.frameKind === 'first') return imageRecordUrl(resolveSbFirstImageRecord(sb, imagesBySbId.value))
+    if (props.data.frameKind === 'last') return imageRecordUrl(resolveSbLastImageRecord(sb, imagesBySbId.value))
+    return imageRecordUrl(resolveSbMainImageRecord(sb, imagesBySbId.value))
+  }
+  if (props.data.kind === 'video') {
+    return videoRecordUrl(props.data.videoRecord || resolveSbVideoRecord(sb, videosBySbId.value))
+  }
+  if (props.data.kind === 'audio') {
+    return audioUrl(
+      sb.audio_local_path
+      || sb.audio_url
+      || sb.narration_audio_local_path
+      || sb.narration_audio_url
+    )
+  }
+  return ''
+})
+const isRecoveredResult = computed(() => Boolean(fallbackResultUrl.value) && !runtimeStatus.value?.resultUrl && !props.data.url)
 
 const isProcessing = computed(() => isNodeBusy.value || props.data.storyboard?.status === 'processing')
 
@@ -101,6 +134,7 @@ const resultState = computed(() => {
   if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
   if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
   if (props.data.kind === 'video' && props.data.videoRecord?.provider === 'library') return { key: 'library', label: '素材库' }
+  if (isRecoveredResult.value) return { key: 'recovered', label: '已恢复' }
   if (resultUrl.value) return { key: 'ready', label: '已生成' }
   if (props.data.generationWarning) return { key: 'warn', label: '需检查' }
   return { key: 'empty', label: '待生成' }
@@ -120,7 +154,7 @@ const kindLabel = computed(() => {
 })
 
 const canRetry = computed(() => Boolean(runtimeStatus.value?.retryStep) || ['image', 'video', 'audio'].includes(props.data.kind))
-const resultUrl = computed(() => props.data.url || runtimeStatus.value?.resultUrl || '')
+const resultUrl = computed(() => runtimeStatus.value?.resultUrl || props.data.url || fallbackResultUrl.value)
 const previewLabel = computed(() => {
   if (props.data.kind === 'image') return '预览图'
   if (props.data.kind === 'video') return '预览视频'
@@ -289,6 +323,7 @@ async function copyResultLink() {
 }
 .state-busy { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
 .state-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.state-recovered { color: #2dd4bf; background: rgba(45, 212, 191, 0.14); }
 .state-library { color: #2dd4bf; background: rgba(45, 212, 191, 0.14); }
 .state-editable { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
 .state-failed { color: #f87171; background: rgba(248, 113, 113, 0.14); }
