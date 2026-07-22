@@ -400,6 +400,12 @@ test('节点运行结果浮层提供成功和失败后的闭环操作', () => {
 test('项目素材节点聚焦后提供配置面板和挂载动作', () => {
   assert.match(projectAssetNodeSource, /v-if="data\.focused"/)
   assert.match(projectAssetNodeSource, /素材配置/)
+  assert.match(projectAssetNodeSource, /import CanvasNodeExecutionStrip from '\.\/CanvasNodeExecutionStrip\.vue'/)
+  assert.match(projectAssetNodeSource, /<CanvasNodeExecutionStrip/)
+  assert.match(projectAssetNodeSource, /:status="activeNodeStatus"/)
+  assert.match(projectAssetNodeSource, /@retry="retryFailedStep"/)
+  assert.match(projectAssetNodeSource, /const activeNodeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)
+  assert.match(projectAssetNodeSource, /async function retryFailedStep\(\)/)
   assert.match(projectAssetNodeSource, /closePanel/)
   assert.match(projectAssetNodeSource, /复制到提示词/)
   assert.match(projectAssetNodeSource, /指派到选中分镜/)

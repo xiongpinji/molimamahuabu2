@@ -25,6 +25,11 @@
         <span>素材配置</span>
         <button type="button" @click.stop="closePanel">收起</button>
       </div>
+      <CanvasNodeExecutionStrip
+        :status="activeNodeStatus"
+        :disabled="assigning"
+        @retry="retryFailedStep"
+      />
       <p class="asset-ref">{{ referenceText || '该素材缺少可复制引用' }}</p>
       <div class="panel-actions">
         <button type="button" :disabled="!url" @click.stop="openAsset">打开预览</button>
@@ -43,6 +48,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetMediaUrl } from '@/utils/mediaUrl'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
+import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -55,6 +61,7 @@ const typeLabel = computed(() => ({ image: '图片素材', video: '视频素材'
 const url = computed(() => assetMediaUrl(props.data.asset))
 const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
 const assetId = computed(() => referenceAssetId.value)
+const activeNodeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
   const id = referenceAssetId.value
@@ -87,6 +94,11 @@ async function assignToSelectedStoryboard() {
   } finally {
     assigning.value = false
   }
+}
+
+async function retryFailedStep() {
+  if (!activeNodeStatus.value?.retryStep || assigning.value) return
+  await assignToSelectedStoryboard()
 }
 
 function closePanel() {
