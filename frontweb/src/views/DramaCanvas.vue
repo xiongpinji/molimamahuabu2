@@ -1208,6 +1208,7 @@ function canvasNodeActions(node) {
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
   }
+  if (canOpenNodeProduction(node)) actions.unshift('open-node-production')
   if (PANEL_NODE_TYPES.has(node.type)) actions.unshift('open-node-config')
   if (node.type === 'canvasProjectAsset') {
     actions.unshift('assign-project-asset-selected')
@@ -1231,6 +1232,12 @@ function canvasNodeActions(node) {
     }
   }
   return [...new Set(actions)]
+}
+
+function canOpenNodeProduction(node) {
+  if (!node) return false
+  if (['canvasStoryboard', 'canvasScript', 'canvasEpisode', 'canvasAsset'].includes(node.type)) return true
+  return Boolean(getStoryboardRefFromNode(node)?.storyboardId)
 }
 
 function findGraphNode(nodeId) {
@@ -2410,6 +2417,8 @@ async function runWorkflowFromNode(node) {
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     openNodeConfig(node)
+  } else if (type === 'open-node-production') {
+    onNodeDoubleClick({ node })
   } else if (type === 'open-node-result') {
     openNodeResult(node)
   } else if (type === 'copy-node-result') {

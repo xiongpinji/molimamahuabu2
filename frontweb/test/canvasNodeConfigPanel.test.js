@@ -19,8 +19,13 @@ const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/compo
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
   assert.match(contextMenuSource, /打开节点配置/)
+  assert.match(contextMenuSource, /type: 'open-node-production'/)
+  assert.match(contextMenuSource, /进入制作页/)
   assert.match(canvasSource, /if \(type === 'open-node-config'\) \{/)
   assert.match(canvasSource, /openNodeConfig\(node\)/)
+  assert.match(canvasSource, /else if \(type === 'open-node-production'\) \{[\s\S]*onNodeDoubleClick\(\{ node \}\)/)
+  assert.match(canvasSource, /function canOpenNodeProduction\(node\)/)
+  assert.match(canvasSource, /if \(canOpenNodeProduction\(node\)\) actions\.unshift\('open-node-production'\)/)
   assert.match(canvasSource, /function openNodeConfig\(node\)/)
   assert.match(canvasSource, /PANEL_NODE_TYPES\.has\(node\.type\)[\s\S]*focusedNodeId\.value = node\.id/)
   assert.match(canvasSource, /'canvasProjectAsset'/)
