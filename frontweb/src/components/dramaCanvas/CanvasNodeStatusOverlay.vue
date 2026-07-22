@@ -8,6 +8,7 @@
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
+    <span v-if="generationAuditText" class="generation-audit">{{ generationAuditText }}</span>
     <span v-if="upstreamReferenceText" class="reference-text">{{ upstreamReferenceText }}</span>
     <span v-if="actionErrorText" class="action-error">{{ actionErrorText }}</span>
     <div v-if="hasResultPreview" class="result-preview" :class="'result-' + resultPreviewType">
@@ -38,6 +39,7 @@
       <span class="action-group action-group-flow" aria-label="流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+        <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
         <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
         <button v-if="status.nextStep" type="button" @click.stop="runNextStep">{{ status.nextLabel || '继续下游' }}</button>
         <button type="button" @click.stop="dismissStatus">收起</button>
@@ -53,6 +55,7 @@
       <span class="action-group action-group-flow" aria-label="失败流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
+        <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
         <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
         <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
         <button type="button" @click.stop="dismissStatus">收起</button>
@@ -133,6 +136,26 @@ const metaText = computed(() => {
   if (elapsedText.value) parts.push(`耗时 ${elapsedText.value}`)
   if (Number.isFinite(Number(status.value?.progress))) parts.push(`${Number(status.value.progress)}%`)
   if (status.value?.taskId) parts.push(`任务 ${status.value.taskId}`)
+  if (status.value?.videoGenerationId) parts.push(`记录 ${status.value.videoGenerationId}`)
+  if (status.value?.model) parts.push(`模型 ${status.value.model}`)
+  return parts.join(' · ')
+})
+
+const requestPayloadText = computed(() => {
+  const payload = status.value?.requestPayload
+  if (!payload || typeof payload !== 'object') return ''
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload || '')
+  }
+})
+
+const generationAuditText = computed(() => {
+  const parts = []
+  if (status.value?.videoGenerationId) parts.push(`生成记录 ${status.value.videoGenerationId}`)
+  if (status.value?.model) parts.push(`模型 ${status.value.model}`)
+  if (requestPayloadText.value) parts.push('真实请求已记录')
   return parts.join(' · ')
 })
 
@@ -188,7 +211,7 @@ const effectiveResultUrl = computed(() => effectiveSavedAsset.value?.url || stat
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
   return parts.join('\n')
 })
 
@@ -236,6 +259,10 @@ function copyResultLink() {
 
 function copyUpstreamReferences() {
   copyText(upstreamReferenceUrls.value.join('\n'), '上游引用已复制', '上游引用（请手动复制）')
+}
+
+function copyRequestPayload() {
+  copyText(requestPayloadText.value, '真实请求已复制', '真实请求（请手动复制）')
 }
 
 function copyAssetReference() {
@@ -597,6 +624,7 @@ onBeforeUnmount(() => {
 }
 .meta,
 .result-text,
+.generation-audit,
 .reference-text,
 .action-error,
 .failed-hint {
@@ -612,6 +640,9 @@ onBeforeUnmount(() => {
 }
 .reference-text {
   color: #c7d2fe;
+}
+.generation-audit {
+  color: #fde68a;
 }
 .action-error {
   color: #fecaca;
