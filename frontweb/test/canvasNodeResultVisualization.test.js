@@ -12,6 +12,7 @@ const assetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dr
 const assetGenerateSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasAssetGenerate.js', import.meta.url)), 'utf8')
 const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptNode.vue', import.meta.url)), 'utf8')
 const scriptActionsSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasScript.js', import.meta.url)), 'utf8')
+const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -200,4 +201,18 @@ test('脚本节点卡片显示保存和提取失败原因并可按步骤重试',
   assert.match(scriptActionsSource, /function successScriptStatus\(episodeId, step, message\)/)
   assert.match(scriptActionsSource, /nodeStatus\?\.success\(scriptNodeId\(episodeId\), \{/)
   assert.match(scriptActionsSource, /keepOrClearScriptStatus\(episodeId\)/)
+})
+
+test('项目素材节点卡片可预览并复制素材引用', () => {
+  assert.match(projectAssetNodeSource, /class="asset-actions"/)
+  assert.match(projectAssetNodeSource, /@click\.stop="openAsset"/)
+  assert.match(projectAssetNodeSource, /@click\.stop="copyReference"/)
+  assert.match(projectAssetNodeSource, /const referenceText = computed/)
+  assert.match(projectAssetNodeSource, /@素材\(\$\{name\}#\$\{asset\.id\}\)/)
+  assert.match(projectAssetNodeSource, /window\.open\(url\.value, '_blank', 'noopener,noreferrer'\)/)
+  assert.match(projectAssetNodeSource, /navigator\.clipboard\?\.writeText/)
+  assert.match(projectAssetNodeSource, /ElMessage\.success\('素材引用已复制'\)/)
+  assert.match(projectAssetNodeSource, /ElMessageBox\.alert\(referenceText\.value, '素材引用（请手动复制）'/)
+  assert.match(canvasSource, /function assetReferenceText\(asset\)/)
+  assert.match(canvasSource, /@素材\(\$\{name\}#\$\{asset\.id\}\)/)
 })
