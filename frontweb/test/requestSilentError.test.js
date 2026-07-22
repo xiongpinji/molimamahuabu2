@@ -15,5 +15,13 @@ test('素材和音色 API 列表方法可透传请求配置', () => {
   assert.match(assetsApiSource, /list\(params, config = \{\}\)/)
   assert.match(assetsApiSource, /request\.get\('\/assets', \{ \.\.\.config, params: params \|\| \{\} \}\)/)
   assert.match(charactersApiSource, /listVoiceCatalog\(params, config = \{\}\)/)
-  assert.match(charactersApiSource, /request\.get\('\/voice-catalog', \{ \.\.\.config, params: params \|\| \{\} \}\)/)
+  assert.match(charactersApiSource, /const requestConfig = \{ silentError: true, \.\.\.config, params: params \|\| \{\} \}/)
+  assert.match(charactersApiSource, /request\.get\('\/voice-catalog', requestConfig\)/)
+})
+
+test('音色目录 404 时静默降级读取项目已提取音色素材', () => {
+  assert.match(charactersApiSource, /if \(status !== 404\) throw e/)
+  assert.match(charactersApiSource, /request\.get\('\/assets', \{[\s\S]*silentError: true[\s\S]*type: 'audio'[\s\S]*category: 'voice'/)
+  assert.match(charactersApiSource, /normalizeVoiceAssetCatalog\(items\)/)
+  assert.match(charactersApiSource, /source: 'extracted_voice_asset'/)
 })
