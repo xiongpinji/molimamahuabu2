@@ -67,7 +67,6 @@
           mode="image"
           label="本镜模型"
           compact
-          models-only
           @change="saveStoryboardGenerationOptions"
         />
         <div class="panel-actions">
@@ -96,7 +95,6 @@
           mode="video"
           label="本镜模型"
           compact
-          models-only
           @change="saveStoryboardGenerationOptions"
         />
         <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
@@ -332,6 +330,12 @@ async function saveStoryboardGenerationOptions(patch, next) {
   const payload = {}
   if (Object.hasOwn(patch, 'imageModel')) payload.image_model = next.imageModel || null
   if (Object.hasOwn(patch, 'videoModel')) payload.video_model = next.videoModel || null
+  if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
+    ctx?.updateGenerationOptions?.({
+      ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
+      ...(Object.hasOwn(patch, 'videoResolution') ? { videoResolution: next.videoResolution || '480p' } : {}),
+    })
+  }
   if (!Object.keys(payload).length) return
   try {
     await storyboardsAPI.update(sbId, payload)

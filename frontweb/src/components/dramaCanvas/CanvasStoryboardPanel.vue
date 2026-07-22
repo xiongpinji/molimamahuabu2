@@ -253,9 +253,9 @@
         :model-value="storyboardGenerationOptions"
         label="本镜模型"
         compact
-        models-only
         @change="saveStoryboardGenerationOptions"
       />
+      <div class="generation-scope-hint">模型保存为本镜覆盖；画幅与清晰度保存为项目生成参数。</div>
     </section>
 
     <section class="panel-section">
@@ -891,6 +891,12 @@ async function saveStoryboardGenerationOptions(patch, next) {
   if (Object.hasOwn(patch, 'videoModel')) {
     payload.video_model = String(next.videoModel || '').trim() || null
   }
+  if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
+    ctx?.updateGenerationOptions?.({
+      ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
+      ...(Object.hasOwn(patch, 'videoResolution') ? { videoResolution: next.videoResolution || '480p' } : {}),
+    })
+  }
   if (!Object.keys(payload).length) return
   try {
     await storyboardsAPI.update(props.storyboard.id, payload)
@@ -1093,6 +1099,12 @@ async function runStep(step) {
   font-size: 10px;
   font-weight: 400;
   white-space: nowrap;
+}
+.generation-scope-hint {
+  margin-top: 6px;
+  color: #71717a;
+  font-size: 10px;
+  line-height: 1.4;
 }
 .relation-row {
   display: flex;

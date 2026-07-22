@@ -35,6 +35,18 @@ test('分镜配置面板保留保存、回显刷新和单镜模型配置', () =>
   assert.match(storyboardPanelSource, /function saveStoryboardGenerationOptions\(patch, next\)/)
 })
 
+test('节点配置面板支持完整生成参数而非只改模型', () => {
+  assert.doesNotMatch(storyboardPanelSource, /<CanvasGenerationOptions[\s\S]*models-only[\s\S]*@change="saveStoryboardGenerationOptions"[\s\S]*\/>/)
+  assert.match(storyboardPanelSource, /画幅与清晰度保存为项目生成参数/)
+  assert.match(storyboardPanelSource, /Object\.hasOwn\(patch, 'aspectRatio'\)/)
+  assert.match(storyboardPanelSource, /Object\.hasOwn\(patch, 'videoResolution'\)/)
+  assert.match(storyboardPanelSource, /ctx\?\.updateGenerationOptions\?\.\(/)
+  assert.doesNotMatch(mediaPanelSource, /<CanvasGenerationOptions[\s\S]*models-only[\s\S]*@change="saveStoryboardGenerationOptions"[\s\S]*\/>/)
+  assert.match(mediaPanelSource, /Object\.hasOwn\(patch, 'aspectRatio'\)/)
+  assert.match(mediaPanelSource, /Object\.hasOwn\(patch, 'videoResolution'\)/)
+  assert.match(mediaPanelSource, /ctx\?\.updateGenerationOptions\?\.\(/)
+})
+
 test('分镜配置面板保留素材库指派、摄影控制、声音策略和连续性入口', () => {
   assert.match(storyboardPanelSource, /从素材库指派参考图/)
   assert.match(storyboardPanelSource, /command="first_frame"/)
