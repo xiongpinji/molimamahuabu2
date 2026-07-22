@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 const overlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
+const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -82,4 +83,21 @@ test('右键节点菜单可直接处理结果和失败重试', () => {
   assert.match(canvasSource, /if \(type === 'open-node-result'\)/)
   assert.match(canvasSource, /await copyNodeAssetReference\(node\)/)
   assert.match(canvasSource, /await retryFailedNode\(node\)/)
+})
+
+test('画布分镜节点回显并复制已指派素材库参考', () => {
+  assert.match(canvasSource, /const storyboardAssignedAssets = ref\(\{\}\)/)
+  assert.match(canvasSource, /assignedAssets: storyboardAssignedAssets\.value\[storyboardId\] \|\| \[\]/)
+  assert.match(canvasSource, /function nodeAssignedAssets\(node\)/)
+  assert.match(canvasSource, /function assetReferenceText\(asset\)/)
+  assert.match(canvasSource, /function copyNodeAssignedAssetReference\(node\)/)
+  assert.match(canvasSource, /actions\.unshift\('copy-node-assigned-asset-ref'\)/)
+  assert.match(canvasSource, /await copyNodeAssignedAssetReference\(node\)/)
+  assert.match(canvasSource, /storyboardAssignedAssets\.value = assets\.reduce/)
+  assert.match(contextMenuSource, /type: 'copy-node-assigned-asset-ref'/)
+  assert.match(contextMenuSource, /复制指派素材/)
+  assert.match(storyboardNodeSource, /const assignedAssets = computed/)
+  assert.match(storyboardNodeSource, /class="reference-strip"/)
+  assert.match(storyboardNodeSource, /assetThumbUrl\(asset\)/)
+  assert.match(storyboardNodeSource, /ctx\?\.setFocusedNode\?\.\(props\.id\)/)
 })

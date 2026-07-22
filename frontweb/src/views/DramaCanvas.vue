@@ -457,6 +457,7 @@ const edges = ref([])
 const allGraphNodes = ref([])
 const allGraphEdges = ref([])
 const projectImageAssets = ref([])
+const storyboardAssignedAssets = ref({})
 const canvasVirtualized = ref(false)
 const filterEpisodeId = ref(null)
 const highlightAssetId = ref(null)
@@ -717,7 +718,17 @@ function rebuildGraph() {
     videosBySbId: videosBySbId.value,
     projectAssets: projectImageAssets.value,
   })
-  let nextNodes = graph.nodes
+  let nextNodes = graph.nodes.map((node) => {
+    const storyboardId = node.type === 'canvasStoryboard' ? Number(node.data?.storyboard?.id) : null
+    if (!Number.isFinite(storyboardId)) return node
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        assignedAssets: storyboardAssignedAssets.value[storyboardId] || [],
+      },
+    }
+  })
   let nextEdges = stampEdgeBaseStyles(graph.edges)
   if (highlightAssetId.value) {
     const highlighted = applyCanvasHighlight(nextNodes, nextEdges, highlightAssetId.value, drama.value)
@@ -906,6 +917,7 @@ function canvasNodeActions(node) {
     actions.unshift('open-node-result', 'copy-node-result')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
+  if (nodeAssignedAssets(node).length) actions.unshift('copy-node-assigned-asset-ref')
   if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
@@ -1034,6 +1046,20 @@ function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
   return videoUrlFromNode(node)
 }
 
+function nodeAssignedAssets(node) {
+  const fromNode = Array.isArray(node?.data?.assignedAssets) ? node.data.assignedAssets : []
+  if (fromNode.length) return fromNode
+  const sb = storyboardForNode(node)
+  return sb?.id ? (storyboardAssignedAssets.value[Number(sb.id)] || []) : []
+}
+
+function assetReferenceText(asset) {
+  if (!asset?.id) return ''
+  const name = asset.name || asset.title || asset.filename || '素材'
+  const url = asset.asset_url || asset.display_url || asset.url || asset.local_path || ''
+  return `@素材(${name}#${asset.id}) ${url}`.trim()
+}
+
 function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
   const sb = storyboardForNode(node)
   if (!sb?.id || !status?.resultType) return ''
@@ -1070,6 +1096,16 @@ async function copyNodeAssetReference(node) {
   const name = status.savedAssetName || '素材'
   const url = status.savedAssetUrl || status.resultUrl || ''
   await copyCanvasText(`@素材(${name}#${status.savedAssetId}) ${url}`.trim(), '素材引用已复制', '素材引用（请手动复制）')
+}
+
+async function copyNodeAssignedAssetReference(node) {
+  const firstAsset = nodeAssignedAssets(node)[0]
+  const text = assetReferenceText(firstAsset)
+  if (!text) {
+    ElMessage.warning('该分镜暂无指派素材')
+    return
+  }
+  await copyCanvasText(text, '指派素材引用已复制', '指派素材引用（请手动复制）')
 }
 
 async function focusNodeResult(node) {
@@ -1254,6 +1290,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeResult(node)
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
+  } else if (type === 'copy-node-assigned-asset-ref') {
+    await copyNodeAssignedAssetReference(node)
   } else if (type === 'focus-node-result') {
     await focusNodeResult(node)
   } else if (type === 'retry-node-failed') {
@@ -1748,10 +1786,19 @@ async function onDirectorStateChange(nextState, acknowledge) {
 async function loadProjectImageAssets() {
   if (!dramaId.value) {
     projectImageAssets.value = []
+    storyboardAssignedAssets.value = {}
     return
   }
   const result = await assetsAPI.list({ drama_id: dramaId.value, type: 'image', page_size: 100 })
-  projectImageAssets.value = Array.isArray(result) ? result : (result?.items || [])
+  const assets = Array.isArray(result) ? result : (result?.items || [])
+  projectImageAssets.value = assets
+  storyboardAssignedAssets.value = assets.reduce((map, asset) => {
+    const storyboardId = Number(asset?.storyboard_id)
+    if (!Number.isFinite(storyboardId)) return map
+    if (!map[storyboardId]) map[storyboardId] = []
+    map[storyboardId].push(asset)
+    return map
+  }, {})
 }
 
 async function onDirectorAssetCreated(asset) {

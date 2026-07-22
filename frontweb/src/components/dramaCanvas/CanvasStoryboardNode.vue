@@ -27,6 +27,13 @@
       <div v-if="failureReason" class="failure-line" :title="failureReason">
         {{ failureReason }}
       </div>
+      <div v-if="assignedAssets.length" class="reference-strip" title="已从素材库指派到该分镜">
+        <span class="reference-label">参考 {{ assignedAssets.length }}</span>
+        <span v-for="asset in assignedAssets.slice(0, 3)" :key="asset.id || asset.name" class="reference-thumb">
+          <img v-if="assetThumbUrl(asset)" :src="assetThumbUrl(asset)" alt="" />
+          <span v-else>{{ asset.name || '素材' }}</span>
+        </span>
+      </div>
       <div v-if="hasResultState" class="result-actions">
         <button v-if="imageUrl" type="button" @click.stop="openResult(imageUrl)">预览图</button>
         <button v-if="videoUrl" type="button" @click.stop="openResult(videoUrl)">预览视频</button>
@@ -94,6 +101,7 @@ const imageUrl = computed(() => imageRecordUrl(resolveSbMainImageRecord(props.da
 const videoUrl = computed(() => videoRecordUrl(resolveSbVideoRecord(props.data.storyboard, videosBySbId.value)))
 const audioPath = computed(() => audioUrl(props.data.storyboard?.audio_local_path || props.data.storyboard?.narration_audio_local_path))
 const primaryResultUrl = computed(() => videoUrl.value || imageUrl.value || audioPath.value)
+const assignedAssets = computed(() => Array.isArray(props.data.assignedAssets) ? props.data.assignedAssets : [])
 const failureReason = computed(() => {
   const sb = props.data.storyboard || {}
   return sb.error_msg || sb.error_message || sb.generation_error || ''
@@ -103,6 +111,13 @@ const hasResultState = computed(() => Boolean(imageUrl.value || videoUrl.value |
 function onSelect(event) {
   ctx?.selectStoryboard?.(props.data.storyboard?.id, event)
   ctx?.setFocusedNode?.(props.id)
+}
+
+function assetThumbUrl(asset) {
+  const url = asset?.display_url || asset?.asset_url || asset?.url || asset?.local_path || ''
+  if (!url) return ''
+  if (/^https?:\/\//.test(url) || url.startsWith('/')) return url
+  return `/static/${String(url).replace(/^\/+/, '')}`
 }
 
 function retryStep(step) {
@@ -238,6 +253,35 @@ async function copyResultLink() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.reference-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.reference-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: #c4b5fd;
+}
+.reference-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  color: #c4b5fd;
+  font-size: 9px;
+  line-height: 24px;
+  text-align: center;
+}
+.reference-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .result-actions {
   display: flex;
