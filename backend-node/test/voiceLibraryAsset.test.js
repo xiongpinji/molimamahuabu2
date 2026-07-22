@@ -99,4 +99,47 @@ describe('voice library assets', () => {
       db.close();
     }
   });
+
+  it('can include global assets when listing project-scoped reusable assets', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const projectAsset = assetService.create(db, null, {
+        drama_id: dramaId,
+        name: '本剧参考图',
+        type: 'image',
+        url: '/static/projects/demo/project.png',
+      });
+      const globalAsset = assetService.create(db, null, {
+        drama_id: null,
+        name: '全局参考图',
+        type: 'image',
+        url: '/static/projects/demo/global.png',
+      });
+      assetService.create(db, null, {
+        drama_id: null,
+        name: '全局音频',
+        type: 'audio',
+        url: '/static/projects/demo/global.mp3',
+      });
+
+      const scopedOnly = assetService.list(db, {
+        drama_id: dramaId,
+        type: 'image',
+        page: 1,
+        page_size: 20,
+      });
+      assert.deepEqual(scopedOnly.items.map((item) => item.id), [projectAsset.id]);
+
+      const withGlobal = assetService.list(db, {
+        drama_id: dramaId,
+        include_global: '1',
+        type: 'image',
+        page: 1,
+        page_size: 20,
+      });
+      assert.deepEqual(new Set(withGlobal.items.map((item) => item.id)), new Set([projectAsset.id, globalAsset.id]));
+    } finally {
+      db.close();
+    }
+  });
 });

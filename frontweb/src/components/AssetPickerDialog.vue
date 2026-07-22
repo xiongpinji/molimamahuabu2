@@ -185,7 +185,10 @@ async function load() {
     const wantsAll = props.type === 'all'
     const params = { page: 1, page_size: 100 }
     if (!wantsAll) params.type = props.type
-    if (props.dramaId) params.drama_id = props.dramaId
+    if (props.dramaId) {
+      params.drama_id = props.dramaId
+      params.include_global = 1
+    }
     if (keyword.value) params.keyword = keyword.value
     const sources = [
       {

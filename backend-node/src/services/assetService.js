@@ -2,7 +2,11 @@ function list(db, query) {
   let sql = 'FROM assets WHERE deleted_at IS NULL';
   const params = [];
   if (query.drama_id) {
-    sql += ' AND drama_id = ?';
+    if (query.include_global === '1' || query.include_global === 1 || query.include_global === true) {
+      sql += ' AND (drama_id = ? OR drama_id IS NULL)';
+    } else {
+      sql += ' AND drama_id = ?';
+    }
     params.push(query.drama_id);
   }
   if (query.type) {

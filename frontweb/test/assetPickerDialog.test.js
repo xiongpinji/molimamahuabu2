@@ -7,7 +7,8 @@ const source = readFileSync(fileURLToPath(new URL('../src/components/AssetPicker
 
 test('素材选择弹窗按项目范围加载项目素材，并合并角色/场景/道具库图片', () => {
   assert.match(source, /assetsAPI\.list\(params, \{ silentError: true \}\)/)
-  assert.match(source, /if \(props\.dramaId\) params\.drama_id = props\.dramaId/)
+  assert.match(source, /if \(props\.dramaId\) \{[\s\S]*params\.drama_id = props\.dramaId[\s\S]*params\.include_global = 1[\s\S]*\}/)
+  assert.match(source, /params\.include_global = 1/)
   assert.match(source, /characterLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
   assert.match(source, /sceneLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
   assert.match(source, /propLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
