@@ -2990,12 +2990,27 @@ function onViewportChange(viewport) {
   scheduleVirtualization()
 }
 
+function syncCanvasViewportFromFlow() {
+  const viewport = canvasFlowApi.value?.getViewport?.()
+  if (!viewport) return
+  currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+  scheduleVirtualization()
+}
+
 function onCanvasWheel(event) {
   if (!event.ctrlKey && !event.metaKey) return
   event.preventDefault()
   event.stopPropagation()
-  if (event.deltaY < 0) canvasFlowApi.value?.zoomIn?.({ duration: 0 })
-  if (event.deltaY > 0) canvasFlowApi.value?.zoomOut?.({ duration: 0 })
+  const action = event.deltaY < 0
+    ? canvasFlowApi.value?.zoomIn?.({ duration: 0 })
+    : event.deltaY > 0
+      ? canvasFlowApi.value?.zoomOut?.({ duration: 0 })
+      : null
+  if (action && typeof action.finally === 'function') {
+    action.finally(syncCanvasViewportFromFlow)
+  } else {
+    syncCanvasViewportFromFlow()
+  }
 }
 
 function toggleSidebar() {
