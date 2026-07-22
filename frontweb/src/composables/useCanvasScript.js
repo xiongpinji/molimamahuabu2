@@ -72,19 +72,48 @@ function extractEntitySnapshot(drama) {
   }
 }
 
-function firstNewEntityNodeId(before, afterDrama, step) {
-  const config = {
-    extract_chars: { items: afterDrama?.characters || [], beforeIds: before?.characters, prefix: 'char' },
-    extract_scenes: { items: afterDrama?.scenes || [], beforeIds: before?.scenes, prefix: 'scene' },
-    extract_props: { items: afterDrama?.props || [], beforeIds: before?.props, prefix: 'prop' },
+function entityExtractConfig(afterDrama, before, step) {
+  return {
+    extract_chars: { items: afterDrama?.characters || [], beforeIds: before?.characters, prefix: 'char', label: '角色' },
+    extract_scenes: { items: afterDrama?.scenes || [], beforeIds: before?.scenes, prefix: 'scene', label: '场景' },
+    extract_props: { items: afterDrama?.props || [], beforeIds: before?.props, prefix: 'prop', label: '道具' },
   }[step]
-  if (!config) {
-    return firstNewEntityNodeId(before, afterDrama, 'extract_chars')
-      || firstNewEntityNodeId(before, afterDrama, 'extract_scenes')
-      || firstNewEntityNodeId(before, afterDrama, 'extract_props')
+}
+
+function entityDisplayName(item, label) {
+  return item?.name || item?.title || item?.description || `${label}${item?.id || ''}`
+}
+
+function newExtractEntities(before, afterDrama, step) {
+  const steps = step === 'extract_all' ? ['extract_chars', 'extract_scenes', 'extract_props'] : [step]
+  return steps.flatMap((itemStep) => {
+    const config = entityExtractConfig(afterDrama, before, itemStep)
+    if (!config) return []
+    return config.items
+      .filter((item) => !config.beforeIds?.has(Number(item?.id)))
+      .map((item) => ({
+        id: item.id,
+        nodeId: item?.id ? `${config.prefix}:${item.id}` : '',
+        label: config.label,
+        name: entityDisplayName(item, config.label),
+      }))
+      .filter((item) => item.id)
+  })
+}
+
+function firstNewEntityNodeId(before, afterDrama, step) {
+  const added = newExtractEntities(before, afterDrama, step).find((item) => item.nodeId)
+  return added?.nodeId || ''
+}
+
+function extractResultMeta(before, afterDrama, step) {
+  const added = newExtractEntities(before, afterDrama, step)
+  if (!added.length) return {}
+  const names = added.slice(0, 4).map((item) => `${item.label}:${item.name}`)
+  return {
+    resultSummary: `新增 ${added.length} 个实体：${names.join('、')}${added.length > 4 ? ' 等' : ''}`,
+    resultReferences: added.map((item) => `@${item.label}(${item.name}#${item.id})`),
   }
-  const added = config.items.find((item) => !config.beforeIds?.has(Number(item?.id)))
-  return added?.id ? `${config.prefix}:${added.id}` : ''
 }
 
 /** 画布：剧本编辑 + 从剧本提取角色/场景/道具 */
@@ -116,12 +145,14 @@ export function useCanvasScript(deps) {
     })
   }
 
-  function successScriptStatus(episodeId, step, message, scriptContent = '', resultNodeId = '') {
+  function successScriptStatus(episodeId, step, message, scriptContent = '', resultNodeId = '', resultMeta = {}) {
     nodeStatus?.success(scriptNodeId(episodeId), {
       message,
       resultType: 'text',
       resultLabel: message,
       resultNodeId: resultNodeId || firstExtractResultNodeId(drama.value, step),
+      resultSummary: resultMeta.resultSummary || '',
+      resultReferences: resultMeta.resultReferences || [],
       promptText: scriptContent || '',
       retryStep: step,
       retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '脚本任务'}`,
@@ -198,7 +229,8 @@ export function useCanvasScript(deps) {
     try {
       const before = extractEntitySnapshot(drama.value)
       await _extractCharacters(episodeId, scriptContent)
-      successScriptStatus(episodeId, 'extract_chars', '角色提取完成', scriptContent, firstNewEntityNodeId(before, drama.value, 'extract_chars'))
+      const resultMeta = extractResultMeta(before, drama.value, 'extract_chars')
+      successScriptStatus(episodeId, 'extract_chars', '角色提取完成', scriptContent, firstNewEntityNodeId(before, drama.value, 'extract_chars'), resultMeta)
       ElMessage.success('角色提取完成')
     } catch (e) {
       failScriptStatus(episodeId, 'extract_chars', e)
@@ -216,7 +248,8 @@ export function useCanvasScript(deps) {
     try {
       const before = extractEntitySnapshot(drama.value)
       await _extractScenes(episodeId)
-      successScriptStatus(episodeId, 'extract_scenes', '场景提取完成', episodeScriptContent(drama.value, episodeId), firstNewEntityNodeId(before, drama.value, 'extract_scenes'))
+      const resultMeta = extractResultMeta(before, drama.value, 'extract_scenes')
+      successScriptStatus(episodeId, 'extract_scenes', '场景提取完成', episodeScriptContent(drama.value, episodeId), firstNewEntityNodeId(before, drama.value, 'extract_scenes'), resultMeta)
       ElMessage.success('场景提取完成')
     } catch (e) {
       failScriptStatus(episodeId, 'extract_scenes', e)
@@ -234,7 +267,8 @@ export function useCanvasScript(deps) {
     try {
       const before = extractEntitySnapshot(drama.value)
       await _extractProps(episodeId)
-      successScriptStatus(episodeId, 'extract_props', '道具提取完成', episodeScriptContent(drama.value, episodeId), firstNewEntityNodeId(before, drama.value, 'extract_props'))
+      const resultMeta = extractResultMeta(before, drama.value, 'extract_props')
+      successScriptStatus(episodeId, 'extract_props', '道具提取完成', episodeScriptContent(drama.value, episodeId), firstNewEntityNodeId(before, drama.value, 'extract_props'), resultMeta)
       ElMessage.success('道具提取完成')
     } catch (e) {
       failScriptStatus(episodeId, 'extract_props', e)
@@ -274,7 +308,8 @@ export function useCanvasScript(deps) {
         successScriptStatus(episodeId, 'extract_all', '角色、场景、道具均已存在', content)
         ElMessage.info('角色、场景、道具均已存在，无需重复提取')
       } else {
-        successScriptStatus(episodeId, 'extract_all', '一键提取完成', content, firstNewEntityNodeId(before, drama.value, 'extract_all'))
+        const resultMeta = extractResultMeta(before, drama.value, 'extract_all')
+        successScriptStatus(episodeId, 'extract_all', '一键提取完成', content, firstNewEntityNodeId(before, drama.value, 'extract_all'), resultMeta)
         ElMessage.success(
           `提取完成：${(drama.value?.characters || []).length} 角色 · ${(drama.value?.scenes || []).length} 场景 · ${(drama.value?.props || []).length} 道具`
         )

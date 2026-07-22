@@ -41,6 +41,7 @@
       </span>
       <span class="action-group action-group-flow" aria-label="流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
+        <button v-if="resultReferencesText" type="button" @click.stop="copyResultReferences">复制结果引用</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
         <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
         <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
@@ -175,8 +176,9 @@ const resultText = computed(() => {
   if (!isSuccess.value) return ''
   const typeMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成' }
   const label = status.value?.resultLabel || typeMap[status.value?.resultType] || ''
+  const summary = status.value?.resultSummary || ''
   const urlHint = effectiveResultUrl.value ? '可在节点卡片预览' : ''
-  return [label, urlHint].filter(Boolean).join(' · ')
+  return [label, summary, urlHint].filter(Boolean).join(' · ')
 })
 
 const failedResultText = computed(() => {
@@ -206,6 +208,11 @@ const upstreamReferenceUrls = computed(() => {
   return [...new Set(urls.map((url) => String(url || '').trim()).filter(Boolean))]
 })
 const upstreamReferenceText = computed(() => upstreamReferenceUrls.value.length ? `已引用 ${upstreamReferenceUrls.value.length} 个上游结果` : '')
+const resultReferences = computed(() => {
+  const references = Array.isArray(status.value?.resultReferences) ? status.value.resultReferences : []
+  return [...new Set(references.map((reference) => String(reference || '').trim()).filter(Boolean))]
+})
+const resultReferencesText = computed(() => resultReferences.value.join('\n'))
 const actionErrorText = computed(() => {
   if (!isSuccess.value) return ''
   return status.value?.actionError || ''
@@ -284,6 +291,10 @@ function copyPrompt() {
 
 function copyResultLink() {
   copyText(effectiveResultUrl.value, '结果链接已复制', '结果链接（请手动复制）')
+}
+
+function copyResultReferences() {
+  copyText(resultReferencesText.value, '结果引用已复制', '结果引用（请手动复制）')
 }
 
 async function focusResultNode() {

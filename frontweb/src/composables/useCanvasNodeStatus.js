@@ -15,6 +15,11 @@ export function createCanvasNodeStatusStore() {
         .map((url) => String(url || '').trim())
         .filter(Boolean))]
       : []
+    const resultReferences = Array.isArray(payload.resultReferences || payload.result_references)
+      ? [...new Set((payload.resultReferences || payload.result_references)
+        .map((reference) => String(reference || '').trim())
+        .filter(Boolean))]
+      : []
     const status = {
       step: payload.step || 'busy',
       message: payload.message || '处理中…',
@@ -25,6 +30,7 @@ export function createCanvasNodeStatusStore() {
       resultNodeId: payload.resultNodeId || payload.result_node_id || '',
       resultType: payload.resultType || payload.result_type || '',
       resultLabel: payload.resultLabel || payload.result_label || '',
+      resultSummary: payload.resultSummary || payload.result_summary || '',
       savedAssetId: payload.savedAssetId || payload.saved_asset_id || '',
       savedAssetName: payload.savedAssetName || payload.saved_asset_name || '',
       savedAssetUrl: payload.savedAssetUrl || payload.saved_asset_url || '',
@@ -42,6 +48,7 @@ export function createCanvasNodeStatusStore() {
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
     if (upstreamReferenceUrls.length) status.upstreamReferenceUrls = upstreamReferenceUrls
+    if (resultReferences.length) status.resultReferences = resultReferences
     assignIfDefined(status, 'workflowId', payload.workflowId || payload.workflow_id)
     assignIfDefined(status, 'runKey', payload.runKey || payload.run_key)
     assignIfDefined(status, 'sourceNodeId', payload.sourceNodeId || payload.source_node_id)

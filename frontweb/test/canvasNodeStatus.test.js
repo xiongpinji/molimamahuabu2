@@ -43,6 +43,7 @@ test('画布节点状态快照可恢复结果和耗时', () => {
     resultNodeId: '',
     resultType: 'image',
     resultLabel: '',
+    resultSummary: '',
     savedAssetId: '',
     savedAssetName: '',
     savedAssetUrl: '',
@@ -89,6 +90,7 @@ test('画布节点状态恢复会保留队列元数据', () => {
     resultNodeId: '',
     resultType: '',
     resultLabel: '',
+    resultSummary: '',
     savedAssetId: '',
     savedAssetName: '',
     savedAssetUrl: '',
@@ -135,6 +137,7 @@ test('画布节点恢复过期运行态会转为可重试失败态', () => {
     resultNodeId: '',
     resultType: '',
     resultLabel: '',
+    resultSummary: '',
     savedAssetId: '',
     savedAssetName: '',
     savedAssetUrl: '',
@@ -182,6 +185,7 @@ test('画布节点状态快照可恢复已保存素材引用', () => {
     resultNodeId: '',
     resultType: 'video',
     resultLabel: '',
+    resultSummary: '',
     savedAssetId: 77,
     savedAssetName: '镜头视频',
     savedAssetUrl: '/static/video.mp4',
@@ -229,6 +233,27 @@ test('画布节点状态会保留上游引用结果用于覆盖层和重试恢�
   restored.restore(store.snapshot(), { now: 51000 })
 
   assert.deepEqual(restored.snapshot()['sbvid:601'].upstreamReferenceUrls, ['/static/a.png', '/static/b.mp4'])
+})
+
+test('画布节点状态会保留脚本提取结果摘要和实体引用', () => {
+  const store = createCanvasNodeStatusStore()
+  store.success('script:901', {
+    message: '角色提取完成',
+    resultType: 'text',
+    resultSummary: '新增 2 个实体：角色:小狐狸、场景:雨林',
+    resultReferences: ['@角色(小狐狸#1)', ' ', '@角色(小狐狸#1)', '@场景(雨林#2)'],
+    autoClear: false,
+    at: 80000,
+  })
+
+  const snapshot = store.snapshot()['script:901']
+  assert.equal(snapshot.resultSummary, '新增 2 个实体：角色:小狐狸、场景:雨林')
+  assert.deepEqual(snapshot.resultReferences, ['@角色(小狐狸#1)', '@场景(雨林#2)'])
+
+  const restored = createCanvasNodeStatusStore()
+  restored.restore(store.snapshot(), { now: 81000 })
+  assert.equal(restored.snapshot()['script:901'].resultSummary, '新增 2 个实体：角色:小狐狸、场景:雨林')
+  assert.deepEqual(restored.snapshot()['script:901'].resultReferences, ['@角色(小狐狸#1)', '@场景(雨林#2)'])
 })
 
 test('画布节点成功状态会保留结果操作失败和重试动作', () => {
