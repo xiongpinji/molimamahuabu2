@@ -2,8 +2,9 @@ import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
+import { assetsAPI } from '@/api/assets'
 import request from '@/utils/request'
-import { storyboardImageUrl } from '@/utils/mediaUrl'
+import { assetImageUrl, storyboardImageUrl } from '@/utils/mediaUrl'
 import {
   DEFAULT_PIPELINE,
   collectStoryboardReferenceAssets,
@@ -19,6 +20,22 @@ import {
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
 import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
+
+/** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
+async function fetchAssignedAssetUrls(storyboardId) {
+  if (!storyboardId) return []
+  try {
+    const res = await assetsAPI.list({ storyboard_id: storyboardId, page: 1, page_size: 20 })
+    return (res?.items || [])
+      .map((a) => {
+        const raw = assetImageUrl(a) || a.video_url || a.video_local_path || ''
+        return toAbsoluteMediaUrl(raw)
+      })
+      .filter(Boolean)
+  } catch (_) {
+    return []
+  }
+}
 
 async function pollTaskSimple(taskId, options = {}) {
   if (!taskId) return { status: 'failed', error: '缺少 task_id' }
@@ -88,9 +105,11 @@ export async function runImageStep(drama, sb, genOpts, frameKind = '', options =
   const frameType = options.frameType
     || getStoryboardImageFrameType(frameKind)
     || (!frameKind ? getStoryboardGridFrameType(effectiveStoryboard) : undefined)
-  const referenceImages = frameType
+  const entityRefs = frameType
     ? collectStoryboardReferenceAssets(drama, effectiveStoryboard).map((ref) => ref.absoluteUrl).filter(Boolean)
     : []
+  const assignedRefs = await fetchAssignedAssetUrls(effectiveStoryboard.id)
+  const referenceImages = [...new Set([...entityRefs, ...assignedRefs])].slice(0, 10)
   const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
     storyboard_id: effectiveStoryboard.id,
@@ -123,9 +142,11 @@ export async function runVideoStep(drama, sb, genOpts) {
   const selectedReferenceUrls = collectStoryboardReferenceAssets(drama, sb)
     .map((ref) => ref.absoluteUrl)
     .filter(Boolean)
+  const assignedRefs = await fetchAssignedAssetUrls(sb.id)
   const referenceUrls = [...new Set([
     absoluteFirst,
     ...selectedReferenceUrls,
+    ...assignedRefs,
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
   const basePrompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
