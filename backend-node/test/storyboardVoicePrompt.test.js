@@ -96,11 +96,17 @@ test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   assert.match(prompt, /VOICE CONTINUITY/);
   assert.match(prompt, /bright youthful voice, clear diction/);
   assert.match(prompt, /林岚: /);
-  assert.equal(
-    voicePrompt.appendVoiceAnchors({ db, dramaId, storyboardId, model: 'veo-2.0-generate-001', protocol: 'veo3', prompt: '小狐狸："别怕。"' }),
-    '小狐狸："别怕。"',
-    'Veo 2 无原生音频，应保持静音模型原始提示'
-  );
+  const veo2Prompt = voicePrompt.appendVoiceAnchors({
+    db,
+    dramaId,
+    storyboardId,
+    model: 'veo-2.0-generate-001',
+    protocol: 'veo3',
+    prompt: '小狐狸："别怕。"',
+  });
+  assert.match(veo2Prompt, /VOICE CONTINUITY/);
+  assert.match(veo2Prompt, /bright youthful voice, clear diction/);
+  assert.match(veo2Prompt, /林岚: /);
   db.close();
 });
 

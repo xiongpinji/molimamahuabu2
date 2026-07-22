@@ -173,10 +173,15 @@ function ensureStoryboardVoicePrompt(db, storyboardId) {
   return prompt;
 }
 
-/** 返回追加后的提示词；无对白、静音模型或无角色时保持原文。 */
-function appendVoiceAnchors({ db, dramaId, storyboardId, prompt, protocol, model }) {
+/** 返回追加后的提示词；无对白或无角色时保持原文。
+ *
+ * 静音/不支持参考音频克隆的模型也要追加文字声线锚点：
+ * 它不能保证真实克隆音色，但能把每个角色的固定声音设定传给模型/后期链路，
+ * 避免不同分镜里同一角色的对白声线漂移。
+ */
+function appendVoiceAnchors({ db, dramaId, storyboardId, prompt }) {
   const base = String(prompt || '').trim();
-  if (!base || !supportsPromptAudio(protocol, model)) return base;
+  if (!base) return base;
   try {
     const row = db.prepare('SELECT dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboardId));
     if (!String(row?.dialogue || '').trim()) return base;
