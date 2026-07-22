@@ -1,7 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildVoicePromptPreview, classifyVideoVoicePolicy, generatedVoiceStyle, videoVoicePolicyForConfig } from '../src/utils/videoVoicePolicy.js'
+import {
+  appendVoicePromptToVideoPrompt,
+  buildVoicePromptPreview,
+  classifyVideoVoicePolicy,
+  generatedVoiceStyle,
+  storyboardVoiceCharacters,
+  videoVoicePolicyForConfig,
+} from '../src/utils/videoVoicePolicy.js'
 
 test('前端策略与后端保持一致：Seedance 2 使用参考音频', () => {
   assert.equal(
@@ -45,4 +52,46 @@ test('声音预览区分静音后期配音与原生音频模型', () => {
   })
   assert.match(native, /小狐狸: 明亮、清透、中速语速/)
   assert.match(native, /不保证音色克隆/)
+})
+
+test('画布视频提示词自动追加角色声线块且保持幂等', () => {
+  const prompt = appendVoicePromptToVideoPrompt({
+    prompt: '镜头从树下推近，小狐狸低声说话。',
+    policy: classifyVideoVoicePolicy({ model: 'veo-3.1-generate-preview' }),
+    characters: [{ id: 1, name: '小狐狸', voice_style: '清亮、少年感、语速轻快' }],
+  })
+  assert.match(prompt, /VOICE CONTINUITY/)
+  assert.match(prompt, /小狐狸: 清亮、少年感、语速轻快/)
+
+  const again = appendVoicePromptToVideoPrompt({
+    prompt,
+    policy: classifyVideoVoicePolicy({ model: 'veo-3.1-generate-preview' }),
+    characters: [{ id: 1, name: '小狐狸', voice_style: '清亮、少年感、语速轻快' }],
+  })
+  assert.equal(again, prompt)
+})
+
+test('不支持音色克隆的模型也降级挂载文字声线指令', () => {
+  const prompt = appendVoicePromptToVideoPrompt({
+    prompt: '小狐狸望向远处。',
+    policy: classifyVideoVoicePolicy({ model: 'veo-2.0-generate-001' }),
+    characters: [{ id: 1, name: '小狐狸' }],
+  })
+  assert.match(prompt, /VOICE CONTINUITY/)
+  assert.match(prompt, /模型不保证音色克隆/)
+  assert.doesNotMatch(prompt, /不生成原生音频/)
+})
+
+test('从分镜绑定角色和对白中提取声线角色', () => {
+  const drama = {
+    characters: [
+      { id: 1, name: '小狐狸', voice_style: '清亮' },
+      { id: 2, name: '刻纹木牌', voice_style: '低沉' },
+    ],
+  }
+  const characters = storyboardVoiceCharacters(drama, {
+    characters: JSON.stringify([{ id: 1 }]),
+    dialogue: '刻纹木牌：你终于来了。',
+  })
+  assert.deepEqual(characters.map((item) => item.name), ['小狐狸', '刻纹木牌'])
 })

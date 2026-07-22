@@ -20,6 +20,7 @@ import {
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
 import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
+import { appendVoicePromptToVideoPrompt, storyboardVoiceCharacters } from '@/utils/videoVoicePolicy'
 
 /** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
 async function fetchAssignedAssetUrls(storyboardId) {
@@ -151,7 +152,11 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     ...assignedRefs,
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
-  const basePrompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
+  const basePrompt = appendVoicePromptToVideoPrompt({
+    prompt: sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || '',
+    policy: genOpts.voicePolicy,
+    characters: storyboardVoiceCharacters(drama, sb),
+  })
   const found = findStoryboardInDrama(drama, sb.id)
   const { previous, next } = getAdjacentStoryboards(found?.episode, sb.id)
   const prompt = buildStoryboardContinuityPrompt({

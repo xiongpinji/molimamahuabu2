@@ -23,6 +23,8 @@ test('画布视频节点把模型、首尾帧和素材引用传给视频创建�
   assert.match(runnerSource, /hydrateStoryboardSettings\(sb\)/)
   assert.match(runnerSource, /sbVideoFirstLastUrls\(sb,\s*imagesBySbId,\s*useFirstLast\)/)
   assert.match(runnerSource, /collectStoryboardReferenceAssets\(drama,\s*sb\)/)
+  assert.match(runnerSource, /appendVoicePromptToVideoPrompt\(\{/)
+  assert.match(runnerSource, /storyboardVoiceCharacters\(drama,\s*sb\)/)
   assert.match(runnerSource, /buildStoryboardContinuityPrompt\(\{/)
   assert.match(runnerSource, /fetchAssignedAssetUrls\(sb\.id\)/)
   assert.match(runnerSource, /getStoryboardVideoModel\(sb,\s*genOpts\)/)

@@ -70,10 +70,87 @@ function buildVoicePromptPreview({ policy, characters = [] } = {}) {
   return [`VOICE CONTINUITY：${mode}`, ...lines, '对白必须由标注角色说出，并与环境音、配乐分离。'].join('\n')
 }
 
+function parseCharacterRefs(value) {
+  if (Array.isArray(value)) return value
+  if (value == null || value === '') return []
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : [parsed]
+    } catch (_) {
+      return value.split(/[，,\s]+/).map((item) => item.trim()).filter(Boolean)
+    }
+  }
+  return [value]
+}
+
+function normalizeCharacterName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[\s　]+/g, '')
+}
+
+function collectDramaCharacters(drama = {}) {
+  const fromRoot = Array.isArray(drama.characters) ? drama.characters : []
+  const fromEpisodes = (Array.isArray(drama.episodes) ? drama.episodes : [])
+    .flatMap((episode) => Array.isArray(episode.characters) ? episode.characters : [])
+  const rows = [...fromRoot, ...fromEpisodes].filter(Boolean)
+  const seen = new Set()
+  return rows.filter((row) => {
+    const key = row.id != null ? `id:${row.id}` : `name:${normalizeCharacterName(row.name)}`
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function storyboardVoiceCharacters(drama = {}, storyboard = {}) {
+  const refs = parseCharacterRefs(storyboard.characters)
+  const rows = collectDramaCharacters(drama)
+  const byId = new Map(rows.map((row) => [String(row.id), row]))
+  const byName = new Map(rows.map((row) => [normalizeCharacterName(row.name), row]))
+  const out = []
+  const seen = new Set()
+  for (const ref of refs) {
+    const object = ref && typeof ref === 'object' ? ref : null
+    const id = object ? object.id : ref
+    const name = object?.name || object?.character_name || (typeof ref === 'string' && !/^\d+$/.test(ref) ? ref : '')
+    const row = byId.get(String(id)) || byName.get(normalizeCharacterName(name)) || object
+    if (!row?.name) continue
+    const key = row.id != null ? `id:${row.id}` : `name:${normalizeCharacterName(row.name)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(row)
+  }
+  const dialogue = String(storyboard.dialogue || '')
+  if (dialogue) {
+    for (const row of rows) {
+      const key = row.id != null ? `id:${row.id}` : `name:${normalizeCharacterName(row.name)}`
+      if (seen.has(key)) continue
+      if (dialogue.includes(`${row.name}：`) || dialogue.includes(`${row.name}:`)) {
+        seen.add(key)
+        out.push(row)
+      }
+    }
+  }
+  return out.slice(0, 6)
+}
+
+function appendVoicePromptToVideoPrompt({ prompt, policy, characters = [] } = {}) {
+  const base = String(prompt || '').trim()
+  if (!base || /(^|\n)VOICE CONTINUITY\b/i.test(base)) return base
+  const effectivePolicy = policy?.key === 'silent' || !policy
+    ? POLICIES.native_audio_prompt
+    : policy
+  const block = buildVoicePromptPreview({ policy: effectivePolicy, characters })
+  if (!/^VOICE CONTINUITY/i.test(block)) return base
+  return `${base}\n\n${block}`
+}
+
 export {
   POLICIES,
+  appendVoicePromptToVideoPrompt,
   buildVoicePromptPreview,
   classifyVideoVoicePolicy,
   generatedVoiceStyle,
+  storyboardVoiceCharacters,
   videoVoicePolicyForConfig,
 }
