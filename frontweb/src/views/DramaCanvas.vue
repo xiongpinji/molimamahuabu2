@@ -1343,6 +1343,10 @@ function nodeInputReferenceUrls(node) {
       || (sourceNode?.type === 'canvasProjectAsset' ? assetDisplayUrl(sourceNode.data?.asset) : '')
     if (url) urls.push(url)
   }
+  for (const asset of nodeAssignedAssets(node)) {
+    const url = assetDisplayUrl(asset)
+    if (url) urls.push(url)
+  }
   return [...new Set(urls)]
 }
 

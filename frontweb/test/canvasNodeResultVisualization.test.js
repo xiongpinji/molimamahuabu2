@@ -226,6 +226,8 @@ test('手动连线的上游节点结果会作为下游生成参考输入', () =>
   assert.match(canvasSource, /String\(edge\?\.target \|\| ''\) !== targetId/)
   assert.match(canvasSource, /const sourceNode = findGraphNode\(edge\.source\)/)
   assert.match(canvasSource, /nodeResultUrl\(sourceNode\)/)
+  assert.match(canvasSource, /for \(const asset of nodeAssignedAssets\(node\)\) \{/)
+  assert.match(canvasSource, /const url = assetDisplayUrl\(asset\)/)
   assert.match(canvasSource, /const upstreamReferenceUrlsForNode = nodeInputReferenceUrls\(node\)/)
   assert.match(canvasSource, /upstreamReferenceUrls: upstreamReferenceUrlsForNode/)
 })
