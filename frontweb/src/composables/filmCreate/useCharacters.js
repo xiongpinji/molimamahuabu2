@@ -76,6 +76,7 @@ export function useCharacters(deps) {
   const voiceCatalogList = ref([])
   const voiceCatalogLoading = ref(false)
   const voiceCatalogBindingId = ref(null)
+
   // ── 角色库状态 ────────────────────────────────────────
   const showCharLibrary = ref(false)
   const charLibraryList = ref([])
@@ -348,18 +349,33 @@ export function useCharacters(deps) {
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          char.errorMsg = pollRes.error || '生成失败'
-        } else {
-          ElMessage.success('角色图片已生成')
+        if (pollRes?.status !== 'completed' || !pollRes?.result?.image_url) {
+          const error = pollRes?.error || '图片任务未完成或未返回有效图片'
+          char.errorMsg = error
+          if (pollRes?.status !== 'failed') ElMessage.error(error)
+          return
         }
+        await loadDrama()
+        const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
+        const current = list.find((x) => Number(x.id) === Number(char.id))
+        if (!current || !(current.image_url || current.local_path)) {
+          char.errorMsg = '任务显示完成，但角色图片未成功写入，请刷新后核对生成记录'
+          ElMessage.error(char.errorMsg)
+          return
+        }
+        ElMessage.success('角色图片已生成')
       } else {
         await loadDrama()
-        await pollUntilResourceHasImage(() => {
+        const hasImage = await pollUntilResourceHasImage(() => {
           const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
           const c = list.find((x) => Number(x.id) === Number(char.id))
           return !!(c && (c.image_url || c.local_path))
         })
+        if (!hasImage) {
+          char.errorMsg = '等待超时，角色图片仍未生成'
+          ElMessage.error(char.errorMsg)
+          return
+        }
         ElMessage.success('角色图片已生成')
       }
     } catch (e) {
@@ -730,6 +746,62 @@ export function useCharacters(deps) {
     await triggerSd2VoiceUpload(char)
   }
 
+  async function openVoiceCatalog(char) {
+    if (!char?.id) return
+    voiceCatalogTarget.value = char
+    showVoiceCatalog.value = true
+    await loadVoiceCatalog()
+  }
+
+  async function loadVoiceCatalog() {
+    voiceCatalogLoading.value = true
+    try {
+      const res = await characterAPI.listVoiceCatalog({ drama_id: dramaId.value }, { silentError: true })
+      voiceCatalogList.value = Array.isArray(res) ? res : (res?.items || [])
+      if (res?.unavailable) ElMessage.warning(res.message || '音色库接口暂不可用')
+    } catch (e) {
+      voiceCatalogList.value = []
+      ElMessage.error(e?.message || '音色库加载失败')
+    } finally {
+      voiceCatalogLoading.value = false
+    }
+  }
+
+  async function bindVoiceCatalog(item) {
+    const char = voiceCatalogTarget.value
+    if (!char?.id || !item?.id) return
+    if (!item.can_bind) {
+      ElMessage.warning(item.setup_hint || '该音色暂不可绑定')
+      return
+    }
+    voiceCatalogBindingId.value = item.id
+    try {
+      const res = await characterAPI.bindVoiceCatalog(char.id, item.id)
+      await loadDrama()
+      ElMessage.success(res?.message || '音色已绑定')
+      showVoiceCatalog.value = false
+    } catch (e) {
+      ElMessage.error(e?.message || '音色绑定失败')
+    } finally {
+      voiceCatalogBindingId.value = null
+    }
+  }
+
+  function playVoiceCatalogPreview(item) {
+    const url = item?.preview_url
+    if (!url) {
+      ElMessage.warning('该音色暂无可试听文件')
+      return
+    }
+    try {
+      const audio = new Audio(url)
+      audio.onerror = () => ElMessage.error('音色试听失败')
+      audio.play().catch(() => ElMessage.error('音色试听失败'))
+    } catch (_) {
+      ElMessage.error('音色试听失败')
+    }
+  }
+
   async function onSd2VoiceRefresh(char) {
     if (!char?.id) return
     sd2VoiceUploadingId.value = char.id
@@ -787,58 +859,6 @@ export function useCharacters(deps) {
       })
     } catch (e) {
       ElMessage.error('无法播放音频')
-    }
-  }
-
-  async function openVoiceCatalog(char) {
-    if (!char?.id) return
-    voiceCatalogTarget.value = char
-    showVoiceCatalog.value = true
-    await loadVoiceCatalog()
-  }
-
-  async function loadVoiceCatalog() {
-    voiceCatalogLoading.value = true
-    try {
-      const result = await characterAPI.listVoiceCatalog({ drama_id: dramaId.value })
-      voiceCatalogList.value = Array.isArray(result) ? result : (result?.items || [])
-    } catch (e) {
-      voiceCatalogList.value = []
-      ElMessage.error(e?.message || '音色库加载失败')
-    } finally {
-      voiceCatalogLoading.value = false
-    }
-  }
-
-  async function bindVoiceCatalog(voice) {
-    const char = voiceCatalogTarget.value
-    if (!char?.id || !voice?.id) return
-    if (!voice.can_bind) {
-      ElMessage.warning(voice.setup_hint || '该音色暂不可绑定')
-      return
-    }
-    voiceCatalogBindingId.value = voice.id
-    try {
-      const result = await characterAPI.bindVoiceCatalog(char.id, voice.id)
-      await loadDrama()
-      ElMessage.success(result?.message || `已绑定${voice.label || '音色'}，仅 Seedance 2.0 模型生效`)
-      showVoiceCatalog.value = false
-    } catch (e) {
-      ElMessage.error(e?.message || '音色绑定失败')
-    } finally {
-      voiceCatalogBindingId.value = null
-    }
-  }
-
-  function playVoiceCatalogPreview(voice) {
-    const url = voice?.preview_url
-    if (!url) return ElMessage.info('该音色尚未生成本地试听文件')
-    try {
-      const audio = new Audio(url)
-      audio.onerror = () => ElMessage.error('试听播放失败')
-      audio.play().catch(() => ElMessage.error('试听播放失败'))
-    } catch (_) {
-      ElMessage.error('试听播放失败')
     }
   }
 
@@ -915,12 +935,12 @@ export function useCharacters(deps) {
     openCharSd2CertDialog,
     onSd2VoicePrimaryAction,
     onSd2VoiceReplace,
-    sd2VoiceActionLabel,
-    playSd2Voice,
     openVoiceCatalog,
     loadVoiceCatalog,
     bindVoiceCatalog,
     playVoiceCatalogPreview,
+    sd2VoiceActionLabel,
+    playSd2Voice,
     loadCharLibraryList,
     debouncedLoadCharLibrary,
     loadDramaAllCharList,
