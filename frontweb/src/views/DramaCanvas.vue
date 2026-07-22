@@ -646,16 +646,45 @@ function taskResultUrl(task) {
     || ''
 }
 
+function restoredNodeStoryboardId(node, status) {
+  return Number(status?.storyboardId || storyboardForNode(node)?.id || storyboardIdFromNodeId(node?.id)) || null
+}
+
+function restoredTaskResultInfo(node, status, task, resultUrl) {
+  const step = status?.retryStep || status?.step || ''
+  const storyboardId = restoredNodeStoryboardId(node, status)
+  const storyboard = storyboardForNode(node)
+  const base = storyboardId ? nodeStepResultInfo(node, step, storyboardId, storyboard) : {}
+  const result = task?.result || {}
+  return {
+    ...base,
+    resultUrl,
+    resultType: status?.resultType || base.resultType || (['image', 'video', 'audio'].includes(step) ? step : ''),
+    resultNodeId: status?.resultNodeId || base.resultNodeId || node?.id || '',
+    resultLabel: status?.resultLabel || base.resultLabel || result.label || '结果已生成',
+    promptText: status?.promptText || result.prompt || '',
+  }
+}
+
 async function syncRestoredNodeTasks() {
   const entries = Object.entries(nodeStatus.map).filter(([, status]) => isRestoredPendingNodeStatus(status))
   for (const [nodeId, status] of entries) {
     try {
       const task = await taskAPI.get(status.taskId)
       if (task?.status === 'completed') {
+        const node = findGraphNode(status.sourceNodeId || nodeId) || findGraphNode(nodeId) || { id: nodeId, data: {} }
+        const resultUrl = taskResultUrl(task) || status.resultUrl || status.savedAssetUrl || ''
+        const storyboardId = restoredNodeStoryboardId(node, status)
+        const resultInfo = restoredTaskResultInfo(node, status, task, resultUrl)
+        const savedAssetInfo = !status.savedAssetId && resultUrl && storyboardId
+          ? await saveNodeResultAsset(node, resultInfo, resultInfo.promptText || '', storyboardId)
+          : null
+        if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
         nodeStatus.success(nodeId, {
           ...status,
+          ...resultInfo,
+          ...(savedAssetInfo || {}),
           message: '恢复的任务已完成',
-          resultUrl: taskResultUrl(task) || status.resultUrl || status.savedAssetUrl || '',
           autoClear: false,
         })
       } else if (task?.status === 'failed') {
