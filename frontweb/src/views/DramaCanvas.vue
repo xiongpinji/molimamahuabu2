@@ -1646,6 +1646,18 @@ function nodeStepResultUrl(node, step, storyboard) {
   return ''
 }
 
+function videoNodeNextAction(storyboard) {
+  const fallback = { nextStep: 'audio', nextLabel: '继续配音' }
+  if (!drama.value || !storyboard?.id) return fallback
+  const found = findStoryboardInDrama(drama.value, storyboard.id)
+  const current = found?.storyboard || storyboard
+  const { next } = found?.episode ? getAdjacentStoryboards(found.episode, current.id) : {}
+  if (next && canChainStoryboardFrames(next, current)) {
+    return { nextStep: 'link_tail_frame', nextLabel: '尾帧衔接' }
+  }
+  return fallback
+}
+
 function nodeStepResultInfo(node, step, storyboardId, storyboard = null) {
   const id = String(node?.id || '')
   const frameKind = node?.data?.frameKind
@@ -1661,7 +1673,7 @@ function nodeStepResultInfo(node, step, storyboardId, storyboard = null) {
   const labelMap = { image: '图片已生成', video: '视频已生成', audio: '音频已生成', text: '尾帧衔接完成' }
   const nextMap = {
     image: { nextStep: 'video', nextLabel: '继续生成视频' },
-    video: { nextStep: 'audio', nextLabel: '继续配音' },
+    video: videoNodeNextAction(storyboard),
   }
   return {
     resultUrl: nodeStepResultUrl(resultNode, step, storyboard),

@@ -116,6 +116,15 @@ test('画布节点运行状态会携带当前节点提示词', () => {
   assert.match(canvasSource, /upstreamReferenceUrls: upstreamReferenceUrlsForNode/)
 })
 
+test('视频节点成功后优先提供尾帧衔接入口', () => {
+  assert.match(canvasSource, /function videoNodeNextAction\(storyboard\)/)
+  assert.match(canvasSource, /const fallback = \{ nextStep: 'audio', nextLabel: '继续配音' \}/)
+  assert.match(canvasSource, /const found = findStoryboardInDrama\(drama\.value, storyboard\.id\)/)
+  assert.match(canvasSource, /const \{ next \} = found\?\.episode \? getAdjacentStoryboards\(found\.episode, current\.id\) : \{\}/)
+  assert.match(canvasSource, /if \(next && canChainStoryboardFrames\(next, current\)\) \{[\s\S]*nextStep: 'link_tail_frame', nextLabel: '尾帧衔接'/)
+  assert.match(canvasSource, /video: videoNodeNextAction\(storyboard\)/)
+})
+
 test('右键节点菜单可直接处理结果和失败重试', () => {
   assert.match(contextMenuSource, /title: '结果'/)
   assert.match(contextMenuSource, /type: 'open-node-result'/)
