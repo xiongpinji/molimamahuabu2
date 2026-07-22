@@ -33,6 +33,12 @@ test('分镜配置面板保留保存、回显刷新和单镜模型配置', () =>
 
 test('分镜配置面板保留素材库指派、摄影控制、声音策略和连续性入口', () => {
   assert.match(storyboardPanelSource, /从素材库指派参考图/)
+  assert.match(storyboardPanelSource, /command="first_frame"/)
+  assert.match(storyboardPanelSource, /command="last_frame"/)
+  assert.match(storyboardPanelSource, /command="video"/)
+  assert.match(storyboardPanelSource, /command="audio"/)
+  assert.match(storyboardPanelSource, /:type="assetLibraryType"/)
+  assert.match(storyboardPanelSource, /:title="assetLibraryTitle"/)
   assert.match(storyboardPanelSource, /:drama-id="ctx\?\.drama\?\.value\?\.id"/)
   assert.match(storyboardPanelSource, /function onAssetLibraryPick\(asset\)/)
   assert.match(storyboardPanelSource, /assetsAPI\.update\(projectAssetId\(asset\), \{ drama_id: dramaId, storyboard_id: storyboardId \}\)/)
@@ -46,6 +52,24 @@ test('分镜配置面板保留素材库指派、摄影控制、声音策略和�
   assert.match(storyboardPanelSource, /buildVoicePromptPreview/)
   assert.match(storyboardPanelSource, /镜头连续性/)
   assert.match(storyboardPanelSource, /function linkTailFrame\(\)/)
+})
+
+test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {
+  assert.match(storyboardPanelSource, /const assetAttachTarget = ref\('reference'\)/)
+  assert.match(storyboardPanelSource, /const ASSET_ATTACH_TARGETS = \{/)
+  assert.match(storyboardPanelSource, /function openAssetLibrary\(target = 'reference'\)/)
+  assert.match(storyboardPanelSource, /assetAttachTarget\.value = ASSET_ATTACH_TARGETS\[target\] \? target : 'reference'/)
+  assert.match(storyboardPanelSource, /async function attachPickedAssetToStoryboard\(target, asset\)/)
+  assert.match(storyboardPanelSource, /payload\.first_frame_image_id = null/)
+  assert.match(storyboardPanelSource, /payload\.image_url = localPath \? null : url/)
+  assert.match(storyboardPanelSource, /payload\.local_path = localPath \|\| null/)
+  assert.match(storyboardPanelSource, /payload\.last_frame_image_id = null/)
+  assert.match(storyboardPanelSource, /payload\.last_frame_image_url = localPath \? null : url/)
+  assert.match(storyboardPanelSource, /payload\.last_frame_local_path = localPath \|\| null/)
+  assert.match(storyboardPanelSource, /payload\.video_url = url/)
+  assert.match(storyboardPanelSource, /payload\.audio_local_path = localPath \|\| undefined/)
+  assert.match(storyboardPanelSource, /payload\.audio_url = localPath \? undefined : url/)
+  assert.match(storyboardPanelSource, /await storyboardsAPI\.update\(storyboardId, payload\)/)
 })
 
 test('资产配置面板保留保存、素材库选图和关联分镜入口', () => {

@@ -108,7 +108,18 @@
           <el-button link type="primary" size="small" @click.stop="createAsset('character')">+角色</el-button>
           <el-button link type="primary" size="small" @click.stop="createAsset('scene')">+场景</el-button>
           <el-button link type="primary" size="small" @click.stop="createAsset('prop')">+道具</el-button>
-          <el-button link type="primary" size="small" :loading="assetAssigning" :disabled="!storyboard?.id" @click.stop="openAssetLibrary">+素材库</el-button>
+          <el-dropdown trigger="click" :disabled="!storyboard?.id || assetAssigning" @command="openAssetLibrary">
+            <el-button link type="primary" size="small" :loading="assetAssigning" :disabled="!storyboard?.id">+素材库</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="reference">指派参考图</el-dropdown-item>
+                <el-dropdown-item command="first_frame">设为首帧</el-dropdown-item>
+                <el-dropdown-item command="last_frame">设为尾帧</el-dropdown-item>
+                <el-dropdown-item command="video">设为成片视频</el-dropdown-item>
+                <el-dropdown-item command="audio">设为分镜音频</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
 
         <div class="reference-strip">
@@ -342,8 +353,8 @@
     </div>
     <AssetPickerDialog
       v-model="assetLibraryVisible"
-      type="image"
-      title="从素材库指派参考图"
+      :type="assetLibraryType"
+      :title="assetLibraryTitle"
       :drama-id="ctx?.drama?.value?.id"
       @pick="onAssetLibraryPick"
     />
@@ -407,6 +418,7 @@ const videoConfigs = ref([])
 const tailLinking = ref(false)
 const assetLibraryVisible = ref(false)
 const assetAssigning = ref(false)
+const assetAttachTarget = ref('reference')
 const form = reactive({
   title: '',
   action: '',
@@ -434,6 +446,15 @@ const referenceAssets = computed(() => collectStoryboardReferenceAssets(ctx?.dra
 // 素材库中指派给本镜的素材（storyboard_id 关联）
 const assignedAssets = ref([])
 const allReferenceAssets = computed(() => [...referenceAssets.value, ...assignedAssets.value].slice(0, 10))
+const ASSET_ATTACH_TARGETS = {
+  reference: { type: 'image', title: '从素材库指派参考图', message: '已指派素材到本镜参考图' },
+  first_frame: { type: 'image', title: '从素材库选择首帧', message: '已将素材设为本镜首帧' },
+  last_frame: { type: 'image', title: '从素材库选择尾帧', message: '已将素材设为本镜尾帧' },
+  video: { type: 'video', title: '从素材库选择成片视频', message: '已将素材设为本镜成片视频' },
+  audio: { type: 'audio', title: '从素材库选择分镜音频', message: '已将素材设为本镜音频' },
+}
+const assetLibraryType = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.type || 'image')
+const assetLibraryTitle = computed(() => ASSET_ATTACH_TARGETS[assetAttachTarget.value]?.title || '从素材库选择素材')
 
 const effectiveVideoModel = computed(() => String(
   props.storyboard?.video_model || ctx?.getGenerationOptions?.()?.videoModel || '',
@@ -524,9 +545,9 @@ const continuityPrompt = computed(() => {
 })
 
 function assetThumbUrl(a) {
-  const lp = a.local_path || a.image_local_path || a.video_local_path
+  const lp = a.local_path || a.image_local_path || a.video_local_path || a.audio_local_path || a.voice_local_path
   if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
-  return a.display_url || a.asset_url || a.preview_url || a.url || a.image_url || a.video_url || ''
+  return a.display_url || a.asset_url || a.preview_url || a.url || a.image_url || a.video_url || a.audio_url || a.voice_url || ''
 }
 
 function normalizeAssignedAsset(asset) {
@@ -658,8 +679,9 @@ function closePanel() {
   ctx?.clearFocusedNode?.()
 }
 
-function openAssetLibrary() {
+function openAssetLibrary(target = 'reference') {
   if (!props.storyboard?.id) return ElMessage.warning('请先保存分镜')
+  assetAttachTarget.value = ASSET_ATTACH_TARGETS[target] ? target : 'reference'
   assetLibraryVisible.value = true
 }
 
@@ -675,6 +697,13 @@ async function onAssetLibraryPick(asset) {
   if (!dramaId || !storyboardId || !asset) return
   assetAssigning.value = true
   try {
+    const target = assetAttachTarget.value
+    if (target !== 'reference') {
+      await attachPickedAssetToStoryboard(target, asset)
+      await ctx?.refreshDrama?.(true)
+      ElMessage.success(ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材')
+      return
+    }
     let savedAsset = asset
     if (asset.source_kind === 'project') {
       await assetsAPI.update(projectAssetId(asset), { drama_id: dramaId, storyboard_id: storyboardId })
@@ -701,12 +730,35 @@ async function onAssetLibraryPick(asset) {
       assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)].slice(0, 10)
     }
     await ctx?.refreshDrama?.(true)
-    ElMessage.success('已指派素材到本镜参考图')
+    ElMessage.success(ASSET_ATTACH_TARGETS.reference.message)
   } catch (e) {
     ElMessage.error(e?.message || '素材指派失败')
   } finally {
     assetAssigning.value = false
   }
+}
+
+async function attachPickedAssetToStoryboard(target, asset) {
+  const storyboardId = props.storyboard?.id
+  if (!storyboardId) return
+  const url = assetThumbUrl(asset)
+  const localPath = asset.local_path || asset.image_local_path || asset.video_local_path || asset.audio_local_path || asset.voice_local_path || ''
+  const payload = {}
+  if (target === 'first_frame') {
+    payload.first_frame_image_id = null
+    payload.image_url = localPath ? null : url
+    payload.local_path = localPath || null
+  } else if (target === 'last_frame') {
+    payload.last_frame_image_id = null
+    payload.last_frame_image_url = localPath ? null : url
+    payload.last_frame_local_path = localPath || null
+  } else if (target === 'video') {
+    payload.video_url = url
+  } else if (target === 'audio') {
+    payload.audio_local_path = localPath || undefined
+    payload.audio_url = localPath ? undefined : url
+  }
+  await storyboardsAPI.update(storyboardId, payload)
 }
 
 function createAsset(type) {
