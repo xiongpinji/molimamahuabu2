@@ -61,6 +61,13 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
 
 test('素材选择弹窗选中素材时输出统一复用字段', () => {
   assert.match(source, /function normalizePickedAsset\(item\)/)
+  assert.match(source, /function firstString\(\.\.\.values\)/)
+  assert.match(source, /it\.asset_url/)
+  assert.match(source, /it\.display_url/)
+  assert.match(source, /it\.preview_url/)
+  assert.match(source, /it\.video_url/)
+  assert.match(source, /it\.thumbnail_url/)
+  assert.match(source, /item\.path/)
   assert.match(source, /display_url: displayUrl/)
   assert.match(source, /asset_url: displayUrl/)
   assert.match(source, /preview_url: displayUrl/)

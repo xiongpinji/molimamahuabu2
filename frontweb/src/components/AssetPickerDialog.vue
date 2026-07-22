@@ -273,8 +273,26 @@ function normalizeVoiceCatalogItems(res) {
 }
 
 function normalizeAssetItem(it, source) {
-  const url = it.url || it.image_url || it.ref_image || it.audio_url || it.voice_url || ''
-  const localPath = it.local_path || it.image_local_path || it.video_local_path || it.audio_local_path || it.voice_local_path || ''
+  const url = firstString(
+    it.url,
+    it.asset_url,
+    it.display_url,
+    it.preview_url,
+    it.image_url,
+    it.video_url,
+    it.ref_image,
+    it.audio_url,
+    it.voice_url,
+    it.thumbnail_url,
+  )
+  const localPath = firstString(
+    it.local_path,
+    it.path,
+    it.image_local_path,
+    it.video_local_path,
+    it.audio_local_path,
+    it.voice_local_path,
+  )
   const itemType = it.type || inferAssetType(url || localPath)
   return {
     ...it,
@@ -324,17 +342,49 @@ function dedupeItems(list) {
   })
 }
 
+function firstString(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
 /** 展示/使用地址：优先本地持久路径，规避过期远程 URL */
 function itemUrl(item) {
   if (!item) return ''
-  const lp = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path
+  const lp = firstString(
+    item.local_path,
+    item.path,
+    item.image_local_path,
+    item.video_local_path,
+    item.audio_local_path,
+    item.voice_local_path,
+  )
   if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
-  return item.url || item.audio_url || item.voice_url || ''
+  return firstString(
+    item.url,
+    item.asset_url,
+    item.display_url,
+    item.preview_url,
+    item.image_url,
+    item.video_url,
+    item.audio_url,
+    item.voice_url,
+    item.thumbnail_url,
+  )
 }
 
 function normalizePickedAsset(item) {
   const displayUrl = itemUrl(item)
-  const localPath = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path || ''
+  const localPath = firstString(
+    item.local_path,
+    item.path,
+    item.image_local_path,
+    item.video_local_path,
+    item.audio_local_path,
+    item.voice_local_path,
+  )
   const name = item.name || item.title || item.filename || '素材'
   return {
     ...item,
