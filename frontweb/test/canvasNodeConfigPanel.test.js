@@ -31,6 +31,7 @@ test('分镜配置面板保留保存、回显刷新和单镜模型配置', () =>
 
 test('分镜配置面板保留素材库指派、摄影控制、声音策略和连续性入口', () => {
   assert.match(storyboardPanelSource, /从素材库指派参考图/)
+  assert.match(storyboardPanelSource, /:drama-id="ctx\?\.drama\?\.value\?\.id"/)
   assert.match(storyboardPanelSource, /function onAssetLibraryPick\(asset\)/)
   assert.match(storyboardPanelSource, /assetsAPI\.update\(projectAssetId\(asset\), \{ drama_id: dramaId, storyboard_id: storyboardId \}\)/)
   assert.match(storyboardPanelSource, /assetsAPI\.create\(\{[\s\S]*storyboard_id: storyboardId[\s\S]*category: 'storyboard_reference'/)

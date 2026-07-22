@@ -340,7 +340,13 @@
         </div>
       </div>
     </div>
-    <AssetPickerDialog v-model="assetLibraryVisible" type="image" title="从素材库指派参考图" @pick="onAssetLibraryPick" />
+    <AssetPickerDialog
+      v-model="assetLibraryVisible"
+      type="image"
+      title="从素材库指派参考图"
+      :drama-id="ctx?.drama?.value?.id"
+      @pick="onAssetLibraryPick"
+    />
   </div>
 </template>
 

@@ -192,3 +192,98 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
   await expect(failedNode).toContainText('图片已生成')
   await expect(failedNode.getByRole('button', { name: '复制素材引用' })).toBeVisible()
 })
+
+test('CV-ASSET-LIB-001 分镜面板从当前项目素材库指派参考图并回显', async ({ page }) => {
+  let assigned = false
+  const assetListQueries = []
+  const assetUpdateRequests = []
+
+  await page.route('**/static/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    })
+  })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const path = url.pathname
+    const method = request.method()
+
+    if (path === '/api/v1/dramas/3' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: mockDrama() }) })
+      return
+    }
+    if (path === '/api/v1/storyboards/301' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: mockDrama().episodes[0].storyboards[0] }) })
+      return
+    }
+    if (path === '/api/v1/ai-configs' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: [{ service_type: 'image', is_active: true, is_default: true, model: 'lib-image-default' }] }) })
+      return
+    }
+    if (path === '/api/v1/video-models' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: [{ model: 'grok-video-3', is_active: true }] }) })
+      return
+    }
+    if (path === '/api/v1/images' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items: [] } }) })
+      return
+    }
+    if (path === '/api/v1/videos' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items: [] } }) })
+      return
+    }
+    if (['/api/v1/character-library', '/api/v1/scene-library', '/api/v1/prop-library'].includes(path) && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items: [] } }) })
+      return
+    }
+    if (path === '/api/v1/assets' && method === 'GET') {
+      assetListQueries.push(Object.fromEntries(url.searchParams.entries()))
+      const storyboardId = Number(url.searchParams.get('storyboard_id'))
+      const dramaId = Number(url.searchParams.get('drama_id'))
+      const items = storyboardId === 301
+        ? (assigned ? [{ id: 501, name: '森林参考图', type: 'image', local_path: 'forest-ref.png', storyboard_id: 301 }] : [])
+        : dramaId === 3
+          ? [{ id: 501, name: '森林参考图', type: 'image', local_path: 'forest-ref.png', drama_id: 3 }]
+          : []
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { items } }) })
+      return
+    }
+    if (path === '/api/v1/assets/501' && method === 'PUT') {
+      const payload = request.postDataJSON() || {}
+      assetUpdateRequests.push(payload)
+      assigned = true
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { id: 501, name: '森林参考图', type: 'image', local_path: 'forest-ref.png', ...payload } }) })
+      return
+    }
+    if (path === '/api/v1/dramas/3/canvas-layout' || path === '/api/v1/dramas/3/outline') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+  })
+
+  await page.goto('/film/3/canvas')
+  const storyboardNode = page.locator('.vue-flow__node[data-id="sb:301"] .canvas-sb-node')
+  await expect(storyboardNode).toBeVisible()
+  await storyboardNode.evaluate((element) => element.click())
+
+  const panel = page.locator('.sb-panel')
+  await expect(panel).toContainText('分镜 #1')
+  await panel.getByRole('button', { name: '+素材库' }).evaluate((element) => element.click())
+
+  const pickerDialog = page.getByRole('dialog', { name: '从素材库指派参考图' })
+  await expect(pickerDialog).toBeVisible()
+  await expect(pickerDialog.locator('.picker-name', { hasText: '森林参考图' })).toBeVisible()
+  expect(assetListQueries).toEqual(expect.arrayContaining([
+    expect.objectContaining({ drama_id: '3', type: 'image' }),
+  ]))
+
+  await pickerDialog.locator('.picker-card', { hasText: '森林参考图' }).getByRole('button', { name: '选用' }).click()
+  await expect.poll(() => assetUpdateRequests.length).toBe(1)
+  expect(assetUpdateRequests[0]).toMatchObject({ drama_id: 3, storyboard_id: 301 })
+  await expect(panel.locator('.reference-strip')).toContainText('森林参考图')
+})
