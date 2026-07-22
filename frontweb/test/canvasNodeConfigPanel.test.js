@@ -16,6 +16,7 @@ const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/d
 const scriptPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptPanel.vue', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
+const nodeExecutionStripSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeExecutionStrip.vue', import.meta.url)), 'utf8')
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
@@ -43,6 +44,9 @@ test('脚本素材媒体节点支持单击聚焦并打开配置面板', () => {
 })
 
 test('脚本配置面板保存后保留节点状态和失败重试', () => {
+  assert.match(scriptPanelSource, /<CanvasNodeExecutionStrip/)
+  assert.match(scriptPanelSource, /:status="activeNodeStatus"/)
+  assert.match(scriptPanelSource, /@retry="retryScriptFailedStep"/)
   assert.match(scriptPanelSource, /ctx\?\.nodeStatus\?\.set\(props\.nodeId, \{ step: 'save', message: '剧本保存中…' \}\)/)
   assert.match(scriptPanelSource, /await ctx\?\.refreshDrama\?\.\(true\)/)
   assert.match(scriptPanelSource, /ctx\?\.nodeStatus\?\.success\(props\.nodeId, \{/)
@@ -55,6 +59,10 @@ test('脚本配置面板保存后保留节点状态和失败重试', () => {
   assert.match(scriptPanelSource, /retryStep: 'save'/)
   assert.match(scriptPanelSource, /retryLabel: '重试保存剧本'/)
   assert.match(scriptPanelSource, /recoverable: true/)
+  assert.match(scriptPanelSource, /async function retryScriptFailedStep\(\)/)
+  assert.match(scriptPanelSource, /step === 'extract_characters'/)
+  assert.match(scriptPanelSource, /retryLabel = '重试提取'/)
+  assert.match(scriptPanelSource, /retryStep: step/)
 })
 
 test('分镜配置面板保留保存、回显刷新和单镜模型配置', () => {
@@ -205,12 +213,18 @@ test('分镜配置面板生成成功后保留节点结果回显', () => {
 })
 
 test('资产配置面板保留保存、素材库选图和关联分镜入口', () => {
+  assert.match(assetPanelSource, /<CanvasNodeExecutionStrip/)
+  assert.match(assetPanelSource, /:status="nodeBusy"/)
+  assert.match(assetPanelSource, /@retry="retryAssetFailedStep"/)
   assert.match(assetPanelSource, /function saveAsset\(\)/)
   assert.match(assetPanelSource, /await ctx\?\.refreshDrama\?\.\(true\)/)
+  assert.match(assetPanelSource, /ctx\?\.nodeStatus\?\.success\(props\.nodeId, \{/)
+  assert.match(assetPanelSource, /retryStep: 'save'/)
   assert.match(assetPanelSource, /素材库选图/)
   assert.match(assetPanelSource, /AssetPickerDialog/)
   assert.match(assetPanelSource, /关联分镜/)
   assert.match(assetPanelSource, /function highlightRelated\(\)/)
+  assert.match(assetPanelSource, /function clearTransientAssetStatus\(\)/)
 })
 
 test('资产配置面板从项目素材库选图后写回画布资产绑定', () => {
@@ -223,6 +237,10 @@ test('资产配置面板从项目素材库选图后写回画布资产绑定', ()
   assert.match(assetPanelSource, /entity_id: props\.entity\.id/)
   assert.match(assetPanelSource, /node_id: props\.nodeId/)
   assert.match(assetPanelSource, /await bindPickedProjectAsset\(asset\)/)
+  assert.match(assetPanelSource, /retryStep: 'library'/)
+  assert.match(assetPanelSource, /libraryAsset: asset/)
+  assert.match(assetPanelSource, /async function retryAssetFailedStep\(\)/)
+  assert.match(assetPanelSource, /status\?\.retryStep === 'library' && status\.libraryAsset/)
 })
 
 test('媒体配置面板支持从素材库复用图片、视频和音频', () => {
@@ -280,9 +298,10 @@ test('媒体配置面板支持从素材库复用图片、视频和音频', () =>
 })
 
 test('媒体配置面板失败后保留原因和重试入口', () => {
-  assert.match(mediaPanelSource, /v-if="failedStatus"/)
-  assert.match(mediaPanelSource, /failedStatus\.errorDetail \|\| failedStatus\.message/)
-  assert.match(mediaPanelSource, /@click\.stop="retryFailedStep"/)
+  assert.match(mediaPanelSource, /<CanvasNodeExecutionStrip/)
+  assert.match(mediaPanelSource, /:status="activeNodeStatus"/)
+  assert.match(mediaPanelSource, /@retry="retryFailedStep"/)
+  assert.match(mediaPanelSource, /@continue="continueMediaNextStep"/)
   assert.match(mediaPanelSource, /const activeNodeStatus = computed/)
   assert.match(mediaPanelSource, /activeNodeStatus\.value\?\.step === 'failed'/)
   assert.match(mediaPanelSource, /retryStep: step/)
@@ -290,15 +309,21 @@ test('媒体配置面板失败后保留原因和重试入口', () => {
   assert.match(mediaPanelSource, /recoverable: true/)
   assert.match(mediaPanelSource, /async function retryFailedStep\(\)/)
   assert.match(mediaPanelSource, /await runStep\(step\)/)
+  assert.match(mediaPanelSource, /async function continueMediaNextStep\(\)/)
 })
 
 test('分镜配置面板提供统一节点执行和失败恢复入口', () => {
-  assert.match(storyboardPanelSource, /class="node-execution-strip"/)
-  assert.match(storyboardPanelSource, /节点执行/)
-  assert.match(storyboardPanelSource, /activeNodeStatus\.step === 'failed' && activeNodeStatus\.retryStep/)
-  assert.match(storyboardPanelSource, /@click\.stop="retryPanelFailedStep"/)
-  assert.match(storyboardPanelSource, /activeNodeStatus\.nextStep/)
-  assert.match(storyboardPanelSource, /@click\.stop="continuePanelNextStep"/)
+  assert.match(nodeExecutionStripSource, /class="node-execution-strip"/)
+  assert.match(nodeExecutionStripSource, /节点执行/)
+  assert.match(nodeExecutionStripSource, /status\.step === 'failed' && status\.retryStep/)
+  assert.match(nodeExecutionStripSource, /@click\.stop="\$emit\('retry'\)"/)
+  assert.match(nodeExecutionStripSource, /status\.nextStep/)
+  assert.match(nodeExecutionStripSource, /@click\.stop="\$emit\('continue'\)"/)
+  assert.match(nodeExecutionStripSource, /status\.errorDetail \|\| status\.message \|\| status\.step/)
+  assert.match(storyboardPanelSource, /<CanvasNodeExecutionStrip/)
+  assert.match(storyboardPanelSource, /:status="activeNodeStatus"/)
+  assert.match(storyboardPanelSource, /@retry="retryPanelFailedStep"/)
+  assert.match(storyboardPanelSource, /@continue="continuePanelNextStep"/)
   assert.match(storyboardPanelSource, /const activeNodeStatus = computed/)
   assert.match(storyboardPanelSource, /function panelRuntimeNode\(\)/)
   assert.match(storyboardPanelSource, /type: 'canvasStoryboard'/)
@@ -306,7 +331,6 @@ test('分镜配置面板提供统一节点执行和失败恢复入口', () => {
   assert.match(storyboardPanelSource, /ctx\?\.nodeStatus\?\.clear\?\.\(sbNodeId\.value\)/)
   assert.match(storyboardPanelSource, /await ctx\?\.runNodeStep\?\.\(panelRuntimeNode\(\), step\)/)
   assert.match(storyboardPanelSource, /async function continuePanelNextStep\(\)/)
-  assert.match(storyboardPanelSource, /\.node-execution-message/)
 })
 
 test('媒体配置面板成功后保留节点结果回显', () => {

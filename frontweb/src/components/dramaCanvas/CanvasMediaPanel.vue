@@ -17,10 +17,12 @@
     </div>
 
     <div class="panel-body">
-      <div v-if="failedStatus" class="generation-alert generation-alert-error">
-        <span>{{ failedStatus.errorDetail || failedStatus.message || '节点执行失败' }}</span>
-        <el-button size="small" type="danger" plain @click.stop="retryFailedStep">重试</el-button>
-      </div>
+      <CanvasNodeExecutionStrip
+        :status="activeNodeStatus"
+        :disabled="busy || attachBusy || Boolean(universalBusy)"
+        @retry="retryFailedStep"
+        @continue="continueMediaNextStep"
+      />
 
       <template v-if="kind === 'text'">
         <p class="summary">{{ summary || '暂无脚本内容' }}</p>
@@ -167,6 +169,7 @@ import {
 } from '@/utils/canvasWorkflow'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
+import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 import { videosAPI } from '@/api/videos'
 
@@ -609,6 +612,12 @@ async function retryFailedStep() {
   const step = failedStatus.value?.retryStep
   if (!step) return
   clearFailedStatus()
+  await runStep(step)
+}
+
+async function continueMediaNextStep() {
+  const step = activeNodeStatus.value?.nextStep
+  if (!step) return
   await runStep(step)
 }
 

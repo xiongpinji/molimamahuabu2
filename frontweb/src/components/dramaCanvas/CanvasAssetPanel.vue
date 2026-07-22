@@ -122,6 +122,12 @@
       </div>
     </div>
 
+    <CanvasNodeExecutionStrip
+      :status="nodeBusy"
+      :disabled="saving || generating || panoramaGenerating || multiViewGenerating || libraryApplying"
+      @retry="retryAssetFailedStep"
+    />
+
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveAsset">保存</el-button>
       <el-button
@@ -181,6 +187,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
+import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
 import { propAPI } from '@/api/props'
@@ -306,11 +313,26 @@ async function saveAsset() {
     }
     ElMessage.success('已保存')
     await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '素材已保存',
+      resultType: 'text',
+      resultLabel: `${kindLabel.value}已保存`,
+      promptText: form.prompt || form.description || form.appearance || form.name || form.location,
+      autoClear: false,
+    })
   } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
+    const message = e?.message || '保存失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'save',
+      retryLabel: `重试保存${kindLabel.value}`,
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     saving.value = false
-    if (!generating.value) ctx?.nodeStatus?.clear(props.nodeId)
+    clearTransientAssetStatus()
   }
 }
 
@@ -346,6 +368,7 @@ async function bindPickedProjectAsset(asset) {
 async function applyLibraryImage(asset) {
   libraryApplying.value = true
   ctx?.nodeStatus?.set(props.nodeId, { step: 'library', message: '引用素材库图片…' })
+  let failed = false
   try {
     const payload = buildLibraryImagePayload(asset)
     if (props.kind === 'character') {
@@ -363,10 +386,20 @@ async function applyLibraryImage(asset) {
     ElMessage.success('已引用素材库图片')
     await ctx?.refreshDrama?.(true)
   } catch (e) {
-    ElMessage.error(e?.message || '引用素材库图片失败')
+    failed = true
+    const message = e?.message || '引用素材库图片失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'library',
+      retryLabel: '重试引用素材库图片',
+      recoverable: true,
+      libraryAsset: asset,
+    })
+    ElMessage.error(message)
   } finally {
     libraryApplying.value = false
-    if (!generating.value && !saving.value && !panoramaGenerating.value) ctx?.nodeStatus?.clear(props.nodeId)
+    if (!failed && !generating.value && !saving.value && !panoramaGenerating.value) ctx?.nodeStatus?.clear(props.nodeId)
   }
 }
 async function deleteAsset() {
@@ -405,7 +438,15 @@ async function generateImage() {
     })
     ElMessage.success('参考图已生成')
   } catch (e) {
-    ElMessage.error(e?.message || '生成失败')
+    const message = e?.message || '生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'image',
+      retryLabel: '重试生成参考图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     generating.value = false
   }
@@ -420,7 +461,15 @@ async function generatePanorama() {
     })
     ElMessage.success('场景全景图已生成')
   } catch (e) {
-    ElMessage.error(e?.message || '全景图生成失败')
+    const message = e?.message || '全景图生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'panorama',
+      retryLabel: '重试生成全景图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     panoramaGenerating.value = false
   }
@@ -436,14 +485,36 @@ async function generateMultiView() {
     })
     ElMessage.success(props.kind === 'character' ? '角色三视图已生成' : '场景多视图已生成')
   } catch (e) {
-    ElMessage.error(e?.message || '多视图生成失败')
+    const message = e?.message || '多视图生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'multi_view',
+      retryLabel: props.kind === 'character' ? '重试生成角色三视图' : '重试生成场景多视图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     multiViewGenerating.value = false
   }
 }
 
+async function retryAssetFailedStep() {
+  const status = nodeBusy.value
+  if (status?.retryStep === 'save') return saveAsset()
+  if (status?.retryStep === 'library' && status.libraryAsset) return applyLibraryImage(status.libraryAsset)
+  if (status?.retryStep === 'image') return generateImage()
+  if (status?.retryStep === 'panorama') return generatePanorama()
+  if (status?.retryStep === 'multi_view') return generateMultiView()
+}
+
 function highlightRelated() {
   ctx?.setHighlightAsset?.(props.nodeId)
+}
+
+function clearTransientAssetStatus() {
+  const status = ctx?.nodeStatus?.get?.(props.nodeId)
+  if (status && !['failed', 'success'].includes(status.step)) ctx?.nodeStatus?.clear(props.nodeId)
 }
 </script>
 
