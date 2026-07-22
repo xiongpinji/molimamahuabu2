@@ -289,14 +289,19 @@ function normalizeAssetItem(it, source) {
     it.audio_url,
     it.voice_url,
     it.thumbnail_url,
+    it.file_url,
+    it.cover_url,
+    it.poster_url,
   )
   const localPath = firstString(
     it.local_path,
     it.path,
+    it.file_path,
     it.image_local_path,
     it.video_local_path,
     it.audio_local_path,
     it.voice_local_path,
+    it.thumbnail_local_path,
   )
   const itemType = it.type || inferAssetType(url || localPath)
   return {
@@ -362,10 +367,12 @@ function itemUrl(item) {
   const lp = firstString(
     item.local_path,
     item.path,
+    item.file_path,
     item.image_local_path,
     item.video_local_path,
     item.audio_local_path,
     item.voice_local_path,
+    item.thumbnail_local_path,
   )
   if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
   return firstString(
@@ -378,6 +385,9 @@ function itemUrl(item) {
     item.audio_url,
     item.voice_url,
     item.thumbnail_url,
+    item.file_url,
+    item.cover_url,
+    item.poster_url,
   )
 }
 
@@ -386,10 +396,12 @@ function normalizePickedAsset(item) {
   const localPath = firstString(
     item.local_path,
     item.path,
+    item.file_path,
     item.image_local_path,
     item.video_local_path,
     item.audio_local_path,
     item.voice_local_path,
+    item.thumbnail_local_path,
   )
   const name = item.name || item.title || item.filename || '素材'
   return {
