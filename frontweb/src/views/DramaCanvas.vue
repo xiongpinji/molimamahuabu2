@@ -643,8 +643,21 @@ function isRestoredPendingNodeStatus(status) {
   return Boolean(status?.restored && status?.taskId && !['failed', 'success'].includes(status.step))
 }
 
+function taskResultObject(task) {
+  const raw = task?.result
+  if (!raw) return {}
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) || {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof raw === 'object' ? raw : {}
+}
+
 function taskResultUrl(task) {
-  const result = task?.result || {}
+  const result = taskResultObject(task)
   const response = result.response || result.data || {}
   return result.video_url
     || result.image_url
@@ -657,6 +670,19 @@ function taskResultUrl(task) {
     || ''
 }
 
+function taskRequestPayload(task, status) {
+  const result = taskResultObject(task)
+  const response = result.response || result.data || {}
+  return status?.requestPayload
+    || result.requestPayload
+    || result.request_payload
+    || result.payload
+    || response.requestPayload
+    || response.request_payload
+    || response.payload
+    || null
+}
+
 function restoredNodeStoryboardId(node, status) {
   return Number(status?.storyboardId || storyboardForNode(node)?.id || storyboardIdFromNodeId(node?.id)) || null
 }
@@ -666,7 +692,8 @@ function restoredTaskResultInfo(node, status, task, resultUrl) {
   const storyboardId = restoredNodeStoryboardId(node, status)
   const storyboard = storyboardForNode(node)
   const base = storyboardId ? nodeStepResultInfo(node, step, storyboardId, storyboard) : {}
-  const result = task?.result || {}
+  const result = taskResultObject(task)
+  const response = result.response || result.data || {}
   return {
     ...base,
     resultUrl,
@@ -674,6 +701,9 @@ function restoredTaskResultInfo(node, status, task, resultUrl) {
     resultNodeId: status?.resultNodeId || base.resultNodeId || node?.id || '',
     resultLabel: status?.resultLabel || base.resultLabel || result.label || '结果已生成',
     promptText: status?.promptText || result.prompt || '',
+    requestPayload: taskRequestPayload(task, status),
+    model: status?.model || result.model || response.model || '',
+    videoGenerationId: status?.videoGenerationId || result.videoGenerationId || result.video_generation_id || response.videoGenerationId || response.video_generation_id || null,
   }
 }
 
