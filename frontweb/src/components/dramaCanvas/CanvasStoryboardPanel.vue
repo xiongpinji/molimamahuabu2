@@ -1017,6 +1017,81 @@ async function polishPrompt() {
   }
 }
 
+function panelNodeStatusIds(step, sbId) {
+  const ids = [sbNodeId.value]
+  if (step === 'image') ids.push(`sbimg:${sbId}`)
+  else if (step === 'video') ids.push(`sbvid:${sbId}`)
+  else if (step === 'audio') ids.push(`sbaud:${sbId}:dialogue`)
+  return [...new Set(ids.filter(Boolean))]
+}
+
+function setPanelNodeStatus(ids, payload, mode = 'set') {
+  ids.forEach((id) => {
+    const action = ctx?.nodeStatus?.[mode] || ctx?.nodeStatus?.set
+    action?.(id, payload)
+  })
+}
+
+function panelGenerationReferenceUrls() {
+  return [...new Set(allReferenceAssets.value
+    .map((asset) => asset.absoluteUrl || asset.url || asset.asset_url || asset.display_url || asset.local_path)
+    .map((url) => toAbsoluteMediaUrl(url))
+    .filter(Boolean))]
+}
+
+function panelResultNodeId(step, sbId) {
+  if (step === 'image') return `sbimg:${sbId}`
+  if (step === 'video') return `sbvid:${sbId}`
+  if (step === 'audio') return `sbaud:${sbId}:dialogue`
+  return sbNodeId.value
+}
+
+function panelResultUrl(step, sb) {
+  const sbId = Number(sb?.id)
+  if (step === 'image') {
+    const rows = Array.isArray(ctx?.imagesBySbId?.value?.[sbId]) ? ctx.imagesBySbId.value[sbId] : []
+    const main = rows.find((row) => ['main', 'storyboard', ''].includes(String(row?.frame_type || '').toLowerCase())) || rows[0]
+    return toAbsoluteMediaUrl(main?.url || main?.image_url || main?.local_path || sb?.image_url || sb?.image_local_path || sb?.local_path || '')
+  }
+  if (step === 'video') {
+    const rows = Array.isArray(ctx?.videosBySbId?.value?.[sbId]) ? ctx.videosBySbId.value[sbId] : []
+    const video = rows[0]
+    return toAbsoluteMediaUrl(video?.video_url || video?.url || video?.local_path || sb?.video_url || sb?.video_local_path || '')
+  }
+  if (step === 'audio') return toAbsoluteMediaUrl(sb?.audio_url || sb?.audio_local_path || '')
+  return ''
+}
+
+function panelPromptText(step, sb) {
+  if (step === 'video') return sb?.video_prompt || sb?.universal_segment_text || sb?.polished_prompt || sb?.image_prompt || sb?.description || ''
+  if (step === 'audio') return sb?.dialogue || sb?.narration || ''
+  return sb?.polished_prompt || sb?.image_prompt || sb?.universal_segment_text || sb?.description || sb?.action || ''
+}
+
+function panelSuccessPayload(step, sb, message, operationResult = {}) {
+  const resultPatch = Object.fromEntries(
+    Object.entries(operationResult || {}).filter(([, value]) => value !== '' && value !== undefined && value !== null),
+  )
+  return {
+    step,
+    message,
+    storyboardId: sb?.id,
+    resultUrl: panelResultUrl(step, sb),
+    resultType: step,
+    resultNodeId: panelResultNodeId(step, sb?.id),
+    resultLabel: message,
+    promptText: panelPromptText(step, sb),
+    upstreamReferenceUrls: panelGenerationReferenceUrls(),
+    autoClear: false,
+    ...resultPatch,
+  }
+}
+
+function shouldKeepPanelNodeStatus(id) {
+  const statusStep = ctx?.nodeStatus?.get(id)?.step
+  return statusStep === 'failed' || statusStep === 'success'
+}
+
 async function runStep(step) {
   const drama = ctx?.drama?.value
   const sbId = props.storyboard?.id
@@ -1033,10 +1108,9 @@ async function runStep(step) {
 
   busyStep.value = step
   const statusMsg = CANVAS_NODE_STATUS_LABELS[step] || '处理中…'
+  const statusIds = panelNodeStatusIds(step, sbId)
   actionStatus.value = { type: 'busy', message: statusMsg }
-  ctx?.nodeStatus?.set(sbNodeId.value, { step, message: statusMsg })
-  if (step === 'image') ctx?.nodeStatus?.set(`sbimg:${sbId}`, { step, message: statusMsg })
-  if (step === 'video') ctx?.nodeStatus?.set(`sbvid:${sbId}`, { step, message: statusMsg })
+  setPanelNodeStatus(statusIds, { step, message: statusMsg })
   try {
     const found = findStoryboardInDrama(drama, sbId)
     const sb = found?.storyboard || props.storyboard
@@ -1045,22 +1119,26 @@ async function runStep(step) {
       imagesBySbId: ctx?.imagesBySbId?.value || {},
       videosBySbId: ctx?.videosBySbId?.value || {},
     }
+    let operationResult = {}
     if (step === 'image') {
-      await runImageStep(drama, sb, {
+      operationResult = await runImageStep(drama, sb, {
         ...genOpts,
         imageModel: imageModel.value || genOpts.imageModel,
+        upstreamReferenceUrls: panelGenerationReferenceUrls(),
       }, '', {
         frameType: gridFrameType.value === 'single' ? undefined : gridFrameType.value,
       })
     }
     else if (step === 'video') {
-      await runVideoStep(drama, sb, {
+      operationResult = await runVideoStep(drama, sb, {
         ...genOpts,
         videoModel: videoModel.value || genOpts.videoModel,
+        upstreamReferenceUrls: panelGenerationReferenceUrls(),
       })
     }
     else if (step === 'audio') {
       const res = await runAudioStep(sb)
+      operationResult = res || {}
       if (res?.skipped) {
         actionStatus.value = { type: 'idle', message: res.reason || '已跳过' }
         ElMessage.info(res.reason || '已跳过')
@@ -1071,6 +1149,10 @@ async function runStep(step) {
     actionStatus.value = { type: 'success', message: successMsg }
     ElMessage.success(successMsg)
     await ctx?.refresh?.()
+    const refreshedDrama = ctx?.drama?.value || drama
+    const refreshed = findStoryboardInDrama(refreshedDrama, sbId)
+    const refreshedSb = refreshed?.storyboard || sb
+    setPanelNodeStatus(statusIds, panelSuccessPayload(step, refreshedSb, successMsg, operationResult), 'success')
   } catch (e) {
     const errorMessage = e?.message || '生成失败'
     actionStatus.value = { type: 'error', message: errorMessage }
@@ -1081,15 +1163,13 @@ async function runStep(step) {
       retryLabel: `重试${CANVAS_NODE_STATUS_LABELS[step] || '生成'}`,
       recoverable: true,
     }
-    ctx?.nodeStatus?.fail(sbNodeId.value, failPayload)
-    if (step === 'image') ctx?.nodeStatus?.fail(`sbimg:${sbId}`, failPayload)
-    if (step === 'video') ctx?.nodeStatus?.fail(`sbvid:${sbId}`, failPayload)
+    setPanelNodeStatus(statusIds, failPayload, 'fail')
     ElMessage.error(errorMessage)
   } finally {
     busyStep.value = ''
-    if (ctx?.nodeStatus?.get(sbNodeId.value)?.step !== 'failed') ctx?.nodeStatus?.clear(sbNodeId.value)
-    if (step === 'image' && ctx?.nodeStatus?.get(`sbimg:${sbId}`)?.step !== 'failed') ctx?.nodeStatus?.clear(`sbimg:${sbId}`)
-    if (step === 'video' && ctx?.nodeStatus?.get(`sbvid:${sbId}`)?.step !== 'failed') ctx?.nodeStatus?.clear(`sbvid:${sbId}`)
+    statusIds.forEach((id) => {
+      if (!shouldKeepPanelNodeStatus(id)) ctx?.nodeStatus?.clear(id)
+    })
   }
 }
 </script>

@@ -117,6 +117,28 @@ test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {
   assert.match(storyboardPanelSource, /await storyboardsAPI\.update\(storyboardId, payload\)/)
 })
 
+test('分镜配置面板生成成功后保留节点结果回显', () => {
+  assert.match(storyboardPanelSource, /function panelNodeStatusIds\(step, sbId\)/)
+  assert.match(storyboardPanelSource, /ids\.push\(`sbimg:\$\{sbId\}`\)/)
+  assert.match(storyboardPanelSource, /ids\.push\(`sbvid:\$\{sbId\}`\)/)
+  assert.match(storyboardPanelSource, /ids\.push\(`sbaud:\$\{sbId\}:dialogue`\)/)
+  assert.match(storyboardPanelSource, /function panelGenerationReferenceUrls\(\)/)
+  assert.match(storyboardPanelSource, /upstreamReferenceUrls: panelGenerationReferenceUrls\(\)/)
+  assert.match(storyboardPanelSource, /function panelSuccessPayload\(step, sb, message, operationResult = \{\}\)/)
+  assert.match(storyboardPanelSource, /const resultPatch = Object\.fromEntries\(/)
+  assert.match(storyboardPanelSource, /value !== '' && value !== undefined && value !== null/)
+  assert.match(storyboardPanelSource, /resultUrl: panelResultUrl\(step, sb\)/)
+  assert.match(storyboardPanelSource, /resultType: step/)
+  assert.match(storyboardPanelSource, /resultNodeId: panelResultNodeId\(step, sb\?\.id\)/)
+  assert.match(storyboardPanelSource, /promptText: panelPromptText\(step, sb\)/)
+  assert.match(storyboardPanelSource, /autoClear: false/)
+  assert.match(storyboardPanelSource, /\.\.\.resultPatch/)
+  assert.match(storyboardPanelSource, /setPanelNodeStatus\(statusIds, panelSuccessPayload\(step, refreshedSb, successMsg, operationResult\), 'success'\)/)
+  assert.match(storyboardPanelSource, /function shouldKeepPanelNodeStatus\(id\)/)
+  assert.match(storyboardPanelSource, /statusStep === 'failed' \|\| statusStep === 'success'/)
+  assert.match(storyboardPanelSource, /if \(!shouldKeepPanelNodeStatus\(id\)\) ctx\?\.nodeStatus\?\.clear\(id\)/)
+})
+
 test('资产配置面板保留保存、素材库选图和关联分镜入口', () => {
   assert.match(assetPanelSource, /function saveAsset\(\)/)
   assert.match(assetPanelSource, /await ctx\?\.refreshDrama\?\.\(true\)/)
