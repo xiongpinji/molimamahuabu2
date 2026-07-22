@@ -21,6 +21,7 @@
         <button type="button" @click.stop="openResult">打开结果</button>
         <button type="button" @click.stop="copyResultLink">复制链接</button>
         <button type="button" @click.stop="downloadResult">下载结果</button>
+        <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位结果</button>
       </span>
       <span v-if="status.resultUrl || effectiveSavedAsset" class="action-group action-group-asset" aria-label="素材操作">
         <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
@@ -50,6 +51,7 @@
         <button v-if="effectiveResultUrl" type="button" @click.stop="openResult">打开结果</button>
         <button v-if="effectiveResultUrl" type="button" @click.stop="copyResultLink">复制链接</button>
         <button v-if="effectiveResultUrl" type="button" @click.stop="downloadResult">下载结果</button>
+        <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位结果</button>
         <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       </span>
       <span class="action-group action-group-flow" aria-label="失败流程操作">
@@ -209,6 +211,7 @@ const statusSavedAsset = computed(() => {
 })
 const effectiveSavedAsset = computed(() => savedAsset.value || statusSavedAsset.value)
 const effectiveResultUrl = computed(() => effectiveSavedAsset.value?.url || status.value?.resultUrl || '')
+const resultNodeId = computed(() => status.value?.resultNodeId || '')
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
@@ -256,6 +259,11 @@ function copyPrompt() {
 
 function copyResultLink() {
   copyText(effectiveResultUrl.value, '结果链接已复制', '结果链接（请手动复制）')
+}
+
+async function focusResultNode() {
+  if (!resultNodeId.value) return
+  await ctx?.focusCanvasNode?.(resultNodeId.value)
 }
 
 function copyUpstreamReferences() {
