@@ -1667,7 +1667,7 @@ function assetLocalPath(asset) {
 }
 
 function selectedStoryboardMediaAssetPayload(asset) {
-  const type = String(asset?.type || '').toLowerCase()
+  const type = normalizePickedAssetType(asset)
   if (!['video', 'audio'].includes(type)) return null
   const url = assetDisplayUrl(asset)
   const localPath = assetLocalPath(asset)
@@ -1951,7 +1951,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     retryStep: 'library',
     retryLabel: '重试指派素材',
     resultUrl,
-    resultType: asset?.type || 'image',
+    resultType: normalizePickedAssetType(asset),
     savedAssetId: assetId,
     savedAssetName: asset?.name || '项目素材',
     autoClear: false,
@@ -2016,7 +2016,7 @@ async function createCanvasProjectAssetFromUpload(file, flowPosition = null, off
     nodeStatus.success(nodeId, {
       message: selectedStoryboardIds.value.length === 1 ? '已上传并指派到分镜' : '已上传并加入画布',
       resultUrl: assetDisplayUrl(asset),
-      resultType: asset.type || mediaTypeFromFile(file),
+      resultType: normalizePickedAssetType(asset),
       savedAssetId: projectAssetId(asset),
       savedAssetName: asset.name || file.name || '上传素材',
       savedAssetUrl: assetDisplayUrl(asset),
@@ -2064,7 +2064,7 @@ async function createCanvasProjectAssetFromUrl(url, flowPosition = null) {
     nodeStatus.success(nodeId, {
       message: selectedStoryboardIds.value.length === 1 ? '已粘贴并指派到分镜' : '已粘贴素材到画布',
       resultUrl: assetDisplayUrl(asset),
-      resultType: asset.type || 'image',
+      resultType: normalizePickedAssetType(asset),
       savedAssetId: projectAssetId(asset),
       savedAssetName: asset.name || '粘贴素材',
       savedAssetUrl: assetDisplayUrl(asset),
@@ -2115,7 +2115,7 @@ async function onCanvasAssetLibraryPick(asset) {
       nodeStatus.success(nodeId, {
         message: selectedStoryboardIds.value.length === 1 ? '已加入画布并指派到分镜' : '已从素材库加入画布',
         resultUrl: assetDisplayUrl(projectAsset),
-        resultType: projectAsset?.type || asset?.type || 'image',
+        resultType: normalizePickedAssetType(projectAsset || asset),
         savedAssetId: projectAssetId(projectAsset),
         savedAssetName: projectAsset?.name || asset?.name || '项目素材',
         savedAssetUrl: assetDisplayUrl(projectAsset),
@@ -2132,7 +2132,7 @@ async function onCanvasAssetLibraryPick(asset) {
         message,
         errorDetail: message,
         resultUrl: projectAsset ? assetDisplayUrl(projectAsset) : '',
-        resultType: projectAsset?.type || asset?.type || 'image',
+        resultType: normalizePickedAssetType(projectAsset || asset),
         savedAssetId: projectAsset ? projectAssetId(projectAsset) : '',
         savedAssetName: projectAsset?.name || asset?.name || '项目素材',
         retryStep: 'library',

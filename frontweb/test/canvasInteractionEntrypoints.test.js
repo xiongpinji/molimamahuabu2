@@ -82,6 +82,7 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /type: normalizePickedAssetType\(asset\)/)
   assert.match(canvasSource, /mediaTypeFromUrl\(url, 'image'\)/)
   assert.match(canvasSource, /function selectedStoryboardMediaAssetPayload\(asset\)/)
+  assert.match(canvasSource, /const type = normalizePickedAssetType\(asset\)/)
   assert.match(canvasSource, /asset\?\.file_url/)
   assert.match(canvasSource, /asset\?\.cover_url/)
   assert.match(canvasSource, /asset\?\.poster_url/)
