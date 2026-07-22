@@ -341,6 +341,8 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开上次</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
+              <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
+              <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button v-if="item.errorDetail || item.message" type="button" @click.stop="copyQueueItemError(item)">原因</button>
               <button v-if="item.retryStep" type="button" @click.stop="retryQueueItem(item)">重试</button>
