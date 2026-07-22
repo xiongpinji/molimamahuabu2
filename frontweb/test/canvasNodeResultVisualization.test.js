@@ -381,6 +381,13 @@ test('画布节点结果定位和工作流失败状态可恢复重试', () => {
   assert.match(canvasSource, /statusIds\.forEach\(\(id\) => nodeStatus\.fail\(id, payload\)\)/)
   assert.match(canvasSource, /function clearTransientNodeStepStatus\(statusIds\)/)
   assert.match(canvasSource, /if \(!shouldKeepNodeStatus\(id\)\) nodeStatus\.clear\(id\)/)
+  assert.match(canvasSource, /function previousNodeStepResultPayload\(statusIds\)/)
+  assert.match(canvasSource, /const status = nodeStatus\.get\(id\)/)
+  assert.match(canvasSource, /const resultUrl = statusResultUrl\(status\)/)
+  assert.match(canvasSource, /resultSummary: status\?\.resultSummary \|\| '失败前结果已保留'/)
+  assert.match(canvasSource, /recoverable: true/)
+  assert.match(canvasSource, /const previousResultPayload = previousNodeStepResultPayload\(statusIds\)/)
+  assert.match(canvasSource, /const retryPayload = \{[\s\S]*\.\.\.previousResultPayload,[\s\S]*message: errorMessage/)
   assert.match(canvasSource, /failNodeStepStatus\(statusIds, retryPayload\)/)
   assert.match(canvasSource, /clearTransientNodeStepStatus\(statusIds\)/)
   assert.match(canvasSource, /nodeStatus\.set\(`sb:\$\{storyboardId\}`, \{ step, message: label, storyboardId, retryStep: step \}\)/)
@@ -439,6 +446,7 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /@click\.stop="copyQueueItemError\(item\)">原因/)
   assert.match(canvasSource, /队列失败原因已复制/)
   assert.match(canvasSource, /队列素材引用已复制/)
+  assert.match(canvasSource, /@click\.stop="openQueueItemResult\(item\)">打开上次/)
 })
 
 test('媒体节点卡片从运行状态恢复结果、失败原因和重试步骤', () => {

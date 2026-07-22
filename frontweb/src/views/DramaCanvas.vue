@@ -338,7 +338,7 @@
               <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
             </span>
             <span v-else-if="item.tone === 'failed'" class="run-failed-actions">
-              <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
+              <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开上次</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
@@ -2443,6 +2443,28 @@ function clearTransientNodeStepStatus(statusIds) {
   })
 }
 
+function previousNodeStepResultPayload(statusIds) {
+  for (const id of statusIds) {
+    const status = nodeStatus.get(id)
+    const resultUrl = statusResultUrl(status)
+    if (!resultUrl && !status?.savedAssetId) continue
+    return {
+      resultUrl,
+      resultNodeId: status?.resultNodeId || '',
+      resultType: status?.resultType || '',
+      resultLabel: status?.resultLabel || '上次成功结果',
+      resultSummary: status?.resultSummary || '失败前结果已保留',
+      savedAssetId: status?.savedAssetId || '',
+      savedAssetName: status?.savedAssetName || '',
+      savedAssetUrl: status?.savedAssetUrl || '',
+      savedAssetLocalPath: status?.savedAssetLocalPath || '',
+      savedAssetDuration: status?.savedAssetDuration ?? null,
+      recoverable: true,
+    }
+  }
+  return {}
+}
+
 function nodeStepTaskStatusOptions(statusIds, basePayload) {
   return {
     onTask(task) {
@@ -2484,6 +2506,7 @@ async function runCanvasNodeStep(node, step) {
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
   const upstreamReferenceUrlsForNode = nodeInputReferenceUrls(node)
+  const previousResultPayload = previousNodeStepResultPayload(statusIds)
   const baseStatusPayload = {
     step,
     message: statusMessage,
@@ -2529,6 +2552,7 @@ async function runCanvasNodeStep(node, step) {
   } catch (e) {
     const errorMessage = e?.message || '节点生成失败'
     const retryPayload = {
+      ...previousResultPayload,
       message: errorMessage,
       errorDetail: errorMessage,
       promptText: nodeStepPromptText(step, sb, node),
