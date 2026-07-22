@@ -1206,6 +1206,7 @@ function canvasNodeActions(node) {
     actions.push('focus-upstream', 'focus-downstream-video')
     actions.push('append-downstream-storyboard')
     if (node.type === 'canvasStoryboard') {
+      actions.push('insert-downstream-storyboard')
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
       actions.push('create-workflow-from-node', 'run-node-workflow')
     } else if (node.type === 'canvasMedia') {
@@ -1354,6 +1355,87 @@ async function appendDownstreamStoryboard(node) {
   await refreshCanvas(false)
   await focusCanvasNode(targetNodeId)
   ElMessage.success('已追加下游分镜并连线')
+}
+
+function firstManualDownstreamStoryboardEdge(node) {
+  if (!node?.id) return null
+  return allGraphEdges.value.find((edge) => (
+    String(edge?.source || '') === String(node.id)
+    && String(edge?.target || '').startsWith('sb:')
+    && (edge?.data?.manual === true || String(edge?.id || '').startsWith('manual:'))
+  )) || null
+}
+
+async function insertDownstreamStoryboard(node) {
+  const downstreamEdge = firstManualDownstreamStoryboardEdge(node)
+  if (!downstreamEdge) {
+    await appendDownstreamStoryboard(node)
+    return
+  }
+  const sourceStoryboard = storyboardForNode(node)
+  const episodeId = sourceStoryboard?.episode_id || node?.data?.episodeId || filterEpisodeId.value
+  if (!episodeId) {
+    ElMessage.warning('请先选择集数，再插入下游分镜')
+    return
+  }
+
+  const episode = (drama.value?.episodes || []).find((ep) => Number(ep.id) === Number(episodeId))
+  const boards = episode?.storyboards || []
+  const maxNum = boards.reduce((max, sb) => Math.max(max, Number(sb.storyboard_number || sb.shot_number || 0)), 0)
+  const created = await storyboardsAPI.create({
+    episode_id: episodeId,
+    storyboard_number: maxNum + 1,
+    title: `插入分镜 ${maxNum + 1}`,
+    description: sourceStoryboard?.description ? `承接：${sourceStoryboard.description}` : '插入到现有下游连线之间',
+  })
+  const storyboard = created?.data ?? created
+  const storyboardId = storyboard?.id ?? storyboard?.storyboard?.id
+  if (!storyboardId) throw new Error('插入下游分镜失败：未返回分镜 ID')
+
+  const targetNodeId = `sb:${storyboardId}`
+  const sourcePosition = node.position || { x: 0, y: 0 }
+  const downstreamNode = findGraphNode(downstreamEdge.target)
+  const downstreamPosition = downstreamNode?.position || { x: sourcePosition.x + 420, y: sourcePosition.y }
+  const targetPosition = {
+    x: sourcePosition.x + Math.max(180, Math.round((downstreamPosition.x - sourcePosition.x) / 2)),
+    y: sourcePosition.y + Math.round((downstreamPosition.y - sourcePosition.y) / 2),
+  }
+  const firstEdge = {
+    id: manualEdgeId({ source: node.id, target: targetNodeId }),
+    source: node.id,
+    target: targetNodeId,
+    sourceHandle: null,
+    targetHandle: null,
+    type: 'smoothstep',
+    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
+    data: { manual: true },
+  }
+  const secondEdge = {
+    id: manualEdgeId({ source: targetNodeId, target: downstreamEdge.target }),
+    source: targetNodeId,
+    target: downstreamEdge.target,
+    sourceHandle: null,
+    targetHandle: downstreamEdge.targetHandle || null,
+    type: 'smoothstep',
+    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
+    data: { manual: true },
+  }
+
+  layoutCache.value = {
+    ...(layoutCache.value || { version: 1 }),
+    nodes: {
+      ...(layoutCache.value?.nodes || {}),
+      [targetNodeId]: targetPosition,
+    },
+  }
+  const remainingEdges = allGraphEdges.value.filter((edge) => String(edge.id) !== String(downstreamEdge.id))
+  const insertedEdges = [firstEdge, secondEdge].filter((edge) => !hasSameEdgeConnection(edge, remainingEdges))
+  allGraphEdges.value = stampEdgeBaseStyles([...remainingEdges, ...insertedEdges])
+  await persistCanvasState({ layoutOnly: true })
+  if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
+  await refreshCanvas(false)
+  await focusCanvasNode(targetNodeId)
+  ElMessage.success('已插入下游分镜并重连')
 }
 
 async function copyNodeReference(node) {
@@ -2285,6 +2367,8 @@ async function runNodeMenuAction(type, node) {
     await focusDownstreamVideo(node)
   } else if (type === 'append-downstream-storyboard') {
     await appendDownstreamStoryboard(node)
+  } else if (type === 'insert-downstream-storyboard') {
+    await insertDownstreamStoryboard(node)
   } else if (type === 'copy-node-ref') {
     await copyNodeReference(node)
   } else if (type === 'create-workflow-from-node') {
