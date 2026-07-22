@@ -7,7 +7,7 @@
     <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" />
     <div v-else class="empty">素材不可用</div>
     <strong>{{ data.asset?.name || '未命名截图' }}</strong>
-    <span>项目领域资产</span>
+    <span>{{ assignmentLabel }}</span>
     <div class="asset-actions">
       <button type="button" :disabled="!url" @click.stop="openAsset">预览</button>
       <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制引用</button>
@@ -31,6 +31,7 @@
         @retry="retryFailedStep"
       />
       <p class="asset-ref">{{ referenceText || '该素材缺少可复制引用' }}</p>
+      <p class="asset-assignment">{{ assignmentLabel }}</p>
       <div class="panel-actions">
         <button type="button" :disabled="!url" @click.stop="openAsset">打开预览</button>
         <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制到提示词</button>
@@ -62,6 +63,10 @@ const url = computed(() => assetMediaUrl(props.data.asset))
 const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
 const assetId = computed(() => referenceAssetId.value)
 const activeNodeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
+const assignedStoryboardId = computed(() => Number(props.data.asset?.storyboard_id || props.data.asset?.metadata?.storyboard_id || 0))
+const assignmentLabel = computed(() => Number.isFinite(assignedStoryboardId.value) && assignedStoryboardId.value > 0
+  ? `已指派到分镜 #${assignedStoryboardId.value}`
+  : '未指派到分镜')
 const referenceText = computed(() => {
   const asset = props.data.asset || {}
   const id = referenceAssetId.value
@@ -125,6 +130,7 @@ function closePanel() {
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 700; color: #bae6fd; }
 .panel-head button { border: 0; background: transparent; color: #7dd3fc; font-size: 10px; cursor: pointer; }
 .asset-ref { margin: 8px 0; max-height: 52px; overflow: auto; color: #a1a1aa; font-size: 10px; line-height: 1.4; word-break: break-all; }
+.asset-assignment { margin: 0 0 8px; color: #7dd3fc; font-size: 10px; }
 .panel-actions { display: grid; gap: 6px; }
 .panel-actions button { border: 1px solid rgba(125,211,252,.32); border-radius: 7px; background: rgba(14,165,233,.13); color: #e0f2fe; font-size: 10px; line-height: 24px; cursor: pointer; }
 .panel-actions button:disabled { opacity: .5; cursor: not-allowed; }
