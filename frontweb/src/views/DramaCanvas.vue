@@ -612,26 +612,28 @@ const sidebarScenes = computed(() => filterCanvasAssets(drama.value?.scenes, 'sc
 const sidebarProps = computed(() => filterCanvasAssets(drama.value?.props, 'prop', episodeContext.value))
 const queueNow = ref(Date.now())
 const runQueueItems = computed(() => {
-  const items = []
+  const grouped = new Map()
   const seen = new Set()
   for (const [nodeId, status] of Object.entries(nodeStatus.map)) {
     if (!nodeId || !status) continue
-    const key = `active:${nodeId}`
+    const key = `active:${queueStatusRunKey(nodeId, status)}`
     const isFailed = status.step === 'failed'
     const isSuccess = status.step === 'success'
+    const sourceNodeId = status.sourceNodeId || nodeId
     seen.add(nodeId)
-    items.push({
+    mergeRunQueueItem(grouped, {
       key,
-      nodeId,
+      nodeId: sourceNodeId,
+      statusIds: [nodeId],
       tone: isFailed ? 'failed' : isSuccess ? 'success' : 'running',
-      label: queueNodeLabel(nodeId),
+      label: queueNodeLabel(sourceNodeId),
       message: isFailed
         ? (status.message || '节点执行失败')
         : isSuccess
           ? queueSuccessMessage(status)
           : queueRunningMessage(status),
       elapsedText: formatQueueElapsed(status.at),
-      retryStep: isFailed ? (status.retryStep || queueNodeRetryStep(findGraphNode(nodeId))) : '',
+      retryStep: isFailed ? (status.retryStep || queueNodeRetryStep(findGraphNode(sourceNodeId))) : '',
       resultUrl: status.resultUrl || status.savedAssetUrl || '',
       resultNodeId: status.resultNodeId || '',
       resultType: status.resultType || '',
@@ -641,16 +643,17 @@ const runQueueItems = computed(() => {
     const failure = queueNodeFailure(node)
     if (!failure || seen.has(String(node.id))) continue
     seen.add(String(node.id))
-    items.push({
+    mergeRunQueueItem(grouped, {
       key: `failed:${node.id}`,
       nodeId: node.id,
+      statusIds: [node.id],
       tone: 'failed',
       label: canvasNodeLabel(node),
       message: failure,
       retryStep: queueNodeRetryStep(node),
     })
   }
-  return items.slice(0, 8)
+  return Array.from(grouped.values()).slice(0, 8)
 })
 const runningQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'running').length)
 const successQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'success').length)
@@ -661,6 +664,33 @@ function queueNodeLabel(nodeId) {
   if (node) return canvasNodeLabel(node)
   const sbId = storyboardIdFromNodeId(nodeId)
   return sbId ? `分镜 #${sbId}` : String(nodeId)
+}
+
+function queueStatusRunKey(nodeId, status) {
+  return status?.runKey || `node:${nodeId}`
+}
+
+function queueToneRank(tone) {
+  if (tone === 'failed') return 3
+  if (tone === 'running') return 2
+  if (tone === 'success') return 1
+  return 0
+}
+
+function mergeRunQueueItem(grouped, item) {
+  const current = grouped.get(item.key)
+  if (!current) {
+    grouped.set(item.key, item)
+    return
+  }
+  current.statusIds = [...new Set([...(current.statusIds || []), ...(item.statusIds || [])])]
+  if (!findGraphNode(current.nodeId) && findGraphNode(item.nodeId)) current.nodeId = item.nodeId
+  if (!current.resultUrl && item.resultUrl) current.resultUrl = item.resultUrl
+  if (!current.resultNodeId && item.resultNodeId) current.resultNodeId = item.resultNodeId
+  if (!current.resultType && item.resultType) current.resultType = item.resultType
+  if (!current.retryStep && item.retryStep) current.retryStep = item.retryStep
+  if (queueToneRank(item.tone) > queueToneRank(current.tone)) current.tone = item.tone
+  if (item.tone === current.tone && item.message) current.message = item.message
 }
 
 function queueNodeFailure(node) {
@@ -743,7 +773,8 @@ async function focusQueueItemResult(item) {
 }
 
 function dismissQueueItem(item) {
-  if (item?.nodeId) nodeStatus.clear(item.nodeId)
+  const ids = item?.statusIds?.length ? item.statusIds : [item?.nodeId]
+  ids.filter(Boolean).forEach((id) => nodeStatus.clear(id))
 }
 
 function syncWorkflowFromDrama() {
@@ -1402,14 +1433,15 @@ async function runCanvasNodeStep(node, step) {
   }
   const nodeId = node?.id
   const statusIds = nodeStepStatusIds(node, step, sb.id)
+  const runKey = `storyboard:${sb.id}:${step}:${Date.now()}`
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
-  setNodeStepStatus(statusIds, { step, message: statusMessage, promptText: initialPromptText })
+  setNodeStepStatus(statusIds, { step, message: statusMessage, promptText: initialPromptText, runKey, sourceNodeId: nodeId })
   try {
     const found = findStoryboardInDrama(drama.value, sb.id)
     const latestSb = found?.storyboard || sb
     const promptText = nodeStepPromptText(step, latestSb, node)
-    setNodeStepStatus(statusIds, { step, message: statusMessage, promptText })
+    setNodeStepStatus(statusIds, { step, message: statusMessage, promptText, runKey, sourceNodeId: nodeId })
     const genOpts = getCanvasGenerationOptions()
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '')
     else if (step === 'video') await runVideoStep(drama.value, latestSb, genOpts)
@@ -1425,7 +1457,7 @@ async function runCanvasNodeStep(node, step) {
     const resultInfo = { ...nodeStepResultInfo(node, step, sb.id), promptText }
     const savedAssetInfo = await saveNodeResultAsset(node, resultInfo, promptText, sb.id)
     if (savedAssetInfo && resultInfo.resultType === 'image') await loadProjectImageAssets()
-    const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), autoClear: false }
+    const successPayload = { ...resultInfo, ...(savedAssetInfo || {}), runKey, sourceNodeId: nodeId, autoClear: false }
     successNodeStepStatus(statusIds, successPayload)
     if (nodeId) await focusCanvasNode(nodeId)
   } catch (e) {
@@ -1436,6 +1468,8 @@ async function runCanvasNodeStep(node, step) {
       promptText: nodeStepPromptText(step, sb, node),
       retryStep: step,
       retryLabel: `重试${nodeStepStatusLabel(step, node).replace(/中…$/, '')}`,
+      runKey,
+      sourceNodeId: nodeId,
     }
     failNodeStepStatus(statusIds, retryPayload)
     ElMessage.error(errorMessage)

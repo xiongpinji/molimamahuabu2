@@ -34,6 +34,8 @@ export function createCanvasNodeStatusStore() {
       at: Number.isFinite(Number(payload.at)) ? Number(payload.at) : Date.now(),
     }
     assignIfDefined(status, 'workflowId', payload.workflowId || payload.workflow_id)
+    assignIfDefined(status, 'runKey', payload.runKey || payload.run_key)
+    assignIfDefined(status, 'sourceNodeId', payload.sourceNodeId || payload.source_node_id)
     assignIfDefined(status, 'queueLabel', payload.queueLabel || payload.queue_label)
     assignIfDefined(status, 'storyboardId', payload.storyboardId || payload.storyboard_id)
     assignIfDefined(status, 'stepIndex', payload.stepIndex ?? payload.step_index)
