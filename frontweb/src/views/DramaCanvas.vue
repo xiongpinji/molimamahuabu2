@@ -1107,6 +1107,7 @@ function canvasNodeActions(node) {
     'unbind-node-assigned-asset',
   )
   if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref')
+  if (runtimeStatus?.nextStep) actions.unshift('continue-node-next-step')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
   }
@@ -1295,6 +1296,7 @@ function nodeRuntimeStatus(node) {
 }
 
 function nodeResultUrl(node, status = nodeRuntimeStatus(node)) {
+  if (status?.savedAssetUrl) return status.savedAssetUrl
   if (status?.resultUrl) return status.resultUrl
   if (node?.data?.url) return node.data.url
   if (node?.type === 'canvasProjectAsset') return assetMediaUrl(node.data?.asset)
@@ -1667,6 +1669,16 @@ async function retryFailedNode(node) {
   await runCanvasNodeStep(node, retryStep)
 }
 
+async function continueNodeNextStep(node) {
+  const status = nodeRuntimeStatus(node)
+  if (!status?.nextStep) {
+    ElMessage.warning('该节点暂无可继续的下游步骤')
+    return
+  }
+  await focusCanvasNode(node.id)
+  await runCanvasNodeStep(node, status.nextStep)
+}
+
 
 function nodeStepStatusLabel(step, node) {
   if (step === 'image' && node?.data?.frameKind === 'first') return '首帧生成中…'
@@ -2031,6 +2043,8 @@ async function runNodeMenuAction(type, node) {
     await focusNodeResult(node)
   } else if (type === 'retry-node-failed') {
     await retryFailedNode(node)
+  } else if (type === 'continue-node-next-step') {
+    await continueNodeNextStep(node)
   } else if (type === 'run-node-image') {
     await runCanvasNodeStep(node, 'image')
   } else if (type === 'run-node-video') {

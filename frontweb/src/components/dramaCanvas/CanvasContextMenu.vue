@@ -111,6 +111,7 @@ const nodeGroups = [
       { type: 'assign-project-asset-selected', label: '指派到选中分镜', hint: '作为参考素材', icon: Connection },
       { type: 'focus-node-result', label: '定位结果节点', hint: '跳到图片/视频/音频节点', icon: FullScreen },
       { type: 'retry-node-failed', label: '重试失败节点', hint: '按失败步骤重跑', icon: VideoPlay },
+      { type: 'continue-node-next-step', label: '继续下游步骤', hint: '按节点状态继续', icon: Connection },
     ],
   },
   {
