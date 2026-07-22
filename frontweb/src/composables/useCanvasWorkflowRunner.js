@@ -20,8 +20,13 @@ import {
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
 import { buildStoryboardContinuityPrompt } from '@/utils/videoContinuity'
-import { appendVoicePromptToVideoPrompt, storyboardVoiceCharacters } from '@/utils/videoVoicePolicy'
-import { buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+import {
+  appendVoicePromptToVideoPrompt,
+  buildVoicePromptPreview,
+  classifyVideoVoicePolicy,
+  storyboardVoiceCharacters,
+} from '@/utils/videoVoicePolicy'
+import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 
 /** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
 async function fetchAssignedAssetUrls(storyboardId) {
@@ -160,10 +165,17 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     ...upstreamReferenceUrls(genOpts),
     absoluteLast,
   ].filter(Boolean))].slice(0, 10)
+  const model = getStoryboardVideoModel(sb, genOpts)
+  const voiceCharacters = storyboardVoiceCharacters(drama, sb)
+  const voicePolicy = genOpts.voicePolicy || classifyVideoVoicePolicy({ model })
+  const voicePromptPreview = buildVoicePromptPreview({
+    policy: voicePolicy,
+    characters: voiceCharacters,
+  })
   const basePrompt = appendVoicePromptToVideoPrompt({
     prompt: sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || '',
-    policy: genOpts.voicePolicy,
-    characters: storyboardVoiceCharacters(drama, sb),
+    policy: voicePolicy,
+    characters: voiceCharacters,
   })
   const found = findStoryboardInDrama(drama, sb.id)
   const { previous, next } = getAdjacentStoryboards(found?.episode, sb.id)
@@ -173,7 +185,6 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     previous,
     next,
   })
-  const model = getStoryboardVideoModel(sb, genOpts)
   const payload = buildVideoGenerationRequest({
     dramaId: drama.id,
     storyboardId: sb.id,
@@ -188,6 +199,11 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     resolution: genOpts.videoResolution,
     duration: sb.duration || undefined,
   })
+  const requestAudit = buildVideoGenerationAudit({
+    payload,
+    voicePolicy,
+    voicePrompt: voicePromptPreview,
+  })
   const res = await videosAPI.create(payload)
   if (res?.task_id) {
     options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
@@ -200,6 +216,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
       resultType: 'video',
       resultLabel: '视频已生成',
       requestPayload: payload,
+      requestAudit,
       task: polled,
     }
   }
@@ -210,6 +227,7 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
     resultType: 'video',
     resultLabel: '视频已生成',
     requestPayload: payload,
+    requestAudit,
   }
 }
 

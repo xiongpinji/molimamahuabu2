@@ -683,6 +683,17 @@ function taskRequestPayload(task, status) {
     || null
 }
 
+function taskRequestAudit(task, status) {
+  const result = taskResultObject(task)
+  const response = result.response || result.data || {}
+  return status?.requestAudit
+    || result.requestAudit
+    || result.request_audit
+    || response.requestAudit
+    || response.request_audit
+    || null
+}
+
 function restoredNodeStoryboardId(node, status) {
   return Number(status?.storyboardId || storyboardForNode(node)?.id || storyboardIdFromNodeId(node?.id)) || null
 }
@@ -702,6 +713,7 @@ function restoredTaskResultInfo(node, status, task, resultUrl) {
     resultLabel: status?.resultLabel || base.resultLabel || result.label || '结果已生成',
     promptText: status?.promptText || result.prompt || '',
     requestPayload: taskRequestPayload(task, status),
+    requestAudit: taskRequestAudit(task, status),
     model: status?.model || result.model || response.model || '',
     videoGenerationId: status?.videoGenerationId || result.videoGenerationId || result.video_generation_id || response.videoGenerationId || response.video_generation_id || null,
   }
@@ -2076,6 +2088,7 @@ async function saveNodeResultAsset(node, resultInfo, promptText, storyboardId) {
         task_id: resultInfo.taskId || '',
         video_generation_id: resultInfo.videoGenerationId || '',
         request_payload: resultInfo.requestPayload || null,
+        request_audit: resultInfo.requestAudit || null,
         auto_saved: true,
       },
     })

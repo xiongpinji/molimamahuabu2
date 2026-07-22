@@ -24,6 +24,9 @@ test('画布视频节点把模型、首尾帧和素材引用传给视频创建�
   assert.match(runnerSource, /sbVideoFirstLastUrls\(sb,\s*imagesBySbId,\s*useFirstLast\)/)
   assert.match(runnerSource, /collectStoryboardReferenceAssets\(drama,\s*sb\)/)
   assert.match(runnerSource, /appendVoicePromptToVideoPrompt\(\{/)
+  assert.match(runnerSource, /classifyVideoVoicePolicy\(\{ model \}\)/)
+  assert.match(runnerSource, /const voicePolicy = genOpts\.voicePolicy \|\| classifyVideoVoicePolicy\(\{ model \}\)/)
+  assert.match(runnerSource, /buildVoicePromptPreview\(\{[\s\S]*policy: voicePolicy,[\s\S]*characters: voiceCharacters/)
   assert.match(runnerSource, /storyboardVoiceCharacters\(drama,\s*sb\)/)
   assert.match(runnerSource, /buildStoryboardContinuityPrompt\(\{/)
   assert.match(runnerSource, /fetchAssignedAssetUrls\(sb\.id\)/)
@@ -34,6 +37,7 @@ test('画布视频节点把模型、首尾帧和素材引用传给视频创建�
   assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*lastFrameUrl:\s*absoluteLast/)
   assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*referenceImageUrls:\s*referenceUrls/)
   assert.match(runnerSource, /buildVideoGenerationRequest\(\{[\s\S]*resolution:\s*genOpts\.videoResolution/)
+  assert.match(runnerSource, /const requestAudit = buildVideoGenerationAudit\(\{[\s\S]*payload,[\s\S]*voicePolicy,[\s\S]*voicePrompt: voicePromptPreview/)
   assert.match(runnerSource, /videosAPI\.create\(payload\)/)
 })
 
@@ -42,7 +46,7 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'image', response: res \}\)/)
   assert.match(runnerSource, /pollTaskSimple\(res\.task_id, options\)/)
   assert.match(runnerSource, /options\.onTask\?\.\(\{ taskId: res\.task_id, step: 'video', response: res \}\)/)
-  assert.match(runnerSource, /return \{[\s\S]*taskId: res\.task_id,[\s\S]*requestPayload: payload,[\s\S]*task: polled/)
+  assert.match(runnerSource, /return \{[\s\S]*taskId: res\.task_id,[\s\S]*requestPayload: payload,[\s\S]*requestAudit,[\s\S]*task: polled/)
   assert.match(canvasSource, /else if \(step === 'video'\) operationResult = await runVideoStep/)
 })
 

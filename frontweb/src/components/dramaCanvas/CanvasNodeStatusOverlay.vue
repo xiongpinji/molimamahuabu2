@@ -142,7 +142,7 @@ const metaText = computed(() => {
 })
 
 const requestPayloadText = computed(() => {
-  const payload = status.value?.requestPayload
+  const payload = status.value?.requestAudit || status.value?.requestPayload
   if (!payload || typeof payload !== 'object') return ''
   try {
     return JSON.stringify(payload, null, 2)
@@ -155,6 +155,7 @@ const generationAuditText = computed(() => {
   const parts = []
   if (status.value?.videoGenerationId) parts.push(`生成记录 ${status.value.videoGenerationId}`)
   if (status.value?.model) parts.push(`模型 ${status.value.model}`)
+  if (status.value?.requestAudit?.voice_policy?.label) parts.push(`声音 ${status.value.requestAudit.voice_policy.label}`)
   if (requestPayloadText.value) parts.push('真实请求已记录')
   return parts.join(' · ')
 })
@@ -377,6 +378,7 @@ async function saveResultAsset() {
         task_id: status.value?.taskId || '',
         video_generation_id: status.value?.videoGenerationId || '',
         request_payload: status.value?.requestPayload || null,
+        request_audit: status.value?.requestAudit || null,
       },
     })
     const normalizedAsset = asset ? {
