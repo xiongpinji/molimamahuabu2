@@ -95,7 +95,7 @@ test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   });
   assert.match(prompt, /VOICE CONTINUITY/);
   assert.match(prompt, /bright youthful voice, clear diction/);
-  assert.match(prompt, /林岚: /);
+  assert.match(prompt, /林岚 \[voice-card:character-/);
   const veo2Prompt = voicePrompt.appendVoiceAnchors({
     db,
     dramaId,
@@ -106,7 +106,7 @@ test('为不支持参考音频的分镜生成固定角色声音锚点', () => {
   });
   assert.match(veo2Prompt, /VOICE CONTINUITY/);
   assert.match(veo2Prompt, /bright youthful voice, clear diction/);
-  assert.match(veo2Prompt, /林岚: /);
+  assert.match(veo2Prompt, /林岚 \[voice-card:character-/);
   db.close();
 });
 
@@ -127,6 +127,17 @@ test('没有声线描述时按角色 ID 生成可重复的描述', () => {
   const second = voicePrompt.appendVoiceAnchors(args);
   assert.equal(first, second);
   db.close();
+});
+
+test('角色声音锚点包含可跨分镜复用的固定 voice-card', () => {
+  const line = voicePrompt.characterVoiceAnchor({
+    id: 7,
+    name: '小狐狸',
+    voice_style: 'bright youthful voice',
+  });
+  assert.match(line, /小狐狸 \[voice-card:character-7\]/);
+  assert.match(line, /every storyboard shot/);
+  assert.match(line, /never swap/);
 });
 
 test('缺省角色声线会写回角色库并跨分镜复用', () => {
@@ -206,8 +217,9 @@ test('部分角色有音频快照时仍为分镜全部角色生成文字声线',
     model: 'veo-3.1-generate-preview',
     prompt: 'A two-shot. 小狐狸："别怕。" 林岚："我在这里。"',
   });
-  assert.match(prompt, /小狐狸:/);
-  assert.match(prompt, /林岚:/);
+  assert.match(prompt, /小狐狸 \[voice-card:character-/);
+  assert.match(prompt, /林岚 \[voice-card:character-/);
+  assert.match(prompt, /reuse the same voice-card for the same character in every storyboard shot/);
   db.close();
 });
 

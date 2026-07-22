@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   appendVoicePromptToVideoPrompt,
   buildVoicePromptPreview,
+  characterVoiceAnchor,
   classifyVideoVoicePolicy,
   generatedVoiceStyle,
   storyboardVoiceCharacters,
@@ -50,8 +51,15 @@ test('声音预览区分静音后期配音与原生音频模型', () => {
     policy: classifyVideoVoicePolicy({ model: 'veo-3.1-generate-preview' }),
     characters: [{ id: 1, name: '小狐狸', voice_style: '明亮、清透、中速语速' }],
   })
-  assert.match(native, /小狐狸: 明亮、清透、中速语速/)
+  assert.match(native, /小狐狸 \[voice-card:character-1\]: 明亮、清透、中速语速/)
   assert.match(native, /不保证音色克隆/)
+})
+
+test('角色声线块包含可跨分镜复用的固定 voice-card', () => {
+  const line = characterVoiceAnchor({ id: 1, name: '小狐狸', voice_style: '清亮、少年感、语速轻快' })
+  assert.match(line, /小狐狸 \[voice-card:character-1\]/)
+  assert.match(line, /every storyboard shot/)
+  assert.match(line, /never swap/)
 })
 
 test('画布视频提示词自动追加角色声线块且保持幂等', () => {
@@ -61,7 +69,9 @@ test('画布视频提示词自动追加角色声线块且保持幂等', () => {
     characters: [{ id: 1, name: '小狐狸', voice_style: '清亮、少年感、语速轻快' }],
   })
   assert.match(prompt, /VOICE CONTINUITY/)
-  assert.match(prompt, /小狐狸: 清亮、少年感、语速轻快/)
+  assert.match(prompt, /同一角色在所有分镜中必须复用同一张 voice-card/)
+  assert.match(prompt, /小狐狸 \[voice-card:character-1\]: 清亮、少年感、语速轻快/)
+  assert.match(prompt, /不要把对白、环境音、配乐或其它角色声音混成同一音色/)
 
   const again = appendVoicePromptToVideoPrompt({
     prompt,

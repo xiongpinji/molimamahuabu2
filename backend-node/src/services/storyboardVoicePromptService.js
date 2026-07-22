@@ -50,6 +50,14 @@ function generatedVoiceStyle(row) {
   return `${PITCHES[hash % PITCHES.length]}, ${TIMBRES[(hash >>> 3) % TIMBRES.length]}, ${PACES[(hash >>> 6) % PACES.length]}, clear diction`;
 }
 
+function characterVoiceAnchor(row) {
+  const name = String(row?.name || `角色${row?.id || ''}`).trim();
+  const explicit = String(row?.voice_style || '').trim();
+  const style = explicit || generatedVoiceStyle(row);
+  const key = row?.id ? `character-${row.id}` : `character-${hashNumber(name)}`;
+  return `- ${name} [voice-card:${key}]: ${style}. Use this exact voice card for this character in every storyboard shot; never swap it with another character.`;
+}
+
 function ensureCharacterVoiceStyle(db, row) {
   const explicit = String(row?.voice_style || '').trim();
   if (explicit || !db || !Number.isInteger(Number(row?.id)) || Number(row.id) <= 0) return row;
@@ -122,15 +130,12 @@ function supportsPromptAudio(protocol, model) {
 }
 
 function buildVoiceContinuityBlock(characters) {
-  const lines = characters.map((row) => {
-    const explicit = String(row.voice_style || '').trim();
-    const style = explicit || generatedVoiceStyle(row);
-    return `- ${row.name}: ${style}. Keep this voice distinct and consistent across shots.`;
-  });
+  const lines = characters.map((row) => characterVoiceAnchor(row));
   return [
     'VOICE CONTINUITY (text guidance only; do not imitate a named person):',
+    'Global rule: reuse the same voice-card for the same character in every storyboard shot. Keep pitch, timbre, pace, accent, and emotional baseline consistent.',
     ...lines,
-    'Dialogue must be spoken by the named character. Keep dialogue, ambience, and music separated; do not merge character voices.',
+    'Dialogue must be spoken by the named character. Keep dialogue, ambience, music, and other character voices separated; do not merge them into one voice.',
   ].join('\n');
 }
 
@@ -196,6 +201,7 @@ module.exports = {
   appendVoiceAnchors,
   appendVoiceContinuityBlock,
   buildVoiceContinuityBlock,
+  characterVoiceAnchor,
   ensureStoryboardVoicePrompt,
   ensureCharacterVoiceStyle,
   generatedVoiceStyle,

@@ -54,6 +54,13 @@ function generatedVoiceStyle(character = {}) {
   return `${VOICE_PITCHES[hash % VOICE_PITCHES.length]}, ${VOICE_TIMBRES[(hash >>> 3) % VOICE_TIMBRES.length]}, ${VOICE_PACES[(hash >>> 6) % VOICE_PACES.length]}, clear diction`
 }
 
+function characterVoiceAnchor(character = {}) {
+  const name = String(character.name || `角色${character.id || ''}`).trim()
+  const style = String(character.voice_style || '').trim() || generatedVoiceStyle(character)
+  const key = character.id != null ? `character-${character.id}` : `character-${stableVoiceHash(name)}`
+  return `- ${name} [voice-card:${key}]: ${style}. Use this exact voice card for this character in every storyboard shot; never swap it with another character.`
+}
+
 function buildVoicePromptPreview({ policy, characters = [] } = {}) {
   if (!policy) return '当前模型的声音策略尚未加载。'
   if (policy.key === 'silent') {
@@ -61,13 +68,14 @@ function buildVoicePromptPreview({ policy, characters = [] } = {}) {
   }
   const list = Array.isArray(characters) ? characters.filter(Boolean) : []
   if (!list.length) return '本镜没有已绑定角色，不会追加角色级声线锚点。'
-  const lines = list.map((character) => {
-    const name = String(character.name || `角色${character.id || ''}`).trim()
-    const style = String(character.voice_style || '').trim() || generatedVoiceStyle(character)
-    return `- ${name}: ${style}. Keep this voice distinct and consistent across shots.`
-  })
+  const lines = list.map((character) => characterVoiceAnchor(character))
   const mode = policy.key === 'reference_audio' ? '参考音频优先；以下文字只用于对白归属和连续性。' : '模型不保证音色克隆；以下文字用于稳定角色声线差异。'
-  return [`VOICE CONTINUITY：${mode}`, ...lines, '对白必须由标注角色说出，并与环境音、配乐分离。'].join('\n')
+  return [
+    `VOICE CONTINUITY：${mode}`,
+    '全片规则：同一角色在所有分镜中必须复用同一张 voice-card，保持音高、音质、语速、口音和情绪基线一致。',
+    ...lines,
+    '对白必须由标注角色说出；不要把对白、环境音、配乐或其它角色声音混成同一音色。',
+  ].join('\n')
 }
 
 function parseCharacterRefs(value) {
@@ -149,6 +157,7 @@ export {
   POLICIES,
   appendVoicePromptToVideoPrompt,
   buildVoicePromptPreview,
+  characterVoiceAnchor,
   classifyVideoVoicePolicy,
   generatedVoiceStyle,
   storyboardVoiceCharacters,
