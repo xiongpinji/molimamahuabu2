@@ -16,22 +16,22 @@
         <p class="text-body universal-body">{{ data.summary || '暂无全能分镜词' }}</p>
       </template>
       <template v-else-if="data.kind === 'image'">
-        <img v-if="data.url" :src="data.url" alt="" class="media-img" />
+        <img v-if="resultUrl" :src="resultUrl" alt="" class="media-img" />
         <div v-else class="empty">无分镜图</div>
       </template>
       <template v-else-if="data.kind === 'video'">
-        <video v-if="data.url" :src="data.url" class="media-vid" muted playsinline />
+        <video v-if="resultUrl" :src="resultUrl" class="media-vid" muted playsinline />
         <div v-else class="empty">无视频</div>
       </template>
       <template v-else-if="data.kind === 'audio'">
         <div class="audio-wrap">
           <span>🎵</span>
           <span>{{ data.audioType === 'narration' ? '旁白' : '对白' }}</span>
-          <span v-if="data.url" class="audio-ready">已生成</span>
+          <span v-if="resultUrl" class="audio-ready">已生成</span>
         </div>
       </template>
-      <div v-if="data.generationError" class="node-error" :title="data.generationError">
-        {{ data.generationError }}
+      <div v-if="failureReason" class="node-error" :title="failureReason">
+        {{ failureReason }}
       </div>
       <div v-if="resultUrl" class="result-actions">
         <button type="button" @click.stop="openResult">{{ previewLabel }}</button>
@@ -55,11 +55,11 @@
       :kind="data.kind"
       :storyboard="data.storyboard"
       :summary="data.summary"
-      :url="data.url"
+      :url="resultUrl"
       :video-record="data.videoRecord"
       :audio-type="data.audioType"
       :frame-kind="data.frameKind"
-      :generation-error="data.generationError"
+      :generation-error="failureReason"
       :generation-warning="data.generationWarning"
     />
   </div>
@@ -87,26 +87,30 @@ const isNodeBusy = computed(() => {
   return isCanvasNodeBusyStatus(map?.[props.id])
 })
 
-const nodeFailed = computed(() => ctx?.nodeStatus?.map?.[props.id]?.step === 'failed')
+const runtimeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
+const nodeFailed = computed(() => runtimeStatus.value?.step === 'failed')
+const failureReason = computed(() => {
+  const status = runtimeStatus.value
+  return status?.errorDetail || status?.detail || (nodeFailed.value ? status?.message : '') || props.data.generationError || ''
+})
 
 const isProcessing = computed(() => isNodeBusy.value || props.data.storyboard?.status === 'processing')
 
 const resultState = computed(() => {
-  if (nodeFailed.value) return { key: 'failed', label: '生成失败' }
+  if (failureReason.value) return { key: 'failed', label: '生成失败' }
   if (isNodeBusy.value || props.data.storyboard?.status === 'processing') return { key: 'busy', label: '生成中' }
   if (props.data.kind === 'text') return { key: 'editable', label: '可编辑' }
-  if (props.data.generationError) return { key: 'failed', label: '生成失败' }
   if (props.data.kind === 'video' && props.data.videoRecord?.provider === 'library') return { key: 'library', label: '素材库' }
-  if (props.data.url) return { key: 'ready', label: '已生成' }
+  if (resultUrl.value) return { key: 'ready', label: '已生成' }
   if (props.data.generationWarning) return { key: 'warn', label: '需检查' }
   return { key: 'empty', label: '待生成' }
 })
 
 const nodeTitle = computed(() => {
   if (props.data.kind === 'text') return '单击查看脚本摘要并编辑'
-  if (props.data.generationError) return props.data.generationError
+  if (failureReason.value) return failureReason.value
   if (props.data.generationWarning) return props.data.generationWarning
-  return props.data.url ? '单击预览结果或重新生成' : '单击查看生成选项'
+  return resultUrl.value ? '单击预览结果或重新生成' : '单击查看生成选项'
 })
 
 const kindLabel = computed(() => {
@@ -115,8 +119,8 @@ const kindLabel = computed(() => {
   return map[props.data.kind] || props.data.kind
 })
 
-const canRetry = computed(() => ['image', 'video', 'audio'].includes(props.data.kind))
-const resultUrl = computed(() => props.data.url || '')
+const canRetry = computed(() => Boolean(runtimeStatus.value?.retryStep) || ['image', 'video', 'audio'].includes(props.data.kind))
+const resultUrl = computed(() => props.data.url || runtimeStatus.value?.resultUrl || '')
 const previewLabel = computed(() => {
   if (props.data.kind === 'image') return '预览图'
   if (props.data.kind === 'video') return '预览视频'
@@ -133,7 +137,7 @@ const retryLabel = computed(() => {
 
 function retryNode() {
   if (!canRetry.value || isNodeBusy.value) return
-  ctx?.runNodeStep?.({ id: props.id, data: props.data }, props.data.kind)
+  ctx?.runNodeStep?.({ id: props.id, data: props.data }, runtimeStatus.value?.retryStep || props.data.kind)
 }
 
 function openResult() {

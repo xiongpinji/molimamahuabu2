@@ -7,6 +7,7 @@ const overlaySource = readFileSync(fileURLToPath(new URL('../src/components/dram
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 const storyboardNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasStoryboardNode.vue', import.meta.url)), 'utf8')
+const mediaNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasMediaNode.vue', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -140,4 +141,15 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /function focusQueueItemResult\(item\)/)
   assert.match(canvasSource, /function dismissQueueItem\(item\)/)
   assert.match(canvasSource, /class="run-success-actions"/)
+})
+
+test('媒体节点卡片从运行状态恢复结果、失败原因和重试步骤', () => {
+  assert.match(mediaNodeSource, /const runtimeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)
+  assert.match(mediaNodeSource, /runtimeStatus\.value\?\.resultUrl/)
+  assert.match(mediaNodeSource, /status\?\.errorDetail \|\| status\?\.detail/)
+  assert.match(mediaNodeSource, /failureReason\.value/)
+  assert.match(mediaNodeSource, /runtimeStatus\.value\?\.retryStep \|\| props\.data\.kind/)
+  assert.match(mediaNodeSource, /<img v-if="resultUrl" :src="resultUrl"/)
+  assert.match(mediaNodeSource, /<video v-if="resultUrl" :src="resultUrl"/)
+  assert.match(mediaNodeSource, /:generation-error="failureReason"/)
 })
