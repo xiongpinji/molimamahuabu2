@@ -1579,15 +1579,24 @@ function assetDisplayUrl(asset) {
     || asset?.image_url
     || asset?.video_url
     || asset?.audio_url
+    || asset?.voice_url
+    || asset?.ref_image
+    || asset?.thumbnail_url
+    || asset?.file_url
+    || asset?.cover_url
+    || asset?.poster_url
     || ''
 }
 
 function assetLocalPath(asset) {
   return asset?.local_path
+    || asset?.path
+    || asset?.file_path
     || asset?.image_local_path
     || asset?.video_local_path
     || asset?.audio_local_path
     || asset?.voice_local_path
+    || asset?.thumbnail_local_path
     || ''
 }
 

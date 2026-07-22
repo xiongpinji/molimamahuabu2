@@ -13,6 +13,7 @@ const assetGenerateSource = readFileSync(fileURLToPath(new URL('../src/composabl
 const scriptNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasScriptNode.vue', import.meta.url)), 'utf8')
 const scriptActionsSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasScript.js', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
+const mediaUrlSource = readFileSync(fileURLToPath(new URL('../src/utils/mediaUrl.js', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -466,6 +467,15 @@ test('项目素材节点卡片可预览并复制素材引用', () => {
   assert.match(canvasSource, /assetMediaUrl\(node\.data\?\.asset\)/)
   assert.match(canvasSource, /function assetDisplayUrl\(asset\)/)
   assert.match(canvasSource, /@素材\(\$\{name\}#\$\{asset\.id\}\)/)
+})
+
+test('素材库媒体地址兼容开放素材字段和本地路径字段', () => {
+  assert.match(mediaUrlSource, /item\.path/)
+  assert.match(mediaUrlSource, /item\.file_path/)
+  assert.match(mediaUrlSource, /item\.thumbnail_local_path/)
+  assert.match(mediaUrlSource, /item\.file_url/)
+  assert.match(mediaUrlSource, /item\.cover_url/)
+  assert.match(mediaUrlSource, /item\.poster_url/)
 })
 
 test('项目素材节点可直接指派到当前选中分镜', () => {
