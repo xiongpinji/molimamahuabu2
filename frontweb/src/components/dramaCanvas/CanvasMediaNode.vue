@@ -37,12 +37,16 @@
       <div v-if="resultReferences.length" class="reference-strip">
         <span v-for="reference in resultReferences.slice(0, 3)" :key="reference">{{ reference }}</span>
       </div>
+      <div v-if="auditBadges.length" class="audit-strip">
+        <span v-for="badge in auditBadges" :key="badge">{{ badge }}</span>
+      </div>
       <div v-if="hasResultActions" class="result-actions">
         <button v-if="resultUrl" type="button" @click.stop="openResult">{{ previewLabel }}</button>
         <button v-if="resultUrl" type="button" @click.stop="copyResultLink">复制</button>
         <button v-if="resultUrl" type="button" @click.stop="downloadResult">下载</button>
         <button v-if="textResult" type="button" @click.stop="copyTextResult">复制文本</button>
         <button v-if="resultReferences.length" type="button" @click.stop="copyResultReferences">复制引用</button>
+        <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
         <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位</button>
         <button v-if="savedAssetReferenceText" type="button" @click.stop="copyAssetReference">素材引用</button>
         <button v-if="savedAsset" type="button" :disabled="assigningAsset" @click.stop="assignSavedAssetToSelectedStoryboard">
@@ -171,7 +175,23 @@ const resultUrl = computed(() => runtimeStatus.value?.resultUrl || props.data.ur
 const textResult = computed(() => runtimeStatus.value?.resultSummary || '')
 const displayText = computed(() => textResult.value || props.data.summary || '')
 const resultReferences = computed(() => Array.isArray(runtimeStatus.value?.resultReferences) ? runtimeStatus.value.resultReferences : [])
-const hasResultActions = computed(() => Boolean(resultUrl.value || textResult.value || resultReferences.value.length || resultNodeId.value || savedAssetReferenceText.value))
+const requestPayloadText = computed(() => {
+  const payload = runtimeStatus.value?.requestAudit || runtimeStatus.value?.requestPayload
+  if (!payload || typeof payload !== 'object') return ''
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload || '')
+  }
+})
+const auditBadges = computed(() => [
+  runtimeStatus.value?.model ? `模型 ${runtimeStatus.value.model}` : '',
+  runtimeStatus.value?.taskId ? `任务 ${runtimeStatus.value.taskId}` : '',
+  runtimeStatus.value?.videoGenerationId ? `记录 ${runtimeStatus.value.videoGenerationId}` : '',
+  runtimeStatus.value?.requestAudit?.voice_policy?.label ? `声音 ${runtimeStatus.value.requestAudit.voice_policy.label}` : '',
+  requestPayloadText.value ? '真实请求已记录' : '',
+].filter(Boolean))
+const hasResultActions = computed(() => Boolean(resultUrl.value || textResult.value || resultReferences.value.length || requestPayloadText.value || resultNodeId.value || savedAssetReferenceText.value))
 const resultNodeId = computed(() => runtimeStatus.value?.resultNodeId || '')
 const savedAsset = computed(() => {
   const status = runtimeStatus.value
@@ -261,6 +281,17 @@ async function copyResultReferences() {
     ElMessage.success('结果引用已复制')
   } catch {
     ElMessageBox.alert(text, '结果引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function copyRequestPayload() {
+  if (!requestPayloadText.value) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(requestPayloadText.value)
+    ElMessage.success('真实请求已复制')
+  } catch {
+    ElMessageBox.alert(requestPayloadText.value, '真实请求（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
   }
 }
 
@@ -395,6 +426,23 @@ function downloadResult() {
   padding: 1px 6px;
   background: rgba(129, 140, 248, 0.14);
   color: #c7d2fe;
+  font-size: 9px;
+}
+.audit-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.audit-strip span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: rgba(251, 191, 36, 0.12);
+  color: #fde68a;
   font-size: 9px;
 }
 .result-actions {
