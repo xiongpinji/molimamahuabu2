@@ -1,0 +1,38 @@
+name: Backend Node Tests
+
+on:
+  pull_request:
+    paths:
+      - 'backend-node/**'
+      - '.github/workflows/backend-node-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-node-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Backend regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend-node/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend-node
+        run: npm ci
+
+      - name: Run backend tests
+        working-directory: backend-node
+        run: node --test test/*.test.js
