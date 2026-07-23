@@ -2,6 +2,7 @@
   <div v-if="status" class="node-execution-strip">
     <span class="node-execution-label">节点执行</span>
     <span class="node-execution-message">{{ status.actionError || status.errorDetail || status.message || status.step }}</span>
+    <span v-if="resultMetaText" class="node-execution-meta">{{ resultMetaText }}</span>
     <el-button
       v-if="resultUrl"
       link
@@ -44,6 +45,34 @@
       type="info"
       @click.stop="copyRequestPayload"
     >复制请求</el-button>
+    <el-button
+      v-if="resultSummary"
+      link
+      size="small"
+      type="info"
+      @click.stop="copyResultSummary"
+    >复制摘要</el-button>
+    <el-button
+      v-if="resultReferencesText"
+      link
+      size="small"
+      type="info"
+      @click.stop="copyResultReferences"
+    >复制引用</el-button>
+    <el-button
+      v-if="upstreamReferenceText"
+      link
+      size="small"
+      type="info"
+      @click.stop="copyUpstreamReferences"
+    >复制上游</el-button>
+    <el-button
+      v-if="savedAssetReference"
+      link
+      size="small"
+      type="info"
+      @click.stop="copySavedAssetReference"
+    >素材引用</el-button>
     <el-button
       v-if="canUseResultAsDownstreamReference"
       link
@@ -106,6 +135,24 @@ const resultUrl = computed(() => assetMediaUrl(statusSavedAsset.value) || props.
 const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || '')
 const downstreamNode = computed(() => downstreamNodeId.value ? ctx?.findCanvasNode?.(downstreamNodeId.value) : null)
 const canUseResultAsDownstreamReference = computed(() => Boolean(resultUrl.value) && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
+const resultSummary = computed(() => String(props.status?.resultSummary || '').trim())
+const resultReferences = computed(() => normalizeTextList(props.status?.resultReferences))
+const resultReferencesText = computed(() => resultReferences.value.join('\n'))
+const upstreamReferenceUrls = computed(() => normalizeTextList(props.status?.upstreamReferenceUrls))
+const upstreamReferenceText = computed(() => upstreamReferenceUrls.value.join('\n'))
+const savedAssetReference = computed(() => {
+  if (!props.status?.savedAssetId) return ''
+  const name = props.status?.savedAssetName || '素材'
+  const url = props.status?.savedAssetUrl || props.status?.resultUrl || ''
+  return `@素材(${name}#${props.status.savedAssetId}) ${url}`.trim()
+})
+const resultMetaText = computed(() => {
+  const parts = []
+  if (resultSummary.value) parts.push(resultSummary.value)
+  if (resultReferences.value.length) parts.push(`引用 ${resultReferences.value.length}`)
+  if (props.status?.savedAssetId) parts.push(`素材 #${props.status.savedAssetId}`)
+  return parts.join(' · ')
+})
 const requestPayloadText = computed(() => {
   const payload = props.status?.requestAudit || props.status?.requestPayload
   if (!payload || typeof payload !== 'object') return ''
@@ -115,6 +162,11 @@ const requestPayloadText = computed(() => {
     return String(payload || '')
   }
 })
+
+function normalizeTextList(items) {
+  if (!Array.isArray(items)) return []
+  return [...new Set(items.map((value) => String(value || '').trim()).filter(Boolean))]
+}
 
 function openResult() {
   if (!resultUrl.value) return
@@ -164,6 +216,22 @@ function copyRequestPayload() {
   copyText(requestPayloadText.value, '真实请求已复制', '真实请求（请手动复制）')
 }
 
+function copyResultSummary() {
+  copyText(resultSummary.value, '结果摘要已复制', '结果摘要（请手动复制）')
+}
+
+function copyResultReferences() {
+  copyText(resultReferencesText.value, '结果引用已复制', '结果引用（请手动复制）')
+}
+
+function copyUpstreamReferences() {
+  copyText(upstreamReferenceText.value, '上游引用已复制', '上游引用（请手动复制）')
+}
+
+function copySavedAssetReference() {
+  copyText(savedAssetReference.value, '素材引用已复制', '素材引用（请手动复制）')
+}
+
 async function useResultAsDownstreamReference() {
   if (!canUseResultAsDownstreamReference.value || attachingReference.value) return
   attachingReference.value = true
@@ -203,6 +271,13 @@ async function useResultAsDownstreamReference() {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-execution-meta {
+  max-width: 240px;
+  overflow: hidden;
+  color: #a5b4fc;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

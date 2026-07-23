@@ -15,6 +15,7 @@ const scriptActionsSource = readFileSync(fileURLToPath(new URL('../src/composabl
 const nodeStatusSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasNodeStatus.js', import.meta.url)), 'utf8')
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const mediaUrlSource = readFileSync(fileURLToPath(new URL('../src/utils/mediaUrl.js', import.meta.url)), 'utf8')
+const executionStripSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeExecutionStrip.vue', import.meta.url)), 'utf8')
 
 test('节点状态覆盖层提供结果、提示词和失败原因操作', () => {
   assert.match(overlaySource, /打开结果/)
@@ -180,6 +181,34 @@ test('节点状态会保留脚本提取结果摘要和引用', () => {
   assert.match(nodeStatusSource, /const resultReferences = Array\.isArray\(payload\.resultReferences \|\| payload\.result_references\)/)
   assert.match(nodeStatusSource, /status\.resultReferences = resultReferences/)
   assert.match(nodeStatusSource, /resultSummary: payload\.resultSummary \|\| payload\.result_summary \|\| ''/)
+})
+
+test('节点执行条展示并复制结果摘要、引用和素材引用', () => {
+  assert.match(executionStripSource, /class="node-execution-meta"/)
+  assert.match(executionStripSource, /const resultSummary = computed/)
+  assert.match(executionStripSource, /const resultReferences = computed\(\(\) => normalizeTextList\(props\.status\?\.resultReferences\)\)/)
+  assert.match(executionStripSource, /const resultReferencesText = computed\(\(\) => resultReferences\.value\.join\('\\n'\)\)/)
+  assert.match(executionStripSource, /const upstreamReferenceUrls = computed\(\(\) => normalizeTextList\(props\.status\?\.upstreamReferenceUrls\)\)/)
+  assert.match(executionStripSource, /const upstreamReferenceText = computed\(\(\) => upstreamReferenceUrls\.value\.join\('\\n'\)\)/)
+  assert.match(executionStripSource, /const savedAssetReference = computed/)
+  assert.match(executionStripSource, /@素材\(\$\{name\}#\$\{props\.status\.savedAssetId\}\)/)
+  assert.match(executionStripSource, /const resultMetaText = computed/)
+  assert.match(executionStripSource, /parts\.push\(`引用 \$\{resultReferences\.value\.length\}`\)/)
+  assert.match(executionStripSource, /parts\.push\(`素材 #\$\{props\.status\.savedAssetId\}`\)/)
+  assert.match(executionStripSource, /function normalizeTextList\(items\)/)
+  assert.match(executionStripSource, /items\.map\(\(value\) => String\(value \|\| ''\)\.trim\(\)\)\.filter\(Boolean\)/)
+  assert.match(executionStripSource, /复制摘要/)
+  assert.match(executionStripSource, /复制引用/)
+  assert.match(executionStripSource, /复制上游/)
+  assert.match(executionStripSource, /素材引用/)
+  assert.match(executionStripSource, /function copyResultSummary\(\)/)
+  assert.match(executionStripSource, /copyText\(resultSummary\.value, '结果摘要已复制'/)
+  assert.match(executionStripSource, /function copyResultReferences\(\)/)
+  assert.match(executionStripSource, /copyText\(resultReferencesText\.value, '结果引用已复制'/)
+  assert.match(executionStripSource, /function copyUpstreamReferences\(\)/)
+  assert.match(executionStripSource, /copyText\(upstreamReferenceText\.value, '上游引用已复制'/)
+  assert.match(executionStripSource, /function copySavedAssetReference\(\)/)
+  assert.match(executionStripSource, /copyText\(savedAssetReference\.value, '素材引用已复制'/)
 })
 
 test('画布节点运行状态会携带当前节点提示词', () => {
