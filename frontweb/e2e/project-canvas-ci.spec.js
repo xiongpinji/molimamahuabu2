@@ -43,6 +43,8 @@ const drama = {
 let mockAssets = []
 let createdAssetPayload = null
 let updatedAssetPayloads = []
+let savedCanvasLayout = null
+let savedWorkflowGroups = []
 
 function apiData(data) {
   return {
@@ -65,6 +67,8 @@ test.beforeEach(async ({ page }) => {
   mockAssets = []
   createdAssetPayload = null
   updatedAssetPayloads = []
+  savedCanvasLayout = null
+  savedWorkflowGroups = []
 
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -72,7 +76,14 @@ test.beforeEach(async ({ page }) => {
     const { pathname } = url
 
     if (request.method() === 'GET' && pathname === '/api/v1/dramas/3') {
-      await route.fulfill(apiData(drama))
+      await route.fulfill(apiData({
+        ...drama,
+        metadata: {
+          ...drama.metadata,
+          ...(savedCanvasLayout ? { canvas_layout: savedCanvasLayout } : {}),
+          workflow_groups: savedWorkflowGroups,
+        },
+      }))
       return
     }
     if (request.method() === 'GET' && pathname === '/api/v1/assets') {
@@ -123,7 +134,17 @@ test.beforeEach(async ({ page }) => {
       return
     }
     if (request.method() === 'PUT' && pathname === '/api/v1/dramas/3/canvas-layout') {
-      await route.fulfill(apiData(request.postDataJSON()?.canvas_layout || {}))
+      const payload = request.postDataJSON() || {}
+      if (payload.canvas_layout) savedCanvasLayout = payload.canvas_layout
+      if (Array.isArray(payload.workflow_groups)) savedWorkflowGroups = payload.workflow_groups
+      await route.fulfill(apiData({
+        ...drama,
+        metadata: {
+          ...drama.metadata,
+          ...(savedCanvasLayout ? { canvas_layout: savedCanvasLayout } : {}),
+          workflow_groups: savedWorkflowGroups,
+        },
+      }))
       return
     }
 
@@ -188,6 +209,65 @@ test('项目画布支持右键添加入口、Ctrl 缩放、Space 平移和快捷
 
   await page.keyboard.press('Control+a')
   await expect(page.locator('.vue-flow__node[data-id="sb:1001"]')).toHaveClass(/selected/)
+})
+
+test('项目画布持久化节点拖拽、手工连线和工作流分组并在刷新后恢复', async ({ page }) => {
+  await page.goto('/film/3/canvas')
+
+  const storyboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await expect(storyboardNode).toBeVisible()
+  await storyboardNode.dragTo(page.locator('.vue-flow__pane'), {
+    sourcePosition: { x: 18, y: 18 },
+    targetPosition: { x: 1080, y: 620 },
+  })
+
+  await expect.poll(() => savedCanvasLayout?.nodes?.['sb:1001']).toEqual(expect.objectContaining({
+    x: expect.any(Number),
+    y: expect.any(Number),
+  }))
+  const savedStoryboardPosition = { ...savedCanvasLayout.nodes['sb:1001'] }
+
+  const sourceHandle = page.locator('.vue-flow__node[data-id="sbimg:1001"] .vue-flow__handle.source')
+  const targetHandle = page.locator('.vue-flow__node[data-id="sbtxt:1001"] .vue-flow__handle.target')
+  await expect(sourceHandle).toBeVisible()
+  await expect(targetHandle).toBeVisible()
+  const sourceBox = await sourceHandle.boundingBox()
+  const targetBox = await targetHandle.boundingBox()
+  expect(sourceBox).not.toBeNull()
+  expect(targetBox).not.toBeNull()
+
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 16 })
+  await page.mouse.up()
+
+  await expect.poll(() => savedCanvasLayout?.manual_edges || []).toContainEqual(expect.objectContaining({
+    source: 'sbimg:1001',
+    target: 'sbtxt:1001',
+    data: { manual: true },
+  }))
+
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Control+g')
+  const groupDialog = page.getByRole('dialog', { name: '创建工作流' })
+  await expect(groupDialog).toBeVisible()
+  await groupDialog.getByRole('textbox').fill('E2E 连贯工作流')
+  await groupDialog.getByRole('button', { name: '创建', exact: true }).click()
+
+  await expect.poll(() => savedWorkflowGroups).toContainEqual(expect.objectContaining({
+    title: 'E2E 连贯工作流',
+    storyboard_ids: [1001],
+  }))
+  await expect(storyboardNode).toContainText('E2E 连贯工作流')
+
+  await page.reload()
+
+  const restoredStoryboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await expect(restoredStoryboardNode).toContainText('E2E 连贯工作流')
+  await expect.poll(() => restoredStoryboardNode.evaluate((element) => element.style.transform)).toContain(
+    `translate(${savedStoryboardPosition.x}px, ${savedStoryboardPosition.y}px)`
+  )
+  await expect(page.locator('.vue-flow__edge[data-id^="manual:sbimg:1001:"]')).toBeAttached()
 })
 
 test('项目画布从素材库导入场景图、指派分镜并在刷新后恢复', async ({ page }) => {
