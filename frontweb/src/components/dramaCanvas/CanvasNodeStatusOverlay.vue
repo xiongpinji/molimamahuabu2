@@ -232,7 +232,7 @@ const textResultPreview = computed(() => {
 })
 const hasTextResultPreview = computed(() => (isSuccess.value || isFailed.value) && Boolean(textResultPreview.value))
 const actionErrorText = computed(() => {
-  if (!isSuccess.value) return ''
+  if (!isSuccess.value && !isFailed.value) return ''
   return status.value?.actionError || ''
 })
 
@@ -267,7 +267,7 @@ const resultNodeId = computed(() => status.value?.resultNodeId || '')
 const hasResultPreview = computed(() => Boolean(effectiveResultUrl.value) && (isSuccess.value || isFailed.value))
 
 const statusTitle = computed(() => {
-  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, failedResultText.value, assetResultText.value, generationAuditText.value, upstreamReferenceText.value, effectiveResultUrl.value].filter(Boolean)
+  const parts = [stepLabel.value, status.value?.message, status.value?.detail, metaText.value, resultText.value, failedResultText.value, assetResultText.value, generationAuditText.value, upstreamReferenceText.value, actionErrorText.value, effectiveResultUrl.value].filter(Boolean)
   return parts.join('\n')
 })
 

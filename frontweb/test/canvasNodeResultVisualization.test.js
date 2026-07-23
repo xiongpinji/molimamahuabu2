@@ -71,6 +71,8 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /max-width: calc\(100% - 14px\)/)
   assert.match(overlaySource, /\.action-group \{/)
   assert.match(overlaySource, /const actionErrorText = computed/)
+  assert.match(overlaySource, /if \(!isSuccess\.value && !isFailed\.value\) return ''/)
+  assert.match(overlaySource, /upstreamReferenceText\.value, actionErrorText\.value, effectiveResultUrl\.value/)
   assert.match(overlaySource, /status\.retryActionLabel \|\| '重试操作'/)
   assert.match(overlaySource, /v-if="status\.retryAction" type="button" :disabled="savingAsset \|\| attachingResult" @click\.stop="retryAction"/)
   assert.match(overlaySource, /function markActionFailure\(message, retryActionName, retryActionLabel\)/)
