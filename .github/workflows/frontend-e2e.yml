@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   canvas-e2e:
-    name: Home canvas browser regression
+    name: Canvas browser regression
     runs-on: ubuntu-latest
 
     steps:
@@ -37,10 +37,10 @@ jobs:
         working-directory: frontweb
         run: npx playwright install --with-deps chromium
 
-      # 首页自由画布回归只依赖前端 localStorage，不需要启动后端服务。
+      # 首页自由画布使用 localStorage，项目画布使用确定性 API mock；均不依赖后端服务。
       - name: Run frontend E2E
         working-directory: frontweb
-        run: npm run test:e2e:home
+        run: npm run test:e2e:canvas
 
       - name: Upload Playwright artifacts
         if: failure()
