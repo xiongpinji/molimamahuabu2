@@ -73,4 +73,27 @@ describe('builtinVoiceCatalogService', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('lists extracted project voices with reusable media paths', () => {
+    const { db, dramaId } = createDb();
+    try {
+      db.prepare(
+        `INSERT INTO assets (drama_id, name, type, category, url, local_path, metadata, created_at, updated_at)
+         VALUES (?, '小岚 · 提取音色', 'audio', 'voice', '', 'project/voices/xiaolan.wav', ?, ?, ?)`
+      ).run(
+        dramaId,
+        JSON.stringify({ character_name: '小岚', storyboard_id: 12, voice_asset: { duration: 3 } }),
+        new Date().toISOString(),
+        new Date().toISOString()
+      );
+      const voices = service.listProjectVoiceAssets(db, dramaId);
+      assert.equal(voices.length, 1);
+      assert.equal(voices[0].source, 'extracted_voice_asset');
+      assert.equal(voices[0].local_path, 'project/voices/xiaolan.wav');
+      assert.equal(voices[0].voice_local_path, 'project/voices/xiaolan.wav');
+      assert.equal(voices[0].preview_url, '/static/project/voices/xiaolan.wav');
+    } finally {
+      db.close();
+    }
+  });
 });

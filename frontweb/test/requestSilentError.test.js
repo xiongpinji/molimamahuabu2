@@ -27,6 +27,8 @@ test('音色目录 404 时静默降级读取项目已提取音色素材', () => 
   assert.match(charactersApiSource, /request\.get\('\/assets', \{[\s\S]*silentError: true[\s\S]*type: 'audio'[\s\S]*category: 'voice'/)
   assert.match(charactersApiSource, /normalizeVoiceAssetCatalog\(items\)/)
   assert.match(charactersApiSource, /source: 'extracted_voice_asset'/)
+  assert.match(charactersApiSource, /voice_local_path: asset\.local_path \|\| ''/)
+  assert.match(charactersApiSource, /audio_url: asset\.url \|\| ''/)
 })
 
 test('音色目录和旧素材接口均 404 时返回空列表而不是触发全局错误', () => {
