@@ -408,6 +408,7 @@ import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/uti
 import { appendVoicePromptToVideoPrompt, buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
@@ -637,7 +638,7 @@ const activeNodeStatus = computed(() => {
   const map = ctx?.nodeStatus?.map
   return map && sbNodeId.value ? map[sbNodeId.value] : null
 })
-const isActionBusy = computed(() => saving.value || !!busyLabel.value)
+const isActionBusy = computed(() => saving.value || !!busyStep.value || isCanvasNodeBusyStatus(activeNodeStatus.value))
 const actionStatusLabel = computed(() => busyLabel.value || actionStatus.value.message || '准备就绪')
 
 function setActionStatus(status) {

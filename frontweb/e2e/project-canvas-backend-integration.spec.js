@@ -477,6 +477,20 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
     }),
   })
 
+  await page.evaluate(({ storageKey, nodeId }) => {
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      [nodeId]: {
+        step: 'success',
+        message: '本镜生成参数已保存',
+        resultType: 'text',
+        at: Date.now(),
+      },
+    }))
+  }, {
+    storageKey: `moli_canvas_node_status:${dramaId}`,
+    nodeId: `sb:${storyboardId}`,
+  })
+
   await page.reload()
   await sourceNode.dispatchEvent('click', {
     bubbles: true,
@@ -500,7 +514,9 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await expect(generation).toContainText('9:16 竖屏')
   await expect(generation).toContainText('720p 高清')
   await expect(durationInput).toHaveValue('9')
-  await panel.getByRole('button', { name: '配音', exact: true }).click()
+  const audioButton = panel.getByRole('button', { name: '配音', exact: true })
+  await expect(audioButton).toBeEnabled()
+  await audioButton.click()
   await expect.poll(() => ttsProviderRequests.at(-1)).toEqual(expect.objectContaining({
     model: 'canvas-tts-beta',
     input: '小茉：终于等到你了。',

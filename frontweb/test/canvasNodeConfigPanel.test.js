@@ -112,6 +112,15 @@ test('分镜生成参数仅在持久化成功后提交到面板本地状态', ()
   assert.doesNotMatch(source.slice(0, persistIndex), /form\.duration\s*=/)
 })
 
+test('分镜终态文案不锁死新的运行入口，真实运行态仍保持步骤互斥', () => {
+  assert.match(storyboardPanelSource, /import \{ isCanvasNodeBusyStatus \} from '@\/utils\/canvasNodeStatus'/)
+  assert.match(storyboardPanelSource, /const isActionBusy = computed\(\(\) => saving\.value \|\| !!busyStep\.value \|\| isCanvasNodeBusyStatus\(activeNodeStatus\.value\)\)/)
+  assert.doesNotMatch(storyboardPanelSource, /const isActionBusy = computed\(\(\) => saving\.value \|\| !!busyLabel\.value\)/)
+  assert.match(storyboardPanelSource, /:disabled="isActionBusy && busyStep !== 'image'"[\s\S]*runStep\('image'\)/)
+  assert.match(storyboardPanelSource, /:disabled="isActionBusy && busyStep !== 'video'"[\s\S]*runStep\('video'\)/)
+  assert.match(storyboardPanelSource, /:disabled="isActionBusy && busyStep !== 'audio'"[\s\S]*runStep\('audio'\)/)
+})
+
 test('节点配置面板支持完整生成参数而非只改模型', () => {
   assert.doesNotMatch(storyboardPanelSource, /<CanvasGenerationOptions[\s\S]*models-only[\s\S]*@change="saveStoryboardGenerationOptions"[\s\S]*\/>/)
   assert.match(storyboardPanelSource, /label="生成参数"/)
