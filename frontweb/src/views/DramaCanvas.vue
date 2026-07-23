@@ -2847,11 +2847,11 @@ function openNodeConfig(node) {
   onNodeDoubleClick({ node })
 }
 
-function focusNodeForConfig(node) {
+function focusNodeForConfig(node, options = {}) {
   if (!node?.id) return
   focusedNodeId.value = node.id
   const storyboard = storyboardForNode(node)
-  if (storyboard?.id) applySelectedStoryboardIds([storyboard.id])
+  if (options?.syncStoryboard !== false && storyboard?.id) applySelectedStoryboardIds([storyboard.id])
   scheduleVirtualization()
 }
 
@@ -3882,8 +3882,7 @@ function onNodeClick({ node, event }) {
   }
 
   if (PANEL_NODE_TYPES.has(node.type)) {
-    focusedNodeId.value = node.id
-    scheduleVirtualization()
+    focusNodeForConfig(node, { syncStoryboard: false })
   }
 
   if (node.type === 'canvasAsset') {
@@ -3891,7 +3890,7 @@ function onNodeClick({ node, event }) {
     selectSidebarAsset(`${prefix}:${node.data.entity.id}`)
     return
   }
-  const sbId = storyboardIdFromNodeId(node.id)
+  const sbId = storyboardIdFromNodeId(node.id) || storyboardForNode(node)?.id
   if (sbId) {
     selectStoryboard(sbId, event)
   }

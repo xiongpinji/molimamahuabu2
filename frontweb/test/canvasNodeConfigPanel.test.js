@@ -31,10 +31,10 @@ test('右键节点菜单保留配置面板入口', () => {
   assert.match(canvasSource, /if \(canOpenNodeProduction\(node\)\) actions\.unshift\('open-node-production'\)/)
   assert.match(canvasSource, /function openNodeConfig\(node\)/)
   assert.match(canvasSource, /PANEL_NODE_TYPES\.has\(node\.type\)[\s\S]*focusNodeForConfig\(node\)/)
-  assert.match(canvasSource, /function focusNodeForConfig\(node\)/)
+  assert.match(canvasSource, /function focusNodeForConfig\(node, options = \{\}\)/)
   assert.match(canvasSource, /focusedNodeId\.value = node\.id/)
   assert.match(canvasSource, /const storyboard = storyboardForNode\(node\)/)
-  assert.match(canvasSource, /if \(storyboard\?\.id\) applySelectedStoryboardIds\(\[storyboard\.id\]\)/)
+  assert.match(canvasSource, /if \(options\?\.syncStoryboard !== false && storyboard\?\.id\) applySelectedStoryboardIds\(\[storyboard\.id\]\)/)
   assert.match(canvasSource, /setFocusedNode: \(nodeId\) => \{[\s\S]*const node = findGraphNode\(nodeId\)[\s\S]*if \(node\) focusNodeForConfig\(node\)/)
   assert.match(canvasSource, /'canvasProjectAsset'/)
   assert.match(canvasSource, /async function focusCanvasNodeWithConfig\(nodeId, warning = ''\)/)
@@ -53,6 +53,8 @@ test('脚本素材媒体节点支持单击聚焦并打开配置面板', () => {
   assert.match(mediaNodeSource, /<CanvasMediaPanel[\s\S]*v-if="showPanel"/)
   assert.match(assetNodeSource, /<CanvasAssetPanel[\s\S]*v-if="showPanel"/)
   assert.match(scriptNodeSource, /<CanvasScriptPanel[\s\S]*v-if="showPanel"/)
+  assert.match(canvasSource, /if \(PANEL_NODE_TYPES\.has\(node\.type\)\) \{[\s\S]*focusNodeForConfig\(node, \{ syncStoryboard: false \}\)/)
+  assert.match(canvasSource, /const sbId = storyboardIdFromNodeId\(node\.id\) \|\| storyboardForNode\(node\)\?\.id/)
 })
 
 test('脚本配置面板保存后保留节点状态和失败重试', () => {
