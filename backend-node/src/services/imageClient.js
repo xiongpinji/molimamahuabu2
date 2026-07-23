@@ -2111,6 +2111,7 @@ function refListHasCanonical(list, ref) {
 
 module.exports = {
   getDefaultImageConfig,
+  callAihubccImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,

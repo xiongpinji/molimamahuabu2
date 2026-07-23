@@ -400,6 +400,7 @@ function ensureAllColumns(database) {
   // --- assets ---
   ensureColumns(database, 'assets', [
     { name: 'drama_id',     type: 'INTEGER' },
+    { name: 'storyboard_id', type: 'INTEGER' },
     { name: 'name',         type: 'TEXT' },
     { name: 'type',         type: 'TEXT' },
     { name: 'category',     type: 'TEXT' },
