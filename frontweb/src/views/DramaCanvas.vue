@@ -2134,7 +2134,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     ...retryPayload,
   })
   try {
-    const result = await assignProjectAssetToSelectedStoryboard(asset, { silent: true, returnDetail: true })
+    const result = await assignProjectAssetToSelectedStoryboard(asset, { silent: true, returnDetail: true, storyboardId: targetStoryboardId })
     if (!result?.ok) throw new Error(result?.message || '素材未指派，请选中一个分镜后重试')
     nodeStatus.success(nodeId, {
       message: result.message || '已指派素材到选中分镜',
