@@ -116,6 +116,47 @@ describe('storyboardVoiceExtractionService', () => {
     }
   });
 
+  it('rolls back the character voice binding when library persistence fails', async (t) => {
+    if (!hasLocalFfmpeg()) return t.skip('ffmpeg unavailable');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-voice-rollback-test-'));
+    const { db, dramaId, storyboardId, characterId } = createDb();
+    try {
+      const { videoId } = makeVideo(root, db, dramaId, storyboardId);
+      db.exec(`
+        CREATE TRIGGER reject_extracted_voice_asset
+        BEFORE INSERT ON assets
+        WHEN NEW.type = 'audio' AND NEW.category = 'voice'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced voice asset failure');
+        END
+      `);
+
+      const result = await voiceService.extractStoryboardVoice({
+        db,
+        cfg: { storage: { local_path: root } },
+        log: { info() {}, warn() {}, error() {} },
+        storyboardId,
+        videoId,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'VOICE_EXTRACTION_FAILED');
+      assert.equal(
+        db.prepare('SELECT seedance2_voice_asset FROM characters WHERE id = ?').get(characterId).seedance2_voice_asset,
+        null,
+      );
+      assert.equal(db.prepare("SELECT COUNT(*) AS total FROM assets WHERE type = 'audio' AND category = 'voice'").get().total, 0);
+      const voiceDir = path.join(root, storageLayout.getProjectStorageSubdir(db, dramaId), 'characters', 'voice');
+      const generatedFiles = fs.existsSync(voiceDir)
+        ? fs.readdirSync(voiceDir).filter((name) => name.includes('_voice_extract_'))
+        : [];
+      assert.deepEqual(generatedFiles, []);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('requires a target when a storyboard contains multiple characters', async () => {
     const { db, storyboardId, characterId } = createDb();
     try {

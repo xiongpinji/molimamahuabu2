@@ -406,16 +406,19 @@ async function extractStoryboardVoice({ db, cfg, log, storyboardId, videoId, cha
       separation: plan,
     });
     const now = new Date().toISOString();
-    db.prepare('UPDATE characters SET seedance2_voice_asset = ?, updated_at = ? WHERE id = ? AND drama_id = ? AND deleted_at IS NULL')
-      .run(JSON.stringify(asset), now, target.character.id, Number(storyboard.drama_id));
-    const libraryAsset = assetService.saveExtractedVoice(db, log, {
-      dramaId: storyboard.drama_id,
-      characterId: target.character.id,
-      characterName: target.character.name,
-      storyboardId: sid,
-      videoId: vid,
-      voiceAsset: asset,
+    const persistVoice = db.transaction(() => {
+      db.prepare('UPDATE characters SET seedance2_voice_asset = ?, updated_at = ? WHERE id = ? AND drama_id = ? AND deleted_at IS NULL')
+        .run(JSON.stringify(asset), now, target.character.id, Number(storyboard.drama_id));
+      return assetService.saveExtractedVoice(db, log, {
+        dramaId: storyboard.drama_id,
+        characterId: target.character.id,
+        characterName: target.character.name,
+        storyboardId: sid,
+        videoId: vid,
+        voiceAsset: asset,
+      });
     });
+    const libraryAsset = persistVoice();
     log?.info?.('[音色提取] 已从分镜视频提取角色音色', {
       storyboard_id: sid,
       video_id: vid,
