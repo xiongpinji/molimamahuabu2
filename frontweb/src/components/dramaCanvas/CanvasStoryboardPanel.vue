@@ -897,8 +897,9 @@ async function onAssetLibraryPick(asset) {
       assignedAssets.value = [...assignedAssets.value, normalizeAssignedAsset(savedAsset)].slice(0, 10)
     }
     await ctx?.refreshDrama?.(true)
-    setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, savedAsset, ASSET_ATTACH_TARGETS.reference.message), 'success')
-    ElMessage.success(ASSET_ATTACH_TARGETS.reference.message)
+    const successMessage = ASSET_ATTACH_TARGETS[target]?.message || '已指派素材到本镜'
+    setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, savedAsset, successMessage), 'success')
+    ElMessage.success(successMessage)
   } catch (e) {
     const message = e?.message || '素材指派失败'
     setAssetAttachStatus(target, storyboardId, assetAttachFailurePayload(target, asset, message), 'fail')
