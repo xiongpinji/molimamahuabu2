@@ -69,6 +69,7 @@
           <div class="picker-name" :title="item.name">{{ item.name || '未命名' }}</div>
           <div class="picker-meta">
             <span v-if="item.source_label" class="source-badge">{{ item.source_label }}</span>
+            <span v-if="itemStatusText(item)" class="status-badge" :class="`status-${itemStatusKind(item)}`">{{ itemStatusText(item) }}</span>
             <span>{{ formatSize(item.file_size || item.size) }}</span>
             <template v-if="item.duration"> · {{ formatDuration(item.duration) }}</template>
             <template v-if="item.setup_hint"> · {{ item.setup_hint }}</template>
@@ -315,6 +316,8 @@ function normalizeAssetItem(it, source) {
     local_path: localPath,
     setup_hint: it.setup_hint || '',
     selectable: it.selectable ?? true,
+    drama_id: it.drama_id || it.metadata?.drama_id || '',
+    storyboard_id: it.storyboard_id || it.metadata?.storyboard_id || it.metadata?.attached_storyboard_id || '',
     source_kind: source,
     source_label: sourceLabel(source),
   }
@@ -344,6 +347,28 @@ function sourceLabel(source) {
     prop: '道具库',
     voice_catalog: '音色库',
   }[source] || '素材库'
+}
+
+function itemStoryboardId(item) {
+  return Number(item?.storyboard_id || item?.metadata?.storyboard_id || item?.metadata?.attached_storyboard_id || 0) || 0
+}
+
+function itemStatusKind(item) {
+  if (item?.selectable === false) return 'disabled'
+  if (itemStoryboardId(item)) return 'attached'
+  if (item?.source_kind === 'project' && item?.drama_id) return 'project'
+  if (item?.source_kind === 'project') return 'global'
+  return 'library'
+}
+
+function itemStatusText(item) {
+  if (!item) return ''
+  if (item.selectable === false) return item.setup_hint || '不可选'
+  const storyboardId = itemStoryboardId(item)
+  if (storyboardId) return `已挂载分镜 #${storyboardId}`
+  if (item.source_kind === 'project' && item.drama_id) return '当前项目'
+  if (item.source_kind === 'project') return '全局素材'
+  return ''
 }
 
 function dedupeItems(list) {
@@ -417,6 +442,8 @@ function normalizePickedAsset(item) {
     local_path: localPath,
     reference_text: `@素材(${name}#${item.raw_id || item.id}) ${displayUrl}`.trim(),
     picker_source: item.source_kind || 'library',
+    picker_status: itemStatusText(item),
+    picker_storyboard_id: itemStoryboardId(item) || null,
     voice_catalog: voiceCatalog,
     voice_catalog_id: voiceCatalog?.id || voiceCatalog?.voice_id || null,
     voice_asset_id: voiceCatalog?.asset_id || null,
@@ -470,6 +497,11 @@ function onPick(item) {
 .picker-name { font-size: 12px; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .picker-meta { margin-top: 3px; font-size: 11px; color: #71717a; }
 .source-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 999px; background: rgba(139,92,246,.16); color: #c4b5fd; }
+.status-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 999px; background: rgba(39,39,42,.82); color: #d4d4d8; }
+.status-attached { background: rgba(34,197,94,.16); color: #86efac; }
+.status-project { background: rgba(59,130,246,.16); color: #93c5fd; }
+.status-global { background: rgba(245,158,11,.16); color: #fcd34d; }
+.status-disabled { background: rgba(239,68,68,.16); color: #fca5a5; }
 .picker-actions { display: flex; justify-content: flex-end; gap: 4px; padding: 0 6px 6px; }
 .picker-empty { grid-column: 1 / -1; text-align: center; color: #71717a; padding: 40px 0; }
 .preview-body { display: flex; justify-content: center; background: #09090b; border-radius: 8px; overflow: hidden; }

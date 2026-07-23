@@ -43,6 +43,22 @@ test('素材选择弹窗支持按素材来源筛选并显示可见数量', () =>
   assert.match(source, /显示 \$\{visibleItems\.length\}\/\$\{items\.length\} 个可用素材/)
 })
 
+test('素材选择弹窗显示素材挂载状态，避免复用时看不出目标用途', () => {
+  assert.match(source, /class="status-badge"/)
+  assert.match(source, /itemStatusText\(item\)/)
+  assert.match(source, /itemStatusKind\(item\)/)
+  assert.match(source, /function itemStoryboardId\(item\)/)
+  assert.match(source, /metadata\?\.attached_storyboard_id/)
+  assert.match(source, /return `已挂载分镜 #\$\{storyboardId\}`/)
+  assert.match(source, /return '当前项目'/)
+  assert.match(source, /return '全局素材'/)
+  assert.match(source, /return item\.setup_hint \|\| '不可选'/)
+  assert.match(source, /\.status-attached/)
+  assert.match(source, /\.status-project/)
+  assert.match(source, /\.status-global/)
+  assert.match(source, /\.status-disabled/)
+})
+
 test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /image \| video \| audio \| all/)
   assert.match(source, /import \{ characterAPI \} from '@\/api\/characters'/)
@@ -98,6 +114,8 @@ test('素材选择弹窗选中素材时输出统一复用字段', () => {
   assert.match(source, /local_path: localPath/)
   assert.match(source, /reference_text: `@素材\(\$\{name\}#\$\{item\.raw_id \|\| item\.id\}\) \$\{displayUrl\}`\.trim\(\)/)
   assert.match(source, /picker_source: item\.source_kind \|\| 'library'/)
+  assert.match(source, /picker_status: itemStatusText\(item\)/)
+  assert.match(source, /picker_storyboard_id: itemStoryboardId\(item\) \|\| null/)
   assert.match(source, /const voiceCatalog = item\.metadata\?\.voice_catalog \|\| null/)
   assert.match(source, /voice_catalog: voiceCatalog/)
   assert.match(source, /voice_catalog_id: voiceCatalog\?\.id \|\| voiceCatalog\?\.voice_id \|\| null/)
