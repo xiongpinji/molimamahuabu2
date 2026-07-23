@@ -4034,6 +4034,7 @@ function showCanvasHelp() {
       'Ctrl/⌘ + 滚轮：放大或缩小画布',
       '拖动画布空白区域：框选节点',
       'Ctrl/⌘ + 点击：多选节点',
+      'Ctrl/⌘ + A：选中当前可见分镜',
       'Ctrl/⌘ + G：将已选分镜创建为工作流',
       'Esc：清空选择、焦点和右键菜单',
       '右键画布：添加节点',
@@ -4094,6 +4095,16 @@ function redoCanvas() {
   ElMessage.info('已重做画布布局操作')
 }
 
+function selectVisibleStoryboards() {
+  const ids = [...visibleStoryboardIds.value]
+  if (!ids.length) {
+    ElMessage.warning('当前画布暂无可选分镜')
+    return
+  }
+  applySelectedStoryboardIds(ids)
+  ElMessage.success(`已选中 ${ids.length} 个可见分镜`)
+}
+
 function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
@@ -4109,6 +4120,11 @@ function onCanvasKeydown(event) {
   }
   const modifier = event.ctrlKey || event.metaKey
   if (!modifier || event.altKey) return
+  if (key === 'a') {
+    event.preventDefault()
+    selectVisibleStoryboards()
+    return
+  }
   if (key === 'g') {
     event.preventDefault()
     void onCreateWorkflowGroup()
