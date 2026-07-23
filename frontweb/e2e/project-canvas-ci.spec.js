@@ -249,8 +249,22 @@ test('项目画布支持右键添加入口、Ctrl 缩放、Space 平移和快捷
   await expect(page.getByRole('dialog', { name: '新建角色' })).toBeVisible()
   await page.getByRole('dialog', { name: '新建角色' }).getByRole('button', { name: '取消' }).click()
 
-  const initialTransform = await viewport.evaluate((element) => element.style.transform)
   await canvas.hover({ position: { x: 700, y: 420 } })
+  const initialWheelState = await viewport.evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform)
+    return { y: matrix.m42, zoom: matrix.a }
+  })
+  await page.mouse.wheel(0, 240)
+  await expect.poll(() => viewport.evaluate((element) => (
+    new DOMMatrixReadOnly(getComputedStyle(element).transform).m42
+  ))).not.toBe(initialWheelState.y)
+  const defaultWheelState = await viewport.evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform)
+    return { zoom: matrix.a }
+  })
+  expect(defaultWheelState.zoom).toBeCloseTo(initialWheelState.zoom, 5)
+
+  const initialTransform = await viewport.evaluate((element) => element.style.transform)
   await page.keyboard.down('Control')
   await page.mouse.wheel(0, -240)
   await page.keyboard.up('Control')
