@@ -92,6 +92,11 @@ describe('storyboardVoiceExtractionService', () => {
       assert.equal(result.asset.source, 'storyboard_video');
       assert.equal(result.asset.source_video_id, videoId);
       assert.equal(result.asset.source_storyboard_id, storyboardId);
+      assert.equal(result.asset.source_audio_kind, 'mixed_video_track');
+      assert.equal(result.asset.speaker_diarization, false);
+      assert.equal(result.asset.quality_status, 'requires_preview_confirmation');
+      assert.match(result.asset.quality_notice, /不是真实说话人分离/);
+      assert.match(result.asset.quality_notice, /背景音乐或环境音/);
       assert.equal(result.library_asset.type, 'audio');
       assert.equal(result.library_asset.category, 'voice');
       assert.equal(result.library_asset.metadata.source, 'storyboard_voice_extraction');

@@ -315,6 +315,10 @@ function buildVoiceAsset({ url, localPath, videoId, storyboardId, durationSecond
     source_storyboard_id: Number(storyboardId),
     extraction_method: 'script_ordered_voice_segments',
     background_suppression: 'center_mix_denoise',
+    source_audio_kind: 'mixed_video_track',
+    speaker_diarization: false,
+    quality_status: 'requires_preview_confirmation',
+    quality_notice: '按剧本对白顺序和静音切点从混合视频音轨裁剪，不是真实说话人分离；背景音乐或环境音可能残留，请试听确认后再复用。',
     role_segments: separation?.entries || [],
   };
 }

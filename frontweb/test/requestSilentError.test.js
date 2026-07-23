@@ -29,6 +29,10 @@ test('音色目录 404 时静默降级读取项目已提取音色素材', () => 
   assert.match(charactersApiSource, /source: 'extracted_voice_asset'/)
   assert.match(charactersApiSource, /voice_local_path: asset\.local_path \|\| ''/)
   assert.match(charactersApiSource, /audio_url: asset\.url \|\| ''/)
+  assert.match(charactersApiSource, /const isExtractedVoice = metadata\.source === 'storyboard_voice_extraction'/)
+  assert.match(charactersApiSource, /quality_status: voiceAsset\.quality_status \|\| \(isExtractedVoice \? 'requires_preview_confirmation' : null\)/)
+  assert.match(charactersApiSource, /quality_notice: qualityNotice/)
+  assert.match(charactersApiSource, /不是真实说话人分离/)
 })
 
 test('音色目录和旧素材接口均 404 时返回空列表而不是触发全局错误', () => {

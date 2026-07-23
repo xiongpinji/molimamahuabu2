@@ -82,7 +82,17 @@ describe('builtinVoiceCatalogService', () => {
          VALUES (?, '小岚 · 提取音色', 'audio', 'voice', '', 'project/voices/xiaolan.wav', ?, ?, ?)`
       ).run(
         dramaId,
-        JSON.stringify({ character_name: '小岚', storyboard_id: 12, voice_asset: { duration: 3 } }),
+        JSON.stringify({
+          character_name: '小岚',
+          storyboard_id: 12,
+          voice_asset: {
+            duration: 3,
+            quality_status: 'requires_preview_confirmation',
+            quality_notice: '测试质量提示',
+            speaker_diarization: false,
+            source_audio_kind: 'mixed_video_track',
+          },
+        }),
         new Date().toISOString(),
         new Date().toISOString()
       );
@@ -92,6 +102,30 @@ describe('builtinVoiceCatalogService', () => {
       assert.equal(voices[0].local_path, 'project/voices/xiaolan.wav');
       assert.equal(voices[0].voice_local_path, 'project/voices/xiaolan.wav');
       assert.equal(voices[0].preview_url, '/static/project/voices/xiaolan.wav');
+      assert.equal(voices[0].quality_status, 'requires_preview_confirmation');
+      assert.equal(voices[0].quality_notice, '测试质量提示');
+      assert.equal(voices[0].speaker_diarization, false);
+      assert.equal(voices[0].source_audio_kind, 'mixed_video_track');
+      assert.match(voices[0].description, /测试质量提示/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('marks historical extracted voices as requiring preview confirmation', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO assets (drama_id, name, type, category, url, metadata, created_at, updated_at)
+         VALUES (?, '旧音色', 'audio', 'voice', '/static/legacy.mp3', ?, ?, ?)`
+      ).run(dramaId, JSON.stringify({ character_name: '小岚', storyboard_id: 1 }), now, now);
+
+      const [voice] = service.listProjectVoiceAssets(db, dramaId);
+      assert.equal(voice.quality_status, 'requires_preview_confirmation');
+      assert.equal(voice.speaker_diarization, false);
+      assert.match(voice.quality_notice, /不是真实说话人分离/);
+      assert.match(voice.description, /请试听确认/);
     } finally {
       db.close();
     }

@@ -1532,6 +1532,7 @@
                   size="small"
                   :loading="extractingVoiceSbIds.has(sb.id)"
                   :disabled="isSbVideoGenerating(sb.id)"
+                  title="按剧本对白顺序和静音切点提取，非声纹/说话人分离；背景音乐或环境音可能残留，请试听确认"
                   @click="onExtractSbVoice(sb)"
                 >
                   提取音色
@@ -2715,7 +2716,7 @@
     </el-dialog>
 
     <el-dialog v-model="showVoiceExtractDialog" title="选择要绑定的角色音色" width="440px">
-      <p class="voice-extract-dialog-hint">本分镜包含多个角色。视频中的对白可能混合多个音色，请选择本次提取要写入的角色。</p>
+      <p class="voice-extract-dialog-hint">按剧本对白顺序和静音切点裁剪，不是真实说话人分离。重叠对白、背景音乐或环境音可能残留；无法可靠切分时系统会阻止写入。请选择目标角色，并在提取后试听确认。</p>
       <el-radio-group v-model="voiceExtractCharacterId" class="voice-extract-character-list">
         <el-radio v-for="char in voiceExtractCandidates" :key="char.id" :value="char.id" border>
           {{ char.name || `角色${char.id}` }}
@@ -3919,7 +3920,7 @@ async function submitStoryboardVoiceExtraction(sb, video, characterId) {
   extractingVoiceSbIds.add(sb.id)
   try {
     const result = await storyboardsAPI.extractVoice(sb.id, { video_id: video.id, character_id: characterId })
-    ElMessage.success(`已将视频音色绑定到${result.character_name || '当前角色'}`)
+    ElMessage.success(`已将视频音色绑定到${result.character_name || '当前角色'}；该结果非说话人分离，请试听确认`)
     showVoiceExtractDialog.value = false
     await loadDrama()
   } catch (e) {

@@ -88,6 +88,9 @@
             <template v-if="item.duration"> · {{ formatDuration(item.duration) }}</template>
             <template v-if="item.setup_hint"> · {{ item.setup_hint }}</template>
           </div>
+          <div v-if="item.quality_notice" class="picker-quality-notice" :title="item.quality_notice">
+            {{ item.quality_notice }}
+          </div>
         </div>
         <div class="picker-actions">
           <el-button size="small" text :disabled="!itemUrl(item)" @click="openPreview(item)">预览</el-button>
@@ -123,6 +126,14 @@
         />
         <img v-else-if="previewItem" :src="itemUrl(previewItem)" class="preview-media" />
       </div>
+      <el-alert
+        v-if="previewItem?.quality_notice"
+        :title="previewItem.quality_notice"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="preview-quality-notice"
+      />
       <template #footer>
         <el-button @click="previewVisible = false">关闭</el-button>
         <el-button type="primary" :disabled="!itemUrl(previewItem)" @click="onPick(previewItem)">选用此素材</el-button>
@@ -341,6 +352,7 @@ function normalizeAssetItem(it, source) {
     url,
     local_path: localPath,
     setup_hint: it.setup_hint || '',
+    quality_notice: it.quality_notice || it.metadata?.voice_asset?.quality_notice || '',
     selectable: it.selectable ?? true,
     drama_id: it.drama_id || it.metadata?.drama_id || '',
     storyboard_id: it.storyboard_id || it.metadata?.storyboard_id || it.metadata?.attached_storyboard_id || '',
@@ -531,6 +543,7 @@ function onPick(item) {
 .picker-info { padding: 6px; }
 .picker-name { font-size: 12px; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .picker-meta { margin-top: 3px; font-size: 11px; color: #71717a; }
+.picker-quality-notice { margin-top: 4px; overflow: hidden; color: #fbbf24; font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .source-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 999px; background: rgba(139,92,246,.16); color: #c4b5fd; }
 .status-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 999px; background: rgba(39,39,42,.82); color: #d4d4d8; }
 .status-attached { background: rgba(34,197,94,.16); color: #86efac; }
@@ -542,4 +555,5 @@ function onPick(item) {
 .preview-body { display: flex; justify-content: center; background: #09090b; border-radius: 8px; overflow: hidden; }
 .preview-media { max-width: 100%; max-height: 520px; object-fit: contain; }
 .preview-audio { width: 100%; margin: 40px 24px; }
+.preview-quality-notice { margin-top: 10px; }
 </style>

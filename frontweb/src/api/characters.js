@@ -1,26 +1,41 @@
 import request from '@/utils/request'
 
+const EXTRACTED_VOICE_QUALITY_NOTICE = '按剧本对白顺序和静音切点从混合视频音轨裁剪，不是真实说话人分离；背景音乐或环境音可能残留，请试听确认后再复用。'
+
 function normalizeVoiceAssetCatalog(items = []) {
-  return items.map((asset) => ({
-    id: `asset-${asset.id}`,
-    asset_id: asset.id,
-    engine: 'audio-library',
-    voice_id: `asset-${asset.id}`,
-    language: '项目音色',
-    label: asset.name || `${asset.metadata?.character_name || '角色'} · 提取音色`,
-    description: `来源：${asset.metadata?.character_name || '角色'}，分镜 ${asset.metadata?.storyboard_id || '-'}；可复用于本项目角色`,
-    available: Boolean(asset.url || asset.local_path),
-    can_bind: Boolean(asset.url || asset.local_path),
-    preview_url: asset.url || (asset.local_path ? `/static/${String(asset.local_path).replace(/^\//, '')}` : null),
-    url: asset.url || '',
-    local_path: asset.local_path || '',
-    audio_url: asset.url || '',
-    voice_url: asset.url || '',
-    voice_local_path: asset.local_path || '',
-    source: 'extracted_voice_asset',
-    duration: asset.duration ?? asset.metadata?.voice_asset?.duration ?? null,
-    metadata: asset.metadata || {},
-  }))
+  return items.map((asset) => {
+    const metadata = asset.metadata || {}
+    const voiceAsset = metadata.voice_asset || {}
+    const isExtractedVoice = metadata.source === 'storyboard_voice_extraction'
+      || voiceAsset.source === 'storyboard_video'
+      || Boolean(metadata.storyboard_id)
+    const qualityNotice = voiceAsset.quality_notice
+      || (isExtractedVoice ? EXTRACTED_VOICE_QUALITY_NOTICE : '')
+    return {
+      id: `asset-${asset.id}`,
+      asset_id: asset.id,
+      engine: 'audio-library',
+      voice_id: `asset-${asset.id}`,
+      language: '项目音色',
+      label: asset.name || `${metadata.character_name || '角色'} · 提取音色`,
+      description: `来源：${metadata.character_name || '角色'}，分镜 ${metadata.storyboard_id || '-'}；可复用于本项目角色${qualityNotice ? `；${qualityNotice}` : ''}`,
+      available: Boolean(asset.url || asset.local_path),
+      can_bind: Boolean(asset.url || asset.local_path),
+      preview_url: asset.url || (asset.local_path ? `/static/${String(asset.local_path).replace(/^\//, '')}` : null),
+      url: asset.url || '',
+      local_path: asset.local_path || '',
+      audio_url: asset.url || '',
+      voice_url: asset.url || '',
+      voice_local_path: asset.local_path || '',
+      source: 'extracted_voice_asset',
+      duration: asset.duration ?? voiceAsset.duration ?? null,
+      quality_status: voiceAsset.quality_status || (isExtractedVoice ? 'requires_preview_confirmation' : null),
+      quality_notice: qualityNotice,
+      speaker_diarization: voiceAsset.speaker_diarization ?? (isExtractedVoice ? false : null),
+      source_audio_kind: voiceAsset.source_audio_kind || (isExtractedVoice ? 'mixed_video_track' : null),
+      metadata,
+    }
+  })
 }
 
 export const characterAPI = {

@@ -92,6 +92,10 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /audio_local_path/)
   assert.match(source, /voice_local_path/)
   assert.match(source, /mp3\|wav\|m4a\|aac\|ogg\|flac/)
+  assert.match(source, /class="picker-quality-notice"/)
+  assert.match(source, /\{\{ item\.quality_notice \}\}/)
+  assert.match(source, /previewItem\?\.quality_notice/)
+  assert.match(source, /quality_notice: it\.quality_notice \|\| it\.metadata\?\.voice_asset\?\.quality_notice \|\| ''/)
 })
 
 test('素材选择弹窗显示未就绪音色目录但禁用不可用音频操作', () => {
