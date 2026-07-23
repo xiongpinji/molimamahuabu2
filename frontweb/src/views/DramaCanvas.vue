@@ -1184,7 +1184,25 @@ async function saveQueueItemResultAsset(item) {
     rebuildGraph()
     ElMessage.success('队列结果已存入素材库')
   } catch (error) {
-    ElMessage.error(error?.message || '队列结果入库失败')
+    const message = error?.message || '队列结果入库失败'
+    const ids = item.statusIds?.length ? item.statusIds : [item.nodeId]
+    ids.filter(Boolean).forEach((id) => {
+      const current = nodeStatus.get(id) || {}
+      nodeStatus.set(id, {
+        ...current,
+        resultUrl: current.resultUrl || item.resultUrl || '',
+        resultType: current.resultType || item.resultType || queueResultPreviewType(item),
+        resultLabel: current.resultLabel || item.resultLabel || item.label || '队列结果',
+        resultSummary: current.resultSummary || item.resultSummary || '',
+        promptText: current.promptText || item.promptText || '',
+        actionError: message,
+        retryAction: 'save_result_asset',
+        retryActionLabel: '重试存入素材库',
+        message,
+        autoClear: false,
+      })
+    })
+    ElMessage.error(message)
   } finally {
     savingQueueAssetKey.value = ''
   }
