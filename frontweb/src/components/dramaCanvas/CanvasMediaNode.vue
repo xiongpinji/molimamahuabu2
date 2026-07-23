@@ -47,6 +47,9 @@
         <button v-if="textResult" type="button" @click.stop="copyTextResult">复制文本</button>
         <button v-if="resultReferences.length" type="button" @click.stop="copyResultReferences">复制引用</button>
         <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
+        <button v-if="canUseResultAsDownstreamReference" type="button" :disabled="assigningDownstreamReference" @click.stop="useResultAsDownstreamReference">
+          {{ assigningDownstreamReference ? '引用中…' : '下游参考' }}
+        </button>
         <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位</button>
         <button v-if="savedAssetReferenceText" type="button" @click.stop="copyAssetReference">素材引用</button>
         <button v-if="savedAsset" type="button" :disabled="assigningAsset" @click.stop="assignSavedAssetToSelectedStoryboard">
@@ -107,6 +110,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 const assigningAsset = ref(false)
+const assigningDownstreamReference = ref(false)
 
 const isNodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
@@ -211,6 +215,7 @@ const savedAssetReferenceText = computed(() => {
   const url = assetMediaUrl(asset) || asset.url || ''
   return `@素材(${asset.name || '素材'}#${asset.id}) ${url}`.trim()
 })
+const canUseResultAsDownstreamReference = computed(() => Boolean(ctx?.useNodeResultAsDownstreamReference) && Boolean(resultUrl.value || resultReferences.value.length || savedAssetReferenceText.value || textResult.value))
 const previewLabel = computed(() => {
   if (props.data.kind === 'image') return '预览图'
   if (props.data.kind === 'video') return '预览视频'
@@ -315,6 +320,25 @@ async function assignSavedAssetToSelectedStoryboard() {
     await ctx?.assignProjectAssetToSelectedStoryboard?.(savedAsset.value)
   } finally {
     assigningAsset.value = false
+  }
+}
+
+async function useResultAsDownstreamReference() {
+  if (!canUseResultAsDownstreamReference.value || assigningDownstreamReference.value) return
+  assigningDownstreamReference.value = true
+  try {
+    await ctx.useNodeResultAsDownstreamReference({ id: props.id, data: props.data }, {
+      resultUrl: resultUrl.value,
+      resultType: runtimeStatus.value?.resultType || props.data.kind,
+      savedAssetId: savedAsset.value?.id || '',
+      resultSummary: textResult.value,
+      resultReferences: resultReferences.value,
+    })
+    ElMessage.success('已作为下游参考')
+  } catch (error) {
+    ElMessage.error(error?.message || '作为下游参考失败')
+  } finally {
+    assigningDownstreamReference.value = false
   }
 }
 
