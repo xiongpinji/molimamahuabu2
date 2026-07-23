@@ -2276,8 +2276,25 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
     rebuildGraph()
   }
   await focusCanvasNode(`sb:${storyboardId}`)
-  ElMessage.success(resultMessage)
+  if (!silent) ElMessage.success(resultMessage)
   return success(resultMessage, { storyboardId, asset: updatedAsset || asset })
+}
+
+async function autoAssignCanvasAssetToSelectedStoryboard(asset) {
+  const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
+  if (selectedIds.length !== 1) return { attempted: false }
+  const storyboardId = selectedIds[0]
+  try {
+    const result = await assignProjectAssetToSelectedStoryboard(asset, { silent: true, returnDetail: true, storyboardId })
+    return { attempted: true, storyboardId, ...(result || {}) }
+  } catch (error) {
+    return {
+      attempted: true,
+      ok: false,
+      storyboardId,
+      message: error?.message || '素材指派失败',
+    }
+  }
 }
 
 async function runCanvasProjectAssetNodeStep(node, step) {
@@ -2363,21 +2380,29 @@ async function createCanvasProjectAssetFromUpload(file, flowPosition = null, off
   })
   const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
   const nodeId = await placeProjectAssetNode(asset, targetPos)
-  if (selectedStoryboardIds.value.length === 1) {
-    await assignProjectAssetToSelectedStoryboard(asset)
-  }
+  const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
   if (nodeId) {
-    nodeStatus.success(nodeId, {
-      message: selectedStoryboardIds.value.length === 1 ? '已上传并指派到分镜' : '已上传并加入画布',
-      resultUrl: assetDisplayUrl(asset),
-      resultType: normalizePickedAssetType(asset),
-      savedAssetId: projectAssetId(asset),
-      savedAssetName: asset.name || file.name || '上传素材',
-      savedAssetUrl: assetDisplayUrl(asset),
-      retryStep: 'library',
-      retryLabel: '重新指派素材',
-      autoClear: false,
-    })
+    if (assignResult.attempted && !assignResult.ok) {
+      const message = assignResult.message || '素材已加入画布，但未指派到分镜'
+      nodeStatus.fail(nodeId, {
+        ...canvasAssetAttachFailurePayload(asset, assignResult.storyboardId, {
+          message,
+          errorDetail: message,
+          retryStep: 'library',
+          retryLabel: '重新指派素材',
+          autoClear: false,
+        }),
+      })
+    } else {
+      nodeStatus.success(nodeId, {
+        ...canvasAssetAttachStatusPayload(assignResult.asset || asset, assignResult.storyboardId, {
+          message: assignResult.attempted ? '已上传并指派到分镜' : '已上传并加入画布',
+          savedAssetName: asset.name || file.name || '上传素材',
+          retryLabel: '重新指派素材',
+          autoClear: false,
+        }),
+      })
+    }
   }
   return asset
 }
@@ -2411,21 +2436,29 @@ async function createCanvasProjectAssetFromUrl(url, flowPosition = null) {
     metadata: { source: 'canvas_context_paste' },
   })
   const nodeId = await placeProjectAssetNode(asset, flowPosition)
-  if (selectedStoryboardIds.value.length === 1) {
-    await assignProjectAssetToSelectedStoryboard(asset)
-  }
+  const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
   if (nodeId) {
-    nodeStatus.success(nodeId, {
-      message: selectedStoryboardIds.value.length === 1 ? '已粘贴并指派到分镜' : '已粘贴素材到画布',
-      resultUrl: assetDisplayUrl(asset),
-      resultType: normalizePickedAssetType(asset),
-      savedAssetId: projectAssetId(asset),
-      savedAssetName: asset.name || '粘贴素材',
-      savedAssetUrl: assetDisplayUrl(asset),
-      retryStep: 'library',
-      retryLabel: '重新指派素材',
-      autoClear: false,
-    })
+    if (assignResult.attempted && !assignResult.ok) {
+      const message = assignResult.message || '素材已加入画布，但未指派到分镜'
+      nodeStatus.fail(nodeId, {
+        ...canvasAssetAttachFailurePayload(asset, assignResult.storyboardId, {
+          message,
+          errorDetail: message,
+          retryStep: 'library',
+          retryLabel: '重新指派素材',
+          autoClear: false,
+        }),
+      })
+    } else {
+      nodeStatus.success(nodeId, {
+        ...canvasAssetAttachStatusPayload(assignResult.asset || asset, assignResult.storyboardId, {
+          message: assignResult.attempted ? '已粘贴并指派到分镜' : '已粘贴素材到画布',
+          savedAssetName: asset.name || '粘贴素材',
+          retryLabel: '重新指派素材',
+          autoClear: false,
+        }),
+      })
+    }
   }
 }
 

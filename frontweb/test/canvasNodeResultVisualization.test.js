@@ -764,6 +764,20 @@ test('项目素材节点可直接指派到当前选中分镜', () => {
   assert.match(contextMenuSource, /指派到选中分镜/)
 })
 
+test('上传和粘贴素材自动指派失败会保留失败重试状态', () => {
+  assert.match(canvasSource, /async function autoAssignCanvasAssetToSelectedStoryboard\(asset\)/)
+  assert.match(canvasSource, /if \(selectedIds\.length !== 1\) return \{ attempted: false \}/)
+  assert.match(canvasSource, /assignProjectAssetToSelectedStoryboard\(asset, \{ silent: true, returnDetail: true, storyboardId \}\)/)
+  assert.match(canvasSource, /return \{[\s\S]*attempted: true,[\s\S]*ok: false,[\s\S]*message: error\?\.message \|\| '素材指派失败'/)
+  assert.match(canvasSource, /const assignResult = await autoAssignCanvasAssetToSelectedStoryboard\(asset\)/)
+  assert.match(canvasSource, /if \(assignResult\.attempted && !assignResult\.ok\) \{[\s\S]*nodeStatus\.fail\(nodeId, \{[\s\S]*canvasAssetAttachFailurePayload\(asset, assignResult\.storyboardId/)
+  assert.match(canvasSource, /message = assignResult\.message \|\| '素材已加入画布，但未指派到分镜'/)
+  assert.match(canvasSource, /retryLabel: '重新指派素材'/)
+  assert.match(canvasSource, /canvasAssetAttachStatusPayload\(assignResult\.asset \|\| asset, assignResult\.storyboardId/)
+  assert.match(canvasSource, /message: assignResult\.attempted \? '已上传并指派到分镜' : '已上传并加入画布'/)
+  assert.match(canvasSource, /message: assignResult\.attempted \? '已粘贴并指派到分镜' : '已粘贴素材到画布'/)
+})
+
 test('素材库资产化失败会落画布失败节点并支持重新选择', () => {
   assert.match(canvasSource, /const canvasAssetPickerRetryNodeId = ref\(''\)/)
   assert.match(canvasSource, /const canvasAssetFailureNodes = ref\(\[\]\)/)
