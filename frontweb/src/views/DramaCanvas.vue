@@ -1415,6 +1415,18 @@ function suppressPaneClick(ms = 350) {
 }
 
 function screenToFlowPosition(clientX, clientY) {
+  const api = canvasFlowApi.value
+  const viewport = api?.getViewport?.()
+  if (viewport) {
+    currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+  }
+  const projectScreenPosition = api?.screenToFlowPosition || api?.project
+  if (typeof projectScreenPosition === 'function') {
+    const flowPosition = projectScreenPosition({ x: clientX, y: clientY })
+    if (Number.isFinite(flowPosition?.x) && Number.isFinite(flowPosition?.y)) {
+      return { x: flowPosition.x, y: flowPosition.y }
+    }
+  }
   const el = canvasMainRef.value
   if (!el) return null
   const rect = el.getBoundingClientRect()

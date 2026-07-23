@@ -7,11 +7,11 @@ import { onMounted, onUnmounted } from 'vue'
 import { useVueFlow } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
-const { fitView, getViewport, zoomIn, zoomOut } = useVueFlow()
+const { fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project } = useVueFlow()
 const ctx = useCanvasContext()
 
 onMounted(() => {
-  ctx?.registerCanvasFlowApi?.({ fitView, getViewport, zoomIn, zoomOut })
+  ctx?.registerCanvasFlowApi?.({ fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project })
 })
 
 onUnmounted(() => {

@@ -7,6 +7,7 @@ const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanva
 const toolbarSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFloatingToolbar.vue', import.meta.url)), 'utf8')
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
 const addButtonSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAddButtonNode.vue', import.meta.url)), 'utf8')
+const alignerSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFlowAligner.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
@@ -78,6 +79,17 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
   assert.match(canvasSource, /contextMenuFlowPos\.value = flowPos/)
   assert.match(canvasSource, /pendingFlowPosition\.value = flowPosition/)
   assert.match(canvasSource, /openCreateDialog\(type, flowPosition\)/)
+})
+
+test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
+  assert.match(alignerSource, /const \{ fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(canvasSource, /const api = canvasFlowApi\.value/)
+  assert.match(canvasSource, /const viewport = api\?\.getViewport\?\.\(\)/)
+  assert.match(canvasSource, /currentViewport\.value = \{ x: viewport\.x, y: viewport\.y, zoom: viewport\.zoom \}/)
+  assert.match(canvasSource, /const projectScreenPosition = api\?\.screenToFlowPosition \|\| api\?\.project/)
+  assert.match(canvasSource, /const flowPosition = projectScreenPosition\(\{ x: clientX, y: clientY \}\)/)
+  assert.match(canvasSource, /Number\.isFinite\(flowPosition\?\.x\) && Number\.isFinite\(flowPosition\?\.y\)/)
 })
 
 test('画布加号节点新建内容时沿用加号所在画布落点', () => {
