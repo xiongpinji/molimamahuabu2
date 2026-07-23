@@ -3658,6 +3658,11 @@ async function onContextMenuSelect(type) {
     openCanvasAssetLibrary(flowPosition)
     return
   }
+  if (type === 'open-director-stage') {
+    closeContextMenu()
+    openDirectorStage()
+    return
+  }
   if (type === 'upload-media') {
     closeContextMenu()
     openCanvasUpload(flowPosition)

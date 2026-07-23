@@ -71,6 +71,7 @@ const addGroups = [
     items: [
       { key: 'script', type: 'focus-script', label: '故事脚本', hint: '定位脚本节点', icon: List },
       { key: 'storyboard', type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
+      { key: 'director-stage', type: 'open-director-stage', label: '3D 导演台', hint: '机位与角色调度', icon: VideoPlay },
     ],
   },
   {
