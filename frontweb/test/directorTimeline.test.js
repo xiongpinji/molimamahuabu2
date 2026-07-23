@@ -13,8 +13,10 @@ import {
   interpolateMotionTransform,
   normalizeDirectorTimeline,
   proportionalScaleFromAxis,
+  removeActionClip,
   removeDirectorObject,
   upsertMotionKeyframe,
+  updateActionClip,
   updateDirectorObject,
 } from '../src/utils/directorTimeline.js'
 import { buildCanvasLayoutPayload } from '../src/utils/canvasLayout.js'
@@ -70,6 +72,34 @@ test('镜头和动作片段可保存后重新标准化恢复', () => {
     start: 4,
     duration: 1.5,
   })
+})
+
+test('动作片段可修改动作、开始时间和时长后删除', () => {
+  const original = appendActionClip(
+    createDirectorTimeline(characters),
+    '1',
+    'Run',
+    { start: 1, duration: 2 },
+  )
+  const clipId = original.tracks.find((track) => track.characterId === '1').clips.at(-1).id
+
+  const updated = updateActionClip(original, clipId, {
+    action: 'Wave',
+    start: 2.5,
+    duration: 1.25,
+  })
+
+  assert.deepEqual(updated.tracks.find((track) => track.characterId === '1').clips.at(-1), {
+    id: clipId,
+    characterId: '1',
+    action: 'Wave',
+    start: 2.5,
+    duration: 1.25,
+  })
+  assert.equal(original.tracks.find((track) => track.characterId === '1').clips.at(-1).action, 'Run')
+
+  const removed = removeActionClip(updated, clipId)
+  assert.equal(removed.tracks.flatMap((track) => track.clips).some((clip) => clip.id === clipId), false)
 })
 
 test('可按时间找到活动镜头和角色动作片段', () => {

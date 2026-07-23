@@ -184,6 +184,61 @@ test('DR-005 捕获机位后切走返回保持位置和方向且复制不丢失'
   expect(savedTimelines.at(-1).cameras.at(-1).target).toEqual(captured.target)
 })
 
+test('动作片段可编辑、保存、刷新恢复并删除', async ({ page }) => {
+  let persistedTimeline = {
+    version: 2,
+    sequence: { duration: 4, fps: 24 },
+    shots: [{ id: 'clip-shot', name: '动作验收镜头', camera: 'director', transition: 'cut', start: 0, duration: 4 }],
+    objects: [],
+    cameras: [],
+    tracks: [{
+      id: 'character-a-track',
+      characterId: 'character-a',
+      clips: [{ id: 'editable-clip', characterId: 'character-a', action: 'Run', start: 0.5, duration: 2 }],
+    }],
+    characterAssets: {},
+    motionTracks: [],
+  }
+  await page.route('**/api/v1/dramas/3', async (route) => {
+    await fulfillMockDrama(route, persistedTimeline)
+  })
+  await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
+    persistedTimeline = route.request().postDataJSON().canvas_layout.director_timeline
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+  })
+
+  await page.goto('/film/3/canvas')
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByRole('button', { name: '角色A Run 动作片段' }).click()
+  await page.getByLabel('动作片段动作').selectOption('Wave')
+  await expect.poll(() => persistedTimeline.tracks[0].clips[0].action).toBe('Wave')
+  await page.getByLabel('动作片段开始时间').fill('1.5')
+  await page.getByLabel('动作片段开始时间').press('Tab')
+  await expect.poll(() => persistedTimeline.tracks[0].clips[0].start).toBe(1.5)
+  await page.getByLabel('动作片段时长').fill('0.75')
+  await page.getByLabel('动作片段时长').press('Tab')
+
+  await expect.poll(() => persistedTimeline.tracks[0].clips[0]).toMatchObject({
+    id: 'editable-clip',
+    action: 'Wave',
+    start: 1.5,
+    duration: 0.75,
+  })
+
+  await page.reload()
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByRole('button', { name: '角色A Wave 动作片段' }).click()
+  await expect(page.getByLabel('动作片段动作')).toHaveValue('Wave')
+  await expect(page.getByLabel('动作片段开始时间')).toHaveValue('1.5')
+  await expect(page.getByLabel('动作片段时长')).toHaveValue('0.75')
+
+  await page.getByRole('button', { name: '删除动作片段' }).click()
+  await expect.poll(() => persistedTimeline.tracks.flatMap((track) => track.clips).some((clip) => clip.id === 'editable-clip')).toBe(false)
+  await expect(page.getByRole('button', { name: '角色A Wave 动作片段' })).toHaveCount(0)
+})
+
 test('DR-004 Shift 等比缩放与变换数值写入统一保存链', async ({ page }) => {
   const savedTimelines = []
   await page.route('**/api/v1/dramas/3', async (route) => {

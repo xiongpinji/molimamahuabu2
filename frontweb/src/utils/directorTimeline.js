@@ -387,6 +387,30 @@ export function appendActionClip(state, characterId, action = 'Idle', patch = {}
   return normalizeDirectorTimeline({ ...current, tracks })
 }
 
+export function updateActionClip(state, clipId, patch = {}) {
+  const current = normalizeDirectorTimeline(state)
+  const normalizedClipId = String(clipId || '')
+  const tracks = current.tracks.map((track) => ({
+    ...track,
+    clips: track.clips.map((clip) => clip.id === normalizedClipId ? {
+      ...clip,
+      action: patch.action ?? clip.action,
+      start: patch.start ?? clip.start,
+      duration: patch.duration ?? clip.duration,
+    } : clip),
+  }))
+  return normalizeDirectorTimeline({ ...current, tracks })
+}
+
+export function removeActionClip(state, clipId) {
+  const current = normalizeDirectorTimeline(state)
+  const normalizedClipId = String(clipId || '')
+  const tracks = current.tracks
+    .map((track) => ({ ...track, clips: track.clips.filter((clip) => clip.id !== normalizedClipId) }))
+    .filter((track) => track.clips.length)
+  return normalizeDirectorTimeline({ ...current, tracks })
+}
+
 export function appendDirectorObject(state, type = 'box', patch = {}) {
   const current = normalizeDirectorTimeline(state)
   const object = {

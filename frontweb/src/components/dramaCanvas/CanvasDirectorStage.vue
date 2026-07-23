@@ -152,6 +152,18 @@
           <div v-else class="stage-empty">先创建角色，再编排动作</div>
         </section>
 
+        <section v-if="selectedActionClip" class="stage-section action-clip-editor">
+          <div class="stage-section__title">动作片段</div>
+          <label>动作
+            <select :value="selectedActionClip.action" aria-label="动作片段动作" @change="updateSelectedActionClip('action', $event.target.value)">
+              <option v-for="action in ACTION_LIBRARY" :key="`clip-${action}`" :value="action">{{ action }}</option>
+            </select>
+          </label>
+          <label>开始时间（秒）<input type="number" min="0" step="0.25" :value="selectedActionClip.start" aria-label="动作片段开始时间" @change="updateSelectedActionClip('start', $event.target.value)" /></label>
+          <label>时长（秒）<input type="number" min="0.25" step="0.25" :value="selectedActionClip.duration" aria-label="动作片段时长" @change="updateSelectedActionClip('duration', $event.target.value)" /></label>
+          <button type="button" class="danger-button" @click="removeSelectedActionClip">删除动作片段</button>
+        </section>
+
         <section v-if="selectedCharacter" class="stage-section resource-editor">
           <div class="stage-section__title">真实模型与动作资源</div>
           <div class="resource-character">当前角色：{{ selectedCharacter.name }}</div>
@@ -291,8 +303,10 @@
                 :key="clip.id"
                 type="button"
                 class="timeline-block timeline-action"
+                :class="{ selected: selectedActionClipId === clip.id }"
                 :style="blockStyle(clip)"
-                @click="setCurrentTime(clip.start)"
+                :aria-label="`${characterName(track.characterId)} ${clip.action} 动作片段`"
+                @click="selectActionClip(track, clip)"
               >
                 <strong>{{ clip.action }}</strong>
                 <small>{{ formatSeconds(clip.duration) }}</small>
@@ -505,9 +519,11 @@ import {
   findActiveShot,
   normalizeDirectorTimeline,
   proportionalScaleFromAxis,
+  removeActionClip,
   removeDirectorObject,
   interpolateMotionTransform,
   upsertMotionKeyframe,
+  updateActionClip,
   updateDirectorObject,
 } from '@/utils/directorTimeline'
 
@@ -615,6 +631,7 @@ const playing = ref(false)
 const dirty = ref(false)
 const selectedShotId = ref('')
 const selectedCharacterId = ref('')
+const selectedActionClipId = ref('')
 const actionToAdd = ref('Idle')
 const timeline = ref(createDirectorTimeline([]))
 const exporting = ref(false)
@@ -669,6 +686,7 @@ const shots = computed(() => timeline.value.shots)
 const duration = computed(() => timeline.value.sequence.duration || 0.25)
 const currentTime = computed(() => timeline.value.sequence.currentTime)
 const selectedShot = computed(() => shots.value.find((shot) => shot.id === selectedShotId.value) || shots.value[0] || null)
+const selectedActionClip = computed(() => timeline.value.tracks.flatMap((track) => track.clips).find((clip) => clip.id === selectedActionClipId.value) || null)
 const selectedCharacter = computed(() => characterEntries.value.find((character) => character.id === selectedCharacterId.value) || characterEntries.value[0] || null)
 const selectedCharacterAsset = computed(() => timeline.value.characterAssets?.[selectedCharacter.value?.id] || { modelUrl: '', scale: 1, actions: {} })
 const proceduralCharacterIds = ref(new Set())
@@ -1147,6 +1165,7 @@ function applyTimelineState(nextState, { emitChange = true } = {}) {
   if (!selectedCharacterId.value || !characterEntries.value.some((character) => character.id === selectedCharacterId.value)) {
     selectedCharacterId.value = characterEntries.value[0]?.id || ''
   }
+  if (selectedActionClipId.value && !selectedActionClip.value) selectedActionClipId.value = ''
   dirty.value = false
   if (emitChange) emit('state-change', cloneTimeline(timeline.value))
   applySceneEnvironment()
@@ -1575,7 +1594,29 @@ function updateSelectedShot(field, value) {
 function addActionClip() {
   if (!selectedCharacterId.value) return
   const next = appendActionClip(timeline.value, selectedCharacterId.value, actionToAdd.value, { start: currentTime.value })
+  selectedActionClipId.value = next.tracks.find((track) => track.characterId === selectedCharacterId.value)?.clips.at(-1)?.id || ''
   mutateTimeline(next)
+}
+
+function selectActionClip(track, clip) {
+  if (!track || !clip) return
+  selectedCharacterId.value = track.characterId
+  selectedActionClipId.value = clip.id
+  actionToAdd.value = clip.action
+  setCurrentTime(clip.start)
+}
+
+function updateSelectedActionClip(field, value) {
+  if (!selectedActionClip.value) return
+  const normalized = field === 'action' ? String(value || '') : Number(value)
+  mutateTimeline(updateActionClip(timeline.value, selectedActionClip.value.id, { [field]: normalized }))
+  if (field === 'action') actionToAdd.value = normalized
+}
+
+function removeSelectedActionClip() {
+  if (!selectedActionClip.value) return
+  mutateTimeline(removeActionClip(timeline.value, selectedActionClip.value.id))
+  selectedActionClipId.value = ''
 }
 
 function setCurrentTime(value) {
