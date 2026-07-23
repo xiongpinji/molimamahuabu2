@@ -102,6 +102,7 @@ const nodeGroups = [
       { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
       { type: 'open-node-production', label: '进入制作页', hint: '等同双击节点', icon: FullScreen },
       { type: 'preview-node-video', label: '预览视频', hint: '打开成片', icon: View },
+      { type: 'duplicate-storyboard-node', label: '复制分镜', hint: '克隆到旁边', icon: Document },
     ],
   },
   {

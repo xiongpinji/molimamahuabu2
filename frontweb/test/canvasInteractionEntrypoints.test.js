@@ -301,6 +301,25 @@ test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(canvasSource, /type === 'insert-downstream-storyboard'[\s\S]*await insertDownstreamStoryboard\(node\)/)
 })
 
+test('右键分镜节点支持克隆到旁边', () => {
+  assert.match(contextMenuSource, /type: 'duplicate-storyboard-node'/)
+  assert.match(contextMenuSource, /复制分镜/)
+  assert.match(contextMenuSource, /克隆到旁边/)
+  assert.match(canvasSource, /actions\.push\('duplicate-storyboard-node'\)/)
+  assert.match(canvasSource, /function cloneStoryboardCreatePayload\(sourceStoryboard, episodeId, storyboardNumber\)/)
+  assert.match(canvasSource, /title: `\$\{sourceStoryboard\?\.title \|\| sourceStoryboard\?\.shot_title \|\| `分镜 \$\{storyboardNumber\}`\} 副本`/)
+  assert.match(canvasSource, /image_prompt: sourceStoryboard\?\.image_prompt \|\| ''/)
+  assert.match(canvasSource, /video_prompt: sourceStoryboard\?\.video_prompt \|\| ''/)
+  assert.match(canvasSource, /characters: sourceStoryboard\?\.characters \|\| \[\]/)
+  assert.match(canvasSource, /async function duplicateStoryboardNode\(node\)/)
+  assert.match(canvasSource, /const created = await storyboardsAPI\.create\(cloneStoryboardCreatePayload\(sourceStoryboard, episodeId, maxNum \+ 1\)\)/)
+  assert.match(canvasSource, /\[targetNodeId\]: \{ x: sourcePosition\.x \+ 56, y: sourcePosition\.y \+ 56 \}/)
+  assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
+  assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
+  assert.match(canvasSource, /已复制分镜到画布/)
+  assert.match(canvasSource, /type === 'duplicate-storyboard-node'[\s\S]*await duplicateStoryboardNode\(node\)/)
+})
+
 test('右键分镜节点可快速选中其所在工作流', () => {
   assert.match(contextMenuSource, /type: 'select-node-workflow'/)
   assert.match(contextMenuSource, /选中所在工作流/)

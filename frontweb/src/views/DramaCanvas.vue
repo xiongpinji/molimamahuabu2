@@ -1582,6 +1582,7 @@ function canvasNodeActions(node) {
     actions.push('focus-upstream', 'focus-downstream-video')
     actions.push('append-downstream-storyboard')
     if (node.type === 'canvasStoryboard') {
+      actions.push('duplicate-storyboard-node')
       actions.push('insert-downstream-storyboard')
       if (workflowGroupForNode(node)) actions.push('select-node-workflow', 'remove-node-workflow')
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
@@ -1884,6 +1885,58 @@ async function insertDownstreamStoryboard(node) {
   await refreshCanvas(false)
   await focusCanvasNode(targetNodeId)
   ElMessage.success('已插入下游分镜并重连')
+}
+
+function cloneStoryboardCreatePayload(sourceStoryboard, episodeId, storyboardNumber) {
+  return {
+    episode_id: episodeId,
+    scene_id: sourceStoryboard?.scene_id ?? null,
+    storyboard_number: storyboardNumber,
+    title: `${sourceStoryboard?.title || sourceStoryboard?.shot_title || `分镜 ${storyboardNumber}`} 副本`,
+    description: sourceStoryboard?.description || '',
+    location: sourceStoryboard?.location || '',
+    time: sourceStoryboard?.time || '',
+    duration: sourceStoryboard?.duration || 0,
+    dialogue: sourceStoryboard?.dialogue || '',
+    action: sourceStoryboard?.action || '',
+    result: sourceStoryboard?.result || '',
+    atmosphere: sourceStoryboard?.atmosphere || '',
+    image_prompt: sourceStoryboard?.image_prompt || '',
+    video_prompt: sourceStoryboard?.video_prompt || '',
+    characters: sourceStoryboard?.characters || [],
+  }
+}
+
+async function duplicateStoryboardNode(node) {
+  const sourceStoryboard = storyboardForNode(node)
+  const episodeId = sourceStoryboard?.episode_id || node?.data?.episodeId || filterEpisodeId.value
+  if (!sourceStoryboard?.id || !episodeId) {
+    ElMessage.warning('该节点不是可复制的分镜')
+    return
+  }
+  const episode = (drama.value?.episodes || []).find((ep) => Number(ep.id) === Number(episodeId))
+  const boards = episode?.storyboards || []
+  const maxNum = boards.reduce((max, sb) => Math.max(max, Number(sb.storyboard_number || sb.shot_number || 0)), 0)
+  const created = await storyboardsAPI.create(cloneStoryboardCreatePayload(sourceStoryboard, episodeId, maxNum + 1))
+  const storyboard = created?.data ?? created
+  const storyboardId = storyboard?.id ?? storyboard?.storyboard?.id
+  if (!storyboardId) throw new Error('复制分镜失败：未返回分镜 ID')
+
+  const targetNodeId = `sb:${storyboardId}`
+  const sourcePosition = node.position || { x: 0, y: 0 }
+  layoutCache.value = {
+    ...(layoutCache.value || { version: 1 }),
+    nodes: {
+      ...(layoutCache.value?.nodes || {}),
+      [targetNodeId]: { x: sourcePosition.x + 56, y: sourcePosition.y + 56 },
+    },
+  }
+  await persistCanvasState({ layoutOnly: true })
+  if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
+  await refreshCanvas(false)
+  await focusCanvasNode(targetNodeId)
+  ElMessage.success('已复制分镜到画布')
+  return targetNodeId
 }
 
 async function copyNodeReference(node) {
@@ -3326,6 +3379,8 @@ async function runNodeMenuAction(type, node) {
     await runCanvasNodeStep(node, 'audio')
   } else if (type === 'preview-node-video') {
     previewNodeVideo(node)
+  } else if (type === 'duplicate-storyboard-node') {
+    await duplicateStoryboardNode(node)
   } else if (type === 'focus-upstream') {
     await focusUpstreamAsset(node)
   } else if (type === 'focus-downstream-video') {
