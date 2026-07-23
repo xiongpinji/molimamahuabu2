@@ -262,6 +262,7 @@ test('画布支持手动节点连线并持久化到布局', () => {
   assert.match(canvasSource, /String\(change\.id \|\| ''\)\.startsWith\('manual:'\)/)
   assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
   assert.match(canvasSource, /allGraphEdges\.value = allGraphEdges\.value\.filter\(\(edge\) => !removed\.has\(String\(edge\.id\)\)\)/)
+  assert.match(canvasSource, /ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /scheduleLayoutSave\(\)/)
   assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value\s*\)/)
 })

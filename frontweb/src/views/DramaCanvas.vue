@@ -3900,6 +3900,7 @@ function onEdgesChange(changes = []) {
   allGraphEdges.value = allGraphEdges.value.filter((edge) => !removed.has(String(edge.id)))
   applyVirtualizedGraph()
   scheduleLayoutSave()
+  ElMessage.success('已删除画布连线')
 }
 
 function selectStoryboard(storyboardId, event) {
