@@ -46,14 +46,15 @@ function routes(db, log, cfg) {
         });
         if (storyboard_id && result.local_path) {
           const now = new Date().toISOString();
+          const selectedModel = selectedConfig?.default_model || null;
           try {
             if (kind === 'narration') {
-              db.prepare('UPDATE storyboards SET narration_audio_local_path = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, now, Number(storyboard_id)
+              db.prepare('UPDATE storyboards SET narration_audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
+                result.local_path, selectedModel, now, Number(storyboard_id)
               );
             } else {
-              db.prepare('UPDATE storyboards SET audio_local_path = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, now, Number(storyboard_id)
+              db.prepare('UPDATE storyboards SET audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
+                result.local_path, selectedModel, now, Number(storyboard_id)
               );
             }
           } catch (_) {}

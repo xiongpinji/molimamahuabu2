@@ -65,6 +65,7 @@ test('画布音频节点按用户选择的已配置 TTS 模型合成并写回分
       id INTEGER PRIMARY KEY,
       dialogue TEXT,
       audio_local_path TEXT,
+      audio_model TEXT,
       updated_at TEXT,
       deleted_at TEXT
     );
@@ -108,6 +109,10 @@ test('画布音频节点按用户选择的已配置 TTS 模型合成并写回分
     db.prepare('SELECT audio_local_path FROM storyboards WHERE id = 1').get().audio_local_path,
     res.body.data.local_path,
   );
+  assert.equal(
+    db.prepare('SELECT audio_model FROM storyboards WHERE id = 1').get().audio_model,
+    'tts-canvas-b',
+  );
 
   for (const model of ['tts-unknown', 'tts-disabled']) {
     const rejected = createResponse();
@@ -126,6 +131,10 @@ test('画布音频节点按用户选择的已配置 TTS 模型合成并写回分
   assert.equal(receivedBodies.length, 1);
   assert.equal(
     db.prepare('SELECT audio_local_path FROM storyboards WHERE id = 2').get().audio_local_path,
+    null,
+  );
+  assert.equal(
+    db.prepare('SELECT audio_model FROM storyboards WHERE id = 2').get().audio_model,
     null,
   );
 });
