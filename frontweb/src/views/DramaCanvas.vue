@@ -435,6 +435,7 @@ import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
+import { characterAPI } from '@/api/characters'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
 import { useTheme } from '@/composables/useTheme'
@@ -2120,6 +2121,38 @@ function selectedStoryboardMediaAssetPayload(asset) {
   return { type, url, localPath }
 }
 
+function storyboardCharacterIds(storyboard) {
+  return [...new Set((storyboard?.characters || [])
+    .map((item) => Number(item?.id ?? item))
+    .filter(Number.isFinite))]
+}
+
+function voiceCatalogBindId(asset) {
+  const metadata = asset?.metadata || {}
+  const voiceCatalog = asset?.voice_catalog || metadata.voice_catalog || {}
+  return asset?.voice_catalog_id
+    || metadata.voice_catalog_id
+    || voiceCatalog.id
+    || voiceCatalog.voice_id
+    || (asset?.category === 'voice' && projectAssetId(asset) ? `asset-${projectAssetId(asset)}` : '')
+}
+
+async function bindVoiceAssetToSingleStoryboardCharacter(asset, storyboardId, { silent = false } = {}) {
+  if (normalizePickedAssetType(asset) !== 'audio') return null
+  const bindId = voiceCatalogBindId(asset)
+  if (!bindId) return null
+  const storyboard = findStoryboardInDrama(drama.value, storyboardId)?.storyboard
+  const characterIds = storyboardCharacterIds(storyboard)
+  if (characterIds.length !== 1) return null
+  try {
+    await characterAPI.bindVoiceCatalog(characterIds[0], bindId, { silentError: true })
+    return { bound: true, characterId: characterIds[0], voiceCatalogId: bindId }
+  } catch (error) {
+    if (!silent) ElMessage.warning(error?.message || '音色已设为分镜音频，但绑定角色音色失败')
+    return { bound: false, characterId: characterIds[0], voiceCatalogId: bindId, error: error?.message || '绑定角色音色失败' }
+  }
+}
+
 function mediaTypeFromFile(file) {
   const mime = String(file?.type || '').toLowerCase()
   if (mime.startsWith('video/')) return 'video'
@@ -2619,7 +2652,8 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
       audio_local_path: mediaPayload.localPath || undefined,
       audio_url: mediaPayload.localPath ? undefined : mediaPayload.url,
     })
-    resultMessage = '已指派素材并设为分镜音频'
+    const voiceBind = await bindVoiceAssetToSingleStoryboardCharacter(assignedAsset, storyboardId, { silent })
+    resultMessage = voiceBind?.bound ? '已指派音色并绑定到分镜角色' : '已指派素材并设为分镜音频'
     await refreshDrama(true)
   } else {
     await loadProjectImageAssets()
