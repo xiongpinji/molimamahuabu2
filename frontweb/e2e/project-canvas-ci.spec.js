@@ -31,6 +31,9 @@ const drama = {
           characters: [11],
           scene_id: 21,
           prop_ids: [31],
+          image_url: '/static/e2e-storyboard.png',
+          video_url: '/static/e2e-storyboard.mp4',
+          audio_url: '/static/e2e-storyboard.mp3',
         },
       ],
     },
@@ -43,6 +46,15 @@ function apiData(data) {
     contentType: 'application/json',
     body: JSON.stringify({ success: true, data }),
   }
+}
+
+async function seedNodeStatus(page, statusMap) {
+  await page.addInitScript(({ key, value }) => {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  }, {
+    key: 'moli_canvas_node_status:3',
+    value: statusMap,
+  })
 }
 
 test.beforeEach(async ({ page }) => {
@@ -125,4 +137,96 @@ test('项目画布支持右键添加入口、Ctrl 缩放、Space 平移和快捷
 
   await page.keyboard.press('Control+a')
   await expect(page.locator('.vue-flow__node[data-id="sb:1001"]')).toHaveClass(/selected/)
+})
+
+test('项目画布恢复图片、视频和音频结果并提供结果复用入口', async ({ page }) => {
+  await seedNodeStatus(page, {
+    'sbimg:1001': {
+      step: 'success',
+      message: '图片已生成',
+      resultUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="18"><rect width="32" height="18" fill="%23818cf8"/></svg>',
+      resultType: 'image',
+      promptText: '雨夜车站中的小茉',
+      storyboardId: 1001,
+      dramaId: 3,
+      at: Date.now(),
+    },
+    'sbvid:1001': {
+      step: 'success',
+      message: '视频已生成',
+      resultUrl: 'data:video/mp4;base64,AAAA',
+      resultType: 'video',
+      storyboardId: 1001,
+      dramaId: 3,
+      at: Date.now(),
+    },
+    'sbaud:1001:dialogue': {
+      step: 'success',
+      message: '音频已生成',
+      resultUrl: 'data:audio/mpeg;base64,AAAA',
+      resultType: 'audio',
+      storyboardId: 1001,
+      dramaId: 3,
+      at: Date.now(),
+    },
+  })
+
+  await page.goto('/film/3/canvas')
+
+  const imageNode = page.locator('.vue-flow__node[data-id="sbimg:1001"]')
+  const videoNode = page.locator('.vue-flow__node[data-id="sbvid:1001"]')
+  const audioNode = page.locator('.vue-flow__node[data-id="sbaud:1001:dialogue"]')
+  await expect(imageNode.locator('img[alt="节点生成结果预览"]')).toBeAttached()
+  await expect(videoNode.locator('.node-status-overlay video')).toBeAttached()
+  await expect(audioNode.locator('.node-status-overlay audio')).toBeAttached()
+
+  const queue = page.getByLabel('画布节点运行队列')
+  await expect(queue).toBeVisible()
+  await expect(queue.locator('.queue-preview-image img[alt="队列结果预览"]')).toBeVisible()
+  await expect(queue.locator('.queue-preview-video video')).toBeVisible()
+  await expect(queue.locator('.queue-preview-audio audio')).toBeVisible()
+
+  await imageNode.click({ button: 'right', position: { x: 12, y: 12 } })
+  const menu = page.getByRole('menu', { name: '节点操作' })
+  await expect(menu).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /打开结果/ })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /复制结果链接/ })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /下载结果/ })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /存入素材库/ })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /作为下游参考/ })).toBeVisible()
+})
+
+test('项目画布恢复失败写回并暴露原因与重试入口', async ({ page }) => {
+  await seedNodeStatus(page, {
+    'sb:1001': {
+      step: 'failed',
+      message: '视频供应商任务失败',
+      errorDetail: '供应商返回超时，请重试当前分镜视频。',
+      retryStep: 'video',
+      retryLabel: '重试视频',
+      recoverable: true,
+      storyboardId: 1001,
+      dramaId: 3,
+      at: Date.now(),
+    },
+  })
+
+  await page.goto('/film/3/canvas')
+
+  const storyboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  const failedOverlay = storyboardNode.locator('.node-status-overlay.step-failed')
+  await expect(failedOverlay).toBeVisible()
+  await expect(failedOverlay).toContainText('视频供应商任务失败')
+  await expect(failedOverlay).toContainText('可点击重试继续执行')
+  await expect(failedOverlay.getByRole('button', { name: '复制原因' })).toBeVisible()
+  await expect(failedOverlay.getByRole('button', { name: '重试视频' })).toBeVisible()
+
+  const queue = page.getByLabel('画布节点运行队列')
+  await expect(queue.locator('.run-queue-item.tone-failed')).toContainText('视频供应商任务失败')
+  await expect(queue.locator('.run-queue-item.tone-failed').getByRole('button', { name: '原因' })).toBeVisible()
+  await expect(queue.locator('.run-queue-item.tone-failed').getByRole('button', { name: '重试' })).toBeVisible()
+
+  await storyboardNode.click({ button: 'right', position: { x: 12, y: 12 } })
+  const menu = page.getByRole('menu', { name: '节点操作' })
+  await expect(menu.getByRole('menuitem', { name: /重试失败节点/ })).toBeVisible()
 })
