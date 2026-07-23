@@ -390,6 +390,11 @@ function firstString(...values) {
   return ''
 }
 
+function staticAssetUrl(localPath) {
+  const path = String(localPath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/^static\//, '')
+  return path ? `/static/${path}` : ''
+}
+
 /** 展示/使用地址：优先本地持久路径，规避过期远程 URL */
 function itemUrl(item) {
   if (!item) return ''
@@ -403,7 +408,7 @@ function itemUrl(item) {
     item.voice_local_path,
     item.thumbnail_local_path,
   )
-  if (lp) return '/static/' + String(lp).replace(/^\/+/, '').replace(/^static\//, '')
+  if (lp) return staticAssetUrl(lp)
   return firstString(
     item.url,
     item.asset_url,

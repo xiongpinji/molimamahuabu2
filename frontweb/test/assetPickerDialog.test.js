@@ -127,3 +127,12 @@ test('素材选择弹窗选中素材时输出统一复用字段', () => {
   assert.match(source, /voice_asset_id: voiceCatalog\?\.asset_id \|\| null/)
   assert.match(source, /emit\('pick', normalizePickedAsset\(item\)\)/)
 })
+
+test('素材选择弹窗将本地 Windows 路径标准化为可访问静态地址', () => {
+  assert.match(source, /function staticAssetUrl\(localPath\)/)
+  assert.ok(source.includes("replace(/\\\\/g, '/')"))
+  assert.ok(source.includes("replace(/^\\/+/, '')"))
+  assert.ok(source.includes("replace(/^static\\//, '')"))
+  assert.match(source, /return path \? `\/static\/\$\{path\}` : ''/)
+  assert.match(source, /if \(lp\) return staticAssetUrl\(lp\)/)
+})
