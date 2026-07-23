@@ -1923,6 +1923,8 @@ function mediaTypeFromUrl(url, fallback = 'image') {
 function normalizePickedAssetType(asset) {
   const type = String(asset?.type || '').toLowerCase()
   if (['image', 'video', 'audio'].includes(type)) return type
+  if (['voice', 'tone', 'sound', 'music', 'bgm', 'tts'].includes(type)) return 'audio'
+  if (asset?.source_kind === 'voice_catalog' || asset?.voice_catalog || asset?.voice_catalog_id || asset?.voice_asset_id || asset?.voice_url || asset?.voice_local_path) return 'audio'
   const url = assetDisplayUrl(asset) || assetLocalPath(asset)
   return mediaTypeFromUrl(url, 'image')
 }
