@@ -897,7 +897,7 @@ const runQueueItems = computed(() => {
       elapsedText: formatQueueElapsed(status.at),
       retryStep: isFailed ? (status.retryStep || queueNodeRetryStep(findGraphNode(sourceNodeId))) : '',
       resultUrl: statusResultUrl(status),
-      resultNodeId: status.resultNodeId || '',
+      resultNodeId: status.resultNodeId || resultNodeIdFromStatus(findGraphNode(sourceNodeId), status) || '',
       resultType: status.resultType || '',
       resultLabel: status.resultLabel || '',
       resultSummary: status.resultSummary || '',

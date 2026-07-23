@@ -523,6 +523,7 @@ test('画布节点结果定位和工作流失败状态可恢复重试', () => {
   assert.match(canvasSource, /nodeStatus\.fail\(nodeId, \{[\s\S]*retryStep: status\.retryStep \|\| status\.step/)
   assert.match(canvasSource, /void syncRestoredNodeTasks\(\)/)
   assert.match(canvasSource, /if \(status\?\.resultNodeId\) return status\.resultNodeId/)
+  assert.match(canvasSource, /resultNodeId: status\.resultNodeId \|\| resultNodeIdFromStatus\(findGraphNode\(sourceNodeId\), status\) \|\| ''/)
   assert.match(canvasSource, /resultNodeId,/)
   assert.match(canvasSource, /function failNodeStepStatus\(statusIds, payload\)/)
   assert.match(canvasSource, /statusIds\.forEach\(\(id\) => nodeStatus\.fail\(id, payload\)\)/)
