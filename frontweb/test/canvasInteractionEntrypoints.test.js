@@ -223,13 +223,25 @@ test('右键分镜节点可快速选中其所在工作流', () => {
   assert.match(contextMenuSource, /type: 'select-node-workflow'/)
   assert.match(contextMenuSource, /选中所在工作流/)
   assert.match(contextMenuSource, /框选同组分镜/)
-  assert.match(canvasSource, /if \(workflowGroupForNode\(node\)\) actions\.push\('select-node-workflow'\)/)
+  assert.match(canvasSource, /if \(workflowGroupForNode\(node\)\) actions\.push\('select-node-workflow', 'remove-node-workflow'\)/)
   assert.match(canvasSource, /function workflowGroupForNode\(node\)/)
   assert.match(canvasSource, /\(group\.storyboard_ids \|\| \[\]\)\.map\(Number\)\.includes\(storyboardId\)/)
   assert.match(canvasSource, /function selectWorkflowGroupFromNode\(node\)/)
   assert.match(canvasSource, /selectWorkflowGroup\(group\.id\)/)
   assert.match(canvasSource, /已选中所在工作流/)
   assert.match(canvasSource, /type === 'select-node-workflow'[\s\S]*selectWorkflowGroupFromNode\(node\)/)
+})
+
+test('右键分镜节点可从所在工作流移出', () => {
+  assert.match(contextMenuSource, /type: 'remove-node-workflow'/)
+  assert.match(contextMenuSource, /移出工作流/)
+  assert.match(contextMenuSource, /取消当前分镜分组/)
+  assert.match(canvasSource, /import \{[\s\S]*removeStoryboardFromWorkflowGroup,[\s\S]*\} from '@\/utils\/canvasWorkflow'/)
+  assert.match(canvasSource, /if \(workflowGroupForNode\(node\)\) actions\.push\('select-node-workflow', 'remove-node-workflow'\)/)
+  assert.match(canvasSource, /async function removeNodeFromWorkflowGroup\(node\)/)
+  assert.match(canvasSource, /const nextGroups = removeStoryboardFromWorkflowGroup\(workflowGroups\.value, group\.id, storyboardId\)/)
+  assert.match(canvasSource, /workflowGroups\.value = previousGroups[\s\S]*activeGroupId\.value = previousActiveGroupId[\s\S]*selectedStoryboardIds\.value = previousSelectedIds/)
+  assert.match(canvasSource, /type === 'remove-node-workflow'[\s\S]*await removeNodeFromWorkflowGroup\(node\)/)
 })
 
 test('框选多个分镜后右键节点可直接运行所选分镜', () => {

@@ -61,6 +61,18 @@ export function reorderWorkflowGroup(existingGroups, groupId, storyboardIds) {
   ))
 }
 
+export function removeStoryboardFromWorkflowGroup(existingGroups, groupId, storyboardId) {
+  const id = Number(storyboardId)
+  if (!groupId || !Number.isFinite(id)) return existingGroups || []
+  return (existingGroups || [])
+    .map((group) => (
+      group.id === groupId
+        ? { ...group, storyboard_ids: (group.storyboard_ids || []).map(Number).filter((item) => item !== id) }
+        : group
+    ))
+    .filter((group) => (group.storyboard_ids || []).length)
+}
+
 export function normalizePipeline(pipeline) {
   const allowed = ['image', 'video', 'audio']
   const list = Array.isArray(pipeline) ? pipeline.filter((s) => allowed.includes(s)) : []

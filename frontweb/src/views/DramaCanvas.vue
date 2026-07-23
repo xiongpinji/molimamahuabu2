@@ -470,6 +470,7 @@ import {
   getAdjacentStoryboards,
   normalizePipeline,
   parseWorkflowGroups,
+  removeStoryboardFromWorkflowGroup,
   reorderWorkflowGroup,
   storyboardIdFromNodeId,
   getDramaGenerationOptions,
@@ -1381,7 +1382,7 @@ function canvasNodeActions(node) {
     actions.push('append-downstream-storyboard')
     if (node.type === 'canvasStoryboard') {
       actions.push('insert-downstream-storyboard')
-      if (workflowGroupForNode(node)) actions.push('select-node-workflow')
+      if (workflowGroupForNode(node)) actions.push('select-node-workflow', 'remove-node-workflow')
       actions.push('run-node-image', 'run-node-video', 'run-node-audio', 'preview-node-video')
       actions.push('create-workflow-from-node', 'run-node-workflow')
       if (isSelectedStoryboardNode(node) && selectedStoryboardIds.value.length > 1) actions.push('run-selected-storyboards')
@@ -2740,6 +2741,39 @@ function selectWorkflowGroupFromNode(node) {
   ElMessage.success('已选中所在工作流')
 }
 
+async function removeNodeFromWorkflowGroup(node) {
+  const group = workflowGroupForNode(node)
+  const storyboard = storyboardForNode(node)
+  const storyboardId = Number(storyboard?.id)
+  if (!group || !Number.isFinite(storyboardId)) {
+    ElMessage.warning('该分镜尚未加入工作流')
+    return
+  }
+
+  const previousGroups = workflowGroups.value
+  const previousActiveGroupId = activeGroupId.value
+  const previousSelectedIds = [...selectedStoryboardIds.value]
+  const wasActiveGroup = activeGroupId.value === group.id
+  const nextGroups = removeStoryboardFromWorkflowGroup(workflowGroups.value, group.id, storyboardId)
+  const nextGroup = nextGroups.find((item) => item.id === group.id)
+  workflowGroups.value = nextGroups
+  if (wasActiveGroup) activeGroupId.value = nextGroup?.id || nextGroups[0]?.id || null
+  selectedStoryboardIds.value = selectedStoryboardIds.value.map(Number).filter((id) => id !== storyboardId)
+  rebuildGraph()
+
+  const saved = await persistCanvasState({ groupsOnly: true })
+  if (!saved) {
+    workflowGroups.value = previousGroups
+    activeGroupId.value = previousActiveGroupId
+    selectedStoryboardIds.value = previousSelectedIds
+    rebuildGraph()
+    return
+  }
+  if (activeGroupId.value) selectWorkflowGroup(activeGroupId.value)
+  else applySelectedStoryboardIds(selectedStoryboardIds.value)
+  ElMessage.success(nextGroup ? '已从工作流移出' : '已移出并解散空工作流')
+}
+
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     openNodeConfig(node)
@@ -2795,6 +2829,8 @@ async function runNodeMenuAction(type, node) {
     await createWorkflowFromNode(node)
   } else if (type === 'select-node-workflow') {
     selectWorkflowGroupFromNode(node)
+  } else if (type === 'remove-node-workflow') {
+    await removeNodeFromWorkflowGroup(node)
   } else if (type === 'run-selected-storyboards') {
     await onRunSelectedStoryboards()
   } else if (type === 'run-node-workflow') {
