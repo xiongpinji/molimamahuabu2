@@ -18,6 +18,9 @@
       <video v-else-if="resultPreviewType === 'video'" :src="effectiveResultUrl" muted controls playsinline />
       <audio v-else-if="resultPreviewType === 'audio'" :src="effectiveResultUrl" controls />
     </div>
+    <div v-if="hasTextResultPreview" class="result-preview result-text-preview">
+      <p>{{ textResultPreview }}</p>
+    </div>
     <span v-if="isSuccess" class="success-actions">
       <span v-if="effectiveResultUrl" class="action-group action-group-primary" aria-label="结果操作">
         <button type="button" @click.stop="openResult">打开结果</button>
@@ -214,6 +217,11 @@ const resultReferences = computed(() => {
   return [...new Set(references.map((reference) => String(reference || '').trim()).filter(Boolean))]
 })
 const resultReferencesText = computed(() => resultReferences.value.join('\n'))
+const textResultPreview = computed(() => {
+  if (!['text', 'script'].includes(String(status.value?.resultType || '').toLowerCase())) return ''
+  return status.value?.resultSummary || resultReferencesText.value || status.value?.promptText || ''
+})
+const hasTextResultPreview = computed(() => (isSuccess.value || isFailed.value) && Boolean(textResultPreview.value))
 const actionErrorText = computed(() => {
   if (!isSuccess.value) return ''
   return status.value?.actionError || ''
@@ -759,6 +767,22 @@ onBeforeUnmount(() => {
 .result-preview audio {
   width: 100%;
   height: 28px;
+}
+.result-text-preview {
+  max-height: 96px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(187, 247, 208, 0.18);
+  border-radius: 8px;
+  background: rgba(3, 7, 18, 0.55);
+}
+.result-text-preview p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #dcfce7;
+  font-size: 10px;
+  line-height: 1.45;
 }
 .success-actions {
   display: flex;
