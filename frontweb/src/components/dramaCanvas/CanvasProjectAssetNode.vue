@@ -62,7 +62,7 @@ const props = defineProps({
 })
 const ctx = useCanvasContext()
 const assigning = ref(false)
-const assetType = computed(() => props.data.asset?.type || 'image')
+const assetType = computed(() => normalizeAssetNodeType(props.data.asset))
 const typeLabel = computed(() => ({ image: '图片素材', video: '视频素材', audio: '音频素材' }[assetType.value] || '项目素材'))
 const url = computed(() => assetMediaUrl(props.data.asset))
 const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
@@ -113,6 +113,22 @@ const referenceText = computed(() => {
   const name = asset.name || asset.title || asset.filename || '素材'
   return `@素材(${name}#${id}) ${url.value || asset.local_path || ''}`.trim()
 })
+
+function normalizeAssetNodeType(asset) {
+  const type = String(asset?.type || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  if (['voice', 'tone', 'sound', 'music', 'bgm', 'tts'].includes(type)) return 'audio'
+  if (asset?.source_kind === 'voice_catalog'
+    || asset?.voice_catalog
+    || asset?.voice_catalog_id
+    || asset?.voice_asset_id
+    || asset?.voice_url
+    || asset?.voice_local_path) return 'audio'
+  const target = String(assetMediaUrl(asset) || asset?.url || asset?.local_path || '').toLowerCase().split('?')[0]
+  if (/\.(mp4|webm|mov|m4v)$/.test(target)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(target)) return 'audio'
+  return 'image'
+}
 
 function openAsset() {
   if (!url.value) return
