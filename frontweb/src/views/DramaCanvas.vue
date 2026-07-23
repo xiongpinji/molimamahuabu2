@@ -341,6 +341,8 @@
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
               </button>
+              <button v-if="item.actionError" type="button" @click.stop="copyQueueItemActionError(item)">动作原因</button>
+              <button v-if="item.retryAction" type="button" @click.stop="retryQueueItemAction(item)">{{ item.retryActionLabel || '重试动作' }}</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="canUseQueueItemAsDownstreamReference(item)" type="button" @click.stop="useQueueItemAsDownstreamReference(item)">作为下游参考</button>
@@ -357,6 +359,8 @@
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
               </button>
+              <button v-if="item.actionError" type="button" @click.stop="copyQueueItemActionError(item)">动作原因</button>
+              <button v-if="item.retryAction" type="button" @click.stop="retryQueueItemAction(item)">{{ item.retryActionLabel || '重试动作' }}</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="canUseQueueItemAsDownstreamReference(item)" type="button" @click.stop="useQueueItemAsDownstreamReference(item)">作为下游参考</button>
@@ -929,6 +933,10 @@ const runQueueItems = computed(() => {
       savedAssetLocalPath: status.savedAssetLocalPath || '',
       savedAssetDuration: status.savedAssetDuration ?? null,
       errorDetail: isFailed ? (status.errorDetail || status.detail || status.message || '') : '',
+      actionError: status.actionError || '',
+      retryAction: status.retryAction || '',
+      retryActionLabel: status.retryActionLabel || '',
+      attachedSlot: status.attachedSlot || '',
     })
   }
   for (const node of allGraphNodes.value) {
@@ -999,6 +1007,10 @@ function mergeRunQueueItem(grouped, item) {
   if (current.savedAssetDuration == null && item.savedAssetDuration != null) current.savedAssetDuration = item.savedAssetDuration
   if (!current.retryStep && item.retryStep) current.retryStep = item.retryStep
   if (!current.errorDetail && item.errorDetail) current.errorDetail = item.errorDetail
+  if (!current.actionError && item.actionError) current.actionError = item.actionError
+  if (!current.retryAction && item.retryAction) current.retryAction = item.retryAction
+  if (!current.retryActionLabel && item.retryActionLabel) current.retryActionLabel = item.retryActionLabel
+  if (!current.attachedSlot && item.attachedSlot) current.attachedSlot = item.attachedSlot
   if (queueToneRank(item.tone) > queueToneRank(current.tone)) {
     current.tone = item.tone
     if (item.message) current.message = item.message
@@ -1175,6 +1187,25 @@ async function copyQueueItemError(item) {
   await copyCanvasText(text, '队列失败原因已复制', '队列失败原因（请手动复制）')
 }
 
+async function copyQueueItemActionError(item) {
+  const text = item?.actionError || ''
+  if (!text) {
+    ElMessage.warning('该队列项暂无动作失败原因')
+    return
+  }
+  await copyCanvasText(text, '队列动作失败原因已复制', '队列动作失败原因（请手动复制）')
+}
+
+async function retryQueueItemAction(item) {
+  const node = findGraphNode(item?.nodeId)
+  if (!node) {
+    ElMessage.warning('未找到可重试节点')
+    return
+  }
+  await focusCanvasNode(item.nodeId)
+  await retryNodeFailedAction(node)
+}
+
 function queueItemSavedAsset(item) {
   if (!item?.savedAssetId) return null
   return {
@@ -1346,6 +1377,10 @@ function archivedQueueStatusPayload(item) {
     savedAssetLocalPath: item.savedAssetLocalPath || '',
     savedAssetDuration: item.savedAssetDuration ?? null,
     errorDetail: item.errorDetail || '',
+    actionError: item.actionError || '',
+    retryAction: item.retryAction || '',
+    retryActionLabel: item.retryActionLabel || '',
+    attachedSlot: item.attachedSlot || '',
   }
 }
 
