@@ -332,6 +332,9 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
+              <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
+                {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
+              </button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
@@ -341,6 +344,9 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开上次</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
+              <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
+                {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
+              </button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
@@ -550,6 +556,7 @@ const canvasAssetPickerTargetStoryboardId = ref(null)
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
+const savingQueueAssetKey = ref('')
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
@@ -886,6 +893,15 @@ const runQueueItems = computed(() => {
       resultUrl: statusResultUrl(status),
       resultNodeId: status.resultNodeId || '',
       resultType: status.resultType || '',
+      resultLabel: status.resultLabel || '',
+      resultSummary: status.resultSummary || '',
+      promptText: status.promptText || '',
+      storyboardId: status.storyboardId || storyboardIdFromNodeId(sourceNodeId) || '',
+      model: status.model || '',
+      taskId: status.taskId || '',
+      videoGenerationId: status.videoGenerationId || '',
+      requestPayload: status.requestPayload || null,
+      requestAudit: status.requestAudit || null,
       savedAssetId: status.savedAssetId || '',
       savedAssetName: status.savedAssetName || '',
       savedAssetUrl: status.savedAssetUrl || '',
@@ -944,6 +960,15 @@ function mergeRunQueueItem(grouped, item) {
   if (!current.resultUrl && item.resultUrl) current.resultUrl = item.resultUrl
   if (!current.resultNodeId && item.resultNodeId) current.resultNodeId = item.resultNodeId
   if (!current.resultType && item.resultType) current.resultType = item.resultType
+  if (!current.resultLabel && item.resultLabel) current.resultLabel = item.resultLabel
+  if (!current.resultSummary && item.resultSummary) current.resultSummary = item.resultSummary
+  if (!current.promptText && item.promptText) current.promptText = item.promptText
+  if (!current.storyboardId && item.storyboardId) current.storyboardId = item.storyboardId
+  if (!current.model && item.model) current.model = item.model
+  if (!current.taskId && item.taskId) current.taskId = item.taskId
+  if (!current.videoGenerationId && item.videoGenerationId) current.videoGenerationId = item.videoGenerationId
+  if (!current.requestPayload && item.requestPayload) current.requestPayload = item.requestPayload
+  if (!current.requestAudit && item.requestAudit) current.requestAudit = item.requestAudit
   if (!current.savedAssetId && item.savedAssetId) current.savedAssetId = item.savedAssetId
   if (!current.savedAssetName && item.savedAssetName) current.savedAssetName = item.savedAssetName
   if (!current.savedAssetUrl && item.savedAssetUrl) current.savedAssetUrl = item.savedAssetUrl
@@ -1118,6 +1143,48 @@ async function assignQueueItemAssetToSelectedStoryboard(item) {
     return
   }
   await assignProjectAssetToSelectedStoryboard(asset)
+}
+
+async function saveQueueItemResultAsset(item) {
+  if (!item?.resultUrl) {
+    ElMessage.warning('该队列项暂无可入库结果')
+    return
+  }
+  if (savingQueueAssetKey.value) return
+  savingQueueAssetKey.value = item.key
+  try {
+    const node = findGraphNode(item.nodeId) || { id: item.nodeId, data: { label: item.label } }
+    const storyboardId = item.storyboardId || storyboardIdFromNodeId(item.nodeId) || selectedStoryboardIdForAssetAttach() || null
+    const saved = await saveNodeResultAsset(node, {
+      resultUrl: item.resultUrl,
+      resultType: item.resultType || queueResultPreviewType(item),
+      resultLabel: item.resultLabel || item.label || '队列结果',
+      resultSummary: item.resultSummary || '',
+      model: item.model || '',
+      taskId: item.taskId || '',
+      videoGenerationId: item.videoGenerationId || '',
+      requestPayload: item.requestPayload || null,
+      requestAudit: item.requestAudit || null,
+    }, item.promptText || '', storyboardId)
+    if (!saved?.savedAssetId) throw new Error('队列结果入库失败')
+    const ids = item.statusIds?.length ? item.statusIds : [item.nodeId]
+    ids.filter(Boolean).forEach((id) => {
+      const current = nodeStatus.get(id) || {}
+      nodeStatus.set(id, {
+        ...current,
+        ...saved,
+        actionError: '',
+        retryAction: '',
+        retryActionLabel: '',
+        message: current.message || item.message || '队列结果已存入素材库',
+      })
+    })
+    ElMessage.success('队列结果已存入素材库')
+  } catch (error) {
+    ElMessage.error(error?.message || '队列结果入库失败')
+  } finally {
+    savingQueueAssetKey.value = ''
+  }
 }
 
 async function focusQueueItemResult(item) {
