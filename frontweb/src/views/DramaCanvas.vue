@@ -1324,6 +1324,15 @@ function syncRenderedNodesToGraph() {
   })
 }
 
+function refreshLayoutCacheFromGraph() {
+  layoutCache.value = buildCanvasLayoutPayload(
+    allGraphNodes.value,
+    currentViewport.value,
+    layoutCache.value,
+    allGraphEdges.value,
+  )
+}
+
 function applyVirtualizedGraph() {
   if (!allGraphNodes.value.length) {
     nodes.value = []
@@ -3593,6 +3602,8 @@ function onNodeDragStart() {
 
 function onNodeDragStop() {
   syncRenderedNodesToGraph()
+  syncCanvasViewportFromFlow()
+  refreshLayoutCacheFromGraph()
   if (dragHistorySnapshot.value) commitInteractionHistory(dragHistorySnapshot.value)
   dragHistorySnapshot.value = null
   scheduleLayoutSave()

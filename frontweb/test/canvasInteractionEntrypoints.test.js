@@ -39,6 +39,12 @@ test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', ()
   assert.match(canvasSource, /function onPaneClick\(event\) \{\s*\n\s*if \(paneClickSuppressed\.value\) return/)
 })
 
+test('节点拖拽停止后立即刷新布局缓存并同步视口', () => {
+  assert.match(canvasSource, /function refreshLayoutCacheFromGraph\(\) \{[\s\S]*layoutCache\.value = buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value,[\s\S]*allGraphEdges\.value,/)
+  assert.match(canvasSource, /function onNodeDragStop\(\) \{\s*\n\s*syncRenderedNodesToGraph\(\)\s*\n\s*syncCanvasViewportFromFlow\(\)\s*\n\s*refreshLayoutCacheFromGraph\(\)/)
+  assert.match(canvasSource, /refreshLayoutCacheFromGraph\(\)[\s\S]*if \(dragHistorySnapshot\.value\) commitInteractionHistory\(dragHistorySnapshot\.value\)/)
+})
+
 test('悬浮工具栏暴露撤销和重做操作', () => {
   assert.match(toolbarSource, /aria-label="撤销"/)
   assert.match(toolbarSource, /aria-label="重做"/)
