@@ -119,6 +119,15 @@
             </el-form-item>
           </template>
         </el-form>
+        <div class="asset-generation-row">
+          <CanvasGenerationOptions
+            mode="image"
+            compact
+            label="图片模型"
+            @change="saveAssetGenerationOptions"
+          />
+          <small>用于参考图 / 多视图 / 全景图</small>
+        </div>
       </div>
     </div>
 
@@ -189,6 +198,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
+import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
@@ -250,6 +260,7 @@ const entityStatusLabel = computed(() => {
   const map = { pending: '待生成', processing: '生成中', completed: '已完成', failed: '失败' }
   return map[s] || (previewUrl.value ? '已有参考图' : '无参考图')
 })
+const assetGenerationOptions = computed(() => ctx?.getGenerationOptions?.() || ctx?.generationOptions?.value || {})
 
 const nodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
@@ -275,6 +286,17 @@ function onSelectVisibleChange(open) {
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+function saveAssetGenerationOptions(patch, next) {
+  ctx?.nodeStatus?.success(props.nodeId, {
+    message: '图片模型已保存',
+    resultType: 'text',
+    resultLabel: '资产生成参数',
+    resultSummary: `图片模型：${next?.imageModel || '跟随项目默认'}`,
+    requestPayload: { generationOptions: next, patch },
+    autoClear: false,
+  })
 }
 
 async function saveAsset() {
@@ -437,6 +459,7 @@ async function generateImage() {
       kind: props.kind,
       entity: props.entity,
       nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
     })
     ElMessage.success('参考图已生成')
   } catch (e) {
@@ -460,6 +483,7 @@ async function generatePanorama() {
     await generateScenePanoramaImage(ctx, {
       entity: props.entity,
       nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
     })
     ElMessage.success('场景全景图已生成')
   } catch (e) {
@@ -484,6 +508,7 @@ async function generateMultiView() {
       kind: props.kind,
       entity: props.entity,
       nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
     })
     ElMessage.success(props.kind === 'character' ? '角色三视图已生成' : '场景多视图已生成')
   } catch (e) {
@@ -625,6 +650,18 @@ function clearTransientAssetStatus() {
 .form-col {
   flex: 1;
   min-width: 0;
+}
+.asset-generation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(63, 63, 70, 0.5);
+}
+.asset-generation-row small {
+  color: #52525b;
+  font-size: 10px;
 }
 .compact-form :deep(.el-form-item) {
   margin-bottom: 6px;

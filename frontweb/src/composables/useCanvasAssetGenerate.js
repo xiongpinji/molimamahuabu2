@@ -32,11 +32,11 @@ async function pollUntilHasImage(findEntity, getImage = assetImageUrl, maxAttemp
   return false
 }
 
-export async function generateScenePanoramaImage(ctx, { entity, nodeId }) {
+export async function generateScenePanoramaImage(ctx, { entity, nodeId, generationOptions = {} }) {
   const nodeStatus = ctx?.nodeStatus
   nodeStatus?.set(nodeId, { step: 'panorama', message: '全景图生成中…' })
   try {
-    const res = await sceneAPI.generatePanoramaImage(entity.id)
+    const res = await sceneAPI.generatePanoramaImage(entity.id, generationOptions.imageModel || undefined, generationOptions.style || undefined)
     const taskId = res?.image_generation?.task_id ?? res?.task_id
     if (taskId) {
       const polled = await pollTask(taskId, () => ctx?.refreshDrama?.(true))
@@ -60,7 +60,7 @@ export async function generateScenePanoramaImage(ctx, { entity, nodeId }) {
 /**
  * 素材参考图生成（含轮询），并同步节点 busy 状态到卡片预览
  */
-export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId }) {
+export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId, generationOptions = {} }) {
   const nodeStatus = ctx?.nodeStatus
   const drama = ctx?.drama?.value
   const step = 'ref_image'
@@ -74,11 +74,16 @@ export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId })
   try {
     let res
     if (kind === 'character') {
-      res = await characterAPI.generateImage(entity.id)
+      res = await characterAPI.generateImage(entity.id, generationOptions.imageModel || undefined, generationOptions.style || undefined)
     } else if (kind === 'scene') {
-      res = await sceneAPI.generateImage({ scene_id: entity.id, drama_id: drama?.id })
+      res = await sceneAPI.generateImage({
+        scene_id: entity.id,
+        drama_id: drama?.id,
+        model: generationOptions.imageModel || undefined,
+        style: generationOptions.style || undefined,
+      })
     } else {
-      res = await propAPI.generateImage(entity.id)
+      res = await propAPI.generateImage(entity.id, generationOptions.imageModel || undefined, generationOptions.style || undefined)
     }
 
     const taskId = res?.image_generation?.task_id ?? res?.task_id
@@ -120,13 +125,13 @@ export async function generateAssetReferenceImage(ctx, { kind, entity, nodeId })
 }
 
 /** 复用角色/场景已有多视图接口，并把任务状态映射到画布节点。 */
-export async function generateAssetMultiViewImage(ctx, { kind, entity, nodeId }) {
+export async function generateAssetMultiViewImage(ctx, { kind, entity, nodeId, generationOptions = {} }) {
   const nodeStatus = ctx?.nodeStatus
   nodeStatus?.set(nodeId, { step: 'multi_view', message: kind === 'character' ? '角色三视图生成中…' : '场景多视图生成中…' })
   try {
     const res = kind === 'character'
-      ? await characterAPI.generateFourViewImage(entity.id)
-      : await sceneAPI.generateFourViewImage(entity.id)
+      ? await characterAPI.generateFourViewImage(entity.id, generationOptions.imageModel || undefined, generationOptions.style || undefined)
+      : await sceneAPI.generateFourViewImage(entity.id, generationOptions.imageModel || undefined, generationOptions.style || undefined)
     const taskId = res?.image_generation?.task_id ?? res?.task_id
     if (taskId) {
       const polled = await pollTask(taskId, () => ctx?.refreshDrama?.(true))

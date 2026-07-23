@@ -866,9 +866,10 @@ async function onAssetLibraryPick(asset) {
   try {
     if (target !== 'reference') {
       await attachPickedAssetToStoryboard(target, asset)
+      const savedAsset = await ensureStoryboardSlotAsset(target, asset, dramaId, storyboardId)
       await ctx?.refreshDrama?.(true)
       const message = ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材'
-      setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, asset, message), 'success')
+      setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, savedAsset || asset, message), 'success')
       ElMessage.success(message)
       return
     }
@@ -907,6 +908,42 @@ async function onAssetLibraryPick(asset) {
     ElMessage.error(message)
   } finally {
     assetAssigning.value = false
+  }
+}
+
+async function ensureStoryboardSlotAsset(target, asset, dramaId, storyboardId) {
+  if (!asset || !ASSET_ATTACH_TARGETS[target]) return null
+  if (asset.source_kind === 'project') {
+    return assetsAPI.update(projectAssetId(asset), {
+      drama_id: dramaId,
+      storyboard_id: storyboardId,
+      metadata: assetSlotMetadata(target, asset),
+    })
+  }
+  return assetsAPI.create({
+    drama_id: dramaId,
+    storyboard_id: storyboardId,
+    type: assetAttachResultType(target, asset),
+    category: target === 'audio' && (asset.voice_catalog || asset.voice_catalog_id || asset.voice_asset_id) ? 'voice' : `storyboard_${assetAttachSlot(target)}`,
+    name: asset.name || ASSET_ATTACH_TARGETS[target]?.title || '素材库素材',
+    url: asset.asset_url || asset.display_url || asset.url || '',
+    local_path: asset.local_path || null,
+    duration: asset.duration || null,
+    metadata: assetSlotMetadata(target, asset),
+  })
+}
+
+function assetSlotMetadata(target, asset) {
+  return {
+    ...(asset?.metadata || {}),
+    source_kind: asset?.source_kind || 'library',
+    source_id: asset?.raw_id || asset?.id || null,
+    source_label: asset?.source_label || null,
+    attached_slot: assetAttachSlot(target),
+    attached_storyboard_id: props.storyboard?.id || null,
+    voice_catalog_id: asset?.voice_catalog_id || asset?.voice_catalog?.id || asset?.voice_catalog?.voice_id || null,
+    voice_asset_id: asset?.voice_asset_id || asset?.voice_catalog?.asset_id || null,
+    voice_catalog: asset?.voice_catalog || null,
   }
 }
 
