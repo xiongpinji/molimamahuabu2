@@ -38,8 +38,8 @@ describe('iCreat Seedance video protocol', () => {
     assert.deepEqual(body, {
       content: [
         { type: 'text', text: '母女在花园里慢慢走近镜头' },
-        { type: 'image_url', image_url: { url: 'https://cdn.example/first.png' }, role: 'first_frame', need_review: true },
-        { type: 'image_url', image_url: { url: 'https://cdn.example/last.png' }, role: 'last_frame', need_review: true },
+        { type: 'image_url', image_url: { url: 'https://cdn.example/first.png' }, role: 'first_frame' },
+        { type: 'image_url', image_url: { url: 'https://cdn.example/last.png' }, role: 'last_frame' },
       ],
       ratio: '9:16',
       resolution: '1080p',
@@ -47,10 +47,22 @@ describe('iCreat Seedance video protocol', () => {
     });
   });
 
+  it('only sends need_review for reference images', () => {
+    const body = buildIcreatVideoBody({
+      prompt: '角色沿着雨林石径前进',
+      first_frame_url: 'https://cdn.example/first.png',
+      last_frame_url: 'https://cdn.example/last.png',
+      reference_urls: ['https://cdn.example/character.png'],
+    });
+
+    assert.equal(body.content.find((part) => part.role === 'first_frame').need_review, undefined);
+    assert.equal(body.content.find((part) => part.role === 'last_frame').need_review, undefined);
+    assert.equal(body.content.find((part) => part.role === 'reference_image').need_review, true);
+  });
+
   it('adds a character voice as the documented reference audio content item', () => {
     const body = buildIcreatVideoBody({
       prompt: '小狐狸抬头说话',
-      first_frame_url: 'https://cdn.example/first.png',
       voice_reference_url: 'https://cdn.example/fox-voice.mp3',
     });
 
@@ -59,6 +71,19 @@ describe('iCreat Seedance video protocol', () => {
       audio_url: { url: 'https://cdn.example/fox-voice.mp3' },
       role: 'reference_audio',
     });
+  });
+
+  it('keeps first/last frame generation valid by omitting the mutually exclusive reference audio', () => {
+    const body = buildIcreatVideoBody({
+      prompt: '小狐狸沿着雨林石径走向石门',
+      first_frame_url: 'https://cdn.example/first.png',
+      last_frame_url: 'https://cdn.example/last.png',
+      voice_reference_url: 'https://cdn.example/fox-voice.mp3',
+    });
+
+    assert.equal(body.content.some((part) => part.role === 'first_frame'), true);
+    assert.equal(body.content.some((part) => part.role === 'last_frame'), true);
+    assert.equal(body.content.some((part) => part.role === 'reference_audio'), false);
   });
 
   it('submits to the iCreat capability-code endpoint and returns the task id', async () => {
@@ -108,7 +133,6 @@ describe('iCreat Seedance video protocol', () => {
       }, log, {
         model: 'Seedance 2.0 Mini',
         prompt: '小狐狸说话',
-        first_frame_url: 'https://cdn.example/first.png',
         voice_reference_url: `/static/${relative}`,
         storage_local_path: storage,
       });

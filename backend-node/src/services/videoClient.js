@@ -3666,16 +3666,16 @@ function buildIcreatVideoBody({
     const value = String(url || '').trim();
     if (!value || seen.has(value)) return;
     seen.add(value);
-    // iCreat requires moderation acknowledgement for references that may contain
-    // faces or copyrighted characters. Local drama references are not reliably
-    // classifiable here, so opt into the documented review path for every image.
-    content.push({ type: 'image_url', image_url: { url: value }, role, need_review: true });
+    const part = { type: 'image_url', image_url: { url: value }, role };
+    if (role === 'reference_image') part.need_review = true;
+    content.push(part);
   };
   addImage(first_frame_url || image_url, 'first_frame');
   addImage(last_frame_url, 'last_frame');
   for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
   const voiceUrl = String(voice_reference_url || '').trim();
-  if (voiceUrl) {
+  const hasFrameRole = content.some((part) => part.role === 'first_frame' || part.role === 'last_frame');
+  if (voiceUrl && !hasFrameRole) {
     content.push({
       type: 'audio_url',
       audio_url: { url: voiceUrl },
@@ -3849,6 +3849,12 @@ async function callIcreatVideoApi(config, log, opts = {}) {
     model,
     has_voice_reference: body.content.some((part) => part.role === 'reference_audio'),
   });
+  if (opts.voice_reference_url && !body.content.some((part) => part.role === 'reference_audio')) {
+    log?.warn?.('[iCreat video] 首尾帧模式不支持混合参考音频，已保留画面连续性并使用提示词声线锚点', {
+      video_gen_id: opts.video_gen_id,
+      model,
+    });
+  }
   const headers = {
     Authorization: `Bearer ${config.api_key || ''}`,
     'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
