@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:home": "playwright test e2e/home-canvas.spec.js",
     "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {

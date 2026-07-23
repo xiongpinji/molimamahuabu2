@@ -188,7 +188,7 @@ test('CV-NODE-RESULT-001 画布节点结果恢复、素材引用复制、定位�
 
   const failedNode = page.locator('.vue-flow__node[data-id="sb:302"]')
   await expect(failedNode).toBeVisible()
-  await failedNode.getByRole('button', { name: '重试生图' }).click()
+  await failedNode.getByRole('button', { name: '重试图片任务' }).click()
 
   await expect.poll(() => imageRequests.length).toBe(1)
   expect(imageRequests[0]).toMatchObject({
@@ -301,6 +301,7 @@ test('CV-ASSET-LIB-001 分镜面板从当前项目素材库指派参考图并回
   const panel = page.locator('.sb-panel')
   await expect(panel).toContainText('分镜 #1')
   await panel.getByRole('button', { name: '+素材库' }).evaluate((element) => element.click())
+  await page.getByRole('menuitem', { name: '指派参考图' }).click()
 
   const pickerDialog = page.getByRole('dialog', { name: '从素材库指派参考图' })
   await expect(pickerDialog).toBeVisible()

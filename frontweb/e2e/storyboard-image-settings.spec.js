@@ -141,5 +141,5 @@ test('CV-IMG-001 分镜图模型与宫格设置可保存恢复并用于生图', 
     model: 'lib-image-grid',
     frame_type: 'nine_grid',
   })
-  await expect(page.getByText('生图完成')).toBeVisible()
+  await expect(page.locator('.el-message').filter({ hasText: '生图完成' })).toBeVisible()
 })

@@ -1,10 +1,15 @@
 import { test, expect } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
+import { fulfillEmptyProjectAssets, fulfillMockDrama } from './mockDrama.js'
 
 const evidenceScreenshot = fileURLToPath(new URL('../../.omx/evidence/local/20260716/director-1280x720.png', import.meta.url))
 const pressureScreenshot = fileURLToPath(new URL('../../.omx/evidence/local/20260716/director-pressure-100-20-200.png', import.meta.url))
 
 test.use({ viewport: { width: 1280, height: 720 } })
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/dramas/3', (route) => fulfillMockDrama(route))
+  await page.route('**/api/v1/assets?**', (route) => fulfillEmptyProjectAssets(route))
+})
 
 test('导演台在 1280×720 可操作并保持完整键盘焦点循环', async ({ page }) => {
   await page.goto('/film/3/canvas')
@@ -101,6 +106,7 @@ test('导演台真实渲染帧率与重复挂载生命周期保持稳定', async
   })
   await page.goto('/film/3/canvas')
   const opener = page.getByRole('button', { name: '打开 3D 导演台' })
+  await expect(opener).toBeVisible()
   const baselineKeydown = await page.evaluate(() => window.__directorLifecycle.keydownHandlers.size)
   let mountedKeydown = null
 
@@ -139,25 +145,14 @@ test('导演台真实渲染帧率与重复挂载生命周期保持稳定', async
 test('DR-005 捕获机位后切走返回保持位置和方向且复制不丢失', async ({ page }) => {
   const savedTimelines = []
   await page.route('**/api/v1/dramas/3', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue()
-    const response = await route.fetch()
-    const payload = await response.json()
-    const drama = payload.data || payload
-    const metadata = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata || '{}') : { ...(drama.metadata || {}) }
-    metadata.canvas_layout = {
-      ...(metadata.canvas_layout || {}),
-      director_timeline: {
-        version: 2,
-        sequence: { duration: 4, fps: 24, activeCameraId: 'accept-camera' },
-        shots: [{ id: 'accept-shot', name: '验收镜头', camera: 'director', cameraId: 'accept-camera', transition: 'cut', start: 0, duration: 4 }],
-        objects: [{ id: 'accept-camera-object', type: 'camera', name: '验收机位', visible: true, locked: false, transform: { position: [1, 2, 3], rotation: [0, 0, 0], scale: [1, 1, 1] } }],
-        cameras: [{ id: 'accept-camera', objectId: 'accept-camera-object', name: '验收机位', fov: 50, aspect: 16 / 9, near: 0.1, far: 1000 }],
-        tracks: [], characterAssets: {}, motionTracks: [],
-      },
-    }
-    drama.metadata = typeof drama.metadata === 'string' ? JSON.stringify(metadata) : metadata
-    if (payload.data) payload.data = drama
-    await route.fulfill({ response, json: payload })
+    await fulfillMockDrama(route, {
+      version: 2,
+      sequence: { duration: 4, fps: 24, activeCameraId: 'accept-camera' },
+      shots: [{ id: 'accept-shot', name: '验收镜头', camera: 'director', cameraId: 'accept-camera', transition: 'cut', start: 0, duration: 4 }],
+      objects: [{ id: 'accept-camera-object', type: 'camera', name: '验收机位', visible: true, locked: false, transform: { position: [1, 2, 3], rotation: [0, 0, 0], scale: [1, 1, 1] } }],
+      cameras: [{ id: 'accept-camera', objectId: 'accept-camera-object', name: '验收机位', fov: 50, aspect: 16 / 9, near: 0.1, far: 1000 }],
+      tracks: [], characterAssets: {}, motionTracks: [],
+    })
   })
   await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
     savedTimelines.push(route.request().postDataJSON().canvas_layout.director_timeline)
@@ -192,23 +187,12 @@ test('DR-005 捕获机位后切走返回保持位置和方向且复制不丢失'
 test('DR-004 Shift 等比缩放与变换数值写入统一保存链', async ({ page }) => {
   const savedTimelines = []
   await page.route('**/api/v1/dramas/3', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue()
-    const response = await route.fetch()
-    const payload = await response.json()
-    const drama = payload.data || payload
-    const metadata = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata || '{}') : { ...(drama.metadata || {}) }
-    metadata.canvas_layout = {
-      ...(metadata.canvas_layout || {}),
-      director_timeline: {
-        version: 2, sequence: { duration: 4, fps: 24 },
-        shots: [{ id: 'transform-shot', name: '变换镜头', camera: 'director', transition: 'cut', start: 0, duration: 4 }],
-        objects: [{ id: 'transform-box', type: 'box', name: '变换验收对象', visible: true, locked: false, transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 2, 3] } }],
-        cameras: [], tracks: [], characterAssets: {}, motionTracks: [],
-      },
-    }
-    drama.metadata = typeof drama.metadata === 'string' ? JSON.stringify(metadata) : metadata
-    if (payload.data) payload.data = drama
-    await route.fulfill({ response, json: payload })
+    await fulfillMockDrama(route, {
+      version: 2, sequence: { duration: 4, fps: 24 },
+      shots: [{ id: 'transform-shot', name: '变换镜头', camera: 'director', transition: 'cut', start: 0, duration: 4 }],
+      objects: [{ id: 'transform-box', type: 'box', name: '变换验收对象', visible: true, locked: false, transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 2, 3] } }],
+      cameras: [], tracks: [], characterAssets: {}, motionTracks: [],
+    })
   })
   await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
     savedTimelines.push(route.request().postDataJSON().canvas_layout.director_timeline)
@@ -283,22 +267,11 @@ test('DR-012 服务端导出达到轮询上限后显示超时且不下载', asyn
     window.MediaRecorder = TestMediaRecorder
   })
   await page.route('**/api/v1/dramas/3', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue()
-    const response = await route.fetch()
-    const payload = await response.json()
-    const drama = payload.data || payload
-    const metadata = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata || '{}') : { ...(drama.metadata || {}) }
-    metadata.canvas_layout = {
-      ...(metadata.canvas_layout || {}),
-      director_timeline: {
-        version: 2, sequence: { duration: 0.25, fps: 24 },
-        shots: [{ id: 'timeout-shot', name: '超时镜头', camera: 'director', transition: 'cut', start: 0, duration: 0.25 }],
-        objects: [], cameras: [], tracks: [], characterAssets: {}, motionTracks: [],
-      },
-    }
-    drama.metadata = typeof drama.metadata === 'string' ? JSON.stringify(metadata) : metadata
-    if (payload.data) payload.data = drama
-    await route.fulfill({ response, json: payload })
+    await fulfillMockDrama(route, {
+      version: 2, sequence: { duration: 0.25, fps: 24 },
+      shots: [{ id: 'timeout-shot', name: '超时镜头', camera: 'director', transition: 'cut', start: 0, duration: 0.25 }],
+      objects: [], cameras: [], tracks: [], characterAssets: {}, motionTracks: [],
+    })
   })
   await page.route('**/api/v1/dramas/3/director/export', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { task_id: 'timeout-task', poll_max_attempts: 3 } }) }))
   let pollCount = 0
@@ -364,14 +337,7 @@ test('DR-002 GLB/VRM 加载区分权限、缺失、MIME 和损坏且场景仍可
 
 test('导演台 100 对象、20 相机、200 片段真实渲染平均 FPS 不低于 30', async ({ page }) => {
   await page.route('**/api/v1/dramas/3', async (route) => {
-    const response = await route.fetch()
-    const payload = await response.json()
-    const drama = payload.data || payload
-    const metadata = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata || '{}') : { ...(drama.metadata || {}) }
-    const canvasLayout = { ...(metadata.canvas_layout || {}) }
-    const previous = canvasLayout.director_timeline || {}
-    const characterIds = (drama.characters || []).map((character, index) => String(character.id ?? character.name ?? `character-${index}`))
-    const safeCharacterIds = characterIds.length ? characterIds : ['character-0']
+    const safeCharacterIds = ['character-a', 'character-b']
     const objects = Array.from({ length: 100 }, (_, index) => ({
       id: `pressure-object-${index}`,
       type: index < 20 ? 'camera' : 'box',
@@ -405,21 +371,16 @@ test('导演台 100 对象、20 相机、200 片段真实渲染平均 FPS 不低
       characterId,
       clips: clips.filter((clip) => clip.characterId === characterId),
     }))
-    canvasLayout.director_timeline = {
-      ...previous,
+    await fulfillMockDrama(route, {
       version: 2,
-      sequence: { ...(previous.sequence || {}), duration: 100, fps: 24 },
+      sequence: { duration: 100, fps: 24 },
       shots: [{ id: 'pressure-shot', name: '压力镜头', camera: 'director', cameraId: cameras[0].id, transition: 'cut', start: 0, duration: 100 }],
       objects,
       cameras,
       tracks,
       characterAssets: {},
       motionTracks: [],
-    }
-    metadata.canvas_layout = canvasLayout
-    drama.metadata = typeof drama.metadata === 'string' ? JSON.stringify(metadata) : metadata
-    if (payload.data) payload.data = drama
-    await route.fulfill({ response, json: payload })
+    })
   })
 
   await page.goto('/film/3/canvas')
