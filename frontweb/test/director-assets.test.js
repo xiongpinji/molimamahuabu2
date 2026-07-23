@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  DIRECTOR_VALIDATION_ASSET_URL,
   createDirectorResourceState,
   isDirectorAnimationCompatible,
   loadDirectorGltf,
@@ -10,6 +11,7 @@ import {
 } from '../src/utils/director-assets.js'
 
 test('导演台资源地址优先使用公开 URL，并兼容项目相对路径', () => {
+  assert.equal(DIRECTOR_VALIDATION_ASSET_URL, '/director-fixtures/khronos-simple-skin.gltf')
   assert.equal(resolveDirectorAssetUrl({ url: 'https://cdn.example/hero.glb', local_path: 'models/hero.glb' }), 'https://cdn.example/hero.glb')
   assert.equal(resolveDirectorAssetUrl({ local_path: 'projects/1/models/hero.glb' }), '/static/projects/1/models/hero.glb')
   assert.equal(resolveDirectorAssetUrl('  /static/models/hero.glb  '), '/static/models/hero.glb')
@@ -59,4 +61,16 @@ test('动作资源必须至少命中当前角色对象树中的一个动画轨�
   assert.equal(isDirectorAnimationCompatible(root, [{ tracks: [{ name: 'Armature|mixamorigHips.position' }] }]), true)
   assert.equal(isDirectorAnimationCompatible(root, [{ tracks: [{ name: 'OtherRoot.position' }] }]), false)
   assert.equal(isDirectorAnimationCompatible(root, []), false)
+})
+
+test('未命名骨骼动作可通过 GLTFLoader 生成的 UUID 目标匹配角色', () => {
+  const root = {
+    name: '',
+    uuid: 'root-uuid',
+    traverse(callback) {
+      callback({ name: '', uuid: 'root-uuid' })
+      callback({ name: '', uuid: 'joint-uuid' })
+    },
+  }
+  assert.equal(isDirectorAnimationCompatible(root, [{ tracks: [{ name: 'joint-uuid.quaternion' }] }]), true)
 })

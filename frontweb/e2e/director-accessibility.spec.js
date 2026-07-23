@@ -4,6 +4,7 @@ import { fulfillEmptyProjectAssets, fulfillMockDrama } from './mockDrama.js'
 
 const evidenceScreenshot = fileURLToPath(new URL('../../.omx/evidence/local/20260716/director-1280x720.png', import.meta.url))
 const pressureScreenshot = fileURLToPath(new URL('../../.omx/evidence/local/20260716/director-pressure-100-20-200.png', import.meta.url))
+const simpleSkinValidationUrl = '/director-fixtures/khronos-simple-skin.gltf'
 
 test.use({ viewport: { width: 1280, height: 720 } })
 test.beforeEach(async ({ page }) => {
@@ -358,12 +359,6 @@ test('DR-002 GLB/VRM 加载区分权限、缺失、MIME 和损坏且场景仍可
   await page.route('**/director-fixtures/private.glb', (route) => route.fulfill({ status: 403, contentType: 'model/gltf-binary', body: '' }))
   await page.route('**/director-fixtures/wrong.glb', (route) => route.fulfill({ status: 200, contentType: 'text/plain', body: 'not a model' }))
   await page.route('**/director-fixtures/broken.glb', (route) => route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: 'broken model bytes' }))
-  await page.route('**/director-fixtures/valid.vrm', (route) => route.fulfill({
-    status: 200,
-    contentType: 'model/gltf+json',
-    body: JSON.stringify({ asset: { version: '2.0', generator: 'DR-002 fixture' }, scene: 0, scenes: [{ nodes: [] }], nodes: [] }),
-  }))
-
   await page.goto('/film/3/canvas')
   await page.getByRole('button', { name: '打开 3D 导演台' }).click()
   await page.getByRole('button', { name: '动画时间轴' }).click()
@@ -383,11 +378,65 @@ test('DR-002 GLB/VRM 加载区分权限、缺失、MIME 和损坏且场景仍可
     await expect(page.getByText(message, { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '+ 立方体' }).click()
   }
-  await modelUrl.fill('/director-fixtures/valid.vrm')
+  await modelUrl.fill(simpleSkinValidationUrl)
   await modelUrl.dispatchEvent('change')
   await loadModel.click()
   await expect(page.locator('.resource-status:not(.resource-status--row)')).toContainText('模型已加载')
   await expect(page.locator('.stage-tree-row')).toHaveCount(initialObjectCount + 4)
+})
+
+test('CC0 SimpleSkin 验证资产加载可见网格、骨骼和动画并在保存刷新后恢复', async ({ page }) => {
+  let persistedTimeline = {
+    version: 2,
+    sequence: { duration: 2, fps: 24, currentTime: 0 },
+    shots: [{ id: 'simple-skin-shot', name: 'SimpleSkin 验证镜头', camera: 'director', transition: 'cut', start: 0, duration: 2 }],
+    objects: [{
+      id: 'project-character:character-a',
+      type: 'character',
+      name: '角色A',
+      visible: true,
+      locked: false,
+      assetRef: { kind: 'project-character', characterId: 'character-a' },
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+    }],
+    cameras: [],
+    tracks: [{ id: 'simple-skin-track', characterId: 'character-a', clips: [{ id: 'simple-skin-clip', characterId: 'character-a', action: 'Run', start: 0, duration: 2 }] }],
+    characterAssets: {},
+    motionTracks: [],
+  }
+  await page.route('**/api/v1/dramas/3', (route) => fulfillMockDrama(route, persistedTimeline))
+  await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
+    persistedTimeline = route.request().postDataJSON().canvas_layout.director_timeline
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+  })
+
+  await page.goto('/film/3/canvas')
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByRole('button', { name: '加载 CC0 验证模型' }).click()
+
+  const modelStatus = page.locator('.resource-status--row').filter({ hasText: '模型：' })
+  await expect(modelStatus).toContainText('可见网格 1 · 骨骼 2 · 动画 1')
+  await page.getByLabel('选择动作').selectOption('Run')
+  const actionStatus = page.locator('.resource-status--row').filter({ hasText: '动作：' })
+  await expect(actionStatus).toContainText('使用模型内置动画 1')
+  await page.getByRole('button', { name: '角色A Run 动作片段' }).click()
+  await expect(page.getByLabel('动作片段时长')).toHaveAttribute('min', '0.25')
+  await expect.poll(() => persistedTimeline.characterAssets?.['character-a']?.modelUrl).toBe(simpleSkinValidationUrl)
+
+  const modelScale = page.getByLabel('模型缩放')
+  await modelScale.fill('1.25')
+  await modelScale.press('Tab')
+  await expect.poll(() => persistedTimeline.characterAssets?.['character-a']?.scale).toBe(1.25)
+
+  await page.reload()
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await expect(page.getByLabel('角色模型 URL')).toHaveValue(simpleSkinValidationUrl)
+  await expect(page.getByLabel('模型缩放')).toHaveValue('1.25')
+  await expect(modelStatus).toContainText('可见网格 1 · 骨骼 2 · 动画 1')
+  await page.getByLabel('选择动作').selectOption('Run')
+  await expect(actionStatus).toContainText('使用模型内置动画 1')
 })
 
 test('导演台 100 对象、20 相机、200 片段真实渲染平均 FPS 不低于 30', async ({ page }) => {

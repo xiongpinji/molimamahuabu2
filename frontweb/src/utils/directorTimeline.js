@@ -16,7 +16,7 @@ export const TRANSITION_TYPES = [
 export const ACTION_LIBRARY = ['Idle', 'Walk', 'Run', 'Talk', 'Wave', 'Attack']
 
 const MIN_SHOT_DURATION = 0.25
-const MIN_CLIP_DURATION = 0.25
+export const MIN_ACTION_CLIP_DURATION = 0.25
 
 function id(prefix) {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -223,7 +223,7 @@ function normalizeClip(clip, characterId, index, duration) {
     characterId: String(clip?.characterId || characterId),
     action: ACTION_LIBRARY.includes(clip?.action) ? clip.action : 'Idle',
     start: Math.min(start, duration),
-    duration: Math.max(MIN_CLIP_DURATION, asNumber(clip?.duration, 2)),
+    duration: Math.max(MIN_ACTION_CLIP_DURATION, asNumber(clip?.duration, 2)),
   }
 }
 
@@ -375,7 +375,7 @@ export function appendActionClip(state, characterId, action = 'Idle', patch = {}
     characterId: normalizedCharacterId,
     action: ACTION_LIBRARY.includes(action) ? action : 'Idle',
     start,
-    duration: Math.max(MIN_CLIP_DURATION, asNumber(patch.duration, 2)),
+    duration: Math.max(MIN_ACTION_CLIP_DURATION, asNumber(patch.duration, 2)),
   }
   let found = false
   const tracks = current.tracks.map((track) => {

@@ -11,6 +11,7 @@ import {
   findActiveActionClips,
   findActiveShot,
   interpolateMotionTransform,
+  MIN_ACTION_CLIP_DURATION,
   normalizeDirectorTimeline,
   proportionalScaleFromAxis,
   removeActionClip,
@@ -22,6 +23,14 @@ import {
 import { buildCanvasLayoutPayload } from '../src/utils/canvasLayout.js'
 
 const characters = [{ id: 1, name: '小满' }, { id: 2, name: '阿姨' }]
+
+test('动作片段编辑与数据模型共享 0.25 秒最小时长', () => {
+  assert.equal(MIN_ACTION_CLIP_DURATION, 0.25)
+  const state = normalizeDirectorTimeline({
+    tracks: [{ characterId: '1', clips: [{ action: 'Run', duration: 0.1 }] }],
+  }, characters)
+  assert.equal(state.tracks[0].clips[0].duration, MIN_ACTION_CLIP_DURATION)
+})
 
 test('DR-002 项目角色自动进入统一导演场景对象', () => {
   const state = createDirectorTimeline(characters)

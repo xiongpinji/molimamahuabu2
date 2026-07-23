@@ -160,7 +160,7 @@
             </select>
           </label>
           <label>开始时间（秒）<input type="number" min="0" step="0.25" :value="selectedActionClip.start" aria-label="动作片段开始时间" @change="updateSelectedActionClip('start', $event.target.value)" /></label>
-          <label>时长（秒）<input type="number" min="0.25" step="0.25" :value="selectedActionClip.duration" aria-label="动作片段时长" @change="updateSelectedActionClip('duration', $event.target.value)" /></label>
+          <label>时长（秒）<input type="number" :min="MIN_ACTION_CLIP_DURATION" :step="MIN_ACTION_CLIP_DURATION" :value="selectedActionClip.duration" aria-label="动作片段时长" @change="updateSelectedActionClip('duration', $event.target.value)" /></label>
           <button type="button" class="danger-button" @click="removeSelectedActionClip">删除动作片段</button>
         </section>
 
@@ -173,6 +173,10 @@
           <div class="resource-upload-row">
             <input type="file" accept=".glb,.vrm,model/gltf-binary" aria-label="上传角色模型" @change="onModelFileChange" />
             <button type="button" class="small-button" :disabled="modelLoading" @click="loadSelectedCharacterModel">加载模型</button>
+          </div>
+          <div class="resource-upload-row">
+            <button type="button" class="small-button" :disabled="modelLoading" @click="applyValidationAsset">加载 CC0 验证模型</button>
+            <span class="resource-tip">Khronos SimpleSkin，仅用于功能验证，不是专业角色库</span>
           </div>
           <label>动作资源 URL（{{ actionToAdd }}）
             <input :value="selectedActionAsset.url" placeholder="可选：动作 GLB URL" @change="updateActionAssetUrl(actionToAdd, $event.target.value)" />
@@ -507,6 +511,7 @@ import { taskAPI } from '@/api/task'
 import { uploadAPI } from '@/api/upload'
 import {
   ACTION_LIBRARY,
+  MIN_ACTION_CLIP_DURATION,
   SHOT_CAMERA_TYPES,
   TRANSITION_TYPES,
   appendActionClip,
@@ -594,6 +599,7 @@ const TRANSFORM_TOOLS = [
   { mode: 'scale', label: '缩放工具', icon: '⤢' },
 ]
 import {
+  DIRECTOR_VALIDATION_ASSET_URL,
   createDirectorResourceState,
   directorResourceStatusLabel,
   isDirectorAnimationCompatible,
@@ -1140,6 +1146,12 @@ function onActionFileChange(event) {
 
 function loadSelectedCharacterModel() {
   if (selectedCharacter.value) void loadCharacterModel(selectedCharacter.value.id)
+}
+
+function applyValidationAsset() {
+  if (!selectedCharacter.value) return
+  assetStatus.value = '正在加载 Khronos SimpleSkin CC0 验证资产…'
+  updateCharacterAsset('modelUrl', DIRECTOR_VALIDATION_ASSET_URL)
 }
 
 function retrySelectedActionResource() {
@@ -2201,6 +2213,8 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
     const gltf = await loadDirectorGltf(loader, url)
     if (disposed || expectedBuildToken !== stageBuildToken || !stageRoot) return
     const model = gltf.scene
+    const animations = Array.isArray(gltf.animations) ? gltf.animations : []
+    let visibleMeshCount = 0
     const directorObject = timeline.value.objects.find((entry) => entry.type === 'character' && entry.assetRef?.characterId === normalizedId)
     model.position.set(...(directorObject?.transform.position || [0, 0, 0]))
     model.rotation.set(...(directorObject?.transform.rotation || [0, 0, 0]))
@@ -2212,10 +2226,15 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
     model.traverse?.((child) => {
       child.castShadow = true
       child.receiveShadow = true
+      if (child?.isMesh && child.visible !== false) visibleMeshCount += 1
     })
+    if (!visibleMeshCount) throw new Error('角色模型不含可见网格')
     const bones = new Map()
+    let boneCount = 0
     model.traverse?.((child) => {
-      if (child?.isBone && child.name) bones.set(child.name, child)
+      if (!child?.isBone) return
+      boneCount += 1
+      if (child.name) bones.set(child.name, child)
     })
     rememberBaseTransform(model)
     removeCharacterPlaceholder(normalizedId)
@@ -2226,7 +2245,7 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
       url,
       root: model,
       mixer: new AnimationMixer(model),
-      animations: Array.isArray(gltf.animations) ? gltf.animations : [],
+      animations,
       actionClips: {},
       loadingActions: new Set(),
       activeClipKey: '',
@@ -2240,8 +2259,22 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
       selectedBoneName.value = bones.keys().next().value || ''
     }
     applyBoneRotations(normalizedId)
-    assetStatus.value = `${characterName(normalizedId)}模型已加载`
-    setResourceState('model', normalizedId, url, { status: 'ready', message: `${characterName(normalizedId)}模型已加载` })
+    const modelMessage = `${characterName(normalizedId)}模型已加载 · 可见网格 ${visibleMeshCount} · 骨骼 ${boneCount} · 动画 ${animations.length}`
+    assetStatus.value = modelMessage
+    setResourceState('model', normalizedId, url, { status: 'ready', message: modelMessage })
+    if (animations.length) {
+      const embeddedActions = new Set(timeline.value.tracks
+        .filter((track) => String(track.characterId) === normalizedId)
+        .flatMap((track) => track.clips || [])
+        .filter((clip) => !resolveDirectorAssetUrl(asset?.actions?.[clip.action]))
+        .map((clip) => clip.action))
+      for (const actionName of embeddedActions) {
+        setResourceState('action', normalizedId, url, {
+          status: 'ready',
+          message: `${characterName(normalizedId)}使用模型内置动画 ${animations.length}：${actionName}`,
+        }, actionName)
+      }
+    }
     applyTimelineFrame()
   } catch (error) {
     if (disposed || expectedBuildToken !== stageBuildToken) return

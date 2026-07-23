@@ -1,4 +1,5 @@
 export const DIRECTOR_RESOURCE_STATUSES = ['idle', 'loading', 'ready', 'error']
+export const DIRECTOR_VALIDATION_ASSET_URL = '/director-fixtures/khronos-simple-skin.gltf'
 
 const RESOURCE_STATUS_LABELS = {
   idle: '未加载',
@@ -60,14 +61,15 @@ function animationTrackTarget(track) {
  */
 export function isDirectorAnimationCompatible(root, animations) {
   if (!root || !Array.isArray(animations) || !animations.length) return false
-  const objectNames = new Set()
+  const objectTargets = new Set()
   root.traverse?.((object) => {
-    if (object?.name) objectNames.add(String(object.name))
+    if (object?.name) objectTargets.add(String(object.name))
+    if (object?.uuid) objectTargets.add(String(object.uuid))
   })
   const tracks = animations.flatMap((clip) => Array.isArray(clip?.tracks) ? clip.tracks : [])
   return tracks.some((track) => {
     const target = animationTrackTarget(track)
-    return Boolean(target) && (objectNames.has(target) || target === String(root.name || ''))
+    return Boolean(target) && objectTargets.has(target)
   })
 }
 
