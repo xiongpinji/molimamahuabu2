@@ -85,6 +85,9 @@ const addGroups = [
   {
     title: '素材',
     items: [
+      { key: 'image', type: 'upload-image', label: '图片', hint: '上传图片节点', icon: Picture },
+      { key: 'video', type: 'upload-video', label: '视频', hint: '上传视频节点', icon: VideoPlay },
+      { key: 'audio', type: 'upload-audio', label: '音频', hint: '上传音频节点', icon: Microphone },
       { key: 'media-library', type: 'open-media-library', label: '素材库', hint: '上传 / 管理素材', icon: FolderOpened },
       { key: 'upload', type: 'upload-media', label: '上传', hint: '本地文件加入画布', icon: Upload },
       { key: 'paste', type: 'paste-media', label: '粘贴', hint: '剪贴板素材加入画布', icon: Document },

@@ -393,7 +393,7 @@
       ref="canvasUploadInput"
       class="canvas-upload-input"
       type="file"
-      accept="image/*,video/*,audio/*"
+      :accept="canvasUploadAccept"
       multiple
       @change="onCanvasUpload"
     />
@@ -562,6 +562,7 @@ const canvasAssetPickerTargetStoryboardId = ref(null)
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
+const canvasUploadAccept = ref('image/*,video/*,audio/*')
 const savingQueueAssetKey = ref('')
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
@@ -2472,8 +2473,9 @@ function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerVisible.value = true
 }
 
-function openCanvasUpload(flowPosition = null) {
+function openCanvasUpload(flowPosition = null, accept = 'image/*,video/*,audio/*') {
   canvasUploadFlowPos.value = flowPosition
+  canvasUploadAccept.value = accept || 'image/*,video/*,audio/*'
   canvasUploadInput.value?.click()
 }
 
@@ -2537,6 +2539,7 @@ async function onCanvasUpload(event) {
   }
   if (ok) ElMessage.success(`已上传 ${ok} 个素材到画布`)
   canvasUploadFlowPos.value = null
+  canvasUploadAccept.value = 'image/*,video/*,audio/*'
   if (event?.target) event.target.value = ''
 }
 
@@ -3303,6 +3306,21 @@ async function onContextMenuSelect(type) {
   if (type === 'upload-media') {
     closeContextMenu()
     openCanvasUpload(flowPosition)
+    return
+  }
+  if (type === 'upload-image') {
+    closeContextMenu()
+    openCanvasUpload(flowPosition, 'image/*')
+    return
+  }
+  if (type === 'upload-video') {
+    closeContextMenu()
+    openCanvasUpload(flowPosition, 'video/*')
+    return
+  }
+  if (type === 'upload-audio') {
+    closeContextMenu()
+    openCanvasUpload(flowPosition, 'audio/*')
     return
   }
   if (type === 'paste-media') {
