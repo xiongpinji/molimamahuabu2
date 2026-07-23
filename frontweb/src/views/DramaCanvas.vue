@@ -1422,8 +1422,12 @@ function canvasNodeActions(node) {
   const actions = ['copy-node-ref']
   const sb = storyboardForNode(node)
   const runtimeStatus = nodeRuntimeStatus(node)
-  if (nodeResultUrl(node, runtimeStatus)) {
+  const resultUrl = nodeResultUrl(node, runtimeStatus)
+  if (resultUrl) {
     actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
+    if (nodeResultTypeFromUrl(resultUrl, runtimeStatus?.resultType || node?.data?.kind) === 'image') {
+      actions.unshift('set-node-result-main-image', 'set-node-result-first-frame', 'set-node-result-last-frame')
+    }
     if (!runtimeStatus?.savedAssetId) actions.unshift('save-node-result-asset')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
@@ -2104,12 +2108,12 @@ async function saveNodeResultAssetFromMenu(node) {
   const status = nodeRuntimeStatus(node)
   if (status?.savedAssetId) {
     ElMessage.info('该节点结果已在素材库中')
-    return
+    return nodeSavedAsset(node, status)
   }
   const resultUrl = nodeResultUrl(node, status)
   if (!resultUrl) {
     ElMessage.warning('该节点暂无可入库结果')
-    return
+    return null
   }
   const sb = storyboardForNode(node)
   const storyboardId = status?.storyboardId || sb?.id || storyboardIdFromNodeId(node?.id) || selectedStoryboardIdForAssetAttach() || null
@@ -2128,9 +2132,9 @@ async function saveNodeResultAssetFromMenu(node) {
   }, promptText, storyboardId)
   if (!saved?.savedAssetId) {
     ElMessage.error('节点结果入库失败')
-    return
+    return null
   }
-  nodeStatus.set(node.id, {
+  const nextStatus = {
     ...status,
     ...saved,
     resultUrl,
@@ -2140,10 +2144,43 @@ async function saveNodeResultAssetFromMenu(node) {
     retryActionLabel: '',
     message: '节点结果已存入素材库',
     autoClear: false,
-  })
+  }
+  nodeStatus.set(node.id, nextStatus)
   await loadProjectImageAssets()
   rebuildGraph()
   ElMessage.success('节点结果已存入素材库')
+  return nodeSavedAsset(node, nextStatus)
+}
+
+async function setNodeResultAsStoryboardFrame(node, frameType) {
+  const status = nodeRuntimeStatus(node)
+  const resultUrl = nodeResultUrl(node, status)
+  const resultType = nodeResultTypeFromUrl(resultUrl, status?.resultType || node?.data?.kind)
+  if (resultType !== 'image') {
+    ElMessage.warning('只有图片结果可以回填为分镜图或首尾帧')
+    return false
+  }
+  const storyboardId = restoredNodeStoryboardId(node, status) || selectedStoryboardIdForAssetAttach()
+  if (!storyboardId || !drama.value?.id) {
+    ElMessage.warning('请先选中一个分镜后再回填节点结果')
+    return false
+  }
+  const asset = nodeSavedAsset(node, status) || await saveNodeResultAssetFromMenu(node)
+  const payload = assignedAssetImagePayload(asset)
+  if (!payload) {
+    ElMessage.warning('该节点结果暂无可回填的图片地址')
+    return false
+  }
+  const label = frameType === 'storyboard_last' ? '尾帧' : frameType === 'storyboard_first' ? '首帧' : '分镜图'
+  await imagesAPI.upload({
+    storyboard_id: storyboardId,
+    drama_id: drama.value.id,
+    frame_type: frameType,
+    ...payload,
+  })
+  await refreshDrama(true)
+  ElMessage.success(`已将节点结果设为${label}`)
+  return true
 }
 
 async function copyNodeAssignedAssetReference(node) {
@@ -2945,6 +2982,12 @@ async function runNodeMenuAction(type, node) {
     await setNodeAssignedAssetFrame(node, 'storyboard_first')
   } else if (type === 'set-assigned-asset-last-frame') {
     await setNodeAssignedAssetFrame(node, 'storyboard_last')
+  } else if (type === 'set-node-result-main-image') {
+    await setNodeResultAsStoryboardFrame(node)
+  } else if (type === 'set-node-result-first-frame') {
+    await setNodeResultAsStoryboardFrame(node, 'storyboard_first')
+  } else if (type === 'set-node-result-last-frame') {
+    await setNodeResultAsStoryboardFrame(node, 'storyboard_last')
   } else if (type === 'assign-project-asset-selected') {
     await runCanvasNodeStep(node, 'library')
   } else if (type === 'focus-node-result') {
