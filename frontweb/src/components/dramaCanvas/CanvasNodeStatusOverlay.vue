@@ -205,6 +205,7 @@ const assetResultText = computed(() => {
     const slot = slotMap[status.value?.attachedSlot] || '分镜素材'
     parts.push(`已挂载：${slot} -> 分镜 ${status.value.attachedToStoryboardId}`)
   }
+  if (status.value?.attachedResultUrl || status.value?.attachedResultLocalPath) parts.push('挂载结果已回写')
   return parts.join(' · ')
 })
 
@@ -391,10 +392,14 @@ async function refreshCanvasAfterAttach() {
 }
 
 function markAttachSuccess(message, extra = {}) {
+  const storyboardId = resultStoryboardId(runtimeNode())
   ctx?.nodeStatus?.success?.(props.nodeId, {
     ...status.value,
     message,
-    attachedToStoryboardId: resultStoryboardId(runtimeNode()),
+    attachedToStoryboardId: storyboardId,
+    attachedResultUrl: resultUrl(),
+    attachedResultLocalPath: resultLocalPath(),
+    attachedResultType: resultPreviewType.value,
     actionError: '',
     retryAction: '',
     retryActionLabel: '',
