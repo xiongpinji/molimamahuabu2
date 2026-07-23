@@ -620,15 +620,17 @@ function libraryImageRetrySlot() {
 }
 
 async function runNextStep() {
-  if (!status.value?.nextStep) return
+  const step = status.value?.nextStep
+  if (!step) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
-  await ctx?.runNodeStep?.(runtimeNode(), status.value.nextStep)
+  await ctx?.runNodeStep?.(runtimeNode(), step)
 }
 
 async function retryFailed() {
-  if (!status.value?.retryStep) return
+  const step = status.value?.retryStep
+  if (!step) return
   ctx?.nodeStatus?.clear?.(props.nodeId)
-  await ctx?.runNodeStep?.(runtimeNode(), status.value.retryStep)
+  await ctx?.runNodeStep?.(runtimeNode(), step)
 }
 
 watch(status, (value) => {
