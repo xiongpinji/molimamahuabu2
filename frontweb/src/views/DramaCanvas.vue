@@ -2613,6 +2613,7 @@ async function onCanvasAssetLibraryPick(asset) {
     if (targetStoryboardId) {
       const assignResult = await assignProjectAssetToSelectedStoryboard(projectAsset, { silent: true, returnDetail: true, storyboardId: targetStoryboardId })
       if (!assignResult?.ok) throw new Error(assignResult?.message || '素材未指派，请选中一个分镜后重试')
+      projectAsset = assignResult.asset || projectAsset
       resultMessage = '已加入画布并指派到分镜'
     } else {
       ElMessage.success(resultMessage)

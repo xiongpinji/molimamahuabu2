@@ -184,6 +184,7 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /return '重试挂载素材库图片'/)
   assert.match(canvasSource, /const assignResult = await assignProjectAssetToSelectedStoryboard\(projectAsset, \{ silent: true, returnDetail: true, storyboardId: targetStoryboardId \}\)/)
   assert.match(canvasSource, /if \(!assignResult\?\.ok\) throw new Error\(assignResult\?\.message \|\| '素材未指派，请选中一个分镜后重试'\)/)
+  assert.match(canvasSource, /projectAsset = assignResult\.asset \|\| projectAsset/)
   assert.match(canvasSource, /if \(mediaPayload\?\.type === 'video'\) \{[\s\S]*await videosAPI\.attach\(\{[\s\S]*storyboard_id: storyboardId,[\s\S]*video_url: mediaPayload\.url,[\s\S]*local_path: mediaPayload\.localPath \|\| undefined/)
   assert.match(canvasSource, /else if \(mediaPayload\?\.type === 'audio'\) \{[\s\S]*await storyboardsAPI\.update\(storyboardId, \{[\s\S]*audio_local_path: mediaPayload\.localPath \|\| undefined,[\s\S]*audio_url: mediaPayload\.localPath \? undefined : mediaPayload\.url/)
   assert.match(canvasSource, /nodeStatus\.success\(nodeId, \{[\s\S]*canvasAssetAttachStatusPayload\(projectAsset \|\| asset, targetStoryboardId, \{[\s\S]*message: resultMessage/)
