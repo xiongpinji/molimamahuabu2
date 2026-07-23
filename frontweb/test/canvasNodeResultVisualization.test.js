@@ -885,6 +885,10 @@ test('素材库媒体地址兼容开放素材字段和本地路径字段', () =>
 
 test('项目素材节点可直接指派到当前选中分镜', () => {
   assert.match(canvasSource, /function projectAssetId\(asset\)/)
+  assert.match(canvasSource, /function syncProjectAssetNodeAsset\(asset\)/)
+  assert.match(canvasSource, /const nodeId = `project-asset:\$\{assetId\}`/)
+  assert.match(canvasSource, /allGraphNodes\.value = allGraphNodes\.value\.map\(patchNode\)/)
+  assert.match(canvasSource, /nodes\.value = nodes\.value\.map\(patchNode\)/)
   assert.match(canvasSource, /async function assignProjectAssetToSelectedStoryboard\(asset, options = \{\}\)/)
   assert.match(canvasSource, /const silent = options\.silent === true/)
   assert.match(canvasSource, /const returnDetail = options\.returnDetail === true/)
@@ -906,7 +910,9 @@ test('项目素材节点可直接指派到当前选中分镜', () => {
   assert.match(canvasSource, /canvas_storyboard_attached: true/)
   assert.match(canvasSource, /attached_storyboard_id: storyboardId/)
   assert.match(canvasSource, /const updatedAsset = await assetsAPI\.update\(assetId, projectAssetAttachPayload\(asset, storyboardId\)\)/)
-  assert.match(canvasSource, /return success\(resultMessage, \{ storyboardId, asset: updatedAsset \|\| asset \}\)/)
+  assert.match(canvasSource, /const assignedAsset = \{ \.\.\.asset, \.\.\.\(updatedAsset \|\| \{\}\), storyboard_id: storyboardId \}/)
+  assert.match(canvasSource, /syncProjectAssetNodeAsset\(assignedAsset\)/)
+  assert.match(canvasSource, /return success\(resultMessage, \{ storyboardId, asset: assignedAsset \}\)/)
   assert.match(canvasSource, /await loadProjectImageAssets\(\)/)
   assert.match(canvasSource, /await focusCanvasNode\(`sb:\$\{storyboardId\}`\)/)
   assert.match(canvasSource, /assignProjectAssetToSelectedStoryboard,/)

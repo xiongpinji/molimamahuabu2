@@ -1555,6 +1555,32 @@ function findGraphNode(nodeId) {
   return allGraphNodes.value.find((node) => String(node.id) === String(nodeId))
 }
 
+function syncProjectAssetNodeAsset(asset) {
+  const assetId = projectAssetId(asset)
+  if (!assetId) return
+  const nodeId = `project-asset:${assetId}`
+  const patchNode = (node) => {
+    if (String(node.id) !== nodeId) return node
+    const previousAsset = node.data?.asset || {}
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        asset: {
+          ...previousAsset,
+          ...asset,
+          metadata: {
+            ...(previousAsset.metadata || {}),
+            ...(asset?.metadata || {}),
+          },
+        },
+      },
+    }
+  }
+  allGraphNodes.value = allGraphNodes.value.map(patchNode)
+  nodes.value = nodes.value.map(patchNode)
+}
+
 function storyboardUsesAsset(storyboard, kind, assetId) {
   const id = Number(assetId)
   if (!storyboard || !Number.isFinite(id)) return false
@@ -2370,6 +2396,8 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   const mediaPayload = selectedStoryboardMediaAssetPayload(asset)
   let resultMessage = '已指派素材到选中分镜'
   const updatedAsset = await assetsAPI.update(assetId, projectAssetAttachPayload(asset, storyboardId))
+  const assignedAsset = { ...asset, ...(updatedAsset || {}), storyboard_id: storyboardId }
+  syncProjectAssetNodeAsset(assignedAsset)
   if (mediaPayload?.type === 'video') {
     await videosAPI.attach({
       storyboard_id: storyboardId,
@@ -2393,7 +2421,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   }
   await focusCanvasNode(`sb:${storyboardId}`)
   if (!silent) ElMessage.success(resultMessage)
-  return success(resultMessage, { storyboardId, asset: updatedAsset || asset })
+  return success(resultMessage, { storyboardId, asset: assignedAsset })
 }
 
 async function autoAssignCanvasAssetToSelectedStoryboard(asset) {
