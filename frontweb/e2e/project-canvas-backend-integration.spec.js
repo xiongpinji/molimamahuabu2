@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
 const backendServer = path.join(backendRoot, 'src', 'server.js')
+const simpleSkinGltfPath = fileURLToPath(new URL('../public/director-fixtures/khronos-simple-skin.gltf', import.meta.url))
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
 
 let backendProcess
@@ -83,6 +84,49 @@ function readDatabase(callback) {
   } finally {
     db.close()
   }
+}
+
+function embeddedGltfToGlb(source) {
+  const document = JSON.parse(source)
+  const offsets = []
+  const chunks = []
+  let byteLength = 0
+  for (const entry of document.buffers || []) {
+    const match = String(entry.uri || '').match(/^data:[^,]+;base64,(.+)$/)
+    if (!match) throw new Error('验证资产必须是嵌入式 glTF')
+    const chunk = Buffer.from(match[1], 'base64')
+    offsets.push(byteLength)
+    chunks.push(chunk)
+    byteLength += chunk.length
+    const padding = (4 - (byteLength % 4)) % 4
+    if (padding) {
+      chunks.push(Buffer.alloc(padding))
+      byteLength += padding
+    }
+  }
+  const binary = Buffer.concat(chunks)
+  document.bufferViews = (document.bufferViews || []).map((view) => ({
+    ...view,
+    buffer: 0,
+    byteOffset: offsets[view.buffer] + (view.byteOffset || 0),
+  }))
+  document.buffers = [{ byteLength: binary.length }]
+
+  const json = Buffer.from(JSON.stringify(document), 'utf8')
+  const jsonPadding = (4 - (json.length % 4)) % 4
+  const paddedJson = jsonPadding ? Buffer.concat([json, Buffer.alloc(jsonPadding, 0x20)]) : json
+  const totalLength = 12 + 8 + paddedJson.length + 8 + binary.length
+  const header = Buffer.alloc(12)
+  header.writeUInt32LE(0x46546c67, 0)
+  header.writeUInt32LE(2, 4)
+  header.writeUInt32LE(totalLength, 8)
+  const jsonHeader = Buffer.alloc(8)
+  jsonHeader.writeUInt32LE(paddedJson.length, 0)
+  jsonHeader.writeUInt32LE(0x4e4f534a, 4)
+  const binaryHeader = Buffer.alloc(8)
+  binaryHeader.writeUInt32LE(binary.length, 0)
+  binaryHeader.writeUInt32LE(0x004e4942, 4)
+  return Buffer.concat([header, jsonHeader, paddedJson, binaryHeader, binary])
 }
 
 async function clickNodeAction(page, node, actionName) {
@@ -625,4 +669,99 @@ test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后�
     `PUT /api/v1/dramas/${dramaId}/canvas-layout`,
   ]))
   expect(forwardedResponses.every(({ status }) => status >= 200 && status < 300)).toBe(true)
+})
+
+test('3D 导演台通过真实后端上传 CC0 角色资产并从素材库刷新恢复', async ({ page }) => {
+  const forwardedResponses = []
+  const modelResponses = []
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    forwardedResponses.push({ method: request.method(), path: source.pathname, status: response.status() })
+    await route.fulfill({ response })
+  })
+  await page.route(/\/static\/.*\.glb(?:\?|$)/, async (route) => {
+    const response = await route.fetch()
+    modelResponses.push(response.status())
+    await route.fulfill({ response })
+  })
+
+  const readDirectorTimeline = () => readDatabase((db) => {
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    return metadata.canvas_layout?.director_timeline || null
+  })
+  const validationGlb = embeddedGltfToGlb(fs.readFileSync(simpleSkinGltfPath, 'utf8'))
+  expect(validationGlb.subarray(0, 4).toString('utf8')).toBe('glTF')
+
+  await page.goto(`/film/${dramaId}/canvas`)
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByLabel('上传角色模型').setInputFiles({
+    name: 'khronos-simple-skin.glb',
+    mimeType: 'model/gltf-binary',
+    buffer: validationGlb,
+  })
+  await expect(page.locator('.resource-status').filter({ hasText: '角色模型已上传' })).toBeVisible()
+
+  await expect.poll(() => readDatabase((db) => db.prepare(
+    `SELECT id, name, type, category, url, local_path
+     FROM assets WHERE drama_id = ? AND name = ? ORDER BY id DESC LIMIT 1`,
+  ).get(dramaId, 'khronos-simple-skin.glb'))).toEqual(expect.objectContaining({
+    name: 'khronos-simple-skin.glb',
+    type: 'model',
+    category: 'director',
+    url: expect.stringMatching(/\/models\/[^/]+\.glb$/),
+    local_path: expect.stringMatching(/\/models\/[^/]+\.glb$/),
+  }))
+  const asset = readDatabase((db) => db.prepare(
+    'SELECT id, url, local_path FROM assets WHERE drama_id = ? AND name = ? ORDER BY id DESC LIMIT 1',
+  ).get(dramaId, 'khronos-simple-skin.glb'))
+  expect(fs.existsSync(path.join(tempRoot, 'storage', asset.local_path))).toBe(true)
+  expect(fs.readFileSync(path.join(tempRoot, 'storage', asset.local_path)).subarray(0, 4).toString('utf8')).toBe('glTF')
+
+  await expect.poll(() => readDirectorTimeline()?.characterAssets?.[String(characterId)]).toEqual(expect.objectContaining({
+    modelAssetId: asset.id,
+    modelUrl: asset.url,
+  }))
+  const librarySelect = page.locator('.resource-library select')
+  await expect(librarySelect).toContainText('khronos-simple-skin.glb')
+  await page.getByRole('button', { name: '加载 CC0 验证模型' }).click()
+  await expect(page.getByLabel('角色模型 URL')).toHaveValue('/director-fixtures/khronos-simple-skin.gltf')
+  await librarySelect.selectOption(String(asset.id))
+  await page.getByRole('button', { name: '应用为模型' }).click()
+  await expect(page.getByLabel('角色模型 URL')).toHaveValue(asset.url)
+  await expect.poll(() => readDirectorTimeline()?.characterAssets?.[String(characterId)]).toEqual(expect.objectContaining({
+    modelAssetId: asset.id,
+    modelUrl: asset.url,
+  }))
+
+  await page.getByRole('button', { name: '加载模型' }).click()
+  const modelStatus = page.locator('.resource-status--row').filter({ hasText: '模型：' })
+  await expect(modelStatus).toContainText('可见网格 1 · 骨骼 2 · 动画 1')
+
+  const dramaReadsBeforeReload = forwardedResponses.filter((entry) => (
+    entry.method === 'GET' && entry.path === `/api/v1/dramas/${dramaId}`
+  )).length
+  await page.getByRole('button', { name: '关闭导演台' }).click()
+  await page.reload()
+  await expect.poll(() => forwardedResponses.filter((entry) => (
+    entry.method === 'GET' && entry.path === `/api/v1/dramas/${dramaId}`
+  )).length).toBeGreaterThan(dramaReadsBeforeReload)
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await expect(page.getByLabel('角色模型 URL')).toHaveValue(asset.url)
+  await expect(page.locator('.resource-library select')).toContainText('khronos-simple-skin.glb')
+  await expect(modelStatus).toContainText('可见网格 1 · 骨骼 2 · 动画 1')
+
+  expect(forwardedResponses).toEqual(expect.arrayContaining([
+    expect.objectContaining({ method: 'POST', path: '/api/v1/upload/model', status: 200 }),
+    expect.objectContaining({ method: 'PUT', path: `/api/v1/dramas/${dramaId}/canvas-layout`, status: 200 }),
+    expect.objectContaining({ method: 'GET', path: '/api/v1/assets', status: 200 }),
+  ]))
+  expect(forwardedResponses.every(({ status }) => status >= 200 && status < 300)).toBe(true)
+  expect(modelResponses.length).toBeGreaterThan(0)
+  expect(modelResponses.every((status) => status >= 200 && status < 300)).toBe(true)
 })
