@@ -1439,6 +1439,7 @@ function canvasNodeActions(node) {
     'unbind-node-assigned-asset',
   )
   if (runtimeStatus?.savedAssetId) actions.unshift('copy-node-asset-ref', 'assign-node-asset-selected')
+  if (runtimeStatus?.retryAction) actions.unshift('retry-node-action')
   if (runtimeStatus?.nextStep) actions.unshift('continue-node-next-step')
   if ((runtimeStatus?.step === 'failed' && (runtimeStatus.retryStep || queueNodeRetryStep(node))) || (queueNodeFailure(node) && queueNodeRetryStep(node))) {
     actions.unshift('retry-node-failed')
@@ -2088,13 +2089,13 @@ async function copyNodeAssetReference(node) {
   await copyCanvasText(text, '素材引用已复制', '素材引用（请手动复制）')
 }
 
-async function assignNodeAssetToSelectedStoryboard(node) {
+async function assignNodeAssetToSelectedStoryboard(node, options = {}) {
   const asset = nodeSavedAsset(node)
   if (!asset) {
     ElMessage.warning('该节点结果尚未存入素材库')
-    return
+    return false
   }
-  await assignProjectAssetToSelectedStoryboard(asset)
+  return assignProjectAssetToSelectedStoryboard(asset, options)
 }
 
 function nodeResultTypeFromUrl(url, fallback = 'image') {
@@ -2525,6 +2526,55 @@ async function continueNodeNextStep(node) {
   }
   await focusCanvasNode(node.id)
   await runCanvasNodeStep(node, status.nextStep)
+}
+
+function frameTypeFromRetryAction(action, status) {
+  const slot = action === 'attach_library_image'
+    ? (status?.attachedSlot || 'main')
+    : String(action || '').replace('attach_image_', '')
+  if (slot === 'first') return 'storyboard_first'
+  if (slot === 'last') return 'storyboard_last'
+  return undefined
+}
+
+function clearNodeRetryAction(node, status, message = '节点结果操作已恢复') {
+  if (!node?.id) return
+  nodeStatus.set(node.id, {
+    ...status,
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
+    message,
+    autoClear: false,
+  })
+}
+
+async function retryNodeFailedAction(node) {
+  const status = nodeRuntimeStatus(node)
+  const action = status?.retryAction
+  if (!action) {
+    ElMessage.warning('该节点暂无可重试操作')
+    return
+  }
+  let recovered = false
+  if (action === 'save_result_asset') {
+    recovered = Boolean(await saveNodeResultAssetFromMenu(node))
+  } else if (action === 'use_downstream_reference') {
+    await useNodeResultAsDownstreamReference(node)
+    recovered = true
+  } else if (action === 'attach_library_image' || action.startsWith('attach_image_')) {
+    recovered = await setNodeResultAsStoryboardFrame(node, frameTypeFromRetryAction(action, status))
+  } else if (['attach_video', 'attach_audio', 'attach_library_video', 'attach_library_audio'].includes(action)) {
+    const asset = nodeSavedAsset(node, status) || await saveNodeResultAssetFromMenu(node)
+    if (!asset) return
+    recovered = await assignNodeAssetToSelectedStoryboard(node, {
+      storyboardId: restoredNodeStoryboardId(node, status) || selectedStoryboardIdForAssetAttach(),
+    })
+  } else {
+    ElMessage.warning('该节点操作暂不支持从右键重试')
+    return
+  }
+  if (recovered) clearNodeRetryAction(node, nodeRuntimeStatus(node))
 }
 
 
@@ -2992,6 +3042,8 @@ async function runNodeMenuAction(type, node) {
     await runCanvasNodeStep(node, 'library')
   } else if (type === 'focus-node-result') {
     await focusNodeResult(node)
+  } else if (type === 'retry-node-action') {
+    await retryNodeFailedAction(node)
   } else if (type === 'retry-node-failed') {
     await retryFailedNode(node)
   } else if (type === 'continue-node-next-step') {
