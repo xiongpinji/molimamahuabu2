@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'frontweb/**'
+      - 'backend-node/package*.json'
+      - 'backend-node/migrations/**'
+      - 'backend-node/src/**'
       - '.github/workflows/frontend-e2e.yml'
 
 permissions:
@@ -27,7 +30,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: frontweb/package-lock.json
+          cache-dependency-path: |
+            frontweb/package-lock.json
+            backend-node/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend-node
+        run: npm ci
 
       - name: Install frontend dependencies
         working-directory: frontweb
@@ -37,7 +46,7 @@ jobs:
         working-directory: frontweb
         run: npx playwright install --with-deps chromium
 
-      # 首页自由画布使用 localStorage，项目画布使用确定性 API mock；均不依赖后端服务。
+      # 同时覆盖首页 localStorage、确定性 API mock，以及真实 Express + SQLite 项目画布闭环。
       - name: Run frontend E2E
         working-directory: frontweb
         run: npm run test:e2e:canvas

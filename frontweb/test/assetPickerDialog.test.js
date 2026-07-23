@@ -14,6 +14,10 @@ test('素材选择弹窗按项目范围加载项目素材，并合并角色/场�
   assert.match(source, /propLibraryAPI\.list\(libraryParams, \{ silentError: true \}\)/)
 })
 
+test('素材选择弹窗使用场景库 location 作为真实场景素材名称', () => {
+  assert.match(source, /name: it\.name \|\| it\.title \|\| it\.location \|\|/)
+})
+
 test('素材选择弹窗暴露部分素材源加载失败，而不是静默吞掉 404', () => {
   assert.match(source, /const loadWarning = ref\(''\)/)
   assert.match(source, /Promise\.allSettled\(sources\.map\(\(source\) => source\.run\(\)\)\)/)

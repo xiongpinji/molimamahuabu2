@@ -337,7 +337,7 @@ function normalizeAssetItem(it, source) {
     id: `${source}:${it.id || url || localPath || it.name}`,
     raw_id: it.id,
     type: itemType,
-    name: it.name || it.title || String(url || localPath).split('/').pop(),
+    name: it.name || it.title || it.location || String(url || localPath).split('/').pop(),
     url,
     local_path: localPath,
     setup_hint: it.setup_hint || '',
