@@ -45,6 +45,14 @@
       @click.stop="copyRequestPayload"
     >复制请求</el-button>
     <el-button
+      v-if="canUseResultAsDownstreamReference"
+      link
+      size="small"
+      type="primary"
+      :disabled="disabled || attachingReference"
+      @click.stop="useResultAsDownstreamReference"
+    >{{ attachingReference ? '处理中…' : '作为下游参考' }}</el-button>
+    <el-button
       v-if="status.step === 'failed' && status.retryStep"
       link
       size="small"
@@ -72,8 +80,9 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
@@ -83,6 +92,8 @@ const props = defineProps({
 
 defineEmits(['retry', 'retry-action', 'continue'])
 
+const ctx = useCanvasContext()
+const attachingReference = ref(false)
 const statusSavedAsset = computed(() => {
   if (!props.status?.savedAssetId) return null
   return {
@@ -92,6 +103,9 @@ const statusSavedAsset = computed(() => {
   }
 })
 const resultUrl = computed(() => assetMediaUrl(statusSavedAsset.value) || props.status?.savedAssetUrl || props.status?.resultUrl || '')
+const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || '')
+const downstreamNode = computed(() => downstreamNodeId.value ? ctx?.findCanvasNode?.(downstreamNodeId.value) : null)
+const canUseResultAsDownstreamReference = computed(() => Boolean(resultUrl.value) && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const requestPayloadText = computed(() => {
   const payload = props.status?.requestAudit || props.status?.requestPayload
   if (!payload || typeof payload !== 'object') return ''
@@ -148,6 +162,23 @@ function copyPrompt() {
 
 function copyRequestPayload() {
   copyText(requestPayloadText.value, '真实请求已复制', '真实请求（请手动复制）')
+}
+
+async function useResultAsDownstreamReference() {
+  if (!canUseResultAsDownstreamReference.value || attachingReference.value) return
+  attachingReference.value = true
+  try {
+    await ctx.useNodeResultAsDownstreamReference(downstreamNode.value, {
+      resultUrl: resultUrl.value,
+      resultType: props.status?.resultType || '',
+      savedAssetId: props.status?.savedAssetId || '',
+    })
+    ElMessage.success('已作为下游参考')
+  } catch (error) {
+    ElMessage.error(error?.message || '作为下游参考失败')
+  } finally {
+    attachingReference.value = false
+  }
 }
 </script>
 
