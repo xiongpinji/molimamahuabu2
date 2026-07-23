@@ -310,18 +310,19 @@
             v-for="item in runQueueItems"
             :key="item.key"
             class="run-queue-item"
-            :class="['tone-' + item.tone, item.resultUrl ? 'queue-preview-' + queueResultPreviewType(item) : 'queue-preview-empty']"
+            :class="['tone-' + item.tone, item.resultUrl ? 'queue-preview-' + queueResultPreviewType(item) : queueTextResult(item) ? 'queue-preview-text' : 'queue-preview-empty']"
             @click="focusQueueItem(item)"
           >
             <span class="run-dot" />
             <span
               class="run-result-preview"
-              :class="[item.resultUrl ? 'preview-' + queueResultPreviewType(item) : 'preview-empty']"
+              :class="[item.resultUrl ? 'preview-' + queueResultPreviewType(item) : queueTextResult(item) ? 'preview-text' : 'preview-empty']"
               @click.stop="item.resultUrl && openQueueItemResult(item)"
             >
               <img v-if="item.resultUrl && queueResultPreviewType(item) === 'image'" :src="item.resultUrl" alt="队列结果预览" />
               <video v-else-if="item.resultUrl && queueResultPreviewType(item) === 'video'" :src="item.resultUrl" muted playsinline />
               <audio v-else-if="item.resultUrl" :src="item.resultUrl" controls preload="metadata" @click.stop />
+              <small v-else-if="queueTextResult(item)">{{ queueTextResult(item) }}</small>
             </span>
             <span class="run-info">
               <strong>{{ item.label }}</strong>
@@ -331,6 +332,8 @@
             <span v-else-if="item.tone === 'success'" class="run-success-actions">
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
+              <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
@@ -343,6 +346,8 @@
             <span v-else-if="item.tone === 'failed'" class="run-failed-actions">
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开上次</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
+              <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
+              <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
@@ -895,6 +900,7 @@ const runQueueItems = computed(() => {
       resultType: status.resultType || '',
       resultLabel: status.resultLabel || '',
       resultSummary: status.resultSummary || '',
+      resultReferences: Array.isArray(status.resultReferences) ? status.resultReferences : [],
       promptText: status.promptText || '',
       storyboardId: status.storyboardId || storyboardIdFromNodeId(sourceNodeId) || '',
       model: status.model || '',
@@ -962,6 +968,7 @@ function mergeRunQueueItem(grouped, item) {
   if (!current.resultType && item.resultType) current.resultType = item.resultType
   if (!current.resultLabel && item.resultLabel) current.resultLabel = item.resultLabel
   if (!current.resultSummary && item.resultSummary) current.resultSummary = item.resultSummary
+  if ((!current.resultReferences || !current.resultReferences.length) && item.resultReferences?.length) current.resultReferences = item.resultReferences
   if (!current.promptText && item.promptText) current.promptText = item.promptText
   if (!current.storyboardId && item.storyboardId) current.storyboardId = item.storyboardId
   if (!current.model && item.model) current.model = item.model
@@ -1031,6 +1038,12 @@ function queueResultPreviewType(item) {
   if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
   if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
   return 'image'
+}
+
+function queueTextResult(item) {
+  const text = String(item?.resultSummary || '').trim()
+  if (text) return text.slice(0, 80)
+  return ''
 }
 
 function formatQueueElapsed(startedAt) {
@@ -1104,6 +1117,24 @@ async function copyQueueItemResult(item) {
     return
   }
   await copyCanvasText(item.resultUrl, '队列结果链接已复制', '队列结果链接（请手动复制）')
+}
+
+async function copyQueueItemTextResult(item) {
+  const text = String(item?.resultSummary || '').trim()
+  if (!text) {
+    ElMessage.warning('该队列项暂无可复制的文本结果')
+    return
+  }
+  await copyCanvasText(text, '队列文本结果已复制', '队列文本结果（请手动复制）')
+}
+
+async function copyQueueItemResultReferences(item) {
+  const references = Array.isArray(item?.resultReferences) ? item.resultReferences.map((value) => String(value || '').trim()).filter(Boolean) : []
+  if (!references.length) {
+    ElMessage.warning('该队列项暂无可复制的结果引用')
+    return
+  }
+  await copyCanvasText([...new Set(references)].join('\n'), '队列结果引用已复制', '队列结果引用（请手动复制）')
 }
 
 async function copyQueueItemError(item) {
@@ -4665,6 +4696,9 @@ onBeforeUnmount(() => {
 .run-queue-item.queue-preview-audio {
   grid-template-columns: 10px 112px minmax(0, 1fr) auto;
 }
+.run-queue-item.queue-preview-text {
+  grid-template-columns: 10px 96px minmax(0, 1fr) auto;
+}
 .run-dot {
   width: 8px;
   height: 8px;
@@ -4709,6 +4743,20 @@ onBeforeUnmount(() => {
 .run-result-preview.preview-audio audio {
   width: 104px;
   height: 24px;
+}
+.run-result-preview.preview-text {
+  width: 96px;
+  padding: 4px 6px;
+  color: #c7d2fe;
+  background: rgba(129, 140, 248, 0.12);
+}
+.run-result-preview.preview-text small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 9px;
+  line-height: 1.25;
 }
 .run-result-preview.preview-empty {
   opacity: 0.28;
