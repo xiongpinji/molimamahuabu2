@@ -172,8 +172,12 @@ const savedAssetReference = computed(() => {
   const url = props.status?.savedAssetUrl || props.status?.resultUrl || ''
   return `@素材(${name}#${props.status.savedAssetId}) ${url}`.trim()
 })
+const reusableResultReferences = computed(() => normalizeTextList([
+  ...resultReferences.value,
+  savedAssetReference.value,
+]))
 const canFocusResultNode = computed(() => Boolean(props.status?.resultNodeId) && Boolean(ctx?.focusCanvasNode))
-const hasReusableResultReference = computed(() => Boolean(resultUrl.value || resultSummary.value || resultReferences.value.length || savedAssetReference.value))
+const hasReusableResultReference = computed(() => Boolean(resultUrl.value || resultSummary.value || reusableResultReferences.value.length))
 const canUseResultAsDownstreamReference = computed(() => hasReusableResultReference.value && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const canSaveResultAsset = computed(() => Boolean(resultUrl.value) && !props.status?.savedAssetId)
 const resultMetaText = computed(() => {
@@ -354,7 +358,7 @@ async function useResultAsDownstreamReference() {
       resultType: props.status?.resultType || '',
       savedAssetId: props.status?.savedAssetId || '',
       resultSummary: resultSummary.value,
-      resultReferences: resultReferences.value,
+      resultReferences: reusableResultReferences.value,
     })
     ElMessage.success('已作为下游参考')
   } catch (error) {

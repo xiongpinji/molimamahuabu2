@@ -200,6 +200,7 @@ test('节点执行条展示并复制结果摘要、引用和素材引用', () =>
   assert.match(executionStripSource, /const upstreamReferenceUrls = computed\(\(\) => normalizeTextList\(props\.status\?\.upstreamReferenceUrls\)\)/)
   assert.match(executionStripSource, /const upstreamReferenceText = computed\(\(\) => upstreamReferenceUrls\.value\.join\('\\n'\)\)/)
   assert.match(executionStripSource, /const savedAssetReference = computed/)
+  assert.match(executionStripSource, /const reusableResultReferences = computed\(\(\) => normalizeTextList\(\[/)
   assert.match(executionStripSource, /const hasReusableResultReference = computed/)
   assert.match(executionStripSource, /nodeId: \{ type: String, default: '' \}/)
   assert.match(executionStripSource, /const downstreamNodeId = computed\(\(\) => props\.status\?\.resultNodeId \|\| props\.status\?\.sourceNodeId \|\| props\.nodeId \|\| ''\)/)
@@ -233,7 +234,7 @@ test('节点执行条展示并复制结果摘要、引用和素材引用', () =>
   assert.match(executionStripSource, /function copySavedAssetReference\(\)/)
   assert.match(executionStripSource, /copyText\(savedAssetReference\.value, '素材引用已复制'/)
   assert.match(executionStripSource, /resultSummary: resultSummary\.value/)
-  assert.match(executionStripSource, /resultReferences: resultReferences\.value/)
+  assert.match(executionStripSource, /resultReferences: reusableResultReferences\.value/)
 })
 
 test('画布节点运行状态会携带当前节点提示词', () => {
