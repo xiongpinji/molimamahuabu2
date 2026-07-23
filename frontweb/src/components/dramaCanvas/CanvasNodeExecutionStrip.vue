@@ -1,7 +1,7 @@
 <template>
   <div v-if="status" class="node-execution-strip">
     <span class="node-execution-label">节点执行</span>
-    <span class="node-execution-message">{{ status.errorDetail || status.message || status.step }}</span>
+    <span class="node-execution-message">{{ status.actionError || status.errorDetail || status.message || status.step }}</span>
     <el-button
       v-if="resultUrl"
       link
@@ -24,10 +24,10 @@
       @click.stop="downloadResult"
     >下载</el-button>
     <el-button
-      v-if="status.errorDetail || status.message"
+      v-if="status.actionError || status.errorDetail || status.message"
       link
       size="small"
-      :type="status.step === 'failed' ? 'danger' : 'info'"
+      :type="status.step === 'failed' || status.actionError ? 'danger' : 'info'"
       @click.stop="copyStatusDetail"
     >复制详情</el-button>
     <el-button
@@ -61,10 +61,10 @@
       @click.stop="$emit('retry')"
     >{{ status.retryLabel || '重试失败步骤' }}</el-button>
     <el-button
-      v-if="status.step === 'failed' && status.retryAction"
+      v-if="status.retryAction"
       link
       size="small"
-      type="danger"
+      :type="status.step === 'failed' || status.actionError ? 'danger' : 'warning'"
       :disabled="disabled"
       @click.stop="$emit('retry-action')"
     >{{ status.retryActionLabel || '重试操作' }}</el-button>
@@ -153,7 +153,7 @@ function copyResult() {
 }
 
 function copyStatusDetail() {
-  copyText(props.status?.errorDetail || props.status?.message || '', '节点详情已复制', '节点详情（请手动复制）')
+  copyText(props.status?.actionError || props.status?.errorDetail || props.status?.message || '', '节点详情已复制', '节点详情（请手动复制）')
 }
 
 function copyPrompt() {
