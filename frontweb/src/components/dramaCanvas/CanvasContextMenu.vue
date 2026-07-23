@@ -107,6 +107,7 @@ const nodeGroups = [
       { type: 'open-node-result', label: '打开结果', hint: '查看生成结果', icon: View },
       { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
       { type: 'download-node-result', label: '下载结果', hint: '保存到本地', icon: Download },
+      { type: 'save-node-result-asset', label: '存入素材库', hint: '转为项目素材', icon: FolderOpened },
       { type: 'copy-node-asset-ref', label: '复制素材引用', hint: '@素材(...)', icon: Document },
       { type: 'assign-node-asset-selected', label: '回填结果素材', hint: '指派到选中分镜', icon: Connection },
       { type: 'copy-node-assigned-asset-ref', label: '复制指派素材', hint: '本镜参考素材', icon: Document },

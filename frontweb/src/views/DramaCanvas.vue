@@ -1424,6 +1424,7 @@ function canvasNodeActions(node) {
   const runtimeStatus = nodeRuntimeStatus(node)
   if (nodeResultUrl(node, runtimeStatus)) {
     actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
+    if (!runtimeStatus?.savedAssetId) actions.unshift('save-node-result-asset')
     if (resultNodeIdFromStatus(node, runtimeStatus)) actions.unshift('focus-node-result')
   }
   if (nodeAssignedAssets(node).length) actions.unshift(
@@ -2090,6 +2091,59 @@ async function assignNodeAssetToSelectedStoryboard(node) {
     return
   }
   await assignProjectAssetToSelectedStoryboard(asset)
+}
+
+function nodeResultTypeFromUrl(url, fallback = 'image') {
+  const value = String(url || '').split(/[?#]/)[0]
+  if (/\.(mp4|webm|mov|m4v)$/i.test(value)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(value)) return 'audio'
+  return ['image', 'video', 'audio', 'text'].includes(fallback) ? fallback : 'image'
+}
+
+async function saveNodeResultAssetFromMenu(node) {
+  const status = nodeRuntimeStatus(node)
+  if (status?.savedAssetId) {
+    ElMessage.info('该节点结果已在素材库中')
+    return
+  }
+  const resultUrl = nodeResultUrl(node, status)
+  if (!resultUrl) {
+    ElMessage.warning('该节点暂无可入库结果')
+    return
+  }
+  const sb = storyboardForNode(node)
+  const storyboardId = status?.storyboardId || sb?.id || storyboardIdFromNodeId(node?.id) || selectedStoryboardIdForAssetAttach() || null
+  const resultType = status?.resultType || nodeResultTypeFromUrl(resultUrl, node?.data?.kind)
+  const promptText = status?.promptText || (sb ? nodeStepPromptText(resultType, sb, node) : '')
+  const saved = await saveNodeResultAsset(node, {
+    resultUrl,
+    resultType,
+    resultLabel: status?.resultLabel || canvasNodeLabel(node) || '节点结果',
+    resultSummary: status?.resultSummary || '',
+    model: status?.model || '',
+    taskId: status?.taskId || '',
+    videoGenerationId: status?.videoGenerationId || '',
+    requestPayload: status?.requestPayload || null,
+    requestAudit: status?.requestAudit || null,
+  }, promptText, storyboardId)
+  if (!saved?.savedAssetId) {
+    ElMessage.error('节点结果入库失败')
+    return
+  }
+  nodeStatus.set(node.id, {
+    ...status,
+    ...saved,
+    resultUrl,
+    resultType,
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
+    message: '节点结果已存入素材库',
+    autoClear: false,
+  })
+  await loadProjectImageAssets()
+  rebuildGraph()
+  ElMessage.success('节点结果已存入素材库')
 }
 
 async function copyNodeAssignedAssetReference(node) {
@@ -2875,6 +2929,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeResult(node)
   } else if (type === 'download-node-result') {
     downloadNodeResult(node)
+  } else if (type === 'save-node-result-asset') {
+    await saveNodeResultAssetFromMenu(node)
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
   } else if (type === 'assign-node-asset-selected') {
