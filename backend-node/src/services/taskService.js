@@ -131,6 +131,17 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       }
     }
     updateTaskError(db, row.id, ORPHAN_ASYNC_TASK_MSG);
+    if (row.type === 'image_generation') {
+      try {
+        db.prepare(
+          `UPDATE image_generations
+           SET status = 'failed', error_msg = ?, updated_at = ?
+           WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).run(ORPHAN_ASYNC_TASK_MSG, new Date().toISOString(), row.id);
+      } catch (error) {
+        log.warn('遗留图片生成记录清理失败', { task_id: row.id, error: error.message });
+      }
+    }
     log.info('Orphaned async task marked failed', {
       task_id: row.id,
       type: row.type,
