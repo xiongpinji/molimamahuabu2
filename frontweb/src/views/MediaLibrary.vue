@@ -275,10 +275,15 @@ function normalizeItem(item) {
   }
 }
 
+function staticAssetUrl(localPath) {
+  const path = String(localPath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/^static\//, '')
+  return path ? `/static/${path}` : ''
+}
+
 function itemUrl(item) {
   if (!item) return ''
   const lp = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path
-  if (lp) return '/static/' + lp.replace(/^\//, '')
+  if (lp) return staticAssetUrl(lp)
   return item.url || item.image_url || item.video_url || item.audio_url || item.voice_url || ''
 }
 

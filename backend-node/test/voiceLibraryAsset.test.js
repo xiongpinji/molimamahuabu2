@@ -59,6 +59,45 @@ describe('voice library assets', () => {
     }
   });
 
+  it('rejects binding a voice asset from another project', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const now = new Date().toISOString();
+      const otherDramaId = db.prepare(
+        `INSERT INTO dramas (title, status, created_at, updated_at) VALUES ('其他项目', 'draft', ?, ?)`
+      ).run(now, now).lastInsertRowid;
+      const otherCharacterId = db.prepare(
+        `INSERT INTO characters (drama_id, name, created_at, updated_at) VALUES (?, '其他角色', ?, ?)`
+      ).run(otherDramaId, now, now).lastInsertRowid;
+      const voice = assetService.saveExtractedVoice(db, null, {
+        dramaId,
+        characterId: 1,
+        characterName: '小狐狸',
+        storyboardId: 12,
+        videoId: 34,
+        voiceAsset: {
+          url: '/static/projects/demo/fox.mp3',
+          local_path: 'projects/demo/fox.mp3',
+          duration: 2.4,
+          format: 'mp3',
+        },
+      });
+
+      const result = assetService.bindVoiceAsset({
+        db,
+        characterId: otherCharacterId,
+        assetId: voice.id,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'VOICE_ASSET_FORBIDDEN');
+      const saved = db.prepare('SELECT seedance2_voice_asset FROM characters WHERE id = ?').get(otherCharacterId);
+      assert.equal(saved.seedance2_voice_asset, null);
+    } finally {
+      db.close();
+    }
+  });
+
   it('filters reusable voice assets by category and keyword', () => {
     const { db, dramaId } = createDb();
     try {

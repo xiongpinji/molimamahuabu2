@@ -38,3 +38,11 @@ test('素材库页面支持音频素材上传、筛选、预览和复用为分�
   assert.match(mediaLibrarySource, /audio_url: localPath \? undefined : itemUrl\(item\)/)
   assert.match(mediaLibrarySource, /已设为该分镜音频，可到画布查看/)
 })
+
+test('素材库将 Windows 和 static 本地路径规范化为可访问地址', () => {
+  assert.match(mediaLibrarySource, /function staticAssetUrl\(localPath\)/)
+  assert.ok(mediaLibrarySource.includes("replace(/\\\\/g, '/')"))
+  assert.ok(mediaLibrarySource.includes("replace(/^\\/+/, '')"))
+  assert.ok(mediaLibrarySource.includes("replace(/^static\\//, '')"))
+  assert.match(mediaLibrarySource, /if \(lp\) return staticAssetUrl\(lp\)/)
+})
