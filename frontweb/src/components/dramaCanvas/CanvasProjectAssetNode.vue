@@ -35,6 +35,7 @@
         :node-id="id"
         :disabled="assigning"
         @retry="retryFailedStep"
+        @retry-action="retryFailedStep"
       />
       <p class="asset-ref">{{ referenceText || '该素材缺少可复制引用' }}</p>
       <p class="asset-assignment">{{ assignmentLabel }}</p>

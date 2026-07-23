@@ -736,6 +736,13 @@ test('资产节点卡片显示参考图失败原因并可重试', () => {
   assert.match(assetGenerateSource, /errorDetail: message/)
 })
 
+test('资产面板和项目素材节点会接住执行条的重试操作事件', () => {
+  assert.match(assetPanelSource, /@retry="retryAssetFailedStep"/)
+  assert.match(assetPanelSource, /@retry-action="retryAssetFailedStep"/)
+  assert.match(projectAssetNodeSource, /@retry="retryFailedStep"/)
+  assert.match(projectAssetNodeSource, /@retry-action="retryFailedStep"/)
+})
+
 test('脚本节点卡片显示保存和提取失败原因并可按步骤重试', () => {
   assert.match(scriptNodeSource, /import \{ isCanvasNodeBusyStatus \} from '@\/utils\/canvasNodeStatus'/)
   assert.match(scriptNodeSource, /const runtimeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)

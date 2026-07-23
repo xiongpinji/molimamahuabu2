@@ -127,6 +127,7 @@
       :node-id="nodeId"
       :disabled="saving || generating || panoramaGenerating || multiViewGenerating || libraryApplying"
       @retry="retryAssetFailedStep"
+      @retry-action="retryAssetFailedStep"
     />
 
     <div class="panel-actions">
