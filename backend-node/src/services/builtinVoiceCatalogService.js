@@ -73,8 +73,21 @@ function safeVoiceFile(entry, cfg = {}) {
   return null;
 }
 
-function listBuiltinVoices(cfg = {}) {
-  return CATALOG.map((entry) => {
+function matchesKeyword(entry, keyword) {
+  const text = String(keyword || '').trim().toLowerCase();
+  if (!text) return true;
+  return [
+    entry.id,
+    entry.engine,
+    entry.voice_id,
+    entry.language,
+    entry.label,
+    entry.description,
+  ].some((value) => String(value || '').toLowerCase().includes(text));
+}
+
+function listBuiltinVoices(cfg = {}, options = {}) {
+  return CATALOG.filter((entry) => matchesKeyword(entry, options.keyword)).map((entry) => {
     const file = safeVoiceFile(entry, cfg);
     return {
       ...entry,
@@ -103,10 +116,17 @@ function getBuiltinVoice(id, cfg = {}) {
   };
 }
 
-function listProjectVoiceAssets(db, dramaId) {
+function listProjectVoiceAssets(db, dramaId, options = {}) {
   const id = Number(dramaId);
   if (!Number.isInteger(id) || id <= 0) return [];
-  return assetService.list(db, { drama_id: id, type: 'audio', category: 'voice', page: 1, page_size: 100 }).items
+  return assetService.list(db, {
+    drama_id: id,
+    type: 'audio',
+    category: 'voice',
+    keyword: options.keyword,
+    page: 1,
+    page_size: 100,
+  }).items
     .map((asset) => {
       const metadata = asset.metadata || {};
       const voiceAsset = metadata.voice_asset || {};

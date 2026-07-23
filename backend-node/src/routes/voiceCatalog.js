@@ -21,9 +21,10 @@ function routes(db, cfg, log) {
     },
     list: (req, res) => {
       try {
+        const keyword = req.query?.keyword || '';
         const items = [
-          ...voiceCatalogService.listBuiltinVoices(cfg),
-          ...voiceCatalogService.listProjectVoiceAssets(db, req.query?.drama_id),
+          ...voiceCatalogService.listBuiltinVoices(cfg, { keyword }),
+          ...voiceCatalogService.listProjectVoiceAssets(db, req.query?.drama_id, { keyword }),
         ];
         response.success(res, { items });
       } catch (err) {

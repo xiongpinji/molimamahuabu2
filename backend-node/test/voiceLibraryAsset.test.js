@@ -100,6 +100,53 @@ describe('voice library assets', () => {
     }
   });
 
+  it('filters voice catalog project assets by keyword', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const fox = assetService.saveExtractedVoice(db, null, {
+        dramaId,
+        characterId: 1,
+        characterName: '小狐狸',
+        storyboardId: 12,
+        videoId: 34,
+        voiceAsset: {
+          url: '/static/projects/demo/fox.mp3',
+          local_path: 'projects/demo/fox.mp3',
+          duration: 2.4,
+          format: 'mp3',
+        },
+      });
+      assetService.saveExtractedVoice(db, null, {
+        dramaId,
+        characterId: 2,
+        characterName: '老猎人',
+        storyboardId: 13,
+        videoId: 35,
+        voiceAsset: {
+          url: '/static/projects/demo/hunter.mp3',
+          local_path: 'projects/demo/hunter.mp3',
+          duration: 3.1,
+          format: 'mp3',
+        },
+      });
+
+      const catalog = voiceCatalogService.listProjectVoiceAssets(db, dramaId, { keyword: '小狐狸' });
+
+      assert.equal(catalog.length, 1);
+      assert.equal(catalog[0].asset_id, fox.id);
+      assert.equal(catalog[0].metadata.character_name, '小狐狸');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('filters builtin voice catalog entries by keyword', () => {
+    const items = voiceCatalogService.listBuiltinVoices({}, { keyword: '日语' });
+
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'melotts-jp');
+  });
+
   it('can include global assets when listing project-scoped reusable assets', () => {
     const { db, dramaId } = createDb();
     try {

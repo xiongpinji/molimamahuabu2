@@ -66,6 +66,7 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
   assert.match(source, /item\.type === 'audio'/)
   assert.match(source, /if \(props\.type === 'audio' \|\| wantsAll\)/)
   assert.match(source, /characterAPI\.listVoiceCatalog\(voiceParams, \{ silentError: true \}\)/)
+  assert.match(source, /if \(keyword\.value\) voiceParams\.keyword = keyword\.value/)
   assert.match(source, /normalizeVoiceCatalogItems/)
   assert.match(source, /it\.available !== false \|\| it\.setup_hint/)
   assert.doesNotMatch(source, /can_bind !== false/)

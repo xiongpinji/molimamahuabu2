@@ -217,6 +217,7 @@ async function load() {
     if (props.type === 'audio' || wantsAll) {
       const voiceParams = {}
       if (props.dramaId) voiceParams.drama_id = props.dramaId
+      if (keyword.value) voiceParams.keyword = keyword.value
       sources.push({
         label: '音色库',
         run: () => characterAPI.listVoiceCatalog(voiceParams, { silentError: true }).then(normalizeVoiceCatalogItems),
