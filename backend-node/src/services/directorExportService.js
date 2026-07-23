@@ -8,6 +8,7 @@ const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 
 const MAX_TIMELINE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_FFMPEG_TIMEOUT_MS = 15 * 60 * 1000;
 
 function storageRootFromConfig(cfg) {
   const raw = cfg?.storage?.local_path || './data/storage';
@@ -79,23 +80,55 @@ function setTaskUser(db, taskId, userId) {
   }
 }
 
-function startFfmpegTask({ db, cfg, log, task, dramaId, inputPath, outputPath, outputRelativePath, metadataPath, timeline, timelineSummary }) {
+function startFfmpegTask({
+  db, cfg, log, task, dramaId, inputPath, outputPath, outputRelativePath,
+  metadataPath, metadataFilePath, timeline, timelineSummary, spawnProcess = spawn,
+  timeoutMs = DEFAULT_FFMPEG_TIMEOUT_MS,
+}) {
   taskService.updateTaskStatus(db, task.id, 'processing', 5, '正在转码 MP4');
-  const child = spawn(getFfmpegPath(), buildFfmpegArgs(inputPath, outputPath), {
+  const child = spawnProcess(getFfmpegPath(), buildFfmpegArgs(inputPath, outputPath), {
     windowsHide: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
+  let settled = false;
   let stderr = '';
+  const removeFile = (filePath) => {
+    if (!filePath) return;
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (_) {}
+  };
+  const removeFailedFiles = () => {
+    removeFile(inputPath);
+    removeFile(outputPath);
+    removeFile(metadataFilePath);
+  };
+  const failTask = (message) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    removeFailedFiles();
+    taskService.updateTaskError(db, task.id, message);
+  };
+  const timeout = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch (_) {}
+    failTask(`视频转码超时（${Math.ceil(timeoutMs / 60000)} 分钟）`);
+  }, timeoutMs);
+  timeout.unref?.();
   child.stderr?.on('data', (chunk) => {
     stderr = (stderr + chunk.toString()).slice(-4000);
   });
   child.on('error', (error) => {
-    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch (_) {}
-    taskService.updateTaskError(db, task.id, `FFmpeg 启动失败：${error.message}`);
+    failTask(`FFmpeg 启动失败：${error.message}`);
   });
   child.on('close', (code) => {
-    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch (_) {}
+    if (settled) {
+      removeFailedFiles();
+      return;
+    }
+    settled = true;
+    clearTimeout(timeout);
+    removeFile(inputPath);
     if (code !== 0 || !fs.existsSync(outputPath)) {
+      removeFailedFiles();
       const detail = stderr.trim().split(/\r?\n/).pop() || `退出码 ${code}`;
       taskService.updateTaskError(db, task.id, `视频转码失败：${detail}`);
       return;
@@ -169,6 +202,7 @@ function createDirectorExportTask({ db, cfg, log, dramaId, file, timeline, userI
     outputPath,
     outputRelativePath,
     metadataPath: metadataRelativePath,
+    metadataFilePath: metadataPath,
     timeline: normalizedTimeline,
     timelineSummary,
   }));
@@ -182,5 +216,7 @@ module.exports = {
   normalizeTimeline,
   summarizeTimeline,
   buildFfmpegArgs,
+  startFfmpegTask,
   createDirectorExportTask,
+  DEFAULT_FFMPEG_TIMEOUT_MS,
 };

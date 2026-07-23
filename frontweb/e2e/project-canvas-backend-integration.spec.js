@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -14,6 +14,7 @@ const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url
 const backendServer = path.join(backendRoot, 'src', 'server.js')
 const simpleSkinGltfPath = fileURLToPath(new URL('../public/director-fixtures/khronos-simple-skin.gltf', import.meta.url))
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
+const { getFfmpegPath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
 
 let backendProcess
 let backendOrigin
@@ -25,6 +26,7 @@ let characterId
 let storyboardId
 let tempRoot
 let ttsProvider
+let validationWebm
 const ttsProviderRequests = []
 
 test.setTimeout(60_000)
@@ -149,6 +151,17 @@ test.beforeAll(async () => {
   await new Promise((resolve) => ttsProvider.listen(0, '127.0.0.1', resolve))
   const port = await reservePort()
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-canvas-browser-backend-'))
+  const validationWebmPath = path.join(tempRoot, 'director-validation.webm')
+  const generatedWebm = spawnSync(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=12',
+    '-t', '0.5', '-c:v', 'libvpx-vp9', '-an', '-y', validationWebmPath,
+  ], { encoding: 'utf8', timeout: 10_000 })
+  if (generatedWebm.status !== 0) {
+    throw new Error(`导演台验证 WebM 生成失败：${generatedWebm.stderr || generatedWebm.error?.message || generatedWebm.status}`)
+  }
+  validationWebm = fs.readFileSync(validationWebmPath)
+  if (validationWebm.length < 1024) throw new Error('导演台验证 WebM 内容无效')
   databasePath = path.join(tempRoot, 'canvas.sqlite')
   const storagePath = path.join(tempRoot, 'storage')
   const configRoot = path.join(tempRoot, 'configs')
@@ -684,7 +697,10 @@ test('3D 导演台通过真实后端上传 CC0 角色资产并从素材库刷新
     await route.fulfill({ response })
   })
   await page.route(/\/static\/.*\.glb(?:\?|$)/, async (route) => {
-    const response = await route.fetch()
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
     modelResponses.push(response.status())
     await route.fulfill({ response })
   })
@@ -764,4 +780,154 @@ test('3D 导演台通过真实后端上传 CC0 角色资产并从素材库刷新
   expect(forwardedResponses.every(({ status }) => status >= 200 && status < 300)).toBe(true)
   expect(modelResponses.length).toBeGreaterThan(0)
   expect(modelResponses.every((status) => status >= 200 && status < 300)).toBe(true)
+})
+
+test('3D 导演台通过真实后端转码 MP4、登记视频资产并下载工件', async ({ page }) => {
+  const forwardedResponses = []
+  const staticResponses = []
+  const validationWebmBase64 = validationWebm.toString('base64')
+  await page.addInitScript(({ webmBase64 }) => {
+    const bytes = Uint8Array.from(atob(webmBase64), (character) => character.charCodeAt(0))
+    const track = { requestFrame() {}, stop() {} }
+    HTMLCanvasElement.prototype.captureStream = () => ({
+      getVideoTracks: () => [track],
+      getTracks: () => [track],
+    })
+    class ValidationMediaRecorder {
+      static isTypeSupported(type) {
+        return String(type).startsWith('video/webm')
+      }
+
+      constructor() {
+        this.state = 'inactive'
+        this.onstop = null
+        this.onerror = null
+        this.ondataavailable = null
+        this.emitted = false
+      }
+
+      start() {
+        this.state = 'recording'
+      }
+
+      requestData() {
+        if (this.emitted) return
+        this.emitted = true
+        this.ondataavailable?.({ data: new Blob([bytes], { type: 'video/webm' }) })
+      }
+
+      stop() {
+        this.requestData()
+        this.state = 'inactive'
+        queueMicrotask(() => this.onstop?.())
+      }
+    }
+    window.MediaRecorder = ValidationMediaRecorder
+  }, { webmBase64: validationWebmBase64 })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    forwardedResponses.push({ method: request.method(), path: source.pathname, status: response.status() })
+    await route.fulfill({ response })
+  })
+  await page.route('**/static/**', async (route) => {
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    staticResponses.push({
+      path: decodeURIComponent(source.pathname),
+      status: response.status(),
+      contentType: response.headers()['content-type'],
+    })
+    await route.fulfill({ response })
+  })
+
+  const taskIdsBefore = new Set(readDatabase((db) => db.prepare(
+    "SELECT id FROM async_tasks WHERE type = 'director_export'",
+  ).all().map((row) => row.id)))
+
+  await page.goto(`/film/${dramaId}/canvas`)
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.locator('.shot-list-item').first().click()
+  const shotDuration = page.locator('.shot-editor').getByRole('spinbutton', { name: '时长（秒）', exact: true })
+  await shotDuration.fill('0.25')
+  await shotDuration.press('Tab')
+  await expect.poll(() => readDatabase((db) => {
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    return metadata.canvas_layout?.director_timeline?.sequence?.duration
+  })).toBe(0.25)
+
+  const downloadPromise = page.waitForEvent('download', { timeout: 30_000 })
+  await page.getByRole('button', { name: '服务端导出 MP4' }).click()
+  const download = await downloadPromise
+  await expect(page.getByText('视频已导出（MP4）', { exact: true })).toBeVisible()
+  expect(download.suggestedFilename()).toBe('真实后端项目画布.mp4')
+  const downloadedPath = await download.path()
+  expect(fs.readFileSync(downloadedPath).subarray(4, 8).toString('ascii')).toBe('ftyp')
+
+  await expect.poll(() => readDatabase((db) => db.prepare(
+    "SELECT id, status, error, result FROM async_tasks WHERE type = 'director_export' ORDER BY created_at DESC LIMIT 1",
+  ).get()), { timeout: 30_000 }).toEqual(expect.objectContaining({
+    status: 'completed',
+    error: null,
+    result: expect.any(String),
+  }))
+  const completedTask = readDatabase((db) => db.prepare(
+    "SELECT id, status, error, result FROM async_tasks WHERE type = 'director_export' ORDER BY created_at DESC LIMIT 1",
+  ).get())
+  expect(taskIdsBefore.has(completedTask.id)).toBe(false)
+  const result = JSON.parse(completedTask.result)
+  expect(result).toEqual(expect.objectContaining({
+    format: 'mp4',
+    asset_id: expect.any(Number),
+    local_path: expect.stringMatching(/\/videos\/director\/director_.*\.mp4$/),
+    metadata_path: expect.stringMatching(/\/videos\/director\/director_.*\.json$/),
+    timeline_summary: expect.objectContaining({
+      duration: 0.25,
+      shot_count: expect.any(Number),
+      track_count: expect.any(Number),
+      action_clip_count: expect.any(Number),
+    }),
+  }))
+
+  const outputPath = path.join(tempRoot, 'storage', result.local_path)
+  const metadataPath = path.join(tempRoot, 'storage', result.metadata_path)
+  expect(fs.existsSync(outputPath)).toBe(true)
+  expect(fs.readFileSync(outputPath).subarray(4, 8).toString('ascii')).toBe('ftyp')
+  expect(fs.existsSync(metadataPath)).toBe(true)
+  expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8'))).toEqual(expect.objectContaining({
+    drama_id: dramaId,
+    task_id: completedTask.id,
+    timeline_summary: expect.objectContaining({ duration: 0.25 }),
+  }))
+  expect(readDatabase((db) => db.prepare(
+    'SELECT id, type, category, url, local_path, mime_type, file_size FROM assets WHERE id = ?',
+  ).get(result.asset_id))).toEqual(expect.objectContaining({
+    id: result.asset_id,
+    type: 'video',
+    category: 'director',
+    url: expect.stringMatching(/\/videos\/director\/director_.*\.mp4$/),
+    local_path: result.local_path,
+    mime_type: 'video/mp4',
+    file_size: expect.any(Number),
+  }))
+
+  expect(staticResponses.filter(({ path: responsePath }) => responsePath.endsWith('.mp4'))).toEqual([
+    expect.objectContaining({
+      path: `/static/${result.local_path}`,
+      status: 200,
+      contentType: expect.stringMatching(/^video\/mp4/),
+    }),
+  ])
+  expect(forwardedResponses).toEqual(expect.arrayContaining([
+    expect.objectContaining({ method: 'POST', path: `/api/v1/dramas/${dramaId}/director/export`, status: 200 }),
+    expect.objectContaining({ method: 'GET', path: expect.stringMatching(/^\/api\/v1\/tasks\//), status: 200 }),
+  ]))
+  expect(forwardedResponses.every(({ status }) => status >= 200 && status < 300)).toBe(true)
 })

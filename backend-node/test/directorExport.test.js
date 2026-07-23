@@ -2,12 +2,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { EventEmitter } = require('events');
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../src/utils/ffmpegPath');
 const directorExport = require('../src/services/directorExportService');
+const taskService = require('../src/services/taskService');
 
 describe('directorExportService', () => {
   it('normalizes timeline input and rejects invalid shapes', () => {
@@ -64,5 +66,71 @@ describe('directorExportService', () => {
     assert.deepEqual(args.slice(args.indexOf('-vf'), args.indexOf('-vf') + 2), [
       '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
     ]);
+  });
+
+  it('terminates a stalled FFmpeg process and removes partial files', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-director-timeout-'));
+    const inputPath = path.join(tempRoot, 'input.webm');
+    const outputPath = path.join(tempRoot, 'partial.mp4');
+    const metadataFilePath = path.join(tempRoot, 'partial.json');
+    fs.writeFileSync(inputPath, 'input');
+    fs.writeFileSync(outputPath, 'partial');
+    fs.writeFileSync(metadataFilePath, '{}');
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const task = taskService.createTask(db, { info() {}, warn() {}, error() {} }, 'director_export', '1');
+    const child = new EventEmitter();
+    child.stderr = new EventEmitter();
+    let killedWith = '';
+    let processClosed = false;
+    child.kill = (signal) => {
+      killedWith = signal;
+      setTimeout(() => {
+        processClosed = true;
+        child.emit('close', null);
+      }, 5);
+      return true;
+    };
+    const unlinkSync = fs.unlinkSync;
+    fs.unlinkSync = (filePath) => {
+      if (!processClosed && [inputPath, outputPath, metadataFilePath].includes(filePath)) {
+        const error = new Error('file is still in use');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return unlinkSync(filePath);
+    };
+
+    try {
+      directorExport.startFfmpegTask({
+        db,
+        cfg: { storage: { local_path: tempRoot } },
+        log: { info() {}, warn() {}, error() {} },
+        task,
+        dramaId: 1,
+        inputPath,
+        outputPath,
+        outputRelativePath: 'partial.mp4',
+        metadataPath: 'partial.json',
+        metadataFilePath,
+        timeline: null,
+        timelineSummary: {},
+        spawnProcess: () => child,
+        timeoutMs: 10,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    } finally {
+      fs.unlinkSync = unlinkSync;
+    }
+
+    const failedTask = taskService.getTask(db, task.id);
+    assert.equal(failedTask.status, 'failed');
+    assert.match(failedTask.error, /视频转码超时/);
+    assert.equal(killedWith, 'SIGKILL');
+    assert.equal(fs.existsSync(inputPath), false);
+    assert.equal(fs.existsSync(outputPath), false);
+    assert.equal(fs.existsSync(metadataFilePath), false);
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 });

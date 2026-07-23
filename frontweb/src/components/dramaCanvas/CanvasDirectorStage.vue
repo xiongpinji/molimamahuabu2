@@ -1870,10 +1870,18 @@ async function exportTimelineMp4() {
     const result = parseDirectorExportResult(task.result)
     const url = directorExportDownloadUrl(result)
     if (!url) throw new Error('导出任务完成但没有下载地址')
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`导出视频下载失败（${response.status}）`)
+    const contentType = String(response.headers.get('content-type') || '')
+    if (!contentType.startsWith('video/') && contentType !== 'application/octet-stream') {
+      throw new Error(`导出视频响应类型错误：${contentType || 'unknown'}`)
+    }
+    const downloadUrl = URL.createObjectURL(await response.blob())
     const link = document.createElement('a')
-    link.href = url
+    link.href = downloadUrl
     link.download = directorExportFilename(props.drama?.title, 'mp4')
     link.click()
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
     assetStatus.value = '视频已导出（MP4）'
     exportProgress.value = 100
   } catch (error) {

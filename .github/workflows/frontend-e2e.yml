@@ -46,6 +46,13 @@ jobs:
         working-directory: frontweb
         run: npx playwright install --with-deps chromium
 
+      - name: Install FFmpeg for director export
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep 'libvpx-vp9'
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep 'libx264'
+
       # 同时覆盖首页 localStorage、确定性 API mock，以及真实 Express + SQLite 项目画布闭环。
       - name: Run frontend E2E
         working-directory: frontweb
