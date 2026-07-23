@@ -11,10 +11,10 @@
       <CanvasNodeStatusOverlay :node-id="id" />
       <div class="tag">{{ kindLabel }}</div>
       <template v-if="data.kind === 'text'">
-        <p class="text-body">{{ data.summary || '暂无脚本' }}</p>
+        <p class="text-body">{{ displayText || '暂无脚本' }}</p>
       </template>
       <template v-else-if="data.kind === 'universal'">
-        <p class="text-body universal-body">{{ data.summary || '暂无全能分镜词' }}</p>
+        <p class="text-body universal-body">{{ displayText || '暂无全能分镜词' }}</p>
       </template>
       <template v-else-if="data.kind === 'image'">
         <img v-if="resultUrl" :src="resultUrl" alt="" class="media-img" />
@@ -34,10 +34,15 @@
       <div v-if="failureReason" class="node-error" :title="failureReason">
         {{ failureReason }}
       </div>
-      <div v-if="resultUrl" class="result-actions">
-        <button type="button" @click.stop="openResult">{{ previewLabel }}</button>
-        <button type="button" @click.stop="copyResultLink">复制</button>
-        <button type="button" @click.stop="downloadResult">下载</button>
+      <div v-if="resultReferences.length" class="reference-strip">
+        <span v-for="reference in resultReferences.slice(0, 3)" :key="reference">{{ reference }}</span>
+      </div>
+      <div v-if="hasResultActions" class="result-actions">
+        <button v-if="resultUrl" type="button" @click.stop="openResult">{{ previewLabel }}</button>
+        <button v-if="resultUrl" type="button" @click.stop="copyResultLink">复制</button>
+        <button v-if="resultUrl" type="button" @click.stop="downloadResult">下载</button>
+        <button v-if="textResult" type="button" @click.stop="copyTextResult">复制文本</button>
+        <button v-if="resultReferences.length" type="button" @click.stop="copyResultReferences">复制引用</button>
         <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位</button>
         <button v-if="savedAssetReferenceText" type="button" @click.stop="copyAssetReference">素材引用</button>
         <button v-if="savedAsset" type="button" :disabled="assigningAsset" @click.stop="assignSavedAssetToSelectedStoryboard">
@@ -163,6 +168,10 @@ const kindLabel = computed(() => {
 
 const canRetry = computed(() => Boolean(runtimeStatus.value?.retryStep) || ['image', 'video', 'audio'].includes(props.data.kind))
 const resultUrl = computed(() => runtimeStatus.value?.resultUrl || props.data.url || fallbackResultUrl.value)
+const textResult = computed(() => runtimeStatus.value?.resultSummary || '')
+const displayText = computed(() => textResult.value || props.data.summary || '')
+const resultReferences = computed(() => Array.isArray(runtimeStatus.value?.resultReferences) ? runtimeStatus.value.resultReferences : [])
+const hasResultActions = computed(() => Boolean(resultUrl.value || textResult.value || resultReferences.value.length || resultNodeId.value || savedAssetReferenceText.value))
 const resultNodeId = computed(() => runtimeStatus.value?.resultNodeId || '')
 const savedAsset = computed(() => {
   const status = runtimeStatus.value
@@ -229,6 +238,29 @@ async function copyAssetReference() {
     ElMessage.success('素材引用已复制')
   } catch {
     ElMessageBox.alert(savedAssetReferenceText.value, '素材引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function copyTextResult() {
+  if (!textResult.value) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(textResult.value)
+    ElMessage.success('文本结果已复制')
+  } catch {
+    ElMessageBox.alert(textResult.value, '文本结果（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
+  }
+}
+
+async function copyResultReferences() {
+  if (!resultReferences.value.length) return
+  const text = resultReferences.value.join('\n')
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('结果引用已复制')
+  } catch {
+    ElMessageBox.alert(text, '结果引用（请手动复制）', { confirmButtonText: '关闭', type: 'info' })
   }
 }
 
@@ -347,6 +379,23 @@ function downloadResult() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.reference-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.reference-strip span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: rgba(129, 140, 248, 0.14);
+  color: #c7d2fe;
+  font-size: 9px;
 }
 .result-actions {
   display: flex;
