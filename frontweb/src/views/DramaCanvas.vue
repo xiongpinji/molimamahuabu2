@@ -1121,6 +1121,7 @@ function queueItemSavedAsset(item) {
     id: item.savedAssetId,
     name: item.savedAssetName || item.label || '队列结果素材',
     type: item.resultType || queueResultPreviewType(item),
+    category: 'canvas-result',
     url: item.savedAssetUrl || item.resultUrl || '',
     local_path: item.savedAssetLocalPath || '',
     duration: item.savedAssetDuration ?? undefined,
@@ -2066,6 +2067,7 @@ function nodeSavedAsset(node, status = nodeRuntimeStatus(node)) {
     id: status.savedAssetId,
     name: status.savedAssetName || canvasNodeLabel(node) || '节点结果素材',
     type: status.resultType || 'image',
+    category: 'canvas-result',
     url: status.savedAssetUrl || status.resultUrl || '',
     local_path: status.savedAssetLocalPath || '',
     duration: status.savedAssetDuration ?? undefined,
@@ -2142,7 +2144,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
     if (!silent) ElMessage.warning(message)
     return returnDetail ? { ok: false, message } : false
   }
-  const success = (message = '已指派素材到选中分镜') => returnDetail ? { ok: true, message } : true
+  const success = (message = '已指派素材到选中分镜', detail = {}) => returnDetail ? { ok: true, message, ...detail } : true
   const selectedIds = selectedStoryboardIds.value.map(Number).filter(Number.isFinite)
   if (!Number.isFinite(explicitStoryboardId) || explicitStoryboardId <= 0) {
     if (selectedIds.length !== 1) {
@@ -2159,7 +2161,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   }
   const mediaPayload = selectedStoryboardMediaAssetPayload(asset)
   let resultMessage = '已指派素材到选中分镜'
-  await assetsAPI.update(assetId, projectAssetAttachPayload(asset, storyboardId))
+  const updatedAsset = await assetsAPI.update(assetId, projectAssetAttachPayload(asset, storyboardId))
   if (mediaPayload?.type === 'video') {
     await videosAPI.attach({
       storyboard_id: storyboardId,
@@ -2183,7 +2185,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   }
   await focusCanvasNode(`sb:${storyboardId}`)
   ElMessage.success(resultMessage)
-  return success(resultMessage)
+  return success(resultMessage, { storyboardId, asset: updatedAsset || asset })
 }
 
 async function runCanvasProjectAssetNodeStep(node, step) {
@@ -2226,7 +2228,7 @@ async function runCanvasProjectAssetNodeStep(node, step) {
     if (!result?.ok) throw new Error(result?.message || '素材未指派，请选中一个分镜后重试')
     nodeStatus.success(nodeId, {
       message: result.message || '已指派素材到选中分镜',
-      ...retryPayload,
+      ...canvasAssetAttachStatusPayload(result.asset || asset, result.storyboardId || targetStoryboardId),
     })
   } catch (error) {
     const message = error?.message || '素材指派失败'
