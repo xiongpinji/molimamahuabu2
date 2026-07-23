@@ -2000,6 +2000,12 @@ function assetAttachRetryLabel(asset) {
 function canvasAssetStatusPayload(asset, overrides = {}) {
   const url = assetDisplayUrl(asset)
   const localPath = assetLocalPath(asset)
+  const metadata = asset?.metadata || {}
+  const pickerSource = asset?.picker_source || metadata.picker_source || asset?.source_kind || 'project'
+  const pickerStatus = asset?.picker_status || metadata.picker_status || ''
+  const pickerStoryboardId = Number(asset?.picker_storyboard_id || metadata.picker_storyboard_id || metadata.attached_storyboard_id || asset?.storyboard_id || 0) || null
+  const voiceCatalogId = asset?.voice_catalog_id || metadata.voice_catalog_id || asset?.voice_catalog?.id || asset?.voice_catalog?.voice_id || null
+  const voiceAssetId = asset?.voice_asset_id || metadata.voice_asset_id || asset?.voice_catalog?.asset_id || null
   return {
     resultUrl: url,
     resultType: normalizePickedAssetType(asset),
@@ -2008,6 +2014,11 @@ function canvasAssetStatusPayload(asset, overrides = {}) {
     savedAssetUrl: url,
     savedAssetLocalPath: localPath,
     libraryAsset: asset || null,
+    pickerSource,
+    pickerStatus,
+    pickerStoryboardId,
+    voiceCatalogId,
+    voiceAssetId,
     retryStep: 'library',
     retryLabel: '重试指派素材',
     autoClear: false,
@@ -2099,8 +2110,15 @@ async function ensureProjectMediaAsset(asset) {
     metadata: {
       source: 'canvas_asset_picker',
       picker_source: asset?.picker_source || asset?.source_kind || 'library',
+      picker_status: asset?.picker_status || '',
+      picker_storyboard_id: asset?.picker_storyboard_id || null,
       source_asset_id: asset?.raw_id || asset?.id || null,
       reference_text: asset?.reference_text || '',
+      display_url: url,
+      local_path: localPath || '',
+      voice_catalog_id: asset?.voice_catalog_id || asset?.voice_catalog?.id || asset?.voice_catalog?.voice_id || null,
+      voice_asset_id: asset?.voice_asset_id || asset?.voice_catalog?.asset_id || null,
+      voice_catalog: asset?.voice_catalog || null,
     },
   })
 }

@@ -87,6 +87,7 @@ const purposeLabel = computed(() => assetPurposeLabel(props.data.asset, attached
 const sourceLabel = computed(() => {
   const source = props.data.asset?.picker_source
     || props.data.asset?.source_kind
+    || props.data.asset?.metadata?.picker_source
     || props.data.asset?.metadata?.source_kind
     || ''
   return {
@@ -97,8 +98,8 @@ const sourceLabel = computed(() => {
     voice_catalog: '音色库',
   }[source] || ''
 })
-const pickerStatusLabel = computed(() => props.data.asset?.picker_status || '')
-const pickerStoryboardId = computed(() => Number(props.data.asset?.picker_storyboard_id || 0))
+const pickerStatusLabel = computed(() => props.data.asset?.picker_status || props.data.asset?.metadata?.picker_status || '')
+const pickerStoryboardId = computed(() => Number(props.data.asset?.picker_storyboard_id || props.data.asset?.metadata?.picker_storyboard_id || 0))
 const assetBadges = computed(() => [
   sourceLabel.value,
   pickerStatusLabel.value || (Number.isFinite(pickerStoryboardId.value) && pickerStoryboardId.value > 0
