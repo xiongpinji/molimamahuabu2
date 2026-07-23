@@ -45,6 +45,9 @@ let createdAssetPayload = null
 let updatedAssetPayloads = []
 let savedCanvasLayout = null
 let savedWorkflowGroups = []
+let mockDrama = null
+let nextStoryboardId = 2001
+let createdStoryboardPayloads = []
 
 function apiData(data) {
   return {
@@ -69,6 +72,9 @@ test.beforeEach(async ({ page }) => {
   updatedAssetPayloads = []
   savedCanvasLayout = null
   savedWorkflowGroups = []
+  mockDrama = JSON.parse(JSON.stringify(drama))
+  nextStoryboardId = 2001
+  createdStoryboardPayloads = []
 
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -77,9 +83,9 @@ test.beforeEach(async ({ page }) => {
 
     if (request.method() === 'GET' && pathname === '/api/v1/dramas/3') {
       await route.fulfill(apiData({
-        ...drama,
+        ...mockDrama,
         metadata: {
-          ...drama.metadata,
+          ...mockDrama.metadata,
           ...(savedCanvasLayout ? { canvas_layout: savedCanvasLayout } : {}),
           workflow_groups: savedWorkflowGroups,
         },
@@ -110,6 +116,21 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill(apiData({ items: [] }))
       return
     }
+    if (request.method() === 'POST' && pathname === '/api/v1/storyboards') {
+      const payload = request.postDataJSON() || {}
+      createdStoryboardPayloads.push(payload)
+      const storyboard = {
+        id: nextStoryboardId++,
+        status: 'pending',
+        characters: [],
+        prop_ids: [],
+        ...payload,
+      }
+      const episode = mockDrama.episodes.find((item) => Number(item.id) === Number(payload.episode_id))
+      episode?.storyboards?.push(storyboard)
+      await route.fulfill(apiData(storyboard))
+      return
+    }
     if (request.method() === 'POST' && pathname === '/api/v1/assets') {
       createdAssetPayload = request.postDataJSON()
       const asset = {
@@ -138,9 +159,9 @@ test.beforeEach(async ({ page }) => {
       if (payload.canvas_layout) savedCanvasLayout = payload.canvas_layout
       if (Array.isArray(payload.workflow_groups)) savedWorkflowGroups = payload.workflow_groups
       await route.fulfill(apiData({
-        ...drama,
+        ...mockDrama,
         metadata: {
-          ...drama.metadata,
+          ...mockDrama.metadata,
           ...(savedCanvasLayout ? { canvas_layout: savedCanvasLayout } : {}),
           workflow_groups: savedWorkflowGroups,
         },
@@ -268,6 +289,71 @@ test('项目画布持久化节点拖拽、手工连线和工作流分组并在�
     `translate(${savedStoryboardPosition.x}px, ${savedStoryboardPosition.y}px)`
   )
   await expect(page.locator('.vue-flow__edge[data-id^="manual:sbimg:1001:"]')).toBeAttached()
+})
+
+test('项目画布通过节点右键菜单复制、追加和插入分镜并持久化重连', async ({ page }) => {
+  await page.goto('/film/3/canvas')
+
+  const sourceNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await expect(sourceNode).toBeVisible()
+
+  await sourceNode.click({ button: 'right', position: { x: 24, y: 24 } })
+  let menu = page.getByRole('menu', { name: '节点操作' })
+  await menu.getByRole('menuitem', { name: /复制分镜/ }).click()
+
+  await expect.poll(() => createdStoryboardPayloads).toContainEqual(expect.objectContaining({
+    episode_id: 101,
+    storyboard_number: 2,
+    title: '雨夜相遇 副本',
+  }))
+  await expect(page.locator('.vue-flow__node[data-id="sb:2001"]')).toContainText('雨夜相遇 副本')
+  await expect.poll(() => savedCanvasLayout?.nodes?.['sb:2001']).toEqual(expect.objectContaining({
+    x: expect.any(Number),
+    y: expect.any(Number),
+  }))
+
+  await sourceNode.click({ button: 'right', position: { x: 24, y: 24 } })
+  menu = page.getByRole('menu', { name: '节点操作' })
+  await menu.getByRole('menuitem', { name: /追加下游分镜/ }).click()
+
+  await expect.poll(() => createdStoryboardPayloads).toContainEqual(expect.objectContaining({
+    episode_id: 101,
+    storyboard_number: 3,
+    title: '下游分镜 3',
+  }))
+  await expect(page.locator('.vue-flow__node[data-id="sb:2002"]')).toContainText('下游分镜 3')
+  await expect.poll(() => savedCanvasLayout?.manual_edges || []).toContainEqual(expect.objectContaining({
+    source: 'sb:1001',
+    target: 'sb:2002',
+    data: { manual: true },
+  }))
+
+  await sourceNode.click({ button: 'right', position: { x: 24, y: 24 } })
+  menu = page.getByRole('menu', { name: '节点操作' })
+  await menu.getByRole('menuitem', { name: /插入下游分镜/ }).click()
+
+  await expect.poll(() => createdStoryboardPayloads).toContainEqual(expect.objectContaining({
+    episode_id: 101,
+    storyboard_number: 4,
+    title: '插入分镜 4',
+  }))
+  await expect(page.locator('.vue-flow__node[data-id="sb:2003"]')).toContainText('插入分镜 4')
+  await expect.poll(() => savedCanvasLayout?.manual_edges || []).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: 'sb:1001', target: 'sb:2003', data: { manual: true } }),
+    expect.objectContaining({ source: 'sb:2003', target: 'sb:2002', data: { manual: true } }),
+  ]))
+  expect(savedCanvasLayout.manual_edges).not.toContainEqual(expect.objectContaining({
+    source: 'sb:1001',
+    target: 'sb:2002',
+  }))
+
+  await page.reload()
+
+  await expect(page.locator('.vue-flow__node[data-id="sb:2001"]')).toContainText('雨夜相遇 副本')
+  await expect(page.locator('.vue-flow__node[data-id="sb:2002"]')).toContainText('下游分镜 3')
+  await expect(page.locator('.vue-flow__node[data-id="sb:2003"]')).toContainText('插入分镜 4')
+  await expect(page.locator('.vue-flow__edge[data-id^="manual:sb:1001:"][data-id$=":sb:2003:in"]')).toBeAttached()
+  await expect(page.locator('.vue-flow__edge[data-id^="manual:sb:2003:"][data-id$=":sb:2002:in"]')).toBeAttached()
 })
 
 test('项目画布从素材库导入场景图、指派分镜并在刷新后恢复', async ({ page }) => {
