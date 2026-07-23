@@ -66,6 +66,7 @@
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>
         <button v-if="requestPayloadText" type="button" @click.stop="copyRequestPayload">复制请求</button>
         <button v-if="status.retryAction" type="button" :disabled="savingAsset || attachingResult" @click.stop="retryAction">{{ status.retryActionLabel || '重试操作' }}</button>
+        <button v-if="canUseResultAsDownstreamReference" type="button" :disabled="attachingResult" @click.stop="useResultAsDownstreamReference">作为下游参考</button>
         <button v-if="status.retryStep" type="button" @click.stop="retryFailed">{{ retryLabel }}</button>
         <button type="button" @click.stop="dismissStatus">收起</button>
       </span>
@@ -240,7 +241,7 @@ const retryLabel = computed(() => status.value?.retryLabel || '重试')
 const canAttachImage = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachVideo = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultUrl()) && Boolean(resultStoryboardId(runtimeNode())))
-const canUseResultAsDownstreamReference = computed(() => isSuccess.value && Boolean(effectiveResultUrl.value) && Boolean(ctx?.useNodeResultAsDownstreamReference))
+const canUseResultAsDownstreamReference = computed(() => (isSuccess.value || isFailed.value) && Boolean(effectiveResultUrl.value) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const statusSavedAsset = computed(() => {
   if (!status.value?.savedAssetId) return null
   return {
