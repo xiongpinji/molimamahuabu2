@@ -343,6 +343,23 @@ test('画布分镜节点回显并复制已指派素材库参考', () => {
   assert.match(storyboardNodeSource, /ctx\?\.setFocusedNode\?\.\(props\.id\)/)
 })
 
+test('分镜节点卡片会回显运行态结果和失败原因', () => {
+  assert.match(storyboardNodeSource, /import \{ assetMediaUrl, audioUrl \} from '@\/utils\/mediaUrl'/)
+  assert.match(storyboardNodeSource, /const runtimeStatus = computed\(\(\) => ctx\?\.nodeStatus\?\.map\?\.\[props\.id\] \|\| null\)/)
+  assert.match(storyboardNodeSource, /const persistedResultUrl = computed\(\(\) => videoUrl\.value \|\| imageUrl\.value \|\| audioPath\.value\)/)
+  assert.match(storyboardNodeSource, /const runtimeResultUrl = computed\(\(\) => assetMediaUrl\(\{/)
+  assert.match(storyboardNodeSource, /savedAssetUrl \|\| runtimeStatus\.value\?\.resultUrl/)
+  assert.match(storyboardNodeSource, /const runtimeResultType = computed/)
+  assert.match(storyboardNodeSource, /const displayImageUrl = computed\(\(\) => imageUrl\.value \|\| \(runtimeResultType\.value === 'image' \? runtimeResultUrl\.value : ''\)\)/)
+  assert.match(storyboardNodeSource, /const displayVideoUrl = computed\(\(\) => videoUrl\.value \|\| \(runtimeResultType\.value === 'video' \? runtimeResultUrl\.value : ''\)\)/)
+  assert.match(storyboardNodeSource, /const displayAudioUrl = computed\(\(\) => audioPath\.value \|\| \(runtimeResultType\.value === 'audio' \? runtimeResultUrl\.value : ''\)\)/)
+  assert.match(storyboardNodeSource, /runtimeResultUrl && !persistedResultUrl/)
+  assert.match(storyboardNodeSource, /运行结果/)
+  assert.match(storyboardNodeSource, /const runtimeError = status\?\.errorDetail \|\| status\?\.detail \|\| \(status\?\.step === 'failed' \? status\?\.message : ''\)/)
+  assert.match(storyboardNodeSource, /return runtimeError \|\| sb\.error_msg \|\| sb\.error_message \|\| sb\.generation_error \|\| ''/)
+  assert.match(storyboardNodeSource, /const primaryResultUrl = computed\(\(\) => displayVideoUrl\.value \|\| displayImageUrl\.value \|\| displayAudioUrl\.value \|\| runtimeResultUrl\.value\)/)
+})
+
 test('画布节点生成成功后自动存入素材库并回填素材引用', () => {
   assert.match(canvasSource, /function resultLocalPathFromUrl\(url\)/)
   assert.match(canvasSource, /function nodeResultAssetName\(node, resultInfo\)/)

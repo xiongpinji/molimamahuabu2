@@ -19,9 +19,10 @@
         <span :class="'st-' + (data.storyboard?.status || 'pending')">{{ statusLabel }}</span>
       </div>
       <div v-if="hasResultState || failureReason" class="result-rail">
-        <span v-if="imageUrl" class="result-pill ready">图</span>
-        <span v-if="videoUrl" class="result-pill ready">视频</span>
-        <span v-if="audioPath" class="result-pill ready">音频</span>
+        <span v-if="displayImageUrl" class="result-pill ready">图</span>
+        <span v-if="displayVideoUrl" class="result-pill ready">视频</span>
+        <span v-if="displayAudioUrl" class="result-pill ready">音频</span>
+        <span v-if="runtimeResultUrl && !persistedResultUrl" class="result-pill runtime">运行结果</span>
         <span v-if="failureReason" class="result-pill failed" :title="failureReason">失败</span>
       </div>
       <div v-if="failureReason" class="failure-line" :title="failureReason">
@@ -35,9 +36,9 @@
         </span>
       </div>
       <div v-if="hasResultState" class="result-actions">
-        <button v-if="imageUrl" type="button" @click.stop="openResult(imageUrl)">预览图</button>
-        <button v-if="videoUrl" type="button" @click.stop="openResult(videoUrl)">预览视频</button>
-        <button v-if="audioPath" type="button" @click.stop="openResult(audioPath)">播放音频</button>
+        <button v-if="displayImageUrl" type="button" @click.stop="openResult(displayImageUrl)">预览图</button>
+        <button v-if="displayVideoUrl" type="button" @click.stop="openResult(displayVideoUrl)">预览视频</button>
+        <button v-if="displayAudioUrl" type="button" @click.stop="openResult(displayAudioUrl)">播放音频</button>
         <button type="button" @click.stop="copyResultLink">复制结果</button>
       </div>
       <div class="retry-row">
@@ -62,7 +63,7 @@ import { Handle, Position } from '@vue-flow/core'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
-import { audioUrl } from '@/utils/mediaUrl'
+import { assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
 import {
   imageRecordUrl,
   resolveSbMainImageRecord,
@@ -96,6 +97,7 @@ const isNodeBusy = computed(() => {
 
 const imagesBySbId = computed(() => ctx?.imagesBySbId?.value || {})
 const videosBySbId = computed(() => ctx?.videosBySbId?.value || {})
+const runtimeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
 
 const imageUrl = computed(() => imageRecordUrl(resolveSbMainImageRecord(props.data.storyboard, imagesBySbId.value)))
 const videoUrl = computed(() => videoRecordUrl(resolveSbVideoRecord(props.data.storyboard, videosBySbId.value)))
@@ -105,13 +107,31 @@ const audioPath = computed(() => audioUrl(
   || props.data.storyboard?.narration_audio_local_path
   || props.data.storyboard?.narration_audio_url
 ))
-const primaryResultUrl = computed(() => videoUrl.value || imageUrl.value || audioPath.value)
+const persistedResultUrl = computed(() => videoUrl.value || imageUrl.value || audioPath.value)
+const runtimeResultUrl = computed(() => assetMediaUrl({
+  local_path: runtimeStatus.value?.savedAssetLocalPath || '',
+  url: runtimeStatus.value?.savedAssetUrl || runtimeStatus.value?.resultUrl || '',
+}) || runtimeStatus.value?.savedAssetUrl || runtimeStatus.value?.resultUrl || '')
+const runtimeResultType = computed(() => {
+  const type = String(runtimeStatus.value?.resultType || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  const url = String(runtimeResultUrl.value).toLowerCase()
+  if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
+  return runtimeResultUrl.value ? 'image' : ''
+})
+const displayImageUrl = computed(() => imageUrl.value || (runtimeResultType.value === 'image' ? runtimeResultUrl.value : ''))
+const displayVideoUrl = computed(() => videoUrl.value || (runtimeResultType.value === 'video' ? runtimeResultUrl.value : ''))
+const displayAudioUrl = computed(() => audioPath.value || (runtimeResultType.value === 'audio' ? runtimeResultUrl.value : ''))
+const primaryResultUrl = computed(() => displayVideoUrl.value || displayImageUrl.value || displayAudioUrl.value || runtimeResultUrl.value)
 const assignedAssets = computed(() => Array.isArray(props.data.assignedAssets) ? props.data.assignedAssets : [])
 const failureReason = computed(() => {
+  const status = runtimeStatus.value
+  const runtimeError = status?.errorDetail || status?.detail || (status?.step === 'failed' ? status?.message : '')
   const sb = props.data.storyboard || {}
-  return sb.error_msg || sb.error_message || sb.generation_error || ''
+  return runtimeError || sb.error_msg || sb.error_message || sb.generation_error || ''
 })
-const hasResultState = computed(() => Boolean(imageUrl.value || videoUrl.value || audioPath.value))
+const hasResultState = computed(() => Boolean(displayImageUrl.value || displayVideoUrl.value || displayAudioUrl.value || runtimeResultUrl.value))
 
 function onSelect(event) {
   ctx?.selectStoryboard?.(props.data.storyboard?.id, event)
@@ -244,6 +264,10 @@ async function copyResultLink() {
 .result-pill.ready {
   background: rgba(52, 211, 153, 0.12);
   color: #34d399;
+}
+.result-pill.runtime {
+  background: rgba(129, 140, 248, 0.16);
+  color: #c7d2fe;
 }
 .result-pill.failed {
   background: rgba(248, 113, 113, 0.14);
