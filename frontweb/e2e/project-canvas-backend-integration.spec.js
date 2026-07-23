@@ -20,6 +20,7 @@ let backendLogs = ''
 let databasePath
 let dramaId
 let episodeId
+let characterId
 let storyboardId
 let tempRoot
 let ttsProvider
@@ -160,7 +161,7 @@ test.beforeAll(async () => {
       `INSERT INTO episodes (drama_id, episode_number, title, script_content, created_at, updated_at)
        VALUES (?, 1, ?, ?, ?, ?)`,
     ).run(dramaId, '第一集', '小茉在雨夜车站撑开红伞。', now, now).lastInsertRowid)
-    const characterId = Number(db.prepare(
+    characterId = Number(db.prepare(
       `INSERT INTO characters (drama_id, name, role, appearance, sort_order, created_at, updated_at)
        VALUES (?, ?, 'main', ?, 1, ?, ?)`,
     ).run(dramaId, '小茉', '短发，蓝色外套', now, now).lastInsertRowid)
@@ -531,4 +532,97 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
     `PUT /api/v1/dramas/${dramaId}/outline`,
     'POST /api/v1/audio/extract',
   ]))
+})
+
+test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后恢复', async ({ page }) => {
+  const forwardedRequests = []
+  const forwardedResponses = []
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    forwardedRequests.push(`${request.method()} ${source.pathname}`)
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    forwardedResponses.push({ path: source.pathname, status: response.status() })
+    await route.fulfill({ response })
+  })
+
+  const readDirectorTimeline = () => readDatabase((db) => {
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    return metadata.canvas_layout?.director_timeline || null
+  })
+
+  await page.goto(`/film/${dramaId}/canvas`)
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+
+  const shotEditor = page.locator('.shot-editor')
+  const shotName = shotEditor.getByRole('textbox', { name: '名称' })
+  await shotName.fill('真实持久化镜头')
+  await shotName.press('Tab')
+  await expect.poll(() => readDirectorTimeline()?.shots?.[0]?.name).toBe('真实持久化镜头')
+
+  await shotEditor.getByRole('combobox', { name: '转场', exact: true }).selectOption('dissolve')
+  await expect.poll(() => readDirectorTimeline()?.shots?.[0]?.transition).toBe('dissolve')
+  const transitionDuration = shotEditor.getByRole('spinbutton', { name: '转场时长（秒）' })
+  await transitionDuration.fill('0.5')
+  await transitionDuration.press('Tab')
+  await expect.poll(() => readDirectorTimeline()?.shots?.[0]?.transitionDuration).toBe(0.5)
+
+  await page.getByLabel('选择动作').selectOption('Wave')
+  await page.locator('.action-editor').getByRole('button', { name: '添加', exact: true }).click()
+  await expect.poll(() => readDirectorTimeline()?.tracks?.flatMap((track) => track.clips).find((clip) => clip.action === 'Wave')?.action).toBe('Wave')
+  await page.getByLabel('动作片段开始时间').fill('1.25')
+  await page.getByLabel('动作片段开始时间').press('Tab')
+  await page.getByLabel('动作片段时长').fill('1.5')
+  await page.getByLabel('动作片段时长').press('Tab')
+
+  await expect.poll(() => {
+    const timeline = readDirectorTimeline()
+    const track = timeline?.tracks?.find((entry) => entry.characterId === String(characterId))
+    return {
+      shot: timeline?.shots?.[0],
+      track,
+      clip: track?.clips?.find((clip) => clip.action === 'Wave'),
+    }
+  }).toEqual({
+    shot: expect.objectContaining({
+      name: '真实持久化镜头',
+      transition: 'dissolve',
+      transitionDuration: 0.5,
+      start: 0,
+    }),
+    track: expect.objectContaining({
+      characterId: String(characterId),
+    }),
+    clip: expect.objectContaining({
+      characterId: String(characterId),
+      action: 'Wave',
+      start: 1.25,
+      duration: 1.5,
+    }),
+  })
+
+  const dramaReadsBeforeReload = forwardedRequests.filter((entry) => entry === `GET /api/v1/dramas/${dramaId}`).length
+  await page.getByRole('button', { name: '关闭导演台' }).click()
+  await page.reload()
+  await expect.poll(() => forwardedRequests.filter((entry) => entry === `GET /api/v1/dramas/${dramaId}`).length).toBeGreaterThan(dramaReadsBeforeReload)
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+
+  await expect(page.locator('.shot-list-item').first()).toContainText('真实持久化镜头')
+  await page.locator('.shot-list-item').first().click()
+  await expect(shotEditor.getByRole('textbox', { name: '名称' })).toHaveValue('真实持久化镜头')
+  await expect(shotEditor.getByRole('combobox', { name: '转场', exact: true })).toHaveValue('dissolve')
+  await expect(shotEditor.getByRole('spinbutton', { name: '转场时长（秒）' })).toHaveValue('0.5')
+  await page.getByRole('button', { name: '小茉 Wave 动作片段' }).click()
+  await expect(page.getByLabel('动作片段开始时间')).toHaveValue('1.25')
+  await expect(page.getByLabel('动作片段时长')).toHaveValue('1.5')
+
+  expect(forwardedRequests).toEqual(expect.arrayContaining([
+    `GET /api/v1/dramas/${dramaId}`,
+    `PUT /api/v1/dramas/${dramaId}/canvas-layout`,
+  ]))
+  expect(forwardedResponses.every(({ status }) => status >= 200 && status < 300)).toBe(true)
 })
