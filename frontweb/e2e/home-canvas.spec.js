@@ -138,3 +138,21 @@ test('Ctrl 加滚轮缩放，普通滚轮保持画布平移', async ({ page }) =
   await expect.poll(() => viewport.evaluate((element) => element.style.transform)).not.toBe(zoomedTransform)
   await expect.poll(() => viewport.evaluate((element) => element.style.transform)).not.toBe(initialTransform)
 })
+
+test('按住 Space 配合鼠标左键拖动画布', async ({ page }) => {
+  const pane = page.locator('.vue-flow__pane')
+  const viewport = page.locator('.vue-flow__transformationpane')
+  const initialTransform = await viewport.evaluate((element) => element.style.transform)
+  const paneBox = await pane.boundingBox()
+  expect(paneBox).not.toBeNull()
+
+  const start = { x: paneBox.x + 120, y: paneBox.y + 120 }
+  await page.keyboard.down('Space')
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await page.mouse.move(start.x + 140, start.y + 90, { steps: 8 })
+  await page.mouse.up()
+  await page.keyboard.up('Space')
+
+  await expect.poll(() => viewport.evaluate((element) => element.style.transform)).not.toBe(initialTransform)
+})
