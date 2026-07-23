@@ -1001,8 +1001,16 @@ function getDefaultVideoConfig(db, preferredModel) {
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      if (models.includes(preferredModel)) return c;
+      const provider = String(c.provider || '').toLowerCase();
+      const normalize = provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance'
+        ? normalizeIcreatModel
+        : (provider === 'volces' || provider === 'volcengine' || provider === 'volc')
+          ? normalizeVolcModel
+          : (value) => String(value || '');
+      const requested = normalize(preferredModel);
+      if (models.some((model) => normalize(model) === requested)) return c;
     }
+    return null;
   }
   const defaultOne = active.find((c) => c.is_default);
   return defaultOne != null ? defaultOne : active[0];
