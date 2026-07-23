@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const toolbarSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFloatingToolbar.vue', import.meta.url)), 'utf8')
 const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasContextMenu.vue', import.meta.url)), 'utf8')
+const addButtonSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAddButtonNode.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
@@ -77,6 +78,15 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
   assert.match(canvasSource, /contextMenuFlowPos\.value = flowPos/)
   assert.match(canvasSource, /pendingFlowPosition\.value = flowPosition/)
   assert.match(canvasSource, /openCreateDialog\(type, flowPosition\)/)
+})
+
+test('画布加号节点新建内容时沿用加号所在画布落点', () => {
+  assert.match(adapterSource, /const addPosition = resolveNodePosition\(savedLayout, addId, \{ x: ASSET_X, y \}\)/)
+  assert.match(adapterSource, /data: \{ assetType: sec\.kind, label: '\+ 新建', flowPosition: addPosition \}/)
+  assert.match(adapterSource, /const addPosition = resolveNodePosition\(savedLayout, addSbId, \{ x: PIPELINE_X, y: addY \}\)/)
+  assert.match(adapterSource, /data: \{ assetType: 'storyboard', label: '\+ 新建分镜', episodeId: episode\.id, flowPosition: addPosition \}/)
+  assert.match(addButtonSource, /openCreateDialog\?\.\(props\.data\.assetType, props\.data\.flowPosition \|\| null\)/)
+  assert.match(canvasSource, /openCreateDialog\(node\.data\?\.assetType \|\| 'storyboard', node\.data\?\.flowPosition \|\| node\.position \|\| null\)/)
 })
 
 test('右键素材库在画布内弹窗选用并定位项目素材节点', () => {

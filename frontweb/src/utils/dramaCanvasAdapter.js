@@ -121,11 +121,12 @@ function buildAssetNodes(drama, savedLayout, startY, episodeContext) {
       y += ASSET_ROW_H
     }
     const addId = `add:${sec.kind}`
+    const addPosition = resolveNodePosition(savedLayout, addId, { x: ASSET_X, y })
     nodes.push(makeNode({
       id: addId,
       type: 'canvasAddButton',
-      position: resolveNodePosition(savedLayout, addId, { x: ASSET_X, y }),
-      data: { assetType: sec.kind, label: '+ 新建' },
+      position: addPosition,
+      data: { assetType: sec.kind, label: '+ 新建', flowPosition: addPosition },
       draggable: false,
       selectable: false,
       connectable: false,
@@ -388,11 +389,12 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
 
   const addSbId = `add:storyboard:${episode.id}`
   const addY = rowYBase + storyboards.length * SB_GAP_Y
+  const addPosition = resolveNodePosition(savedLayout, addSbId, { x: PIPELINE_X, y: addY })
   nodes.push(makeNode({
     id: addSbId,
     type: 'canvasAddButton',
-    position: resolveNodePosition(savedLayout, addSbId, { x: PIPELINE_X, y: addY }),
-    data: { assetType: 'storyboard', label: '+ 新建分镜', episodeId: episode.id },
+    position: addPosition,
+    data: { assetType: 'storyboard', label: '+ 新建分镜', episodeId: episode.id, flowPosition: addPosition },
     draggable: false,
     selectable: false,
     connectable: false,

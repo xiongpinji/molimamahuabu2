@@ -4117,7 +4117,7 @@ function onPaneClick(event) {
 function onNodeClick({ node, event }) {
   if (node.type === 'canvasAddButton') {
     event?.stopPropagation?.()
-    openCreateDialog(node.data?.assetType || 'storyboard')
+    openCreateDialog(node.data?.assetType || 'storyboard', node.data?.flowPosition || node.position || null)
     return
   }
 

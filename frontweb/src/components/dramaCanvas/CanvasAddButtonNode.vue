@@ -25,7 +25,7 @@ const defaultLabel = computed(() => {
 })
 
 function onClick() {
-  ctx?.openCreateDialog?.(props.data.assetType)
+  ctx?.openCreateDialog?.(props.data.assetType, props.data.flowPosition || null)
 }
 </script>
 
