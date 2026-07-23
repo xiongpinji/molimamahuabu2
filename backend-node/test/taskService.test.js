@@ -90,6 +90,60 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.ok(new Date(generation.updated_at).getTime() >= new Date(now).getTime());
   });
 
+  it('keeps a processing task alive while a long operation is running', async () => {
+    const db = createTestDb();
+    const now = new Date(Date.now() - 60_000).toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks (id, type, status, progress, message, resource_id, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, '', ?, ?, ?)`
+    ).run('task-image', 'image_generation', '42', now, now);
+
+    let release;
+    const operation = new Promise((resolve) => { release = resolve; });
+    const running = taskService.withTaskHeartbeat(
+      db,
+      'task-image',
+      '正在等待图片生成服务...',
+      () => operation,
+      10
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const active = taskService.getTask(db, 'task-image');
+    assert.equal(active.status, 'processing');
+    assert.equal(active.message, '正在等待图片生成服务...');
+    assert.ok(new Date(active.updated_at).getTime() > new Date(now).getTime());
+
+    release('done');
+    assert.equal(await running, 'done');
+  });
+
+  it('does not revive a task cancelled during a long operation', async () => {
+    const db = createTestDb();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks (id, type, status, progress, message, resource_id, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, '', ?, ?, ?)`
+    ).run('task-cancelled-image', 'image_generation', '43', now, now);
+
+    let release;
+    const operation = new Promise((resolve) => { release = resolve; });
+    const running = taskService.withTaskHeartbeat(
+      db,
+      'task-cancelled-image',
+      '正在等待图片生成服务...',
+      () => operation,
+      10
+    );
+
+    taskService.cancelTask(db, { warn() {}, info() {} }, 'task-cancelled-image');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(taskService.getTask(db, 'task-cancelled-image').status, 'failed');
+
+    release('done');
+    assert.equal(await running, 'done');
+  });
+
   it('cancelTask marks active task as failed', () => {
     const db = createTestDb();
     const now = new Date().toISOString();

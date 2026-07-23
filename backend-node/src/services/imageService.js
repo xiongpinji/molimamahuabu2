@@ -1596,7 +1596,7 @@ async function processImageGeneration(db, log, imageGenId) {
       });
     }
 
-    const result = await imageClient.callImageApi(db, log, {
+    const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
       prompt: finalPrompt,
       model: row.model,
       size: imageSize,
@@ -1611,7 +1611,7 @@ async function processImageGeneration(db, log, imageGenId) {
       system_prompt: apiSystemPrompt,
       negative_prompt: row.negative_prompt || undefined,
       frame_identity_lock: isFrameIdentityLock,
-    });
+    }));
     log.info('[图生] Step4 图生 API 返回', { id: imageGenId, api_ms: Date.now() - tApi, has_error: !!result.error, elapsed: elapsed() });
 
     const now2 = new Date().toISOString();

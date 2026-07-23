@@ -36,6 +36,25 @@ function updateTaskStatus(db, taskId, status, progress, message) {
   ).run(status, progress ?? 0, message || '', now, completedAt, taskId);
 }
 
+async function withTaskHeartbeat(db, taskId, message, operation, intervalMs = 60_000) {
+  if (!taskId) return operation();
+  const touch = () => db.prepare(
+    `UPDATE async_tasks
+     SET status = 'processing', progress = 10, message = ?, updated_at = ?
+     WHERE id = ? AND status IN ('pending', 'processing')`
+  ).run(message || '', new Date().toISOString(), taskId);
+  touch();
+  const timer = setInterval(() => {
+    touch();
+  }, intervalMs);
+  timer.unref?.();
+  try {
+    return await operation();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function updateTaskError(db, taskId, errMsg) {
   const now = new Date().toISOString();
   try {
@@ -157,6 +176,7 @@ module.exports = {
   getTask,
   getTasksByResource,
   updateTaskStatus,
+  withTaskHeartbeat,
   updateTaskError,
   updateTaskResult,
   failOrphanedAsyncTasksOnStartup,
