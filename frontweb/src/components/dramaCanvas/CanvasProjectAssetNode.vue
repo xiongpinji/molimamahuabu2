@@ -5,6 +5,7 @@
     <div v-if="assetBadges.length" class="asset-badges">
       <span v-for="badge in assetBadges" :key="badge" class="asset-badge">{{ badge }}</span>
     </div>
+    <div class="asset-purpose">{{ purposeLabel }}</div>
     <video v-if="assetType === 'video' && url" :src="url" class="asset-media" muted controls preload="metadata" />
     <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio" controls />
     <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" />
@@ -81,6 +82,8 @@ const assignmentLabel = computed(() => Number.isFinite(assignedStoryboardId.valu
   : Number.isFinite(statusStoryboardId.value) && statusStoryboardId.value > 0
     ? `目标分镜 #${statusStoryboardId.value}`
   : '未指派到分镜')
+const attachedSlot = computed(() => activeNodeStatus.value?.attachedSlot || props.data.asset?.metadata?.attached_slot || props.data.asset?.metadata?.picker_slot || '')
+const purposeLabel = computed(() => assetPurposeLabel(props.data.asset, attachedSlot.value))
 const sourceLabel = computed(() => {
   const source = props.data.asset?.picker_source
     || props.data.asset?.source_kind
@@ -128,6 +131,18 @@ function normalizeAssetNodeType(asset) {
   if (/\.(mp4|webm|mov|m4v)$/.test(target)) return 'video'
   if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(target)) return 'audio'
   return 'image'
+}
+
+function assetPurposeLabel(asset, slot = '') {
+  const normalizedSlot = String(slot || '').toLowerCase()
+  if (['storyboard_first', 'first_frame', 'first'].includes(normalizedSlot)) return '用途：首帧'
+  if (['storyboard_last', 'last_frame', 'last'].includes(normalizedSlot)) return '用途：尾帧'
+  if (normalizedSlot === 'video') return '用途：分镜视频'
+  if (normalizedSlot === 'audio') return '用途：分镜音频'
+  const type = normalizeAssetNodeType(asset)
+  if (type === 'video') return '用途：分镜视频'
+  if (type === 'audio') return '用途：分镜音频'
+  return '用途：参考素材'
 }
 
 function openAsset() {
@@ -178,6 +193,7 @@ function closePanel() {
 .tag { color: #38bdf8; font-size: 10px; font-weight: 700; }
 .asset-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .asset-badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; padding: 1px 6px; background: rgba(139,92,246,.16); color: #c4b5fd; font-size: 10px; }
+.asset-purpose { display: inline-flex; margin-top: 5px; border-radius: 999px; padding: 2px 6px; background: rgba(14,165,233,.12); color: #7dd3fc; font-size: 10px; }
 .project-asset-node strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .project-asset-node span { color: #71717a; font-size: 10px; }
 .asset-actions { display: flex; gap: 6px; margin-top: 8px; }

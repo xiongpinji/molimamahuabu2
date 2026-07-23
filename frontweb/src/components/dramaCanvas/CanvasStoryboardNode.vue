@@ -29,11 +29,12 @@
         {{ failureReason }}
       </div>
       <div v-if="assignedAssets.length" class="reference-strip" title="已从素材库指派到该分镜">
-        <span class="reference-label">参考 {{ assignedAssets.length }}</span>
-        <span v-for="asset in assignedAssets.slice(0, 3)" :key="asset.id || asset.name" class="reference-thumb">
+        <span class="reference-label">素材 {{ assignedAssets.length }}</span>
+        <span v-for="asset in assignedAssets.slice(0, 3)" :key="asset.id || asset.name" class="reference-thumb" :title="assetPurposeLabel(asset)">
           <img v-if="assetThumbUrl(asset)" :src="assetThumbUrl(asset)" alt="" />
-          <span v-else>{{ asset.name || '素材' }}</span>
+          <span v-else>{{ assetPurposeShortLabel(asset) }}</span>
         </span>
+        <span class="reference-purpose">{{ assignedAssetPurposeSummary }}</span>
       </div>
       <div v-if="hasResultState" class="result-actions">
         <button v-if="displayImageUrl" type="button" @click.stop="openResult(displayImageUrl)">预览图</button>
@@ -125,6 +126,7 @@ const displayVideoUrl = computed(() => videoUrl.value || (runtimeResultType.valu
 const displayAudioUrl = computed(() => audioPath.value || (runtimeResultType.value === 'audio' ? runtimeResultUrl.value : ''))
 const primaryResultUrl = computed(() => displayVideoUrl.value || displayImageUrl.value || displayAudioUrl.value || runtimeResultUrl.value)
 const assignedAssets = computed(() => Array.isArray(props.data.assignedAssets) ? props.data.assignedAssets : [])
+const assignedAssetPurposeSummary = computed(() => [...new Set(assignedAssets.value.map(assetPurposeLabel))].join(' / '))
 const failureReason = computed(() => {
   const status = runtimeStatus.value
   const runtimeError = status?.errorDetail || status?.detail || (status?.step === 'failed' ? status?.message : '')
@@ -139,10 +141,40 @@ function onSelect(event) {
 }
 
 function assetThumbUrl(asset) {
-  const url = asset?.display_url || asset?.asset_url || asset?.url || asset?.local_path || ''
+  if (assetType(asset) !== 'image') return ''
+  const url = asset?.display_url || asset?.asset_url || asset?.preview_url || asset?.url || asset?.image_url || asset?.thumbnail_url || asset?.cover_url || asset?.local_path || ''
   if (!url) return ''
   if (/^https?:\/\//.test(url) || url.startsWith('/')) return url
   return `/static/${String(url).replace(/^\/+/, '')}`
+}
+
+function assetMediaTarget(asset) {
+  return asset?.display_url || asset?.asset_url || asset?.preview_url || asset?.url || asset?.image_url || asset?.video_url || asset?.audio_url || asset?.voice_url || asset?.local_path || ''
+}
+
+function assetType(asset) {
+  const type = String(asset?.type || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  if (['voice', 'tone', 'sound', 'music', 'bgm', 'tts'].includes(type)) return 'audio'
+  if (asset?.source_kind === 'voice_catalog' || asset?.voice_url || asset?.voice_local_path) return 'audio'
+  const url = String(assetMediaTarget(asset) || '').toLowerCase().split('?')[0]
+  if (/\.(mp4|webm|mov|m4v)$/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(url)) return 'audio'
+  return 'image'
+}
+
+function assetPurposeLabel(asset) {
+  const slot = String(asset?.metadata?.attached_slot || asset?.metadata?.picker_slot || '').toLowerCase()
+  if (['storyboard_first', 'first_frame', 'first'].includes(slot)) return '首帧'
+  if (['storyboard_last', 'last_frame', 'last'].includes(slot)) return '尾帧'
+  const type = assetType(asset)
+  if (type === 'video') return '分镜视频'
+  if (type === 'audio') return '分镜音频'
+  return '参考素材'
+}
+
+function assetPurposeShortLabel(asset) {
+  return ({ 首帧: '首', 尾帧: '尾', 分镜视频: '视', 分镜音频: '音', 参考素材: '参' }[assetPurposeLabel(asset)] || '素')
 }
 
 function retryStep(step) {
@@ -293,6 +325,14 @@ async function copyResultLink() {
   flex: 0 0 auto;
   font-size: 9px;
   color: #c4b5fd;
+}
+.reference-purpose {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: #7dd3fc;
 }
 .reference-thumb {
   width: 24px;
