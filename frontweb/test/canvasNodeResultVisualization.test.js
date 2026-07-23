@@ -461,6 +461,8 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /selectedStoryboardIdForAssetAttach\(\)/)
   assert.match(canvasSource, /nodeStatus\.set\(id, \{/)
   assert.match(canvasSource, /\.\.\.saved/)
+  assert.match(canvasSource, /await loadProjectImageAssets\(\)/)
+  assert.match(canvasSource, /rebuildGraph\(\)/)
   assert.match(canvasSource, /队列结果已存入素材库/)
   assert.match(canvasSource, /function focusQueueItemResult\(item\)/)
   assert.match(canvasSource, /function dismissQueueItem\(item\)/)

@@ -1179,6 +1179,8 @@ async function saveQueueItemResultAsset(item) {
         message: current.message || item.message || '队列结果已存入素材库',
       })
     })
+    await loadProjectImageAssets()
+    rebuildGraph()
     ElMessage.success('队列结果已存入素材库')
   } catch (error) {
     ElMessage.error(error?.message || '队列结果入库失败')
