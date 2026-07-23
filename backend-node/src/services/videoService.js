@@ -69,6 +69,8 @@ function rowToItem(r) {
     model: r.model,
     image_gen_id: r.image_gen_id,
     image_url: r.image_url,
+    first_frame_url: r.first_frame_url,
+    last_frame_url: r.last_frame_url,
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
