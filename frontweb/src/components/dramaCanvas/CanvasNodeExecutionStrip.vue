@@ -74,6 +74,13 @@
       @click.stop="copySavedAssetReference"
     >素材引用</el-button>
     <el-button
+      v-if="canFocusResultNode"
+      link
+      size="small"
+      type="primary"
+      @click.stop="focusResultNode"
+    >定位结果</el-button>
+    <el-button
       v-if="canUseResultAsDownstreamReference"
       link
       size="small"
@@ -146,6 +153,7 @@ const savedAssetReference = computed(() => {
   const url = props.status?.savedAssetUrl || props.status?.resultUrl || ''
   return `@素材(${name}#${props.status.savedAssetId}) ${url}`.trim()
 })
+const canFocusResultNode = computed(() => Boolean(props.status?.resultNodeId) && Boolean(ctx?.focusCanvasNode))
 const hasReusableResultReference = computed(() => Boolean(resultUrl.value || resultSummary.value || resultReferences.value.length || savedAssetReference.value))
 const canUseResultAsDownstreamReference = computed(() => hasReusableResultReference.value && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const resultMetaText = computed(() => {
@@ -232,6 +240,15 @@ function copyUpstreamReferences() {
 
 function copySavedAssetReference() {
   copyText(savedAssetReference.value, '素材引用已复制', '素材引用（请手动复制）')
+}
+
+function focusResultNode() {
+  if (!props.status?.resultNodeId || !ctx?.focusCanvasNode) return
+  if (ctx?.findCanvasNode && !ctx.findCanvasNode(props.status.resultNodeId)) {
+    ElMessage.warning('结果节点不在当前画布，可刷新后重试')
+    return
+  }
+  ctx.focusCanvasNode(props.status.resultNodeId)
 }
 
 async function useResultAsDownstreamReference() {
