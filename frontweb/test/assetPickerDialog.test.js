@@ -43,6 +43,18 @@ test('素材选择弹窗支持按素材来源筛选并显示可见数量', () =>
   assert.match(source, /显示 \$\{visibleItems\.length\}\/\$\{items\.length\} 个可用素材/)
 })
 
+test('素材选择弹窗在全类型入口支持按图片视频音频筛选', () => {
+  assert.match(source, /const typeFilter = ref\('all'\)/)
+  assert.match(source, /v-if="type === 'all'"/)
+  assert.match(source, /v-model="typeFilter"/)
+  assert.match(source, /const typeOptions = computed\(\(\) => \[/)
+  assert.match(source, /音频\/音色/)
+  assert.match(source, /const matchesType = props\.type !== 'all' \|\| typeFilter\.value === 'all' \|\| item\.type === typeFilter\.value/)
+  assert.match(source, /return matchesSource && matchesType/)
+  assert.match(source, /typeFilter\.value = 'all'/)
+  assert.match(source, /\.type-filter/)
+})
+
 test('素材选择弹窗显示素材挂载状态，避免复用时看不出目标用途', () => {
   assert.match(source, /class="status-badge"/)
   assert.match(source, /itemStatusText\(item\)/)

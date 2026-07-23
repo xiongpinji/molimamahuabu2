@@ -17,6 +17,20 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-select
+        v-if="type === 'all'"
+        v-model="typeFilter"
+        size="small"
+        class="type-filter"
+        placeholder="素材类型"
+      >
+        <el-option
+          v-for="option in typeOptions"
+          :key="option.value"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
+      <el-select
         v-model="sourceFilter"
         size="small"
         class="source-filter"
@@ -144,6 +158,7 @@ watch(visible, (v) => emit('update:modelValue', v))
 const loading = ref(false)
 const items = ref([])
 const keyword = ref('')
+const typeFilter = ref('all')
 const sourceFilter = ref('all')
 const loadError = ref('')
 const loadWarning = ref('')
@@ -164,14 +179,23 @@ const sourceOptions = computed(() => {
   }
   return options
 })
+const typeOptions = computed(() => [
+  { label: '全部类型', value: 'all' },
+  { label: '图片', value: 'image' },
+  { label: '视频', value: 'video' },
+  { label: '音频/音色', value: 'audio' },
+])
 const visibleItems = computed(() => (
-  sourceFilter.value === 'all'
-    ? items.value
-    : items.value.filter((item) => item.source_kind === sourceFilter.value)
+  items.value.filter((item) => {
+    const matchesSource = sourceFilter.value === 'all' || item.source_kind === sourceFilter.value
+    const matchesType = props.type !== 'all' || typeFilter.value === 'all' || item.type === typeFilter.value
+    return matchesSource && matchesType
+  })
 ))
 
 watch(() => props.type, () => {
   sourceFilter.value = 'all'
+  typeFilter.value = 'all'
 })
 
 function debouncedLoad() {
@@ -489,7 +513,8 @@ function onPick(item) {
 <style scoped>
 .picker-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .picker-search { width: 240px; }
-.source-filter { width: 116px; flex-shrink: 0; }
+.source-filter,
+.type-filter { width: 116px; flex-shrink: 0; }
 .picker-summary { display: flex; align-items: center; gap: 8px; color: #a1a1aa; font-size: 12px; flex: 1; }
 .picker-alert { margin-bottom: 12px; }
 .picker-alert-action { margin-left: 8px; }
