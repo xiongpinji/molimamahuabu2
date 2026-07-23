@@ -610,6 +610,7 @@ test('运行队列区分成功状态并提供结果操作', () => {
   assert.match(canvasSource, /队列文本结果已复制/)
   assert.match(canvasSource, /async function copyQueueItemResultReferences\(item\)/)
   assert.match(canvasSource, /队列结果引用已复制/)
+  assert.equal((canvasSource.match(/<button v-if="item\.resultReferences\?\.length"/g) || []).length, 2)
   assert.match(canvasSource, /function queueItemRequestPayloadText\(item\)/)
   assert.match(canvasSource, /const payload = item\?\.requestAudit \|\| item\?\.requestPayload/)
   assert.match(canvasSource, /async function copyQueueItemRequestPayload\(item\)/)

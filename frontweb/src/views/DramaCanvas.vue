@@ -337,7 +337,7 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
-              <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
+              <button v-if="item.resultReferences?.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
               <button v-if="queueItemRequestPayloadText(item)" type="button" @click.stop="copyQueueItemRequestPayload(item)">复制请求</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
@@ -355,7 +355,7 @@
               <button v-if="item.resultUrl" type="button" @click.stop="openQueueItemResult(item)">打开上次</button>
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
-              <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
+              <button v-if="item.resultReferences?.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
               <button v-if="queueItemRequestPayloadText(item)" type="button" @click.stop="copyQueueItemRequestPayload(item)">复制请求</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
