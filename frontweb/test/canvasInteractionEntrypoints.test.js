@@ -240,6 +240,16 @@ test('右键节点支持追加下游分镜并自动创建手动连线', () => {
   assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
 })
 
+test('右键节点结果可直接作为下游参考', () => {
+  assert.match(contextMenuSource, /type: 'use-node-result-downstream-reference'/)
+  assert.match(contextMenuSource, /作为下游参考/)
+  assert.match(contextMenuSource, /追加承接分镜/)
+  assert.match(canvasSource, /actions\.unshift\('use-node-result-downstream-reference'\)/)
+  assert.match(canvasSource, /type === 'use-node-result-downstream-reference'[\s\S]*await useNodeResultAsDownstreamReference\(node\)/)
+  assert.match(canvasSource, /async function useNodeResultAsDownstreamReference\(node, result = \{\}\)/)
+  assert.match(canvasSource, /normalizeNodeResultReferences\(node, result\)/)
+})
+
 test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(contextMenuSource, /type: 'insert-downstream-storyboard'/)
   assert.match(contextMenuSource, /插入下游分镜/)

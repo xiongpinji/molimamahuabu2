@@ -108,6 +108,7 @@ const nodeGroups = [
       { type: 'copy-node-result', label: '复制结果链接', hint: '复用到提示词', icon: Document },
       { type: 'download-node-result', label: '下载结果', hint: '保存到本地', icon: Download },
       { type: 'save-node-result-asset', label: '存入素材库', hint: '转为项目素材', icon: FolderOpened },
+      { type: 'use-node-result-downstream-reference', label: '作为下游参考', hint: '追加承接分镜', icon: Connection },
       { type: 'set-node-result-main-image', label: '结果设为分镜图', hint: '直接回填本镜', icon: Picture },
       { type: 'set-node-result-first-frame', label: '结果设为首帧', hint: '用于首帧参考', icon: Picture },
       { type: 'set-node-result-last-frame', label: '结果设为尾帧', hint: '用于视频衔接', icon: Picture },

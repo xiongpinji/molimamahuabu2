@@ -1495,6 +1495,7 @@ function canvasNodeActions(node) {
   const resultUrl = nodeResultUrl(node, runtimeStatus)
   if (resultUrl) {
     actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
+    actions.unshift('use-node-result-downstream-reference')
     if (nodeResultTypeFromUrl(resultUrl, runtimeStatus?.resultType || node?.data?.kind) === 'image') {
       actions.unshift('set-node-result-main-image', 'set-node-result-first-frame', 'set-node-result-last-frame')
     }
@@ -3168,6 +3169,8 @@ async function runNodeMenuAction(type, node) {
     await copyNodeAssetReference(node)
   } else if (type === 'assign-node-asset-selected') {
     await assignNodeAssetToSelectedStoryboard(node)
+  } else if (type === 'use-node-result-downstream-reference') {
+    await useNodeResultAsDownstreamReference(node)
   } else if (type === 'copy-node-assigned-asset-ref') {
     await copyNodeAssignedAssetReference(node)
   } else if (type === 'unbind-node-assigned-asset') {
