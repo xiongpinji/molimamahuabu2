@@ -61,6 +61,10 @@
         <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位结果</button>
         <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       </span>
+      <span v-if="effectiveSavedAsset" class="action-group action-group-asset" aria-label="失败素材操作">
+        <button type="button" @click.stop="copyAssetReference">复制素材引用</button>
+        <button type="button" @click.stop="viewSavedAsset">查看素材</button>
+      </span>
       <span class="action-group action-group-flow" aria-label="失败流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
         <button v-if="upstreamReferenceUrls.length" type="button" @click.stop="copyUpstreamReferences">复制上游引用</button>

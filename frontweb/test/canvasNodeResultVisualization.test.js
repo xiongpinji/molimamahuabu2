@@ -110,6 +110,7 @@ test('节点状态覆盖层提供结果、提示词和失败原因操作', () =>
   assert.match(overlaySource, /\.result-text-preview p/)
   assert.match(overlaySource, /<span v-if="effectiveResultUrl" class="action-group action-group-primary"/)
   assert.match(overlaySource, /<span v-if="isFailed" class="failed-actions">[\s\S]*打开结果[\s\S]*复制链接[\s\S]*下载结果/)
+  assert.match(overlaySource, /aria-label="失败素材操作"[\s\S]*复制素材引用[\s\S]*查看素材/)
   assert.match(overlaySource, /<span class="action-group action-group-flow" aria-label="失败流程操作">[\s\S]*作为下游参考[\s\S]*retryFailed/)
   assert.match(overlaySource, /function copyPrompt\(\)/)
   assert.match(overlaySource, /function copyResultLink\(\)/)
