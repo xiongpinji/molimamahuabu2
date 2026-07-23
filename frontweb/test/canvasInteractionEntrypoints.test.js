@@ -195,7 +195,8 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /else if \(mediaPayload\?\.type === 'audio'\) \{[\s\S]*await storyboardsAPI\.update\(storyboardId, \{[\s\S]*audio_local_path: mediaPayload\.localPath \|\| undefined,[\s\S]*audio_url: mediaPayload\.localPath \? undefined : mediaPayload\.url/)
   assert.match(canvasSource, /nodeStatus\.success\(nodeId, \{[\s\S]*canvasAssetAttachStatusPayload\(projectAsset \|\| asset, targetStoryboardId, \{[\s\S]*message: resultMessage/)
   assert.match(canvasSource, /nodeStatus\.fail\(nodeId, \{[\s\S]*canvasAssetAttachFailurePayload\(projectAsset \|\| asset, targetStoryboardId, \{[\s\S]*errorDetail: message/)
-  assert.match(canvasSource, /if \(item\?\.retryStep === 'library'\) \{[\s\S]*canvasAssetPickerVisible\.value = true[\s\S]*nodeStatus\.set\(item\.nodeId/)
+  assert.match(canvasSource, /if \(item\?\.retryStep === 'library'\) \{[\s\S]*openCanvasAssetLibraryRetry\(\{[\s\S]*nodeId: item\.nodeId \|\| ''/)
+  assert.match(canvasSource, /function openCanvasAssetLibraryRetry\(\{ nodeId = '', asset = null, status = null, flowPosition = null, message = '请在素材库中重新选择素材…' \} = \{\}\)/)
 })
 
 test('右键画布支持上传和粘贴素材并按点击位置落点', () => {
