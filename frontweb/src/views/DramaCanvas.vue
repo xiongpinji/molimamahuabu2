@@ -335,6 +335,7 @@
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
               <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
+              <button v-if="queueItemRequestPayloadText(item)" type="button" @click.stop="copyQueueItemRequestPayload(item)">复制请求</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
@@ -350,6 +351,7 @@
               <button v-if="item.resultUrl" type="button" @click.stop="copyQueueItemResult(item)">复制</button>
               <button v-if="queueTextResult(item)" type="button" @click.stop="copyQueueItemTextResult(item)">复制文本</button>
               <button v-if="item.resultReferences.length" type="button" @click.stop="copyQueueItemResultReferences(item)">复制引用</button>
+              <button v-if="queueItemRequestPayloadText(item)" type="button" @click.stop="copyQueueItemRequestPayload(item)">复制请求</button>
               <button v-if="item.resultUrl" type="button" @click.stop="downloadQueueItemResult(item)">下载</button>
               <button v-if="item.resultUrl && !item.savedAssetId" type="button" :disabled="savingQueueAssetKey === item.key" @click.stop="saveQueueItemResultAsset(item)">
                 {{ savingQueueAssetKey === item.key ? '入库中…' : '存入素材库' }}
@@ -1132,6 +1134,26 @@ async function copyQueueItemResultReferences(item) {
     return
   }
   await copyCanvasText([...new Set(references)].join('\n'), '队列结果引用已复制', '队列结果引用（请手动复制）')
+}
+
+function queueItemRequestPayloadText(item) {
+  const payload = item?.requestAudit || item?.requestPayload
+  if (!payload) return ''
+  if (typeof payload === 'string') return payload
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return String(payload)
+  }
+}
+
+async function copyQueueItemRequestPayload(item) {
+  const text = queueItemRequestPayloadText(item)
+  if (!text) {
+    ElMessage.warning('该队列项暂无可复制的真实请求')
+    return
+  }
+  await copyCanvasText(text, '队列真实请求已复制', '队列真实请求（请手动复制）')
 }
 
 async function copyQueueItemError(item) {
