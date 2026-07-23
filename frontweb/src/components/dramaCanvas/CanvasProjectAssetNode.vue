@@ -2,6 +2,9 @@
   <div class="project-asset-node" :class="{ focused: data.focused }">
     <CanvasNodeStatusOverlay :node-id="id" />
     <div class="tag">{{ typeLabel }}</div>
+    <div v-if="assetBadges.length" class="asset-badges">
+      <span v-for="badge in assetBadges" :key="badge" class="asset-badge">{{ badge }}</span>
+    </div>
     <video v-if="assetType === 'video' && url" :src="url" class="asset-media" muted controls preload="metadata" />
     <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio" controls />
     <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" />
@@ -65,13 +68,40 @@ const url = computed(() => assetMediaUrl(props.data.asset))
 const referenceAssetId = computed(() => props.data.asset?.raw_id || props.data.asset?.id || '')
 const assetId = computed(() => referenceAssetId.value)
 const activeNodeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
-const assignedStoryboardId = computed(() => Number(props.data.asset?.storyboard_id || props.data.asset?.metadata?.storyboard_id || 0))
+const assignedStoryboardId = computed(() => Number(
+  props.data.asset?.storyboard_id
+  || props.data.asset?.metadata?.storyboard_id
+  || props.data.asset?.metadata?.attached_storyboard_id
+  || props.data.asset?.picker_storyboard_id
+  || 0,
+))
 const statusStoryboardId = computed(() => Number(activeNodeStatus.value?.attachedToStoryboardId || activeNodeStatus.value?.storyboardId || 0))
 const assignmentLabel = computed(() => Number.isFinite(assignedStoryboardId.value) && assignedStoryboardId.value > 0
   ? `已指派到分镜 #${assignedStoryboardId.value}`
   : Number.isFinite(statusStoryboardId.value) && statusStoryboardId.value > 0
     ? `目标分镜 #${statusStoryboardId.value}`
   : '未指派到分镜')
+const sourceLabel = computed(() => {
+  const source = props.data.asset?.picker_source
+    || props.data.asset?.source_kind
+    || props.data.asset?.metadata?.source_kind
+    || ''
+  return {
+    project: '项目资产',
+    character: '角色库',
+    scene: '场景库',
+    prop: '道具库',
+    voice_catalog: '音色库',
+  }[source] || ''
+})
+const pickerStatusLabel = computed(() => props.data.asset?.picker_status || '')
+const pickerStoryboardId = computed(() => Number(props.data.asset?.picker_storyboard_id || 0))
+const assetBadges = computed(() => [
+  sourceLabel.value,
+  pickerStatusLabel.value || (Number.isFinite(pickerStoryboardId.value) && pickerStoryboardId.value > 0
+    ? `已挂载分镜 #${pickerStoryboardId.value}`
+    : ''),
+].filter(Boolean))
 const isFailureAsset = computed(() => props.data.asset?.category === 'canvas-asset-failure')
 const failureReason = computed(() => activeNodeStatus.value?.errorDetail || activeNodeStatus.value?.message || props.data.asset?.metadata?.error || '')
 const failureLabel = computed(() => `素材库挂载失败${failureReason.value ? `：${failureReason.value}` : ''}`)
@@ -130,6 +160,8 @@ function closePanel() {
 .asset-audio { height: 42px; }
 .empty { display: grid; place-items: center; color: #71717a; font-size: 11px; }
 .tag { color: #38bdf8; font-size: 10px; font-weight: 700; }
+.asset-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.asset-badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; padding: 1px 6px; background: rgba(139,92,246,.16); color: #c4b5fd; font-size: 10px; }
 .project-asset-node strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .project-asset-node span { color: #71717a; font-size: 10px; }
 .asset-actions { display: flex; gap: 6px; margin-top: 8px; }
