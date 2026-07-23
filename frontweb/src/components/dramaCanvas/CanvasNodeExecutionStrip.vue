@@ -74,6 +74,14 @@
       @click.stop="copySavedAssetReference"
     >素材引用</el-button>
     <el-button
+      v-if="canSaveResultAsset"
+      link
+      size="small"
+      type="success"
+      :disabled="disabled || savingAsset"
+      @click.stop="saveResultAsset"
+    >{{ savingAsset ? '入库中…' : '存入素材库' }}</el-button>
+    <el-button
       v-if="canFocusResultNode"
       link
       size="small"
@@ -119,6 +127,7 @@
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { assetsAPI } from '@/api/assets'
 import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
@@ -131,15 +140,25 @@ defineEmits(['retry', 'retry-action', 'continue'])
 
 const ctx = useCanvasContext()
 const attachingReference = ref(false)
+const savingAsset = ref(false)
 const statusSavedAsset = computed(() => {
   if (!props.status?.savedAssetId) return null
   return {
     id: props.status.savedAssetId,
+    name: props.status.savedAssetName || '素材',
     url: props.status.savedAssetUrl || props.status.resultUrl || '',
     local_path: props.status.savedAssetLocalPath || '',
   }
 })
 const resultUrl = computed(() => assetMediaUrl(statusSavedAsset.value) || props.status?.savedAssetUrl || props.status?.resultUrl || '')
+const resultType = computed(() => {
+  const type = String(props.status?.resultType || '').toLowerCase()
+  if (['image', 'video', 'audio'].includes(type)) return type
+  const url = String(resultUrl.value).toLowerCase()
+  if (/\.(mp4|webm|mov|m4v)(\?|#|$)/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/.test(url)) return 'audio'
+  return 'image'
+})
 const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || props.nodeId || '')
 const downstreamNode = computed(() => downstreamNodeId.value ? ctx?.findCanvasNode?.(downstreamNodeId.value) : null)
 const resultSummary = computed(() => String(props.status?.resultSummary || '').trim())
@@ -156,6 +175,7 @@ const savedAssetReference = computed(() => {
 const canFocusResultNode = computed(() => Boolean(props.status?.resultNodeId) && Boolean(ctx?.focusCanvasNode))
 const hasReusableResultReference = computed(() => Boolean(resultUrl.value || resultSummary.value || resultReferences.value.length || savedAssetReference.value))
 const canUseResultAsDownstreamReference = computed(() => hasReusableResultReference.value && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
+const canSaveResultAsset = computed(() => Boolean(resultUrl.value) && !props.status?.savedAssetId)
 const resultMetaText = computed(() => {
   const parts = []
   if (resultSummary.value) parts.push(resultSummary.value)
@@ -199,6 +219,24 @@ function resultFilename() {
   return rawName || 'canvas-node-result'
 }
 
+function resultLocalPath() {
+  if (props.status?.savedAssetLocalPath) return props.status.savedAssetLocalPath
+  const url = String(resultUrl.value || '')
+  const marker = '/static/'
+  const index = url.indexOf(marker)
+  if (index < 0) return null
+  return url.slice(index + marker.length).split(/[?#]/)[0] || null
+}
+
+function resultAssetName() {
+  const label = props.status?.resultLabel || props.status?.queueLabel || '节点结果'
+  return `${label}-${resultFilename()}`
+}
+
+function resultStoryboardId() {
+  return Number(props.status?.storyboardId || downstreamNode.value?.data?.storyboard?.id) || null
+}
+
 async function copyText(text, successMessage, fallbackTitle) {
   if (!text) return
   try {
@@ -240,6 +278,62 @@ function copyUpstreamReferences() {
 
 function copySavedAssetReference() {
   copyText(savedAssetReference.value, '素材引用已复制', '素材引用（请手动复制）')
+}
+
+async function saveResultAsset() {
+  if (!canSaveResultAsset.value || savingAsset.value) return
+  const dramaId = Number(props.status?.dramaId || ctx?.drama?.value?.id || downstreamNode.value?.data?.dramaId)
+  if (!Number.isFinite(dramaId) || dramaId <= 0) {
+    ElMessage.warning('缺少项目 ID，无法存入素材库')
+    return
+  }
+  savingAsset.value = true
+  try {
+    const asset = await assetsAPI.create({
+      drama_id: dramaId,
+      storyboard_id: resultStoryboardId(),
+      name: resultAssetName(),
+      type: resultType.value,
+      category: 'canvas-result',
+      url: resultUrl.value,
+      local_path: resultLocalPath(),
+      metadata: {
+        source: 'canvas_node_execution_strip',
+        canvas_node_id: props.nodeId,
+        result_label: props.status?.resultLabel || '',
+        prompt_text: props.status?.promptText || '',
+        model: props.status?.model || '',
+        task_id: props.status?.taskId || '',
+        video_generation_id: props.status?.videoGenerationId || '',
+        request_payload: props.status?.requestPayload || null,
+        request_audit: props.status?.requestAudit || null,
+      },
+    })
+    if (!asset?.id) throw new Error('结果入库失败')
+    ctx?.nodeStatus?.set?.(props.nodeId, {
+      ...props.status,
+      savedAssetId: asset?.id || '',
+      savedAssetName: asset?.name || resultAssetName(),
+      savedAssetUrl: asset?.url || resultUrl.value,
+      savedAssetLocalPath: asset?.local_path || '',
+      savedAssetDuration: asset?.duration ?? null,
+      actionError: '',
+      autoClear: false,
+    })
+    ElMessage.success('结果已存入素材库')
+    if (ctx?.refreshProjectAssets) await ctx.refreshProjectAssets()
+    else await ctx?.refreshDrama?.(true)
+  } catch (error) {
+    const message = error?.message || '存入素材库失败'
+    ElMessage.error(message)
+    ctx?.nodeStatus?.set?.(props.nodeId, {
+      ...props.status,
+      actionError: message,
+      autoClear: false,
+    })
+  } finally {
+    savingAsset.value = false
+  }
 }
 
 function focusResultNode() {
