@@ -14,6 +14,7 @@ import {
   getStoryboardImageFrameType,
   getStoryboardGridFrameType,
   getStoryboardImageModel,
+  getStoryboardAudioModel,
   getStoryboardVideoModel,
   toAbsoluteMediaUrl,
   buildCanvasPhotographyPrompt,
@@ -263,13 +264,15 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
   }
 }
 
-export async function runAudioStep(sb) {
+export async function runAudioStep(sb, genOpts = {}) {
   const text = (sb.dialogue || '').trim()
   if (!text) return { skipped: true, reason: '无对白' }
+  const model = getStoryboardAudioModel(sb, genOpts)
   const res = await request.post('/audio/extract', {
     storyboard_id: sb.id,
     text,
     tts_kind: 'dialogue',
+    tts_model: model || undefined,
   })
   return {
     skipped: false,
@@ -277,6 +280,7 @@ export async function runAudioStep(sb) {
     resultLocalPath: res?.local_path || '',
     resultType: 'audio',
     resultLabel: '音频已生成',
+    model: res?.model || model || null,
   }
 }
 
@@ -311,7 +315,7 @@ export async function runStoryboardPipeline(drama, storyboardId, pipeline, hooks
           sb = (await hooks.reloadStoryboard(storyboardId)) || sb
         }
       } else if (step === 'audio') {
-        const audioRes = await runAudioStep(sb)
+        const audioRes = await runAudioStep(sb, genOpts)
         results.push({ step, ...audioRes })
       }
       hooks.onStepComplete?.({ storyboardId, step, sb })

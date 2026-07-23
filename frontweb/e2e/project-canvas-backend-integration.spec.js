@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
+import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -21,6 +22,8 @@ let dramaId
 let episodeId
 let storyboardId
 let tempRoot
+let ttsProvider
+const ttsProviderRequests = []
 
 test.setTimeout(60_000)
 test.describe.configure({ mode: 'serial' })
@@ -89,6 +92,16 @@ async function clickNodeAction(page, node, actionName) {
 }
 
 test.beforeAll(async () => {
+  ttsProvider = http.createServer((request, response) => {
+    const chunks = []
+    request.on('data', (chunk) => chunks.push(chunk))
+    request.on('end', () => {
+      ttsProviderRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      response.writeHead(200, { 'content-type': 'audio/mpeg' })
+      response.end(Buffer.from('canvas-browser-tts'))
+    })
+  })
+  await new Promise((resolve) => ttsProvider.listen(0, '127.0.0.1', resolve))
   const port = await reservePort()
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-canvas-browser-backend-'))
   databasePath = path.join(tempRoot, 'canvas.sqlite')
@@ -222,6 +235,16 @@ test.beforeAll(async () => {
       default_model: 'canvas-video-alpha',
       is_default: true,
     },
+    {
+      service_type: 'tts',
+      name: '画布音频模型',
+      provider: 'openai',
+      base_url: `http://127.0.0.1:${ttsProvider.address().port}`,
+      api_key: 'test-no-request-key',
+      model: ['canvas-tts-alpha', 'canvas-tts-beta'],
+      default_model: 'canvas-tts-alpha',
+      is_default: true,
+    },
   ]) {
     const configResponse = await fetch(`${backendOrigin}/api/v1/ai-configs`, {
       method: 'POST',
@@ -236,6 +259,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await stopBackend()
+  if (ttsProvider) await new Promise((resolve) => ttsProvider.close(resolve))
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
 })
 
@@ -405,14 +429,16 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
 
   const generation = panel.locator('.generation-section')
   const generationSelects = generation.locator('.el-select')
-  await expect(generationSelects).toHaveCount(4)
+  await expect(generationSelects).toHaveCount(5)
   await generationSelects.nth(0).click()
   await page.getByRole('option', { name: 'canvas-image-beta' }).click()
   await generationSelects.nth(1).click()
   await page.getByRole('option', { name: 'canvas-video-beta' }).click()
   await generationSelects.nth(2).click()
-  await page.getByRole('option', { name: '9:16 竖屏' }).click()
+  await page.getByRole('option', { name: 'canvas-tts-beta' }).click()
   await generationSelects.nth(3).click()
+  await page.getByRole('option', { name: '9:16 竖屏' }).click()
+  await generationSelects.nth(4).click()
   await page.getByRole('option', { name: '720p 高清' }).click()
   const durationInput = generation.locator('.duration-input input')
   await durationInput.fill('9')
@@ -423,7 +449,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await expect.poll(() => readDatabase((db) => {
     const storyboard = db.prepare(
       `SELECT title, action, dialogue, image_prompt, video_prompt, angle_h, angle_v,
-              angle_s, lighting_style, grid_frame_type, image_model, video_model, duration
+              angle_s, lighting_style, grid_frame_type, image_model, video_model, audio_model, duration
        FROM storyboards WHERE id = ?`,
     ).get(storyboardId)
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
@@ -442,6 +468,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
       grid_frame_type: 'quad_grid',
       image_model: 'canvas-image-beta',
       video_model: 'canvas-video-beta',
+      audio_model: 'canvas-tts-beta',
       duration: 9,
     },
     metadata: expect.objectContaining({
@@ -469,13 +496,23 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await expect(panel.locator('.camera-control-grid')).toContainText('黄金时段')
   await expect(generation).toContainText('canvas-image-beta')
   await expect(generation).toContainText('canvas-video-beta')
+  await expect(generation).toContainText('canvas-tts-beta')
   await expect(generation).toContainText('9:16 竖屏')
   await expect(generation).toContainText('720p 高清')
   await expect(durationInput).toHaveValue('9')
+  await panel.getByRole('button', { name: '配音', exact: true }).click()
+  await expect.poll(() => ttsProviderRequests.at(-1)).toEqual(expect.objectContaining({
+    model: 'canvas-tts-beta',
+    input: '小茉：终于等到你了。',
+  }))
+  await expect.poll(() => readDatabase((db) => db.prepare(
+    'SELECT audio_local_path FROM storyboards WHERE id = ?',
+  ).get(storyboardId).audio_local_path)).toMatch(/^audio\/tts_sb/)
 
   expect(forwardedRequests).toEqual(expect.arrayContaining([
     `GET /api/v1/dramas/${dramaId}`,
     `PUT /api/v1/storyboards/${storyboardId}`,
     `PUT /api/v1/dramas/${dramaId}/outline`,
+    'POST /api/v1/audio/extract',
   ]))
 })

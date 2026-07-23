@@ -93,6 +93,12 @@ export function getStoryboardVideoModel(storyboard, generationOptions = {}) {
   return override || String(generationOptions?.videoModel || '').trim()
 }
 
+/** 分镜级音频模型优先，未设置时回退到项目画布默认模型。 */
+export function getStoryboardAudioModel(storyboard, generationOptions = {}) {
+  const override = String(storyboard?.audio_model || '').trim()
+  return override || String(generationOptions?.audioModel || '').trim()
+}
+
 /** 分镜级图像模型优先，未设置时回退到项目画布默认模型。 */
 export function getStoryboardImageModel(storyboard, generationOptions = {}) {
   const override = String(storyboard?.image_model || '').trim()
@@ -128,6 +134,7 @@ export function getDramaGenerationOptions(drama) {
     videoResolution: meta.video_resolution || '480p',
     imageModel: meta.image_model || '',
     videoModel: meta.video_model || '',
+    audioModel: meta.audio_model || '',
   }
 }
 
@@ -135,6 +142,15 @@ export function getStoryboardImageFrameType(frameKind) {
   if (frameKind === 'first') return 'storyboard_first'
   if (frameKind === 'last') return 'storyboard_last'
   return undefined
+}
+
+export function getStoryboardGenerationOptions(storyboard, generationOptions = {}) {
+  return {
+    ...generationOptions,
+    imageModel: getStoryboardImageModel(storyboard, generationOptions),
+    videoModel: getStoryboardVideoModel(storyboard, generationOptions),
+    audioModel: getStoryboardAudioModel(storyboard, generationOptions),
+  }
 }
 
 export function universalPromptDuration(storyboard) {

@@ -31,3 +31,10 @@ export function getSelectableModels(configs, serviceType, configId) {
   if (!config) return []
   return getModelsFromAiConfig(config)
 }
+
+export function getSelectableModelsAcrossConfigs(configs, serviceType) {
+  const models = (Array.isArray(configs) ? configs : [])
+    .filter((config) => config?.is_active && isConfigForServiceType(config, serviceType))
+    .flatMap((config) => getModelsFromAiConfig(config))
+  return [...new Set(models)]
+}

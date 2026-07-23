@@ -173,6 +173,7 @@ import {
   findStoryboardInDrama,
   getDramaGenerationOptions,
   getStoryboardImageModel,
+  getStoryboardAudioModel,
   getStoryboardVideoModel,
   universalPromptDuration,
 } from '@/utils/canvasWorkflow'
@@ -212,6 +213,7 @@ const storyboardGenerationOptions = computed(() => {
     ...defaults,
     imageModel: getStoryboardImageModel(props.storyboard, defaults),
     videoModel: getStoryboardVideoModel(props.storyboard, defaults),
+    audioModel: getStoryboardAudioModel(props.storyboard, defaults),
     videoDuration: universalPromptDuration(props.storyboard),
   }
 })
@@ -222,6 +224,7 @@ function effectiveGenerationOptions(base = {}) {
     ...base,
     imageModel: current.imageModel || base.imageModel,
     videoModel: current.videoModel || base.videoModel,
+    audioModel: current.audioModel || base.audioModel,
     aspectRatio: current.aspectRatio || base.aspectRatio,
     videoResolution: current.videoResolution || base.videoResolution,
     videoDuration: current.videoDuration || base.videoDuration,
@@ -455,6 +458,7 @@ async function saveStoryboardGenerationOptions(patch, next) {
   const payload = {}
   if (Object.hasOwn(patch, 'imageModel')) payload.image_model = next.imageModel || null
   if (Object.hasOwn(patch, 'videoModel')) payload.video_model = next.videoModel || null
+  if (Object.hasOwn(patch, 'audioModel')) payload.audio_model = next.audioModel || null
   if (Object.hasOwn(patch, 'videoDuration')) payload.duration = Number(next.videoDuration) || 5
   if (!Object.keys(payload).length && !hasProjectPatch) return
   const statusMessage = '生成参数保存中…'
@@ -499,6 +503,7 @@ function generationOptionsSummary(next) {
   const parts = []
   if (next.imageModel) parts.push(`图像模型：${next.imageModel}`)
   if (next.videoModel) parts.push(`视频模型：${next.videoModel}`)
+  if (next.audioModel) parts.push(`音频模型：${next.audioModel}`)
   if (next.aspectRatio) parts.push(`画幅：${next.aspectRatio}`)
   if (next.videoResolution) parts.push(`清晰度：${next.videoResolution}`)
   if (next.videoDuration) parts.push(`时长：${next.videoDuration}s`)
@@ -614,7 +619,7 @@ async function runStep(step) {
     if (step === 'image') await runImageStep(drama, sb, genOpts, props.frameKind)
     else if (step === 'video') await runVideoStep(drama, sb, genOpts)
     else if (step === 'audio') {
-      const res = await runAudioStep(sb)
+      const res = await runAudioStep(sb, genOpts)
       if (res?.skipped) {
         ElMessage.info(res.reason || '已跳过')
         return

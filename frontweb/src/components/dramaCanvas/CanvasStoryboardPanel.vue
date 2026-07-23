@@ -401,6 +401,7 @@ import {
   getAdjacentStoryboards,
   getDramaGenerationOptions,
   getStoryboardImageModel,
+  getStoryboardAudioModel,
   toAbsoluteMediaUrl,
 } from '@/utils/canvasWorkflow'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
@@ -483,6 +484,7 @@ const storyboardGenerationOptions = computed(() => ({
   ...projectGenerationOptions.value,
   imageModel: imageModel.value || getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
   videoModel: videoModel.value || projectGenerationOptions.value.videoModel || '',
+  audioModel: getStoryboardAudioModel(props.storyboard, projectGenerationOptions.value),
   videoDuration: form.duration || 5,
 }))
 const storyboardCharacters = computed(() => {
@@ -1156,6 +1158,9 @@ async function saveStoryboardGenerationOptions(patch, next) {
     pending.videoModel = String(next.videoModel || '').trim()
     payload.video_model = pending.videoModel || null
   }
+  if (Object.hasOwn(patch, 'audioModel')) {
+    payload.audio_model = String(next.audioModel || '').trim() || null
+  }
   if (Object.hasOwn(patch, 'videoDuration')) {
     pending.videoDuration = Number(next.videoDuration) || 5
     payload.duration = pending.videoDuration
@@ -1349,7 +1354,10 @@ async function runStep(step) {
       })
     }
     else if (step === 'audio') {
-      const res = await runAudioStep(sb)
+      const res = await runAudioStep(sb, {
+        ...genOpts,
+        audioModel: getStoryboardAudioModel(sb, genOpts),
+      })
       operationResult = res || {}
       if (res?.skipped) {
         actionStatus.value = { type: 'idle', message: res.reason || '已跳过' }

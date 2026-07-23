@@ -380,6 +380,7 @@ function rowToStoryboard(r) {
     video_prompt: r.video_prompt,
       video_model: r.video_model ?? null,
       image_model: r.image_model ?? null,
+      audio_model: r.audio_model ?? null,
       grid_frame_type: r.grid_frame_type || 'single',
       shot_type: r.shot_type ?? null,
       angle: r.angle ?? null,

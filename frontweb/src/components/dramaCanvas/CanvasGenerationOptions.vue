@@ -26,6 +26,18 @@
       <el-option v-for="model in videoModelOptions" :key="`video-${model}`" :label="model" :value="model" />
     </el-select>
     <el-select
+      v-if="mode === 'audio' || mode === 'both'"
+      :model-value="options.audioModel || ''"
+      size="small"
+      class="model-select"
+      :disabled="!audioModelOptions.length"
+      :placeholder="audioModelOptions.length ? '音频模型' : 'AI 配置默认'"
+      @change="update('audioModel', $event)"
+    >
+      <el-option label="跟随项目默认" value="" />
+      <el-option v-for="model in audioModelOptions" :key="`audio-${model}`" :label="model" :value="model" />
+    </el-select>
+    <el-select
       v-if="!modelsOnly && mode !== 'audio'"
       :model-value="options.aspectRatio || '16:9'"
       size="small"
@@ -70,7 +82,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { aiAPI } from '@/api/ai'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { getSelectableModels } from '@/utils/modelSelection'
+import { getSelectableModels, getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 
 const props = defineProps({
   mode: { type: String, default: 'both' },
@@ -84,6 +96,7 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const ctx = useCanvasContext()
 const imageConfigs = ref([])
 const videoConfigs = ref([])
+const audioConfigs = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
 
 const imageModelOptions = computed(() => withCurrent(
@@ -93,6 +106,10 @@ const imageModelOptions = computed(() => withCurrent(
 const videoModelOptions = computed(() => withCurrent(
   getSelectableModels(videoConfigs.value, 'video'),
   options.value.videoModel,
+))
+const audioModelOptions = computed(() => withCurrent(
+  getSelectableModelsAcrossConfigs(audioConfigs.value, 'tts'),
+  options.value.audioModel,
 ))
 
 function withCurrent(models, current) {
@@ -114,15 +131,17 @@ function update(field, value) {
 }
 
 onMounted(async () => {
-  const [images, storyboardImages, videos] = await Promise.allSettled([
+  const [images, storyboardImages, videos, audios] = await Promise.allSettled([
     aiAPI.list('image'),
     aiAPI.list('storyboard_image'),
     aiAPI.list('video'),
+    aiAPI.list('tts'),
   ])
   const imageList = images.status === 'fulfilled' && Array.isArray(images.value) ? images.value : []
   const storyboardImageList = storyboardImages.status === 'fulfilled' && Array.isArray(storyboardImages.value) ? storyboardImages.value : []
   imageConfigs.value = [...storyboardImageList, ...imageList]
   if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []
+  if (audios.status === 'fulfilled') audioConfigs.value = Array.isArray(audios.value) ? audios.value : []
 })
 </script>
 

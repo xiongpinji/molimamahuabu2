@@ -11,11 +11,13 @@ import {
   getDramaGenerationOptions,
   getStoryboardImageFrameType,
   getStoryboardGridFrameType,
+  getStoryboardAudioModel,
   getStoryboardImageModel,
   getStoryboardVideoModel,
   storyboardIdFromNodeId,
   universalPromptDuration,
 } from '../src/utils/canvasWorkflow.js'
+import { getSelectableModelsAcrossConfigs } from '../src/utils/modelSelection.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const generationOptionsSource = fs.readFileSync(
@@ -31,6 +33,7 @@ test('画布生成参数从项目元数据读取模型、画幅和清晰度', ()
       video_resolution: '720p',
       image_model: 'image-model-a',
       video_model: 'video-model-b',
+      audio_model: 'tts-model-c',
     }),
   })
 
@@ -40,6 +43,7 @@ test('画布生成参数从项目元数据读取模型、画幅和清晰度', ()
     videoResolution: '720p',
     imageModel: 'image-model-a',
     videoModel: 'video-model-b',
+    audioModel: 'tts-model-c',
   })
 })
 
@@ -67,6 +71,17 @@ test('分镜视频模型覆盖项目默认模型', () => {
   assert.equal(
     getStoryboardVideoModel({ video_model: '  ' }, { videoModel: 'project-video' }),
     'project-video',
+  )
+})
+
+test('分镜音频模型覆盖项目默认模型', () => {
+  assert.equal(
+    getStoryboardAudioModel({ audio_model: 'storyboard-tts' }, { audioModel: 'project-tts' }),
+    'storyboard-tts',
+  )
+  assert.equal(
+    getStoryboardAudioModel({ audio_model: '  ' }, { audioModel: 'project-tts' }),
+    'project-tts',
   )
 })
 
@@ -150,6 +165,26 @@ test('画布模型选择包含分镜图片专用配置并保留图片模型兜�
   assert.match(generationOptionsSource, /getSelectableModels\(imageConfigs\.value,\s*'storyboard_image'\)/)
   assert.match(generationOptionsSource, /aiAPI\.list\('storyboard_image'\)/)
   assert.match(generationOptionsSource, /imageConfigs\.value\s*=\s*\[\.\.\.storyboardImageList,\s*\.\.\.imageList\]/)
+})
+
+test('画布音频模式加载已配置 TTS 模型并提供模型选择', () => {
+  assert.match(generationOptionsSource, /v-if="mode === 'audio' \|\| mode === 'both'"/)
+  assert.match(generationOptionsSource, /:model-value="options\.audioModel \|\| ''"/)
+  assert.match(generationOptionsSource, /@change="update\('audioModel', \$event\)"/)
+  assert.match(generationOptionsSource, /getSelectableModelsAcrossConfigs\(audioConfigs\.value,\s*'tts'\)/)
+  assert.match(generationOptionsSource, /aiAPI\.list\('tts'\)/)
+})
+
+test('画布音频模型合并所有启用 TTS 配置并去重', () => {
+  assert.deepEqual(
+    getSelectableModelsAcrossConfigs([
+      { service_type: 'tts', is_active: true, model: ['tts-a', 'shared'] },
+      { service_type: 'tts', is_active: true, model: ['tts-b', 'shared'] },
+      { service_type: 'tts', is_active: false, model: ['tts-disabled'] },
+      { service_type: 'video', is_active: true, model: ['video-a'] },
+    ], 'tts'),
+    ['tts-a', 'shared', 'tts-b'],
+  )
 })
 
 test('视频生成参数组件提供单镜时长配置', () => {

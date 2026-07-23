@@ -59,11 +59,14 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
 })
 
 test('画布音频节点把同步提取结果写入节点成功结果', () => {
-  assert.match(runnerSource, /const res = await request\.post\('\/audio\/extract', \{[\s\S]*tts_kind: 'dialogue'/)
+  assert.match(runnerSource, /export async function runAudioStep\(sb, genOpts = \{\}\)/)
+  assert.match(runnerSource, /const model = getStoryboardAudioModel\(sb, genOpts\)/)
+  assert.match(runnerSource, /const res = await request\.post\('\/audio\/extract', \{[\s\S]*tts_kind: 'dialogue',[\s\S]*tts_model: model \|\| undefined/)
   assert.match(runnerSource, /resultUrl: res\?\.url \|\| ''/)
   assert.match(runnerSource, /resultLocalPath: res\?\.local_path \|\| ''/)
   assert.match(runnerSource, /resultType: 'audio'/)
-  assert.match(canvasSource, /const res = await runAudioStep\(latestSb\)[\s\S]*operationResult = res/)
+  assert.match(canvasSource, /const res = await runAudioStep\(latestSb,\s*getCanvasGenerationOptions\(\)\)[\s\S]*operationResult = res/)
+  assert.match(storyboardPanelSource, /runAudioStep\(sb,\s*\{[\s\S]*audioModel:/)
 })
 
 test('分镜面板直接生视频补传画布媒体映射给首尾帧链路', () => {
