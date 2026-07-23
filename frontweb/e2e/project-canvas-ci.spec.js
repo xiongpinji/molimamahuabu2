@@ -48,6 +48,8 @@ let savedWorkflowGroups = []
 let mockDrama = null
 let nextStoryboardId = 2001
 let createdStoryboardPayloads = []
+let updatedStoryboardPayloads = []
+let boundVoicePayloads = []
 
 function apiData(data) {
   return {
@@ -75,6 +77,8 @@ test.beforeEach(async ({ page }) => {
   mockDrama = JSON.parse(JSON.stringify(drama))
   nextStoryboardId = 2001
   createdStoryboardPayloads = []
+  updatedStoryboardPayloads = []
+  boundVoicePayloads = []
 
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -96,6 +100,10 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill(apiData({ items: mockAssets }))
       return
     }
+    if (request.method() === 'GET' && pathname === '/api/v1/storyboards/1001') {
+      await route.fulfill(apiData(mockDrama.episodes[0].storyboards[0]))
+      return
+    }
     if (request.method() === 'GET' && ['/api/v1/images', '/api/v1/videos'].includes(pathname)) {
       await route.fulfill(apiData({ items: [] }))
       return
@@ -112,7 +120,21 @@ test.beforeEach(async ({ page }) => {
       }))
       return
     }
-    if (request.method() === 'GET' && ['/api/v1/character-library', '/api/v1/prop-library', '/api/v1/voice-catalog'].includes(pathname)) {
+    if (request.method() === 'GET' && pathname === '/api/v1/voice-catalog') {
+      await route.fulfill(apiData({
+        items: [
+          {
+            id: 'xiaomo-fixed-voice',
+            label: '小茉固定音色',
+            preview_url: '/static/e2e-xiaomo-voice.mp3',
+            language: 'zh-CN',
+            available: true,
+          },
+        ],
+      }))
+      return
+    }
+    if (request.method() === 'GET' && ['/api/v1/character-library', '/api/v1/prop-library'].includes(pathname)) {
       await route.fulfill(apiData({ items: [] }))
       return
     }
@@ -129,6 +151,23 @@ test.beforeEach(async ({ page }) => {
       const episode = mockDrama.episodes.find((item) => Number(item.id) === Number(payload.episode_id))
       episode?.storyboards?.push(storyboard)
       await route.fulfill(apiData(storyboard))
+      return
+    }
+    if (request.method() === 'PUT' && pathname === '/api/v1/storyboards/1001') {
+      const payload = request.postDataJSON() || {}
+      updatedStoryboardPayloads.push(payload)
+      Object.assign(mockDrama.episodes[0].storyboards[0], payload)
+      await route.fulfill(apiData(mockDrama.episodes[0].storyboards[0]))
+      return
+    }
+    if (request.method() === 'POST' && pathname === '/api/v1/characters/11/sd2-voice-catalog') {
+      const payload = request.postDataJSON() || {}
+      boundVoicePayloads.push(payload)
+      Object.assign(mockDrama.characters[0], {
+        voice_catalog_id: payload.voice_id,
+        sd2_voice_catalog_id: payload.voice_id,
+      })
+      await route.fulfill(apiData(mockDrama.characters[0]))
       return
     }
     if (request.method() === 'POST' && pathname === '/api/v1/assets') {
@@ -403,6 +442,57 @@ test('项目画布从素材库导入场景图、指派分镜并在刷新后恢�
   await expect(restoredProjectAssetNode).toBeAttached()
   await expect(restoredProjectAssetNode).toContainText('雨夜站台参考')
   await expect(restoredProjectAssetNode).toContainText('已指派到分镜 #1001')
+})
+
+test('项目画布选择音色后绑定唯一角色并在刷新后恢复', async ({ page }) => {
+  await page.goto('/film/3/canvas')
+
+  const storyboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await storyboardNode.click()
+
+  const panel = page.locator('.canvas-node-panel.sb-panel')
+  await panel.getByRole('button', { name: '+素材库', exact: true }).click()
+  await page.getByRole('menuitem', { name: '设为分镜音频', exact: true }).click()
+
+  const picker = page.getByRole('dialog', { name: '从素材库选择分镜音频' })
+  await expect(picker).toBeVisible()
+  const voiceCard = picker.locator('.picker-card').filter({ hasText: '小茉固定音色' })
+  await expect(voiceCard).toContainText('音色库')
+  await voiceCard.getByRole('button', { name: '选用', exact: true }).click()
+  await expect(picker).toBeHidden()
+
+  await expect.poll(() => updatedStoryboardPayloads).toContainEqual(expect.objectContaining({
+    audio_url: '/static/e2e-xiaomo-voice.mp3',
+  }))
+  await expect.poll(() => createdAssetPayload).toMatchObject({
+    drama_id: 3,
+    storyboard_id: 1001,
+    type: 'audio',
+    category: 'voice',
+    name: '小茉固定音色',
+    url: '/static/e2e-xiaomo-voice.mp3',
+    metadata: {
+      attached_slot: 'audio',
+      attached_storyboard_id: 1001,
+      voice_catalog_id: 'xiaomo-fixed-voice',
+    },
+  })
+  await expect.poll(() => boundVoicePayloads).toEqual([
+    { voice_id: 'xiaomo-fixed-voice' },
+  ])
+  await expect(page.locator('.el-message__content').filter({
+    hasText: '已将音色设为本镜音频并绑定分镜角色',
+  })).toBeVisible()
+
+  await page.reload()
+
+  const restoredStoryboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await expect(restoredStoryboardNode).toContainText('音频')
+  await restoredStoryboardNode.click()
+  const restoredPanel = page.locator('.canvas-node-panel.sb-panel')
+  await expect(restoredPanel.locator('.reference-chip').filter({ hasText: '小茉固定音色' })).toBeVisible()
+  expect(mockDrama.episodes[0].storyboards[0].audio_url).toBe('/static/e2e-xiaomo-voice.mp3')
+  expect(mockDrama.characters[0].voice_catalog_id).toBe('xiaomo-fixed-voice')
 })
 
 test('项目画布恢复图片、视频和音频结果并提供结果复用入口', async ({ page }) => {
