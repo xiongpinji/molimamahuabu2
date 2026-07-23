@@ -40,6 +40,10 @@ const drama = {
   ],
 }
 
+let mockAssets = []
+let createdAssetPayload = null
+let updatedAssetPayloads = []
+
 function apiData(data) {
   return {
     status: 200,
@@ -58,6 +62,10 @@ async function seedNodeStatus(page, statusMap) {
 }
 
 test.beforeEach(async ({ page }) => {
+  mockAssets = []
+  createdAssetPayload = null
+  updatedAssetPayloads = []
+
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -67,8 +75,51 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill(apiData(drama))
       return
     }
-    if (request.method() === 'GET' && ['/api/v1/assets', '/api/v1/images', '/api/v1/videos'].includes(pathname)) {
+    if (request.method() === 'GET' && pathname === '/api/v1/assets') {
+      await route.fulfill(apiData({ items: mockAssets }))
+      return
+    }
+    if (request.method() === 'GET' && ['/api/v1/images', '/api/v1/videos'].includes(pathname)) {
       await route.fulfill(apiData({ items: [] }))
+      return
+    }
+    if (request.method() === 'GET' && pathname === '/api/v1/scene-library') {
+      await route.fulfill(apiData({
+        items: [
+          {
+            id: 77,
+            name: '雨夜站台参考',
+            ref_image: '/static/library-rain-station.png',
+          },
+        ],
+      }))
+      return
+    }
+    if (request.method() === 'GET' && ['/api/v1/character-library', '/api/v1/prop-library', '/api/v1/voice-catalog'].includes(pathname)) {
+      await route.fulfill(apiData({ items: [] }))
+      return
+    }
+    if (request.method() === 'POST' && pathname === '/api/v1/assets') {
+      createdAssetPayload = request.postDataJSON()
+      const asset = {
+        id: 901,
+        ...createdAssetPayload,
+      }
+      mockAssets.push(asset)
+      await route.fulfill(apiData(asset))
+      return
+    }
+    if (request.method() === 'PUT' && pathname === '/api/v1/assets/901') {
+      const payload = request.postDataJSON()
+      updatedAssetPayloads.push(payload)
+      const index = mockAssets.findIndex((asset) => Number(asset.id) === 901)
+      const asset = {
+        ...(index >= 0 ? mockAssets[index] : { id: 901 }),
+        ...payload,
+      }
+      if (index >= 0) mockAssets[index] = asset
+      else mockAssets.push(asset)
+      await route.fulfill(apiData(asset))
       return
     }
     if (request.method() === 'PUT' && pathname === '/api/v1/dramas/3/canvas-layout') {
@@ -137,6 +188,55 @@ test('项目画布支持右键添加入口、Ctrl 缩放、Space 平移和快捷
 
   await page.keyboard.press('Control+a')
   await expect(page.locator('.vue-flow__node[data-id="sb:1001"]')).toHaveClass(/selected/)
+})
+
+test('项目画布从素材库导入场景图、指派分镜并在刷新后恢复', async ({ page }) => {
+  await page.goto('/film/3/canvas')
+
+  const storyboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
+  await storyboardNode.click()
+
+  const pane = page.locator('.vue-flow__pane')
+  await pane.click({ button: 'right', position: { x: 1100, y: 680 } })
+  const menu = page.getByRole('menu', { name: '添加画布节点' })
+  await menu.getByRole('menuitem', { name: /素材库/ }).click()
+
+  const picker = page.getByRole('dialog', { name: '从素材库加入画布' })
+  await expect(picker).toBeVisible()
+  const assetCard = picker.locator('.picker-card').filter({ hasText: '雨夜站台参考' })
+  await expect(assetCard).toContainText('场景库')
+  await assetCard.getByRole('button', { name: '选用', exact: true }).click()
+  await expect(picker).toBeHidden()
+
+  await expect.poll(() => createdAssetPayload).toMatchObject({
+    drama_id: 3,
+    name: '雨夜站台参考',
+    type: 'image',
+    category: 'canvas-library-pick',
+    url: '/static/library-rain-station.png',
+    metadata: {
+      source: 'canvas_asset_picker',
+      picker_source: 'scene',
+      source_asset_id: 77,
+    },
+  })
+  await expect.poll(() => updatedAssetPayloads).toContainEqual(expect.objectContaining({
+    drama_id: 3,
+    storyboard_id: 1001,
+  }))
+
+  const projectAssetNode = page.locator('.vue-flow__node[data-id="project-asset:901"]')
+  await expect(projectAssetNode).toBeAttached()
+  await expect(projectAssetNode).toContainText('雨夜站台参考')
+  await expect(projectAssetNode).toContainText('已指派到分镜 #1001')
+  await expect(projectAssetNode.locator('.node-status-overlay')).toContainText('已加入画布并指派到分镜')
+
+  await page.reload()
+
+  const restoredProjectAssetNode = page.locator('.vue-flow__node[data-id="project-asset:901"]')
+  await expect(restoredProjectAssetNode).toBeAttached()
+  await expect(restoredProjectAssetNode).toContainText('雨夜站台参考')
+  await expect(restoredProjectAssetNode).toContainText('已指派到分镜 #1001')
 })
 
 test('项目画布恢复图片、视频和音频结果并提供结果复用入口', async ({ page }) => {
