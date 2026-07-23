@@ -109,7 +109,9 @@ test('视频请求缺少提示词和模型时读取分镜持久化配置并固�
     model: 'explicit-video-model',
   }, { billingEnabled: false, schedule() {} });
   assert.equal(explicit.model, 'explicit-video-model');
-  assert.equal(explicit.prompt, '显式覆盖后的镜头动作');
+  assert.match(explicit.prompt, /显式覆盖后的镜头动作/);
+  assert.match(explicit.prompt, /VOICE CONTINUITY/);
+  assert.match(explicit.prompt, /bright youthful voice, clear diction/);
   db.close();
 });
 
