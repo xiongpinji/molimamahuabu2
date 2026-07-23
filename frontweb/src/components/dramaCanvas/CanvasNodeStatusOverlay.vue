@@ -61,9 +61,12 @@
         <button v-if="resultNodeId" type="button" @click.stop="focusResultNode">定位结果</button>
         <button v-if="status.errorDetail || status.message" type="button" @click.stop="copyError">复制原因</button>
       </span>
-      <span v-if="effectiveSavedAsset" class="action-group action-group-asset" aria-label="失败素材操作">
-        <button type="button" @click.stop="copyAssetReference">复制素材引用</button>
-        <button type="button" @click.stop="viewSavedAsset">查看素材</button>
+      <span v-if="status.resultUrl || effectiveSavedAsset" class="action-group action-group-asset" aria-label="失败素材操作">
+        <button v-if="status.resultUrl" type="button" :disabled="savingAsset" @click.stop="saveResultAsset">
+          {{ savingAsset ? '保存中…' : '存入素材库' }}
+        </button>
+        <button v-if="effectiveSavedAsset" type="button" @click.stop="copyAssetReference">复制素材引用</button>
+        <button v-if="effectiveSavedAsset" type="button" @click.stop="viewSavedAsset">查看素材</button>
       </span>
       <span class="action-group action-group-flow" aria-label="失败流程操作">
         <button v-if="status.promptText" type="button" @click.stop="copyPrompt">复制提示词</button>
@@ -415,9 +418,10 @@ function markAttachSuccess(message, extra = {}) {
 
 function markActionFailure(message, retryActionName, retryActionLabel) {
   const text = message || '结果操作失败'
-  ctx?.nodeStatus?.success?.(props.nodeId, {
+  const update = isFailed.value ? ctx?.nodeStatus?.fail : ctx?.nodeStatus?.success
+  update?.(props.nodeId, {
     ...status.value,
-    message: status.value?.message || '节点执行完成',
+    message: status.value?.message || (isFailed.value ? '节点执行失败' : '节点执行完成'),
     actionError: text,
     retryAction: retryActionName,
     retryActionLabel,
