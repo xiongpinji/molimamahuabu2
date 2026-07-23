@@ -115,6 +115,12 @@ test('节点配置面板支持完整生成参数而非只改模型', () => {
   assert.match(mediaPanelSource, /payload\.duration = Number\(next\.videoDuration\) \|\| 5/)
   assert.match(mediaPanelSource, /videoDuration: universalPromptDuration\(props\.storyboard\)/)
   assert.match(mediaPanelSource, /ctx\?\.updateGenerationOptions\?\.\(/)
+  assert.match(mediaPanelSource, /ctx\?\.nodeStatus\?\.set\(props\.nodeId, \{ step: 'save', message: statusMessage \}\)/)
+  assert.match(mediaPanelSource, /markNodeSuccess\('生成参数已保存'/)
+  assert.match(mediaPanelSource, /resultSummary: generationOptionsSummary\(next\)/)
+  assert.match(mediaPanelSource, /retryAction: 'save_generation_options'/)
+  assert.match(mediaPanelSource, /retryLabel: '重试保存生成参数'/)
+  assert.match(mediaPanelSource, /await saveGenerationOptionsFromStatus\(status\)/)
   assert.match(mediaPanelSource, /kind === 'audio'[\s\S]*<CanvasGenerationOptions[\s\S]*mode="audio"[\s\S]*@change="saveStoryboardGenerationOptions"/)
 })
 

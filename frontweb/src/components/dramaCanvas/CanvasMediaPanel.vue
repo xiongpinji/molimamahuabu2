@@ -438,24 +438,65 @@ function closePanel() {
 async function saveStoryboardGenerationOptions(patch, next) {
   const sbId = props.storyboard?.id
   if (!sbId) return
+  const hasProjectPatch = Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')
   const payload = {}
   if (Object.hasOwn(patch, 'imageModel')) payload.image_model = next.imageModel || null
   if (Object.hasOwn(patch, 'videoModel')) payload.video_model = next.videoModel || null
   if (Object.hasOwn(patch, 'videoDuration')) payload.duration = Number(next.videoDuration) || 5
-  if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
-    ctx?.updateGenerationOptions?.({
-      ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
-      ...(Object.hasOwn(patch, 'videoResolution') ? { videoResolution: next.videoResolution || '480p' } : {}),
-    })
-  }
-  if (!Object.keys(payload).length) return
+  if (!Object.keys(payload).length && !hasProjectPatch) return
+  const statusMessage = '生成参数保存中…'
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: statusMessage })
   try {
-    await storyboardsAPI.update(sbId, payload)
-    await ctx?.refreshDrama?.(true)
+    if (hasProjectPatch) {
+      ctx?.updateGenerationOptions?.({
+        ...(Object.hasOwn(patch, 'aspectRatio') ? { aspectRatio: next.aspectRatio || '16:9' } : {}),
+        ...(Object.hasOwn(patch, 'videoResolution') ? { videoResolution: next.videoResolution || '480p' } : {}),
+      })
+    }
+    if (Object.keys(payload).length) {
+      await storyboardsAPI.update(sbId, payload)
+      await ctx?.refreshDrama?.(true)
+    }
+    markNodeSuccess('生成参数已保存', {
+      resultType: 'text',
+      resultLabel: '生成参数已保存',
+      resultSummary: generationOptionsSummary(next),
+      requestPayload: { patch, next },
+    })
     ElMessage.success('本镜生成参数已保存')
   } catch (e) {
-    ElMessage.error(e?.message || '生成参数保存失败')
+    const message = e?.message || '生成参数保存失败'
+    const failurePayload = {
+      message,
+      errorDetail: message,
+      retryAction: 'save_generation_options',
+      retryLabel: '重试保存生成参数',
+      requestPayload: { patch, next },
+      recoverable: true,
+      autoClear: false,
+    }
+    ctx?.nodeStatus?.fail(props.nodeId, failurePayload)
+    ctx?.nodeStatus?.fail(sbNodeId.value, failurePayload)
+    ElMessage.error(message)
   }
+}
+
+function generationOptionsSummary(next) {
+  const parts = []
+  if (next.imageModel) parts.push(`图像模型：${next.imageModel}`)
+  if (next.videoModel) parts.push(`视频模型：${next.videoModel}`)
+  if (next.aspectRatio) parts.push(`画幅：${next.aspectRatio}`)
+  if (next.videoResolution) parts.push(`清晰度：${next.videoResolution}`)
+  if (next.videoDuration) parts.push(`时长：${next.videoDuration}s`)
+  return parts.join(' · ')
+}
+
+async function saveGenerationOptionsFromStatus(status) {
+  const requestPayload = status?.requestPayload
+  if (!requestPayload?.patch || !requestPayload?.next) return false
+  await saveStoryboardGenerationOptions(requestPayload.patch, requestPayload.next)
+  return true
 }
 
 async function runUniversalPrompt(mode) {
@@ -602,6 +643,12 @@ async function runStep(step) {
 async function retryFailedStep() {
   const retryAction = failedStatus.value?.retryAction
   const asset = failedStatus.value?.libraryAsset
+  if (retryAction === 'save_generation_options') {
+    const status = failedStatus.value
+    clearFailedStatus()
+    await saveGenerationOptionsFromStatus(status)
+    return
+  }
   if (retryAction === 'attach_library_image' && asset) {
     clearFailedStatus()
     await onLibraryImagePick(asset)
