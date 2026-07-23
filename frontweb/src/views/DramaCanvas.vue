@@ -139,6 +139,7 @@
         :storyboards="allStoryboards"
         :disabled="workflowRunning || layoutSaveState === 'saving'"
         @change="onWorkflowOrderChange"
+        @focus="focusWorkflowStoryboard"
       />
 
       <div v-if="showWorkflowPanel" class="generate-bar">
@@ -4071,6 +4072,13 @@ async function onWorkflowOrderChange(storyboardIds) {
     return
   }
   ElMessage.success('工作流执行顺序已保存')
+}
+
+async function focusWorkflowStoryboard(storyboardId) {
+  const id = Number(storyboardId)
+  if (!Number.isFinite(id)) return
+  applySelectedStoryboardIds([id])
+  await focusCanvasNode(`sb:${id}`)
 }
 
 async function onRunActiveGroup() {

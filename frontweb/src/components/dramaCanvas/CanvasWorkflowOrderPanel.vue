@@ -15,9 +15,13 @@
         class="order-item"
         :class="{ dragging: draggingIndex === index, missing: !item.storyboard }"
         draggable="true"
+        role="button"
+        tabindex="0"
         @dragstart="startDragging(index, $event)"
         @dragover.prevent
         @drop.prevent="dropOn(index)"
+        @click="focusItem(item)"
+        @keydown.enter.prevent="focusItem(item)"
       >
         <span class="drag-handle" aria-hidden="true">⋮⋮</span>
         <span class="order-index">{{ index + 1 }}</span>
@@ -59,7 +63,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['change'])
+const emit = defineEmits(['change', 'focus'])
 const orderedIds = ref([])
 const draggingIndex = ref(null)
 
@@ -114,6 +118,11 @@ function move(sourceIndex, targetIndex) {
   next.splice(Math.max(0, Math.min(targetIndex, next.length)), 0, moved)
   orderedIds.value = next
   emit('change', next)
+}
+
+function focusItem(item) {
+  if (props.disabled || !item?.storyboard) return
+  emit('focus', item.id)
 }
 </script>
 

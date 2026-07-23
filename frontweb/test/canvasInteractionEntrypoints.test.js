@@ -9,6 +9,7 @@ const contextMenuSource = readFileSync(fileURLToPath(new URL('../src/components/
 const addButtonSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasAddButtonNode.vue', import.meta.url)), 'utf8')
 const alignerSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFlowAligner.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
+const workflowOrderPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasWorkflowOrderPanel.vue', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
@@ -61,6 +62,18 @@ test('画布工作流支持直接运行所选分镜', () => {
   assert.match(canvasSource, /title: '所选分镜'/)
   assert.match(canvasSource, /async function runWorkflowWithConfirm\(runGroup, confirmTitle\)/)
   assert.match(canvasSource, /await runWorkflowWithConfirm\(\{\s*\.\.\.group,/)
+})
+
+test('工作流顺序面板点击分镜可回到画布节点', () => {
+  assert.match(canvasSource, /@focus="focusWorkflowStoryboard"/)
+  assert.match(canvasSource, /async function focusWorkflowStoryboard\(storyboardId\)/)
+  assert.match(canvasSource, /applySelectedStoryboardIds\(\[id\]\)/)
+  assert.match(canvasSource, /await focusCanvasNode\(`sb:\$\{id\}`\)/)
+  assert.match(workflowOrderPanelSource, /const emit = defineEmits\(\['change', 'focus'\]\)/)
+  assert.match(workflowOrderPanelSource, /@click="focusItem\(item\)"/)
+  assert.match(workflowOrderPanelSource, /@keydown\.enter\.prevent="focusItem\(item\)"/)
+  assert.match(workflowOrderPanelSource, /function focusItem\(item\)/)
+  assert.match(workflowOrderPanelSource, /emit\('focus', item\.id\)/)
 })
 
 test('画布支持 LibTV 式键盘完成选择清理和工作流分组', () => {

@@ -370,7 +370,7 @@ test('分镜配置面板提供统一节点执行和失败恢复入口', () => {
   assert.match(nodeExecutionStripSource, /@click\.stop="copyPrompt"/)
   assert.match(nodeExecutionStripSource, /@click\.stop="copyRequestPayload"/)
   assert.match(nodeExecutionStripSource, /作为下游参考/)
-  assert.match(nodeExecutionStripSource, /const downstreamNodeId = computed\(\(\) => props\.status\?\.resultNodeId \|\| props\.status\?\.sourceNodeId \|\| ''\)/)
+  assert.match(nodeExecutionStripSource, /const downstreamNodeId = computed\(\(\) => props\.status\?\.resultNodeId \|\| props\.status\?\.sourceNodeId \|\| props\.nodeId \|\| ''\)/)
   assert.match(nodeExecutionStripSource, /const hasReusableResultReference = computed\(\(\) => Boolean\(resultUrl\.value \|\| resultSummary\.value \|\| resultReferences\.value\.length \|\| savedAssetReference\.value\)\)/)
   assert.match(nodeExecutionStripSource, /const canUseResultAsDownstreamReference = computed\(\(\) => hasReusableResultReference\.value && Boolean\(downstreamNode\.value\?\.id\) && Boolean\(ctx\?\.useNodeResultAsDownstreamReference\)\)/)
   assert.match(nodeExecutionStripSource, /await ctx\.useNodeResultAsDownstreamReference\(downstreamNode\.value, \{/)
