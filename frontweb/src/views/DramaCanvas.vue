@@ -1855,6 +1855,25 @@ function selectedStoryboardIdForAssetAttach() {
   return selectedIds.length === 1 ? selectedIds[0] : null
 }
 
+function projectAssetAttachPayload(asset, storyboardId) {
+  const payload = { drama_id: drama.value.id, storyboard_id: storyboardId }
+  if (asset?.category === 'canvas-result') {
+    payload.metadata = {
+      ...(asset.metadata || {}),
+      canvas_storyboard_attached: true,
+      attached_storyboard_id: storyboardId,
+    }
+  }
+  return payload
+}
+
+function isStoryboardAssignedAsset(asset) {
+  const storyboardId = Number(asset?.storyboard_id)
+  if (!Number.isFinite(storyboardId)) return false
+  if (asset?.category !== 'canvas-result') return true
+  return asset?.metadata?.canvas_storyboard_attached === true
+}
+
 function assetAttachSlot(asset) {
   const type = normalizePickedAssetType(asset)
   if (type === 'video') return 'video'
@@ -2140,7 +2159,7 @@ async function assignProjectAssetToSelectedStoryboard(asset, options = {}) {
   }
   const mediaPayload = selectedStoryboardMediaAssetPayload(asset)
   let resultMessage = '已指派素材到选中分镜'
-  await assetsAPI.update(assetId, { drama_id: drama.value.id, storyboard_id: storyboardId })
+  await assetsAPI.update(assetId, projectAssetAttachPayload(asset, storyboardId))
   if (mediaPayload?.type === 'video') {
     await videosAPI.attach({
       storyboard_id: storyboardId,
@@ -3517,9 +3536,8 @@ async function loadProjectImageAssets() {
   const assets = Array.isArray(result) ? result : (result?.items || [])
   projectImageAssets.value = assets
   storyboardAssignedAssets.value = assets.reduce((map, asset) => {
-    if (asset?.category === 'canvas-result') return map
     const storyboardId = Number(asset?.storyboard_id)
-    if (!Number.isFinite(storyboardId)) return map
+    if (!isStoryboardAssignedAsset(asset)) return map
     if (!map[storyboardId]) map[storyboardId] = []
     map[storyboardId].push(asset)
     return map
