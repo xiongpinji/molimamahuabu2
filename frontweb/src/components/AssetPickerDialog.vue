@@ -407,6 +407,7 @@ function normalizePickedAsset(item) {
     item.thumbnail_local_path,
   )
   const name = item.name || item.title || item.filename || '素材'
+  const voiceCatalog = item.metadata?.voice_catalog || null
   return {
     ...item,
     name,
@@ -416,6 +417,9 @@ function normalizePickedAsset(item) {
     local_path: localPath,
     reference_text: `@素材(${name}#${item.raw_id || item.id}) ${displayUrl}`.trim(),
     picker_source: item.source_kind || 'library',
+    voice_catalog: voiceCatalog,
+    voice_catalog_id: voiceCatalog?.id || voiceCatalog?.voice_id || null,
+    voice_asset_id: voiceCatalog?.asset_id || null,
   }
 }
 
