@@ -313,6 +313,7 @@
             :key="item.key"
             class="run-queue-item"
             :class="['tone-' + item.tone, item.resultUrl ? 'queue-preview-' + queueResultPreviewType(item) : queueTextResult(item) ? 'queue-preview-text' : 'queue-preview-empty']"
+            :title="queueItemTitle(item)"
             @click="focusQueueItem(item)"
           >
             <span class="run-dot" />
@@ -329,6 +330,7 @@
             <span class="run-info">
               <strong>{{ item.label }}</strong>
               <small>{{ item.message }}</small>
+              <small v-if="item.actionError" class="run-action-error">动作：{{ item.actionError }}</small>
             </span>
             <span v-if="item.tone === 'running'" class="run-action">{{ item.elapsedText }}</span>
             <span v-else-if="item.tone === 'success'" class="run-success-actions">
@@ -1072,6 +1074,20 @@ function queueTextResult(item) {
   const text = String(item?.resultSummary || '').trim()
   if (text) return text.slice(0, 80)
   return ''
+}
+
+function queueItemTitle(item) {
+  const parts = [
+    item?.label,
+    item?.message,
+    item?.actionError ? `动作失败：${item.actionError}` : '',
+    item?.errorDetail ? `失败原因：${item.errorDetail}` : '',
+    item?.model ? `模型：${item.model}` : '',
+    item?.taskId ? `任务：${item.taskId}` : '',
+    item?.videoGenerationId ? `生成记录：${item.videoGenerationId}` : '',
+    item?.resultUrl ? `结果：${item.resultUrl}` : '',
+  ]
+  return parts.filter(Boolean).join('\n')
 }
 
 function formatQueueElapsed(startedAt) {
@@ -5211,6 +5227,9 @@ onBeforeUnmount(() => {
 }
 .tone-success .run-info small {
   color: #bbf7d0;
+}
+.run-info .run-action-error {
+  color: #fed7aa;
 }
 .run-action {
   color: #a5b4fc;
