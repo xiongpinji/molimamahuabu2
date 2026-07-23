@@ -627,6 +627,18 @@ test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后�
   await transitionDuration.press('Tab')
   await expect.poll(() => readDirectorTimeline()?.shots?.[0]?.transitionDuration).toBe(0.5)
 
+  await page.getByLabel('时间线位置').fill('2')
+  await shotEditor.getByRole('button', { name: '在播放头切开镜头' }).click()
+  await expect.poll(() => readDirectorTimeline()?.shots?.map((shot) => ({
+    name: shot.name,
+    start: shot.start,
+    duration: shot.duration,
+    transition: shot.transition,
+  }))).toEqual([
+    { name: '真实持久化镜头', start: 0, duration: 2, transition: 'dissolve' },
+    { name: '真实持久化镜头（后段）', start: 2, duration: 2, transition: 'cut' },
+  ])
+
   await page.getByLabel('选择动作').selectOption('Wave')
   await page.locator('.action-editor').getByRole('button', { name: '添加', exact: true }).click()
   await expect.poll(() => readDirectorTimeline()?.tracks?.flatMap((track) => track.clips).find((clip) => clip.action === 'Wave')?.action).toBe('Wave')
@@ -640,6 +652,7 @@ test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后�
     const track = timeline?.tracks?.find((entry) => entry.characterId === String(characterId))
     return {
       shot: timeline?.shots?.[0],
+      cutShot: timeline?.shots?.[1],
       track,
       clip: track?.clips?.find((clip) => clip.action === 'Wave'),
     }
@@ -649,6 +662,13 @@ test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后�
       transition: 'dissolve',
       transitionDuration: 0.5,
       start: 0,
+    }),
+    cutShot: expect.objectContaining({
+      name: '真实持久化镜头（后段）',
+      transition: 'cut',
+      transitionDuration: 0,
+      start: 2,
+      duration: 2,
     }),
     track: expect.objectContaining({
       characterId: String(characterId),
@@ -668,7 +688,9 @@ test('3D 导演台通过真实后端保存镜头与角色动作并在刷新后�
   await page.getByRole('button', { name: '打开 3D 导演台' }).click()
   await page.getByRole('button', { name: '动画时间轴' }).click()
 
+  await expect(page.locator('.shot-list-item')).toHaveCount(2)
   await expect(page.locator('.shot-list-item').first()).toContainText('真实持久化镜头')
+  await expect(page.locator('.shot-list-item').nth(1)).toContainText('真实持久化镜头（后段）')
   await page.locator('.shot-list-item').first().click()
   await expect(shotEditor.getByRole('textbox', { name: '名称' })).toHaveValue('真实持久化镜头')
   await expect(shotEditor.getByRole('combobox', { name: '转场', exact: true })).toHaveValue('dissolve')
@@ -854,7 +876,18 @@ test('3D 导演台通过真实后端转码 MP4、登记视频资产并下载工�
   await page.goto(`/film/${dramaId}/canvas`)
   await page.getByRole('button', { name: '打开 3D 导演台' }).click()
   await page.getByRole('button', { name: '动画时间轴' }).click()
-  await page.locator('.shot-list-item').first().click()
+  const shotItems = page.locator('.shot-list-item')
+  for (let count = await shotItems.count(); count > 1; count -= 1) {
+    await shotItems.last().click()
+    await page.locator('.shot-editor').getByRole('button', { name: '删除镜头' }).click()
+    await expect(shotItems).toHaveCount(count - 1)
+  }
+  await expect.poll(() => readDatabase((db) => {
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    return metadata.canvas_layout?.director_timeline?.shots?.length
+  })).toBe(1)
+
+  await shotItems.first().click()
   const shotDuration = page.locator('.shot-editor').getByRole('spinbutton', { name: '时长（秒）', exact: true })
   await shotDuration.fill('0.25')
   await shotDuration.press('Tab')

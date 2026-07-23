@@ -16,6 +16,7 @@ import {
   proportionalScaleFromAxis,
   removeActionClip,
   removeDirectorObject,
+  splitShotAtTime,
   upsertMotionKeyframe,
   updateActionClip,
   updateDirectorObject,
@@ -60,6 +61,30 @@ test('导演时间线会按镜头顺序重算切点和总时长', () => {
   assert.equal(state.sequence.duration, 5)
   assert.equal(state.shots[1].transition, 'dissolve')
   assert.equal(state.shots[1].transitionDuration, 0.5)
+})
+
+test('播放头可把镜头切成连续实体并为新切点使用硬切', () => {
+  const original = normalizeDirectorTimeline({
+    shots: [{ id: 'shot-a', name: '追踪镜头', duration: 4, transition: 'dissolve', transitionDuration: 0.5 }],
+  })
+
+  const split = splitShotAtTime(original, 'shot-a', 1.5)
+
+  assert.equal(split.shots.length, 2)
+  assert.deepEqual(split.shots.map((shot) => [shot.start, shot.duration]), [[0, 1.5], [1.5, 2.5]])
+  assert.equal(split.shots[0].transition, 'dissolve')
+  assert.equal(split.shots[0].transitionDuration, 0.5)
+  assert.equal(split.shots[1].transition, 'cut')
+  assert.equal(split.shots[1].transitionDuration, 0)
+  assert.notEqual(split.shots[1].id, 'shot-a')
+  assert.equal(split.sequence.duration, 4)
+})
+
+test('播放头距镜头边界不足最小时长时不会产生碎片镜头', () => {
+  const original = normalizeDirectorTimeline({ shots: [{ id: 'shot-a', duration: 4 }] })
+
+  assert.deepEqual(splitShotAtTime(original, 'shot-a', 0.1).shots, original.shots)
+  assert.deepEqual(splitShotAtTime(original, 'shot-a', 3.9).shots, original.shots)
 })
 
 test('镜头和动作片段可保存后重新标准化恢复', () => {
@@ -109,6 +134,23 @@ test('动作片段可修改动作、开始时间和时长后删除', () => {
 
   const removed = removeActionClip(updated, clipId)
   assert.equal(removed.tracks.flatMap((track) => track.clips).some((clip) => clip.id === clipId), false)
+})
+
+test('动作片段始终限制在镜头序列时长内', () => {
+  const appended = appendActionClip(
+    createDirectorTimeline(characters),
+    '1',
+    'Run',
+    { start: 3.9, duration: 2 },
+  )
+  const appendedClip = appended.tracks.find((track) => track.characterId === '1').clips.at(-1)
+  assert.equal(appendedClip.start, 3.75)
+  assert.equal(appendedClip.duration, 0.25)
+
+  const updated = updateActionClip(appended, appendedClip.id, { start: 3, duration: 3 })
+  const updatedClip = updated.tracks.find((track) => track.characterId === '1').clips.at(-1)
+  assert.equal(updatedClip.start, 3)
+  assert.equal(updatedClip.duration, 1)
 })
 
 test('可按时间找到活动镜头和角色动作片段', () => {

@@ -194,6 +194,13 @@ test('G005 灯光、对象复制和镜头排序进入统一命令链', () => {
   assert.match(stageSource, /function moveSelectedShot\(direction\)/)
 })
 
+test('导演台可在播放头建立真实切点并选中新镜头', () => {
+  assert.match(stageSource, /在播放头切开镜头/)
+  assert.match(stageSource, /:disabled="!canSplitSelectedShot"/)
+  assert.match(stageSource, /splitShotAtTime\(timeline\.value, selectedShot\.value\.id, currentTime\.value\)/)
+  assert.match(stageSource, /selectedShotId\.value = next\.shots\[shotIndex \+ 1\]\.id/)
+})
+
 test('DR-013 导演台支持初始焦点、Esc 分层关闭、焦点圈闭与入口焦点返回', () => {
   assert.match(stageSource, /ref="dialogRef"[^>]+role="dialog"[^>]+tabindex="-1"/)
   assert.match(stageSource, /dialogRef\.value\?\.focus\(\)/)

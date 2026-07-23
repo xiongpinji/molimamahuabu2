@@ -15,7 +15,7 @@ export const TRANSITION_TYPES = [
 
 export const ACTION_LIBRARY = ['Idle', 'Walk', 'Run', 'Talk', 'Wave', 'Attack']
 
-const MIN_SHOT_DURATION = 0.25
+export const MIN_SHOT_DURATION = 0.25
 export const MIN_ACTION_CLIP_DURATION = 0.25
 
 function id(prefix) {
@@ -217,13 +217,15 @@ function normalizeShot(shot, index, start) {
 }
 
 function normalizeClip(clip, characterId, index, duration) {
-  const start = Math.max(0, asNumber(clip?.start, 0))
+  const maxStart = Math.max(0, duration - MIN_ACTION_CLIP_DURATION)
+  const start = Math.min(maxStart, Math.max(0, asNumber(clip?.start, 0)))
+  const maxDuration = Math.max(MIN_ACTION_CLIP_DURATION, duration - start)
   return {
     id: clip?.id || id('clip'),
     characterId: String(clip?.characterId || characterId),
     action: ACTION_LIBRARY.includes(clip?.action) ? clip.action : 'Idle',
-    start: Math.min(start, duration),
-    duration: Math.max(MIN_ACTION_CLIP_DURATION, asNumber(clip?.duration, 2)),
+    start,
+    duration: Math.min(maxDuration, Math.max(MIN_ACTION_CLIP_DURATION, asNumber(clip?.duration, 2))),
   }
 }
 
@@ -364,6 +366,32 @@ export function appendShot(state, patch = {}) {
       ...patch,
     }],
   })
+}
+
+export function splitShotAtTime(state, shotId, time) {
+  const current = normalizeDirectorTimeline(state)
+  const shotIndex = current.shots.findIndex((shot) => shot.id === String(shotId || ''))
+  if (shotIndex < 0) return current
+  const shot = current.shots[shotIndex]
+  const cutTime = Math.max(shot.start, Math.min(shot.start + shot.duration, asNumber(time, shot.start)))
+  const firstDuration = cutTime - shot.start
+  const secondDuration = shot.duration - firstDuration
+  if (firstDuration < MIN_SHOT_DURATION || secondDuration < MIN_SHOT_DURATION) return current
+  const shots = [...current.shots]
+  shots.splice(
+    shotIndex,
+    1,
+    { ...shot, duration: firstDuration },
+    {
+      ...shot,
+      id: id('shot'),
+      name: `${shot.name}（后段）`,
+      transition: 'cut',
+      transitionDuration: 0,
+      duration: secondDuration,
+    },
+  )
+  return normalizeDirectorTimeline({ ...current, shots })
 }
 
 export function appendActionClip(state, characterId, action = 'Idle', patch = {}) {

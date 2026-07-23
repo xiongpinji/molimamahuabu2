@@ -108,6 +108,7 @@
         <section v-if="selectedShot" class="stage-section shot-editor">
           <div class="stage-section__title">镜头实体</div>
           <div class="shot-cut-range" aria-label="镜头切点">入点 {{ formatSeconds(selectedShot.start) }} · 出点 {{ formatSeconds(selectedShot.start + selectedShot.duration) }}</div>
+          <button type="button" class="small-button" :disabled="!canSplitSelectedShot" @click="splitSelectedShot">在播放头切开镜头</button>
           <label>名称<input :value="selectedShot.name" @input="updateSelectedShot('name', $event.target.value)" /></label>
           <label>时长（秒）<input type="number" min="0.25" step="0.25" :value="selectedShot.duration" @change="updateSelectedShot('duration', $event.target.value)" /></label>
           <label>机位
@@ -513,6 +514,7 @@ import { uploadAPI } from '@/api/upload'
 import {
   ACTION_LIBRARY,
   MIN_ACTION_CLIP_DURATION,
+  MIN_SHOT_DURATION,
   SHOT_CAMERA_TYPES,
   TRANSITION_TYPES,
   appendActionClip,
@@ -527,6 +529,7 @@ import {
   proportionalScaleFromAxis,
   removeActionClip,
   removeDirectorObject,
+  splitShotAtTime,
   interpolateMotionTransform,
   upsertMotionKeyframe,
   updateActionClip,
@@ -693,6 +696,11 @@ const shots = computed(() => timeline.value.shots)
 const duration = computed(() => timeline.value.sequence.duration || 0.25)
 const currentTime = computed(() => timeline.value.sequence.currentTime)
 const selectedShot = computed(() => shots.value.find((shot) => shot.id === selectedShotId.value) || shots.value[0] || null)
+const canSplitSelectedShot = computed(() => {
+  if (!selectedShot.value) return false
+  const offset = currentTime.value - selectedShot.value.start
+  return offset >= MIN_SHOT_DURATION && selectedShot.value.duration - offset >= MIN_SHOT_DURATION
+})
 const selectedActionClip = computed(() => timeline.value.tracks.flatMap((track) => track.clips).find((clip) => clip.id === selectedActionClipId.value) || null)
 const selectedCharacter = computed(() => characterEntries.value.find((character) => character.id === selectedCharacterId.value) || characterEntries.value[0] || null)
 const selectedCharacterAsset = computed(() => timeline.value.characterAssets?.[selectedCharacter.value?.id] || { modelUrl: '', scale: 1, actions: {} })
@@ -1596,6 +1604,14 @@ function moveSelectedShot(direction) {
   const ordered = [...shots.value]
   ;[ordered[index], ordered[target]] = [ordered[target], ordered[index]]
   mutateTimeline(normalizeDirectorTimeline({ ...timeline.value, shots: ordered }, characters.value))
+}
+
+function splitSelectedShot() {
+  if (!selectedShot.value || !canSplitSelectedShot.value) return
+  const shotIndex = shots.value.findIndex((shot) => shot.id === selectedShot.value.id)
+  const next = splitShotAtTime(timeline.value, selectedShot.value.id, currentTime.value)
+  selectedShotId.value = next.shots[shotIndex + 1].id
+  mutateTimeline(next)
 }
 
 function updateSelectedShot(field, value) {
