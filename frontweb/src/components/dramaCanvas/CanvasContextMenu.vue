@@ -208,6 +208,8 @@ function close() {
   position: fixed;
   z-index: 3000;
   width: 236px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 6px 0;
   border-radius: 8px;
   border: 1px solid #3f3f46;

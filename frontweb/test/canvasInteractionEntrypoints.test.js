@@ -87,6 +87,8 @@ test('画布支持 LibTV 式键盘完成选择清理和工作流分组', () => {
 test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置', () => {
   assert.match(contextMenuSource, /'添加画布节点'/)
   assert.match(contextMenuSource, /<div class="ctx-title">添加节点<\/div>/)
+  assert.match(contextMenuSource, /max-height: calc\(100vh - 16px\)/)
+  assert.match(contextMenuSource, /overflow-y: auto/)
   assert.match(contextMenuSource, /label: '故事脚本'/)
   assert.match(contextMenuSource, /label: '分镜'/)
   assert.match(contextMenuSource, /type: 'open-director-stage'/)
