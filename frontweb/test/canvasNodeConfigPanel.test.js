@@ -94,8 +94,22 @@ test('分镜配置面板保留保存、回显刷新和单镜模型配置', () =>
   assert.match(storyboardPanelSource, /const videoModel = ref\(''\)/)
   assert.match(storyboardPanelSource, /videoModel\.value \|\| projectGenerationOptions\.value\.videoModel/)
   assert.match(storyboardPanelSource, /videoModel\.value = Object\.prototype\.hasOwnProperty\.call\(sb \|\| \{\}, 'video_model'\) \? sb\?\.video_model \|\| '' : ''/)
-  assert.match(storyboardPanelSource, /videoModel\.value = String\(next\.videoModel \|\| ''\)\.trim\(\)/)
+  assert.match(storyboardPanelSource, /pending\.videoModel = String\(next\.videoModel \|\| ''\)\.trim\(\)/)
   assert.match(storyboardPanelSource, /runVideoStep\(drama, sb, \{[\s\S]*videoModel: videoModel\.value \|\| genOpts\.videoModel/)
+})
+
+test('分镜生成参数仅在持久化成功后提交到面板本地状态', () => {
+  const start = storyboardPanelSource.indexOf('async function saveStoryboardGenerationOptions')
+  const end = storyboardPanelSource.indexOf('async function linkTailFrame', start)
+  const source = storyboardPanelSource.slice(start, end)
+  const persistIndex = source.indexOf('await persistForm(true, payload)')
+
+  assert.ok(persistIndex >= 0)
+  assert.ok(source.indexOf('imageModel.value = pending.imageModel', persistIndex) > persistIndex)
+  assert.ok(source.indexOf('videoModel.value = pending.videoModel', persistIndex) > persistIndex)
+  assert.ok(source.indexOf('form.duration = pending.videoDuration', persistIndex) > persistIndex)
+  assert.doesNotMatch(source.slice(0, persistIndex), /(?:imageModel|videoModel)\.value\s*=/)
+  assert.doesNotMatch(source.slice(0, persistIndex), /form\.duration\s*=/)
 })
 
 test('节点配置面板支持完整生成参数而非只改模型', () => {
@@ -106,7 +120,7 @@ test('节点配置面板支持完整生成参数而非只改模型', () => {
   assert.match(storyboardPanelSource, /Object\.hasOwn\(patch, 'aspectRatio'\)/)
   assert.match(storyboardPanelSource, /Object\.hasOwn\(patch, 'videoResolution'\)/)
   assert.match(storyboardPanelSource, /Object\.hasOwn\(patch, 'videoDuration'\)/)
-  assert.match(storyboardPanelSource, /payload\.duration = form\.duration/)
+  assert.match(storyboardPanelSource, /payload\.duration = pending\.videoDuration/)
   assert.match(storyboardPanelSource, /ctx\?\.updateGenerationOptions\?\.\(/)
   assert.doesNotMatch(mediaPanelSource, /<CanvasGenerationOptions[\s\S]*models-only[\s\S]*@change="saveStoryboardGenerationOptions"[\s\S]*\/>/)
   assert.match(mediaPanelSource, /label="生成参数"/)

@@ -1147,17 +1147,18 @@ async function deleteStoryboard() {
 async function saveStoryboardGenerationOptions(patch, next) {
   if (!props.storyboard?.id) return
   const payload = {}
+  const pending = {}
   if (Object.hasOwn(patch, 'imageModel')) {
-    imageModel.value = String(next.imageModel || '').trim()
-    payload.image_model = imageModel.value || null
+    pending.imageModel = String(next.imageModel || '').trim()
+    payload.image_model = pending.imageModel || null
   }
   if (Object.hasOwn(patch, 'videoModel')) {
-    videoModel.value = String(next.videoModel || '').trim()
-    payload.video_model = videoModel.value || null
+    pending.videoModel = String(next.videoModel || '').trim()
+    payload.video_model = pending.videoModel || null
   }
   if (Object.hasOwn(patch, 'videoDuration')) {
-    form.duration = Number(next.videoDuration) || 5
-    payload.duration = form.duration
+    pending.videoDuration = Number(next.videoDuration) || 5
+    payload.duration = pending.videoDuration
   }
   if (Object.hasOwn(patch, 'aspectRatio') || Object.hasOwn(patch, 'videoResolution')) {
     ctx?.updateGenerationOptions?.({
@@ -1168,6 +1169,10 @@ async function saveStoryboardGenerationOptions(patch, next) {
   if (!Object.keys(payload).length) return
   try {
     await persistForm(true, payload)
+    if (Object.hasOwn(pending, 'imageModel')) imageModel.value = pending.imageModel
+    if (Object.hasOwn(pending, 'videoModel')) videoModel.value = pending.videoModel
+    if (Object.hasOwn(pending, 'videoDuration')) form.duration = pending.videoDuration
+    await ctx?.refreshDrama?.(true)
     ElMessage.success('本镜生成参数已保存')
   } catch (e) {
     ElMessage.error(e?.message || '保存分镜生成参数失败')
