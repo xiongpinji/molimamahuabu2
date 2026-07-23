@@ -338,6 +338,7 @@
       </div>
       <CanvasNodeExecutionStrip
         :status="activeNodeStatus"
+        :node-id="sbNodeId"
         :disabled="saving"
         @retry="retryPanelFailedStep"
         @retry-action="retryPanelFailedAction"

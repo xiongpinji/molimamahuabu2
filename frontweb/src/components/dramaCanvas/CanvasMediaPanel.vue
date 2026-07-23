@@ -19,6 +19,7 @@
     <div class="panel-body">
       <CanvasNodeExecutionStrip
         :status="activeNodeStatus"
+        :node-id="nodeId || sbNodeId"
         :disabled="busy || attachBusy || Boolean(universalBusy)"
         @retry="retryFailedStep"
         @retry-action="retryFailedStep"

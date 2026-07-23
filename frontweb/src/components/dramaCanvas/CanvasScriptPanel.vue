@@ -18,6 +18,7 @@
     <p class="flow-hint">创作起点：编写剧本 → 提取角色/场景/道具 → AI 生成分镜 → 生图/生视频</p>
     <CanvasNodeExecutionStrip
       :status="activeNodeStatus"
+      :node-id="nodeId"
       :disabled="saving || extracting"
       @retry="retryScriptFailedStep"
     />

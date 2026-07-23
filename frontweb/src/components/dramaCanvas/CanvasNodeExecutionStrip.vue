@@ -116,6 +116,7 @@ import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
   status: { type: Object, default: null },
+  nodeId: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
 })
 
@@ -132,7 +133,7 @@ const statusSavedAsset = computed(() => {
   }
 })
 const resultUrl = computed(() => assetMediaUrl(statusSavedAsset.value) || props.status?.savedAssetUrl || props.status?.resultUrl || '')
-const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || '')
+const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || props.nodeId || '')
 const downstreamNode = computed(() => downstreamNodeId.value ? ctx?.findCanvasNode?.(downstreamNodeId.value) : null)
 const resultSummary = computed(() => String(props.status?.resultSummary || '').trim())
 const resultReferences = computed(() => normalizeTextList(props.status?.resultReferences))

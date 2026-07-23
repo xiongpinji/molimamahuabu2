@@ -124,6 +124,7 @@
 
     <CanvasNodeExecutionStrip
       :status="nodeBusy"
+      :node-id="nodeId"
       :disabled="saving || generating || panoramaGenerating || multiViewGenerating || libraryApplying"
       @retry="retryAssetFailedStep"
     />

@@ -32,6 +32,7 @@
       </div>
       <CanvasNodeExecutionStrip
         :status="activeNodeStatus"
+        :node-id="id"
         :disabled="assigning"
         @retry="retryFailedStep"
       />
