@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const imageClient = require('../src/services/imageClient');
 const imageService = require('../src/services/imageService');
+const uploadService = require('../src/services/uploadService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
@@ -90,6 +91,55 @@ test('分镜图片供应商明确失败时写回图片、任务和分镜状态�
     assert.equal(imageService.findActiveForTarget(db, storyboardId, 'single'), null);
   } finally {
     imageClient.callImageApi = originalCall;
+    db.close();
+  }
+});
+
+test('分镜图片供应商返回远程图但本地保存失败时不标记完成也不绑定首帧', async () => {
+  const { db, dramaId, storyboardId } = setup();
+  const originalCall = imageClient.callImageApi;
+  const originalDownload = uploadService.downloadImageToLocal;
+  imageClient.callImageApi = async () => ({ image_url: 'https://cdn.example/generated.png' });
+  uploadService.downloadImageToLocal = async () => {
+    throw new Error('disk full');
+  };
+
+  try {
+    const created = imageService.create(db, log, {
+      drama_id: dramaId,
+      storyboard_id: storyboardId,
+      model: 'dall-e-3',
+      prompt: '雨后森林中的小狐狸',
+      frame_type: 'storyboard_first',
+    }, { schedule() {} });
+
+    await imageService.processImageGeneration(db, log, created.id);
+
+    const image = db.prepare(
+      'SELECT status, model, image_url, local_path, error_msg, task_id FROM image_generations WHERE id = ?'
+    ).get(created.id);
+    const task = db.prepare(
+      'SELECT status, error FROM async_tasks WHERE id = ?'
+    ).get(image.task_id);
+    const storyboard = db.prepare(
+      'SELECT first_frame_image_id, image_url, local_path, error_msg FROM storyboards WHERE id = ?'
+    ).get(storyboardId);
+
+    assert.equal(image.status, 'failed');
+    assert.equal(image.model, 'dall-e-3');
+    assert.equal(image.image_url, null);
+    assert.equal(image.local_path, null);
+    assert.match(image.error_msg, /本地保存失败/);
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error, image.error_msg);
+    assert.equal(storyboard.first_frame_image_id, null);
+    assert.equal(storyboard.image_url, null);
+    assert.equal(storyboard.local_path, null);
+    assert.equal(storyboard.error_msg, image.error_msg);
+    assert.equal(imageService.findActiveForTarget(db, storyboardId, 'storyboard_first'), null);
+  } finally {
+    imageClient.callImageApi = originalCall;
+    uploadService.downloadImageToLocal = originalDownload;
     db.close();
   }
 });

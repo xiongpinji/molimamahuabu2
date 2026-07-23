@@ -1635,6 +1635,7 @@ async function processImageGeneration(db, log, imageGenId) {
     log.info('[图生] Step5 保存到本地 →', { id: imageGenId, elapsed: elapsed() });
     const tSave = Date.now();
     let localPath = null;
+    let saveErrorMsg = '';
     try {
       const storagePath = path.isAbsolute(cfg.storage?.local_path)
         ? cfg.storage.local_path
@@ -1666,7 +1667,25 @@ async function processImageGeneration(db, log, imageGenId) {
         await normalizeSavedImageToTargetPixels(absNorm, imageSize, log, { id: imageGenId, size: imageSize });
       }
     } catch (saveErr) {
-      log.warn('[图生] Step5 保存失败（不影响结果）', { id: imageGenId, err: saveErr.message, elapsed: elapsed() });
+      saveErrorMsg = saveErr.message || String(saveErr);
+      log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErrorMsg, elapsed: elapsed() });
+    }
+
+    if (!localPath) {
+      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成本地文件'}；未标记完成，请重试生成`).slice(0, 500);
+      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
+        'failed', msg, now2, imageGenId
+      );
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
+      log.error('[图生] ✗ 本地 artifact 未落盘，拒绝标记完成', { id: imageGenId, error: msg, total_elapsed: elapsed() });
+      if (row.scene_id != null) {
+        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
+      }
+      if (row.storyboard_id != null) {
+        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
+      }
+      settleImageCredit(db, log, row, 'failed', msg);
+      return;
     }
 
     // 入库的 image_url：优先指向本地静态路径，避免前端仍用 Gemini 返回的 data URL
