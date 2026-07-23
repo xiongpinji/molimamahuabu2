@@ -134,7 +134,6 @@ const statusSavedAsset = computed(() => {
 const resultUrl = computed(() => assetMediaUrl(statusSavedAsset.value) || props.status?.savedAssetUrl || props.status?.resultUrl || '')
 const downstreamNodeId = computed(() => props.status?.resultNodeId || props.status?.sourceNodeId || '')
 const downstreamNode = computed(() => downstreamNodeId.value ? ctx?.findCanvasNode?.(downstreamNodeId.value) : null)
-const canUseResultAsDownstreamReference = computed(() => Boolean(resultUrl.value) && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const resultSummary = computed(() => String(props.status?.resultSummary || '').trim())
 const resultReferences = computed(() => normalizeTextList(props.status?.resultReferences))
 const resultReferencesText = computed(() => resultReferences.value.join('\n'))
@@ -146,6 +145,8 @@ const savedAssetReference = computed(() => {
   const url = props.status?.savedAssetUrl || props.status?.resultUrl || ''
   return `@素材(${name}#${props.status.savedAssetId}) ${url}`.trim()
 })
+const hasReusableResultReference = computed(() => Boolean(resultUrl.value || resultSummary.value || resultReferences.value.length || savedAssetReference.value))
+const canUseResultAsDownstreamReference = computed(() => hasReusableResultReference.value && Boolean(downstreamNode.value?.id) && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const resultMetaText = computed(() => {
   const parts = []
   if (resultSummary.value) parts.push(resultSummary.value)
@@ -240,6 +241,8 @@ async function useResultAsDownstreamReference() {
       resultUrl: resultUrl.value,
       resultType: props.status?.resultType || '',
       savedAssetId: props.status?.savedAssetId || '',
+      resultSummary: resultSummary.value,
+      resultReferences: resultReferences.value,
     })
     ElMessage.success('已作为下游参考')
   } catch (error) {

@@ -1631,7 +1631,7 @@ async function focusDownstreamVideo(node) {
   await focusNodeOrWarn(targetId, '该节点下游暂无视频节点')
 }
 
-async function appendDownstreamStoryboard(node) {
+async function appendDownstreamStoryboard(node, options = {}) {
   if (!node) return
   const sourceStoryboard = storyboardForNode(node) || (node.type === 'canvasAsset' ? firstStoryboardForAssetNode(node) : null)
   let episodeId = sourceStoryboard?.episode_id || node.data?.episodeId || filterEpisodeId.value
@@ -1651,11 +1651,7 @@ async function appendDownstreamStoryboard(node) {
     episode_id: episodeId,
     storyboard_number: maxNum + 1,
     title: `下游分镜 ${maxNum + 1}`,
-    description: sourceStoryboard?.description
-      ? `承接：${sourceStoryboard.description}`
-      : node.type === 'canvasAsset'
-        ? `围绕${canvasNodeLabel(node)}设计新分镜`
-        : '',
+    description: downstreamStoryboardDescription(node, sourceStoryboard, options.result),
   })
   const storyboard = created?.data ?? created
   const storyboardId = storyboard?.id ?? storyboard?.storyboard?.id
@@ -1693,12 +1689,39 @@ async function appendDownstreamStoryboard(node) {
   return targetNodeId
 }
 
+function downstreamStoryboardDescription(node, sourceStoryboard, result = {}) {
+  const base = sourceStoryboard?.description
+    ? `承接：${sourceStoryboard.description}`
+    : node?.type === 'canvasAsset'
+      ? `围绕${canvasNodeLabel(node)}设计新分镜`
+      : ''
+  const references = normalizeNodeResultReferences(node, result)
+  return [base, ...references].filter(Boolean).join('\n')
+}
+
+function normalizeNodeResultReferences(node, result = {}) {
+  const status = nodeRuntimeStatus(node) || {}
+  const references = []
+  const summary = String(result.resultSummary || status.resultSummary || '').trim()
+  const resultRefs = Array.isArray(result.resultReferences || status.resultReferences)
+    ? (result.resultReferences || status.resultReferences)
+    : []
+  const assetRef = assetReferenceText(nodeSavedAsset(node, status))
+  const url = result.resultUrl || nodeResultUrl(node, status)
+  if (summary) references.push(`参考结果：${summary}`)
+  references.push(...resultRefs.map((value) => String(value || '').trim()).filter(Boolean))
+  if (assetRef) references.push(assetRef)
+  else if (url) references.push(`参考素材：${url}`)
+  return [...new Set(references)]
+}
+
 async function useNodeResultAsDownstreamReference(node, result = {}) {
   const url = result?.resultUrl || nodeResultUrl(node)
-  if (!node?.id || !url) {
+  const references = normalizeNodeResultReferences(node, result)
+  if (!node?.id || (!url && !references.length)) {
     throw new Error('该节点暂无可作为下游参考的结果')
   }
-  return appendDownstreamStoryboard(node)
+  return appendDownstreamStoryboard(node, { result })
 }
 
 function firstManualDownstreamStoryboardEdge(node) {

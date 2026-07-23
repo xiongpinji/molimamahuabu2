@@ -246,7 +246,8 @@ const retryLabel = computed(() => status.value?.retryLabel || '重试')
 const canAttachImage = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'image' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachVideo = computed(() => isSuccess.value && effectiveResultUrl.value && resultPreviewType.value === 'video' && Boolean(resultStoryboardId(runtimeNode())))
 const canAttachAudio = computed(() => isSuccess.value && resultPreviewType.value === 'audio' && Boolean(resultUrl()) && Boolean(resultStoryboardId(runtimeNode())))
-const canUseResultAsDownstreamReference = computed(() => (isSuccess.value || isFailed.value) && Boolean(effectiveResultUrl.value) && Boolean(ctx?.useNodeResultAsDownstreamReference))
+const hasReusableResultReference = computed(() => Boolean(effectiveResultUrl.value || textResultPreview.value || resultReferences.value.length))
+const canUseResultAsDownstreamReference = computed(() => (isSuccess.value || isFailed.value) && hasReusableResultReference.value && Boolean(ctx?.useNodeResultAsDownstreamReference))
 const statusSavedAsset = computed(() => {
   if (!status.value?.savedAssetId) return null
   return {
@@ -580,6 +581,8 @@ async function useResultAsDownstreamReference() {
       resultUrl: resultUrl(),
       resultType: resultPreviewType.value,
       savedAssetId: effectiveSavedAsset.value?.id || status.value?.savedAssetId || '',
+      resultSummary: status.value?.resultSummary || '',
+      resultReferences: resultReferences.value,
     })
     ctx?.nodeStatus?.success?.(props.nodeId, {
       ...status.value,
