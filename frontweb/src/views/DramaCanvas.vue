@@ -2841,11 +2841,18 @@ async function runNodeMenuAction(type, node) {
 function openNodeConfig(node) {
   if (!node) return
   if (PANEL_NODE_TYPES.has(node.type)) {
-    focusedNodeId.value = node.id
-    scheduleVirtualization()
+    focusNodeForConfig(node)
     return
   }
   onNodeDoubleClick({ node })
+}
+
+function focusNodeForConfig(node) {
+  if (!node?.id) return
+  focusedNodeId.value = node.id
+  const storyboard = storyboardForNode(node)
+  if (storyboard?.id) applySelectedStoryboardIds([storyboard.id])
+  scheduleVirtualization()
 }
 
 function onPaneContextMenu(payload) {
@@ -2972,7 +2979,9 @@ provide(CANVAS_CONTEXT_KEY, {
   updateGenerationOptions,
   getGenerationOptions: getCanvasGenerationOptions,
   setFocusedNode: (nodeId) => {
-    focusedNodeId.value = nodeId
+    const node = findGraphNode(nodeId)
+    if (node) focusNodeForConfig(node)
+    else focusedNodeId.value = nodeId
   },
   clearFocusedNode: () => {
     focusedNodeId.value = null
