@@ -81,6 +81,7 @@ test('脚本配置面板保存后保留节点状态和失败重试', () => {
 
 test('分镜配置面板保留保存、回显刷新和单镜模型配置', () => {
   assert.match(storyboardPanelSource, /function saveFields\(\)/)
+  assert.match(storyboardPanelSource, /function saveFields\(\)[\s\S]*appendVoicePromptToVideoPrompt\(\{[\s\S]*characters: storyboardCharacters\.value,[\s\S]*if \(videoPrompt\) form\.video_prompt = videoPrompt[\s\S]*await persistForm\(false\)/)
   assert.match(storyboardPanelSource, /await persistForm\(false\)/)
   assert.match(storyboardPanelSource, /await ctx\?\.refreshDrama\?\.\(true\)/)
   assert.match(storyboardPanelSource, /actionStatus\.value = \{ type: 'success', message: '保存完成' \}/)
@@ -198,7 +199,7 @@ test('分镜配置面板保留素材库指派、摄影控制、声音策略和�
   assert.match(storyboardPanelSource, /const canApplyVoicePrompt = computed\(\(\) => \{/)
   assert.match(storyboardPanelSource, /async function applyVoicePromptToVideoPrompt\(\)/)
   assert.match(storyboardPanelSource, /form\.video_prompt = nextPrompt/)
-  assert.match(storyboardPanelSource, /await storyboardsAPI\.update\(props\.storyboard\.id, \{ video_prompt: nextPrompt \}\)/)
+  assert.match(storyboardPanelSource, /await persistForm\(true, \{ video_prompt: nextPrompt \}\)/)
   assert.match(storyboardPanelSource, /镜头连续性/)
   assert.match(storyboardPanelSource, /function linkTailFrame\(\)/)
   assert.match(storyboardPanelSource, /ctx\?\.nodeStatus\?\.set\(sbNodeId\.value, \{ step: 'link_tail_frame', message: '尾帧衔接中…' \}\)/)

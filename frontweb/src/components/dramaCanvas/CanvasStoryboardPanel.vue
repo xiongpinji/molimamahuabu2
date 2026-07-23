@@ -987,12 +987,11 @@ function openListMode() {
 async function onRelationChange() {
   if (!props.storyboard?.id) return
   try {
-    await storyboardsAPI.update(props.storyboard.id, {
+    await persistForm(true, {
       character_ids: characterIds.value,
       scene_id: sceneId.value,
       prop_ids: propIds.value,
     })
-    await ctx?.refreshDrama?.(true)
   } catch (e) {
     ElMessage.error(e?.message || '关联保存失败')
   }
@@ -1001,20 +1000,19 @@ async function onRelationChange() {
 async function saveMeta() {
   if (!props.storyboard?.id) return
   try {
-    await storyboardsAPI.update(props.storyboard.id, {
+    await persistForm(true, {
       title: form.title.trim() || null,
       shot_type: form.shot_type.trim() || null,
       duration: form.duration ?? 5,
     })
-    await ctx?.refreshDrama?.(true)
   } catch (e) {
     ElMessage.error(e?.message || '保存失败')
   }
 }
 
-async function persistForm(silent = false) {
+async function persistForm(silent = false, extra = {}) {
   if (!props.storyboard?.id) return
-  const payload = isUniversal.value
+  const formPayload = isUniversal.value
     ? {
         title: form.title.trim() || null,
         universal_segment_text: form.universal_segment_text.trim() || null,
@@ -1031,6 +1029,7 @@ async function persistForm(silent = false) {
         shot_type: form.shot_type.trim() || null,
         duration: form.duration ?? 5,
       }
+  const payload = { ...formPayload, ...extra }
   await storyboardsAPI.update(props.storyboard.id, payload)
   if (!silent) ElMessage.success('已保存')
 }
@@ -1048,8 +1047,7 @@ async function applyVoicePromptToVideoPrompt() {
   }
   form.video_prompt = nextPrompt
   try {
-    await storyboardsAPI.update(props.storyboard.id, { video_prompt: nextPrompt })
-    await ctx?.refreshDrama?.(true)
+    await persistForm(true, { video_prompt: nextPrompt })
     ElMessage.success('已将角色声线固化到视频词')
   } catch (e) {
     ElMessage.error(e?.message || '声线提示保存失败')
@@ -1059,7 +1057,7 @@ async function applyVoicePromptToVideoPrompt() {
 async function savePhotography() {
   if (!props.storyboard?.id) return
   try {
-    await storyboardsAPI.update(props.storyboard.id, {
+    await persistForm(true, {
       angle_h: angleH.value || null,
       angle_v: angleV.value || null,
       angle_s: angleS.value || null,
@@ -1067,7 +1065,6 @@ async function savePhotography() {
       image_model: imageModel.value || null,
       grid_frame_type: gridFrameType.value || 'single',
     })
-    await ctx?.refreshDrama?.(true)
   } catch (e) {
     ElMessage.error(e?.message || '摄影参数保存失败')
   }
@@ -1079,6 +1076,12 @@ async function saveFields() {
   actionStatus.value = { type: 'busy', message: '保存中…' }
   ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: CANVAS_NODE_STATUS_LABELS.save })
   try {
+    const videoPrompt = appendVoicePromptToVideoPrompt({
+      prompt: form.video_prompt || form.universal_segment_text || form.image_prompt || form.action || '',
+      policy: voicePolicy.value,
+      characters: storyboardCharacters.value,
+    })
+    if (videoPrompt) form.video_prompt = videoPrompt
     await persistForm(false)
     await ctx?.refreshDrama?.(true)
     actionStatus.value = { type: 'success', message: '保存完成' }
@@ -1134,8 +1137,7 @@ async function saveStoryboardGenerationOptions(patch, next) {
   }
   if (!Object.keys(payload).length) return
   try {
-    await storyboardsAPI.update(props.storyboard.id, payload)
-    await ctx?.refreshDrama?.(true)
+    await persistForm(true, payload)
     ElMessage.success('本镜生成参数已保存')
   } catch (e) {
     ElMessage.error(e?.message || '保存分镜生成参数失败')
@@ -1353,7 +1355,11 @@ async function runStep(step) {
 .sb-panel {
   margin-top: 10px;
   width: min(560px, 94vw);
+  max-height: min(720px, calc(100vh - 120px));
   padding: 10px 14px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: 132px;
   border-radius: 12px;
   border: 1px solid rgba(129, 140, 248, 0.45);
   background: rgba(15, 15, 18, 0.97);

@@ -200,6 +200,38 @@ test.beforeAll(async () => {
   if (!libraryResponse.ok) {
     throw new Error(`场景素材初始化失败：${libraryResponse.status} ${await libraryResponse.text()}`)
   }
+
+  for (const config of [
+    {
+      service_type: 'storyboard_image',
+      name: '画布图片模型',
+      provider: 'openai',
+      base_url: 'http://127.0.0.1:9',
+      api_key: 'test-no-request-key',
+      model: ['canvas-image-alpha', 'canvas-image-beta'],
+      default_model: 'canvas-image-alpha',
+      is_default: true,
+    },
+    {
+      service_type: 'video',
+      name: '画布视频模型',
+      provider: 'openai',
+      base_url: 'http://127.0.0.1:9',
+      api_key: 'test-no-request-key',
+      model: ['canvas-video-alpha', 'canvas-video-beta'],
+      default_model: 'canvas-video-alpha',
+      is_default: true,
+    },
+  ]) {
+    const configResponse = await fetch(`${backendOrigin}/api/v1/ai-configs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    if (!configResponse.ok) {
+      throw new Error(`AI 模型配置初始化失败：${configResponse.status} ${await configResponse.text()}`)
+    }
+  }
 })
 
 test.afterAll(async () => {
@@ -324,5 +356,126 @@ test('项目画布通过真实后端持久化节点操作、连线和素材指�
     `PUT /api/v1/dramas/${dramaId}/canvas-layout`,
     'POST /api/v1/assets',
     `PUT /api/v1/assets/${assignedAsset.id}`,
+  ]))
+})
+
+test('项目画布通过真实后端保存节点配置并在刷新后恢复', async ({ page }) => {
+  const forwardedRequests = []
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    forwardedRequests.push(`${request.method()} ${source.pathname}`)
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    await route.fulfill({ response })
+  })
+
+  await page.goto(`/film/${dramaId}/canvas`)
+
+  const sourceNode = page.locator(`.vue-flow__node[data-id="sb:${storyboardId}"]`)
+  await sourceNode.dispatchEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  })
+  await expect(sourceNode).toHaveClass(/selected/)
+  const panel = page.locator('.canvas-node-panel.sb-panel')
+  await expect(panel).toBeVisible()
+
+  await panel.getByPlaceholder('分镜标题').fill('雨夜配置闭环')
+  await panel.getByPlaceholder('分镜标题').blur()
+  await panel.getByPlaceholder('画面动作').fill('小茉收起红伞，向站台灯光走去。')
+  await panel.getByPlaceholder('角色对白').fill('小茉：终于等到你了。')
+  await panel.getByPlaceholder('图片提示词').fill('雨夜站台，蓝色外套少女收起红伞，电影光影。')
+  await panel.getByPlaceholder('视频提示词').fill('镜头缓慢推进，小茉收伞后抬头，雨滴从伞沿滑落。')
+
+  const cameraSelects = panel.locator('.camera-control-grid .el-select')
+  await expect(cameraSelects).toHaveCount(5)
+  await cameraSelects.nth(0).click()
+  await page.getByRole('option', { name: '前左 45°' }).click()
+  await cameraSelects.nth(1).click()
+  await page.getByRole('option', { name: '低角度仰拍' }).click()
+  await cameraSelects.nth(2).click()
+  await page.getByRole('option', { name: '近景/特写' }).click()
+  await cameraSelects.nth(3).click()
+  await page.getByRole('option', { name: '黄金时段' }).click()
+  await cameraSelects.nth(4).click()
+  await page.getByRole('option', { name: '四宫格', exact: true }).click()
+
+  const generation = panel.locator('.generation-section')
+  const generationSelects = generation.locator('.el-select')
+  await expect(generationSelects).toHaveCount(4)
+  await generationSelects.nth(0).click()
+  await page.getByRole('option', { name: 'canvas-image-beta' }).click()
+  await generationSelects.nth(1).click()
+  await page.getByRole('option', { name: 'canvas-video-beta' }).click()
+  await generationSelects.nth(2).click()
+  await page.getByRole('option', { name: '9:16 竖屏' }).click()
+  await generationSelects.nth(3).click()
+  await page.getByRole('option', { name: '720p 高清' }).click()
+  const durationInput = generation.locator('.duration-input input')
+  await durationInput.fill('9')
+  await durationInput.press('Enter')
+
+  await panel.getByRole('button', { name: '保存', exact: true }).click()
+
+  await expect.poll(() => readDatabase((db) => {
+    const storyboard = db.prepare(
+      `SELECT title, action, dialogue, image_prompt, video_prompt, angle_h, angle_v,
+              angle_s, lighting_style, grid_frame_type, image_model, video_model, duration
+       FROM storyboards WHERE id = ?`,
+    ).get(storyboardId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    return { storyboard, metadata }
+  })).toEqual({
+    storyboard: {
+      title: '雨夜配置闭环',
+      action: '小茉收起红伞，向站台灯光走去。',
+      dialogue: '小茉：终于等到你了。',
+      image_prompt: '雨夜站台，蓝色外套少女收起红伞，电影光影。',
+      video_prompt: expect.stringContaining('镜头缓慢推进，小茉收伞后抬头，雨滴从伞沿滑落。'),
+      angle_h: 'front_left',
+      angle_v: 'low',
+      angle_s: 'close_up',
+      lighting_style: 'golden_hour',
+      grid_frame_type: 'quad_grid',
+      image_model: 'canvas-image-beta',
+      video_model: 'canvas-video-beta',
+      duration: 9,
+    },
+    metadata: expect.objectContaining({
+      aspect_ratio: '9:16',
+      video_resolution: '720p',
+    }),
+  })
+
+  await page.reload()
+  await sourceNode.dispatchEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  })
+  await expect(sourceNode).toHaveClass(/selected/)
+  await expect(panel.getByPlaceholder('分镜标题')).toHaveValue('雨夜配置闭环')
+  await expect(panel.getByPlaceholder('画面动作')).toHaveValue('小茉收起红伞，向站台灯光走去。')
+  await expect(panel.getByPlaceholder('角色对白')).toHaveValue('小茉：终于等到你了。')
+  await expect(panel.getByPlaceholder('图片提示词')).toHaveValue('雨夜站台，蓝色外套少女收起红伞，电影光影。')
+  await expect(panel.getByPlaceholder('视频提示词')).toHaveValue(/镜头缓慢推进，小茉收伞后抬头，雨滴从伞沿滑落。/)
+  await expect(panel.getByPlaceholder('视频提示词')).toHaveValue(/VOICE CONTINUITY/)
+  await expect(panel.locator('.camera-control-grid')).toContainText('前左 45°')
+  await expect(panel.locator('.camera-control-grid')).toContainText('低角度仰拍')
+  await expect(panel.locator('.camera-control-grid')).toContainText('近景/特写')
+  await expect(panel.locator('.camera-control-grid')).toContainText('黄金时段')
+  await expect(generation).toContainText('canvas-image-beta')
+  await expect(generation).toContainText('canvas-video-beta')
+  await expect(generation).toContainText('9:16 竖屏')
+  await expect(generation).toContainText('720p 高清')
+  await expect(durationInput).toHaveValue('9')
+
+  expect(forwardedRequests).toEqual(expect.arrayContaining([
+    `GET /api/v1/dramas/${dramaId}`,
+    `PUT /api/v1/storyboards/${storyboardId}`,
+    `PUT /api/v1/dramas/${dramaId}/outline`,
   ]))
 })

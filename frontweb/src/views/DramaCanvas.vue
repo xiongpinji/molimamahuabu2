@@ -3728,7 +3728,12 @@ function updateGenerationOptions(patch = {}) {
   generationSaveTimer = setTimeout(async () => {
     generationSaveTimer = null
     if (!dramaId.value) return
-    const metadata = parseDramaMetadata(drama.value?.metadata) || {}
+    const latest = getCanvasGenerationOptions()
+    const metadata = {
+      ...(parseDramaMetadata(drama.value?.metadata) || {}),
+      aspect_ratio: latest.aspectRatio || '16:9',
+      video_resolution: latest.videoResolution || '480p',
+    }
     try {
       await dramaAPI.saveOutline(dramaId.value, { metadata })
     } catch (e) {

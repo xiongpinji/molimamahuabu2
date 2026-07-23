@@ -1,5 +1,10 @@
 <template>
-  <div ref="toolbarRef" class="canvas-floating-toolbar nodrag nopan" @mousedown.stop>
+  <div
+    ref="toolbarRef"
+    class="canvas-floating-toolbar nodrag nopan"
+    :class="{ 'panel-open': panelOpen }"
+    @mousedown.stop
+  >
     <div v-if="addMenuVisible" class="canvas-add-menu" role="menu" aria-label="添加节点菜单">
       <div class="add-menu-title">添加节点</div>
       <button v-for="item in addItems" :key="item.type" type="button" class="add-menu-item" role="menuitem" @click="create(item.type)">
@@ -79,6 +84,7 @@ const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))
 const directorOpen = computed(() => Boolean(ctx?.directorStageVisible?.value))
 const canUndo = computed(() => Boolean(ctx?.canUndo?.value))
 const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
+const panelOpen = computed(() => Boolean(ctx?.focusedNodeId?.value))
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
@@ -135,6 +141,12 @@ onBeforeUnmount(() => {
   z-index: 25;
   transform: translateX(-50%);
   max-width: calc(100% - 28px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.canvas-floating-toolbar.panel-open {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
 }
 .toolbar-main {
   display: flex;

@@ -97,27 +97,45 @@ test('画布分镜图设置与真实生图请求通过后端持久化并可恢�
     const initial = await readJson(await fetch(`${baseUrl}/storyboards/${storyboardId}`));
     assert.equal(initial.status, 200);
     assert.equal(initial.body.data.image_model, null);
+    assert.equal(initial.body.data.video_model, null);
     assert.equal(initial.body.data.grid_frame_type, 'single');
 
     const saved = await readJson(
       await fetch(`${baseUrl}/storyboards/${storyboardId}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ image_model: 'lib-image-grid', grid_frame_type: 'nine_grid' }),
+        body: JSON.stringify({
+          image_model: 'lib-image-grid',
+          video_model: 'lib-video-continuity',
+          grid_frame_type: 'nine_grid',
+        }),
       })
     );
     assert.equal(saved.status, 200);
     assert.equal(saved.body.data.image_model, 'lib-image-grid');
+    assert.equal(saved.body.data.video_model, 'lib-video-continuity');
     assert.equal(saved.body.data.grid_frame_type, 'nine_grid');
 
     const refreshed = await readJson(await fetch(`${baseUrl}/storyboards/${storyboardId}`));
     assert.equal(refreshed.status, 200);
     assert.equal(refreshed.body.data.image_model, 'lib-image-grid');
+    assert.equal(refreshed.body.data.video_model, 'lib-video-continuity');
     assert.equal(refreshed.body.data.grid_frame_type, 'nine_grid');
     assert.deepEqual(
-      db.prepare('SELECT image_model, grid_frame_type FROM storyboards WHERE id = ?').get(storyboardId),
-      { image_model: 'lib-image-grid', grid_frame_type: 'nine_grid' }
+      db.prepare('SELECT image_model, video_model, grid_frame_type FROM storyboards WHERE id = ?').get(storyboardId),
+      {
+        image_model: 'lib-image-grid',
+        video_model: 'lib-video-continuity',
+        grid_frame_type: 'nine_grid',
+      }
     );
+
+    const dramaReadback = await readJson(await fetch(`${baseUrl}/dramas/${dramaId}`));
+    assert.equal(dramaReadback.status, 200);
+    const nestedStoryboard = dramaReadback.body.data.episodes[0].storyboards[0];
+    assert.equal(nestedStoryboard.image_model, 'lib-image-grid');
+    assert.equal(nestedStoryboard.video_model, 'lib-video-continuity');
+    assert.equal(nestedStoryboard.grid_frame_type, 'nine_grid');
 
     const generated = await readJson(
       await fetch(`${baseUrl}/images`, {
