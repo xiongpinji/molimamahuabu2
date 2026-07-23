@@ -492,8 +492,14 @@ import {
   reorderWorkflowGroup,
   storyboardIdFromNodeId,
   getDramaGenerationOptions,
+  getStoryboardVideoModel,
 } from '@/utils/canvasWorkflow'
 import { canChainStoryboardFrames } from '@/utils/videoContinuity'
+import {
+  appendVoicePromptToVideoPrompt,
+  buildStoryboardVoiceSnapshot,
+  classifyVideoVoicePolicy,
+} from '@/utils/videoVoicePolicy'
 import {
   filterCanvasAssets,
   getCanvasEpisodeContext,
@@ -3136,7 +3142,16 @@ function nodeStepPromptText(step, sb, node) {
     if (frameKind === 'last') return sb.video_prompt || sb.result || sb.action || sb.description || ''
     return sb.polished_prompt || sb.image_prompt || sb.description || sb.action || ''
   }
-  if (step === 'video') return sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
+  if (step === 'video') {
+    const genOpts = getCanvasGenerationOptions()
+    const model = getStoryboardVideoModel(sb, genOpts)
+    const voiceSnapshot = buildStoryboardVoiceSnapshot(drama.value, sb)
+    return appendVoicePromptToVideoPrompt({
+      prompt: sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || '',
+      policy: classifyVideoVoicePolicy({ model }),
+      characters: voiceSnapshot.characters,
+    })
+  }
   if (step === 'audio') return sb.dialogue || ''
   return ''
 }

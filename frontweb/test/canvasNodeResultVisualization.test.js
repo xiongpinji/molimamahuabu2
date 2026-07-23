@@ -239,6 +239,10 @@ test('节点执行条展示并复制结果摘要、引用和素材引用', () =>
 
 test('画布节点运行状态会携带当前节点提示词', () => {
   assert.match(canvasSource, /function nodeStepPromptText\(step, sb, node\)/)
+  assert.match(canvasSource, /import \{[\s\S]*appendVoicePromptToVideoPrompt,[\s\S]*buildStoryboardVoiceSnapshot,[\s\S]*classifyVideoVoicePolicy,[\s\S]*\} from '@\/utils\/videoVoicePolicy'/)
+  assert.match(canvasSource, /getStoryboardVideoModel\(sb, genOpts\)/)
+  assert.match(canvasSource, /const voiceSnapshot = buildStoryboardVoiceSnapshot\(drama\.value, sb\)/)
+  assert.match(canvasSource, /appendVoicePromptToVideoPrompt\(\{[\s\S]*policy: classifyVideoVoicePolicy\(\{ model \}\),[\s\S]*characters: voiceSnapshot\.characters/)
   assert.match(canvasSource, /function nodeStepStatusIds\(node, step, storyboardId\)/)
   assert.match(canvasSource, /nodeStepResultInfo\(node, step, storyboardId\)\.resultNodeId/)
   assert.match(canvasSource, /function setNodeStepStatus\(statusIds, payload\)/)
