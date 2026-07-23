@@ -2105,7 +2105,7 @@ async function ensureProjectMediaAsset(asset) {
     drama_id: drama.value.id,
     name: asset?.name || asset?.title || asset?.filename || '素材库素材',
     type: normalizePickedAssetType(asset),
-    category: 'canvas-library-pick',
+    category: asset?.category || (asset?.voice_catalog || asset?.voice_catalog_id || asset?.voice_asset_id ? 'voice' : 'canvas-library-pick'),
     url,
     local_path: localPath || undefined,
     metadata: {
