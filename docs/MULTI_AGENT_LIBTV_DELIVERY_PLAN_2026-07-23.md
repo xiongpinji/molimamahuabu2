@@ -1,5 +1,40 @@
 # LibTV 对齐多智能体交付计划（2026-07-23）
 
+## 本轮并行交付批次（重新启动）
+
+- 启动基线：`0ccdb9f12083b1f731bb17cf011cec59d7ca6e7c`
+- 分支：`codex/libtv-frontend-alignment`
+- PR：`https://github.com/xiongpinji/molimamahuabu2/pull/1`
+- 当前 staged 区必须保持为空；Agent A–E 不执行 `git add/commit/push`，只在各自边界内修改和验证。
+- Agent F 在 A–E 工作期间只做只读基线审计；待根代理完成冲突审查后，再执行提交候选审计和 PR 验收。
+- 所有 Agent 都必须保留用户与其他 Agent 的现有修改，不得回退、格式化或清理无关文件；共享文件发生碰撞时停止修改并报告。
+
+本轮六路成功标准：
+
+1. Agent A：补齐右键菜单、空白添加、复制、插入/追加、快捷键、Ctrl 缩放、Space 平移、分组选择的真实浏览器回归。
+2. Agent B：统一验证文本、图片、视频、音频、角色、脚本节点的配置、模型、素材、提示词与运行入口；仅修复真实缺口。
+3. Agent C：形成图片、视频、首尾帧、音色提示词、失败写回、重试恢复的同链证据；付费调用未经明确授权保持 `blocked`。
+4. Agent D：验证素材筛选/复用/回填/历史、音色入库与角色固化；明确区分角色音色与混合音轨。
+5. Agent E：验证镜头、序列、切点/转场、角色轨道、动作片段的编辑与保存/恢复；仅修复最小缺口。
+6. Agent F：核对阶段边界、测试证据、staged diff、提交、push、PR 与 CI，输出仍未完成的生产差距。
+
+### 本轮执行结果
+
+- Agent A：补齐并验证节点右键复制、追加、插入、下游重连与刷新恢复；Playwright 单文件重复 3 轮，`21/21` 通过。
+- Agent B：节点配置矩阵复核通过；针对性测试 `18/18`，前端全量 `257/257`，build 通过；未为凑提交扩大代码。
+- Agent C：生成链路定向测试 `57/57`、后端全量 `257/257`；本地兼容 provider 的图片工件、数据库回读与失败写回有效。未获外部付费调用授权，真实外部供应商同链证据继续标记 `blocked`。
+- Agent D：素材/音色后端测试 `28/28`、前端测试 `41/41`、build 通过；多人对白与配乐混合且无可靠切点时会拒绝错误绑定。
+- Agent E：导演台前端测试 `54/54`、后端测试 `6/6`、Playwright `8/8`、build 通过；专业 NLE、复杂骨骼重定向和电影级离线渲染仍不在当前最小闭环内。
+- Agent F：只读基线与提交边界审计完成；仅选择性提交 Agent A 的单个 E2E 文件，未混入历史脏改。
+- 根代理复核：前端全量 `257/257`、后端全量 `257/257`、生产 build 通过。
+
+阶段交付：
+
+- 提交：`58a99d76e4d521c9dfe63a8d6ad1977fac171026`（`test(画布): 补节点复制插入追加回归`）
+- PR 评论：`https://github.com/xiongpinji/molimamahuabu2/pull/1#issuecomment-5059175929`
+- GitHub Actions：`Backend regression` 与 `Canvas browser regression` 均成功。
+- staged 区提交后为空；`.omx/**`、`frontweb/.playwright-cli/**`、`03_visual_spec/**`、`test-results/**` 及其他历史脏改均未进入提交。
+
 ## 交付目标
 
 在 `codex/libtv-frontend-alignment` 分支上，以可回归、可审计、可演示为标准补齐项目画布闭环。不得用静态界面、源码正则测试或模拟返回替代真实运行证据。
