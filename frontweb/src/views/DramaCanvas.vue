@@ -302,10 +302,11 @@
           <MiniMap pannable zoomable />
         </VueFlow>
         <el-empty v-else-if="!loading" description="暂无画布数据" />
-        <div v-if="runQueueItems.length" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
+        <div v-if="runQueueItems.length || dismissedRunQueueCount" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
           <div class="run-queue-head">
             <span>运行队列</span>
             <small>{{ runningQueueCount }} 进行中 · {{ successQueueCount }} 完成 · {{ failedQueueCount }} 异常</small>
+            <button v-if="dismissedRunQueueCount" type="button" @click.stop="restoreDismissedRunQueueItems">恢复已收起 {{ dismissedRunQueueCount }}</button>
           </div>
           <div
             v-for="item in runQueueItems"
@@ -568,6 +569,7 @@ const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
 const canvasUploadAccept = ref('image/*,video/*,audio/*')
 const savingQueueAssetKey = ref('')
+const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
@@ -942,6 +944,7 @@ const runQueueItems = computed(() => {
 const runningQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'running').length)
 const successQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'success').length)
 const failedQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'failed').length)
+const dismissedRunQueueCount = computed(() => dismissedRunQueueItems.value.length)
 
 function queueNodeLabel(nodeId) {
   const node = findGraphNode(nodeId)
@@ -1302,8 +1305,62 @@ async function focusQueueItemResult(item) {
 }
 
 function dismissQueueItem(item) {
+  const archived = archivedQueueStatusPayload(item)
+  if (archived) {
+    dismissedRunQueueItems.value = [
+      archived,
+      ...dismissedRunQueueItems.value.filter((entry) => entry.key !== archived.key),
+    ].slice(0, 8)
+  }
   const ids = item?.statusIds?.length ? item.statusIds : [item?.nodeId]
   ids.filter(Boolean).forEach((id) => nodeStatus.clear(id))
+}
+
+function archivedQueueStatusPayload(item) {
+  if (!item?.nodeId) return null
+  return {
+    key: item.key || `dismissed:${item.nodeId}:${Date.now()}`,
+    nodeId: item.nodeId,
+    statusIds: item.statusIds?.length ? item.statusIds : [item.nodeId],
+    step: item.tone === 'failed' ? 'failed' : item.tone === 'success' ? 'success' : 'busy',
+    message: item.message || '已恢复已收起队列项',
+    retryStep: item.retryStep || '',
+    resultUrl: item.resultUrl || '',
+    resultNodeId: item.resultNodeId || '',
+    resultType: item.resultType || '',
+    resultLabel: item.resultLabel || '',
+    resultSummary: item.resultSummary || '',
+    resultReferences: item.resultReferences || [],
+    promptText: item.promptText || '',
+    storyboardId: item.storyboardId || '',
+    model: item.model || '',
+    taskId: item.taskId || '',
+    videoGenerationId: item.videoGenerationId || '',
+    requestPayload: item.requestPayload || null,
+    requestAudit: item.requestAudit || null,
+    savedAssetId: item.savedAssetId || '',
+    savedAssetName: item.savedAssetName || '',
+    savedAssetUrl: item.savedAssetUrl || '',
+    savedAssetLocalPath: item.savedAssetLocalPath || '',
+    savedAssetDuration: item.savedAssetDuration ?? null,
+    errorDetail: item.errorDetail || '',
+  }
+}
+
+function restoreDismissedRunQueueItems() {
+  const archivedItems = dismissedRunQueueItems.value
+  if (!archivedItems.length) return
+  archivedItems.forEach((item) => {
+    const ids = item.statusIds?.length ? item.statusIds : [item.nodeId]
+    ids.filter(Boolean).forEach((id) => nodeStatus.set(id, {
+      ...item,
+      sourceNodeId: item.nodeId,
+      restored: true,
+      at: Date.now(),
+    }))
+  })
+  dismissedRunQueueItems.value = []
+  ElMessage.success('已恢复收起的运行结果')
 }
 
 function syncWorkflowFromDrama() {
@@ -4917,6 +4974,19 @@ onBeforeUnmount(() => {
   color: #71717a;
   font-size: 10px;
   font-weight: 400;
+}
+.run-queue-head button {
+  padding: 2px 7px;
+  border: 1px solid rgba(129, 140, 248, 0.5);
+  border-radius: 999px;
+  background: rgba(49, 46, 129, 0.35);
+  color: #c7d2fe;
+  font-size: 10px;
+  cursor: pointer;
+}
+.run-queue-head button:hover {
+  border-color: rgba(129, 140, 248, 0.85);
+  background: rgba(67, 56, 202, 0.45);
 }
 .run-queue-item {
   width: 100%;
