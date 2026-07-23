@@ -1258,17 +1258,12 @@ async function saveQueueItemResultAsset(item) {
     }, item.promptText || '', storyboardId)
     if (!saved?.savedAssetId) throw new Error('队列结果入库失败')
     const ids = item.statusIds?.length ? item.statusIds : [item.nodeId]
-    ids.filter(Boolean).forEach((id) => {
-      const current = nodeStatus.get(id) || {}
-      nodeStatus.set(id, {
-        ...current,
-        ...saved,
-        actionError: '',
-        retryAction: '',
-        retryActionLabel: '',
-        message: current.message || item.message || '队列结果已存入素材库',
-      })
-    })
+    markNodeResultSavedAsset(node, {
+      ...item,
+      sourceNodeId: item.nodeId,
+      storyboardId,
+      resultType: item.resultType || queueResultPreviewType(item),
+    }, saved, '队列结果已存入素材库', ids)
     await loadProjectImageAssets()
     rebuildGraph()
     ElMessage.success('队列结果已存入素材库')
@@ -2423,6 +2418,44 @@ function resultNodeIdFromStatus(node, status = nodeRuntimeStatus(node)) {
   return ''
 }
 
+function nodeResultStatusIds(node, status = nodeRuntimeStatus(node), extraIds = []) {
+  const ids = [
+    node?.id,
+    status?.sourceNodeId,
+    status?.resultNodeId,
+    resultNodeIdFromStatus(node, status),
+    ...extraIds,
+  ]
+  const storyboardId = status?.storyboardId || storyboardForNode(node)?.id || storyboardIdFromNodeId(node?.id)
+  if (storyboardId) ids.push(`sb:${storyboardId}`)
+  if (status?.runKey) {
+    for (const [id, item] of Object.entries(nodeStatus.map)) {
+      if (item?.runKey === status.runKey) ids.push(id)
+    }
+  }
+  return [...new Set(ids.map((id) => String(id || '').trim()).filter(Boolean))]
+}
+
+function markNodeResultSavedAsset(node, status, saved, message, extraIds = []) {
+  const nextStatus = {
+    ...status,
+    ...saved,
+    actionError: '',
+    retryAction: '',
+    retryActionLabel: '',
+    message,
+    autoClear: false,
+  }
+  nodeResultStatusIds(node, status, extraIds).forEach((id) => {
+    const current = nodeStatus.get(id) || {}
+    nodeStatus.set(id, {
+      ...current,
+      ...nextStatus,
+    })
+  })
+  return nextStatus
+}
+
 function openNodeResult(node) {
   const url = nodeResultUrl(node)
   if (!url) {
@@ -2516,18 +2549,12 @@ async function saveNodeResultAssetFromMenu(node) {
     ElMessage.error('节点结果入库失败')
     return null
   }
-  const nextStatus = {
+  const nextStatus = markNodeResultSavedAsset(node, {
     ...status,
-    ...saved,
     resultUrl,
     resultType,
-    actionError: '',
-    retryAction: '',
-    retryActionLabel: '',
-    message: '节点结果已存入素材库',
-    autoClear: false,
-  }
-  nodeStatus.set(node.id, nextStatus)
+    storyboardId,
+  }, saved, '节点结果已存入素材库')
   await loadProjectImageAssets()
   rebuildGraph()
   ElMessage.success('节点结果已存入素材库')
