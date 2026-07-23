@@ -107,6 +107,7 @@
 
         <section v-if="selectedShot" class="stage-section shot-editor">
           <div class="stage-section__title">镜头实体</div>
+          <div class="shot-cut-range" aria-label="镜头切点">入点 {{ formatSeconds(selectedShot.start) }} · 出点 {{ formatSeconds(selectedShot.start + selectedShot.duration) }}</div>
           <label>名称<input :value="selectedShot.name" @input="updateSelectedShot('name', $event.target.value)" /></label>
           <label>时长（秒）<input type="number" min="0.25" step="0.25" :value="selectedShot.duration" @change="updateSelectedShot('duration', $event.target.value)" /></label>
           <label>机位
@@ -2626,6 +2627,7 @@ onBeforeUnmount(() => {
 .transition-badge { color: #60a5fa; font-size: 10px; }
 .shot-editor { display: grid; gap: 7px; padding: 10px; border: 1px solid #3f3f46; border-radius: 10px; background: rgba(39, 39, 42, 0.42); }
 .shot-editor .stage-section__title { grid-column: 1 / -1; }
+.shot-cut-range { grid-column: 1 / -1; color: #a5b4fc; font-size: 11px; }
 .shot-editor label { display: grid; gap: 4px; color: #a1a1aa; font-size: 10px; }
 .shot-editor input, .shot-editor select, .action-add-row select { width: 100%; min-width: 0; border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #18181b; color: #e4e4e7; font-size: 11px; }
 .danger-button { margin-top: 3px; border-color: rgba(248, 113, 113, 0.5); color: #fca5a5; font-size: 11px; }

@@ -240,6 +240,63 @@ test('动作片段可编辑、保存、刷新恢复并删除', async ({ page }) 
   await expect(page.getByRole('button', { name: '角色A Wave 动作片段' })).toHaveCount(0)
 })
 
+test('镜头排序会重算可见切点并通过前端保存契约刷新恢复', async ({ page }) => {
+  let persistedTimeline = {
+    version: 2,
+    sequence: { duration: 7, fps: 24 },
+    shots: [
+      { id: 'opening-shot', name: '开场镜头', camera: 'wide', transition: 'cut', transitionDuration: 0, start: 0, duration: 4 },
+      { id: 'reverse-shot', name: '反打镜头', camera: 'close', transition: 'cut', transitionDuration: 0, start: 4, duration: 3 },
+    ],
+    objects: [],
+    cameras: [],
+    tracks: [],
+    characterAssets: {},
+    motionTracks: [],
+  }
+  await page.route('**/api/v1/dramas/3', async (route) => {
+    await fulfillMockDrama(route, persistedTimeline)
+  })
+  // 这里只验证前端发出的保存契约；后端数据库回读由 directorTimelinePersistence.test.js 独立覆盖。
+  await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
+    persistedTimeline = route.request().postDataJSON().canvas_layout.director_timeline
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+  })
+
+  await page.goto('/film/3/canvas')
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByRole('button', { name: /反打镜头/ }).first().click()
+
+  const shotEditor = page.locator('.shot-editor')
+  await expect(shotEditor.getByText('入点 4.00s · 出点 7.00s', { exact: true })).toBeVisible()
+  await shotEditor.getByRole('combobox', { name: '转场', exact: true }).selectOption('dissolve')
+  await shotEditor.getByRole('spinbutton', { name: '转场时长（秒）' }).fill('0.5')
+  await shotEditor.getByRole('spinbutton', { name: '转场时长（秒）' }).press('Tab')
+  await page.getByRole('button', { name: '镜头前移' }).click()
+
+  await expect.poll(() => persistedTimeline.shots.map((shot) => ({
+    id: shot.id,
+    start: shot.start,
+    transition: shot.transition,
+    transitionDuration: shot.transitionDuration,
+  }))).toEqual([
+    { id: 'reverse-shot', start: 0, transition: 'dissolve', transitionDuration: 0.5 },
+    { id: 'opening-shot', start: 3, transition: 'cut', transitionDuration: 0 },
+  ])
+  await expect(shotEditor.getByText('入点 0.00s · 出点 3.00s', { exact: true })).toBeVisible()
+  await expect(page.locator('.shot-list-item').first()).toContainText('反打镜头')
+
+  await page.reload()
+  await page.getByRole('button', { name: '打开 3D 导演台' }).click()
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await expect(page.locator('.shot-list-item').first()).toContainText('反打镜头')
+  await page.locator('.shot-list-item').first().click()
+  await expect(page.locator('.shot-editor').getByText('入点 0.00s · 出点 3.00s', { exact: true })).toBeVisible()
+  await expect(page.locator('.shot-editor').getByRole('combobox', { name: '转场', exact: true })).toHaveValue('dissolve')
+  await expect(page.locator('.shot-editor').getByRole('spinbutton', { name: '转场时长（秒）' })).toHaveValue('0.5')
+})
+
 test('DR-004 Shift 等比缩放与变换数值写入统一保存链', async ({ page }) => {
   const savedTimelines = []
   await page.route('**/api/v1/dramas/3', async (route) => {
