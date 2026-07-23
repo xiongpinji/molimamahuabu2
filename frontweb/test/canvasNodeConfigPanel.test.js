@@ -210,6 +210,7 @@ test('分镜配置面板保留素材库指派、摄影控制、声音策略和�
 })
 
 test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {
+  assert.match(storyboardPanelSource, /import \{ characterAPI \} from '@\/api\/characters'/)
   assert.match(storyboardPanelSource, /const assetAttachTarget = ref\('reference'\)/)
   assert.match(storyboardPanelSource, /const ASSET_ATTACH_TARGETS = \{/)
   assert.match(storyboardPanelSource, /function openAssetLibrary\(target = 'reference'\)/)
@@ -225,6 +226,12 @@ test('分镜配置面板支持素材库按用途挂载到分镜字段', () => {
   assert.match(storyboardPanelSource, /payload\.audio_local_path = localPath \|\| undefined/)
   assert.match(storyboardPanelSource, /payload\.audio_url = localPath \? undefined : url/)
   assert.match(storyboardPanelSource, /await storyboardsAPI\.update\(storyboardId, payload\)/)
+  assert.match(storyboardPanelSource, /function voiceCatalogBindId\(asset\)/)
+  assert.match(storyboardPanelSource, /async function bindPickedVoiceToSingleStoryboardCharacter\(asset\)/)
+  assert.match(storyboardPanelSource, /if \(!bindId \|\| storyboardCharacters\.value\.length !== 1\) return null/)
+  assert.match(storyboardPanelSource, /await characterAPI\.bindVoiceCatalog\(characterId, bindId, \{ silentError: true \}\)/)
+  assert.match(storyboardPanelSource, /const voiceBind = target === 'audio'[\s\S]*await bindPickedVoiceToSingleStoryboardCharacter\(savedAsset \|\| asset\)/)
+  assert.match(storyboardPanelSource, /voiceBind\?\.bound[\s\S]*\? '已将音色设为本镜音频并绑定分镜角色'/)
 })
 
 test('分镜首尾帧素材库引用兼容统一素材字段并保留失败状态', () => {

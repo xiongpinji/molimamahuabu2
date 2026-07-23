@@ -385,6 +385,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiAPI } from '@/api/ai'
 import { storyboardsAPI } from '@/api/storyboards'
 import { assetsAPI } from '@/api/assets'
+import { characterAPI } from '@/api/characters'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { CANVAS_NODE_STATUS_LABELS } from '@/composables/useCanvasNodeStatus'
 import {
@@ -867,9 +868,15 @@ async function onAssetLibraryPick(asset) {
     if (target !== 'reference') {
       await attachPickedAssetToStoryboard(target, asset)
       const savedAsset = await ensureStoryboardSlotAsset(target, asset, dramaId, storyboardId)
+      const voiceBind = target === 'audio'
+        ? await bindPickedVoiceToSingleStoryboardCharacter(savedAsset || asset)
+        : null
       await ctx?.refreshDrama?.(true)
-      const message = ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材'
+      const message = voiceBind?.bound
+        ? '已将音色设为本镜音频并绑定分镜角色'
+        : ASSET_ATTACH_TARGETS[target]?.message || '已挂载素材'
       setAssetAttachStatus(target, storyboardId, assetAttachStatusPayload(target, savedAsset || asset, message), 'success')
+      if (voiceBind?.error) ElMessage.warning(voiceBind.error)
       ElMessage.success(message)
       return
     }
@@ -908,6 +915,29 @@ async function onAssetLibraryPick(asset) {
     ElMessage.error(message)
   } finally {
     assetAssigning.value = false
+  }
+}
+
+function voiceCatalogBindId(asset) {
+  const metadata = asset?.metadata || {}
+  const voiceCatalog = asset?.voice_catalog || metadata.voice_catalog || {}
+  return asset?.voice_catalog_id
+    || metadata.voice_catalog_id
+    || voiceCatalog.id
+    || voiceCatalog.voice_id
+    || (asset?.category === 'voice' && projectAssetId(asset) ? `asset-${projectAssetId(asset)}` : '')
+}
+
+async function bindPickedVoiceToSingleStoryboardCharacter(asset) {
+  const bindId = voiceCatalogBindId(asset)
+  if (!bindId || storyboardCharacters.value.length !== 1) return null
+  const characterId = storyboardCharacters.value[0]?.id
+  if (!characterId) return null
+  try {
+    await characterAPI.bindVoiceCatalog(characterId, bindId, { silentError: true })
+    return { bound: true }
+  } catch (error) {
+    return { bound: false, error: error?.message || '音频已回填，但绑定角色音色失败' }
   }
 }
 
