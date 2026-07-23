@@ -341,6 +341,7 @@
               </button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
+              <button v-if="canUseQueueItemAsDownstreamReference(item)" type="button" @click.stop="useQueueItemAsDownstreamReference(item)">作为下游参考</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button type="button" @click.stop="dismissQueueItem(item)">收起</button>
             </span>
@@ -355,6 +356,7 @@
               </button>
               <button v-if="item.savedAssetId" type="button" @click.stop="copyQueueItemAssetReference(item)">素材引用</button>
               <button v-if="item.savedAssetId" type="button" @click.stop="assignQueueItemAssetToSelectedStoryboard(item)">回填</button>
+              <button v-if="canUseQueueItemAsDownstreamReference(item)" type="button" @click.stop="useQueueItemAsDownstreamReference(item)">作为下游参考</button>
               <button v-if="item.resultNodeId" type="button" @click.stop="focusQueueItemResult(item)">定位</button>
               <button v-if="item.errorDetail || item.message" type="button" @click.stop="copyQueueItemError(item)">原因</button>
               <button v-if="item.retryStep" type="button" @click.stop="retryQueueItem(item)">重试</button>
@@ -1177,6 +1179,41 @@ async function assignQueueItemAssetToSelectedStoryboard(item) {
     return
   }
   await assignProjectAssetToSelectedStoryboard(asset)
+}
+
+function queueItemReusableReferences(item) {
+  const references = Array.isArray(item?.resultReferences)
+    ? item.resultReferences.map((value) => String(value || '').trim()).filter(Boolean)
+    : []
+  const assetRef = assetReferenceText(queueItemSavedAsset(item))
+  if (assetRef) references.push(assetRef)
+  return [...new Set(references)]
+}
+
+function canUseQueueItemAsDownstreamReference(item) {
+  return Boolean(
+    findGraphNode(item?.nodeId)
+    && (item?.resultUrl || queueTextResult(item) || queueItemReusableReferences(item).length)
+  )
+}
+
+async function useQueueItemAsDownstreamReference(item) {
+  const node = findGraphNode(item?.nodeId)
+  if (!node) {
+    ElMessage.warning('未找到可承接的队列节点')
+    return
+  }
+  try {
+    await useNodeResultAsDownstreamReference(node, {
+      resultUrl: item.resultUrl || '',
+      resultType: item.resultType || (item.resultUrl ? queueResultPreviewType(item) : 'text'),
+      savedAssetId: item.savedAssetId || '',
+      resultSummary: item.resultSummary || '',
+      resultReferences: queueItemReusableReferences(item),
+    })
+  } catch (error) {
+    ElMessage.error(error?.message || '队列结果作为下游参考失败')
+  }
 }
 
 async function saveQueueItemResultAsset(item) {
