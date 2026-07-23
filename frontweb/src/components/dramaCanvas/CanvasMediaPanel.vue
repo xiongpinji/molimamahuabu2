@@ -215,6 +215,18 @@ const storyboardGenerationOptions = computed(() => {
   }
 })
 
+function effectiveGenerationOptions(base = {}) {
+  const current = storyboardGenerationOptions.value || {}
+  return {
+    ...base,
+    imageModel: current.imageModel || base.imageModel,
+    videoModel: current.videoModel || base.videoModel,
+    aspectRatio: current.aspectRatio || base.aspectRatio,
+    videoResolution: current.videoResolution || base.videoResolution,
+    videoDuration: current.videoDuration || base.videoDuration,
+  }
+}
+
 /** 素材库视频直接复用为该分镜成片（不生成、不计费） */
 async function onLibraryVideoPick(asset) {
   const drama = ctx?.drama?.value
@@ -593,7 +605,7 @@ async function runStep(step) {
   try {
     const found = findStoryboardInDrama(drama, sbId)
     const sb = found?.storyboard || props.storyboard
-    const genOpts = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)
+    const genOpts = effectiveGenerationOptions(ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama))
     if (step === 'image') await runImageStep(drama, sb, genOpts, props.frameKind)
     else if (step === 'video') await runVideoStep(drama, sb, genOpts)
     else if (step === 'audio') {
@@ -610,6 +622,7 @@ async function runStep(step) {
       resultType: step,
       resultLabel: step === 'image' ? '分镜图' : step === 'video' ? '分镜视频' : step === 'audio' ? '分镜音频' : '节点结果',
       retryStep: step,
+      requestPayload: { step, generationOptions: genOpts, frameKind: props.frameKind || '' },
     })
   } catch (e) {
     const errorMessage = e?.message || '生成失败'
@@ -627,6 +640,7 @@ async function runStep(step) {
       errorDetail: errorMessage,
       retryStep: step,
       retryLabel,
+      requestPayload: { step, generationOptions: effectiveGenerationOptions(ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama)), frameKind: props.frameKind || '' },
       recoverable: true,
     }
     ctx?.nodeStatus?.fail(props.nodeId, failurePayload)
