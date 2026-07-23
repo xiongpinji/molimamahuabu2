@@ -390,6 +390,18 @@ test('媒体配置面板失败后保留原因和重试入口', () => {
   assert.match(mediaPanelSource, /async function continueMediaNextStep\(\)/)
 })
 
+test('全能词配置失败后保留原因并可从节点执行条重试', () => {
+  assert.match(mediaPanelSource, /function markUniversalFailure\(message, mode\)/)
+  assert.match(mediaPanelSource, /generate: \['universal_generate', '重试生成全能词'\]/)
+  assert.match(mediaPanelSource, /polish: \['universal_polish', '重试润色全能词'\]/)
+  assert.match(mediaPanelSource, /save: \['save_universal_text', '重试保存全能词'\]/)
+  assert.match(mediaPanelSource, /ctx\?\.nodeStatus\?\.fail\(props\.nodeId, status\)/)
+  assert.match(mediaPanelSource, /ctx\?\.nodeStatus\?\.fail\(sbNodeId\.value, status\)/)
+  assert.match(mediaPanelSource, /retryAction === 'universal_generate'[\s\S]*await runUniversalPrompt\('generate'\)/)
+  assert.match(mediaPanelSource, /retryAction === 'universal_polish'[\s\S]*await runUniversalPrompt\('polish'\)/)
+  assert.match(mediaPanelSource, /retryAction === 'save_universal_text'[\s\S]*await saveUniversalText\(\)/)
+})
+
 test('分镜配置面板提供统一节点执行和失败恢复入口', () => {
   assert.match(nodeExecutionStripSource, /class="node-execution-strip"/)
   assert.match(nodeExecutionStripSource, /节点执行/)

@@ -558,7 +558,9 @@ async function runUniversalPrompt(mode) {
     })
   } catch (e) {
     universalText.value = draft
-    ElMessage.error(e?.message || '全能词处理失败')
+    const message = e?.message || '全能词处理失败'
+    markUniversalFailure(message, mode)
+    ElMessage.error(message)
   } finally {
     universalBusy.value = ''
     clearRunningStatus(props.nodeId)
@@ -583,7 +585,9 @@ async function saveUniversalText() {
       promptText: universalText.value.trim(),
     })
   } catch (e) {
-    ElMessage.error(e?.message || '全能词保存失败')
+    const message = e?.message || '全能词保存失败'
+    markUniversalFailure(message, 'save')
+    ElMessage.error(message)
   } finally {
     universalBusy.value = ''
     clearRunningStatus(props.nodeId)
@@ -664,6 +668,21 @@ async function retryFailedStep() {
     await saveGenerationOptionsFromStatus(status)
     return
   }
+  if (retryAction === 'universal_generate') {
+    clearFailedStatus()
+    await runUniversalPrompt('generate')
+    return
+  }
+  if (retryAction === 'universal_polish') {
+    clearFailedStatus()
+    await runUniversalPrompt('polish')
+    return
+  }
+  if (retryAction === 'save_universal_text') {
+    clearFailedStatus()
+    await saveUniversalText()
+    return
+  }
   if (retryAction === 'attach_library_image' && asset) {
     clearFailedStatus()
     await onLibraryImagePick(asset)
@@ -700,6 +719,28 @@ function markNodeSuccess(message, payload = {}) {
   }
   ctx?.nodeStatus?.success(props.nodeId, status)
   ctx?.nodeStatus?.success(sbNodeId.value, status)
+}
+
+function markUniversalFailure(message, mode) {
+  const actionMap = {
+    generate: ['universal_generate', '重试生成全能词'],
+    polish: ['universal_polish', '重试润色全能词'],
+    save: ['save_universal_text', '重试保存全能词'],
+  }
+  const [retryAction, retryLabel] = actionMap[mode] || actionMap.generate
+  const status = {
+    message,
+    errorDetail: message,
+    storyboardId: props.storyboard?.id || undefined,
+    retryAction,
+    retryActionLabel: retryLabel,
+    retryLabel,
+    requestPayload: { mode, text: universalText.value },
+    recoverable: true,
+    autoClear: false,
+  }
+  ctx?.nodeStatus?.fail(props.nodeId, status)
+  ctx?.nodeStatus?.fail(sbNodeId.value, status)
 }
 
 function libraryAssetLocalPath(asset, resultType) {
