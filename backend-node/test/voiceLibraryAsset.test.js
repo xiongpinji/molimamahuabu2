@@ -139,6 +139,51 @@ describe('voice library assets', () => {
     }
   });
 
+  it('persists storyboard audio slot metadata for asset history readback', () => {
+    const { db, dramaId } = createDb();
+    try {
+      const item = assetService.create(db, null, {
+        drama_id: dramaId,
+        storyboard_id: 21,
+        name: '小狐狸 · 分镜音色',
+        type: 'audio',
+        category: 'voice',
+        url: '/static/projects/demo/fox-slot.mp3',
+        local_path: 'projects/demo/fox-slot.mp3',
+        metadata: {
+          source_kind: 'voice_catalog',
+          source_id: 'asset-7',
+          attached_slot: 'audio',
+          attached_storyboard_id: 21,
+          voice_catalog_id: 'asset-7',
+          voice_asset_id: 7,
+        },
+      });
+
+      const listed = assetService.list(db, {
+        drama_id: dramaId,
+        storyboard_id: 21,
+        type: 'audio',
+        page: 1,
+        page_size: 20,
+      });
+
+      assert.equal(listed.total, 1);
+      assert.equal(listed.items[0].id, item.id);
+      assert.equal(listed.items[0].category, 'voice');
+      assert.deepEqual(listed.items[0].metadata, {
+        source_kind: 'voice_catalog',
+        source_id: 'asset-7',
+        attached_slot: 'audio',
+        attached_storyboard_id: 21,
+        voice_catalog_id: 'asset-7',
+        voice_asset_id: 7,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('filters voice catalog project assets by keyword', () => {
     const { db, dramaId } = createDb();
     try {
