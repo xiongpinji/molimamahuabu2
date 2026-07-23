@@ -269,9 +269,10 @@ function normalizeVoiceCatalogItems(res) {
       id: it.asset_id || it.id || it.voice_id,
       name: it.label || it.name || it.voice_id,
       type: 'audio',
-      url: it.preview_url || it.url || it.audio_url || '',
-      audio_url: it.preview_url || it.url || it.audio_url || '',
-      selectable: Boolean(it.preview_url || it.url || it.audio_url),
+      url: firstString(it.preview_url, it.url, it.audio_url, it.voice_url),
+      audio_url: firstString(it.preview_url, it.url, it.audio_url, it.voice_url),
+      local_path: firstString(it.local_path, it.audio_local_path, it.voice_local_path),
+      selectable: Boolean(firstString(it.preview_url, it.url, it.audio_url, it.voice_url, it.local_path, it.audio_local_path, it.voice_local_path)),
       metadata: {
         ...(it.metadata || {}),
         voice_catalog: it,

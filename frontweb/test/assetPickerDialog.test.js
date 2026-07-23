@@ -79,7 +79,9 @@ test('素材选择弹窗支持音频/音色素材选择与预览', () => {
 
 test('素材选择弹窗显示未就绪音色目录但禁用不可用音频操作', () => {
   assert.match(source, /<template v-if="item\.setup_hint"> · \{\{ item\.setup_hint \}\}<\/template>/)
-  assert.match(source, /selectable: Boolean\(it\.preview_url \|\| it\.url \|\| it\.audio_url\)/)
+  assert.match(source, /url: firstString\(it\.preview_url, it\.url, it\.audio_url, it\.voice_url\)/)
+  assert.match(source, /local_path: firstString\(it\.local_path, it\.audio_local_path, it\.voice_local_path\)/)
+  assert.match(source, /selectable: Boolean\(firstString\(it\.preview_url, it\.url, it\.audio_url, it\.voice_url, it\.local_path, it\.audio_local_path, it\.voice_local_path\)\)/)
   assert.match(source, /setup_hint: it\.setup_hint \|\| ''/)
   assert.match(source, /selectable: it\.selectable \?\? true/)
   assert.match(source, /:disabled="!itemUrl\(item\)"/)
