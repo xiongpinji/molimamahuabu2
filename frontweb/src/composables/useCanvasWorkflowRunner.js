@@ -264,14 +264,15 @@ export async function runVideoStep(drama, sb, genOpts, options = {}) {
   }
 }
 
-export async function runAudioStep(sb, genOpts = {}) {
-  const text = (sb.dialogue || '').trim()
-  if (!text) return { skipped: true, reason: '无对白' }
+export async function runAudioStep(sb, genOpts = {}, options = {}) {
+  const audioType = options.audioType === 'narration' ? 'narration' : 'dialogue'
+  const text = String(options.text ?? sb[audioType] ?? '').trim()
+  if (!text) return { skipped: true, reason: audioType === 'narration' ? '无旁白' : '无对白' }
   const model = getStoryboardAudioModel(sb, genOpts)
   const res = await request.post('/audio/extract', {
     storyboard_id: sb.id,
     text,
-    tts_kind: 'dialogue',
+    tts_kind: audioType,
     tts_model: model || undefined,
   })
   return {
@@ -279,7 +280,8 @@ export async function runAudioStep(sb, genOpts = {}) {
     resultUrl: res?.url || '',
     resultLocalPath: res?.local_path || '',
     resultType: 'audio',
-    resultLabel: '音频已生成',
+    resultLabel: audioType === 'narration' ? '旁白音频已生成' : '对白音频已生成',
+    audioType,
     model: res?.model || model || null,
   }
 }

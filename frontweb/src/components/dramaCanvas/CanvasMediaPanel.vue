@@ -20,15 +20,31 @@
       <CanvasNodeExecutionStrip
         :status="activeNodeStatus"
         :node-id="nodeId || sbNodeId"
-        :disabled="busy || attachBusy || Boolean(universalBusy)"
+        :disabled="busy || attachBusy || promptLoading || promptSaving || Boolean(universalBusy)"
         @retry="retryFailedStep"
         @retry-action="retryFailedStep"
         @continue="continueMediaNextStep"
       />
 
       <template v-if="kind === 'text'">
-        <p class="summary">{{ summary || '暂无脚本内容' }}</p>
-        <el-button size="small" type="primary" plain @click.stop="focusStoryboard">编辑脚本</el-button>
+        <el-input
+          v-model="textAction"
+          type="textarea"
+          :rows="3"
+          resize="vertical"
+          placeholder="画面动作"
+        />
+        <el-input
+          v-model="textDialogue"
+          type="textarea"
+          :rows="3"
+          resize="vertical"
+          placeholder="角色对白"
+        />
+        <div class="panel-actions">
+          <el-button size="small" type="primary" :loading="promptSaving" @click.stop="saveTextFields">保存文本</el-button>
+          <el-button size="small" plain @click.stop="focusStoryboard">编辑完整分镜</el-button>
+        </div>
       </template>
 
       <template v-else-if="kind === 'universal'">
@@ -74,7 +90,7 @@
           @change="saveStoryboardGenerationOptions"
         />
         <div class="panel-actions">
-          <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('image')">
+          <el-button size="small" type="primary" :loading="busy" :disabled="promptLoading || promptSaving" @click.stop="runStep('image')">
             {{ frameKind === 'first' ? '生成首帧' : frameKind === 'last' ? '生成尾帧' : '重新生图' }}
           </el-button>
           <el-button size="small" :loading="attachBusy" @click.stop="imageLibraryVisible = true">从素材库选用图片</el-button>
@@ -109,7 +125,7 @@
           compact
           @change="saveStoryboardGenerationOptions"
         />
-        <el-button size="small" type="primary" :loading="busy" @click.stop="runStep('video')">重新生视频</el-button>
+        <el-button size="small" type="primary" :loading="busy" :disabled="promptLoading || promptSaving" @click.stop="runStep('video')">重新生视频</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="videoLibraryVisible = true">从素材库选用成片</el-button>
         <el-button v-if="libraryVideoLabel" size="small" text @click.stop="libraryPreviewVisible = true">查看素材</el-button>
         <AssetPickerDialog
@@ -147,7 +163,7 @@
           compact
           @change="saveStoryboardGenerationOptions"
         />
-        <el-button size="small" type="warning" :loading="busy" @click.stop="runStep('audio')">重新配音</el-button>
+        <el-button size="small" type="warning" :loading="busy" :disabled="promptLoading || promptSaving" @click.stop="runStep('audio')">重新配音</el-button>
         <el-button size="small" :loading="attachBusy" @click.stop="audioLibraryVisible = true">从素材库选用音频</el-button>
         <AssetPickerDialog
           v-model="audioLibraryVisible"
@@ -157,6 +173,21 @@
           @pick="onLibraryAudioPick"
         />
       </template>
+
+      <div v-if="['image', 'video', 'audio'].includes(kind)" class="prompt-editor">
+        <span class="prompt-label">{{ mediaPromptLabel }}</span>
+        <el-input
+          v-model="mediaPrompt"
+          type="textarea"
+          :rows="3"
+          resize="vertical"
+          :disabled="promptLoading"
+          :placeholder="mediaPromptPlaceholder"
+        />
+        <el-button size="small" :loading="promptLoading || promptSaving" :disabled="busy || attachBusy" @click.stop="saveMediaPrompt">
+          保存提示词
+        </el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -200,6 +231,12 @@ const ctx = useCanvasContext()
 const busy = ref(false)
 const universalBusy = ref('')
 const universalText = ref('')
+const textAction = ref('')
+const textDialogue = ref('')
+const mediaPrompt = ref('')
+const mediaPromptBaseline = ref('')
+const promptLoading = ref(false)
+const promptSaving = ref(false)
 const imageLibraryVisible = ref(false)
 const videoLibraryVisible = ref(false)
 const audioLibraryVisible = ref(false)
@@ -207,6 +244,7 @@ const libraryPreviewVisible = ref(false)
 const attachBusy = ref(false)
 const attachedLibraryAssetName = ref('')
 const attachedLibraryAssetUrl = ref('')
+let promptLoadToken = 0
 const storyboardGenerationOptions = computed(() => {
   const defaults = ctx?.getGenerationOptions?.() || getDramaGenerationOptions(ctx?.drama?.value)
   return {
@@ -217,6 +255,14 @@ const storyboardGenerationOptions = computed(() => {
     videoDuration: universalPromptDuration(props.storyboard),
   }
 })
+const mediaPromptLabel = computed(() => {
+  if (props.kind === 'image' && props.frameKind === 'first') return '首帧提示词'
+  if (props.kind === 'image' && props.frameKind === 'last') return '尾帧提示词'
+  return props.kind === 'image' ? '图片提示词' : props.kind === 'video' ? '视频提示词' : props.audioType === 'narration' ? '旁白文本' : '对白文本'
+})
+const mediaPromptPlaceholder = computed(() => (
+  props.kind === 'image' ? `编辑本镜${props.frameKind === 'first' ? '首帧' : props.frameKind === 'last' ? '尾帧' : '图片'}提示词` : props.kind === 'video' ? '编辑本镜视频提示词' : '编辑本镜配音文本'
+))
 
 function effectiveGenerationOptions(base = {}) {
   const current = storyboardGenerationOptions.value || {}
@@ -365,6 +411,17 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => [props.kind, props.audioType, props.frameKind, props.storyboard],
+  () => {
+    const storyboard = props.storyboard || {}
+    textAction.value = storyboard.action || ''
+    textDialogue.value = storyboard.dialogue || ''
+    void loadMediaPrompt(storyboard)
+  },
+  { immediate: true, deep: true }
+)
+
 /** 素材库图片直接复用为该分镜图、首帧或尾帧（不生成、不计费） */
 async function onLibraryImagePick(asset) {
   const sbId = props.storyboard?.id
@@ -449,6 +506,161 @@ function focusStoryboard() {
 
 function closePanel() {
   ctx?.clearFocusedNode?.()
+}
+
+function mediaPromptField() {
+  if (props.kind === 'image') return 'image_prompt'
+  if (props.kind === 'video') return 'video_prompt'
+  return props.audioType === 'narration' ? 'narration' : 'dialogue'
+}
+
+function isFramePromptNode() {
+  return props.kind === 'image' && ['first', 'last'].includes(props.frameKind)
+}
+
+function mediaPromptInitialValue(storyboard) {
+  if (props.kind === 'image' && props.frameKind === 'last') {
+    return storyboard.video_prompt || storyboard.result || storyboard.action || storyboard.description || ''
+  }
+  if (props.kind === 'image') return storyboard.polished_prompt || storyboard.image_prompt || ''
+  if (props.kind === 'video') return storyboard.video_prompt || storyboard.polished_prompt || storyboard.image_prompt || storyboard.description || ''
+  return storyboard[mediaPromptField()] || ''
+}
+
+async function loadMediaPrompt(storyboard) {
+  const token = ++promptLoadToken
+  const fallback = mediaPromptInitialValue(storyboard)
+  if (!isFramePromptNode() || !storyboard.id) {
+    promptLoading.value = false
+    mediaPrompt.value = fallback
+    mediaPromptBaseline.value = fallback
+    return
+  }
+  promptLoading.value = true
+  try {
+    const res = await storyboardsAPI.getFramePrompts(storyboard.id)
+    const saved = (res?.frame_prompts || []).find((item) => item.frame_type === props.frameKind)?.prompt
+    if (token !== promptLoadToken) return
+    const savedPrompt = String(saved || '').trim()
+    mediaPrompt.value = savedPrompt || fallback
+    mediaPromptBaseline.value = savedPrompt
+  } catch (_) {
+    if (token !== promptLoadToken) return
+    mediaPrompt.value = fallback
+    mediaPromptBaseline.value = ''
+  } finally {
+    if (token === promptLoadToken) promptLoading.value = false
+  }
+}
+
+async function persistFramePrompt(sbId) {
+  const prompt = mediaPrompt.value.trim()
+  if (!prompt) throw new Error(`${props.frameKind === 'last' ? '尾帧' : '首帧'}提示词不能为空`)
+  await storyboardsAPI.saveFramePrompt(sbId, props.frameKind, { prompt })
+  mediaPromptBaseline.value = prompt
+  return { frame_type: props.frameKind, prompt }
+}
+
+function mediaPromptPatch() {
+  if (!['image', 'video', 'audio'].includes(props.kind)) return {}
+  if (props.kind === 'image') {
+    const prompt = mediaPrompt.value.trim()
+    return {
+      image_prompt: prompt,
+      polished_prompt: prompt,
+    }
+  }
+  return { [mediaPromptField()]: mediaPrompt.value.trim() }
+}
+
+function mediaPromptChanged(patch) {
+  return Object.entries(patch).some(
+    ([field, value]) => String(props.storyboard?.[field] || '').trim() !== String(value || '').trim(),
+  )
+}
+
+async function saveTextFields() {
+  const sbId = props.storyboard?.id
+  if (!sbId || promptSaving.value) return
+  promptSaving.value = true
+  const statusMessage = '文本保存中…'
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: statusMessage })
+  try {
+    await storyboardsAPI.update(sbId, {
+      action: textAction.value.trim(),
+      dialogue: textDialogue.value.trim(),
+    })
+    await ctx?.refreshDrama?.(true)
+    markNodeSuccess('文本已保存', {
+      resultType: 'text',
+      resultLabel: '动作与对白',
+      promptText: [textAction.value.trim(), textDialogue.value.trim()].filter(Boolean).join('\n'),
+    })
+    ElMessage.success('动作与对白已保存')
+  } catch (e) {
+    const message = e?.message || '文本保存失败'
+    const failurePayload = {
+      message,
+      errorDetail: message,
+      retryAction: 'save_text_fields',
+      retryLabel: '重试保存文本',
+      recoverable: true,
+      autoClear: false,
+    }
+    ctx?.nodeStatus?.fail(props.nodeId, failurePayload)
+    ctx?.nodeStatus?.fail(sbNodeId.value, failurePayload)
+    ElMessage.error(message)
+  } finally {
+    promptSaving.value = false
+    clearRunningStatus(props.nodeId)
+    clearRunningStatus(sbNodeId.value)
+  }
+}
+
+async function saveMediaPrompt() {
+  const sbId = props.storyboard?.id
+  if (!sbId || promptLoading.value || promptSaving.value) return
+  const requestPayload = {}
+  promptSaving.value = true
+  const statusMessage = '提示词保存中…'
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: statusMessage })
+  ctx?.nodeStatus?.set(sbNodeId.value, { step: 'save', message: statusMessage })
+  try {
+    if (isFramePromptNode()) {
+      Object.assign(requestPayload, await persistFramePrompt(sbId))
+    } else {
+      const patch = mediaPromptPatch()
+      await storyboardsAPI.update(sbId, patch)
+      requestPayload.patch = patch
+    }
+    await ctx?.refreshDrama?.(true)
+    markNodeSuccess('提示词已保存', {
+      resultType: 'text',
+      resultLabel: mediaPromptLabel.value,
+      promptText: mediaPrompt.value.trim(),
+      requestPayload,
+    })
+    ElMessage.success('本镜提示词已保存')
+  } catch (e) {
+    const message = e?.message || '提示词保存失败'
+    const failurePayload = {
+      message,
+      errorDetail: message,
+      retryAction: 'save_media_prompt',
+      retryLabel: '重试保存提示词',
+      requestPayload,
+      recoverable: true,
+      autoClear: false,
+    }
+    ctx?.nodeStatus?.fail(props.nodeId, failurePayload)
+    ctx?.nodeStatus?.fail(sbNodeId.value, failurePayload)
+    ElMessage.error(message)
+  } finally {
+    promptSaving.value = false
+    clearRunningStatus(props.nodeId)
+    clearRunningStatus(sbNodeId.value)
+  }
 }
 
 async function saveStoryboardGenerationOptions(patch, next) {
@@ -614,12 +826,18 @@ async function runStep(step) {
   ctx?.nodeStatus?.set(sbNodeId.value, { step, message: statusMsg })
   try {
     const found = findStoryboardInDrama(drama, sbId)
-    const sb = found?.storyboard || props.storyboard
+    const promptPatch = isFramePromptNode() ? {} : mediaPromptPatch()
+    if (isFramePromptNode()) {
+      if (mediaPrompt.value.trim() !== mediaPromptBaseline.value.trim()) await persistFramePrompt(sbId)
+    } else if (Object.keys(promptPatch).length && mediaPromptChanged(promptPatch)) {
+      await storyboardsAPI.update(sbId, promptPatch)
+    }
+    const sb = { ...(found?.storyboard || props.storyboard), ...promptPatch }
     const genOpts = effectiveGenerationOptions(ctx?.getGenerationOptions?.() || getDramaGenerationOptions(drama))
     if (step === 'image') await runImageStep(drama, sb, genOpts, props.frameKind)
     else if (step === 'video') await runVideoStep(drama, sb, genOpts)
     else if (step === 'audio') {
-      const res = await runAudioStep(sb, genOpts)
+      const res = await runAudioStep(sb, genOpts, { audioType: props.audioType, text: mediaPrompt.value })
       if (res?.skipped) {
         ElMessage.info(res.reason || '已跳过')
         return
@@ -667,6 +885,16 @@ async function runStep(step) {
 async function retryFailedStep() {
   const retryAction = failedStatus.value?.retryAction
   const asset = failedStatus.value?.libraryAsset
+  if (retryAction === 'save_media_prompt') {
+    clearFailedStatus()
+    await saveMediaPrompt()
+    return
+  }
+  if (retryAction === 'save_text_fields') {
+    clearFailedStatus()
+    await saveTextFields()
+    return
+  }
   if (retryAction === 'save_generation_options') {
     const status = failedStatus.value
     clearFailedStatus()
@@ -939,6 +1167,21 @@ function currentResultUrl(step) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.prompt-editor {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  width: 100%;
+}
+.prompt-label {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: #a1a1aa;
+}
+.kind-text :deep(.el-textarea) {
+  flex: 1 1 200px;
 }
 .universal-editor {
   width: 100%;

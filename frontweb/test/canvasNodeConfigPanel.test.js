@@ -18,6 +18,30 @@ const storyboardImageUploadSource = readFileSync(fileURLToPath(new URL('../src/c
 const projectAssetNodeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasProjectAssetNode.vue', import.meta.url)), 'utf8')
 const nodeStatusOverlaySource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeStatusOverlay.vue', import.meta.url)), 'utf8')
 const nodeExecutionStripSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasNodeExecutionStrip.vue', import.meta.url)), 'utf8')
+const workflowRunnerSource = readFileSync(fileURLToPath(new URL('../src/composables/useCanvasWorkflowRunner.js', import.meta.url)), 'utf8')
+
+function extractFunction(source, signature) {
+  const start = source.indexOf(signature)
+  assert.notEqual(start, -1)
+  const paramsStart = source.indexOf('(', start)
+  let paramsDepth = 0
+  let bodyStart = -1
+  for (let i = paramsStart; i < source.length; i += 1) {
+    if (source[i] === '(') paramsDepth += 1
+    if (source[i] === ')') paramsDepth -= 1
+    if (paramsDepth === 0) {
+      bodyStart = source.indexOf('{', i)
+      break
+    }
+  }
+  let depth = 0
+  for (let i = bodyStart; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1
+    if (source[i] === '}') depth -= 1
+    if (depth === 0) return source.slice(start, i + 1).replace(/^export\s+/, '')
+  }
+  throw new Error(`无法提取函数：${signature}`)
+}
 
 test('右键节点菜单保留配置面板入口', () => {
   assert.match(contextMenuSource, /type: 'open-node-config'/)
@@ -334,6 +358,20 @@ test('资产节点生成入口透传统一图片模型和风格参数', () => {
   assert.match(assetGenerateSource, /sceneAPI\.generateFourViewImage\(entity\.id, generationOptions\.imageModel \|\| undefined, generationOptions\.style \|\| undefined\)/)
 })
 
+test('角色配置面板补齐提示词编辑、生成和失败重试', () => {
+  assert.match(assetPanelSource, /v-if="kind === 'character'"[\s\S]*label="提示词"[\s\S]*v-model="form\.prompt"/)
+  assert.match(assetPanelSource, /polished_prompt: form\.prompt\.trim\(\)/)
+  assert.match(assetPanelSource, /@click\.stop="generateCharacterPrompt"/)
+  assert.match(assetPanelSource, /async function generateCharacterPrompt\(\)/)
+  assert.match(assetPanelSource, /characterAPI\.generatePrompt\(props\.entity\.id\)/)
+  assert.match(assetPanelSource, /form\.prompt = String\(res\?\.polished_prompt \|\| ''\)\.trim\(\)/)
+  assert.match(assetPanelSource, /import \{ isCanvasNodeBusyStatus \} from '@\/utils\/canvasNodeStatus'/)
+  assert.match(assetPanelSource, /const nodeRunning = computed\(\(\) => isCanvasNodeBusyStatus\(nodeBusy\.value\)\)/)
+  assert.match(assetPanelSource, /v-if="generating \|\| promptGenerating \|\| nodeRunning"/)
+  assert.match(assetPanelSource, /retryStep: 'prompt'/)
+  assert.match(assetPanelSource, /status\?\.retryStep === 'prompt'[\s\S]*generateCharacterPrompt\(\)/)
+})
+
 test('资产配置面板从项目素材库选图后写回画布资产绑定', () => {
   assert.match(assetPanelSource, /import \{ assetsAPI \} from '@\/api\/assets'/)
   assert.match(assetPanelSource, /async function bindPickedProjectAsset\(asset\)/)
@@ -402,6 +440,94 @@ test('媒体配置面板支持从素材库复用图片、视频和音频', () =>
   assert.match(dramaCanvasAdapterSource, /const dialogueAudio = sb\.audio_local_path \|\| sb\.audio_url/)
   assert.match(dramaCanvasAdapterSource, /url: audioUrl\(dialogueAudio\)/)
   assert.match(storyboardNodeSource, /props\.data\.storyboard\?\.audio_url/)
+})
+
+test('文本和媒体配置面板可就地编辑运行所用提示词', () => {
+  assert.match(mediaPanelSource, /kind === 'text'[\s\S]*v-model="textAction"[\s\S]*v-model="textDialogue"/)
+  assert.match(mediaPanelSource, /@click\.stop="saveTextFields"/)
+  assert.match(mediaPanelSource, /async function saveTextFields\(\)/)
+  assert.match(mediaPanelSource, /storyboardsAPI\.update\(sbId, \{[\s\S]*action: textAction\.value\.trim\(\)[\s\S]*dialogue: textDialogue\.value\.trim\(\)/)
+  assert.match(mediaPanelSource, /v-model="mediaPrompt"/)
+  assert.match(mediaPanelSource, /function mediaPromptField\(\)/)
+  assert.match(mediaPanelSource, /if \(props\.kind === 'image'\) return 'image_prompt'/)
+  assert.match(mediaPanelSource, /if \(props\.kind === 'video'\) return 'video_prompt'/)
+  assert.match(mediaPanelSource, /props\.audioType === 'narration' \? 'narration' : 'dialogue'/)
+  assert.match(mediaPanelSource, /if \(props\.kind === 'image'\) return storyboard\.polished_prompt \|\| storyboard\.image_prompt \|\| ''/)
+  assert.match(mediaPanelSource, /if \(props\.kind === 'video'\) return storyboard\.video_prompt \|\| storyboard\.polished_prompt \|\| storyboard\.image_prompt \|\| storyboard\.description \|\| ''/)
+  assert.match(mediaPanelSource, /const fallback = mediaPromptInitialValue\(storyboard\)/)
+  assert.match(mediaPanelSource, /const savedPrompt = String\(saved \|\| ''\)\.trim\(\)/)
+  assert.match(mediaPanelSource, /mediaPrompt\.value = savedPrompt \|\| fallback/)
+  assert.match(mediaPanelSource, /mediaPromptBaseline\.value = savedPrompt/)
+  assert.match(mediaPanelSource, /if \(props\.kind === 'image'\) \{[\s\S]*image_prompt: prompt,[\s\S]*polished_prompt: prompt/)
+  assert.match(mediaPanelSource, /Object\.entries\(patch\)\.some/)
+  assert.match(mediaPanelSource, /@click\.stop="saveMediaPrompt"/)
+  assert.match(mediaPanelSource, /async function saveMediaPrompt\(\)/)
+  assert.match(mediaPanelSource, /storyboardsAPI\.update\(sbId, patch\)/)
+  assert.match(mediaPanelSource, /const promptPatch = isFramePromptNode\(\) \? \{\} : mediaPromptPatch\(\)/)
+  assert.match(mediaPanelSource, /const sb = \{ \.\.\.\(found\?\.storyboard \|\| props\.storyboard\), \.\.\.promptPatch \}/)
+  assert.match(mediaPanelSource, /retryAction: 'save_media_prompt'/)
+  assert.match(mediaPanelSource, /retryAction === 'save_media_prompt'[\s\S]*saveMediaPrompt\(\)/)
+})
+
+test('音频运行按对白和旁白槽发送实际编辑文本', async () => {
+  const requests = []
+  const request = {
+    async post(url, payload) {
+      requests.push({ url, payload })
+      return { url: '/static/audio/result.wav', local_path: 'audio/result.wav', model: payload.tts_model }
+    },
+  }
+  const runAudioStepSource = extractFunction(workflowRunnerSource, 'export async function runAudioStep')
+  const runAudioStep = new Function(
+    'request',
+    'getStoryboardAudioModel',
+    `${runAudioStepSource}; return runAudioStep`,
+  )(request, (_storyboard, options) => options.audioModel)
+
+  await runAudioStep(
+    { id: 7, dialogue: '旧对白', narration: '旧旁白' },
+    { audioModel: 'tts-dialogue' },
+    { audioType: 'dialogue', text: '编辑后的对白' },
+  )
+  await runAudioStep(
+    { id: 8, dialogue: '旧对白', narration: '旧旁白' },
+    { audioModel: 'tts-narration' },
+    { audioType: 'narration', text: '编辑后的旁白' },
+  )
+
+  assert.deepEqual(requests, [
+    {
+      url: '/audio/extract',
+      payload: {
+        storyboard_id: 7,
+        text: '编辑后的对白',
+        tts_kind: 'dialogue',
+        tts_model: 'tts-dialogue',
+      },
+    },
+    {
+      url: '/audio/extract',
+      payload: {
+        storyboard_id: 8,
+        text: '编辑后的旁白',
+        tts_kind: 'narration',
+        tts_model: 'tts-narration',
+      },
+    },
+  ])
+  assert.match(mediaPanelSource, /runAudioStep\(sb, genOpts, \{ audioType: props\.audioType, text: mediaPrompt\.value \}\)/)
+})
+
+test('首帧和尾帧节点编辑真实帧提示词并在运行前持久化', () => {
+  assert.match(mediaPanelSource, /function isFramePromptNode\(\)/)
+  assert.match(mediaPanelSource, /props\.frameKind === 'last'[\s\S]*storyboard\.video_prompt \|\| storyboard\.result \|\| storyboard\.action \|\| storyboard\.description \|\| ''/)
+  assert.match(mediaPanelSource, /const token = \+\+promptLoadToken/)
+  assert.match(mediaPanelSource, /storyboardsAPI\.getFramePrompts\(storyboard\.id\)/)
+  assert.match(mediaPanelSource, /item\.frame_type === props\.frameKind/)
+  assert.match(mediaPanelSource, /if \(token !== promptLoadToken\) return/)
+  assert.match(mediaPanelSource, /storyboardsAPI\.saveFramePrompt\(sbId, props\.frameKind, \{ prompt \}\)/)
+  assert.match(mediaPanelSource, /if \(isFramePromptNode\(\)\) \{[\s\S]*persistFramePrompt\(sbId\)[\s\S]*\} else if \(Object\.keys\(promptPatch\)\.length/)
+  assert.match(mediaPanelSource, /const promptPatch = isFramePromptNode\(\) \? \{\} : mediaPromptPatch\(\)/)
 })
 
 test('媒体配置面板失败后保留原因和重试入口', () => {

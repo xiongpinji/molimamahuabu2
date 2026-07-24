@@ -16,11 +16,11 @@
     <div class="panel-body">
       <div class="preview-col">
         <div class="preview-box">
-          <img v-if="previewUrl && !generating" :src="previewUrl" alt="" />
-          <div v-else-if="!generating" class="preview-empty">{{ kindIcon }}</div>
-          <div v-if="generating || nodeBusy" class="preview-loading">
+          <img v-if="previewUrl && !generating && !promptGenerating" :src="previewUrl" alt="" />
+          <div v-else-if="!generating && !promptGenerating" class="preview-empty">{{ kindIcon }}</div>
+          <div v-if="generating || promptGenerating || nodeRunning" class="preview-loading">
             <span class="spinner" />
-            <span>{{ nodeBusy?.message || '生成参考图…' }}</span>
+            <span>{{ nodeBusy?.message || (promptGenerating ? '生成提示词…' : '生成参考图…') }}</span>
           </div>
         </div>
         <div v-if="entityStatus" class="entity-status" :class="'st-' + entityStatus">{{ entityStatusLabel }}</div>
@@ -71,6 +71,15 @@
                 :rows="2"
                 resize="vertical"
                 placeholder="角色简介"
+              />
+            </el-form-item>
+            <el-form-item label="提示词">
+              <el-input
+                v-model="form.prompt"
+                type="textarea"
+                :rows="3"
+                resize="vertical"
+                placeholder="角色参考图提示词"
               />
             </el-form-item>
           </template>
@@ -134,13 +143,22 @@
     <CanvasNodeExecutionStrip
       :status="nodeBusy"
       :node-id="nodeId"
-      :disabled="saving || generating || panoramaGenerating || multiViewGenerating || libraryApplying"
+      :disabled="saving || generating || promptGenerating || panoramaGenerating || multiViewGenerating || libraryApplying"
       @retry="retryAssetFailedStep"
       @retry-action="retryAssetFailedStep"
     />
 
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveAsset">保存</el-button>
+      <el-button
+        v-if="kind === 'character'"
+        size="small"
+        :loading="promptGenerating"
+        :disabled="saving || generating || panoramaGenerating || multiViewGenerating"
+        @click.stop="generateCharacterPrompt"
+      >
+        生成提示词
+      </el-button>
       <el-button
         size="small"
         plain
@@ -211,6 +229,7 @@ import {
   generateScenePanoramaImage,
 } from '@/composables/useCanvasAssetGenerate'
 import { assetImageUrl } from '@/utils/mediaUrl'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 
 const props = defineProps({
   kind: { type: String, required: true },
@@ -221,6 +240,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const saving = ref(false)
 const generating = ref(false)
+const promptGenerating = ref(false)
 const multiViewGenerating = ref(false)
 const panoramaGenerating = ref(false)
 const libraryVisible = ref(false)
@@ -266,6 +286,7 @@ const nodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
   return map ? map[props.nodeId] : null
 })
+const nodeRunning = computed(() => isCanvasNodeBusyStatus(nodeBusy.value))
 
 function syncForm(entity) {
   form.name = entity?.name || ''
@@ -313,6 +334,7 @@ async function saveAsset() {
         role: form.role || undefined,
         appearance: form.appearance.trim() || undefined,
         description: form.description.trim() || undefined,
+        polished_prompt: form.prompt.trim(),
       })
     } else if (props.kind === 'scene') {
       if (!form.location.trim()) {
@@ -452,6 +474,41 @@ async function deleteAsset() {
   }
 }
 
+async function generateCharacterPrompt() {
+  if (props.kind !== 'character' || promptGenerating.value) return
+  promptGenerating.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'prompt', message: '角色提示词生成中…' })
+  try {
+    const res = await characterAPI.generatePrompt(props.entity.id)
+    form.prompt = String(res?.polished_prompt || '').trim()
+    if (!form.prompt) throw new Error('未生成有效的角色提示词')
+    await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '角色提示词已生成',
+      resultType: 'text',
+      resultLabel: '角色提示词',
+      promptText: form.prompt,
+      retryStep: 'prompt',
+      retryLabel: '重试生成角色提示词',
+      autoClear: false,
+    })
+    ElMessage.success('角色提示词已生成')
+  } catch (e) {
+    const message = e?.message || '角色提示词生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'prompt',
+      retryLabel: '重试生成角色提示词',
+      recoverable: true,
+    })
+    ElMessage.error(message)
+  } finally {
+    promptGenerating.value = false
+    clearTransientAssetStatus()
+  }
+}
+
 async function generateImage() {
   generating.value = true
   try {
@@ -530,6 +587,7 @@ async function retryAssetFailedStep() {
   const status = nodeBusy.value
   if (status?.retryStep === 'save') return saveAsset()
   if (status?.retryStep === 'library' && status.libraryAsset) return applyLibraryImage(status.libraryAsset)
+  if (status?.retryStep === 'prompt') return generateCharacterPrompt()
   if (status?.retryStep === 'image') return generateImage()
   if (status?.retryStep === 'panorama') return generatePanorama()
   if (status?.retryStep === 'multi_view') return generateMultiView()

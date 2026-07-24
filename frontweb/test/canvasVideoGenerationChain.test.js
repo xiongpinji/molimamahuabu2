@@ -59,9 +59,10 @@ test('画布真实模型链路把 task_id 和轮询状态暴露给节点队列',
 })
 
 test('画布音频节点把同步提取结果写入节点成功结果', () => {
-  assert.match(runnerSource, /export async function runAudioStep\(sb, genOpts = \{\}\)/)
+  assert.match(runnerSource, /export async function runAudioStep\(sb, genOpts = \{\}, options = \{\}\)/)
+  assert.match(runnerSource, /const audioType = options\.audioType === 'narration' \? 'narration' : 'dialogue'/)
   assert.match(runnerSource, /const model = getStoryboardAudioModel\(sb, genOpts\)/)
-  assert.match(runnerSource, /const res = await request\.post\('\/audio\/extract', \{[\s\S]*tts_kind: 'dialogue',[\s\S]*tts_model: model \|\| undefined/)
+  assert.match(runnerSource, /const res = await request\.post\('\/audio\/extract', \{[\s\S]*tts_kind: audioType,[\s\S]*tts_model: model \|\| undefined/)
   assert.match(runnerSource, /resultUrl: res\?\.url \|\| ''/)
   assert.match(runnerSource, /resultLocalPath: res\?\.local_path \|\| ''/)
   assert.match(runnerSource, /resultType: 'audio'/)
