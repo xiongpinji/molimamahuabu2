@@ -44,7 +44,7 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "cn.molimama.shortdrama",
+    "appId": "com.localminidrama.desktop",
     "productName": "茉莉妈妈短剧制作平台",
     "copyright": "Copyright © 2026 茉莉妈妈",
     "artifactName": "茉莉妈妈短剧制作平台 ${version}.${ext}",
@@ -91,7 +91,8 @@
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
     },
     "portable": {
       "artifactName": "茉莉妈妈短剧制作平台 ${version} Portable.${ext}"

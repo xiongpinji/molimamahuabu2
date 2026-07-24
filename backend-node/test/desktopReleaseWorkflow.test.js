@@ -13,6 +13,10 @@ function readWorkflow(name) {
   return fs.readFileSync(path.join(root, '.github', 'workflows', name), 'utf8');
 }
 
+function readDesktopScript(name) {
+  return fs.readFileSync(path.join(root, 'desktop', 'scripts', name), 'utf8');
+}
+
 test('Windows 桌面包使用茉莉妈妈品牌元数据并保留资源编辑', () => {
   const packageJson = readDesktopPackage();
   const build = packageJson.build;
@@ -20,11 +24,12 @@ test('Windows 桌面包使用茉莉妈妈品牌元数据并保留资源编辑', 
   assert.equal(packageJson.name, 'molimama-short-drama-desktop');
   assert.equal(packageJson.description, '茉莉妈妈短剧制作平台桌面客户端');
   assert.equal(packageJson.author, '茉莉妈妈');
-  assert.equal(build.appId, 'cn.molimama.shortdrama');
+  assert.equal(build.appId, 'com.localminidrama.desktop');
   assert.equal(build.productName, '茉莉妈妈短剧制作平台');
   assert.equal(build.copyright, 'Copyright © 2026 茉莉妈妈');
   assert.equal(build.win.icon, 'build/icon.ico');
   assert.equal(build.win.signAndEditExecutable, true);
+  assert.equal(build.nsis.deleteAppDataOnUninstall, false);
   assert.match(build.nsis.artifactName, /^茉莉妈妈短剧制作平台 /);
   assert.match(build.portable.artifactName, /^茉莉妈妈短剧制作平台 /);
 });
@@ -55,8 +60,30 @@ test('PR 与主分支变更会构建明确未签名的 Windows 验证包', () =>
   assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY: ['"]false['"]/);
   assert.match(workflow, /SHA256SUMS\.txt/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.match(workflow, /validate-windows-installer\.ps1/);
   assert.doesNotMatch(workflow, /WIN_CSC_(?:LINK|KEY_PASSWORD)/);
   assert.doesNotMatch(workflow, /action-gh-release/);
+});
+
+test('Windows 安装器回归脚本覆盖安装、重复覆盖和卸载后数据保留', () => {
+  const script = readDesktopScript('validate-windows-installer.ps1');
+
+  assert.match(script, /Start-Process[\s\S]*\/S/);
+  assert.match(script, /Start-Process[\s\S]*\/D=/);
+  assert.ok((script.match(/Invoke-Installer/g) || []).length >= 3);
+  assert.match(script, /BaselineInstallerPath/);
+  assert.match(script, /firstInstaller/);
+  assert.match(script, /localminidrama-desktop/);
+  assert.match(script, /user-data-sentinel/);
+  assert.match(script, /Cover install removed user data/);
+  assert.match(script, /FileDescription/);
+  assert.match(script, /Uninstall.*\.exe/);
+  assert.match(script, /Wait-UntilMissing -Path \$uninstallerPath/);
+  assert.match(script, /Test-Path[\s\S]*userDataSentinel/);
+  assert.match(
+    script,
+    /finally[\s\S]*Test-Path -LiteralPath \$installDir[\s\S]*Invoke-Uninstaller/,
+  );
 });
 
 test('标签发布强制 Windows 签名、校验和与产物证明', () => {

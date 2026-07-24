@@ -77,6 +77,17 @@ jobs:
             }
           $checksums | Set-Content -Path desktop/release/SHA256SUMS.txt -Encoding utf8NoBOM
 
+      - name: Verify install, cover install, uninstall and user-data retention
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path desktop/release -Filter '* Setup.exe' |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw 'Missing NSIS installer'
+          }
+          & desktop/scripts/validate-windows-installer.ps1 `
+            -InstallerPath $installer.FullName
+
       - name: Upload Windows verification package
         uses: actions/upload-artifact@v4
         with:
