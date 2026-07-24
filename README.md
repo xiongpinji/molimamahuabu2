@@ -6,7 +6,7 @@
 
 *LocalMiniDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/releases)
+[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#-快速开始)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#-项目架构)
@@ -39,13 +39,13 @@
 
 ---
 
-## 📌 最新动态（v1.2.8）
+## 📌 最新动态（v1.2.9）
 
-- 🆕 **Agnes AI 接入**：文本 / 图片 / 视频一键配置，一个 Key 覆盖全流程
-- 🆕 **画布模式增强**：剧本节点、右键菜单、浮动工具栏、画布内新建/删除/整集生成
-- 🆕 **ModelArk 私有资产库**：SD2 角色认证对接火山方舟资产组，AK/SK 与 Bearer 双鉴权
-- 🔧 **图床可配置**：`upload_url` / 超时（默认 180s）/ 重试次数写入 `config.yaml`；缓存 URL 失效自动重传
-- 🔧 **提示词优化** · **分镜图片数量上限修复**
+- 🆕 **LibTV 风格画布闭环**：自由画布、项目画布、节点配置、运行队列、真实结果和素材回填统一
+- 🆕 **多模型与角色声线**：DeepWL Grok、iCreat Seedance、AIHubCC 图片/视频协议，支持分镜单镜模型与角色声线固化
+- 🆕 **公开平台管理**：多租户隔离、兑换码、积分计费、模型独立定价、管理员和对账能力
+- 🆕 **3D 导演台**：镜头序列、切点/转场、角色轨道、动作片段、保存恢复与导出
+- 🔒 **生产交付门禁**：预发布预检、数据库备份、依赖安全 CI、Windows 签名与安装升级回归
 
 完整记录 → **[CHANGELOG.md](CHANGELOG.md)**
 

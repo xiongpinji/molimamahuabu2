@@ -4,9 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..', '..');
+const expectedReleaseVersion = '1.2.9';
 
 function readDesktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(root, 'desktop', 'package.json'), 'utf8'));
+}
+
+function readJson(...segments) {
+  return JSON.parse(fs.readFileSync(path.join(root, ...segments), 'utf8'));
 }
 
 function readWorkflow(name) {
@@ -16,6 +21,17 @@ function readWorkflow(name) {
 function readDesktopScript(name) {
   return fs.readFileSync(path.join(root, 'desktop', 'scripts', name), 'utf8');
 }
+
+test('v1.2.9 发布版本在三端包、锁文件和变更记录中保持一致', () => {
+  for (const directory of ['frontweb', 'backend-node', 'desktop']) {
+    assert.equal(readJson(directory, 'package.json').version, expectedReleaseVersion);
+    assert.equal(readJson(directory, 'package-lock.json').version, expectedReleaseVersion);
+    assert.equal(readJson(directory, 'package-lock.json').packages[''].version, expectedReleaseVersion);
+  }
+
+  const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+  assert.match(changelog, /^## \[1\.2\.9\] - 2026-07-25$/m);
+});
 
 test('Windows 桌面包使用茉莉妈妈品牌元数据并保留资源编辑', () => {
   const packageJson = readDesktopPackage();

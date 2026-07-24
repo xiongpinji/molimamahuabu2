@@ -1,13 +1,16 @@
 # 茉莉妈妈短剧制作平台桌面客户端
 
-基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.8**
+基于 Electron 的本地桌面应用，内嵌 `backend-node` 与 `frontweb`，打包为 Windows exe / macOS dmg 后可直接运行。当前版本：**v1.2.9**
 
 ---
 
-## 主要功能（v1.2.8）
+## 主要功能（v1.2.9）
 
 | 模块 | 功能 |
 |------|------|
+| 画布工作区（v1.2.9） | 首页自由画布与项目画布统一交互；节点配置、真实生成、运行队列、结果入库、素材回填和失败重试闭环 |
+| 公开平台（v1.2.9） | 多租户隔离、管理员、兑换码、积分计费、模型独立定价、对账和租户控制台 |
+| 生产交付（v1.2.9） | 预发布预检、数据库备份、依赖安全门禁、Windows 签名、覆盖安装与用户数据保留回归 |
 | 画布模式（v1.2.8 增强） | 剧本节点、右键菜单、浮动工具栏；画布内新建/删除分镜/角色/场景/道具；节点内编辑与整集批量生成 |
 | Agnes AI（v1.2.8） | AI 配置页一键配置文本/图片/视频三类模型，一个 Key 覆盖全流程 |
 | ModelArk 私有资产库（v1.2.8） | SD2 角色认证对接火山方舟资产组；AK/SK 签名与 Bearer 双鉴权 |
@@ -103,7 +106,7 @@ PR 和主分支变更由 `Windows Desktop Build` 工作流生成明确未签名�
 ### 2. 从命令行运行（实时日志）
 
 ```powershell
-& "D:\path\to\release\茉莉妈妈短剧制作平台 1.2.8 Portable.exe"
+& "D:\path\to\release\茉莉妈妈短剧制作平台 1.2.9 Portable.exe"
 ```
 
 日志会直接打印在终端，操作软件时可实时看到所有输出。
@@ -112,7 +115,7 @@ PR 和主分支变更由 `Windows Desktop Build` 工作流生成明确未签名�
 
 ```powershell
 $env:LOCALMINIDRAMA_DEVTOOLS=1
-& "D:\path\to\release\茉莉妈妈短剧制作平台 1.2.8 Portable.exe"
+& "D:\path\to\release\茉莉妈妈短剧制作平台 1.2.9 Portable.exe"
 ```
 
 在 Network 面板查看各 API 请求（如 `POST /api/v1/generation/characters`）是否正常发出和返回。
