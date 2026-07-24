@@ -1,0 +1,53 @@
+name: Dependency Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-dependencies:
+    name: Production dependency gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            backend-node/package-lock.json
+            frontweb/package-lock.json
+            desktop/package-lock.json
+
+      - name: Verify backend lockfile
+        run: npm --prefix backend-node ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
+
+      - name: Audit backend production dependencies
+        run: npm --prefix backend-node audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+
+      - name: Verify frontend lockfile
+        # threepipe 锁定的 three 定制 tarball 不存在于 npm 官方仓库；npm 仍会校验 lockfile integrity。
+        run: npm --prefix frontweb ci --ignore-scripts --registry=https://registry.npmjs.org
+
+      - name: Audit frontend production dependencies
+        run: npm --prefix frontweb audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+
+      - name: Verify desktop lockfile
+        run: npm --prefix desktop ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
+
+      - name: Audit desktop production dependencies
+        run: npm --prefix desktop audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
