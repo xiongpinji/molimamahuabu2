@@ -35,3 +35,10 @@ test('前端 API 覆盖兑换和管理员控制接口', () => {
     assert.match(billingApi, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
 })
+
+test('未配置的默认模型首次保存时按启用状态提交', () => {
+  assert.match(
+    adminSource,
+    /status:\s*item\.status === 'unconfigured' \? 'enabled' : item\.status/,
+  )
+})

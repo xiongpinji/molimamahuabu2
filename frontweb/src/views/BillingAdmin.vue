@@ -234,7 +234,10 @@ async function loadAll() {
     listAdminTenants(),
     listAdminCreditTransactions(),
   ])
-  prices.value = modelRows
+  prices.value = modelRows.map((item) => ({
+    ...item,
+    status: item.status === 'unconfigured' ? 'enabled' : item.status,
+  }))
   codes.value = codeRows
   users.value = userRows
   tenants.value = tenantRows
@@ -261,7 +264,7 @@ async function saveModel(item) {
       credits: item.credits,
       display_name: item.display_name,
       category: item.category,
-      status: item.status,
+      status: item.status === 'unconfigured' ? 'enabled' : item.status,
     })
     Object.assign(item, saved)
     ElMessage.success(`${saved.display_name || saved.model} 已保存`)

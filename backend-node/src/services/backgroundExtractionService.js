@@ -3,7 +3,47 @@ const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const sceneService = require('./sceneService');
+const creditLedger = require('./creditLedgerService');
+const modelPrice = require('./modelPriceService');
+const auditEvent = require('./auditEventService');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
+
+function resolveBillingModel(db, requestedModel) {
+  const mapped = aiClient.getConfigFromModelMap(db, 'scene_extraction');
+  const config = mapped?.config
+    || (requestedModel
+      ? aiClient.getConfigForModel(db, 'text', requestedModel)
+      : aiClient.getDefaultConfig(db, 'text'));
+  if (!config) throw new Error('未配置场景提取文本模型');
+  return modelPrice.canonicalModel(
+    aiClient.getModelFromConfig(config, mapped?.modelOverride || requestedModel),
+  );
+}
+
+function settleBackgroundCredit(db, log, reservationId, outcome, message = '') {
+  if (!reservationId) return null;
+  try {
+    const settled = creditLedger.settleGeneration(db, reservationId, outcome, message);
+    auditEvent.record(db, {
+      userId: settled?.actor_user_id || settled?.user_id,
+      tenantId: settled?.tenant_id,
+      eventType: outcome === 'completed'
+        ? 'generation.background_extraction.completed'
+        : 'generation.background_extraction.failed',
+      resourceType: 'text',
+      resourceId: settled?.resource_id,
+      outcome: outcome === 'completed' ? 'success' : 'failed',
+      code: outcome === 'failed' ? 'BACKGROUND_EXTRACTION_FAILED' : null,
+    });
+    return settled;
+  } catch (error) {
+    log?.error?.('场景提取积分结算失败，保留原预扣状态', {
+      reservation_id: reservationId,
+      error: error.message,
+    });
+    return null;
+  }
+}
 
 function normalizeLanguage(language) {
   const lang = (language || '').toString().trim().toLowerCase();
@@ -57,7 +97,17 @@ async function extractBackgroundsFromScript(db, cfg, log, scriptContent, dramaId
   }));
 }
 
-async function processBackgroundExtraction(db, cfg, log, taskID, episodeId, model, style, language) {
+async function processBackgroundExtraction(
+  db,
+  cfg,
+  log,
+  taskID,
+  episodeId,
+  model,
+  style,
+  language,
+  billingReservationId,
+) {
   taskService.updateTaskStatus(db, taskID, 'processing', 0, '正在提取场景信息...');
   const episode = db.prepare('SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL').get(Number(episodeId));
   if (!episode) {
@@ -116,6 +166,7 @@ async function processBackgroundExtraction(db, cfg, log, taskID, episodeId, mode
   } catch (err) {
     log.error('Background extraction AI failed', { error: err.message, task_id: taskID });
     taskService.updateTaskStatus(db, taskID, 'failed', 0, 'AI提取场景失败: ' + err.message);
+    settleBackgroundCredit(db, log, billingReservationId, 'failed', err.message);
     return;
   }
   if (effectiveLanguage === 'zh') {
@@ -149,7 +200,7 @@ async function processBackgroundExtraction(db, cfg, log, taskID, episodeId, mode
       if (effectiveCfg) {
         const capturedStyle = style;
         setImmediate(() => {
-          sceneService.generateScenePromptOnly(db, log, effectiveCfg, scene.id, undefined, capturedStyle).catch((err) => {
+          sceneService.generateScenePromptOnly(db, log, effectiveCfg, scene.id, model, capturedStyle).catch((err) => {
             log.warn('[提取场景] 预生成polished_prompt失败', { scene_id: scene.id, error: err.message });
           });
         });
@@ -162,10 +213,11 @@ async function processBackgroundExtraction(db, cfg, log, taskID, episodeId, mode
     episode_id: episodeId,
     drama_id: episode.drama_id,
   });
+  settleBackgroundCredit(db, log, billingReservationId, 'completed');
   log.info('Background extraction completed', { task_id: taskID, episode_id: episodeId, count: scenes.length });
 }
 
-function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, language) {
+function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, language, options = {}) {
   const episode = db.prepare('SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL').get(Number(episodeId));
   if (!episode) throw new Error('episode not found');
   if (!episode.script_content || !String(episode.script_content).trim()) {
@@ -184,21 +236,74 @@ function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, lan
       }
     } catch (_) {}
   }
+  const billingEnabled = Boolean(options.billingEnabled);
+  const userId = options.userId ? String(options.userId) : '';
+  const tenantId = options.tenantId ? String(options.tenantId) : '';
+  if (billingEnabled && !userId) {
+    throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
+  }
+  const ownerClause = billingEnabled ? (tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?') : '';
   const existing = db.prepare(
     `SELECT id FROM async_tasks
      WHERE resource_id = ? AND type = 'background_extraction'
        AND status IN ('pending', 'processing') AND deleted_at IS NULL
+       ${ownerClause}
      ORDER BY created_at DESC LIMIT 1`
-  ).get(String(episodeId));
+  ).get(...(billingEnabled ? [String(episodeId), tenantId || userId] : [String(episodeId)]));
   if (existing) {
     log.info('Background extraction already running', { task_id: existing.id, episode_id: episodeId });
     return existing.id;
   }
 
   const task = taskService.createTask(db, log, 'background_extraction', String(episodeId));
+  let billingReservationId = null;
+  let billingModel = model;
+  if (billingEnabled) {
+    try {
+      billingModel = resolveBillingModel(db, model);
+      const amount = modelPrice.requirePrice(db, billingModel);
+      const reservation = creditLedger.reserve(db, {
+        tenantId,
+        actorUserId: userId,
+        userId,
+        operationKey: `background_extraction:${task.id}`,
+        model: billingModel,
+        resourceType: 'text',
+        resourceId: task.id,
+        amount,
+      });
+      billingReservationId = reservation.id;
+      db.prepare(`UPDATE async_tasks
+        SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ? WHERE id = ?`)
+        .run(tenantId || null, userId, billingModel, reservation.id, task.id);
+      auditEvent.record(db, {
+        userId,
+        tenantId,
+        eventType: 'generation.background_extraction.created',
+        resourceType: 'text',
+        resourceId: task.id,
+        outcome: 'success',
+        code: 'CREATED',
+      });
+    } catch (error) {
+      taskService.updateTaskError(db, task.id, error.message || '积分预扣失败');
+      throw error;
+    }
+  }
   setImmediate(() => {
-    processBackgroundExtraction(db, runCfg, log, task.id, episodeId, model, style, language).catch((err) => {
+    processBackgroundExtraction(
+      db,
+      runCfg,
+      log,
+      task.id,
+      episodeId,
+      billingModel,
+      style,
+      language,
+      billingReservationId,
+    ).catch((err) => {
       log.error('processBackgroundExtraction fatal', { error: err.message, task_id: task.id });
+      settleBackgroundCredit(db, log, billingReservationId, 'failed', err.message);
       taskService.updateTaskError(db, task.id, err.message || '场景提取失败');
     });
   });

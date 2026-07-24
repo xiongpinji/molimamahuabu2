@@ -700,6 +700,7 @@ module.exports = {
   getDefaultConfig,
   getConfigForModel,
   getConfigFromModelMap,
+  getModelFromConfig,
   generateText,
   streamGenerateText,
   generateTextWithVision,
