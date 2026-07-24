@@ -190,6 +190,7 @@ import { uploadAPI } from '@/api/upload'
 import { assetsAPI } from '@/api/assets'
 import { videosAPI } from '@/api/videos'
 import { dramaAPI } from '@/api/drama'
+import { buildAssetReusePayload } from '@/utils/assetReuse'
 import request from '@/utils/request'
 
 const route = useRoute()
@@ -374,11 +375,18 @@ async function onUseDramaChange(dramaId) {
 }
 
 async function submitUse() {
+  if (useSubmitting.value) return
   const item = useItem.value
   if (!item || !useDramaId.value) return
   if (needsStoryboard.value && !useStoryboardId.value) return
   useSubmitting.value = true
+  let reusedAsset = null
   try {
+    reusedAsset = await assetsAPI.create(buildAssetReusePayload(item, {
+      purpose: usePurpose.value,
+      dramaId: useDramaId.value,
+      storyboardId: useStoryboardId.value,
+    }))
     if (usePurpose.value === 'attach') {
       await videosAPI.attach({
         storyboard_id: useStoryboardId.value,
@@ -390,21 +398,23 @@ async function submitUse() {
       ElMessage.success('已设为该分镜成片，可到画布查看')
     } else if (usePurpose.value === 'audio') {
       const localPath = item.local_path || item.audio_local_path || item.voice_local_path || ''
-      await assetsAPI.update(item.id, { drama_id: useDramaId.value, storyboard_id: useStoryboardId.value })
       await request.put(`/storyboards/${useStoryboardId.value}`, {
         audio_local_path: localPath || undefined,
         audio_url: localPath ? undefined : itemUrl(item),
       })
       ElMessage.success('已设为该分镜音频，可到画布查看')
     } else if (usePurpose.value === 'reference') {
-      await assetsAPI.update(item.id, { drama_id: useDramaId.value, storyboard_id: useStoryboardId.value })
       ElMessage.success('已设为该分镜参考图，生图/生视频时自动带入')
     } else {
-      await assetsAPI.update(item.id, { drama_id: useDramaId.value, storyboard_id: null })
       ElMessage.success('已添加到项目，画布「项目截图」区可见')
     }
     useDialogVisible.value = false
   } catch (e) {
+    if (reusedAsset?.id) {
+      try {
+        await request.delete(`/assets/${reusedAsset.id}`, { silentError: true })
+      } catch (_) {}
+    }
     ElMessage.error(e?.message || '操作失败')
   } finally {
     useSubmitting.value = false
