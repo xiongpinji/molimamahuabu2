@@ -42,10 +42,11 @@ function createDrama(db, log, req) {
   }
   const metadataStr = Object.keys(meta).length ? JSON.stringify(meta) : null;
   const stmt = db.prepare(`
-    INSERT INTO dramas (user_id, title, description, genre, style, metadata, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+    INSERT INTO dramas (tenant_id, user_id, title, description, genre, style, metadata, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
   `);
   const info = stmt.run(
+    req.tenant_id || req.tenantId || null,
     req.user_id || req.userId || null,
     req.title || '',
     req.description || null,
@@ -57,19 +58,22 @@ function createDrama(db, log, req) {
   );
   const id = info.lastInsertRowid;
   log.info('Drama created', { drama_id: id });
-  return getDramaById(db, id, req.user_id || req.userId);
+  return getDramaById(db, id, req.user_id || req.userId, req.tenant_id || req.tenantId);
 }
 
-function getDramaById(db, id, userId) {
-  const sql = userId == null
-    ? 'SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL'
-    : 'SELECT * FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL';
-  const row = db.prepare(sql).get(...(userId == null ? [id] : [id, userId]));
+function getDramaById(db, id, userId, tenantId) {
+  const sql = tenantId != null
+    ? 'SELECT * FROM dramas WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
+    : userId == null
+      ? 'SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL'
+      : 'SELECT * FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL';
+  const params = tenantId != null ? [id, tenantId] : userId == null ? [id] : [id, userId];
+  const row = db.prepare(sql).get(...params);
   return row ? rowToDrama(row) : null;
 }
 
-function getDrama(db, dramaId, baseUrl, userId) {
-  const drama = getDramaById(db, Number(dramaId), userId);
+function getDrama(db, dramaId, baseUrl, userId, tenantId) {
+  const drama = getDramaById(db, Number(dramaId), userId, tenantId);
   if (!drama) return null;
   // 加载 episodes、characters、scenes、props、storyboards（简化：只查当前 drama 的）
   const episodes = db.prepare(
@@ -171,7 +175,10 @@ function getDrama(db, dramaId, baseUrl, userId) {
 function listDramas(db, query) {
   let sql = 'FROM dramas WHERE deleted_at IS NULL';
   const params = [];
-  if (query.userId != null) {
+  if (query.tenantId != null) {
+    sql += ' AND tenant_id = ?';
+    params.push(query.tenantId);
+  } else if (query.userId != null) {
     sql += ' AND user_id = ?';
     params.push(query.userId);
   }
@@ -231,8 +238,8 @@ function listDramas(db, query) {
   return { dramas, total, page, pageSize };
 }
 
-function updateDrama(db, log, dramaId, req, userId) {
-  const drama = getDramaById(db, Number(dramaId), userId);
+function updateDrama(db, log, dramaId, req, userId, tenantId) {
+  const drama = getDramaById(db, Number(dramaId), userId, tenantId);
   if (!drama) return null;
   const updates = [];
   const params = [];
@@ -258,7 +265,7 @@ function updateDrama(db, log, dramaId, req, userId) {
     'UPDATE dramas SET ' + updates.join(', ') + ', updated_at = ? WHERE id = ?'
   ).run(...params);
   log.info('Drama updated', { drama_id: dramaId });
-  return getDramaById(db, dramaId, userId);
+  return getDramaById(db, dramaId, userId, tenantId);
 }
 
 function generateStoryboard(db, log, episodeId, options) {
@@ -281,22 +288,26 @@ function generateStoryboard(db, log, episodeId, options) {
   );
 }
 
-function deleteDrama(db, log, dramaId, userId) {
-  const sql = userId == null
+function deleteDrama(db, log, dramaId, userId, tenantId) {
+  const sql = tenantId != null
+    ? 'UPDATE dramas SET deleted_at = ? WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
+    : userId == null
     ? 'UPDATE dramas SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'
     : 'UPDATE dramas SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL';
-  const params = userId == null
-    ? [new Date().toISOString(), Number(dramaId)]
-    : [new Date().toISOString(), Number(dramaId), userId];
+  const params = tenantId != null
+    ? [new Date().toISOString(), Number(dramaId), tenantId]
+    : userId == null
+      ? [new Date().toISOString(), Number(dramaId)]
+      : [new Date().toISOString(), Number(dramaId), userId];
   const result = db.prepare(sql).run(...params);
   if (result.changes === 0) return false;
   log.info('Drama deleted', { drama_id: dramaId });
   return true;
 }
 
-function getDramaStats(db, userId) {
-  const suffix = userId == null ? '' : ' AND user_id = ?';
-  const params = userId == null ? [] : [userId];
+function getDramaStats(db, userId, tenantId) {
+  const suffix = tenantId != null ? ' AND tenant_id = ?' : userId == null ? '' : ' AND user_id = ?';
+  const params = tenantId != null ? [tenantId] : userId == null ? [] : [userId];
   const total = db.prepare('SELECT COUNT(*) as c FROM dramas WHERE deleted_at IS NULL' + suffix).get(...params).c;
   const byStatus = db.prepare(
     'SELECT status, COUNT(*) as count FROM dramas WHERE deleted_at IS NULL' + suffix + ' GROUP BY status'

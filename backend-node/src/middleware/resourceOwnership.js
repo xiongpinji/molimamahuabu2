@@ -39,9 +39,29 @@ function resolveDramaId(db, req) {
     if (dramaId) return { dramaId };
     return episodeId ? { dramaId: lookup(db, 'SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL', episodeId) } : { skip: true };
   }
-  if (root === 'characters' && first) return { dramaId: lookup(db, 'SELECT drama_id FROM characters WHERE id = ? AND deleted_at IS NULL', first) };
+  if (root === 'characters') {
+    if (parts[1] === 'batch-generate-images') {
+      const ids = Array.isArray(body.character_ids) ? body.character_ids.map(numericId).filter(Boolean) : [];
+      if (ids.length === 0) return { skip: true };
+      return {
+        dramaIds: ids.map((id) => lookup(
+          db,
+          'SELECT drama_id FROM characters WHERE id = ? AND deleted_at IS NULL',
+          id,
+        )),
+      };
+    }
+    if (first) return { dramaId: lookup(db, 'SELECT drama_id FROM characters WHERE id = ? AND deleted_at IS NULL', first) };
+    return relationFromInput(db, body, query);
+  }
   if (root === 'scenes') {
-    if (parts[1] === 'generate-image' || !first) return { skip: true };
+    if (parts[1] === 'generate-image') {
+      const sceneId = numericId(body.scene_id || query.scene_id);
+      return sceneId
+        ? { dramaId: lookup(db, 'SELECT drama_id FROM scenes WHERE id = ? AND deleted_at IS NULL', sceneId) }
+        : { skip: true };
+    }
+    if (!first) return relationFromInput(db, body, query);
     return { dramaId: lookup(db, 'SELECT drama_id FROM scenes WHERE id = ? AND deleted_at IS NULL', first) };
   }
   if (root === 'props') {
@@ -109,9 +129,10 @@ function relationFromInput(db, body, query) {
   return { skip: true };
 }
 
-function taskOwnedByUser(db, taskId, userId) {
-  const task = db.prepare('SELECT id, type, resource_id, user_id FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(taskId);
+function taskOwnedByUser(db, taskId, userId, tenantId) {
+  const task = db.prepare('SELECT id, type, resource_id, user_id, tenant_id FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(taskId);
   if (!task) return false;
+  if (tenantId && task.tenant_id != null) return task.tenant_id === tenantId;
   if (task.user_id != null) return task.user_id === userId;
   const resource = String(task.resource_id || '');
   let dramaId = null;
@@ -132,6 +153,9 @@ function taskOwnedByUser(db, taskId, userId) {
     dramaId = numericId(resource);
   }
   if (!dramaId) return false;
+  if (tenantId) {
+    return Boolean(db.prepare('SELECT id FROM dramas WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(dramaId, tenantId));
+  }
   return Boolean(db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(dramaId, userId));
 }
 
@@ -141,11 +165,23 @@ function createResourceOwnershipMiddleware({ db, enabled } = {}) {
     const resolved = resolveDramaId(db, req);
     if (resolved.skip) return next();
     if (resolved.taskId) {
-      if (!taskOwnedByUser(db, resolved.taskId, req.user?.id)) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
+      if (!taskOwnedByUser(db, resolved.taskId, req.user?.id, req.tenant?.id)) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
+      return next();
+    }
+    if (resolved.dramaIds) {
+      const allOwned = resolved.dramaIds.length > 0 && resolved.dramaIds.every((dramaId) => {
+        if (!dramaId) return false;
+        return req.tenant?.id
+          ? Boolean(db.prepare('SELECT id FROM dramas WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(dramaId, req.tenant.id))
+          : Boolean(db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(dramaId, req.user?.id));
+      });
+      if (!allOwned) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
       return next();
     }
     if (!resolved.dramaId) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
-    const owned = db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(resolved.dramaId, req.user?.id);
+    const owned = req.tenant?.id
+      ? db.prepare('SELECT id FROM dramas WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(resolved.dramaId, req.tenant.id)
+      : db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(resolved.dramaId, req.user?.id);
     if (!owned) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
     req.ownerDramaId = owned.id;
     return next();
@@ -175,7 +211,16 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     if (!project) return res.status(404).end();
     const dramaId = Number(project[1]);
-    const owned = db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(dramaId, user.id);
+    const tenantService = require('../services/tenantService');
+    const tenant = tenantService.resolveForUser(
+      db,
+      user.id,
+      req.get('x-tenant-id') || req.query?.tenant_id || null,
+    );
+    if (!tenant) return res.status(404).end();
+    const owned = db.prepare(`SELECT id FROM dramas
+      WHERE id = ? AND deleted_at IS NULL
+        AND (tenant_id = ? OR (tenant_id IS NULL AND user_id = ?))`).get(dramaId, tenant.id, user.id);
     if (!owned) return res.status(404).end();
     req.user = user;
     return next();

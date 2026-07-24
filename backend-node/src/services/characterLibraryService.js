@@ -599,6 +599,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
     user_negative_prompt: userNeg || undefined,
     billingEnabled: Boolean(options.billingEnabled),
     userId: options.userId,
+    tenantId: options.tenantId,
   });
 
   log.info('[四视图] Step2 图片生成任务已提交', { character_id: characterId, image_gen_id: imageGen?.id });

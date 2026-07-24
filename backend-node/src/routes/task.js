@@ -14,7 +14,10 @@ function getResourceTasks(db, log) {
     const resourceId = req.query.resource_id;
     if (!resourceId) return response.badRequest(res, '缺少resource_id参数');
     try {
-      const tasks = taskService.getTasksByResource(db, resourceId);
+      const tasks = taskService.getTasksByResource(db, resourceId, {
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+      });
       response.success(res, tasks);
     } catch (err) {
       log.errorw('Get resource tasks failed', { error: err.message });

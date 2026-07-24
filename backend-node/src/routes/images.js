@@ -8,7 +8,11 @@ function routes(db, cfg, log, options = {}) {
     list: (req, res) => {
       try {
         const query = { ...req.query };
-        const { items, total, page, pageSize } = imageService.list(db, query, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const { items, total, page, pageSize } = imageService.list(db, query, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         response.successWithPagination(res, items, total, page, pageSize);
       } catch (err) {
         log.error('images list', { error: err.message });
@@ -21,6 +25,7 @@ function routes(db, cfg, log, options = {}) {
         const rec = imageService.create(db, log, body, {
           billingEnabled: options.billingEnabled,
           userId: req.user?.id,
+          tenantId: req.tenant?.id,
           schedule: options.schedule,
         });
         response.created(res, rec);
@@ -40,7 +45,11 @@ function routes(db, cfg, log, options = {}) {
     },
     get: (req, res) => {
       try {
-        const item = imageService.getById(db, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const item = imageService.getById(db, req.params.id, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         if (!item) return response.notFound(res, '记录不存在');
         response.success(res, item);
       } catch (err) {
@@ -50,7 +59,11 @@ function routes(db, cfg, log, options = {}) {
     },
     delete: (req, res) => {
       try {
-        const ok = imageService.deleteById(db, log, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const ok = imageService.deleteById(db, log, req.params.id, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         if (!ok) return response.notFound(res, '记录不存在');
         response.success(res, { message: '删除成功' });
       } catch (err) {

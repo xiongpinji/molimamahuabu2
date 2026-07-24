@@ -1762,9 +1762,13 @@ async function callImageApi(db, log, opts) {
  * 创建 image_generation 记录并异步调用 API，完成后更新记录与角色 image_url。
  * 与场景图一致：创建 task 并写入 task_id，便于前端轮询 /tasks/:task_id 获知完成或报错。
  */
-function findActiveAssetImage(db, characterId, sceneId, userId = null, imageType = null) {
-  const ownerClause = userId == null ? '' : ' AND user_id = ?';
-  const ownerValue = userId == null ? [] : [String(userId)];
+function findActiveAssetImage(db, characterId, sceneId, options = {}, imageType = null) {
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const ownerValue = options.billingEnabled
+    ? [String(options.tenantId || options.userId || '')]
+    : [];
   const typeClause = imageType ? ' AND image_type = ?' : '';
   const typeValue = imageType ? [String(imageType)] : [];
   if (characterId != null) {
@@ -1807,6 +1811,7 @@ function createAndGenerateImage(db, log, opts) {
     user_negative_prompt,
     billingEnabled = false,
     userId,
+    tenantId,
     schedule,
   } = opts;
   const imageType = String(image_type || '').trim() || null;
@@ -1828,11 +1833,16 @@ function createAndGenerateImage(db, log, opts) {
     billedModel = modelPriceService.canonicalModel(model || '');
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
-  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null, imageType);
+  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, {
+    billingEnabled,
+    userId,
+    tenantId,
+  }, imageType);
   if (active) {
     if (billingEnabled) {
       auditEvent.record(db, {
         userId,
+        tenantId,
         eventType: 'generation.image.reused',
         resourceType: 'image',
         resourceId: active.id,
@@ -1850,15 +1860,21 @@ function createAndGenerateImage(db, log, opts) {
   const created = db.transaction(() => {
     const task = taskService.createTask(db, log, 'image_generation', resourceId);
     const taskId = task.id;
-    const billingColumns = billingEnabled ? ', user_id, credit_reservation_id' : '';
-    const billingValues = billingEnabled ? ', ?, NULL' : '';
+    if (billingEnabled && tenantId) {
+      db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
+        .run(String(tenantId), String(userId), taskId);
+    }
+    const billingColumns = billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
+    const billingValues = billingEnabled ? ', ?, ?, NULL' : '';
     const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
     const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
-    if (billingEnabled) values.push(String(userId));
+    if (billingEnabled) values.push(tenantId ? String(tenantId) : null, String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
     if (billingEnabled) {
       const reservation = creditLedger.reserve(db, {
+        tenantId,
+        actorUserId: userId,
         userId,
         operationKey: 'image:' + imageGenId,
         amount: billedCredits,
@@ -1869,6 +1885,7 @@ function createAndGenerateImage(db, log, opts) {
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, imageGenId);
       auditEvent.record(db, {
         userId,
+        tenantId,
         eventType: 'generation.image.created',
         resourceType: 'image',
         resourceId: imageGenId,

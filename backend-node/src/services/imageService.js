@@ -2,8 +2,8 @@ function list(db, query, options = {}) {
   let sql = 'FROM image_generations WHERE deleted_at IS NULL';
   const params = [];
   if (options.billingEnabled) {
-    sql += ' AND user_id = ?';
-    params.push(options.userId || '');
+    sql += options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?';
+    params.push(options.tenantId || options.userId || '');
   }
   if (query.drama_id) {
     sql += ' AND drama_id = ?';
@@ -53,8 +53,12 @@ function rowToItem(r) {
 }
 
 function getById(db, id, options = {}) {
-  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
-  const params = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const params = options.billingEnabled
+    ? [Number(id), options.tenantId || options.userId || '']
+    : [Number(id)];
   const r = db.prepare('SELECT * FROM image_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...params);
   return r ? rowToItem(r) : null;
 }
@@ -671,23 +675,30 @@ function mergePromptWithStyle(prompt, style) {
   return base + ', ' + styleText;
 }
 
-function findActiveForTarget(db, storyboardId, frameType) {
+function findActiveForTarget(db, storyboardId, frameType, options = {}) {
   if (!storyboardId) return null;
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const ownerParams = options.billingEnabled
+    ? [options.tenantId || options.userId || '']
+    : [];
   return db.prepare(
     `SELECT * FROM image_generations
      WHERE storyboard_id = ?
        AND (frame_type = ? OR (frame_type IS NULL AND ? IS NULL))
        AND status IN ('pending', 'processing')
        AND deleted_at IS NULL
+       ${ownerClause}
      ORDER BY created_at DESC, id DESC
      LIMIT 1`
-  ).get(Number(storyboardId), frameType ?? null, frameType ?? null) || null;
+  ).get(Number(storyboardId), frameType ?? null, frameType ?? null, ...ownerParams) || null;
 }
 
 function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const frameType = req.frame_type ?? null;
-  const active = findActiveForTarget(db, req.storyboard_id, frameType);
+  const active = findActiveForTarget(db, req.storyboard_id, frameType, options);
   if (active) {
     log.info('Duplicate image generation prevented', {
       storyboard_id: req.storyboard_id,
@@ -697,6 +708,7 @@ function create(db, log, req, options = {}) {
     if (options.billingEnabled) {
       auditEvent.record(db, {
         userId: options.userId,
+        tenantId: options.tenantId,
         eventType: 'generation.image.reused',
         resourceType: 'image',
         resourceId: active.id,
@@ -743,14 +755,18 @@ function create(db, log, req, options = {}) {
   const created = db.transaction(() => {
     const task = taskService.createTask(db, log, 'image_generation', String(req.drama_id || ''));
     const taskId = task.id;
-    const billingColumns = options.billingEnabled ? ', user_id, credit_reservation_id' : '';
-    const billingValues = options.billingEnabled ? ', ?, NULL' : '';
+    if (options.billingEnabled && options.tenantId) {
+      db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
+        .run(options.tenantId, options.userId, taskId);
+    }
+    const billingColumns = options.billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
+    const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
       req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId, req.provider || 'openai',
       mergedPrompt, req.negative_prompt ?? null, billedModel || req.model || null, frameType,
       refImagesJson, useFirstFrameLayoutLock, reqSize, taskId, now, now,
     ];
-    if (options.billingEnabled) params.push(String(options.userId));
+    if (options.billingEnabled) params.push(options.tenantId || null, String(options.userId));
     const info = db.prepare(
       `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at${billingColumns})
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
@@ -760,6 +776,8 @@ function create(db, log, req, options = {}) {
     if (options.billingEnabled) {
       const creditLedger = require('./creditLedgerService');
       const reservation = creditLedger.reserve(db, {
+        tenantId: options.tenantId,
+        actorUserId: options.userId,
         userId: options.userId,
         operationKey: `image:${imageGenId}`,
         amount: billedCredits,
@@ -771,6 +789,7 @@ function create(db, log, req, options = {}) {
         .run(reservation.id, imageGenId);
       auditEvent.record(db, {
         userId: options.userId,
+        tenantId: options.tenantId,
         eventType: 'generation.image.created',
         resourceType: 'image',
         resourceId: imageGenId,
@@ -1821,8 +1840,12 @@ async function processImageGeneration(db, log, imageGenId) {
 function deleteById(db, log, id, options = {}) {
   const numId = Number(id);
   const now = new Date().toISOString();
-  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
-  const ownerParams = options.billingEnabled ? [numId, options.userId || ''] : [numId];
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const ownerParams = options.billingEnabled
+    ? [numId, options.tenantId || options.userId || '']
+    : [numId];
   // 若该图当前绑定为某分镜的首/尾帧，解除绑定（避免悬空引用）
   try {
     const row = db.prepare('SELECT storyboard_id FROM image_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...ownerParams);
