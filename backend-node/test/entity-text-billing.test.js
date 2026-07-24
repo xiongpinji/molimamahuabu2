@@ -130,6 +130,73 @@ test('角色提示词模型未定价时返回 503 且不调用服务', async (t)
   assert.equal(calls, 0);
 });
 
+test('角色身份锚点模型未定价时返回 503 且不调用 AI', async (t) => {
+  const { db, characterId } = setup({ withPrice: false });
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    calls += 1;
+    return '{}';
+  };
+  const { res, result } = capture();
+
+  await characterRoutes(db, {}, log, null, { billingEnabled: true })
+    .extractAnchors(request(characterId), res);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.error.code, 'MODEL_PRICE_NOT_CONFIGURED');
+  assert.equal(calls, 0);
+});
+
+test('角色身份锚点提炼成功后确认文本模型积分', async (t) => {
+  const { db, characterId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return JSON.stringify({
+      color_anchors: { hair: '#111111', clothing: '#f6a5b5' },
+      face: '圆脸',
+    });
+  };
+  const { res, result } = capture();
+
+  await characterRoutes(db, {}, log, null, { billingEnabled: true })
+    .extractAnchors(request(characterId), res);
+
+  assert.equal(result.status, 200);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'character_identity_anchors' AND resource_id = ?`,
+  ).get(String(characterId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(reservation.model, 'GPT-5.5');
+  assert.ok(db.prepare('SELECT identity_anchors FROM characters WHERE id = ?').get(characterId).identity_anchors);
+});
+
+test('角色身份锚点提炼失败时退款并返回可见错误', async (t) => {
+  const { db, characterId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    throw new Error('锚点供应商失败');
+  };
+  const { res, result } = capture();
+
+  await characterRoutes(db, {}, log, null, { billingEnabled: true })
+    .extractAnchors(request(characterId), res);
+
+  assert.equal(result.status, 500);
+  assert.match(result.body.error.message, /锚点供应商失败/);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'character_identity_anchors' AND resource_id = ?`,
+  ).get(String(characterId));
+  assert.equal(reservation.status, 'refunded');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 30);
+});
+
 test('道具视觉提取失败时退回文本模型预扣积分', async (t) => {
   const { db, propId } = setup();
   const original = propService.extractPropFromImage;
@@ -356,6 +423,47 @@ test('剧集道具异步提取成功后确认积分', async (t) => {
   ).get(task.credit_reservation_id);
   assert.equal(reservation.status, 'confirmed');
   assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('道具提取缺少图片提示词时按第二次实际模型调用独立计费', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    calls += 1;
+    assert.equal(options.model, 'GPT-5.5');
+    return calls === 1
+      ? JSON.stringify([{
+        name: '刻纹木牌',
+        type: '线索',
+        description: '一块刻有纹路的旧木牌',
+      }])
+      : 'an old carved wooden tablet';
+  };
+
+  const taskId = propExtractionService.extractPropsForEpisode(
+    db,
+    log,
+    episodeId,
+    {},
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      model: 'GPT-5.5',
+    },
+  );
+
+  const task = await waitForTask(db, taskId);
+  assert.equal(task.status, 'completed');
+  assert.equal(calls, 2);
+  const reservations = db.prepare(
+    "SELECT * FROM tenant_usage_reservations WHERE resource_type IN ('episode_props', 'prop_prompt')",
+  ).all();
+  assert.equal(reservations.length, 2);
+  assert.ok(reservations.every((item) => item.status === 'confirmed'));
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
 });
 
 test('剧集道具异步提取失败后退款', async (t) => {

@@ -3,8 +3,8 @@ const modelPrice = require('../services/modelPriceService');
 const creditLedger = require('../services/creditLedgerService');
 const auditEvents = require('../services/auditEventService');
 const subscriptions = require('../services/subscriptionBillingService');
-const redeemCodes = require('../services/redeemCodeService');
-const platformAdmin = require('../services/platformAdminService');
+const redeemCodes = require('../services/redeem-code-service');
+const platformAdmin = require('../services/platform-admin-service');
 
 function routes(db, log) {
   return {

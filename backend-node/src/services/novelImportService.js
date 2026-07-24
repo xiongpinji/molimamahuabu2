@@ -3,6 +3,7 @@
  * 功能：上传 txt/docx 内容 → AI 识别章节分割 → 自动填充各集剧本
  */
 const aiClient = require('./aiClient');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { safeParseAIJSON } = require('../utils/safeJson');
 
 /**
@@ -50,7 +51,7 @@ function detectChaptersByRules(text) {
 /**
  * 用 AI 将章节内容摘要为剧本形式
  */
-async function summarizeChapterToScript(db, log, chapterTitle, chapterContent, dramaTitle) {
+async function summarizeChapterToScript(db, log, chapterTitle, chapterContent, dramaTitle, options = {}) {
   const maxLen = 2000;
   const truncated = chapterContent.length > maxLen ? chapterContent.slice(0, maxLen) + '...' : chapterContent;
   const userPrompt = `小说名称：${dramaTitle || '未知'}
@@ -61,14 +62,29 @@ ${truncated}
 
 请将上述章节内容改写为短剧剧本格式，包含：场景描述、角色对话、动作说明。输出为中文纯文本，不需要 JSON 格式，长度200-500字。`;
 
+  const billing = textGenerationBilling.begin(db, {
+    enabled: Boolean(options.billingEnabled),
+    tenantId: options.tenantId,
+    userId: options.userId,
+    requestedModel: options.model || undefined,
+    sceneKey: 'novel_import',
+    resourceType: 'novel_chapter',
+    resourceId: options.resourceId,
+    operation: 'novel_import_chapter',
+  });
   try {
     const result = await aiClient.generateText(db, log, 'text', userPrompt, null, {
       scene_key: 'novel_import',
+      model: billing.model || options.model || undefined,
       max_tokens: 800,
       temperature: 0.7,
     });
-    return result || chapterContent.slice(0, 500);
+    if (!result || !String(result).trim()) throw new Error('AI 改写章节返回空内容');
+    textGenerationBilling.settle(db, log, billing, 'completed');
+    return result;
   } catch (err) {
+    textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+    if (options.billingEnabled) throw err;
     log.warn('[小说导入] AI改写章节失败，使用原文截断', { error: err.message });
     return chapterContent.slice(0, 500);
   }
@@ -78,7 +94,16 @@ ${truncated}
  * 主入口：解析小说文本，返回章节列表
  * @returns {{ chapters: Array<{title, content, script}> }}
  */
-async function importNovel(db, log, { text, title, maxChapters, aiSummarize }) {
+async function importNovel(db, log, {
+  text,
+  title,
+  maxChapters,
+  aiSummarize,
+  model,
+  billingEnabled,
+  tenantId,
+  userId,
+}) {
   if (!text || !text.trim()) throw new Error('小说内容不能为空');
 
   const chapters = detectChaptersByRules(text);
@@ -94,7 +119,13 @@ async function importNovel(db, log, { text, title, maxChapters, aiSummarize }) {
     const ch = chapters[i];
     let script = ch.content;
     if (aiSummarize) {
-      script = await summarizeChapterToScript(db, log, ch.title, ch.content, title);
+      script = await summarizeChapterToScript(db, log, ch.title, ch.content, title, {
+        model,
+        billingEnabled,
+        tenantId,
+        userId,
+        resourceId: `${title || 'novel'}:${i + 1}`,
+      });
     }
     result.push({
       index: i + 1,

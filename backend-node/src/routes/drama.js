@@ -3,7 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function createDrama(db, log) {
   return (req, res) => {

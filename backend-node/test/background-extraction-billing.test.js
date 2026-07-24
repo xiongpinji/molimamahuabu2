@@ -157,3 +157,43 @@ test('场景提取供应商明确失败时退回预扣积分', async (t) => {
     tenant_id: 'tenant-a', available: 20, held: 0, spent: 0,
   });
 });
+
+test('场景提取后的英文提示词翻译按第二次模型调用独立计费', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    calls += 1;
+    assert.equal(options.model, 'GPT-5.5');
+    if (calls === 1) {
+      return JSON.stringify([{
+        location: '庭院',
+        time: '清晨',
+        prompt: 'rainy courtyard, cinematic lighting',
+      }]);
+    }
+    return '雨后庭院，电影感光线';
+  };
+
+  const taskId = backgroundExtraction.extractBackgroundsForEpisode(
+    db,
+    {},
+    log,
+    episodeId,
+    'GPT-5.5',
+    '',
+    'zh',
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+
+  assert.equal((await waitForTask(db, taskId)).status, 'completed');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 2);
+  const reservations = db.prepare(
+    "SELECT * FROM tenant_usage_reservations WHERE resource_type IN ('text', 'background_translation')",
+  ).all();
+  assert.equal(reservations.length, 2);
+  assert.ok(reservations.every((item) => item.status === 'confirmed'));
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
+});

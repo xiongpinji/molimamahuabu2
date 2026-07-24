@@ -7,7 +7,7 @@ const auditEvent = require('../services/auditEventService');
 const creditLedger = require('../services/creditLedgerService');
 const modelPrice = require('../services/modelPriceService');
 const { randomUUID } = require('crypto');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function resolveTextModel(db, requestedModel) {
   const config = requestedModel

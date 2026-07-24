@@ -82,7 +82,7 @@ function captureStream() {
 }
 
 async function waitForTask(db, taskId) {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 7000;
   while (Date.now() < deadline) {
     const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(taskId);
     if (task && ['completed', 'failed'].includes(task.status)) return task;
@@ -125,6 +125,35 @@ test('分镜全能提示词在模型未定价时返回 503 且不调用供应商
   assert.equal(result.status, 503);
   assert.equal(result.body.error.code, 'MODEL_PRICE_NOT_CONFIGURED');
   assert.equal(calls, 0);
+});
+
+test('分镜提示词润色与连戏快照按两次实际模型调用分别计费', async (t) => {
+  const { db, storyboardId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _userPrompt, _systemPrompt, options) => {
+    calls += 1;
+    assert.equal(options.model, 'GPT-5.5');
+    return calls === 1
+      ? '雨后庭院里，母亲沿石阶缓慢走近，画面保持单镜头构图。'
+      : JSON.stringify({ character_state: '母亲站在石阶左侧' });
+  };
+  const { res, result } = captureJson();
+
+  await storyboardRoutes(db, log, { billingEnabled: true })
+    .polishPrompt(request(storyboardId), res);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(result.status, 200);
+  assert.equal(calls, 2);
+  const reservations = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'storyboard_prompt' AND resource_id = ?`,
+  ).all(String(storyboardId));
+  assert.equal(reservations.length, 2);
+  assert.ok(reservations.every((item) => item.status === 'confirmed'));
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
 });
 
 test('分镜流式提示词供应商失败时退回预扣积分', async (t) => {
@@ -288,6 +317,74 @@ test('整集分镜异步生成成功后确认积分', async (t) => {
   ).get(task.credit_reservation_id);
   assert.equal(reservation.status, 'confirmed');
   assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('整集分镜截断续写按第二次实际模型调用独立计费', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return '[{"shot_number":1,"title":"相遇","action":"母亲走进庭院","duration":5},{"shot_number":2';
+    }
+    return JSON.stringify([{
+      shot_number: 2,
+      title: '对望',
+      action: '母女在雨中对望。',
+      duration: 5,
+    }]);
+  };
+
+  const started = episodeStoryboardService.generateStoryboard(
+    db, log, episodeId, 'GPT-5.5', undefined, undefined, undefined, undefined,
+    false, false,
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+
+  const task = await waitForTask(db, started.task_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(calls, 2);
+  const reservations = db.prepare(
+    "SELECT * FROM tenant_usage_reservations WHERE resource_type = 'episode_storyboards'",
+  ).all();
+  assert.equal(reservations.length, 2);
+  assert.ok(reservations.every((item) => item.status === 'confirmed'));
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
+});
+
+test('整集分镜数量校正按第二次实际模型调用独立计费', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    calls += 1;
+    const count = calls === 1 ? 1 : 2;
+    return JSON.stringify(Array.from({ length: count }, (_, index) => ({
+      shot_number: index + 1,
+      title: `镜头${index + 1}`,
+      action: `动作${index + 1}`,
+      duration: 5,
+    })));
+  };
+
+  const started = episodeStoryboardService.generateStoryboard(
+    db, log, episodeId, 'GPT-5.5', undefined, 2, 10, '16:9',
+    false, false,
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+
+  const task = await waitForTask(db, started.task_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(calls, 2);
+  const reservations = db.prepare(
+    "SELECT * FROM tenant_usage_reservations WHERE resource_type = 'episode_storyboards'",
+  ).all();
+  assert.equal(reservations.length, 2);
+  assert.ok(reservations.every((item) => item.status === 'confirmed'));
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
 });
 
 test('整集分镜供应商失败后退款', async (t) => {

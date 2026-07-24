@@ -6,6 +6,7 @@ const sceneService = require('./sceneService');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
 function resolveBillingModel(db, requestedModel) {
@@ -107,6 +108,7 @@ async function processBackgroundExtraction(
   style,
   language,
   billingReservationId,
+  options = {},
 ) {
   taskService.updateTaskStatus(db, taskID, 'processing', 0, '正在提取场景信息...');
   const episode = db.prepare('SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL').get(Number(episodeId));
@@ -171,14 +173,27 @@ async function processBackgroundExtraction(
   }
   if (effectiveLanguage === 'zh') {
     const translated = await Promise.all(
-      (backgroundsInfo || []).map(async (bg) => {
+      (backgroundsInfo || []).map(async (bg, index) => {
         const original = (bg.prompt || '').toString().trim();
         if (!original || hasChinese(original)) return bg;
+        let translationBilling = null;
         try {
-          const translatedPrompt = await translatePromptToChinese(db, log, model, original);
-          if (!translatedPrompt) return bg;
+          translationBilling = textGenerationBilling.begin(db, {
+            enabled: Boolean(options.billingEnabled),
+            tenantId: options.tenantId,
+            userId: options.userId,
+            requestedModel: model,
+            sceneKey: 'scene_extraction',
+            resourceType: 'background_translation',
+            resourceId: `${taskID}:${index}`,
+            operation: 'background_prompt_translation',
+          });
+          const translatedPrompt = await translatePromptToChinese(db, log, translationBilling.model, original);
+          if (!translatedPrompt) throw new Error('场景提示词翻译结果为空');
+          textGenerationBilling.settle(db, log, translationBilling, 'completed');
           return { ...bg, prompt: translatedPrompt };
         } catch (err) {
+          textGenerationBilling.settle(db, log, translationBilling, 'failed', err.message);
           log.warn('Background prompt translate failed', { error: err.message, task_id: taskID });
           return bg;
         }
@@ -197,7 +212,7 @@ async function processBackgroundExtraction(
     if (scene) {
       scenes.push(scene);
       // polished_prompt 是完整四视图图片提示词，提取后始终为空，需要异步预生成
-      if (effectiveCfg) {
+      if (effectiveCfg && !options.billingEnabled) {
         const capturedStyle = style;
         setImmediate(() => {
           sceneService.generateScenePromptOnly(db, log, effectiveCfg, scene.id, model, capturedStyle).catch((err) => {
@@ -301,6 +316,7 @@ function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, lan
       style,
       language,
       billingReservationId,
+      options,
     ).catch((err) => {
       log.error('processBackgroundExtraction fatal', { error: err.message, task_id: task.id });
       settleBackgroundCredit(db, log, billingReservationId, 'failed', err.message);

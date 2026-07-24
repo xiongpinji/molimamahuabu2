@@ -28,7 +28,7 @@ const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
@@ -155,10 +155,20 @@ function setupRouter(cfg, db, log) {
       const title = req.body?.title || '';
       const maxChapters = Number(req.body?.max_chapters) || 20;
       const aiSummarize = req.body?.ai_summarize === 'true' || req.body?.ai_summarize === true;
-      const result = await novelImportService.importNovel(db, log, { text, title, maxChapters, aiSummarize });
+      const result = await novelImportService.importNovel(db, log, {
+        text,
+        title,
+        maxChapters,
+        aiSummarize,
+        model: req.body?.model,
+        billingEnabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+      });
       response.success(res, result);
     } catch (err) {
       log.error('dramas import-novel', { error: err.message });
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   });
@@ -197,10 +207,15 @@ function setupRouter(cfg, db, log) {
       if (!body.drama_id) {
         return response.badRequest(res, 'drama_id 必填');
       }
-      const taskId = characterGenerationService.generateCharacters(db, cfg, log, body);
+      const taskId = characterGenerationService.generateCharacters(db, cfg, log, body, {
+        billingEnabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+      });
       response.success(res, { task_id: taskId, status: 'pending' });
     } catch (err) {
       log.error('generation/characters', { error: err.message });
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message || '创建任务失败');
     }
   });

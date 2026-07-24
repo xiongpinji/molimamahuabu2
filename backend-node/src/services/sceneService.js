@@ -2,7 +2,7 @@
 const imageClient = require('./imageClient');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
-const textGenerationBilling = require('./textGenerationBillingService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 
 function applySceneStyleOverride(cfg, styleOverride) {

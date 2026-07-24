@@ -9,7 +9,7 @@ const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
 const storyboardVoiceLockService = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
-const textGenerationBilling = require('./textGenerationBillingService');
+const textGenerationBilling = require('./text-generation-billing-service');
 
 /**
  * 分镜专用 generateText 包装：
@@ -96,6 +96,38 @@ async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, opti
     }
     // 其他错误直接抛出
     throw e;
+  }
+}
+
+async function generateAdditionalStoryboardText(
+  db,
+  log,
+  userPrompt,
+  systemPrompt,
+  generationOptions,
+  billingOptions,
+) {
+  let billing = null;
+  try {
+    billing = textGenerationBilling.begin(db, {
+      enabled: Boolean(billingOptions.billingEnabled),
+      tenantId: billingOptions.tenantId,
+      userId: billingOptions.userId,
+      requestedModel: generationOptions.model || undefined,
+      sceneKey: 'storyboard_extraction',
+      resourceType: 'episode_storyboards',
+      resourceId: String(billingOptions.episodeId),
+      operation: billingOptions.operation,
+    });
+    const text = await generateTextForStoryboard(db, log, userPrompt, systemPrompt, {
+      ...generationOptions,
+      model: billing.model || generationOptions.model || undefined,
+    });
+    textGenerationBilling.settle(db, log, billing, 'completed');
+    return text;
+  } catch (error) {
+    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    throw error;
   }
 }
 
@@ -877,7 +909,7 @@ function buildStoryboardCountCorrectionPrompt(storyboards, targetCount) {
 ${JSON.stringify(storyboards)}`;
 }
 
-async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, targetStoryboardCount = null, billing = null) {
+async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, targetStoryboardCount = null, billing = null, options = {}) {
   // 增量保存状态放在 try 外，catch 里可用于部分恢复
   const episodeIdNum = Number(episodeId);
   const streamSavedNums = new Set();
@@ -1027,14 +1059,25 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
       let contText;
       try {
-        contText = await generateTextForStoryboard(db, log, contPrompt, systemPrompt, {
-          model: model || undefined,
-          streamCallback: (accumulated) => {
-            if (accumulated.length - streamThrottle < 400) return;
-            streamThrottle = accumulated.length;
-            tryIncrementalSave(db, log, episodeIdNum, accumulated, streamSavedNums, streamStyle, streamVideoRatio, deriveOpts);
+        contText = await generateAdditionalStoryboardText(
+          db,
+          log,
+          contPrompt,
+          systemPrompt,
+          {
+            model: model || undefined,
+            streamCallback: (accumulated) => {
+              if (accumulated.length - streamThrottle < 400) return;
+              streamThrottle = accumulated.length;
+              tryIncrementalSave(db, log, episodeIdNum, accumulated, streamSavedNums, streamStyle, streamVideoRatio, deriveOpts);
+            },
           },
-        });
+          {
+            ...options,
+            episodeId: episodeIdNum,
+            operation: 'episode_storyboards_continue',
+          },
+        );
       } catch (e) {
         log.warn('Continuation request failed', { task_id: taskId, attempt: contAttempt, error: e.message });
         break;
@@ -1083,12 +1126,17 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL')
         .run(new Date().toISOString(), episodeIdNum);
       streamSavedNums.clear();
-      const correctionText = await generateTextForStoryboard(
+      const correctionText = await generateAdditionalStoryboardText(
         db,
         log,
         buildStoryboardCountCorrectionPrompt(storyboards, target),
         systemPrompt,
-        { model: model || undefined }
+        { model: model || undefined },
+        {
+          ...options,
+          episodeId: episodeIdNum,
+          operation: 'episode_storyboards_correct_count',
+        },
       );
       const correctionMeta = {};
       const corrected = extractFirstArray(safeParseAIJSON(correctionText, null, log, correctionMeta)) || [];
@@ -1414,6 +1462,7 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
       clipSec,
       storyboardCount,
       billing,
+      options,
     );
   });
 

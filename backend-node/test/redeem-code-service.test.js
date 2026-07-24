@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const credits = require('../src/services/creditLedgerService');
-const redeemCodes = require('../src/services/redeemCodeService');
+const redeemCodes = require('../src/services/redeem-code-service');
 
 function setup() {
   const db = new Database(':memory:');

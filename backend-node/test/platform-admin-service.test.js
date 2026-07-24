@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const admin = require('../src/services/platformAdminService');
+const admin = require('../src/services/platform-admin-service');
 const credits = require('../src/services/creditLedgerService');
 const tenants = require('../src/services/tenantService');
 const users = require('../src/services/userAuthService');

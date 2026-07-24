@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const response = require('../response');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 const characterLibraryService = require('../services/characterLibraryService');
 const storageLayout = require('../services/storageLayout');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
@@ -252,17 +252,35 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         response.internalError(res, err.message);
       }
     },
-    extractAnchors: (req, res) => {
+    extractAnchors: async (req, res) => {
       const charRow = db.prepare(
         'SELECT id, appearance, identity_anchors FROM characters WHERE id = ? AND deleted_at IS NULL'
       ).get(Number(req.params.id));
       if (!charRow) return response.notFound(res, '角色不存在');
       if (!charRow.appearance) return response.badRequest(res, '角色缺少外貌描述，无法提炼锚点');
-      const { enrichIdentityAnchors } = require('../services/characterGenerationService');
-      setImmediate(() => {
-        enrichIdentityAnchors(db, log, charRow.id, charRow.appearance).catch(() => {});
-      });
-      response.success(res, { message: '锚点提炼已启动，请稍后刷新查看' });
+      let billing = null;
+      try {
+        const body = req.body || {};
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: body.model_name || body.model || undefined,
+          sceneKey: 'identity_anchors',
+          resourceType: 'character_identity_anchors',
+          resourceId: charRow.id,
+          operation: 'character_identity_anchors',
+        });
+        const { enrichIdentityAnchors } = require('../services/characterGenerationService');
+        await enrichIdentityAnchors(db, log, charRow.id, charRow.appearance, billing.model);
+        textGenerationBilling.settle(db, log, billing, 'completed');
+        response.success(res, { message: '锚点提炼完成' });
+      } catch (err) {
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        log.error('characters extract-anchors', { error: err.message, character_id: charRow.id });
+        if (textGenerationBilling.respondError(response, res, err)) return;
+        response.internalError(res, err.message);
+      }
     },
     generateFourViewImage: async (req, res) => {
       try {

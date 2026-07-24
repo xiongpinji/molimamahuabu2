@@ -1,7 +1,7 @@
 const propService = require('../services/propService');
 const propLibraryService = require('../services/propLibraryService');
 const response = require('../response');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function listProps(db) {
   return (req, res) => {

@@ -3,10 +3,10 @@ const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const propService = require('./propService');
-const textGenerationBilling = require('./textGenerationBillingService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
-async function processPropExtraction(db, log, taskId, episodeId, model, billing, routeCfg) {
+async function processPropExtraction(db, log, taskId, episodeId, model, billing, routeCfg, options = {}) {
   const failTask = (message) => {
     textGenerationBilling.settle(db, log, billing, 'failed', message);
     taskService.updateTaskError(db, taskId, message);
@@ -111,19 +111,36 @@ async function processPropExtraction(db, log, taskId, episodeId, model, billing,
     });
     if (prop) {
       createdProps.push(prop);
-      // 若提取时没有生成 prompt，异步后台补生成
+      // 若提取时没有生成 prompt：公开计费模式同步结算，本地模式后台补生成
       if (!prop.prompt && routeCfg) {
         if (billing?.reservationId) {
-          const generated = await propService.generatePropPromptOnly(
-            db,
-            log,
-            routeCfg,
-            prop.id,
-            model,
-            undefined,
-          );
-          if (!generated.ok) {
-            throw new Error(generated.error || '道具提示词生成失败');
+          let promptBilling = null;
+          try {
+            promptBilling = textGenerationBilling.begin(db, {
+              enabled: Boolean(options.billingEnabled),
+              tenantId: options.tenantId,
+              userId: options.userId,
+              requestedModel: model,
+              sceneKey: 'prop_image_polish',
+              resourceType: 'prop_prompt',
+              resourceId: prop.id,
+              operation: 'prop_extraction_prompt',
+            });
+            const generated = await propService.generatePropPromptOnly(
+              db,
+              log,
+              routeCfg,
+              prop.id,
+              promptBilling.model || model,
+              undefined,
+            );
+            if (!generated.ok) {
+              throw new Error(generated.error || '道具提示词生成失败');
+            }
+            textGenerationBilling.settle(db, log, promptBilling, 'completed');
+          } catch (error) {
+            textGenerationBilling.settle(db, log, promptBilling, 'failed', error.message);
+            throw error;
           }
         } else {
           setImmediate(() => {
@@ -198,6 +215,7 @@ function extractPropsForEpisode(db, log, episodeId, cfg, options = {}) {
       billing.model,
       billing,
       cfg,
+      options,
     ).catch((err) => {
       log.error('processPropExtraction fatal', { error: err.message, task_id: task.id });
       textGenerationBilling.settle(db, log, billing, 'failed', err.message);

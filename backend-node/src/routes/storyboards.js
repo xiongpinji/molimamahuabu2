@@ -11,7 +11,7 @@ const { buildUniversalSegmentUserPromptBundle } = require('../services/universal
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
 const storyboardVoiceExtractionService = require('../services/storyboardVoiceExtractionService');
 const storyboardVoicePromptService = require('../services/storyboardVoicePromptService');
-const textGenerationBilling = require('../services/textGenerationBillingService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function beginStoryboardTextBilling(db, req, generationOptions, operation) {
   return textGenerationBilling.begin(db, {
@@ -591,22 +591,36 @@ function routes(db, log, generationOptions = {}) {
         );
         log.info('[分镜] polishPrompt 完成', { id: sbId, len: polished.length, has_prev_continuity: !!prevContinuityState });
 
-        // 异步提取连戏状态快照并保存（不阻塞响应）
+        // 连戏快照是第二次真实模型调用，必须独立预扣并结算。
         const snapshotPrompt = promptI18n.getContinuitySnapshotPrompt();
         const snapshotUserPrompt = [`PROMPT: ${polished}`, `ASSETS: ${assetNames || 'none'}`].join('\n');
-        aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
-          scene_key: 'image_polish', model: billing.model, max_tokens: 200, temperature: 0.1,
-        }).then((snapshotJson) => {
-          if (!snapshotJson?.trim()) return;
+        let snapshotBilling = null;
+        try {
+          snapshotBilling = textGenerationBilling.begin(db, {
+            enabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+            requestedModel: billing.model,
+            sceneKey: 'image_polish',
+            resourceType: 'storyboard_prompt',
+            resourceId: sbId,
+            operation: 'storyboard_continuity_snapshot',
+          });
+          const snapshotJson = await aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
+            scene_key: 'image_polish', model: snapshotBilling.model, max_tokens: 200, temperature: 0.1,
+          });
+          if (!snapshotJson?.trim()) throw new Error('连戏快照为空');
           const cleaned = snapshotJson.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-          try {
-            JSON.parse(cleaned);
-            db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
-              cleaned, new Date().toISOString(), sbId
-            );
-            log.info('[分镜] polishPrompt 连戏快照已保存', { id: sbId });
-          } catch (_) {}
-        }).catch(() => {});
+          JSON.parse(cleaned);
+          db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+            cleaned, new Date().toISOString(), sbId
+          );
+          textGenerationBilling.settle(db, log, snapshotBilling, 'completed');
+          log.info('[分镜] polishPrompt 连戏快照已保存', { id: sbId });
+        } catch (snapshotError) {
+          textGenerationBilling.settle(db, log, snapshotBilling, 'failed', snapshotError.message);
+          log.warn('[分镜] polishPrompt 连戏快照跳过', { id: sbId, error: snapshotError.message });
+        }
 
         textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { polished_prompt: polished });
