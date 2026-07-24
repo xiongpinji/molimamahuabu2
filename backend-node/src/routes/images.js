@@ -31,7 +31,7 @@ function routes(db, cfg, log, options = {}) {
         response.created(res, rec);
       } catch (err) {
         log.error('images create', { error: err.message });
-        if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') {
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {

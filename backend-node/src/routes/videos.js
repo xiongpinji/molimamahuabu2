@@ -30,7 +30,7 @@ function routes(db, log, options = {}) {
         response.created(res, item);
       } catch (err) {
         log.error('videos create', { error: err.message });
-        if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') {
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {

@@ -1,180 +1,377 @@
 <template>
-  <main class="billing-page">
-    <PlatformHeader title="模型积分定价" back-to="/" back-label="返回" />
-    <section class="billing-card">
-      <header>
+  <main class="admin-page">
+    <PlatformHeader title="平台管理后台" back-to="/" back-label="返回" />
+    <section class="admin-shell">
+      <header class="page-heading">
         <div>
-          <h1>模型积分定价</h1>
-          <p>仅管理平台允许的三个模型。未定价的模型会被禁止生成。</p>
+          <h1>平台管理后台</h1>
+          <p>统一管理账号、兑换码、积分流水和每个模型的独立计费规则。</p>
         </div>
       </header>
 
       <div class="admin-auth">
-        <el-input v-model="adminToken" type="password" show-password autocomplete="off" placeholder="输入平台管理员令牌" />
+        <el-input
+          v-model="adminToken"
+          type="password"
+          show-password
+          autocomplete="off"
+          placeholder="输入平台管理员令牌"
+        />
         <el-button type="primary" :loading="loading" @click="unlock">验证并读取</el-button>
       </div>
+      <el-alert
+        v-if="!unlocked"
+        title="管理员令牌只保存在当前浏览器会话，不会写入长期存储。"
+        type="info"
+        :closable="false"
+      />
 
-      <el-alert v-if="!unlocked" title="管理员令牌只保存在当前浏览器会话，不会写入长期存储。" type="info" :closable="false" />
+      <el-tabs v-else v-model="activeTab" class="admin-tabs">
+        <el-tab-pane label="模型计费" name="models">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>模型计费</h2>
+                <p>每个实际模型单独配置积分、类型和启停状态；停用后立即禁止新生成。</p>
+              </div>
+            </div>
+            <div class="model-list">
+              <div v-for="item in prices" :key="item.model" class="model-row">
+                <el-input v-model="item.display_name" placeholder="展示名称" />
+                <el-select v-model="item.category">
+                  <el-option label="文本" value="text" />
+                  <el-option label="图片" value="image" />
+                  <el-option label="视频" value="video" />
+                  <el-option label="音频" value="audio" />
+                  <el-option label="其他" value="other" />
+                </el-select>
+                <el-input-number v-model="item.credits" :min="1" :step="1" step-strictly />
+                <el-select v-model="item.status">
+                  <el-option label="启用" value="enabled" />
+                  <el-option label="停用" value="disabled" />
+                </el-select>
+                <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
+                <small>{{ item.model }}</small>
+              </div>
+            </div>
+            <div class="new-model">
+              <el-input v-model.trim="newModel.model" placeholder="模型 ID" />
+              <el-input v-model.trim="newModel.display_name" placeholder="展示名称" />
+              <el-select v-model="newModel.category">
+                <el-option label="文本" value="text" />
+                <el-option label="图片" value="image" />
+                <el-option label="视频" value="video" />
+                <el-option label="音频" value="audio" />
+                <el-option label="其他" value="other" />
+              </el-select>
+              <el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly />
+              <el-button type="primary" :loading="savingModel === newModel.model" @click="addModel">
+                新增模型
+              </el-button>
+            </div>
+          </section>
+        </el-tab-pane>
 
-      <div v-else class="price-list">
-        <div v-for="item in prices" :key="item.model" class="price-row">
-          <div>
-            <strong>{{ item.model }}</strong>
-            <span>{{ item.credits == null ? '尚未定价，当前禁止生成' : `当前 ${item.credits} 积分/次` }}</span>
-          </div>
-          <el-input-number v-model="drafts[item.model]" :min="1" :step="1" step-strictly />
-          <el-button :loading="saving === item.model" @click="save(item.model)">保存价格</el-button>
-        </div>
-      </div>
+        <el-tab-pane label="兑换码" name="codes">
+          <section class="panel">
+            <div class="code-form">
+              <el-input v-model.trim="newCode.label" placeholder="用途说明" />
+              <el-input-number v-model="newCode.credits" :min="1" :step="100" step-strictly />
+              <el-input-number v-model="newCode.max_redemptions" :min="1" :step="1" step-strictly />
+              <el-date-picker
+                v-model="newCode.expires_at"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm:ss.SSSZ"
+                placeholder="到期时间（可选）"
+              />
+              <el-button type="primary" :loading="creatingCode" @click="generateCode">生成兑换码</el-button>
+            </div>
+            <p class="field-hint">依次填写说明、单次积分、最大兑换次数和可选到期时间。</p>
+            <el-table :data="codes" empty-text="暂无兑换码">
+              <el-table-column prop="code_hint" label="兑换码" min-width="190" />
+              <el-table-column prop="label" label="说明" min-width="160" />
+              <el-table-column prop="credits" label="积分" width="100" />
+              <el-table-column label="使用次数" width="120">
+                <template #default="{ row }">{{ row.redeemed_count }}/{{ row.max_redemptions }}</template>
+              </el-table-column>
+              <el-table-column label="到期时间" min-width="170">
+                <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-switch
+                    :model-value="row.status === 'active'"
+                    :loading="updatingCode === row.id"
+                    @change="toggleCode(row, $event)"
+                  />
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+        </el-tab-pane>
 
-      <section v-if="unlocked" class="plan-admin">
-        <header>
-          <div>
-            <h2>订阅套餐</h2>
-            <p>配置可下单的套餐。支付成功、订阅激活和积分发放将在真实支付回调阶段接入。</p>
-          </div>
-        </header>
+        <el-tab-pane label="账号管理" name="accounts">
+          <section class="panel">
+            <el-table :data="users" empty-text="暂无账号">
+              <el-table-column prop="email" label="邮箱" min-width="230" />
+              <el-table-column label="平台角色" width="150">
+                <template #default="{ row }">
+                  <el-select v-model="row.role">
+                    <el-option label="用户" value="user" />
+                    <el-option label="管理员" value="admin" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="150">
+                <template #default="{ row }">
+                  <el-select v-model="row.status">
+                    <el-option label="启用" value="active" />
+                    <el-option label="停用" value="disabled" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column prop="tenant_count" label="工作区" width="90" />
+              <el-table-column label="操作" width="100" align="right">
+                <template #default="{ row }">
+                  <el-button :loading="savingUser === row.id" @click="saveUser(row)">保存</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+        </el-tab-pane>
 
-        <div v-for="plan in plans" :key="plan.id" class="plan-row">
-          <el-input v-model="plan.name" placeholder="套餐名称" />
-          <el-input-number v-model="plan.price_cents" :min="0" :step="100" step-strictly />
-          <el-input-number v-model="plan.monthly_credits" :min="0" :step="100" step-strictly />
-          <el-input v-model.trim="plan.currency" maxlength="3" placeholder="币种" />
-          <el-select v-model="plan.status">
-            <el-option label="启用" value="active" />
-            <el-option label="归档" value="archived" />
-          </el-select>
-          <el-button :loading="savingPlan === plan.id" @click="savePlan(plan)">保存</el-button>
-        </div>
-
-        <div class="new-plan">
-          <el-input v-model.trim="newPlan.id" placeholder="英文 ID，例如 creator" />
-          <el-input v-model.trim="newPlan.name" placeholder="套餐名称" />
-          <el-input-number v-model="newPlan.price_cents" :min="0" :step="100" step-strictly />
-          <el-input-number v-model="newPlan.monthly_credits" :min="0" :step="100" step-strictly />
-          <el-input v-model.trim="newPlan.currency" maxlength="3" placeholder="币种，例如 CNY" />
-          <el-button type="primary" :loading="savingPlan === newPlan.id" @click="createPlan">新增套餐</el-button>
-        </div>
-        <p class="field-hint">金额单位为分，月度积分为整数，币种使用三个大写字母。</p>
-      </section>
+        <el-tab-pane label="积分流水" name="credits">
+          <section class="panel">
+            <div class="credit-form">
+              <el-select v-model="creditForm.tenant_id" filterable placeholder="选择工作区">
+                <el-option
+                  v-for="tenant in tenants"
+                  :key="tenant.id"
+                  :label="`${tenant.name}（余额 ${tenant.available}）`"
+                  :value="tenant.id"
+                />
+              </el-select>
+              <el-input-number v-model="creditForm.amount" :step="100" step-strictly />
+              <el-input v-model.trim="creditForm.reason" placeholder="调账原因" />
+              <el-button type="primary" :loading="adjustingCredits" @click="submitAdjustment">确认调账</el-button>
+            </div>
+            <p class="field-hint">正数增加积分，负数扣回积分；扣回后余额不能小于零。</p>
+            <el-table :data="transactions" empty-text="暂无积分流水">
+              <el-table-column prop="tenant_name" label="工作区" min-width="160" />
+              <el-table-column prop="amount" label="变动" width="100" />
+              <el-table-column prop="reason" label="原因" min-width="200" />
+              <el-table-column prop="event_type" label="类型" width="120" />
+              <el-table-column label="时间" min-width="180">
+                <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+              </el-table-column>
+            </el-table>
+          </section>
+        </el-tab-pane>
+      </el-tabs>
     </section>
   </main>
 </template>
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import {
-  listAdminBillingPlans,
+  adjustTenantCredits,
+  createRedeemCode,
+  listAdminCreditTransactions,
+  listAdminTenants,
   listModelPrices,
-  updateBillingPlan,
+  listPlatformUsers,
+  listRedeemCodes,
   updateModelPrice,
+  updatePlatformUser,
+  updateRedeemCode,
 } from '@/api/billing'
 import { saveAdminToken } from '@/utils/authSession'
 
 const adminToken = ref('')
 const loading = ref(false)
 const unlocked = ref(false)
+const activeTab = ref('models')
 const prices = ref([])
-const drafts = reactive({})
-const saving = ref('')
-const plans = ref([])
-const savingPlan = ref('')
-const newPlan = reactive({
-  id: '',
-  name: '',
-  price_cents: 0,
-  monthly_credits: 0,
-  currency: 'CNY',
+const codes = ref([])
+const users = ref([])
+const tenants = ref([])
+const transactions = ref([])
+const savingModel = ref('')
+const creatingCode = ref(false)
+const updatingCode = ref('')
+const savingUser = ref('')
+const adjustingCredits = ref(false)
+const newModel = reactive({
+  model: '',
+  display_name: '',
+  category: 'video',
+  credits: 1,
 })
+const newCode = reactive({
+  label: '',
+  credits: 100,
+  max_redemptions: 1,
+  expires_at: null,
+})
+const creditForm = reactive({
+  tenant_id: '',
+  amount: 100,
+  reason: '',
+})
+
+function formatDate(value) {
+  return value ? new Date(value).toLocaleString('zh-CN') : '永久'
+}
+
+async function loadAll() {
+  const [modelRows, codeRows, userRows, tenantRows, transactionRows] = await Promise.all([
+    listModelPrices(),
+    listRedeemCodes(),
+    listPlatformUsers(),
+    listAdminTenants(),
+    listAdminCreditTransactions(),
+  ])
+  prices.value = modelRows
+  codes.value = codeRows
+  users.value = userRows
+  tenants.value = tenantRows
+  transactions.value = transactionRows
+  if (!creditForm.tenant_id) creditForm.tenant_id = tenantRows[0]?.id || ''
+}
 
 async function unlock() {
   if (adminToken.value.length < 32) return ElMessage.warning('管理员令牌长度不能少于 32 位')
   saveAdminToken(adminToken.value)
   loading.value = true
   try {
-    const [modelPrices, billingPlans] = await Promise.all([
-      listModelPrices(),
-      listAdminBillingPlans(),
-    ])
-    prices.value = modelPrices
-    plans.value = billingPlans
-    for (const item of prices.value) drafts[item.model] = item.credits || 1
+    await loadAll()
     unlocked.value = true
   } finally {
     loading.value = false
   }
 }
 
-async function save(model) {
-  saving.value = model
+async function saveModel(item) {
+  savingModel.value = item.model
   try {
-    const saved = await updateModelPrice(model, drafts[model])
-    const index = prices.value.findIndex((item) => item.model === model)
+    const saved = await updateModelPrice(item.model, {
+      credits: item.credits,
+      display_name: item.display_name,
+      category: item.category,
+      status: item.status,
+    })
+    Object.assign(item, saved)
+    ElMessage.success(`${saved.display_name || saved.model} 已保存`)
+  } finally {
+    savingModel.value = ''
+  }
+}
+
+async function addModel() {
+  if (!newModel.model) return ElMessage.warning('请填写模型 ID')
+  savingModel.value = newModel.model
+  try {
+    const saved = await updateModelPrice(newModel.model, {
+      credits: newModel.credits,
+      display_name: newModel.display_name || newModel.model,
+      category: newModel.category,
+      status: 'enabled',
+    })
+    const index = prices.value.findIndex((item) => item.model === saved.model)
     if (index >= 0) prices.value[index] = saved
-    ElMessage.success(`${model} 价格已保存`)
+    else prices.value.push(saved)
+    Object.assign(newModel, { model: '', display_name: '', category: 'video', credits: 1 })
+    ElMessage.success('模型计费规则已新增')
   } finally {
-    saving.value = ''
+    savingModel.value = ''
   }
 }
 
-async function savePlan(plan) {
-  savingPlan.value = plan.id
+async function generateCode() {
+  creatingCode.value = true
   try {
-    const saved = await updateBillingPlan(plan.id, {
-      name: plan.name,
-      description: plan.description || '',
-      price_cents: plan.price_cents,
-      monthly_credits: plan.monthly_credits,
-      currency: String(plan.currency || 'CNY').toUpperCase(),
-      status: plan.status,
-    })
-    const index = plans.value.findIndex((item) => item.id === plan.id)
-    if (index >= 0) plans.value[index] = saved
-    ElMessage.success(`${saved.name} 已保存`)
+    const created = await createRedeemCode(newCode)
+    codes.value.unshift(created)
+    Object.assign(newCode, { label: '', credits: 100, max_redemptions: 1, expires_at: null })
+    await ElMessageBox.alert(
+      created.code,
+      '兑换码已生成，请立即复制',
+      { confirmButtonText: '我已复制', type: 'success' },
+    )
   } finally {
-    savingPlan.value = ''
+    creatingCode.value = false
   }
 }
 
-async function createPlan() {
-  if (!newPlan.id || !newPlan.name) return ElMessage.warning('请填写套餐 ID 和名称')
-  savingPlan.value = newPlan.id
+async function toggleCode(row, enabled) {
+  updatingCode.value = row.id
   try {
-    const saved = await updateBillingPlan(newPlan.id, {
-      name: newPlan.name,
-      description: '',
-      price_cents: newPlan.price_cents,
-      monthly_credits: newPlan.monthly_credits,
-      currency: String(newPlan.currency || '').toUpperCase(),
-      status: 'active',
-    })
-    plans.value.push(saved)
-    Object.assign(newPlan, { id: '', name: '', price_cents: 0, monthly_credits: 0, currency: 'CNY' })
-    ElMessage.success('套餐已新增')
+    const saved = await updateRedeemCode(row.id, { status: enabled ? 'active' : 'disabled' })
+    Object.assign(row, saved)
   } finally {
-    savingPlan.value = ''
+    updatingCode.value = ''
+  }
+}
+
+async function saveUser(row) {
+  savingUser.value = row.id
+  try {
+    const saved = await updatePlatformUser(row.id, { role: row.role, status: row.status })
+    Object.assign(row, saved)
+    ElMessage.success('账号状态已保存')
+  } finally {
+    savingUser.value = ''
+  }
+}
+
+async function submitAdjustment() {
+  if (!creditForm.tenant_id || !creditForm.amount || !creditForm.reason) {
+    return ElMessage.warning('请选择工作区并填写非零积分和调账原因')
+  }
+  adjustingCredits.value = true
+  try {
+    await adjustTenantCredits(creditForm.tenant_id, {
+      amount: creditForm.amount,
+      reason: creditForm.reason,
+    })
+    const [tenantRows, transactionRows] = await Promise.all([
+      listAdminTenants(),
+      listAdminCreditTransactions(),
+    ])
+    tenants.value = tenantRows
+    transactions.value = transactionRows
+    creditForm.amount = 100
+    creditForm.reason = ''
+    ElMessage.success('积分调账已完成')
+  } finally {
+    adjustingCredits.value = false
   }
 }
 </script>
 
 <style scoped>
-.billing-page { min-height: 100vh; padding: 36px 20px; background: #111214; color: #f5f5f7; }
-.billing-card { width: min(900px, 100%); margin: auto; padding: 28px; border: 1px solid #303136; border-radius: 20px; background: #1b1c20; }
-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
-h1 { margin: 0 0 8px; font-size: 26px; }
-header p { margin: 0; color: #a8a9af; }
+.admin-page { min-height: 100vh; padding: 0 20px 56px; color: #f5f5f7; background: #111214; }
+.admin-shell { width: min(1180px, 100%); margin: 24px auto 0; }
+.page-heading { margin-bottom: 20px; }
+.page-heading h1, .panel h2 { margin: 0 0 8px; }
+.page-heading p, .panel-heading p, .field-hint { margin: 0; color: #a8a9af; }
 .admin-auth { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 18px; }
-.price-list { display: grid; gap: 12px; margin-top: 24px; }
-.price-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 16px; padding: 18px; border: 1px solid #303136; border-radius: 14px; background: #222328; }
-.price-row div:first-child { display: grid; gap: 5px; }
-.price-row span { color: #999ba3; font-size: 13px; }
-.plan-admin { margin-top: 32px; padding-top: 28px; border-top: 1px solid #303136; }
-.plan-admin h2 { margin: 0 0 8px; }
-.plan-row, .new-plan { display: grid; grid-template-columns: 1.2fr 150px 150px 90px 110px auto; gap: 10px; align-items: center; margin-top: 12px; }
-.new-plan { grid-template-columns: 1fr 1fr 140px 140px 130px auto; padding-top: 18px; border-top: 1px dashed #3f4047; }
-.field-hint { color: #999ba3; font-size: 12px; }
-@media (max-width: 680px) { .price-row { grid-template-columns: 1fr; } .admin-auth { grid-template-columns: 1fr; } }
-@media (max-width: 900px) { .plan-row, .new-plan { grid-template-columns: 1fr; } }
+.admin-tabs { margin-top: 22px; }
+.panel { padding: 22px; border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
+.panel-heading { margin-bottom: 18px; }
+.model-list { display: grid; gap: 10px; }
+.model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #303136; border-radius: 12px; }
+.model-row small { grid-column: 1 / -1; color: #8f9098; }
+.new-model, .code-form, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
+.new-model { grid-template-columns: 1.2fr 1fr 120px 150px auto; }
+.code-form { grid-template-columns: 1fr 150px 170px 240px auto; }
+.credit-form { grid-template-columns: 1.2fr 160px 1.5fr auto; }
+.panel :deep(.el-table) { margin-top: 18px; }
+.field-hint { font-size: 12px; }
+@media (max-width: 900px) {
+  .model-row, .new-model, .code-form, .credit-form, .admin-auth { grid-template-columns: 1fr; }
+}
 </style>

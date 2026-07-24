@@ -85,12 +85,27 @@ function setupRouter(cfg, db, log) {
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
+  // 平台管理接口不依赖当前租户，避免管理员因浏览器残留了无效租户 ID 而无法进入后台。
+  r.get('/billing/admin/users', requireAdmin, billing.listAdminUsers);
+  r.put('/billing/admin/users/:userId', requireAdmin, billing.updateAdminUser);
+  r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
+  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
+  r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
+  r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
+  r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
+  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
+  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
+  r.get('/billing/prices', requireAdmin, billing.listPrices);
+  r.put('/billing/prices/:model', requireAdmin, billing.updatePrice);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
+  r.post('/billing/redeem', billing.redeemCredits);
+  r.get('/billing/credit-transactions', billing.listCreditTransactions);
   r.get('/billing/plans', billing.listPlans);
   r.get('/billing/subscription', billing.getSubscription);
   r.get('/billing/orders', billing.listOrders);
@@ -98,11 +113,6 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
-  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
-  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
-  r.use('/billing/prices', requireAdmin);
-  r.get('/billing/prices', billing.listPrices);
-  r.put('/billing/prices/:model', billing.updatePrice);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);
@@ -213,7 +223,9 @@ function setupRouter(cfg, db, log) {
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
-      if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') return response.error(res, 503, err.code, err.message);
+      if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+        return response.error(res, 503, err.code, err.message);
+      }
       if (err.code === 'INSUFFICIENT_CREDITS') return response.error(res, 402, err.code, '积分不足，请充值后重试');
       if (err.code === 'UNSUPPORTED_BILLING_MODEL') return response.badRequest(res, err.message);
       if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
