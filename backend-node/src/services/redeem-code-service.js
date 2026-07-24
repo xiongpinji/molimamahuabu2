@@ -39,6 +39,7 @@ function ensureSchema(db) {
       code_hash TEXT NOT NULL UNIQUE,
       code_hint TEXT NOT NULL,
       label TEXT,
+      tenant_id TEXT,
       credits INTEGER NOT NULL CHECK (credits > 0),
       max_redemptions INTEGER NOT NULL CHECK (max_redemptions > 0),
       redeemed_count INTEGER NOT NULL DEFAULT 0 CHECK (redeemed_count >= 0),
@@ -58,6 +59,12 @@ function ensureSchema(db) {
       UNIQUE (code_id, tenant_id)
     );
   `);
+  const columns = db.prepare('PRAGMA table_info(redeem_codes)').all();
+  if (!columns.some((column) => column.name === 'tenant_id')) {
+    db.exec('ALTER TABLE redeem_codes ADD COLUMN tenant_id TEXT');
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_redeem_codes_tenant_created
+    ON redeem_codes(tenant_id, created_at DESC)`);
 }
 
 function publicCode(row) {
@@ -71,6 +78,7 @@ function createCode(db, input = {}) {
   const creditsValue = Number(input.credits);
   const maxRedemptions = Number(input.maxRedemptions ?? input.max_redemptions ?? 1);
   const label = String(input.label || '').trim();
+  const tenantId = String(input.tenantId ?? input.tenant_id ?? '').trim() || null;
   const expiresAtInput = input.expiresAt ?? input.expires_at ?? null;
   const expiresAtDate = expiresAtInput ? new Date(expiresAtInput) : null;
   if (expiresAtDate && Number.isNaN(expiresAtDate.getTime())) {
@@ -84,6 +92,9 @@ function createCode(db, input = {}) {
     throw redeemError('INVALID_REDEEM_CODE', '最大兑换次数必须是 1 到 100000 的整数');
   }
   if (label.length > 120) throw redeemError('INVALID_REDEEM_CODE', '兑换码说明不能超过 120 个字符');
+  if (tenantId && tenantId.length > 120) {
+    throw redeemError('INVALID_REDEEM_CODE', '目标租户 ID 不能超过 120 个字符');
+  }
   let code;
   let digest;
   do {
@@ -93,14 +104,15 @@ function createCode(db, input = {}) {
   const now = new Date().toISOString();
   const id = randomUUID();
   db.prepare(`INSERT INTO redeem_codes
-    (id, code_hash, code_hint, label, credits, max_redemptions, redeemed_count,
+    (id, code_hash, code_hint, label, tenant_id, credits, max_redemptions, redeemed_count,
       expires_at, status, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'active', ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'active', ?, ?, ?)`)
     .run(
       id,
       digest,
       `MOLI-****-****-${code.slice(-4)}`,
       label || null,
+      tenantId,
       creditsValue,
       maxRedemptions,
       expiresAt,
@@ -111,23 +123,81 @@ function createCode(db, input = {}) {
   return { ...publicCode(db.prepare('SELECT * FROM redeem_codes WHERE id = ?').get(id)), code };
 }
 
+function createCodes(db, input = {}) {
+  ensureSchema(db);
+  const quantity = Number(input.quantity);
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 500) {
+    throw redeemError('INVALID_REDEEM_CODE', '批量创建数量必须是 1 到 500 的整数');
+  }
+  const items = db.transaction(() => Array.from(
+    { length: quantity },
+    () => createCode(db, input),
+  ))();
+  return { quantity, items };
+}
+
 function listCodes(db) {
   ensureSchema(db);
-  return db.prepare(`SELECT id, code_hint, label, credits, max_redemptions,
+  return db.prepare(`SELECT id, code_hint, label, tenant_id, credits, max_redemptions,
       redeemed_count, expires_at, status, created_by, created_at, updated_at
     FROM redeem_codes ORDER BY created_at DESC, id DESC`).all();
 }
 
 function updateCode(db, codeId, input = {}) {
   ensureSchema(db);
-  const status = String(input.status || '').trim();
+  const id = String(codeId);
+  const current = db.prepare('SELECT * FROM redeem_codes WHERE id = ?').get(id);
+  if (!current) throw redeemError('REDEEM_CODE_NOT_FOUND', '兑换码不存在');
+  const hasStatus = Object.prototype.hasOwnProperty.call(input, 'status');
+  const hasExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
+    || Object.prototype.hasOwnProperty.call(input, 'expires_at');
+  if (!hasStatus && !hasExpiresAt) {
+    throw redeemError('INVALID_REDEEM_CODE', '请提供兑换码状态或到期时间');
+  }
+  const status = hasStatus ? String(input.status || '').trim() : current.status;
   if (!['active', 'disabled'].includes(status)) {
     throw redeemError('INVALID_REDEEM_CODE', '兑换码状态必须是 active 或 disabled');
   }
-  const result = db.prepare('UPDATE redeem_codes SET status = ?, updated_at = ? WHERE id = ?')
-    .run(status, new Date().toISOString(), String(codeId));
-  if (result.changes !== 1) throw redeemError('REDEEM_CODE_NOT_FOUND', '兑换码不存在');
-  return publicCode(db.prepare('SELECT * FROM redeem_codes WHERE id = ?').get(String(codeId)));
+  let expiresAt = current.expires_at;
+  if (hasExpiresAt) {
+    const value = input.expiresAt ?? input.expires_at ?? null;
+    const parsed = value ? new Date(value) : null;
+    if (parsed && Number.isNaN(parsed.getTime())) {
+      throw redeemError('INVALID_REDEEM_CODE', '兑换码到期时间无效');
+    }
+    expiresAt = parsed ? parsed.toISOString() : null;
+  }
+  db.prepare(`UPDATE redeem_codes
+    SET status = ?, expires_at = ?, updated_at = ? WHERE id = ?`)
+    .run(status, expiresAt, new Date().toISOString(), id);
+  return publicCode(db.prepare('SELECT * FROM redeem_codes WHERE id = ?').get(id));
+}
+
+function listUsages(db, codeId) {
+  ensureSchema(db);
+  const id = String(codeId);
+  if (!db.prepare('SELECT 1 FROM redeem_codes WHERE id = ?').get(id)) {
+    throw redeemError('REDEEM_CODE_NOT_FOUND', '兑换码不存在');
+  }
+  return db.prepare(`SELECT
+      usages.id,
+      usages.code_id,
+      usages.tenant_id,
+      usages.user_id,
+      usages.credits,
+      usages.redeemed_at,
+      adjustments.id AS ledger_id,
+      adjustments.amount AS ledger_amount,
+      adjustments.reason AS ledger_reason,
+      adjustments.reference_id AS ledger_reference_id,
+      adjustments.created_at AS ledger_created_at
+    FROM redeem_code_usages AS usages
+    LEFT JOIN tenant_credit_adjustments AS adjustments
+      ON adjustments.tenant_id = usages.tenant_id
+      AND adjustments.reference_type = 'redeem_code'
+      AND adjustments.reference_id = usages.code_id
+    WHERE usages.code_id = ?
+    ORDER BY usages.rowid DESC`).all(id);
 }
 
 function redeem(db, input = {}) {
@@ -139,6 +209,9 @@ function redeem(db, input = {}) {
   return db.transaction(() => {
     const row = db.prepare('SELECT * FROM redeem_codes WHERE code_hash = ?').get(digest);
     if (!row) throw redeemError('REDEEM_CODE_NOT_FOUND', '兑换码不存在');
+    if (row.tenant_id && row.tenant_id !== tenantId) {
+      throw redeemError('REDEEM_CODE_NOT_FOUND', '兑换码不存在');
+    }
     if (row.status !== 'active') throw redeemError('CODE_DISABLED', '兑换码已停用');
     if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) {
       throw redeemError('CODE_EXPIRED', '兑换码已过期');
@@ -186,7 +259,9 @@ function redeem(db, input = {}) {
 module.exports = {
   ensureSchema,
   createCode,
+  createCodes,
   listCodes,
+  listUsages,
   updateCode,
   redeem,
   normalizeCode,

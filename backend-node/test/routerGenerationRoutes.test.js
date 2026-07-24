@@ -62,3 +62,18 @@ test('keeps global billing admin routes before tenant context and tenant billing
   assert.equal(modelPricesIndex < tenantContextIndex, true);
   assert.equal(redeemIndex > tenantContextIndex, true);
 });
+
+test('registers redeem operations routes before tenant context', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  const batchIndex = source.indexOf("r.post('/billing/admin/redeem-codes/batch'");
+  const usagesIndex = source.indexOf("r.get('/billing/admin/redeem-codes/:codeId/usages'");
+  const tenantContextIndex = source.indexOf('r.use(createTenantContextMiddleware');
+  assert.notEqual(batchIndex, -1);
+  assert.notEqual(usagesIndex, -1);
+  assert.equal(batchIndex < tenantContextIndex, true);
+  assert.equal(usagesIndex < tenantContextIndex, true);
+  assert.match(
+    source,
+    /r\.get\('\/billing\/admin\/redeem-codes\/:codeId\/usages', requireAdmin,/,
+  );
+});

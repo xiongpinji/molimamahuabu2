@@ -140,6 +140,24 @@ function routes(db, log) {
         response.internalError(res, error.message);
       }
     },
+    createAdminRedeemCodes: (req, res) => {
+      try {
+        response.created(res, redeemCodes.createCodes(db, req.body || {}));
+      } catch (error) {
+        if (error.code === 'INVALID_REDEEM_CODE') return response.badRequest(res, error.message);
+        log.error('billing admin create redeem codes', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    listAdminRedeemCodeUsages: (req, res) => {
+      try {
+        response.success(res, redeemCodes.listUsages(db, req.params.codeId));
+      } catch (error) {
+        if (error.code === 'REDEEM_CODE_NOT_FOUND') return response.notFound(res, error.message);
+        log.error('billing admin list redeem code usages', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
     updateAdminRedeemCode: (req, res) => {
       try {
         response.success(res, redeemCodes.updateCode(db, req.params.codeId, req.body || {}));

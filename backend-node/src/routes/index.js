@@ -102,6 +102,8 @@ function setupRouter(cfg, db, log) {
   r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
   r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
   r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
+  r.post('/billing/admin/redeem-codes/batch', requireAdmin, billing.createAdminRedeemCodes);
+  r.get('/billing/admin/redeem-codes/:codeId/usages', requireAdmin, billing.listAdminRedeemCodeUsages);
   r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
   r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
   r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
