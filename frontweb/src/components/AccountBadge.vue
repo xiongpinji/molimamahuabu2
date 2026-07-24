@@ -22,6 +22,7 @@
     </div>
     <div v-if="account.held" class="held">冻结 {{ account.held }}</div>
     <router-link class="manage-link" to="/tenant-console">管理</router-link>
+    <router-link v-if="canManageAccounts" class="manage-link" to="/account-admin">账号</router-link>
     <button type="button" @click="logout">退出</button>
   </aside>
 </template>
@@ -38,6 +39,7 @@ import {
   saveCurrentTenantId,
 } from '@/utils/authSession'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
+import { ACCOUNT_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
 const route = useRoute()
 const router = useRouter()
@@ -48,6 +50,10 @@ const tenants = ref([])
 const tenantId = ref('')
 const loadingTenants = ref(false)
 const visible = computed(() => publicMode && route.name !== 'login' && !!readSession()?.token)
+const canManageAccounts = computed(() => {
+  const role = readSession()?.user?.role
+  return canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ)
+})
 
 async function loadAccount() {
   accountError.value = ''

@@ -35,6 +35,12 @@ export function clearSession(store = defaultStorage()) {
   store?.removeItem(TENANT_KEY)
 }
 
+export function clearSessionOnUnauthorized(status, publicMode, store = defaultStorage()) {
+  if (!publicMode || Number(status) !== 401) return false
+  clearSession(store)
+  return true
+}
+
 export function applyAuthHeader(config, store = defaultStorage()) {
   const session = readSession(store)
   config.headers = config.headers || {}

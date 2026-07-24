@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const audit = require('./auditEventService');
 
 const TOKEN_TTL = '2h';
 
@@ -18,18 +19,28 @@ function ensureSchema(db) {
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+      platform_role TEXT NOT NULL DEFAULT 'user',
+      token_version INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  const columns = new Set(db.prepare('PRAGMA table_info(platform_users)').all().map((row) => row.name));
+  if (!columns.has('platform_role')) {
+    db.exec("ALTER TABLE platform_users ADD COLUMN platform_role TEXT NOT NULL DEFAULT 'user'");
+    db.exec("UPDATE platform_users SET platform_role = role WHERE role = 'admin'");
+  }
+  if (!columns.has('token_version')) {
+    db.exec('ALTER TABLE platform_users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 function publicUser(row) {
   return row && {
     id: row.id,
     email: row.email,
-    role: row.role,
+    role: row.platform_role || row.role,
     status: row.status,
     created_at: row.created_at,
   };
@@ -73,6 +84,38 @@ function register(db, input) {
   return publicUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(row.id));
 }
 
+function bootstrapFirstAdmin(db, emailValue) {
+  ensureSchema(db);
+  if (!String(emailValue || '').trim()) return null;
+  let email;
+  try {
+    email = normalizeEmail(emailValue);
+  } catch {
+    return null;
+  }
+  return db.transaction(() => {
+    const existingAdmin = db.prepare(`SELECT 1 FROM platform_users
+      WHERE platform_role = 'admin' LIMIT 1`).get();
+    if (existingAdmin) return null;
+    const target = db.prepare(`SELECT id FROM platform_users
+      WHERE email = ? AND status = 'active'`).get(email);
+    if (!target) return null;
+    db.prepare(`UPDATE platform_users
+      SET role = 'admin', platform_role = 'admin',
+        token_version = token_version + 1, updated_at = ?
+      WHERE id = ?`).run(new Date().toISOString(), target.id);
+    const user = getUserById(db, target.id);
+    audit.record(db, {
+      userId: user.id,
+      eventType: 'platform.admin.bootstrap',
+      resourceType: 'platform_user',
+      resourceId: user.id,
+      outcome: 'success',
+    });
+    return user;
+  })();
+}
+
 function authenticate(db, emailValue, passwordValue) {
   ensureSchema(db);
   const email = normalizeEmail(emailValue);
@@ -85,13 +128,24 @@ function authenticate(db, emailValue, passwordValue) {
   return publicUser(row);
 }
 
+function getUserById(db, userId) {
+  ensureSchema(db);
+  return publicUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(String(userId)));
+}
+
+function getTokenVersion(db, userId) {
+  ensureSchema(db);
+  const row = db.prepare('SELECT token_version FROM platform_users WHERE id = ?').get(String(userId));
+  return row ? Number(row.token_version) || 0 : null;
+}
+
 function validSecret(secret) {
   return typeof secret === 'string' && Buffer.byteLength(secret, 'utf8') >= 32;
 }
 
-function issueToken(user, secret) {
+function issueToken(user, secret, tokenVersion = 0) {
   if (!validSecret(secret)) throw authError('AUTH_NOT_CONFIGURED', '用户登录密钥未安全配置');
-  return jwt.sign({ email: user.email, role: user.role }, secret, {
+  return jwt.sign({ email: user.email, role: user.role, ver: Number(tokenVersion) || 0 }, secret, {
     subject: user.id,
     expiresIn: TOKEN_TTL,
     algorithm: 'HS256',
@@ -101,7 +155,22 @@ function issueToken(user, secret) {
 function verifyToken(token, secret) {
   if (!validSecret(secret)) throw authError('AUTH_NOT_CONFIGURED', '用户登录密钥未安全配置');
   const claims = jwt.verify(token, secret, { algorithms: ['HS256'] });
-  return { id: claims.sub, email: claims.email, role: claims.role };
+  return {
+    id: claims.sub,
+    email: claims.email,
+    role: claims.role,
+    tokenVersion: Number(claims.ver) || 0,
+  };
 }
 
-module.exports = { ensureSchema, register, authenticate, issueToken, verifyToken, validSecret };
+module.exports = {
+  ensureSchema,
+  register,
+  bootstrapFirstAdmin,
+  authenticate,
+  getUserById,
+  getTokenVersion,
+  issueToken,
+  verifyToken,
+  validSecret,
+};

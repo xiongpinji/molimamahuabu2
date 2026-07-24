@@ -11,10 +11,22 @@ function createUserAuthMiddleware({ enabled, secret, db } = {}) {
       return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: '请先登录' } });
     }
     try {
-      req.user = auth.verifyToken(match[1], secret);
+      const claims = auth.verifyToken(match[1], secret);
       if (db) {
-        const current = db.prepare('SELECT status FROM platform_users WHERE id = ?').get(req.user.id);
-        if (!current || current.status !== 'active') throw new Error('inactive user');
+        const current = db.prepare(`SELECT email, role, platform_role, status, token_version
+          FROM platform_users WHERE id = ?`).get(claims.id);
+        if (!current
+          || current.status !== 'active'
+          || (Number(current.token_version) || 0) !== claims.tokenVersion) {
+          throw new Error('inactive user');
+        }
+        req.user = {
+          id: claims.id,
+          email: current.email,
+          role: current.platform_role || current.role,
+        };
+      } else {
+        req.user = { id: claims.id, email: claims.email, role: claims.role };
       }
       return next();
     } catch {

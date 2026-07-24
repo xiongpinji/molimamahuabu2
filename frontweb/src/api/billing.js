@@ -45,6 +45,14 @@ export function createRedeemCode(data) {
   return request.post('/billing/admin/redeem-codes', data)
 }
 
+export function createRedeemCodes(data) {
+  return request.post('/billing/admin/redeem-codes/batch', data)
+}
+
+export function listRedeemCodeUsages(codeId) {
+  return request.get(`/billing/admin/redeem-codes/${encodeURIComponent(codeId)}/usages`)
+}
+
 export function updateRedeemCode(codeId, data) {
   return request.put(`/billing/admin/redeem-codes/${encodeURIComponent(codeId)}`, data)
 }

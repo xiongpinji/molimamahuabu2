@@ -2,6 +2,10 @@ const { randomUUID } = require('crypto');
 const credits = require('./creditLedgerService');
 const tenants = require('./tenantService');
 const users = require('./userAuthService');
+const audit = require('./auditEventService');
+
+const PLATFORM_ROLES = Object.freeze(['user', 'admin', 'ops', 'support', 'read_only']);
+const USER_STATUSES = Object.freeze(['active', 'disabled']);
 
 function adminError(code, message) {
   const error = new Error(message);
@@ -15,7 +19,7 @@ function listUsers(db) {
   return db.prepare(`SELECT
       platform_users.id,
       platform_users.email,
-      platform_users.role,
+      platform_users.platform_role AS role,
       platform_users.status,
       platform_users.created_at,
       platform_users.updated_at,
@@ -28,19 +32,126 @@ function listUsers(db) {
     ORDER BY platform_users.created_at DESC, platform_users.email COLLATE NOCASE`).all();
 }
 
-function updateUser(db, userId, input = {}) {
+function getUser(db, userId) {
+  return db.prepare(`SELECT id, email, platform_role AS role, status, token_version,
+      created_at, updated_at
+    FROM platform_users WHERE id = ?`).get(String(userId));
+}
+
+function requireUser(db, userId) {
+  const user = getUser(db, userId);
+  if (!user) throw adminError('USER_NOT_FOUND', '账号不存在');
+  return user;
+}
+
+function assertNotLastActiveAdmin(db, user) {
+  if (user.role !== 'admin' || user.status !== 'active') return;
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM platform_users
+    WHERE platform_role = 'admin' AND status = 'active'`).get();
+  if (Number(row.count) <= 1) throw adminError('LAST_ACTIVE_ADMIN', '不能停用或降级最后一个启用管理员');
+}
+
+function recordAccountAudit(db, actorUserId, targetUserId, eventType, code) {
+  audit.record(db, {
+    userId: actorUserId,
+    eventType,
+    resourceType: 'platform_user',
+    resourceId: targetUserId,
+    outcome: 'success',
+    code,
+  });
+}
+
+function changeUserRole(db, input = {}) {
   users.ensureSchema(db);
-  const status = String(input.status || '').trim();
+  audit.ensureSchema(db);
+  const targetUserId = String(input.targetUserId || '');
   const role = String(input.role || '').trim();
-  if (!['active', 'disabled'].includes(status) || !['user', 'admin'].includes(role)) {
+  if (!PLATFORM_ROLES.includes(role)) throw adminError('INVALID_USER_ROLE', '账号角色无效');
+  return db.transaction(() => {
+    const current = requireUser(db, targetUserId);
+    if (current.role === role) return current;
+    if (current.role === 'admin' && role !== 'admin') assertNotLastActiveAdmin(db, current);
+    db.prepare(`UPDATE platform_users
+      SET role = ?, platform_role = ?, token_version = token_version + 1, updated_at = ?
+      WHERE id = ?`)
+      .run(role === 'admin' ? 'admin' : 'user', role, new Date().toISOString(), targetUserId);
+    recordAccountAudit(
+      db,
+      input.actorUserId,
+      targetUserId,
+      'platform.user.role_changed',
+      `${current.role}->${role}`,
+    );
+    return getUser(db, targetUserId);
+  })();
+}
+
+function changeUserStatus(db, input = {}) {
+  users.ensureSchema(db);
+  audit.ensureSchema(db);
+  const targetUserId = String(input.targetUserId || '');
+  const status = String(input.status || '').trim();
+  if (!USER_STATUSES.includes(status)) throw adminError('INVALID_USER_STATUS', '账号状态无效');
+  return db.transaction(() => {
+    const current = requireUser(db, targetUserId);
+    if (current.status === status) return current;
+    if (status === 'disabled' && String(input.actorUserId) === targetUserId) {
+      throw adminError('CANNOT_SUSPEND_SELF', '不能暂停自己的账号');
+    }
+    if (status === 'disabled') assertNotLastActiveAdmin(db, current);
+    db.prepare(`UPDATE platform_users
+      SET status = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?`)
+      .run(status, new Date().toISOString(), targetUserId);
+    recordAccountAudit(
+      db,
+      input.actorUserId,
+      targetUserId,
+      'platform.user.status_changed',
+      `${current.status}->${status}`,
+    );
+    return getUser(db, targetUserId);
+  })();
+}
+
+function forceLogout(db, input = {}) {
+  users.ensureSchema(db);
+  audit.ensureSchema(db);
+  const targetUserId = String(input.targetUserId || '');
+  return db.transaction(() => {
+    requireUser(db, targetUserId);
+    db.prepare(`UPDATE platform_users
+      SET token_version = token_version + 1, updated_at = ? WHERE id = ?`)
+      .run(new Date().toISOString(), targetUserId);
+    recordAccountAudit(
+      db,
+      input.actorUserId,
+      targetUserId,
+      'platform.user.force_logout',
+      'token_version_incremented',
+    );
+    return getUser(db, targetUserId);
+  })();
+}
+
+function updateUser(db, userId, input = {}) {
+  const role = String(input.role || '').trim();
+  const status = String(input.status || '').trim();
+  if (!PLATFORM_ROLES.includes(role) || !USER_STATUSES.includes(status)) {
     throw adminError('INVALID_USER_UPDATE', '账号角色或状态无效');
   }
-  const result = db.prepare(`UPDATE platform_users
-    SET role = ?, status = ?, updated_at = ? WHERE id = ?`)
-    .run(role, status, new Date().toISOString(), String(userId));
-  if (result.changes !== 1) throw adminError('USER_NOT_FOUND', '账号不存在');
-  return db.prepare(`SELECT id, email, role, status, created_at, updated_at
-    FROM platform_users WHERE id = ?`).get(String(userId));
+  return db.transaction(() => {
+    changeUserStatus(db, {
+      actorUserId: input.actorUserId,
+      targetUserId: userId,
+      status,
+    });
+    return changeUserRole(db, {
+      actorUserId: input.actorUserId,
+      targetUserId: userId,
+      role,
+    });
+  })();
 }
 
 function listTenants(db) {
@@ -119,8 +230,13 @@ function listCreditTransactions(db, input = {}) {
 }
 
 module.exports = {
+  PLATFORM_ROLES,
+  USER_STATUSES,
   listUsers,
   updateUser,
+  changeUserRole,
+  changeUserStatus,
+  forceLogout,
   listTenants,
   adjustTenantCredits,
   listCreditTransactions,

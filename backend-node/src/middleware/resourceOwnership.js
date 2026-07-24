@@ -196,9 +196,15 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
     if (!match) return res.status(401).end();
     let user;
     try {
-      user = userAuth.verifyToken(match[1], secret);
-      const current = db.prepare('SELECT status FROM platform_users WHERE id = ?').get(user.id);
-      if (!current || current.status !== 'active') throw new Error('inactive user');
+      const claims = userAuth.verifyToken(match[1], secret);
+      const current = db.prepare(`SELECT email, role, platform_role, status, token_version
+        FROM platform_users WHERE id = ?`).get(claims.id);
+      if (!current
+        || current.status !== 'active'
+        || (Number(current.token_version) || 0) !== claims.tokenVersion) {
+        throw new Error('inactive user');
+      }
+      user = { id: claims.id, email: current.email, role: current.platform_role || current.role };
     } catch (_) {
       return res.status(401).end();
     }

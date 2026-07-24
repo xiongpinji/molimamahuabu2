@@ -5,7 +5,27 @@ const auditEvents = require('../services/auditEventService');
 const subscriptions = require('../services/subscriptionBillingService');
 const redeemCodes = require('../services/redeem-code-service');
 const platformAdmin = require('../services/platform-admin-service');
+const tenants = require('../services/tenantService');
+const reconciliation = require('../services/billingReconciliationService');
 
+function adminRedeemInput(db, req) {
+  const input = {
+    ...(req.body || {}),
+    createdBy: req.user?.id,
+  };
+  const tenantId = String(input.tenantId ?? input.tenant_id ?? '').trim();
+  if (tenantId) {
+    tenants.ensureSchema(db);
+    const tenant = db.prepare("SELECT id FROM tenants WHERE id = ? AND status = 'active'")
+      .get(tenantId);
+    if (!tenant) {
+      const error = new Error('目标租户不存在或已停用');
+      error.code = 'INVALID_REDEEM_CODE';
+      throw error;
+    }
+  }
+  return input;
+}
 function routes(db, log) {
   return {
     getAccount: (req, res) => {
@@ -73,7 +93,10 @@ function routes(db, log) {
     },
     updateAdminUser: (req, res) => {
       try {
-        response.success(res, platformAdmin.updateUser(db, req.params.userId, req.body || {}));
+        response.success(res, platformAdmin.updateUser(db, req.params.userId, {
+          ...(req.body || {}),
+          actorUserId: req.user?.id,
+        }));
       } catch (error) {
         if (error.code === 'INVALID_USER_UPDATE') return response.badRequest(res, error.message);
         if (error.code === 'USER_NOT_FOUND') return response.notFound(res, error.message);
@@ -94,7 +117,10 @@ function routes(db, log) {
         response.success(res, platformAdmin.adjustTenantCredits(
           db,
           req.params.tenantId,
-          req.body || {},
+          {
+            ...(req.body || {}),
+            actorUserId: req.user?.id,
+          },
         ));
       } catch (error) {
         if (error.code === 'INVALID_CREDIT_ADJUSTMENT') return response.badRequest(res, error.message);
@@ -117,6 +143,52 @@ function routes(db, log) {
         response.internalError(res, error.message);
       }
     },
+    listReconciliationAnomalies: (req, res) => {
+      try {
+        response.success(res, reconciliation.listAnomalies(db, {
+          olderThanMinutes: req.query?.older_than_minutes,
+          limit: req.query?.limit,
+        }));
+      } catch (error) {
+        if (error.code === 'INVALID_RECONCILIATION_INPUT') {
+          return response.badRequest(res, error.message);
+        }
+        log.error('billing admin list reconciliation anomalies', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    listReconciliationHistory: (req, res) => {
+      try {
+        response.success(res, reconciliation.listHistory(db, {
+          limit: req.query?.limit,
+        }));
+      } catch (error) {
+        log.error('billing admin list reconciliation history', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    refundReconciliationReservation: (req, res) => {
+      try {
+        response.success(res, reconciliation.refundReservation(db, {
+          reservationId: req.params.reservationId,
+          idempotencyKey: req.body?.idempotency_key,
+          reason: req.body?.reason,
+          actorUserId: req.user?.id,
+        }));
+      } catch (error) {
+        if (error.code === 'INVALID_RECONCILIATION_INPUT') {
+          return response.badRequest(res, error.message);
+        }
+        if (error.code === 'RECONCILIATION_RESERVATION_NOT_FOUND') {
+          return response.notFound(res, error.message);
+        }
+        if (['UNSAFE_RECONCILIATION_REFUND', 'RECONCILIATION_IDEMPOTENCY_CONFLICT'].includes(error.code)) {
+          return response.error(res, 409, error.code, error.message);
+        }
+        log.error('billing admin refund reconciliation reservation', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
     listAdminRedeemCodes: (_req, res) => {
       try {
         response.success(res, redeemCodes.listCodes(db));
@@ -127,10 +199,28 @@ function routes(db, log) {
     },
     createAdminRedeemCode: (req, res) => {
       try {
-        response.created(res, redeemCodes.createCode(db, req.body || {}));
+        response.created(res, redeemCodes.createCode(db, adminRedeemInput(db, req)));
       } catch (error) {
         if (error.code === 'INVALID_REDEEM_CODE') return response.badRequest(res, error.message);
         log.error('billing admin create redeem code', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    createAdminRedeemCodes: (req, res) => {
+      try {
+        response.created(res, redeemCodes.createCodes(db, adminRedeemInput(db, req)));
+      } catch (error) {
+        if (error.code === 'INVALID_REDEEM_CODE') return response.badRequest(res, error.message);
+        log.error('billing admin create redeem codes', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    listAdminRedeemCodeUsages: (req, res) => {
+      try {
+        response.success(res, redeemCodes.listUsages(db, req.params.codeId));
+      } catch (error) {
+        if (error.code === 'REDEEM_CODE_NOT_FOUND') return response.notFound(res, error.message);
+        log.error('billing admin list redeem code usages', { error: error.message });
         response.internalError(res, error.message);
       }
     },

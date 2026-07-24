@@ -8,11 +8,13 @@
 PUBLIC_PLATFORM_MODE=true
 PLATFORM_JWT_SECRET=<至少 32 字节的独立随机密钥>
 PLATFORM_ADMIN_TOKEN=<至少 32 字符的独立随机令牌>
+PLATFORM_BOOTSTRAP_ADMIN_EMAIL=<首个管理员的已验证邮箱>
 PLATFORM_REGISTRATION_ENABLED=false
 ```
 
 - `PLATFORM_JWT_SECRET` 用于签发用户登录令牌，不能与管理员令牌或模型 API 密钥复用。
 - `PLATFORM_ADMIN_TOKEN` 通过 `X-Platform-Admin-Token` 请求头传递；用户 JWT 始终使用 `Authorization: Bearer ...`，两者不能混用。
+- `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 锁定首管理员身份。仅凭邮箱不会自动提权；对应账号登录后还必须携带 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`。该接口只在数据库从未存在任何 `admin` 账号时成功一次，并返回提升后的新 JWT；管理员即使被停用也不会重新开放引导。
 - 默认关闭公开注册。正式开放前还需要验证码、邮件验证、注册限流和用户协议确认。
 
 ## 前端构建变量
@@ -26,7 +28,7 @@ VITE_PUBLIC_PLATFORM_MODE=true
 ## 上线前人工确认
 
 1. 通过 `/billing-admin` 为 `GPT-5.5`、`gpt-image-2`、`seedance 2.0` 分别设置正整数积分价格；未定价模型会禁止生成。
-2. 创建管理员用户和普通测试用户，由管理员通过受控后台充值；当前版本尚未提供支付渠道或自动充值。
+2. 设置 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL`，临时开放注册或预先创建对应账号。该账号登录后，用 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`，保存返回的新 JWT并立即关闭公开注册；再创建普通测试用户。当前版本尚未提供支付渠道或自动充值。
 3. 在隔离测试账户中执行一次真实小额生成，核对供应商账单、预扣、成功确认、明确失败退款和状态未知冻结。
 4. 配置 HTTPS、反向代理请求体上限、数据库与素材备份、日志脱敏、限流及告警。
 

@@ -26,8 +26,10 @@ const sceneModelMapRoutes = require('./sceneModelMap');
 const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
+const platformAccountRoutes = require('./platformAccounts');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
+const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
 const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function setupRouter(cfg, db, log) {
@@ -45,12 +47,25 @@ function setupRouter(cfg, db, log) {
     enabled: publicPlatformEnabled,
     token: process.env.PLATFORM_ADMIN_TOKEN,
   });
+  const requireBootstrapAdminToken = createAdminAuthMiddleware({
+    enabled: publicPlatformEnabled,
+    token: process.env.PLATFORM_ADMIN_TOKEN,
+    requireRole: false,
+  });
   const auth = authRoutes(db, {
     registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    bootstrapAdminEmail: publicPlatformEnabled
+      ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
+      : undefined,
   });
   const billing = billingRoutes(db, log);
   const tenants = tenantRoutes(db, log);
+  const platformAccounts = platformAccountRoutes(db, log);
+  const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
+    permission,
+    { enabled: publicPlatformEnabled },
+  );
   const authRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'auth',
@@ -80,20 +95,30 @@ function setupRouter(cfg, db, log) {
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
+  r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
   r.get('/auth/me', auth.me);
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
+  r.get('/platform-admin/users', requirePlatformPermission(PERMISSIONS.USERS_READ), platformAccounts.listUsers);
+  r.patch('/platform-admin/users/:userId/role', requirePlatformPermission(PERMISSIONS.USERS_ROLE), platformAccounts.changeRole);
+  r.patch('/platform-admin/users/:userId/status', requirePlatformPermission(PERMISSIONS.USERS_STATUS), platformAccounts.changeStatus);
+  r.post('/platform-admin/users/:userId/force-logout', requirePlatformPermission(PERMISSIONS.USERS_FORCE_LOGOUT), platformAccounts.forceLogout);
   // 平台管理接口不依赖当前租户，避免管理员因浏览器残留了无效租户 ID 而无法进入后台。
-  r.get('/billing/admin/users', requireAdmin, billing.listAdminUsers);
-  r.put('/billing/admin/users/:userId', requireAdmin, billing.updateAdminUser);
+  r.get('/billing/admin/users', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_READ), billing.listAdminUsers);
+  r.put('/billing/admin/users/:userId', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_ROLE), billing.updateAdminUser);
   r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
   r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
   r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, billing.listReconciliationAnomalies);
+  r.get('/billing/admin/reconciliation/history', requireAdmin, billing.listReconciliationHistory);
+  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, billing.refundReconciliationReservation);
   r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
   r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
+  r.post('/billing/admin/redeem-codes/batch', requireAdmin, billing.createAdminRedeemCodes);
+  r.get('/billing/admin/redeem-codes/:codeId/usages', requireAdmin, billing.listAdminRedeemCodeUsages);
   r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
   r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
   r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);

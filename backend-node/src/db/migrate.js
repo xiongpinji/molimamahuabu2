@@ -97,6 +97,11 @@ function ensureColumns(database, table, columns) {
  * 所以原 schema 中 NOT NULL 的列在这里用 DEFAULT 兜底。
  */
 function ensureAllColumns(database) {
+  ensureColumns(database, 'platform_users', [
+    { name: 'platform_role', type: 'TEXT NOT NULL DEFAULT \'user\'' },
+    { name: 'token_version', type: 'INTEGER NOT NULL DEFAULT 0' },
+  ]);
+
   // --- dramas ---
   ensureColumns(database, 'dramas', [
     { name: 'user_id',         type: 'TEXT' },

@@ -77,7 +77,7 @@ test('GPT-5.5 同步生成供应商失败时退回预扣积分', async (t) => {
   assert.equal(credits.getAccount(db, 'user-1').held, 0);
 });
 
-test('重启遗留和用户取消的故事任务都会退款', () => {
+test('重启遗留任务退款，但用户取消在底层调用结束前保持冻结', () => {
   const db = setup();
   const now = new Date().toISOString();
   const held = credits.reserve(db, {
@@ -102,6 +102,7 @@ test('重启遗留和用户取消的故事任务都会退款', () => {
     'cancel-task', '1', 'user-1', 'GPT-5.5', heldCancel.id, now, now
   );
   assert.equal(taskService.cancelTask(db, log, 'cancel-task').ok, true);
-  assert.equal(credits.getReservation(db, heldCancel.id).status, 'refunded');
+  assert.equal(credits.getReservation(db, heldCancel.id).status, 'held');
+  assert.equal(credits.getAccount(db, 'user-1').held, 5);
   db.close();
 });

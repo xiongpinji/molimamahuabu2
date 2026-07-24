@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 
 const { createAdminAuthMiddleware } = require('../src/middleware/adminAuth');
 
-function run(middleware, headers = {}) {
-  const req = { get: (name) => headers[name.toLowerCase()] };
+function run(middleware, headers = {}, user = null) {
+  const req = { get: (name) => headers[name.toLowerCase()], user };
   const result = { status: null, body: null, next: false };
   const res = {
     status(code) { result.status = code; return this; },
@@ -29,10 +29,29 @@ test('公开模式拒绝缺失或错误令牌并只接受独立管理员请求�
   assert.equal(run(middleware, undefined).status, 401);
   assert.equal(run(middleware, { 'x-platform-admin-token': 'b'.repeat(32) }).status, 401);
   assert.equal(run(middleware, { authorization: `Bearer ${'a'.repeat(32)}` }).status, 401);
-  assert.equal(run(middleware, { 'x-platform-admin-token': 'a'.repeat(32) }).next, true);
+  assert.equal(run(middleware, { 'x-platform-admin-token': 'a'.repeat(32) }).status, 403);
+  assert.equal(run(
+    middleware,
+    { 'x-platform-admin-token': 'a'.repeat(32) },
+    { id: 'admin-1', role: 'admin' },
+  ).next, true);
 });
 
 test('公开模式拒绝过短管理员令牌配置', () => {
   const result = run(createAdminAuthMiddleware({ enabled: true, token: 'short' }), { 'x-platform-admin-token': 'short' });
   assert.equal(result.status, 503);
+});
+
+test('首管理员引导只校验独立管理员令牌，不预先要求数据库管理员角色', () => {
+  const middleware = createAdminAuthMiddleware({
+    enabled: true,
+    token: 'a'.repeat(32),
+    requireRole: false,
+  });
+  const result = run(
+    middleware,
+    { 'x-platform-admin-token': 'a'.repeat(32) },
+    { id: 'founder-1', role: 'user' },
+  );
+  assert.equal(result.next, true);
 });

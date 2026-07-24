@@ -73,41 +73,7 @@
         </el-tab-pane>
 
         <el-tab-pane label="兑换码" name="codes">
-          <section class="panel">
-            <div class="code-form">
-              <el-input v-model.trim="newCode.label" placeholder="用途说明" />
-              <el-input-number v-model="newCode.credits" :min="1" :step="100" step-strictly />
-              <el-input-number v-model="newCode.max_redemptions" :min="1" :step="1" step-strictly />
-              <el-date-picker
-                v-model="newCode.expires_at"
-                type="datetime"
-                value-format="YYYY-MM-DDTHH:mm:ss.SSSZ"
-                placeholder="到期时间（可选）"
-              />
-              <el-button type="primary" :loading="creatingCode" @click="generateCode">生成兑换码</el-button>
-            </div>
-            <p class="field-hint">依次填写说明、单次积分、最大兑换次数和可选到期时间。</p>
-            <el-table :data="codes" empty-text="暂无兑换码">
-              <el-table-column prop="code_hint" label="兑换码" min-width="190" />
-              <el-table-column prop="label" label="说明" min-width="160" />
-              <el-table-column prop="credits" label="积分" width="100" />
-              <el-table-column label="使用次数" width="120">
-                <template #default="{ row }">{{ row.redeemed_count }}/{{ row.max_redemptions }}</template>
-              </el-table-column>
-              <el-table-column label="到期时间" min-width="170">
-                <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="110">
-                <template #default="{ row }">
-                  <el-switch
-                    :model-value="row.status === 'active'"
-                    :loading="updatingCode === row.id"
-                    @change="toggleCode(row, $event)"
-                  />
-                </template>
-              </el-table-column>
-            </el-table>
-          </section>
+          <RedeemOperationsPanel :users="users" :tenants="tenants" />
         </el-tab-pane>
 
         <el-tab-pane label="账号管理" name="accounts">
@@ -167,6 +133,10 @@
             </el-table>
           </section>
         </el-tab-pane>
+
+        <el-tab-pane label="积分对账" name="reconciliation">
+          <BillingReconciliationPanel />
+        </el-tab-pane>
       </el-tabs>
     </section>
   </main>
@@ -174,19 +144,18 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
+import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
+import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
 import {
   adjustTenantCredits,
-  createRedeemCode,
   listAdminCreditTransactions,
   listAdminTenants,
   listModelPrices,
   listPlatformUsers,
-  listRedeemCodes,
   updateModelPrice,
   updatePlatformUser,
-  updateRedeemCode,
 } from '@/api/billing'
 import { saveAdminToken } from '@/utils/authSession'
 
@@ -195,13 +164,10 @@ const loading = ref(false)
 const unlocked = ref(false)
 const activeTab = ref('models')
 const prices = ref([])
-const codes = ref([])
 const users = ref([])
 const tenants = ref([])
 const transactions = ref([])
 const savingModel = ref('')
-const creatingCode = ref(false)
-const updatingCode = ref('')
 const savingUser = ref('')
 const adjustingCredits = ref(false)
 const newModel = reactive({
@@ -209,12 +175,6 @@ const newModel = reactive({
   display_name: '',
   category: 'video',
   credits: 1,
-})
-const newCode = reactive({
-  label: '',
-  credits: 100,
-  max_redemptions: 1,
-  expires_at: null,
 })
 const creditForm = reactive({
   tenant_id: '',
@@ -227,9 +187,8 @@ function formatDate(value) {
 }
 
 async function loadAll() {
-  const [modelRows, codeRows, userRows, tenantRows, transactionRows] = await Promise.all([
+  const [modelRows, userRows, tenantRows, transactionRows] = await Promise.all([
     listModelPrices(),
-    listRedeemCodes(),
     listPlatformUsers(),
     listAdminTenants(),
     listAdminCreditTransactions(),
@@ -238,7 +197,6 @@ async function loadAll() {
     ...item,
     status: item.status === 'unconfigured' ? 'enabled' : item.status,
   }))
-  codes.value = codeRows
   users.value = userRows
   tenants.value = tenantRows
   transactions.value = transactionRows
@@ -293,32 +251,6 @@ async function addModel() {
   }
 }
 
-async function generateCode() {
-  creatingCode.value = true
-  try {
-    const created = await createRedeemCode(newCode)
-    codes.value.unshift(created)
-    Object.assign(newCode, { label: '', credits: 100, max_redemptions: 1, expires_at: null })
-    await ElMessageBox.alert(
-      created.code,
-      '兑换码已生成，请立即复制',
-      { confirmButtonText: '我已复制', type: 'success' },
-    )
-  } finally {
-    creatingCode.value = false
-  }
-}
-
-async function toggleCode(row, enabled) {
-  updatingCode.value = row.id
-  try {
-    const saved = await updateRedeemCode(row.id, { status: enabled ? 'active' : 'disabled' })
-    Object.assign(row, saved)
-  } finally {
-    updatingCode.value = ''
-  }
-}
-
 async function saveUser(row) {
   savingUser.value = row.id
   try {
@@ -368,13 +300,12 @@ async function submitAdjustment() {
 .model-list { display: grid; gap: 10px; }
 .model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #303136; border-radius: 12px; }
 .model-row small { grid-column: 1 / -1; color: #8f9098; }
-.new-model, .code-form, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
+.new-model, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
 .new-model { grid-template-columns: 1.2fr 1fr 120px 150px auto; }
-.code-form { grid-template-columns: 1fr 150px 170px 240px auto; }
 .credit-form { grid-template-columns: 1.2fr 160px 1.5fr auto; }
 .panel :deep(.el-table) { margin-top: 18px; }
 .field-hint { font-size: 12px; }
 @media (max-width: 900px) {
-  .model-row, .new-model, .code-form, .credit-form, .admin-auth { grid-template-columns: 1fr; }
+  .model-row, .new-model, .credit-form, .admin-auth { grid-template-columns: 1fr; }
 }
 </style>

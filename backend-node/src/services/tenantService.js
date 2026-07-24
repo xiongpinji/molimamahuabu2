@@ -165,6 +165,9 @@ function removeMember(db, tenantIdValue, requesterUserId, targetUserIdValue) {
   const targetUserId = String(targetUserIdValue);
   const target = membership(db, tenantId, targetUserId);
   if (!target) throw tenantError('USER_NOT_FOUND', '成员不存在');
+  if (manager.role === 'admin' && target.role !== 'member') {
+    throw tenantError('TENANT_NOT_FOUND', '租户不存在');
+  }
   if (target.role === 'owner') {
     if (manager.role !== 'owner') throw tenantError('TENANT_NOT_FOUND', '租户不存在');
     const owners = db.prepare(`SELECT COUNT(*) AS count FROM tenant_members
