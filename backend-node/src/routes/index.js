@@ -28,17 +28,18 @@ const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
+const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
-  const drama = dramaRoutes(db, cfg, log);
+  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
   const aiConfig = aiConfigRoutes(db, log, cfg);
-  const prop = propRoutes(db, log, cfg);
   const stub = stubRoutes(db, cfg, log);
   const sceneModelMap = sceneModelMapRoutes(db, log);
-  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const prop = propRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const { createAdminAuthMiddleware } = require('../middleware/adminAuth');
   const requireAdmin = createAdminAuthMiddleware({
     enabled: publicPlatformEnabled,
@@ -85,12 +86,27 @@ function setupRouter(cfg, db, log) {
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
+  // 平台管理接口不依赖当前租户，避免管理员因浏览器残留了无效租户 ID 而无法进入后台。
+  r.get('/billing/admin/users', requireAdmin, billing.listAdminUsers);
+  r.put('/billing/admin/users/:userId', requireAdmin, billing.updateAdminUser);
+  r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
+  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
+  r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
+  r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
+  r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
+  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
+  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
+  r.get('/billing/prices', requireAdmin, billing.listPrices);
+  r.put('/billing/prices/:model', requireAdmin, billing.updatePrice);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
+  r.post('/billing/redeem', billing.redeemCredits);
+  r.get('/billing/credit-transactions', billing.listCreditTransactions);
   r.get('/billing/plans', billing.listPlans);
   r.get('/billing/subscription', billing.getSubscription);
   r.get('/billing/orders', billing.listOrders);
@@ -98,11 +114,6 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
-  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
-  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
-  r.use('/billing/prices', requireAdmin);
-  r.get('/billing/prices', billing.listPrices);
-  r.put('/billing/prices/:model', billing.updatePrice);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);
@@ -111,7 +122,7 @@ function setupRouter(cfg, db, log) {
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
   const uploadHandlers = uploadModule.routes(cfg, log, db);
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
-  const storyboards = storyboardRoutes(db, log);
+  const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
   const images = imageRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
@@ -144,10 +155,20 @@ function setupRouter(cfg, db, log) {
       const title = req.body?.title || '';
       const maxChapters = Number(req.body?.max_chapters) || 20;
       const aiSummarize = req.body?.ai_summarize === 'true' || req.body?.ai_summarize === true;
-      const result = await novelImportService.importNovel(db, log, { text, title, maxChapters, aiSummarize });
+      const result = await novelImportService.importNovel(db, log, {
+        text,
+        title,
+        maxChapters,
+        aiSummarize,
+        model: req.body?.model,
+        billingEnabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+      });
       response.success(res, result);
     } catch (err) {
       log.error('dramas import-novel', { error: err.message });
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   });
@@ -186,10 +207,15 @@ function setupRouter(cfg, db, log) {
       if (!body.drama_id) {
         return response.badRequest(res, 'drama_id 必填');
       }
-      const taskId = characterGenerationService.generateCharacters(db, cfg, log, body);
+      const taskId = characterGenerationService.generateCharacters(db, cfg, log, body, {
+        billingEnabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+      });
       response.success(res, { task_id: taskId, status: 'pending' });
     } catch (err) {
       log.error('generation/characters', { error: err.message });
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message || '创建任务失败');
     }
   });
@@ -213,7 +239,9 @@ function setupRouter(cfg, db, log) {
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
-      if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') return response.error(res, 503, err.code, err.message);
+      if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+        return response.error(res, 503, err.code, err.message);
+      }
       if (err.code === 'INSUFFICIENT_CREDITS') return response.error(res, 402, err.code, '积分不足，请充值后重试');
       if (err.code === 'UNSUPPORTED_BILLING_MODEL') return response.badRequest(res, err.message);
       if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
@@ -278,16 +306,34 @@ function setupRouter(cfg, db, log) {
 
   // ---------- vision: 从图片提取描述（不依赖已有实体 ID）----------
   r.post('/extract-description-from-image', async (req, res) => {
-    const { image_url, entity_type, entity_name } = req.body || {};
+    const { image_url, entity_type, entity_name, model } = req.body || {};
     if (!image_url) return response.badRequest(res, '缺少 image_url');
     if (!['character', 'scene', 'prop'].includes(entity_type)) return response.badRequest(res, 'entity_type 需为 character/scene/prop');
+    let billing = null;
     try {
+      billing = textGenerationBilling.begin(db, {
+        enabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+        requestedModel: model || undefined,
+        resourceType: 'vision_description',
+        resourceId: `${entity_type}:${entity_name || 'unnamed'}`,
+        operation: 'vision_description',
+      });
       const { extractDescriptionFromImage } = require('../services/aiClient');
-      const out = await extractDescriptionFromImage(db, log, entity_type, image_url, entity_name);
-      if (!out.ok) return response.badRequest(res, out.error);
+      const out = await extractDescriptionFromImage(
+        db, log, entity_type, image_url, entity_name, billing.model,
+      );
+      if (!out.ok) {
+        textGenerationBilling.settle(db, log, billing, 'failed', out.error);
+        return response.badRequest(res, out.error);
+      }
+      textGenerationBilling.settle(db, log, billing, 'completed');
       response.success(res, { description: out.description });
     } catch (err) {
       log.error('extract-description-from-image', { error: err.message });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   });

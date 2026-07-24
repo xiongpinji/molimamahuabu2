@@ -69,6 +69,20 @@ function ensureSchema(db) {
       created_at TEXT NOT NULL,
       UNIQUE (reservation_id, event_type)
     );
+    CREATE TABLE IF NOT EXISTS tenant_credit_adjustments (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_user_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust')),
+      amount INTEGER NOT NULL CHECK (amount != 0),
+      reason TEXT NOT NULL,
+      reference_type TEXT NOT NULL,
+      reference_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, reference_type, reference_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_adjustments_tenant_created
+      ON tenant_credit_adjustments(tenant_id, created_at DESC);
   `);
 }
 
@@ -103,6 +117,77 @@ function setTenantAccountBalance(db, tenantId, available) {
     ON CONFLICT(tenant_id) DO UPDATE SET available = excluded.available, updated_at = excluded.updated_at`)
     .run(String(tenantId), amount, now);
   return getTenantAccount(db, tenantId);
+}
+
+function adjustTenantBalance(db, input) {
+  ensureSchema(db);
+  const tenantId = String(input.tenantId || '').trim();
+  const amount = Number(input.amount);
+  const eventType = String(input.eventType || '');
+  const reason = String(input.reason || '').trim();
+  const referenceType = String(input.referenceType || '').trim();
+  const referenceId = String(input.referenceId || '').trim();
+  if (!tenantId || !Number.isSafeInteger(amount) || amount === 0) {
+    throw new Error('积分调整参数无效');
+  }
+  if (!['redeem', 'admin_adjust'].includes(eventType)) throw new Error('积分调整类型无效');
+  if (!reason || reason.length > 240 || !referenceType || !referenceId) {
+    throw new Error('积分调整原因或引用无效');
+  }
+  return db.transaction(() => {
+    const existing = db.prepare(`SELECT * FROM tenant_credit_adjustments
+      WHERE tenant_id = ? AND reference_type = ? AND reference_id = ?`)
+      .get(tenantId, referenceType, referenceId);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    db.prepare(`INSERT OR IGNORE INTO tenant_credit_accounts
+      (tenant_id, available, held, spent, updated_at) VALUES (?, 0, 0, 0, ?)`)
+      .run(tenantId, now);
+    const changed = amount > 0
+      ? db.prepare(`UPDATE tenant_credit_accounts
+        SET available = available + ?, updated_at = ? WHERE tenant_id = ?`)
+        .run(amount, now, tenantId)
+      : db.prepare(`UPDATE tenant_credit_accounts
+        SET available = available - ?, updated_at = ?
+        WHERE tenant_id = ? AND available >= ?`)
+        .run(Math.abs(amount), now, tenantId, Math.abs(amount));
+    if (changed.changes !== 1) {
+      const error = new Error('可用积分不足，不能完成扣减');
+      error.code = 'INSUFFICIENT_CREDITS';
+      throw error;
+    }
+    const row = {
+      id: randomUUID(),
+      tenant_id: tenantId,
+      actor_user_id: input.actorUserId == null ? null : String(input.actorUserId),
+      event_type: eventType,
+      amount,
+      reason,
+      reference_type: referenceType,
+      reference_id: referenceId,
+      created_at: now,
+    };
+    db.prepare(`INSERT INTO tenant_credit_adjustments
+      (id, tenant_id, actor_user_id, event_type, amount, reason,
+        reference_type, reference_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        row.id, row.tenant_id, row.actor_user_id, row.event_type, row.amount,
+        row.reason, row.reference_type, row.reference_id, row.created_at,
+      );
+    return row;
+  })();
+}
+
+function listTenantAdjustments(db, tenantId, limitValue = 100) {
+  ensureSchema(db);
+  const limit = Math.min(Math.max(Number.parseInt(limitValue, 10) || 100, 1), 500);
+  return db.prepare(`SELECT id, tenant_id, actor_user_id, event_type, amount,
+      reason, reference_type, reference_id, created_at
+    FROM tenant_credit_adjustments
+    WHERE tenant_id = ?
+    ORDER BY rowid DESC
+    LIMIT ?`).all(String(tenantId), limit);
 }
 
 function getReservation(db, id) {
@@ -270,6 +355,8 @@ module.exports = {
   getAccount,
   setTenantAccountBalance,
   getTenantAccount,
+  adjustTenantBalance,
+  listTenantAdjustments,
   getReservation,
   reserve,
   confirm,

@@ -1,6 +1,6 @@
 <template>
   <main class="tenant-page">
-    <PlatformHeader title="工作区与计费" back-to="/" back-label="返回项目" />
+    <PlatformHeader title="工作区与积分" back-to="/" back-label="返回项目" />
 
     <section v-if="!publicMode" class="tenant-shell">
       <el-alert
@@ -14,8 +14,8 @@
     <section v-else v-loading="loading" class="tenant-shell">
       <header class="page-heading">
         <div>
-          <h1>工作区与计费</h1>
-          <p>切换团队空间、管理成员，并查看当前租户的积分和订阅。</p>
+          <h1>工作区与积分</h1>
+          <p>切换团队空间、管理成员，并查看当前工作区的积分。</p>
         </div>
         <el-button type="primary" @click="showCreate = true">新建工作区</el-button>
       </header>
@@ -41,9 +41,9 @@
           <small>冻结 {{ account.held }} · 已使用 {{ account.spent }}</small>
         </article>
         <article class="info-card">
-          <span>当前套餐</span>
-          <strong>{{ subscription?.plan_name || '尚未订阅' }}</strong>
-          <small>{{ subscription ? subscriptionStatus(subscription.status) : '可从下方创建待支付订单' }}</small>
+          <span>积分获取</span>
+          <strong>兑换码</strong>
+          <small>平台管理员发放，兑换后立即进入当前工作区</small>
         </article>
         <article class="info-card">
           <span>当前工作区</span>
@@ -90,58 +90,32 @@
         </el-table>
       </section>
 
+      <section class="panel redeem-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>兑换码</h2>
+            <p>兑换积分只进入当前工作区；同一工作区不能重复使用同一兑换码。</p>
+          </div>
+          <div class="redeem-form">
+            <el-input v-model.trim="redeemCode" placeholder="MOLI-XXXX-XXXX-XXXX" />
+            <el-button type="primary" :loading="redeeming" @click="redeem">立即兑换</el-button>
+          </div>
+        </div>
+      </section>
+
       <section class="panel">
         <div class="panel-heading">
           <div>
-            <h2>套餐</h2>
-            <p>本阶段仅创建待支付订单，不会自动扣款、激活订阅或发放积分。</p>
+            <h2>积分流水</h2>
+            <p>展示兑换和管理员调账记录，便于核对工作区积分变化。</p>
           </div>
         </div>
-        <div v-if="plans.length" class="plan-grid">
-          <article v-for="plan in plans" :key="plan.id" class="plan-card">
-            <h3>{{ plan.name }}</h3>
-            <p>{{ plan.description || '暂无说明' }}</p>
-            <strong>{{ formatMoney(plan.price_cents, plan.currency) }}</strong>
-            <span>每月 {{ plan.monthly_credits }} 积分</span>
-            <el-button
-              v-if="isManager"
-              :loading="orderingPlanId === plan.id"
-              @click="createOrder(plan)"
-            >
-              创建待支付订单
-            </el-button>
-          </article>
-        </div>
-        <el-empty v-else description="平台管理员尚未配置套餐" />
-      </section>
-
-      <section v-if="isManager" class="panel">
-        <div class="panel-heading">
-          <div>
-            <h2>订单</h2>
-            <p>真实支付回调接入前，订单只保留待支付或已取消状态。</p>
-          </div>
-        </div>
-        <el-table :data="orders" empty-text="暂无订单">
-          <el-table-column prop="plan_name" label="套餐" min-width="150" />
-          <el-table-column label="金额" width="130">
-            <template #default="{ row }">{{ formatMoney(row.amount_cents, row.currency) }}</template>
-          </el-table-column>
-          <el-table-column label="积分" width="110">
-            <template #default="{ row }">{{ row.monthly_credits }}</template>
-          </el-table-column>
-          <el-table-column label="状态" width="110">
-            <template #default="{ row }">{{ orderStatus(row.status) }}</template>
-          </el-table-column>
-          <el-table-column label="创建时间" min-width="180">
+        <el-table :data="transactions" empty-text="暂无积分流水">
+          <el-table-column prop="amount" label="积分变动" width="120" />
+          <el-table-column prop="reason" label="原因" min-width="220" />
+          <el-table-column prop="event_type" label="类型" width="130" />
+          <el-table-column label="时间" min-width="180">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="100" align="right">
-            <template #default="{ row }">
-              <el-button v-if="row.status === 'pending'" link type="danger" @click="cancelOrder(row)">
-                取消
-              </el-button>
-            </template>
           </el-table-column>
         </el-table>
       </section>
@@ -177,11 +151,8 @@ import {
   removeTenantMember,
 } from '@/api/tenants'
 import {
-  cancelBillingOrder,
-  createBillingOrder,
-  getCurrentSubscription,
-  listBillingOrders,
-  listBillingPlans,
+  listCreditTransactions,
+  redeemCredits,
 } from '@/api/billing'
 import {
   readCurrentTenantId,
@@ -195,14 +166,13 @@ const loading = ref(false)
 const tenants = ref([])
 const tenantId = ref('')
 const account = ref(normalizeCreditAccount())
-const subscription = ref(null)
-const plans = ref([])
 const members = ref([])
-const orders = ref([])
+const transactions = ref([])
+const redeemCode = ref('')
+const redeeming = ref(false)
 const showCreate = ref(false)
 const creatingWorkspace = ref(false)
 const addingMember = ref(false)
-const orderingPlanId = ref('')
 const workspaceForm = reactive({ name: '', slug: '' })
 const memberForm = reactive({ email: '', role: 'member' })
 const sessionUserId = readSession()?.user?.id || ''
@@ -214,45 +184,22 @@ function roleLabel(role) {
   return ({ owner: '所有者', admin: '管理员', member: '成员' })[role] || role || '成员'
 }
 
-function subscriptionStatus(status) {
-  return ({ trialing: '试用中', active: '生效中', past_due: '待续费', canceled: '已取消' })[status] || status
-}
-
-function orderStatus(status) {
-  return ({ pending: '待支付', paid: '已支付', canceled: '已取消', refunded: '已退款' })[status] || status
-}
-
-function formatMoney(cents, currency = 'CNY') {
-  return new Intl.NumberFormat('zh-CN', {
-    style: 'currency',
-    currency,
-  }).format(Number(cents || 0) / 100)
-}
-
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
 }
 
 async function loadTenantData() {
   if (!tenantId.value) return
-  const [credit, currentSubscription, availablePlans] = await Promise.all([
+  const [credit, creditTransactions] = await Promise.all([
     getCreditAccount(),
-    getCurrentSubscription(),
-    listBillingPlans(),
+    listCreditTransactions(),
   ])
   account.value = normalizeCreditAccount(credit)
-  subscription.value = currentSubscription
-  plans.value = availablePlans
+  transactions.value = creditTransactions
   if (isManager.value) {
-    const [tenantMembers, tenantOrders] = await Promise.all([
-      listTenantMembers(tenantId.value),
-      listBillingOrders(),
-    ])
-    members.value = tenantMembers
-    orders.value = tenantOrders
+    members.value = await listTenantMembers(tenantId.value)
   } else {
     members.value = []
-    orders.value = []
   }
 }
 
@@ -326,28 +273,18 @@ async function removeMember(row) {
   ElMessage.success('成员已移除')
 }
 
-async function createOrder(plan) {
-  orderingPlanId.value = plan.id
+async function redeem() {
+  if (!redeemCode.value) return ElMessage.warning('请输入兑换码')
+  redeeming.value = true
   try {
-    const orderKey = globalThis.crypto?.randomUUID?.()
-      || `checkout-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    await createBillingOrder({ plan_id: plan.id, client_order_key: orderKey })
-    orders.value = await listBillingOrders()
-    ElMessage.success('待支付订单已创建；尚未发生扣款或积分入账')
+    const result = await redeemCredits(redeemCode.value)
+    account.value = normalizeCreditAccount(result.account)
+    transactions.value = await listCreditTransactions()
+    redeemCode.value = ''
+    ElMessage.success(`兑换成功，已增加 ${result.credits} 积分`)
   } finally {
-    orderingPlanId.value = ''
+    redeeming.value = false
   }
-}
-
-async function cancelOrder(row) {
-  try {
-    await ElMessageBox.confirm('确定取消该待支付订单？', '取消订单', { type: 'warning' })
-  } catch (_) {
-    return
-  }
-  await cancelBillingOrder(row.id)
-  orders.value = await listBillingOrders()
-  ElMessage.success('订单已取消')
 }
 
 onMounted(load)
@@ -364,22 +301,18 @@ onMounted(load)
 .workspace-card strong, .workspace-card span { display: block; }
 .workspace-card span { margin-top: 6px; color: #92939a; font-size: 12px; }
 .workspace-card.active { border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139, 92, 246, .16); }
-.overview-grid, .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-.info-card, .plan-card, .panel { border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
+.overview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.info-card, .panel { border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
 .info-card { display: grid; gap: 7px; padding: 20px; }
 .info-card span, .info-card small, .plan-card span { color: #a8a9af; }
 .info-card strong { font-size: 22px; }
 .panel { margin-top: 18px; padding: 22px; }
 .member-form { display: grid; grid-template-columns: minmax(190px, 1fr) 120px auto; gap: 8px; width: min(520px, 100%); }
 .panel :deep(.el-table) { margin-top: 18px; }
-.plan-grid { margin-top: 18px; }
-.plan-card { display: grid; gap: 10px; padding: 20px; }
-.plan-card h3, .plan-card p { margin: 0; }
-.plan-card p { min-height: 40px; color: #a8a9af; }
-.plan-card strong { font-size: 22px; color: #fbbf24; }
+.redeem-form { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 8px; width: min(480px, 100%); }
 @media (max-width: 820px) {
-  .overview-grid, .plan-grid { grid-template-columns: 1fr; }
+  .overview-grid { grid-template-columns: 1fr; }
   .page-heading, .panel-heading { flex-direction: column; }
-  .member-form { grid-template-columns: 1fr; }
+  .member-form, .redeem-form { grid-template-columns: 1fr; }
 }
 </style>

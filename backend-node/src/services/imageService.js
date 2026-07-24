@@ -73,6 +73,7 @@ const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
 
 function settleImageCredit(db, log, row, outcome, message = '') {
@@ -1411,6 +1412,7 @@ async function processImageGeneration(db, log, imageGenId) {
     let finalPrompt = row.prompt;
     const isSingleStoryboard = row.storyboard_id && !isGridFrameType(row.frame_type);
     if (isSingleStoryboard && row.prompt) {
+      let polishBilling = null;
       try {
         // 若分镜已有 polished_prompt（手动编辑或上次优化结果），直接使用，不再重复调 AI
         // 但**首帧/尾帧/关键帧专用提示词优先**：这些是用户通过“生成首/尾帧提示词”+“生成图片”流程明确批准的干净 prompt，
@@ -1436,6 +1438,16 @@ async function processImageGeneration(db, log, imageGenId) {
           "SELECT id FROM ai_service_configs WHERE service_type = 'text' AND deleted_at IS NULL LIMIT 1"
         ).get();
         if (anyTextConfig) {
+          polishBilling = textGenerationBilling.begin(db, {
+            enabled: Boolean(row.credit_reservation_id),
+            tenantId: row.tenant_id,
+            userId: row.user_id,
+            requestedModel: undefined,
+            sceneKey: 'image_polish',
+            resourceType: 'image_prompt',
+            resourceId: imageGenId,
+            operation: 'image_prompt_polish',
+          });
           log.info('[图生] Step3.5 文本AI优化 prompt 开始', { id: imageGenId, elapsed: elapsed() });
           const rawSt = (cfg?.style?.default_style_en || cfg?.style?.default_style || '').toString().trim();
           const styleZh = (cfg?.style?.default_style_zh || '').toString().trim();
@@ -1500,6 +1512,7 @@ async function processImageGeneration(db, log, imageGenId) {
           const systemPrompt = promptI18n.getImagePolishPrompt(cfg);
           const polishedPrompt = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
             scene_key: 'image_polish',
+            model: polishBilling.model,
             max_tokens: 300,
             temperature: 0.3,
           });
@@ -1525,34 +1538,51 @@ async function processImageGeneration(db, log, imageGenId) {
               preview: finalPrompt.slice(0, 100),
               elapsed: elapsed(),
             });
+            textGenerationBilling.settle(db, log, polishBilling, 'completed');
 
-            // 异步提取本镜头连戏状态快照，存入 continuity_snapshot（不阻塞图生主流程）
+            // 连戏快照是第二次真实文本模型调用，独立预扣并结算。
             if (row.storyboard_id) {
               const sbIdForCont = Number(row.storyboard_id);
               const snapshotPrompt = promptI18n.getContinuitySnapshotPrompt();
               const snapshotUserPrompt = [`PROMPT: ${finalPrompt}`, `ASSETS: ${assetNames || 'none'}`].join('\n');
-              aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
-                scene_key: 'image_polish',
-                max_tokens: 200,
-                temperature: 0.1,
-              }).then((snapshotJson) => {
-                if (!snapshotJson?.trim()) return;
+              let snapshotBilling = null;
+              try {
+                snapshotBilling = textGenerationBilling.begin(db, {
+                  enabled: Boolean(row.credit_reservation_id),
+                  tenantId: row.tenant_id,
+                  userId: row.user_id,
+                  requestedModel: polishBilling.model,
+                  sceneKey: 'image_polish',
+                  resourceType: 'continuity_snapshot',
+                  resourceId: imageGenId,
+                  operation: 'image_continuity_snapshot',
+                });
+                const snapshotJson = await aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
+                  scene_key: 'image_polish',
+                  model: snapshotBilling.model,
+                  max_tokens: 200,
+                  temperature: 0.1,
+                });
+                if (!snapshotJson?.trim()) throw new Error('连戏快照为空');
                 // 清理可能的 markdown 代码块包裹
                 const cleaned = snapshotJson.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-                try {
-                  JSON.parse(cleaned); // 验证合法 JSON
-                  db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
-                    cleaned, new Date().toISOString(), sbIdForCont
-                  );
-                  log.info('[图生] Step3.5 连戏快照已保存', { id: imageGenId, storyboard_id: sbIdForCont });
-                } catch (_) {
-                  log.warn('[图生] Step3.5 连戏快照 JSON 解析失败，跳过', { id: imageGenId, preview: cleaned.slice(0, 100) });
-                }
-              }).catch(() => {});
+                JSON.parse(cleaned); // 验证合法 JSON
+                db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+                  cleaned, new Date().toISOString(), sbIdForCont
+                );
+                textGenerationBilling.settle(db, log, snapshotBilling, 'completed');
+                log.info('[图生] Step3.5 连戏快照已保存', { id: imageGenId, storyboard_id: sbIdForCont });
+              } catch (snapshotError) {
+                textGenerationBilling.settle(db, log, snapshotBilling, 'failed', snapshotError.message);
+                log.warn('[图生] Step3.5 连戏快照跳过', { id: imageGenId, error: snapshotError.message });
+              }
             }
+          } else {
+            textGenerationBilling.settle(db, log, polishBilling, 'failed', 'AI 返回内容过短');
           }
         }
       } catch (polishErr) {
+        textGenerationBilling.settle(db, log, polishBilling, 'failed', polishErr.message);
         log.warn('[图生] Step3.5 prompt 优化失败，使用原始 prompt', { id: imageGenId, error: polishErr.message });
       }
     }

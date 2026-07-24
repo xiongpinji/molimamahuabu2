@@ -3,6 +3,7 @@ const loadConfig = require('../config').loadConfig;
 const promptI18n = require('./promptI18n');
 const aiClient = require('./aiClient');
 const taskService = require('./taskService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { safeParseAIJSON } = require('../utils/safeJson');
 const storyboardService = require('./storyboardService');
 const angleService = require('./angleService');
@@ -447,6 +448,7 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
       max_tokens: 2400,
     });
   } catch (err) {
+    if (sanitizeOpts.failOnTextError) throw err;
     log.warn('Frame prompt AI failed, using fallback', { error: err.message });
     const prompt = buildFallbackPrompt(cfg, scene, frameKind);
     const desc =
@@ -469,6 +471,9 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
     log.info('[帧提示词] PARSED RESULT prompt:\n' + cleanedPrompt);
     return { ...parsed, prompt: cleanedPrompt };
   }
+  if (sanitizeOpts.failOnTextError) {
+    throw new Error('AI 返回的帧提示词格式无效');
+  }
   const fallback = buildFallbackPrompt(cfg, scene, frameKind);
   log.warn('[帧提示词] JSON 解析失败，使用 FALLBACK prompt:\n' + fallback);
   return {
@@ -477,12 +482,13 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
   };
 }
 
-async function processFramePromptGeneration(db, log, taskId, storyboardId, frameType, panelCount, model) {
+async function processFramePromptGeneration(db, log, taskId, storyboardId, frameType, panelCount, model, billing = null) {
   let cfg = loadConfig();
   taskService.updateTaskStatus(db, taskId, 'processing', 0, '正在生成帧提示词...');
 
   const sb = loadStoryboard(db, storyboardId);
   if (!sb) {
+    textGenerationBilling.settle(db, log, billing, 'failed', '分镜信息不存在');
     taskService.updateTaskError(db, taskId, '分镜信息不存在');
     log.error('Frame prompt: storyboard not found', { storyboard_id: storyboardId });
     return;
@@ -513,7 +519,10 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
   const scene = loadScene(db, sb.scene_id);
   const characterNames = loadStoryboardCharacterNames(db, storyboardId);
   const allDramaNames = loadDramaCharacterNamesForStoryboard(db, storyboardId);
-  const sanitizeOpts = { allDramaNames };
+  const sanitizeOpts = {
+    allDramaNames,
+    failOnTextError: Boolean(billing?.reservationId),
+  };
 
   // 强调试日志：确认角色视觉锚点是否成功加载（用于排查“黑发扎马尾”等脑补问题）
   log.info('[帧提示词] 角色视觉锚点加载结果', {
@@ -572,6 +581,7 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
       description = '动作序列组合提示词';
       saveFramePrompt(db, log, storyboardId, frameType, combinedPrompt, description, layout);
     } else {
+      textGenerationBilling.settle(db, log, billing, 'failed', '不支持的帧类型');
       taskService.updateTaskError(db, taskId, '不支持的帧类型');
       log.error('Frame prompt: unsupported frame_type', { frame_type: frameType });
       return;
@@ -582,14 +592,16 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
       frame_type: frameType,
       response: { frame_type: frameType, single_frame: combinedPrompt ? { prompt: combinedPrompt, description } : undefined, layout: layout || undefined },
     });
+    textGenerationBilling.settle(db, log, billing, 'completed');
     log.info('Frame prompt generation completed', { task_id: taskId, storyboard_id: storyboardId, frame_type: frameType });
   } catch (err) {
     log.error('Frame prompt generation error', { task_id: taskId, error: err.message });
+    textGenerationBilling.settle(db, log, billing, 'failed', err.message);
     taskService.updateTaskError(db, taskId, err.message || '生成失败');
   }
 }
 
-function generateFramePrompt(db, log, storyboardId, frameType, panelCount, model) {
+function generateFramePrompt(db, log, storyboardId, frameType, panelCount, model, options = {}) {
   const sid = Number(storyboardId);
   const sb = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sid);
   if (!sb) {
@@ -599,9 +611,46 @@ function generateFramePrompt(db, log, storyboardId, frameType, panelCount, model
   if (!validTypes) {
     throw new Error('不支持的 frame_type，可选: first, key, last, panel, action');
   }
-  const task = taskService.createTask(db, log, 'frame_prompt_generation', String(storyboardId));
+  const billing = textGenerationBilling.begin(db, {
+    enabled: Boolean(options.billingEnabled),
+    tenantId: options.tenantId,
+    userId: options.userId,
+    requestedModel: model || undefined,
+    resourceType: 'frame_prompt',
+    resourceId: String(storyboardId),
+    operation: 'frame_prompt',
+  });
+  let task;
+  try {
+    task = taskService.createTask(db, log, 'frame_prompt_generation', String(storyboardId));
+    if (billing.reservationId) {
+      db.prepare(
+        `UPDATE async_tasks
+         SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?
+         WHERE id = ?`,
+      ).run(
+        options.tenantId || null,
+        options.userId || null,
+        billing.model,
+        billing.reservationId,
+        task.id,
+      );
+    }
+  } catch (error) {
+    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    throw error;
+  }
   setImmediate(() => {
-    processFramePromptGeneration(db, log, task.id, storyboardId, frameType, panelCount || 0, model);
+    processFramePromptGeneration(
+      db,
+      log,
+      task.id,
+      storyboardId,
+      frameType,
+      panelCount || 0,
+      billing.model,
+      billing,
+    );
   });
   log.info('Frame prompt task created', { task_id: task.id, storyboard_id: storyboardId, frame_type: frameType });
   return task.id;
@@ -626,7 +675,7 @@ module.exports = {
  * 自动参考上下分镜，保证前后连贯性
  * @returns {string} 新的 layout_description 文本
  */
-async function regenerateLayoutDescription(db, log, storyboardId) {
+async function regenerateLayoutDescription(db, log, storyboardId, model) {
   const sid = Number(storyboardId);
   const sb = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sid);
   if (!sb) throw new Error('分镜不存在');
@@ -672,6 +721,7 @@ async function regenerateLayoutDescription(db, log, storyboardId) {
   log.info('[布局重生成] 开始', { storyboard_id: sid, has_prev: !!prevSb, has_next: !!nextSb });
 
   const raw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
+    model: model || undefined,
     max_tokens: 300,
     temperature: 0.35,
   });

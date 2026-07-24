@@ -31,7 +31,7 @@ function routes(db, cfg, log, options = {}) {
         response.created(res, rec);
       } catch (err) {
         log.error('images create', { error: err.message });
-        if (err.code === 'MODEL_PRICE_NOT_CONFIGURED') {
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {
@@ -100,13 +100,24 @@ function routes(db, cfg, log, options = {}) {
           req.params.episode_id,
           body.model,
           body.style,
-          body.language
+          body.language,
+          {
+            billingEnabled: options.billingEnabled,
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+          },
         );
         response.success(res, { task_id: taskId, status: 'pending', message: '场景提取任务已创建，正在后台处理...' });
       } catch (err) {
         log.error('images episode backgrounds extract', { error: err.message });
         if (err.message && (err.message.includes('script content') || err.message.includes('not found'))) {
           return response.badRequest(res, err.message);
+        }
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+          return response.error(res, 503, err.code, err.message);
+        }
+        if (err.code === 'INSUFFICIENT_CREDITS') {
+          return response.error(res, 402, err.code, '积分不足，请充值后重试');
         }
         response.internalError(res, err.message || '任务创建失败');
       }

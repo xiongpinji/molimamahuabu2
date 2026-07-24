@@ -14,10 +14,10 @@ test('租户业务请求统一经过会注入租户头的 request 客户端', ()
   assert.match(storyboardsApiSource, /applyTenantHeader\(applyAuthHeader\(/)
 })
 
-test('套餐管理允许配置币种而不是固定为人民币', () => {
-  assert.match(billingAdminSource, /v-model(?:\.trim)?="plan\.currency"/)
-  assert.match(billingAdminSource, /v-model(?:\.trim)?="newPlan\.currency"/)
-  assert.match(billingAdminSource, /currency:\s*String\(newPlan\.currency/)
+test('支付搁置后管理后台不再暴露套餐和币种配置', () => {
+  assert.doesNotMatch(billingAdminSource, /订阅套餐/)
+  assert.doesNotMatch(billingAdminSource, /newPlan/)
+  assert.doesNotMatch(billingAdminSource, /plan\.currency/)
 })
 
 test('账户余额加载失败会显示明确状态', () => {

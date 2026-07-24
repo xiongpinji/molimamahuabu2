@@ -53,13 +53,13 @@ const router = createRouter({
       path: '/billing-admin',
       name: 'billing-admin',
       component: () => import('@/views/BillingAdmin.vue'),
-      meta: { title: '模型积分定价' }
+      meta: { title: '平台管理后台' }
     },
     {
       path: '/tenant-console',
       name: 'tenant-console',
       component: () => import('@/views/TenantConsole.vue'),
-      meta: { title: '工作区与计费' }
+      meta: { title: '工作区与积分' }
     },
     {
       path: '/free-create',

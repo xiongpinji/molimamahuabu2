@@ -11,6 +11,20 @@ const { buildUniversalSegmentUserPromptBundle } = require('../services/universal
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
 const storyboardVoiceExtractionService = require('../services/storyboardVoiceExtractionService');
 const storyboardVoicePromptService = require('../services/storyboardVoicePromptService');
+const textGenerationBilling = require('../services/text-generation-billing-service');
+
+function beginStoryboardTextBilling(db, req, generationOptions, operation) {
+  return textGenerationBilling.begin(db, {
+    enabled: Boolean(generationOptions.billingEnabled),
+    tenantId: req.tenant?.id,
+    userId: req.user?.id,
+    requestedModel: req.body?.model || undefined,
+    sceneKey: 'image_polish',
+    resourceType: 'storyboard_prompt',
+    resourceId: req.params.id,
+    operation,
+  });
+}
 
 /** 润色接口：邻镜结构化摘要（含全能片段与其它提示词字段） */
 function formatNeighborShotPolishContext(row) {
@@ -239,7 +253,7 @@ function normalizeUniversalSegmentAtImageSpacing(text) {
   );
 }
 
-function routes(db, log) {
+function routes(db, log, generationOptions = {}) {
   return {
     create: (req, res) => {
       try {
@@ -296,7 +310,19 @@ function routes(db, log) {
         const frameType = body.frame_type || 'first';
         const panelCount = body.panel_count || 3;
         const model = body.model || '';
-        const taskId = framePromptService.generateFramePrompt(db, log, req.params.id, frameType, panelCount, model);
+        const taskId = framePromptService.generateFramePrompt(
+          db,
+          log,
+          req.params.id,
+          frameType,
+          panelCount,
+          model,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+          },
+        );
         response.success(res, {
           task_id: taskId,
           status: 'pending',
@@ -304,6 +330,7 @@ function routes(db, log) {
         });
       } catch (err) {
         log.error('storyboards frame-prompt', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         if (err.message && (err.message.includes('分镜不存在') || err.message.includes('不支持的'))) {
           return response.badRequest(res, err.message);
         }
@@ -341,16 +368,38 @@ function routes(db, log) {
       }
     },
     regenerateLayoutDescription: async (req, res) => {
+      let billing = null;
       try {
         const id = Number(req.params.id);
         if (!id) return response.badRequest(res, '缺少分镜 id');
-        const newLayout = await framePromptService.regenerateLayoutDescription(db, log, id);
+        const exists = db.prepare(
+          'SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL',
+        ).get(id);
+        if (!exists) return response.notFound(res, '分镜不存在');
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: req.body?.model || undefined,
+          resourceType: 'storyboard_layout',
+          resourceId: String(id),
+          operation: 'storyboard_layout_regenerate',
+        });
+        const newLayout = await framePromptService.regenerateLayoutDescription(
+          db,
+          log,
+          id,
+          billing.model,
+        );
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, {
           layout_description: newLayout,
           message: '布局描述已由 AI 重新生成并保存',
         });
       } catch (err) {
         log.error('storyboards regenerateLayoutDescription', { error: err.message, id: req.params.id });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message || '重新生成布局描述失败');
       }
     },
@@ -385,16 +434,27 @@ function routes(db, log) {
     },
     episodeStoryboardsGenerate: (req, res) => {
       try {
-        const taskId = episodeStoryboardService.generateStoryboard(
+        const started = episodeStoryboardService.generateStoryboard(
           db,
           log,
           req.params.episode_id,
           req.query.model,
-          req.query.style
+          req.query.style,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+          },
         );
-        response.success(res, { task_id: taskId, status: 'pending', message: '分镜头生成任务已创建，正在后台处理...' });
+        response.success(res, started);
       } catch (err) {
         log.error('episode storyboards generate', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -410,6 +470,7 @@ function routes(db, log) {
 
     // 独立触发单条分镜的 image prompt 优化，结果保存到 storyboards.polished_prompt 并返回
     polishPrompt: async (req, res) => {
+      let billing = null;
       try {
         const sbId = Number(req.params.id);
         const sb = db.prepare(
@@ -419,6 +480,7 @@ function routes(db, log) {
         if (!sb.image_prompt && !sb.action && !sb.dialogue) {
           return response.badRequest(res, '该分镜暂无可优化的内容（image_prompt / action / dialogue 均为空）');
         }
+        billing = beginStoryboardTextBilling(db, req, generationOptions, 'storyboard_image_polish');
 
         // 通过 episode 查 drama_id
         let dramaId = null;
@@ -514,10 +576,11 @@ function routes(db, log) {
 
         const polishedPrompt = await aiClient.generateText(
           db, log, 'text', userPromptLines.join('\n'), promptI18n.getImagePolishPrompt(),
-          { scene_key: 'image_polish', max_tokens: 300, temperature: 0.3 }
+          { scene_key: 'image_polish', model: billing.model, max_tokens: 300, temperature: 0.3 }
         );
 
         if (!polishedPrompt || polishedPrompt.trim().length < 10) {
+          textGenerationBilling.settle(db, log, billing, 'failed', 'AI 返回内容过短');
           return response.badRequest(res, 'AI 返回内容过短，请检查文本模型配置');
         }
 
@@ -528,32 +591,51 @@ function routes(db, log) {
         );
         log.info('[分镜] polishPrompt 完成', { id: sbId, len: polished.length, has_prev_continuity: !!prevContinuityState });
 
-        // 异步提取连戏状态快照并保存（不阻塞响应）
+        // 连戏快照是第二次真实模型调用，必须独立预扣并结算。
         const snapshotPrompt = promptI18n.getContinuitySnapshotPrompt();
         const snapshotUserPrompt = [`PROMPT: ${polished}`, `ASSETS: ${assetNames || 'none'}`].join('\n');
-        aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
-          scene_key: 'image_polish', max_tokens: 200, temperature: 0.1,
-        }).then((snapshotJson) => {
-          if (!snapshotJson?.trim()) return;
+        let snapshotBilling = null;
+        try {
+          snapshotBilling = textGenerationBilling.begin(db, {
+            enabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+            requestedModel: billing.model,
+            sceneKey: 'image_polish',
+            resourceType: 'storyboard_prompt',
+            resourceId: sbId,
+            operation: 'storyboard_continuity_snapshot',
+          });
+          const snapshotJson = await aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
+            scene_key: 'image_polish', model: snapshotBilling.model, max_tokens: 200, temperature: 0.1,
+          });
+          if (!snapshotJson?.trim()) throw new Error('连戏快照为空');
           const cleaned = snapshotJson.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-          try {
-            JSON.parse(cleaned);
-            db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
-              cleaned, new Date().toISOString(), sbId
-            );
-            log.info('[分镜] polishPrompt 连戏快照已保存', { id: sbId });
-          } catch (_) {}
-        }).catch(() => {});
+          JSON.parse(cleaned);
+          db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+            cleaned, new Date().toISOString(), sbId
+          );
+          textGenerationBilling.settle(db, log, snapshotBilling, 'completed');
+          log.info('[分镜] polishPrompt 连戏快照已保存', { id: sbId });
+        } catch (snapshotError) {
+          textGenerationBilling.settle(db, log, snapshotBilling, 'failed', snapshotError.message);
+          log.warn('[分镜] polishPrompt 连戏快照跳过', { id: sbId, error: snapshotError.message });
+        }
 
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { polished_prompt: polished });
       } catch (err) {
         log.error('storyboards polishPrompt', { error: err.message });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        const billingResponse = textGenerationBilling.respondError(response, res, err);
+        if (billingResponse) return billingResponse;
         response.internalError(res, err.message);
       }
     },
 
     /** 全能模式：根据分镜字段 AI 生成 universal_segment_text（含运镜/机位等专业描述） */
     generateUniversalSegmentPrompt: async (req, res) => {
+      let billing = null;
       try {
         const sbId = Number(req.params.id);
         const built = buildUniversalSegmentUserPromptBundle(db, sbId, req.body || {}, {});
@@ -561,6 +643,7 @@ function routes(db, log) {
           if (built.code === 'not_found') return response.notFound(res, built.message);
           return response.badRequest(res, built.message);
         }
+        billing = beginStoryboardTextBilling(db, req, generationOptions, 'storyboard_universal_prompt');
         const { userPrompt, durationLabel, durationSec } = built;
         const out = await aiClient.generateText(
           db,
@@ -568,9 +651,10 @@ function routes(db, log) {
           'text',
           userPrompt,
           promptI18n.getUniversalOmniSegmentPrompt(),
-          { scene_key: 'image_polish', max_tokens: 2400, temperature: 0.28 }
+          { scene_key: 'image_polish', model: billing.model, max_tokens: 2400, temperature: 0.28 }
         );
         if (!out || String(out).trim().length < 20) {
+          textGenerationBilling.settle(db, log, billing, 'failed', 'AI 返回内容过短');
           return response.badRequest(res, 'AI 返回内容过短，请检查文本模型配置');
         }
         let text = String(out).trim();
@@ -583,15 +667,20 @@ function routes(db, log) {
           sbId
         );
         log.info('[分镜] generateUniversalSegmentPrompt 完成', { id: sbId, len: text.length, duration_sec: durationSec });
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { universal_segment_text: text });
       } catch (err) {
         log.error('storyboards generateUniversalSegmentPrompt', { error: err.message });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        const billingResponse = textGenerationBilling.respondError(response, res, err);
+        if (billingResponse) return billingResponse;
         response.internalError(res, err.message);
       }
     },
 
     /** 全能模式：与 generateUniversalSegmentPrompt 相同逻辑，NDJSON 流式（delta + done） */
     generateUniversalSegmentStream: async (req, res) => {
+      let billing = null;
       const sbId = Number(req.params.id);
       const built = buildUniversalSegmentUserPromptBundle(db, sbId, req.body || {}, {});
       if (!built.ok) {
@@ -599,6 +688,13 @@ function routes(db, log) {
         return response.badRequest(res, built.message);
       }
       const { userPrompt, durationLabel, durationSec } = built;
+      try {
+        billing = beginStoryboardTextBilling(db, req, generationOptions, 'storyboard_universal_prompt_stream');
+      } catch (err) {
+        const billingResponse = textGenerationBilling.respondError(response, res, err);
+        if (billingResponse) return billingResponse;
+        return response.internalError(res, err.message);
+      }
 
       res.status(200);
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -620,6 +716,7 @@ function routes(db, log) {
           promptI18n.getUniversalOmniSegmentPrompt(),
           {
             scene_key: 'image_polish',
+            model: billing.model,
             max_tokens: 2400,
             temperature: 0.28,
             silence_timeout_ms: 180000,
@@ -628,11 +725,13 @@ function routes(db, log) {
         );
       } catch (err) {
         log.error('storyboards generateUniversalSegmentStream', { error: err.message, id: sbId });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
         writeNd({ type: 'error', message: err.message || 'stream failed' });
         return res.end();
       }
 
       if (!finalRaw || String(finalRaw).trim().length < 20) {
+        textGenerationBilling.settle(db, log, billing, 'failed', 'AI 返回内容过短');
         writeNd({ type: 'error', message: 'AI 返回内容过短，请检查文本模型配置' });
         return res.end();
       }
@@ -646,6 +745,7 @@ function routes(db, log) {
         sbId
       );
       log.info('[分镜] generateUniversalSegmentStream 完成', { id: sbId, len: text.length, duration_sec: durationSec });
+      textGenerationBilling.settle(db, log, billing, 'completed');
       writeNd({ type: 'done', universal_segment_text: text });
       res.end();
     },
@@ -655,6 +755,7 @@ function routes(db, log) {
      * body.draft_universal_segment_text 必填（与编辑器一致，可为未保存到 DB 的当前文本）
      */
     polishUniversalSegmentStream: async (req, res) => {
+      let billing = null;
       const sbId = Number(req.params.id);
       const draftRaw =
         req.body && req.body.draft_universal_segment_text != null
@@ -672,6 +773,13 @@ function routes(db, log) {
         return response.badRequest(res, built.message);
       }
       const { userPrompt: baseUser, durationLabel, durationSec, episodeId, storyboardNumber } = built;
+      try {
+        billing = beginStoryboardTextBilling(db, req, generationOptions, 'storyboard_universal_polish_stream');
+      } catch (err) {
+        const billingResponse = textGenerationBilling.respondError(response, res, err);
+        if (billingResponse) return billingResponse;
+        return response.internalError(res, err.message);
+      }
 
       let scriptText = '';
       try {
@@ -742,6 +850,7 @@ function routes(db, log) {
           promptI18n.getUniversalOmniPolishPrompt(),
           {
             scene_key: 'image_polish',
+            model: billing.model,
             max_tokens: 4096,
             temperature: 0.52,
             silence_timeout_ms: 180000,
@@ -750,11 +859,13 @@ function routes(db, log) {
         );
       } catch (err) {
         log.error('storyboards polishUniversalSegmentStream', { error: err.message, id: sbId });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
         writeNd({ type: 'error', message: err.message || 'stream failed' });
         return res.end();
       }
 
       if (!finalRaw || String(finalRaw).trim().length < 20) {
+        textGenerationBilling.settle(db, log, billing, 'failed', 'AI 返回内容过短');
         writeNd({ type: 'error', message: 'AI 返回内容过短，请检查文本模型配置' });
         return res.end();
       }
@@ -768,6 +879,7 @@ function routes(db, log) {
         sbId
       );
       log.info('[分镜] polishUniversalSegmentStream 完成', { id: sbId, len: text.length, duration_sec: durationSec });
+      textGenerationBilling.settle(db, log, billing, 'completed');
       writeNd({ type: 'done', universal_segment_text: text });
       res.end();
     },
@@ -777,6 +889,7 @@ function routes(db, log) {
      * body.draft_video_prompt 可选，为当前编辑区全文；缺省则用库内 video_prompt，再不行则用字段自动拼装。
      */
     polishClassicVideoPromptStream: async (req, res) => {
+      let billing = null;
       const sbId = Number(req.params.id);
       const sbRow = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sbId);
       if (!sbRow) return response.notFound(res, '分镜不存在');
@@ -821,6 +934,13 @@ function routes(db, log) {
       const anchor = currentDraft || String(autoComposed || '').trim();
       if (!anchor || anchor.length < 4) {
         return response.badRequest(res, '请先填写分镜的动作/对白/场景等字段，或手写视频提示词后再润色');
+      }
+      try {
+        billing = beginStoryboardTextBilling(db, req, generationOptions, 'storyboard_classic_video_polish_stream');
+      } catch (err) {
+        const billingResponse = textGenerationBilling.respondError(response, res, err);
+        if (billingResponse) return billingResponse;
+        return response.internalError(res, err.message);
       }
 
       let scriptText = '';
@@ -999,6 +1119,7 @@ function routes(db, log) {
           promptI18n.getClassicVideoPromptPolishPrompt(),
           {
             scene_key: 'image_polish',
+            model: billing.model,
             max_tokens: 3600,
             temperature: 0.28,
             silence_timeout_ms: 180000,
@@ -1007,11 +1128,13 @@ function routes(db, log) {
         );
       } catch (err) {
         log.error('storyboards polishClassicVideoPromptStream', { error: err.message, id: sbId });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
         writeNd({ type: 'error', message: err.message || 'stream failed' });
         return res.end();
       }
 
       if (!finalRaw || String(finalRaw).trim().length < 12) {
+        textGenerationBilling.settle(db, log, billing, 'failed', 'AI 返回内容过短');
         writeNd({ type: 'error', message: 'AI 返回内容过短，请检查文本模型配置' });
         return res.end();
       }
@@ -1024,6 +1147,7 @@ function routes(db, log) {
       );
       const persistedPrompt = storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, sbId) || text;
       log.info('[分镜] polishClassicVideoPromptStream 完成', { id: sbId, len: persistedPrompt.length });
+      textGenerationBilling.settle(db, log, billing, 'completed');
       writeNd({ type: 'done', video_prompt: persistedPrompt });
       res.end();
     },

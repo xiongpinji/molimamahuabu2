@@ -72,3 +72,20 @@ test('公开模式接受有效令牌并写入 req.user', () => {
   assert.equal(result.next, true);
   assert.equal(req.user.id, 'user-1');
 });
+
+test('管理员停用账号后既有令牌立即失效', () => {
+  const secret = 's'.repeat(32);
+  const db = makeDb();
+  const user = auth.register(db, {
+    email: 'disabled@example.com',
+    password: 'correct horse battery staple',
+  });
+  const token = auth.issueToken(user, secret);
+  db.prepare("UPDATE platform_users SET status = 'disabled' WHERE id = ?").run(user.id);
+  const { result } = runMiddleware(
+    createUserAuthMiddleware({ enabled: true, secret, db }),
+    `Bearer ${token}`,
+  );
+  assert.equal(result.status, 401);
+  assert.equal(result.next, false);
+});

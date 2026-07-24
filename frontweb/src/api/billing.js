@@ -4,8 +4,49 @@ export function listModelPrices() {
   return request.get('/billing/prices')
 }
 
-export function updateModelPrice(model, credits) {
-  return request.put(`/billing/prices/${encodeURIComponent(model)}`, { credits })
+export function updateModelPrice(model, value) {
+  const data = value && typeof value === 'object' ? value : { credits: value }
+  return request.put(`/billing/prices/${encodeURIComponent(model)}`, data)
+}
+
+export function redeemCredits(code) {
+  return request.post('/billing/redeem', { code })
+}
+
+export function listCreditTransactions() {
+  return request.get('/billing/credit-transactions')
+}
+
+export function listPlatformUsers() {
+  return request.get('/billing/admin/users')
+}
+
+export function updatePlatformUser(userId, data) {
+  return request.put(`/billing/admin/users/${encodeURIComponent(userId)}`, data)
+}
+
+export function listAdminTenants() {
+  return request.get('/billing/admin/tenants')
+}
+
+export function adjustTenantCredits(tenantId, data) {
+  return request.post(`/billing/admin/tenants/${encodeURIComponent(tenantId)}/credits`, data)
+}
+
+export function listAdminCreditTransactions(params) {
+  return request.get('/billing/admin/credit-transactions', { params })
+}
+
+export function listRedeemCodes() {
+  return request.get('/billing/admin/redeem-codes')
+}
+
+export function createRedeemCode(data) {
+  return request.post('/billing/admin/redeem-codes', data)
+}
+
+export function updateRedeemCode(codeId, data) {
+  return request.put(`/billing/admin/redeem-codes/${encodeURIComponent(codeId)}`, data)
 }
 
 export function listBillingPlans() {

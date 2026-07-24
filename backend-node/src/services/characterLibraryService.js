@@ -5,6 +5,7 @@ const imageClient = require('./imageClient');
 const { aspectRatioToSize } = require('./imageService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 const jimengMaterialHubService = require('./jimengMaterialHubService');
 const modelArkAssetConfigService = require('./modelArkAssetConfigService');
@@ -480,7 +481,7 @@ function buildFourViewImagePrompt(fourViewDescription, styleEn, styleZh) {
  * 供前端「生成提示词」按钮调用，或提取角色后后台异步调用。
  * @returns {{ ok: boolean, polished_prompt?: string, error?: string }}
  */
-async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName, style) {
+async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName, style, options = {}) {
   const charRow = db.prepare(
     'SELECT id, drama_id, name, appearance, description FROM characters WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(characterId));
@@ -513,6 +514,7 @@ async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName,
     });
   } catch (err) {
     log.error('[四视图提示词] 文本AI失败，降级为外貌描述', { error: err.message });
+    if (options.failOnTextError) return { ok: false, error: err.message };
     fourViewDescription = appearanceText;
   }
 
@@ -540,6 +542,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
   let mergedCfg = mergeCfgStyleWithDrama(cfg, dramaFull);
   mergedCfg = applyStyleOverrideToCfg(mergedCfg, style);
   let imagePrompt;
+  let textBilling = null;
 
   if (charRow.polished_prompt && String(charRow.polished_prompt).trim()) {
     // 直接使用已保存的提示词（用户可能已编辑过）
@@ -563,13 +566,25 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
 
     let fourViewDescription;
     try {
+      textBilling = textGenerationBilling.begin(db, {
+        enabled: Boolean(options.billingEnabled),
+        tenantId: options.tenantId,
+        userId: options.userId,
+        requestedModel: options.textModel,
+        sceneKey: 'role_image_polish',
+        resourceType: 'character_image_prompt',
+        resourceId: characterId,
+        operation: 'character_image_prompt',
+      });
       fourViewDescription = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
         scene_key: 'role_image_polish',
-        model: modelName || undefined,
+        model: textBilling.model,
         max_tokens: 4000,
       });
     } catch (err) {
       log.error('[四视图] Step1 文本AI失败，降级为直接使用外貌描述', { error: err.message });
+      textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+      if (options.billingEnabled) throw err;
       fourViewDescription = appearanceText;
     }
 
@@ -587,20 +602,27 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
     log.info('[四视图] Step1 完成，开始Step2生图', { character_id: characterId });
   }
 
-  const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
-  const imageGen = imageClient.createAndGenerateImage(db, log, {
-    drama_id: charRow.drama_id,
-    character_id: charRow.id,
-    prompt: imagePrompt,
-    model: modelName || undefined,
-    size: '1792x1024',
-    quality: 'standard',
-    provider: 'openai',
-    user_negative_prompt: userNeg || undefined,
-    billingEnabled: Boolean(options.billingEnabled),
-    userId: options.userId,
-    tenantId: options.tenantId,
-  });
+  let imageGen;
+  try {
+    const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
+    imageGen = imageClient.createAndGenerateImage(db, log, {
+      drama_id: charRow.drama_id,
+      character_id: charRow.id,
+      prompt: imagePrompt,
+      model: modelName || undefined,
+      size: '1792x1024',
+      quality: 'standard',
+      provider: 'openai',
+      user_negative_prompt: userNeg || undefined,
+      billingEnabled: Boolean(options.billingEnabled),
+      userId: options.userId,
+      tenantId: options.tenantId,
+    });
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+  } catch (err) {
+    textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+    throw err;
+  }
 
   log.info('[四视图] Step2 图片生成任务已提交', { character_id: characterId, image_gen_id: imageGen?.id });
 
@@ -610,7 +632,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
 /**
  * 从角色现有图片中反向提取外貌描述，更新 appearance 字段。
  */
-async function extractAppearanceFromImage(db, log, cfg, characterId) {
+async function extractAppearanceFromImage(db, log, cfg, characterId, modelName) {
   const { generateTextWithVision, resolveEntityImageSource, EXTRACT_PROMPTS } = require('./aiClient');
 
   const charRow = db.prepare(
@@ -627,7 +649,10 @@ async function extractAppearanceFromImage(db, log, cfg, characterId) {
   const { isRefusalResponse } = require('./aiClient');
   let appearance;
   try {
-    appearance = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, { max_tokens: 2000 });
+    appearance = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, {
+      model: modelName || undefined,
+      max_tokens: 2000,
+    });
   } catch (err) {
     log.error('[extractAppearanceFromImage] AI 调用失败', { characterId, error: err.message });
     const errMsg = /image|vision|visual|multimodal/i.test(err.message)

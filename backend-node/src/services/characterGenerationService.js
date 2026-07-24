@@ -4,19 +4,21 @@ const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 const characterLibraryService = require('./characterLibraryService');
+const textGenerationBilling = require('./text-generation-billing-service');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 
 /**
  * 从角色外貌描述中提炼 6层视觉锚点，写入 characters.identity_anchors
  * 异步后台执行，不阻塞角色生成主流程
  */
-async function enrichIdentityAnchors(db, log, characterId, appearance) {
+async function enrichIdentityAnchors(db, log, characterId, appearance, model) {
   if (!appearance || !String(appearance).trim()) return;
   try {
     const systemPrompt = promptI18n.getIdentityAnchorsPrompt();
     const userPrompt = `Character appearance description:\n${appearance}`;
     const raw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
       scene_key: 'identity_anchors',
+      model: model || undefined,
       max_tokens: 800,
       temperature: 0.1,
     });
@@ -27,12 +29,14 @@ async function enrichIdentityAnchors(db, log, characterId, appearance) {
       'UPDATE characters SET identity_anchors = ?, color_palette = ?, updated_at = ? WHERE id = ?'
     ).run(JSON.stringify(anchors), colorPalette, new Date().toISOString(), characterId);
     log.info('[锚点] identity_anchors 提炼完成', { character_id: characterId });
+    return anchors;
   } catch (err) {
     log.warn('[锚点] identity_anchors 提炼失败', { character_id: characterId, error: err.message });
+    throw err;
   }
 }
 
-async function processCharacterGeneration(db, cfg, log, taskID, req) {
+async function processCharacterGeneration(db, cfg, log, taskID, req, billing, options = {}) {
   taskService.updateTaskStatus(db, taskID, 'processing', 0, '正在生成角色...');
   let outlineText = req.outline || '';
 
@@ -41,6 +45,7 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
   const dramaRow = db.prepare('SELECT id, title, description, genre, style, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(Number(req.drama_id));
   if (!dramaRow) {
     taskService.updateTaskStatus(db, taskID, 'failed', 0, '剧本信息不存在');
+    textGenerationBilling.settle(db, log, billing, 'failed', '剧本信息不存在');
     return;
   }
   try {
@@ -75,13 +80,14 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
   try {
     text = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
       scene_key: 'role_extraction',
-      model: req.model || undefined,
+      model: billing.model || req.model || undefined,
       temperature,
       max_tokens: maxTokensForChars,
     });
   } catch (err) {
     log.error('Character generation AI failed', { error: err.message, task_id: taskID });
     taskService.updateTaskStatus(db, taskID, 'failed', 0, 'AI生成失败: ' + err.message);
+    textGenerationBilling.settle(db, log, billing, 'failed', err.message);
     return;
   }
 
@@ -95,6 +101,7 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
     log.error('Character generation parse failed', { error: err.message, task_id: taskID });
     console.error('[角色生成] JSON解析失败，原始内容：\n' + text);
     taskService.updateTaskStatus(db, taskID, 'failed', 0, '解析AI返回结果失败');
+    textGenerationBilling.settle(db, log, billing, 'failed', '解析AI返回结果失败');
     return;
   }
 
@@ -156,7 +163,7 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
     );
     const newCharId = info.lastInsertRowid;
     // 异步后台提炼视觉锚点 + 预生成图片提示词，不阻塞主流程
-    if (char.appearance) {
+    if (char.appearance && !options.billingEnabled) {
       setImmediate(() => {
         enrichIdentityAnchors(db, log, newCharId, char.appearance).catch(() => {});
         characterLibraryService.generateCharacterPromptOnly(db, log, effectiveCfg, newCharId, undefined, undefined).catch((err) => {
@@ -186,13 +193,43 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
   }
 
   taskService.updateTaskResult(db, taskID, { characters, count: characters.length });
+  textGenerationBilling.settle(db, log, billing, 'completed');
   log.info('Character generation completed', { task_id: taskID, drama_id: req.drama_id, character_count: characters.length });
 }
 
-function generateCharacters(db, cfg, log, req) {
+function generateCharacters(db, cfg, log, req, options = {}) {
   const dramaId = String(req.drama_id || '');
   if (!dramaId) throw new Error('drama_id 必填');
-  const task = taskService.createTask(db, log, 'character_generation', dramaId);
+  const billing = textGenerationBilling.begin(db, {
+    enabled: Boolean(options.billingEnabled),
+    tenantId: options.tenantId,
+    userId: options.userId,
+    requestedModel: req.model || undefined,
+    sceneKey: 'role_extraction',
+    resourceType: 'character_extraction',
+    resourceId: dramaId,
+    operation: 'character_extraction',
+  });
+  let task;
+  try {
+    task = taskService.createTask(db, log, 'character_generation', dramaId);
+    if (options.billingEnabled) {
+      db.prepare(
+        `UPDATE async_tasks
+         SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?
+         WHERE id = ?`,
+      ).run(
+        options.tenantId || null,
+        String(options.userId),
+        billing.model,
+        billing.reservationId,
+        task.id,
+      );
+    }
+  } catch (error) {
+    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    throw error;
+  }
   setImmediate(() => {
     processCharacterGeneration(db, cfg, log, task.id, {
       drama_id: req.drama_id,
@@ -200,8 +237,10 @@ function generateCharacters(db, cfg, log, req) {
       outline: req.outline,
       temperature: req.temperature,
       model: req.model,
-    }).catch((err) => {
+    }, billing, options).catch((err) => {
       log.error('processCharacterGeneration fatal', { error: err.message, task_id: task.id });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      taskService.updateTaskError(db, task.id, err.message || '角色生成失败');
     });
   });
   return task.id;

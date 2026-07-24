@@ -48,3 +48,17 @@ test('keeps tenant recovery routes before tenant context middleware', () => {
   assert.notEqual(tenantContextIndex, -1);
   assert.equal(listTenantsIndex < tenantContextIndex, true);
 });
+
+test('keeps global billing admin routes before tenant context and tenant billing routes after it', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  const adminUsersIndex = source.indexOf("r.get('/billing/admin/users'");
+  const modelPricesIndex = source.indexOf("r.get('/billing/prices'");
+  const tenantContextIndex = source.indexOf('r.use(createTenantContextMiddleware');
+  const redeemIndex = source.indexOf("r.post('/billing/redeem'");
+  assert.notEqual(adminUsersIndex, -1);
+  assert.notEqual(modelPricesIndex, -1);
+  assert.notEqual(redeemIndex, -1);
+  assert.equal(adminUsersIndex < tenantContextIndex, true);
+  assert.equal(modelPricesIndex < tenantContextIndex, true);
+  assert.equal(redeemIndex > tenantContextIndex, true);
+});
