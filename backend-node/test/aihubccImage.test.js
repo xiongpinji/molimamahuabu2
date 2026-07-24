@@ -33,3 +33,39 @@ test('AIHubCC async image submits then polls to image URL', async () => {
     else process.env.AIHUBCC_POLL_INTERVAL_MS = originalInterval;
   }
 });
+
+test('AIHubCC Flow image posts chat completion and extracts markdown image URL', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    return jsonResponse({
+      choices: [{
+        message: {
+          content: '![Generated Image](https://flow-content.google/image/generated.png?Expires=1&Signature=x)',
+        },
+      }],
+    });
+  };
+  try {
+    const result = await callAihubccImageApi(
+      { base_url: 'https://aihubcc.cc/v1', api_key: 'test-key', endpoint: '/images/generations' },
+      { info() {}, warn() {}, error() {} },
+      {
+        model: 'gemini-3.1-flash-image-landscape',
+        prompt: 'a cinematic forest',
+        reference_image_urls: ['https://example.com/character.png'],
+      }
+    );
+    assert.deepEqual(result, {
+      image_url: 'https://flow-content.google/image/generated.png?Expires=1&Signature=x',
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/chat\/completions$/);
+    const body = JSON.parse(calls[0].options.body);
+    assert.equal(body.model, 'gemini-3.1-flash-image-landscape');
+    assert.equal(body.messages[0].content[1].type, 'image_url');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

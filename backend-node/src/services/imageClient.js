@@ -113,21 +113,29 @@ async function callAihubccImageApi(config, log, opts = {}) {
     .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
     .filter(Boolean)
     .slice(0, 6);
+  const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
-  const endpoint = asyncModel ? '/videos' : (config.endpoint || '/images/generations');
-  const body = aihubccClient.buildImageBody({
-    model,
-    prompt: opts.prompt,
-    size: opts.size,
-    quality: opts.quality,
-    referenceUrls: refs,
-  });
+  const endpoint = flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations'));
+  const body = flowModel
+    ? aihubccClient.buildFlowImageBody({
+        model,
+        prompt: opts.prompt,
+        referenceUrls: refs,
+      })
+    : aihubccClient.buildImageBody({
+        model,
+        prompt: opts.prompt,
+        size: opts.size,
+        quality: opts.quality,
+        referenceUrls: refs,
+      });
   const url = aihubccClient.getSubmitUrl(config, endpoint);
   log.info('[AIHubCC image] 提交', {
     image_gen_id: opts.image_gen_id,
     model,
     endpoint: url,
     async: asyncModel,
+    flow: flowModel,
     ref_count: refs.length,
   });
   let result;
@@ -143,6 +151,12 @@ async function callAihubccImageApi(config, log, opts = {}) {
   }
   if (!result.response.ok) {
     return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+  }
+  if (flowModel) {
+    const flowUrl = aihubccClient.extractFlowImageUrl(result.data, config);
+    return flowUrl
+      ? { image_url: flowUrl }
+      : { error: 'AIHubCC Flow 图片接口未在 choices[0].message.content 返回图片地址' };
   }
   const direct = aihubccClient.extractMediaUrl(result.data, config);
   if (direct) return { image_url: direct };

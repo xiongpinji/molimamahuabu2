@@ -1,7 +1,7 @@
 'use strict';
 
 const DEFAULT_BASE_URL = 'https://aihubcc.cc/v1';
-const ASYNC_IMAGE_MODELS = new Set(['gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k']);
+const ASYNC_IMAGE_MODELS = new Set(['gpt-image-2-2k', 'gpt-image-2-3.5k']);
 const FAILED_STATUSES = new Set(['failed', 'failure', 'error', 'cancelled', 'canceled', 'rejected']);
 const DONE_STATUSES = new Set(['succeeded', 'success', 'completed', 'complete', 'done']);
 
@@ -57,6 +57,40 @@ function isAsyncImageModel(model) {
   return ASYNC_IMAGE_MODELS.has(String(model || '').trim().toLowerCase());
 }
 
+function isFlowImageModel(model) {
+  const name = String(model || '').trim().toLowerCase();
+  return /^gemini-3\.[01]-(?:pro|flash)-image-/.test(name)
+    || /^imagen-4\.0-generate-preview-/.test(name);
+}
+
+function isFlowVideoModel(model) {
+  return /^veo_3_1_/i.test(String(model || '').trim());
+}
+
+function buildFlowImageBody({ model, prompt, referenceUrls = [] } = {}) {
+  const refs = referenceUrls.filter(Boolean).slice(0, 6);
+  const content = refs.length
+    ? [
+        { type: 'text', text: prompt || '' },
+        ...refs.map((url) => ({ type: 'image_url', image_url: { url } })),
+      ]
+    : (prompt || '');
+  return {
+    model: model || 'gemini-3.1-flash-image-landscape',
+    stream: false,
+    messages: [{ role: 'user', content }],
+  };
+}
+
+function extractFlowImageUrl(payload, config) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content !== 'string') return null;
+  const markdown = content.match(/!\[[^\]]*]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/i);
+  if (markdown?.[1]) return normalizeMediaUrl(markdown[1], config);
+  const direct = content.match(/https?:\/\/[^\s<>"')]+/i);
+  return direct?.[0] ? normalizeMediaUrl(direct[0], config) : null;
+}
+
 function buildImageBody({ model, prompt, size, quality, referenceUrls = [] } = {}) {
   const refs = referenceUrls.filter(Boolean).slice(0, 6);
   const body = {
@@ -94,13 +128,14 @@ function buildVideoBody({
 } = {}) {
   const name = String(model || '').trim();
   const isOmni = /^omni-fast/i.test(name);
+  const isFlow = isFlowVideoModel(name);
   const body = {
     model: name,
     prompt: prompt || '',
-    aspect_ratio: normalizeAspectRatio(aspect_ratio),
+    ...(!isFlow ? { aspect_ratio: normalizeAspectRatio(aspect_ratio) } : {}),
   };
   const length = Number(seconds ?? duration);
-  if (Number.isFinite(length)) {
+  if (!isFlow && Number.isFinite(length)) {
     body[isOmni ? 'seconds' : 'duration'] = Math.min(15, Math.max(1, Math.round(length)));
   }
   const first = first_image_url || first_frame_url || image_url;
@@ -108,10 +143,14 @@ function buildVideoBody({
   if (first) body[isOmni ? 'image_url' : 'first_image_url'] = first;
   if (last) body.last_image_url = last;
   if (video_url) body.video = video_url;
-  const refs = reference_urls.filter(Boolean).slice(0, isOmni ? 5 : 9);
+  const refs = reference_urls.filter(Boolean).slice(0, isFlow ? 3 : (isOmni ? 5 : 9));
   if (refs.length) {
-    body.reference_image_urls = refs;
-    if (isOmni) body.images = refs;
+    if (isFlow) {
+      if (/_r2v_/i.test(name)) body.images = refs;
+    } else {
+      body.reference_image_urls = refs;
+      if (isOmni) body.images = refs;
+    }
   }
   return body;
 }
@@ -220,7 +259,11 @@ module.exports = {
   getContentUrl,
   aspectRatioFromSize,
   isAsyncImageModel,
+  isFlowImageModel,
+  isFlowVideoModel,
   buildImageBody,
+  buildFlowImageBody,
+  extractFlowImageUrl,
   buildVideoBody,
   extractTaskId,
   extractMediaUrl,

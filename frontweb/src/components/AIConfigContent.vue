@@ -1138,6 +1138,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
 import { videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
+import {
+  AIHUBCC_IMAGE_MODELS,
+  AIHUBCC_VIDEO_MODELS,
+  isAihubccFlowImageModel,
+} from '@/utils/aihubccModelCatalog'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
@@ -1346,7 +1351,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-2.0-flash'] }
   ],
   image: [
-    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1358,7 +1363,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
-    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1369,7 +1374,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
-    { id: 'aihubcc', name: 'AIHubCC 图片/视频', models: ['omni-fast', 'omni-fast-v2v', 'omni-fast-no-water', 'omni-fast-v2v-no-water', 'Seedance-2.0-mini-480p', 'Seedance-2.0-fast-480p', 'Seedance-2.0-480p', 'Seedance-2.0-mini-720p', 'Seedance-2.0-fast-720p', 'Seedance-2.0-720p', 'Seedance-2.0-1080p', 'Seedance-2.0-4k'] },
+    { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1538,6 +1543,12 @@ const modelIdentifierTip = computed(() => {
   if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'openai') {
     return '模型名会原样提交；图片模型请填写 gpt-image-2（不要填写显示名 GPT Image 2）。'
   }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'aihubcc') {
+    return 'GPT/价格页图片模型走 /images/generations；Flow 的 Gemini/Imagen 模型由系统自动切换到 /chat/completions。'
+  }
+  if (serviceType === 'video' && provider === 'aihubcc') {
+    return 'Omni、Seedance、Grok 与 Flow Veo 均走 /videos 异步任务；veo-clean 是视频后处理，不属于普通生成模型。'
+  }
   return ''
 })
 
@@ -1572,7 +1583,9 @@ const endpointPreviewInfo = computed(() => {
       submitPath = endpoint || '/tts'
     }
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
-    if (endpoint) {
+    if ((proto === 'aihubcc' || p === 'aihubcc') && isAihubccFlowImageModel(form.value.default_model)) {
+      submitPath = '/chat/completions'
+    } else if (endpoint) {
       submitPath = endpoint
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       submitPath = '/images/generations'
