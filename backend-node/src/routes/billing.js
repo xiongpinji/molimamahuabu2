@@ -5,6 +5,26 @@ const auditEvents = require('../services/auditEventService');
 const subscriptions = require('../services/subscriptionBillingService');
 const redeemCodes = require('../services/redeem-code-service');
 const platformAdmin = require('../services/platform-admin-service');
+const tenants = require('../services/tenantService');
+
+function adminRedeemInput(db, req) {
+  const input = {
+    ...(req.body || {}),
+    createdBy: req.user.id,
+  };
+  const tenantId = String(input.tenantId ?? input.tenant_id ?? '').trim();
+  if (tenantId) {
+    tenants.ensureSchema(db);
+    const tenant = db.prepare("SELECT id FROM tenants WHERE id = ? AND status = 'active'")
+      .get(tenantId);
+    if (!tenant) {
+      const error = new Error('目标租户不存在或已停用');
+      error.code = 'INVALID_REDEEM_CODE';
+      throw error;
+    }
+  }
+  return input;
+}
 
 function routes(db, log) {
   return {
@@ -133,7 +153,7 @@ function routes(db, log) {
     },
     createAdminRedeemCode: (req, res) => {
       try {
-        response.created(res, redeemCodes.createCode(db, req.body || {}));
+        response.created(res, redeemCodes.createCode(db, adminRedeemInput(db, req)));
       } catch (error) {
         if (error.code === 'INVALID_REDEEM_CODE') return response.badRequest(res, error.message);
         log.error('billing admin create redeem code', { error: error.message });
@@ -142,7 +162,7 @@ function routes(db, log) {
     },
     createAdminRedeemCodes: (req, res) => {
       try {
-        response.created(res, redeemCodes.createCodes(db, req.body || {}));
+        response.created(res, redeemCodes.createCodes(db, adminRedeemInput(db, req)));
       } catch (error) {
         if (error.code === 'INVALID_REDEEM_CODE') return response.badRequest(res, error.message);
         log.error('billing admin create redeem codes', { error: error.message });
