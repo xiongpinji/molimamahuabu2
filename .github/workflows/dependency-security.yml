@@ -49,5 +49,5 @@ jobs:
       - name: Verify desktop lockfile
         run: npm --prefix desktop ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
 
-      - name: Audit desktop production dependencies
-        run: npm --prefix desktop audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+      - name: Audit desktop complete dependency graph
+        run: npm --prefix desktop audit --audit-level=low --registry=https://registry.npmjs.org
