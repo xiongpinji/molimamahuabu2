@@ -2793,6 +2793,7 @@ import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
+import request from '@/utils/request'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { getModelsFromAiConfig } from '@/utils/modelSelection'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
@@ -5426,12 +5427,11 @@ async function onImportNovel() {
     formData.append('title', scriptTitle.value || '导入小说')
     formData.append('max_chapters', String(novelMaxChapters.value))
     formData.append('ai_summarize', String(novelAiSummarize.value))
-    const { default: axios } = await import('axios')
-    const baseURL = (await import('@/utils/request')).default.defaults.baseURL || '/api/v1'
-    const res = await axios.post(`${baseURL}/dramas/import-novel`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+    const data = await request.post('/dramas/import-novel', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      silentError: true,
     })
-    let chapters = res.data?.data?.chapters || res.data?.chapters || []
+    let chapters = data?.chapters || []
     if (!chapters.length) {
       ElMessage.warning('未能识别到章节内容')
       return
@@ -5839,19 +5839,16 @@ async function onTtsSbDialogue(sb) {
   }
   ttsSbIds.add(sb.id)
   try {
-    const res = await fetch('/api/v1/audio/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storyboard_id: sb.id, text: sb.dialogue, tts_kind: 'dialogue' }),
+    const data = await request.post('/audio/extract', {
+      storyboard_id: sb.id,
+      text: sb.dialogue,
+      tts_kind: 'dialogue',
+    }, {
+      silentError: true,
     })
-    const data = await res.json()
-    const businessOk = data.success === true || Number(data.code) === 200
-    if (!res.ok || !businessOk) {
-      throw new Error(data.error?.message || data.message || '配音失败')
-    }
-    if (data.data?.local_path) {
-      sbDialogueAudioPaths.value = { ...sbDialogueAudioPaths.value, [sb.id]: data.data.local_path }
-      sb.audio_local_path = data.data.local_path
+    if (data?.local_path) {
+      sbDialogueAudioPaths.value = { ...sbDialogueAudioPaths.value, [sb.id]: data.local_path }
+      sb.audio_local_path = data.local_path
       ElMessage.success('配音已生成')
     }
   } catch (e) {
@@ -5871,19 +5868,16 @@ async function onTtsSbNarration(sb) {
   }
   ttsSbNarrationIds.add(sb.id)
   try {
-    const res = await fetch('/api/v1/audio/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storyboard_id: sb.id, text, tts_kind: 'narration' }),
+    const data = await request.post('/audio/extract', {
+      storyboard_id: sb.id,
+      text,
+      tts_kind: 'narration',
+    }, {
+      silentError: true,
     })
-    const data = await res.json()
-    const businessOk = data.success === true || Number(data.code) === 200
-    if (!res.ok || !businessOk) {
-      throw new Error(data.error?.message || data.message || '解说配音失败')
-    }
-    if (data.data?.local_path) {
-      sbNarrationAudioPaths.value = { ...sbNarrationAudioPaths.value, [sb.id]: data.data.local_path }
-      sb.narration_audio_local_path = data.data.local_path
+    if (data?.local_path) {
+      sbNarrationAudioPaths.value = { ...sbNarrationAudioPaths.value, [sb.id]: data.local_path }
+      sb.narration_audio_local_path = data.local_path
       ElMessage.success('解说配音已生成')
     }
   } catch (e) {

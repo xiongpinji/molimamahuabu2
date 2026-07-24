@@ -56,6 +56,12 @@ const router = createRouter({
       meta: { title: '模型积分定价' }
     },
     {
+      path: '/tenant-console',
+      name: 'tenant-console',
+      component: () => import('@/views/TenantConsole.vue'),
+      meta: { title: '工作区与计费' }
+    },
+    {
       path: '/free-create',
       name: 'free-create',
       component: () => import('@/views/FreeCreate.vue'),
