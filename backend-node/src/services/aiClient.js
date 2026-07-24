@@ -643,7 +643,7 @@ const EXTRACT_PROMPTS = {
  * entityType: 'character' | 'scene' | 'prop'
  * imageUrl: http URL 或 data:image/xxx;base64,... 格式的 data URL
  */
-async function extractDescriptionFromImage(db, log, entityType, imageUrl, entityName) {
+async function extractDescriptionFromImage(db, log, entityType, imageUrl, entityName, modelName) {
   const prompts = EXTRACT_PROMPTS[entityType];
   if (!prompts) throw new Error(`不支持的实体类型：${entityType}`);
 
@@ -660,7 +660,7 @@ async function extractDescriptionFromImage(db, log, entityType, imageUrl, entity
       prompts.user(entityName),
       prompts.system,
       imageSource,
-      { max_tokens: 2000 },
+      { model: modelName || undefined, max_tokens: 2000 },
     );
     // 检测模型因安全策略拒绝描述真人的回答
     if (isRefusalResponse(result)) {

@@ -480,7 +480,7 @@ function buildFourViewImagePrompt(fourViewDescription, styleEn, styleZh) {
  * 供前端「生成提示词」按钮调用，或提取角色后后台异步调用。
  * @returns {{ ok: boolean, polished_prompt?: string, error?: string }}
  */
-async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName, style) {
+async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName, style, options = {}) {
   const charRow = db.prepare(
     'SELECT id, drama_id, name, appearance, description FROM characters WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(characterId));
@@ -513,6 +513,7 @@ async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName,
     });
   } catch (err) {
     log.error('[四视图提示词] 文本AI失败，降级为外貌描述', { error: err.message });
+    if (options.failOnTextError) return { ok: false, error: err.message };
     fourViewDescription = appearanceText;
   }
 
@@ -610,7 +611,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
 /**
  * 从角色现有图片中反向提取外貌描述，更新 appearance 字段。
  */
-async function extractAppearanceFromImage(db, log, cfg, characterId) {
+async function extractAppearanceFromImage(db, log, cfg, characterId, modelName) {
   const { generateTextWithVision, resolveEntityImageSource, EXTRACT_PROMPTS } = require('./aiClient');
 
   const charRow = db.prepare(
@@ -627,7 +628,10 @@ async function extractAppearanceFromImage(db, log, cfg, characterId) {
   const { isRefusalResponse } = require('./aiClient');
   let appearance;
   try {
-    appearance = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, { max_tokens: 2000 });
+    appearance = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, {
+      model: modelName || undefined,
+      max_tokens: 2000,
+    });
   } catch (err) {
     log.error('[extractAppearanceFromImage] AI 调用失败', { characterId, error: err.message });
     const errMsg = /image|vision|visual|multimodal/i.test(err.message)

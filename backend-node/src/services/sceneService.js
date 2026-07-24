@@ -519,7 +519,7 @@ async function generateScenePanoramaImage(db, log, cfg, sceneId, modelName, styl
 /**
  * 从场景现有图片中反向提取场景描述，更新 prompt 字段。
  */
-async function extractSceneFromImage(db, log, cfg, sceneId) {
+async function extractSceneFromImage(db, log, cfg, sceneId, modelName) {
   const { generateTextWithVision, resolveEntityImageSource, EXTRACT_PROMPTS } = require('./aiClient');
 
   const sceneRow = db.prepare(
@@ -536,7 +536,10 @@ async function extractSceneFromImage(db, log, cfg, sceneId) {
 
   let prompt;
   try {
-    prompt = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, { max_tokens: 2000 });
+    prompt = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, {
+      model: modelName || undefined,
+      max_tokens: 2000,
+    });
   } catch (err) {
     log.error('[extractSceneFromImage] AI 调用失败', { sceneId, error: err.message });
     const errMsg = /image|vision|visual|multimodal/i.test(err.message)

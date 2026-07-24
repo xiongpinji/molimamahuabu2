@@ -7,6 +7,7 @@ const auditEvent = require('../services/auditEventService');
 const creditLedger = require('../services/creditLedgerService');
 const modelPrice = require('../services/modelPriceService');
 const { randomUUID } = require('crypto');
+const textGenerationBilling = require('../services/textGenerationBillingService');
 
 function resolveTextModel(db, requestedModel) {
   const config = requestedModel
@@ -113,15 +114,34 @@ function routes(db, log, cfg, generationOptions = {}) {
       }
     },
     extractFromImage: async (req, res) => {
+      let billing = null;
       try {
-        const out = await sceneService.extractSceneFromImage(db, log, cfg, req.params.scene_id);
+        if (!sceneService.getSceneById(db, Number(req.params.scene_id))) {
+          return response.notFound(res, '场景不存在');
+        }
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: req.body?.model || undefined,
+          resourceType: 'scene_vision',
+          resourceId: req.params.scene_id,
+          operation: 'scene_vision',
+        });
+        const out = await sceneService.extractSceneFromImage(
+          db, log, cfg, req.params.scene_id, billing.model,
+        );
         if (!out.ok) {
+          textGenerationBilling.settle(db, log, billing, 'failed', out.error);
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           return response.badRequest(res, out.error);
         }
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { message: '场景描述已提取', prompt: out.prompt });
       } catch (err) {
         log.error('scenes extract-from-image', { error: err.message });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },

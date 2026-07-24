@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const response = require('../response');
+const textGenerationBilling = require('../services/textGenerationBillingService');
 const characterLibraryService = require('../services/characterLibraryService');
 const storageLayout = require('../services/storageLayout');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
@@ -269,31 +270,71 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
       }
     },
     generatePrompt: async (req, res) => {
+      let billing = null;
       try {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await characterLibraryService.generateCharacterPromptOnly(db, log, cfg, req.params.id, modelName, style);
+        if (!db.prepare('SELECT id FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(req.params.id))) {
+          return response.notFound(res, '角色不存在');
+        }
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: modelName,
+          sceneKey: 'role_image_polish',
+          resourceType: 'character_prompt',
+          resourceId: req.params.id,
+          operation: 'character_prompt',
+        });
+        const out = await characterLibraryService.generateCharacterPromptOnly(
+          db, log, cfg, req.params.id, billing.model, style,
+          { failOnTextError: Boolean(generationOptions.billingEnabled) },
+        );
         if (!out.ok) {
+          textGenerationBilling.settle(db, log, billing, 'failed', out.error);
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           return response.badRequest(res, out.error);
         }
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { message: '提示词已生成', polished_prompt: out.polished_prompt });
       } catch (err) {
         log.error('characters generate-prompt', { error: err.message });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },
     extractFromImage: async (req, res) => {
+      let billing = null;
       try {
-        const out = await characterLibraryService.extractAppearanceFromImage(db, log, cfg, req.params.id);
+        if (!db.prepare('SELECT id FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(req.params.id))) {
+          return response.notFound(res, '角色不存在');
+        }
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: req.body?.model_name || req.body?.model || undefined,
+          resourceType: 'character_vision',
+          resourceId: req.params.id,
+          operation: 'character_vision',
+        });
+        const out = await characterLibraryService.extractAppearanceFromImage(
+          db, log, cfg, req.params.id, billing.model,
+        );
         if (!out.ok) {
+          textGenerationBilling.settle(db, log, billing, 'failed', out.error);
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           return response.badRequest(res, out.error);
         }
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, { message: '外貌描述已提取', appearance: out.appearance });
       } catch (err) {
         log.error('characters extract-from-image', { error: err.message });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },

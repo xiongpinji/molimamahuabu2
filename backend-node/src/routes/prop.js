@@ -1,6 +1,7 @@
 const propService = require('../services/propService');
 const propLibraryService = require('../services/propLibraryService');
 const response = require('../response');
+const textGenerationBilling = require('../services/textGenerationBillingService');
 
 function listProps(db) {
   return (req, res) => {
@@ -126,44 +127,77 @@ function getPropById(db, log) {
   };
 }
 
-function generatePropPrompt(db, log, cfg) {
+function generatePropPrompt(db, log, cfg, generationOptions) {
   return async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的ID');
+    let billing = null;
     try {
       const body = req.body || {};
-      const out = await propService.generatePropPromptOnly(db, log, cfg, id, body.model || undefined, body.style || undefined);
+      if (!propService.getById(db, id)) return response.notFound(res, '道具不存在');
+      billing = textGenerationBilling.begin(db, {
+        enabled: Boolean(generationOptions.billingEnabled),
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+        requestedModel: body.model || undefined,
+        sceneKey: 'prop_image_polish',
+        resourceType: 'prop_prompt',
+        resourceId: id,
+        operation: 'prop_prompt',
+      });
+      const out = await propService.generatePropPromptOnly(
+        db, log, cfg, id, billing.model, body.style || undefined,
+      );
       if (!out.ok) {
+        textGenerationBilling.settle(db, log, billing, 'failed', out.error);
         if (out.error === 'prop not found') return response.notFound(res, '道具不存在');
         return response.badRequest(res, out.error);
       }
+      textGenerationBilling.settle(db, log, billing, 'completed');
       response.success(res, { message: '提示词已生成', prompt: out.prompt });
     } catch (err) {
       log.error('generatePropPrompt failed', { error: err.message });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   };
 }
 
-function extractPropFromImage(db, log, cfg) {
+function extractPropFromImage(db, log, cfg, generationOptions) {
   return async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的ID');
+    let billing = null;
     try {
-      const out = await propService.extractPropFromImage(db, log, cfg, id);
+      if (!propService.getById(db, id)) return response.notFound(res, '道具不存在');
+      billing = textGenerationBilling.begin(db, {
+        enabled: Boolean(generationOptions.billingEnabled),
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+        requestedModel: req.body?.model || undefined,
+        resourceType: 'prop_vision',
+        resourceId: id,
+        operation: 'prop_vision',
+      });
+      const out = await propService.extractPropFromImage(db, log, cfg, id, billing.model);
       if (!out.ok) {
+        textGenerationBilling.settle(db, log, billing, 'failed', out.error);
         if (out.error === 'prop not found') return response.notFound(res, '道具不存在');
         return response.badRequest(res, out.error);
       }
+      textGenerationBilling.settle(db, log, billing, 'completed');
       response.success(res, { message: '道具描述已提取', description: out.description });
     } catch (err) {
       log.error('extractPropFromImage failed', { error: err.message });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   };
 }
 
-module.exports = function propRoutes(db, log, cfg) {
+module.exports = function propRoutes(db, log, cfg, generationOptions = {}) {
   return {
     listProps: listProps(db),
     createProp: createProp(db, log),
@@ -171,11 +205,11 @@ module.exports = function propRoutes(db, log, cfg) {
     deleteProp: deleteProp(db, log),
     getPropById: getPropById(db, log),
     generateImage: generateImage(db, log),
-    generatePropPrompt: generatePropPrompt(db, log, cfg),
+    generatePropPrompt: generatePropPrompt(db, log, cfg, generationOptions),
     extractProps: extractProps(db, log, cfg),
     associateProps: associateProps(db, log),
     addToLibrary: addToLibrary(db, log),
     addToMaterialLibrary: addToMaterialLibrary(db, log),
-    extractPropFromImage: extractPropFromImage(db, log, cfg),
+    extractPropFromImage: extractPropFromImage(db, log, cfg, generationOptions),
   };
 };

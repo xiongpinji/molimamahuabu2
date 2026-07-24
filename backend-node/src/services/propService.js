@@ -179,7 +179,7 @@ async function generatePropPromptOnly(db, log, cfg, propId, modelName, style) {
 /**
  * 从道具现有图片中反向提取外观描述，更新 description 字段。
  */
-async function extractPropFromImage(db, log, cfg, propId) {
+async function extractPropFromImage(db, log, cfg, propId, modelName) {
   const { generateTextWithVision, resolveEntityImageSource, EXTRACT_PROMPTS } = require('./aiClient');
 
   const prop = db.prepare(
@@ -196,7 +196,10 @@ async function extractPropFromImage(db, log, cfg, propId) {
 
   let description;
   try {
-    description = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, { max_tokens: 2000 });
+    description = await generateTextWithVision(db, log, 'text', userPrompt, systemPrompt, imgSrc, {
+      model: modelName || undefined,
+      max_tokens: 2000,
+    });
   } catch (err) {
     log.error('[extractPropFromImage] AI 调用失败', { propId, error: err.message });
     const errMsg = /image|vision|visual|multimodal/i.test(err.message)

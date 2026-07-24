@@ -28,6 +28,7 @@ const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
+const textGenerationBilling = require('../services/textGenerationBillingService');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
@@ -35,10 +36,10 @@ function setupRouter(cfg, db, log) {
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
   const aiConfig = aiConfigRoutes(db, log, cfg);
-  const prop = propRoutes(db, log, cfg);
   const stub = stubRoutes(db, cfg, log);
   const sceneModelMap = sceneModelMapRoutes(db, log);
   const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const prop = propRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const { createAdminAuthMiddleware } = require('../middleware/adminAuth');
   const requireAdmin = createAdminAuthMiddleware({
     enabled: publicPlatformEnabled,
@@ -121,7 +122,7 @@ function setupRouter(cfg, db, log) {
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
   const uploadHandlers = uploadModule.routes(cfg, log, db);
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
-  const storyboards = storyboardRoutes(db, log);
+  const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
   const images = imageRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
@@ -290,16 +291,34 @@ function setupRouter(cfg, db, log) {
 
   // ---------- vision: 从图片提取描述（不依赖已有实体 ID）----------
   r.post('/extract-description-from-image', async (req, res) => {
-    const { image_url, entity_type, entity_name } = req.body || {};
+    const { image_url, entity_type, entity_name, model } = req.body || {};
     if (!image_url) return response.badRequest(res, '缺少 image_url');
     if (!['character', 'scene', 'prop'].includes(entity_type)) return response.badRequest(res, 'entity_type 需为 character/scene/prop');
+    let billing = null;
     try {
+      billing = textGenerationBilling.begin(db, {
+        enabled: publicPlatformEnabled,
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+        requestedModel: model || undefined,
+        resourceType: 'vision_description',
+        resourceId: `${entity_type}:${entity_name || 'unnamed'}`,
+        operation: 'vision_description',
+      });
       const { extractDescriptionFromImage } = require('../services/aiClient');
-      const out = await extractDescriptionFromImage(db, log, entity_type, image_url, entity_name);
-      if (!out.ok) return response.badRequest(res, out.error);
+      const out = await extractDescriptionFromImage(
+        db, log, entity_type, image_url, entity_name, billing.model,
+      );
+      if (!out.ok) {
+        textGenerationBilling.settle(db, log, billing, 'failed', out.error);
+        return response.badRequest(res, out.error);
+      }
+      textGenerationBilling.settle(db, log, billing, 'completed');
       response.success(res, { description: out.description });
     } catch (err) {
       log.error('extract-description-from-image', { error: err.message });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message);
     }
   });
