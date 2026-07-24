@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$InstallerPath,
   [string]$BaselineInstallerPath,
-  [string]$ProductName = '茉莉妈妈短剧制作平台'
+  [string]$ProductName = '茉莉妈妈短剧制作平台',
+  [switch]$RequireValidSignature
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +36,16 @@ function Invoke-Installer([string]$Path) {
     -PassThru
   if ($process.ExitCode -ne 0) {
     throw "Installer exited with code $($process.ExitCode)"
+  }
+}
+
+function Assert-ValidSignature([string]$Path) {
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  if ($signature.Status -ne 'Valid') {
+    throw "Invalid Authenticode signature on $Path`: $($signature.Status)"
+  }
+  if (-not $signature.TimeStamperCertificate) {
+    throw "Missing trusted timestamp on $Path"
   }
 }
 
@@ -85,6 +96,12 @@ try {
   New-Item -ItemType Directory -Path $userDataValidationDir -Force | Out-Null
   Set-Content -LiteralPath $userDataSentinel -Value $runId -Encoding utf8NoBOM
 
+  if ($RequireValidSignature) {
+    Assert-ValidSignature -Path $firstInstaller
+    if ($resolvedInstaller -ne $firstInstaller) {
+      Assert-ValidSignature -Path $resolvedInstaller
+    }
+  }
   Invoke-Installer -Path $firstInstaller
   $baselineExecutable = Get-ChildItem -LiteralPath $installDir -Filter '*.exe' |
     Where-Object { $_.Name -notlike 'Uninstall*.exe' } |
@@ -97,6 +114,9 @@ try {
   Invoke-Installer -Path $resolvedInstaller
   if (-not (Test-Path -LiteralPath $appExe)) {
     throw "Cover install removed the installed executable: $appExe"
+  }
+  if ($RequireValidSignature) {
+    Assert-ValidSignature -Path $appExe
   }
   $versionInfo = (Get-Item -LiteralPath $appExe).VersionInfo
   if ($versionInfo.ProductName -ne $ProductName) {
@@ -112,6 +132,9 @@ try {
   $uninstallerPath = Find-Uninstaller
   if (-not $uninstallerPath) {
     throw "Uninstaller is missing under $installDir"
+  }
+  if ($RequireValidSignature) {
+    Assert-ValidSignature -Path $uninstallerPath
   }
   Invoke-Uninstaller -UninstallerPath $uninstallerPath
 

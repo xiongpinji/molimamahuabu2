@@ -10,6 +10,10 @@ permissions:
   id-token: write
   attestations: write
 
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-windows:
     name: Build signed Windows release
@@ -68,32 +72,23 @@ jobs:
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npm --prefix desktop run dist -- --publish never --config.win.forceCodeSigning=true
 
-      - name: Verify signatures and write checksums
+      - name: Verify signatures, timestamps and checksums
         shell: pwsh
         run: |
-          $artifacts = @(Get-ChildItem -Path desktop/release -Filter '*.exe')
-          if ($artifacts.Count -ne 2) {
-            throw "Expected installer and portable EXE, found $($artifacts.Count)"
-          }
-          if (-not ($artifacts.Name -match ' Setup\.exe$')) {
+          & desktop/scripts/verify-signed-release.ps1 `
+            -ReleaseDirectory desktop/release
+
+      - name: Verify signed install, cover install, uninstall and user-data retention
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path desktop/release -Filter '* Setup.exe' |
+            Select-Object -First 1
+          if (-not $installer) {
             throw 'Missing NSIS installer'
           }
-          if (-not ($artifacts.Name -match ' Portable\.exe$')) {
-            throw 'Missing portable executable'
-          }
-          foreach ($artifact in $artifacts) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $artifact.FullName
-            if ($signature.Status -ne 'Valid') {
-              throw "Invalid Authenticode signature on $($artifact.Name): $($signature.Status)"
-            }
-          }
-          $checksums = $artifacts |
-            Sort-Object Name |
-            ForEach-Object {
-              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
-              "$hash *$($_.Name)"
-            }
-          $checksums | Set-Content -Path desktop/release/SHA256SUMS.txt -Encoding utf8NoBOM
+          & desktop/scripts/validate-windows-installer.ps1 `
+            -InstallerPath $installer.FullName `
+            -RequireValidSignature
 
       - name: Attest signed executables
         uses: actions/attest@v4
@@ -107,6 +102,7 @@ jobs:
           path: |
             desktop/release/*.exe
             desktop/release/SHA256SUMS.txt
+            desktop/release/release-verification.json
           if-no-files-found: error
           retention-days: 7
 
@@ -116,6 +112,7 @@ jobs:
           files: |
             desktop/release/*.exe
             desktop/release/SHA256SUMS.txt
+            desktop/release/release-verification.json
           generate_release_notes: true
           draft: true
         env:

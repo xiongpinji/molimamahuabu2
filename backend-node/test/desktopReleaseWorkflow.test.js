@@ -86,7 +86,22 @@ test('Windows 安装器回归脚本覆盖安装、重复覆盖和卸载后数据
   );
 });
 
-test('标签发布强制 Windows 签名、校验和与产物证明', () => {
+test('正式发布验证脚本强制校验签名、时间戳、版本和校验和', () => {
+  const script = readDesktopScript('verify-signed-release.ps1');
+
+  assert.match(script, /Get-AuthenticodeSignature/);
+  assert.match(script, /\.Status -ne ['"]Valid['"]/);
+  assert.match(script, /TimeStamperCertificate/);
+  assert.match(script, /SignerCertificate/);
+  assert.match(script, /Get-ChildItem[\s\S]*-Filter ['"]\*\.exe['"]/);
+  assert.match(script, /\.Count -ne \$expectedNames\.Count/);
+  assert.match(script, /FileVersion -ne \$version/);
+  assert.match(script, /SHA256SUMS\.txt/);
+  assert.match(script, /release-verification\.json/);
+  assert.match(script, /Get-FileHash[\s\S]*SHA256/);
+});
+
+test('标签发布强制 Windows 签名、签名安装回归、校验和与产物证明', () => {
   const workflow = readWorkflow('release.yml');
 
   assert.match(workflow, /tags:\s*\n\s+- ['"]v\*\.\*\.\*['"]/);
@@ -99,11 +114,14 @@ test('标签发布强制 Windows 签名、校验和与产物证明', () => {
   assert.match(workflow, /Get-Content desktop\/package\.json/);
   assert.match(workflow, /\$env:GITHUB_REF_NAME -ne "v\$version"/);
   assert.match(workflow, /--config\.win\.forceCodeSigning=true/);
-  assert.match(workflow, /Get-AuthenticodeSignature/);
-  assert.match(workflow, /\.Status -ne ['"]Valid['"]/);
+  assert.match(workflow, /verify-signed-release\.ps1/);
+  assert.match(workflow, /validate-windows-installer\.ps1/);
+  assert.match(workflow, /-RequireValidSignature/);
   assert.match(workflow, /SHA256SUMS\.txt/);
+  assert.match(workflow, /release-verification\.json/);
   assert.match(workflow, /actions\/attest@v4/);
   assert.match(workflow, /subject-path: desktop\/release\/\*\.exe/);
   assert.match(workflow, /softprops\/action-gh-release@v2/);
   assert.match(workflow, /desktop\/release\/SHA256SUMS\.txt/);
+  assert.match(workflow, /desktop\/release\/release-verification\.json/);
 });
