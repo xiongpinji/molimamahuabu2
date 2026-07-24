@@ -31,6 +31,7 @@ VITE_PUBLIC_PLATFORM_MODE=true
 2. 设置 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL`，临时开放注册或预先创建对应账号。该账号登录后，用 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`，保存返回的新 JWT并立即关闭公开注册；再创建普通测试用户。当前版本尚未提供支付渠道或自动充值。
 3. 在隔离测试账户中执行一次真实小额生成，核对供应商账单、预扣、成功确认、明确失败退款和状态未知冻结。
 4. 配置 HTTPS、反向代理请求体上限、数据库与素材备份、日志脱敏、限流及告警。
+5. 按 [`docs/PREPRODUCTION_OPERATIONS.md`](docs/PREPRODUCTION_OPERATIONS.md) 执行生产预检、数据库备份和只读恢复演练；自动预检的 `ready` 必须为 `true`。
 
 ## 当前禁止事项
 
