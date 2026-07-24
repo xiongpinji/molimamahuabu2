@@ -1,0 +1,88 @@
+name: Windows Desktop Build
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'frontweb/**'
+      - 'backend-node/**'
+      - '.github/workflows/windows-desktop-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'frontweb/**'
+      - 'backend-node/**'
+      - '.github/workflows/windows-desktop-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned Windows verification package
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            frontweb/package-lock.json
+            desktop/package-lock.json
+
+      - name: Verify release contract
+        run: node --test backend-node/test/desktopReleaseWorkflow.test.js
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontweb ci
+
+      - name: Install desktop dependencies
+        run: npm --prefix desktop ci
+
+      - name: Build unsigned Windows verification package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm --prefix desktop run dist -- --publish never
+
+      - name: Verify artifacts and write checksums
+        shell: pwsh
+        run: |
+          $artifacts = @(Get-ChildItem -Path desktop/release -Filter '*.exe')
+          if ($artifacts.Count -ne 2) {
+            throw "Expected installer and portable EXE, found $($artifacts.Count)"
+          }
+          if (-not ($artifacts.Name -match ' Setup\.exe$')) {
+            throw 'Missing NSIS installer'
+          }
+          if (-not ($artifacts.Name -match ' Portable\.exe$')) {
+            throw 'Missing portable executable'
+          }
+          $checksums = $artifacts |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash *$($_.Name)"
+            }
+          $checksums | Set-Content -Path desktop/release/SHA256SUMS.txt -Encoding utf8NoBOM
+
+      - name: Upload Windows verification package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-verification
+          path: |
+            desktop/release/*.exe
+            desktop/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7

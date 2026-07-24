@@ -23,4 +23,8 @@ desktop/release-icon-test
 desktop/release-icon-test-7
 desktop/backend-app-secure
 build
+!desktop/build/
+desktop/build/*
+!desktop/build/icon.png
+!desktop/build/icon.ico
 frontweb-edu
