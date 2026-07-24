@@ -64,7 +64,12 @@ function isMaxTokensParamError(errMsg) {
 }
 
 async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, options = {}) {
-  const { model, streamCallback, temperature = 0.7 } = options;
+  const {
+    model,
+    streamCallback,
+    temperature = 0.7,
+    allowMaxTokensRetry = true,
+  } = options;
 
   // 第一次尝试：带 max_tokens:16384
   log.info('Storyboard generateText attempt 1', { model: model || '(default)', max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS });
@@ -78,7 +83,7 @@ async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, opti
     });
     return text;
   } catch (e) {
-    if (isMaxTokensParamError(e.message)) {
+    if (allowMaxTokensRetry && isMaxTokensParamError(e.message)) {
       log.warn('Storyboard generateText: max_tokens rejected by model, retrying without it', {
         model: model || '(default)',
         error: e.message.slice(0, 200),
@@ -122,6 +127,7 @@ async function generateAdditionalStoryboardText(
     const text = await generateTextForStoryboard(db, log, userPrompt, systemPrompt, {
       ...generationOptions,
       model: billing.model || generationOptions.model || undefined,
+      allowMaxTokensRetry: !billingOptions.billingEnabled,
     });
     textGenerationBilling.settle(db, log, billing, 'completed');
     return text;
@@ -947,6 +953,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     // {"storyboards":[...]} 或产生乱码 key，改由 extractFirstArray 统一处理任意包装格式。
     const text = await generateTextForStoryboard(db, log, userPrompt, systemPrompt, {
       model: model || undefined,
+      allowMaxTokensRetry: !options.billingEnabled,
       // 每积累约 400 字符触发一次增量解析，尝试提前保存已完成的分镜
       streamCallback: (accumulated) => {
         if (accumulated.length - streamThrottle < 400) return;

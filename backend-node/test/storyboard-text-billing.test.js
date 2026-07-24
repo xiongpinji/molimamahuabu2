@@ -387,6 +387,29 @@ test('整集分镜数量校正按第二次实际模型调用独立计费', async
   assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
 });
 
+test('公开计费模式不隐式重试被模型拒绝的 max_tokens 参数', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  let calls = 0;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => {
+    calls += 1;
+    throw new Error('HTTP 400: max_tokens is not supported');
+  };
+
+  const started = episodeStoryboardService.generateStoryboard(
+    db, log, episodeId, 'GPT-5.5', undefined, undefined, undefined, undefined,
+    false, false,
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+
+  const task = await waitForTask(db, started.task_id);
+  assert.equal(task.status, 'failed');
+  assert.equal(calls, 1);
+  assert.equal(credits.getReservation(db, task.credit_reservation_id).status, 'refunded');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 20);
+});
+
 test('整集分镜供应商失败后退款', async (t) => {
   const { db, episodeId } = setup();
   const original = aiClient.generateText;
