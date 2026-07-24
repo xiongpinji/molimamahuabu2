@@ -32,10 +32,15 @@ test('依赖安全门禁覆盖三个 Node 子项目并在高危漏洞时失败',
     );
   }
   assert.match(commands, /--registry=https:\/\/registry\.npmjs\.org/);
-  assert.equal(
-    commands.match(/--replace-registry-host=always/g)?.length,
-    3,
-    '三个干净安装步骤都必须覆盖锁文件中的历史镜像主机',
+  for (const project of ['backend-node', 'desktop']) {
+    const step = steps.find((item) => item.run?.startsWith(`npm --prefix ${project} ci `));
+    assert.match(step.run, /--replace-registry-host=always/);
+  }
+  const frontendInstall = steps.find((step) => step.run?.startsWith('npm --prefix frontweb ci '));
+  assert.doesNotMatch(
+    frontendInstall.run,
+    /--replace-registry-host=always/,
+    '前端锁文件的 three 定制 tarball 不存在于 npm 官方仓库，必须保留完整锁定地址',
   );
 });
 

@@ -40,7 +40,8 @@ jobs:
         run: npm --prefix backend-node audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
 
       - name: Verify frontend lockfile
-        run: npm --prefix frontweb ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
+        # threepipe 锁定的 three 定制 tarball 不存在于 npm 官方仓库；npm 仍会校验 lockfile integrity。
+        run: npm --prefix frontweb ci --ignore-scripts --registry=https://registry.npmjs.org
 
       - name: Audit frontend production dependencies
         run: npm --prefix frontweb audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
