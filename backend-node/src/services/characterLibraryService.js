@@ -5,6 +5,7 @@ const imageClient = require('./imageClient');
 const { aspectRatioToSize } = require('./imageService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const textGenerationBilling = require('./textGenerationBillingService');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 const jimengMaterialHubService = require('./jimengMaterialHubService');
 const modelArkAssetConfigService = require('./modelArkAssetConfigService');
@@ -541,6 +542,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
   let mergedCfg = mergeCfgStyleWithDrama(cfg, dramaFull);
   mergedCfg = applyStyleOverrideToCfg(mergedCfg, style);
   let imagePrompt;
+  let textBilling = null;
 
   if (charRow.polished_prompt && String(charRow.polished_prompt).trim()) {
     // 直接使用已保存的提示词（用户可能已编辑过）
@@ -564,13 +566,25 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
 
     let fourViewDescription;
     try {
+      textBilling = textGenerationBilling.begin(db, {
+        enabled: Boolean(options.billingEnabled),
+        tenantId: options.tenantId,
+        userId: options.userId,
+        requestedModel: options.textModel,
+        sceneKey: 'role_image_polish',
+        resourceType: 'character_image_prompt',
+        resourceId: characterId,
+        operation: 'character_image_prompt',
+      });
       fourViewDescription = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
         scene_key: 'role_image_polish',
-        model: modelName || undefined,
+        model: textBilling.model,
         max_tokens: 4000,
       });
     } catch (err) {
       log.error('[四视图] Step1 文本AI失败，降级为直接使用外貌描述', { error: err.message });
+      textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+      if (options.billingEnabled) throw err;
       fourViewDescription = appearanceText;
     }
 
@@ -588,20 +602,27 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
     log.info('[四视图] Step1 完成，开始Step2生图', { character_id: characterId });
   }
 
-  const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
-  const imageGen = imageClient.createAndGenerateImage(db, log, {
-    drama_id: charRow.drama_id,
-    character_id: charRow.id,
-    prompt: imagePrompt,
-    model: modelName || undefined,
-    size: '1792x1024',
-    quality: 'standard',
-    provider: 'openai',
-    user_negative_prompt: userNeg || undefined,
-    billingEnabled: Boolean(options.billingEnabled),
-    userId: options.userId,
-    tenantId: options.tenantId,
-  });
+  let imageGen;
+  try {
+    const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
+    imageGen = imageClient.createAndGenerateImage(db, log, {
+      drama_id: charRow.drama_id,
+      character_id: charRow.id,
+      prompt: imagePrompt,
+      model: modelName || undefined,
+      size: '1792x1024',
+      quality: 'standard',
+      provider: 'openai',
+      user_negative_prompt: userNeg || undefined,
+      billingEnabled: Boolean(options.billingEnabled),
+      userId: options.userId,
+      tenantId: options.tenantId,
+    });
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+  } catch (err) {
+    textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+    throw err;
+  }
 
   log.info('[四视图] Step2 图片生成任务已提交', { character_id: characterId, image_gen_id: imageGen?.id });
 

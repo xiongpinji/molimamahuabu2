@@ -82,7 +82,12 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
           characterIds,
           body.model,
           body.style,
-          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+            textModel: body.text_model_name || body.text_model || undefined,
+          }
         );
         if (!out.ok) {
           return response.badRequest(res, out.error);
@@ -93,6 +98,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         });
       } catch (err) {
         log.error('characters batch-generate-images', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -106,7 +112,12 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
           req.params.id,
           body.model,
           body.style,
-          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+            textModel: body.text_model_name || body.text_model || undefined,
+          }
         );
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
@@ -119,6 +130,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         });
       } catch (err) {
         log.error('characters generate-image', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -257,7 +269,20 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await characterLibraryService.generateCharacterFourViewImage(db, log, cfg, req.params.id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id });
+        const out = await characterLibraryService.generateCharacterFourViewImage(
+          db,
+          log,
+          cfg,
+          req.params.id,
+          modelName,
+          style,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+            textModel: body.text_model_name || body.text_model || undefined,
+          },
+        );
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
@@ -266,6 +291,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         response.success(res, { message: '四视图生成任务已提交', image_generation: out.image_generation });
       } catch (err) {
         log.error('characters generate-four-view-image', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },

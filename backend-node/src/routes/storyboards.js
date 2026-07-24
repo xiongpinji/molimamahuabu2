@@ -310,7 +310,19 @@ function routes(db, log, generationOptions = {}) {
         const frameType = body.frame_type || 'first';
         const panelCount = body.panel_count || 3;
         const model = body.model || '';
-        const taskId = framePromptService.generateFramePrompt(db, log, req.params.id, frameType, panelCount, model);
+        const taskId = framePromptService.generateFramePrompt(
+          db,
+          log,
+          req.params.id,
+          frameType,
+          panelCount,
+          model,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+          },
+        );
         response.success(res, {
           task_id: taskId,
           status: 'pending',
@@ -318,6 +330,7 @@ function routes(db, log, generationOptions = {}) {
         });
       } catch (err) {
         log.error('storyboards frame-prompt', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         if (err.message && (err.message.includes('分镜不存在') || err.message.includes('不支持的'))) {
           return response.badRequest(res, err.message);
         }
@@ -355,16 +368,38 @@ function routes(db, log, generationOptions = {}) {
       }
     },
     regenerateLayoutDescription: async (req, res) => {
+      let billing = null;
       try {
         const id = Number(req.params.id);
         if (!id) return response.badRequest(res, '缺少分镜 id');
-        const newLayout = await framePromptService.regenerateLayoutDescription(db, log, id);
+        const exists = db.prepare(
+          'SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL',
+        ).get(id);
+        if (!exists) return response.notFound(res, '分镜不存在');
+        billing = textGenerationBilling.begin(db, {
+          enabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          requestedModel: req.body?.model || undefined,
+          resourceType: 'storyboard_layout',
+          resourceId: String(id),
+          operation: 'storyboard_layout_regenerate',
+        });
+        const newLayout = await framePromptService.regenerateLayoutDescription(
+          db,
+          log,
+          id,
+          billing.model,
+        );
+        textGenerationBilling.settle(db, log, billing, 'completed');
         response.success(res, {
           layout_description: newLayout,
           message: '布局描述已由 AI 重新生成并保存',
         });
       } catch (err) {
         log.error('storyboards regenerateLayoutDescription', { error: err.message, id: req.params.id });
+        textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message || '重新生成布局描述失败');
       }
     },
@@ -399,16 +434,27 @@ function routes(db, log, generationOptions = {}) {
     },
     episodeStoryboardsGenerate: (req, res) => {
       try {
-        const taskId = episodeStoryboardService.generateStoryboard(
+        const started = episodeStoryboardService.generateStoryboard(
           db,
           log,
           req.params.episode_id,
           req.query.model,
-          req.query.style
+          req.query.style,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            tenantId: req.tenant?.id,
+            userId: req.user?.id,
+          },
         );
-        response.success(res, { task_id: taskId, status: 'pending', message: '分镜头生成任务已创建，正在后台处理...' });
+        response.success(res, started);
       } catch (err) {
         log.error('episode storyboards generate', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },

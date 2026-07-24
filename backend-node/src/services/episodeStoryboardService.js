@@ -9,6 +9,7 @@ const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
 const storyboardVoiceLockService = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
+const textGenerationBilling = require('./textGenerationBillingService');
 
 /**
  * 分镜专用 generateText 包装：
@@ -876,7 +877,7 @@ function buildStoryboardCountCorrectionPrompt(storyboards, targetCount) {
 ${JSON.stringify(storyboards)}`;
 }
 
-async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, targetStoryboardCount = null) {
+async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, targetStoryboardCount = null, billing = null) {
   // 增量保存状态放在 try 外，catch 里可用于部分恢复
   const episodeIdNum = Number(episodeId);
   const streamSavedNums = new Set();
@@ -887,6 +888,14 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
   };
   let streamThrottle = 0;
+  const completeTask = (result) => {
+    textGenerationBilling.settle(db, log, billing, 'completed');
+    taskService.updateTaskResult(db, taskId, result);
+  };
+  const failTask = (message) => {
+    textGenerationBilling.settle(db, log, billing, 'failed', message);
+    taskService.updateTaskError(db, taskId, message);
+  };
 
   try {
     taskService.updateTaskStatus(db, taskId, 'processing', 10, '开始生成分镜头...');
@@ -950,7 +959,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
           log.warn('Parse failed but partial storyboards already saved incrementally, treating as truncated success', {
             task_id: taskId, recovered_count: partialBoards.length, parse_error: e.message,
           });
-          taskService.updateTaskResult(db, taskId, {
+          completeTask({
             storyboards: partialBoards,
             total: partialBoards.length,
             total_duration: totalDuration,
@@ -962,7 +971,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         }
       }
 
-      taskService.updateTaskError(db, taskId, '解析分镜头结果失败: ' + (e.message || ''));
+      failTask('解析分镜头结果失败: ' + (e.message || ''));
       return;
     }
 
@@ -975,7 +984,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
           log.warn('Final parse returned 0 items but incremental saves exist, using those', {
             task_id: taskId, recovered_count: partialBoards.length,
           });
-          taskService.updateTaskResult(db, taskId, {
+          completeTask({
             storyboards: partialBoards,
             total: partialBoards.length,
             total_duration: totalDuration,
@@ -986,7 +995,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         }
       }
       log.error('AI returned 0 storyboards', { task_id: taskId });
-      taskService.updateTaskError(db, taskId, 'AI生成分镜失败：返回的分镜数量为0');
+      failTask('AI生成分镜失败：返回的分镜数量为0');
       return;
     }
 
@@ -1128,7 +1137,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       duration_minutes: durationMinutes,
       truncated: parseMeta.truncated || false,
     };
-    taskService.updateTaskResult(db, taskId, resultData);
+    completeTask(resultData);
     log.info('Storyboard generation completed', { task_id: taskId, episode_id: episodeId });
   } catch (err) {
     log.error('Storyboard generation failed', { error: err.message, task_id: taskId });
@@ -1142,7 +1151,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
           log.warn('Partial storyboards recovered after error, treating as truncated success', {
             task_id: taskId, recovered_count: partialBoards.length, error: err.message,
           });
-          taskService.updateTaskResult(db, taskId, {
+          completeTask({
             storyboards: partialBoards,
             total: partialBoards.length,
             total_duration: totalDuration,
@@ -1155,11 +1164,11 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       } catch (_) {}
     }
 
-    taskService.updateTaskError(db, taskId, (err.message || '生成分镜头失败'));
+    failTask(err.message || '生成分镜头失败');
   }
 }
 
-function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni) {
+function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni, options = {}) {
   const cfg = loadConfig();
   const episode = db.prepare(
     'SELECT id, script_content, description, drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL'
@@ -1341,7 +1350,36 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
     systemPrompt += promptI18n.getStoryboardUniversalOmniModeSuffix(cfg);
   }
 
-  const task = taskService.createTask(db, log, 'storyboard_generation', String(episodeId));
+  const billing = textGenerationBilling.begin(db, {
+    enabled: Boolean(options.billingEnabled),
+    tenantId: options.tenantId,
+    userId: options.userId,
+    requestedModel: model || undefined,
+    sceneKey: 'storyboard_extraction',
+    resourceType: 'episode_storyboards',
+    resourceId: String(episodeId),
+    operation: 'episode_storyboards_generate',
+  });
+  let task;
+  try {
+    task = taskService.createTask(db, log, 'storyboard_generation', String(episodeId));
+    if (billing.reservationId) {
+      db.prepare(
+        `UPDATE async_tasks
+         SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?
+         WHERE id = ?`,
+      ).run(
+        options.tenantId || null,
+        options.userId || null,
+        billing.model,
+        billing.reservationId,
+        task.id,
+      );
+    }
+  } catch (error) {
+    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    throw error;
+  }
   log.info('Generating storyboard asynchronously', {
     task_id: task.id,
     episode_id: episodeId,
@@ -1367,14 +1405,15 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
       runCfg,
       task.id,
       String(episodeId),
-      model || undefined,
+      billing.model || undefined,
       finalStyle,
       userPrompt,
       systemPrompt,
       wantNarration,
       wantUniversalOmni,
       clipSec,
-      storyboardCount
+      storyboardCount,
+      billing,
     );
   });
 

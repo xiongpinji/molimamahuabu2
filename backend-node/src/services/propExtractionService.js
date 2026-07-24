@@ -3,23 +3,27 @@ const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const propService = require('./propService');
+const textGenerationBilling = require('./textGenerationBillingService');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
-let _cfg = null; // 由 extractPropsForEpisode 注入，供异步任务使用
 
-async function processPropExtraction(db, log, taskId, episodeId) {
+async function processPropExtraction(db, log, taskId, episodeId, model, billing, routeCfg) {
+  const failTask = (message) => {
+    textGenerationBilling.settle(db, log, billing, 'failed', message);
+    taskService.updateTaskError(db, taskId, message);
+  };
   taskService.updateTaskStatus(db, taskId, 'processing', 0, '正在分析剧本...');
 
   const episode = db.prepare(
     'SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(episodeId));
   if (!episode) {
-    taskService.updateTaskError(db, taskId, '剧集不存在');
+    failTask('剧集不存在');
     return;
   }
 
   const scriptContent = episode.script_content;
   if (!scriptContent || !String(scriptContent).trim()) {
-    taskService.updateTaskError(db, taskId, '剧本内容为空');
+    failTask('剧本内容为空');
     return;
   }
 
@@ -49,12 +53,13 @@ async function processPropExtraction(db, log, taskId, episodeId) {
   try {
     response = await aiClient.generateText(db, log, 'text', prompt, systemPrompt, {
       scene_key: 'prop_extraction',
+      model: model || undefined,
       max_tokens: 2000,
       temperature: 0.3,
     });
   } catch (err) {
     log.error('Prop extraction AI failed', { error: err.message, task_id: taskId });
-    taskService.updateTaskError(db, taskId, 'AI 提取失败: ' + (err.message || '未知错误'));
+    failTask('AI 提取失败: ' + (err.message || '未知错误'));
     return;
   }
 
@@ -63,7 +68,7 @@ async function processPropExtraction(db, log, taskId, episodeId) {
     const parsed = safeParseAIJSON(response, log);
     extractedProps = extractFirstArray(parsed) || [];
   } catch (_) {
-    taskService.updateTaskError(db, taskId, '解析 AI 返回的 JSON 失败');
+    failTask('解析 AI 返回的 JSON 失败');
     return;
   }
 
@@ -107,16 +112,31 @@ async function processPropExtraction(db, log, taskId, episodeId) {
     if (prop) {
       createdProps.push(prop);
       // 若提取时没有生成 prompt，异步后台补生成
-      if (!prop.prompt && _cfg) {
-        setImmediate(() => {
-          propService.generatePropPromptOnly(db, log, _cfg, prop.id, undefined, undefined).catch((err) => {
-            log.warn('[提取道具] 预生成提示词失败', { prop_id: prop.id, error: err.message });
+      if (!prop.prompt && routeCfg) {
+        if (billing?.reservationId) {
+          const generated = await propService.generatePropPromptOnly(
+            db,
+            log,
+            routeCfg,
+            prop.id,
+            model,
+            undefined,
+          );
+          if (!generated.ok) {
+            throw new Error(generated.error || '道具提示词生成失败');
+          }
+        } else {
+          setImmediate(() => {
+            propService.generatePropPromptOnly(db, log, routeCfg, prop.id, undefined, undefined).catch((err) => {
+              log.warn('[提取道具] 预生成提示词失败', { prop_id: prop.id, error: err.message });
+            });
           });
-        });
+        }
       }
     }
   }
 
+  textGenerationBilling.settle(db, log, billing, 'completed');
   taskService.updateTaskResult(db, taskId, {
     props: createdProps,
     count: createdProps.length,
@@ -130,8 +150,7 @@ async function processPropExtraction(db, log, taskId, episodeId) {
   });
 }
 
-function extractPropsForEpisode(db, log, episodeId, cfg) {
-  if (cfg) _cfg = cfg;
+function extractPropsForEpisode(db, log, episodeId, cfg, options = {}) {
   const episode = db.prepare(
     'SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(episodeId));
@@ -140,10 +159,49 @@ function extractPropsForEpisode(db, log, episodeId, cfg) {
     throw new Error('剧集剧本内容为空，无法提取道具');
   }
 
-  const task = taskService.createTask(db, log, 'prop_extraction', String(episodeId));
+  const billing = textGenerationBilling.begin(db, {
+    enabled: Boolean(options.billingEnabled),
+    tenantId: options.tenantId,
+    userId: options.userId,
+    requestedModel: options.model || undefined,
+    sceneKey: 'prop_extraction',
+    resourceType: 'episode_props',
+    resourceId: String(episodeId),
+    operation: 'episode_props_extract',
+  });
+  let task;
+  try {
+    task = taskService.createTask(db, log, 'prop_extraction', String(episodeId));
+    if (billing.reservationId) {
+      db.prepare(
+        `UPDATE async_tasks
+         SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?
+         WHERE id = ?`,
+      ).run(
+        options.tenantId || null,
+        options.userId || null,
+        billing.model,
+        billing.reservationId,
+        task.id,
+      );
+    }
+  } catch (error) {
+    textGenerationBilling.settle(db, log, billing, 'failed', error.message);
+    throw error;
+  }
   setImmediate(() => {
-    processPropExtraction(db, log, task.id, episodeId).catch((err) => {
+    processPropExtraction(
+      db,
+      log,
+      task.id,
+      episodeId,
+      billing.model,
+      billing,
+      cfg,
+    ).catch((err) => {
       log.error('processPropExtraction fatal', { error: err.message, task_id: task.id });
+      textGenerationBilling.settle(db, log, billing, 'failed', err.message);
+      taskService.updateTaskError(db, task.id, err.message || '提取道具失败');
     });
   });
   return task.id;

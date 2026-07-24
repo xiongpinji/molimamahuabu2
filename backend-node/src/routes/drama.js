@@ -3,6 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
+const textGenerationBilling = require('../services/textGenerationBillingService');
 
 function createDrama(db, log) {
   return (req, res) => {
@@ -267,7 +268,7 @@ function importExample(db, cfg, log) {
   };
 }
 
-function generateStoryboard(db, log) {
+function generateStoryboard(db, log, generationOptions = {}) {
   return async (req, res) => {
     const body = req.body || {};
     try {
@@ -282,16 +283,20 @@ function generateStoryboard(db, log) {
         aspect_ratio: body.aspect_ratio,
         include_narration: body.include_narration,
         universal_omni_storyboard: body.universal_omni_storyboard,
+        billing_enabled: Boolean(generationOptions.billingEnabled),
+        tenant_id: req.tenant?.id,
+        user_id: req.user?.id,
       });
       response.success(res, resData);
     } catch (err) {
       log.error('Generate storyboard failed', { error: err.message });
+      if (textGenerationBilling.respondError(response, res, err)) return;
       response.internalError(res, err.message || '生成分镜失败');
     }
   };
 }
 
-module.exports = function dramaRoutes(db, cfg, log) {
+module.exports = function dramaRoutes(db, cfg, log, generationOptions = {}) {
   return {
     createDrama: createDrama(db, log),
     getDrama: getDrama(db, cfg),
@@ -308,7 +313,7 @@ module.exports = function dramaRoutes(db, cfg, log) {
     listProps: listProps(db),
     finalizeEpisode: finalizeEpisode(db, log, cfg),
     downloadEpisodeVideo: downloadEpisodeVideo(db),
-    generateStoryboard: generateStoryboard(db, log),
+    generateStoryboard: generateStoryboard(db, log, generationOptions),
     exportDrama: exportDrama(db, cfg, log),
     importDrama: importDrama(db, cfg, log),
     listExamples: listExamples(log),

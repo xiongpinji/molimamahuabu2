@@ -2,6 +2,7 @@
 const imageClient = require('./imageClient');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const textGenerationBilling = require('./textGenerationBillingService');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 
 function applySceneStyleOverride(cfg, styleOverride) {
@@ -325,6 +326,7 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
   let mergedCfg = mergeCfgStyleWithDrama(cfg, dramaFull);
   mergedCfg = applySceneStyleOverride(mergedCfg, style);
   let imagePrompt;
+  let textBilling = null;
 
   if (sceneRow.polished_prompt && String(sceneRow.polished_prompt).trim()) {
     imagePrompt = String(sceneRow.polished_prompt).trim();
@@ -347,12 +349,23 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
 
     let fourViewDescription;
     try {
+      textBilling = textGenerationBilling.begin(db, {
+        enabled: Boolean(options.billingEnabled),
+        tenantId: options.tenantId,
+        userId: options.userId,
+        requestedModel: options.textModel,
+        resourceType: 'scene_image_prompt',
+        resourceId: sceneId,
+        operation: 'scene_image_prompt',
+      });
       fourViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
-        model: modelName || undefined,
+        model: textBilling.model,
         max_tokens: 4000,
       });
     } catch (err) {
       log.error('[场景四视图] Step1 文本AI失败，降级为直接使用场景描述', { error: err.message });
+      textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+      if (options.billingEnabled) throw err;
       fourViewDescription = inputText;
     }
 
@@ -370,19 +383,26 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
     log.info('[场景四视图] Step1 完成，开始Step2生图', { scene_id: sceneId });
   }
 
-  const imageGen = imageClient.createAndGenerateImage(db, log, {
-    drama_id: sceneRow.drama_id,
-    scene_id: sceneId,
-    image_type: 'scene_reference',
-    prompt: imagePrompt,
-    model: modelName || undefined,
-    size: '1792x1024',
-    quality: 'standard',
-    provider: 'openai',
-    billingEnabled: Boolean(options.billingEnabled),
-    userId: options.userId,
-    tenantId: options.tenantId,
-  });
+  let imageGen;
+  try {
+    imageGen = imageClient.createAndGenerateImage(db, log, {
+      drama_id: sceneRow.drama_id,
+      scene_id: sceneId,
+      image_type: 'scene_reference',
+      prompt: imagePrompt,
+      model: modelName || undefined,
+      size: '1792x1024',
+      quality: 'standard',
+      provider: 'openai',
+      billingEnabled: Boolean(options.billingEnabled),
+      userId: options.userId,
+      tenantId: options.tenantId,
+    });
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+  } catch (err) {
+    textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+    throw err;
+  }
 
   log.info('[场景四视图] Step2 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGen?.id });
 
@@ -405,6 +425,7 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
   let mergedCfg = mergeCfgStyleWithDrama(cfg, dramaFull);
   mergedCfg = applySceneStyleOverride(mergedCfg, style);
   let imagePrompt;
+  let textBilling = null;
 
   // 注意：单图模式只检查 polished_prompt_single，即使 polished_prompt（四宫格）有值也不复用
   // 这样可以兼容老数据（老数据 polished_prompt 是四宫格内容，不能用于单图）
@@ -429,12 +450,23 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
 
     let singleViewDescription;
     try {
+      textBilling = textGenerationBilling.begin(db, {
+        enabled: Boolean(options.billingEnabled),
+        tenantId: options.tenantId,
+        userId: options.userId,
+        requestedModel: options.textModel,
+        resourceType: 'scene_single_image_prompt',
+        resourceId: sceneId,
+        operation: 'scene_single_image_prompt',
+      });
       singleViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
-        model: modelName || undefined,
+        model: textBilling.model,
         max_tokens: 4000,
       });
     } catch (err) {
       log.error('[场景单图] Step1 文本AI失败，降级为直接使用场景描述', { error: err.message });
+      textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+      if (options.billingEnabled) throw err;
       singleViewDescription = inputText;
     }
 
@@ -451,19 +483,26 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
     log.info('[场景单图] Step1 完成，开始Step2生图', { scene_id: sceneId });
   }
 
-  const imageGen = imageClient.createAndGenerateImage(db, log, {
-    drama_id: sceneRow.drama_id,
-    scene_id: sceneId,
-    image_type: 'scene_reference',
-    prompt: imagePrompt,
-    model: modelName || undefined,
-    size: '1792x1024',
-    quality: 'standard',
-    provider: 'openai',
-    billingEnabled: Boolean(options.billingEnabled),
-    userId: options.userId,
-    tenantId: options.tenantId,
-  });
+  let imageGen;
+  try {
+    imageGen = imageClient.createAndGenerateImage(db, log, {
+      drama_id: sceneRow.drama_id,
+      scene_id: sceneId,
+      image_type: 'scene_reference',
+      prompt: imagePrompt,
+      model: modelName || undefined,
+      size: '1792x1024',
+      quality: 'standard',
+      provider: 'openai',
+      billingEnabled: Boolean(options.billingEnabled),
+      userId: options.userId,
+      tenantId: options.tenantId,
+    });
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+  } catch (err) {
+    textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
+    throw err;
+  }
 
   log.info('[场景单图] Step2 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGen?.id });
 

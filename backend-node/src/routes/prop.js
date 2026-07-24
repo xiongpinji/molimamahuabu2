@@ -63,15 +63,27 @@ function generateImage(db, log) {
   };
 }
 
-function extractProps(db, log, cfg) {
+function extractProps(db, log, cfg, generationOptions = {}) {
   const propExtractionService = require('../services/propExtractionService');
   return (req, res) => {
     const episodeId = req.params.episode_id;
     if (!episodeId) return response.badRequest(res, '缺少 episode_id');
     try {
-      const taskId = propExtractionService.extractPropsForEpisode(db, log, episodeId, cfg);
+      const taskId = propExtractionService.extractPropsForEpisode(
+        db,
+        log,
+        episodeId,
+        cfg,
+        {
+          billingEnabled: Boolean(generationOptions.billingEnabled),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          model: req.body?.model || undefined,
+        },
+      );
       response.success(res, { task_id: taskId });
     } catch (err) {
+      if (textGenerationBilling.respondError(response, res, err)) return;
       if (err.message === 'episode not found' || err.message?.includes('剧本内容为空')) {
         return response.badRequest(res, err.message);
       }
@@ -206,7 +218,7 @@ module.exports = function propRoutes(db, log, cfg, generationOptions = {}) {
     getPropById: getPropById(db, log),
     generateImage: generateImage(db, log),
     generatePropPrompt: generatePropPrompt(db, log, cfg, generationOptions),
-    extractProps: extractProps(db, log, cfg),
+    extractProps: extractProps(db, log, cfg, generationOptions),
     associateProps: associateProps(db, log),
     addToLibrary: addToLibrary(db, log),
     addToMaterialLibrary: addToMaterialLibrary(db, log),

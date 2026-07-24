@@ -193,7 +193,18 @@ function routes(db, log, cfg, generationOptions = {}) {
         const sceneId = body.scene_id != null ? Number(body.scene_id) : null;
         if (sceneId == null) return response.badRequest(res, '缺少 scene_id');
         const out = await sceneService.generateSceneFourViewImage(
-          db, log, cfg, sceneId, body.model || undefined, body.style || undefined, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
+          db,
+          log,
+          cfg,
+          sceneId,
+          body.model || undefined,
+          body.style || undefined,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+            textModel: body.text_model_name || body.text_model || undefined,
+          },
         );
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
@@ -206,6 +217,7 @@ function routes(db, log, cfg, generationOptions = {}) {
         });
       } catch (err) {
         log.error('scenes generateImage', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -241,7 +253,20 @@ function routes(db, log, cfg, generationOptions = {}) {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await sceneService.generateSceneFourViewImage(db, log, cfg, req.params.scene_id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id });
+        const out = await sceneService.generateSceneFourViewImage(
+          db,
+          log,
+          cfg,
+          req.params.scene_id,
+          modelName,
+          style,
+          {
+            billingEnabled: Boolean(generationOptions.billingEnabled),
+            userId: req.user?.id,
+            tenantId: req.tenant?.id,
+            textModel: body.text_model_name || body.text_model || undefined,
+          },
+        );
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
@@ -250,6 +275,7 @@ function routes(db, log, cfg, generationOptions = {}) {
         response.success(res, { message: '场景四视图生成任务已提交', image_generation: out.image_generation });
       } catch (err) {
         log.error('scenes generate-four-view-image', { error: err.message });
+        if (textGenerationBilling.respondError(response, res, err)) return;
         response.internalError(res, err.message);
       }
     },

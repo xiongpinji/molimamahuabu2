@@ -32,13 +32,13 @@ const textGenerationBilling = require('../services/textGenerationBillingService'
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
-  const drama = dramaRoutes(db, cfg, log);
+  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
   const aiConfig = aiConfigRoutes(db, log, cfg);
   const stub = stubRoutes(db, cfg, log);
   const sceneModelMap = sceneModelMapRoutes(db, log);
-  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
   const prop = propRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const { createAdminAuthMiddleware } = require('../middleware/adminAuth');
   const requireAdmin = createAdminAuthMiddleware({

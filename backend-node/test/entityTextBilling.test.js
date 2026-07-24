@@ -3,11 +3,14 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const aiConfig = require('../src/services/aiConfigService');
+const aiClient = require('../src/services/aiClient');
 const characterLibrary = require('../src/services/characterLibraryService');
 const characterRoutes = require('../src/routes/characters');
 const credits = require('../src/services/creditLedgerService');
+const imageClient = require('../src/services/imageClient');
 const prices = require('../src/services/modelPriceService');
 const propRoutes = require('../src/routes/prop');
+const propExtractionService = require('../src/services/propExtractionService');
 const propService = require('../src/services/propService');
 const sceneRoutes = require('../src/routes/scenes');
 const sceneService = require('../src/services/sceneService');
@@ -26,6 +29,11 @@ function setup({ withPrice = true } = {}) {
   const characterId = db.prepare(
     `INSERT INTO characters (drama_id, name, appearance, created_at, updated_at)
      VALUES (?, '小茉', '黑色长发，粉色外套', ?, ?)`,
+  ).run(dramaId, now, now).lastInsertRowid;
+  const episodeId = db.prepare(
+    `INSERT INTO episodes
+      (drama_id, episode_number, title, script_content, created_at, updated_at)
+     VALUES (?, 1, '第一集', '小茉拿起刻纹木牌。', ?, ?)`,
   ).run(dramaId, now, now).lastInsertRowid;
   const propId = db.prepare(
     `INSERT INTO props (drama_id, name, description, created_at, updated_at)
@@ -48,7 +56,7 @@ function setup({ withPrice = true } = {}) {
   });
   credits.setTenantAccountBalance(db, 'tenant-a', 30);
   if (withPrice) prices.set(db, 'GPT-5.5', 5);
-  return { db, characterId, propId, sceneId: scene.id };
+  return { db, episodeId, characterId, propId, sceneId: scene.id };
 }
 
 function capture() {
@@ -69,6 +77,16 @@ function request(id, body = {}) {
     user: { id: 'user-1' },
     tenant: { id: 'tenant-a' },
   };
+}
+
+async function waitForTask(db, taskId) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(taskId);
+    if (task && ['completed', 'failed'].includes(task.status)) return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`等待任务 ${taskId} 超时`);
 }
 
 test('角色提示词生成成功后确认文本模型积分', async (t) => {
@@ -149,4 +167,221 @@ test('场景视觉提取成功后确认文本模型积分', async (t) => {
      WHERE resource_type = 'scene_vision' AND resource_id = ?`,
   ).get(String(sceneId));
   assert.equal(reservation.status, 'confirmed');
+});
+
+test('角色四视图缺少润色提示词时按独立文本模型计费', async (t) => {
+  const { db, characterId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return '角色四视图描述';
+  };
+  imageClient.createAndGenerateImage = (_db, _log, options) => {
+    assert.equal(options.model, 'image-model');
+    return { id: 101 };
+  };
+
+  const out = await characterLibrary.generateCharacterFourViewImage(
+    db,
+    log,
+    {},
+    characterId,
+    'image-model',
+    undefined,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      textModel: 'GPT-5.5',
+    },
+  );
+
+  assert.equal(out.ok, true);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'character_image_prompt' AND resource_id = ?`,
+  ).get(String(characterId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(reservation.model, 'GPT-5.5');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('角色四视图文本生成失败时退回提示词预扣积分', async (t) => {
+  const { db, characterId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  let imageCalls = 0;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiClient.generateText = async () => { throw new Error('文本供应商失败'); };
+  imageClient.createAndGenerateImage = () => {
+    imageCalls += 1;
+    return { id: 102 };
+  };
+
+  await assert.rejects(
+    characterLibrary.generateCharacterFourViewImage(
+      db,
+      log,
+      {},
+      characterId,
+      'image-model',
+      undefined,
+      {
+        billingEnabled: true,
+        tenantId: 'tenant-a',
+        userId: 'user-1',
+        textModel: 'GPT-5.5',
+      },
+    ),
+    /文本供应商失败/,
+  );
+
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'character_image_prompt' AND resource_id = ?`,
+  ).get(String(characterId));
+  assert.equal(reservation.status, 'refunded');
+  assert.equal(imageCalls, 0);
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 30);
+});
+
+test('场景四视图缺少润色提示词时按独立文本模型计费', async (t) => {
+  const { db, sceneId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return '场景四视图描述';
+  };
+  imageClient.createAndGenerateImage = (_db, _log, options) => {
+    assert.equal(options.model, 'image-model');
+    return { id: 201 };
+  };
+
+  const out = await sceneService.generateSceneFourViewImage(
+    db,
+    log,
+    {},
+    sceneId,
+    'image-model',
+    undefined,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      textModel: 'GPT-5.5',
+    },
+  );
+
+  assert.equal(out.ok, true);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'scene_image_prompt' AND resource_id = ?`,
+  ).get(String(sceneId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(reservation.model, 'GPT-5.5');
+});
+
+test('角色四视图文本模型未定价时返回 503 且不提交图片任务', async (t) => {
+  const { db, characterId } = setup({ withPrice: false });
+  const originalImage = imageClient.createAndGenerateImage;
+  let imageCalls = 0;
+  t.after(() => {
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  imageClient.createAndGenerateImage = () => {
+    imageCalls += 1;
+    return { id: 103 };
+  };
+  const { res, result } = capture();
+
+  await characterRoutes(db, {}, log, null, { billingEnabled: true })
+    .generateFourViewImage(request(characterId, {
+      model: 'image-model',
+      text_model: 'GPT-5.5',
+    }), res);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.error.code, 'MODEL_PRICE_NOT_CONFIGURED');
+  assert.equal(imageCalls, 0);
+});
+
+test('剧集道具异步提取成功后确认积分', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return JSON.stringify([{
+      name: '刻纹木牌',
+      type: '线索',
+      description: '一块刻有纹路的旧木牌',
+      image_prompt: 'an old carved wooden tablet',
+    }]);
+  };
+
+  const taskId = propExtractionService.extractPropsForEpisode(
+    db,
+    log,
+    episodeId,
+    {},
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      model: 'GPT-5.5',
+    },
+  );
+
+  const task = await waitForTask(db, taskId);
+  assert.equal(task.status, 'completed');
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('剧集道具异步提取失败后退款', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => { throw new Error('供应商明确失败'); };
+
+  const taskId = propExtractionService.extractPropsForEpisode(
+    db,
+    log,
+    episodeId,
+    {},
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      model: 'GPT-5.5',
+    },
+  );
+
+  const task = await waitForTask(db, taskId);
+  assert.equal(task.status, 'failed');
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'refunded');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 30);
 });

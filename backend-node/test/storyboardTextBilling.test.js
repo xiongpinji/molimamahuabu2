@@ -7,6 +7,7 @@ const aiConfig = require('../src/services/aiConfigService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const storyboardRoutes = require('../src/routes/storyboards');
+const episodeStoryboardService = require('../src/services/episodeStoryboardService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -42,7 +43,7 @@ function setup({ withPrice = true } = {}) {
   });
   credits.setTenantAccountBalance(db, 'tenant-a', 20);
   if (withPrice) prices.set(db, 'GPT-5.5', 5);
-  return { db, storyboardId };
+  return { db, dramaId, episodeId, storyboardId };
 }
 
 function request(storyboardId, body = {}) {
@@ -78,6 +79,16 @@ function captureStream() {
       end() { result.ended = true; return this; },
     },
   };
+}
+
+async function waitForTask(db, taskId) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(taskId);
+    if (task && ['completed', 'failed'].includes(task.status)) return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`等待任务 ${taskId} 超时`);
 }
 
 test('分镜全能提示词按实际文本模型计费并确认积分', async (t) => {
@@ -152,4 +163,191 @@ test('五个分镜文本入口均声明独立计费操作', () => {
   ]) {
     assert.match(source, new RegExp(`beginStoryboardTextBilling\\([^\\n]+${operation}`));
   }
+});
+
+test('帧提示词异步任务成功后确认预扣积分', async (t) => {
+  const { db, storyboardId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => JSON.stringify({
+    prompt: '雨后庭院里，母亲站在石阶前。',
+    description: '镜头开始的静态画面',
+  });
+  const { res, result } = captureJson();
+
+  storyboardRoutes(db, log, { billingEnabled: true })
+    .framePrompt(request(storyboardId, { frame_type: 'first' }), res);
+
+  assert.equal(result.status, 200);
+  const task = await waitForTask(db, result.body.data.task_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.model, 'GPT-5.5');
+  assert.ok(task.credit_reservation_id);
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('帧提示词供应商失败后任务失败并退款', async (t) => {
+  const { db, storyboardId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => { throw new Error('供应商明确失败'); };
+  const { res, result } = captureJson();
+
+  storyboardRoutes(db, log, { billingEnabled: true })
+    .framePrompt(request(storyboardId, { frame_type: 'first' }), res);
+
+  assert.equal(result.status, 200);
+  const task = await waitForTask(db, result.body.data.task_id);
+  assert.equal(task.status, 'failed');
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'refunded');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 20);
+});
+
+test('帧提示词模型未定价时返回 503 且不创建任务', () => {
+  const { db, storyboardId } = setup({ withPrice: false });
+  const { res, result } = captureJson();
+
+  storyboardRoutes(db, log, { billingEnabled: true })
+    .framePrompt(request(storyboardId, { frame_type: 'first' }), res);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.error.code, 'MODEL_PRICE_NOT_CONFIGURED');
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'frame_prompt_generation'",
+  ).get().count, 0);
+  db.close();
+});
+
+test('布局描述重生成按实际文本模型计费并确认积分', async (t) => {
+  const { db, storyboardId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _userPrompt, _systemPrompt, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return '母亲位于画面左侧，庭院石阶沿纵深延伸。';
+  };
+  const { res, result } = captureJson();
+
+  await storyboardRoutes(db, log, { billingEnabled: true })
+    .regenerateLayoutDescription(request(storyboardId), res);
+
+  assert.equal(result.status, 200);
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'storyboard_layout' AND resource_id = ?`,
+  ).get(String(storyboardId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('整集分镜异步生成成功后确认积分', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async (_db, _log, _type, _userPrompt, _systemPrompt, options) => {
+    assert.equal(options.model, 'GPT-5.5');
+    return JSON.stringify([{
+      shot_number: 1,
+      title: '庭院相遇',
+      action: '母亲走进雨后庭院。',
+      dialogue: '妈妈：你回来了。',
+      duration: 5,
+    }]);
+  };
+
+  const started = episodeStoryboardService.generateStoryboard(
+    db,
+    log,
+    episodeId,
+    'GPT-5.5',
+    undefined,
+    1,
+    5,
+    '16:9',
+    false,
+    false,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+    },
+  );
+
+  const task = await waitForTask(db, started.task_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.model, 'GPT-5.5');
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('整集分镜供应商失败后退款', async (t) => {
+  const { db, episodeId } = setup();
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => { throw new Error('供应商明确失败'); };
+
+  const started = episodeStoryboardService.generateStoryboard(
+    db,
+    log,
+    episodeId,
+    'GPT-5.5',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+    },
+  );
+
+  const task = await waitForTask(db, started.task_id);
+  assert.equal(task.status, 'failed');
+  const reservation = db.prepare(
+    'SELECT * FROM tenant_usage_reservations WHERE id = ?',
+  ).get(task.credit_reservation_id);
+  assert.equal(reservation.status, 'refunded');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 20);
+});
+
+test('整集分镜模型未定价时拒绝创建任务', () => {
+  const { db, episodeId } = setup({ withPrice: false });
+
+  assert.throws(
+    () => episodeStoryboardService.generateStoryboard(
+      db,
+      log,
+      episodeId,
+      'GPT-5.5',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      false,
+      {
+        billingEnabled: true,
+        tenantId: 'tenant-a',
+        userId: 'user-1',
+      },
+    ),
+    { code: 'MODEL_PRICE_NOT_CONFIGURED' },
+  );
+  assert.equal(db.prepare(
+    "SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'storyboard_generation'",
+  ).get().count, 0);
+  db.close();
 });
