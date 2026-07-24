@@ -26,6 +26,18 @@ test('公开模式阻止普通用户直接进入账号管理页', () => {
   assert.equal(authRedirect(true, target, { token: 'token', user: { role: 'support' } }), null)
 })
 
+test('统一管理后台在进入页面前要求管理员登录态', () => {
+  const router = fs.readFileSync(path.join(root, 'src/router/index.js'), 'utf8')
+  assert.match(
+    router,
+    /path:\s*'\/billing-admin'[\s\S]*?meta:\s*\{\s*title:\s*'平台管理后台',\s*roles:\s*\['admin'\]\s*\}/,
+  )
+  const target = { path: '/billing-admin', meta: { roles: ['admin'] } }
+  assert.deepEqual(authRedirect(true, target, null), { name: 'login', query: { redirect: '/billing-admin' } })
+  assert.deepEqual(authRedirect(true, target, { token: 'token', user: { role: 'ops' } }), { name: 'list' })
+  assert.equal(authRedirect(true, target, { token: 'token', user: { role: 'admin' } }), null)
+})
+
 test('账号管理页使用独立 JWT API 并按权限控制敏感操作', () => {
   const view = fs.readFileSync(path.join(root, 'src/views/AccountAdmin.vue'), 'utf8')
   const api = fs.readFileSync(path.join(root, 'src/api/platformAccounts.js'), 'utf8')

@@ -53,7 +53,7 @@ const router = createRouter({
       path: '/billing-admin',
       name: 'billing-admin',
       component: () => import('@/views/BillingAdmin.vue'),
-      meta: { title: '平台管理后台' }
+      meta: { title: '平台管理后台', roles: ['admin'] }
     },
     {
       path: '/account-admin',
