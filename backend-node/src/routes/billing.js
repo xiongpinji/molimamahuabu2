@@ -8,7 +8,12 @@ function routes(db, log) {
     getAccount: (req, res) => {
       try {
         const userId = String(req.user.id);
-        const account = creditLedger.getAccount(db, userId) || { user_id: userId, available: 0, held: 0, spent: 0 };
+        const tenantId = req.tenant?.id;
+        const account = tenantId
+          ? creditLedger.getTenantAccount(db, tenantId)
+            || { tenant_id: tenantId, available: 0, held: 0, spent: 0 }
+          : creditLedger.getAccount(db, userId)
+            || { user_id: userId, available: 0, held: 0, spent: 0 };
         response.success(res, account);
       } catch (error) {
         log.error('billing get account', { error: error.message });
@@ -17,7 +22,9 @@ function routes(db, log) {
     },
     listAuditEvents: (req, res) => {
       try {
-        const events = auditEvents.listForUser(db, req.user.id, req.query?.limit);
+        const events = req.tenant?.id
+          ? auditEvents.listForTenant(db, req.tenant.id, req.query?.limit)
+          : auditEvents.listForUser(db, req.user.id, req.query?.limit);
         response.success(res, events);
       } catch (error) {
         log.error('billing list audit events', { error: error.message });

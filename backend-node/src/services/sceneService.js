@@ -381,6 +381,7 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
     provider: 'openai',
     billingEnabled: Boolean(options.billingEnabled),
     userId: options.userId,
+    tenantId: options.tenantId,
   });
 
   log.info('[场景四视图] Step2 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGen?.id });
@@ -461,6 +462,7 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
     provider: 'openai',
     billingEnabled: Boolean(options.billingEnabled),
     userId: options.userId,
+    tenantId: options.tenantId,
   });
 
   log.info('[场景单图] Step2 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGen?.id });
@@ -508,6 +510,7 @@ async function generateScenePanoramaImage(db, log, cfg, sceneId, modelName, styl
     provider: 'openai',
     billingEnabled: Boolean(options.billingEnabled),
     userId: options.userId,
+    tenantId: options.tenantId,
   });
   log.info('[场景全景图] 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGeneration?.id });
   return { ok: true, image_generation: imageGeneration };

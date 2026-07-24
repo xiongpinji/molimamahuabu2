@@ -10,10 +10,12 @@ const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 
-function reserveStoryCredit(db, { userId, resourceId, operationKey, model }) {
+function reserveStoryCredit(db, { tenantId, userId, resourceId, operationKey, model }) {
   const canonicalModel = modelPrice.canonicalModel(model || 'GPT-5.5');
   const amount = modelPrice.requirePrice(db, canonicalModel);
   const reservation = creditLedger.reserve(db, {
+    tenantId,
+    actorUserId: userId,
     userId,
     operationKey,
     model: canonicalModel,
@@ -23,6 +25,7 @@ function reserveStoryCredit(db, { userId, resourceId, operationKey, model }) {
   });
   auditEvent.record(db, {
     userId,
+    tenantId,
     eventType: 'generation.text.created',
     resourceType: 'text',
     resourceId,
@@ -37,6 +40,7 @@ function settleStoryCredit(db, log, reservationId, outcome, message = '') {
     const settled = creditLedger.settleGeneration(db, reservationId, outcome, message);
     auditEvent.record(db, {
       userId: settled?.user_id,
+      tenantId: settled?.tenant_id,
       eventType: outcome === 'completed' ? 'generation.text.completed' : 'generation.text.failed',
       resourceType: 'text',
       resourceId: settled?.resource_id,
@@ -76,6 +80,7 @@ async function generateStory(db, log, body) {
     const prepared = billingReservationId
       ? { model: modelPrice.canonicalModel(body.model || 'GPT-5.5') }
       : reserveStoryCredit(db, {
+        tenantId: body.tenantId,
         userId: body.userId,
         resourceId: body.billingResourceId || body.billingOperationKey || randomUUID(),
         operationKey: body.billingOperationKey || ('story_sync:' + body.userId + ':' + randomUUID()),
@@ -210,16 +215,25 @@ function startStoryGeneration(db, log, req, options = {}) {
   if (!dramaId) throw new Error('drama_id 必填');
   const billingEnabled = Boolean(options.billingEnabled);
   const userId = options.userId ? String(options.userId) : '';
+  const tenantId = options.tenantId ? String(options.tenantId) : '';
   if (billingEnabled && !userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
-  if (!dramaService.getDramaById(db, Number(dramaId))) {
+  if (!dramaService.getDramaById(
+    db,
+    Number(dramaId),
+    tenantId ? userId || null : null,
+    tenantId || null,
+  )) {
     throw new Error('项目不存在');
   }
 
+  const ownerClause = billingEnabled ? tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?' : '';
   const existingSql = `SELECT id FROM async_tasks
      WHERE resource_id = ? AND type = 'story_generation'
-       AND status IN ('pending', 'processing') AND deleted_at IS NULL${billingEnabled ? ' AND user_id = ?' : ''}
+       AND status IN ('pending', 'processing') AND deleted_at IS NULL${ownerClause}
      ORDER BY created_at DESC LIMIT 1`;
-  const existing = db.prepare(existingSql).get(...(billingEnabled ? [dramaId, userId] : [dramaId]));
+  const existing = db.prepare(existingSql).get(
+    ...(billingEnabled ? [dramaId, tenantId || userId] : [dramaId]),
+  );
   if (existing) {
     log.info('Story generation already running', { task_id: existing.id, drama_id: dramaId });
     return existing.id;
@@ -230,14 +244,24 @@ function startStoryGeneration(db, log, req, options = {}) {
   if (billingEnabled) {
     try {
       const prepared = reserveStoryCredit(db, {
+        tenantId,
         userId,
         resourceId: task.id,
         operationKey: 'story_task:' + task.id,
         model: req.model || 'GPT-5.5',
       });
-      db.prepare('UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ? WHERE id = ?')
-        .run(userId, prepared.model, prepared.reservation.id, task.id);
-      taskRequest = { ...req, billingEnabled: true, userId, billingReservationId: prepared.reservation.id, billingResourceId: task.id, model: prepared.model };
+      db.prepare(`UPDATE async_tasks
+        SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ? WHERE id = ?`)
+        .run(tenantId || null, userId, prepared.model, prepared.reservation.id, task.id);
+      taskRequest = {
+        ...req,
+        billingEnabled: true,
+        tenantId,
+        userId,
+        billingReservationId: prepared.reservation.id,
+        billingResourceId: task.id,
+        model: prepared.model,
+      };
     } catch (error) {
       taskService.updateTaskError(db, task.id, error.message || '积分预扣失败');
       throw error;

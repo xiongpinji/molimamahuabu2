@@ -2,11 +2,13 @@ const response = require('../response');
 const auth = require('../services/userAuthService');
 const credits = require('../services/creditLedgerService');
 const audit = require('../services/auditEventService');
+const tenants = require('../services/tenantService');
 
 function createAuthRoutes(db, options = {}) {
   auth.ensureSchema(db);
   credits.ensureSchema(db);
   audit.ensureSchema(db);
+  tenants.ensureSchema(db);
 
   function register(req, res) {
     if (!options.registrationEnabled) {
@@ -19,7 +21,14 @@ function createAuthRoutes(db, options = {}) {
       const user = db.transaction(() => {
         const created = auth.register(db, req.body || {});
         credits.setAccountBalance(db, created.id, 0);
-        audit.record(db, { userId: created.id, eventType: 'auth.register.success', outcome: 'success' });
+        const tenant = tenants.ensurePersonalTenant(db, created);
+        credits.setTenantAccountBalance(db, tenant.id, 0);
+        audit.record(db, {
+          userId: created.id,
+          tenantId: tenant.id,
+          eventType: 'auth.register.success',
+          outcome: 'success',
+        });
         return created;
       })();
       const token = auth.issueToken(user, options.jwtSecret);
@@ -35,8 +44,15 @@ function createAuthRoutes(db, options = {}) {
   function login(req, res) {
     try {
       const user = auth.authenticate(db, req.body?.email, req.body?.password);
+      const tenant = tenants.ensurePersonalTenant(db, user);
+      if (!credits.getTenantAccount(db, tenant.id)) credits.setTenantAccountBalance(db, tenant.id, 0);
       const token = auth.issueToken(user, options.jwtSecret);
-      audit.record(db, { userId: user.id, eventType: 'auth.login.success', outcome: 'success' });
+      audit.record(db, {
+        userId: user.id,
+        tenantId: tenant.id,
+        eventType: 'auth.login.success',
+        outcome: 'success',
+      });
       return response.success(res, { user, token });
     } catch (error) {
       if (error.code === 'INVALID_CREDENTIALS' || error.code === 'INVALID_INPUT') {

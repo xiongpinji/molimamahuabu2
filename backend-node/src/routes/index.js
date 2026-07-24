@@ -25,6 +25,7 @@ const directorExportRoutes = require('./directorExport');
 const sceneModelMapRoutes = require('./sceneModelMap');
 const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
+const tenantRoutes = require('./tenants');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 
@@ -48,6 +49,7 @@ function setupRouter(cfg, db, log) {
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
   });
   const billing = billingRoutes(db, log);
+  const tenants = tenantRoutes(db, log);
   const authRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'auth',
@@ -63,6 +65,7 @@ function setupRouter(cfg, db, log) {
   const modelGenerationGuard = createModelGenerationGuard(generationRateLimit);
   const { createUserAuthMiddleware } = require('../middleware/userAuth');
   const { createResourceOwnershipMiddleware } = require('../middleware/resourceOwnership');
+  const { createTenantContextMiddleware } = require('../middleware/tenantContext');
   const requireUser = createUserAuthMiddleware({
     enabled: publicPlatformEnabled,
     secret: process.env.PLATFORM_JWT_SECRET,
@@ -75,11 +78,17 @@ function setupRouter(cfg, db, log) {
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
+  r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/auth/me', auth.me);
 
+  r.get('/tenants', tenants.list);
+  r.post('/tenants', tenants.create);
+  r.get('/tenants/:tenantId/members', tenants.listMembers);
+  r.post('/tenants/:tenantId/members', tenants.addMember);
+  r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
   r.get('/video-models', aiConfig.listPublicVideoModels);
@@ -184,11 +193,15 @@ function setupRouter(cfg, db, log) {
     try {
       const body = req.body || {};
       if (body.drama_id) {
-        const taskId = storyGenerationService.startStoryGeneration(db, log, body, { billingEnabled: publicPlatformEnabled, userId: req.user?.id });
+        const taskId = storyGenerationService.startStoryGeneration(db, log, body, {
+          billingEnabled: publicPlatformEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         return response.success(res, { task_id: taskId, status: 'pending' });
       }
       const result = await storyGenerationService.generateStory(db, log, publicPlatformEnabled
-        ? { ...body, billingEnabled: true, userId: req.user?.id }
+        ? { ...body, billingEnabled: true, userId: req.user?.id, tenantId: req.tenant?.id }
         : body);
       response.success(res, result);
     } catch (err) {

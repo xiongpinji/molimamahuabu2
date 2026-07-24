@@ -19,10 +19,18 @@ function getTask(db, taskId) {
   return rowToTask(row);
 }
 
-function getTasksByResource(db, resourceId) {
+function getTasksByResource(db, resourceId, options = {}) {
+  const ownerClause = options.tenantId
+    ? ' AND tenant_id = ?'
+    : options.userId ? ' AND user_id = ?' : '';
+  const ownerParams = options.tenantId
+    ? [String(options.tenantId)]
+    : options.userId ? [String(options.userId)] : [];
   const rows = db.prepare(
-    'SELECT * FROM async_tasks WHERE resource_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
-  ).all(resourceId);
+    `SELECT * FROM async_tasks
+     WHERE resource_id = ? AND deleted_at IS NULL${ownerClause}
+     ORDER BY created_at DESC`
+  ).all(resourceId, ...ownerParams);
   return rows.map(rowToTask);
 }
 
@@ -88,6 +96,7 @@ function rowToTask(r) {
     error: r.error,
     result: r.result,
     resource_id: r.resource_id,
+    tenant_id: r.tenant_id,
     user_id: r.user_id,
     model: r.model,
     credit_reservation_id: r.credit_reservation_id,

@@ -7,7 +7,11 @@ function routes(db, log, options = {}) {
     list: (req, res) => {
       try {
         const query = { ...req.query };
-        const { items, total, page, pageSize } = videoService.list(db, query, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const { items, total, page, pageSize } = videoService.list(db, query, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         response.successWithPagination(res, items, total, page, pageSize);
       } catch (err) {
         log.error('videos list', { error: err.message });
@@ -19,6 +23,7 @@ function routes(db, log, options = {}) {
         const item = videoService.create(db, log, req.body || {}, {
           billingEnabled: options.billingEnabled,
           userId: req.user?.id,
+          tenantId: req.tenant?.id,
           schedule: options.schedule,
         });
         if (item.reused) return response.success(res, item);
@@ -39,7 +44,11 @@ function routes(db, log, options = {}) {
     },
     get: (req, res) => {
       try {
-        const item = videoService.getById(db, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const item = videoService.getById(db, req.params.id, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         if (!item) return response.notFound(res, '记录不存在');
         response.success(res, item);
       } catch (err) {
@@ -49,7 +58,11 @@ function routes(db, log, options = {}) {
     },
     delete: (req, res) => {
       try {
-        const ok = videoService.deleteById(db, log, req.params.id, { billingEnabled: options.billingEnabled, userId: req.user?.id });
+        const ok = videoService.deleteById(db, log, req.params.id, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         if (!ok) return response.notFound(res, '记录不存在');
         response.success(res, { message: '删除成功' });
       } catch (err) {

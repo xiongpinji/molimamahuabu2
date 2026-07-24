@@ -81,7 +81,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
           characterIds,
           body.model,
           body.style,
-          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
         );
         if (!out.ok) {
           return response.badRequest(res, out.error);
@@ -105,7 +105,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
           req.params.id,
           body.model,
           body.style,
-          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id }
         );
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
@@ -256,7 +256,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
         const body = req.body || {};
         const modelName = body.model_name || body.model || undefined;
         const style = body.style || undefined;
-        const out = await characterLibraryService.generateCharacterFourViewImage(db, log, cfg, req.params.id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id });
+        const out = await characterLibraryService.generateCharacterFourViewImage(db, log, cfg, req.params.id, modelName, style, { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id, tenantId: req.tenant?.id });
         if (!out.ok) {
           if (out.error === 'character not found') return response.notFound(res, '角色不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');

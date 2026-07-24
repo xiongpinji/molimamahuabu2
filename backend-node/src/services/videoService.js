@@ -31,8 +31,8 @@ function list(db, query, options = {}) {
   let sql = 'FROM video_generations WHERE deleted_at IS NULL';
   const params = [];
   if (options.billingEnabled) {
-    sql += ' AND user_id = ?';
-    params.push(options.userId || '');
+    sql += options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?';
+    params.push(options.tenantId || options.userId || '');
   }
   if (query.drama_id) {
     sql += ' AND drama_id = ?';
@@ -87,8 +87,12 @@ function rowToItem(r) {
 }
 
 function getById(db, id, options = {}) {
-  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
-  const params = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const params = options.billingEnabled
+    ? [Number(id), options.tenantId || options.userId || '']
+    : [Number(id)];
   const r = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL' + ownerClause).get(...params);
   return r ? rowToItem(r) : null;
 }
@@ -99,8 +103,12 @@ function localVideoDeliveryWarning(localPath) {
 
 function findActiveForStoryboard(db, storyboardId, options = {}) {
   if (!storyboardId) return null;
-  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
-  const params = options.billingEnabled ? [Number(storyboardId), options.userId || ''] : [Number(storyboardId)];
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const params = options.billingEnabled
+    ? [Number(storyboardId), options.tenantId || options.userId || '']
+    : [Number(storyboardId)];
   return db.prepare(
     `SELECT * FROM video_generations
      WHERE storyboard_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL${ownerClause}
@@ -142,6 +150,7 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
     const settled = creditLedger.settleGeneration(db, row.credit_reservation_id, outcome, message);
     auditEvent.record(db, {
       userId: settled?.user_id,
+      tenantId: settled?.tenant_id,
       eventType: outcome === 'completed' ? 'generation.video.completed' : 'generation.video.failed',
       resourceType: 'video',
       resourceId: row.id,
@@ -163,11 +172,16 @@ function create(db, log, req, options = {}) {
   const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
   const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
-  const active = findActiveForStoryboard(db, storyboardId, { billingEnabled, userId: options.userId });
+  const active = findActiveForStoryboard(db, storyboardId, {
+    billingEnabled,
+    userId: options.userId,
+    tenantId: options.tenantId,
+  });
   if (active) {
     if (billingEnabled) {
       auditEvent.record(db, {
         userId: options.userId,
+        tenantId: options.tenantId,
         eventType: 'generation.video.reused',
         resourceType: 'video',
         resourceId: active.id,
@@ -198,6 +212,10 @@ function create(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const result = db.transaction(() => {
     const task = taskService.createTask(db, log, 'video_generation', String(dramaId || ''));
+    if (billingEnabled && options.tenantId) {
+      db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
+        .run(options.tenantId, options.userId, task.id);
+    }
     let prompt = String(body.prompt ?? '').trim();
     if (!prompt) prompt = storyboardPrompt;
     const style = String(body.style || '').trim();
@@ -224,19 +242,22 @@ function create(db, log, req, options = {}) {
     const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(body.reference_image_urls.slice(0, 10)) : null;
     db.prepare(`INSERT INTO video_generations
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
-       image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)`)
+       image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, tenant_id, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
         dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, body.duration ?? null,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
         body.last_frame_url ?? body.last_frame_local_path ?? null, refs, task.id,
+        billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
     const id = db.prepare('SELECT last_insert_rowid() AS id').get().id;
     if (billingEnabled) {
       const reservation = creditLedger.reserve(db, {
+        tenantId: options.tenantId,
+        actorUserId: options.userId,
         userId: options.userId,
         operationKey: `video:${id}`,
         amount: price,
@@ -247,6 +268,7 @@ function create(db, log, req, options = {}) {
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
       auditEvent.record(db, {
         userId: options.userId,
+        tenantId: options.tenantId,
         eventType: 'generation.video.created',
         resourceType: 'video',
         resourceId: id,
@@ -690,8 +712,12 @@ async function processVideoGeneration(db, log, videoGenId) {
 
 function deleteById(db, log, id, options = {}) {
   const now = new Date().toISOString();
-  const ownerClause = options.billingEnabled ? ' AND user_id = ?' : '';
-  const ownerParams = options.billingEnabled ? [Number(id), options.userId || ''] : [Number(id)];
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const ownerParams = options.billingEnabled
+    ? [Number(id), options.tenantId || options.userId || '']
+    : [Number(id)];
   const result = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL' + ownerClause).run(now, ...ownerParams);
   return result.changes > 0;
 }
