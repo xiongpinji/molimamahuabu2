@@ -26,6 +26,37 @@
           <el-button :loading="saving === item.model" @click="save(item.model)">保存价格</el-button>
         </div>
       </div>
+
+      <section v-if="unlocked" class="plan-admin">
+        <header>
+          <div>
+            <h2>订阅套餐</h2>
+            <p>配置可下单的套餐。支付成功、订阅激活和积分发放将在真实支付回调阶段接入。</p>
+          </div>
+        </header>
+
+        <div v-for="plan in plans" :key="plan.id" class="plan-row">
+          <el-input v-model="plan.name" placeholder="套餐名称" />
+          <el-input-number v-model="plan.price_cents" :min="0" :step="100" step-strictly />
+          <el-input-number v-model="plan.monthly_credits" :min="0" :step="100" step-strictly />
+          <el-input v-model.trim="plan.currency" maxlength="3" placeholder="币种" />
+          <el-select v-model="plan.status">
+            <el-option label="启用" value="active" />
+            <el-option label="归档" value="archived" />
+          </el-select>
+          <el-button :loading="savingPlan === plan.id" @click="savePlan(plan)">保存</el-button>
+        </div>
+
+        <div class="new-plan">
+          <el-input v-model.trim="newPlan.id" placeholder="英文 ID，例如 creator" />
+          <el-input v-model.trim="newPlan.name" placeholder="套餐名称" />
+          <el-input-number v-model="newPlan.price_cents" :min="0" :step="100" step-strictly />
+          <el-input-number v-model="newPlan.monthly_credits" :min="0" :step="100" step-strictly />
+          <el-input v-model.trim="newPlan.currency" maxlength="3" placeholder="币种，例如 CNY" />
+          <el-button type="primary" :loading="savingPlan === newPlan.id" @click="createPlan">新增套餐</el-button>
+        </div>
+        <p class="field-hint">金额单位为分，月度积分为整数，币种使用三个大写字母。</p>
+      </section>
     </section>
   </main>
 </template>
@@ -34,7 +65,12 @@
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
-import { listModelPrices, updateModelPrice } from '@/api/billing'
+import {
+  listAdminBillingPlans,
+  listModelPrices,
+  updateBillingPlan,
+  updateModelPrice,
+} from '@/api/billing'
 import { saveAdminToken } from '@/utils/authSession'
 
 const adminToken = ref('')
@@ -43,13 +79,27 @@ const unlocked = ref(false)
 const prices = ref([])
 const drafts = reactive({})
 const saving = ref('')
+const plans = ref([])
+const savingPlan = ref('')
+const newPlan = reactive({
+  id: '',
+  name: '',
+  price_cents: 0,
+  monthly_credits: 0,
+  currency: 'CNY',
+})
 
 async function unlock() {
   if (adminToken.value.length < 32) return ElMessage.warning('管理员令牌长度不能少于 32 位')
   saveAdminToken(adminToken.value)
   loading.value = true
   try {
-    prices.value = await listModelPrices()
+    const [modelPrices, billingPlans] = await Promise.all([
+      listModelPrices(),
+      listAdminBillingPlans(),
+    ])
+    prices.value = modelPrices
+    plans.value = billingPlans
     for (const item of prices.value) drafts[item.model] = item.credits || 1
     unlocked.value = true
   } finally {
@@ -68,6 +118,45 @@ async function save(model) {
     saving.value = ''
   }
 }
+
+async function savePlan(plan) {
+  savingPlan.value = plan.id
+  try {
+    const saved = await updateBillingPlan(plan.id, {
+      name: plan.name,
+      description: plan.description || '',
+      price_cents: plan.price_cents,
+      monthly_credits: plan.monthly_credits,
+      currency: String(plan.currency || 'CNY').toUpperCase(),
+      status: plan.status,
+    })
+    const index = plans.value.findIndex((item) => item.id === plan.id)
+    if (index >= 0) plans.value[index] = saved
+    ElMessage.success(`${saved.name} 已保存`)
+  } finally {
+    savingPlan.value = ''
+  }
+}
+
+async function createPlan() {
+  if (!newPlan.id || !newPlan.name) return ElMessage.warning('请填写套餐 ID 和名称')
+  savingPlan.value = newPlan.id
+  try {
+    const saved = await updateBillingPlan(newPlan.id, {
+      name: newPlan.name,
+      description: '',
+      price_cents: newPlan.price_cents,
+      monthly_credits: newPlan.monthly_credits,
+      currency: String(newPlan.currency || '').toUpperCase(),
+      status: 'active',
+    })
+    plans.value.push(saved)
+    Object.assign(newPlan, { id: '', name: '', price_cents: 0, monthly_credits: 0, currency: 'CNY' })
+    ElMessage.success('套餐已新增')
+  } finally {
+    savingPlan.value = ''
+  }
+}
 </script>
 
 <style scoped>
@@ -81,5 +170,11 @@ header p { margin: 0; color: #a8a9af; }
 .price-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 16px; padding: 18px; border: 1px solid #303136; border-radius: 14px; background: #222328; }
 .price-row div:first-child { display: grid; gap: 5px; }
 .price-row span { color: #999ba3; font-size: 13px; }
+.plan-admin { margin-top: 32px; padding-top: 28px; border-top: 1px solid #303136; }
+.plan-admin h2 { margin: 0 0 8px; }
+.plan-row, .new-plan { display: grid; grid-template-columns: 1.2fr 150px 150px 90px 110px auto; gap: 10px; align-items: center; margin-top: 12px; }
+.new-plan { grid-template-columns: 1fr 1fr 140px 140px 130px auto; padding-top: 18px; border-top: 1px dashed #3f4047; }
+.field-hint { color: #999ba3; font-size: 12px; }
 @media (max-width: 680px) { .price-row { grid-template-columns: 1fr; } .admin-auth { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .plan-row, .new-plan { grid-template-columns: 1fr; } }
 </style>

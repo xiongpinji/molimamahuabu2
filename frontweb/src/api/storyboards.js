@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { applyAuthHeader, applyTenantHeader } from '@/utils/authSession'
 
 /**
  * @param {string} url
@@ -7,9 +8,12 @@ import request from '@/utils/request'
  * @returns {Promise<{ universal_segment_text: string }>}
  */
 function postUniversalSegmentNdjsonStream(url, body, onDelta) {
+  const config = applyTenantHeader(applyAuthHeader({
+    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+  }))
   return fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+    headers: config.headers,
     body: JSON.stringify(body || {}),
   }).then(async (res) => {
     if (!res.ok) {

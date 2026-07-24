@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-import { applyAdminHeader, applyAuthHeader } from './authSession'
+import { applyAdminHeader, applyAuthHeader, applyTenantHeader } from './authSession'
 
 const request = axios.create({
   baseURL: '/api/v1',
@@ -8,7 +8,7 @@ const request = axios.create({
   headers: { 'Content-Type': 'application/json' }
 })
 
-request.interceptors.request.use((config) => applyAdminHeader(applyAuthHeader(config)))
+request.interceptors.request.use((config) => applyAdminHeader(applyTenantHeader(applyAuthHeader(config))))
 
 request.interceptors.response.use(
   (response) => {

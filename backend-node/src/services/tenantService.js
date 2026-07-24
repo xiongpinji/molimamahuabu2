@@ -182,6 +182,7 @@ module.exports = {
   createTenant,
   listForUser,
   resolveForUser,
+  requireManager,
   listMembers,
   addMemberByEmail,
   removeMember,

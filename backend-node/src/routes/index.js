@@ -78,21 +78,28 @@ function setupRouter(cfg, db, log) {
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
-  r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
-  // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
-  r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
-  r.use(modelGenerationGuard);
+  // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.get('/auth/me', auth.me);
-
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
+  r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
+  // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
+  r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
+  r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
   r.get('/billing/audit-events', billing.listAuditEvents);
+  r.get('/billing/plans', billing.listPlans);
+  r.get('/billing/subscription', billing.getSubscription);
+  r.get('/billing/orders', billing.listOrders);
+  r.post('/billing/orders', billing.createOrder);
+  r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
+  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
+  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
   r.use('/billing/prices', requireAdmin);
   r.get('/billing/prices', billing.listPrices);
   r.put('/billing/prices/:model', billing.updatePrice);

@@ -39,3 +39,12 @@ test('keeps voice preview before user auth middleware', () => {
   assert.notEqual(authIndex, -1);
   assert.equal(previewIndex < authIndex, true);
 });
+
+test('keeps tenant recovery routes before tenant context middleware', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  const listTenantsIndex = source.indexOf("r.get('/tenants'");
+  const tenantContextIndex = source.indexOf('r.use(createTenantContextMiddleware');
+  assert.notEqual(listTenantsIndex, -1);
+  assert.notEqual(tenantContextIndex, -1);
+  assert.equal(listTenantsIndex < tenantContextIndex, true);
+});
