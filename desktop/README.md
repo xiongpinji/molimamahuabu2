@@ -129,6 +129,6 @@ AI 相关配置需在软件「AI 配置」弹窗中填写并保存（会写入�
 
 ## 依赖
 
-- Node.js >= 18
+- Node.js >= 20.9.0
 - 本仓库中的 `backend-node`（打包时通过 `prepare-backend` 复制到 `backend-app`）
 - 前端需先在 `frontweb` 目录执行 `npm run build`，再打包或开发运行

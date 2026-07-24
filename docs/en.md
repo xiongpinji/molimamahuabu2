@@ -102,7 +102,7 @@ Double-click → open **AI Config** → enter your API key → start creating.
 
 ### Option B — Development Mode
 
-> Requires Node.js >= 18
+> Requires Node.js >= 20.9.0
 
 ```bash
 # 1. Clone
