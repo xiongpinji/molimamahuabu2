@@ -56,6 +56,15 @@ const router = createRouter({
       meta: { title: '平台管理后台' }
     },
     {
+      path: '/account-admin',
+      name: 'account-admin',
+      component: () => import('@/views/AccountAdmin.vue'),
+      meta: {
+        title: '账号与权限',
+        roles: ['admin', 'ops', 'support', 'read_only']
+      }
+    },
+    {
       path: '/tenant-console',
       name: 'tenant-console',
       component: () => import('@/views/TenantConsole.vue'),

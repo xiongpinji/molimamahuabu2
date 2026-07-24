@@ -73,7 +73,10 @@ function routes(db, log) {
     },
     updateAdminUser: (req, res) => {
       try {
-        response.success(res, platformAdmin.updateUser(db, req.params.userId, req.body || {}));
+        response.success(res, platformAdmin.updateUser(db, req.params.userId, {
+          ...(req.body || {}),
+          actorUserId: req.user.id,
+        }));
       } catch (error) {
         if (error.code === 'INVALID_USER_UPDATE') return response.badRequest(res, error.message);
         if (error.code === 'USER_NOT_FOUND') return response.notFound(res, error.message);
@@ -94,7 +97,10 @@ function routes(db, log) {
         response.success(res, platformAdmin.adjustTenantCredits(
           db,
           req.params.tenantId,
-          req.body || {},
+          {
+            ...(req.body || {}),
+            actorUserId: req.user.id,
+          },
         ));
       } catch (error) {
         if (error.code === 'INVALID_CREDIT_ADJUSTMENT') return response.badRequest(res, error.message);

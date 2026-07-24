@@ -1,0 +1,193 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const Database = require('better-sqlite3')
+
+const auth = require('../src/services/userAuthService')
+const admin = require('../src/services/platform-admin-service')
+const { createUserAuthMiddleware } = require('../src/middleware/userAuth')
+const { createAdminAuthMiddleware } = require('../src/middleware/adminAuth')
+const {
+  PERMISSIONS,
+  createPlatformPermissionMiddleware,
+} = require('../src/middleware/platformRbac')
+
+const SECRET = 's'.repeat(32)
+
+function createDb() {
+  const db = new Database(':memory:')
+  auth.ensureSchema(db)
+  const users = {}
+  for (const [name, role] of [
+    ['admin', 'admin'],
+    ['secondAdmin', 'admin'],
+    ['ops', 'ops'],
+    ['support', 'support'],
+    ['reader', 'read_only'],
+    ['user', 'user'],
+  ]) {
+    const created = auth.register(db, {
+      email: `${name.toLowerCase()}@example.com`,
+      password: 'correct horse battery staple',
+    })
+    db.prepare('UPDATE platform_users SET platform_role = ? WHERE id = ?').run(role, created.id)
+    users[name] = created.id
+  }
+  return { db, users }
+}
+
+function runPermission(role, permission) {
+  const req = { user: { id: 'actor', role } }
+  const result = { status: null, body: null, next: false }
+  const res = {
+    status(code) { result.status = code; return this },
+    json(body) { result.body = body; return this },
+  }
+  createPlatformPermissionMiddleware(permission)(req, res, () => { result.next = true })
+  return result
+}
+
+function runUserAuth(db, token) {
+  const req = { get: (name) => name.toLowerCase() === 'authorization' ? `Bearer ${token}` : '' }
+  const result = { status: null, body: null, next: false }
+  const res = {
+    status(code) { result.status = code; return this },
+    json(body) { result.body = body; return this },
+  }
+  createUserAuthMiddleware({ enabled: true, secret: SECRET, db })(req, res, () => { result.next = true })
+  return { req, result }
+}
+
+test('admin/ops/support/read-only 严格符合账号管理权限矩阵', () => {
+  const allowed = {
+    admin: Object.values(PERMISSIONS),
+    ops: [PERMISSIONS.USERS_READ, PERMISSIONS.USERS_STATUS, PERMISSIONS.USERS_FORCE_LOGOUT],
+    support: [PERMISSIONS.USERS_READ, PERMISSIONS.USERS_FORCE_LOGOUT],
+    read_only: [PERMISSIONS.USERS_READ],
+    user: [],
+  }
+  for (const role of Object.keys(allowed)) {
+    for (const permission of Object.values(PERMISSIONS)) {
+      const result = runPermission(role, permission)
+      assert.equal(result.next, allowed[role].includes(permission), `${role} -> ${permission}`)
+      if (!allowed[role].includes(permission)) {
+        assert.equal(result.status, 403)
+        assert.equal(result.body.error.code, 'PLATFORM_PERMISSION_DENIED')
+      }
+    }
+  }
+})
+
+test('强制退出递增账号版本并使旧 JWT 立即失效', () => {
+  const { db, users } = createDb()
+  const current = auth.getUserById(db, users.user)
+  const token = auth.issueToken(current, SECRET, auth.getTokenVersion(db, current.id))
+  assert.equal(runUserAuth(db, token).result.next, true)
+
+  const changed = admin.forceLogout(db, {
+    actorUserId: users.support,
+    targetUserId: users.user,
+  })
+  assert.equal(changed.token_version, 1)
+  const rejected = runUserAuth(db, token)
+  assert.equal(rejected.result.status, 401)
+  assert.equal(rejected.result.body.error.code, 'UNAUTHORIZED')
+  db.close()
+})
+
+test('暂停再恢复后旧 JWT 仍失效，且当前数据库角色覆盖令牌快照', () => {
+  const { db, users } = createDb()
+  const current = auth.getUserById(db, users.user)
+  const token = auth.issueToken(current, SECRET, auth.getTokenVersion(db, current.id))
+
+  admin.changeUserStatus(db, {
+    actorUserId: users.ops,
+    targetUserId: users.user,
+    status: 'disabled',
+  })
+  assert.equal(runUserAuth(db, token).result.status, 401)
+  admin.changeUserStatus(db, {
+    actorUserId: users.ops,
+    targetUserId: users.user,
+    status: 'active',
+  })
+  assert.equal(runUserAuth(db, token).result.status, 401)
+
+  const freshUser = auth.getUserById(db, users.user)
+  const fresh = auth.issueToken(freshUser, SECRET, auth.getTokenVersion(db, freshUser.id))
+  db.prepare("UPDATE platform_users SET platform_role = 'support' WHERE id = ?").run(users.user)
+  const accepted = runUserAuth(db, fresh)
+  assert.equal(accepted.result.next, true)
+  assert.equal(accepted.req.user.role, 'support')
+  db.close()
+})
+
+test('管理员降级后旧 JWT 即使携带正确静态管理员令牌仍被拒绝', () => {
+  const { db, users } = createDb()
+  const current = auth.getUserById(db, users.admin)
+  const token = auth.issueToken(current, SECRET, auth.getTokenVersion(db, current.id))
+  db.prepare("UPDATE platform_users SET platform_role = 'support' WHERE id = ?").run(users.admin)
+  const authenticated = runUserAuth(db, token)
+  assert.equal(authenticated.result.next, true)
+  assert.equal(authenticated.req.user.role, 'support')
+
+  const result = { status: null, body: null, next: false }
+  const res = {
+    status(code) { result.status = code; return this },
+    json(body) { result.body = body; return this },
+  }
+  authenticated.req.get = (name) => name.toLowerCase() === 'x-platform-admin-token' ? 'a'.repeat(32) : ''
+  createAdminAuthMiddleware({ enabled: true, token: 'a'.repeat(32) })(
+    authenticated.req,
+    res,
+    () => { result.next = true },
+  )
+  assert.equal(result.status, 403)
+  assert.equal(result.body.error.code, 'ADMIN_ROLE_REQUIRED')
+  db.close()
+})
+
+test('账号控制写审计，并保护自己和最后一个启用管理员', () => {
+  const { db, users } = createDb()
+  admin.changeUserRole(db, {
+    actorUserId: users.admin,
+    targetUserId: users.support,
+    role: 'ops',
+  })
+  admin.changeUserStatus(db, {
+    actorUserId: users.ops,
+    targetUserId: users.reader,
+    status: 'disabled',
+  })
+  admin.forceLogout(db, {
+    actorUserId: users.ops,
+    targetUserId: users.user,
+  })
+
+  assert.deepEqual(
+    db.prepare('SELECT event_type FROM audit_events ORDER BY rowid').all().map((row) => row.event_type),
+    ['platform.user.role_changed', 'platform.user.status_changed', 'platform.user.force_logout'],
+  )
+  assert.throws(
+    () => admin.changeUserStatus(db, {
+      actorUserId: users.ops,
+      targetUserId: users.ops,
+      status: 'disabled',
+    }),
+    (error) => error.code === 'CANNOT_SUSPEND_SELF',
+  )
+
+  admin.changeUserStatus(db, {
+    actorUserId: users.admin,
+    targetUserId: users.secondAdmin,
+    status: 'disabled',
+  })
+  assert.throws(
+    () => admin.changeUserRole(db, {
+      actorUserId: users.admin,
+      targetUserId: users.admin,
+      role: 'ops',
+    }),
+    (error) => error.code === 'LAST_ACTIVE_ADMIN',
+  )
+  db.close()
+})

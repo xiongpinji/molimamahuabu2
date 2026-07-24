@@ -23,6 +23,12 @@ function createAdminAuthMiddleware({ enabled, token } = {}) {
         error: { code: 'ADMIN_AUTH_REQUIRED', message: '需要管理员身份' },
       });
     }
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ADMIN_ROLE_REQUIRED', message: '当前账号不具备管理员权限' },
+      });
+    }
     next();
   };
 }

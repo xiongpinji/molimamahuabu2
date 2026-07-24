@@ -1,0 +1,39 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { ACCOUNT_PERMISSIONS, canPlatformAccount } from '../src/utils/platformRbac.js'
+import { authRedirect } from '../src/utils/authGuard.js'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+test('账号管理前端权限提示与服务端矩阵保持一致', () => {
+  assert.equal(canPlatformAccount('admin', ACCOUNT_PERMISSIONS.ROLE), true)
+  assert.equal(canPlatformAccount('ops', ACCOUNT_PERMISSIONS.STATUS), true)
+  assert.equal(canPlatformAccount('ops', ACCOUNT_PERMISSIONS.ROLE), false)
+  assert.equal(canPlatformAccount('support', ACCOUNT_PERMISSIONS.FORCE_LOGOUT), true)
+  assert.equal(canPlatformAccount('support', ACCOUNT_PERMISSIONS.STATUS), false)
+  assert.equal(canPlatformAccount('read_only', ACCOUNT_PERMISSIONS.READ), true)
+  assert.equal(canPlatformAccount('read_only', ACCOUNT_PERMISSIONS.FORCE_LOGOUT), false)
+  assert.equal(canPlatformAccount('user', ACCOUNT_PERMISSIONS.READ), false)
+})
+
+test('公开模式阻止普通用户直接进入账号管理页', () => {
+  const target = { path: '/account-admin', meta: { roles: ['admin', 'ops', 'support', 'read_only'] } }
+  assert.deepEqual(authRedirect(true, target, { token: 'token', user: { role: 'user' } }), { name: 'list' })
+  assert.equal(authRedirect(true, target, { token: 'token', user: { role: 'support' } }), null)
+})
+
+test('账号管理页使用独立 JWT API 并按权限控制敏感操作', () => {
+  const view = fs.readFileSync(path.join(root, 'src/views/AccountAdmin.vue'), 'utf8')
+  const api = fs.readFileSync(path.join(root, 'src/api/platformAccounts.js'), 'utf8')
+  assert.match(api, /request\.get\('\/platform-admin\/users'\)/)
+  assert.match(api, /\/role`/)
+  assert.match(api, /\/status`/)
+  assert.match(api, /\/force-logout`/)
+  assert.match(view, /canRole/)
+  assert.match(view, /canStatus/)
+  assert.match(view, /canForceLogout/)
+})

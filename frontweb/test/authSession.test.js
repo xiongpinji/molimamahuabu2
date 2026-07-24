@@ -11,6 +11,7 @@ import {
   saveCurrentTenantId,
   readCurrentTenantId,
   applyTenantHeader,
+  clearSessionOnUnauthorized,
 } from '../src/utils/authSession.js'
 
 function storage() {
@@ -77,4 +78,15 @@ test('切换登录用户时清除上一用户的租户选择', () => {
   saveCurrentTenantId('tenant-1', store)
   saveSession({ token: 'token-2', user: { id: 'u2', email: 'b@example.com', role: 'user' } }, store)
   assert.equal(readCurrentTenantId(store), null)
+});
+
+test('公开模式收到 401 时清除已失效登录，本地模式和非 401 不处理', () => {
+  const store = storage()
+  saveSession({ token: 'token-1', user: { id: 'u1', email: 'a@example.com', role: 'user' } }, store)
+  assert.equal(clearSessionOnUnauthorized(403, true, store), false)
+  assert.ok(readSession(store))
+  assert.equal(clearSessionOnUnauthorized(401, false, store), false)
+  assert.ok(readSession(store))
+  assert.equal(clearSessionOnUnauthorized(401, true, store), true)
+  assert.equal(readSession(store), null)
 });

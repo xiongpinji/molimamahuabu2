@@ -31,7 +31,7 @@ function createAuthRoutes(db, options = {}) {
         });
         return created;
       })();
-      const token = auth.issueToken(user, options.jwtSecret);
+      const token = auth.issueToken(user, options.jwtSecret, auth.getTokenVersion(db, user.id));
       return response.created(res, { user, token });
     } catch (error) {
       if (error.code === 'EMAIL_EXISTS') return response.error(res, 409, error.code, error.message);
@@ -46,7 +46,7 @@ function createAuthRoutes(db, options = {}) {
       const user = auth.authenticate(db, req.body?.email, req.body?.password);
       const tenant = tenants.ensurePersonalTenant(db, user);
       if (!credits.getTenantAccount(db, tenant.id)) credits.setTenantAccountBalance(db, tenant.id, 0);
-      const token = auth.issueToken(user, options.jwtSecret);
+      const token = auth.issueToken(user, options.jwtSecret, auth.getTokenVersion(db, user.id));
       audit.record(db, {
         userId: user.id,
         tenantId: tenant.id,
