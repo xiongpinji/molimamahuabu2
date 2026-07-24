@@ -4193,6 +4193,55 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
 
 async function callAihubccVideoApi(config, log, opts = {}) {
   const model = String(opts.model || '').trim();
+  if (model.toLowerCase() === 'veo-clean') {
+    const input = String(opts.video_url || '').trim();
+    if (!input) return { error: 'AIHubCC veo-clean 需要输入视频' };
+    let bytes;
+    let mimeType = 'video/mp4';
+    if (/^data:video\//i.test(input)) {
+      const match = input.match(/^data:([^;,]+);base64,(.+)$/i);
+      if (!match) return { error: 'AIHubCC veo-clean 输入视频 data URL 格式无效' };
+      mimeType = match[1];
+      bytes = Buffer.from(match[2], 'base64');
+    } else if (/^https?:\/\//i.test(input)) {
+      const sourceResponse = await fetch(input);
+      if (!sourceResponse.ok) return { error: `AIHubCC veo-clean 下载输入视频失败: ${sourceResponse.status}` };
+      bytes = Buffer.from(await sourceResponse.arrayBuffer());
+      mimeType = sourceResponse.headers.get('content-type') || mimeType;
+    } else {
+      const localPath = path.isAbsolute(input)
+        ? input
+        : path.resolve(opts.storage_local_path || process.cwd(), input);
+      if (!fs.existsSync(localPath)) return { error: 'AIHubCC veo-clean 输入视频文件不存在' };
+      bytes = fs.readFileSync(localPath);
+    }
+    if (bytes.length > 20 * 1024 * 1024) return { error: 'AIHubCC veo-clean 输入视频超过 20MB 限制' };
+    const form = new FormData();
+    form.append('model', 'veo-clean');
+    form.append('prompt', opts.prompt || 'remove watermark');
+    form.append('input_video', new Blob([bytes], { type: mimeType }), 'input.mp4');
+    const url = aihubccClient.getSubmitUrl(config, '/videos');
+    let result;
+    try {
+      result = await aihubccClient.requestJson(url, {
+        method: 'POST',
+        headers: aihubccClient.authHeaders(config),
+        body: form,
+        timeoutMs: 600000,
+      });
+    } catch (error) {
+      return { error: `AIHubCC veo-clean 请求失败: ${error.message}` };
+    }
+    if (!result.response.ok) {
+      return { error: `AIHubCC veo-clean 请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+    }
+    const direct = aihubccClient.extractMediaUrl(result.data, config);
+    if (direct) return { video_url: direct };
+    const taskId = aihubccClient.extractTaskId(result.data);
+    return taskId
+      ? { task_id: taskId, status: aihubccClient.extractStatus(result.data) || 'processing' }
+      : { error: 'AIHubCC veo-clean 接口未返回视频地址或任务编号' };
+  }
   const resolve = async (value, suffix) => {
     const result = await resolveVeo3ImageForApi(value, opts.storage_local_path, log, `${opts.video_gen_id || 0}_${suffix}`);
     return result?.value || null;

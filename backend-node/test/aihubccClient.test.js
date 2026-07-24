@@ -26,6 +26,7 @@ test('AIHubCC 1K image body keeps reference images and quality', () => {
 
 test('AIHubCC high-resolution image models use async video task contract', () => {
   assert.equal(client.isAsyncImageModel('gpt-image-2-2k'), true);
+  assert.equal(client.isAsyncImageModel('gpt-image-2-4k'), false);
   const body = client.buildImageBody({
     model: 'gpt-image-2-3.5k',
     prompt: 'portrait',
@@ -35,6 +36,29 @@ test('AIHubCC high-resolution image models use async video task contract', () =>
   assert.equal(body.aspect_ratio, '9:16');
   assert.equal(body.image_url, 'https://example.com/character.png');
   assert.equal('image' in body, false);
+});
+
+test('AIHubCC Flow image uses chat completion multimodal contract', () => {
+  assert.equal(client.isFlowImageModel('gemini-3.1-flash-image-landscape'), true);
+  assert.equal(client.isFlowImageModel('imagen-4.0-generate-preview-portrait'), true);
+  assert.equal(client.isFlowImageModel('gpt-image-2'), false);
+  const body = client.buildFlowImageBody({
+    model: 'gemini-3.1-flash-image-landscape',
+    prompt: 'keep the same character',
+    referenceUrls: ['https://example.com/character.png'],
+  });
+  assert.equal(body.stream, false);
+  assert.equal(body.messages[0].content[0].type, 'text');
+  assert.deepEqual(body.messages[0].content[1], {
+    type: 'image_url',
+    image_url: { url: 'https://example.com/character.png' },
+  });
+  assert.equal(
+    client.extractFlowImageUrl({
+      choices: [{ message: { content: '![Generated Image](https://cdn.example.com/flow.png?sig=1)' } }],
+    }),
+    'https://cdn.example.com/flow.png?sig=1'
+  );
 });
 
 test('AIHubCC video body maps Omni and Seedance fields', () => {
@@ -63,6 +87,40 @@ test('AIHubCC video body maps Omni and Seedance fields', () => {
   assert.equal(seedance.image_url, undefined);
   assert.equal(seedance.last_image_url, 'https://example.com/last.png');
   assert.deepEqual(seedance.reference_image_urls, ['https://example.com/character.png']);
+});
+
+test('AIHubCC Flow video relies on model name for duration and aspect ratio', () => {
+  const flow = client.buildVideoBody({
+    model: 'veo_3_1_i2v_s_fast_portrait_6s_fl',
+    prompt: 'walk forward',
+    duration: 10,
+    aspect_ratio: '16:9',
+    first_image_url: 'https://example.com/first.png',
+    last_image_url: 'https://example.com/last.png',
+    reference_urls: ['https://example.com/ref.png'],
+  });
+  assert.equal(flow.duration, undefined);
+  assert.equal(flow.seconds, undefined);
+  assert.equal(flow.aspect_ratio, undefined);
+  assert.equal(flow.first_image_url, 'https://example.com/first.png');
+  assert.equal(flow.last_image_url, 'https://example.com/last.png');
+  assert.equal(flow.reference_image_urls, undefined);
+
+  const r2v = client.buildVideoBody({
+    model: 'veo_3_1_r2v_fast_portrait',
+    prompt: 'merge references',
+    reference_urls: [
+      'https://example.com/1.png',
+      'https://example.com/2.png',
+      'https://example.com/3.png',
+      'https://example.com/4.png',
+    ],
+  });
+  assert.deepEqual(r2v.images, [
+    'https://example.com/1.png',
+    'https://example.com/2.png',
+    'https://example.com/3.png',
+  ]);
 });
 
 test('AIHubCC extracts direct, nested and relative media URLs', () => {

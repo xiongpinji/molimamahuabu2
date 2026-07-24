@@ -42,3 +42,34 @@ test('AIHubCC video uses async submit and poll contract', async () => {
     else process.env.AIHUBCC_POLL_INTERVAL_MS = originalInterval;
   }
 });
+
+test('AIHubCC veo-clean uploads input video as multipart task', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    return jsonResponse({ task_id: 'clean_task_1', status: 'queued' });
+  };
+  try {
+    const result = await callAihubccVideoApi(
+      {
+        base_url: 'https://aihubcc.cc/v1',
+        api_key: 'test-key',
+        provider: 'aihubcc',
+      },
+      { info() {}, warn() {}, error() {} },
+      {
+        model: 'veo-clean',
+        video_url: `data:video/mp4;base64,${Buffer.from('video').toString('base64')}`,
+      }
+    );
+    assert.deepEqual(result, { task_id: 'clean_task_1', status: 'queued' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.body instanceof FormData, true);
+    assert.equal(calls[0].options.body.get('model'), 'veo-clean');
+    assert.equal(calls[0].options.body.get('prompt'), 'remove watermark');
+    assert.equal(calls[0].options.headers['Content-Type'], undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
