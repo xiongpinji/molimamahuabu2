@@ -49,10 +49,39 @@ export function resolveViewport(savedLayout, fallback = { x: 0, y: 0, zoom: 0.75
 
 const NON_DRAGGABLE_TYPES = new Set(['canvasLabel', 'canvasAddButton'])
 
+export function normalizeManualCanvasEdges(edges) {
+  const result = []
+  const seen = new Set()
+  for (const edge of edges || []) {
+    if (!edge?.source || !edge?.target) continue
+    if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
+
+    const source = String(edge.source)
+    const target = String(edge.target)
+    const sourceHandle = edge.sourceHandle || null
+    const targetHandle = edge.targetHandle || null
+    const key = `${source}|${sourceHandle || ''}|${target}|${targetHandle || ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+
+    result.push({
+      id: edge.id || `manual:${key}`,
+      source,
+      target,
+      sourceHandle,
+      targetHandle,
+      type: edge.type || 'smoothstep',
+      data: { manual: true },
+    })
+  }
+  return result
+}
+
 /** 从当前 Vue Flow 节点与视口构建可持久化的 canvas_layout */
-export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null) {
+export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null, flowEdges = []) {
   const nodes = { ...(existingLayout?.nodes || {}) }
   const base = existingLayout && typeof existingLayout === 'object' ? { ...existingLayout } : {}
+  const manualEdges = normalizeManualCanvasEdges(flowEdges.length ? flowEdges : existingLayout?.manual_edges)
   for (const node of flowNodes || []) {
     if (!node?.id || NON_DRAGGABLE_TYPES.has(node.type)) continue
     if (!node.position) continue
@@ -70,6 +99,7 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
       zoom: Number(viewport?.zoom) || 0.75,
     },
     nodes,
+    manual_edges: manualEdges,
     updated_at: new Date().toISOString(),
   }
 }

@@ -7,12 +7,14 @@
         empty: !hasScript,
         processing: isNodeBusy,
       }"
+      @click.stop="onSelect"
     >
       <Handle type="source" :position="Position.Right" />
       <CanvasNodeStatusOverlay :node-id="id" />
       <div class="head">
         <span class="badge">📜 剧本</span>
         <span class="ep">第 {{ data.episode?.episode_number ?? '?' }} 集</span>
+        <span v-if="statusChip" class="status-chip" :class="'st-' + statusChip.key">{{ statusChip.label }}</span>
       </div>
       <div class="preview">{{ previewText }}</div>
       <div class="meta">
@@ -20,7 +22,17 @@
         <span>{{ sceneCount }} 场景</span>
         <span>{{ propCount }} 道具</span>
       </div>
-      <div class="hint">{{ showPanel ? '下方可编辑与提取' : '单击展开 · 创作起点' }}</div>
+      <div v-if="failureReason" class="script-error" :title="failureReason">
+        {{ failureReason }}
+      </div>
+      <button
+        v-if="canRetry"
+        class="retry-btn"
+        type="button"
+        :disabled="isNodeBusy"
+        @click.stop="retryScript"
+      >{{ retryLabel }}</button>
+      <div class="hint">{{ showPanel ? '下方可编辑与提取' : '单击展开 · 双击进制作' }}</div>
     </div>
     <CanvasScriptPanel
       v-if="showPanel"
@@ -34,6 +46,7 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 import CanvasScriptPanel from './CanvasScriptPanel.vue'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
@@ -54,11 +67,52 @@ const previewText = computed(() => {
 const charCount = computed(() => (ctx?.drama?.value?.characters || []).length)
 const sceneCount = computed(() => (ctx?.drama?.value?.scenes || []).length)
 const propCount = computed(() => (ctx?.drama?.value?.props || []).length)
+const runtimeStatus = computed(() => ctx?.nodeStatus?.map?.[props.id] || null)
 
 const isNodeBusy = computed(() => {
-  const map = ctx?.nodeStatus?.map
-  return map ? !!map[props.id] : false
+  return isCanvasNodeBusyStatus(runtimeStatus.value)
 })
+
+const failureReason = computed(() => {
+  const status = runtimeStatus.value
+  return status?.errorDetail || status?.detail || (status?.step === 'failed' ? status?.message : '') || ''
+})
+const retryStep = computed(() => runtimeStatus.value?.retryStep || '')
+const retryLabel = computed(() => runtimeStatus.value?.retryLabel || '重试脚本任务')
+const canRetry = computed(() => Boolean(failureReason.value && retryStep.value && ctx?.scriptActions))
+
+const statusChip = computed(() => {
+  const status = runtimeStatus.value
+  if (status?.step === 'failed') return { key: 'failed', label: '失败' }
+  if (isNodeBusy.value) return { key: 'busy', label: status?.message?.slice(0, 8) || '处理中' }
+  if (status?.step === 'success') return { key: 'ready', label: '已完成' }
+  return null
+})
+
+function retryScript() {
+  if (!canRetry.value || isNodeBusy.value) return
+  const api = ctx?.scriptActions
+  const episode = props.data.episode
+  const episodeId = episode?.id
+  const scriptContent = episode?.script_content || ''
+  const title = episode?.title || ''
+  if (!episodeId) return
+  if (retryStep.value === 'save_script' || retryStep.value === 'save') {
+    api?.saveScript?.(episodeId, { scriptContent, title })
+  } else if (retryStep.value === 'extract_chars') {
+    api?.extractCharacters?.(episodeId, scriptContent)
+  } else if (retryStep.value === 'extract_scenes') {
+    api?.extractScenes?.(episodeId)
+  } else if (retryStep.value === 'extract_props') {
+    api?.extractProps?.(episodeId)
+  } else if (retryStep.value === 'extract_all') {
+    api?.extractAll?.(episodeId, scriptContent)
+  }
+}
+
+function onSelect() {
+  ctx?.setFocusedNode?.(props.id)
+}
 </script>
 
 <style scoped>
@@ -104,6 +158,18 @@ const isNodeBusy = computed(() => {
   font-size: 11px;
   color: #d4d4d8;
 }
+.status-chip {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+}
+.status-chip.st-busy { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+.status-chip.st-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.status-chip.st-failed { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 .preview {
   font-size: 11px;
   line-height: 1.45;
@@ -124,6 +190,31 @@ const isNodeBusy = computed(() => {
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.08);
   color: #a1a1aa;
+}
+.script-error {
+  margin: 0 0 6px;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.retry-btn {
+  margin-bottom: 6px;
+  width: 100%;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
+  font-size: 10px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.retry-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .hint {
   font-size: 10px;

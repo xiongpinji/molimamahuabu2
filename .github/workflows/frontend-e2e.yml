@@ -1,0 +1,69 @@
+name: Frontend Canvas E2E
+
+on:
+  pull_request:
+    paths:
+      - 'frontweb/**'
+      - 'backend-node/package*.json'
+      - 'backend-node/migrations/**'
+      - 'backend-node/src/**'
+      - '.github/workflows/frontend-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canvas-e2e:
+    name: Canvas browser regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            frontweb/package-lock.json
+            backend-node/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend-node
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontweb
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontweb
+        run: npx playwright install --with-deps chromium
+
+      - name: Install FFmpeg for director export
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep 'libvpx-vp9'
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep 'libx264'
+
+      # 同时覆盖首页 localStorage、确定性 API mock，以及真实 Express + SQLite 项目画布闭环。
+      - name: Run frontend E2E
+        working-directory: frontweb
+        run: npm run test:e2e:canvas
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-e2e-artifacts
+          path: |
+            frontweb/test-results
+            frontweb/playwright-report
+          if-no-files-found: ignore

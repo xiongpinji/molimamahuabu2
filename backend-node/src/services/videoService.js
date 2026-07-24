@@ -69,6 +69,8 @@ function rowToItem(r) {
     model: r.model,
     image_gen_id: r.image_gen_id,
     image_url: r.image_url,
+    first_frame_url: r.first_frame_url,
+    last_frame_url: r.last_frame_url,
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -116,7 +118,23 @@ const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
+const voicePrompt = require('./storyboardVoicePromptService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+
+function loadStoryboardVideoDefaults(db, storyboardId) {
+  const sid = Number(storyboardId);
+  if (!db || !Number.isInteger(sid) || sid <= 0) return null;
+  try {
+    return db.prepare(
+      `SELECT s.video_prompt, s.video_model, e.drama_id
+       FROM storyboards s
+       LEFT JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
+       WHERE s.id = ? AND s.deleted_at IS NULL`
+    ).get(sid) || null;
+  } catch (_) {
+    return null;
+  }
+}
 
 function settleVideoCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
@@ -141,8 +159,10 @@ function create(db, log, req, options = {}) {
   const body = req || {};
   const billingEnabled = Boolean(options.billingEnabled);
   if (billingEnabled && !options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
-  const dramaId = Number(body.drama_id) || 0;
+  let dramaId = Number(body.drama_id) || 0;
   const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
+  const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
+  if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const active = findActiveForStoryboard(db, storyboardId, { billingEnabled, userId: options.userId });
   if (active) {
     if (billingEnabled) {
@@ -158,7 +178,7 @@ function create(db, log, req, options = {}) {
     return { ...getById(db, active.id), reused: true };
   }
 
-  let billingModel = body.model || null;
+  let billingModel = body.model || storyboardDefaults?.video_model || null;
   let price = null;
   if (billingEnabled) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
@@ -170,14 +190,29 @@ function create(db, log, req, options = {}) {
     price = modelPrice.requirePrice(db, billingModel);
   }
 
+  const persistedPrompt = storyboardId
+    ? voicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
+    : null;
+  const storyboardPrompt = String(persistedPrompt || storyboardDefaults?.video_prompt || '').trim();
+
   const now = new Date().toISOString();
   const result = db.transaction(() => {
-    const task = taskService.createTask(db, log, 'video_generation', String(body.drama_id || ''));
-    let prompt = body.prompt || '';
+    const task = taskService.createTask(db, log, 'video_generation', String(dramaId || ''));
+    let prompt = String(body.prompt ?? '').trim();
+    if (!prompt) prompt = storyboardPrompt;
     const style = String(body.style || '').trim();
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
     }
+    const model = body.model || storyboardDefaults?.video_model || null;
+    prompt = voicePrompt.appendVoiceAnchors({
+      db,
+      dramaId,
+      storyboardId,
+      prompt,
+      protocol: body.api_protocol,
+      model,
+    });
     let aspectRatio = body.aspect_ratio ? videoClient.normalizeAspectRatioForApi(body.aspect_ratio) : null;
     if (!aspectRatio && dramaId) {
       try {
@@ -192,7 +227,7 @@ function create(db, log, req, options = {}) {
        image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || body.model || null, body.duration ?? null,
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, body.duration ?? null,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
@@ -661,10 +696,49 @@ function deleteById(db, log, id, options = {}) {
   return result.changes > 0;
 }
 
+/**
+ * 素材库视频复用：把已有视频（素材库/本地文件）直接挂到分镜作为成片。
+ * 插入 status='completed' 的 video_generations 行（provider='library'），不走计费、不生成任务。
+ * 画布视频节点按 storyboard_id 取最新 completed，即显示该视频。
+ */
+function attach(db, log, body) {
+  const storyboardId = Number(body.storyboard_id);
+  if (!storyboardId) throw new Error('storyboard_id 必填');
+  const sb = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+  if (!sb) throw new Error('分镜不存在');
+  const videoUrl = String(body.video_url || '').trim();
+  const localPath = String(body.local_path || '').trim();
+  if (!videoUrl && !localPath) throw new Error('video_url / local_path 至少提供一个');
+  const dramaId = Number(body.drama_id) || null;
+  const now = new Date().toISOString();
+  const info = db.prepare(`INSERT INTO video_generations
+    (drama_id, storyboard_id, provider, prompt, model, duration, video_url, local_path, status, completed_at, created_at, updated_at)
+    VALUES (?, ?, 'library', ?, 'library-reuse', ?, ?, ?, 'completed', ?, ?, ?)`).run(
+      dramaId,
+      storyboardId,
+      body.prompt || '素材库复用',
+      body.duration ?? null,
+      videoUrl || null,
+      localPath || null,
+      now,
+      now,
+      now
+    );
+  const id = info.lastInsertRowid;
+  try {
+    db.prepare('UPDATE storyboards SET video_url = ?, updated_at = ? WHERE id = ?')
+      .run(videoUrl || ('/static/' + localPath.replace(/^\/static\//, '')), now, storyboardId);
+  } catch (_) {
+    // 历史库列不一致时忽略；video_generations 仍保留可读取成片。
+  }
+  log?.info?.('[Library] 视频复用到分镜', { storyboard_id: storyboardId, video_gen_id: id });
+  return getById(db, id);
+}
 module.exports = {
   list,
   getById,
   create,
+  attach,
   findActiveForStoryboard,
   deleteById,
   processVideoGeneration,

@@ -1,22 +1,21 @@
 <template>
   <div class="free-create-page">
-    <div class="page-header">
-      <div class="header-left">
-        <el-button text @click="$router.back()">
-          <el-icon><ArrowLeft /></el-icon>
-          返回
-        </el-button>
-        <h2 class="page-title">自由创作</h2>
-      </div>
-      <p class="page-desc">不绑定剧集，直接输入文字生成图片或视频</p>
-    </div>
+    <PlatformHeader title="自由创作" back-to="/" back-label="返回">
+      <template #leading>
+        <p class="page-desc">不绑定剧集，直接输入文字生成图片或视频</p>
+      </template>
+    </PlatformHeader>
 
     <div class="create-layout">
       <!-- 左侧：输入面板 -->
       <div class="input-panel">
         <el-tabs v-model="mode" class="mode-tabs">
-          <el-tab-pane label="🎨 生成图片" name="image" />
-          <el-tab-pane label="🎬 生成视频" name="video" />
+          <el-tab-pane name="image">
+            <template #label><span class="mode-tab-label"><el-icon><Picture /></el-icon>生成图片</span></template>
+          </el-tab-pane>
+          <el-tab-pane name="video">
+            <template #label><span class="mode-tab-label"><el-icon><VideoCamera /></el-icon>生成视频</span></template>
+          </el-tab-pane>
         </el-tabs>
 
         <div class="form-section">
@@ -147,7 +146,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Picture, MagicStick, Loading, CircleClose } from '@element-plus/icons-vue'
+import { Picture, VideoCamera, MagicStick, Loading, CircleClose } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
@@ -375,6 +375,12 @@ async function pollVideoTask(taskId, item) {
 
 .mode-tabs {
   margin-bottom: 16px;
+}
+
+.mode-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .form-section {

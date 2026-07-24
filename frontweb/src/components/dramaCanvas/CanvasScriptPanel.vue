@@ -16,6 +16,12 @@
     </div>
 
     <p class="flow-hint">创作起点：编写剧本 → 提取角色/场景/道具 → AI 生成分镜 → 生图/生视频</p>
+    <CanvasNodeExecutionStrip
+      :status="activeNodeStatus"
+      :node-id="nodeId"
+      :disabled="saving || extracting"
+      @retry="retryScriptFailedStep"
+    />
 
     <el-form label-position="left" label-width="44px" size="small" class="compact-form">
       <el-form-item label="集标题">
@@ -52,6 +58,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 
 const props = defineProps({
   episode: { type: Object, required: true },
@@ -71,9 +78,12 @@ const sceneCount = computed(() => (ctx?.drama?.value?.scenes || []).length)
 const propCount = computed(() => (ctx?.drama?.value?.props || []).length)
 const scriptLen = computed(() => (form.scriptContent || '').length)
 
-const busyLabel = computed(() => {
+const activeNodeStatus = computed(() => {
   const map = ctx?.nodeStatus?.map
-  return map?.[props.nodeId]?.message || ''
+  return map ? map[props.nodeId] : null
+})
+const busyLabel = computed(() => {
+  return activeNodeStatus.value?.message || ''
 })
 
 function syncForm(ep) {
@@ -97,24 +107,57 @@ async function onSave() {
     return
   }
   saving.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: '剧本保存中…' })
   try {
     await getScriptApi()?.saveScript?.(props.episode.id, {
       scriptContent: form.scriptContent,
       title: form.title,
     })
+    await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '剧本已保存',
+      resultType: 'text',
+      resultLabel: '剧本已保存',
+      promptText: form.scriptContent,
+      autoClear: false,
+    })
   } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
+    const message = e?.message || '保存失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'save',
+      retryLabel: '重试保存剧本',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     saving.value = false
   }
 }
 
-async function runExtract(fn) {
+async function runExtract(fn, step = 'extract_all', retryLabel = '重试提取') {
   extracting.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step, message: `${retryLabel.replace(/^重试/, '')}中…` })
   try {
     await fn()
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '提取完成',
+      resultType: 'text',
+      resultLabel: retryLabel.replace(/^重试/, ''),
+      promptText: form.scriptContent,
+      autoClear: false,
+    })
   } catch (e) {
-    if (e?.message) ElMessage.error(e.message)
+    const message = e?.message || '提取失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: step,
+      retryLabel,
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     extracting.value = false
   }
@@ -123,15 +166,19 @@ async function runExtract(fn) {
 async function onExtractChars() {
   await runExtract(() =>
     getScriptApi()?.extractCharacters?.(props.episode.id, form.scriptContent)
-  )
+  , 'extract_characters', '重试提取角色')
 }
 
 async function onExtractScenes() {
-  await runExtract(() => getScriptApi()?.extractScenes?.(props.episode.id))
+  await runExtract(() =>
+    getScriptApi()?.extractScenes?.(props.episode.id)
+  , 'extract_scenes', '重试提取场景')
 }
 
 async function onExtractProps() {
-  await runExtract(() => getScriptApi()?.extractProps?.(props.episode.id))
+  await runExtract(() =>
+    getScriptApi()?.extractProps?.(props.episode.id)
+  , 'extract_props', '重试提取道具')
 }
 
 async function onExtractAll() {
@@ -141,7 +188,16 @@ async function onExtractAll() {
   }
   await runExtract(() =>
     getScriptApi()?.extractAll?.(props.episode.id, form.scriptContent)
-  )
+  , 'extract_all', '重试一键提取')
+}
+
+async function retryScriptFailedStep() {
+  const step = activeNodeStatus.value?.retryStep
+  if (step === 'save') return onSave()
+  if (step === 'extract_characters') return onExtractChars()
+  if (step === 'extract_scenes') return onExtractScenes()
+  if (step === 'extract_props') return onExtractProps()
+  if (step === 'extract_all') return onExtractAll()
 }
 </script>
 

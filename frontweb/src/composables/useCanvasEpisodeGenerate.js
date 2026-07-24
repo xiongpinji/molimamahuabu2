@@ -88,6 +88,14 @@ export function useCanvasEpisodeGenerate(deps) {
     for (const sb of getStoryboardsForEpisode()) clearSbBusy(sb)
   }
 
+  function setEpisodeBusy(ep, step, message) {
+    nodeStatus?.set(`episode:${ep.id}`, { step, message })
+  }
+
+  function clearEpisodeBusy(ep) {
+    nodeStatus?.clear(`episode:${ep.id}`)
+  }
+
   function getGenOpts() {
     return {
       ...getDramaGenerationOptions(drama.value),
@@ -120,6 +128,7 @@ export function useCanvasEpisodeGenerate(deps) {
 
     episodeGenerating.value = true
     episodeGenProgress.value = 'AI 正在根据剧本解析分镜…'
+    setEpisodeBusy(ep, 'generate_sb', episodeGenProgress.value)
     for (const sb of existing) {
       setSbBusy(sb, 'generate_sb', CANVAS_NODE_STATUS_LABELS.generate_sb)
     }
@@ -145,6 +154,7 @@ export function useCanvasEpisodeGenerate(deps) {
     } finally {
       clearInterval(refreshTimer)
       clearEpisodeSbBusy()
+      clearEpisodeBusy(ep)
       episodeGenerating.value = false
       episodeGenProgress.value = ''
     }
@@ -175,12 +185,14 @@ export function useCanvasEpisodeGenerate(deps) {
     }
 
     episodeGenerating.value = true
+    setEpisodeBusy(ep, 'image', `批量生图 0/${todo.length}`)
     let ok = 0
     let failed = 0
     try {
       for (let i = 0; i < todo.length; i++) {
         const sb = todo[i]
         episodeGenProgress.value = `批量生图 ${i + 1}/${todo.length}：分镜 #${sb.storyboard_number ?? sb.id}`
+        setEpisodeBusy(ep, 'image', episodeGenProgress.value)
         setSbBusy(sb, 'image', `${CANVAS_NODE_STATUS_LABELS.image} ${i + 1}/${todo.length}`)
         try {
           await runImageStep(drama.value, sb, getGenOpts())
@@ -196,6 +208,7 @@ export function useCanvasEpisodeGenerate(deps) {
       if (failed === 0) ElMessage.success(`批量生图完成，共 ${ok} 镜`)
       else ElMessage.warning(`完成 ${ok} 镜，失败 ${failed} 镜`)
     } finally {
+      clearEpisodeBusy(ep)
       episodeGenerating.value = false
       episodeGenProgress.value = ''
     }
@@ -224,12 +237,14 @@ export function useCanvasEpisodeGenerate(deps) {
     }
 
     episodeGenerating.value = true
+    setEpisodeBusy(ep, 'video', `批量生视频 0/${todo.length}`)
     let ok = 0
     let failed = 0
     try {
       for (let i = 0; i < todo.length; i++) {
         const sb = todo[i]
         episodeGenProgress.value = `批量生视频 ${i + 1}/${todo.length}：分镜 #${sb.storyboard_number ?? sb.id}`
+        setEpisodeBusy(ep, 'video', episodeGenProgress.value)
         setSbBusy(sb, 'video', `${CANVAS_NODE_STATUS_LABELS.video} ${i + 1}/${todo.length}`)
         try {
           await runVideoStep(drama.value, sb, getGenOpts())
@@ -245,6 +260,7 @@ export function useCanvasEpisodeGenerate(deps) {
       if (failed === 0) ElMessage.success(`批量生视频完成，共 ${ok} 镜`)
       else ElMessage.warning(`完成 ${ok} 镜，失败 ${failed} 镜`)
     } finally {
+      clearEpisodeBusy(ep)
       episodeGenerating.value = false
       episodeGenProgress.value = ''
     }

@@ -5,6 +5,9 @@ const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
+const aihubccClient = require('./aihubccClient');
+const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
+const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -23,6 +26,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
   if (p === 'djpsd') return 'djpsd';
   if (p === 'dashscope') return 'dashscope';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -31,6 +35,8 @@ function inferVideoProtocol(provider) {
   if (p === 'ffir') return 'kling_omni';
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
+  if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
+  if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -133,12 +139,19 @@ function resolveVideoProtocol(config, modelHint) {
   const provider = (config.provider || '').toLowerCase();
   const explicit = String(config.api_protocol || '').trim();
   let protocol = explicit.toLowerCase() || inferVideoProtocol(provider);
+  if (provider === 'deepwl' || provider === 'deepwl_grok' || provider === 'deepwl-grok') {
+    if (!explicit || /deepwl|grok|unified|imagine|multipart|openai/.test(protocol)) protocol = 'deepwl_grok';
+  }
+  if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
+    protocol = 'icreat_task';
+  }
+  if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
   if (!explicit && protocol === 'openai') {
     if (/api\.x\.ai(\/|$)/.test(baseLower)) protocol = 'xai';
     else if (/grok-imagine|grok.*video/.test(modelLower)) protocol = 'xai';
-    else if (p === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
+    else if (provider === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
   }
   return protocol;
 }
@@ -678,7 +691,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
   }
 
   // Seedance 2.0 音色参考音频支持（仅 Seedance 2.x 模型有效）
-  const isSeedance2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(finalModel);
+  const isSeedance2 = isSeedance2ModelName(finalModel);
   if (isSeedance2 && opts.voice_reference_url) {
     let voiceUrl = String(opts.voice_reference_url).trim();
     if (voiceUrl) {
@@ -988,8 +1001,16 @@ function getDefaultVideoConfig(db, preferredModel) {
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      if (models.includes(preferredModel)) return c;
+      const provider = String(c.provider || '').toLowerCase();
+      const normalize = provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance'
+        ? normalizeIcreatModel
+        : (provider === 'volces' || provider === 'volcengine' || provider === 'volc')
+          ? normalizeVolcModel
+          : (value) => String(value || '');
+      const requested = normalize(preferredModel);
+      if (models.some((model) => normalize(model) === requested)) return c;
     }
+    return null;
   }
   const defaultOne = active.find((c) => c.is_default);
   return defaultOne != null ? defaultOne : active[0];
@@ -1026,17 +1047,30 @@ function buildQueryUrl(config, taskId) {
   const isDashScope = proto === 'dashscope' || p === 'dashscope';
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
   const isSora = proto === 'sora';
+  if (proto === 'aihubcc') return aihubccClient.getQueryUrl(config, taskId);
   if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_QUERY_PATH + '/' + encodeURIComponent(taskId);
-  const base = (config.base_url || '').replace(/\/$/, '');
+  const base = (config.base_url || (proto === 'deepwl_grok' ? 'https://zx1.deepwl.net' : '')).replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
+  else if (proto === 'deepwl_grok') {
+    const mode = resolveDeepwlGrokMode(config);
+    defaultEp = mode === 'unified' ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}';
+  }
   else if (proto === 'veo3') defaultEp = '/v1/video/query?id={taskId}';
   else if (isDashScope) defaultEp = '/api/v1/tasks/{taskId}';
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
+  else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
+  if (
+    proto === 'deepwl_grok' &&
+    resolveDeepwlGrokMode(config) !== 'unified' &&
+    /\/v1\/video\/query\?id=\{task[_-]?id\}/i.test(String(ep))
+  ) {
+    ep = defaultEp;
+  }
   ep = String(ep).replace(/\{taskId\}/gi, encodeURIComponent(taskId)).replace(/\{task_id\}/gi, encodeURIComponent(taskId)).replace(/\{id\}/gi, encodeURIComponent(taskId));
   if (!ep.startsWith('/')) ep = '/' + ep;
   return base + ep;
@@ -1067,6 +1101,151 @@ function getModelFromConfig(config, preferredModel) {
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || '';
+}
+
+/** DeepWL Grok 同时提供统一 JSON、Imagine JSON 和 OpenAI multipart 三种视频协议。 */
+function resolveDeepwlGrokMode(config = {}, modelHint) {
+  const explicit = String(config.api_protocol || '').toLowerCase();
+  if (explicit.includes('unified')) return 'unified';
+  if (explicit.includes('imagine')) return 'imagine';
+  if (explicit.includes('multipart') || explicit.includes('openai')) return 'openai';
+
+  // DeepWL 的 endpoint 是第二层契约信号：显式端点优先于模型名推断，
+  // 这样默认 /v1/video/create 不会因为模型名含 grok-video 被误切到 multipart。
+  const endpoint = String(config.endpoint || '').toLowerCase();
+  if (endpoint.includes('/v1/video/create')) return 'unified';
+  if (endpoint.includes('/v1/videos')) return 'openai';
+
+  const models = Array.isArray(config.model) ? config.model : [config.model || config.default_model || modelHint || ''];
+  const model = String(modelHint || config.default_model || models[0] || '').toLowerCase();
+  if (/grok[-_ ]*imagine/.test(model)) return 'imagine';
+  if (/grok/.test(model) && /video/.test(model)) return 'openai';
+  return 'unified';
+}
+
+function normalizeDeepwlUnifiedDuration(duration) {
+  const n = Number(duration);
+  if (!Number.isFinite(n)) return 10;
+  if (n <= 6) return 6;
+  if (n <= 10) return 10;
+  return 15;
+}
+
+function clampDeepwlImagineSeconds(duration) {
+  const n = Math.round(Number(duration));
+  if (!Number.isFinite(n)) return 8;
+  return Math.min(15, Math.max(1, n));
+}
+
+function normalizeDeepwlOpenaiSeconds(duration, model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('grok-1.5-video-15s')) return 15;
+  if (m.includes('grok-video-3-pro')) return 10;
+  if (m.includes('grok-video-3-max')) return 15;
+  return clampDeepwlImagineSeconds(duration);
+}
+
+function formatDeepwlSize(resolution) {
+  return String(resolution || '').toLowerCase().includes('1080') ? '1080P' : '720P';
+}
+
+function formatDeepwlResolution(resolution) {
+  // Imagine API 只接受 480P / 720P；不支持的值回退到合法的 720P。
+  return String(resolution || '').toLowerCase().includes('480') ? '480P' : '720P';
+}
+
+function buildDeepwlGrokVideoBody({
+  mode,
+  model,
+  prompt,
+  duration,
+  aspect_ratio,
+  resolution,
+  images = [],
+} = {}) {
+  const refs = Array.isArray(images) ? images.filter(Boolean) : [];
+  const ratio = normalizeAspectRatioForApi(aspect_ratio) || aspect_ratio || '16:9';
+  if (mode === 'imagine') {
+    const body = {
+      model: model || 'grok-imagine-video',
+      prompt: prompt || '',
+      seconds: String(clampDeepwlImagineSeconds(duration)),
+      aspect_ratio: ratio,
+      resolution: formatDeepwlResolution(resolution),
+    };
+    if (refs.length === 1) body.image = refs[0];
+    else if (refs.length > 1) body.images = refs.slice(0, 6);
+    return body;
+  }
+  return {
+    model: model || 'grok-video-3',
+    prompt: prompt || '',
+    images: refs.slice(0, 6),
+    aspect_ratio: ratio,
+    size: formatDeepwlSize(resolution),
+    duration: normalizeDeepwlUnifiedDuration(duration),
+  };
+}
+
+function collectDeepwlGrokImageInputs(opts = {}) {
+  const candidates = [];
+  const add = (value) => {
+    const s = String(value || '').trim();
+    if (s && !candidates.includes(s)) candidates.push(s);
+  };
+  add(opts.first_frame_url);
+  add(opts.last_frame_url);
+  add(opts.image_url);
+  for (const value of Array.isArray(opts.reference_urls) ? opts.reference_urls : []) add(value);
+  return candidates;
+}
+
+async function resolveDeepwlGrokImages(opts, log) {
+  const rawImages = collectDeepwlGrokImageInputs(opts);
+  const resolved = [];
+  for (let i = 0; i < rawImages.length; i++) {
+    const image = await resolveVeo3ImageForApi(
+      rawImages[i],
+      opts.storage_local_path,
+      log,
+      `${opts.video_gen_id || 0}_deepwl_${i}`
+    );
+    if (image?.value) resolved.push(image.value);
+  }
+  return resolved.slice(0, 6);
+}
+
+function pickDeepwlGrokVideoUrl(data) {
+  if (!data || typeof data !== 'object') return null;
+  const candidates = [
+    data.output?.url,
+    data.output?.video_url,
+    data.output?.detail?.url,
+    data.video_url,
+    data.url,
+    data.detail?.url,
+    data.data?.output?.url,
+    data.data?.output?.video_url,
+    data.data?.video_url,
+    data.data?.url,
+  ];
+  for (const value of candidates) {
+    const url = coerceHttpVideoUrl(value);
+    if (url) return url;
+  }
+  return pickProxyVideoUrl(data);
+}
+
+function parseDeepwlGrokSubmitResponse(payload) {
+  const direct = pickDeepwlGrokVideoUrl(payload);
+  if (direct) return { video_url: direct };
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload || {};
+  const taskId = payload?.id ?? payload?.task_id ?? data.id ?? data.task_id;
+  if (taskId == null || String(taskId).trim() === '') return null;
+  return {
+    task_id: String(taskId),
+    status: payload?.status || payload?.state || data.status || data.state || 'processing',
+  };
 }
 
 /** 仅把 http(s) 当作可下载直链，避免方舟/中转让 result_url 填入错误文案 */
@@ -3238,6 +3417,474 @@ async function callXaiVideoApi(config, log, opts) {
   return { error: 'xAI 未返回 request_id 或视频地址: ' + JSON.stringify(data).slice(0, 300) };
 }
 
+function buildDeepwlGrokEndpoint(config, mode) {
+  const base = (config.base_url || 'https://zx1.deepwl.net').replace(/\/$/, '');
+  let endpoint = String(config.endpoint || '').trim();
+  if (!endpoint || (mode !== 'unified' && /\/v1\/video\/create$/i.test(endpoint))) {
+    endpoint = mode === 'unified' ? '/v1/video/create' : '/v1/videos';
+  }
+  if (!endpoint.startsWith('/')) endpoint = '/' + endpoint;
+  return base + endpoint;
+}
+
+function buildDeepwlGrokContentEndpoint(config, taskId) {
+  const base = (config.base_url || 'https://zx1.deepwl.net').replace(/\/$/, '');
+  return `${base}/v1/videos/${encodeURIComponent(taskId)}/content`;
+}
+
+async function fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId) {
+  const url = buildDeepwlGrokContentEndpoint(config, taskId);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + (config.api_key || '') },
+    });
+    if (!response.ok) {
+      log?.warn?.('[DeepWL Grok] content 回退失败', {
+        video_gen_id: videoGenId,
+        task_id: taskId,
+        status: response.status,
+      });
+      return null;
+    }
+    // DeepWL 文档通常通过 302 返回短期签名地址；fetch 会跟随跳转，
+    // 同时兼容服务端直接返回 Location 的实现。
+    const finalUrl = coerceHttpVideoUrl(response.url);
+    const location = coerceHttpVideoUrl(response.headers?.get?.('location'));
+    if (finalUrl && finalUrl !== url) return finalUrl;
+    if (location) return location;
+    return null;
+  } catch (error) {
+    log?.warn?.('[DeepWL Grok] content 回退请求异常', {
+      video_gen_id: videoGenId,
+      task_id: taskId,
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+async function deepwlImageValueToDataUri(value, log, videoGenId) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('data:')) return raw;
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  try {
+    const response = await fetch(raw);
+    if (!response.ok) return raw;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers?.get?.('content-type') || 'image/jpeg';
+    const mime = contentType.startsWith('image/') ? contentType.split(';')[0] : 'image/jpeg';
+    return `data:${mime};base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    log?.warn?.('[DeepWL Grok] 参考图转 data URI 失败，保留原值', {
+      video_gen_id: videoGenId,
+      error: error.message,
+    });
+    return raw;
+  }
+}
+
+function dataUriToBlob(value, index) {
+  const match = String(value || '').match(/^data:([^;,]+);base64,(.+)$/is);
+  if (!match) return null;
+  const mime = match[1] || 'image/jpeg';
+  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  const extension = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+  return {
+    blob: new Blob([bytes], { type: mime }),
+    filename: `reference-${index + 1}.${extension}`,
+  };
+}
+
+async function deepwlImageValueToBlob(value, index) {
+  const raw = String(value || '').trim();
+  const dataBlob = dataUriToBlob(raw, index);
+  if (dataBlob) return dataBlob;
+  if (!/^https?:\/\//i.test(raw)) return null;
+  try {
+    const response = await fetch(raw);
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    const contentType = response.headers?.get?.('content-type') || 'image/jpeg';
+    const mime = contentType.startsWith('image/') ? contentType.split(';')[0] : 'image/jpeg';
+    const extension = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    return {
+      blob: new Blob([bytes], { type: mime }),
+      filename: `reference-${index + 1}.${extension}`,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function callDeepwlGrokVideoApi(config, log, opts = {}) {
+  const mode = resolveDeepwlGrokMode(config, opts.model);
+  const model = opts.model || (mode === 'imagine' ? 'grok-imagine-video' : 'grok-video-3');
+  if (mode !== 'unified' && String(opts.prompt || '').length > 4096) {
+    return { error: 'DeepWL Grok prompt 最多支持 4096 个字符' };
+  }
+  const url = buildDeepwlGrokEndpoint(config, mode);
+  const resolvedImages = await resolveDeepwlGrokImages(opts, log);
+  const ratio = normalizeAspectRatioForApi(opts.aspect_ratio) || opts.aspect_ratio || '16:9';
+  const headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+
+  let fetchOptions;
+  if (mode === 'openai') {
+    const form = new FormData();
+    form.append('model', model);
+    form.append('prompt', opts.prompt || '');
+    form.append('aspect_ratio', ratio);
+    form.append('seconds', String(normalizeDeepwlOpenaiSeconds(opts.duration, model)));
+    form.append('size', formatDeepwlSize(opts.resolution));
+    for (let i = 0; i < resolvedImages.length; i++) {
+      const file = await deepwlImageValueToBlob(resolvedImages[i], i);
+      if (file) form.append('input_reference', file.blob, file.filename);
+    }
+    fetchOptions = { method: 'POST', headers, body: form };
+  } else {
+    const images = mode === 'imagine'
+      ? await Promise.all(resolvedImages.map((image) => deepwlImageValueToDataUri(image, log, opts.video_gen_id)))
+      : resolvedImages;
+    const body = buildDeepwlGrokVideoBody({
+      mode,
+      model,
+      prompt: opts.prompt,
+      duration: opts.duration,
+      aspect_ratio: opts.aspect_ratio,
+      resolution: opts.resolution,
+      images,
+    });
+    fetchOptions = {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  }
+
+  log?.info?.('[DeepWL Grok] 提交视频任务', {
+    video_gen_id: opts.video_gen_id,
+    mode,
+    url,
+    model,
+    image_count: resolvedImages.length,
+  });
+  let response;
+  try {
+    response = await fetch(url, fetchOptions);
+  } catch (error) {
+    return { error: `DeepWL Grok 请求失败: ${error.message}` };
+  }
+  const raw = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    return { error: `DeepWL Grok 响应非 JSON (${response.status}): ${raw.slice(0, 300)}` };
+  }
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || payload?.detail || raw;
+    return { error: `DeepWL Grok 创建任务失败 (${response.status}): ${String(message).slice(0, 400)}` };
+  }
+  const result = parseDeepwlGrokSubmitResponse(payload);
+  if (result) return result;
+  return { error: 'DeepWL Grok 创建成功但未返回任务编号或视频地址' };
+}
+
+const ICREAT_MODEL_ALIASES = {
+  'seedance 2.0 fast': 'bytedance/seedance-2-0-fast',
+  'seedance 2.0 mini': 'bytedance/seedance-2-0-mini',
+  'seedance-2.0-fast': 'bytedance/seedance-2-0-fast',
+  'seedance-2.0-mini': 'bytedance/seedance-2-0-mini',
+  'seedance-2-0-fast': 'bytedance/seedance-2-0-fast',
+  'seedance-2-0-mini': 'bytedance/seedance-2-0-mini',
+};
+
+function normalizeIcreatBaseUrl(baseUrl) {
+  const raw = String(baseUrl || 'https://api.icreat.ai').trim().replace(/\/+$/, '');
+  try {
+    const url = new URL(raw);
+    if (url.hostname.toLowerCase() === 'zh.icreat.ai') url.hostname = 'api.icreat.ai';
+    if (url.pathname === '/v1') url.pathname = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch (_) {
+    return raw.replace(/^https:\/\/zh\.icreat\.ai/i, 'https://api.icreat.ai').replace(/\/v1$/i, '');
+  }
+}
+
+function normalizeIcreatModel(model) {
+  const raw = String(model || '').trim();
+  if (!raw) return 'bytedance/seedance-2-0-mini';
+  if (/^bytedance\/seedance-2-0-(?:fast|mini)$/i.test(raw)) return raw.toLowerCase();
+  return ICREAT_MODEL_ALIASES[raw.toLowerCase()] || raw;
+}
+
+function isSeedance2ModelName(model) {
+  return /seedance[\s._-]*2(?:[\s._-]*0)?/i.test(String(model || ''));
+}
+
+function normalizeIcreatDuration(duration) {
+  const n = Math.round(Number(duration));
+  if (!Number.isFinite(n)) return 5;
+  return Math.min(15, Math.max(4, n));
+}
+
+function normalizeIcreatResolution(resolution, model) {
+  const value = String(resolution || '').toLowerCase().replace(/\s/g, '');
+  if (!value) return '720p';
+  const normalized = value === '480' ? '480p' : value === '720' ? '720p' : value === '1080' ? '1080p' : value;
+  if ((/seedance-2-0-(?:fast|mini)/i.test(String(model || '')) || /seedance 2\.0 (?:fast|mini)/i.test(String(model || ''))) && !['480p', '720p'].includes(normalized)) {
+    return '720p';
+  }
+  return ['480p', '720p', '1080p', '4k'].includes(normalized) ? normalized : '720p';
+}
+
+function normalizeIcreatEndpoint(endpoint, fallback) {
+  const value = String(endpoint || fallback).trim();
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
+function buildIcreatTaskUrl(config, endpoint, taskId) {
+  const base = normalizeIcreatBaseUrl(config?.base_url);
+  let ep = normalizeIcreatEndpoint(endpoint, '/v1/task/query-status');
+  ep = ep
+    .replace(/\{taskId\}/gi, encodeURIComponent(taskId))
+    .replace(/\{task_id\}/gi, encodeURIComponent(taskId))
+    .replace(/\{id\}/gi, encodeURIComponent(taskId));
+  return /^https?:\/\//i.test(ep) ? ep : base + ep;
+}
+
+function buildIcreatVideoBody({
+  prompt,
+  duration,
+  aspect_ratio,
+  resolution,
+  model,
+  first_frame_url,
+  last_frame_url,
+  image_url,
+  reference_urls,
+  voice_reference_url,
+  generate_audio,
+  watermark,
+  tools,
+} = {}) {
+  const content = [{ type: 'text', text: String(prompt || '') }];
+  const seen = new Set();
+  const addImage = (url, role) => {
+    const value = String(url || '').trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    const part = { type: 'image_url', image_url: { url: value }, role };
+    if (role === 'reference_image') part.need_review = true;
+    content.push(part);
+  };
+  addImage(first_frame_url || image_url, 'first_frame');
+  addImage(last_frame_url, 'last_frame');
+  for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
+  const voiceUrl = String(voice_reference_url || '').trim();
+  const hasFrameRole = content.some((part) => part.role === 'first_frame' || part.role === 'last_frame');
+  if (voiceUrl && !hasFrameRole) {
+    content.push({
+      type: 'audio_url',
+      audio_url: { url: voiceUrl },
+      role: 'reference_audio',
+    });
+  }
+
+  const body = {
+    content,
+    ratio: normalizeAspectRatioForApi(aspect_ratio) || aspect_ratio || '16:9',
+    resolution: normalizeIcreatResolution(resolution, model),
+    duration: normalizeIcreatDuration(duration),
+  };
+  if (generate_audio != null) body.generate_audio = Boolean(generate_audio);
+  if (watermark != null) body.watermark = Boolean(watermark);
+  if (Array.isArray(tools) && tools.length) body.tools = tools;
+  return body;
+}
+
+async function resolveIcreatImages(opts, log) {
+  const fields = [
+    ['first_frame_url', 'first_frame_url'],
+    ['last_frame_url', 'last_frame_url'],
+    ['image_url', 'image_url'],
+  ];
+  const resolved = {};
+  for (const [field, role] of fields) {
+    const raw = String(opts[field] || '').trim();
+    if (!raw) continue;
+    const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_${role}`);
+    if (image?.value) resolved[field] = image.value;
+  }
+  const refs = [];
+  for (let i = 0; i < (Array.isArray(opts.reference_urls) ? opts.reference_urls.length : 0); i++) {
+    const raw = String(opts.reference_urls[i] || '').trim();
+    if (!raw) continue;
+    const image = await resolveVeo3ImageForApi(raw, opts.storage_local_path, log, `${opts.video_gen_id || 0}_icreat_ref${i}`);
+    if (image?.value && !refs.includes(image.value)) refs.push(image.value);
+  }
+  resolved.reference_urls = refs;
+  return resolved;
+}
+
+function audioMimeType(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac',
+  }[ext] || 'audio/mpeg';
+}
+
+function resolveStorageAudioFile(rawUrl, storageLocalPath) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw || !storageLocalPath) return null;
+  let relative = '';
+  if (raw.includes('/static/')) {
+    relative = (raw.split('/static/')[1] || '').split(/[?#]/)[0].replace(/^\/+/, '');
+  } else if (!/^https?:\/\//i.test(raw)) {
+    relative = raw.replace(/^[\\/]+/, '').split(/[?#]/)[0];
+  }
+  if (!relative) return null;
+  const baseResolved = path.resolve(storageLocalPath);
+  const localFile = path.resolve(path.join(baseResolved, relative));
+  if (!localFile.startsWith(baseResolved + path.sep) || !fs.existsSync(localFile)) return null;
+  return localFile;
+}
+
+async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, log, videoGenId) {
+  const raw = String(rawAudioUrl || '').trim();
+  if (!raw) return null;
+  if (/^data:audio\//i.test(raw)) return { kind: 'data', value: raw };
+
+  const localFile = resolveStorageAudioFile(raw, storageLocalPath);
+  if (localFile) {
+    try {
+      const buf = fs.readFileSync(localFile);
+      const value = `data:${audioMimeType(localFile)};base64,${buf.toString('base64')}`;
+      log?.info?.('[iCreat] 已将本地角色音色转换为音频引用', {
+        video_gen_id: videoGenId,
+        local_path: path.relative(storageLocalPath, localFile).replace(/\\/g, '/'),
+      });
+      return { kind: 'data', value };
+    } catch (error) {
+      log?.warn?.('[iCreat] 读取本地角色音色失败', { video_gen_id: videoGenId, error: error.message });
+    }
+  }
+  return { kind: 'url', value: raw };
+}
+
+async function resolveIcreatAudioReference(opts, log) {
+  if (!opts.voice_reference_url) return {};
+  const resolved = await resolveIcreatAudio(
+    opts.voice_reference_url,
+    opts.storage_local_path,
+    log,
+    opts.video_gen_id
+  );
+  return resolved?.value ? { voice_reference_url: resolved.value } : {};
+}
+
+function pickIcreatVideoUrl(payload) {
+  if (!payload) return null;
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = pickIcreatVideoUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof payload !== 'object') return coerceHttpVideoUrl(payload);
+  const direct = [
+    payload.video_url,
+    payload.videoUrl,
+    payload.url,
+    payload.output?.video_url,
+    payload.output?.videoUrl,
+    payload.output?.url,
+    payload.data?.video_url,
+    payload.data?.videoUrl,
+    payload.data?.url,
+    payload.result?.video_url,
+    payload.result?.videoUrl,
+    payload.result?.url,
+  ];
+  for (const candidate of direct) {
+    const url = coerceHttpVideoUrl(candidate);
+    if (url) return url;
+  }
+  for (const nested of [payload.data, payload.result, payload.output]) {
+    const found = pickIcreatVideoUrl(nested);
+    if (found) return found;
+  }
+  return null;
+}
+
+function parseIcreatTaskResponse(payload) {
+  const direct = pickIcreatVideoUrl(payload);
+  if (direct) return { video_url: direct };
+  const data = payload?.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? payload.data : payload || {};
+  const taskId = payload?.taskId ?? payload?.task_id ?? payload?.id ?? data.taskId ?? data.task_id ?? data.id;
+  if (taskId == null || String(taskId).trim() === '') return null;
+  return {
+    task_id: String(taskId),
+    status: payload?.status || payload?.state || data.status || data.state || 'processing',
+  };
+}
+
+async function callIcreatVideoApi(config, log, opts = {}) {
+  const model = normalizeIcreatModel(opts.model || config.default_model || (Array.isArray(config.model) ? config.model[0] : config.model));
+  const encodedModel = model.split('/').map((part) => encodeURIComponent(part)).join('/');
+  let endpoint = normalizeIcreatEndpoint(config.endpoint, '/v1/task/submit/{model}');
+  endpoint = endpoint.replace(/\{model\}/gi, encodedModel);
+  if (!endpoint.includes(encodedModel) && /\/v1\/task\/submit\/?$/i.test(endpoint)) endpoint += `/${encodedModel}`;
+  const url = /^https?:\/\//i.test(endpoint) ? endpoint : normalizeIcreatBaseUrl(config.base_url) + endpoint;
+  const images = await resolveIcreatImages(opts, log);
+  const audio = await resolveIcreatAudioReference(opts, log);
+  const settings = parseConfigSettingsJson(config);
+  const body = buildIcreatVideoBody({
+    ...opts,
+    ...images,
+    ...audio,
+    model,
+    resolution: normalizeIcreatResolution(opts.resolution, model),
+  });
+  log?.info?.('[iCreat video] 提交', {
+    video_gen_id: opts.video_gen_id,
+    model,
+    has_voice_reference: body.content.some((part) => part.role === 'reference_audio'),
+  });
+  if (opts.voice_reference_url && !body.content.some((part) => part.role === 'reference_audio')) {
+    log?.warn?.('[iCreat video] 首尾帧模式不支持混合参考音频，已保留画面连续性并使用提示词声线锚点', {
+      video_gen_id: opts.video_gen_id,
+      model,
+    });
+  }
+  const headers = {
+    Authorization: `Bearer ${config.api_key || ''}`,
+    'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+    'Content-Type': 'application/json',
+  };
+  let response;
+  try {
+    response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (error) {
+    return { error: `iCreat 视频请求失败: ${error.message}` };
+  }
+  const raw = await response.text();
+  let payload;
+  try { payload = JSON.parse(raw); } catch (_) { payload = null; }
+  if (!response.ok) {
+    const message = payload?.message || payload?.detail || payload?.error?.message || raw || `HTTP ${response.status}`;
+    return { error: `iCreat 创建任务失败 (${response.status}): ${String(message).slice(0, 400)}` };
+  }
+  const result = parseIcreatTaskResponse(payload);
+  return result || { error: 'iCreat 创建成功但未返回任务编号或视频地址' };
+}
+
 const VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME = new Set([
   'volcengine_omni',
   'volcengine',
@@ -3343,8 +3990,8 @@ function collectActiveCharacterVoiceRefs(db, dramaId) {
   if (!db || !dramaId) return map;
   try {
     const rows = db.prepare(
-      'SELECT id, seedance2_voice_asset FROM characters WHERE drama_id = ? AND deleted_at IS NULL'
-    ).all(Number(dramaId));
+      'SELECT id, seedance2_voice_asset FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC'
+    ).all(Number(dramaId)).sort((a, b) => Number(a.id) - Number(b.id));
     for (const row of rows) {
       const asset = parseJsonColumnForVideo(row.seedance2_voice_asset);
       if (!asset || String(asset.status || '').toLowerCase() !== 'active') continue;
@@ -3353,6 +4000,121 @@ function collectActiveCharacterVoiceRefs(db, dramaId) {
     }
   } catch (_) {}
   return map;
+}
+
+/**
+ * 选择本剧固定的 Seedance 2.0 音色参考。
+ * 作为没有分镜角色音色时的稳定回退，避免请求里出现伪造 URL。
+ */
+function selectStableCharacterVoiceRef(db, dramaId) {
+  const voiceMap = collectActiveCharacterVoiceRefs(db, dramaId);
+  return voiceMap.values().next().value || null;
+}
+
+function parseStoryboardVoiceCharacterIds(raw) {
+  if (raw == null || raw === '') return [];
+  let value = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); } catch (_) { return []; }
+  }
+  if (!Array.isArray(value)) value = [value];
+  return [...new Set(value
+    .map((item) => Number(item && typeof item === 'object' ? item.id : item))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+function normalizeStoryboardVoiceName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[\s　]+/g, '');
+}
+
+function parseStoryboardVoiceRefs(raw) {
+  if (raw == null || raw === '') return [];
+  let value = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); } catch (_) { return []; }
+  }
+  if (!Array.isArray(value)) value = [value];
+  const seen = new Set();
+  return value.map((item) => {
+    const object = item && typeof item === 'object' ? item : null;
+    const id = Number(object ? object.id : item);
+    const name = String(object?.name || object?.character_name || (typeof item === 'string' && !/^\d+$/.test(item) ? item : '')).trim();
+    const key = Number.isInteger(id) && id > 0 ? `id:${id}` : name ? `name:${name}` : '';
+    if (!key || seen.has(key)) return null;
+    seen.add(key);
+    return { id: Number.isInteger(id) && id > 0 ? id : null, name };
+  }).filter(Boolean);
+}
+
+function firstDialogueSpeakerId(dialogue, characterRows) {
+  const text = String(dialogue || '');
+  if (!text) return null;
+  let best = null;
+  for (const row of characterRows || []) {
+    const name = String(row.name || '').trim();
+    if (!name) continue;
+    const indexes = [`${name}：`, `${name}:`]
+      .map((token) => text.indexOf(token))
+      .filter((idx) => idx >= 0);
+    if (!indexes.length) continue;
+    const index = Math.min(...indexes);
+    if (!best || index < best.index) best = { index, id: Number(row.id) };
+  }
+  return best?.id || null;
+}
+
+/**
+ * 当前分镜优先选择已绑定的角色音色；分镜没有可用角色音色时回退到本剧
+ * 按角色 ID 固定的第一条音色。这样同一角色跨分镜保持一致，同时不会把
+ * 某个无关角色的音色强行覆盖到有明确角色绑定的分镜上。
+ */
+function selectStoryboardCharacterVoiceRef(db, dramaId, storyboardId) {
+  const voiceMap = collectActiveCharacterVoiceRefs(db, dramaId);
+  if (!voiceMap.size) return null;
+
+  const sid = Number(storyboardId);
+  if (Number.isInteger(sid) && sid > 0) {
+    let storyboard = null;
+    let refs = [];
+    let rows = [];
+    try {
+      storyboard = db.prepare(
+        'SELECT characters, dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+      ).get(sid);
+    } catch (_) {}
+    let voiceSnapshot = null;
+    try {
+      voiceSnapshot = db.prepare(
+        'SELECT voice_snapshot FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+      ).get(sid)?.voice_snapshot;
+    } catch (_) {}
+    const snapshotMap = snapshotVoiceMap(voiceSnapshot);
+    try {
+      rows = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(Number(dramaId));
+    } catch (_) {}
+    const byName = new Map(rows.map((row) => [normalizeStoryboardVoiceName(row.name), Number(row.id)]));
+    refs = parseStoryboardVoiceRefs(storyboard?.characters);
+    if (!refs.length) refs = parseStoryboardVoiceCharacterIds(storyboard?.characters).map((id) => ({ id, name: '' }));
+    const firstSpeakerId = firstDialogueSpeakerId(storyboard?.dialogue, rows);
+    const orderedIds = [];
+    if (firstSpeakerId) orderedIds.push(firstSpeakerId);
+    for (const ref of refs) {
+      const id = ref.id || (ref.name ? byName.get(normalizeStoryboardVoiceName(ref.name)) : null);
+      if (id) orderedIds.push(id);
+    }
+    if (!orderedIds.length) {
+      try {
+        orderedIds.push(...db.prepare(
+          'SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC'
+        ).all(sid).map((row) => Number(row.character_id)).filter((id) => Number.isInteger(id) && id > 0));
+      } catch (_) {}
+    }
+    for (const id of [...new Set(orderedIds)]) {
+      if (snapshotMap.has(id)) return snapshotMap.get(id);
+      if (voiceMap.has(id)) return voiceMap.get(id);
+    }
+  }
+  return voiceMap.values().next().value || null;
 }
 
 function applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts) {
@@ -3429,13 +4191,69 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
   return u;
 }
 
+async function callAihubccVideoApi(config, log, opts = {}) {
+  const model = String(opts.model || '').trim();
+  const resolve = async (value, suffix) => {
+    const result = await resolveVeo3ImageForApi(value, opts.storage_local_path, log, `${opts.video_gen_id || 0}_${suffix}`);
+    return result?.value || null;
+  };
+  const first = await resolve(opts.first_frame_url || opts.image_url, 'first');
+  const last = await resolve(opts.last_frame_url, 'last');
+  const refs = [];
+  for (let i = 0; i < (Array.isArray(opts.reference_urls) ? opts.reference_urls.length : 0); i += 1) {
+    const value = await resolve(opts.reference_urls[i], `ref${i}`);
+    if (value && !refs.includes(value)) refs.push(value);
+  }
+  const body = aihubccClient.buildVideoBody({
+    model,
+    prompt: opts.prompt,
+    duration: opts.duration,
+    aspect_ratio: opts.aspect_ratio,
+    image_url: first,
+    first_image_url: first,
+    last_image_url: last,
+    reference_urls: refs,
+    video_url: opts.video_url,
+  });
+  const url = aihubccClient.getSubmitUrl(config, config.endpoint || '/videos');
+  log.info('[AIHubCC video] 提交', {
+    video_gen_id: opts.video_gen_id,
+    model,
+    endpoint: url,
+    duration: body.seconds || body.duration,
+    aspect_ratio: body.aspect_ratio,
+    has_first_frame: !!first,
+    has_last_frame: !!last,
+    reference_count: refs.length,
+  });
+  let result;
+  try {
+    result = await aihubccClient.requestJson(url, {
+      method: 'POST',
+      headers: aihubccClient.authHeaders(config, true),
+      body: JSON.stringify(body),
+      timeoutMs: 600000,
+    });
+  } catch (error) {
+    return { error: `AIHubCC 视频请求失败: ${error.message}` };
+  }
+  if (!result.response.ok) {
+    return { error: `AIHubCC 视频请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+  }
+  const direct = aihubccClient.extractMediaUrl(result.data, config);
+  if (direct) return { video_url: direct };
+  const taskId = aihubccClient.extractTaskId(result.data);
+  if (!taskId) return { error: 'AIHubCC 视频接口未返回视频地址或任务编号' };
+  return { task_id: taskId, status: aihubccClient.extractStatus(result.data) || 'processing' };
+}
+
 /**
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
 async function callVideoApi(db, log, opts) {
   const {
-    prompt,
+    prompt: inputPrompt,
     model: preferredModel,
     duration,
     aspect_ratio,
@@ -3459,49 +4277,45 @@ async function callVideoApi(db, log, opts) {
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
+  let prompt = inputPrompt;
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
   }
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
-  const isSeedance2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(String(model || ''));
+  const isSeedance2 = isSeedance2ModelName(model);
   if (isSeedance2 && db && opts.drama_id && !opts.voice_reference_url) {
-    const voiceMap = collectActiveCharacterVoiceRefs(db, opts.drama_id);
-    if (voiceMap.size > 0) {
-      // 优先使用分镜显式指定的角色（如果有），否则取第一个
-      let chosen = null;
-      if (opts.storyboard_id) {
-        try {
-          const sbRow = db.prepare('SELECT characters FROM storyboards WHERE id = ?').get(opts.storyboard_id);
-          if (sbRow && sbRow.characters) {
-            const charList = typeof sbRow.characters === 'string' ? JSON.parse(sbRow.characters) : sbRow.characters;
-            const ids = Array.isArray(charList) ? charList.map(c => Number(c?.id || c)).filter(Boolean) : [];
-            for (const cid of ids) {
-              if (voiceMap.has(cid)) { chosen = voiceMap.get(cid); break; }
-            }
-          }
-        } catch (_) {}
-      }
-      if (!chosen) {
-        // 取 Map 中的第一个
-        chosen = voiceMap.values().next().value;
-      }
-      if (chosen) {
-        opts.voice_reference_url = chosen;
-        log.info('[视频][SD2][全能] 自动为 Seedance 2.0 注入角色音色参考（来自角色 seedance2_voice_asset）', {
-          video_gen_id,
-          storyboard_id: opts.storyboard_id,
-          voice_ref_url: String(chosen).slice(0, 100)
-        });
-      } else {
-        log.info('[视频][SD2][全能] 检测到活跃音色参考但未匹配到当前分镜角色', {
-          video_gen_id,
-          storyboard_id: opts.storyboard_id,
-          available_voice_char_ids: Array.from(voiceMap.keys())
-        });
-      }
+    const chosen = selectStoryboardCharacterVoiceRef(db, opts.drama_id, opts.storyboard_id);
+    if (chosen) {
+      opts.voice_reference_url = chosen;
+      log.info('[视频][SD2][全能] 已注入当前分镜角色音色（无匹配时回退本剧固定音色）', {
+        video_gen_id,
+        storyboard_id: opts.storyboard_id,
+        voice_ref_url: String(chosen).slice(0, 100)
+      });
     } else {
       log.info('[视频][SD2][全能] Seedance 2.0 模型但本剧暂无 active 音色参考', { video_gen_id, drama_id: opts.drama_id });
+    }
+  }
+  // 参考音频只对少数模型生效；其余模型用稳定的角色级文字声音锚点，避免同一角色跨分镜漂移。
+  if (!(isSeedance2 && opts.voice_reference_url) && db && opts.drama_id && opts.storyboard_id) {
+    const anchoredPrompt = storyboardVoicePromptService.appendVoiceAnchors({
+      db,
+      dramaId: opts.drama_id,
+      storyboardId: opts.storyboard_id,
+      prompt,
+      protocol,
+      model,
+    });
+    if (anchoredPrompt !== prompt) {
+      prompt = anchoredPrompt;
+      log.info('[视频][角色音色提示] 已追加稳定声音锚点', {
+        video_gen_id,
+        storyboard_id: opts.storyboard_id,
+        protocol,
+        model,
+        prompt_len: prompt.length,
+      });
     }
   }
   log.info('[视频] 路由协议', {
@@ -3512,6 +4326,19 @@ async function callVideoApi(db, log, opts) {
     model,
     endpoint: config.endpoint || '(auto)',
   });
+
+  if (protocol === 'aihubcc') {
+    return callAihubccVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration,
+      aspect_ratio,
+      image_url,
+      first_frame_url,
+      last_frame_url,
+    });
+  }
 
   if (protocol === 'jimeng_ai_api') {
     return callJimengAiApiVideo(config, log, {
@@ -3542,6 +4369,38 @@ async function callVideoApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
+    });
+  }
+
+  if (protocol === 'deepwl_grok') {
+    return callDeepwlGrokVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
+  if (protocol === 'icreat_task') {
+    return callIcreatVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url,
+      first_frame_url,
+      last_frame_url,
+      video_gen_id,
     });
   }
 
@@ -3845,6 +4704,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
+  const isDeepwlGrok = protocol === 'deepwl_grok';
+  const isAihubcc = protocol === 'aihubcc';
+  const isIcreat = protocol === 'icreat_task';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -3867,7 +4729,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
-      let url, headers;
+      let url, headers, method = 'GET', requestBody;
       if (isKling) {
         // task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx`
         const klingBase = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
@@ -3914,13 +4776,26 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       } else if (isDjpsd) {
         url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs/${encodeURIComponent(taskId)}`;
         headers = { 'api-key': config.api_key || '' };
+      } else if (isDeepwlGrok) {
+        url = queryUrl();
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+      } else if (isIcreat) {
+        const settings = parseConfigSettingsJson(config);
+        url = buildIcreatTaskUrl(config, config.query_endpoint || '/v1/task/query-status', taskId);
+        method = 'POST';
+        requestBody = JSON.stringify({ task_id: String(taskId) });
+        headers = {
+          Authorization: 'Bearer ' + (config.api_key || ''),
+          'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+          'Content-Type': 'application/json',
+        };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
       }
       const pollRound = attempt + 1;
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
-      const res = await fetch(url, { method: 'GET', headers });
+      const res = await fetch(url, { method, headers, ...(requestBody ? { body: requestBody } : {}) });
       const raw = await res.text();
       const bodyLogged =
         pollLogBodyMax === Infinity
@@ -3966,6 +4841,110 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isDeepwlGrok) {
+        const status = extractPollTaskStatus(data);
+        const videoUrl = pickDeepwlGrokVideoUrl(data);
+        log.info('[DeepWL Grok poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (status === 'unknown') {
+          return {
+            indeterminate: true,
+            provider_task_id: String(taskId),
+            error: `DeepWL Grok 返回 unknown，暂不重提任务 ${taskId}`,
+          };
+        }
+        if (isPollTaskFailed(status) || data.error) {
+          const message = extractPollFailureMessage(data) || data.error?.message || data.error || status || '任务失败';
+          return { error: String(message).slice(0, 500) };
+        }
+        if (status === 'succeeded' || status === 'completed' || status === 'done') {
+          const mode = resolveDeepwlGrokMode(config);
+          if (mode !== 'unified') {
+            const contentUrl = await fetchDeepwlGrokContentUrl(config, taskId, log, videoGenId);
+            if (contentUrl) {
+              log.info('[DeepWL Grok poll] 通过 content 回退取得视频地址', {
+                video_gen_id: videoGenId,
+                task_id: taskId,
+                video_url: contentUrl,
+              });
+              return { video_url: contentUrl };
+            }
+          }
+          return { error: 'DeepWL Grok 任务完成但未返回可下载的视频地址' };
+        }
+        continue;
+      }
+
+      if (isAihubcc) {
+        const status = aihubccClient.extractStatus(data);
+        const videoUrl = aihubccClient.extractMediaUrl(data, config);
+        log.info('[AIHubCC poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (aihubccClient.isFailedStatus(status) || data.error) {
+          return { error: aihubccClient.extractError(data) || `AIHubCC 任务失败: ${status || 'unknown'}` };
+        }
+        if (aihubccClient.isDoneStatus(status)) {
+          const contentResponse = await fetch(aihubccClient.getContentUrl(config, taskId), {
+            headers: aihubccClient.authHeaders(config),
+          });
+          const contentRaw = await contentResponse.text();
+          let contentData = {};
+          try { contentData = contentRaw ? JSON.parse(contentRaw) : {}; } catch (_) {}
+          const contentUrl = aihubccClient.extractMediaUrl(contentData, config);
+          if (contentUrl) return { video_url: contentUrl };
+          return { error: 'AIHubCC 任务完成但未返回可下载的视频地址' };
+        }
+        continue;
+      }
+
+      if (isIcreat) {
+        const status = String(data?.status || data?.state || data?.data?.status || data?.data?.state || '').toUpperCase();
+        const videoUrl = pickIcreatVideoUrl(data);
+        log.info('[iCreat poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          status,
+          has_video_url: !!videoUrl,
+        });
+        if (videoUrl) return { video_url: videoUrl };
+        if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED', 'NOT_FOUND'].includes(status)) {
+          const providerMessage = data?.error_message || data?.error?.message || data?.message || data?.error;
+          const detail = providerMessage ? `: ${String(providerMessage).slice(0, 300)}` : '';
+          return { error: `iCreat 任务失败或不存在: ${status}${detail}` };
+        }
+        if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
+          const settings = parseConfigSettingsJson(config);
+          const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
+          const resultResponse = await fetch(resultUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer ' + (config.api_key || ''),
+              'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ task_id: String(taskId) }),
+          });
+          const resultRaw = await resultResponse.text();
+          let resultData;
+          try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
+          if (!resultResponse.ok) return { error: `iCreat 获取结果失败 (${resultResponse.status})` };
+          const resultVideoUrl = pickIcreatVideoUrl(resultData);
+          if (resultVideoUrl) return { video_url: resultVideoUrl };
+          return { error: 'iCreat 任务完成但未返回视频地址' };
+        }
         continue;
       }
 
@@ -4177,6 +5156,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
 
 module.exports = {
   getDefaultVideoConfig,
+  callAihubccVideoApi,
   callVideoApi,
   pollVideoTask,
   normalizeAspectRatioForApi,
@@ -4190,4 +5170,18 @@ module.exports = {
   parseDjpsdSubmitResponse,
   parseDjpsdPollResponse,
   formatDjpsdUnknownSubmitError,
+  callDeepwlGrokVideoApi,
+  buildDeepwlGrokVideoBody,
+  resolveDeepwlGrokMode,
+  normalizeDeepwlUnifiedDuration,
+  pickDeepwlGrokVideoUrl,
+  normalizeIcreatBaseUrl,
+  normalizeIcreatModel,
+  isSeedance2ModelName,
+  buildIcreatVideoBody,
+  callIcreatVideoApi,
+  pickIcreatVideoUrl,
+  collectActiveCharacterVoiceRefs,
+  selectStableCharacterVoiceRef,
+  selectStoryboardCharacterVoiceRef,
 };

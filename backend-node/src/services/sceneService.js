@@ -121,6 +121,8 @@ function listByDramaId(db, dramaId) {
     image_url: row.image_url,
     local_path: row.local_path,
     extra_images: row.extra_images || null,
+    panorama_image_url: row.panorama_image_url || null,
+    panorama_local_path: row.panorama_local_path || null,
     status: row.status,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -140,6 +142,8 @@ function getSceneById(db, id) {
     image_url: row.image_url,
     local_path: row.local_path,
     extra_images: row.extra_images || null,
+    panorama_image_url: row.panorama_image_url || null,
+    panorama_local_path: row.panorama_local_path || null,
     status: row.status,
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -369,6 +373,7 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
   const imageGen = imageClient.createAndGenerateImage(db, log, {
     drama_id: sceneRow.drama_id,
     scene_id: sceneId,
+    image_type: 'scene_reference',
     prompt: imagePrompt,
     model: modelName || undefined,
     size: '1792x1024',
@@ -448,6 +453,7 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
   const imageGen = imageClient.createAndGenerateImage(db, log, {
     drama_id: sceneRow.drama_id,
     scene_id: sceneId,
+    image_type: 'scene_reference',
     prompt: imagePrompt,
     model: modelName || undefined,
     size: '1792x1024',
@@ -460,6 +466,51 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
   log.info('[场景单图] Step2 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGen?.id });
 
   return { ok: true, image_generation: imageGen };
+}
+
+/**
+ * 生成独立的场景全景环境图，不覆盖场景主参考图。
+ * 这是超宽环境参考图，不宣称为可直接投影的 equirectangular 360 贴图。
+ */
+async function generateScenePanoramaImage(db, log, cfg, sceneId, modelName, style, options = {}) {
+  const sceneRow = db.prepare(
+    'SELECT id, drama_id, location, time, prompt FROM scenes WHERE id = ? AND deleted_at IS NULL'
+  ).get(Number(sceneId));
+  if (!sceneRow) return { ok: false, error: 'scene not found' };
+  const dramaFull = db.prepare('SELECT id, style, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(sceneRow.drama_id);
+  if (!dramaFull) return { ok: false, error: 'unauthorized' };
+
+  let mergedCfg = mergeCfgStyleWithDrama(cfg, dramaFull);
+  mergedCfg = applySceneStyleOverride(mergedCfg, style);
+  const styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
+  const styleZh = (mergedCfg.style.default_style_zh || '').trim();
+  const sceneDescription = [
+    sceneRow.location ? `Location: ${sceneRow.location}` : '',
+    sceneRow.time ? `Time: ${sceneRow.time}` : '',
+    sceneRow.prompt ? `Environment description: ${sceneRow.prompt}` : '',
+  ].filter(Boolean).join('\n') || 'Cinematic story environment';
+  const styleLine = styleEn || styleZh ? `Visual style: ${styleEn || styleZh}.` : '';
+  const prompt = [
+    'Create one ultra-wide cinematic panoramic environment reference image for a short drama scene.',
+    'Show a continuous spatial environment suitable for wide shots and camera movement, with seamless visual continuity from left to right.',
+    'No people, no characters, no text, no logos, no split panels, no collage, no borders.',
+    sceneDescription,
+    styleLine,
+  ].filter(Boolean).join('\n\n');
+  const imageGeneration = imageClient.createAndGenerateImage(db, log, {
+    drama_id: sceneRow.drama_id,
+    scene_id: sceneId,
+    image_type: 'scene_panorama',
+    prompt,
+    model: modelName || undefined,
+    size: '1792x1024',
+    quality: 'standard',
+    provider: 'openai',
+    billingEnabled: Boolean(options.billingEnabled),
+    userId: options.userId,
+  });
+  log.info('[场景全景图] 图片生成任务已提交', { scene_id: sceneId, image_gen_id: imageGeneration?.id });
+  return { ok: true, image_generation: imageGeneration };
 }
 
 /**
@@ -509,6 +560,7 @@ module.exports = {
   getSceneById,
   generateSceneFourViewImage,
   generateSceneSingleImage,
+  generateScenePanoramaImage,
   generateScenePromptOnly,
   generateSceneSinglePromptOnly,
   extractSceneFromImage,

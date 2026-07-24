@@ -161,7 +161,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { sceneModelMapAPI } from '@/api/sceneModelMap'
 import { aiAPI } from '@/api/ai'
-import { getSelectableModels } from '@/utils/modelSelection'
+import { getSelectableModels, isConfigForServiceType } from '@/utils/modelSelection'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -215,7 +215,7 @@ const filteredConfigs = computed(() => {
   const currentServiceType = form.value.service_type
   console.log('filteredConfigs computed, service_type:', currentServiceType, 'configs:', configs.value.length)
   const filtered = configs.value.filter(c => {
-    const match = c.service_type === currentServiceType && c.is_active
+    const match = isConfigForServiceType(c, currentServiceType) && c.is_active
     console.log('  config:', c.name, 'service_type:', c.service_type, 'match:', match)
     return match
   })

@@ -4,7 +4,7 @@ const MODEL_GENERATION_ROUTES = [
   ['POST', /^\/props\/\d+\/(?:generate|generate-prompt|extract-from-image)$/],
   ['POST', /^\/extract-description-from-image$/],
   ['POST', /^\/episodes\/\d+\/(?:storyboards|props\/extract|characters\/extract)$/],
-  ['POST', /^\/scenes\/(?:generate-image|\d+\/(?:generate-prompt|generate-four-view-image|extract-from-image))$/],
+  ['POST', /^\/scenes\/(?:generate-image|\d+\/(?:generate-prompt|generate-four-view-image|generate-panorama-image|extract-from-image))$/],
   ['POST', /^\/images(?:$|\/episode\/\d+\/(?:backgrounds\/extract|batch)$|\/scene\/\d+$)/],
   ['POST', /^\/videos(?:$|\/image\/\d+$|\/episode\/\d+\/batch$)/],
   ['GET', /^\/storyboards\/episode\/\d+\/generate$/],

@@ -1,15 +1,7 @@
 <template>
   <div class="film-list">
-    <header class="header">
-      <div class="header-inner">
-        <h1 class="logo">
-          <img class="brand-logo" src="/moli-mama-logo.png" alt="茉莉妈妈" />
-          <span class="brand-copy">
-            <span class="logo-main">茉莉妈妈</span>
-            <span class="logo-sub">短剧制作平台</span>
-          </span>
-        </h1>
-        <!-- 公共资源库（左侧，靛紫调） -->
+    <PlatformHeader>
+      <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
             <el-icon><User /></el-icon>素材角色
@@ -21,35 +13,20 @@
             <el-icon><Box /></el-icon>素材道具
           </el-button>
         </div>
-        <!-- 右侧操作区 -->
-        <div class="header-actions">
-          <el-button class="btn-library" title="首页自由画布" @click="goHomeCanvas">
-            <el-icon><Grid /></el-icon>首页画布
-          </el-button>
-          <!-- 暂时隐藏，功能待完善 -->
-          <!-- <el-button class="btn-library" title="自由创作" @click="$router.push('/free-create')">
-            <el-icon><MagicStick /></el-icon>自由创作
-          </el-button>
-          <el-button class="btn-library" title="媒体素材库" @click="$router.push('/media-library')">
-            <el-icon><Files /></el-icon>素材库
-          </el-button> -->
-          <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button>
-          <el-button class="btn-settings" @click="showAiConfigDialog = true">
-            <el-icon><Setting /></el-icon>AI配置
-          </el-button>
-          <el-button class="btn-import" :loading="importing" @click="triggerImport">
-            <el-icon><Upload /></el-icon>导入项目
-          </el-button>
-          <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
-          <el-button type="primary" class="btn-new" @click="goNewProject">
-            <el-icon><Plus /></el-icon>新建项目
-          </el-button>
-        </div>
-      </div>
-    </header>
+      </template>
+      <template #actions>
+        <el-button class="btn-settings" @click="showAiConfigDialog = true">
+          <el-icon><Setting /></el-icon>AI配置
+        </el-button>
+        <el-button class="btn-import" :loading="importing" @click="triggerImport">
+          <el-icon><Upload /></el-icon>导入项目
+        </el-button>
+        <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
+        <el-button type="primary" class="btn-new" @click="goNewProject">
+          <el-icon><Plus /></el-icon>新建项目
+        </el-button>
+      </template>
+    </PlatformHeader>
 
     <main class="main">
       <div v-loading="loading" class="projects-wrap">
@@ -64,9 +41,6 @@
                 </el-button>
                 <el-button size="large" class="action-btn action-btn-import" :loading="importing" @click="triggerImport">
                   <el-icon><Upload /></el-icon>导入短剧项目
-                </el-button>
-                <el-button size="large" class="action-btn action-btn-canvas" @click="goHomeCanvas">
-                  <el-icon><Grid /></el-icon>首页自由画布
                 </el-button>
               </div>
               <div v-if="exampleList.length > 0" class="action-card-example">
@@ -93,7 +67,12 @@
             v-for="d in dramas"
             :key="d.id"
             class="project-card"
+            role="button"
+            tabindex="0"
+            :aria-label="`打开项目详情：${d.title || '未命名项目'}`"
             @click="openProject(d.id)"
+            @keydown.enter="openProject(d.id)"
+            @keydown.space.prevent="openProject(d.id)"
           >
             <div class="project-card-actions" @click.stop>
               <el-button size="small" circle :icon="Download" title="导出项目" :loading="exportingId === d.id" @click="onExport(d)" />
@@ -111,7 +90,13 @@
                 <span v-if="d.style" class="badge badge-style">{{ formatStyle(d.style) }}</span>
                 <span v-if="d.genre" class="badge badge-genre">{{ formatGenre(d.genre) }}</span>
               </div>
-              <p class="project-meta">{{ formatDate(d.updated_at) }}</p>
+              <div class="project-card-footer">
+                <p class="project-meta">{{ formatDate(d.updated_at) }}</p>
+                <el-button size="small" type="primary" plain class="project-open-canvas" @click.stop="openCanvas(d.id)">
+                  <el-icon><Grid /></el-icon>
+                  打开画布
+                </el-button>
+              </div>
             </div>
           </div>
         </div>
@@ -354,8 +339,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files, Grid } from '@element-plus/icons-vue'
-import { useTheme } from '@/composables/useTheme'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
@@ -366,7 +351,6 @@ import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 
 const router = useRouter()
-const { isDark, toggle: toggleTheme } = useTheme()
 
 // 库编辑图片 – 文件输入 refs
 const charLibFileRef  = ref(null)
@@ -702,8 +686,8 @@ function goNewProject() {
   showNewDialog.value = true
 }
 
-function goHomeCanvas() {
-  router.push('/canvas')
+function openCanvas(id) {
+  router.push('/film/' + id + '/canvas')
 }
 
 function resetNewForm() {
@@ -1078,14 +1062,6 @@ html.light .btn-import {
   --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
   --el-button-hover-text-color: #c7d2fe;
 }
-.action-btn-canvas {
-  --el-button-bg-color: rgba(52, 211, 153, 0.12);
-  --el-button-border-color: rgba(52, 211, 153, 0.35);
-  --el-button-text-color: #6ee7b7;
-  --el-button-hover-bg-color: rgba(52, 211, 153, 0.22);
-  --el-button-hover-border-color: rgba(52, 211, 153, 0.55);
-  --el-button-hover-text-color: #a7f3d0;
-}
 .action-card-example {
   width: 100%;
   padding-top: 8px;
@@ -1207,6 +1183,16 @@ html.light .btn-import {
   font-size: 0.75rem;
   color: #71717a;
   margin: 0;
+}
+.project-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+.project-open-canvas {
+  flex: 0 0 auto;
 }
 .project-card-actions {
   position: absolute;

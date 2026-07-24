@@ -36,6 +36,25 @@ function updateTaskStatus(db, taskId, status, progress, message) {
   ).run(status, progress ?? 0, message || '', now, completedAt, taskId);
 }
 
+async function withTaskHeartbeat(db, taskId, message, operation, intervalMs = 60_000) {
+  if (!taskId) return operation();
+  const touch = () => db.prepare(
+    `UPDATE async_tasks
+     SET status = 'processing', progress = 10, message = ?, updated_at = ?
+     WHERE id = ? AND status IN ('pending', 'processing')`
+  ).run(message || '', new Date().toISOString(), taskId);
+  touch();
+  const timer = setInterval(() => {
+    touch();
+  }, intervalMs);
+  timer.unref?.();
+  try {
+    return await operation();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function updateTaskError(db, taskId, errMsg) {
   const now = new Date().toISOString();
   try {
@@ -120,6 +139,21 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
        WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
     ).all().map((row) => ({ ...row, credit_reservation_id: null }));
   }
+  try {
+    const resumableVideoTaskIds = new Set(
+      db.prepare(
+        `SELECT task_id FROM video_generations
+         WHERE status = 'processing' AND deleted_at IS NULL
+           AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''
+           AND task_id IS NOT NULL AND TRIM(task_id) != ''`
+      ).all().map((row) => row.task_id)
+    );
+    rows = rows.filter(
+      (row) => row.type !== 'video_generation' || !resumableVideoTaskIds.has(row.id)
+    );
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
   if (!rows.length) return 0;
   log.warn('Failing orphaned async tasks after startup', { count: rows.length });
   for (const row of rows) {
@@ -131,6 +165,17 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       }
     }
     updateTaskError(db, row.id, ORPHAN_ASYNC_TASK_MSG);
+    if (row.type === 'image_generation') {
+      try {
+        db.prepare(
+          `UPDATE image_generations
+           SET status = 'failed', error_msg = ?, updated_at = ?
+           WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).run(ORPHAN_ASYNC_TASK_MSG, new Date().toISOString(), row.id);
+      } catch (error) {
+        log.warn('遗留图片生成记录清理失败', { task_id: row.id, error: error.message });
+      }
+    }
     log.info('Orphaned async task marked failed', {
       task_id: row.id,
       type: row.type,
@@ -146,6 +191,7 @@ module.exports = {
   getTask,
   getTasksByResource,
   updateTaskStatus,
+  withTaskHeartbeat,
   updateTaskError,
   updateTaskResult,
   failOrphanedAsyncTasksOnStartup,

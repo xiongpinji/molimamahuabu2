@@ -148,6 +148,8 @@ function ensureAllColumns(database) {
     { name: 'atmosphere',        type: 'TEXT' },
     { name: 'image_prompt',      type: 'TEXT' },
     { name: 'video_prompt',      type: 'TEXT' },
+    { name: 'image_model',       type: 'TEXT' },               // 分镜级图片模型覆盖，NULL/空值表示跟随项目默认
+    { name: 'video_model',       type: 'TEXT' },               // 分镜级视频模型覆盖，NULL/空值表示跟随项目默认
     { name: 'characters',        type: 'TEXT' },
     { name: 'shot_type',         type: 'TEXT' },
     { name: 'angle',             type: 'TEXT' },
@@ -171,7 +173,9 @@ function ensureAllColumns(database) {
     { name: 'polished_prompt',        type: 'TEXT' },               // 文字AI润色后的图片生成提示词（可编辑，生图时优先使用）
     { name: 'continuity_snapshot',   type: 'TEXT' },               // JSON: 连戏状态快照 {characters:{name:{position,clothing,expression,props}},lighting}
     { name: 'audio_local_path',      type: 'TEXT' },               // 对白 TTS 本地路径
+    { name: 'audio_url',             type: 'TEXT' },               // 对白远程音频素材 URL
     { name: 'narration_audio_local_path', type: 'TEXT' },         // 解说旁白 TTS 本地路径
+    { name: 'narration_audio_url',   type: 'TEXT' },               // 解说旁白远程音频素材 URL
     { name: 'creation_mode',     type: 'TEXT DEFAULT \'classic\'' }, // classic | universal
     { name: 'universal_segment_text', type: 'TEXT' },              // 全能模式片段描述（@ 引用等）
     { name: 'first_frame_image_id', type: 'INTEGER' },
@@ -223,6 +227,8 @@ function ensureAllColumns(database) {
     { name: 'polished_prompt',  type: 'TEXT' },  // 文字AI润色后的完整四视图图片提示词，生图时直接使用
     { name: 'image_url',        type: 'TEXT' },
     { name: 'local_path',       type: 'TEXT' },
+    { name: 'panorama_image_url', type: 'TEXT' },
+    { name: 'panorama_local_path', type: 'TEXT' },
     { name: 'extra_images',     type: 'TEXT' },
     { name: 'ref_image',        type: 'TEXT' },  // 用户上传的参考图（本地相对路径或 URL）
     { name: 'negative_prompt',  type: 'TEXT' },
@@ -320,6 +326,7 @@ function ensureAllColumns(database) {
     { name: 'scene_id',         type: 'INTEGER' },
     { name: 'character_id',     type: 'INTEGER' },
     { name: 'provider',         type: 'TEXT' },
+    { name: 'image_type',       type: 'TEXT' },
     { name: 'prompt',           type: 'TEXT' },
     { name: 'negative_prompt',  type: 'TEXT' },
     { name: 'model',            type: 'TEXT' },
@@ -393,6 +400,7 @@ function ensureAllColumns(database) {
   // --- assets ---
   ensureColumns(database, 'assets', [
     { name: 'drama_id',     type: 'INTEGER' },
+    { name: 'storyboard_id', type: 'INTEGER' },
     { name: 'name',         type: 'TEXT' },
     { name: 'type',         type: 'TEXT' },
     { name: 'category',     type: 'TEXT' },
@@ -403,6 +411,7 @@ function ensureAllColumns(database) {
     { name: 'width',        type: 'INTEGER' },
     { name: 'height',       type: 'INTEGER' },
     { name: 'duration',     type: 'REAL' },
+    { name: 'metadata',     type: 'TEXT' },
     { name: 'image_gen_id', type: 'INTEGER' },
     { name: 'video_gen_id', type: 'INTEGER' },
     { name: 'created_at',   type: 'TEXT' },

@@ -12,6 +12,7 @@ const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
+const aihubccClient = require('./aihubccClient');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -93,6 +94,7 @@ function getProxyExpireHours() {
  */
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -102,6 +104,58 @@ function inferProtocol(provider, model) {
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
   return 'openai';
+}
+
+async function callAihubccImageApi(config, log, opts = {}) {
+  const model = String(opts.model || 'gpt-image-2').trim();
+  const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
+  const refs = rawRefs
+    .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
+    .filter(Boolean)
+    .slice(0, 6);
+  const asyncModel = aihubccClient.isAsyncImageModel(model);
+  const endpoint = asyncModel ? '/videos' : (config.endpoint || '/images/generations');
+  const body = aihubccClient.buildImageBody({
+    model,
+    prompt: opts.prompt,
+    size: opts.size,
+    quality: opts.quality,
+    referenceUrls: refs,
+  });
+  const url = aihubccClient.getSubmitUrl(config, endpoint);
+  log.info('[AIHubCC image] 提交', {
+    image_gen_id: opts.image_gen_id,
+    model,
+    endpoint: url,
+    async: asyncModel,
+    ref_count: refs.length,
+  });
+  let result;
+  try {
+    result = await aihubccClient.requestJson(url, {
+      method: 'POST',
+      headers: aihubccClient.authHeaders(config, true),
+      body: JSON.stringify(body),
+      timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
+    });
+  } catch (error) {
+    return { error: `AIHubCC 图片请求失败: ${error.message}` };
+  }
+  if (!result.response.ok) {
+    return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+  }
+  const direct = aihubccClient.extractMediaUrl(result.data, config);
+  if (direct) return { image_url: direct };
+  const b64 = result.data?.data?.[0]?.b64_json;
+  if (b64) return { image_url: `data:image/png;base64,${String(b64).replace(/\s/g, '')}` };
+  const taskId = aihubccClient.extractTaskId(result.data);
+  if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
+  return aihubccClient.pollTask(config, taskId, {
+    mediaType: 'image',
+    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 180),
+    intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
+    log,
+  });
 }
 
 /**
@@ -1512,6 +1566,19 @@ async function callImageApi(db, log, opts) {
     effectivePrompt
   });
 
+  if (protocol === 'aihubcc') {
+    return callAihubccImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      quality,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
+
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
@@ -1681,18 +1748,20 @@ async function callImageApi(db, log, opts) {
  * 创建 image_generation 记录并异步调用 API，完成后更新记录与角色 image_url。
  * 与场景图一致：创建 task 并写入 task_id，便于前端轮询 /tasks/:task_id 获知完成或报错。
  */
-function findActiveAssetImage(db, characterId, sceneId, userId = null) {
+function findActiveAssetImage(db, characterId, sceneId, userId = null, imageType = null) {
   const ownerClause = userId == null ? '' : ' AND user_id = ?';
   const ownerValue = userId == null ? [] : [String(userId)];
+  const typeClause = imageType ? ' AND image_type = ?' : '';
+  const typeValue = imageType ? [String(imageType)] : [];
   if (characterId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
-    ).get(Number(characterId), ...ownerValue) || null;
+      "SELECT * FROM image_generations WHERE character_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(characterId), ...ownerValue, ...typeValue) || null;
   }
   if (sceneId != null) {
     return db.prepare(
-      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
-    ).get(Number(sceneId), ...ownerValue) || null;
+      "SELECT * FROM image_generations WHERE scene_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL" + ownerClause + typeClause + " ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).get(Number(sceneId), ...ownerValue, ...typeValue) || null;
   }
   return null;
 }
@@ -1726,6 +1795,7 @@ function createAndGenerateImage(db, log, opts) {
     userId,
     schedule,
   } = opts;
+  const imageType = String(image_type || '').trim() || null;
   const negRow = (user_negative_prompt && String(user_negative_prompt).trim()) || null;
   const now = new Date().toISOString();
   const dramaIdNum = Number(drama_id) || 0;
@@ -1744,7 +1814,7 @@ function createAndGenerateImage(db, log, opts) {
     billedModel = modelPriceService.canonicalModel(model || '');
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
-  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null);
+  const active = findActiveAssetImage(db, charIdNum, sceneIdNum, billingEnabled ? userId : null, imageType);
   if (active) {
     if (billingEnabled) {
       auditEvent.record(db, {
@@ -1768,8 +1838,8 @@ function createAndGenerateImage(db, log, opts) {
     const taskId = task.id;
     const billingColumns = billingEnabled ? ', user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, NULL' : '';
-    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -1800,7 +1870,7 @@ function createAndGenerateImage(db, log, opts) {
   scheduleTask(async () => {
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
-      const result = await callImageApi(db, log, {
+      const result = await taskService.withTaskHeartbeat(db, taskId, '正在等待图片生成服务...', () => callImageApi(db, log, {
         prompt,
         model,
         size,
@@ -1810,7 +1880,7 @@ function createAndGenerateImage(db, log, opts) {
         image_type,
         image_gen_id: imageGenId,
         user_negative_prompt: user_negative_prompt || undefined,
-      });
+      }));
       const now2 = new Date().toISOString();
       if (result.error) {
         db.prepare(
@@ -1899,21 +1969,23 @@ function createAndGenerateImage(db, log, opts) {
       }
       if (sceneIdNum != null) {
         try {
-          // 旧图追加到 extra_images，与上传逻辑保持一致
-          const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(sceneIdNum);
-          const oldPath = oldScene?.local_path || oldScene?.image_url || '';
-          let extras = [];
-          try { extras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
-          if (!Array.isArray(extras)) extras = [];
-          if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
-          const extraJson = extras.length ? JSON.stringify(extras) : null;
-          db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
-            result.image_url,
-            localPath,
-            extraJson,
-            now2,
-            sceneIdNum
-          );
+          if (imageType === 'scene_panorama') {
+            db.prepare('UPDATE scenes SET panorama_image_url = ?, panorama_local_path = ?, updated_at = ? WHERE id = ?').run(
+              result.image_url, localPath, now2, sceneIdNum
+            );
+          } else {
+            // 旧图追加到 extra_images，与上传逻辑保持一致
+            const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(sceneIdNum);
+            const oldPath = oldScene?.local_path || oldScene?.image_url || '';
+            let extras = [];
+            try { extras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
+            if (!Array.isArray(extras)) extras = [];
+            if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
+            const extraJson = extras.length ? JSON.stringify(extras) : null;
+            db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?').run(
+              result.image_url, localPath, extraJson, now2, sceneIdNum
+            );
+          }
         } catch (e) {
           if ((e.message || '').includes('local_path') || (e.message || '').includes('extra_images')) {
             db.prepare('UPDATE scenes SET image_url = ?, updated_at = ? WHERE id = ?').run(result.image_url, now2, sceneIdNum);
@@ -1971,6 +2043,7 @@ function rowToItem(r) {
     quality: r.quality,
     image_url: r.image_url,
     local_path: r.local_path,
+    image_type: r.image_type,
     status: r.status,
     task_id: r.task_id,
     error_msg: r.error_msg,
@@ -2038,6 +2111,7 @@ function refListHasCanonical(list, ref) {
 
 module.exports = {
   getDefaultImageConfig,
+  callAihubccImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,

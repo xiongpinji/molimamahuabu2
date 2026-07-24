@@ -260,6 +260,14 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       return pollPromises.value.get(taskId)
     }
 
+    // 新一轮显式轮询应清除该 taskId 遗留的前端停止标记；真正取消的任务
+    // 会由后端状态返回 cancelled/failed，不能让旧页面状态永久阻断恢复轮询。
+    if (cancelledPollTaskIds.value.has(taskId)) {
+      const nextCancelled = new Set(cancelledPollTaskIds.value)
+      nextCancelled.delete(taskId)
+      cancelledPollTaskIds.value = nextCancelled
+    }
+
     const maxAttempts = options.maxAttempts ?? 450
     const interval = options.interval ?? 2000
     const showErrorToast = options.showErrorToast !== false
@@ -327,7 +335,6 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
 
     return promise.finally(() => {
       stopped = true
-      cancelledPollTaskIds.value = new Set([...cancelledPollTaskIds.value, taskId])
       const cleaned = new Map(pollPromises.value)
       cleaned.delete(taskId)
       pollPromises.value = cleaned

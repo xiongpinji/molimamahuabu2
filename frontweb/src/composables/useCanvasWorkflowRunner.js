@@ -1,15 +1,49 @@
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
+import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
+import { assetsAPI } from '@/api/assets'
 import request from '@/utils/request'
-import { storyboardImageUrl } from '@/utils/mediaUrl'
+import { assetImageUrl, storyboardImageUrl } from '@/utils/mediaUrl'
 import {
   DEFAULT_PIPELINE,
+  collectStoryboardReferenceAssets,
+  getAdjacentStoryboards,
   findStoryboardInDrama,
   getDramaGenerationOptions,
+  getStoryboardImageFrameType,
+  getStoryboardGridFrameType,
+  getStoryboardImageModel,
+  getStoryboardAudioModel,
+  getStoryboardVideoModel,
   toAbsoluteMediaUrl,
+  buildCanvasPhotographyPrompt,
 } from '@/utils/canvasWorkflow'
 import { dramaUsesFirstLastFrame, sbVideoFirstLastUrls } from '@/utils/storyboardMedia'
+import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
+import {
+  appendVoicePromptToVideoPrompt,
+  buildStoryboardVoiceSnapshot,
+  buildVoicePromptPreview,
+  classifyVideoVoicePolicy,
+} from '@/utils/videoVoicePolicy'
+import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+
+/** 拉取用户在素材库中指派给该分镜的素材（storyboard_id 关联），转为绝对 URL。 */
+async function fetchAssignedAssetUrls(storyboardId) {
+  if (!storyboardId) return []
+  try {
+    const res = await assetsAPI.list({ storyboard_id: storyboardId, page: 1, page_size: 20 })
+    return (res?.items || [])
+      .map((a) => {
+        const raw = assetImageUrl(a) || a.video_url || a.video_local_path || ''
+        return toAbsoluteMediaUrl(raw)
+      })
+      .filter(Boolean)
+  } catch (_) {
+    return []
+  }
+}
 
 async function pollTaskSimple(taskId, options = {}) {
   if (!taskId) return { status: 'failed', error: '缺少 task_id' }
@@ -19,6 +53,7 @@ async function pollTaskSimple(taskId, options = {}) {
     await new Promise((r) => setTimeout(r, interval))
     try {
       const t = await taskAPI.get(taskId)
+      options.onPoll?.(t)
       if (t.status === 'completed') return { status: 'completed', result: t.result }
       if (t.status === 'failed') {
         return { status: 'failed', error: t.error?.message || t.error || '任务失败' }
@@ -30,23 +65,109 @@ async function pollTaskSimple(taskId, options = {}) {
   return { status: 'timeout', error: '任务超时' }
 }
 
-export async function runImageStep(drama, sb, genOpts) {
-  const prompt = sb.polished_prompt || sb.image_prompt || sb.description || sb.action || ''
-  if (!prompt.trim()) throw new Error(`分镜 #${sb.storyboard_number ?? sb.id} 缺少图片提示词`)
+async function resolveCanvasFramePrompt(sb, frameKind) {
+  const frameType = frameKind === 'last' ? 'last' : 'first'
+  const fallback = frameKind === 'last'
+    ? (sb.video_prompt || sb.result || sb.action || sb.description || '')
+    : (sb.polished_prompt || sb.image_prompt || sb.description || sb.action || '')
+  if (!sb?.id || !frameKind) return fallback
+
+  try {
+    const cached = await storyboardsAPI.getFramePrompts(sb.id)
+    const prompt = (cached?.frame_prompts || []).find((item) => item.frame_type === frameType)?.prompt
+    if (prompt?.trim()) return prompt.trim()
+
+    const generated = await storyboardsAPI.generateFramePrompt(sb.id, { frame_type: frameType })
+    if (generated?.task_id) {
+      const task = await pollTaskSimple(generated.task_id)
+      const fromTask = task.result?.response?.single_frame?.prompt
+      if (task.status === 'completed' && fromTask?.trim()) return fromTask.trim()
+    }
+    const refreshed = await storyboardsAPI.getFramePrompts(sb.id)
+    const refreshedPrompt = (refreshed?.frame_prompts || []).find((item) => item.frame_type === frameType)?.prompt
+    return refreshedPrompt?.trim() || fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+function upstreamReferenceUrls(genOpts = {}) {
+  return (Array.isArray(genOpts.upstreamReferenceUrls) ? genOpts.upstreamReferenceUrls : [])
+    .map((url) => toAbsoluteMediaUrl(url))
+    .filter(Boolean)
+}
+
+async function hydrateStoryboardSettings(storyboard) {
+  if (!storyboard?.id) return storyboard
+  const hasImageSettings = Object.prototype.hasOwnProperty.call(storyboard, 'image_model')
+    && Object.prototype.hasOwnProperty.call(storyboard, 'grid_frame_type')
+  const hasVideoModel = Object.prototype.hasOwnProperty.call(storyboard, 'video_model')
+  if (hasImageSettings && hasVideoModel) return storyboard
+  try {
+    const detail = await storyboardsAPI.get(storyboard.id)
+    if (Number(detail?.id) === Number(storyboard.id)) return { ...storyboard, ...detail }
+  } catch (_) {
+    // 兼容尚未部署新分镜字段的服务，继续使用当前对象和项目默认配置。
+  }
+  return storyboard
+}
+
+async function autoLinkTailFrameAfterVideo(drama, storyboard, found) {
+  const current = found?.storyboard || storyboard
+  const { next } = getAdjacentStoryboards(found?.episode, current?.id)
+  if (!drama?.id || !current?.id || !next || !canChainStoryboardFrames(next, current)) return null
+  try {
+    const result = await storyboardsAPI.linkTailFrame(current.id, { drama_id: drama.id })
+    return {
+      tailFrameLinked: true,
+      tailFrameNextStoryboardId: result?.next_storyboard_id || next.id,
+      tailFrameLinkMessage: result?.message || '尾帧已自动衔接到下一镜首帧',
+      nextStep: 'audio',
+      nextLabel: '继续配音',
+    }
+  } catch (error) {
+    return {
+      tailFrameLinked: false,
+      tailFrameLinkError: error?.message || '尾帧衔接失败',
+      actionError: `尾帧自动衔接失败：${error?.message || '尾帧衔接失败'}`,
+    }
+  }
+}
+
+export async function runImageStep(drama, sb, genOpts, frameKind = '', options = {}) {
+  const effectiveStoryboard = await hydrateStoryboardSettings(sb)
+  const basePrompt = await resolveCanvasFramePrompt(effectiveStoryboard, frameKind)
+  const prompt = buildCanvasPhotographyPrompt(basePrompt, effectiveStoryboard)
+  if (!prompt.trim()) throw new Error(`分镜 #${effectiveStoryboard.storyboard_number ?? effectiveStoryboard.id} 缺少图片提示词`)
+  const frameType = options.frameType
+    || getStoryboardImageFrameType(frameKind)
+    || (!frameKind ? getStoryboardGridFrameType(effectiveStoryboard) : undefined)
+  const entityRefs = frameType
+    ? collectStoryboardReferenceAssets(drama, effectiveStoryboard).map((ref) => ref.absoluteUrl).filter(Boolean)
+    : []
+  const assignedRefs = await fetchAssignedAssetUrls(effectiveStoryboard.id)
+  const referenceImages = [...new Set([...entityRefs, ...assignedRefs, ...upstreamReferenceUrls(genOpts)])].slice(0, 10)
+  const isLastFrame = frameKind === 'last'
   const res = await imagesAPI.create({
-    storyboard_id: sb.id,
+    storyboard_id: effectiveStoryboard.id,
     drama_id: drama.id,
     prompt,
+    model: getStoryboardImageModel(effectiveStoryboard, genOpts) || undefined,
     style: genOpts.style || undefined,
     aspect_ratio: genOpts.aspectRatio,
+    frame_type: frameType,
+    reference_images: referenceImages.length ? referenceImages : undefined,
+    use_first_frame_layout_lock: isLastFrame ? true : undefined,
   })
   if (res?.task_id) {
-    const polled = await pollTaskSimple(res.task_id)
+    options.onTask?.({ taskId: res.task_id, step: 'image', response: res })
+    const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '分镜图生成失败')
   }
 }
 
-export async function runVideoStep(drama, sb, genOpts) {
+export async function runVideoStep(drama, sb, genOpts, options = {}) {
+  sb = await hydrateStoryboardSettings(sb)
   const useFirstLast = dramaUsesFirstLastFrame(drama)
   const imagesBySbId = genOpts?.imagesBySbId || {}
   const { first, last } = sbVideoFirstLastUrls(sb, imagesBySbId, useFirstLast)
@@ -56,34 +177,113 @@ export async function runVideoStep(drama, sb, genOpts) {
   }
   const absoluteFirst = toAbsoluteMediaUrl(imgPath)
   const absoluteLast = last ? toAbsoluteMediaUrl(last) : undefined
-  const prompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
-  const res = await videosAPI.create({
-    drama_id: drama.id,
-    storyboard_id: sb.id,
+  const selectedReferenceUrls = collectStoryboardReferenceAssets(drama, sb)
+    .map((ref) => ref.absoluteUrl)
+    .filter(Boolean)
+  const assignedRefs = await fetchAssignedAssetUrls(sb.id)
+  const referenceUrls = [...new Set([
+    absoluteFirst,
+    ...selectedReferenceUrls,
+    ...assignedRefs,
+    ...upstreamReferenceUrls(genOpts),
+    absoluteLast,
+  ].filter(Boolean))].slice(0, 10)
+  const model = getStoryboardVideoModel(sb, genOpts)
+  const voiceSnapshot = buildStoryboardVoiceSnapshot(drama, sb)
+  const voiceCharacters = voiceSnapshot.characters
+  const voicePolicy = genOpts.voicePolicy || classifyVideoVoicePolicy({ model })
+  const voicePromptPreview = buildVoicePromptPreview({
+    policy: voicePolicy,
+    characters: voiceCharacters,
+  })
+  const basePrompt = appendVoicePromptToVideoPrompt({
+    prompt: sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || '',
+    policy: voicePolicy,
+    characters: voiceCharacters,
+  })
+  const found = findStoryboardInDrama(drama, sb.id)
+  const { previous, next } = getAdjacentStoryboards(found?.episode, sb.id)
+  const prompt = buildStoryboardContinuityPrompt({
+    prompt: basePrompt,
+    current: sb,
+    previous,
+    next,
+  })
+  const payload = buildVideoGenerationRequest({
+    dramaId: drama.id,
+    storyboardId: sb.id,
     prompt,
-    image_url: absoluteFirst || undefined,
-    first_frame_url: absoluteFirst || undefined,
-    last_frame_url: absoluteLast,
-    style: genOpts.style || undefined,
-    aspect_ratio: genOpts.aspectRatio,
-    resolution: genOpts.videoResolution || undefined,
+    model,
+    imageUrl: absoluteFirst,
+    firstFrameUrl: absoluteFirst,
+    lastFrameUrl: absoluteLast,
+    referenceImageUrls: referenceUrls,
+    style: genOpts.style,
+    aspectRatio: genOpts.aspectRatio,
+    resolution: genOpts.videoResolution,
     duration: sb.duration || undefined,
   })
+  const requestAudit = buildVideoGenerationAudit({
+    payload,
+    voicePolicy,
+    voicePrompt: voicePromptPreview,
+    voiceSnapshot,
+  })
+  const res = await videosAPI.create(payload)
   if (res?.task_id) {
-    const polled = await pollTaskSimple(res.task_id)
+    options.onTask?.({ taskId: res.task_id, step: 'video', response: res })
+    const polled = await pollTaskSimple(res.task_id, options)
     if (polled.status !== 'completed') throw new Error(polled.error || '视频生成失败')
+    const tailFrameResult = genOpts.autoLinkTailFrame === false
+      ? null
+      : await autoLinkTailFrameAfterVideo(drama, sb, found)
+    return {
+      taskId: res.task_id,
+      videoGenerationId: res.id || null,
+      model: payload.model || null,
+      resultType: 'video',
+      resultLabel: '视频已生成',
+      requestPayload: payload,
+      requestAudit,
+      ...(tailFrameResult || {}),
+      task: polled,
+    }
+  }
+  const tailFrameResult = genOpts.autoLinkTailFrame === false
+    ? null
+    : await autoLinkTailFrameAfterVideo(drama, sb, found)
+  return {
+    taskId: res?.task_id || '',
+    videoGenerationId: res?.id || null,
+    model: payload.model || null,
+    resultType: 'video',
+    resultLabel: '视频已生成',
+    requestPayload: payload,
+    requestAudit,
+    ...(tailFrameResult || {}),
   }
 }
 
-export async function runAudioStep(sb) {
-  const text = (sb.dialogue || '').trim()
-  if (!text) return { skipped: true, reason: '无对白' }
-  await request.post('/audio/extract', {
+export async function runAudioStep(sb, genOpts = {}, options = {}) {
+  const audioType = options.audioType === 'narration' ? 'narration' : 'dialogue'
+  const text = String(options.text ?? sb[audioType] ?? '').trim()
+  if (!text) return { skipped: true, reason: audioType === 'narration' ? '无旁白' : '无对白' }
+  const model = getStoryboardAudioModel(sb, genOpts)
+  const res = await request.post('/audio/extract', {
     storyboard_id: sb.id,
     text,
-    tts_kind: 'dialogue',
+    tts_kind: audioType,
+    tts_model: model || undefined,
   })
-  return { skipped: false }
+  return {
+    skipped: false,
+    resultUrl: res?.url || '',
+    resultLocalPath: res?.local_path || '',
+    resultType: 'audio',
+    resultLabel: audioType === 'narration' ? '旁白音频已生成' : '对白音频已生成',
+    audioType,
+    model: res?.model || model || null,
+  }
 }
 
 /**
@@ -105,7 +305,9 @@ export async function runStoryboardPipeline(drama, storyboardId, pipeline, hooks
     hooks.onStepStart?.({ storyboardId, step, sb })
     try {
       if (step === 'image') {
-        await runImageStep(drama, sb, genOpts)
+        await runImageStep(drama, sb, genOpts, '', {
+          frameType: getStoryboardGridFrameType(sb),
+        })
         if (hooks.reloadStoryboard) {
           sb = (await hooks.reloadStoryboard(storyboardId)) || sb
         }
@@ -115,7 +317,7 @@ export async function runStoryboardPipeline(drama, storyboardId, pipeline, hooks
           sb = (await hooks.reloadStoryboard(storyboardId)) || sb
         }
       } else if (step === 'audio') {
-        const audioRes = await runAudioStep(sb)
+        const audioRes = await runAudioStep(sb, genOpts)
         results.push({ step, ...audioRes })
       }
       hooks.onStepComplete?.({ storyboardId, step, sb })

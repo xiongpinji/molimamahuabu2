@@ -5,6 +5,7 @@ import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
+import { buildMaterialLibraryQuery } from '@/utils/materialLibraryQuery'
 
 /**
  * 场景管理 Composable
@@ -353,12 +354,13 @@ export function useScenes(deps) {
   async function loadSceneLibraryList() {
     sceneLibraryLoading.value = true
     try {
-      const res = await sceneLibraryAPI.list({
-        drama_id: dramaId.value,
-        page: sceneLibraryPage.value,
-        page_size: sceneLibraryPageSize.value,
-        keyword: sceneLibraryKeyword.value || undefined
-      })
+      const res = await sceneLibraryAPI.list(buildMaterialLibraryQuery(
+        sceneLibraryTab.value,
+        dramaId.value,
+        sceneLibraryPage.value,
+        sceneLibraryPageSize.value,
+        sceneLibraryKeyword.value,
+      ))
       sceneLibraryList.value = res?.items ?? []
       const pagination = res?.pagination ?? {}
       sceneLibraryTotal.value = pagination.total ?? 0
@@ -419,12 +421,12 @@ export function useScenes(deps) {
   }
 
   function onSceneLibraryDialogOpen() {
-    if (sceneLibraryTab.value === 'library') loadSceneLibraryList()
+    if (sceneLibraryTab.value === 'library' || sceneLibraryTab.value === 'global') loadSceneLibraryList()
     else if (sceneLibraryTab.value === 'drama') loadDramaAllSceneList()
   }
 
   function onSceneLibraryTabChange() {
-    if (sceneLibraryTab.value === 'library') {
+    if (sceneLibraryTab.value === 'library' || sceneLibraryTab.value === 'global') {
       sceneLibraryPage.value = 1
       loadSceneLibraryList()
     } else if (sceneLibraryTab.value === 'drama') {

@@ -21,6 +21,7 @@ function createAssetImage(db, asset = {}) {
     drama_id: 1,
     character_id: asset.characterId ?? 4,
     scene_id: asset.sceneId ?? null,
+    image_type: asset.imageType ?? null,
     prompt: 'test only',
     model: 'gpt-image-2',
     provider: 'openai',
@@ -93,4 +94,17 @@ test('公开计费模式不复用其他用户的处理中资产图任务', () =>
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM image_generations').get().count, 2);
   assert.equal(credits.getAccount(db, 'user-1').held, 18);
   assert.equal(credits.getAccount(db, 'user-2').held, 18);
+});
+
+test('场景全景图任务与场景主参考图任务独立去重', () => {
+  const db = setup();
+  prices.set(db, 'gpt-image-2', 18);
+
+  const reference = createAssetImage(db, { sceneId: 9, imageType: 'scene_reference' });
+  const panorama = createAssetImage(db, { sceneId: 9, imageType: 'scene_panorama' });
+  const panoramaAgain = createAssetImage(db, { sceneId: 9, imageType: 'scene_panorama' });
+
+  assert.notEqual(panorama.id, reference.id);
+  assert.equal(panoramaAgain.id, panorama.id);
+  assert.equal(panoramaAgain.reused, true);
 });

@@ -16,6 +16,7 @@
     "@volcengine/openapi": "^1.36.2",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.6.0",
+    "buffer": "^6.0.3",
     "cors": "^2.8.5",
     "express": "^4.22.2",
     "js-yaml": "^4.3.0",

@@ -9,6 +9,8 @@ const promptI18n = require('../services/promptI18n');
 const angleService = require('../services/angleService');
 const { buildUniversalSegmentUserPromptBundle } = require('../services/universalSegmentPromptBundle');
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
+const storyboardVoiceExtractionService = require('../services/storyboardVoiceExtractionService');
+const storyboardVoicePromptService = require('../services/storyboardVoicePromptService');
 
 /** 润色接口：邻镜结构化摘要（含全能片段与其它提示词字段） */
 function formatNeighborShotPolishContext(row) {
@@ -1020,8 +1022,9 @@ function routes(db, log) {
         nowIso,
         sbId
       );
-      log.info('[分镜] polishClassicVideoPromptStream 完成', { id: sbId, len: text.length });
-      writeNd({ type: 'done', video_prompt: text });
+      const persistedPrompt = storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, sbId) || text;
+      log.info('[分镜] polishClassicVideoPromptStream 完成', { id: sbId, len: persistedPrompt.length });
+      writeNd({ type: 'done', video_prompt: persistedPrompt });
       res.end();
     },
 
@@ -1059,6 +1062,30 @@ function routes(db, log) {
       } catch (err) {
         log.error('storyboards upscale', { error: err.message });
         response.internalError(res, err.message);
+      }
+    },
+    extractVoice: async (req, res) => {
+      try {
+        const result = await storyboardVoiceExtractionService.extractStoryboardVoice({
+          db,
+          log,
+          storyboardId: req.params.id,
+          videoId: req.body?.video_id,
+          characterId: req.body?.character_id,
+        });
+        if (!result.ok) {
+          return response.error(
+            res,
+            result.status || 400,
+            result.code || 'VOICE_EXTRACTION_FAILED',
+            result.error || '提取音色失败',
+            result.details,
+          );
+        }
+        return response.success(res, result);
+      } catch (err) {
+        log.error('storyboards extractVoice', { error: err.message });
+        return response.internalError(res, err.message);
       }
     },
 

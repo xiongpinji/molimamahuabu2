@@ -7,6 +7,7 @@ import { generationAPI } from '@/api/generation'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
+import { buildMaterialLibraryQuery } from '@/utils/materialLibraryQuery'
 
 /**
  * 角色管理 Composable
@@ -70,6 +71,11 @@ export function useCharacters(deps) {
   const showCharSd2Cert = ref(false)
   const charSd2CertPayload = ref(null)
   const sd2VoiceUploadingId = ref(null)
+  const showVoiceCatalog = ref(false)
+  const voiceCatalogTarget = ref(null)
+  const voiceCatalogList = ref([])
+  const voiceCatalogLoading = ref(false)
+  const voiceCatalogBindingId = ref(null)
 
   // ── 角色库状态 ────────────────────────────────────────
   const showCharLibrary = ref(false)
@@ -87,7 +93,7 @@ export function useCharacters(deps) {
   const addingCharFromLibraryId = ref(null)
   let charLibraryKeywordTimer = null
 
-  /** 角色库弹窗 Tab：library | drama | team */
+  /** 角色库弹窗 Tab：library | global | drama */
   const charLibraryTab = ref('library')
   const dramaAllCharList = ref([])
   const dramaAllCharLoading = ref(false)
@@ -343,18 +349,33 @@ export function useCharacters(deps) {
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          char.errorMsg = pollRes.error || '生成失败'
-        } else {
-          ElMessage.success('角色图片已生成')
+        if (pollRes?.status !== 'completed' || !pollRes?.result?.image_url) {
+          const error = pollRes?.error || '图片任务未完成或未返回有效图片'
+          char.errorMsg = error
+          if (pollRes?.status !== 'failed') ElMessage.error(error)
+          return
         }
+        await loadDrama()
+        const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
+        const current = list.find((x) => Number(x.id) === Number(char.id))
+        if (!current || !(current.image_url || current.local_path)) {
+          char.errorMsg = '任务显示完成，但角色图片未成功写入，请刷新后核对生成记录'
+          ElMessage.error(char.errorMsg)
+          return
+        }
+        ElMessage.success('角色图片已生成')
       } else {
         await loadDrama()
-        await pollUntilResourceHasImage(() => {
+        const hasImage = await pollUntilResourceHasImage(() => {
           const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
           const c = list.find((x) => Number(x.id) === Number(char.id))
           return !!(c && (c.image_url || c.local_path))
         })
+        if (!hasImage) {
+          char.errorMsg = '等待超时，角色图片仍未生成'
+          ElMessage.error(char.errorMsg)
+          return
+        }
         ElMessage.success('角色图片已生成')
       }
     } catch (e) {
@@ -371,12 +392,13 @@ export function useCharacters(deps) {
   async function loadCharLibraryList() {
     charLibraryLoading.value = true
     try {
-      const res = await characterLibraryAPI.list({
-        drama_id: dramaId.value,
-        page: charLibraryPage.value,
-        page_size: charLibraryPageSize.value,
-        keyword: charLibraryKeyword.value || undefined
-      })
+      const res = await characterLibraryAPI.list(buildMaterialLibraryQuery(
+        charLibraryTab.value,
+        dramaId.value,
+        charLibraryPage.value,
+        charLibraryPageSize.value,
+        charLibraryKeyword.value,
+      ))
       charLibraryList.value = res?.items ?? []
       const pagination = res?.pagination ?? {}
       charLibraryTotal.value = pagination.total ?? 0
@@ -436,12 +458,12 @@ export function useCharacters(deps) {
   }
 
   function onCharLibraryDialogOpen() {
-    if (charLibraryTab.value === 'library') loadCharLibraryList()
+    if (charLibraryTab.value === 'library' || charLibraryTab.value === 'global') loadCharLibraryList()
     else if (charLibraryTab.value === 'drama') loadDramaAllCharList()
   }
 
   function onCharLibraryTabChange() {
-    if (charLibraryTab.value === 'library') {
+    if (charLibraryTab.value === 'library' || charLibraryTab.value === 'global') {
       charLibraryPage.value = 1
       loadCharLibraryList()
     } else if (charLibraryTab.value === 'drama') {
@@ -724,6 +746,63 @@ export function useCharacters(deps) {
     await triggerSd2VoiceUpload(char)
   }
 
+  async function openVoiceCatalog(char) {
+    if (!char?.id) return
+    voiceCatalogTarget.value = char
+    showVoiceCatalog.value = true
+    await loadVoiceCatalog()
+  }
+
+  async function loadVoiceCatalog() {
+    voiceCatalogLoading.value = true
+    try {
+      const res = await characterAPI.listVoiceCatalog({ drama_id: dramaId.value }, { silentError: true })
+      voiceCatalogList.value = Array.isArray(res) ? res : (res?.items || [])
+      if (res?.unavailable) ElMessage.warning(res.message || '音色库接口暂不可用')
+    } catch (e) {
+      voiceCatalogList.value = []
+      ElMessage.error(e?.message || '音色库加载失败')
+    } finally {
+      voiceCatalogLoading.value = false
+    }
+  }
+
+  async function bindVoiceCatalog(item) {
+    const char = voiceCatalogTarget.value
+    if (!char?.id || !item?.id) return
+    if (!item.can_bind) {
+      ElMessage.warning(item.setup_hint || '该音色暂不可绑定')
+      return
+    }
+    voiceCatalogBindingId.value = item.id
+    try {
+      const res = await characterAPI.bindVoiceCatalog(char.id, item.id, { silentError: true })
+      await loadDrama()
+      ElMessage.success(res?.message || '音色已绑定')
+      showVoiceCatalog.value = false
+    } catch (e) {
+      const status = e?.response?.status
+      ElMessage.error(status === 404 ? '音色绑定接口暂不可用，请确认后端已更新并重启' : (e?.message || '音色绑定失败'))
+    } finally {
+      voiceCatalogBindingId.value = null
+    }
+  }
+
+  function playVoiceCatalogPreview(item) {
+    const url = item?.preview_url
+    if (!url) {
+      ElMessage.warning('该音色暂无可试听文件')
+      return
+    }
+    try {
+      const audio = new Audio(url)
+      audio.onerror = () => ElMessage.error('音色试听失败')
+      audio.play().catch(() => ElMessage.error('音色试听失败'))
+    } catch (_) {
+      ElMessage.error('音色试听失败')
+    }
+  }
+
   async function onSd2VoiceRefresh(char) {
     if (!char?.id) return
     sd2VoiceUploadingId.value = char.id
@@ -801,6 +880,11 @@ export function useCharacters(deps) {
     showCharSd2Cert,
     charSd2CertPayload,
     sd2VoiceUploadingId,
+    showVoiceCatalog,
+    voiceCatalogTarget,
+    voiceCatalogList,
+    voiceCatalogLoading,
+    voiceCatalogBindingId,
     // 库状态
     showCharLibrary,
     charLibraryList,
@@ -852,6 +936,10 @@ export function useCharacters(deps) {
     openCharSd2CertDialog,
     onSd2VoicePrimaryAction,
     onSd2VoiceReplace,
+    openVoiceCatalog,
+    loadVoiceCatalog,
+    bindVoiceCatalog,
+    playVoiceCatalogPreview,
     sd2VoiceActionLabel,
     playSd2Voice,
     loadCharLibraryList,

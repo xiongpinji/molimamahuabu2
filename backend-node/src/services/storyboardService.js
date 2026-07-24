@@ -1,4 +1,6 @@
 // 分镜：create, update, delete；帧提示词 get/save
+const storyboardVoiceLockService = require('./storyboardVoiceLockService');
+const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 
 /**
  * 将分镜勾选的角色（dramas.characters 表 id）同步到 storyboard_characters（角色库 id），
@@ -59,9 +61,14 @@ function createStoryboard(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = Number(req.episode_id);
   const num = Number(req.storyboard_number ?? 0) || 0;
+  const charactersValue = req.character_ids !== undefined ? req.character_ids : req.characters;
+  const charactersJson = charactersValue != null
+    ? (Array.isArray(charactersValue) ? JSON.stringify(charactersValue) : String(charactersValue))
+    : '[]';
+  const parsedDramaCharIdsForSync = charactersValue === undefined ? null : (parseDramaCharacterIds(charactersValue) ?? []);
   const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
     episodeId,
     req.scene_id ?? null,
@@ -77,9 +84,19 @@ function createStoryboard(db, log, req) {
     req.atmosphere ?? null,
     req.image_prompt ?? null,
     req.video_prompt ?? null,
+    charactersJson,
     now,
     now
   );
+  if (parsedDramaCharIdsForSync !== null) {
+    try {
+      syncStoryboardCharacterLinks(db, info.lastInsertRowid, parsedDramaCharIdsForSync);
+    } catch (e) {
+      log.warn('syncStoryboardCharacterLinks failed', { id: info.lastInsertRowid, message: e.message });
+    }
+  }
+  storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, info.lastInsertRowid);
+  storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, info.lastInsertRowid);
   log.info('Storyboard created', { id: info.lastInsertRowid, episode_id: episodeId });
   return getStoryboardById(db, info.lastInsertRowid);
 }
@@ -87,7 +104,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'video_model', 'image_model', 'audio_model', 'grid_frame_type', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'main_panel_indices', 'video_url', 'audio_local_path', 'audio_url', 'narration_audio_local_path', 'narration_audio_url', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'lighting_style', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -103,7 +120,7 @@ function updateStoryboard(db, log, id, req) {
     if (key === 'characters') continue;
     if (req[key] !== undefined) {
       updates.push(key + ' = ?');
-      const val = req[key];
+      const val = key === 'main_panel_indices' && Array.isArray(req[key]) ? JSON.stringify(req[key]) : req[key];
       params.push(val);
     }
   }
@@ -120,7 +137,9 @@ function updateStoryboard(db, log, id, req) {
     } catch (e) {
       log.warn('syncStoryboardCharacterLinks failed', { id, message: e.message });
     }
+    storyboardVoiceLockService.refreshStoryboardVoiceSnapshot(db, id);
   }
+  storyboardVoicePromptService.ensureStoryboardVoicePrompt(db, id);
   // 道具关联：写入 storyboard_props 表
   if (req.prop_ids !== undefined) {
     const propIds = Array.isArray(req.prop_ids) ? req.prop_ids : [];
@@ -172,16 +191,24 @@ function getStoryboardById(db, id) {
     image_prompt: r.image_prompt,
     polished_prompt: r.polished_prompt ?? null,
     video_prompt: r.video_prompt,
+    video_model: r.video_model ?? null,
+    image_model: r.image_model ?? null,
+    audio_model: r.audio_model ?? null,
+    grid_frame_type: r.grid_frame_type || 'single',
     shot_type: r.shot_type,
     angle: r.angle,
     angle_h: r.angle_h ?? null,
     angle_v: r.angle_v ?? null,
     angle_s: r.angle_s ?? null,
     movement: r.movement,
+    lighting_style: r.lighting_style ?? null,
     segment_index: r.segment_index ?? 0,
     segment_title: r.segment_title ?? null,
     creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
     universal_segment_text: r.universal_segment_text ?? null,
+    voice_snapshot: (() => {
+      try { return r.voice_snapshot ? JSON.parse(r.voice_snapshot) : null; } catch (_) { return null; }
+    })(),
     layout_description: r.layout_description ?? null,
     first_frame_image_id: r.first_frame_image_id ?? null,
     last_frame_image_id: r.last_frame_image_id ?? null,
@@ -193,9 +220,12 @@ function getStoryboardById(db, id) {
     image_url: r.image_url ?? null,
     local_path: r.local_path ?? null,
     main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
+    main_panel_indices: (() => { try { return JSON.parse(r.main_panel_indices || '[]'); } catch (_) { return []; } })(),
     video_url: r.video_url,
     audio_local_path: r.audio_local_path ?? null,
+    audio_url: r.audio_url ?? null,
     narration_audio_local_path: r.narration_audio_local_path ?? null,
+    narration_audio_url: r.narration_audio_url ?? null,
     status: r.status || 'pending',
     created_at: r.created_at,
     updated_at: r.updated_at,

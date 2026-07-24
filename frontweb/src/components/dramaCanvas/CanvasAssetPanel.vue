@@ -16,14 +16,22 @@
     <div class="panel-body">
       <div class="preview-col">
         <div class="preview-box">
-          <img v-if="previewUrl && !generating" :src="previewUrl" alt="" />
-          <div v-else-if="!generating" class="preview-empty">{{ kindIcon }}</div>
-          <div v-if="generating || nodeBusy" class="preview-loading">
+          <img v-if="previewUrl && !generating && !promptGenerating" :src="previewUrl" alt="" />
+          <div v-else-if="!generating && !promptGenerating" class="preview-empty">{{ kindIcon }}</div>
+          <div v-if="generating || promptGenerating || nodeRunning" class="preview-loading">
             <span class="spinner" />
-            <span>{{ nodeBusy?.message || '生成参考图…' }}</span>
+            <span>{{ nodeBusy?.message || (promptGenerating ? '生成提示词…' : '生成参考图…') }}</span>
           </div>
         </div>
         <div v-if="entityStatus" class="entity-status" :class="'st-' + entityStatus">{{ entityStatusLabel }}</div>
+        <div v-if="kind === 'scene' && panoramaUrl" class="panorama-preview">
+          <img :src="panoramaUrl" alt="场景全景图" />
+          <span>全景图</span>
+        </div>
+        <div v-if="kind === 'character' && multiViewUrl" class="panorama-preview multi-view-preview">
+          <img :src="multiViewUrl" alt="角色三视图" />
+          <span>三视图参考</span>
+        </div>
       </div>
 
       <div class="form-col">
@@ -63,6 +71,15 @@
                 :rows="2"
                 resize="vertical"
                 placeholder="角色简介"
+              />
+            </el-form-item>
+            <el-form-item label="提示词">
+              <el-input
+                v-model="form.prompt"
+                type="textarea"
+                :rows="3"
+                resize="vertical"
+                placeholder="角色参考图提示词"
               />
             </el-form-item>
           </template>
@@ -111,11 +128,46 @@
             </el-form-item>
           </template>
         </el-form>
+        <div class="asset-generation-row">
+          <CanvasGenerationOptions
+            mode="image"
+            compact
+            label="图片模型"
+            @change="saveAssetGenerationOptions"
+          />
+          <small>用于参考图 / 多视图 / 全景图</small>
+        </div>
       </div>
     </div>
 
+    <CanvasNodeExecutionStrip
+      :status="nodeBusy"
+      :node-id="nodeId"
+      :disabled="saving || generating || promptGenerating || panoramaGenerating || multiViewGenerating || libraryApplying"
+      @retry="retryAssetFailedStep"
+      @retry-action="retryAssetFailedStep"
+    />
+
     <div class="panel-actions">
       <el-button size="small" :loading="saving" @click.stop="saveAsset">保存</el-button>
+      <el-button
+        v-if="kind === 'character'"
+        size="small"
+        :loading="promptGenerating"
+        :disabled="saving || generating || panoramaGenerating || multiViewGenerating"
+        @click.stop="generateCharacterPrompt"
+      >
+        生成提示词
+      </el-button>
+      <el-button
+        size="small"
+        plain
+        :loading="libraryApplying"
+        :disabled="generating || panoramaGenerating"
+        @click.stop="libraryVisible = true"
+      >
+        素材库选图
+      </el-button>
       <el-button
         v-if="canGenerate || generating"
         size="small"
@@ -125,21 +177,59 @@
       >
         生成参考图
       </el-button>
+      <el-button
+        v-if="kind === 'scene'"
+        size="small"
+        type="success"
+        :loading="panoramaGenerating"
+        :disabled="generating"
+        @click.stop="generatePanorama"
+      >
+        生成全景图
+      </el-button>
+      <el-button
+        v-if="kind === 'character' || kind === 'scene'"
+        size="small"
+        type="warning"
+        plain
+        :loading="multiViewGenerating"
+        :disabled="generating || panoramaGenerating"
+        @click.stop="generateMultiView"
+      >
+        {{ kind === 'character' ? '角色三视图' : '场景多视图' }}
+      </el-button>
       <el-button size="small" plain @click.stop="highlightRelated">关联分镜</el-button>
       <el-button size="small" type="danger" plain @click.stop="deleteAsset">删除</el-button>
     </div>
+
+    <AssetPickerDialog
+      v-model="libraryVisible"
+      type="image"
+      :title="`从素材库选择${kindLabel}参考图`"
+      :drama-id="ctx?.drama?.value?.id"
+      @pick="applyLibraryImage"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
+import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
+import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
 import { characterAPI } from '@/api/characters'
 import { sceneAPI } from '@/api/scenes'
 import { propAPI } from '@/api/props'
+import { assetsAPI } from '@/api/assets'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
+import {
+  generateAssetReferenceImage,
+  generateAssetMultiViewImage,
+  generateScenePanoramaImage,
+} from '@/composables/useCanvasAssetGenerate'
 import { assetImageUrl } from '@/utils/mediaUrl'
+import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
 
 const props = defineProps({
   kind: { type: String, required: true },
@@ -150,6 +240,11 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const saving = ref(false)
 const generating = ref(false)
+const promptGenerating = ref(false)
+const multiViewGenerating = ref(false)
+const panoramaGenerating = ref(false)
+const libraryVisible = ref(false)
+const libraryApplying = ref(false)
 const form = reactive({
   name: '',
   role: '',
@@ -171,6 +266,13 @@ const kindIcon = computed(() => {
 })
 
 const previewUrl = computed(() => assetImageUrl(props.entity))
+const panoramaUrl = computed(() => assetImageUrl({
+  image_url: props.entity?.panorama_image_url,
+  local_path: props.entity?.panorama_local_path,
+}))
+const multiViewUrl = computed(() => props.kind === 'character'
+  ? assetImageUrl({ image_url: props.entity?.four_view_image_url })
+  : '')
 const canGenerate = computed(() => !previewUrl.value)
 const entityStatus = computed(() => props.entity?.status || '')
 const entityStatusLabel = computed(() => {
@@ -178,11 +280,13 @@ const entityStatusLabel = computed(() => {
   const map = { pending: '待生成', processing: '生成中', completed: '已完成', failed: '失败' }
   return map[s] || (previewUrl.value ? '已有参考图' : '无参考图')
 })
+const assetGenerationOptions = computed(() => ctx?.getGenerationOptions?.() || ctx?.generationOptions?.value || {})
 
 const nodeBusy = computed(() => {
   const map = ctx?.nodeStatus?.map
   return map ? map[props.nodeId] : null
 })
+const nodeRunning = computed(() => isCanvasNodeBusyStatus(nodeBusy.value))
 
 function syncForm(entity) {
   form.name = entity?.name || ''
@@ -205,6 +309,17 @@ function closePanel() {
   ctx?.clearFocusedNode?.()
 }
 
+function saveAssetGenerationOptions(patch, next) {
+  ctx?.nodeStatus?.success(props.nodeId, {
+    message: '图片模型已保存',
+    resultType: 'text',
+    resultLabel: '资产生成参数',
+    resultSummary: `图片模型：${next?.imageModel || '跟随项目默认'}`,
+    requestPayload: { generationOptions: next, patch },
+    autoClear: false,
+  })
+}
+
 async function saveAsset() {
   saving.value = true
   ctx?.nodeStatus?.set(props.nodeId, { step: 'save', message: '保存中…' })
@@ -219,6 +334,7 @@ async function saveAsset() {
         role: form.role || undefined,
         appearance: form.appearance.trim() || undefined,
         description: form.description.trim() || undefined,
+        polished_prompt: form.prompt.trim(),
       })
     } else if (props.kind === 'scene') {
       if (!form.location.trim()) {
@@ -243,14 +359,95 @@ async function saveAsset() {
     }
     ElMessage.success('已保存')
     await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '素材已保存',
+      resultType: 'text',
+      resultLabel: `${kindLabel.value}已保存`,
+      promptText: form.prompt || form.description || form.appearance || form.name || form.location,
+      autoClear: false,
+    })
   } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
+    const message = e?.message || '保存失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'save',
+      retryLabel: `重试保存${kindLabel.value}`,
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     saving.value = false
-    if (!generating.value) ctx?.nodeStatus?.clear(props.nodeId)
+    clearTransientAssetStatus()
   }
 }
 
+function buildLibraryImagePayload(asset) {
+  const localPath = asset?.local_path || asset?.image_local_path || ''
+  const displayUrl = asset?.display_url || asset?.url || ''
+  const ref = localPath || displayUrl
+  if (!ref) throw new Error('该素材缺少可用图片地址')
+  const payload = { ref_image: ref }
+  if (localPath) {
+    payload.local_path = localPath
+  } else {
+    payload.image_url = displayUrl
+  }
+  return payload
+}
+
+async function bindPickedProjectAsset(asset) {
+  if (asset?.source_kind !== 'project' || !asset?.raw_id) return
+  await assetsAPI.update(asset.raw_id, {
+    metadata: {
+      ...(asset.metadata || {}),
+      canvas_asset_binding: {
+        kind: props.kind,
+        entity_id: props.entity.id,
+        node_id: props.nodeId,
+        drama_id: ctx?.drama?.value?.id || null,
+      },
+    },
+  })
+}
+
+async function applyLibraryImage(asset) {
+  libraryApplying.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'library', message: '引用素材库图片…' })
+  let failed = false
+  try {
+    const payload = buildLibraryImagePayload(asset)
+    if (props.kind === 'character') {
+      await characterAPI.putImage(props.entity.id, payload)
+    } else if (props.kind === 'scene') {
+      await sceneAPI.update(props.entity.id, payload)
+    } else {
+      await propAPI.update(props.entity.id, payload)
+    }
+    try {
+      await bindPickedProjectAsset(asset)
+    } catch (e) {
+      ElMessage.warning(e?.message || '素材关联写回失败，图片已引用')
+    }
+    ElMessage.success('已引用素材库图片')
+    await ctx?.refreshDrama?.(true)
+  } catch (e) {
+    failed = true
+    const message = e?.message || '引用素材库图片失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'library',
+      retryLabel: '重试引用素材库图片',
+      recoverable: true,
+      libraryAsset: asset,
+    })
+    ElMessage.error(message)
+  } finally {
+    libraryApplying.value = false
+    if (!failed && !generating.value && !saving.value && !panoramaGenerating.value) ctx?.nodeStatus?.clear(props.nodeId)
+  }
+}
 async function deleteAsset() {
   const label = props.kind === 'scene'
     ? (props.entity.location || '未命名')
@@ -277,6 +474,41 @@ async function deleteAsset() {
   }
 }
 
+async function generateCharacterPrompt() {
+  if (props.kind !== 'character' || promptGenerating.value) return
+  promptGenerating.value = true
+  ctx?.nodeStatus?.set(props.nodeId, { step: 'prompt', message: '角色提示词生成中…' })
+  try {
+    const res = await characterAPI.generatePrompt(props.entity.id)
+    form.prompt = String(res?.polished_prompt || '').trim()
+    if (!form.prompt) throw new Error('未生成有效的角色提示词')
+    await ctx?.refreshDrama?.(true)
+    ctx?.nodeStatus?.success(props.nodeId, {
+      message: '角色提示词已生成',
+      resultType: 'text',
+      resultLabel: '角色提示词',
+      promptText: form.prompt,
+      retryStep: 'prompt',
+      retryLabel: '重试生成角色提示词',
+      autoClear: false,
+    })
+    ElMessage.success('角色提示词已生成')
+  } catch (e) {
+    const message = e?.message || '角色提示词生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'prompt',
+      retryLabel: '重试生成角色提示词',
+      recoverable: true,
+    })
+    ElMessage.error(message)
+  } finally {
+    promptGenerating.value = false
+    clearTransientAssetStatus()
+  }
+}
+
 async function generateImage() {
   generating.value = true
   try {
@@ -284,17 +516,90 @@ async function generateImage() {
       kind: props.kind,
       entity: props.entity,
       nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
     })
     ElMessage.success('参考图已生成')
   } catch (e) {
-    ElMessage.error(e?.message || '生成失败')
+    const message = e?.message || '生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'image',
+      retryLabel: '重试生成参考图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
   } finally {
     generating.value = false
   }
 }
 
+async function generatePanorama() {
+  panoramaGenerating.value = true
+  try {
+    await generateScenePanoramaImage(ctx, {
+      entity: props.entity,
+      nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
+    })
+    ElMessage.success('场景全景图已生成')
+  } catch (e) {
+    const message = e?.message || '全景图生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'panorama',
+      retryLabel: '重试生成全景图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
+  } finally {
+    panoramaGenerating.value = false
+  }
+}
+
+async function generateMultiView() {
+  multiViewGenerating.value = true
+  try {
+    await generateAssetMultiViewImage(ctx, {
+      kind: props.kind,
+      entity: props.entity,
+      nodeId: props.nodeId,
+      generationOptions: assetGenerationOptions.value,
+    })
+    ElMessage.success(props.kind === 'character' ? '角色三视图已生成' : '场景多视图已生成')
+  } catch (e) {
+    const message = e?.message || '多视图生成失败'
+    ctx?.nodeStatus?.fail(props.nodeId, {
+      message,
+      errorDetail: message,
+      retryStep: 'multi_view',
+      retryLabel: props.kind === 'character' ? '重试生成角色三视图' : '重试生成场景多视图',
+      recoverable: true,
+    })
+    ElMessage.error(message)
+  } finally {
+    multiViewGenerating.value = false
+  }
+}
+
+async function retryAssetFailedStep() {
+  const status = nodeBusy.value
+  if (status?.retryStep === 'save') return saveAsset()
+  if (status?.retryStep === 'library' && status.libraryAsset) return applyLibraryImage(status.libraryAsset)
+  if (status?.retryStep === 'prompt') return generateCharacterPrompt()
+  if (status?.retryStep === 'image') return generateImage()
+  if (status?.retryStep === 'panorama') return generatePanorama()
+  if (status?.retryStep === 'multi_view') return generateMultiView()
+}
+
 function highlightRelated() {
   ctx?.setHighlightAsset?.(props.nodeId)
+}
+
+function clearTransientAssetStatus() {
+  const status = ctx?.nodeStatus?.get?.(props.nodeId)
+  if (status && !['failed', 'success'].includes(status.step)) ctx?.nodeStatus?.clear(props.nodeId)
 }
 </script>
 
@@ -380,9 +685,41 @@ function highlightRelated() {
 .entity-status.st-processing { color: #60a5fa; }
 .entity-status.st-completed { color: #34d399; }
 .entity-status.st-failed { color: #f87171; }
+.panorama-preview {
+  margin-top: 6px;
+  width: 108px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #09090b;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+.panorama-preview img {
+  display: block;
+  width: 100%;
+  height: 42px;
+  object-fit: cover;
+}
+.panorama-preview span {
+  display: block;
+  padding: 2px 5px;
+  font-size: 9px;
+  color: #6ee7b7;
+}
 .form-col {
   flex: 1;
   min-width: 0;
+}
+.asset-generation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(63, 63, 70, 0.5);
+}
+.asset-generation-row small {
+  color: #52525b;
+  font-size: 10px;
 }
 .compact-form :deep(.el-form-item) {
   margin-bottom: 6px;

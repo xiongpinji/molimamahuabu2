@@ -1,20 +1,56 @@
 <template>
-  <div v-if="visible" class="director-stage" role="dialog" aria-modal="true" aria-label="3D 导演台">
+  <div v-if="visible" ref="dialogRef" class="director-stage" role="dialog" aria-modal="true" aria-label="3D 导演台" tabindex="-1">
     <header class="director-stage__header">
-      <div>
-        <strong>3D 导演台</strong>
-        <span class="director-stage__hint">镜头序列 · 角色轨道 · 动作片段</span>
+      <strong>3D 导演台</strong>
+      <div class="director-stage__view-switch" aria-label="视角切换">
+        <button type="button" :class="{ active: viewMode === 'director' }" @click="setView('director')">导演视角</button>
+        <button type="button" :class="{ active: viewMode === 'camera' }" @click="setView('camera')">机位视角</button>
       </div>
       <div class="director-stage__header-actions">
         <span class="director-stage__save-state" :class="{ dirty }">{{ dirty ? '有修改' : '已保存' }}</span>
-        <button type="button" :class="{ active: viewMode === 'director' }" @click="setView('director')">导演视角</button>
-        <button type="button" :class="{ active: viewMode === 'camera' }" @click="setView('camera')">机位视角</button>
+        <button type="button" :disabled="!canUndo" aria-label="撤销导演操作" title="撤销（Ctrl/Cmd+Z）" @click="undoDirector">撤销</button>
+        <button type="button" :disabled="!canRedo" aria-label="重做导演操作" title="重做（Ctrl/Cmd+Shift+Z）" @click="redoDirector">重做</button>
+        <button ref="helpButtonRef" type="button" aria-label="导演台帮助" @click="helpOpen = true">帮助</button>
         <button type="button" class="close-button" aria-label="关闭导演台" @click="emit('close')">×</button>
       </div>
     </header>
 
     <div class="director-stage__body">
       <aside class="director-stage__sidebar">
+        <section class="stage-section">
+          <div class="stage-section__title">场景树</div>
+          <input v-model="sceneSearch" class="scene-search" type="search" placeholder="搜索场景对象" aria-label="搜索场景对象" />
+          <div v-if="workspaceMode === 'animation'" class="object-create-row">
+            <button type="button" class="small-button" @click="addSceneObject('box')">+ 立方体</button>
+            <button type="button" class="small-button" @click="addSceneObject('sphere')">+ 球体</button>
+            <button type="button" class="small-button" @click="addSceneObject('group')">+ 空对象</button>
+            <button type="button" class="small-button" @click="addCamera">+ 相机</button>
+            <button type="button" class="small-button" @click="addSceneObject('light')">+ 灯光</button>
+          </div>
+          <details v-if="workspaceMode === 'animation'" class="role-create-library">
+            <summary>添加角色与群众</summary>
+            <div class="object-create-row object-create-row--roles">
+              <button v-for="role in ROLE_ARCHETYPES" :key="role.kind" type="button" class="small-button" @click="addRoleArchetype(role)">{{ role.label }}</button>
+              <button type="button" class="small-button" @click="addCrowd">群众 3×3</button>
+            </div>
+          </details>
+          <div
+            v-for="object in filteredDirectorObjects"
+            :key="object.id"
+            class="stage-tree-row"
+            :class="{ selected: selectedObjectId === object.id, muted: !object.visible }"
+          >
+            <button type="button" class="stage-item stage-tree-row__name" @click="selectSceneObject(object.id)">
+              <span class="stage-dot stage-dot--prop" />
+              {{ object.name }}
+              <small>{{ object.type }}</small>
+            </button>
+            <button type="button" class="tree-icon-button" :aria-label="`${object.visible ? '隐藏' : '显示'} ${object.name}`" :title="object.visible ? '隐藏' : '显示'" @click="toggleObjectVisibility(object)">{{ object.visible ? '◉' : '○' }}</button>
+            <button type="button" class="tree-icon-button" :aria-label="`${object.locked ? '解锁' : '锁定'} ${object.name}`" :title="object.locked ? '解锁' : '锁定'" @click="toggleObjectLock(object)">{{ object.locked ? '🔒' : '🔓' }}</button>
+          </div>
+          <div v-if="!filteredDirectorObjects.length" class="stage-empty">{{ timeline.objects.length ? '没有匹配对象' : '使用上方按钮添加可编辑对象' }}</div>
+        </section>
+        <template v-if="workspaceMode === 'animation'">
         <section class="stage-section">
           <div class="stage-section__title">场景</div>
           <button
@@ -71,11 +107,18 @@
 
         <section v-if="selectedShot" class="stage-section shot-editor">
           <div class="stage-section__title">镜头实体</div>
+          <div class="shot-cut-range" aria-label="镜头切点">入点 {{ formatSeconds(selectedShot.start) }} · 出点 {{ formatSeconds(selectedShot.start + selectedShot.duration) }}</div>
+          <button type="button" class="small-button" :disabled="!canSplitSelectedShot" @click="splitSelectedShot">在播放头切开镜头</button>
           <label>名称<input :value="selectedShot.name" @input="updateSelectedShot('name', $event.target.value)" /></label>
           <label>时长（秒）<input type="number" min="0.25" step="0.25" :value="selectedShot.duration" @change="updateSelectedShot('duration', $event.target.value)" /></label>
           <label>机位
             <select :value="selectedShot.camera" @change="updateSelectedShot('camera', $event.target.value)">
               <option v-for="camera in SHOT_CAMERA_TYPES" :key="camera.value" :value="camera.value">{{ camera.label }}</option>
+            </select>
+          </label>
+          <label>绑定相机
+            <select :value="selectedShot.cameraId" @change="updateSelectedShot('cameraId', $event.target.value)">
+              <option v-for="camera in timeline.cameras" :key="camera.id" :value="camera.id">{{ camera.name }}</option>
             </select>
           </label>
           <label>转场
@@ -91,6 +134,10 @@
             </select>
           </label>
           <button v-if="shots.length > 1" type="button" class="danger-button" @click="removeSelectedShot">删除镜头</button>
+          <div v-if="shots.length > 1" class="object-create-row">
+            <button type="button" class="small-button" :disabled="shots[0]?.id === selectedShot.id" @click="moveSelectedShot(-1)">镜头前移</button>
+            <button type="button" class="small-button" :disabled="shots.at(-1)?.id === selectedShot.id" @click="moveSelectedShot(1)">镜头后移</button>
+          </div>
         </section>
 
         <section class="stage-section action-editor">
@@ -107,6 +154,18 @@
           <div v-else class="stage-empty">先创建角色，再编排动作</div>
         </section>
 
+        <section v-if="selectedActionClip" class="stage-section action-clip-editor">
+          <div class="stage-section__title">动作片段</div>
+          <label>动作
+            <select :value="selectedActionClip.action" aria-label="动作片段动作" @change="updateSelectedActionClip('action', $event.target.value)">
+              <option v-for="action in ACTION_LIBRARY" :key="`clip-${action}`" :value="action">{{ action }}</option>
+            </select>
+          </label>
+          <label>开始时间（秒）<input type="number" min="0" step="0.25" :value="selectedActionClip.start" aria-label="动作片段开始时间" @change="updateSelectedActionClip('start', $event.target.value)" /></label>
+          <label>时长（秒）<input type="number" :min="MIN_ACTION_CLIP_DURATION" :step="MIN_ACTION_CLIP_DURATION" :value="selectedActionClip.duration" aria-label="动作片段时长" @change="updateSelectedActionClip('duration', $event.target.value)" /></label>
+          <button type="button" class="danger-button" @click="removeSelectedActionClip">删除动作片段</button>
+        </section>
+
         <section v-if="selectedCharacter" class="stage-section resource-editor">
           <div class="stage-section__title">真实模型与动作资源</div>
           <div class="resource-character">当前角色：{{ selectedCharacter.name }}</div>
@@ -116,6 +175,10 @@
           <div class="resource-upload-row">
             <input type="file" accept=".glb,.vrm,model/gltf-binary" aria-label="上传角色模型" @change="onModelFileChange" />
             <button type="button" class="small-button" :disabled="modelLoading" @click="loadSelectedCharacterModel">加载模型</button>
+          </div>
+          <div class="resource-upload-row">
+            <button type="button" class="small-button" :disabled="modelLoading" @click="applyValidationAsset">加载 CC0 验证模型</button>
+            <span class="resource-tip">Khronos SimpleSkin，仅用于功能验证，不是专业角色库</span>
           </div>
           <label>动作资源 URL（{{ actionToAdd }}）
             <input :value="selectedActionAsset.url" placeholder="可选：动作 GLB URL" @change="updateActionAssetUrl(actionToAdd, $event.target.value)" />
@@ -139,12 +202,58 @@
           <label>模型缩放
             <input type="number" min="0.01" max="100" step="0.01" :value="selectedCharacterAsset.scale" @change="updateCharacterAsset('scale', $event.target.value)" />
           </label>
+          <div class="resource-status resource-status--row" :data-status="selectedModelResourceState.status">
+            <span>模型：{{ directorResourceStatusLabel(selectedModelResourceState) }}<template v-if="selectedModelResourceState.message"> · {{ selectedModelResourceState.message }}</template></span>
+            <button v-if="selectedModelResourceState.status === 'error'" type="button" class="small-button" :disabled="modelLoading" @click="loadSelectedCharacterModel">重试</button>
+          </div>
+          <div class="resource-status resource-status--row" :data-status="selectedActionResourceState.status">
+            <span>动作：{{ directorResourceStatusLabel(selectedActionResourceState) }}<template v-if="selectedActionResourceState.message"> · {{ selectedActionResourceState.message }}</template></span>
+            <button v-if="selectedActionResourceState.status === 'error'" type="button" class="small-button" @click="retrySelectedActionResource">重试</button>
+          </div>
+          <section v-if="selectedModelResourceState.status === 'ready'" class="bone-editor" aria-label="骨骼姿态">
+            <div class="stage-section__title">骨骼姿态</div>
+            <template v-if="selectedCharacterBones.length">
+              <div class="pose-presets" aria-label="姿势预设">
+                <button v-for="preset in POSE_PRESETS" :key="preset.name" type="button" class="small-button" @click="applyPosePreset(preset)">{{ preset.name }}</button>
+              </div>
+              <div class="semantic-pose-controls" aria-label="姿势调节">
+                <label v-for="control in availableSemanticControls" :key="`${control.semantic}-${control.axis}`">{{ control.label }}
+                  <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
+                </label>
+              </div>
+              <label>关节
+                <select v-model="selectedBoneName" aria-label="选择骨骼">
+                  <option v-for="bone in selectedCharacterBones" :key="bone.name" :value="bone.name">{{ bone.name }}</option>
+                </select>
+              </label>
+              <div class="inspector-group">
+                <strong>关节旋转（度）</strong>
+                <div class="vector-row">
+                  <label v-for="(axis, index) in axes" :key="`bone-${axis}`">{{ axis }}
+                    <input type="number" step="1" :aria-label="`骨骼旋转 ${axis}`" :value="selectedBoneRotationDegrees[index]" @input="updateBoneRotation(index, $event.target.value)" />
+                  </label>
+                </div>
+              </div>
+              <button type="button" class="small-button" @click="resetSelectedBone">重置当前关节</button>
+            </template>
+            <div v-else class="stage-empty">模型不含骨骼</div>
+          </section>
           <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
         </section>
+        </template>
       </aside>
 
-      <main class="director-stage__viewport">
+      <main class="director-stage__viewport" :class="{ 'director-stage__viewport--timeline': workspaceMode === 'animation' }">
         <canvas ref="canvasRef" class="director-stage__canvas" aria-label="3D 导演台预览" />
+        <div class="viewport-tools" aria-label="视口变换工具">
+          <button v-for="tool in TRANSFORM_TOOLS" :key="tool.mode" type="button" :class="{ active: transformMode === tool.mode }" :aria-label="tool.label" @click="setTransformMode(tool.mode)">{{ tool.icon }}</button>
+          <button type="button" :class="{ active: transformSpace === 'local' }" aria-label="切换局部与世界坐标" @click="toggleTransformSpace">{{ transformSpace === 'local' ? '局部' : '世界' }}</button>
+        </div>
+        <div v-if="activeCompositionGuides" class="composition-guides" aria-label="构图辅助线">
+          <span class="composition-guides__v composition-guides__v--1" /><span class="composition-guides__v composition-guides__v--2" />
+          <span class="composition-guides__h composition-guides__h--1" /><span class="composition-guides__h composition-guides__h--2" />
+          <span class="composition-guides__safe" />
+        </div>
         <div class="director-stage__legend">
           <span><i class="stage-dot stage-dot--scene" />场景</span>
           <span><i class="stage-dot stage-dot--character" />角色</span>
@@ -154,17 +263,26 @@
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
         <div v-else-if="errorMessage" class="director-stage__error">{{ errorMessage }}</div>
 
-        <section class="timeline-panel" aria-label="导演时间线">
+        <section v-if="workspaceMode === 'animation'" class="timeline-panel" :class="{ collapsed: timeline.sequence.timelineCollapsed }" :style="{ '--timeline-zoom': timeline.sequence.timelineZoom }" aria-label="导演时间线">
           <div class="timeline-toolbar">
             <div class="timeline-controls">
               <button type="button" :aria-label="playing ? '暂停' : '播放'" @click="togglePlayback">{{ playing ? 'Ⅱ' : '▶' }}</button>
               <button type="button" aria-label="停止" @click="stopPlayback">■</button>
+              <button type="button" :class="{ active: timeline.sequence.loop }" :aria-pressed="timeline.sequence.loop" aria-label="循环播放" @click="toggleLoopPlayback">↻</button>
+              <button type="button" :class="{ active: timeline.sequence.autoKey }" :aria-pressed="timeline.sequence.autoKey" aria-label="自动关键帧" @click="toggleSequenceOption('autoKey')">◇</button>
+              <button type="button" :class="{ active: timeline.sequence.showMotionPaths }" :aria-pressed="timeline.sequence.showMotionPaths" aria-label="运动轨迹" @click="toggleSequenceOption('showMotionPaths')">⌁</button>
+              <button type="button" :disabled="!selectedDirectorObject" aria-label="在当前位置添加关键帧" @click="addCurrentMotionKeyframe">◆</button>
               <span class="timeline-time">{{ formatSeconds(currentTime) }} / {{ formatSeconds(duration) }}</span>
               <span class="timeline-fps">{{ timeline.sequence.fps }} fps</span>
+              <button type="button" aria-label="缩小时间线" @click="setTimelineZoom(timeline.sequence.timelineZoom - 0.25)">−</button>
+              <span class="timeline-zoom">{{ Math.round(timeline.sequence.timelineZoom * 100) }}%</span>
+              <button type="button" aria-label="放大时间线" @click="setTimelineZoom(timeline.sequence.timelineZoom + 0.25)">＋</button>
+              <button type="button" aria-label="最小化时间线" @click="toggleTimelineCollapsed">{{ timeline.sequence.timelineCollapsed ? '展开' : '最小化' }}</button>
             </div>
             <input class="timeline-scrubber" type="range" min="0" :max="duration || 0.25" step="0.01" :value="currentTime" aria-label="时间线位置" @input="setCurrentTime(Number($event.target.value))" />
           </div>
 
+          <div v-if="!timeline.sequence.timelineCollapsed" class="timeline-scroll-content">
           <div class="timeline-ruler"><span>0s</span><span>{{ formatSeconds(duration / 2) }}</span><span>{{ formatSeconds(duration) }}</span></div>
           <div class="timeline-track shot-track">
             <div class="track-label">镜头序列</div>
@@ -191,28 +309,181 @@
                 :key="clip.id"
                 type="button"
                 class="timeline-block timeline-action"
+                :class="{ selected: selectedActionClipId === clip.id }"
                 :style="blockStyle(clip)"
-                @click="setCurrentTime(clip.start)"
+                :aria-label="`${characterName(track.characterId)} ${clip.action} 动作片段`"
+                @click="selectActionClip(track, clip)"
               >
                 <strong>{{ clip.action }}</strong>
                 <small>{{ formatSeconds(clip.duration) }}</small>
               </button>
             </div>
           </div>
+          <div v-for="track in timeline.motionTracks" :key="track.id" class="timeline-track motion-track">
+            <div class="track-label">{{ objectName(track.objectId) }}</div>
+            <div class="track-lane">
+              <button v-for="keyframe in track.keyframes" :key="keyframe.id" type="button" class="motion-keyframe" :style="keyframeStyle(keyframe)" :aria-label="`${objectName(track.objectId)} ${formatSeconds(keyframe.time)} 关键帧`" @click="setCurrentTime(keyframe.time)">◆</button>
+            </div>
+          </div>
           <div v-if="!timeline.tracks.length" class="timeline-empty">暂无角色轨道</div>
+          </div>
         </section>
+        <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
+          <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
+          <button type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
+          <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
+          <button type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
+          <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
+          <button type="button" :disabled="capturing || initializing" aria-label="截图" title="截图" @click="captureToCanvasAsset">◎</button>
+          <button ref="aiImportButtonRef" type="button" aria-label="AI 识图导入" title="AI 识图导入" @click="aiImportOpen = true">◫</button>
+          <button type="button" aria-label="全屏" title="全屏" @click="toggleFullscreen">⤢</button>
+          <span class="director-stage__quick-divider" />
+          <button type="button" :class="{ active: workspaceMode === 'scene' }" aria-label="场景编辑" title="场景编辑" @click="workspaceMode = 'scene'">▱</button>
+          <button type="button" :class="{ active: workspaceMode === 'animation' }" aria-label="动画时间轴" title="动画时间轴" @click="workspaceMode = workspaceMode === 'animation' ? 'scene' : 'animation'">◴</button>
+        </nav>
       </main>
+
+      <aside class="director-stage__inspector" aria-label="属性检查器">
+        <template v-if="selectedDirectorObject">
+          <div class="director-stage__inspector-title">{{ isSelectedCharacterObject ? '角色' : selectedDirectorObject.type === 'camera' ? '机位' : '对象' }}</div>
+          <div v-if="isSelectedCharacterObject" class="director-stage__inspector-tabs">
+            <button type="button" :class="{ active: inspectorTab === 'properties' }" @click="inspectorTab = 'properties'">属性</button>
+            <button type="button" :class="{ active: inspectorTab === 'pose' }" @click="inspectorTab = 'pose'">姿势</button>
+          </div>
+          <template v-if="inspectorTab === 'properties' || !isSelectedCharacterObject">
+          <label>名称<input :value="selectedDirectorObject.name" @input="updateSelectedObject({ name: $event.target.value })" /></label>
+          <label class="visibility-row"><input type="checkbox" :checked="selectedDirectorObject.visible" @change="updateSelectedObject({ visible: $event.target.checked })" /> 显示对象</label>
+          <div v-if="selectedDirectorObject.assetRef?.description" class="ai-reference-description">
+            <strong>AI 识图描述</strong>
+            <p>{{ selectedDirectorObject.assetRef.description }}</p>
+          </div>
+          <label>父级分组
+            <select :value="selectedDirectorObject.parentId" @change="updateObjectParent($event.target.value)">
+              <option value="">场景根节点</option>
+              <option v-for="group in availableParentGroups" :key="group.id" :value="group.id">{{ group.name }}</option>
+            </select>
+          </label>
+          <div class="inspector-group">
+            <strong>位置（米）</strong>
+            <div class="vector-row"><label v-for="(axis, index) in axes" :key="`p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="selectedInspectorTransform.position[index]" @change="updateObjectVector('position', index, $event.target.value)" /></label></div>
+          </div>
+          <div class="inspector-group">
+            <strong>旋转（度）</strong>
+            <div class="vector-row"><label v-for="(axis, index) in axes" :key="`r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(selectedInspectorTransform.rotation[index])" @change="updateObjectRotation(index, $event.target.value)" /></label></div>
+          </div>
+          <div class="inspector-group">
+            <strong>缩放</strong>
+            <div class="vector-row"><label v-for="(axis, index) in axes" :key="`s-${axis}`">{{ axis }}<input type="number" min="0.0001" step="0.1" :value="selectedInspectorTransform.scale[index]" @change="updateObjectScale(index, $event.target.value, $event.shiftKey)" /></label></div>
+          </div>
+          <template v-if="selectedCamera">
+            <div class="inspector-group"><strong>相机</strong>
+              <label>构图预设
+                <select aria-label="构图预设" @change="applyCameraPreset($event.target.value)">
+                  <option value="">选择机位视角</option>
+                  <option v-for="preset in CAMERA_PRESETS" :key="preset.name" :value="preset.name">{{ preset.name }}</option>
+                </select>
+              </label>
+              <label>视野 FOV<input type="number" min="1" max="179" :value="selectedCamera.fov" @change="updateSelectedCamera('fov', $event.target.value)" /></label>
+              <label>画幅比例
+                <select aria-label="画幅比例" :value="cameraAspectLabel(selectedCamera.aspect)" @change="applyCameraAspect($event.target.value)">
+                  <option v-for="ratio in CAMERA_ASPECTS" :key="ratio.label" :value="ratio.label">{{ ratio.label }}</option>
+                </select>
+              </label>
+              <label>跟随目标
+                <select aria-label="相机跟随目标" :value="selectedCamera.followTargetId" @change="updateSelectedCamera('followTargetId', $event.target.value)">
+                  <option value="">不跟随</option>
+                  <option v-for="object in cameraTargetObjects" :key="`follow-${object.id}`" :value="object.id">{{ object.name }}</option>
+                </select>
+              </label>
+              <label>注视模式
+                <select aria-label="相机注视模式" :value="selectedCamera.lookAtMode" @change="updateSelectedCamera('lookAtMode', $event.target.value)">
+                  <option value="origin">场景中心</option><option value="object">指定对象</option>
+                </select>
+              </label>
+              <label v-if="selectedCamera.lookAtMode === 'object'">注视目标
+                <select aria-label="相机注视目标" :value="selectedCamera.lookAtTargetId" @change="updateSelectedCamera('lookAtTargetId', $event.target.value)">
+                  <option value="">请选择对象</option>
+                  <option v-for="object in cameraTargetObjects" :key="`look-${object.id}`" :value="object.id">{{ object.name }}</option>
+                </select>
+              </label>
+              <label class="visibility-row"><input type="checkbox" :checked="selectedCamera.showGuides" @change="updateSelectedCamera('showGuides', $event.target.checked)" /> 构图辅助线</label>
+              <button type="button" class="small-button" @click="captureCurrentViewToCamera">从当前视角更新机位</button>
+              <button type="button" class="small-button" @click="captureToCanvasAsset">机位截图回写画布</button>
+            </div>
+          </template>
+          <button type="button" class="small-button" @click="duplicateSelectedObject">复制对象</button>
+          <button type="button" class="danger-button" @click="deleteSelectedObject">删除对象</button>
+          </template>
+          <section v-else class="director-pose-panel" aria-label="角色姿势">
+            <strong>姿势预设</strong>
+            <div class="pose-presets">
+              <button v-for="preset in POSE_PRESETS" :key="`inspector-${preset.name}`" type="button" class="small-button" :disabled="!availableSemanticControls.length" @click="applyPosePreset(preset)">{{ preset.name }}</button>
+            </div>
+            <strong>姿势调节</strong>
+            <div v-if="availableSemanticControls.length" class="semantic-pose-controls">
+              <label v-for="control in availableSemanticControls" :key="`inspector-${control.semantic}-${control.axis}`">{{ control.label }}
+                <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
+              </label>
+            </div>
+            <div v-else class="stage-empty">加载带骨骼的角色模型后可逐关节调节</div>
+          </section>
+        </template>
+        <div v-else class="stage-empty">在场景树中选择对象以编辑属性</div>
+        <section class="inspector-group environment-editor">
+          <strong>3D 场景</strong>
+          <label>场景缩放<input type="range" min="0.1" max="5" step="0.1" :value="timeline.environment.sceneScale" @input="updateEnvironment('sceneScale', $event.target.value)" /></label>
+          <div class="inspector-group"><strong>场景平移</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="timeline.environment.scenePosition[index]" @change="updateEnvironmentVector('scenePosition', index, $event.target.value)" /></label></div></div>
+          <div class="inspector-group"><strong>场景旋转（度）</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(timeline.environment.sceneRotation[index])" @change="updateEnvironmentRotation(index, $event.target.value)" /></label></div></div>
+          <label>天空颜色<input type="color" :value="timeline.environment.backgroundColor" @input="updateEnvironment('backgroundColor', $event.target.value)" /></label>
+          <label>全景图 URL<input :value="timeline.environment.panoramaUrl" placeholder="https://…/panorama.jpg" @change="updateEnvironment('panoramaUrl', $event.target.value)" /></label>
+          <label>全景水平旋转<input type="range" min="-180" max="180" step="1" :value="timeline.environment.panoramaRotation" @input="updateEnvironment('panoramaRotation', $event.target.value)" /></label>
+          <label>全景球半径<input type="range" min="10" max="200" step="1" :value="timeline.environment.panoramaRadius" @input="updateEnvironment('panoramaRadius', $event.target.value)" /></label>
+          <label class="visibility-row"><input type="checkbox" :checked="timeline.environment.showCharacterLabels" @change="updateEnvironment('showCharacterLabels', $event.target.checked)" /> 角色标签</label>
+          <label class="visibility-row"><input type="checkbox" :checked="timeline.environment.gridSnap" @change="updateEnvironment('gridSnap', $event.target.checked)" /> 网格吸附</label>
+          <label class="visibility-row"><input type="checkbox" :checked="timeline.environment.groundSnap" @change="updateEnvironment('groundSnap', $event.target.checked)" /> 地面吸附</label>
+          <label class="visibility-row"><input type="checkbox" :checked="timeline.environment.showGround" @change="updateEnvironment('showGround', $event.target.checked)" /> 地面</label>
+          <label>地面透明度<input type="range" min="0" max="1" step="0.05" :value="timeline.environment.groundOpacity" @input="updateEnvironment('groundOpacity', $event.target.value)" /></label>
+          <label>地面高度<input type="number" step="0.1" :value="timeline.environment.groundHeight" @change="updateEnvironment('groundHeight', $event.target.value)" /></label>
+          <label>环境光<input type="number" min="0" max="20" step="0.1" :value="timeline.environment.ambientIntensity" @input="updateEnvironment('ambientIntensity', $event.target.value)" /></label>
+          <label>方向光<input type="number" min="0" max="20" step="0.1" :value="timeline.environment.directionalIntensity" @input="updateEnvironment('directionalIntensity', $event.target.value)" /></label>
+        </section>
+      </aside>
     </div>
 
-    <footer class="director-stage__footer">
+    <section v-if="aiImportOpen" ref="aiImportModalRef" class="director-modal" role="dialog" aria-modal="true" aria-label="AI 识图导入">
+      <div class="director-modal__panel">
+        <div class="director-modal__header"><strong>AI 识图导入</strong><button type="button" aria-label="关闭 AI 识图导入" @click="aiImportOpen = false">×</button></div>
+        <label>识别类型<select v-model="aiImportType"><option value="scene">场景</option><option value="character">角色</option><option value="prop">道具</option></select></label>
+        <label>参考图片<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择识图图片" @change="onAIImportFile" /></label>
+        <img v-if="aiImportPreview" class="ai-import-preview" :src="aiImportPreview" alt="AI 识图参考预览" />
+        <button type="button" :disabled="!aiImportFile || aiImportBusy" @click="analyzeAIImport">{{ aiImportBusy ? '识别中…' : '开始识图' }}</button>
+        <label>识别描述<textarea v-model="aiImportDescription" rows="5" placeholder="识别结果也可手动修订" /></label>
+        <div v-if="aiImportStatus" class="resource-status">{{ aiImportStatus }}</div>
+        <button type="button" :disabled="!aiImportDescription.trim() || aiImportBusy" @click="createAIImportObject">导入 3D 场景</button>
+      </div>
+    </section>
+
+    <section v-if="helpOpen" ref="helpModalRef" class="director-modal" role="dialog" aria-modal="true" aria-label="导演台帮助">
+      <div class="director-modal__panel">
+        <div class="director-modal__header"><strong>3D 导演台帮助</strong><button type="button" aria-label="关闭导演台帮助" @click="helpOpen = false">×</button></div>
+        <ol><li>从场景树添加角色、几何体、空对象或机位。</li><li>在属性检查器精确调整位置、旋转、缩放、画幅和环境。</li><li>启用自动关键帧后，在不同时间修改对象即可形成运动。</li><li>通过姿势预设或语义滑杆调整支持骨骼的角色。</li><li>截图可回写项目画布，视频可导出 WebM 或 MP4。</li></ol>
+      </div>
+    </section>
+
+    <footer v-if="workspaceMode === 'animation'" class="director-stage__footer">
       <span>镜头实体决定机位与转场；角色轨道决定动作片段。拖动时间线可预览当前编排。</span>
       <div class="director-stage__footer-actions">
+        <button type="button" @click="aiImportOpen = true">AI 识图导入</button>
+        <button type="button" :disabled="capturing || exporting || initializing" @click="captureToCanvasAsset">
+          {{ capturing ? '截图回写中…' : '截图回写画布' }}
+        </button>
         <button type="button" :disabled="exporting || initializing" @click="exportTimelineVideo">
           {{ exporting ? `导出中 ${exportProgress}%` : '导出 WebM 视频' }}
         </button>
         <button type="button" :disabled="exporting || initializing || !drama?.id" @click="exportTimelineMp4">
           {{ exporting ? `服务端处理中 ${exportProgress}%` : '服务端导出 MP4' }}
         </button>
+        <button v-if="exporting" type="button" @click="cancelExport">取消导出</button>
         <button type="button" @click="resetCamera">重置视角</button>
       </div>
     </footer>
@@ -242,15 +513,111 @@ import { taskAPI } from '@/api/task'
 import { uploadAPI } from '@/api/upload'
 import {
   ACTION_LIBRARY,
+  MIN_ACTION_CLIP_DURATION,
+  MIN_SHOT_DURATION,
   SHOT_CAMERA_TYPES,
   TRANSITION_TYPES,
   appendActionClip,
+  appendDirectorCamera,
+  appendDirectorObject,
+  duplicateDirectorObject,
   appendShot,
   createDirectorTimeline,
   findActiveActionClips,
   findActiveShot,
   normalizeDirectorTimeline,
+  proportionalScaleFromAxis,
+  removeActionClip,
+  removeDirectorObject,
+  splitShotAtTime,
+  interpolateMotionTransform,
+  upsertMotionKeyframe,
+  updateActionClip,
+  updateDirectorObject,
 } from '@/utils/directorTimeline'
+
+const CAMERA_ASPECTS = [
+  { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
+  { label: '4:3', value: 4 / 3 }, { label: '1:1', value: 1 }, { label: '3:4', value: 3 / 4 }, { label: '9:16', value: 9 / 16 },
+]
+const CAMERA_PRESETS = [
+  { name: '当前视角', current: true },
+  { name: '正面中景', position: [0, 1.6, 4.8], target: [0, 1.1, 0], fov: 50 },
+  { name: '正面特写', position: [0, 1.65, 2.4], target: [0, 1.45, 0], fov: 42 },
+  { name: '正面全景', position: [0, 2.2, 8.2], target: [0, 1, 0], fov: 58 },
+  { name: '侧面跟拍', position: [5.2, 1.7, 0.8], target: [0, 1.1, 0], fov: 50 },
+  { name: '侧面近景', position: [3.1, 1.65, 0.4], target: [0, 1.35, 0], fov: 42 },
+  { name: '背面中景', position: [0, 1.7, -4.8], target: [0, 1.1, 0], fov: 50 },
+  { name: '俯拍全景', position: [0, 8, 5], target: [0, 0, 0], fov: 58 },
+  { name: '45° 俯拍', position: [5, 5, 5], target: [0, 1, 0], fov: 50 },
+  { name: '低角度仰拍', position: [0, 0.35, 3.8], target: [0, 1.55, 0], fov: 48 },
+  { name: '低角度广角', position: [0, 0.25, 5], target: [0, 1.4, 0], fov: 72 },
+  { name: '过肩镜头', position: [-1.25, 1.65, 2.4], target: [0, 1.4, 0], fov: 42 },
+  { name: '过肩镜头（右）', position: [1.25, 1.65, 2.4], target: [0, 1.4, 0], fov: 42 },
+  { name: '鸟瞰', position: [0, 10, 0.01], target: [0, 0, 0], fov: 55 },
+  { name: '荷兰角', position: [3.8, 2, 4.4], target: [0, 1.1, 0], fov: 50, roll: -0.28 },
+]
+const SEMANTIC_BONES = {
+  root: ['root', 'hips', 'pelvis', 'mixamorighips'], spine: ['spine', 'chest', 'upperchest', 'mixamorigspine'], head: ['head', 'neck', 'mixamorighead'],
+  leftShoulder: ['leftshoulder', 'leftarm', 'upperarm_l', 'mixamorigleftarm'], rightShoulder: ['rightshoulder', 'rightarm', 'upperarm_r', 'mixamorigrightarm'],
+  leftElbow: ['leftforearm', 'lowerarm_l', 'mixamorigleftforearm'], rightElbow: ['rightforearm', 'lowerarm_r', 'mixamorigrightforearm'],
+  leftHip: ['leftupleg', 'thigh_l', 'mixamorigleftupleg'], rightHip: ['rightupleg', 'thigh_r', 'mixamorigrightupleg'],
+  leftKnee: ['leftleg', 'calf_l', 'mixamorigleftleg'], rightKnee: ['rightleg', 'calf_r', 'mixamorigrightleg'],
+}
+const SEMANTIC_POSE_CONTROLS = [
+  { label: '身体前倾', semantic: 'root', axis: 0, min: -45, max: 45 }, { label: '身体转身', semantic: 'root', axis: 1, min: -90, max: 90 }, { label: '身体侧倾', semantic: 'root', axis: 2, min: -45, max: 45 },
+  { label: '躯干前倾', semantic: 'spine', axis: 0, min: -45, max: 45 }, { label: '躯干扭转', semantic: 'spine', axis: 1, min: -60, max: 60 }, { label: '躯干侧倾', semantic: 'spine', axis: 2, min: -45, max: 45 },
+  { label: '头部点头', semantic: 'head', axis: 0, min: -60, max: 60 }, { label: '头部转头', semantic: 'head', axis: 1, min: -90, max: 90 }, { label: '头部歪头', semantic: 'head', axis: 2, min: -45, max: 45 },
+  { label: '左肩前举', semantic: 'leftShoulder', axis: 0, min: -120, max: 120 }, { label: '右肩前举', semantic: 'rightShoulder', axis: 0, min: -120, max: 120 },
+  { label: '左肘弯曲', semantic: 'leftElbow', axis: 0, min: 0, max: 150 }, { label: '右肘弯曲', semantic: 'rightElbow', axis: 0, min: 0, max: 150 },
+  { label: '左髋前抬', semantic: 'leftHip', axis: 0, min: -90, max: 120 }, { label: '右髋前抬', semantic: 'rightHip', axis: 0, min: -90, max: 120 },
+  { label: '左膝弯曲', semantic: 'leftKnee', axis: 0, min: 0, max: 150 }, { label: '右膝弯曲', semantic: 'rightKnee', axis: 0, min: 0, max: 150 },
+]
+const pose = (name, rotations = {}) => ({ name, rotations })
+const POSE_PRESETS = [
+  pose('站立', { spine: [2, 0, 0], head: [-10, 0, 0], leftElbow: [15, 0, 0], rightElbow: [15, 0, 0] }), pose('T型', { leftShoulder: [0, 0, -90], rightShoulder: [0, 0, 90] }),
+  pose('行走', { spine: [5, 0, 0], leftShoulder: [-25, 0, 0], rightShoulder: [25, 0, 0], leftHip: [25, 0, 0], rightHip: [-20, 0, 0], rightKnee: [25, 0, 0] }),
+  pose('跑步', { root: [15, 0, 0], spine: [12, 0, 0], leftShoulder: [-55, 0, 0], rightShoulder: [55, 0, 0], leftHip: [55, 0, 0], rightHip: [-35, 0, 0], rightKnee: [75, 0, 0] }),
+  pose('坐姿', { root: [5, 0, 0], leftHip: [85, 0, 0], rightHip: [85, 0, 0], leftKnee: [90, 0, 0], rightKnee: [90, 0, 0] }), pose('蹲下', { root: [18, 0, 0], leftHip: [65, 0, 0], rightHip: [65, 0, 0], leftKnee: [115, 0, 0], rightKnee: [115, 0, 0] }),
+  pose('单膝跪', { leftHip: [45, 0, 0], rightHip: [75, 0, 0], leftKnee: [90, 0, 0], rightKnee: [130, 0, 0] }), pose('双膝跪', { leftHip: [25, 0, 0], rightHip: [25, 0, 0], leftKnee: [135, 0, 0], rightKnee: [135, 0, 0] }),
+  pose('叉腰', { leftShoulder: [10, 0, -35], rightShoulder: [10, 0, 35], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }), pose('倚靠', { root: [0, 0, 12], spine: [0, 0, -8] }),
+  pose('鞠躬', { root: [35, 0, 0], spine: [25, 0, 0], head: [-15, 0, 0] }), pose('思考', { head: [8, -12, 8], rightShoulder: [-35, 0, 15], rightElbow: [110, 0, 0] }),
+  pose('格斗', { spine: [8, -15, 0], leftShoulder: [-55, 0, -20], rightShoulder: [-65, 0, 20], leftElbow: [95, 0, 0], rightElbow: [105, 0, 0] }), pose('踢球', { root: [8, 0, 0], rightHip: [-60, 0, 0], rightKnee: [25, 0, 0] }),
+  pose('投掷', { spine: [-8, -20, 0], rightShoulder: [-105, 0, 25], rightElbow: [55, 0, 0] }), pose('推进', { root: [12, 0, 0], leftShoulder: [-65, 0, -12], rightShoulder: [-65, 0, 12], leftElbow: [25, 0, 0], rightElbow: [25, 0, 0] }),
+  pose('招手', { rightShoulder: [-70, 0, 35], rightElbow: [85, 0, 0] }), pose('伸手', { rightShoulder: [-75, 0, 0], rightElbow: [8, 0, 0] }),
+  pose('抱臂', { leftShoulder: [-35, 0, -25], rightShoulder: [-35, 0, 25], leftElbow: [105, 0, 0], rightElbow: [105, 0, 0] }), pose('看手机', { head: [18, 0, 0], leftShoulder: [-25, 0, -10], rightShoulder: [-25, 0, 10], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }),
+]
+const ROLE_ARCHETYPES = [
+  { kind: 'male', label: '男性素体', height: 1.82, width: 0.5, color: 0x4f8ef7 },
+  { kind: 'female', label: '女性素体', height: 1.7, width: 0.42, color: 0xf472b6 },
+  { kind: 'broad', label: '宽厚素体', height: 1.78, width: 0.66, color: 0xf59e0b },
+  { kind: 'muscular', label: '健壮素体', height: 1.84, width: 0.6, color: 0xef4444 },
+  { kind: 'slim', label: '纤细素体', height: 1.78, width: 0.35, color: 0x8b5cf6 },
+  { kind: 'youth', label: '少年素体', height: 1.52, width: 0.38, color: 0x22c55e },
+  { kind: 'child', label: '儿童素体', height: 1.22, width: 0.34, color: 0x06b6d4 },
+  { kind: 'chibi', label: '二头身', height: 0.95, width: 0.46, color: 0xf97316 },
+]
+const TRANSFORM_TOOLS = [
+  { mode: 'translate', label: '移动工具', icon: '↔' },
+  { mode: 'rotate', label: '旋转工具', icon: '⟳' },
+  { mode: 'scale', label: '缩放工具', icon: '⤢' },
+]
+import {
+  DIRECTOR_VALIDATION_ASSET_URL,
+  createDirectorResourceState,
+  directorResourceStatusLabel,
+  isDirectorAnimationCompatible,
+  loadDirectorGltf,
+  resolveDirectorAssetUrl,
+  updateDirectorResourceState,
+} from '@/utils/director-assets'
+import {
+  directorExportDownloadUrl,
+  directorExportFilename,
+  parseDirectorExportResult,
+  pickDirectorRecordingMimeType,
+  waitForDirectorExportTask,
+} from '@/utils/director-export-support'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -258,7 +625,12 @@ const props = defineProps({
   initialState: { type: Object, default: null },
 })
 
-const emit = defineEmits(['close', 'state-change'])
+const emit = defineEmits(['close', 'state-change', 'asset-created'])
+const dialogRef = ref(null)
+const aiImportModalRef = ref(null)
+const helpModalRef = ref(null)
+const aiImportButtonRef = ref(null)
+const helpButtonRef = ref(null)
 const canvasRef = ref(null)
 // Threepipe owns a mutable object graph; keep it out of Vue's deep proxying.
 const viewer = shallowRef(null)
@@ -269,15 +641,49 @@ const playing = ref(false)
 const dirty = ref(false)
 const selectedShotId = ref('')
 const selectedCharacterId = ref('')
+const selectedActionClipId = ref('')
 const actionToAdd = ref('Idle')
 const timeline = ref(createDirectorTimeline([]))
 const exporting = ref(false)
+const capturing = ref(false)
 const exportProgress = ref(0)
+const exportCancelled = ref(false)
+const activeExportTaskId = ref('')
 const assetStatus = ref('')
 const modelLoading = ref(false)
 const libraryAssets = ref([])
 const libraryLoading = ref(false)
 const selectedLibraryAssetId = ref('')
+const selectedObjectId = ref('')
+const selectedBoneName = ref('')
+const characterBones = ref({})
+const resourceStates = ref({})
+const transformMode = ref('translate')
+const transformSpace = ref('world')
+const workspaceMode = ref('scene')
+const inspectorTab = ref('properties')
+const sceneSearch = ref('')
+const aiImportOpen = ref(false)
+const helpOpen = ref(false)
+const aiImportType = ref('scene')
+const aiImportFile = ref(null)
+const aiImportPreview = ref('')
+const aiImportDescription = ref('')
+const aiImportStatus = ref('')
+const aiImportBusy = ref(false)
+const aiImportUploadedUrl = ref('')
+const aiImportAssetId = ref(null)
+const axes = ['X', 'Y', 'Z']
+const undoStack = ref([])
+const redoStack = ref([])
+let ambientLight = null
+let keyLight = null
+let groundGrid = null
+let environmentRequest = 0
+let transformControls = null
+let transformStartScale = null
+let shiftPressed = false
+let pickingPlugin = null
 
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
@@ -290,17 +696,56 @@ const shots = computed(() => timeline.value.shots)
 const duration = computed(() => timeline.value.sequence.duration || 0.25)
 const currentTime = computed(() => timeline.value.sequence.currentTime)
 const selectedShot = computed(() => shots.value.find((shot) => shot.id === selectedShotId.value) || shots.value[0] || null)
+const canSplitSelectedShot = computed(() => {
+  if (!selectedShot.value) return false
+  const offset = currentTime.value - selectedShot.value.start
+  return offset >= MIN_SHOT_DURATION && selectedShot.value.duration - offset >= MIN_SHOT_DURATION
+})
+const selectedActionClip = computed(() => timeline.value.tracks.flatMap((track) => track.clips).find((clip) => clip.id === selectedActionClipId.value) || null)
 const selectedCharacter = computed(() => characterEntries.value.find((character) => character.id === selectedCharacterId.value) || characterEntries.value[0] || null)
 const selectedCharacterAsset = computed(() => timeline.value.characterAssets?.[selectedCharacter.value?.id] || { modelUrl: '', scale: 1, actions: {} })
+const proceduralCharacterIds = ref(new Set())
+const selectedCharacterBones = computed(() => characterBones.value[selectedCharacter.value?.id] || [])
+const selectedPoseRotations = computed(() => isSelectedProceduralCharacter.value
+  ? (selectedDirectorObject.value?.poseRotations || {})
+  : (selectedCharacterAsset.value.boneRotations || {}))
+const availableSemanticControls = computed(() => SEMANTIC_POSE_CONTROLS.filter((control) => resolveSemanticBone(control.semantic)))
+const selectedBoneRotation = computed(() => selectedCharacterAsset.value.boneRotations?.[selectedBoneName.value] || [0, 0, 0])
+const selectedBoneRotationDegrees = computed(() => selectedBoneRotation.value.map(radiansToDegrees))
 const selectedActionAsset = computed(() => selectedCharacterAsset.value.actions?.[actionToAdd.value] || { url: '' })
+const selectedModelResourceState = computed(() => resourceStates.value[resourceStateKey('model', selectedCharacter.value?.id)] || createDirectorResourceState('model', selectedCharacterAsset.value.modelUrl))
+const selectedActionResourceState = computed(() => resourceStates.value[resourceStateKey('action', selectedCharacter.value?.id, actionToAdd.value)] || createDirectorResourceState('action', selectedActionAsset.value.url))
 const selectedLibraryAsset = computed(() => libraryAssets.value.find((asset) => String(asset.id) === String(selectedLibraryAssetId.value)) || null)
 const activeShot = computed(() => findActiveShot(timeline.value, currentTime.value))
+const selectedDirectorObject = computed(() => timeline.value.objects.find((object) => object.id === selectedObjectId.value) || null)
+const isSelectedCharacterObject = computed(() => ['character', 'humanoid'].includes(selectedDirectorObject.value?.type))
+const isSelectedProceduralCharacter = computed(() => selectedDirectorObject.value?.type === 'humanoid'
+  || (selectedDirectorObject.value?.type === 'character'
+    && proceduralCharacterIds.value.has(String(selectedDirectorObject.value.assetRef?.characterId || ''))))
+const filteredDirectorObjects = computed(() => {
+  const query = sceneSearch.value.trim().toLowerCase()
+  return query ? timeline.value.objects.filter((object) => `${object.name} ${object.type}`.toLowerCase().includes(query)) : timeline.value.objects
+})
+const selectedInspectorTransform = computed(() => selectedDirectorObject.value
+  ? (interpolateMotionTransform(timeline.value, selectedDirectorObject.value.id, currentTime.value) || selectedDirectorObject.value.transform)
+  : { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] })
+const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
+const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
+const activeCompositionGuides = computed(() => {
+  if (viewMode.value !== 'camera') return false
+  const camera = timeline.value.cameras.find((entry) => entry.id === selectedShot.value?.cameraId)
+  return camera?.showGuides === true
+})
+const availableParentGroups = computed(() => timeline.value.objects.filter((object) => object.type === 'group' && object.id !== selectedObjectId.value))
+const canUndo = computed(() => undoStack.value.length > 0)
+const canRedo = computed(() => redoStack.value.length > 0)
 const stageObjects = new Map()
 const characterObjects = new Map()
 const characterModels = new Map()
 const characterPlaceholders = new Map()
 const actionResourceCache = new Map()
-const actionResourceLoading = new Set()
+const actionResourceRequests = new Map()
+const actionResourceGenerations = new Map()
 let stageRoot = null
 let disposed = false
 let animationFrame = 0
@@ -335,6 +780,22 @@ function cloneTimeline(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function resourceStateKey(kind, characterId, action = '') {
+  return `${kind}:${String(characterId || '')}:${String(action || '')}`
+}
+
+function setResourceState(kind, characterId, asset, patch = {}, action = '') {
+  const key = resourceStateKey(kind, characterId, action)
+  const current = resourceStates.value[key] || createDirectorResourceState(kind, asset)
+  resourceStates.value = {
+    ...resourceStates.value,
+    [key]: updateDirectorResourceState(current, {
+      ...patch,
+      url: patch.url === undefined ? asset : patch.url,
+    }),
+  }
+}
+
 function updateCharacterAsset(field, value) {
   if (!selectedCharacter.value) return
   const characterId = selectedCharacter.value.id
@@ -351,9 +812,250 @@ function updateCharacterAsset(field, value) {
   }
   mutateTimeline({ ...timeline.value, characterAssets: assets })
   if (field === 'modelUrl') {
-    if (assets[characterId].modelUrl) void loadCharacterModel(characterId)
-    else buildStage()
+    setResourceState('model', characterId, assets[characterId].modelUrl, { status: 'idle', message: '' })
+    buildStage()
   }
+}
+
+function applyBoneRotations(characterId) {
+  const modelState = characterModels.get(String(characterId))
+  const rotations = timeline.value.characterAssets?.[String(characterId)]?.boneRotations || {}
+  if (!modelState?.bones) return
+  for (const [name, rotation] of Object.entries(rotations)) {
+    const bone = modelState.bones.get(name)
+    if (bone) bone.rotation.set(...rotation)
+  }
+}
+
+function normalizedBoneName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function resolveSemanticBone(semantic) {
+  if (isSelectedProceduralCharacter.value) return SEMANTIC_BONES[semantic] ? semantic : ''
+  const aliases = SEMANTIC_BONES[semantic] || []
+  const bones = selectedCharacterBones.value
+  return bones.find((bone) => aliases.some((alias) => normalizedBoneName(bone.name) === alias || normalizedBoneName(bone.name).includes(alias)))?.name || ''
+}
+
+function semanticRotationDegrees(control) {
+  const boneName = resolveSemanticBone(control.semantic)
+  const rotation = selectedPoseRotations.value[boneName] || [0, 0, 0]
+  return radiansToDegrees(rotation[control.axis])
+}
+
+function applyProceduralPose(objectId) {
+  const object = stageObjects.get(`custom:${objectId}`)
+  const rotations = timeline.value.objects.find((entry) => entry.id === objectId)?.poseRotations || {}
+  const poseBones = object?.userData?.poseBones
+  if (!poseBones) return
+  for (const semantic of Object.keys(SEMANTIC_BONES)) {
+    const rotation = rotations[semantic] || [0, 0, 0]
+    poseBones[semantic]?.rotation?.set?.(...rotation)
+  }
+  viewer.value?.setDirty?.()
+}
+
+function persistPoseRotations(poseRotations) {
+  if (isSelectedProceduralCharacter.value) {
+    const objectId = selectedDirectorObject.value.id
+    mutateTimeline(updateDirectorObject(timeline.value, objectId, { poseRotations }))
+    applyProceduralPose(objectId)
+    return
+  }
+  persistBoneRotations(poseRotations)
+}
+
+function persistBoneRotations(boneRotations) {
+  if (!selectedCharacter.value) return
+  const characterId = selectedCharacter.value.id
+  const assets = cloneTimeline(timeline.value.characterAssets || {})
+  const current = assets[characterId] || { modelUrl: '', scale: 1, actions: {}, boneRotations: {} }
+  assets[characterId] = { ...current, actions: { ...(current.actions || {}) }, boneRotations }
+  mutateTimeline({ ...timeline.value, characterAssets: assets })
+  applyBoneRotations(characterId)
+}
+
+function updateSemanticRotation(control, value) {
+  const boneName = resolveSemanticBone(control.semantic)
+  if (!boneName) return
+  const rotations = cloneTimeline(selectedPoseRotations.value)
+  const rotation = [...(rotations[boneName] || [0, 0, 0])]
+  rotation[control.axis] = (Number(value) || 0) * Math.PI / 180
+  rotations[boneName] = rotation
+  persistPoseRotations(rotations)
+}
+
+function applyPosePreset(preset) {
+  const rotations = cloneTimeline(selectedPoseRotations.value)
+  for (const semantic of Object.keys(SEMANTIC_BONES)) {
+    const boneName = resolveSemanticBone(semantic)
+    if (boneName) rotations[boneName] = [0, 0, 0]
+  }
+  for (const [semantic, degrees] of Object.entries(preset.rotations || {})) {
+    const boneName = resolveSemanticBone(semantic)
+    if (boneName) rotations[boneName] = degrees.map((value) => Number(value || 0) * Math.PI / 180)
+  }
+  persistPoseRotations(rotations)
+  assetStatus.value = `已应用姿势：${preset.name}`
+}
+
+function updateBoneRotation(index, value) {
+  if (!selectedCharacter.value || !selectedBoneName.value) return
+  const current = selectedCharacterAsset.value
+  const rotation = [...(current.boneRotations?.[selectedBoneName.value] || [0, 0, 0])]
+  rotation[index] = (Number(value) || 0) * Math.PI / 180
+  persistBoneRotations({ ...(current.boneRotations || {}), [selectedBoneName.value]: rotation })
+}
+
+function resetSelectedBone() {
+  if (!selectedCharacter.value || !selectedBoneName.value) return
+  const characterId = selectedCharacter.value.id
+  const assets = cloneTimeline(timeline.value.characterAssets || {})
+  const current = assets[characterId]
+  if (!current) return
+  const boneRotations = { ...(current.boneRotations || {}) }
+  delete boneRotations[selectedBoneName.value]
+  assets[characterId] = { ...current, boneRotations }
+  mutateTimeline({ ...timeline.value, characterAssets: assets })
+  const bone = characterModels.get(characterId)?.bones?.get(selectedBoneName.value)
+  bone?.rotation?.set?.(0, 0, 0)
+  viewer.value?.setDirty?.()
+}
+
+function canvasBlob(canvas, type = 'image/png') {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('截图生成失败')), type)
+    } catch (error) {
+      reject(new Error(`截图失败，可能存在未允许跨域读取的纹理：${error?.message || '画布不可读取'}`))
+    }
+  })
+}
+
+async function blobHash(blob) {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+async function captureToCanvasAsset() {
+  const dramaId = Number(props.drama?.id)
+  if (!canvasRef.value || !dramaId || capturing.value) return
+  capturing.value = true
+  assetStatus.value = '正在生成导演截图…'
+  try {
+    viewer.value?.setDirty?.()
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const blob = await canvasBlob(canvasRef.value)
+    const hash = await blobHash(blob)
+    const name = `导演截图-${hash.slice(0, 12)}.png`
+    const existingResult = await assetsAPI.list({ drama_id: dramaId, type: 'image', page_size: 100 })
+    const existing = (Array.isArray(existingResult) ? existingResult : (existingResult?.items || []))
+      .find((asset) => asset.name === name && asset.category === 'director-capture')
+    if (existing) {
+      assetStatus.value = '相同导演截图已在画布中'
+      emit('asset-created', existing)
+      return
+    }
+    const file = new File([blob], name, { type: 'image/png' })
+    const uploaded = await uploadAPI.uploadImage(file, { dramaId })
+    const asset = await assetsAPI.create({
+      drama_id: dramaId,
+      name,
+      type: 'image',
+      category: 'director-capture',
+      url: uploaded?.url || '',
+      local_path: uploaded?.local_path || uploaded?.path || null,
+      file_size: blob.size,
+      mime_type: blob.type || 'image/png',
+      width: canvasRef.value.width,
+      height: canvasRef.value.height,
+    })
+    assetStatus.value = '导演截图已写入项目画布'
+    emit('asset-created', asset)
+  } catch (error) {
+    assetStatus.value = error?.message || '导演截图回写失败'
+  } finally {
+    capturing.value = false
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error || new Error('无法读取图片'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function onAIImportFile(event) {
+  const file = event.target.files?.[0] || null
+  if (aiImportPreview.value) URL.revokeObjectURL(aiImportPreview.value)
+  aiImportFile.value = file
+  aiImportPreview.value = file ? URL.createObjectURL(file) : ''
+  aiImportDescription.value = ''
+  aiImportStatus.value = ''
+  aiImportUploadedUrl.value = ''
+  aiImportAssetId.value = null
+}
+
+async function analyzeAIImport() {
+  const file = aiImportFile.value
+  if (!file || aiImportBusy.value) return
+  aiImportBusy.value = true
+  aiImportStatus.value = '正在识别并上传参考图…'
+  try {
+    const dataUrl = await fileToDataUrl(file)
+    const analysis = await uploadAPI.extractDescriptionFromImage(aiImportType.value, dataUrl, '导演台参考')
+    const uploaded = await uploadAPI.uploadImage(file, { dramaId: props.drama?.id })
+    const description = String(analysis?.description || analysis?.data?.description || '').trim()
+    if (!description) throw new Error('识图服务未返回描述')
+    aiImportDescription.value = description
+    aiImportUploadedUrl.value = uploaded?.url || ''
+    const dramaId = Number(props.drama?.id)
+    if (dramaId) {
+      const asset = await assetsAPI.create({
+        drama_id: dramaId,
+        name: file.name,
+        type: 'image',
+        category: 'director-ai-reference',
+        url: uploaded?.url || '',
+        local_path: uploaded?.local_path || uploaded?.path || null,
+        file_size: file.size,
+        mime_type: file.type || 'image/png',
+      })
+      aiImportAssetId.value = asset?.id || null
+      emit('asset-created', asset)
+    }
+    aiImportStatus.value = '识别完成，可修订描述后导入'
+  } catch (error) {
+    aiImportStatus.value = `${error?.message || '识图失败'}；可手动填写描述后继续导入`
+  } finally {
+    aiImportBusy.value = false
+  }
+}
+
+function createAIImportObject() {
+  const description = aiImportDescription.value.trim()
+  if (!description) return
+  const type = aiImportType.value
+  const objectType = type === 'character' ? 'humanoid' : type === 'scene' ? 'group' : 'box'
+  const name = type === 'character' ? 'AI 角色参考' : type === 'scene' ? 'AI 场景参考' : 'AI 道具参考'
+  const next = appendDirectorObject(timeline.value, objectType, {
+    name,
+    assetRef: {
+      kind: `ai-${type}-reference`,
+      url: aiImportUploadedUrl.value,
+      assetId: aiImportAssetId.value,
+      description,
+    },
+  })
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  aiImportOpen.value = false
+  assetStatus.value = `${name}已加入导演台`
 }
 
 function updateActionAssetUrl(action, value, assetId = null) {
@@ -361,6 +1063,16 @@ function updateActionAssetUrl(action, value, assetId = null) {
   const characterId = selectedCharacter.value.id
   const assets = cloneTimeline(timeline.value.characterAssets || {})
   const current = assets[characterId] || { modelUrl: '', scale: 1, actions: {} }
+  const previousActionUrl = resolveDirectorAssetUrl(current.actions?.[action]?.url)
+  const modelState = characterModels.get(String(characterId))
+  const requestKey = resourceStateKey('action', characterId, action)
+  actionResourceGenerations.set(requestKey, (actionResourceGenerations.get(requestKey) || 0) + 1)
+  actionResourceRequests.delete(requestKey)
+  if (modelState) {
+    delete modelState.actionClips[action]
+    modelState.activeClipKey = ''
+  }
+  actionResourceCache.delete(previousActionUrl)
   const actionAsset = { ...(current.actions?.[action] || {}), url: String(value || '').trim() }
   if (assetId !== null && assetId !== undefined) actionAsset.assetId = Number(assetId) > 0 ? Number(assetId) : null
   assets[characterId] = {
@@ -371,7 +1083,10 @@ function updateActionAssetUrl(action, value, assetId = null) {
     },
   }
   mutateTimeline({ ...timeline.value, characterAssets: assets })
-  actionResourceCache.delete(String(value || '').trim())
+  const url = resolveDirectorAssetUrl(value)
+  actionResourceCache.delete(url)
+  setResourceState('action', characterId, url, { status: 'idle', message: '' }, action)
+  applyTimelineFrame()
 }
 
 async function uploadModelAsset(file, kind) {
@@ -379,7 +1094,7 @@ async function uploadModelAsset(file, kind) {
   assetStatus.value = '正在上传三维资源…'
   try {
     const result = await uploadAPI.uploadModel(file, { dramaId: props.drama?.id })
-    const url = result?.url || (result?.local_path ? `/static/${result.local_path}` : '')
+    const url = resolveDirectorAssetUrl(result)
     if (!url) throw new Error('上传成功但没有返回资源地址')
     const assetId = result?.asset_id || result?.asset?.id || null
     if (kind === 'model') {
@@ -415,12 +1130,13 @@ async function loadProjectAssets() {
 
 function applyLibraryAsset(kind) {
   const asset = selectedLibraryAsset.value
-  if (!asset?.url) return
+  if (!resolveDirectorAssetUrl(asset)) return
+  const url = resolveDirectorAssetUrl(asset)
   if (kind === 'model') {
-    updateCharacterAsset('modelUrl', asset.url)
+    updateCharacterAsset('modelUrl', url)
     updateCharacterAsset('modelAssetId', asset.id)
   } else {
-    updateActionAssetUrl(actionToAdd.value, asset.url, asset.id)
+    updateActionAssetUrl(actionToAdd.value, url, asset.id)
   }
   assetStatus.value = `${asset.name || '项目资产'}已应用为${kind === 'model' ? '角色模型' : '动作资源'}`
 }
@@ -441,6 +1157,27 @@ function loadSelectedCharacterModel() {
   if (selectedCharacter.value) void loadCharacterModel(selectedCharacter.value.id)
 }
 
+function applyValidationAsset() {
+  if (!selectedCharacter.value) return
+  assetStatus.value = '正在加载 Khronos SimpleSkin CC0 验证资产…'
+  updateCharacterAsset('modelUrl', DIRECTOR_VALIDATION_ASSET_URL)
+}
+
+function retrySelectedActionResource() {
+  if (!selectedCharacter.value) return
+  const characterId = selectedCharacter.value.id
+  const modelState = characterModels.get(String(characterId))
+  const resource = timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionToAdd.value]
+  const url = resolveDirectorAssetUrl(resource)
+  if (!url || !modelState) return
+  actionResourceCache.delete(url)
+  const requestKey = resourceStateKey('action', characterId, actionToAdd.value)
+  actionResourceGenerations.set(requestKey, (actionResourceGenerations.get(requestKey) || 0) + 1)
+  actionResourceRequests.delete(requestKey)
+  delete modelState.actionClips[actionToAdd.value]
+  void loadActionResource(characterId, actionToAdd.value, modelState)
+}
+
 function applyTimelineState(nextState, { emitChange = true } = {}) {
   timeline.value = normalizeDirectorTimeline(nextState, characters.value)
   if (!selectedShotId.value || !shots.value.some((shot) => shot.id === selectedShotId.value)) {
@@ -449,14 +1186,87 @@ function applyTimelineState(nextState, { emitChange = true } = {}) {
   if (!selectedCharacterId.value || !characterEntries.value.some((character) => character.id === selectedCharacterId.value)) {
     selectedCharacterId.value = characterEntries.value[0]?.id || ''
   }
+  if (selectedActionClipId.value && !selectedActionClip.value) selectedActionClipId.value = ''
   dirty.value = false
   if (emitChange) emit('state-change', cloneTimeline(timeline.value))
+  applySceneEnvironment()
   applyTimelineFrame()
 }
 
 function mutateTimeline(nextState) {
-  applyTimelineState(nextState)
+  const previous = cloneTimeline(timeline.value)
+  let normalized = normalizeDirectorTimeline(nextState, characters.value)
+  if (normalized.revision <= previous.revision) normalized = { ...normalized, revision: previous.revision + 1 }
+  if (JSON.stringify(previous) === JSON.stringify(normalized)) return
+  undoStack.value = [...undoStack.value, previous].slice(-80)
+  redoStack.value = []
+  applyTimelineState(normalized, { emitChange: false })
   dirty.value = true
+  const emittedRevision = timeline.value.revision
+  emit('state-change', cloneTimeline(timeline.value), (saved) => {
+    if (saved && timeline.value.revision === emittedRevision) dirty.value = false
+  })
+}
+
+function persistHistoryState(nextState) {
+  applyTimelineState({ ...nextState, revision: timeline.value.revision + 1 }, { emitChange: false })
+  dirty.value = true
+  buildStage()
+  const emittedRevision = timeline.value.revision
+  emit('state-change', cloneTimeline(timeline.value), (saved) => {
+    if (saved && timeline.value.revision === emittedRevision) dirty.value = false
+  })
+}
+
+function undoDirector() {
+  const previous = undoStack.value.at(-1)
+  if (!previous) return
+  redoStack.value = [...redoStack.value, cloneTimeline(timeline.value)].slice(-80)
+  undoStack.value = undoStack.value.slice(0, -1)
+  persistHistoryState(previous)
+}
+
+function redoDirector() {
+  const next = redoStack.value.at(-1)
+  if (!next) return
+  undoStack.value = [...undoStack.value, cloneTimeline(timeline.value)].slice(-80)
+  redoStack.value = redoStack.value.slice(0, -1)
+  persistHistoryState(next)
+}
+
+function onDirectorKeydown(event) {
+  if (event.key === 'Shift') shiftPressed = true
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    if (aiImportOpen.value) aiImportOpen.value = false
+    else if (helpOpen.value) helpOpen.value = false
+    else emit('close')
+    return
+  }
+  if (event.key === 'Tab') {
+    const scope = aiImportModalRef.value || helpModalRef.value || dialogRef.value
+    const focusable = [...(scope?.querySelectorAll?.('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])]
+      .filter((element) => element.offsetParent !== null)
+    if (!focusable.length) return
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+    return
+  }
+  if (!(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'z') return
+  event.preventDefault()
+  if (event.shiftKey) redoDirector()
+  else undoDirector()
+}
+
+function onDirectorKeyup(event) {
+  if (event.key === 'Shift') shiftPressed = false
 }
 
 function selectShot(shot) {
@@ -467,7 +1277,308 @@ function selectShot(shot) {
 
 function selectCharacter(characterId) {
   selectedCharacterId.value = String(characterId)
-  focusItem(`character:${characterId}`)
+  const object = timeline.value.objects.find((entry) => entry.type === 'character' && entry.assetRef?.characterId === selectedCharacterId.value)
+  if (object) selectSceneObject(object.id)
+}
+
+function addSceneObject(type) {
+  const next = appendDirectorObject(timeline.value, type)
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  if (selectedObjectId.value) nextTick(() => focusItem(`custom:${selectedObjectId.value}`))
+}
+
+function addRoleArchetype(role) {
+  const count = timeline.value.objects.filter((object) => object.type === 'humanoid').length
+  const next = appendDirectorObject(timeline.value, 'humanoid', {
+    name: `${role.label} ${count + 1}`,
+    assetRef: { assetId: null, url: '', kind: role.kind },
+    transform: { position: [(count % 4) * 1.25 - 1.8, 0, -Math.floor(count / 4) * 1.2], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  })
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+}
+
+function addCrowd() {
+  let next = appendDirectorObject(timeline.value, 'group', { name: '群众 3×3', transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] } })
+  const groupId = next.objects.at(-1).id
+  for (let index = 0; index < 9; index += 1) {
+    const role = ROLE_ARCHETYPES[index % ROLE_ARCHETYPES.length]
+    next = appendDirectorObject(next, 'humanoid', {
+      name: `群众 ${index + 1}`,
+      parentId: groupId,
+      assetRef: { assetId: null, url: '', kind: role.kind },
+      transform: { position: [(index % 3 - 1) * 1.15, 0, (Math.floor(index / 3) - 1) * 1.05], rotation: [0, 0, 0], scale: [0.86, 0.86, 0.86] },
+    })
+  }
+  selectedObjectId.value = groupId
+  mutateTimeline(next)
+  buildStage()
+}
+
+function addCamera() {
+  const next = appendDirectorCamera(timeline.value)
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+}
+
+function duplicateSelectedObject() {
+  if (!selectedDirectorObject.value) return
+  const next = duplicateDirectorObject(timeline.value, selectedDirectorObject.value.id)
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+}
+
+function selectSceneObject(objectId) {
+  selectedObjectId.value = String(objectId)
+  const object = timeline.value.objects.find((entry) => entry.id === selectedObjectId.value)
+  if (object?.assetRef?.characterId) selectedCharacterId.value = object.assetRef.characterId
+  inspectorTab.value = 'properties'
+  for (const [key, stageObject] of stageObjects.entries()) {
+    for (const marker of stageObject.userData?.rigControls || []) marker.visible = key === `custom:${objectId}`
+  }
+  viewer.value?.setDirty?.()
+  focusItem(`custom:${objectId}`)
+}
+
+function selectEnvironmentInspector() {
+  selectedObjectId.value = ''
+  inspectorTab.value = 'properties'
+}
+
+function updateSelectedObject(patch) {
+  if (!selectedObjectId.value) return
+  if (selectedDirectorObject.value?.locked && patch.locked === undefined && patch.visible === undefined) return
+  let next = updateDirectorObject(timeline.value, selectedObjectId.value, patch)
+  const updated = next.objects.find((object) => object.id === selectedObjectId.value)
+  if (patch.transform && timeline.value.sequence.autoKey && updated) next = upsertMotionKeyframe(next, selectedObjectId.value, currentTime.value, updated.transform)
+  mutateTimeline(next)
+  applyDirectorObjectToStage(next.objects.find((object) => object.id === selectedObjectId.value))
+}
+
+function toggleObjectVisibility(object) {
+  if (!object) return
+  selectedObjectId.value = object.id
+  updateSelectedObject({ visible: !object.visible })
+}
+
+function toggleObjectLock(object) {
+  if (!object) return
+  selectedObjectId.value = object.id
+  updateSelectedObject({ locked: !object.locked })
+}
+
+function updateObjectParent(parentId) {
+  updateSelectedObject({ parentId: String(parentId || '') })
+  buildStage()
+}
+
+function applyDirectorObjectToStage(entry) {
+  const object = entry ? stageObjects.get(`custom:${entry.id}`) : null
+  if (!object) return
+  object.name = entry.name
+  object.visible = entry.visible
+  object.position.set(...entry.transform.position)
+  object.rotation.set(...entry.transform.rotation)
+  object.scale.set(...entry.transform.scale)
+  rememberBaseTransform(object)
+  viewer.value?.setDirty?.()
+}
+
+function updateObjectVector(field, index, value) {
+  if (!selectedDirectorObject.value) return
+  const vector = [...selectedInspectorTransform.value[field]]
+  vector[index] = Number(value) || 0
+  updateSelectedObject({ transform: { [field]: vector } })
+}
+
+function updateObjectRotation(index, value) {
+  if (!selectedDirectorObject.value) return
+  const vector = [...selectedInspectorTransform.value.rotation]
+  vector[index] = (Number(value) || 0) * Math.PI / 180
+  updateSelectedObject({ transform: { rotation: vector } })
+}
+
+function updateObjectScale(index, value, proportional = false) {
+  const current = [...selectedInspectorTransform.value.scale]
+  const nextValue = Math.max(0.0001, Number(value) || 0.0001)
+  if (proportional) {
+    const edited = [...current]
+    edited[index] = nextValue
+    updateSelectedObject({ transform: { scale: proportionalScaleFromAxis(current, edited) } })
+  } else {
+    current[index] = nextValue
+    updateSelectedObject({ transform: { scale: current } })
+  }
+}
+
+function radiansToDegrees(value) {
+  return Number((Number(value || 0) * 180 / Math.PI).toFixed(2))
+}
+
+function deleteSelectedObject() {
+  if (!selectedObjectId.value) return
+  mutateTimeline(removeDirectorObject(timeline.value, selectedObjectId.value))
+  selectedObjectId.value = ''
+  buildStage()
+}
+
+function updateSelectedCamera(field, value) {
+  if (!selectedCamera.value) return
+  const normalized = ['fov', 'aspect', 'near', 'far'].includes(field) ? Number(value) : field === 'showGuides' ? Boolean(value) : String(value || '')
+  const cameras = timeline.value.cameras.map((camera) => camera.id === selectedCamera.value.id ? { ...camera, [field]: normalized } : camera)
+  mutateTimeline({ ...timeline.value, cameras })
+  if (selectedShot.value?.cameraId === selectedCamera.value.id) setCameraForShot(selectedShot.value)
+}
+
+function cameraAspectLabel(value) {
+  const numeric = Number(value)
+  return CAMERA_ASPECTS.find((ratio) => ratio.value && Math.abs(ratio.value - numeric) < 0.01)?.label || 'Auto'
+}
+
+function applyCameraAspect(label) {
+  const ratio = CAMERA_ASPECTS.find((item) => item.label === label)
+  if (!ratio || !selectedCamera.value) return
+  const canvas = canvasRef.value
+  const aspect = ratio.value || (canvas?.clientWidth && canvas?.clientHeight ? canvas.clientWidth / canvas.clientHeight : 16 / 9)
+  updateSelectedCamera('aspect', aspect)
+  const camera = viewer.value?.scene?.mainCamera
+  if (camera) {
+    camera.aspect = aspect
+    camera.updateProjectionMatrix?.()
+    viewer.value?.setDirty?.()
+  }
+}
+
+function cycleCameraAspect() {
+  if (!selectedCamera.value) {
+    const activeCameraId = selectedShot.value?.cameraId
+    const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeCameraId) || timeline.value.cameras[0]
+    if (activeCamera?.objectId) selectSceneObject(activeCamera.objectId)
+  }
+  if (!selectedCamera.value) return
+  const current = cameraAspectLabel(selectedCamera.value.aspect)
+  const index = CAMERA_ASPECTS.findIndex((ratio) => ratio.label === current)
+  applyCameraAspect(CAMERA_ASPECTS[(index + 1) % CAMERA_ASPECTS.length].label)
+}
+
+async function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen?.()
+    return
+  }
+  await dialogRef.value?.requestFullscreen?.()
+}
+
+function applyCameraPreset(name) {
+  const preset = CAMERA_PRESETS.find((item) => item.name === name)
+  if (!preset || !selectedCamera.value) return
+  if (preset.current) {
+    captureCurrentViewToCamera()
+    return
+  }
+  updateSelectedObject({
+    transform: {
+      position: preset.position,
+      rotation: [0, 0, preset.roll || 0],
+    },
+  })
+  updateSelectedCamera('fov', preset.fov)
+  setCamera(preset.position, preset.target)
+  const camera = viewer.value?.scene?.mainCamera
+  if (camera) {
+    camera.fov = preset.fov
+    camera.rotation.z = preset.roll || 0
+    camera.updateProjectionMatrix?.()
+    viewer.value?.setDirty?.()
+  }
+}
+
+async function applyEnvironment(environment = timeline.value.environment) {
+  const currentViewer = viewer.value
+  if (!currentViewer) return
+  const requestId = ++environmentRequest
+  currentViewer.scene?.setBackgroundColor?.(environment.backgroundColor || '#0f172a')
+  if (ambientLight) ambientLight.intensity = Math.max(0, Number(environment.ambientIntensity) || 0)
+  if (keyLight) keyLight.intensity = Math.max(0, Number(environment.directionalIntensity) || 0)
+  try {
+    if (environment.panoramaUrl) {
+      await currentViewer.setBackgroundMap(environment.panoramaUrl, { setEnvironment: true })
+    } else {
+      await currentViewer.setBackgroundMap(null)
+      currentViewer.scene?.setBackgroundColor?.(environment.backgroundColor || '#0f172a')
+    }
+    if (requestId === environmentRequest) errorMessage.value = ''
+  } catch (error) {
+    if (requestId === environmentRequest) errorMessage.value = error?.message || '全景环境加载失败'
+  }
+  currentViewer.setDirty?.()
+}
+
+function updateEnvironment(field, value) {
+  const numeric = ['ambientIntensity', 'directionalIntensity', 'sceneScale', 'panoramaRotation', 'panoramaRadius', 'groundOpacity', 'groundHeight'].includes(field)
+  const boolean = ['showCharacterLabels', 'gridSnap', 'groundSnap', 'showGround'].includes(field)
+  mutateTimeline({
+    ...timeline.value,
+    environment: { ...timeline.value.environment, [field]: boolean ? Boolean(value) : numeric ? Number(value) || 0 : String(value || '') },
+    revision: timeline.value.revision + 1,
+  })
+  applySceneEnvironment()
+  void applyEnvironment()
+}
+
+function updateEnvironmentVector(field, index, value) {
+  const vector = [...timeline.value.environment[field]]
+  vector[index] = Number(value) || 0
+  mutateTimeline({ ...timeline.value, environment: { ...timeline.value.environment, [field]: vector } })
+  applySceneEnvironment()
+}
+
+function updateEnvironmentRotation(index, value) {
+  const vector = [...timeline.value.environment.sceneRotation]
+  vector[index] = (Number(value) || 0) * Math.PI / 180
+  mutateTimeline({ ...timeline.value, environment: { ...timeline.value.environment, sceneRotation: vector } })
+  applySceneEnvironment()
+}
+
+function applySceneEnvironment() {
+  const environment = timeline.value.environment
+  if (stageRoot) {
+    stageRoot.position.set(...environment.scenePosition)
+    stageRoot.rotation.set(...environment.sceneRotation)
+    stageRoot.scale.setScalar(environment.sceneScale)
+  }
+  if (groundGrid) {
+    groundGrid.visible = environment.showGround
+    groundGrid.position.y = environment.groundHeight
+    if (groundGrid.material) {
+      groundGrid.material.transparent = environment.groundOpacity < 1
+      groundGrid.material.opacity = environment.groundOpacity
+    }
+  }
+  viewer.value?.setDirty?.()
+}
+
+function captureCurrentViewToCamera() {
+  const camera = viewer.value?.scene?.mainCamera
+  if (!camera || !selectedDirectorObject.value || !selectedCamera.value || selectedDirectorObject.value.locked) return
+  const position = [camera.position.x, camera.position.y, camera.position.z]
+  const quaternion = [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w]
+  const target = camera.target ? [camera.target.x, camera.target.y, camera.target.z] : [0, 0.8, 0]
+  let next = updateDirectorObject(timeline.value, selectedObjectId.value, { transform: { position } })
+  next = {
+    ...next,
+    cameras: next.cameras.map((entry) => entry.id === selectedCamera.value.id ? { ...entry, quaternion, target } : entry),
+  }
+  const updated = next.objects.find((object) => object.id === selectedObjectId.value)
+  if (timeline.value.sequence.autoKey && updated) next = upsertMotionKeyframe(next, selectedObjectId.value, currentTime.value, updated.transform)
+  mutateTimeline(next)
+  applyDirectorObjectToStage(updated)
+  assetStatus.value = '已从当前导演视角更新机位位置与方向'
 }
 
 function addShot() {
@@ -485,16 +1596,56 @@ function removeSelectedShot() {
   mutateTimeline(next)
 }
 
+function moveSelectedShot(direction) {
+  if (!selectedShot.value) return
+  const index = shots.value.findIndex((shot) => shot.id === selectedShot.value.id)
+  const target = index + direction
+  if (index < 0 || target < 0 || target >= shots.value.length) return
+  const ordered = [...shots.value]
+  ;[ordered[index], ordered[target]] = [ordered[target], ordered[index]]
+  mutateTimeline(normalizeDirectorTimeline({ ...timeline.value, shots: ordered }, characters.value))
+}
+
+function splitSelectedShot() {
+  if (!selectedShot.value || !canSplitSelectedShot.value) return
+  const shotIndex = shots.value.findIndex((shot) => shot.id === selectedShot.value.id)
+  const next = splitShotAtTime(timeline.value, selectedShot.value.id, currentTime.value)
+  selectedShotId.value = next.shots[shotIndex + 1].id
+  mutateTimeline(next)
+}
+
 function updateSelectedShot(field, value) {
   if (!selectedShot.value) return
-  const shotsNext = shots.value.map((shot) => shot.id === selectedShot.value.id ? { ...shot, [field]: field === 'name' || field === 'camera' || field === 'transition' || field === 'sceneId' ? value : Number(value) } : shot)
+  const shotsNext = shots.value.map((shot) => shot.id === selectedShot.value.id ? { ...shot, [field]: field === 'name' || field === 'camera' || field === 'cameraId' || field === 'transition' || field === 'sceneId' ? value : Number(value) } : shot)
   mutateTimeline({ ...timeline.value, shots: shotsNext })
 }
 
 function addActionClip() {
   if (!selectedCharacterId.value) return
   const next = appendActionClip(timeline.value, selectedCharacterId.value, actionToAdd.value, { start: currentTime.value })
+  selectedActionClipId.value = next.tracks.find((track) => track.characterId === selectedCharacterId.value)?.clips.at(-1)?.id || ''
   mutateTimeline(next)
+}
+
+function selectActionClip(track, clip) {
+  if (!track || !clip) return
+  selectedCharacterId.value = track.characterId
+  selectedActionClipId.value = clip.id
+  actionToAdd.value = clip.action
+  setCurrentTime(clip.start)
+}
+
+function updateSelectedActionClip(field, value) {
+  if (!selectedActionClip.value) return
+  const normalized = field === 'action' ? String(value || '') : Number(value)
+  mutateTimeline(updateActionClip(timeline.value, selectedActionClip.value.id, { [field]: normalized }))
+  if (field === 'action') actionToAdd.value = normalized
+}
+
+function removeSelectedActionClip() {
+  if (!selectedActionClip.value) return
+  mutateTimeline(removeActionClip(timeline.value, selectedActionClip.value.id))
+  selectedActionClipId.value = ''
 }
 
 function setCurrentTime(value) {
@@ -518,8 +1669,83 @@ function playFrame(now) {
   const elapsed = Math.max(0, (now - lastFrameTime) / 1000)
   lastFrameTime = now
   const next = currentTime.value + elapsed
-  setCurrentTime(next >= duration.value ? 0 : next)
+  if (next >= duration.value && !timeline.value.sequence.loop) {
+    setCurrentTime(duration.value)
+    stopPlayback()
+    return
+  }
+  setCurrentTime(next >= duration.value ? next % duration.value : next)
   animationFrame = requestAnimationFrame(playFrame)
+}
+
+function toggleLoopPlayback() {
+  mutateTimeline({ ...timeline.value, sequence: { ...timeline.value.sequence, loop: !timeline.value.sequence.loop } })
+}
+
+function toggleSequenceOption(field) {
+  mutateTimeline({ ...timeline.value, sequence: { ...timeline.value.sequence, [field]: !timeline.value.sequence[field] } })
+}
+
+function setTimelineZoom(value) {
+  mutateTimeline({ ...timeline.value, sequence: { ...timeline.value.sequence, timelineZoom: Math.max(0.5, Math.min(4, Number(value) || 1)) } })
+}
+
+function toggleTimelineCollapsed() {
+  mutateTimeline({ ...timeline.value, sequence: { ...timeline.value.sequence, timelineCollapsed: !timeline.value.sequence.timelineCollapsed } })
+}
+
+function setTransformMode(mode) {
+  if (!TRANSFORM_TOOLS.some((tool) => tool.mode === mode)) return
+  transformMode.value = mode
+  if (transformControls) transformControls.mode = mode
+}
+
+function toggleTransformSpace() {
+  transformSpace.value = transformSpace.value === 'world' ? 'local' : 'world'
+  if (transformControls) transformControls.space = transformSpace.value
+}
+
+function directorObjectIdForStageObject(object) {
+  let current = object
+  while (current) {
+    for (const [key, stageObject] of stageObjects) if (stageObject === current && key.startsWith('custom:')) return key.slice(7)
+    current = current.parent
+  }
+  return ''
+}
+
+function syncTransformSelection(event) {
+  const objectId = directorObjectIdForStageObject(event?.object || event?.value)
+  if (objectId) selectedObjectId.value = objectId
+}
+
+function rememberTransformControlStart() {
+  transformStartScale = transformControls?.object?.scale?.toArray?.() || null
+}
+
+function persistTransformControlChange() {
+  const object = transformControls?.object
+  const objectId = directorObjectIdForStageObject(object)
+  if (!objectId) return
+  if (transformMode.value === 'scale' && shiftPressed && transformStartScale) {
+    object.scale.set(...proportionalScaleFromAxis(transformStartScale, object.scale.toArray()))
+  }
+  selectedObjectId.value = objectId
+  updateSelectedObject({ transform: { position: object.position.toArray(), rotation: [object.rotation.x, object.rotation.y, object.rotation.z], scale: object.scale.toArray() } })
+  transformStartScale = null
+}
+
+function addCurrentMotionKeyframe() {
+  if (!selectedDirectorObject.value) return
+  mutateTimeline(upsertMotionKeyframe(timeline.value, selectedDirectorObject.value.id, currentTime.value, selectedDirectorObject.value.transform))
+}
+
+function objectName(objectId) {
+  return timeline.value.objects.find((object) => object.id === objectId)?.name || '运动轨道'
+}
+
+function keyframeStyle(keyframe) {
+  return { left: `${Math.max(0, Math.min(100, keyframe.time / duration.value * 100))}%` }
 }
 
 function stopPlayback() {
@@ -529,12 +1755,7 @@ function stopPlayback() {
 }
 
 function recordingMimeType() {
-  const candidates = [
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
-    'video/webm',
-  ]
-  return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || ''
+  return pickDirectorRecordingMimeType((type) => window.MediaRecorder?.isTypeSupported?.(type))
 }
 
 async function recordTimelineBlob() {
@@ -547,7 +1768,21 @@ async function recordTimelineBlob() {
   const previousTime = currentTime.value
   const wasPlaying = playing.value
   const total = Math.max(0.25, duration.value)
-  const stream = canvasRef.value.captureStream(timeline.value.sequence.fps)
+  const recordingCanvas = document.createElement('canvas')
+  recordingCanvas.width = canvasRef.value.width
+  recordingCanvas.height = canvasRef.value.height
+  const recordingContext = recordingCanvas.getContext('2d', { alpha: false })
+  if (!recordingContext) throw new Error('无法创建视频录制画布')
+  const copyViewportFrame = () => {
+    try {
+      recordingContext.drawImage(canvasRef.value, 0, 0, recordingCanvas.width, recordingCanvas.height)
+    } catch (error) {
+      throw new Error(`视频录制失败，可能存在未允许跨域读取的纹理：${error?.message || '画布不可读取'}`)
+    }
+  }
+  copyViewportFrame()
+  const stream = recordingCanvas.captureStream(timeline.value.sequence.fps)
+  const videoTrack = stream.getVideoTracks?.()[0]
   const chunks = []
   let recorder
   let exportFrame = 0
@@ -563,21 +1798,40 @@ async function recordTimelineBlob() {
       recorder.onstop = resolve
       const startedAt = performance.now()
       recorder.start(100)
+      videoTrack?.requestFrame?.()
       const tick = (now) => {
+        if (exportCancelled.value) {
+          if (recorder.state !== 'inactive') recorder.stop()
+          return
+        }
         const elapsed = Math.max(0, (now - startedAt) / 1000)
         if (elapsed >= total) {
           setCurrentTime(total)
           exportProgress.value = 100
-          recorder.stop()
+          viewer.value?.setDirty?.()
+          copyViewportFrame()
+          videoTrack?.requestFrame?.()
+          setTimeout(() => {
+            if (recorder.state !== 'inactive') {
+              recorder.requestData?.()
+              recorder.stop()
+            }
+          }, 100)
           return
         }
         setCurrentTime(elapsed)
+        viewer.value?.setDirty?.()
+        copyViewportFrame()
+        videoTrack?.requestFrame?.()
         exportProgress.value = Math.min(99, Math.round(elapsed / total * 100))
         exportFrame = requestAnimationFrame(tick)
       }
       exportFrame = requestAnimationFrame(tick)
     })
-    return new Blob(chunks, { type: mimeType })
+    if (exportCancelled.value) throw new Error('已取消视频导出')
+    const blob = new Blob(chunks, { type: mimeType })
+    if (blob.size < 1024) throw new Error('WebM 录制未产生有效视频帧')
+    return blob
   } finally {
     if (exportFrame) cancelAnimationFrame(exportFrame)
     stream.getTracks?.().forEach((track) => track.stop())
@@ -589,13 +1843,14 @@ async function recordTimelineBlob() {
 async function exportTimelineVideo() {
   if (exporting.value) return
   exporting.value = true
+  exportCancelled.value = false
   exportProgress.value = 0
   try {
     const blob = await recordTimelineBlob()
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${String(props.drama?.title || '导演台镜头序列').replace(/[\\/:*?"<>|]/g, '_')}.webm`
+    link.download = directorExportFilename(props.drama?.title, 'webm')
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
     assetStatus.value = '视频已导出（WebM）'
@@ -610,39 +1865,54 @@ async function exportTimelineVideo() {
 async function exportTimelineMp4() {
   if (exporting.value || !props.drama?.id) return
   exporting.value = true
+  exportCancelled.value = false
   exportProgress.value = 0
   try {
     const blob = await recordTimelineBlob()
     assetStatus.value = '正在提交服务端转码…'
     const created = await directorExportAPI.create(props.drama.id, blob, timeline.value)
     if (!created?.task_id) throw new Error('服务端未返回导出任务')
-    for (let attempt = 0; attempt < 180; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      const task = await taskAPI.get(created.task_id)
-      exportProgress.value = Math.max(1, Math.min(99, Number(task?.progress) || 1))
-      if (task?.status === 'failed') throw new Error(task.error || '服务端转码失败')
-      if (task?.status !== 'completed') continue
-      let result = task.result
-      if (typeof result === 'string') {
-        try { result = JSON.parse(result) } catch (_) {}
-      }
-      const url = result?.url
-      if (!url) throw new Error('导出任务完成但没有下载地址')
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `${String(props.drama?.title || '导演台镜头序列').replace(/[\\/:*?"<>|]/g, '_')}.mp4`
-      link.click()
-      assetStatus.value = '视频已导出（MP4）'
-      exportProgress.value = 100
-      return
+    activeExportTaskId.value = created.task_id
+    const task = await waitForDirectorExportTask({
+      getTask: async (taskId) => {
+        const next = await taskAPI.get(taskId)
+        exportProgress.value = Math.max(1, Math.min(99, Number(next?.progress) || 1))
+        return next
+      },
+      taskId: created.task_id,
+      maxAttempts: Math.max(1, Math.min(180, Number(created.poll_max_attempts) || 180)),
+      isCancelled: () => exportCancelled.value,
+    })
+    const result = parseDirectorExportResult(task.result)
+    const url = directorExportDownloadUrl(result)
+    if (!url) throw new Error('导出任务完成但没有下载地址')
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`导出视频下载失败（${response.status}）`)
+    const contentType = String(response.headers.get('content-type') || '')
+    if (!contentType.startsWith('video/') && contentType !== 'application/octet-stream') {
+      throw new Error(`导出视频响应类型错误：${contentType || 'unknown'}`)
     }
-    throw new Error('服务端转码超时')
+    const downloadUrl = URL.createObjectURL(await response.blob())
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = directorExportFilename(props.drama?.title, 'mp4')
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
+    assetStatus.value = '视频已导出（MP4）'
+    exportProgress.value = 100
   } catch (error) {
     assetStatus.value = error?.message || '服务端导出失败'
   } finally {
     exporting.value = false
+    activeExportTaskId.value = ''
     exportProgress.value = 0
   }
+}
+
+async function cancelExport() {
+  exportCancelled.value = true
+  if (activeExportTaskId.value) await taskAPI.cancel(activeExportTaskId.value, { reason: '用户取消导演台导出' }).catch(() => {})
+  assetStatus.value = '已取消视频导出'
 }
 
 function colorize(object, color) {
@@ -658,6 +1928,110 @@ function generator() {
 function makeObject(type, params, color) {
   const object = generator()?.generateObject(type, params)
   return object ? colorize(object, color) : null
+}
+
+function makeHumanoidObject(kind) {
+  const role = ROLE_ARCHETYPES.find((item) => item.kind === kind) || ROLE_ARCHETYPES[0]
+  const group = new Group()
+  const isChibi = role.kind === 'chibi'
+  const headRadius = isChibi ? role.height * 0.24 : role.height * 0.11
+  const torsoHeight = role.height * (isChibi ? 0.3 : 0.32)
+  const legHeight = role.height * (isChibi ? 0.22 : 0.47)
+  const armHeight = role.height * (isChibi ? 0.26 : 0.34)
+  const limbRadius = Math.max(0.045, role.width * 0.105)
+  const halfArm = armHeight / 2
+  const halfLeg = legHeight / 2
+  const surface = role.color
+  const makeEllipsoid = (radius, scale, color = surface) => {
+    const mesh = makeObject('sphere', { radius, widthSegments: 24, heightSegments: 16 }, color)
+    mesh?.scale.set(...scale)
+    return mesh
+  }
+  const makeTapered = (height, top, bottom, depthScale = 1, color = surface) => {
+    const mesh = makeObject('cylinder', { radiusTop: top, radiusBottom: bottom, height, radialSegments: 20, heightSegments: 2 }, color)
+    if (mesh) mesh.scale.z = depthScale
+    return mesh
+  }
+  const chest = makeEllipsoid(role.width * 0.39, [1, torsoHeight * 0.72 / (role.width * 0.78), 0.62])
+  const abdomen = makeEllipsoid(role.width * 0.25, [1, 1.28, 0.65])
+  const pelvis = makeEllipsoid(role.width * 0.29, [1, 0.78, 0.72])
+  const neck = makeTapered(headRadius * 0.72, headRadius * 0.42, headRadius * 0.48, 0.92)
+  const head = makeEllipsoid(headRadius, [0.82, 1.08, 0.9])
+  const jaw = makeEllipsoid(headRadius * 0.72, [0.78, 0.7, 0.8])
+  const nose = makeEllipsoid(headRadius * 0.15, [0.65, 0.9, 1.35])
+  const upperArms = [makeTapered(halfArm, limbRadius * 1.2, limbRadius, 0.94), makeTapered(halfArm, limbRadius * 1.2, limbRadius, 0.94)]
+  const lowerArms = [makeTapered(halfArm, limbRadius, limbRadius * 0.72, 0.92), makeTapered(halfArm, limbRadius, limbRadius * 0.72, 0.92)]
+  const upperLegRadius = limbRadius * 1.55
+  const lowerLegRadius = limbRadius * 1.2
+  const upperLegs = [makeTapered(halfLeg, upperLegRadius, upperLegRadius * 0.78, 1.08), makeTapered(halfLeg, upperLegRadius, upperLegRadius * 0.78, 1.08)]
+  const lowerLegs = [makeTapered(halfLeg, lowerLegRadius, lowerLegRadius * 0.72, 1.02), makeTapered(halfLeg, lowerLegRadius, lowerLegRadius * 0.72, 1.02)]
+  const shoulderCaps = [makeEllipsoid(limbRadius * 1.34, [1, 1, 1]), makeEllipsoid(limbRadius * 1.34, [1, 1, 1])]
+  const elbowCaps = [makeEllipsoid(limbRadius, [1, 1, 1]), makeEllipsoid(limbRadius, [1, 1, 1])]
+  const kneeCaps = [makeEllipsoid(lowerLegRadius, [1, 0.86, 1]), makeEllipsoid(lowerLegRadius, [1, 0.86, 1])]
+  const hands = [new Group(), new Group()]
+  const palms = [makeEllipsoid(limbRadius * 0.92, [0.78, 1.15, 0.48]), makeEllipsoid(limbRadius * 0.92, [0.78, 1.15, 0.48])]
+  const fingers = hands.map((hand, side) => Array.from({ length: 5 }, (_, index) => {
+    const finger = makeTapered(limbRadius * (index === 0 ? 1.05 : 1.28 - Math.abs(index - 2) * 0.08), limbRadius * 0.18, limbRadius * 0.13, 0.88)
+    finger.position.set((index - 2) * limbRadius * 0.28, -limbRadius * 1.5, index === 0 ? limbRadius * 0.12 : 0)
+    finger.rotation.z = index === 0 ? (side ? -0.52 : 0.52) : (index - 2) * 0.025
+    hand.add(finger)
+    return finger
+  }))
+  hands.forEach((hand, index) => hand.add(palms[index]))
+  const feet = [makeEllipsoid(lowerLegRadius, [0.92, 0.58, 1.65]), makeEllipsoid(lowerLegRadius, [0.92, 0.58, 1.65])]
+  const meshes = [chest, abdomen, pelvis, neck, head, jaw, nose, ...upperArms, ...lowerArms, ...upperLegs, ...lowerLegs, ...shoulderCaps, ...elbowCaps, ...kneeCaps, ...palms, ...fingers.flat(), ...feet]
+  if (!meshes.every(Boolean)) return null
+
+  const root = new Group(); const spine = new Group(); const headPivot = new Group()
+  const leftShoulder = new Group(); const rightShoulder = new Group(); const leftElbow = new Group(); const rightElbow = new Group()
+  const leftHip = new Group(); const rightHip = new Group(); const leftKnee = new Group(); const rightKnee = new Group()
+  const poseBones = { root, spine, head: headPivot, leftShoulder, rightShoulder, leftElbow, rightElbow, leftHip, rightHip, leftKnee, rightKnee }
+
+  spine.position.set(0, legHeight, 0)
+  pelvis.position.set(0, torsoHeight * 0.08, 0)
+  abdomen.position.set(0, torsoHeight * 0.34, 0)
+  chest.position.set(0, torsoHeight * 0.7, 0)
+  headPivot.position.set(0, legHeight + torsoHeight, 0)
+  neck.position.set(0, headRadius * 0.2, 0)
+  head.position.set(0, headRadius * 1.2, 0)
+  jaw.position.set(0, headRadius * 0.9, headRadius * 0.16)
+  nose.position.set(0, headRadius * 1.28, headRadius * 0.84)
+  const shoulderY = legHeight + torsoHeight * 0.77
+  leftShoulder.position.set(-role.width / 2, shoulderY, 0)
+  rightShoulder.position.set(role.width / 2, shoulderY, 0)
+  shoulderCaps[0].position.set(0, 0, 0); shoulderCaps[1].position.set(0, 0, 0)
+  upperArms[0].position.set(0, -halfArm / 2, 0); upperArms[1].position.set(0, -halfArm / 2, 0)
+  leftElbow.position.set(0, -halfArm, 0); rightElbow.position.set(0, -halfArm, 0)
+  elbowCaps[0].position.set(0, 0, 0); elbowCaps[1].position.set(0, 0, 0)
+  lowerArms[0].position.set(0, -halfArm / 2, 0); lowerArms[1].position.set(0, -halfArm / 2, 0)
+  hands[0].position.set(0, -halfArm - limbRadius * 0.75, limbRadius * 0.16); hands[1].position.set(0, -halfArm - limbRadius * 0.75, limbRadius * 0.16)
+  leftHip.position.set(-role.width * 0.18, legHeight, 0)
+  rightHip.position.set(role.width * 0.18, legHeight, 0)
+  upperLegs[0].position.set(0, -halfLeg / 2, 0); upperLegs[1].position.set(0, -halfLeg / 2, 0)
+  leftKnee.position.set(0, -halfLeg, 0); rightKnee.position.set(0, -halfLeg, 0)
+  kneeCaps[0].position.set(0, 0, lowerLegRadius * 0.12); kneeCaps[1].position.set(0, 0, lowerLegRadius * 0.12)
+  lowerLegs[0].position.set(0, -halfLeg / 2, 0); lowerLegs[1].position.set(0, -halfLeg / 2, 0)
+  feet[0].position.set(0, -halfLeg - lowerLegRadius * 0.25, lowerLegRadius * 0.68); feet[1].position.set(0, -halfLeg - lowerLegRadius * 0.25, lowerLegRadius * 0.68)
+
+  spine.add(pelvis, abdomen, chest); headPivot.add(neck, head, jaw, nose)
+  leftElbow.add(elbowCaps[0], lowerArms[0], hands[0]); rightElbow.add(elbowCaps[1], lowerArms[1], hands[1])
+  leftShoulder.add(shoulderCaps[0], upperArms[0], leftElbow); rightShoulder.add(shoulderCaps[1], upperArms[1], rightElbow)
+  leftKnee.add(kneeCaps[0], lowerLegs[0], feet[0]); rightKnee.add(kneeCaps[1], lowerLegs[1], feet[1])
+  leftHip.add(upperLegs[0], leftKnee); rightHip.add(upperLegs[1], rightKnee)
+  root.add(spine, headPivot, leftShoulder, rightShoulder, leftHip, rightHip)
+  const rigControls = Object.values(poseBones).map((bone) => {
+    const marker = makeObject('sphere', { radius: Math.max(0.018, role.height * 0.012), widthSegments: 14, heightSegments: 10 }, 0x72e7f2)
+    if (marker?.material) {
+      marker.material.emissive?.set?.(0x285a63)
+      marker.material.depthTest = false
+      marker.material.depthWrite = false
+    }
+    if (marker) { marker.visible = false; marker.renderOrder = 100; bone.add(marker) }
+    return marker
+  }).filter(Boolean)
+  group.add(root)
+  group.userData = { ...(group.userData || {}), poseBones, rigControls }
+  return group
 }
 
 function addObject(key, object) {
@@ -677,6 +2051,8 @@ function clearStageObjects() {
   characterObjects.clear()
   characterModels.clear()
   characterPlaceholders.clear()
+  proceduralCharacterIds.value = new Set()
+  actionResourceRequests.clear()
   stageRoot?.parent?.remove?.(stageRoot)
   stageRoot?.dispose?.()
   stageRoot = null
@@ -709,25 +2085,6 @@ function buildStage() {
     stageObjects.set(`scene:${scene.id || index}`, platform)
   })
 
-  characterEntries.value.forEach((character, index) => {
-    const x = (index - (characterEntries.value.length - 1) / 2) * 1.8
-    const body = makeObject('box', { width: 0.7, height: 1.35, depth: 0.5 }, 0x818cf8)
-    const head = makeObject('sphere', { radius: 0.34, widthSegments: 20, heightSegments: 14 }, 0xf5c2a4)
-    if (!body || !head) return
-    body.position.set(x, 0.68, 0)
-    head.position.set(x, 1.62, 0)
-    body.name = character.name
-    head.name = `${character.name} · 头部`
-    rememberBaseTransform(body)
-    rememberBaseTransform(head)
-    root.add(body, head)
-    stageObjects.set(`character:${character.id}`, body)
-    characterObjects.set(character.id, body)
-    characterPlaceholders.set(character.id, [body, head])
-    const modelUrl = timeline.value.characterAssets?.[character.id]?.modelUrl
-    if (modelUrl) void loadCharacterModel(character.id, buildToken)
-  })
-
   propsList.value.forEach((prop, index) => {
     const object = makeObject('box', { width: 0.55, height: 0.55, depth: 0.55 }, 0xfbbf24)
     if (!object) return
@@ -738,20 +2095,107 @@ function buildStage() {
     stageObjects.set(`prop:${prop.id || index}`, object)
   })
 
+  timeline.value.objects.forEach((entry) => {
+    if (entry.type === 'group') {
+      const group = new Group()
+      group.name = entry.name
+      group.visible = entry.visible
+      group.position.set(...entry.transform.position)
+      group.rotation.set(...entry.transform.rotation)
+      group.scale.set(...entry.transform.scale)
+      rememberBaseTransform(group)
+      stageObjects.set(`custom:${entry.id}`, group)
+      return
+    }
+    if (entry.type === 'light') {
+      const light = new DirectionalLight(0xffffff, 2)
+      light.name = entry.name
+      light.visible = entry.visible
+      light.position.set(...entry.transform.position)
+      light.rotation.set(...entry.transform.rotation)
+      light.scale.set(...entry.transform.scale)
+      rememberBaseTransform(light)
+      stageObjects.set(`custom:${entry.id}`, light)
+      return
+    }
+    if (entry.type === 'humanoid' || entry.type === 'character') {
+      const humanoid = makeHumanoidObject(entry.assetRef?.kind)
+      if (!humanoid) return
+      humanoid.name = entry.name
+      humanoid.visible = entry.visible
+      humanoid.position.set(...entry.transform.position)
+      humanoid.rotation.set(...entry.transform.rotation)
+      humanoid.scale.set(...entry.transform.scale)
+      rememberBaseTransform(humanoid)
+      stageObjects.set(`custom:${entry.id}`, humanoid)
+      for (const [semantic, rotation] of Object.entries(entry.poseRotations || {})) humanoid.userData.poseBones?.[semantic]?.rotation?.set?.(...rotation)
+      if (entry.type === 'character' && entry.assetRef?.characterId) {
+        characterObjects.set(entry.assetRef.characterId, humanoid)
+        characterPlaceholders.set(entry.assetRef.characterId, [humanoid])
+        proceduralCharacterIds.value = new Set([...proceduralCharacterIds.value, String(entry.assetRef.characterId)])
+      }
+      return
+    }
+    const type = entry.type === 'sphere' ? 'sphere' : 'box'
+    const params = type === 'sphere'
+      ? { radius: 0.5, widthSegments: 20, heightSegments: 14 }
+      : { width: entry.type === 'camera' ? 0.5 : 1, height: entry.type === 'camera' ? 0.32 : 1, depth: entry.type === 'camera' ? 0.7 : 1 }
+    const object = makeObject(type, params, entry.type === 'camera' ? 0x38bdf8 : 0xa78bfa)
+    if (!object) return
+    object.name = entry.name
+    object.visible = entry.visible
+    object.position.set(...entry.transform.position)
+    object.rotation.set(...entry.transform.rotation)
+    object.scale.set(...entry.transform.scale)
+    rememberBaseTransform(object)
+    stageObjects.set(`custom:${entry.id}`, object)
+  })
+
+  timeline.value.objects.forEach((entry) => {
+    const object = stageObjects.get(`custom:${entry.id}`)
+    if (!object) return
+    const parent = entry.parentId ? stageObjects.get(`custom:${entry.parentId}`) : null
+    ;(parent || root).add(object)
+  })
+
+  for (const entry of timeline.value.objects) {
+    if (entry.type !== 'character' || !entry.assetRef?.characterId) continue
+    if (timeline.value.characterAssets?.[entry.assetRef.characterId]?.modelUrl) void loadCharacterModel(entry.assetRef.characterId, buildToken)
+  }
+
   viewer.value.setDirty?.()
+  applySceneEnvironment()
   applyTimelineFrame()
 }
 
-function setCamera(position, target = [0, 0.8, 0]) {
+function setCamera(position, target = [0, 0.8, 0], quaternion = null) {
   const camera = viewer.value?.scene?.mainCamera
   if (!camera) return
   camera.position.set(...position)
   camera.target?.set?.(...target)
+  if (Array.isArray(quaternion) && quaternion.length === 4) camera.quaternion.set(...quaternion)
   camera.setDirty?.()
 }
 
 function setCameraForShot(shot) {
   if (!shot) return
+  const boundCamera = timeline.value.cameras.find((camera) => camera.id === shot.cameraId)
+  const cameraObject = boundCamera && timeline.value.objects.find((object) => object.id === boundCamera.objectId)
+  if (boundCamera && cameraObject) {
+    const camera = viewer.value?.scene?.mainCamera
+    if (camera) {
+      camera.fov = Number(boundCamera.fov) || 50
+      camera.aspect = Number(boundCamera.aspect) || camera.aspect
+      camera.updateProjectionMatrix?.()
+    }
+    const followObject = timeline.value.objects.find((object) => object.id === boundCamera.followTargetId)
+    const lookAtObject = boundCamera.lookAtMode === 'object' ? timeline.value.objects.find((object) => object.id === boundCamera.lookAtTargetId) : null
+    const follow = followObject?.transform?.position || [0, 0, 0]
+    const position = cameraObject.transform.position.map((value, index) => value + follow[index])
+    const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
+    setCamera(position, target, lookAtObject ? null : boundCamera.quaternion)
+    return
+  }
   const firstCharacter = characterObjects.values().next().value
   const target = firstCharacter?.position || { x: 0, y: 0.8, z: 0 }
   if (shot.camera === 'wide') setCamera([7.8, 5.4, 10.5], [0, 0.8, 0])
@@ -776,50 +2220,92 @@ function removeCharacterPlaceholder(characterId) {
     object.dispose?.()
   }
   characterPlaceholders.delete(String(characterId))
+  proceduralCharacterIds.value = new Set([...proceduralCharacterIds.value].filter((id) => id !== String(characterId)))
 }
 
 async function loadCharacterModel(characterId, expectedBuildToken = stageBuildToken) {
   const normalizedId = String(characterId)
   const asset = timeline.value.characterAssets?.[normalizedId]
-  const url = String(asset?.modelUrl || '').trim()
+  const url = resolveDirectorAssetUrl(asset?.modelUrl)
   if (!url || !viewer.value || !stageRoot || expectedBuildToken !== stageBuildToken) return
   const existing = characterModels.get(normalizedId)
   if (existing?.url === url) return
   modelLoading.value = true
+  setResourceState('model', normalizedId, url, { status: 'loading', message: '正在加载角色模型…' })
   assetStatus.value = '正在加载角色模型…'
   try {
     const loader = new GLTFLoader()
-    const gltf = await loader.loadAsync(url)
+    const gltf = await loadDirectorGltf(loader, url)
     if (disposed || expectedBuildToken !== stageBuildToken || !stageRoot) return
     const model = gltf.scene
-    const characterIndex = characterEntries.value.findIndex((character) => character.id === normalizedId)
-    const x = (characterIndex - (characterEntries.value.length - 1) / 2) * 1.8
-    model.position.set(x, 0, 0)
-    model.scale.setScalar(Math.max(0.01, Number(asset.scale) || 1))
+    const animations = Array.isArray(gltf.animations) ? gltf.animations : []
+    let visibleMeshCount = 0
+    const directorObject = timeline.value.objects.find((entry) => entry.type === 'character' && entry.assetRef?.characterId === normalizedId)
+    model.position.set(...(directorObject?.transform.position || [0, 0, 0]))
+    model.rotation.set(...(directorObject?.transform.rotation || [0, 0, 0]))
+    const objectScale = directorObject?.transform.scale || [1, 1, 1]
+    const assetScale = Math.max(0.01, Number(asset.scale) || 1)
+    model.scale.set(objectScale[0] * assetScale, objectScale[1] * assetScale, objectScale[2] * assetScale)
     model.name = characterName(normalizedId)
-    model.userData = { ...(model.userData || {}), directorKey: `character:${normalizedId}` }
+    model.userData = { ...(model.userData || {}), directorKey: `custom:${directorObject?.id || `project-character:${normalizedId}`}` }
     model.traverse?.((child) => {
       child.castShadow = true
       child.receiveShadow = true
+      if (child?.isMesh && child.visible !== false) visibleMeshCount += 1
+    })
+    if (!visibleMeshCount) throw new Error('角色模型不含可见网格')
+    const bones = new Map()
+    let boneCount = 0
+    model.traverse?.((child) => {
+      if (!child?.isBone) return
+      boneCount += 1
+      if (child.name) bones.set(child.name, child)
     })
     rememberBaseTransform(model)
     removeCharacterPlaceholder(normalizedId)
     stageRoot.add(model)
-    stageObjects.set(`character:${normalizedId}`, model)
+    stageObjects.set(`custom:${directorObject?.id || `project-character:${normalizedId}`}`, model)
     characterObjects.set(normalizedId, model)
     characterModels.set(normalizedId, {
       url,
       root: model,
       mixer: new AnimationMixer(model),
-      animations: Array.isArray(gltf.animations) ? gltf.animations : [],
+      animations,
       actionClips: {},
       loadingActions: new Set(),
       activeClipKey: '',
+      bones,
     })
-    assetStatus.value = `${characterName(normalizedId)}模型已加载`
+    characterBones.value = {
+      ...characterBones.value,
+      [normalizedId]: [...bones.values()].map((bone) => ({ name: bone.name })),
+    }
+    if (selectedCharacterId.value === normalizedId && !bones.has(selectedBoneName.value)) {
+      selectedBoneName.value = bones.keys().next().value || ''
+    }
+    applyBoneRotations(normalizedId)
+    const modelMessage = `${characterName(normalizedId)}模型已加载 · 可见网格 ${visibleMeshCount} · 骨骼 ${boneCount} · 动画 ${animations.length}`
+    assetStatus.value = modelMessage
+    setResourceState('model', normalizedId, url, { status: 'ready', message: modelMessage })
+    if (animations.length) {
+      const embeddedActions = new Set(timeline.value.tracks
+        .filter((track) => String(track.characterId) === normalizedId)
+        .flatMap((track) => track.clips || [])
+        .filter((clip) => !resolveDirectorAssetUrl(asset?.actions?.[clip.action]))
+        .map((clip) => clip.action))
+      for (const actionName of embeddedActions) {
+        setResourceState('action', normalizedId, url, {
+          status: 'ready',
+          message: `${characterName(normalizedId)}使用模型内置动画 ${animations.length}：${actionName}`,
+        }, actionName)
+      }
+    }
     applyTimelineFrame()
   } catch (error) {
-    assetStatus.value = `模型加载失败：${error?.message || '资源不可用'}`
+    if (disposed || expectedBuildToken !== stageBuildToken) return
+    const message = `模型加载失败：${error?.message || '资源不可用'}`
+    assetStatus.value = message
+    setResourceState('model', normalizedId, url, { status: 'error', message })
   } finally {
     modelLoading.value = false
   }
@@ -827,26 +2313,60 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
 
 async function loadActionResource(characterId, actionName, modelState) {
   const resource = timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionName]
-  const url = String(resource?.url || '').trim()
+  const url = resolveDirectorAssetUrl(resource)
   if (!url) return
+  const requestKey = resourceStateKey('action', characterId, actionName)
+  const existingRequest = actionResourceRequests.get(requestKey)
+  if (existingRequest?.url === url) return
+  const requestToken = (actionResourceGenerations.get(requestKey) || 0) + 1
+  actionResourceGenerations.set(requestKey, requestToken)
+  actionResourceRequests.set(requestKey, { url, token: requestToken })
+  const isCurrentRequest = () => {
+    const currentRequest = actionResourceRequests.get(requestKey)
+    const currentUrl = resolveDirectorAssetUrl(timeline.value.characterAssets?.[String(characterId)]?.actions?.[actionName])
+    return currentRequest?.url === url
+      && currentRequest?.token === requestToken
+      && characterModels.get(String(characterId)) === modelState
+      && currentUrl === url
+  }
+  setResourceState('action', characterId, url, { status: 'loading', message: `正在加载动作资源：${actionName}` }, actionName)
   if (actionResourceCache.has(url)) {
-    modelState.actionClips[actionName] = actionResourceCache.get(url)
+    const cachedAnimations = actionResourceCache.get(url)
+    if (!isDirectorAnimationCompatible(modelState?.root, cachedAnimations)) {
+      const message = '动作资源与当前角色模型骨架不兼容'
+      modelState.actionClips[actionName] = []
+      modelState.activeClipKey = ''
+      setResourceState('action', characterId, url, { status: 'error', message }, actionName)
+      actionResourceRequests.delete(requestKey)
+      return
+    }
+    modelState.actionClips[actionName] = Array.isArray(cachedAnimations) ? cachedAnimations : []
+    setResourceState('action', characterId, url, { status: 'ready', message: `${characterName(characterId)}动作资源已加载：${actionName}` }, actionName)
+    actionResourceRequests.delete(requestKey)
     return
   }
-  if (actionResourceLoading.has(url)) return
-  actionResourceLoading.add(url)
   try {
     const loader = new GLTFLoader()
-    const gltf = await loader.loadAsync(url)
-    actionResourceCache.set(url, Array.isArray(gltf.animations) ? gltf.animations : [])
+    const gltf = await loadDirectorGltf(loader, url)
+    if (!isCurrentRequest()) return
+    const animations = Array.isArray(gltf.animations) ? gltf.animations : []
+    if (!isDirectorAnimationCompatible(modelState?.root, animations)) {
+      throw new Error('动作资源与当前角色模型骨架不兼容')
+    }
+    actionResourceCache.set(url, animations)
     if (modelState) modelState.actionClips[actionName] = actionResourceCache.get(url)
     assetStatus.value = `${characterName(characterId)}动作资源已加载：${actionName}`
+    setResourceState('action', characterId, url, { status: 'ready', message: `${characterName(characterId)}动作资源已加载：${actionName}` }, actionName)
     applyTimelineFrame()
   } catch (error) {
-    assetStatus.value = `动作资源加载失败：${error?.message || '资源不可用'}`
+    if (!isCurrentRequest()) return
+    const message = `动作资源加载失败：${error?.message || '资源不可用'}`
+    assetStatus.value = message
+    setResourceState('action', characterId, url, { status: 'error', message }, actionName)
+    if (modelState) modelState.actionClips[actionName] = []
     actionResourceCache.set(url, [])
   } finally {
-    actionResourceLoading.delete(url)
+    if (actionResourceRequests.get(requestKey)?.token === requestToken) actionResourceRequests.delete(requestKey)
   }
 }
 
@@ -867,6 +2387,16 @@ function applyModelAnimation(modelState, clip, localTime) {
 function applyTimelineFrame() {
   if (!viewer.value) return
   setCameraForShot(activeShot.value)
+  for (const track of timeline.value.motionTracks || []) {
+    const transform = interpolateMotionTransform(timeline.value, track.objectId, currentTime.value)
+    const object = stageObjects.get(`custom:${track.objectId}`)
+    if (!transform || !object) continue
+    object.position.set(...transform.position)
+    object.rotation.set(...transform.rotation)
+    object.scale.set(...transform.scale)
+    const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeShot.value?.cameraId && camera.objectId === track.objectId)
+    if (activeCamera) setCamera(transform.position, [0, 0.8, 0])
+  }
   for (const object of characterObjects.values()) {
     const base = object.userData?.directorBasePosition
     const rotation = object.userData?.directorBaseRotation
@@ -903,6 +2433,7 @@ function applyTimelineFrame() {
       object.position.y = base.y + Math.abs(wave) * 0.025
     }
   }
+  for (const characterId of characterModels.keys()) applyBoneRotations(characterId)
   viewer.value.setDirty?.()
 }
 
@@ -913,7 +2444,7 @@ function resetCamera() {
 
 function setView(mode) {
   viewMode.value = mode
-  if (mode === 'camera') setCamera([0, 2.25, 8.2], [0, 1, 0])
+  if (mode === 'camera') setCameraForShot(selectedShot.value)
   else resetCamera()
 }
 
@@ -921,8 +2452,12 @@ function focusItem(key) {
   const object = stageObjects.get(key)
   if (!object) return
   const target = object.position.clone()
-  setCamera([target.x + 3.4, target.y + 2.1, target.z + 4.8], [target.x, target.y, target.z])
-  viewer.value?.getPlugin?.(PickingPlugin)?.selectObject?.(object)
+  if (object.userData?.poseBones) {
+    setCamera([target.x, target.y + 1.35, target.z + 4.5], [target.x, target.y + 1.35, target.z])
+  } else {
+    setCamera([target.x + 3.4, target.y + 2.1, target.z + 4.8], [target.x, target.y, target.z])
+  }
+  viewer.value?.getPlugin?.(PickingPlugin)?.setSelectedObject?.(object, false)
 }
 
 async function initialize() {
@@ -935,17 +2470,34 @@ async function initialize() {
       PickingPlugin,
       Object3DGeneratorPlugin,
       GeometryGeneratorPlugin,
-      new TransformControlsPlugin(false),
+      new TransformControlsPlugin(true),
       new Object3DWidgetsPlugin(false),
       EditorViewWidgetPlugin,
     ])
-    nextViewer.scene.setBackgroundColor('#0f172a')
-    nextViewer.scene.addObject(new GridHelper(20, 20, 0x334155, 0x1e293b), { addToRoot: true })
-    nextViewer.scene.addObject(new HemisphereLight(0xffffff, 0x334155, 1.6), { addToRoot: true })
-    const keyLight = new DirectionalLight(0xffffff, 2.2)
+    nextViewer.scene.setBackgroundColor(timeline.value.environment.backgroundColor || '#0f172a')
+    groundGrid = new GridHelper(20, 20, 0x334155, 0x1e293b)
+    nextViewer.scene.addObject(groundGrid, { addToRoot: true })
+    ambientLight = new HemisphereLight(0xffffff, 0x334155, timeline.value.environment.ambientIntensity)
+    nextViewer.scene.addObject(ambientLight, { addToRoot: true })
+    keyLight = new DirectionalLight(0xffffff, timeline.value.environment.directionalIntensity)
     keyLight.position.set(4, 7, 5)
     nextViewer.scene.addObject(keyLight, { addToRoot: true })
     viewer.value = nextViewer
+    const transformPlugin = nextViewer.getPlugin(TransformControlsPlugin)
+    transformPlugin.selectionFilterTest = (object) => {
+      const objectId = directorObjectIdForStageObject(object)
+      return timeline.value.objects.find((entry) => entry.id === objectId)?.locked ? null : object
+    }
+    transformControls = transformPlugin?.transformControls || null
+    if (transformControls) {
+      transformControls.mode = transformMode.value
+      transformControls.space = transformSpace.value
+      transformControls.addEventListener('mouseDown', rememberTransformControlStart)
+      transformControls.addEventListener('mouseUp', persistTransformControlChange)
+    }
+    pickingPlugin = nextViewer.getPlugin(PickingPlugin)
+    pickingPlugin?.addEventListener?.('selectedObjectChanged', syncTransformSelection)
+    await applyEnvironment()
     resetCamera()
     buildStage()
   } catch (error) {
@@ -972,6 +2524,10 @@ watch(
 )
 
 onMounted(async () => {
+  window.addEventListener('keydown', onDirectorKeydown)
+  window.addEventListener('keyup', onDirectorKeyup)
+  await nextTick()
+  dialogRef.value?.focus()
   await loadProjectAssets()
   await nextTick()
   applyTimelineState(props.initialState || createDirectorTimeline(characters.value), { emitChange: false })
@@ -982,21 +2538,52 @@ watch(() => props.drama?.id, () => {
   void loadProjectAssets()
 })
 
+watch(selectedCharacterId, (characterId) => {
+  const bones = characterBones.value[String(characterId)] || []
+  if (!bones.some((bone) => bone.name === selectedBoneName.value)) selectedBoneName.value = bones[0]?.name || ''
+})
+
+watch(aiImportOpen, async (open) => {
+  await nextTick()
+  if (open) aiImportModalRef.value?.querySelector('button')?.focus()
+  else if (props.visible) aiImportButtonRef.value?.focus()
+})
+
+watch(helpOpen, async (open) => {
+  await nextTick()
+  if (open) helpModalRef.value?.querySelector('button')?.focus()
+  else if (props.visible) helpButtonRef.value?.focus()
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onDirectorKeydown)
+  window.removeEventListener('keyup', onDirectorKeyup)
   disposed = true
   stopPlayback()
+  transformControls?.removeEventListener?.('mouseDown', rememberTransformControlStart)
+  transformControls?.removeEventListener?.('mouseUp', persistTransformControlChange)
+  pickingPlugin?.removeEventListener?.('selectedObjectChanged', syncTransformSelection)
   clearStageObjects()
   viewer.value?.dispose?.(true)
   viewer.value = null
+  ambientLight = null
+  keyLight = null
+  transformControls = null
+  pickingPlugin = null
+  if (aiImportPreview.value) URL.revokeObjectURL(aiImportPreview.value)
 })
 </script>
 
 <style scoped>
 .director-stage { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #101014; color: #e4e4e7; }
-.director-stage__header, .director-stage__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid #27272a; background: rgba(24, 24, 27, 0.95); }
+.director-stage__header, .director-stage__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-bottom: 1px solid #343438; background: #202020; }
+.director-stage__header { position: relative; min-height: 62px; box-sizing: border-box; }
+.director-stage__view-switch { position: absolute; left: 50%; display: flex; padding: 4px; border: 1px solid #3a3a3d; border-radius: 22px; transform: translateX(-50%); background: #171719; }
+.director-stage__view-switch button { min-width: 96px; border: 0; border-radius: 17px; background: transparent; }
+.director-stage__view-switch button.active { background: #353537; color: #fff; }
 .director-stage__footer { border-top: 1px solid #27272a; border-bottom: 0; color: #71717a; font-size: 12px; }
 .director-stage__footer-actions { display: flex; align-items: center; gap: 8px; }
-.director-stage__header strong { font-size: 16px; }
+.director-stage__header strong { font-size: 20px; }
 .director-stage__hint { margin-left: 10px; color: #818cf8; font-size: 11px; }
 .director-stage__header-actions { display: flex; align-items: center; gap: 8px; }
 .director-stage__header button, .director-stage__footer button, .small-button, .danger-button { border: 1px solid #3f3f46; border-radius: 9px; padding: 7px 12px; background: #18181b; color: #d4d4d8; cursor: pointer; }
@@ -1005,9 +2592,47 @@ onBeforeUnmount(() => {
 .director-stage__save-state { color: #34d399; font-size: 11px; }
 .director-stage__save-state.dirty { color: #fbbf24; }
 .director-stage__body { flex: 1; display: flex; min-height: 0; }
-.director-stage__sidebar { width: 286px; flex: 0 0 286px; padding: 16px 14px; overflow-y: auto; border-right: 1px solid #27272a; background: #18181b; }
+.director-stage__sidebar { width: 300px; flex: 0 0 300px; padding: 22px 16px; overflow-y: auto; border-right: 1px solid #343438; background: #202020; }
+.director-stage__inspector { width: 360px; flex: 0 0 360px; padding: 20px 18px; overflow-y: auto; border-left: 1px solid #343438; background: #202020; }
+.director-stage__inspector-title { margin: -2px 0 18px; color: #f4f4f5; font-size: 20px; font-weight: 700; }
+.director-stage__inspector-tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #343438; padding-bottom: 10px; }
+.director-stage__inspector-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; background: transparent; color: #8b8b92; cursor: pointer; }
+.director-stage__inspector-tabs button.active { background: #39393c; color: #fff; }
+.director-pose-panel > strong { display: block; margin: 14px 0 8px; color: #d4d4d8; font-size: 13px; }
+.director-stage__inspector > label, .director-stage__inspector .inspector-group > label { display: grid; gap: 5px; margin: 12px 0; color: #a1a1aa; font-size: 11px; }
+.director-stage__inspector input { width: 100%; box-sizing: border-box; border: 1px solid #3f3f46; border-radius: 7px; padding: 7px 8px; background: #111114; color: #e4e4e7; }
+.director-stage__inspector .visibility-row { display: flex; align-items: center; }
+.director-stage__inspector .visibility-row input { width: auto; }
+.ai-reference-description { margin: 12px 0; padding: 10px; border: 1px solid #3f3f46; border-radius: 8px; background: #111114; color: #a1a1aa; font-size: 11px; }
+.ai-reference-description strong { color: #d4d4d8; }
+.ai-reference-description p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.5; }
+.director-modal { position: absolute; inset: 0; z-index: 95; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .72); }
+.director-modal__panel { display: grid; gap: 12px; width: min(520px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; box-sizing: border-box; padding: 18px; border: 1px solid #3f3f46; border-radius: 12px; background: #18181b; box-shadow: 0 20px 70px rgba(0, 0, 0, .45); }
+.director-modal__header { display: flex; align-items: center; justify-content: space-between; }
+.director-modal__panel label { display: grid; gap: 6px; color: #a1a1aa; font-size: 12px; }
+.director-modal__panel input, .director-modal__panel select, .director-modal__panel textarea { box-sizing: border-box; width: 100%; border: 1px solid #3f3f46; border-radius: 8px; padding: 8px; background: #111114; color: #e4e4e7; }
+.director-modal__panel button { border: 1px solid #4f46e5; border-radius: 8px; padding: 8px 12px; background: #312e81; color: #e0e7ff; cursor: pointer; }
+.director-modal__panel button:disabled { opacity: .5; cursor: default; }
+.ai-import-preview { max-width: 100%; max-height: 240px; justify-self: center; border-radius: 8px; object-fit: contain; }
+.inspector-group { margin: 16px 0; padding-top: 12px; border-top: 1px solid #303036; }
+.inspector-group > strong { color: #d4d4d8; font-size: 12px; }
+.vector-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.vector-row label { min-width: 0; }
+.object-create-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 8px; }
+.role-create-library { margin-bottom: 10px; color: #a1a1aa; font-size: 11px; }
+.role-create-library summary { padding: 6px 2px; cursor: pointer; }
+.object-create-row--roles { margin-top: 6px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.stage-item.muted { opacity: .5; }
+.scene-search { box-sizing: border-box; width: 100%; margin: 14px 0 20px; border: 0; border-radius: 11px; padding: 12px 14px; background: #343436; color: #e4e4e7; }
+.stage-tree-row { display: flex; align-items: center; border-radius: 7px; }
+.stage-tree-row.selected { background: rgba(129, 140, 248, 0.18); }
+.stage-tree-row.muted { opacity: .58; }
+.stage-tree-row__name { min-width: 0; flex: 1; }
+.tree-icon-button { flex: 0 0 26px; width: 26px; height: 26px; border: 0; border-radius: 6px; padding: 0; background: transparent; color: #a1a1aa; cursor: pointer; font-size: 11px; }
+.tree-icon-button:hover { background: #303036; color: #f4f4f5; }
+.stage-item small { margin-left: auto; color: #71717a; font-size: 9px; }
 .stage-section { margin-bottom: 18px; }
-.stage-section__title { margin-bottom: 8px; color: #a1a1aa; font-size: 11px; font-weight: 700; }
+.stage-section__title { margin-bottom: 8px; color: #d4d4d8; font-size: 16px; font-weight: 700; }
 .stage-item, .shot-list-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: #e4e4e7; text-align: left; cursor: pointer; }
 .stage-item:hover, .shot-list-item:hover { background: rgba(129, 140, 248, 0.14); }
 .stage-item.selected, .shot-list-item.selected { background: rgba(129, 140, 248, 0.18); color: #c4b5fd; }
@@ -1026,6 +2651,7 @@ onBeforeUnmount(() => {
 .transition-badge { color: #60a5fa; font-size: 10px; }
 .shot-editor { display: grid; gap: 7px; padding: 10px; border: 1px solid #3f3f46; border-radius: 10px; background: rgba(39, 39, 42, 0.42); }
 .shot-editor .stage-section__title { grid-column: 1 / -1; }
+.shot-cut-range { grid-column: 1 / -1; color: #a5b4fc; font-size: 11px; }
 .shot-editor label { display: grid; gap: 4px; color: #a1a1aa; font-size: 10px; }
 .shot-editor input, .shot-editor select, .action-add-row select { width: 100%; min-width: 0; border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #18181b; color: #e4e4e7; font-size: 11px; }
 .danger-button { margin-top: 3px; border-color: rgba(248, 113, 113, 0.5); color: #fca5a5; font-size: 11px; }
@@ -1035,23 +2661,52 @@ onBeforeUnmount(() => {
 .resource-editor label { display: grid; gap: 4px; color: #a1a1aa; font-size: 10px; }
 .resource-editor input[type="text"], .resource-editor input[type="url"], .resource-editor input[type="number"] { width: 100%; min-width: 0; border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #18181b; color: #e4e4e7; font-size: 11px; }
 .resource-editor label input:not([type="file"]) { width: 100%; min-width: 0; border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #18181b; color: #e4e4e7; font-size: 11px; }
+.pose-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 8px 0 12px; }
+.pose-presets .small-button { min-width: 0; padding: 5px 2px; font-size: 10px; }
+.semantic-pose-controls { display: grid; gap: 7px; margin-bottom: 12px; }
+.semantic-pose-controls label { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 7px; color: #a1a1aa; font-size: 10px; }
 .resource-upload-row { display: flex; align-items: center; gap: 6px; }
 .resource-upload-row input[type="file"] { min-width: 0; flex: 1; color: #a1a1aa; font-size: 10px; }
 .resource-character, .resource-tip, .resource-status { color: #71717a; font-size: 10px; }
 .resource-status { color: #34d399; }
-.director-stage__viewport { position: relative; flex: 1; min-width: 0; min-height: 0; padding-bottom: 224px; background: #0f172a; }
+.resource-status--row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.resource-status[data-status='loading'] { color: #fbbf24; }
+.resource-status[data-status='error'] { color: #fca5a5; }
+.resource-status--row .small-button { min-height: 44px; }
+.director-stage__viewport { position: relative; flex: 1; min-width: 0; min-height: 0; background: #050507; }
+.director-stage__viewport--timeline { padding-bottom: 224px; }
+.viewport-tools { position: absolute; top: 14px; left: 50%; z-index: 7; display: flex; gap: 5px; transform: translateX(-50%); padding: 5px; border: 1px solid #3f3f46; border-radius: 10px; background: rgba(24, 24, 27, .9); }
+.viewport-tools button { border: 0; border-radius: 7px; padding: 6px 10px; background: transparent; color: #d4d4d8; cursor: pointer; }
+.viewport-tools button.active { background: #4338ca; color: white; }
+.composition-guides { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.composition-guides > span { position: absolute; display: block; border-color: rgba(255, 255, 255, .42); }
+.composition-guides__v { top: 0; bottom: 0; border-left: 1px dashed; }
+.composition-guides__v--1 { left: 33.333%; }.composition-guides__v--2 { left: 66.666%; }
+.composition-guides__h { left: 0; right: 0; border-top: 1px dashed; }
+.composition-guides__h--1 { top: 33.333%; }.composition-guides__h--2 { top: 66.666%; }
+.composition-guides__safe { inset: 8%; border: 1px solid rgba(255, 255, 255, .3); }
 .director-stage__canvas { width: 100%; height: 100%; display: block; outline: none; }
 .director-stage__legend { position: absolute; right: 16px; top: 16px; display: flex; gap: 12px; padding: 8px 10px; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 9px; background: rgba(24, 24, 27, 0.82); color: #a1a1aa; font-size: 11px; }
 .director-stage__legend span { display: inline-flex; align-items: center; gap: 5px; }
 .director-stage__loading, .director-stage__error { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); color: #a1a1aa; font-size: 13px; }
 .director-stage__error { color: #fca5a5; }
-.timeline-panel { position: absolute; right: 12px; bottom: 12px; left: 12px; z-index: 3; padding: 10px 12px 12px; border: 1px solid #3f3f46; border-radius: 12px; background: rgba(24, 24, 27, 0.94); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32); backdrop-filter: blur(14px); }
+.timeline-panel { position: absolute; right: 12px; bottom: 74px; left: 12px; z-index: 3; padding: 10px 12px 12px; border: 1px solid #3f3f46; border-radius: 12px; background: rgba(24, 24, 27, 0.94); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32); backdrop-filter: blur(14px); }
+.director-stage__quick-toolbar { position: absolute; bottom: 22px; left: 50%; z-index: 9; display: flex; align-items: center; gap: 5px; transform: translateX(-50%); padding: 7px; border: 1px solid #38383c; border-radius: 17px; background: rgba(31, 31, 32, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .4); }
+.director-stage__quick-toolbar button { min-width: 42px; height: 42px; border: 0; border-radius: 11px; padding: 0 8px; background: transparent; color: #ededee; cursor: pointer; font-size: 18px; }
+.director-stage__quick-toolbar button[aria-label='选择画幅比例'], .director-stage__quick-toolbar button[aria-label='全景图'] { font-size: 11px; font-weight: 700; }
+.director-stage__quick-toolbar button:hover, .director-stage__quick-toolbar button.active { background: #343437; color: #fff; }
+.director-stage__quick-toolbar button:disabled { opacity: .45; cursor: default; }
+.director-stage__quick-divider { width: 1px; height: 28px; margin: 0 3px; background: #3c3c40; }
+.timeline-panel.collapsed { overflow: hidden; }
+.timeline-scroll-content { min-width: calc(100% * var(--timeline-zoom)); }
+.timeline-zoom { min-width: 38px; color: #a1a1aa; text-align: center; font-size: 10px; }
 .timeline-toolbar { display: flex; align-items: center; gap: 12px; }
 .timeline-controls { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .timeline-controls button { width: 27px; height: 27px; border: 1px solid #3f3f46; border-radius: 6px; background: #27272a; color: #e4e4e7; cursor: pointer; }
+.timeline-controls button.active { border-color: #818cf8; background: rgba(129, 140, 248, 0.22); color: #c4b5fd; }
 .timeline-time { min-width: 90px; color: #d4d4d8; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .timeline-fps { color: #71717a; font-size: 10px; }
-.timeline-scrubber { flex: 1; accent-color: #818cf8; }
+.timeline-scrubber { min-width: 96px; flex: 1; accent-color: #818cf8; }
 .timeline-ruler { display: flex; justify-content: space-between; padding: 8px 0 4px 102px; color: #71717a; font-size: 10px; }
 .timeline-track { display: flex; min-height: 30px; margin-top: 4px; }
 .track-label { width: 92px; flex: 0 0 92px; padding: 8px 10px 0 0; overflow: hidden; color: #a1a1aa; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1059,18 +2714,22 @@ onBeforeUnmount(() => {
 .timeline-block { position: absolute; top: 3px; min-width: 24px; height: 24px; overflow: hidden; border: 1px solid #6366f1; border-radius: 5px; padding: 2px 6px; background: rgba(99, 102, 241, 0.35); color: #eef2ff; text-align: left; cursor: pointer; }
 .timeline-block.selected { border-color: #c4b5fd; box-shadow: 0 0 0 1px #c4b5fd; }
 .timeline-action { border-color: #34d399; background: rgba(16, 185, 129, 0.3); }
+.motion-keyframe { position: absolute; top: 2px; transform: translateX(-50%); border: 0; background: transparent; color: #fbbf24; cursor: pointer; }
 .timeline-block strong, .timeline-block small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-block strong { font-size: 10px; }
 .timeline-block small { color: #c4b5fd; font-size: 9px; }
 .timeline-empty { padding: 8px 0 0 102px; color: #71717a; font-size: 10px; }
-@media (max-width: 900px) {
-  .director-stage__sidebar { width: 244px; flex-basis: 244px; }
+@media (max-width: 1300px) {
+  .director-stage__sidebar { width: 220px; flex-basis: 220px; }
+  .director-stage__inspector { width: 250px; flex-basis: 250px; }
   .director-stage__hint { display: none; }
-  .timeline-panel { right: 6px; bottom: 6px; left: 6px; }
+  .timeline-toolbar { gap: 8px; }
+  .timeline-panel { right: 6px; bottom: 70px; left: 6px; }
 }
 @media (max-width: 680px) {
   .director-stage__header, .director-stage__footer { padding: 10px 12px; }
   .director-stage__sidebar { width: 210px; flex-basis: 210px; }
+  .director-stage__inspector { display: none; }
   .director-stage__footer span { display: none; }
 }
 </style>

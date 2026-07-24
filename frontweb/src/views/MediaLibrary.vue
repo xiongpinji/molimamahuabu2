@@ -1,29 +1,23 @@
 <template>
   <div class="media-library-page">
-    <div class="page-header">
-      <div class="header-left">
-        <el-button text @click="$router.back()">
-          <el-icon><ArrowLeft /></el-icon>
-          返回
-        </el-button>
-        <h2 class="page-title">媒体素材库</h2>
-      </div>
-      <div class="header-actions">
+    <PlatformHeader title="媒体素材库" back-to="/" back-label="返回">
+      <template #actions>
         <el-button type="primary" plain @click="triggerUpload">
           <el-icon><Upload /></el-icon>
           上传素材
         </el-button>
-        <input ref="uploadInput" type="file" accept="image/*,video/*" multiple style="display:none" @change="onUpload" />
-      </div>
-    </div>
+        <input ref="uploadInput" type="file" accept="image/*,video/*,audio/*" multiple style="display:none" @change="onUpload" />
+      </template>
+    </PlatformHeader>
 
     <!-- 筛选栏 -->
     <div class="filter-bar">
-      <el-radio-group v-model="mediaType" class="type-filter" @change="loadMedia">
-        <el-radio-button value="all">全部</el-radio-button>
-        <el-radio-button value="image">图片</el-radio-button>
-        <el-radio-button value="video">视频</el-radio-button>
-      </el-radio-group>
+        <el-radio-group v-model="mediaType" class="type-filter" @change="loadMedia">
+          <el-radio-button value="all">全部</el-radio-button>
+          <el-radio-button value="image">图片</el-radio-button>
+          <el-radio-button value="video">视频</el-radio-button>
+          <el-radio-button value="audio">音频</el-radio-button>
+        </el-radio-group>
       <el-input
         v-model="keyword"
         placeholder="搜索素材..."
@@ -47,15 +41,25 @@
         v-for="item in mediaItems"
         :key="item.id"
         class="media-card"
-        :class="{ selected: selectedIds.has(item.id) }"
+        :class="{ selected: selectedIds.has(item.id), targeted: isTargetAsset(item) }"
         @click="toggleSelect(item)"
       >
         <div class="media-thumb">
           <video v-if="item.type === 'video'" :src="itemUrl(item)" class="thumb-video" muted />
+          <div v-else-if="item.type === 'audio'" class="thumb-audio">♪</div>
           <img v-else :src="itemUrl(item)" class="thumb-img" />
+          <span v-if="isTargetAsset(item)" class="locate-badge">画布结果定位</span>
           <div class="media-overlay">
             <el-icon v-if="selectedIds.has(item.id)" class="check-icon"><CircleCheck /></el-icon>
             <div class="overlay-actions" @click.stop>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                @click.stop="openUseDialog(item)"
+              >
+                使用
+              </el-button>
               <el-button
                 size="small"
                 plain
@@ -115,6 +119,12 @@
           class="preview-video"
           autoplay
         />
+        <audio
+          v-else-if="previewItem?.type === 'audio'"
+          :src="itemUrl(previewItem)"
+          controls
+          class="preview-audio"
+        />
         <img v-else-if="previewItem" :src="itemUrl(previewItem)" class="preview-image" />
       </div>
       <div class="preview-meta">
@@ -123,19 +133,67 @@
         <div class="meta-row"><span>创建时间：</span>{{ previewItem?.created_at }}</div>
       </div>
     </el-dialog>
+
+    <!-- 使用素材弹窗 -->
+    <el-dialog v-model="useDialogVisible" :title="useDialogTitle" width="520px" destroy-on-close>
+      <div class="use-dialog">
+        <div class="use-row">
+          <span class="use-label">用途</span>
+          <el-radio-group v-model="usePurpose" class="purpose-group" @change="onPurposeChange">
+            <template v-if="useItem?.type === 'video'">
+              <el-radio-button value="attach">分镜成片</el-radio-button>
+            </template>
+            <template v-else-if="useItem?.type === 'audio'">
+              <el-radio-button value="audio">分镜音频</el-radio-button>
+            </template>
+            <template v-else>
+              <el-radio-button value="reference">分镜参考图</el-radio-button>
+              <el-radio-button value="canvas">项目画布</el-radio-button>
+            </template>
+          </el-radio-group>
+        </div>
+        <div class="use-row">
+          <span class="use-label">目标项目</span>
+          <el-select v-model="useDramaId" filterable placeholder="选择项目" style="width:100%" @change="onUseDramaChange">
+            <el-option v-for="d in useDramas" :key="d.id" :label="d.title || ('项目' + d.id)" :value="d.id" />
+          </el-select>
+        </div>
+        <div v-if="needsStoryboard" class="use-row">
+          <span class="use-label">目标分镜</span>
+          <el-select v-model="useStoryboardId" filterable placeholder="选择分镜" style="width:100%" :disabled="!useStoryboards.length">
+            <el-option v-for="s in useStoryboards" :key="s.id" :label="`第${s.storyboard_number ?? s.id}镜 ${String(s.title || s.action || '').slice(0, 20)}`" :value="s.id" />
+          </el-select>
+        </div>
+        <p v-if="usePurpose === 'reference'" class="use-hint">设置后，该图片将作为参考图参与该分镜的图片 / 视频生成。</p>
+        <p v-else-if="usePurpose === 'audio'" class="use-hint">设置后，该音频将作为该分镜对白音频，画布音频节点可直接回显和复用。</p>
+        <div class="use-actions">
+          <el-button @click="useDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="useSubmitting" :disabled="!useDramaId || (needsStoryboard && !useStoryboardId)" @click="submitUse">
+            确定
+          </el-button>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ArrowLeft, Upload, Search, Loading, CircleCheck,
+  Upload, Search, Loading, CircleCheck,
   ZoomIn, Delete, Files
 } from '@element-plus/icons-vue'
+import PlatformHeader from '@/components/PlatformHeader.vue'
 import { uploadAPI } from '@/api/upload'
+import { assetsAPI } from '@/api/assets'
+import { videosAPI } from '@/api/videos'
+import { dramaAPI } from '@/api/drama'
+import { buildAssetReusePayload } from '@/utils/assetReuse'
 import request from '@/utils/request'
 
+const route = useRoute()
 const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref({ current: 0, total: 0 })
@@ -149,7 +207,16 @@ const selectedIds = reactive(new Set())
 const showPreview = ref(false)
 const previewItem = ref(null)
 const uploadInput = ref(null)
+const highlightedAssetId = ref(null)
 let keywordTimer = null
+
+function applyRouteAssetFocus() {
+  const id = Number(route.query.assetId)
+  highlightedAssetId.value = Number.isFinite(id) && id > 0 ? id : null
+  const type = String(route.query.type || '')
+  if (['image', 'video', 'audio'].includes(type)) mediaType.value = type
+  page.value = 1
+}
 
 function triggerUpload() {
   uploadInput.value?.click()
@@ -162,7 +229,7 @@ async function onUpload(e) {
   uploadProgress.value = { current: 0, total: files.length }
   for (const file of files) {
     try {
-      await uploadAPI.uploadImage(file)
+      await uploadAPI.uploadMedia(file)
       uploadProgress.value.current++
     } catch (err) {
       ElMessage.warning(`${file.name} 上传失败: ${err.message}`)
@@ -199,20 +266,26 @@ async function loadMedia() {
 }
 
 function normalizeItem(item) {
-  const url = item.url || item.image_url || item.video_url || ''
+  const url = item.url || item.image_url || item.video_url || item.audio_url || item.voice_url || ''
   const isVideo = url.match(/\.(mp4|webm|mov)$/i) || item.type === 'video'
+  const isAudio = url.match(/\.(mp3|wav|m4a|aac|ogg|flac)$/i) || item.type === 'audio'
   return {
     ...item,
-    type: isVideo ? 'video' : 'image',
+    type: isVideo ? 'video' : isAudio ? 'audio' : 'image',
     name: item.name || item.filename || (url.split('/').pop()),
   }
 }
 
+function staticAssetUrl(localPath) {
+  const path = String(localPath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/^static\//, '')
+  return path ? `/static/${path}` : ''
+}
+
 function itemUrl(item) {
   if (!item) return ''
-  const lp = item.local_path || item.image_local_path || item.video_local_path
-  if (lp) return '/static/' + lp.replace(/^\//, '')
-  return item.url || item.image_url || item.video_url || ''
+  const lp = item.local_path || item.image_local_path || item.video_local_path || item.audio_local_path || item.voice_local_path
+  if (lp) return staticAssetUrl(lp)
+  return item.url || item.image_url || item.video_url || item.audio_url || item.voice_url || ''
 }
 
 function formatSize(size) {
@@ -230,9 +303,122 @@ function toggleSelect(item) {
   }
 }
 
+function isTargetAsset(item) {
+  return Boolean(highlightedAssetId.value && Number(item?.id) === highlightedAssetId.value)
+}
+
 function openPreview(item) {
   previewItem.value = item
   showPreview.value = true
+}
+
+// ---------- 素材「使用」：图片→分镜参考图/项目画布；视频→复用为分镜成片；音频→分镜音频 ----------
+const useDialogVisible = ref(false)
+const useItem = ref(null)
+const useDramas = ref([])
+const useDramaId = ref(null)
+const useStoryboards = ref([])
+const useStoryboardId = ref(null)
+const useSubmitting = ref(false)
+const usePurpose = ref('reference') // reference | canvas | attach | audio
+
+const needsStoryboard = computed(() => usePurpose.value === 'reference' || usePurpose.value === 'attach' || usePurpose.value === 'audio')
+const useDialogTitle = computed(() => {
+  if (usePurpose.value === 'attach') return '复用为分镜成片'
+  if (usePurpose.value === 'audio') return '复用为分镜音频'
+  if (usePurpose.value === 'reference') return '设为分镜参考图'
+  return '添加到项目画布'
+})
+
+async function openUseDialog(item) {
+  useItem.value = item
+  usePurpose.value = item.type === 'video' ? 'attach' : item.type === 'audio' ? 'audio' : 'reference'
+  useDramaId.value = item.drama_id || null
+  useStoryboardId.value = null
+  useStoryboards.value = []
+  useDialogVisible.value = true
+  try {
+    const res = await dramaAPI.list({ page: 1, page_size: 100 })
+    useDramas.value = res?.items || []
+    if (useDramaId.value) {
+      await onUseDramaChange(useDramaId.value)
+      if (item.storyboard_id) useStoryboardId.value = item.storyboard_id
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '项目列表加载失败')
+  }
+}
+
+async function onPurposeChange() {
+  // 切换到需要分镜的用途时，若尚未加载分镜列表则补加载
+  if (needsStoryboard.value && useDramaId.value && !useStoryboards.value.length) {
+    await onUseDramaChange(useDramaId.value)
+  }
+}
+
+async function onUseDramaChange(dramaId) {
+  useStoryboardId.value = null
+  useStoryboards.value = []
+  if (!dramaId || !needsStoryboard.value) return
+  try {
+    const drama = await dramaAPI.get(dramaId)
+    const eps = drama?.episodes || []
+    const all = []
+    for (const ep of eps) {
+      const sbs = ep.storyboards?.length ? ep.storyboards : (await dramaAPI.getStoryboards(ep.id)) || []
+      all.push(...sbs)
+    }
+    useStoryboards.value = all
+  } catch (e) {
+    ElMessage.error(e?.message || '分镜列表加载失败')
+  }
+}
+
+async function submitUse() {
+  if (useSubmitting.value) return
+  const item = useItem.value
+  if (!item || !useDramaId.value) return
+  if (needsStoryboard.value && !useStoryboardId.value) return
+  useSubmitting.value = true
+  let reusedAsset = null
+  try {
+    reusedAsset = await assetsAPI.create(buildAssetReusePayload(item, {
+      purpose: usePurpose.value,
+      dramaId: useDramaId.value,
+      storyboardId: useStoryboardId.value,
+    }))
+    if (usePurpose.value === 'attach') {
+      await videosAPI.attach({
+        storyboard_id: useStoryboardId.value,
+        drama_id: useDramaId.value,
+        video_url: itemUrl(item),
+        local_path: item.local_path || undefined,
+        duration: item.duration ?? undefined,
+      })
+      ElMessage.success('已设为该分镜成片，可到画布查看')
+    } else if (usePurpose.value === 'audio') {
+      const localPath = item.local_path || item.audio_local_path || item.voice_local_path || ''
+      await request.put(`/storyboards/${useStoryboardId.value}`, {
+        audio_local_path: localPath || undefined,
+        audio_url: localPath ? undefined : itemUrl(item),
+      })
+      ElMessage.success('已设为该分镜音频，可到画布查看')
+    } else if (usePurpose.value === 'reference') {
+      ElMessage.success('已设为该分镜参考图，生图/生视频时自动带入')
+    } else {
+      ElMessage.success('已添加到项目，画布「项目截图」区可见')
+    }
+    useDialogVisible.value = false
+  } catch (e) {
+    if (reusedAsset?.id) {
+      try {
+        await request.delete(`/assets/${reusedAsset.id}`, { silentError: true })
+      } catch (_) {}
+    }
+    ElMessage.error(e?.message || '操作失败')
+  } finally {
+    useSubmitting.value = false
+  }
 }
 
 async function deleteItem(item) {
@@ -261,7 +447,15 @@ async function batchDelete() {
   loadMedia()
 }
 
-onMounted(loadMedia)
+watch(() => [route.query.assetId, route.query.type], async () => {
+  applyRouteAssetFocus()
+  await loadMedia()
+})
+
+onMounted(() => {
+  applyRouteAssetFocus()
+  loadMedia()
+})
 </script>
 
 <style scoped>
@@ -337,6 +531,11 @@ onMounted(loadMedia)
   border-color: #409eff;
 }
 
+.media-card.targeted {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .18), 0 8px 24px rgba(80, 53, 150, .18);
+}
+
 .media-thumb {
   aspect-ratio: 1;
   background: #f3f4f6;
@@ -344,11 +543,35 @@ onMounted(loadMedia)
   position: relative;
 }
 
+.locate-badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(109, 40, 217, .92);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .thumb-img,
 .thumb-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.thumb-audio {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #312e81, #111827);
+  color: #c4b5fd;
+  font-size: 44px;
 }
 
 .media-overlay {
@@ -461,6 +684,11 @@ onMounted(loadMedia)
   max-height: 60vh;
 }
 
+.preview-audio {
+  width: 100%;
+  margin: 48px 24px;
+}
+
 .preview-meta {
   margin-top: 16px;
 }
@@ -474,5 +702,35 @@ onMounted(loadMedia)
 .meta-row span {
   font-weight: 500;
   color: #374151;
+}
+
+.use-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.use-label {
+  display: block;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.use-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+.purpose-group {
+  display: flex;
+}
+
+.use-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

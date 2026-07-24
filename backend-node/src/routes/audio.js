@@ -13,7 +13,7 @@ function routes(db, log, cfg) {
   return {
     /** 为单条分镜生成 TTS：对白 → audio_local_path；旁白 → narration_audio_local_path（body.tts_kind === 'narration'） */
     extract: async (req, res) => {
-      const { storyboard_id, text, tts_kind } = req.body || {};
+      const { storyboard_id, text, tts_kind, tts_model } = req.body || {};
       if (!text && !storyboard_id) return response.badRequest(res, '请提供 storyboard_id 或 text');
       const kind = String(tts_kind || 'dialogue').toLowerCase() === 'narration' ? 'narration' : 'dialogue';
       let ttsText = text;
@@ -36,28 +36,40 @@ function routes(db, log, cfg) {
       }
       try {
         const ttsService = require('../services/ttsService');
+        const { selectTtsConfig } = require('../services/ttsConfigSelectionService');
+        const selectedConfig = selectTtsConfig(db, tts_model);
         const result = await ttsService.synthesize(db, log, {
           text: ttsText,
           storyboard_id: storyboard_id || null,
           storage_base: getStoragePath(),
+          config: selectedConfig,
         });
         if (storyboard_id && result.local_path) {
           const now = new Date().toISOString();
+          const selectedModel = selectedConfig?.default_model || null;
           try {
             if (kind === 'narration') {
-              db.prepare('UPDATE storyboards SET narration_audio_local_path = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, now, Number(storyboard_id)
+              db.prepare('UPDATE storyboards SET narration_audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
+                result.local_path, selectedModel, now, Number(storyboard_id)
               );
             } else {
-              db.prepare('UPDATE storyboards SET audio_local_path = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, now, Number(storyboard_id)
+              db.prepare('UPDATE storyboards SET audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
+                result.local_path, selectedModel, now, Number(storyboard_id)
               );
             }
           } catch (_) {}
         }
-        response.success(res, { local_path: result.local_path, url: result.local_path ? '/static/' + result.local_path : '', tts_kind: kind });
+        response.success(res, {
+          local_path: result.local_path,
+          url: result.local_path ? '/static/' + result.local_path : '',
+          tts_kind: kind,
+          model: selectedConfig?.default_model || null,
+        });
       } catch (err) {
         log.error('audio extract', { error: err.message });
+        if (err.code === 'TTS_MODEL_NOT_CONFIGURED') {
+          return response.error(res, 400, err.code, err.message);
+        }
         response.internalError(res, err.message);
       }
     },

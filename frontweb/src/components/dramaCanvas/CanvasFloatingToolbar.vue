@@ -1,6 +1,11 @@
 <template>
-  <div class="canvas-floating-toolbar nodrag nopan" @mousedown.stop>
-    <div v-if="addMenuVisible" class="canvas-add-menu" role="menu">
+  <div
+    ref="toolbarRef"
+    class="canvas-floating-toolbar nodrag nopan"
+    :class="{ 'panel-open': panelOpen }"
+    @mousedown.stop
+  >
+    <div v-if="addMenuVisible" class="canvas-add-menu" role="menu" aria-label="添加节点菜单">
       <div class="add-menu-title">添加节点</div>
       <button v-for="item in addItems" :key="item.type" type="button" class="add-menu-item" role="menuitem" @click="create(item.type)">
         <el-icon><component :is="item.icon" /></el-icon>
@@ -33,6 +38,12 @@
       <button type="button" class="toolbar-icon" aria-label="画布帮助" title="帮助" @click="showHelp">
         <el-icon><QuestionFilled /></el-icon>
       </button>
+      <button type="button" class="toolbar-icon" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undo">
+        <el-icon><RefreshLeft /></el-icon>
+      </button>
+      <button type="button" class="toolbar-icon" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redo">
+        <el-icon><RefreshRight /></el-icon>
+      </button>
       <button type="button" class="toolbar-icon" aria-label="返回列表模式" title="列表模式" @click="goList">
         <el-icon><List /></el-icon>
       </button>
@@ -52,12 +63,13 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const ctx = useCanvasContext()
 const addMenuVisible = ref(false)
+const toolbarRef = ref(null)
 
 const addItems = [
   { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
@@ -70,6 +82,9 @@ const addItems = [
 const workflowOpen = computed(() => Boolean(ctx?.showWorkflowPanel?.value))
 const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))
 const directorOpen = computed(() => Boolean(ctx?.directorStageVisible?.value))
+const canUndo = computed(() => Boolean(ctx?.canUndo?.value))
+const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
+const panelOpen = computed(() => Boolean(ctx?.focusedNodeId?.value))
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
@@ -77,6 +92,16 @@ const zoomLabel = computed(() => {
 
 function toggleAddMenu() {
   addMenuVisible.value = !addMenuVisible.value
+}
+
+function closeAddMenuOnOutside(event) {
+  if (!addMenuVisible.value || toolbarRef.value?.contains(event.target)) return
+  addMenuVisible.value = false
+}
+
+function closeAddMenuOnEscape(event) {
+  if (event.key !== 'Escape' || !addMenuVisible.value) return
+  addMenuVisible.value = false
 }
 
 function create(type) {
@@ -90,10 +115,22 @@ function focusScript() { ctx?.focusScript?.() }
 function alignNodes() { ctx?.alignNodes?.() }
 function openDirectorStage() { ctx?.openDirectorStage?.() }
 function showHelp() { ctx?.showCanvasHelp?.() }
+function undo() { ctx?.undoCanvas?.() }
+function redo() { ctx?.redoCanvas?.() }
 function goList() { ctx?.goListMode?.() }
 function zoomIn() { ctx?.zoomIn?.() }
 function zoomOut() { ctx?.zoomOut?.() }
 function fitView() { ctx?.fitCanvasView?.() }
+
+onMounted(() => {
+  document.addEventListener('pointerdown', closeAddMenuOnOutside)
+  document.addEventListener('keydown', closeAddMenuOnEscape)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeAddMenuOnOutside)
+  document.removeEventListener('keydown', closeAddMenuOnEscape)
+})
 </script>
 
 <style scoped>
@@ -104,6 +141,12 @@ function fitView() { ctx?.fitCanvasView?.() }
   z-index: 25;
   transform: translateX(-50%);
   max-width: calc(100% - 28px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.canvas-floating-toolbar.panel-open {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
 }
 .toolbar-main {
   display: flex;

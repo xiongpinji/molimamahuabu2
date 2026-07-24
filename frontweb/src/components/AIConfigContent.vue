@@ -96,6 +96,18 @@
                 </span>
               </template>
             </el-table-column>
+            <el-table-column label="声音策略" min-width="150">
+              <template #default="{ row }">
+                <template v-if="row.service_type === 'video'">
+                  <el-tooltip :content="voicePolicyDescription(row)" placement="top">
+                    <el-tag size="small" effect="plain" :type="videoVoicePolicyForConfig(row)?.type || 'info'">
+                      {{ videoVoicePolicyForConfig(row)?.label || '未识别' }}
+                    </el-tag>
+                  </el-tooltip>
+                </template>
+                <span v-else class="no-default">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="is_default" label="默认" width="60">
               <template #default="{ row }">
                 <el-tag v-if="row.is_default" type="success" size="small">✓</el-tag>
@@ -333,6 +345,8 @@
             <el-option label="Vidu 视频" value="vidu" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
+            <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
+            <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -489,6 +503,15 @@ input_reference = (图片文件，可选)</pre>
   "watermark": false
 }</pre>
                   <b>注意：</b>官方 api.vidu.cn 用 <code>Token</code> 认证，中转站用 <code>Bearer</code>，系统自动识别。localhost 图片自动上传图床。
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="icreat-vid">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> iCreat Seedance — 三段式任务接口</template>
+                <div class="ph-body">
+                  <b>Base URL：</b><code>https://api.icreat.ai</code>（网页域名 <code>zh.icreat.ai</code> 仅用于文档）<br>
+                  <b>创建：</b><code>POST /v1/task/submit/{model}</code>；<b>查询：</b><code>POST /v1/task/query-status</code>；<b>取结果：</b><code>POST /v1/task/get-result</code><br>
+                  <b>模型：</b><code>bytedance/seedance-2-0-fast</code>、<code>bytedance/seedance-2-0-mini</code><br>
+                  <b>认证：</b><code>Authorization: Bearer {api_key}</code>，并发送 <code>X-ICREAT-AI-GROUP: default</code>。连接测试只查询不存在的任务，不会提交计费任务。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="jimeng-ai-api-vid">
@@ -1114,6 +1137,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
+import { videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
@@ -1322,6 +1346,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-2.0-flash'] }
   ],
   image: [
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1333,6 +1358,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
+    { id: 'aihubcc', name: 'AIHubCC 图片', models: ['gpt-image-2', 'gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-3.5k', 'gpt-image-2-4k'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1343,6 +1369,8 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
+    { id: 'aihubcc', name: 'AIHubCC 图片/视频', models: ['omni-fast', 'omni-fast-v2v', 'omni-fast-no-water', 'omni-fast-v2v-no-water', 'Seedance-2.0-mini-480p', 'Seedance-2.0-fast-480p', 'Seedance-2.0-480p', 'Seedance-2.0-mini-720p', 'Seedance-2.0-fast-720p', 'Seedance-2.0-720p', 'Seedance-2.0-1080p', 'Seedance-2.0-4k'] },
+    { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1367,6 +1395,7 @@ const providerConfigs = {
     },
     { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
     { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
+    { id: 'deepwl', name: 'DeepWL Grok 视频', models: ['grok-video-3', 'grok-video-3-pro', 'grok-video-3-max', 'grok-imagine-video', 'grok-imagine-video-1.5-preview'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
   ],
   tts: [
@@ -1379,6 +1408,7 @@ const providerConfigs = {
 
 /** 厂商 id → 默认接口规范（api_protocol） */
 const providerProtocolMap = {
+  aihubcc: 'aihubcc',
   // image / storyboard_image
   volcengine: 'volcengine',
   volces: 'volcengine',
@@ -1395,6 +1425,10 @@ const providerProtocolMap = {
   vidu: 'vidu',
   xai: 'xai',
   grok: 'xai',
+  deepwl: 'deepwl_grok',
+  deepwl_grok: 'deepwl_grok',
+  icreat: 'icreat_task',
+  icreat_task: 'icreat_task',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1410,6 +1444,7 @@ const providerProtocolMap = {
 function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
+  if (p === 'aihubcc') return 'https://aihubcc.cc/v1'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
   if (p === 'volces' || p === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3'
@@ -1426,6 +1461,8 @@ function getBaseUrlForProvider(provider) {
   if (p === 'jimeng_ai_api') return 'http://127.0.0.1:8000'
   if (p === 'jimeng_material_api') return 'https://silvamux.tingyutech.com'
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
+  if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
+  if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1537,6 +1574,8 @@ const endpointPreviewInfo = computed(() => {
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
     if (endpoint) {
       submitPath = endpoint
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      submitPath = '/images/generations'
     } else if (proto === 'volcengine' || p === 'volcengine' || p === 'volces') {
       submitPath = '/images/generations'
     } else if (proto === 'dashscope' || p === 'dashscope' || p === 'qwen_image') {
@@ -1552,8 +1591,12 @@ const endpointPreviewInfo = computed(() => {
     } else {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
-    } else if (service_type === 'video') {
-    if (endpoint) {
+  } else if (service_type === 'video') {
+    if (proto === 'icreat_task' || p === 'icreat') {
+      submitPath = endpoint || '/v1/task/submit/{model}'
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      submitPath = endpoint || '/videos'
+    } else if (endpoint) {
       submitPath = endpoint
     } else if (proto === 'volcengine_omni') {
       submitPath = '/contents/generations/tasks'
@@ -1577,6 +1620,12 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/videos'
     } else if (proto === 'xai') {
       submitPath = '/v1/videos/generations'
+    } else if (proto === 'deepwl_grok' || p === 'deepwl' || p === 'deepwl_grok') {
+      const model = String(form.value.default_model || '').toLowerCase()
+      const isUnified = endpoint
+        ? /\/v1\/video\/create/i.test(endpoint)
+        : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
+      submitPath = isUnified ? '/v1/video/create' : '/v1/videos'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       submitPath = '/api/v1/video-jobs'
     } else if (proto === 'veo3') {
@@ -1602,6 +1651,10 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'aihubcc' || p === 'aihubcc') {
+      queryPath = '/videos/{taskId}'
+    } else if (proto === 'icreat_task' || p === 'icreat') {
+      queryPath = '/v1/task/query-status'
     } else if (proto === 'volcengine_omni') {
       queryPath = '/contents/generations/tasks/{taskId}'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
@@ -1616,6 +1669,12 @@ const endpointPreviewInfo = computed(() => {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'xai') {
       queryPath = '/v1/videos/{taskId}'
+    } else if (proto === 'deepwl_grok' || p === 'deepwl' || p === 'deepwl_grok') {
+      const model = String(form.value.default_model || '').toLowerCase()
+      const isUnified = endpoint
+        ? /\/v1\/video\/create/i.test(endpoint)
+        : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
+      queryPath = isUnified ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       queryPath = '/api/v1/video-jobs/{taskId}'
     } else if (proto === 'veo3') {
@@ -1674,6 +1733,14 @@ function onProviderChange(providerId) {
   }
   // 自动填充接口规范
   form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
+  if (providerId === 'aihubcc' && (st === 'image' || st === 'storyboard_image')) {
+    form.value.endpoint = '/images/generations'
+    form.value.query_endpoint = '/videos/{taskId}'
+  }
+  if (providerId === 'aihubcc' && st === 'video') {
+    form.value.endpoint = '/videos'
+    form.value.query_endpoint = '/videos/{taskId}'
+  }
   if (st === 'video' && providerId === 'jimeng_ai_api') {
     form.value.endpoint = ''
     form.value.query_endpoint = ''
@@ -1696,6 +1763,16 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'djpsd'
     form.value.endpoint = '/api/v1/video-jobs'
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
+  }
+  if (st === 'video' && (providerId === 'deepwl' || providerId === 'deepwl_grok')) {
+    form.value.api_protocol = 'deepwl_grok'
+    form.value.endpoint = '/v1/video/create'
+    form.value.query_endpoint = '/v1/video/query?id={taskId}'
+  }
+  if (st === 'video' && (providerId === 'icreat' || providerId === 'icreat_task')) {
+    form.value.api_protocol = 'icreat_task'
+    form.value.endpoint = '/v1/task/submit/{model}'
+    form.value.query_endpoint = '/v1/task/query-status'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
@@ -1742,6 +1819,14 @@ function serviceTypeLabel(t) {
     model_ark_asset: 'SD2 资产库',
   }
   return map[t] || t
+}
+
+function voicePolicyDescription(row) {
+  const policy = videoVoicePolicyForConfig(row)
+  if (!policy) return '未识别模型能力，请在配置中填写视频模型。'
+  if (policy.key === 'reference_audio') return '优先使用分镜锁定的角色参考音频。'
+  if (policy.key === 'silent') return '模型不生成原生音频，需要使用 TTS 或后期混音。'
+  return '模型生成原生音频，使用角色级文字声线提示；不等同于音色克隆。'
 }
 
 function onRowEdit(row) {

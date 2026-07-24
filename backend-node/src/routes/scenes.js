@@ -152,6 +152,24 @@ function routes(db, log, cfg, generationOptions = {}) {
         response.internalError(res, err.message);
       }
     },
+    generatePanoramaImage: async (req, res) => {
+      try {
+        const body = req.body || {};
+        const out = await sceneService.generateScenePanoramaImage(
+          db, log, cfg, req.params.scene_id, body.model || undefined, body.style || undefined,
+          { billingEnabled: Boolean(generationOptions.billingEnabled), userId: req.user?.id }
+        );
+        if (!out.ok) {
+          if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
+          if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
+          return response.badRequest(res, out.error);
+        }
+        response.success(res, { message: '场景全景图生成任务已提交', image_generation: out.image_generation });
+      } catch (err) {
+        log.error('scenes generate-panorama-image', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
   };
 }
 

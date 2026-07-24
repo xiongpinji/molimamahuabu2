@@ -1,6 +1,6 @@
-import { parseCanvasLayout, resolveNodePosition } from './canvasLayout'
+import { normalizeManualCanvasEdges, parseCanvasLayout, resolveNodePosition } from './canvasLayout'
 import { getStoryboardGroupMap, parseWorkflowGroups } from './canvasWorkflow'
-import { assetImageUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
+import { assetImageUrl, assetMediaUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
 import {
   dramaUsesFirstLastFrame,
   imageRecordUrl,
@@ -10,6 +10,8 @@ import {
   resolveSbVideoRecord,
   videoRecordUrl,
 } from './storyboardMedia'
+import { latestVideoGenerationError, latestVideoGenerationWarning } from './videoGenerationStatus'
+import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
 
 const ASSET_X = 48
 const SCRIPT_OFFSET_X = 248
@@ -27,6 +29,7 @@ const ASSET_EDGE_STYLE = { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray:
 const SCRIPT_EDGE_STYLE = { stroke: '#fbbf24', strokeWidth: 2, strokeDasharray: '8 4' }
 const PIPELINE_EDGE_STYLE = { stroke: '#818cf8', strokeWidth: 2 }
 const CHAIN_EDGE_STYLE = { stroke: '#a78bfa', strokeWidth: 1.5, strokeDasharray: '4 3' }
+const MANUAL_EDGE_STYLE = { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' }
 
 /** Vue Flow 贝塞尔曲线（curvature 越大弧线越明显） */
 function makeEdge(props) {
@@ -69,15 +72,39 @@ function makeNode(base) {
   return { ...base, draggable }
 }
 
-function buildAssetNodes(drama, savedLayout, startY) {
+function isProjectMediaAsset(asset) {
+  return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
+}
+
+function appendManualEdges(edges, savedLayout, nodes) {
+  const nodeIds = new Set(nodes.map((node) => String(node.id)))
+  const existing = new Set(edges.map((edge) => (
+    `${edge.source}|${edge.sourceHandle || ''}|${edge.target}|${edge.targetHandle || ''}`
+  )))
+
+  for (const edge of normalizeManualCanvasEdges(savedLayout?.manual_edges)) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue
+    const key = `${edge.source}|${edge.sourceHandle || ''}|${edge.target}|${edge.targetHandle || ''}`
+    if (existing.has(key)) continue
+    existing.add(key)
+    edges.push(makeEdge({
+      ...edge,
+      type: edge.type || 'smoothstep',
+      style: MANUAL_EDGE_STYLE,
+      data: { ...(edge.data || {}), manual: true },
+    }))
+  }
+}
+
+function buildAssetNodes(drama, savedLayout, startY, episodeContext) {
   const nodes = []
   const edges = []
   let y = startY
 
   const sections = [
-    { key: 'characters', label: '👤 角色', hint: '从剧本提取', items: drama.characters || [], kind: 'character', prefix: 'char' },
-    { key: 'scenes', label: '🏞 场景', hint: '从剧本提取', items: drama.scenes || [], kind: 'scene', prefix: 'scene' },
-    { key: 'props', label: '🎭 道具', hint: '从剧本提取', items: drama.props || [], kind: 'prop', prefix: 'prop' },
+    { key: 'characters', label: '👤 角色', hint: '从剧本提取', items: filterCanvasAssets(drama.characters, 'character', episodeContext), kind: 'character', prefix: 'char' },
+    { key: 'scenes', label: '🏞 场景', hint: '从剧本提取', items: filterCanvasAssets(drama.scenes, 'scene', episodeContext), kind: 'scene', prefix: 'scene' },
+    { key: 'props', label: '🎭 道具', hint: '从剧本提取', items: filterCanvasAssets(drama.props, 'prop', episodeContext), kind: 'prop', prefix: 'prop' },
   ]
 
   for (const sec of sections) {
@@ -94,11 +121,12 @@ function buildAssetNodes(drama, savedLayout, startY) {
       y += ASSET_ROW_H
     }
     const addId = `add:${sec.kind}`
+    const addPosition = resolveNodePosition(savedLayout, addId, { x: ASSET_X, y })
     nodes.push(makeNode({
       id: addId,
       type: 'canvasAddButton',
-      position: resolveNodePosition(savedLayout, addId, { x: ASSET_X, y }),
-      data: { assetType: sec.kind, label: '+ 新建' },
+      position: addPosition,
+      data: { assetType: sec.kind, label: '+ 新建', flowPosition: addPosition },
       draggable: false,
       selectable: false,
       connectable: false,
@@ -138,9 +166,9 @@ function appendUniversalNode(nodes, edges, ctx) {
 
 function appendMediaImageNode(nodes, edges, ctx) {
   const {
-    savedLayout, sb, sbId, fromId, mediaX, mediaY, imgId, url, frameKind, frameLabel,
+    savedLayout, sb, sbId, fromId, mediaX, mediaY, imgId, url, frameKind, frameLabel, allowEmpty,
   } = ctx
-  if (!url) return fromId
+  if (!url && !allowEmpty) return fromId
   nodes.push(makeNode({
     id: imgId,
     type: 'canvasMedia',
@@ -251,23 +279,19 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
 
       if (useFirstLast) {
         const firstUrl = imageRecordUrl(resolveSbFirstImageRecord(sb, imagesBySbId))
-        if (firstUrl) {
-          const imgId = `sbimg-first:${sb.id}`
-          pipelineTailId = appendMediaImageNode(nodes, edges, {
-            savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId, url: firstUrl,
-            frameKind: 'first', frameLabel: '首帧',
-          })
-          mediaX += MEDIA_GAP_X
-        }
+        const firstImgId = `sbimg-first:${sb.id}`
+        pipelineTailId = appendMediaImageNode(nodes, edges, {
+          savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId: firstImgId, url: firstUrl,
+          frameKind: 'first', frameLabel: '首帧', allowEmpty: true,
+        })
+        mediaX += MEDIA_GAP_X
         const lastUrl = imageRecordUrl(resolveSbLastImageRecord(sb, imagesBySbId))
-        if (lastUrl) {
-          const imgId = `sbimg-last:${sb.id}`
-          pipelineTailId = appendMediaImageNode(nodes, edges, {
-            savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId, url: lastUrl,
-            frameKind: 'last', frameLabel: '尾帧',
-          })
-          mediaX += MEDIA_GAP_X
-        }
+        const lastImgId = `sbimg-last:${sb.id}`
+        pipelineTailId = appendMediaImageNode(nodes, edges, {
+          savedLayout, sb, sbId, fromId: pipelineTailId, mediaX, mediaY, imgId: lastImgId, url: lastUrl,
+          frameKind: 'last', frameLabel: '尾帧', allowEmpty: true,
+        })
+        mediaX += MEDIA_GAP_X
       } else {
         const mainUrl = imageRecordUrl(resolveSbMainImageRecord(sb, imagesBySbId)) || storyboardImageUrl(sb)
         if (mainUrl) {
@@ -281,14 +305,18 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
       }
     }
 
-    const vidUrl = videoRecordUrl(resolveSbVideoRecord(sb, videosBySbId)) || storyboardVideoUrl(sb)
-    if (vidUrl) {
+    const sbVideos = videosBySbId?.[sb.id] || []
+    const videoError = latestVideoGenerationError(sbVideos)
+    const videoWarning = latestVideoGenerationWarning(sbVideos)
+    const videoRecord = resolveSbVideoRecord(sb, videosBySbId)
+    const vidUrl = videoRecordUrl(videoRecord) || storyboardVideoUrl(sb)
+    if (vidUrl || videoError) {
       const vidId = `sbvid:${sb.id}`
       nodes.push(makeNode({
         id: vidId,
         type: 'canvasMedia',
         position: resolveNodePosition(savedLayout, vidId, { x: mediaX, y: mediaY }),
-        data: { kind: 'video', storyboard: sb, url: vidUrl },
+        data: { kind: 'video', storyboard: sb, url: vidUrl, videoRecord, generationError: videoError, generationWarning: videoWarning },
       }))
       edges.push(makeEdge({
         id: `e-${pipelineTailId}-${vidId}`,
@@ -299,13 +327,14 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
       mediaX += MEDIA_GAP_X
     }
 
-    if (sb.audio_local_path) {
+    const dialogueAudio = sb.audio_local_path || sb.audio_url
+    if (dialogueAudio) {
       const audId = `sbaud:${sb.id}:dialogue`
       nodes.push(makeNode({
         id: audId,
         type: 'canvasMedia',
         position: resolveNodePosition(savedLayout, audId, { x: mediaX, y: mediaY }),
-        data: { kind: 'audio', storyboard: sb, url: audioUrl(sb.audio_local_path), audioType: 'dialogue' },
+        data: { kind: 'audio', storyboard: sb, url: audioUrl(dialogueAudio), audioType: 'dialogue' },
       }))
       edges.push(makeEdge({
         id: `e-sb-aud-${sb.id}`,
@@ -360,11 +389,12 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
 
   const addSbId = `add:storyboard:${episode.id}`
   const addY = rowYBase + storyboards.length * SB_GAP_Y
+  const addPosition = resolveNodePosition(savedLayout, addSbId, { x: PIPELINE_X, y: addY })
   nodes.push(makeNode({
     id: addSbId,
     type: 'canvasAddButton',
-    position: resolveNodePosition(savedLayout, addSbId, { x: PIPELINE_X, y: addY }),
-    data: { assetType: 'storyboard', label: '+ 新建分镜', episodeId: episode.id },
+    position: addPosition,
+    data: { assetType: 'storyboard', label: '+ 新建分镜', episodeId: episode.id, flowPosition: addPosition },
     draggable: false,
     selectable: false,
     connectable: false,
@@ -389,8 +419,9 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   )
   const useFirstLastFrame = options.useFirstLastFrame ?? dramaUsesFirstLastFrame(drama)
   const episodeId = options.episodeId ?? null
+  const episodeContext = getCanvasEpisodeContext(drama, episodeId)
   const episodes = episodeId
-    ? (drama.episodes || []).filter((ep) => ep.id === episodeId)
+    ? episodeContext.episodes
     : (drama.episodes || [])
 
   const nodes = []
@@ -404,8 +435,22 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     data: { drama },
   }))
 
-  const assetBlock = buildAssetNodes(drama, savedLayout, 80)
+  const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
+
+  const projectAssets = (options.projectAssets || []).filter(isProjectMediaAsset)
+  if (projectAssets.length) {
+    nodes.push(sectionLabel('label:project-assets', `🗂 项目素材 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
+    projectAssets.forEach((asset, index) => {
+      const id = `project-asset:${asset.id}`
+      nodes.push(makeNode({
+        id,
+        type: 'canvasProjectAsset',
+        position: resolveNodePosition(savedLayout, id, { x: ASSET_X, y: assetBlock.nextY + 36 + index * ASSET_ROW_H }),
+        data: { asset },
+      }))
+    })
+  }
 
   let pipelineY = 88
   let maxPipelineX = PIPELINE_X
@@ -426,13 +471,15 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     nodes.push(sectionLabel('label:empty', '暂无剧集，可点顶栏「+ 集」或右键空白处新建', PIPELINE_X, pipelineY))
   }
 
+  appendManualEdges(edges, savedLayout, nodes)
+
   return {
     nodes,
     edges,
     savedLayout,
     bounds: {
       width: Math.max(maxPipelineX + SCRIPT_OFFSET_X + 200, 1200),
-      height: Math.max(pipelineY + 80, assetBlock.nextY, 600),
+      height: Math.max(pipelineY + 80, assetBlock.nextY + projectAssets.length * ASSET_ROW_H + 80, 600),
     },
   }
 }
@@ -471,7 +518,7 @@ export function getAssetRelationHighlight(drama, assetNodeId) {
       nodeIds.add(`sbimg-first:${sb.id}`)
       nodeIds.add(`sbimg-last:${sb.id}`)
       if (storyboardVideoUrl(sb)) nodeIds.add(`sbvid:${sb.id}`)
-      if (sb.audio_local_path) nodeIds.add(`sbaud:${sb.id}:dialogue`)
+      if (sb.audio_local_path || sb.audio_url) nodeIds.add(`sbaud:${sb.id}:dialogue`)
 
       if (prefix === 'char') edgeIds.add(`e-char-${entityId}-sb-${sb.id}`)
       if (prefix === 'scene') edgeIds.add(`e-scene-${entityId}-sb-${sb.id}`)
