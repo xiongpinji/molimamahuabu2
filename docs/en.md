@@ -4,7 +4,7 @@
 
 **A locally-running AI short drama & comic generator — download and run, no cloud required, fully open source**
 
-[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](../LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -185,7 +185,14 @@ LocalMiniDrama/
 
 Full version history → **[CHANGELOG](changelog.md)**
 
-**Latest v1.2.8 highlights:**
+**Latest v1.2.9 highlights:**
+- 🆕 **LibTV-style canvas workflow** — free/project canvases, unified node configuration, real generation status, retry, asset reuse, and result write-back
+- 🆕 **Provider and voice continuity** — DeepWL Grok, iCreat Seedance, and AIHubCC media protocols; per-shot model selection and persistent character voice anchors
+- 🆕 **Public platform operations** — tenant isolation, administrators, redeem codes, model pricing, credit ledger, reconciliation, and tenant console foundation
+- 🆕 **3D director workflow** — shot sequences, cuts/transitions, character tracks, action clips, persistence, and export status
+- 🔒 **Production delivery gates** — preflight checks, database backup drills, dependency-security CI, Windows signing, upgrade-install, and user-data retention validation
+
+**v1.2.8 highlights:**
 - 🆕 **Agnes AI** — one-click setup for text (`agnes-2.0-flash`), image (`agnes-image-2.1-flash`), and video (`agnes-video-v2.0`) with a single API key
 - 🆕 **Canvas mode enhancements** — script node on canvas, context menu, floating toolbar, in-canvas create/delete, batch episode generation
 - 🆕 **ModelArk private asset library** — configure BytePlus / Volcengine Ark asset groups for Seedance 2.0 character certification (AK/SK or Bearer auth)
