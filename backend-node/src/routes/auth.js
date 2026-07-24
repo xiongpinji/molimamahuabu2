@@ -68,7 +68,23 @@ function createAuthRoutes(db, options = {}) {
     return response.success(res, req.user);
   }
 
-  return { register, login, me };
+  function bootstrapAdmin(req, res) {
+    const configuredEmail = String(options.bootstrapAdminEmail || '').trim().toLowerCase();
+    if (!configuredEmail) {
+      return response.error(res, 503, 'ADMIN_BOOTSTRAP_NOT_CONFIGURED', '首管理员引导尚未配置');
+    }
+    if (!req.user || String(req.user.email || '').trim().toLowerCase() !== configuredEmail) {
+      return response.error(res, 403, 'ADMIN_BOOTSTRAP_IDENTITY_MISMATCH', '当前账号不是指定的首管理员');
+    }
+    const user = auth.bootstrapFirstAdmin(db, configuredEmail);
+    if (!user) {
+      return response.error(res, 409, 'ADMIN_BOOTSTRAP_CLOSED', '系统已存在管理员账号');
+    }
+    const token = auth.issueToken(user, options.jwtSecret, auth.getTokenVersion(db, user.id));
+    return response.success(res, { user, token });
+  }
+
+  return { register, login, me, bootstrapAdmin };
 }
 
 module.exports = createAuthRoutes;

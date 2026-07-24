@@ -11,7 +11,7 @@ const reconciliation = require('../services/billingReconciliationService');
 function adminRedeemInput(db, req) {
   const input = {
     ...(req.body || {}),
-    createdBy: req.user.id,
+    createdBy: req.user?.id,
   };
   const tenantId = String(input.tenantId ?? input.tenant_id ?? '').trim();
   if (tenantId) {
@@ -95,7 +95,7 @@ function routes(db, log) {
       try {
         response.success(res, platformAdmin.updateUser(db, req.params.userId, {
           ...(req.body || {}),
-          actorUserId: req.user.id,
+          actorUserId: req.user?.id,
         }));
       } catch (error) {
         if (error.code === 'INVALID_USER_UPDATE') return response.badRequest(res, error.message);
@@ -119,7 +119,7 @@ function routes(db, log) {
           req.params.tenantId,
           {
             ...(req.body || {}),
-            actorUserId: req.user.id,
+            actorUserId: req.user?.id,
           },
         ));
       } catch (error) {

@@ -47,14 +47,25 @@ function setupRouter(cfg, db, log) {
     enabled: publicPlatformEnabled,
     token: process.env.PLATFORM_ADMIN_TOKEN,
   });
+  const requireBootstrapAdminToken = createAdminAuthMiddleware({
+    enabled: publicPlatformEnabled,
+    token: process.env.PLATFORM_ADMIN_TOKEN,
+    requireRole: false,
+  });
   const auth = authRoutes(db, {
     registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    bootstrapAdminEmail: publicPlatformEnabled
+      ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
+      : undefined,
   });
   const billing = billingRoutes(db, log);
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
-  const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(permission);
+  const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
+    permission,
+    { enabled: publicPlatformEnabled },
+  );
   const authRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'auth',
@@ -84,6 +95,7 @@ function setupRouter(cfg, db, log) {
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
+  r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
   r.get('/auth/me', auth.me);
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);

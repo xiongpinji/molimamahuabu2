@@ -41,3 +41,17 @@ test('公开模式拒绝过短管理员令牌配置', () => {
   const result = run(createAdminAuthMiddleware({ enabled: true, token: 'short' }), { 'x-platform-admin-token': 'short' });
   assert.equal(result.status, 503);
 });
+
+test('首管理员引导只校验独立管理员令牌，不预先要求数据库管理员角色', () => {
+  const middleware = createAdminAuthMiddleware({
+    enabled: true,
+    token: 'a'.repeat(32),
+    requireRole: false,
+  });
+  const result = run(
+    middleware,
+    { 'x-platform-admin-token': 'a'.repeat(32) },
+    { id: 'founder-1', role: 'user' },
+  );
+  assert.equal(result.next, true);
+});

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const Database = require('better-sqlite3')
 
 const auth = require('../src/services/userAuthService')
+const createAuthRoutes = require('../src/routes/auth')
 const admin = require('../src/services/platform-admin-service')
 const { createUserAuthMiddleware } = require('../src/middleware/userAuth')
 const { createAdminAuthMiddleware } = require('../src/middleware/adminAuth')
@@ -55,6 +56,17 @@ function runUserAuth(db, token) {
   }
   createUserAuthMiddleware({ enabled: true, secret: SECRET, db })(req, res, () => { result.next = true })
   return { req, result }
+}
+
+function captureResponse() {
+  const result = { status: null, body: null }
+  return {
+    result,
+    res: {
+      status(code) { result.status = code; return this },
+      json(body) { result.body = body; return this },
+    },
+  }
 }
 
 test('admin/ops/support/read-only 严格符合账号管理权限矩阵', () => {
@@ -189,5 +201,110 @@ test('账号控制写审计，并保护自己和最后一个启用管理员', ()
     }),
     (error) => error.code === 'LAST_ACTIVE_ADMIN',
   )
+  db.close()
+})
+
+test('注册指定邮箱不会在缺少管理员令牌确认时自动提权', () => {
+  const db = new Database(':memory:')
+  const firstCapture = captureResponse()
+  const routes = createAuthRoutes(db, {
+    registrationEnabled: true,
+    jwtSecret: SECRET,
+    bootstrapAdminEmail: 'founder@example.com',
+  })
+
+  routes.register({
+    body: {
+      email: 'founder@example.com',
+      password: 'correct horse battery staple',
+    },
+  }, firstCapture.res)
+  assert.equal(firstCapture.result.status, 201)
+  assert.equal(firstCapture.result.body.data.user.role, 'user')
+
+  const secondCapture = captureResponse()
+  routes.register({
+    body: {
+      email: 'second@example.com',
+      password: 'correct horse battery staple',
+    },
+  }, secondCapture.res)
+  assert.equal(secondCapture.result.status, 201)
+  assert.equal(secondCapture.result.body.data.user.role, 'user')
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM platform_users WHERE platform_role = 'admin'").get().count,
+    0,
+  )
+  db.close()
+})
+
+test('零管理员旧数据库启动路由时不会仅凭邮箱自动提权', () => {
+  const db = new Database(':memory:')
+  const existing = auth.register(db, {
+    email: 'recovery@example.com',
+    password: 'correct horse battery staple',
+  })
+  createAuthRoutes(db, {
+    registrationEnabled: false,
+    jwtSecret: SECRET,
+    bootstrapAdminEmail: 'recovery@example.com',
+  })
+
+  const recovered = auth.getUserById(db, existing.id)
+  assert.equal(recovered.role, 'user')
+  assert.equal(auth.getTokenVersion(db, existing.id), 0)
+  db.close()
+})
+
+test('首管理员审计失败时提权必须整体回滚', () => {
+  const db = new Database(':memory:')
+  const founder = auth.register(db, {
+    email: 'founder@example.com',
+    password: 'correct horse battery staple',
+  })
+  createAuthRoutes(db, {
+    registrationEnabled: false,
+    jwtSecret: SECRET,
+    bootstrapAdminEmail: 'founder@example.com',
+  })
+  db.exec(`
+    CREATE TRIGGER reject_bootstrap_audit
+    BEFORE INSERT ON audit_events
+    WHEN NEW.event_type = 'platform.admin.bootstrap'
+    BEGIN
+      SELECT RAISE(ABORT, 'audit unavailable');
+    END
+  `)
+
+  assert.throws(
+    () => auth.bootstrapFirstAdmin(db, 'founder@example.com'),
+    /audit unavailable/,
+  )
+  assert.equal(auth.getUserById(db, founder.id).role, 'user')
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'platform.admin.bootstrap'").get().count,
+    0,
+  )
+  db.close()
+})
+
+test('只要历史上存在管理员账号就永久关闭首管理员引导', () => {
+  const db = new Database(':memory:')
+  const oldAdmin = auth.register(db, {
+    email: 'old-admin@example.com',
+    password: 'correct horse battery staple',
+  })
+  db.prepare(`
+    UPDATE platform_users
+    SET role = 'admin', platform_role = 'admin', status = 'disabled'
+    WHERE id = ?
+  `).run(oldAdmin.id)
+  const founder = auth.register(db, {
+    email: 'founder@example.com',
+    password: 'correct horse battery staple',
+  })
+
+  assert.equal(auth.bootstrapFirstAdmin(db, 'founder@example.com'), null)
+  assert.equal(auth.getUserById(db, founder.id).role, 'user')
   db.close()
 })

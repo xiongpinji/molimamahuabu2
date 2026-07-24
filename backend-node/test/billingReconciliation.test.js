@@ -149,6 +149,9 @@ test('明确失败退款以幂等键闭环，重复调用不重复入账或审�
   assert.equal(db.prepare(
     "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'billing.reconciliation.refunded'",
   ).get().count, 1);
+  assert.equal(db.prepare(
+    "SELECT user_id FROM audit_events WHERE event_type = 'billing.reconciliation.refunded'",
+  ).get().user_id, 'admin-1');
 });
 
 test('租户对账退款只修改目标租户账户和账本', () => {

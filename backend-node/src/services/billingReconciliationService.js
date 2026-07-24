@@ -295,7 +295,7 @@ function refundReservation(db, input = {}) {
         history.created_at,
       );
     auditEvents.record(db, {
-      userId: reservation.user_id || reservation.actor_user_id,
+      userId: history.actor_user_id,
       tenantId: reservation.tenant_id,
       eventType: 'billing.reconciliation.refunded',
       resourceType: 'credit_reservation',

@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const audit = require('./auditEventService');
 
 const TOKEN_TTL = '2h';
 
@@ -83,6 +84,38 @@ function register(db, input) {
   return publicUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(row.id));
 }
 
+function bootstrapFirstAdmin(db, emailValue) {
+  ensureSchema(db);
+  if (!String(emailValue || '').trim()) return null;
+  let email;
+  try {
+    email = normalizeEmail(emailValue);
+  } catch {
+    return null;
+  }
+  return db.transaction(() => {
+    const existingAdmin = db.prepare(`SELECT 1 FROM platform_users
+      WHERE platform_role = 'admin' LIMIT 1`).get();
+    if (existingAdmin) return null;
+    const target = db.prepare(`SELECT id FROM platform_users
+      WHERE email = ? AND status = 'active'`).get(email);
+    if (!target) return null;
+    db.prepare(`UPDATE platform_users
+      SET role = 'admin', platform_role = 'admin',
+        token_version = token_version + 1, updated_at = ?
+      WHERE id = ?`).run(new Date().toISOString(), target.id);
+    const user = getUserById(db, target.id);
+    audit.record(db, {
+      userId: user.id,
+      eventType: 'platform.admin.bootstrap',
+      resourceType: 'platform_user',
+      resourceId: user.id,
+      outcome: 'success',
+    });
+    return user;
+  })();
+}
+
 function authenticate(db, emailValue, passwordValue) {
   ensureSchema(db);
   const email = normalizeEmail(emailValue);
@@ -133,6 +166,7 @@ function verifyToken(token, secret) {
 module.exports = {
   ensureSchema,
   register,
+  bootstrapFirstAdmin,
   authenticate,
   getUserById,
   getTokenVersion,

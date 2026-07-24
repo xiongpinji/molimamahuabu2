@@ -25,7 +25,7 @@ function routes(db, log) {
     changeRole: (req, res) => {
       try {
         return response.success(res, platformAdmin.changeUserRole(db, {
-          actorUserId: req.user.id,
+          actorUserId: req.user?.id,
           targetUserId: req.params.userId,
           role: req.body?.role,
         }));
@@ -36,7 +36,7 @@ function routes(db, log) {
     changeStatus: (req, res) => {
       try {
         return response.success(res, platformAdmin.changeUserStatus(db, {
-          actorUserId: req.user.id,
+          actorUserId: req.user?.id,
           targetUserId: req.params.userId,
           status: req.body?.status,
         }));
@@ -47,7 +47,7 @@ function routes(db, log) {
     forceLogout: (req, res) => {
       try {
         return response.success(res, platformAdmin.forceLogout(db, {
-          actorUserId: req.user.id,
+          actorUserId: req.user?.id,
           targetUserId: req.params.userId,
         }));
       } catch (error) {
