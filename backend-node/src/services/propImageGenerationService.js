@@ -31,6 +31,9 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     return;
   }
 
+  db.prepare('UPDATE props SET error_msg = NULL, updated_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), propId);
+
   const loadConfig = require('../config').loadConfig;
   const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
   let cfg = loadConfig();
@@ -130,11 +133,11 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   const extraJson = extras.length ? JSON.stringify(extras) : null;
   try {
     db.prepare(
-      'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?'
+      'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
     ).run(result.image_url, localPath, extraJson, now, propId);
   } catch (e) {
     if ((e.message || '').includes('extra_images')) {
-      db.prepare('UPDATE props SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
+      db.prepare('UPDATE props SET image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
     } else {
       throw e;
     }
