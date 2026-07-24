@@ -260,7 +260,7 @@ app.whenReady().then(async () => {
     console.error('Failed to start backend', err);
     const { dialog } = require('electron');
     dialog.showErrorBox(
-      '本地短剧助手启动失败',
+      '茉莉妈妈短剧制作平台启动失败',
       `后端服务未能启动，请查看日志：\n${MAIN_STARTUP_LOG}\n\n${stack}`
     );
     app.quit();

@@ -1,9 +1,9 @@
 {
-  "name": "localminidrama-desktop",
+  "name": "molimama-short-drama-desktop",
   "version": "1.2.8",
-  "description": "LocalMiniDrama 本地桌面客户端",
+  "description": "茉莉妈妈短剧制作平台桌面客户端",
   "main": "main.js",
-  "author": "LocalMiniDrama",
+  "author": "茉莉妈妈",
   "license": "MIT",
   "scripts": {
     "prestart": "node scripts/copy-backend.js",
@@ -44,9 +44,10 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.localminidrama.desktop",
-    "productName": "本地短剧助手",
-    "artifactName": "LocalMiniDrama ${version}.${ext}",
+    "appId": "cn.molimama.shortdrama",
+    "productName": "茉莉妈妈短剧制作平台",
+    "copyright": "Copyright © 2026 茉莉妈妈",
+    "artifactName": "茉莉妈妈短剧制作平台 ${version}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -79,16 +80,21 @@
     ],
     "win": {
       "target": ["nsis", "portable"],
-      "icon": null,
-      "signAndEditExecutable": false
+      "icon": "build/icon.ico",
+      "executableName": "茉莉妈妈短剧制作平台",
+      "legalTrademarks": "茉莉妈妈",
+      "signAndEditExecutable": true
     },
     "nsis": {
-      "artifactName": "LocalMiniDrama ${version} Setup.${ext}",
+      "artifactName": "茉莉妈妈短剧制作平台 ${version} Setup.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
     "portable": {
-      "artifactName": "LocalMiniDrama ${version} Portable.${ext}"
+      "artifactName": "茉莉妈妈短剧制作平台 ${version} Portable.${ext}"
     }
   }
 }
