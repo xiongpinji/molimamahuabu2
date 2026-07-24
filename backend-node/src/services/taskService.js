@@ -139,6 +139,21 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
        WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
     ).all().map((row) => ({ ...row, credit_reservation_id: null }));
   }
+  try {
+    const resumableVideoTaskIds = new Set(
+      db.prepare(
+        `SELECT task_id FROM video_generations
+         WHERE status = 'processing' AND deleted_at IS NULL
+           AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''
+           AND task_id IS NOT NULL AND TRIM(task_id) != ''`
+      ).all().map((row) => row.task_id)
+    );
+    rows = rows.filter(
+      (row) => row.type !== 'video_generation' || !resumableVideoTaskIds.has(row.id)
+    );
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
   if (!rows.length) return 0;
   log.warn('Failing orphaned async tasks after startup', { count: rows.length });
   for (const row of rows) {
