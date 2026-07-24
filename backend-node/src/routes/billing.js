@@ -6,6 +6,7 @@ const subscriptions = require('../services/subscriptionBillingService');
 const redeemCodes = require('../services/redeem-code-service');
 const platformAdmin = require('../services/platform-admin-service');
 const tenants = require('../services/tenantService');
+const reconciliation = require('../services/billingReconciliationService');
 
 function adminRedeemInput(db, req) {
   const input = {
@@ -25,7 +26,6 @@ function adminRedeemInput(db, req) {
   }
   return input;
 }
-
 function routes(db, log) {
   return {
     getAccount: (req, res) => {
@@ -140,6 +140,52 @@ function routes(db, log) {
         }));
       } catch (error) {
         log.error('billing admin list credit transactions', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    listReconciliationAnomalies: (req, res) => {
+      try {
+        response.success(res, reconciliation.listAnomalies(db, {
+          olderThanMinutes: req.query?.older_than_minutes,
+          limit: req.query?.limit,
+        }));
+      } catch (error) {
+        if (error.code === 'INVALID_RECONCILIATION_INPUT') {
+          return response.badRequest(res, error.message);
+        }
+        log.error('billing admin list reconciliation anomalies', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    listReconciliationHistory: (req, res) => {
+      try {
+        response.success(res, reconciliation.listHistory(db, {
+          limit: req.query?.limit,
+        }));
+      } catch (error) {
+        log.error('billing admin list reconciliation history', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    refundReconciliationReservation: (req, res) => {
+      try {
+        response.success(res, reconciliation.refundReservation(db, {
+          reservationId: req.params.reservationId,
+          idempotencyKey: req.body?.idempotency_key,
+          reason: req.body?.reason,
+          actorUserId: req.user?.id,
+        }));
+      } catch (error) {
+        if (error.code === 'INVALID_RECONCILIATION_INPUT') {
+          return response.badRequest(res, error.message);
+        }
+        if (error.code === 'RECONCILIATION_RESERVATION_NOT_FOUND') {
+          return response.notFound(res, error.message);
+        }
+        if (['UNSAFE_RECONCILIATION_REFUND', 'RECONCILIATION_IDEMPOTENCY_CONFLICT'].includes(error.code)) {
+          return response.error(res, 409, error.code, error.message);
+        }
+        log.error('billing admin refund reconciliation reservation', { error: error.message });
         response.internalError(res, error.message);
       }
     },

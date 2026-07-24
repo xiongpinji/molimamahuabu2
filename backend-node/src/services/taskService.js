@@ -111,6 +111,7 @@ const USER_CANCEL_TASK_MSG = '用户已取消';
 
 /**
  * 用户主动取消进行中的异步任务（无法中断已在执行的 AI 调用，但会停止前端轮询并防止恢复）。
+ * 预扣积分继续保持 held，等待实际调用返回后由生成流程结算，避免运行中的任务被误退款。
  */
 function cancelTask(db, log, taskId, reason) {
   const task = getTask(db, taskId);
@@ -119,13 +120,6 @@ function cancelTask(db, log, taskId, reason) {
     return { ok: true, already_done: true, task };
   }
   const msg = (reason || USER_CANCEL_TASK_MSG).toString().trim() || USER_CANCEL_TASK_MSG;
-  if (task.credit_reservation_id) {
-    try {
-      creditLedger.settleGeneration(db, task.credit_reservation_id, 'failed', msg);
-    } catch (error) {
-      log.warn('取消任务积分结算失败', { task_id: taskId, reservation_id: task.credit_reservation_id, error: error.message });
-    }
-  }
   updateTaskError(db, taskId, msg);
   log.info('Task cancelled by user', { task_id: taskId, type: task.type });
   return { ok: true, task: getTask(db, taskId) };

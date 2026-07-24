@@ -133,6 +133,10 @@
             </el-table>
           </section>
         </el-tab-pane>
+
+        <el-tab-pane label="积分对账" name="reconciliation">
+          <BillingReconciliationPanel />
+        </el-tab-pane>
       </el-tabs>
     </section>
   </main>
@@ -143,6 +147,7 @@ import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
+import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
 import {
   adjustTenantCredits,
   listAdminCreditTransactions,

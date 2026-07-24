@@ -9,9 +9,17 @@ const redeemOperationsSource = fs.readFileSync(
 )
 const tenantSource = fs.readFileSync(new URL('../src/views/TenantConsole.vue', import.meta.url), 'utf8')
 const billingApi = fs.readFileSync(new URL('../src/api/billing.js', import.meta.url), 'utf8')
+const reconciliationSource = fs.readFileSync(
+  new URL('../src/components/BillingReconciliationPanel.vue', import.meta.url),
+  'utf8',
+)
+const reconciliationApi = fs.readFileSync(
+  new URL('../src/api/billingReconciliation.js', import.meta.url),
+  'utf8',
+)
 
-test('统一管理后台提供账号、兑换码、积分和模型计费入口', () => {
-  for (const label of ['账号管理', '兑换码', '积分流水', '模型计费']) {
+test('统一管理后台提供账号、兑换码、积分、对账和模型计费入口', () => {
+  for (const label of ['账号管理', '兑换码', '积分流水', '积分对账', '模型计费']) {
     assert.match(adminSource, new RegExp(label))
   }
   assert.doesNotMatch(adminSource, /订阅套餐/)
@@ -35,9 +43,15 @@ test('前端 API 覆盖兑换和管理员控制接口', () => {
     '/billing/admin/tenants',
     '/billing/admin/redeem-codes',
     '/billing/admin/credit-transactions',
+    '/billing/admin/reconciliation/anomalies',
+    '/billing/admin/reconciliation/history',
   ]) {
-    assert.match(billingApi, new RegExp(endpoint.replaceAll('/', '\\/')))
+    assert.match(`${billingApi}\n${reconciliationApi}`, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
+  assert.match(reconciliationApi, /reconciliation\/\$\{encodeURIComponent\(reservationId\)\}\/refund/)
+  assert.match(reconciliationSource, /refundReconciliationReservation/)
+  assert.match(reconciliationSource, /row\.refundable/)
+  assert.match(adminSource, /BillingReconciliationPanel/)
 })
 
 test('未配置的默认模型首次保存时按启用状态提交', () => {

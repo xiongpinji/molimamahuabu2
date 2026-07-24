@@ -100,6 +100,9 @@ function setupRouter(cfg, db, log) {
   r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
   r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
   r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, billing.listReconciliationAnomalies);
+  r.get('/billing/admin/reconciliation/history', requireAdmin, billing.listReconciliationHistory);
+  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, billing.refundReconciliationReservation);
   r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
   r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
   r.post('/billing/admin/redeem-codes/batch', requireAdmin, billing.createAdminRedeemCodes);
