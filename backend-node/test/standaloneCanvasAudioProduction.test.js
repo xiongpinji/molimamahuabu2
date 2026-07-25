@@ -12,8 +12,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
 const userAuth = require('../src/services/userAuthService');
 const { isProbableMp3 } = require('../src/services/ttsService');
-
-const validMp3Bytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
+const validMp3Bytes = require('./fixtures/minimalMp3');
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -113,9 +112,14 @@ function listMp3Files(root) {
     .filter((entry) => entry.endsWith('.mp3'));
 }
 
-test('MP3 字节签名仅接受 ID3 或合法 MPEG 音频帧头', () => {
+test('MP3 校验要求完整 ID3v2 标签和至少一个完整 MPEG 音频帧', () => {
   assert.equal(isProbableMp3(validMp3Bytes), true);
-  assert.equal(isProbableMp3(Buffer.from([0xff, 0xfb, 0x90, 0x00])), true);
+  assert.equal(isProbableMp3(validMp3Bytes.subarray(45)), true);
+  assert.equal(isProbableMp3(validMp3Bytes.subarray(0, 8)), false);
+  assert.equal(isProbableMp3(Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00])), false);
+  assert.equal(isProbableMp3(validMp3Bytes.subarray(45, 49)), false);
+  assert.equal(isProbableMp3(validMp3Bytes.subarray(45, 188)), false);
+  assert.equal(isProbableMp3(validMp3Bytes.subarray(45, 189)), true);
   assert.equal(isProbableMp3(Buffer.from('{"error":"not audio"}')), false);
   assert.equal(isProbableMp3(Buffer.from('<html>not audio</html>')), false);
   assert.equal(isProbableMp3(Buffer.from([0xff, 0xe8, 0x90, 0x00])), false);
@@ -401,6 +405,11 @@ for (const scenario of [
     name: '垃圾字节',
     contentType: 'application/octet-stream',
     payload: Buffer.from([0x01, 0x02, 0x03, 0x04]),
+  },
+  {
+    name: '截断 MP3',
+    contentType: 'audio/mpeg',
+    payload: validMp3Bytes.subarray(0, 100),
   },
 ]) {
   test(`TTS 供应商 HTTP 200 返回非空${scenario.name}时失败、退款并记录审计`, async (t) => {
