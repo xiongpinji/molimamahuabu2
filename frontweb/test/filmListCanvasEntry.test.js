@@ -43,3 +43,11 @@ test('普通页面的全局头部不再把独立自由画布作为主要入口',
     assert.doesNotMatch(readView(view), /show-home-canvas="true"/, view)
   }
 })
+
+test('画布项目中心支持搜索和完整复制入口', () => {
+  assert.match(filmListSource, /v-model="searchKeyword"/)
+  assert.match(filmListSource, /keyword:\s*searchKeyword\.value\.trim\(\)/)
+  assert.match(filmListSource, /dramaAPI\.duplicate\(d\.id\)/)
+  assert.match(filmListSource, /aria-label="复制画布项目"/)
+  assert.match(filmListSource, /duplicatingId === d\.id/)
+})

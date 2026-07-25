@@ -61,6 +61,9 @@ export const dramaAPI = {
   exportDrama(id) {
     return request.get(`/dramas/${id}/export`, { responseType: 'blob' })
   },
+  duplicate(id) {
+    return request.post(`/dramas/${id}/duplicate`)
+  },
   importDrama(file) {
     const form = new FormData()
     form.append('file', file)

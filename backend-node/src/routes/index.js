@@ -164,6 +164,7 @@ function setupRouter(cfg, db, log) {
   r.get('/dramas/stats', drama.getDramaStats);
   // 导出/导入（放在 :id 路由前，避免被 :id 捕获）
   r.get('/dramas/:id/export', drama.exportDrama);
+  r.post('/dramas/:id/duplicate', drama.duplicateDrama);
   const multer = require('multer');
   const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
   r.post('/dramas/import', importUpload.single('file'), drama.importDrama);

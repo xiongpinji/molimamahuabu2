@@ -56,8 +56,16 @@ function parseZip(zipBuffer) {
 /**
  * 生成不重名的剧集标题
  */
-function resolveTitle(db, baseTitle) {
-  const existing = db.prepare('SELECT title FROM dramas WHERE deleted_at IS NULL').all().map(r => r.title);
+function resolveTitle(db, baseTitle, { userId, tenantId } = {}) {
+  let rows;
+  if (tenantId != null) {
+    rows = db.prepare('SELECT title FROM dramas WHERE tenant_id = ? AND deleted_at IS NULL').all(tenantId);
+  } else if (userId != null) {
+    rows = db.prepare('SELECT title FROM dramas WHERE user_id = ? AND deleted_at IS NULL').all(userId);
+  } else {
+    rows = db.prepare('SELECT title FROM dramas WHERE deleted_at IS NULL').all();
+  }
+  const existing = rows.map(r => r.title);
   if (!existing.includes(baseTitle)) return baseTitle;
   let i = 1;
   while (existing.includes(`${baseTitle} 导入${i}`)) i++;
@@ -118,17 +126,114 @@ function saveExtraImages(storagePath, projectDir, category, files, zipPaths, pre
   return localPaths.length > 0 ? JSON.stringify(localPaths) : null;
 }
 
+function remapCanvasNodeIds(value, maps) {
+  if (typeof value !== 'string') return value;
+  const patterns = [
+    [/project-asset:(\d+)/g, 'assets', 'project-asset:'],
+    [/sbimg-first:(\d+)/g, 'storyboards', 'sbimg-first:'],
+    [/sbimg-last:(\d+)/g, 'storyboards', 'sbimg-last:'],
+    [/sbaud:(\d+)/g, 'storyboards', 'sbaud:'],
+    [/sbuni:(\d+)/g, 'storyboards', 'sbuni:'],
+    [/sbtxt:(\d+)/g, 'storyboards', 'sbtxt:'],
+    [/sbvid:(\d+)/g, 'storyboards', 'sbvid:'],
+    [/sbimg:(\d+)/g, 'storyboards', 'sbimg:'],
+    [/sb:(\d+)/g, 'storyboards', 'sb:'],
+    [/add:storyboard:(\d+)/g, 'episodes', 'add:storyboard:'],
+    [/episode:(\d+)/g, 'episodes', 'episode:'],
+    [/script:(\d+)/g, 'episodes', 'script:'],
+    [/char:(\d+)/g, 'characters', 'char:'],
+    [/scene:(\d+)/g, 'scenes', 'scene:'],
+    [/prop:(\d+)/g, 'props', 'prop:'],
+  ];
+  return patterns.reduce((result, [pattern, mapName, prefix]) => (
+    result.replace(pattern, (match, oldId) => {
+      const newId = maps[mapName]?.get(Number(oldId));
+      return newId == null ? match : `${prefix}${newId}`;
+    })
+  ), value);
+}
+
+function remapDirectorEntityIds(value, maps) {
+  if (Array.isArray(value)) return value.map((item) => remapDirectorEntityIds(item, maps));
+  if (!value || typeof value !== 'object') return value;
+  const keyMaps = {
+    assetId: maps.assets,
+    asset_id: maps.assets,
+    modelAssetId: maps.assets,
+    model_asset_id: maps.assets,
+    characterId: maps.characters,
+    character_id: maps.characters,
+    sceneId: maps.scenes,
+    scene_id: maps.scenes,
+    propId: maps.props,
+    prop_id: maps.props,
+    storyboardId: maps.storyboards,
+    storyboard_id: maps.storyboards,
+    episodeId: maps.episodes,
+    episode_id: maps.episodes,
+  };
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (keyMaps[key]) {
+      const mapped = keyMaps[key].get(Number(item));
+      out[key] = mapped == null ? item : mapped;
+    } else {
+      out[key] = remapDirectorEntityIds(item, maps);
+    }
+  }
+  return out;
+}
+
+function remapCanvasReferences(metaStr, maps) {
+  if (!Object.values(maps).some((map) => map.size > 0)) return metaStr;
+  let metadata;
+  try {
+    metadata = JSON.parse(metaStr || '{}');
+  } catch (_) {
+    return metaStr;
+  }
+  const layout = metadata.canvas_layout;
+  if (layout?.nodes && typeof layout.nodes === 'object' && !Array.isArray(layout.nodes)) {
+    layout.nodes = Object.fromEntries(
+      Object.entries(layout.nodes).map(([nodeId, position]) => [
+        remapCanvasNodeIds(nodeId, maps),
+        position,
+      ]),
+    );
+  }
+  if (Array.isArray(layout?.manual_edges)) {
+    layout.manual_edges = layout.manual_edges.map((edge) => ({
+      ...edge,
+      id: remapCanvasNodeIds(edge.id, maps),
+      source: remapCanvasNodeIds(edge.source, maps),
+      target: remapCanvasNodeIds(edge.target, maps),
+    }));
+  }
+  if (layout?.director_timeline) {
+    layout.director_timeline = remapDirectorEntityIds(layout.director_timeline, maps);
+  }
+  if (Array.isArray(metadata.workflow_groups)) {
+    metadata.workflow_groups = metadata.workflow_groups.map((group) => ({
+      ...group,
+      storyboard_ids: Array.isArray(group.storyboard_ids)
+        ? group.storyboard_ids.map((id) => maps.storyboards.get(Number(id)) || id)
+        : group.storyboard_ids,
+    }));
+  }
+  return JSON.stringify(metadata);
+}
+
 /**
  * 导入 ZIP，创建剧集并还原所有数据
  * @param {Buffer} zipBuffer
  * @returns {{ drama_id: number, title: string }}
  */
-function importDrama(db, cfg, log, zipBuffer, { userId, tenantId } = {}) {
+function importDrama(db, cfg, log, zipBuffer, { userId, tenantId, title: requestedTitle } = {}) {
   const storagePath = getStoragePath(cfg);
   const { data, files } = parseZip(zipBuffer);
 
   const d = data.drama;
-  const title = resolveTitle(db, d.title || '导入项目');
+  const title = resolveTitle(db, requestedTitle || d.title || '导入项目', { userId, tenantId });
   const now = new Date().toISOString();
 
   let metadata = d.metadata || {};
@@ -180,6 +285,7 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
 
   // ---- 导入角色 ----
   const charNewIds = []; // 按导出顺序保存新角色 id，用于恢复分镜 character_indices
+  const characterOldToNew = new Map();
   for (let i = 0; i < (data.characters || []).length; i++) {
     const c = data.characters[i];
     if (!c.name) { charNewIds.push(null); continue; }
@@ -190,16 +296,19 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(dramaId, c.name, c.role || null, c.description || null, c.personality || null, c.appearance || null, c.voice_style || null, c.polished_prompt || null, localPath, extraImagesJson, i, now, now);
     charNewIds.push(info.lastInsertRowid);
+    if (c.original_id != null) characterOldToNew.set(Number(c.original_id), info.lastInsertRowid);
   }
 
   // ---- 导入剧集（先建好所有集，再关联角色/场景/道具） ----
   const episodeIdList = []; // 按顺序保存新集 id
+  const episodeOldToNew = new Map();
   for (const ep of (data.episodes || [])) {
     const epInfo = db.prepare(
       `INSERT INTO episodes (drama_id, episode_number, title, description, script_content, duration, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(dramaId, ep.episode_number || 1, ep.title || `第${ep.episode_number || 1}集`, ep.description || null, ep.script_content || null, ep.duration || 0, now, now);
     episodeIdList.push(epInfo.lastInsertRowid);
+    if (ep.original_id != null) episodeOldToNew.set(Number(ep.original_id), epInfo.lastInsertRowid);
   }
 
   // ---- 关联角色到所有集（episode_characters） ----
@@ -215,13 +324,16 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
 
   // ---- 导入场景（带 episode_id，按 location+time 去重：同名场景只创建一条记录）----
   const sceneNewIds = []; // 按导出顺序保存新场景 id（含去重后的映射），用于恢复分镜 scene_index
+  const sceneOldToNew = new Map();
   const sceneDedupeMap = new Map(); // key: "location|time" → 已创建的 scene id
   for (let i = 0; i < (data.scenes || []).length; i++) {
     const s = data.scenes[i];
     const dedupeKey = `${(s.location || '').trim()}|${(s.time || '').trim()}`;
     if (sceneDedupeMap.has(dedupeKey)) {
       // 同 location+time 已存在，直接复用，不重复插入
-      sceneNewIds.push(sceneDedupeMap.get(dedupeKey));
+      const existingId = sceneDedupeMap.get(dedupeKey);
+      sceneNewIds.push(existingId);
+      if (s.original_id != null) sceneOldToNew.set(Number(s.original_id), existingId);
       continue;
     }
     const epIdx = s.episode_index;
@@ -236,10 +348,12 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
     ).run(dramaId, epId, s.location || '', s.time || '', s.prompt || '', s.polished_prompt || null, localPath, extraImagesJson, now, now);
     sceneNewIds.push(info.lastInsertRowid);
     sceneDedupeMap.set(dedupeKey, info.lastInsertRowid);
+    if (s.original_id != null) sceneOldToNew.set(Number(s.original_id), info.lastInsertRowid);
   }
 
   // ---- 导入道具（带 episode_id） ----
   const propNewIds = []; // 按导出顺序保存新道具 id，用于恢复 storyboard_props
+  const propOldToNew = new Map();
   for (const p of (data.props || [])) {
     if (!p.name) { propNewIds.push(null); continue; }
     const epIdx = p.episode_index;
@@ -253,9 +367,13 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(dramaId, epId, p.name, p.type || null, p.description || null, p.prompt || null, localPath, extraImagesJson, now, now);
     propNewIds.push(pInfo.lastInsertRowid);
+    if (p.original_id != null) propOldToNew.set(Number(p.original_id), pInfo.lastInsertRowid);
   }
 
   // ---- 导入分镜 ----
+  const storyboardOldToNew = new Map();
+  const imageGenerationOldToNew = new Map();
+  const videoGenerationOldToNew = new Map();
   for (let epIdx = 0; epIdx < (data.episodes || []).length; epIdx++) {
     const ep = data.episodes[epIdx];
     const episodeId = episodeIdList[epIdx];
@@ -347,6 +465,7 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
          VALUES (${sbCols.map(() => '?').join(', ')})`
       ).run(...sbVals);
       const sbId = sbInfo.lastInsertRowid;
+      if (sb.original_id != null) storyboardOldToNew.set(Number(sb.original_id), sbId);
 
       // 还原 storyboard_props（分镜与道具的关联）
       if (sbPropNewIds.length > 0) {
@@ -392,6 +511,7 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
             const newGenId = genInfo.lastInsertRowid;
             if (gen.original_id != null) {
               genOldToNew.set(Number(gen.original_id), { newId: newGenId, localPath: genLocalPath });
+              imageGenerationOldToNew.set(Number(gen.original_id), newGenId);
             }
           }
         }
@@ -410,10 +530,13 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
       if (sb.video_file) {
         const videoLocalPath = saveMediaFile(storagePath, projectDir, 'videos', files, sb.video_file, 'vid_imp');
         if (videoLocalPath) {
-          db.prepare(
+          const videoInfo = db.prepare(
             `INSERT INTO video_generations (drama_id, storyboard_id, provider, prompt, status, local_path, created_at, updated_at)
              VALUES (?, ?, 'imported', ?, 'completed', ?, ?, ?)`
           ).run(dramaId, sbId, sb.video_prompt || '', videoLocalPath, now, now);
+          if (sb.video_original_id != null) {
+            videoGenerationOldToNew.set(Number(sb.video_original_id), videoInfo.lastInsertRowid);
+          }
         }
       }
 
@@ -452,6 +575,64 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log, us
       // 兼容老工程：ZIP 无 frame_prompts 时，用已导入的首/尾帧图生 prompt 回填
       restoreFramePromptsFromImageGens(db, sbId, now2, log);
     }
+  }
+
+  // ---- 导入画布项目素材，并恢复到新分镜/生成记录的关联 ----
+  const assetOldToNew = new Map();
+  for (const asset of (data.assets || [])) {
+    const localPath = saveMediaFile(storagePath, projectDir, 'assets', files, asset.local_file, 'asset_imp');
+    const storyboardId = asset.storyboard_original_id != null
+      ? (storyboardOldToNew.get(Number(asset.storyboard_original_id)) || null)
+      : null;
+    const imageGenId = asset.image_generation_original_id != null
+      ? (imageGenerationOldToNew.get(Number(asset.image_generation_original_id)) || null)
+      : null;
+    const videoGenId = asset.video_generation_original_id != null
+      ? (videoGenerationOldToNew.get(Number(asset.video_generation_original_id)) || null)
+      : null;
+    const assetMetadata = asset.metadata && typeof asset.metadata === 'object'
+      ? JSON.stringify(asset.metadata)
+      : (asset.metadata || null);
+    const assetInfo = db.prepare(
+      `INSERT INTO assets
+        (drama_id, storyboard_id, name, type, category, url, local_path, file_size, mime_type,
+         width, height, duration, metadata, image_gen_id, video_gen_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      dramaId,
+      storyboardId,
+      asset.name || '',
+      asset.type || null,
+      asset.category || null,
+      asset.url || null,
+      localPath,
+      asset.file_size || null,
+      asset.mime_type || null,
+      asset.width || null,
+      asset.height || null,
+      asset.duration || null,
+      assetMetadata,
+      imageGenId,
+      videoGenId,
+      now,
+      now,
+    );
+    if (asset.original_id != null) {
+      assetOldToNew.set(Number(asset.original_id), assetInfo.lastInsertRowid);
+    }
+  }
+  const referenceMaps = {
+    assets: assetOldToNew,
+    characters: characterOldToNew,
+    scenes: sceneOldToNew,
+    props: propOldToNew,
+    episodes: episodeOldToNew,
+    storyboards: storyboardOldToNew,
+  };
+  if (Object.values(referenceMaps).some((map) => map.size > 0)) {
+    const remappedMetadata = remapCanvasReferences(metaStr, referenceMaps);
+    db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+      .run(remappedMetadata, now, dramaId);
   }
 
   log.info('Drama imported', { drama_id: dramaId, title });

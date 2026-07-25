@@ -29,6 +29,20 @@
     </PlatformHeader>
 
     <main class="main">
+      <section v-if="isCanvasMode" class="canvas-project-toolbar" aria-label="画布项目搜索">
+        <el-input
+          v-model="searchKeyword"
+          class="canvas-project-search"
+          clearable
+          :prefix-icon="Search"
+          placeholder="搜索画布名称或描述"
+          aria-label="搜索画布项目"
+          @keyup.enter="loadList"
+          @clear="loadList"
+        />
+        <el-button type="primary" plain @click="loadList">搜索</el-button>
+        <span class="canvas-project-count" aria-live="polite">共 {{ total }} 个画布</span>
+      </section>
       <div v-loading="loading" class="projects-wrap">
         <div class="project-grid">
           <!-- 操作卡片：始终作为第一个格子 -->
@@ -75,6 +89,16 @@
             @keydown.space.prevent="openProject(d.id)"
           >
             <div class="project-card-actions" @click.stop>
+              <el-button
+                v-if="isCanvasMode"
+                size="small"
+                circle
+                :icon="CopyDocument"
+                title="复制画布项目"
+                aria-label="复制画布项目"
+                :loading="duplicatingId === d.id"
+                @click="onDuplicate(d)"
+              />
               <el-button size="small" circle :icon="Download" title="导出项目" :loading="exportingId === d.id" @click="onExport(d)" />
               <el-button size="small" circle :icon="Edit" title="编辑" @click="openEditDialog(d)" />
               <el-button size="small" type="danger" plain circle :icon="Delete" title="删除" @click="onDelete(d)" />
@@ -339,7 +363,7 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid } from '@element-plus/icons-vue'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -422,6 +446,7 @@ async function doGenerateLibImg(form, prompt, api, reloadFn) {
 const loading = ref(false)
 const dramas = ref([])
 const total = ref(0)
+const searchKeyword = ref('')
 
 const showAiConfigDialog = ref(false)
 
@@ -584,6 +609,7 @@ const showNewDialog = ref(false)
 const newForm = ref({ title: '', description: '', aspect_ratio: '16:9' })
 const newSaving = ref(false)
 const exportingId = ref(null)
+const duplicatingId = ref(null)
 const importing = ref(false)
 const importFileInput = ref(null)
 
@@ -617,7 +643,12 @@ const editSaving = ref(false)
 function loadList() {
   loading.value = true
   dramaAPI
-    .list({ page: 1, page_size: 50, project_type: projectMode.value })
+    .list({
+      page: 1,
+      page_size: 50,
+      project_type: projectMode.value,
+      keyword: searchKeyword.value.trim(),
+    })
     .then((res) => {
       dramas.value = res?.items ?? []
       total.value = res?.pagination?.total ?? 0
@@ -775,6 +806,20 @@ function onExport(d) {
   }
 }
 
+async function onDuplicate(d) {
+  if (duplicatingId.value != null) return
+  duplicatingId.value = d.id
+  try {
+    const copy = await dramaAPI.duplicate(d.id)
+    ElMessage.success(`已复制：${copy?.title || `${d.title || '画布'} 副本`}`)
+    await loadList()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || e.message || '复制失败')
+  } finally {
+    duplicatingId.value = null
+  }
+}
+
 function triggerImport() {
   importFileInput.value?.click()
 }
@@ -825,6 +870,7 @@ onMounted(() => {
 })
 
 watch(projectMode, () => {
+  searchKeyword.value = ''
   loadList()
   if (!isCanvasMode.value) loadExamples()
   else exampleList.value = []
@@ -980,6 +1026,19 @@ html.light .btn-import {
   max-width: min(1400px, 96vw);
   margin: 0 auto;
   padding: 24px 16px 48px;
+}
+.canvas-project-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.canvas-project-search {
+  width: min(420px, 100%);
+}
+.canvas-project-count {
+  color: #a1a1aa;
+  font-size: 0.84rem;
 }
 .projects-wrap {
   min-height: 200px;

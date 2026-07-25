@@ -3,6 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
+const dramaDuplicateService = require('../services/dramaDuplicateService');
 const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function createDrama(db, log) {
@@ -213,6 +214,22 @@ function importDrama(db, cfg, log) {
   };
 }
 
+function duplicateDrama(db, cfg, log) {
+  return (req, res) => {
+    try {
+      const result = dramaDuplicateService.duplicateDrama(db, cfg, log, req.params.id, {
+        userId: req.user?.id,
+        tenantId: req.tenant?.id,
+      });
+      if (!result) return response.notFound(res, '剧本不存在');
+      response.created(res, result);
+    } catch (err) {
+      log.error('Duplicate drama failed', { error: err.message, stack: err.stack });
+      response.internalError(res, err.message || '复制失败');
+    }
+  };
+}
+
 function getExampleDramaDir() {
   const path = require('path');
   const fs = require('fs');
@@ -317,6 +334,7 @@ module.exports = function dramaRoutes(db, cfg, log, generationOptions = {}) {
     downloadEpisodeVideo: downloadEpisodeVideo(db),
     generateStoryboard: generateStoryboard(db, log, generationOptions),
     exportDrama: exportDrama(db, cfg, log),
+    duplicateDrama: duplicateDrama(db, cfg, log),
     importDrama: importDrama(db, cfg, log),
     listExamples: listExamples(log),
     importExample: importExample(db, cfg, log),
