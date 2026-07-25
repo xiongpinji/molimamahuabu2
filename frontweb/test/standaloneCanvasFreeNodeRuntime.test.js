@@ -60,13 +60,30 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl[\s\S]*assetSaveStatus: 'running'[\s\S]*assetSaveError: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'failed'[\s\S]*error: errorMessage/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload\(\{[\s\S]*storyboard_id: null/)
-  assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{ assetSaveStatus: 'running', assetSaveError: '' \}/)
+  assert.match(canvasSource, /patchFreeCanvasNodeData\(nodeId, \{ assetSaveStatus: 'running', assetSaveError: '' \}/)
   assert.match(canvasSource, /await assetsAPI\.create\(assetPayload\)/)
   assert.match(canvasSource, /assetSaveStatus: 'success'[\s\S]*assetSaveError: ''[\s\S]*savedAssetId: String\(savedAsset\?\.id \|\| ''\)/)
   assert.match(canvasSource, /assetSaveStatus: 'failed'[\s\S]*assetSaveError: error\?\.message \|\| '自动存入素材库失败'/)
   assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
   assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\n\}\)/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
+})
+
+test('画布保存使用串行队列并在执行时构造最新布局', () => {
+  assert.match(canvasSource, /let canvasPersistQueue = Promise\.resolve\(\)/)
+  assert.match(canvasSource, /function persistCanvasState\(options = \{\}\) \{[\s\S]*const runPersist = \(\) => persistCanvasStateNow\(options\)[\s\S]*canvasPersistQueue = canvasPersistQueue\.then\(runPersist, runPersist\)[\s\S]*return canvasPersistQueue[\s\S]*\}/)
+  assert.match(canvasSource, /async function persistCanvasStateNow\(\{ layoutOnly = false, groupsOnly = false \} = \{\}\)/)
+  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
+  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*const updated = await layoutPersistence\.update/)
+})
+
+test('自由节点素材入库使用 single-flight 并在 create 前检查已入库状态', () => {
+  assert.match(canvasSource, /const freeCanvasAssetSaveFlights = new Map\(\)/)
+  assert.match(canvasSource, /const saveKey = `\$\{nodeId\}::\$\{url\}`/)
+  assert.match(canvasSource, /const existingFlight = freeCanvasAssetSaveFlights\.get\(saveKey\)[\s\S]*if \(existingFlight\) return existingFlight/)
+  assert.match(canvasSource, /const savePromise = \(async \(\) => \{[\s\S]*const latestBeforeRun = freeCanvasNodeById\(nodeId\) \|\| node[\s\S]*if \(latestBeforeRun\?\.data\?\.savedAssetId\)[\s\S]*return \{ id: latestBeforeRun\.data\.savedAssetId, skipped: true \}/)
+  assert.match(canvasSource, /const latestBeforeCreate = freeCanvasNodeById\(nodeId\) \|\| latestBeforeRun[\s\S]*if \(latestBeforeCreate\?\.data\?\.savedAssetId\)[\s\S]*return \{ id: latestBeforeCreate\.data\.savedAssetId, skipped: true \}[\s\S]*await assetsAPI\.create\(assetPayload\)/)
+  assert.match(canvasSource, /freeCanvasAssetSaveFlights\.set\(saveKey, savePromise\)[\s\S]*finally \{[\s\S]*freeCanvasAssetSaveFlights\.delete\(saveKey\)/)
 })
 
 test('图片和视频 API 提供 get 回读包装', () => {

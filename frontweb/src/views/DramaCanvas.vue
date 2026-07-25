@@ -638,6 +638,8 @@ const layoutDirty = ref(false)
 const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
   dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups)
 ))
+let canvasPersistQueue = Promise.resolve()
+const freeCanvasAssetSaveFlights = new Map()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
@@ -1885,31 +1887,60 @@ async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
 }
 
 async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, taskId) {
-  await patchFreeCanvasNodeData(node.id, { assetSaveStatus: 'running', assetSaveError: '' })
-  try {
+  const nodeId = String(node?.id || '')
+  const url = String(resultUrl || '')
+  const saveKey = `${nodeId}::${url}`
+  if (!nodeId || !url) throw new Error('自由节点素材入库缺少结果地址')
+
+  const existingFlight = freeCanvasAssetSaveFlights.get(saveKey)
+  if (existingFlight) return existingFlight
+
+  const savePromise = (async () => {
+    const latestBeforeRun = freeCanvasNodeById(nodeId) || node
+    if (latestBeforeRun?.data?.savedAssetId) {
+      return { id: latestBeforeRun.data.savedAssetId, skipped: true }
+    }
+
+    await patchFreeCanvasNodeData(nodeId, { assetSaveStatus: 'running', assetSaveError: '' })
     const assetPayload = buildFreeCanvasProjectAssetPayload({
       dramaId: dramaId.value,
-      nodeId: node.id,
+      nodeId,
       taskId,
-      model: node.data?.model,
+      model: latestBeforeRun.data?.model,
       type: kind,
-      url: resultUrl,
+      url,
       requestPayload,
     })
-    if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
-    const savedAsset = await assetsAPI.create(assetPayload)
-    await patchFreeCanvasNodeData(node.id, {
-      assetSaveStatus: 'success',
-      assetSaveError: '',
-      savedAssetId: String(savedAsset?.id || ''),
-    })
-    return savedAsset
-  } catch (error) {
-    await patchFreeCanvasNodeData(node.id, {
-      assetSaveStatus: 'failed',
-      assetSaveError: error?.message || '自动存入素材库失败',
-    })
-    throw error
+    try {
+      const latestBeforeCreate = freeCanvasNodeById(nodeId) || latestBeforeRun
+      if (latestBeforeCreate?.data?.savedAssetId) {
+        await patchFreeCanvasNodeData(nodeId, { assetSaveStatus: 'success', assetSaveError: '' })
+        return { id: latestBeforeCreate.data.savedAssetId, skipped: true }
+      }
+      if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
+      const savedAsset = await assetsAPI.create(assetPayload)
+      await patchFreeCanvasNodeData(nodeId, {
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        savedAssetId: String(savedAsset?.id || ''),
+      })
+      return savedAsset
+    } catch (error) {
+      await patchFreeCanvasNodeData(nodeId, {
+        assetSaveStatus: 'failed',
+        assetSaveError: error?.message || '自动存入素材库失败',
+      })
+      throw error
+    }
+  })()
+
+  freeCanvasAssetSaveFlights.set(saveKey, savePromise)
+  try {
+    return await savePromise
+  } finally {
+    if (freeCanvasAssetSaveFlights.get(saveKey) === savePromise) {
+      freeCanvasAssetSaveFlights.delete(saveKey)
+    }
   }
 }
 
@@ -4564,7 +4595,13 @@ function onCanvasBlur() {
   setSpacePanning(false)
 }
 
-async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
+function persistCanvasState(options = {}) {
+  const runPersist = () => persistCanvasStateNow(options)
+  canvasPersistQueue = canvasPersistQueue.then(runPersist, runPersist)
+  return canvasPersistQueue
+}
+
+async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } = {}) {
   if (!dramaId.value) return
 
   let layoutPayload = null
