@@ -1,5 +1,6 @@
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
+const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
@@ -66,6 +67,11 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   }
   if (Object.hasOwn(data, 'error')) normalized.error = cleanString(data.error)
   if (Object.hasOwn(data, 'savedAssetId')) normalized.savedAssetId = cleanString(data.savedAssetId)
+  if (Object.hasOwn(data, 'assetSaveStatus')) {
+    const assetSaveStatus = cleanString(data.assetSaveStatus)
+    if (FREE_NODE_ASSET_SAVE_STATUSES.has(assetSaveStatus)) normalized.assetSaveStatus = assetSaveStatus
+  }
+  if (Object.hasOwn(data, 'assetSaveError')) normalized.assetSaveError = cleanString(data.assetSaveError)
   return Object.fromEntries(
     Object.entries(normalized).filter(([, value]) => value !== undefined)
   )

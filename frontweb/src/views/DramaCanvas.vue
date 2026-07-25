@@ -511,6 +511,7 @@ import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
+import request from '@/utils/request'
 import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
@@ -1884,19 +1885,32 @@ async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
 }
 
 async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, taskId) {
-  const assetPayload = buildFreeCanvasProjectAssetPayload({
-    dramaId: dramaId.value,
-    nodeId: node.id,
-    taskId,
-    model: node.data?.model,
-    type: kind,
-    url: resultUrl,
-    requestPayload,
-  })
-  if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
-  const savedAsset = await assetsAPI.create(assetPayload)
-  await patchFreeCanvasNodeData(node.id, { savedAssetId: String(savedAsset?.id || '') })
-  return savedAsset
+  await patchFreeCanvasNodeData(node.id, { assetSaveStatus: 'running', assetSaveError: '' })
+  try {
+    const assetPayload = buildFreeCanvasProjectAssetPayload({
+      dramaId: dramaId.value,
+      nodeId: node.id,
+      taskId,
+      model: node.data?.model,
+      type: kind,
+      url: resultUrl,
+      requestPayload,
+    })
+    if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
+    const savedAsset = await assetsAPI.create(assetPayload)
+    await patchFreeCanvasNodeData(node.id, {
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+      savedAssetId: String(savedAsset?.id || ''),
+    })
+    return savedAsset
+  } catch (error) {
+    await patchFreeCanvasNodeData(node.id, {
+      assetSaveStatus: 'failed',
+      assetSaveError: error?.message || '自动存入素材库失败',
+    })
+    throw error
+  }
 }
 
 async function runFreeCanvasNode(nodeOrId) {
@@ -1946,6 +1960,8 @@ async function runFreeCanvasNode(nodeOrId) {
       taskId,
       error: '',
       savedAssetId: '',
+      assetSaveStatus: 'running',
+      assetSaveError: '',
     })
     try {
       const latestNode = findGraphNode(node.id) || { ...node, data: { ...node.data, url: resultUrl } }
@@ -1964,6 +1980,20 @@ async function runFreeCanvasNode(nodeOrId) {
       error: errorMessage,
     })
     ElMessage.error(errorMessage)
+  }
+}
+
+async function retryFreeCanvasAssetSave(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !node.data?.url) {
+    ElMessage.warning('该自由节点暂无可入库结果')
+    return
+  }
+  try {
+    await saveFreeCanvasResultAsset(node, node.data?.kind, node.data.url, null, node.data?.taskId || '')
+    ElMessage.success('已重新存入素材库')
+  } catch (error) {
+    ElMessage.error(error?.message || '存入素材库失败')
   }
 }
 
@@ -3871,7 +3901,12 @@ async function runNodeMenuAction(type, node) {
     downloadNodeResult(node)
   } else if (type === 'save-node-result-asset') {
     if (isStandaloneCanvas.value && node?.type === 'homeCanvasNode') {
-      await saveFreeCanvasResultAsset(node, node.data?.kind, nodeResultUrl(node), null, node.data?.taskId || '')
+      try {
+        await saveFreeCanvasResultAsset(node, node.data?.kind, nodeResultUrl(node), null, node.data?.taskId || '')
+        ElMessage.success('已存入素材库')
+      } catch (error) {
+        ElMessage.error(error?.message || '存入素材库失败')
+      }
     } else {
       await saveNodeResultAssetFromMenu(node)
     }
@@ -4156,6 +4191,7 @@ provide(CANVAS_CONTEXT_KEY, {
     if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
   },
   runFreeCanvasNode,
+  retryFreeCanvasAssetSave,
 })
 
 function clearAssetHighlight() {

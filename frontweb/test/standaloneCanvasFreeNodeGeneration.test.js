@@ -28,6 +28,8 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     status: 'success',
     error: ' ',
     savedAssetId: 99,
+    assetSaveStatus: 'failed',
+    assetSaveError: ' 入库失败 ',
   }), {
     kind: 'video',
     title: '雨夜街道',
@@ -40,11 +42,14 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     status: 'success',
     error: '',
     savedAssetId: '99',
+    assetSaveStatus: 'failed',
+    assetSaveError: '入库失败',
   })
   assert.deepEqual(normalizeFreeCanvasNodeData({
     kind: 'audio',
     duration: -1,
     status: 'done',
+    assetSaveStatus: 'done',
   }), {
     kind: 'audio',
     title: '',
@@ -209,6 +214,8 @@ test('canvasLayout 使用标准化函数保存和恢复自由节点生成字段'
       status: 'running',
       error: '',
       savedAssetId: 'asset-1',
+      assetSaveStatus: 'failed',
+      assetSaveError: '入库失败',
     },
   })
   const layout = buildCanvasLayoutPayload(

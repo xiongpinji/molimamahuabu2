@@ -14,6 +14,7 @@
     <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
     <div v-else class="node-empty">{{ data.content || emptyHint }}</div>
     <div v-if="data.error" class="node-error">{{ data.error }}</div>
+    <div v-if="assetSaveFailed" class="node-asset-error">入库失败：{{ data.assetSaveError || '请重试' }}</div>
     <div class="node-actions">
       <button type="button" @click.stop="openConfig" @mousedown.stop>配置</button>
       <button
@@ -24,6 +25,15 @@
         @mousedown.stop
       >
         {{ data.status === 'failed' ? '重试' : data.status === 'running' ? '生成中' : '生成' }}
+      </button>
+      <button
+        v-if="assetSaveFailed"
+        type="button"
+        :disabled="data.assetSaveStatus === 'running'"
+        @click.stop="retryAssetSave"
+        @mousedown.stop
+      >
+        重试入库
       </button>
     </div>
     <div class="node-hint">双击编辑</div>
@@ -43,6 +53,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const kindIcon = computed(() => ({ text: '☷', image: '▧', video: '▶', audio: '♫' }[props.data.kind] || '◈'))
 const emptyHint = computed(() => props.data.kind === 'audio' ? '填写音频描述或媒体地址' : '填写视频描述或媒体地址')
+const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
 const statusLabel = computed(() => ({
   running: '运行中',
   success: '已生成',
@@ -55,6 +66,10 @@ function openConfig() {
 
 function runNode() {
   ctx?.runFreeCanvasNode?.(props.id)
+}
+
+function retryAssetSave() {
+  ctx?.retryFreeCanvasAssetSave?.(props.id)
 }
 </script>
 
@@ -81,6 +96,7 @@ function runNode() {
 .node-audio { display: block; width: 100%; height: 38px; }
 .node-empty { min-height: 60px; display: flex; align-items: center; justify-content: center; color: #71717a; font-size: 11px; text-align: center; }
 .node-error { margin-top: 8px; color: #f87171; font-size: 11px; line-height: 1.35; }
+.node-asset-error { margin-top: 8px; color: #fbbf24; font-size: 11px; line-height: 1.35; }
 .node-actions { display: flex; gap: 8px; margin-top: 10px; }
 .node-actions button {
   flex: 1;

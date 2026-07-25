@@ -25,6 +25,9 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /useCanvasContext/)
   assert.match(nodeSource, /ctx\?\.openFreeNodeConfig\?\.\(props\.id\)/)
   assert.match(nodeSource, /ctx\?\.runFreeCanvasNode\?\.\(props\.id\)/)
+  assert.match(nodeSource, /ctx\?\.retryFreeCanvasAssetSave\?\.\(props\.id\)/)
+  assert.match(nodeSource, /assetSaveFailed = computed\(\(\) => props\.data\.status === 'success'[\s\S]*props\.data\.assetSaveStatus === 'failed'[\s\S]*Boolean\(props\.data\.url\)/)
+  assert.match(nodeSource, /v-if="assetSaveFailed"[\s\S]*重试入库/)
   assert.match(nodeSource, /node-status/)
   assert.match(nodeSource, /data\.status === 'running'/)
   assert.match(nodeSource, /data\.status === 'failed'/)
@@ -33,6 +36,7 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
 })
 
 test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanvasNodeStep', () => {
+  assert.match(canvasSource, /import request from '@\/utils\/request'/)
   assert.match(canvasSource, /collectDirectUpstreamResultUrls/)
   assert.match(canvasSource, /buildFreeCanvasGenerationRequest/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload/)
@@ -53,11 +57,16 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /if \(task\?\.status === 'failed'\) throw new Error/)
   assert.match(canvasSource, /throw new Error\('自由节点生成超时'\)/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'running'[\s\S]*error: ''/)
-  assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl/)
+  assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl[\s\S]*assetSaveStatus: 'running'[\s\S]*assetSaveError: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'failed'[\s\S]*error: errorMessage/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload\(\{[\s\S]*storyboard_id: null/)
+  assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{ assetSaveStatus: 'running', assetSaveError: '' \}/)
   assert.match(canvasSource, /await assetsAPI\.create\(assetPayload\)/)
-  assert.match(canvasSource, /savedAssetId: String\(savedAsset\?\.id \|\| ''\)/)
+  assert.match(canvasSource, /assetSaveStatus: 'success'[\s\S]*assetSaveError: ''[\s\S]*savedAssetId: String\(savedAsset\?\.id \|\| ''\)/)
+  assert.match(canvasSource, /assetSaveStatus: 'failed'[\s\S]*assetSaveError: error\?\.message \|\| '自动存入素材库失败'/)
+  assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
+  assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\n\}\)/)
+  assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
 })
 
 test('图片和视频 API 提供 get 回读包装', () => {
