@@ -11,6 +11,11 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : undefined
 }
 
+function positiveInteger(value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : undefined
+}
+
 function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map((value) => cleanString(value))
@@ -81,12 +86,12 @@ export function normalizeFreeCanvasNode(node = {}) {
 export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const nodeData = normalizeFreeCanvasNodeData(data)
   if (!nodeData) return null
-  const dramaId = Number(options.dramaId)
   const upstreamUrls = uniqueStrings(options.upstreamUrls)
 
   if (nodeData.kind === 'image') {
+    const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
-      drama_id: Number.isFinite(dramaId) && dramaId > 0 ? dramaId : undefined,
+      drama_id: dramaId,
       prompt: nodeData.content,
       model: nodeData.model,
       aspect_ratio: nodeData.aspectRatio,
@@ -95,9 +100,10 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   }
 
   if (nodeData.kind === 'video') {
+    const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     const firstFrameUrl = upstreamUrls[0] || ''
     return withoutEmptyFields({
-      drama_id: Number.isFinite(dramaId) && dramaId > 0 ? dramaId : undefined,
+      drama_id: dramaId,
       prompt: nodeData.content,
       model: nodeData.model,
       image_url: firstFrameUrl,
@@ -146,8 +152,9 @@ export function buildFreeCanvasProjectAssetPayload({
 } = {}) {
   const assetType = cleanString(type)
   if (!ASSET_TYPES.has(assetType)) return null
+  const validDramaId = requirePositiveDramaId(dramaId, '自由节点素材入库缺少有效项目 ID')
   return {
-    drama_id: Number(dramaId),
+    drama_id: validDramaId,
     storyboard_id: null,
     category: 'canvas-result',
     type: assetType,
@@ -159,6 +166,12 @@ export function buildFreeCanvasProjectAssetPayload({
       request_payload: requestPayload || null,
     },
   }
+}
+
+function requirePositiveDramaId(value, message) {
+  const dramaId = positiveInteger(value)
+  if (!dramaId) throw new Error(message)
+  return dramaId
 }
 
 export function resolveFreeCanvasResultUrl(kind, response = {}) {

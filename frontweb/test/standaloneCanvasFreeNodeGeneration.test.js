@@ -105,6 +105,21 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
   })
 })
 
+test('自由节点图片和视频请求强制要求正整数 dramaId', () => {
+  const imageData = { kind: 'image', content: '一张图' }
+  const videoData = { kind: 'video', content: '一段视频' }
+  for (const dramaId of [undefined, 0, 'abc']) {
+    assert.throws(
+      () => buildFreeCanvasGenerationRequest(imageData, { dramaId }),
+      /自由节点生成缺少有效项目 ID/
+    )
+    assert.throws(
+      () => buildFreeCanvasGenerationRequest(videoData, { dramaId }),
+      /自由节点生成缺少有效项目 ID/
+    )
+  }
+})
+
 test('collectDirectUpstreamResultUrls 只收集直接手动上游真实结果 URL 并去重', () => {
   const nodes = [
     { id: 'a', data: { kind: 'image', url: 'https://cdn.example/a.png' } },
@@ -145,6 +160,23 @@ test('buildFreeCanvasProjectAssetPayload 生成 canvas-result 素材入库 paylo
       request_payload: requestPayload,
     },
   })
+})
+
+test('buildFreeCanvasProjectAssetPayload 强制要求正整数 dramaId', () => {
+  for (const dramaId of [undefined, 0, 'abc']) {
+    assert.throws(
+      () => buildFreeCanvasProjectAssetPayload({
+        dramaId,
+        nodeId: 'free:image:1',
+        taskId: 'task-1',
+        model: 'flux',
+        type: 'image',
+        url: 'https://cdn.example/image.png',
+        requestPayload: { prompt: '画面' },
+      }),
+      /自由节点素材入库缺少有效项目 ID/
+    )
+  }
 })
 
 test('resolveFreeCanvasResultUrl 兼容图片、视频任务/记录和同步音频结果', () => {
