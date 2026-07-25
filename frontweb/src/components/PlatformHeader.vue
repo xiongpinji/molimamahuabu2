@@ -6,6 +6,8 @@
       <span v-if="title" class="platform-header__separator" aria-hidden="true">›</span>
       <div v-if="title" class="platform-header__title" :title="title">{{ title }}</div>
 
+      <PlatformPrimaryNav />
+
       <div class="platform-header__leading">
         <slot name="leading" />
       </div>
@@ -58,6 +60,7 @@ import { useRouter } from 'vue-router'
 import { ArrowLeft, Grid, Moon, Setting, Sunny } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
+import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 
 const props = defineProps({
   title: { type: String, default: '' },

@@ -17,7 +17,15 @@ const router = createRouter({
       path: '/',
       name: 'list',
       component: () => import('@/views/FilmList.vue'),
+      props: { projectMode: 'factory' },
       meta: { title: '项目列表' }
+    },
+    {
+      path: '/factory',
+      name: 'factory',
+      component: () => import('@/views/FilmList.vue'),
+      props: { projectMode: 'factory' },
+      meta: { title: '短剧工厂' }
     },
     {
       path: '/drama/:id',
@@ -38,10 +46,23 @@ const router = createRouter({
       meta: { title: '画布模式' }
     },
     {
-      path: '/canvas',
-      name: 'home-canvas',
+      path: '/canvas/local',
+      name: 'home-canvas-local',
       component: () => import('@/views/HomeCanvas.vue'),
-      meta: { title: '首页自由画布' }
+      meta: { title: '本地临时画布' }
+    },
+    {
+      path: '/canvas/:id',
+      name: 'standalone-canvas',
+      component: () => import('@/views/DramaCanvas.vue'),
+      meta: { title: '独立画布' }
+    },
+    {
+      path: '/canvas',
+      name: 'canvas-projects',
+      component: () => import('@/views/FilmList.vue'),
+      props: { projectMode: 'canvas' },
+      meta: { title: '画布项目' }
     },
     {
       path: '/ai-config',

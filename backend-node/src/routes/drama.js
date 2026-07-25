@@ -40,6 +40,7 @@ function listDramas(db, log) {
     const status = req.query.status || '';
     const genre = req.query.genre || '';
     const keyword = req.query.keyword || '';
+    const project_type = req.query.project_type || '';
     try {
       const { dramas, total, page: p, pageSize: ps } = dramaService.listDramas(db, {
         page,
@@ -47,6 +48,7 @@ function listDramas(db, log) {
         status,
         genre,
         keyword,
+        project_type,
         userId: req.user?.id,
         tenantId: req.tenant?.id,
       });

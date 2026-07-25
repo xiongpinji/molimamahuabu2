@@ -3,6 +3,7 @@
     <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
+        <PlatformPrimaryNav />
         <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
         <span class="canvas-name">画布 1</span>
@@ -61,7 +62,7 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <CanvasModeSwitch mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
+          <CanvasModeSwitch v-if="!isStandaloneCanvas" mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
           <el-button class="btn-theme" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
@@ -530,10 +531,12 @@ import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOp
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
+import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
+const isStandaloneCanvas = computed(() => route.name === 'standalone-canvas')
 const { isDark, toggle: toggleTheme } = useTheme()
 const { imagesBySbId, videosBySbId, loadForDrama } = useCanvasStoryboardMedia()
 
@@ -4617,6 +4620,10 @@ function stopStatusPoll() {
 }
 
 function goListMode() {
+  if (isStandaloneCanvas.value) {
+    router.push('/canvas')
+    return
+  }
   const query = filterEpisodeId.value ? { episode: String(filterEpisodeId.value) } : {}
   router.push({ path: `/film/${dramaId.value}`, query })
 }

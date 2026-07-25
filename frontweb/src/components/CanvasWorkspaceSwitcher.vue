@@ -16,15 +16,20 @@
 
     <template #dropdown>
       <el-dropdown-menu class="canvas-workspace-menu">
-        <el-dropdown-item :command="homeTo">
+        <el-dropdown-item command="/factory">
           <el-icon><List /></el-icon>
-          项目列表
+          短剧工厂
           <span v-if="isActive('list')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/canvas">
           <el-icon><Grid /></el-icon>
-          首页自由画布
+          画布项目
           <span v-if="isActive('canvas')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
+        </el-dropdown-item>
+        <el-dropdown-item command="/canvas/local">
+          <el-icon><Grid /></el-icon>
+          本地临时画布
+          <span v-if="isActive('local-canvas')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
         <el-dropdown-item command="/free-create">
           <el-icon><MagicStick /></el-icon>
@@ -59,20 +64,20 @@ import { ArrowDown, Files, Grid, List, MagicStick, Plus, Setting } from '@elemen
 const router = useRouter()
 const route = useRoute()
 
-const props = defineProps({
+defineProps({
   homeTo: { type: [String, Object], default: '/' }
 })
-
-const homeTo = props.homeTo
 
 const routeName = computed(() => route.name)
 
 function isActive(target) {
   const name = routeName.value
   if (target === 'list') {
-    return ['list', 'drama-detail', 'film-canvas'].includes(name)
+    return ['list', 'factory', 'drama-detail', 'film-canvas'].includes(name)
       || (name === 'film' && String(route.params.id) !== 'new')
   }
+  if (target === 'canvas') return ['canvas-projects', 'standalone-canvas'].includes(name)
+  if (target === 'local-canvas') return name === 'home-canvas-local'
   if (target === 'create') return name === 'film' && String(route.params.id) === 'new'
   return name === target
 }

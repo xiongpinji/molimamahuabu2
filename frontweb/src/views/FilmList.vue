@@ -1,6 +1,6 @@
 <template>
   <div class="film-list">
-    <PlatformHeader>
+    <PlatformHeader :title="isCanvasMode ? '画布项目' : '短剧工厂'">
       <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
@@ -18,12 +18,12 @@
         <el-button class="btn-settings" @click="showAiConfigDialog = true">
           <el-icon><Setting /></el-icon>AI配置
         </el-button>
-        <el-button class="btn-import" :loading="importing" @click="triggerImport">
+        <el-button v-if="!isCanvasMode" class="btn-import" :loading="importing" @click="triggerImport">
           <el-icon><Upload /></el-icon>导入项目
         </el-button>
         <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
         <el-button type="primary" class="btn-new" @click="goNewProject">
-          <el-icon><Plus /></el-icon>新建项目
+          <el-icon><Plus /></el-icon>{{ isCanvasMode ? '新建画布' : '新建项目' }}
         </el-button>
       </template>
     </PlatformHeader>
@@ -37,13 +37,13 @@
               <h3 class="action-card-title">快速开始</h3>
               <div class="action-card-buttons">
                 <el-button type="primary" size="large" class="action-btn action-btn-new" @click="goNewProject">
-                  <el-icon><Plus /></el-icon>新建短剧项目
+                  <el-icon><Plus /></el-icon>{{ isCanvasMode ? '新建画布项目' : '新建短剧项目' }}
                 </el-button>
-                <el-button size="large" class="action-btn action-btn-import" :loading="importing" @click="triggerImport">
+                <el-button v-if="!isCanvasMode" size="large" class="action-btn action-btn-import" :loading="importing" @click="triggerImport">
                   <el-icon><Upload /></el-icon>导入短剧项目
                 </el-button>
               </div>
-              <div v-if="exampleList.length > 0" class="action-card-example">
+              <div v-if="!isCanvasMode && exampleList.length > 0" class="action-card-example">
                 <div class="example-hint">
                   <el-icon class="example-hint-icon"><QuestionFilled /></el-icon>
                   <span class="example-hint-text">新手？试试导入示例项目快速体验</span>
@@ -69,7 +69,7 @@
             class="project-card"
             role="button"
             tabindex="0"
-            :aria-label="`打开项目详情：${d.title || '未命名项目'}`"
+            :aria-label="`${isCanvasMode ? '打开画布' : '打开项目详情'}：${d.title || '未命名项目'}`"
             @click="openProject(d.id)"
             @keydown.enter="openProject(d.id)"
             @keydown.space.prevent="openProject(d.id)"
@@ -94,7 +94,7 @@
                 <p class="project-meta">{{ formatDate(d.updated_at) }}</p>
                 <el-button size="small" type="primary" plain class="project-open-canvas" @click.stop="openCanvas(d.id)">
                   <el-icon><Grid /></el-icon>
-                  打开画布
+                  {{ isCanvasMode ? '进入画布' : '打开画布' }}
                 </el-button>
               </div>
             </div>
@@ -106,7 +106,7 @@
     <!-- 新建项目：先填标题和描述 -->
     <el-dialog
       v-model="showNewDialog"
-      title="新建项目"
+      :title="isCanvasMode ? '新建画布项目' : '新建项目'"
       width="480px"
       :close-on-click-modal="false"
       @closed="resetNewForm"
@@ -336,7 +336,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid } from '@element-plus/icons-vue'
@@ -349,8 +349,19 @@ import AIConfigContent from '@/components/AIConfigContent.vue'
 import { uploadAPI } from '@/api/upload'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
+import {
+  normalizeProjectMode,
+  projectCanvasPath,
+  projectMetadata,
+  projectOpenPath,
+} from '@/utils/projectMode'
 
 const router = useRouter()
+const props = defineProps({
+  projectMode: { type: String, default: 'factory' },
+})
+const projectMode = computed(() => normalizeProjectMode(props.projectMode))
+const isCanvasMode = computed(() => projectMode.value === 'canvas')
 
 // 库编辑图片 – 文件输入 refs
 const charLibFileRef  = ref(null)
@@ -606,7 +617,7 @@ const editSaving = ref(false)
 function loadList() {
   loading.value = true
   dramaAPI
-    .list({ page: 1, page_size: 50 })
+    .list({ page: 1, page_size: 50, project_type: projectMode.value })
     .then((res) => {
       dramas.value = res?.items ?? []
       total.value = res?.pagination?.total ?? 0
@@ -687,7 +698,7 @@ function goNewProject() {
 }
 
 function openCanvas(id) {
-  router.push('/film/' + id + '/canvas')
+  router.push(projectCanvasPath(id, projectMode.value))
 }
 
 function resetNewForm() {
@@ -699,11 +710,15 @@ async function submitNew() {
   if (!title) return
   newSaving.value = true
   try {
-    const drama = await dramaAPI.create({ title, description: newForm.value.description?.trim() || undefined, metadata: { aspect_ratio: newForm.value.aspect_ratio || '16:9' } })
+    const drama = await dramaAPI.create({
+      title,
+      description: newForm.value.description?.trim() || undefined,
+      metadata: projectMetadata(newForm.value.aspect_ratio, projectMode.value),
+    })
     showNewDialog.value = false
     ElMessage.success('项目已创建')
     loadList()
-    router.push('/film/' + drama.id)
+    router.push(isCanvasMode.value ? projectCanvasPath(drama.id, projectMode.value) : `/film/${drama.id}`)
   } catch (e) {
     ElMessage.error(e.message || '创建失败')
   } finally {
@@ -737,7 +752,7 @@ async function submitEdit() {
 }
 
 function openProject(id) {
-  router.push('/drama/' + id)
+  router.push(projectOpenPath(id, projectMode.value))
 }
 
 function onExport(d) {
@@ -806,7 +821,13 @@ async function onDelete(d) {
 
 onMounted(() => {
   loadList()
-  loadExamples()
+  if (!isCanvasMode.value) loadExamples()
+})
+
+watch(projectMode, () => {
+  loadList()
+  if (!isCanvasMode.value) loadExamples()
+  else exampleList.value = []
 })
 </script>
 

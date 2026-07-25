@@ -195,6 +195,17 @@ function listDramas(db, query) {
     const k = '%' + query.keyword + '%';
     params.push(k, k);
   }
+  if (query.project_type) {
+    const projectType = query.project_type === 'canvas' ? 'canvas' : 'factory';
+    sql += ` AND (
+      CASE
+        WHEN metadata IS NOT NULL AND json_valid(metadata)
+          THEN COALESCE(json_extract(metadata, '$.project_type'), 'factory')
+        ELSE 'factory'
+      END
+    ) = ?`;
+    params.push(projectType);
+  }
   const countRow = db.prepare('SELECT COUNT(*) as total ' + sql).get(...params);
   const total = countRow.total || 0;
   const page = Math.max(1, parseInt(query.page, 10) || 1);
