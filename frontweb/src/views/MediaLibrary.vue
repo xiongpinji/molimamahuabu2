@@ -269,17 +269,28 @@ async function onUpload(e) {
   }
   uploading.value = true
   uploadProgress.value = { current: 0, total: files.length }
+  let successCount = 0
+  let failureCount = 0
   for (const file of files) {
     try {
       await uploadAPI.uploadMedia(file, { dramaId: libraryDramaId.value })
+      successCount++
       uploadProgress.value.current++
     } catch (err) {
+      failureCount++
+      uploadProgress.value.current++
       ElMessage.warning(`${file.name} 上传失败: ${err.message}`)
     }
   }
   uploading.value = false
   e.target.value = ''
-  ElMessage.success(`${files.length} 个素材上传完成`)
+  if (successCount === 0) {
+    ElMessage.error('全部上传失败')
+  } else if (failureCount > 0) {
+    ElMessage.warning(`成功 ${successCount} 个，失败 ${failureCount} 个`)
+  } else {
+    ElMessage.success(`${successCount} 个素材上传完成`)
+  }
   loadMedia()
 }
 

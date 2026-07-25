@@ -145,7 +145,7 @@ function setupRouter(cfg, db, log) {
   const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
   const propLibrary = propLibraryRoutes(db, cfg, log);
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
-  const uploadHandlers = uploadModule.routes(cfg, log, db);
+  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
@@ -371,6 +371,7 @@ function setupRouter(cfg, db, log) {
   // ---------- upload ----------
   r.post('/upload/image', uploadModule.multerSingle, uploadHandlers.uploadImage);
   r.post('/upload/model', uploadHandlers.multerModelSingle, uploadHandlers.uploadModel);
+  r.post('/upload/media', uploadHandlers.multerMediaSingle, uploadHandlers.uploadMedia);
 
   // ---------- episodes ----------
   // 注意：drama.generateStoryboard 已处理所有逻辑（包括参数解析），这里统一使用 drama 模块的实现

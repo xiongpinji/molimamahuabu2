@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const mediaLibrarySource = readFileSync(fileURLToPath(new URL('../src/views/MediaLibrary.vue', import.meta.url)), 'utf8')
+const uploadApiSource = readFileSync(fileURLToPath(new URL('../src/api/upload.js', import.meta.url)), 'utf8')
 
 test('素材库消费画布结果跳转参数并高亮目标素材', () => {
   assert.match(mediaLibrarySource, /import \{ useRoute \} from 'vue-router'/)
@@ -47,6 +48,22 @@ test('素材库页面支持音频素材上传、筛选、预览和复用为分�
   assert.match(mediaLibrarySource, /audio_local_path: localPath \|\| undefined/)
   assert.match(mediaLibrarySource, /audio_url: localPath \? undefined : itemUrl\(item\)/)
   assert.match(mediaLibrarySource, /已设为该分镜音频，可到画布查看/)
+})
+
+test('素材库通用上传绑定项目且按真实成功失败数量提示', () => {
+  assert.match(uploadApiSource, /uploadMedia\(file, opts = \{\}\)/)
+  assert.match(uploadApiSource, /form\.append\('drama_id', String\(did\)\)/)
+  assert.match(uploadApiSource, /request\.post\('\/upload\/media', form/)
+  assert.match(mediaLibrarySource, /let successCount = 0/)
+  assert.match(mediaLibrarySource, /let failureCount = 0/)
+  assert.match(mediaLibrarySource, /successCount\+\+/)
+  assert.match(mediaLibrarySource, /failureCount\+\+/)
+  assert.match(mediaLibrarySource, /uploadProgress\.value\.current\+\+/)
+  assert.match(mediaLibrarySource, /if \(successCount === 0\)/)
+  assert.match(mediaLibrarySource, /全部上传失败/)
+  assert.match(mediaLibrarySource, /成功 \$\{successCount\} 个，失败 \$\{failureCount\} 个/)
+  assert.match(mediaLibrarySource, /ElMessage\.success\(`\$\{successCount\} 个素材上传完成`\)/)
+  assert.doesNotMatch(mediaLibrarySource, /ElMessage\.success\(`\$\{files\.length\} 个素材上传完成`\)/)
 })
 
 test('素材复用创建派生记录且提交期间拒绝重复点击，不迁移原素材', () => {

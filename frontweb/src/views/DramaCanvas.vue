@@ -3231,20 +3231,8 @@ function openCanvasUpload(flowPosition = null, accept = 'image/*,video/*,audio/*
 
 async function createCanvasProjectAssetFromUpload(file, flowPosition = null, offsetIndex = 0) {
   if (!drama.value?.id) throw new Error('项目信息不完整，无法上传素材')
-  const uploaded = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
-  const localPath = uploaded?.local_path || uploaded?.path || ''
-  const url = uploaded?.url || uploaded?.display_url || ''
-  const asset = await assetsAPI.create({
-    drama_id: drama.value.id,
-    name: file.name || '上传素材',
-    type: mediaTypeFromFile(file),
-    category: 'canvas-upload',
-    url,
-    local_path: localPath || undefined,
-    file_size: file.size || undefined,
-    mime_type: file.type || undefined,
-    metadata: { source: 'canvas_context_upload' },
-  })
+  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!asset?.id) throw new Error('素材上传成功但未返回资产记录')
   const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
   const nodeId = await placeProjectAssetNode(asset, targetPos)
   const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
