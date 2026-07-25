@@ -462,6 +462,21 @@
         <el-form-item v-if="freeNodeKind !== 'text'" label="媒体地址（选填）">
           <el-input v-model="freeNodeForm.url" placeholder="可粘贴已有素材地址；本地文件请使用右键“上传”" />
         </el-form-item>
+        <el-form-item v-if="freeNodeKind !== 'text'" label="模型">
+          <el-input v-model="freeNodeForm.model" placeholder="留空使用系统默认模型" />
+        </el-form-item>
+        <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
+          <el-select v-model="freeNodeForm.aspectRatio" placeholder="选择比例">
+            <el-option label="16:9" value="16:9" />
+            <el-option label="9:16" value="9:16" />
+            <el-option label="1:1" value="1:1" />
+            <el-option label="4:3" value="4:3" />
+            <el-option label="3:4" value="3:4" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="freeNodeKind === 'video'" label="视频时长(秒)">
+          <el-input-number v-model="freeNodeForm.duration" :min="1" :max="30" :step="1" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="freeNodeDialogVisible = false">取消</el-button>
@@ -522,6 +537,12 @@ import {
   parseDramaMetadata,
   resolveViewport,
 } from '@/utils/canvasLayout'
+import {
+  buildFreeCanvasGenerationRequest,
+  buildFreeCanvasProjectAssetPayload,
+  collectDirectUpstreamResultUrls,
+  resolveFreeCanvasResultUrl,
+} from '@/utils/freeCanvasGeneration'
 import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
@@ -640,7 +661,7 @@ const freeNodeDialogVisible = ref(false)
 const freeNodeKind = ref('text')
 const freeNodeEditingId = ref('')
 const freeNodeFlowPosition = ref(null)
-const freeNodeForm = ref({ title: '', content: '', url: '' })
+const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
@@ -1733,7 +1754,7 @@ function resetFreeNodeDialog() {
   freeNodeKind.value = 'text'
   freeNodeEditingId.value = ''
   freeNodeFlowPosition.value = null
-  freeNodeForm.value = { title: '', content: '', url: '' }
+  freeNodeForm.value = { title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 }
 }
 
 function openFreeNodeDialog(kind, flowPosition = null, node = null) {
@@ -1746,6 +1767,9 @@ function openFreeNodeDialog(kind, flowPosition = null, node = null) {
     title: node?.data?.title || '',
     content: node?.data?.content || '',
     url: node?.data?.url || '',
+    model: node?.data?.model || '',
+    aspectRatio: node?.data?.aspectRatio || '16:9',
+    duration: node?.data?.duration || 5,
   }
   freeNodeDialogVisible.value = true
 }
@@ -1760,6 +1784,9 @@ async function submitFreeNode() {
     content: freeNodeForm.value.content.trim(),
     url: freeNodeForm.value.url.trim(),
   }
+  if (freeNodeKind.value !== 'text') nodeData.model = freeNodeForm.value.model.trim()
+  if (['image', 'video'].includes(freeNodeKind.value)) nodeData.aspectRatio = freeNodeForm.value.aspectRatio
+  if (freeNodeKind.value === 'video') nodeData.duration = Number(freeNodeForm.value.duration) || 5
   if (freeNodeEditingId.value) {
     allGraphNodes.value = allGraphNodes.value.map((node) => (
       String(node.id) === String(freeNodeEditingId.value)
@@ -1782,6 +1809,164 @@ async function submitFreeNode() {
   if (saved) ElMessage.success(editing ? '节点已更新' : '节点已添加')
 }
 
+async function patchFreeCanvasNodeData(nodeId, patch) {
+  const id = String(nodeId || '')
+  if (!id) return null
+  let updated = null
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
+    if (String(node.id) !== id) return node
+    updated = { ...node, data: { ...node.data, ...patch } }
+    return updated
+  })
+  if (!updated) return null
+  applyVirtualizedGraph()
+  await persistCanvasState({ layoutOnly: true })
+  return updated
+}
+
+function freeCanvasNodeById(nodeOrId) {
+  if (typeof nodeOrId === 'object' && nodeOrId?.id) return findGraphNode(nodeOrId.id) || nodeOrId
+  return findGraphNode(nodeOrId)
+}
+
+function freeCanvasTaskId(response) {
+  return String(
+    response?.task_id
+    || response?.taskId
+    || response?.image_generation?.task_id
+    || response?.video_generation?.task_id
+    || ''
+  )
+}
+
+function freeCanvasGenerationId(kind, submitResult, taskResult) {
+  const result = taskResult?.result || taskResult || {}
+  if (kind === 'image') {
+    return result.image_generation_id
+      || result.generation_id
+      || submitResult?.image_generation?.id
+      || submitResult?.id
+      || ''
+  }
+  if (kind === 'video') {
+    return result.video_generation_id
+      || result.generation_id
+      || submitResult?.video_generation?.id
+      || submitResult?.id
+      || ''
+  }
+  return ''
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await sleep(intervalMs)
+    const task = await taskAPI.get(taskId)
+    if (task?.status === 'completed') return task
+    if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
+  }
+  throw new Error('自由节点生成超时')
+}
+
+async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
+  let resultUrl = resolveFreeCanvasResultUrl(kind, taskResult) || resolveFreeCanvasResultUrl(kind, submitResult)
+  if (resultUrl || kind === 'audio') return resultUrl
+  const generationId = freeCanvasGenerationId(kind, submitResult, taskResult)
+  if (!generationId) return ''
+  const record = kind === 'image'
+    ? await imagesAPI.get(generationId)
+    : await videosAPI.get(generationId)
+  return resolveFreeCanvasResultUrl(kind, record)
+}
+
+async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, taskId) {
+  const assetPayload = buildFreeCanvasProjectAssetPayload({
+    dramaId: dramaId.value,
+    nodeId: node.id,
+    taskId,
+    model: node.data?.model,
+    type: kind,
+    url: resultUrl,
+    requestPayload,
+  })
+  if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
+  const savedAsset = await assetsAPI.create(assetPayload)
+  await patchFreeCanvasNodeData(node.id, { savedAssetId: String(savedAsset?.id || '') })
+  return savedAsset
+}
+
+async function runFreeCanvasNode(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
+    ElMessage.warning('只有独立画布自由节点可直接运行')
+    return
+  }
+  const kind = node.data?.kind
+  if (!['image', 'video', 'audio'].includes(kind)) {
+    ElMessage.warning('文本节点无需生成')
+    return
+  }
+  const upstreamUrls = collectDirectUpstreamResultUrls(allGraphNodes.value, allGraphEdges.value, node.id)
+  let requestPayload
+  try {
+    requestPayload = buildFreeCanvasGenerationRequest(node.data, {
+      dramaId: dramaId.value,
+      upstreamUrls,
+    })
+  } catch (error) {
+    ElMessage.error(error?.message || '自由节点生成参数不完整')
+    return
+  }
+
+  const previousUrl = node.data?.url || ''
+  await patchFreeCanvasNodeData(node.id, { status: 'running', taskId: '', error: '' })
+  let taskId = ''
+  try {
+    let submitResult = null
+    let taskResult = null
+    if (kind === 'image') submitResult = await imagesAPI.create(requestPayload)
+    else if (kind === 'video') submitResult = await videosAPI.create(requestPayload)
+    else if (kind === 'audio') submitResult = await request.post('/audio/extract', requestPayload)
+    else throw new Error(`暂不支持自由节点生成类型：${kind}`)
+
+    taskId = freeCanvasTaskId(submitResult)
+    if (taskId) {
+      await patchFreeCanvasNodeData(node.id, { taskId })
+      taskResult = await pollFreeCanvasTask(taskId)
+    }
+    const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
+    if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
+    await patchFreeCanvasNodeData(node.id, {
+      status: 'success',
+      url: resultUrl,
+      taskId,
+      error: '',
+      savedAssetId: '',
+    })
+    try {
+      const latestNode = findGraphNode(node.id) || { ...node, data: { ...node.data, url: resultUrl } }
+      await saveFreeCanvasResultAsset(latestNode, kind, resultUrl, requestPayload, taskId)
+    } catch (assetError) {
+      console.warn('auto save free canvas result asset failed', assetError)
+      ElMessage.warning('生成完成，但自动存入素材库失败')
+    }
+    ElMessage.success('自由节点生成完成')
+  } catch (error) {
+    const errorMessage = error?.message || '自由节点生成失败'
+    await patchFreeCanvasNodeData(node.id, {
+      status: 'failed',
+      url: previousUrl,
+      taskId,
+      error: errorMessage,
+    })
+    ElMessage.error(errorMessage)
+  }
+}
+
 function canvasNodeLabel(node) {
   if (!node) return ''
   if (node.type === 'homeCanvasNode') return node.data?.title || '未命名自由节点'
@@ -1795,7 +1980,14 @@ function canvasNodeLabel(node) {
 
 function canvasNodeActions(node) {
   if (!node) return []
-  if (node.type === 'homeCanvasNode') return ['open-node-config', 'copy-node-ref']
+  if (node.type === 'homeCanvasNode') {
+    const actions = ['open-node-config', 'copy-node-ref']
+    if (['image', 'video', 'audio'].includes(node.data?.kind)) actions.push(`run-node-${node.data.kind}`)
+    if (nodeResultUrl(node)) actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
+    if (nodeResultUrl(node) && !node.data?.savedAssetId) actions.unshift('save-node-result-asset')
+    if (node.data?.savedAssetId) actions.unshift('copy-node-asset-ref')
+    return [...new Set(actions)]
+  }
   const actions = ['copy-node-ref']
   const sb = storyboardForNode(node)
   const runtimeStatus = nodeRuntimeStatus(node)
@@ -2682,6 +2874,15 @@ async function copyNodeResult(node) {
 }
 
 function nodeSavedAsset(node, status = nodeRuntimeStatus(node)) {
+  if (node?.type === 'homeCanvasNode' && node.data?.savedAssetId) {
+    return {
+      id: node.data.savedAssetId,
+      name: node.data.title || '自由节点结果素材',
+      type: node.data.kind || 'image',
+      category: 'canvas-result',
+      url: node.data.url || '',
+    }
+  }
   if (!status?.savedAssetId) return null
   return {
     id: status.savedAssetId,
@@ -3434,6 +3635,10 @@ function nodeStepTaskStatusOptions(statusIds, basePayload) {
 }
 
 async function runCanvasNodeStep(node, step) {
+  if (isStandaloneCanvas.value && node?.type === 'homeCanvasNode') {
+    await runFreeCanvasNode(node)
+    return
+  }
   if (node?.type === 'canvasProjectAsset') {
     await runCanvasProjectAssetNodeStep(node, step)
     return
@@ -3665,7 +3870,11 @@ async function runNodeMenuAction(type, node) {
   } else if (type === 'download-node-result') {
     downloadNodeResult(node)
   } else if (type === 'save-node-result-asset') {
-    await saveNodeResultAssetFromMenu(node)
+    if (isStandaloneCanvas.value && node?.type === 'homeCanvasNode') {
+      await saveFreeCanvasResultAsset(node, node.data?.kind, nodeResultUrl(node), null, node.data?.taskId || '')
+    } else {
+      await saveNodeResultAssetFromMenu(node)
+    }
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
   } else if (type === 'assign-node-asset-selected') {
@@ -3942,6 +4151,11 @@ provide(CANVAS_CONTEXT_KEY, {
   selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
   assignProjectAssetToSelectedStoryboard,
   runNodeStep: runCanvasNodeStep,
+  openFreeNodeConfig: (nodeId) => {
+    const node = freeCanvasNodeById(nodeId)
+    if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
+  },
+  runFreeCanvasNode,
 })
 
 function clearAssetHighlight() {
