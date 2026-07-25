@@ -21,6 +21,7 @@ chmod 600 .env.production
 编辑 `.env.production`：
 
 - `APP_DOMAIN` 只填写域名，不带协议和路径。
+- `APP_IMAGE` 使用通过 `Web Production Image` 工作流验证并发布的不可变 `sha-<commit-sha>` 标签，不使用 `latest`。
 - `PLATFORM_JWT_SECRET` 与 `PLATFORM_ADMIN_TOKEN` 分别生成至少 32 字符的随机值，且不得相同。
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 填写首管理员邮箱。
 - 首次启动保持 `PLATFORM_REGISTRATION_ENABLED=false`。
@@ -31,10 +32,12 @@ chmod 600 .env.production
 docker compose --env-file .env.production -f compose.production.yml config --quiet
 ```
 
-## 3. 构建并启动
+如果 GHCR 包保持私有，先使用仅含 `read:packages` 权限的部署令牌执行 `docker login ghcr.io`；不要在服务器命令历史或仓库文件中保存令牌。公开镜像无需登录。
+
+## 3. 拉取已验证镜像并启动
 
 ```bash
-docker compose --env-file .env.production -f compose.production.yml build app
+docker compose --env-file .env.production -f compose.production.yml pull app
 docker compose --env-file .env.production -f compose.production.yml up -d
 docker compose --env-file .env.production -f compose.production.yml ps
 curl --fail "https://${APP_DOMAIN}/health"
@@ -79,12 +82,12 @@ docker compose --env-file .env.production -f compose.production.yml exec app npm
 更新：
 
 ```bash
-docker compose --env-file .env.production -f compose.production.yml build app
+docker compose --env-file .env.production -f compose.production.yml pull app
 docker compose --env-file .env.production -f compose.production.yml up -d --no-deps app
 docker compose --env-file .env.production -f compose.production.yml ps
 ```
 
-回滚应用时，把 `APP_IMAGE` 改回上一已验证镜像标签后重建应用容器。数据库恢复必须按 `docs/PREPRODUCTION_OPERATIONS.md` 先完成备份验证和恢复演练，部署命令不会自动覆盖数据库。
+更新前先把 `.env.production` 的 `APP_IMAGE` 改为目标提交对应的 `ghcr.io/xiongpinji/molimamahuabu2:sha-<commit-sha>`。回滚应用时，把它改回上一已验证的不可变标签，重新 `pull app` 后重建应用容器。数据库恢复必须按 `docs/PREPRODUCTION_OPERATIONS.md` 先完成备份验证和恢复演练，部署命令不会自动覆盖数据库。
 
 ## 8. 边界
 

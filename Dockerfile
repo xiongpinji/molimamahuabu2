@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-bookworm-slim AS frontend-build
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS frontend-build
 WORKDIR /build/frontweb
 COPY frontweb/package*.json ./
 RUN npm ci
@@ -9,7 +9,7 @@ ARG VITE_PUBLIC_PLATFORM_MODE=true
 ENV VITE_PUBLIC_PLATFORM_MODE=${VITE_PUBLIC_PLATFORM_MODE}
 RUN npm run build
 
-FROM node:24-bookworm-slim AS backend-dependencies
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS backend-dependencies
 WORKDIR /build/backend-node
 RUN apt-get update \
     && apt-get install -y --no-install-recommends g++ make python3 \
@@ -17,7 +17,7 @@ RUN apt-get update \
 COPY backend-node/package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
