@@ -294,12 +294,53 @@ function resolveVideosDir(storagePath, projectSubdir) {
   return { dir: path.join(storagePath, 'videos'), relPrefix: 'videos' };
 }
 
+function hasIsoBmffFileStructure(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 16) return false;
+  let offset = 0;
+  let hasMoov = false;
+  let hasMdat = false;
+  while (offset + 8 <= buffer.length) {
+    let size = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+    let headerSize = 8;
+    if (size === 1) {
+      if (offset + 16 > buffer.length) return false;
+      const largeSize = buffer.readBigUInt64BE(offset + 8);
+      if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+      size = Number(largeSize);
+      headerSize = 16;
+    } else if (size === 0) {
+      size = buffer.length - offset;
+    }
+    if (size < headerSize || offset + size > buffer.length) return false;
+    if (offset === 0) {
+      if (type !== 'ftyp' || size < headerSize + 8 || (size - headerSize) % 4 !== 0) return false;
+      const majorBrand = buffer.subarray(offset + headerSize, offset + headerSize + 4);
+      if (!majorBrand.every((byte) => byte >= 0x20 && byte <= 0x7e)) return false;
+      const brands = buffer.subarray(offset + headerSize + 8, offset + size);
+      for (let i = 0; i < brands.length; i += 4) {
+        if (!brands.subarray(i, i + 4).every((byte) => byte >= 0x20 && byte <= 0x7e)) return false;
+      }
+    }
+    if (type === 'moov' && size > headerSize + 8) hasMoov = true;
+    if (type === 'mdat' && size > headerSize) hasMdat = true;
+    offset += size;
+  }
+  return hasMoov && hasMdat && offset === buffer.length;
+}
+
+function validateDownloadedVideoBuffer(buffer, ext) {
+  const normalized = String(ext || '').toLowerCase();
+  if ((normalized === 'mp4' || normalized === 'mov') && hasIsoBmffFileStructure(buffer)) return null;
+  return `供应商返回的视频不是可识别的 ${normalized.toUpperCase()} 文件`;
+}
+
 /**
  * 将远程 video_url 下载到本地
- * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
+ * @returns {Promise<{localPath: string|null, error?: string}>} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
 async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
-  if (!videoUrl || typeof videoUrl !== 'string') return null;
+  if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -309,16 +350,22 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const res = await fetch(videoUrl, { method: 'GET' });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
-      return null;
+      return { localPath: null };
     }
     const buf = Buffer.from(await res.arrayBuffer());
+    const validationError = validateDownloadedVideoBuffer(buf, ext);
+    if (validationError) {
+      const message = validationError;
+      log.warn('Downloaded video rejected', { videoGenId, reason: message });
+      return { localPath: null, error: message };
+    }
     fs.writeFileSync(filePath, buf);
     const relativePath = `${relPrefix}/${name}`.replace(/\\/g, '/');
     log.info('Video saved to local', { videoGenId, local_path: relativePath, projectSubdir: projectSubdir || '(root)' });
-    return relativePath;
+    return { localPath: relativePath };
   } catch (e) {
     log.warn('Download video error', { videoGenId, error: e.message });
-    return null;
+    return { localPath: null };
   }
 }
 
@@ -414,13 +461,22 @@ function resolveStoragePath(cfg) {
 async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel) {
   const now = new Date().toISOString();
   let localPath = null;
+  let downloadError = null;
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-    localPath = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
+    const downloaded = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
+    localPath = downloaded.localPath;
+    downloadError = downloaded.error || null;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
   } catch (_) {}
+  if (downloadError) {
+    setVideoGenFailed(db, videoGenId, downloadError, now);
+    if (row.task_id) taskService.updateTaskError(db, row.task_id, downloadError);
+    log.error('Video generation failed before completion', { id: videoGenId, error: downloadError });
+    return false;
+  }
   const deliveryWarning = localVideoDeliveryWarning(localPath);
   try {
     db.prepare(
@@ -461,6 +517,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     video_url: videoUrl,
     local_path: localPath,
   });
+  return true;
 }
 
 async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config) {

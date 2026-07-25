@@ -198,7 +198,13 @@ test('分镜图片内部润色与连戏快照按独立文本模型调用计费',
     ).all();
     assert.equal(textReservations.length, 2);
     assert.ok(textReservations.every((item) => item.status === 'confirmed'));
-    assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 10);
+    const imageReservation = db.prepare(
+      "SELECT * FROM tenant_usage_reservations WHERE resource_type = 'image'",
+    ).get();
+    assert.equal(imageReservation.status, 'refunded');
+    assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
+      tenant_id: 'tenant-a', available: 40, held: 0, spent: 10,
+    });
   } finally {
     aiClient.generateText = originalText;
     imageClient.callImageApi = originalImage;
