@@ -31,7 +31,7 @@ test('素材库列表始终绑定当前项目并允许切换自有项目', () =>
 })
 
 test('素材库页面支持音频素材上传、筛选、预览和复用为分镜音频', () => {
-  assert.match(mediaLibrarySource, /accept="image\/\*,video\/\*,audio\/\*"/)
+  assert.match(mediaLibrarySource, /accept="\.png,\.jpg,\.jpeg,\.gif,\.webp,\.mp4,\.mov,\.m4a,\.m4b,\.webm,\.wav,\.mp3,\.ogg,\.oga,\.flac,\.aac"/)
   assert.match(mediaLibrarySource, /<el-radio-button value="audio">音频<\/el-radio-button>/)
   assert.match(mediaLibrarySource, /await uploadAPI\.uploadMedia\(file, \{ dramaId: libraryDramaId\.value \}\)/)
   assert.match(mediaLibrarySource, /item\.audio_url \|\| item\.voice_url/)

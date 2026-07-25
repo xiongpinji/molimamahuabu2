@@ -659,7 +659,11 @@ const canvasAssetPickerTargetStoryboardId = ref(null)
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
-const canvasUploadAccept = ref('image/*,video/*,audio/*')
+const CANVAS_MEDIA_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac'
+const CANVAS_IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp'
+const CANVAS_VIDEO_ACCEPT = '.mp4,.mov,.webm'
+const CANVAS_AUDIO_ACCEPT = '.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac'
+const canvasUploadAccept = ref(CANVAS_MEDIA_ACCEPT)
 const freeNodeDialogVisible = ref(false)
 const freeNodeKind = ref('text')
 const freeNodeEditingId = ref('')
@@ -3223,9 +3227,9 @@ function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerVisible.value = true
 }
 
-function openCanvasUpload(flowPosition = null, accept = 'image/*,video/*,audio/*') {
+function openCanvasUpload(flowPosition = null, accept = CANVAS_MEDIA_ACCEPT) {
   canvasUploadFlowPos.value = flowPosition
-  canvasUploadAccept.value = accept || 'image/*,video/*,audio/*'
+  canvasUploadAccept.value = accept || CANVAS_MEDIA_ACCEPT
   canvasUploadInput.value?.click()
 }
 
@@ -3277,7 +3281,7 @@ async function onCanvasUpload(event) {
   }
   if (ok) ElMessage.success(`已上传 ${ok} 个素材到画布`)
   canvasUploadFlowPos.value = null
-  canvasUploadAccept.value = 'image/*,video/*,audio/*'
+  canvasUploadAccept.value = CANVAS_MEDIA_ACCEPT
   if (event?.target) event.target.value = ''
 }
 
@@ -4077,17 +4081,17 @@ async function onContextMenuSelect(type) {
   }
   if (type === 'upload-image') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'image/*')
+    openCanvasUpload(flowPosition, CANVAS_IMAGE_ACCEPT)
     return
   }
   if (type === 'upload-video') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'video/*')
+    openCanvasUpload(flowPosition, CANVAS_VIDEO_ACCEPT)
     return
   }
   if (type === 'upload-audio') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'audio/*')
+    openCanvasUpload(flowPosition, CANVAS_AUDIO_ACCEPT)
     return
   }
   if (type === 'paste-media') {

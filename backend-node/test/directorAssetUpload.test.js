@@ -80,10 +80,10 @@ test('素材库媒体上传必须绑定自有项目，并注册项目素材记�
       storage: { local_path: tempRoot, base_url: 'http://localhost:5679/static' },
     }, { info() {}, warn() {}, error() {} }, db);
     const file = {
-      buffer: Buffer.from('video-fixture'),
+      buffer: Buffer.from('00000018667479706d703432000000006d70343269736f6d', 'hex'),
       originalname: 'clip.mp4',
       mimetype: 'video/mp4',
-      size: 13,
+      size: 24,
     };
 
     const missingDrama = captureResponse();

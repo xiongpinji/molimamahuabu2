@@ -6,7 +6,7 @@
           <el-icon><Upload /></el-icon>
           上传素材
         </el-button>
-        <input ref="uploadInput" type="file" accept="image/*,video/*,audio/*" multiple style="display:none" @change="onUpload" />
+        <input ref="uploadInput" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac" multiple style="display:none" @change="onUpload" />
       </template>
     </PlatformHeader>
 
