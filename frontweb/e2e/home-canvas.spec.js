@@ -42,7 +42,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(({ storageKey, state }) => {
     window.localStorage.setItem(storageKey, JSON.stringify(state))
   }, { storageKey: homeCanvasStorageKey, state: seededHomeCanvasState })
-  await page.goto('/canvas')
+  await page.goto('/canvas/local')
   await expect(page.locator('.home-starter-panel')).toHaveCount(0)
 })
 

@@ -84,7 +84,7 @@ function goAiConfig() {
 }
 
 function goHomeCanvas() {
-  router.push({ name: 'home-canvas' })
+  router.push({ name: 'home-canvas-local' })
 }
 </script>
 

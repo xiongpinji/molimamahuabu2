@@ -32,6 +32,7 @@ test('独立画布入口直接复用完整 DramaCanvas 并保留旧本地画布�
 
 test('统一导航在项目页和完整画布页都暴露画布与短剧工厂入口', () => {
   assert.match(platformHeaderSource, /<PlatformPrimaryNav \/>/)
+  assert.match(platformHeaderSource, /router\.push\(\{ name: 'home-canvas-local' \}\)/)
   assert.match(dramaCanvasSource, /<PlatformPrimaryNav \/>/)
   assert.match(primaryNavSource, /to="\/canvas"/)
   assert.match(primaryNavSource, /to="\/factory"/)

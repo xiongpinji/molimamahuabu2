@@ -15,6 +15,7 @@ const backendServer = path.join(backendRoot, 'src', 'server.js')
 const simpleSkinGltfPath = fileURLToPath(new URL('../public/director-fixtures/khronos-simple-skin.gltf', import.meta.url))
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
 const { getFfmpegPath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
+const minimalMp3 = require(path.join(backendRoot, 'test', 'fixtures', 'minimalMp3'))
 
 let backendProcess
 let backendOrigin
@@ -145,7 +146,7 @@ test.beforeAll(async () => {
     request.on('end', () => {
       ttsProviderRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       response.writeHead(200, { 'content-type': 'audio/mpeg' })
-      response.end(Buffer.from('canvas-browser-tts'))
+      response.end(minimalMp3)
     })
   })
   await new Promise((resolve) => ttsProvider.listen(0, '127.0.0.1', resolve))
@@ -443,6 +444,7 @@ test('项目画布通过真实后端持久化节点操作、连线和素材指�
 
 test('项目画布通过真实后端保存节点配置并在刷新后恢复', async ({ page }) => {
   const forwardedRequests = []
+  const failedResponses = []
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const source = new URL(request.url())
@@ -450,6 +452,14 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
     const response = await route.fetch({
       url: `${backendOrigin}${source.pathname}${source.search}`,
     })
+    if (!response.ok()) {
+      failedResponses.push({
+        method: request.method(),
+        path: source.pathname,
+        status: response.status(),
+        body: await response.text(),
+      })
+    }
     await route.fulfill({ response })
   })
 
@@ -579,9 +589,15 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
     model: 'canvas-tts-beta',
     input: '小茉：终于等到你了。',
   }))
-  await expect.poll(() => readDatabase((db) => db.prepare(
-    'SELECT audio_local_path FROM storyboards WHERE id = ?',
-  ).get(storyboardId).audio_local_path)).toMatch(/^audio\/tts_sb/)
+  await expect.poll(() => ({
+    audioLocalPath: readDatabase((db) => db.prepare(
+      'SELECT audio_local_path FROM storyboards WHERE id = ?',
+    ).get(storyboardId).audio_local_path),
+    failedResponses,
+  })).toEqual({
+    audioLocalPath: expect.stringMatching(/^audio\/tts_sb/),
+    failedResponses: [],
+  })
 
   expect(forwardedRequests).toEqual(expect.arrayContaining([
     `GET /api/v1/dramas/${dramaId}`,
