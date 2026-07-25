@@ -12,7 +12,7 @@ function readWorkflow(name) {
   return yaml.load(fs.readFileSync(workflowPath, 'utf8'), { schema: yaml.JSON_SCHEMA });
 }
 
-test('依赖安全门禁覆盖三个 Node 子项目并审计桌面完整构建链', () => {
+test('生产依赖安全门禁覆盖网页端两个 Node 子项目', () => {
   const workflow = readWorkflow('dependency-security.yml');
   assert.ok(Object.hasOwn(workflow.on, 'pull_request'));
   assert.deepEqual(workflow.on.push.branches, ['main']);
@@ -24,22 +24,17 @@ test('依赖安全门禁覆盖三个 Node 子项目并审计桌面完整构建�
   assert.equal(setupNode.with['node-version'], '24');
 
   const commands = steps.map((step) => step.run || '').join('\n');
-  for (const project of ['backend-node', 'frontweb', 'desktop']) {
-    assert.match(commands, new RegExp(`npm --prefix ${project} ci --ignore-scripts`));
-  }
   for (const project of ['backend-node', 'frontweb']) {
+    assert.match(commands, new RegExp(`npm --prefix ${project} ci --ignore-scripts`));
     assert.match(
       commands,
       new RegExp(`npm --prefix ${project} audit --omit=dev --audit-level=high`),
     );
   }
-  assert.match(commands, /npm --prefix desktop audit --audit-level=low/);
-  assert.doesNotMatch(commands, /npm --prefix desktop audit --omit=dev/);
+  assert.doesNotMatch(commands, /npm --prefix desktop/);
   assert.match(commands, /--registry=https:\/\/registry\.npmjs\.org/);
-  for (const project of ['backend-node', 'desktop']) {
-    const step = steps.find((item) => item.run?.startsWith(`npm --prefix ${project} ci `));
-    assert.match(step.run, /--replace-registry-host=always/);
-  }
+  const backendInstall = steps.find((step) => step.run?.startsWith('npm --prefix backend-node ci '));
+  assert.match(backendInstall.run, /--replace-registry-host=always/);
   const frontendInstall = steps.find((step) => step.run?.startsWith('npm --prefix frontweb ci '));
   assert.doesNotMatch(
     frontendInstall.run,
