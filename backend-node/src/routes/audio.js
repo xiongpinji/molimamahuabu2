@@ -32,11 +32,25 @@ function routes(db, log, cfg, options = {}) {
             WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).get(dramaId, req.user?.id);
         if (!owner) return response.notFound(res, '资源不存在');
       }
+      let scopedStoryboard = null;
+      if (options.billingEnabled && storyboard_id) {
+        const storyboardId = Number(storyboard_id);
+        if (!Number.isInteger(storyboardId) || storyboardId <= 0) {
+          return response.notFound(res, '资源不存在');
+        }
+        scopedStoryboard = db.prepare(`SELECT s.id, s.dialogue, s.narration
+          FROM storyboards s
+          JOIN episodes e ON e.id = s.episode_id
+          WHERE s.id = ? AND e.drama_id = ?
+            AND s.deleted_at IS NULL AND e.deleted_at IS NULL`).get(storyboardId, dramaId);
+        if (!scopedStoryboard) return response.notFound(res, '资源不存在');
+      }
       const kind = String(tts_kind || 'dialogue').toLowerCase() === 'narration' ? 'narration' : 'dialogue';
       let ttsText = text;
       if (kind === 'narration') {
         if ((!ttsText || !String(ttsText).trim()) && storyboard_id) {
-          const row = db.prepare('SELECT narration FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboard_id));
+          const row = scopedStoryboard
+            || db.prepare('SELECT narration FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboard_id));
           ttsText = row?.narration;
         }
         if (!ttsText || !String(ttsText).trim()) {
@@ -44,7 +58,8 @@ function routes(db, log, cfg, options = {}) {
         }
       } else {
         if ((!ttsText || !String(ttsText).trim()) && storyboard_id) {
-          const row = db.prepare('SELECT dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboard_id));
+          const row = scopedStoryboard
+            || db.prepare('SELECT dialogue FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(storyboard_id));
           ttsText = row?.dialogue;
         }
         if (!ttsText || !String(ttsText).trim()) {
@@ -55,9 +70,9 @@ function routes(db, log, cfg, options = {}) {
       let selectedModel = null;
       try {
         const ttsService = require('../services/ttsService');
-        const { selectTtsConfig } = require('../services/ttsConfigSelectionService');
+        const { resolveTtsModel, selectTtsConfig } = require('../services/ttsConfigSelectionService');
         const selectedConfig = selectTtsConfig(db, tts_model);
-        selectedModel = modelPrice.canonicalModel(selectedConfig.default_model);
+        selectedModel = modelPrice.canonicalModel(resolveTtsModel(selectedConfig));
         if (options.billingEnabled) {
           const amount = modelPrice.requirePrice(db, selectedModel);
           reservation = creditLedger.reserve(db, {
@@ -104,12 +119,28 @@ function routes(db, log, cfg, options = {}) {
           const now = new Date().toISOString();
           try {
             if (kind === 'narration') {
-              db.prepare('UPDATE storyboards SET narration_audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, selectedModel, now, Number(storyboard_id)
+              const sql = options.billingEnabled
+                ? `UPDATE storyboards SET narration_audio_local_path = ?, audio_model = ?, updated_at = ?
+                  WHERE id = ? AND EXISTS (
+                    SELECT 1 FROM episodes e
+                    WHERE e.id = storyboards.episode_id AND e.drama_id = ? AND e.deleted_at IS NULL
+                  )`
+                : 'UPDATE storyboards SET narration_audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?';
+              db.prepare(sql).run(
+                result.local_path, selectedModel, now, Number(storyboard_id),
+                ...(options.billingEnabled ? [dramaId] : [])
               );
             } else {
-              db.prepare('UPDATE storyboards SET audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?').run(
-                result.local_path, selectedModel, now, Number(storyboard_id)
+              const sql = options.billingEnabled
+                ? `UPDATE storyboards SET audio_local_path = ?, audio_model = ?, updated_at = ?
+                  WHERE id = ? AND EXISTS (
+                    SELECT 1 FROM episodes e
+                    WHERE e.id = storyboards.episode_id AND e.drama_id = ? AND e.deleted_at IS NULL
+                  )`
+                : 'UPDATE storyboards SET audio_local_path = ?, audio_model = ?, updated_at = ? WHERE id = ?';
+              db.prepare(sql).run(
+                result.local_path, selectedModel, now, Number(storyboard_id),
+                ...(options.billingEnabled ? [dramaId] : [])
               );
             }
           } catch (_) {}

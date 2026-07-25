@@ -140,7 +140,8 @@ async function synthesize(db, log, {
   // 外部传入的 voice_id / speed 优先（海外化场景），否则取配置值
   const voiceId = voice_id || ttsConfig.voice_id || ttsSettings.voice_id || '';
   const groupId = ttsConfig.group_id || ttsSettings.group_id || '';
-  const ttsModel = ttsConfig.default_model || (Array.isArray(ttsConfig.model) ? ttsConfig.model[0] : ttsConfig.model) || '';
+  const { resolveTtsModel } = require('./ttsConfigSelectionService');
+  const ttsModel = resolveTtsModel(ttsConfig);
   const finalSpeed = speed || ttsSettings.speed || 1.0;
   let audioBuffer;
 
@@ -150,7 +151,7 @@ async function synthesize(db, log, {
       voiceId || 'female-shaonv',
       ttsConfig.api_key,
       groupId,
-      ttsModel || 'speech-02-hd'
+      ttsModel
     );
   } else if (provider === 'openai' || ttsConfig.base_url) {
     audioBuffer = await synthesizeWithOpenai(
@@ -158,11 +159,15 @@ async function synthesize(db, log, {
       voiceId || 'alloy',
       ttsConfig.api_key,
       ttsConfig.base_url,
-      ttsModel || 'tts-1',
+      ttsModel,
       finalSpeed
     );
   } else {
     throw new Error(`不支持的 TTS provider: ${provider}，目前支持 openai、minimax`);
+  }
+
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+    throw new Error('TTS 未返回有效音频');
   }
 
   // 保存到本地

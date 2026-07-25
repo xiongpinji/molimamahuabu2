@@ -1,5 +1,13 @@
 const aiConfigService = require('./aiConfigService');
 
+function resolveTtsModel(config) {
+  const configured = config?.default_model
+    || (Array.isArray(config?.model) ? config.model[0] : config?.model);
+  if (configured && String(configured).trim()) return String(configured).trim();
+  const provider = String(config?.provider || '').toLowerCase();
+  return provider === 'minimax' ? 'speech-02-hd' : 'tts-1';
+}
+
 function selectTtsConfig(db, requestedModel) {
   const model = String(requestedModel || '').trim();
   const active = aiConfigService.listConfigs(db, 'tts').filter((item) => item.is_active);
@@ -16,4 +24,4 @@ function selectTtsConfig(db, requestedModel) {
   return model ? { ...config, default_model: model } : config;
 }
 
-module.exports = { selectTtsConfig };
+module.exports = { resolveTtsModel, selectTtsConfig };

@@ -65,13 +65,13 @@ function insertDrama(db, tenantId, userId, title) {
     .run(tenantId, userId, title, now, now).lastInsertRowid);
 }
 
-function insertTtsConfig(db, baseUrl, model = 'tts-canvas') {
+function insertTtsConfig(db, baseUrl, model = 'tts-canvas', defaultModel = model) {
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, name, base_url, api_key, model, default_model,
      is_default, is_active, settings, created_at, updated_at)
     VALUES ('tts', 'openai', '画布 TTS', ?, 'test-key', ?, ?, 1, 1, '{}', ?, ?)`)
-    .run(baseUrl, JSON.stringify([model]), model, now, now);
+    .run(baseUrl, JSON.stringify([model]), defaultModel, now, now);
 }
 
 function setPriceAndBalance(db, tenantId, model, price, available) {
@@ -92,6 +92,24 @@ function makeRequest(body, userId = 'user-a', tenantId = 'tenant-a') {
   };
 }
 
+function insertStoryboard(db, dramaId, dialogue, audioLocalPath = null) {
+  const now = new Date().toISOString();
+  const episodeId = Number(db.prepare(`INSERT INTO episodes
+    (drama_id, episode_number, title, status, created_at, updated_at)
+    VALUES (?, 1, '第 1 集', 'draft', ?, ?)`).run(dramaId, now, now).lastInsertRowid);
+  return Number(db.prepare(`INSERT INTO storyboards
+    (episode_id, storyboard_number, title, dialogue, audio_local_path, status, created_at, updated_at)
+    VALUES (?, 1, '镜头 1', ?, ?, 'draft', ?, ?)`)
+    .run(episodeId, dialogue, audioLocalPath, now, now).lastInsertRowid);
+}
+
+function listMp3Files(root) {
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root, { recursive: true })
+    .map((entry) => String(entry))
+    .filter((entry) => entry.endsWith('.mp3'));
+}
+
 test('自由画布音频按项目目录保存、确认计费并可经授权静态地址回读', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'audio/mpeg' });
@@ -106,7 +124,9 @@ test('自由画布音频按项目目录保存、确认计费并可经授权静�
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
   insertUser(db, 'user-a', 'a@example.com');
+  insertUser(db, 'user-b', 'b@example.com');
   insertTenant(db, 'tenant-a', 'user-a');
+  insertTenant(db, 'tenant-b', 'user-b');
   const dramaId = insertDrama(db, 'tenant-a', 'user-a', '自由画布');
   insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-canvas');
   setPriceAndBalance(db, 'tenant-a', 'tts-canvas', 7, 20);
@@ -156,6 +176,56 @@ test('自由画布音频按项目目录保存、确认计费并可经授权静�
   );
   assert.equal(audioResponse.status, 200);
   assert.equal(await audioResponse.text(), 'project-audio-bytes');
+
+  const otherToken = userAuth.issueToken({ id: 'user-b', email: 'b@example.com', role: 'user' }, secret);
+  const forbiddenResponse = await fetch(
+    `http://127.0.0.1:${staticServer.address().port}${res.body.data.url}`,
+    { headers: { authorization: `Bearer ${otherToken}`, 'x-tenant-id': 'tenant-b' } },
+  );
+  assert.equal(forbiddenResponse.status, 404);
+});
+
+test('未设置 default_model 时按实际首个模型调用并计费', async (t) => {
+  let providerModel = null;
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      providerModel = JSON.parse(Buffer.concat(chunks).toString()).model;
+      res.writeHead(200, { 'content-type': 'audio/mpeg' });
+      res.end(Buffer.from('first-model-audio'));
+    });
+  });
+  const providerServer = await listen(provider);
+  t.after(() => close(providerServer));
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-audio-model-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'user-a', 'a@example.com');
+  insertTenant(db, 'tenant-a', 'user-a');
+  const dramaId = insertDrama(db, 'tenant-a', 'user-a', '模型项目');
+  insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-array-first', '');
+  setPriceAndBalance(db, 'tenant-a', 'tts-array-first', 6, 20);
+
+  const routes = createAudioRoutes(db, { info() {}, error() {} }, {
+    storage: { local_path: storageRoot },
+  }, { billingEnabled: true });
+  const res = createResponse();
+  await routes.extract(makeRequest({
+    drama_id: dramaId,
+    text: '使用模型数组首项',
+  }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.model, 'tts-array-first');
+  assert.equal(providerModel, 'tts-array-first');
+  assert.equal(
+    db.prepare("SELECT model FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().model,
+    'tts-array-first',
+  );
 });
 
 test('公开计费模式拒绝无价格、余额不足和跨租户项目', async (t) => {
@@ -211,6 +281,103 @@ test('公开计费模式拒绝无价格、余额不足和跨租户项目', async
   assert.equal(crossTenant.statusCode, 404);
   assert.equal(crossTenant.body.error.code, 'NOT_FOUND');
   assert.equal(providerCalls, 0);
+});
+
+test('公开模式拒绝当前项目之外的 storyboard 且不读取或回写', async (t) => {
+  let providerCalls = 0;
+  const provider = http.createServer((_req, res) => {
+    providerCalls += 1;
+    res.writeHead(200, { 'content-type': 'audio/mpeg' });
+    res.end(Buffer.from('should-not-run'));
+  });
+  const providerServer = await listen(provider);
+  t.after(() => close(providerServer));
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-audio-storyboard-owner-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'user-a', 'a@example.com');
+  insertUser(db, 'user-b', 'b@example.com');
+  insertTenant(db, 'tenant-a', 'user-a');
+  insertTenant(db, 'tenant-b', 'user-b');
+  const ownDramaId = insertDrama(db, 'tenant-a', 'user-a', 'A 项目');
+  const foreignDramaId = insertDrama(db, 'tenant-b', 'user-b', 'B 项目');
+  const foreignStoryboardId = insertStoryboard(
+    db,
+    foreignDramaId,
+    'B 项目的秘密对白',
+    'projects/original/audio/unchanged.mp3',
+  );
+  insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-canvas');
+  setPriceAndBalance(db, 'tenant-a', 'tts-canvas', 7, 20);
+  const routes = createAudioRoutes(db, { info() {}, error() {} }, {
+    storage: { local_path: storageRoot },
+  }, { billingEnabled: true });
+
+  const before = db.prepare(
+    'SELECT dialogue, audio_local_path, audio_model, updated_at FROM storyboards WHERE id = ?',
+  ).get(foreignStoryboardId);
+  const res = createResponse();
+  await routes.extract(makeRequest({
+    drama_id: ownDramaId,
+    storyboard_id: foreignStoryboardId,
+  }), res);
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.body.error.code, 'NOT_FOUND');
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(
+    db.prepare('SELECT dialogue, audio_local_path, audio_model, updated_at FROM storyboards WHERE id = ?')
+      .get(foreignStoryboardId),
+    before,
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().count,
+    0,
+  );
+});
+
+test('TTS 供应商返回空音频时不落盘、不扣费并退款', async (t) => {
+  const provider = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'audio/mpeg' });
+    res.end();
+  });
+  const providerServer = await listen(provider);
+  t.after(() => close(providerServer));
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-audio-empty-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  insertUser(db, 'user-a', 'a@example.com');
+  insertTenant(db, 'tenant-a', 'user-a');
+  const dramaId = insertDrama(db, 'tenant-a', 'user-a', '空音频项目');
+  insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-canvas');
+  setPriceAndBalance(db, 'tenant-a', 'tts-canvas', 7, 20);
+  const routes = createAudioRoutes(db, { info() {}, error() {} }, {
+    storage: { local_path: storageRoot },
+  }, { billingEnabled: true });
+
+  const res = createResponse();
+  await routes.extract(makeRequest({
+    drama_id: dramaId,
+    text: '供应商返回空音频',
+    tts_model: 'tts-canvas',
+  }), res);
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(listMp3Files(storageRoot).length, 0);
+  assert.deepEqual(
+    db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
+    { available: 20, held: 0, spent: 0 },
+  );
+  assert.equal(
+    db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
+    'refunded',
+  );
 });
 
 test('TTS 供应商失败后退款并记录失败审计', async (t) => {
