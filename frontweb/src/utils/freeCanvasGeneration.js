@@ -121,7 +121,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   }
 
   if (nodeData.kind === 'audio') {
+    const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
+      drama_id: dramaId,
       text: nodeData.content,
       tts_model: nodeData.model,
     })

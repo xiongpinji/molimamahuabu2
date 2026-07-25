@@ -116,7 +116,15 @@ async function synthesizeWithOpenai(text, voice, apiKey, baseUrl, model, speed) 
  * 合成 TTS 并保存到本地文件
  * @returns {{ local_path: string, audio_url: string }}
  */
-async function synthesize(db, log, { text, storyboard_id, config, storage_base, voice_id, speed }) {
+async function synthesize(db, log, {
+  text,
+  storyboard_id,
+  config,
+  storage_base,
+  storage_subdir,
+  voice_id,
+  speed,
+}) {
   if (!text || !text.trim()) throw new Error('text 不能为空');
   const aiConfigService = require('./aiConfigService');
   const ttsConfig = config || (() => {
@@ -158,12 +166,13 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   }
 
   // 保存到本地
-  const audioDir = path.join(storage_base, 'audio');
+  const relativeAudioDir = String(storage_subdir || 'audio').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const audioDir = path.join(storage_base, relativeAudioDir);
   if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
   const filename = `tts_sb${storyboard_id || 'x'}_${randomUUID().slice(0, 8)}.mp3`;
   const filePath = path.join(audioDir, filename);
   fs.writeFileSync(filePath, audioBuffer);
-  const localPath = `audio/${filename}`;
+  const localPath = `${relativeAudioDir}/${filename}`;
   log.info('[TTS] 合成完成', { storyboard_id, local_path: localPath, provider });
   try { const cs = require('./cloudService'); cs.reportUsage('tts', ttsModel || '', '', 0); } catch (_) {}
   return { local_path: localPath };

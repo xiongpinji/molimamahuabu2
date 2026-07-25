@@ -105,14 +105,17 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'cosyvoice',
   }, { dramaId: 7 })
   assert.deepEqual(audioPayload, {
+    drama_id: 7,
     text: '欢迎来到茉莉妈妈',
     tts_model: 'cosyvoice',
   })
+  assert.equal('storyboard_id' in audioPayload, false)
 })
 
-test('自由节点图片和视频请求强制要求正整数 dramaId', () => {
+test('自由节点图片、视频和音频请求强制要求正整数 dramaId', () => {
   const imageData = { kind: 'image', content: '一张图' }
   const videoData = { kind: 'video', content: '一段视频' }
+  const audioData = { kind: 'audio', content: '一段对白' }
   for (const dramaId of [undefined, 0, 'abc']) {
     assert.throws(
       () => buildFreeCanvasGenerationRequest(imageData, { dramaId }),
@@ -120,6 +123,10 @@ test('自由节点图片和视频请求强制要求正整数 dramaId', () => {
     )
     assert.throws(
       () => buildFreeCanvasGenerationRequest(videoData, { dramaId }),
+      /自由节点生成缺少有效项目 ID/
+    )
+    assert.throws(
+      () => buildFreeCanvasGenerationRequest(audioData, { dramaId }),
       /自由节点生成缺少有效项目 ID/
     )
   }

@@ -153,7 +153,7 @@ function setupRouter(cfg, db, log) {
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const videoMerges = videoMergeRoutes(db, log);
   const assets = assetRoutes(db, log);
-  const audio = audioRoutes(db, log, cfg);
+  const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
   r.get('/voice-catalog', voiceCatalog.list);
