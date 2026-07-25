@@ -152,6 +152,7 @@ export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNo
 export function buildFreeCanvasProjectAssetPayload({
   dramaId,
   nodeId,
+  name,
   taskId,
   model,
   type,
@@ -161,12 +162,15 @@ export function buildFreeCanvasProjectAssetPayload({
   const assetType = cleanString(type)
   if (!ASSET_TYPES.has(assetType)) return null
   const validDramaId = requirePositiveDramaId(dramaId, '自由节点素材入库缺少有效项目 ID')
+  const assetUrl = cleanString(url)
+  const resultFilename = assetUrl.split(/[?#]/)[0].split('/').pop()
   return {
     drama_id: validDramaId,
     storyboard_id: null,
+    name: cleanString(name) || resultFilename || '未命名画布结果',
     category: 'canvas-result',
     type: assetType,
-    url: cleanString(url),
+    url: assetUrl,
     metadata: {
       canvas_node_id: cleanString(nodeId),
       task_id: cleanString(taskId),

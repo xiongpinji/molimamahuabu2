@@ -12,12 +12,26 @@
 
     <!-- 筛选栏 -->
     <div class="filter-bar">
-        <el-radio-group v-model="mediaType" class="type-filter" @change="loadMedia">
-          <el-radio-button value="all">全部</el-radio-button>
-          <el-radio-button value="image">图片</el-radio-button>
-          <el-radio-button value="video">视频</el-radio-button>
-          <el-radio-button value="audio">音频</el-radio-button>
-        </el-radio-group>
+      <el-select
+        v-model="libraryDramaId"
+        class="project-filter"
+        placeholder="选择素材项目"
+        filterable
+        @change="onLibraryDramaChange"
+      >
+        <el-option
+          v-for="drama in libraryDramas"
+          :key="drama.id"
+          :label="drama.title || ('项目' + drama.id)"
+          :value="drama.id"
+        />
+      </el-select>
+      <el-radio-group v-model="mediaType" class="type-filter" @change="loadMedia">
+        <el-radio-button value="all">全部</el-radio-button>
+        <el-radio-button value="image">图片</el-radio-button>
+        <el-radio-button value="video">视频</el-radio-button>
+        <el-radio-button value="audio">音频</el-radio-button>
+      </el-radio-group>
       <el-input
         v-model="keyword"
         placeholder="搜索素材..."
@@ -208,6 +222,8 @@ const showPreview = ref(false)
 const previewItem = ref(null)
 const uploadInput = ref(null)
 const highlightedAssetId = ref(null)
+const libraryDramas = ref([])
+const libraryDramaId = ref(null)
 let keywordTimer = null
 
 function applyRouteAssetFocus() {
@@ -215,21 +231,47 @@ function applyRouteAssetFocus() {
   highlightedAssetId.value = Number.isFinite(id) && id > 0 ? id : null
   const type = String(route.query.type || '')
   if (['image', 'video', 'audio'].includes(type)) mediaType.value = type
+  const routeDramaId = Number(route.query.dramaId)
+  if (Number.isInteger(routeDramaId) && routeDramaId > 0) libraryDramaId.value = routeDramaId
   page.value = 1
 }
 
+async function loadLibraryDramas() {
+  const res = await dramaAPI.list({ page: 1, page_size: 100 })
+  libraryDramas.value = res?.items || []
+  const selected = Number(libraryDramaId.value)
+  if (!libraryDramas.value.some((item) => Number(item.id) === selected)) {
+    libraryDramaId.value = libraryDramas.value[0]?.id || null
+  }
+}
+
+async function onLibraryDramaChange() {
+  page.value = 1
+  selectedIds.clear()
+  await loadMedia()
+}
+
 function triggerUpload() {
+  if (!libraryDramaId.value) {
+    ElMessage.warning('请先选择素材所属项目')
+    return
+  }
   uploadInput.value?.click()
 }
 
 async function onUpload(e) {
   const files = Array.from(e.target.files || [])
   if (!files.length) return
+  if (!libraryDramaId.value) {
+    ElMessage.warning('请先选择素材所属项目')
+    e.target.value = ''
+    return
+  }
   uploading.value = true
   uploadProgress.value = { current: 0, total: files.length }
   for (const file of files) {
     try {
-      await uploadAPI.uploadMedia(file)
+      await uploadAPI.uploadMedia(file, { dramaId: libraryDramaId.value })
       uploadProgress.value.current++
     } catch (err) {
       ElMessage.warning(`${file.name} 上传失败: ${err.message}`)
@@ -247,12 +289,19 @@ function debouncedLoad() {
 }
 
 async function loadMedia() {
+  if (!libraryDramaId.value) {
+    mediaItems.value = []
+    total.value = 0
+    return
+  }
   loading.value = true
   try {
     const params = {
       page: page.value,
       page_size: pageSize.value,
     }
+    params.drama_id = libraryDramaId.value
+    params.include_global = 1
     if (mediaType.value !== 'all') params.type = mediaType.value
     if (keyword.value) params.keyword = keyword.value
     const res = await request.get('/assets', { params })
@@ -447,14 +496,16 @@ async function batchDelete() {
   loadMedia()
 }
 
-watch(() => [route.query.assetId, route.query.type], async () => {
+watch(() => [route.query.assetId, route.query.type, route.query.dramaId], async () => {
   applyRouteAssetFocus()
+  await loadLibraryDramas()
   await loadMedia()
 })
 
-onMounted(() => {
+onMounted(async () => {
   applyRouteAssetFocus()
-  loadMedia()
+  await loadLibraryDramas()
+  await loadMedia()
 })
 </script>
 
@@ -495,6 +546,10 @@ onMounted(() => {
 
 .search-input {
   width: 240px;
+}
+
+.project-filter {
+  width: 220px;
 }
 
 .upload-progress {

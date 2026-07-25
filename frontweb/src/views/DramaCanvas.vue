@@ -1905,6 +1905,7 @@ async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, 
     const assetPayload = buildFreeCanvasProjectAssetPayload({
       dramaId: dramaId.value,
       nodeId,
+      name: latestBeforeRun.data?.title,
       taskId,
       model: latestBeforeRun.data?.model,
       type: kind,

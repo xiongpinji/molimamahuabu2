@@ -152,7 +152,7 @@ function setupRouter(cfg, db, log) {
   const images = imageRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const videoMerges = videoMergeRoutes(db, log);
-  const assets = assetRoutes(db, log);
+  const assets = assetRoutes(db, log, { publicPlatformEnabled });
   const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);

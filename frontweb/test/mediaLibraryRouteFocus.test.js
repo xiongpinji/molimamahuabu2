@@ -15,14 +15,24 @@ test('素材库消费画布结果跳转参数并高亮目标素材', () => {
   assert.match(mediaLibrarySource, /function isTargetAsset\(item\)/)
   assert.match(mediaLibrarySource, /targeted: isTargetAsset\(item\)/)
   assert.match(mediaLibrarySource, /画布结果定位/)
-  assert.match(mediaLibrarySource, /watch\(\(\) => \[route\.query\.assetId, route\.query\.type\]/)
-  assert.match(mediaLibrarySource, /applyRouteAssetFocus\(\)\s*\n\s*loadMedia\(\)/)
+  assert.match(mediaLibrarySource, /watch\(\(\) => \[route\.query\.assetId, route\.query\.type, route\.query\.dramaId\]/)
+  assert.match(mediaLibrarySource, /applyRouteAssetFocus\(\)\s*\n\s*await loadLibraryDramas\(\)\s*\n\s*await loadMedia\(\)/)
+})
+
+test('素材库列表始终绑定当前项目并允许切换自有项目', () => {
+  assert.match(mediaLibrarySource, /v-model="libraryDramaId"[\s\S]*placeholder="选择素材项目"/)
+  assert.match(mediaLibrarySource, /const libraryDramas = ref\(\[\]\)/)
+  assert.match(mediaLibrarySource, /const libraryDramaId = ref\(null\)/)
+  assert.match(mediaLibrarySource, /async function loadLibraryDramas\(\)/)
+  assert.match(mediaLibrarySource, /params\.drama_id = libraryDramaId\.value/)
+  assert.match(mediaLibrarySource, /params\.include_global = 1/)
+  assert.match(mediaLibrarySource, /if \(!libraryDramaId\.value\)[\s\S]*mediaItems\.value = \[\][\s\S]*return/)
 })
 
 test('素材库页面支持音频素材上传、筛选、预览和复用为分镜音频', () => {
   assert.match(mediaLibrarySource, /accept="image\/\*,video\/\*,audio\/\*"/)
   assert.match(mediaLibrarySource, /<el-radio-button value="audio">音频<\/el-radio-button>/)
-  assert.match(mediaLibrarySource, /await uploadAPI\.uploadMedia\(file\)/)
+  assert.match(mediaLibrarySource, /await uploadAPI\.uploadMedia\(file, \{ dramaId: libraryDramaId\.value \}\)/)
   assert.match(mediaLibrarySource, /item\.audio_url \|\| item\.voice_url/)
   assert.match(mediaLibrarySource, /const isAudio = url\.match\(\/\\\.\(mp3\|wav\|m4a\|aac\|ogg\|flac\)\$\/i\) \|\| item\.type === 'audio'/)
   assert.match(mediaLibrarySource, /type: isVideo \? 'video' : isAudio \? 'audio' : 'image'/)
