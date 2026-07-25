@@ -64,6 +64,18 @@ export const dramaAPI = {
   duplicate(id) {
     return request.post(`/dramas/${id}/duplicate`)
   },
+  listFolders(params) {
+    return request.get('/project-folders', { params: params || {} })
+  },
+  createFolder(name) {
+    return request.post('/project-folders', { name })
+  },
+  renameFolder(id, name) {
+    return request.put(`/project-folders/${id}`, { name })
+  },
+  deleteFolder(id) {
+    return request.delete(`/project-folders/${id}`)
+  },
   importDrama(file) {
     const form = new FormData()
     form.append('file', file)

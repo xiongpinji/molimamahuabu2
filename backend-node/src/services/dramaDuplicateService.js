@@ -25,11 +25,22 @@ function duplicateDrama(db, cfg, log, dramaId, { userId, tenantId } = {}) {
 
   const title = resolveDuplicateTitle(db, source.title, userId, tenantId);
   const { buffer } = dramaExportService.exportDrama(db, cfg, log, source.id);
-  return dramaImportService.importDrama(db, cfg, log, buffer, {
+  const duplicated = dramaImportService.importDrama(db, cfg, log, buffer, {
     userId,
     tenantId,
     title,
   });
+  if (source.folder_id != null) {
+    return dramaService.updateDrama(
+      db,
+      log,
+      duplicated.id,
+      { folder_id: source.folder_id },
+      userId,
+      tenantId,
+    );
+  }
+  return duplicated;
 }
 
 module.exports = { duplicateDrama, resolveDuplicateTitle };

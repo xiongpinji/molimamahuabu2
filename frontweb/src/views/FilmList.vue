@@ -29,7 +29,7 @@
     </PlatformHeader>
 
     <main class="main">
-      <section v-if="isCanvasMode" class="canvas-project-toolbar" aria-label="画布项目搜索">
+      <section v-if="isCanvasMode" class="canvas-project-toolbar" aria-label="画布项目搜索与筛选">
         <el-input
           v-model="searchKeyword"
           class="canvas-project-search"
@@ -41,6 +41,32 @@
           @clear="loadList"
         />
         <el-button type="primary" plain @click="loadList">搜索</el-button>
+        <el-select
+          v-model="selectedFolderId"
+          class="canvas-project-filter"
+          aria-label="按文件夹筛选画布项目"
+          @change="loadList"
+        >
+          <el-option label="全部文件夹" value="" />
+          <el-option label="未分类" value="unfiled" />
+          <el-option
+            v-for="folder in projectFolders"
+            :key="folder.id"
+            :label="`${folder.name}（${folder.project_count || 0}）`"
+            :value="String(folder.id)"
+          />
+        </el-select>
+        <el-select
+          v-model="projectSort"
+          class="canvas-project-sort"
+          aria-label="画布项目排序"
+          @change="loadList"
+        >
+          <el-option label="最近更新" value="updated_desc" />
+          <el-option label="最近创建" value="created_desc" />
+          <el-option label="名称排序" value="title_asc" />
+        </el-select>
+        <el-button :icon="FolderOpened" @click="openFolderDialog">管理文件夹</el-button>
         <span class="canvas-project-count" aria-live="polite">共 {{ total }} 个画布</span>
       </section>
       <div v-loading="loading" class="projects-wrap">
@@ -99,6 +125,32 @@
                 :loading="duplicatingId === d.id"
                 @click="onDuplicate(d)"
               />
+              <el-dropdown
+                v-if="isCanvasMode"
+                trigger="click"
+                @command="(folderId) => moveProjectToFolder(d, folderId)"
+              >
+                <el-button
+                  size="small"
+                  circle
+                  :icon="FolderOpened"
+                  title="移动画布项目"
+                  aria-label="移动画布项目"
+                  :loading="movingProjectId === d.id"
+                />
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="unfiled">未分类</el-dropdown-item>
+                    <el-dropdown-item
+                      v-for="folder in projectFolders"
+                      :key="folder.id"
+                      :command="String(folder.id)"
+                    >
+                      {{ folder.name }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button size="small" circle :icon="Download" title="导出项目" :loading="exportingId === d.id" @click="onExport(d)" />
               <el-button size="small" circle :icon="Edit" title="编辑" @click="openEditDialog(d)" />
               <el-button size="small" type="danger" plain circle :icon="Delete" title="删除" @click="onDelete(d)" />
@@ -111,6 +163,7 @@
                 <span v-if="d.episodes?.length" class="badge badge-episodes">{{ d.episodes.length }} 集</span>
                 <span v-if="totalStoryboards(d) > 0" class="badge badge-storyboards">{{ totalStoryboards(d) }} 分镜</span>
                 <span v-if="d.metadata?.aspect_ratio" class="badge badge-ratio">{{ d.metadata.aspect_ratio }}</span>
+                <span v-if="isCanvasMode && folderName(d.folder_id)" class="badge badge-folder">{{ folderName(d.folder_id) }}</span>
                 <span v-if="d.style" class="badge badge-style">{{ formatStyle(d.style) }}</span>
                 <span v-if="d.genre" class="badge badge-genre">{{ formatGenre(d.genre) }}</span>
               </div>
@@ -153,11 +206,51 @@
           </el-select>
           <p style="margin: 4px 0 0; font-size: 12px; color: #71717a;">影响分镜图和视频的生成比例，短视频选 9:16</p>
         </el-form-item>
+        <el-form-item v-if="isCanvasMode" label="文件夹">
+          <el-select v-model="newForm.folder_id" style="width: 100%">
+            <el-option label="未分类" :value="null" />
+            <el-option v-for="folder in projectFolders" :key="folder.id" :label="folder.name" :value="folder.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showNewDialog = false">取消</el-button>
         <el-button type="primary" :loading="newSaving" :disabled="!newForm.title?.trim()" @click="submitNew">确定</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showFolderDialog"
+      title="管理画布文件夹"
+      width="480px"
+      :close-on-click-modal="false"
+    >
+      <div class="folder-create-row">
+        <el-input
+          v-model="newFolderName"
+          maxlength="50"
+          placeholder="输入文件夹名称"
+          aria-label="新文件夹名称"
+          @keyup.enter="createProjectFolder"
+        />
+        <el-button type="primary" :loading="folderSaving" :disabled="!newFolderName.trim()" @click="createProjectFolder">
+          新建
+        </el-button>
+      </div>
+      <div class="folder-list">
+        <div v-for="folder in projectFolders" :key="folder.id" class="folder-list-item">
+          <div class="folder-list-label">
+            <el-icon><FolderOpened /></el-icon>
+            <span>{{ folder.name }}</span>
+            <small>{{ folder.project_count || 0 }} 个画布</small>
+          </div>
+          <div>
+            <el-button text @click="renameProjectFolder(folder)">重命名</el-button>
+            <el-button text type="danger" @click="deleteProjectFolder(folder)">删除</el-button>
+          </div>
+        </div>
+        <el-empty v-if="projectFolders.length === 0" :image-size="64" description="暂无文件夹" />
+      </div>
     </el-dialog>
 
     <!-- AI 配置弹窗 -->
@@ -447,6 +540,13 @@ const loading = ref(false)
 const dramas = ref([])
 const total = ref(0)
 const searchKeyword = ref('')
+const projectFolders = ref([])
+const selectedFolderId = ref('')
+const projectSort = ref('updated_desc')
+const showFolderDialog = ref(false)
+const newFolderName = ref('')
+const folderSaving = ref(false)
+const movingProjectId = ref(null)
 
 const showAiConfigDialog = ref(false)
 
@@ -606,7 +706,7 @@ async function onDeletePropLibrary(item) {
 }
 
 const showNewDialog = ref(false)
-const newForm = ref({ title: '', description: '', aspect_ratio: '16:9' })
+const newForm = ref({ title: '', description: '', aspect_ratio: '16:9', folder_id: null })
 const newSaving = ref(false)
 const exportingId = ref(null)
 const duplicatingId = ref(null)
@@ -642,12 +742,14 @@ const editSaving = ref(false)
 
 function loadList() {
   loading.value = true
-  dramaAPI
+  return dramaAPI
     .list({
       page: 1,
       page_size: 50,
       project_type: projectMode.value,
       keyword: searchKeyword.value.trim(),
+      folder_id: selectedFolderId.value,
+      sort: projectSort.value,
     })
     .then((res) => {
       dramas.value = res?.items ?? []
@@ -659,6 +761,101 @@ function loadList() {
     .finally(() => {
       loading.value = false
     })
+}
+
+async function loadProjectFolders() {
+  if (!isCanvasMode.value) {
+    projectFolders.value = []
+    return
+  }
+  try {
+    const res = await dramaAPI.listFolders({ project_type: projectMode.value })
+    projectFolders.value = res?.items ?? res ?? []
+  } catch (e) {
+    projectFolders.value = []
+    ElMessage.error(e.message || '文件夹加载失败')
+  }
+}
+
+function openFolderDialog() {
+  showFolderDialog.value = true
+  loadProjectFolders()
+}
+
+async function createProjectFolder() {
+  const name = newFolderName.value.trim()
+  if (!name) return
+  folderSaving.value = true
+  try {
+    await dramaAPI.createFolder(name)
+    newFolderName.value = ''
+    await loadProjectFolders()
+    ElMessage.success('文件夹已创建')
+  } catch (e) {
+    ElMessage.error(e.message || '文件夹创建失败')
+  } finally {
+    folderSaving.value = false
+  }
+}
+
+async function renameProjectFolder(folder) {
+  let value
+  try {
+    ({ value } = await ElMessageBox.prompt('输入新的文件夹名称', '重命名文件夹', {
+      inputValue: folder.name,
+      inputPattern: /\S+/,
+      inputErrorMessage: '文件夹名称不能为空',
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    }))
+  } catch {
+    return
+  }
+  try {
+    await dramaAPI.renameFolder(folder.id, value.trim())
+    await loadProjectFolders()
+    ElMessage.success('文件夹已重命名')
+  } catch (e) {
+    ElMessage.error(e.message || '重命名失败')
+  }
+}
+
+async function deleteProjectFolder(folder) {
+  try {
+    await ElMessageBox.confirm(
+      `删除文件夹「${folder.name}」？其中的画布会保留并移到“未分类”。`,
+      '删除文件夹',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await dramaAPI.deleteFolder(folder.id)
+    if (selectedFolderId.value === String(folder.id)) selectedFolderId.value = ''
+    await Promise.all([loadProjectFolders(), loadList()])
+    ElMessage.success('文件夹已删除，画布已移到未分类')
+  } catch (e) {
+    ElMessage.error(e.message || '文件夹删除失败')
+  }
+}
+
+async function moveProjectToFolder(d, folderId) {
+  movingProjectId.value = d.id
+  try {
+    await dramaAPI.update(d.id, { folder_id: folderId === 'unfiled' ? null : Number(folderId) })
+    await Promise.all([loadProjectFolders(), loadList()])
+    ElMessage.success(folderId === 'unfiled' ? '已移到未分类' : '画布已移动')
+  } catch (e) {
+    ElMessage.error(e.message || '移动失败')
+  } finally {
+    movingProjectId.value = null
+  }
+}
+
+function folderName(folderId) {
+  if (folderId == null) return ''
+  return projectFolders.value.find(folder => Number(folder.id) === Number(folderId))?.name || ''
 }
 
 function formatDate(val) {
@@ -725,6 +922,7 @@ function totalStoryboards(d) {
 }
 
 function goNewProject() {
+  newForm.value.folder_id = /^\d+$/.test(selectedFolderId.value) ? Number(selectedFolderId.value) : null
   showNewDialog.value = true
 }
 
@@ -733,7 +931,7 @@ function openCanvas(id) {
 }
 
 function resetNewForm() {
-  newForm.value = { title: '', description: '', aspect_ratio: '16:9' }
+  newForm.value = { title: '', description: '', aspect_ratio: '16:9', folder_id: null }
 }
 
 async function submitNew() {
@@ -744,6 +942,7 @@ async function submitNew() {
     const drama = await dramaAPI.create({
       title,
       description: newForm.value.description?.trim() || undefined,
+      folder_id: newForm.value.folder_id,
       metadata: projectMetadata(newForm.value.aspect_ratio, projectMode.value),
     })
     showNewDialog.value = false
@@ -866,14 +1065,20 @@ async function onDelete(d) {
 
 onMounted(() => {
   loadList()
-  if (!isCanvasMode.value) loadExamples()
+  if (isCanvasMode.value) loadProjectFolders()
+  else loadExamples()
 })
 
 watch(projectMode, () => {
   searchKeyword.value = ''
+  selectedFolderId.value = ''
+  projectSort.value = 'updated_desc'
   loadList()
   if (!isCanvasMode.value) loadExamples()
-  else exampleList.value = []
+  else {
+    exampleList.value = []
+    loadProjectFolders()
+  }
 })
 </script>
 
@@ -1030,11 +1235,18 @@ html.light .btn-import {
 .canvas-project-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 18px;
 }
 .canvas-project-search {
   width: min(420px, 100%);
+}
+.canvas-project-filter {
+  width: 190px;
+}
+.canvas-project-sort {
+  width: 140px;
 }
 .canvas-project-count {
   color: #a1a1aa;
@@ -1249,6 +1461,11 @@ html.light .btn-import {
   border: 1px solid rgba(251, 146, 60, 0.25);
   font-family: monospace;
 }
+.badge-folder {
+  background: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
 .badge-style {
   background: rgba(168, 85, 247, 0.1);
   color: #c084fc;
@@ -1287,6 +1504,53 @@ html.light .btn-import {
 }
 .project-card-actions .el-button .el-icon {
   font-size: 14px;
+}
+
+.folder-create-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.folder-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  background: #18181e;
+}
+.folder-list-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.folder-list-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-list-label small {
+  flex: 0 0 auto;
+  color: #71717a;
+}
+
+@media (max-width: 760px) {
+  .canvas-project-search,
+  .canvas-project-filter,
+  .canvas-project-sort {
+    width: 100%;
+  }
 }
 
 /* 公共库弹窗 */

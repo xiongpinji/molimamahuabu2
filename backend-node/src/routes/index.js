@@ -161,6 +161,10 @@ function setupRouter(cfg, db, log) {
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
   r.post('/dramas', drama.createDrama);
+  r.get('/project-folders', drama.listProjectFolders);
+  r.post('/project-folders', drama.createProjectFolder);
+  r.put('/project-folders/:folderId', drama.renameProjectFolder);
+  r.delete('/project-folders/:folderId', drama.deleteProjectFolder);
   r.get('/dramas/stats', drama.getDramaStats);
   // 导出/导入（放在 :id 路由前，避免被 :id 捕获）
   r.get('/dramas/:id/export', drama.exportDrama);

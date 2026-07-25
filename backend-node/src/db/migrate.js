@@ -106,6 +106,7 @@ function ensureAllColumns(database) {
   ensureColumns(database, 'dramas', [
     { name: 'user_id',         type: 'TEXT' },
     { name: 'tenant_id',       type: 'TEXT' },
+    { name: 'folder_id',       type: 'INTEGER' },
     { name: 'title',          type: 'TEXT NOT NULL DEFAULT \'\'' },
     { name: 'description',    type: 'TEXT' },
     { name: 'genre',          type: 'TEXT' },
