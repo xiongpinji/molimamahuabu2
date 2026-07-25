@@ -28,3 +28,4 @@ desktop/build/*
 !desktop/build/icon.png
 !desktop/build/icon.ico
 frontweb-edu
+.env.production

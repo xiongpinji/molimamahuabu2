@@ -1,0 +1,81 @@
+name: Web Production Image
+
+on:
+  pull_request:
+    paths:
+      - 'backend-node/**'
+      - 'frontweb/**'
+      - 'deploy/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'compose.production.yml'
+      - '.env.production.example'
+      - '.github/workflows/web-production-image.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend-node/**'
+      - 'frontweb/**'
+      - 'deploy/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'compose.production.yml'
+      - '.env.production.example'
+      - '.github/workflows/web-production-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-production-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image-smoke:
+    name: Build and smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build --tag molimama-web:ci .
+
+      - name: Start production image
+        run: |
+          docker run --detach --name molimama-web-ci --publish 127.0.0.1:5679:5679 \
+            --env PUBLIC_PLATFORM_MODE=true \
+            --env PLATFORM_REGISTRATION_ENABLED=false \
+            --env PLATFORM_JWT_SECRET=ci_jwt_secret_0000000000000000000000000000 \
+            --env PLATFORM_ADMIN_TOKEN=ci_admin_token_000000000000000000000000000 \
+            --env PLATFORM_BOOTSTRAP_ADMIN_EMAIL=admin@example.com \
+            --env APP_DEBUG=false \
+            --env SERVER_INSECURE_TLS=false \
+            --env SERVER_CORS_ORIGINS=https://studio.example.com \
+            --env DATABASE_PATH=/var/lib/molimama/drama_generator.db \
+            --env STORAGE_LOCAL_PATH=/var/lib/molimama/storage \
+            --env STORAGE_BASE_URL=https://studio.example.com/static \
+            molimama-web:ci
+
+      - name: Verify health and index.html
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:5679/health > health.json; then
+              break
+            fi
+            sleep 2
+          done
+          cat health.json
+          grep --quiet '"status":"ok"' health.json
+          curl --fail --silent http://127.0.0.1:5679/ | grep --quiet 'id="app"'
+
+      - name: Print container logs
+        if: failure()
+        run: docker logs molimama-web-ci
+
+      - name: Remove test container
+        if: always()
+        run: docker rm --force molimama-web-ci || true

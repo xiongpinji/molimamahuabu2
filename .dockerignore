@@ -1,0 +1,16 @@
+.git
+.github
+.codegraph
+.env
+.env.*
+!.env.production.example
+**/node_modules
+**/data
+**/dist
+**/test-results
+**/playwright-report
+desktop
+docs
+research
+*.log
+backend-node/configs/ai-configs-*.json

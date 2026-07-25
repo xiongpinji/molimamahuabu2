@@ -1,0 +1,56 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const yaml = require('js-yaml');
+
+const root = path.resolve(__dirname, '..', '..');
+
+function read(relativePath) {
+  return fs.readFileSync(path.join(root, relativePath), 'utf8');
+}
+
+test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查', () => {
+  const dockerfile = read('Dockerfile');
+  assert.match(dockerfile, /npm run build/);
+  assert.match(dockerfile, /WEB_DIST_PATH=/);
+  assert.match(dockerfile, /ffmpeg/);
+  assert.match(dockerfile, /python3/);
+  assert.match(dockerfile, /make/);
+  assert.match(dockerfile, /g\+\+/);
+  assert.match(dockerfile, /HEALTHCHECK/);
+  assert.doesNotMatch(dockerfile, /PLATFORM_JWT_SECRET\s*=/);
+  assert.doesNotMatch(dockerfile, /PLATFORM_ADMIN_TOKEN\s*=/);
+});
+
+test('生产 Compose 使用 HTTPS 入口、持久卷、健康检查和自动重启', () => {
+  const compose = yaml.load(read('compose.production.yml'));
+  const app = compose.services.app;
+  const caddy = compose.services.caddy;
+
+  assert.equal(app.restart, 'unless-stopped');
+  assert.ok(app.healthcheck);
+  assert.ok(app.volumes.includes('molimama_data:/var/lib/molimama'));
+  assert.equal(caddy.restart, 'unless-stopped');
+  assert.deepEqual(caddy.ports, ['80:80', '443:443']);
+  assert.ok(caddy.depends_on.app);
+  assert.ok(compose.volumes.molimama_data !== undefined);
+  assert.ok(compose.volumes.caddy_data !== undefined);
+});
+
+test('生产示例环境文件只包含占位符且公开注册默认关闭', () => {
+  const example = read('.env.production.example');
+  assert.match(example, /^APP_DOMAIN=/m);
+  assert.match(example, /^PLATFORM_REGISTRATION_ENABLED=false$/m);
+  assert.match(example, /^PLATFORM_JWT_SECRET=CHANGE_ME_/m);
+  assert.match(example, /^PLATFORM_ADMIN_TOKEN=CHANGE_ME_/m);
+  assert.doesNotMatch(example, /sk-[A-Za-z0-9]/);
+});
+
+test('镜像 CI 会实际启动容器并检查网页与健康接口', () => {
+  const workflow = read('.github/workflows/web-production-image.yml');
+  assert.match(workflow, /docker build/);
+  assert.match(workflow, /\/health/);
+  assert.match(workflow, /docker run/);
+  assert.match(workflow, /index\.html|茉莉妈妈/);
+});
