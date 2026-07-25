@@ -654,6 +654,12 @@ async function processVideoGeneration(db, log, videoGenId) {
   const now = new Date().toISOString();
   try {
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
+    if (row.task_id) {
+      const task = taskService.getTask(db, row.task_id);
+      if (task?.status === 'pending') {
+        taskService.updateTaskStatus(db, row.task_id, 'processing', 1, '正在提交视频生成任务');
+      }
+    }
     const loadConfig = require('../config').loadConfig;
     const cfg = loadConfig();
     const filesBaseUrl = (cfg.storage && cfg.storage.base_url) ? String(cfg.storage.base_url).replace(/\/$/, '') : '';
@@ -702,13 +708,16 @@ async function processVideoGeneration(db, log, videoGenId) {
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
     if (row.task_id && hasOmniRefs) {
-      taskService.updateTaskStatus(
-        db,
-        row.task_id,
-        'processing',
-        5,
-        `正在上传 ${reference_urls.length} 张参考图到图床…`
-      );
+      const task = taskService.getTask(db, row.task_id);
+      if (task && (task.status === 'pending' || task.status === 'processing')) {
+        taskService.updateTaskStatus(
+          db,
+          row.task_id,
+          'processing',
+          5,
+          `正在上传 ${reference_urls.length} 张参考图到图床…`
+        );
+      }
     }
     const result = await videoClient.callVideoApi(db, log, {
       prompt: row.prompt,

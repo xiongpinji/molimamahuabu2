@@ -306,6 +306,202 @@ test('分镜视频通过本地 DeepWL 兼容供应商完成提交、下载与结
   }
 });
 
+test('异步供应商同一创建链持久化任务编号后轮询完成并只提交一次', async () => {
+  const previousCwd = process.cwd();
+  const originalSetTimeout = global.setTimeout;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-async-video-'));
+  const configRoot = path.join(tempRoot, 'configs');
+  const storagePath = path.join(tempRoot, 'storage').replace(/\\/g, '/');
+  const configModulePath = require.resolve('../src/config');
+  fs.mkdirSync(configRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(configRoot, 'config.yaml'),
+    [
+      'app:',
+      '  name: LocalMiniDrama async video integration',
+      '  version: test',
+      'server:',
+      '  host: 127.0.0.1',
+      '  port: 0',
+      'storage:',
+      '  type: local',
+      `  local_path: ${storagePath}`,
+      '  base_url: http://127.0.0.1:0/static',
+    ].join('\n'),
+    'utf8'
+  );
+
+  const db = new Database(':memory:');
+  const { runMigrationsAndEnsure } = require('../src/db/migrate');
+  const credits = require('../src/services/creditLedgerService');
+  const prices = require('../src/services/modelPriceService');
+  const taskService = require('../src/services/taskService');
+  const videoService = require('../src/services/videoService');
+  const log = { info() {}, warn() {}, error() {} };
+  let providerServer;
+  let releaseCompletedPoll;
+  let scheduledPromise;
+  let submitCount = 0;
+  let pollCount = 0;
+  try {
+    process.chdir(tempRoot);
+    delete require.cache[configModulePath];
+    runMigrationsAndEnsure(db);
+    credits.setTenantAccountBalance(db, 'tenant-a', 40);
+    prices.set(db, 'seedance-2.0-720p', 13);
+
+    const completedPollGate = new Promise((resolve) => {
+      releaseCompletedPoll = resolve;
+    });
+    providerServer = await listen(http.createServer(async (req, res) => {
+      if (req.method === 'POST' && req.url === '/videos') {
+        submitCount += 1;
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ task_id: 'async-video-1', status: 'queued' }));
+        });
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/videos/async-video-1') {
+        pollCount += 1;
+        if (pollCount === 1) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ id: 'async-video-1', status: 'processing' }));
+          return;
+        }
+        await completedPollGate;
+        const providerBaseUrl = `http://127.0.0.1:${providerServer.address().port}`;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'async-video-1',
+          status: 'completed',
+          video_url: `${providerBaseUrl}/output.mp4`,
+        }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/output.mp4') {
+        res.writeHead(200, { 'content-type': 'video/mp4' });
+        res.end(MINIMAL_MP4);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    }));
+
+    const providerBaseUrl = `http://127.0.0.1:${providerServer.address().port}`;
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO ai_service_configs
+        (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+         endpoint, query_endpoint, is_active, is_default, priority, created_at, updated_at)
+       VALUES ('video', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+    ).run(
+      '本地异步视频供应商',
+      providerBaseUrl,
+      'integration-secret',
+      JSON.stringify(['seedance-2.0-720p']),
+      'seedance-2.0-720p',
+      '/videos',
+      '/videos/{taskId}',
+      now,
+      now
+    );
+    const dramaId = Number(db.prepare(
+      `INSERT INTO dramas (title, status, created_at, updated_at)
+       VALUES (?, 'draft', ?, ?)`
+    ).run('异步视频闭环', now, now).lastInsertRowid);
+    const episodeId = Number(db.prepare(
+      `INSERT INTO episodes (drama_id, episode_number, title, script_content, created_at, updated_at)
+       VALUES (?, 1, ?, ?, ?, ?)`
+    ).run(dramaId, '第1集', '异步视频测试', now, now).lastInsertRowid);
+    const storyboardId = Number(db.prepare(
+      `INSERT INTO storyboards
+        (episode_id, storyboard_number, title, video_prompt, video_model, duration, status, created_at, updated_at)
+       VALUES (?, 1, ?, ?, ?, 5, 'pending', ?, ?)`
+    ).run(
+      episodeId,
+      '异步镜头',
+      '单镜头连续跟随角色向前走。',
+      'seedance-2.0-720p',
+      now,
+      now
+    ).lastInsertRowid);
+
+    global.setTimeout = (callback, delay, ...args) => (
+      originalSetTimeout(callback, delay === 10000 ? 0 : delay, ...args)
+    );
+    const created = videoService.create(db, log, {
+      drama_id: dramaId,
+      storyboard_id: storyboardId,
+      provider: 'aihubcc',
+      model: 'seedance-2.0-720p',
+      prompt: '单镜头连续跟随角色向前走。',
+    }, {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      schedule(callback) {
+        scheduledPromise = callback();
+      },
+    });
+
+    await waitFor(() => {
+      const state = db.prepare(
+        'SELECT status, error_msg FROM video_generations WHERE id = ?'
+      ).get(created.id);
+      if (state?.status === 'failed') {
+        throw new Error(`异步视频在完成轮询前失败: ${state.error_msg || 'unknown error'}`);
+      }
+      return pollCount >= 2;
+    });
+    const processingVideo = db.prepare(
+      'SELECT status, provider_task_id, task_id, credit_reservation_id FROM video_generations WHERE id = ?'
+    ).get(created.id);
+    assert.equal(processingVideo.provider_task_id, 'async-video-1');
+    assert.equal(processingVideo.status, 'processing');
+    assert.equal(taskService.getTask(db, processingVideo.task_id).status, 'processing');
+    assert.equal(credits.getReservation(db, processingVideo.credit_reservation_id).status, 'held');
+
+    releaseCompletedPoll();
+    await scheduledPromise;
+
+    const completedVideo = db.prepare(
+      'SELECT status, video_url, local_path, provider_task_id FROM video_generations WHERE id = ?'
+    ).get(created.id);
+    assert.equal(completedVideo.status, 'completed');
+    assert.equal(completedVideo.provider_task_id, 'async-video-1');
+    assert.equal(completedVideo.video_url, `${providerBaseUrl}/output.mp4`);
+    const localVideoPath = path.join(storagePath, completedVideo.local_path);
+    assert.ok(fs.existsSync(localVideoPath));
+    assertIsoBmffVideoBytes(fs.readFileSync(localVideoPath));
+
+    const completedTask = taskService.getTask(db, processingVideo.task_id);
+    assert.equal(completedTask.status, 'completed');
+    assert.equal(JSON.parse(completedTask.result).video_generation_id, created.id);
+    assert.deepEqual(
+      db.prepare('SELECT video_url, local_path FROM storyboards WHERE id = ?').get(storyboardId),
+      { video_url: `${providerBaseUrl}/output.mp4`, local_path: completedVideo.local_path }
+    );
+    assert.equal(credits.getReservation(db, processingVideo.credit_reservation_id).status, 'confirmed');
+    assert.deepEqual(
+      credits.getTenantAccount(db, 'tenant-a'),
+      { tenant_id: 'tenant-a', available: 27, held: 0, spent: 13 }
+    );
+    assert.equal(submitCount, 1);
+    assert.equal(pollCount, 2);
+  } finally {
+    if (releaseCompletedPoll) releaseCompletedPoll();
+    if (scheduledPromise) await scheduledPromise.catch(() => {});
+    if (providerServer) await close(providerServer);
+    global.setTimeout = originalSetTimeout;
+    db.close();
+    delete require.cache[configModulePath];
+    process.chdir(previousCwd);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 async function runRejectedVendorVideoCase({ videoUrl, payload, expectedError }) {
   const previousCwd = process.cwd();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-bad-video-'));
