@@ -182,26 +182,27 @@ function requirePositiveDramaId(value, message) {
 
 export function resolveFreeCanvasResultUrl(kind, response = {}) {
   const resultKind = cleanString(kind)
-  const result = response?.result || response?.task?.result || response || {}
+  const normalizedResponse = response || {}
+  const result = normalizedResponse?.result || normalizedResponse?.task?.result || normalizedResponse || {}
   if (resultKind === 'image') {
     return firstString(
       result.image_url,
       result.url,
-      response.image_url,
-      response.url,
-      staticLocalPathUrl(result.local_path || response.local_path)
+      normalizedResponse.image_url,
+      normalizedResponse.url,
+      staticLocalPathUrl(result.local_path || normalizedResponse.local_path)
     )
   }
   if (resultKind === 'video') {
-    const record = response?.video || response?.videoRecord || response?.record || {}
+    const record = normalizedResponse?.video || normalizedResponse?.videoRecord || normalizedResponse?.record || {}
     return firstString(
       result.video_url,
       result.url,
-      response.video_url,
-      response.url,
+      normalizedResponse.video_url,
+      normalizedResponse.url,
       record.video_url,
       record.url,
-      staticLocalPathUrl(result.local_path || response.local_path || record.local_path)
+      staticLocalPathUrl(result.local_path || normalizedResponse.local_path || record.local_path)
     )
   }
   if (resultKind === 'audio') {
@@ -209,10 +210,10 @@ export function resolveFreeCanvasResultUrl(kind, response = {}) {
       result.url,
       result.audio_url,
       result.voice_url,
-      response.url,
-      response.audio_url,
-      response.voice_url,
-      staticLocalPathUrl(result.local_path || response.local_path)
+      normalizedResponse.url,
+      normalizedResponse.audio_url,
+      normalizedResponse.voice_url,
+      staticLocalPathUrl(result.local_path || normalizedResponse.local_path)
     )
   }
   return ''

@@ -185,6 +185,9 @@ test('buildFreeCanvasProjectAssetPayload 强制要求正整数 dramaId', () => {
 })
 
 test('resolveFreeCanvasResultUrl 兼容图片、视频任务/记录和同步音频结果', () => {
+  assert.equal(resolveFreeCanvasResultUrl('image', null), '')
+  assert.equal(resolveFreeCanvasResultUrl('video', null), '')
+  assert.equal(resolveFreeCanvasResultUrl('audio', null), '')
   assert.equal(resolveFreeCanvasResultUrl('image', {
     result: { image_url: 'https://cdn.example/image.png' },
   }), 'https://cdn.example/image.png')

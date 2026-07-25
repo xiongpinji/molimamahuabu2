@@ -323,7 +323,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     })
   })
 
-  test('音频节点同步返回 URL 时写回失败原因，避免伪装成已入库成功', async ({ page }) => {
+  test('音频节点同步返回 URL 时成功预览并自动入库', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout({
         free_nodes: [{
@@ -358,12 +358,22 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     expect(state.audioRequests[0]).not.toHaveProperty('storyboard_id')
     expect(state.audioRequests[0]).not.toHaveProperty('storyboardId')
 
-    await expect(node).toContainText('失败')
-    await expect(node).toContainText("Cannot read properties of null (reading 'url')")
-    expect(state.assetRequests).toEqual([])
+    await expect(node).toContainText('已生成')
+    await expect(node.locator('audio')).toBeAttached()
+    await expect.poll(() => state.assetRequests.length).toBe(1)
+    await expect.poll(() => state.assetRequests[0]).toMatchObject({
+      drama_id: 3,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'audio',
+      url: '/static/free-audio.mp3',
+    })
     await expect.poll(() => freeNode(state.canvasLayout, 'free:audio:1')?.data).toMatchObject({
-      status: 'failed',
-      error: "Cannot read properties of null (reading 'url')",
+      status: 'success',
+      url: '/static/free-audio.mp3',
+      savedAssetId: '901',
+      assetSaveStatus: 'success',
+      assetSaveError: '',
     })
   })
 })
