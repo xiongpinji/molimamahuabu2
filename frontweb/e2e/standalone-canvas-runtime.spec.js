@@ -352,6 +352,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await node.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.audioRequests).toEqual([{
+      drama_id: 3,
       text: '茉莉妈妈短剧制作平台欢迎你',
       tts_model: 'voice-e2e',
     }])

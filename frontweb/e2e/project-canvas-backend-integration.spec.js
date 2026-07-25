@@ -25,10 +25,14 @@ let dramaId
 let episodeId
 let characterId
 let storyboardId
+let standaloneDramaId
 let tempRoot
 let ttsProvider
+let imageProvider
 let validationWebm
 const ttsProviderRequests = []
+const imageProviderRequests = []
+const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 test.setTimeout(60_000)
 test.describe.configure({ mode: 'serial' })
@@ -150,6 +154,21 @@ test.beforeAll(async () => {
     })
   })
   await new Promise((resolve) => ttsProvider.listen(0, '127.0.0.1', resolve))
+  imageProvider = http.createServer((request, response) => {
+    if (request.method !== 'POST' || request.url !== '/v1/images/generations') {
+      response.writeHead(404)
+      response.end()
+      return
+    }
+    const chunks = []
+    request.on('data', (chunk) => chunks.push(chunk))
+    request.on('end', () => {
+      imageProviderRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ data: [{ b64_json: ONE_PIXEL_PNG }] }))
+    })
+  })
+  await new Promise((resolve) => imageProvider.listen(0, '127.0.0.1', resolve))
   const port = await reservePort()
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-canvas-browser-backend-'))
   const validationWebmPath = path.join(tempRoot, 'director-validation.webm')
@@ -215,6 +234,30 @@ test.beforeAll(async () => {
       `INSERT INTO dramas (title, style, status, metadata, created_at, updated_at)
        VALUES (?, 'realistic', 'draft', ?, ?, ?)`,
     ).run('真实后端项目画布', JSON.stringify({ aspect_ratio: '16:9' }), now, now).lastInsertRowid)
+    standaloneDramaId = Number(db.prepare(
+      `INSERT INTO dramas (title, style, status, metadata, created_at, updated_at)
+       VALUES (?, 'realistic', 'draft', ?, ?, ?)`,
+    ).run('真实后端独立画布', JSON.stringify({
+      project_type: 'canvas',
+      canvas_layout: {
+        version: 1,
+        viewport: { x: 0, y: 0, zoom: 0.75 },
+        nodes: {},
+        manual_edges: [],
+        free_nodes: [{
+          id: 'free:image:same-chain',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: '真实图片节点',
+            content: '待配置图片提示词',
+            model: '',
+            aspectRatio: '16:9',
+          },
+        }],
+      },
+    }), now, now).lastInsertRowid)
     episodeId = Number(db.prepare(
       `INSERT INTO episodes (drama_id, episode_number, title, script_content, created_at, updated_at)
        VALUES (?, 1, ?, ?, ?, ?)`,
@@ -275,10 +318,10 @@ test.beforeAll(async () => {
 
   for (const config of [
     {
-      service_type: 'storyboard_image',
+      service_type: 'image',
       name: '画布图片模型',
       provider: 'openai',
-      base_url: 'http://127.0.0.1:9',
+      base_url: `http://127.0.0.1:${imageProvider.address().port}/v1`,
       api_key: 'test-no-request-key',
       model: ['canvas-image-alpha', 'canvas-image-beta'],
       default_model: 'canvas-image-alpha',
@@ -319,7 +362,141 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await stopBackend()
   if (ttsProvider) await new Promise((resolve) => ttsProvider.close(resolve))
+  if (imageProvider) await new Promise((resolve) => imageProvider.close(resolve))
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
+})
+
+test('独立项目画布图片节点通过真实后端同链路生成、入库并刷新恢复', async ({ page }) => {
+  const forwardedRequests = []
+  const failedResponses = []
+  const providerRequestOffset = imageProviderRequests.length
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    forwardedRequests.push(`${request.method()} ${source.pathname}`)
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    if (!response.ok()) {
+      failedResponses.push({
+        method: request.method(),
+        path: source.pathname,
+        status: response.status(),
+        body: await response.text(),
+      })
+    }
+    await route.fulfill({ response })
+  })
+  await page.route('**/static/**', async (route) => {
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    await route.fulfill({ response })
+  })
+
+  await page.goto(`/canvas/${standaloneDramaId}`)
+
+  await expect(page.getByRole('banner').getByText('真实后端独立画布', { exact: true })).toBeVisible()
+  await expect(page.getByRole('banner')).not.toContainText('集')
+  const nodeId = 'free:image:same-chain'
+  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(node).toContainText('真实图片节点')
+  await node.getByRole('button', { name: '配置', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑图片节点' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByPlaceholder('描述希望生成的图片内容').fill('雨夜花园里一朵白色茉莉花，电影光影')
+  await dialog.getByPlaceholder('留空使用系统默认模型').fill('canvas-image-alpha')
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await node.getByRole('button', { name: '生成', exact: true }).click()
+
+  await expect.poll(() => imageProviderRequests.length - providerRequestOffset).toBe(1)
+  expect(imageProviderRequests[providerRequestOffset]).toMatchObject({
+    model: 'canvas-image-alpha',
+    prompt: expect.stringContaining('白色茉莉花'),
+  })
+
+  await expect.poll(() => readDatabase((db) => {
+    const image = db.prepare(
+      `SELECT id, drama_id, storyboard_id, model, prompt, status, task_id, image_url, local_path
+       FROM image_generations
+       WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
+    ).get(standaloneDramaId)
+    const task = image?.task_id
+      ? db.prepare('SELECT id, type, resource_id, status, error, result FROM async_tasks WHERE id = ?').get(image.task_id)
+      : null
+    const asset = db.prepare(
+      `SELECT id, drama_id, storyboard_id, category, type, url, metadata
+       FROM assets
+       WHERE drama_id = ? AND category = 'canvas-result' ORDER BY id DESC LIMIT 1`,
+    ).get(standaloneDramaId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(standaloneDramaId).metadata)
+    const freeNode = metadata.canvas_layout?.free_nodes?.find((item) => item.id === nodeId)
+    return {
+      image,
+      task,
+      asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
+      freeNode,
+    }
+  }), { timeout: 10_000 }).toMatchObject({
+    image: {
+      drama_id: standaloneDramaId,
+      storyboard_id: null,
+      model: 'canvas-image-alpha',
+      prompt: '雨夜花园里一朵白色茉莉花，电影光影',
+      status: 'completed',
+      task_id: expect.any(String),
+      image_url: expect.stringMatching(/^\/static\//),
+      local_path: expect.stringMatching(/^projects\/.+\/images\//),
+    },
+    task: {
+      type: 'image_generation',
+      resource_id: String(standaloneDramaId),
+      status: 'completed',
+      error: null,
+      result: expect.stringContaining('"image_generation_id"'),
+    },
+    asset: {
+      drama_id: standaloneDramaId,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'image',
+      url: expect.stringMatching(/^\/static\//),
+      metadata: {
+        canvas_node_id: nodeId,
+        task_id: expect.any(String),
+        model: 'canvas-image-alpha',
+      },
+    },
+    freeNode: {
+      id: nodeId,
+      data: expect.objectContaining({
+        kind: 'image',
+        status: 'success',
+        url: expect.stringMatching(/^\/static\//),
+        taskId: expect.any(String),
+        savedAssetId: expect.any(String),
+        assetSaveStatus: 'success',
+      }),
+    },
+  })
+
+  await expect(node).toContainText('已生成')
+  await expect(node.locator('img[alt="真实图片节点"]')).toBeVisible()
+  await page.reload()
+  const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(restored).toContainText('已生成')
+  await expect(restored.locator('img[alt="真实图片节点"]')).toBeVisible()
+
+  expect(failedResponses).toEqual([])
+  expect(forwardedRequests).toEqual(expect.arrayContaining([
+    `GET /api/v1/dramas/${standaloneDramaId}`,
+    'POST /api/v1/images',
+    'POST /api/v1/assets',
+    `PUT /api/v1/dramas/${standaloneDramaId}/canvas-layout`,
+  ]))
+  expect(forwardedRequests.some((request) => /^GET \/api\/v1\/tasks\/[^/]+$/.test(request))).toBe(true)
 })
 
 test('项目画布通过真实后端持久化节点操作、连线和素材指派', async ({ page }) => {
