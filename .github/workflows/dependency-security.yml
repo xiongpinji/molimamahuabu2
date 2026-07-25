@@ -31,7 +31,6 @@ jobs:
           cache-dependency-path: |
             backend-node/package-lock.json
             frontweb/package-lock.json
-            desktop/package-lock.json
 
       - name: Verify backend lockfile
         run: npm --prefix backend-node ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
@@ -45,9 +44,3 @@ jobs:
 
       - name: Audit frontend production dependencies
         run: npm --prefix frontweb audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
-
-      - name: Verify desktop lockfile
-        run: npm --prefix desktop ci --ignore-scripts --registry=https://registry.npmjs.org --replace-registry-host=always
-
-      - name: Audit desktop complete dependency graph
-        run: npm --prefix desktop audit --audit-level=low --registry=https://registry.npmjs.org

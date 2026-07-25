@@ -1,0 +1,70 @@
+name: molimama
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_PUBLIC_PLATFORM_MODE: "true"
+    image: ${APP_IMAGE:?APP_IMAGE must use a verified sha tag}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${ENV_FILE:-.env.production}
+    environment:
+      NODE_ENV: production
+      APP_NAME: 茉莉妈妈短剧制作平台 API
+      APP_DEBUG: "false"
+      SERVER_INSECURE_TLS: "false"
+      SERVER_CORS_ORIGINS: https://${APP_DOMAIN}
+      DATABASE_PATH: /var/lib/molimama/drama_generator.db
+      STORAGE_LOCAL_PATH: /var/lib/molimama/storage
+      STORAGE_BASE_URL: https://${APP_DOMAIN}/static
+      DATA_BACKUP_DIR: /var/lib/molimama/backups
+      PORT: "5679"
+    expose:
+      - "5679"
+    volumes:
+      - molimama_data:/var/lib/molimama
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:5679/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 4
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - web
+
+networks:
+  web:
+
+volumes:
+  molimama_data:
+  caddy_data:
+  caddy_config:
