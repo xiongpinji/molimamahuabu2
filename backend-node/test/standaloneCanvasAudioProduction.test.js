@@ -11,6 +11,9 @@ const createAudioRoutes = require('../src/routes/audio');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
 const userAuth = require('../src/services/userAuthService');
+const { isProbableMp3 } = require('../src/services/ttsService');
+
+const validMp3Bytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -110,10 +113,18 @@ function listMp3Files(root) {
     .filter((entry) => entry.endsWith('.mp3'));
 }
 
+test('MP3 字节签名仅接受 ID3 或合法 MPEG 音频帧头', () => {
+  assert.equal(isProbableMp3(validMp3Bytes), true);
+  assert.equal(isProbableMp3(Buffer.from([0xff, 0xfb, 0x90, 0x00])), true);
+  assert.equal(isProbableMp3(Buffer.from('{"error":"not audio"}')), false);
+  assert.equal(isProbableMp3(Buffer.from('<html>not audio</html>')), false);
+  assert.equal(isProbableMp3(Buffer.from([0xff, 0xe8, 0x90, 0x00])), false);
+});
+
 test('自由画布音频按项目目录保存、确认计费并可经授权静态地址回读', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'audio/mpeg' });
-    res.end(Buffer.from('project-audio-bytes'));
+    res.end(validMp3Bytes);
   });
   const providerServer = await listen(provider);
   t.after(() => close(providerServer));
@@ -145,7 +156,7 @@ test('自由画布音频按项目目录保存、确认计费并可经授权静�
   assert.equal(res.body.data.model, 'tts-canvas');
   assert.match(res.body.data.local_path, new RegExp(`^projects/${String(dramaId).padStart(4, '0')}_\\d{8}_自由画布/audio/tts_`));
   assert.equal(res.body.data.url, `/static/${res.body.data.local_path}`);
-  assert.equal(fs.readFileSync(path.join(storageRoot, res.body.data.local_path), 'utf8'), 'project-audio-bytes');
+  assert.deepEqual(fs.readFileSync(path.join(storageRoot, res.body.data.local_path)), validMp3Bytes);
   assert.deepEqual(
     db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
     { available: 13, held: 0, spent: 7 },
@@ -175,7 +186,7 @@ test('自由画布音频按项目目录保存、确认计费并可经授权静�
     { headers: { authorization: `Bearer ${token}`, 'x-tenant-id': 'tenant-a' } },
   );
   assert.equal(audioResponse.status, 200);
-  assert.equal(await audioResponse.text(), 'project-audio-bytes');
+  assert.deepEqual(Buffer.from(await audioResponse.arrayBuffer()), validMp3Bytes);
 
   const otherToken = userAuth.issueToken({ id: 'user-b', email: 'b@example.com', role: 'user' }, secret);
   const forbiddenResponse = await fetch(
@@ -193,7 +204,7 @@ test('未设置 default_model 时按实际首个模型调用并计费', async (t
     req.on('end', () => {
       providerModel = JSON.parse(Buffer.concat(chunks).toString()).model;
       res.writeHead(200, { 'content-type': 'audio/mpeg' });
-      res.end(Buffer.from('first-model-audio'));
+      res.end(validMp3Bytes);
     });
   });
   const providerServer = await listen(provider);
@@ -379,6 +390,67 @@ test('TTS 供应商返回空音频时不落盘、不扣费并退款', async (t) 
     'refunded',
   );
 });
+
+for (const scenario of [
+  {
+    name: 'JSON',
+    contentType: 'application/json',
+    payload: Buffer.from(JSON.stringify({ error: 'provider returned JSON with HTTP 200' })),
+  },
+  {
+    name: '垃圾字节',
+    contentType: 'application/octet-stream',
+    payload: Buffer.from([0x01, 0x02, 0x03, 0x04]),
+  },
+]) {
+  test(`TTS 供应商 HTTP 200 返回非空${scenario.name}时失败、退款并记录审计`, async (t) => {
+    const provider = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': scenario.contentType });
+      res.end(scenario.payload);
+    });
+    const providerServer = await listen(provider);
+    t.after(() => close(providerServer));
+
+    const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-audio-invalid-'));
+    t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+    const db = new Database(':memory:');
+    t.after(() => db.close());
+    runMigrationsAndEnsure(db);
+    insertUser(db, 'user-a', 'a@example.com');
+    insertTenant(db, 'tenant-a', 'user-a');
+    const dramaId = insertDrama(db, 'tenant-a', 'user-a', `无效${scenario.name}项目`);
+    insertTtsConfig(db, `http://127.0.0.1:${providerServer.address().port}`, 'tts-canvas');
+    setPriceAndBalance(db, 'tenant-a', 'tts-canvas', 7, 20);
+    const routes = createAudioRoutes(db, { info() {}, error() {} }, {
+      storage: { local_path: storageRoot },
+    }, { billingEnabled: true });
+
+    const res = createResponse();
+    await routes.extract(makeRequest({
+      drama_id: dramaId,
+      text: `供应商返回非音频${scenario.name}`,
+      tts_model: 'tts-canvas',
+    }), res);
+
+    assert.equal(res.statusCode, 500);
+    assert.equal(listMp3Files(storageRoot).length, 0);
+    assert.deepEqual(
+      db.prepare('SELECT available, held, spent FROM tenant_credit_accounts WHERE tenant_id = ?').get('tenant-a'),
+      { available: 20, held: 0, spent: 0 },
+    );
+    assert.equal(
+      db.prepare("SELECT status FROM tenant_usage_reservations WHERE tenant_id = 'tenant-a'").get().status,
+      'refunded',
+    );
+    assert.deepEqual(
+      db.prepare("SELECT event_type, outcome FROM audit_events WHERE tenant_id = 'tenant-a' ORDER BY rowid").all(),
+      [
+        { event_type: 'generation.audio.created', outcome: 'success' },
+        { event_type: 'generation.audio.failed', outcome: 'failed' },
+      ],
+    );
+  });
+}
 
 test('TTS 供应商失败后退款并记录失败审计', async (t) => {
   const provider = http.createServer((_req, res) => {

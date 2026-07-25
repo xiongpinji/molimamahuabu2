@@ -8,6 +8,21 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
+function isProbableMp3(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 3) return false;
+  if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) return true;
+  if (buffer[0] !== 0xff || (buffer[1] & 0xe0) !== 0xe0) return false;
+
+  const mpegVersion = (buffer[1] >> 3) & 0x03;
+  const layer = (buffer[1] >> 1) & 0x03;
+  const bitrateIndex = (buffer[2] >> 4) & 0x0f;
+  const sampleRateIndex = (buffer[2] >> 2) & 0x03;
+  return mpegVersion !== 0x01
+    && layer !== 0x00
+    && bitrateIndex !== 0x0f
+    && sampleRateIndex !== 0x03;
+}
+
 /**
  * 使用 MiniMax T2A v2 合成语音
  */
@@ -166,8 +181,8 @@ async function synthesize(db, log, {
     throw new Error(`不支持的 TTS provider: ${provider}，目前支持 openai、minimax`);
   }
 
-  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
-    throw new Error('TTS 未返回有效音频');
+  if (!isProbableMp3(audioBuffer)) {
+    throw new Error('TTS 未返回有效 MP3 音频');
   }
 
   // 保存到本地
@@ -183,4 +198,4 @@ async function synthesize(db, log, {
   return { local_path: localPath };
 }
 
-module.exports = { synthesize };
+module.exports = { synthesize, isProbableMp3 };

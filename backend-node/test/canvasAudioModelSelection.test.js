@@ -30,7 +30,7 @@ test('画布音频节点按用户选择的已配置 TTS 模型合成并写回分
     req.on('end', () => {
       receivedBodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       res.writeHead(200, { 'content-type': 'audio/mpeg' });
-      res.end(Buffer.from('mock-mp3'));
+      res.end(Buffer.from([0xff, 0xfb, 0x90, 0x00]));
     });
   });
   await new Promise((resolve) => provider.listen(0, '127.0.0.1', resolve));
