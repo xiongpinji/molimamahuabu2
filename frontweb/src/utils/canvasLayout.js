@@ -1,3 +1,5 @@
+import { normalizeFreeCanvasNode } from './freeCanvasGeneration.js'
+
 /** 从 drama.metadata 解析画布布局（旧 JSON 无此字段时返回 null） */
 export function parseCanvasLayout(metadata) {
   if (metadata == null) return null
@@ -48,24 +50,12 @@ export function resolveViewport(savedLayout, fallback = { x: 0, y: 0, zoom: 0.75
 }
 
 const NON_DRAGGABLE_TYPES = new Set(['canvasLabel', 'canvasAddButton'])
-const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 
 export function resolveFreeCanvasNodes(savedLayout) {
   const result = []
   for (const node of savedLayout?.free_nodes || []) {
-    if (!node?.id || !FREE_NODE_KINDS.has(node.data?.kind)) continue
-    if (!Number.isFinite(node.position?.x) || !Number.isFinite(node.position?.y)) continue
-    result.push({
-      id: String(node.id),
-      type: 'homeCanvasNode',
-      position: { x: node.position.x, y: node.position.y },
-      data: {
-        kind: node.data.kind,
-        title: String(node.data.title || ''),
-        content: String(node.data.content || ''),
-        url: String(node.data.url || ''),
-      },
-    })
+    const normalized = normalizeFreeCanvasNode(node)
+    if (normalized) result.push(normalized)
   }
   return result
 }
