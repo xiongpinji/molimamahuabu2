@@ -48,6 +48,27 @@ export function resolveViewport(savedLayout, fallback = { x: 0, y: 0, zoom: 0.75
 }
 
 const NON_DRAGGABLE_TYPES = new Set(['canvasLabel', 'canvasAddButton'])
+const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
+
+export function resolveFreeCanvasNodes(savedLayout) {
+  const result = []
+  for (const node of savedLayout?.free_nodes || []) {
+    if (!node?.id || !FREE_NODE_KINDS.has(node.data?.kind)) continue
+    if (!Number.isFinite(node.position?.x) || !Number.isFinite(node.position?.y)) continue
+    result.push({
+      id: String(node.id),
+      type: 'homeCanvasNode',
+      position: { x: node.position.x, y: node.position.y },
+      data: {
+        kind: node.data.kind,
+        title: String(node.data.title || ''),
+        content: String(node.data.content || ''),
+        url: String(node.data.url || ''),
+      },
+    })
+  }
+  return result
+}
 
 export function normalizeManualCanvasEdges(edges) {
   const result = []
@@ -78,7 +99,7 @@ export function normalizeManualCanvasEdges(edges) {
 }
 
 /** 从当前 Vue Flow 节点与视口构建可持久化的 canvas_layout */
-export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null, flowEdges = []) {
+export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null, flowEdges = [], options = {}) {
   const nodes = { ...(existingLayout?.nodes || {}) }
   const base = existingLayout && typeof existingLayout === 'object' ? { ...existingLayout } : {}
   const manualEdges = normalizeManualCanvasEdges(flowEdges.length ? flowEdges : existingLayout?.manual_edges)
@@ -90,7 +111,7 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
       y: node.position.y,
     }
   }
-  return {
+  const payload = {
     ...base,
     version: 1,
     viewport: {
@@ -102,6 +123,12 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
     manual_edges: manualEdges,
     updated_at: new Date().toISOString(),
   }
+  if (options.persistFreeNodes) {
+    payload.free_nodes = resolveFreeCanvasNodes({
+      free_nodes: (flowNodes || []).filter((node) => node?.type === 'homeCanvasNode'),
+    })
+  }
+  return payload
 }
 
 export function parseDramaMetadata(metadata) {

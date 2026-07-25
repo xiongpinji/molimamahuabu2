@@ -7,10 +7,11 @@
       <span class="node-title">{{ data.title || '未命名节点' }}</span>
     </div>
     <p v-if="data.kind === 'text'" class="node-content">{{ data.content || '双击节点编辑内容' }}</p>
-    <img v-else-if="data.kind === 'image' && data.url" :src="data.url" alt="" class="node-media" />
-    <div v-else-if="data.kind === 'image'" class="node-empty">填写图片地址后显示预览</div>
+    <img v-else-if="data.kind === 'image' && data.url" :src="data.url" :alt="data.title || '图片节点预览'" class="node-media" />
+    <div v-else-if="data.kind === 'image'" class="node-empty">{{ data.content || '填写图片描述或媒体地址' }}</div>
     <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
-    <div v-else class="node-empty">填写视频地址后显示预览</div>
+    <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
+    <div v-else class="node-empty">{{ data.content || emptyHint }}</div>
     <div class="node-hint">双击编辑</div>
   </div>
 </template>
@@ -23,7 +24,8 @@ const props = defineProps({
   data: { type: Object, required: true },
 })
 
-const kindIcon = computed(() => ({ text: '☷', image: '▧', video: '▶' }[props.data.kind] || '◈'))
+const kindIcon = computed(() => ({ text: '☷', image: '▧', video: '▶', audio: '♫' }[props.data.kind] || '◈'))
+const emptyHint = computed(() => props.data.kind === 'audio' ? '填写音频描述或媒体地址' : '填写视频描述或媒体地址')
 </script>
 
 <style scoped>
@@ -45,10 +47,13 @@ const kindIcon = computed(() => ({ text: '☷', image: '▧', video: '▶' }[pro
 .node-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
 .node-content { margin: 0; color: #c4c4cc; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .node-media { display: block; width: 100%; height: 126px; border-radius: 8px; background: #09090b; object-fit: cover; }
+.node-audio { display: block; width: 100%; height: 38px; }
 .node-empty { min-height: 60px; display: flex; align-items: center; justify-content: center; color: #71717a; font-size: 11px; text-align: center; }
 .node-hint { margin-top: 10px; color: #52525b; font-size: 10px; }
 .kind-image { border-color: rgba(96, 165, 250, 0.55); }
 .kind-image .node-icon { color: #93c5fd; }
 .kind-video { border-color: rgba(244, 114, 182, 0.55); }
 .kind-video .node-icon { color: #f9a8d4; }
+.kind-audio { border-color: rgba(52, 211, 153, 0.55); }
+.kind-audio .node-icon { color: #6ee7b7; }
 </style>

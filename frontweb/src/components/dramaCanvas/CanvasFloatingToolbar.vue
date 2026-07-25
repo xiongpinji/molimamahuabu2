@@ -19,13 +19,13 @@
         <el-icon><Plus /></el-icon>
       </button>
       <span class="toolbar-divider" aria-hidden="true" />
-      <button type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
+      <button v-if="!props.standalone" type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
         <el-icon><Operation /></el-icon><span>工作流</span>
       </button>
       <button type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" title="素材库" @click="toggleSidebar">
         <el-icon><FolderOpened /></el-icon><span>素材库</span>
       </button>
-      <button type="button" class="toolbar-button" aria-label="打开剧本节点" title="剧本" @click="focusScript">
+      <button v-if="!props.standalone" type="button" class="toolbar-button" aria-label="打开剧本节点" title="剧本" @click="focusScript">
         <el-icon><Document /></el-icon><span>剧本</span>
       </button>
       <button type="button" class="toolbar-button" aria-label="整理画布节点" title="整理节点" @click="alignNodes">
@@ -64,20 +64,30 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
+const props = defineProps({
+  standalone: { type: Boolean, default: false },
+})
 const ctx = useCanvasContext()
 const addMenuVisible = ref(false)
 const toolbarRef = ref(null)
 
-const addItems = [
+const productionAddItems = [
   { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
   { type: 'character', label: '角色', hint: '角色设定', icon: FolderOpened },
   { type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
   { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
   { type: 'episode', label: '新集', hint: '从剧本开始', icon: List },
 ]
+const standaloneAddItems = [
+  { type: 'text', label: '文本', hint: '内容与提示词', icon: Document },
+  { type: 'image', label: '图片', hint: '图片生成节点', icon: Picture },
+  { type: 'video', label: '视频', hint: '视频生成节点', icon: VideoPlay },
+  { type: 'audio', label: '音频', hint: '音频生成节点', icon: Microphone },
+]
+const addItems = computed(() => props.standalone ? standaloneAddItems : productionAddItems)
 
 const workflowOpen = computed(() => Boolean(ctx?.showWorkflowPanel?.value))
 const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))

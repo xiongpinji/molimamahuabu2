@@ -16,6 +16,7 @@
         </span>
 
         <el-select
+          v-if="!isStandaloneCanvas"
           v-model="filterEpisodeId"
           class="episode-select"
           placeholder="全部集数"
@@ -39,7 +40,7 @@
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
-          <el-tooltip content="工作流：框选分镜后创建，可拖拽排序并按步骤整组重跑" placement="bottom">
+          <el-tooltip v-if="!isStandaloneCanvas" content="工作流：框选分镜后创建，可拖拽排序并按步骤整组重跑" placement="bottom">
             <el-button class="topbar-workflow-toggle" size="small" :type="showWorkflowPanel ? 'primary' : 'default'" plain @click="toggleWorkflowPanel">
               <el-icon><Operation /></el-icon>
               工作流
@@ -52,12 +53,20 @@
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
-                <el-dropdown-item command="storyboard">添加分镜</el-dropdown-item>
-                <el-dropdown-item command="character">添加角色</el-dropdown-item>
-                <el-dropdown-item command="scene">添加场景</el-dropdown-item>
-                <el-dropdown-item command="prop">添加道具</el-dropdown-item>
-                <el-dropdown-item command="episode">添加集数</el-dropdown-item>
+                <template v-if="isStandaloneCanvas">
+                  <el-dropdown-item command="text">添加文本节点</el-dropdown-item>
+                  <el-dropdown-item command="image">添加图片节点</el-dropdown-item>
+                  <el-dropdown-item command="video">添加视频节点</el-dropdown-item>
+                  <el-dropdown-item command="audio">添加音频节点</el-dropdown-item>
+                </template>
+                <template v-else>
+                  <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
+                  <el-dropdown-item command="storyboard">添加分镜</el-dropdown-item>
+                  <el-dropdown-item command="character">添加角色</el-dropdown-item>
+                  <el-dropdown-item command="scene">添加场景</el-dropdown-item>
+                  <el-dropdown-item command="prop">添加道具</el-dropdown-item>
+                  <el-dropdown-item command="episode">添加集数</el-dropdown-item>
+                </template>
                 <el-dropdown-item command="align" :disabled="aligningNodes">自动对齐节点</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -265,7 +274,7 @@
         @wheel.capture="onCanvasWheel"
       >
         <VueFlow
-          v-if="allGraphNodes.length"
+          v-if="isStandaloneCanvas || allGraphNodes.length"
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
@@ -375,7 +384,10 @@
             <span v-else class="run-action">定位</span>
           </div>
         </div>
-        <CanvasFloatingToolbar v-if="drama && allGraphNodes.length" />
+        <CanvasFloatingToolbar
+          v-if="drama && (isStandaloneCanvas || allGraphNodes.length)"
+          :standalone="isStandaloneCanvas"
+        />
       </div>
     </div>
 
@@ -390,6 +402,7 @@
     />
 
     <CanvasCreateDialog
+      v-if="!isStandaloneCanvas"
       v-model="createDialogVisible"
       :type="createDialogType"
       :on-submit="onCreateSubmit"
@@ -416,9 +429,47 @@
       :mode="contextMenuNode ? 'node' : 'create'"
       :node-label="contextMenuNodeLabel"
       :node-actions="contextMenuNodeActions"
+      :standalone="isStandaloneCanvas"
       @select="onContextMenuSelect"
       @close="closeContextMenu"
     />
+    <el-dialog
+      v-model="freeNodeDialogVisible"
+      class="canvas-free-node-dialog"
+      :title="freeNodeEditingId ? `编辑${freeNodeKindLabel}节点` : `添加${freeNodeKindLabel}节点`"
+      width="480px"
+      destroy-on-close
+      :close-on-click-modal="false"
+      @closed="resetFreeNodeDialog"
+    >
+      <el-form label-position="top" @submit.prevent="submitFreeNode">
+        <el-form-item label="标题" required>
+          <el-input
+            v-model="freeNodeForm.title"
+            maxlength="80"
+            :placeholder="freeNodeTitlePlaceholder"
+            autofocus
+          />
+        </el-form-item>
+        <el-form-item :label="freeNodeKind === 'text' ? '内容' : '描述 / 提示词'">
+          <el-input
+            v-model="freeNodeForm.content"
+            type="textarea"
+            :rows="5"
+            :placeholder="freeNodeContentPlaceholder"
+          />
+        </el-form-item>
+        <el-form-item v-if="freeNodeKind !== 'text'" label="媒体地址（选填）">
+          <el-input v-model="freeNodeForm.url" placeholder="可粘贴已有素材地址；本地文件请使用右键“上传”" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="freeNodeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!freeNodeForm.title.trim()" @click="submitFreeNode">
+          {{ freeNodeEditingId ? '保存修改' : '添加到画布' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -521,6 +572,7 @@ import CanvasScriptNode from '@/components/dramaCanvas/CanvasScriptNode.vue'
 import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.vue'
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
 import CanvasProjectAssetNode from '@/components/dramaCanvas/CanvasProjectAssetNode.vue'
+import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
@@ -584,6 +636,11 @@ const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
 const canvasUploadAccept = ref('image/*,video/*,audio/*')
+const freeNodeDialogVisible = ref(false)
+const freeNodeKind = ref('text')
+const freeNodeEditingId = ref('')
+const freeNodeFlowPosition = ref(null)
+const freeNodeForm = ref({ title: '', content: '', url: '' })
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
@@ -594,6 +651,25 @@ const canvasFlowApi = ref(null)
 const NODE_STATUS_STORAGE_PREFIX = 'moli_canvas_node_status'
 const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
 const dragHistorySnapshot = ref(null)
+const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
+
+const freeNodeKindLabel = computed(() => ({
+  text: '文本',
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+}[freeNodeKind.value] || '自由'))
+const freeNodeTitlePlaceholder = computed(() => ({
+  text: '例如：第一幕故事设定',
+  image: '例如：雨夜街道首帧',
+  video: '例如：主角走入车站',
+  audio: '例如：车站环境音',
+}[freeNodeKind.value] || '输入节点标题'))
+const freeNodeContentPlaceholder = computed(() => (
+  freeNodeKind.value === 'text'
+    ? '输入文本、脚本或创作要求'
+    : `描述希望生成的${freeNodeKindLabel.value}内容`
+))
 
 function openDirectorStage() {
   directorReturnFocus = document.activeElement
@@ -629,6 +705,7 @@ const nodeTypes = {
   canvasMedia: markRaw(CanvasMediaNode),
   canvasProjectAsset: markRaw(CanvasProjectAssetNode),
   canvasAddButton: markRaw(CanvasAddButtonNode),
+  homeCanvasNode: markRaw(HomeCanvasNode),
 }
 
 const dramaId = computed(() => Number(route.params.id))
@@ -1436,6 +1513,7 @@ function rebuildGraph() {
     return
   }
   const graph = buildDramaCanvasGraph(drama.value, {
+    standalone: isStandaloneCanvas.value,
     episodeId: filterEpisodeId.value,
     savedLayout: savedLayout.value,
     workflowGroups: workflowGroups.value,
@@ -1528,6 +1606,7 @@ function refreshLayoutCacheFromGraph() {
     currentViewport.value,
     layoutCache.value,
     allGraphEdges.value,
+    { persistFreeNodes: isStandaloneCanvas.value },
   )
 }
 
@@ -1644,8 +1723,68 @@ function screenToFlowPosition(clientX, clientY) {
   }
 }
 
+function canvasCenterFlowPosition() {
+  const rect = canvasMainRef.value?.getBoundingClientRect?.()
+  if (!rect) return { x: 80, y: 80 }
+  return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
+}
+
+function resetFreeNodeDialog() {
+  freeNodeKind.value = 'text'
+  freeNodeEditingId.value = ''
+  freeNodeFlowPosition.value = null
+  freeNodeForm.value = { title: '', content: '', url: '' }
+}
+
+function openFreeNodeDialog(kind, flowPosition = null, node = null) {
+  if (!FREE_NODE_KINDS.has(kind)) return
+  closeContextMenu()
+  freeNodeKind.value = kind
+  freeNodeEditingId.value = node?.id || ''
+  freeNodeFlowPosition.value = node?.position || flowPosition || canvasCenterFlowPosition()
+  freeNodeForm.value = {
+    title: node?.data?.title || '',
+    content: node?.data?.content || '',
+    url: node?.data?.url || '',
+  }
+  freeNodeDialogVisible.value = true
+}
+
+async function submitFreeNode() {
+  const title = freeNodeForm.value.title.trim()
+  if (!title) return
+  const previousState = currentInteractionState()
+  const nodeData = {
+    kind: freeNodeKind.value,
+    title,
+    content: freeNodeForm.value.content.trim(),
+    url: freeNodeForm.value.url.trim(),
+  }
+  if (freeNodeEditingId.value) {
+    allGraphNodes.value = allGraphNodes.value.map((node) => (
+      String(node.id) === String(freeNodeEditingId.value)
+        ? { ...node, data: { ...node.data, ...nodeData } }
+        : node
+    ))
+  } else {
+    allGraphNodes.value.push({
+      id: `free:${freeNodeKind.value}:${Date.now()}`,
+      type: 'homeCanvasNode',
+      position: freeNodeFlowPosition.value || canvasCenterFlowPosition(),
+      data: nodeData,
+    })
+  }
+  const editing = Boolean(freeNodeEditingId.value)
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  freeNodeDialogVisible.value = false
+  const saved = await persistCanvasState({ layoutOnly: true })
+  if (saved) ElMessage.success(editing ? '节点已更新' : '节点已添加')
+}
+
 function canvasNodeLabel(node) {
   if (!node) return ''
+  if (node.type === 'homeCanvasNode') return node.data?.title || '未命名自由节点'
   if (node.data?.label) return node.data.label
   if (node.data?.entity) return node.data.entity.name || node.data.entity.location || node.id
   if (node.data?.storyboard) return node.data.storyboard.shot_title || `分镜 ${node.data.storyboard.shot_number || node.data.storyboard.id}`
@@ -1656,6 +1795,7 @@ function canvasNodeLabel(node) {
 
 function canvasNodeActions(node) {
   if (!node) return []
+  if (node.type === 'homeCanvasNode') return ['open-node-config', 'copy-node-ref']
   const actions = ['copy-node-ref']
   const sb = storyboardForNode(node)
   const runtimeStatus = nodeRuntimeStatus(node)
@@ -3839,6 +3979,20 @@ function applySelectedStoryboardIds(ids = []) {
 }
 
 function onNodesChange(changes = []) {
+  const removedFreeNodeIds = new Set(
+    changes
+      .filter((change) => change?.type === 'remove' && findGraphNode(change.id)?.type === 'homeCanvasNode')
+      .map((change) => String(change.id))
+  )
+  if (removedFreeNodeIds.size) {
+    allGraphNodes.value = allGraphNodes.value.filter((node) => !removedFreeNodeIds.has(String(node.id)))
+    allGraphEdges.value = allGraphEdges.value.filter((edge) => (
+      !removedFreeNodeIds.has(String(edge.source)) && !removedFreeNodeIds.has(String(edge.target))
+    ))
+    applyVirtualizedGraph()
+    scheduleLayoutSave()
+  }
+
   const selectionChanges = changes.filter((change) => change?.type === 'select')
   if (!selectionChanges.length) return
 
@@ -4170,7 +4324,8 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
       allGraphNodes.value,
       currentViewport.value,
       layoutCache.value,
-      allGraphEdges.value
+      allGraphEdges.value,
+      { persistFreeNodes: isStandaloneCanvas.value }
     )
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
@@ -4267,7 +4422,7 @@ const {
   createDialogVisible,
   createDialogType,
   pendingFlowPosition,
-  openCreateDialog,
+  openCreateDialog: openProductionCreateDialog,
   submitCreate,
 } = useCanvasCrud({
   drama,
@@ -4277,6 +4432,14 @@ const {
   refreshCanvas,
   persistCanvasState,
 })
+
+function openCreateDialog(type, flowPosition = null) {
+  if (isStandaloneCanvas.value && FREE_NODE_KINDS.has(type)) {
+    openFreeNodeDialog(type, flowPosition)
+    return
+  }
+  openProductionCreateDialog(type, flowPosition)
+}
 
 const {
   episodeGenerating,
@@ -4641,6 +4804,10 @@ function navigateToStoryboard(episodeId, storyboardId) {
 }
 
 function onNodeDoubleClick({ node }) {
+  if (node.type === 'homeCanvasNode') {
+    openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
+    return
+  }
   if (node.type === 'canvasStoryboard') {
     navigateToStoryboard(node.data.episodeId || node.data.storyboard?.episode_id, node.data.storyboard?.id)
     return

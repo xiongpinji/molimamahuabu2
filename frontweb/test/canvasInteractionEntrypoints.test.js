@@ -271,7 +271,7 @@ test('画布支持手动节点连线并持久化到布局', () => {
   assert.match(canvasSource, /allGraphEdges\.value = allGraphEdges\.value\.filter\(\(edge\) => !removed\.has\(String\(edge\.id\)\)\)/)
   assert.match(canvasSource, /ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /scheduleLayoutSave\(\)/)
-  assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value\s*\)/)
+  assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value,\s*\{ persistFreeNodes: isStandaloneCanvas\.value \},?\s*\)/)
 })
 
 test('右键节点支持追加下游分镜并自动创建手动连线', () => {

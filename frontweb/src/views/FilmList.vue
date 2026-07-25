@@ -192,10 +192,10 @@
         <el-form-item label="标题" required>
           <el-input v-model="newForm.title" placeholder="输入项目标题" maxlength="100" show-word-limit />
         </el-form-item>
-        <el-form-item label="描述">
+        <el-form-item v-if="!isCanvasMode" label="描述">
           <el-input v-model="newForm.description" type="textarea" :rows="3" placeholder="输入项目描述（选填）" />
         </el-form-item>
-        <el-form-item label="画面比例">
+        <el-form-item v-if="!isCanvasMode" label="画面比例">
           <el-select v-model="newForm.aspect_ratio" style="width: 100%">
             <el-option label="16:9 横屏（默认）" value="16:9" />
             <el-option label="9:16 竖屏（短视频）" value="9:16" />
@@ -208,7 +208,7 @@
         </el-form-item>
         <el-form-item v-if="isCanvasMode" label="文件夹">
           <el-select v-model="newForm.folder_id" style="width: 100%">
-            <el-option label="未分类" :value="null" />
+            <el-option label="未分类" value="" />
             <el-option v-for="folder in projectFolders" :key="folder.id" :label="folder.name" :value="folder.id" />
           </el-select>
         </el-form-item>
@@ -706,7 +706,7 @@ async function onDeletePropLibrary(item) {
 }
 
 const showNewDialog = ref(false)
-const newForm = ref({ title: '', description: '', aspect_ratio: '16:9', folder_id: null })
+const newForm = ref({ title: '', description: '', aspect_ratio: '16:9', folder_id: '' })
 const newSaving = ref(false)
 const exportingId = ref(null)
 const duplicatingId = ref(null)
@@ -922,7 +922,7 @@ function totalStoryboards(d) {
 }
 
 function goNewProject() {
-  newForm.value.folder_id = /^\d+$/.test(selectedFolderId.value) ? Number(selectedFolderId.value) : null
+  newForm.value.folder_id = /^\d+$/.test(selectedFolderId.value) ? Number(selectedFolderId.value) : ''
   showNewDialog.value = true
 }
 
@@ -931,7 +931,7 @@ function openCanvas(id) {
 }
 
 function resetNewForm() {
-  newForm.value = { title: '', description: '', aspect_ratio: '16:9', folder_id: null }
+  newForm.value = { title: '', description: '', aspect_ratio: '16:9', folder_id: '' }
 }
 
 async function submitNew() {
@@ -941,8 +941,8 @@ async function submitNew() {
   try {
     const drama = await dramaAPI.create({
       title,
-      description: newForm.value.description?.trim() || undefined,
-      folder_id: newForm.value.folder_id,
+      description: isCanvasMode.value ? undefined : newForm.value.description?.trim() || undefined,
+      folder_id: newForm.value.folder_id === '' ? null : newForm.value.folder_id,
       metadata: projectMetadata(newForm.value.aspect_ratio, projectMode.value),
     })
     showNewDialog.value = false

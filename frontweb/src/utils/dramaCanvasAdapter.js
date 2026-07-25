@@ -1,4 +1,4 @@
-import { normalizeManualCanvasEdges, parseCanvasLayout, resolveNodePosition } from './canvasLayout'
+import { normalizeManualCanvasEdges, parseCanvasLayout, resolveFreeCanvasNodes, resolveNodePosition } from './canvasLayout'
 import { getStoryboardGroupMap, parseWorkflowGroups } from './canvasWorkflow'
 import { assetImageUrl, assetMediaUrl, storyboardImageUrl, storyboardVideoUrl, audioUrl } from './mediaUrl'
 import {
@@ -74,6 +74,38 @@ function makeNode(base) {
 
 function isProjectMediaAsset(asset) {
   return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
+}
+
+function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
+  const nodes = resolveFreeCanvasNodes(savedLayout)
+  const edges = []
+  const mediaAssets = projectAssets.filter(isProjectMediaAsset)
+
+  mediaAssets.forEach((asset, index) => {
+    const id = `project-asset:${asset.id}`
+    const column = index % 3
+    const row = Math.floor(index / 3)
+    nodes.push(makeNode({
+      id,
+      type: 'canvasProjectAsset',
+      position: resolveNodePosition(savedLayout, id, {
+        x: 48 + column * 288,
+        y: 64 + row * 210,
+      }),
+      data: { asset },
+    }))
+  })
+
+  appendManualEdges(edges, savedLayout, nodes)
+  return {
+    nodes,
+    edges,
+    savedLayout,
+    bounds: {
+      width: Math.max(1200, 48 + Math.min(mediaAssets.length, 3) * 288),
+      height: Math.max(600, 160 + Math.ceil(mediaAssets.length / 3) * 210),
+    },
+  }
 }
 
 function appendManualEdges(edges, savedLayout, nodes) {
@@ -414,6 +446,9 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   if (!drama) return { nodes: [], edges: [] }
 
   const savedLayout = options.savedLayout ?? parseCanvasLayout(drama.metadata)
+  if (options.standalone) {
+    return buildStandaloneCanvasGraph(savedLayout, options.projectAssets)
+  }
   const workflowGroupMap = options.workflowGroupMap ?? getStoryboardGroupMap(
     options.workflowGroups ?? parseWorkflowGroups(drama.metadata)
   )

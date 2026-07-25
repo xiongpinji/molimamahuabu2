@@ -59,13 +59,35 @@ const props = defineProps({
   mode: { type: String, default: 'create' },
   nodeLabel: { type: String, default: '' },
   nodeActions: { type: Array, default: () => [] },
+  standalone: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['select', 'close'])
 const menuRef = ref(null)
 const menuStyle = ref({ left: '8px', top: '8px' })
 
-const addGroups = [
+const standaloneAddGroups = [
+  {
+    title: '自由创作',
+    items: [
+      { key: 'text', type: 'text', label: '文本', hint: '内容与提示词', icon: Document },
+      { key: 'image', type: 'image', label: '图片', hint: '图片生成节点', icon: Picture },
+      { key: 'video', type: 'video', label: '视频', hint: '视频生成节点', icon: VideoPlay },
+      { key: 'audio', type: 'audio', label: '音频', hint: '音频生成节点', icon: Microphone },
+    ],
+  },
+  {
+    title: '资源',
+    items: [
+      { key: 'media-library', type: 'open-media-library', label: '素材库', hint: '选择已有素材', icon: FolderOpened },
+      { key: 'upload', type: 'upload-media', label: '上传', hint: '本地文件加入画布', icon: Upload },
+      { key: 'paste', type: 'paste-media', label: '粘贴', hint: '剪贴板素材加入画布', icon: Document },
+      { key: 'director-stage', type: 'open-director-stage', label: '3D 导演台', hint: '机位与角色调度', icon: VideoPlay },
+    ],
+  },
+]
+
+const productionAddGroups = [
   {
     title: '创作',
     items: [
@@ -95,6 +117,7 @@ const addGroups = [
     ],
   },
 ]
+const addGroups = computed(() => props.standalone ? standaloneAddGroups : productionAddGroups)
 
 const nodeGroups = [
   {
