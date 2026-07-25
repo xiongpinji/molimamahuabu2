@@ -72,3 +72,12 @@ test('生产手册拉取已验证镜像且安全政策覆盖网页端责任边�
   assert.match(security, /密钥/);
   assert.doesNotMatch(security, /本地离线桌面应用/);
 });
+
+test('网页生产门禁不审计或构建已退出交付路径的桌面安装包', () => {
+  const dependencyWorkflow = read('.github/workflows/dependency-security.yml');
+  const desktopWorkflow = read('.github/workflows/windows-desktop-build.yml');
+
+  assert.doesNotMatch(dependencyWorkflow, /npm --prefix desktop/);
+  assert.doesNotMatch(desktopWorkflow, /-\s+'frontweb\/\*\*'/);
+  assert.doesNotMatch(desktopWorkflow, /-\s+'backend-node\/\*\*'/);
+});
