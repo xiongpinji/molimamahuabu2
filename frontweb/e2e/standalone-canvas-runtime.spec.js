@@ -202,7 +202,21 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     })
 
     const originalPosition = { ...state.canvasLayout.free_nodes[0].position }
-    const dragHandle = node.locator('.node-icon')
+    const dragHandle = node.locator('.node-drag-grip')
+    await expect(dragHandle).toHaveCount(1)
+    await page.mouse.move(20, 20)
+    await expect.poll(() => dragHandle.evaluate((element) => ({
+      opacity: getComputedStyle(element).opacity,
+      pointerEvents: getComputedStyle(element).pointerEvents,
+    }))).toEqual({ opacity: '0', pointerEvents: 'none' })
+
+    await node.hover()
+    await expect.poll(() => dragHandle.evaluate((element) => ({
+      opacity: getComputedStyle(element).opacity,
+      pointerEvents: getComputedStyle(element).pointerEvents,
+      cursor: getComputedStyle(element).cursor,
+    }))).toEqual({ opacity: '1', pointerEvents: 'auto', cursor: 'grab' })
+
     const dragHandleBox = await dragHandle.boundingBox()
     expect(dragHandleBox).not.toBeNull()
     await page.mouse.move(

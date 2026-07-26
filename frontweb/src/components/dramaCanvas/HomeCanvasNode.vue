@@ -21,6 +21,16 @@
 
     <Handle class="node-handle node-handle-input" type="target" :position="Position.Left" />
     <Handle class="node-handle node-handle-output" type="source" :position="Position.Right" />
+    <button
+      type="button"
+      class="node-drag-grip"
+      tabindex="-1"
+      aria-label="拖动节点"
+      title="按住拖动节点"
+      @click.prevent
+    >
+      <el-icon><Pointer /></el-icon>
+    </button>
 
     <section v-if="data.kind === 'text'" class="text-editor nodrag nopan" @mousedown.stop>
       <div class="text-toolbar" aria-label="文本格式工具栏">
@@ -104,6 +114,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
+import { Pointer } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const props = defineProps({
@@ -261,6 +272,34 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 .node-handle::after { content: '+'; display: grid; height: 100%; place-items: center; color: #d4d4d8; font-size: 19px; line-height: 1; }
 .node-handle-input { left: -24px; }
 .node-handle-output { right: -24px; }
+.node-drag-grip {
+  position: absolute;
+  top: calc(50% + 19px);
+  left: 50%;
+  z-index: 7;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(161, 161, 170, 0.52);
+  border-radius: 50%;
+  background: rgba(24, 24, 27, 0.9);
+  color: #f4f4f5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  cursor: grab;
+  transform: translate(-50%, -50%) scale(0.86);
+  transition: opacity 120ms ease, transform 120ms ease, border-color 120ms ease;
+}
+.home-canvas-node:hover .node-drag-grip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+.node-drag-grip:hover { border-color: #fb7b3b; color: #fb7b3b; }
+.node-drag-grip:active { cursor: grabbing; transform: translate(-50%, -50%) scale(0.94); }
 .text-editor, .media-stage, .generation-panel { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
 .text-toolbar { display: flex; gap: 3px; padding: 8px 10px; border-bottom: 1px solid #2f2f33; }
 .text-toolbar button {
