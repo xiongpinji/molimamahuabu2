@@ -24,15 +24,6 @@
           <span class="platform-header__button-label">首页画布</span>
         </el-button>
         <el-button
-          v-if="showAiConfig"
-          class="platform-header__button"
-          title="打开 AI 配置"
-          @click="goAiConfig"
-        >
-          <el-icon><Setting /></el-icon>
-          <span class="platform-header__button-label">AI 配置</span>
-        </el-button>
-        <el-button
           v-if="showTheme"
           class="platform-header__button platform-header__theme"
           :title="isDark ? '切换到浅色模式' : '切换到暗色模式'"
@@ -57,7 +48,7 @@
 
 <script setup>
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Grid, Moon, Setting, Sunny } from '@element-plus/icons-vue'
+import { ArrowLeft, Grid, Moon, Sunny } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
@@ -67,7 +58,6 @@ const props = defineProps({
   backTo: { type: [String, Object], default: '' },
   backLabel: { type: String, default: '返回' },
   showTheme: { type: Boolean, default: true },
-  showAiConfig: { type: Boolean, default: false },
   showHomeCanvas: { type: Boolean, default: false },
   homeTo: { type: [String, Object], default: '/' }
 })
@@ -77,10 +67,6 @@ const { isDark, toggle: toggleTheme } = useTheme()
 
 function goBack() {
   router.push(props.backTo)
-}
-
-function goAiConfig() {
-  router.push({ name: 'ai-config' })
 }
 
 function goHomeCanvas() {

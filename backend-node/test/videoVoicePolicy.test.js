@@ -47,7 +47,7 @@ test('多模型配置按默认模型返回主策略并保留每个模型的策�
   assert.equal(policyForConfig(enriched).key, 'native_audio_prompt');
 });
 
-test('公开视频模型接口返回声音策略，供前端按模型提示用户', () => {
+test('公开视频模型接口不下发声音策略等后台配置元数据', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
@@ -63,10 +63,9 @@ test('公开视频模型接口返回声音策略，供前端按模型提示用�
   };
   aiConfigRoutes(db, { info() {} }, {}).listPublicVideoModels({}, res);
   assert.equal(payload.success, true);
-  assert.equal(payload.data[0].voice_policy, 'native_audio_prompt');
-  assert.deepEqual(
-    payload.data[0].voice_policies.map((item) => item.key),
-    ['silent', 'native_audio_prompt']
-  );
+  assert.deepEqual(payload.data, [
+    'veo-3.1-generate-preview',
+    'veo-2.0-generate-001',
+  ]);
   db.close();
 });

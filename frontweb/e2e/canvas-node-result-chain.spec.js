@@ -252,7 +252,7 @@ test('CV-ASSET-LIB-001 分镜面板从当前项目素材库指派参考图并回
       return
     }
     if (path === '/api/v1/video-models' && method === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: [{ model: 'grok-video-3', is_active: true }] }) })
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: ['grok-video-3'] }) })
       return
     }
     if (path === '/api/v1/images' && method === 'GET') {

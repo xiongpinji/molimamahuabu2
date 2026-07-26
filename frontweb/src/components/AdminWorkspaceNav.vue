@@ -43,6 +43,12 @@ const items = [
     description: '模型、兑换码与对账',
     visible: !publicMode || role === 'admin',
   },
+  {
+    name: 'ai-config',
+    label: '模型配置',
+    description: '供应商、密钥与模型',
+    visible: !publicMode || role === 'admin',
+  },
 ]
 
 const visibleItems = computed(() => items.filter((item) => item.visible))
@@ -51,7 +57,7 @@ const visibleItems = computed(() => items.filter((item) => item.visible))
 <style scoped>
 .admin-workspace-nav {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   margin-bottom: 34px;
   padding: 8px;

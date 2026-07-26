@@ -27,10 +27,6 @@
         </el-select>
       </template>
       <template #actions>
-        <el-button class="btn-settings" @click="showAiConfigDialog = true">
-          <el-icon><Setting /></el-icon>
-          AI 配置
-        </el-button>
         <CanvasModeSwitch v-if="dramaId" mode="production" :drama-id="dramaId" :episode-id="selectedEpisodeId" />
       </template>
     </PlatformHeader>
@@ -1217,7 +1213,7 @@
                     <el-tooltip placement="top" :show-after="280" :show-arrow="false" popper-class="sb-universal-tooltip-popper">
                       <template #content>
                         <div class="sb-universal-tooltip">
-                          全能生视频链路（<strong>AI 配置 · 视频</strong> 中选接口规范：<code>kling_omni</code> 可灵 Omni，或 <code>volcengine_omni</code> 火山即梦 Seedance 2.0 多图参考；模型如 <code>kling-video-o1</code>、<code>doubao-seedance-2-0-260128</code> 等以控制台为准）：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。参考图顺序一般为：场景 → 角色（多张）→ 物品（<strong>不含</strong>经典分镜中间主图）；请用 <strong>@图片1</strong>、<strong>@图片2</strong>…（<strong>@图片N 后建议加半角空格</strong>）对应参考图，勿用 @姓名 指图；有场景图时 <strong>@图片1</strong> 只表环境，人物从 <strong>@图片2</strong> 起。若场景参考是<strong>四宫格/多视角拼图</strong>，仅借空间与氛围，须在文案中写明<strong>单镜头完整画幅、禁止分屏宫格</strong>，避免成片模仿拼图布局。全能提示词下拉中「生成」会按<strong>本条分镜总时长</strong>与本集剧本、镜序、邻镜信息，自动决定子分镜数 M（第2行「由以下M个分镜…」），第4行起为「分镜1：T1秒:」…多行，且各段秒数之和等于本镜时长；第3行仍为环境/参考图约束；「生成」与「润色」均为<strong>流式输出</strong>到本框；「润色」在此基础上增强。若本框留空，则退回仅用「视频提示词」。
+                          全能生视频链路使用平台管理员启用的 Omni 视频模型：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。参考图顺序一般为：场景 → 角色（多张）→ 物品（<strong>不含</strong>经典分镜中间主图）；请用 <strong>@图片1</strong>、<strong>@图片2</strong>…（<strong>@图片N 后建议加半角空格</strong>）对应参考图，勿用 @姓名 指图；有场景图时 <strong>@图片1</strong> 只表环境，人物从 <strong>@图片2</strong> 起。若场景参考是<strong>四宫格/多视角拼图</strong>，仅借空间与氛围，须在文案中写明<strong>单镜头完整画幅、禁止分屏宫格</strong>，避免成片模仿拼图布局。全能提示词下拉中「生成」会按<strong>本条分镜总时长</strong>与本集剧本、镜序、邻镜信息，自动决定子分镜数 M（第2行「由以下M个分镜…」），第4行起为「分镜1：T1秒:」…多行，且各段秒数之和等于本镜时长；第3行仍为环境/参考图约束；「生成」与「润色」均为<strong>流式输出</strong>到本框；「润色」在此基础上增强。若本框留空，则退回仅用「视频提示词」。
                         </div>
                       </template>
                       <el-icon class="sb-universal-hint-icon" tabindex="0" role="img" aria-label="片段说明">
@@ -1693,7 +1689,7 @@
             </div>
           </el-form-item>
         </div>
-        <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" underline="never" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
+        <p class="config-tip">文本、图片和视频模型由平台管理员统一启用；创作端仅使用可用模型。</p>
       </section>
 
       <!-- 8. 合成视频 -->
@@ -2478,7 +2474,7 @@
             <el-radio-button value="classic">经典分镜</el-radio-button>
             <el-radio-button value="universal">全能模式</el-radio-button>
           </el-radio-group>
-          <div class="vp-mode-hint">全能模式：中间为片段描述；生视频时使用 <strong>AI 配置里当前启用的视频</strong>（接口规范 <code>kling_omni</code> 或 <code>volcengine_omni</code>，模型如 <code>kling-video-o1</code>、<code>doubao-seedance-2-0-260128</code> 等）并合并场景/角色/道具等参考图（不含经典分镜主图）。经典字段保留，可随时切回。</div>
+          <div class="vp-mode-hint">全能模式：中间为片段描述；生视频时使用<strong>平台管理员当前启用的视频模型</strong>并合并场景、角色和道具等参考图（不含经典分镜主图）。经典字段保留，可随时切回。</div>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -2723,11 +2719,6 @@
       </template>
     </el-dialog>
 
-    <!-- AI 配置弹窗（不跳转，避免本页内容丢失） -->
-    <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close class="ai-config-dialog">
-      <AIConfigContent v-if="showAiConfigDialog" />
-    </el-dialog>
-
     <el-dialog v-model="showVoiceExtractDialog" title="选择要绑定的角色音色" width="440px">
       <p class="voice-extract-dialog-hint">按剧本对白顺序和静音切点裁剪，不是真实说话人分离。重叠对白、背景音乐或环境音可能残留；无法可靠切分时系统会阻止写入。请选择目标角色，并在提取后试听确认。</p>
       <el-radio-group v-model="voiceExtractCharacterId" class="voice-extract-character-list">
@@ -2785,7 +2776,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } 
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowRight, Plus, Minus, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Setting, Close } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, ArrowRight, Plus, Minus, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Close } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 import { useFilmStore } from '@/stores/film'
@@ -2823,7 +2814,6 @@ import {
   latestVideoGenerationWarning,
 } from '@/utils/videoGenerationStatus'
 import StylePickerButton from '@/components/StylePickerButton.vue'
-import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import {
   generationStyleOptions,
@@ -2851,13 +2841,6 @@ function goList() {
   router.push('/')
 }
 
-const showAiConfigDialog = ref(false)
-watch(showAiConfigDialog, (open) => {
-  if (!open) {
-    invalidateActiveVideoAiConfigCache()
-    loadVideoModelOptions()
-  }
-})
 const storyInput = ref('')
 const storyStyle = ref('')
 const storyType = ref('')
@@ -3641,7 +3624,7 @@ async function doExtractFromRef(type) {
         ElMessage.success('已从参考图提取外貌描述')
       }
     } catch (e) {
-      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+      ElMessage.error(e.message || '提取失败，平台暂无支持视觉的可用模型')
     } finally {
       extractingCharAppearance.value = false
     }
@@ -3657,7 +3640,7 @@ async function doExtractFromRef(type) {
         ElMessage.success('已从参考图提取特征描述')
       }
     } catch (e) {
-      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+      ElMessage.error(e.message || '提取失败，平台暂无支持视觉的可用模型')
     } finally {
       extractingPropDesc.value = false
     }
@@ -3673,7 +3656,7 @@ async function doExtractFromRef(type) {
         ElMessage.success('已从参考图提取场景描述')
       }
     } catch (e) {
-      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+      ElMessage.error(e.message || '提取失败，平台暂无支持视觉的可用模型')
     } finally {
       extractingSceneDesc.value = false
     }
@@ -6456,6 +6439,17 @@ let activeVideoAiConfigsCache = []
 let activeVideoAiConfigCacheAt = 0
 const ACTIVE_VIDEO_AI_CONFIG_TTL_MS = 15000
 
+function publicVideoConfigs(rows) {
+  return [...new Set((Array.isArray(rows) ? rows : [])
+    .map((model) => String(model || '').trim())
+    .filter(Boolean))]
+    .map((model, index) => ({
+      model: [model],
+      default_model: model,
+      is_default: index === 0,
+    }))
+}
+
 function invalidateActiveVideoAiConfigCache() {
   activeVideoAiConfigCache = null
   activeVideoAiConfigsCache = []
@@ -6465,24 +6459,12 @@ function invalidateActiveVideoAiConfigCache() {
 async function loadVideoModelOptions() {
   try {
     const rows = await aiAPI.listVideoModels()
-    const active = (Array.isArray(rows) ? rows : []).filter((config) => config.is_active !== false)
+    const active = publicVideoConfigs(rows)
     const models = [...new Set(active.flatMap(getModelsFromAiConfig))]
     const voicePolicies = {}
     for (const config of active) {
-      const policies = Array.isArray(config.voice_policies) ? config.voice_policies : []
-      if (policies.length) {
-        for (const policy of policies) {
-          if (policy?.model) {
-            voicePolicies[String(policy.model)] = {
-              ...policy,
-              type: policy.type || policy.tone || 'info',
-            }
-          }
-        }
-      } else {
-        const fallback = videoVoicePolicyForConfig(config)
-        if (fallback?.model) voicePolicies[String(fallback.model)] = fallback
-      }
+      const fallback = videoVoicePolicyForConfig(config)
+      if (fallback?.model) voicePolicies[String(fallback.model)] = fallback
     }
     videoModelOptions.value = models
     videoVoicePolicyByModel.value = voicePolicies
@@ -6677,8 +6659,7 @@ async function getActiveVideoAiConfig(preferredModel = selectedVideoModel.value)
   }
   try {
     const rows = await aiAPI.listVideoModels()
-    const list = Array.isArray(rows) ? rows : []
-    const active = list.filter((c) => c.is_active !== false)
+    const active = publicVideoConfigs(rows)
     activeVideoAiConfigsCache = active
     activeVideoAiConfigCache = active.find((c) => c.is_default) || active[0] || null
   } catch {
@@ -6707,19 +6688,11 @@ function isSeedance2VideoModel(modelName) {
 /** 全能分镜 + 当前视频配置是否可走多图参考（火山 Seedance 2.0、可灵 Omni、Agnes Video 等） */
 function canUseUniversalOmniVideoApi(cfg) {
   if (!cfg) return false
-  const proto = String(cfg.api_protocol || '').toLowerCase()
-  const provider = String(cfg.provider || '').toLowerCase()
   const model = videoModelNameFromAiConfig(cfg).toLowerCase()
-  if (proto === 'kling_omni') return true
-  if (proto === 'icreat_task' || provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') return true
-  if (proto === 'deepwl_grok_openai' || proto === 'deepwl_grok' || provider === 'deepwl') return true
-  if (proto === 'volcengine_omni') {
-    return isSeedance2VideoModel(model)
-  }
-  if (proto === 'agnes' || provider === 'agnes' || /agnes-video/.test(model)) {
-    return true
-  }
-  return false
+  return isSeedance2VideoModel(model)
+    || /grok.*video|video.*grok/.test(model)
+    || /kling.*omni|omni.*kling/.test(model)
+    || /agnes-video/.test(model)
 }
 
 async function confirmUniversalNonSeedance2Video() {
@@ -7060,7 +7033,7 @@ async function onGenerateSbVideo(sb) {
     try {
       await ElMessageBox.confirm(
         universalOmniApi
-          ? '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交 Omni-Video（模型以 AI 配置为准），效果可能不稳定。确认继续？'
+          ? '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？'
           : '当前没有分镜主图且无场景参考图，将仅按文字提示词生成视频，效果可能不稳定。确认继续？',
         universalOmniApi ? '全能模式无参考图' : '全能降级无参考图',
         { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }

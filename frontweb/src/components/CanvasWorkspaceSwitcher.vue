@@ -41,11 +41,6 @@
           媒体素材库
           <span v-if="isActive('media-library')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
-        <el-dropdown-item command="/ai-config">
-          <el-icon><Setting /></el-icon>
-          AI 配置
-          <span v-if="isActive('ai-config')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
-        </el-dropdown-item>
         <el-dropdown-item command="/film/new" divided>
           <el-icon><Plus /></el-icon>
           开始创作
@@ -59,7 +54,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Files, Grid, List, MagicStick, Plus, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Files, Grid, List, MagicStick, Plus } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()

@@ -15,9 +15,6 @@
         </div>
       </template>
       <template #actions>
-        <el-button class="btn-settings" @click="goAiConfig">
-          <el-icon><Setting /></el-icon>AI配置
-        </el-button>
         <el-button v-if="!isCanvasMode" class="btn-import" :loading="importing" @click="triggerImport">
           <el-icon><Upload /></el-icon>导入项目
         </el-button>
@@ -302,7 +299,7 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
+import { Edit, Delete, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
 import {
@@ -333,10 +330,6 @@ const movingProjectId = ref(null)
 
 function goMaterialLibrary(type) {
   router.push({ name: `material-${type}` })
-}
-
-function goAiConfig() {
-  router.push({ name: 'ai-config' })
 }
 
 const showNewDialog = ref(false)
@@ -830,28 +823,6 @@ html.light .btn-theme {
   --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
   --el-button-hover-border-color: rgba(255, 113, 57, 0.5);
   --el-button-hover-text-color: #ff9a72;
-}
-
-/* AI配置按钮 —— 琥珀调 */
-.btn-settings {
-  --el-button-bg-color: rgba(234, 179, 8, 0.1);
-  --el-button-border-color: rgba(234, 179, 8, 0.32);
-  --el-button-text-color: #fcd34d;
-  --el-button-hover-bg-color: rgba(234, 179, 8, 0.2);
-  --el-button-hover-border-color: rgba(234, 179, 8, 0.5);
-  --el-button-hover-text-color: #fde68a;
-  --el-button-active-bg-color: rgba(234, 179, 8, 0.28);
-  --el-button-active-border-color: rgba(234, 179, 8, 0.65);
-}
-html.light .btn-settings {
-  --el-button-bg-color: rgba(180, 83, 9, 0.07);
-  --el-button-border-color: rgba(180, 83, 9, 0.28);
-  --el-button-text-color: #92400e;
-  --el-button-hover-bg-color: rgba(180, 83, 9, 0.12);
-  --el-button-hover-border-color: rgba(180, 83, 9, 0.45);
-  --el-button-hover-text-color: #78350f;
-  --el-button-active-bg-color: rgba(180, 83, 9, 0.18);
-  --el-button-active-border-color: rgba(180, 83, 9, 0.6);
 }
 
 /* 导入按钮 */
