@@ -1,7 +1,7 @@
 <template>
   <div class="film-list">
     <PlatformHeader :show-theme="false">
-      <template #leading>
+      <template v-if="isCanvasMode" #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="goMaterialLibrary('characters')">
             <el-icon><User /></el-icon>素材角色
@@ -14,8 +14,8 @@
           </el-button>
         </div>
       </template>
-      <template #actions>
-        <el-button v-if="!isCanvasMode" class="btn-import" :loading="importing" @click="triggerImport">
+      <template v-if="isCanvasMode" #actions>
+        <el-button class="btn-import" :loading="importing" @click="triggerImport">
           <el-icon><Upload /></el-icon>导入项目
         </el-button>
         <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
@@ -25,8 +25,93 @@
       </template>
     </PlatformHeader>
 
-    <main class="main">
-      <section class="workspace-heading" aria-labelledby="workspace-heading-title">
+    <main :class="['main', { 'main--home': !isCanvasMode }]">
+      <section v-if="!isCanvasMode" class="home-workbench" aria-labelledby="home-workbench-title">
+        <div class="home-workbench__glow home-workbench__glow--left" aria-hidden="true"></div>
+        <div class="home-workbench__glow home-workbench__glow--right" aria-hidden="true"></div>
+        <div class="home-workbench__inner">
+          <p class="home-workbench__eyebrow">茉莉妈妈 AI 创作工作台</p>
+          <h1 id="home-workbench-title">你好，今天想生成点什么？</h1>
+
+          <section class="home-composer" aria-label="快速生成">
+            <button class="home-composer__reference" type="button" @click="openMediaLibrary">
+              <span class="home-composer__plus">＋</span>
+              <span>参考内容</span>
+            </button>
+            <div class="home-composer__body">
+              <textarea
+                v-model="homePrompt"
+                rows="3"
+                aria-label="描述想生成的内容"
+                placeholder="上传参考素材、输入文字，自由组合图片、文字、音频与视频。"
+              />
+              <div class="home-composer__toolbar">
+                <div class="home-composer__controls">
+                  <label class="home-control">
+                    <span class="home-control__icon">▣</span>
+                    <select v-model="homeMediaType" aria-label="生成类型">
+                      <option value="video">视频</option>
+                      <option value="image">图片</option>
+                      <option value="storyboard">分镜</option>
+                    </select>
+                  </label>
+                  <label class="home-control">
+                    <span class="home-control__icon">◇</span>
+                    <select v-model="homeWorkflow" aria-label="生成模式">
+                      <option value="reference">全能参考生成</option>
+                      <option value="script">剧本生成</option>
+                      <option value="canvas">自由画布</option>
+                    </select>
+                  </label>
+                  <span class="home-control home-control--static">16:9</span>
+                  <span class="home-control home-control--static">5s</span>
+                  <span class="home-control home-control--static">720P</span>
+                </div>
+                <div class="home-composer__submit">
+                  <span class="home-composer__credits" aria-label="预计消耗积分">✦ 35</span>
+                  <button type="button" class="home-generate" @click="startFromComposer">
+                    <span>✦</span>生成
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="home-recent" aria-labelledby="home-recent-title">
+            <div class="home-recent__heading">
+              <h2 id="home-recent-title">最近项目</h2>
+              <button type="button" @click="scrollToProjects">所有项目 <span>→</span></button>
+            </div>
+            <div ref="homeProjectsRef" v-loading="loading" class="home-project-grid">
+              <button class="home-project-card home-project-card--create" type="button" @click="goNewProject">
+                <span class="home-project-card__create-icon">＋</span>
+                <strong>创建新项目</strong>
+                <small>从灵感开始新的短剧</small>
+              </button>
+              <article
+                v-for="d in dramas.slice(0, 4)"
+                :key="d.id"
+                class="home-project-card"
+                role="button"
+                tabindex="0"
+                @click="openProject(d.id)"
+                @keydown.enter="openProject(d.id)"
+                @keydown.space.prevent="openProject(d.id)"
+              >
+                <div class="home-project-card__cover">
+                  <span>{{ (d.title || '未命名项目').slice(0, 1) }}</span>
+                </div>
+                <div class="home-project-card__copy">
+                  <strong>{{ d.title || '未命名项目' }}</strong>
+                  <small>{{ formatDate(d.updated_at) }} · {{ d.episodes?.length || 0 }} 集</small>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-else class="workspace-heading" aria-labelledby="workspace-heading-title">
         <span class="workspace-heading__eyebrow">AI 原生创作工作区</span>
         <div class="workspace-heading__row">
           <div>
@@ -85,7 +170,7 @@
         <el-button :icon="FolderOpened" @click="openFolderDialog">管理文件夹</el-button>
         <span class="canvas-project-count" aria-live="polite">共 {{ total }} 个画布</span>
       </section>
-      <div v-loading="loading" class="projects-wrap">
+      <div v-if="isCanvasMode" v-loading="loading" class="projects-wrap">
         <div class="project-grid">
           <!-- 操作卡片：始终作为第一个格子 -->
           <div class="project-card action-card">
@@ -319,6 +404,10 @@ const isCanvasMode = computed(() => projectMode.value === 'canvas')
 const loading = ref(false)
 const dramas = ref([])
 const total = ref(0)
+const homePrompt = ref('')
+const homeMediaType = ref('video')
+const homeWorkflow = ref('reference')
+const homeProjectsRef = ref(null)
 const searchKeyword = ref('')
 const projectFolders = ref([])
 const selectedFolderId = ref('')
@@ -330,6 +419,25 @@ const movingProjectId = ref(null)
 
 function goMaterialLibrary(type) {
   router.push({ name: `material-${type}` })
+}
+
+function openMediaLibrary() {
+  router.push({ name: 'media-library' })
+}
+
+function startFromComposer() {
+  if (homeWorkflow.value === 'canvas') {
+    router.push({ name: 'canvas-projects' })
+    return
+  }
+  const prompt = homePrompt.value.trim()
+  newForm.value.title = prompt ? prompt.slice(0, 24) : ''
+  newForm.value.description = prompt
+  showNewDialog.value = true
+}
+
+function scrollToProjects() {
+  homeProjectsRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 const showNewDialog = ref(false)
@@ -841,6 +949,329 @@ html.light .btn-import {
   margin: 0 auto;
   padding: 58px 0 72px;
 }
+.main--home {
+  max-width: none;
+  padding: 0;
+}
+.home-workbench {
+  position: relative;
+  min-height: calc(100vh - 72px);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(12, 9, 20, .08) 0 17%, rgba(5, 5, 8, .72) 52%, rgba(5, 5, 8, .96) 76%),
+    linear-gradient(112deg, #2d0d4c 0%, #0a0811 26%, #07070a 58%, #27125b 100%);
+}
+.home-workbench::before,
+.home-workbench::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.home-workbench::before {
+  width: 620px;
+  height: 620px;
+  right: -185px;
+  top: 150px;
+  border: 1px solid rgba(199, 171, 255, .12);
+  background: radial-gradient(circle at 40% 35%, rgba(133, 93, 231, .24), rgba(71, 38, 143, .22) 42%, rgba(20, 10, 42, .08) 67%, transparent 70%);
+  box-shadow: inset 42px 0 90px rgba(150, 106, 255, .15), 0 0 110px rgba(106, 63, 211, .12);
+}
+.home-workbench::after {
+  width: 340px;
+  height: 340px;
+  left: -120px;
+  bottom: -135px;
+  background: radial-gradient(circle at 60% 40%, rgba(129, 84, 232, .38), rgba(59, 30, 123, .12) 58%, transparent 70%);
+}
+.home-workbench__glow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffe09c;
+  box-shadow: 0 0 18px 6px rgba(255, 208, 112, .48);
+  pointer-events: none;
+}
+.home-workbench__glow--left {
+  left: 10%;
+  bottom: 16%;
+}
+.home-workbench__glow--right {
+  right: 10%;
+  top: 39%;
+}
+.home-workbench__inner {
+  position: relative;
+  z-index: 1;
+  width: min(1460px, calc(100vw - 64px));
+  margin: 0 auto;
+  padding: 104px 0 90px;
+}
+.home-workbench__eyebrow {
+  margin: 0 0 14px;
+  text-align: center;
+  color: rgba(232, 220, 255, .62);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .18em;
+}
+.home-workbench h1 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(48px, 5.4vw, 78px);
+  font-weight: 750;
+  letter-spacing: -.055em;
+  line-height: 1.08;
+  text-align: center;
+  text-shadow: 0 18px 55px rgba(0, 0, 0, .48);
+}
+.home-composer {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 22px;
+  width: min(1220px, 100%);
+  min-height: 188px;
+  margin: 72px auto 0;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 24px;
+  background: rgba(12, 12, 15, .96);
+  box-shadow: 0 34px 72px rgba(0, 0, 0, .48), 0 0 0 1px rgba(0, 0, 0, .34);
+}
+.home-composer__reference {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 136px;
+  border: 1px dashed #47474c;
+  border-radius: 17px;
+  color: #8d8d94;
+  background: #111114;
+  cursor: pointer;
+  transition: border-color .2s, color .2s, background .2s;
+}
+.home-composer__reference:hover,
+.home-composer__reference:focus-visible {
+  outline: none;
+  border-color: #ff7139;
+  color: #ff9a72;
+  background: rgba(255, 113, 57, .07);
+}
+.home-composer__plus {
+  color: #b4b4ba;
+  font-size: 32px;
+  font-weight: 300;
+  line-height: 1;
+}
+.home-composer__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.home-composer textarea {
+  width: 100%;
+  min-height: 90px;
+  padding: 2px 0 12px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: #f2f2f3;
+  background: transparent;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1.6;
+}
+.home-composer textarea::placeholder {
+  color: #68686f;
+}
+.home-composer__toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: auto;
+}
+.home-composer__controls,
+.home-composer__submit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.home-control,
+.home-composer__credits {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid #333338;
+  border-radius: 13px;
+  color: #dedee1;
+  background: #19191d;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.home-control select {
+  max-width: 190px;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.home-control select option {
+  color: #e8e8e8;
+  background: #18181b;
+}
+.home-control__icon {
+  color: #ff7139;
+}
+.home-control--static {
+  color: #bbb;
+}
+.home-composer__credits {
+  min-height: 44px;
+  border-color: rgba(255, 165, 43, .48);
+  color: #ffb34b;
+  background: rgba(140, 75, 12, .13);
+}
+.home-generate {
+  display: inline-flex;
+  min-width: 126px;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 14px;
+  color: #fff;
+  background: #ef6c3b;
+  box-shadow: 0 12px 28px rgba(239, 108, 59, .18);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .2s, background .2s, box-shadow .2s;
+}
+.home-generate:hover,
+.home-generate:focus-visible {
+  outline: none;
+  background: #ff7b46;
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px rgba(239, 108, 59, .28);
+}
+.home-recent {
+  width: min(1220px, 100%);
+  margin: 64px auto 0;
+}
+.home-recent__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+.home-recent__heading h2 {
+  margin: 0;
+  color: #efedf4;
+  font-size: 23px;
+  letter-spacing: -.02em;
+}
+.home-recent__heading button {
+  border: 0;
+  color: #9f9aa9;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+}
+.home-recent__heading button:hover,
+.home-recent__heading button:focus-visible {
+  outline: none;
+  color: #fff;
+}
+.home-project-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 18px;
+  scroll-margin-top: 90px;
+}
+.home-project-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 18px;
+  color: inherit;
+  background: rgba(12, 12, 15, .92);
+  text-align: left;
+  cursor: pointer;
+  transition: transform .2s, border-color .2s, box-shadow .2s;
+}
+.home-project-card:hover,
+.home-project-card:focus-visible {
+  outline: none;
+  border-color: rgba(255, 113, 57, .64);
+  transform: translateY(-4px);
+  box-shadow: 0 20px 38px rgba(0, 0, 0, .32);
+}
+.home-project-card__cover {
+  display: grid;
+  min-height: 148px;
+  place-items: center;
+  color: rgba(255, 255, 255, .78);
+  background:
+    radial-gradient(circle at 28% 25%, rgba(255, 128, 77, .62), transparent 33%),
+    radial-gradient(circle at 72% 72%, rgba(122, 81, 226, .76), transparent 38%),
+    linear-gradient(135deg, #231427, #101014);
+  font-size: 48px;
+  font-weight: 800;
+}
+.home-project-card__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 15px 16px 17px;
+}
+.home-project-card__copy strong {
+  overflow: hidden;
+  color: #f2f2f3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-project-card__copy small {
+  color: #777780;
+}
+.home-project-card--create {
+  display: flex;
+  min-height: 214px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  border-style: dashed;
+  border-color: rgba(255, 113, 57, .42);
+  background: rgba(17, 12, 20, .75);
+  text-align: center;
+}
+.home-project-card--create strong {
+  color: #f5f1f7;
+}
+.home-project-card--create small {
+  color: #7d7883;
+}
+.home-project-card__create-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  place-items: center;
+  border: 1px solid rgba(255, 113, 57, .54);
+  border-radius: 50%;
+  color: #ff9168;
+  background: rgba(255, 113, 57, .1);
+  font-size: 27px;
+}
 .workspace-heading {
   margin-bottom: 42px;
 }
@@ -1212,6 +1643,43 @@ html.light .btn-import {
     max-width: calc(100vw - 24px);
     padding-top: 34px;
   }
+  .main--home {
+    max-width: none;
+    padding-top: 0;
+  }
+  .home-workbench__inner {
+    width: calc(100vw - 28px);
+    padding: 62px 0 72px;
+  }
+  .home-workbench h1 {
+    font-size: 40px;
+    line-height: 1.14;
+  }
+  .home-composer {
+    grid-template-columns: 1fr;
+    margin-top: 42px;
+    padding: 16px;
+  }
+  .home-composer__reference {
+    min-height: 82px;
+  }
+  .home-composer__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .home-composer__controls {
+    overflow-x: auto;
+    padding-bottom: 5px;
+  }
+  .home-composer__submit {
+    justify-content: flex-end;
+  }
+  .home-project-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-project-card--create {
+    min-height: 196px;
+  }
   .workspace-heading {
     margin-bottom: 28px;
   }
@@ -1245,6 +1713,16 @@ html.light .btn-import {
   border-radius: 16px;
   background: #111111 !important;
   box-shadow: 0 28px 90px rgba(0, 0, 0, .66);
+}
+
+@media (min-width: 761px) and (max-width: 1180px) {
+  .home-composer__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .home-project-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 :global(.project-dialog .el-dialog__title) {
   color: #f5f5f5 !important;

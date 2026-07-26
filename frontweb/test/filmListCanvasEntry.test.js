@@ -47,6 +47,17 @@ test('统一导航暴露首页、画布、短剧工厂与右上角登录入口',
   assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.canvas-topbar \.header-actions \.el-button[\s\S]*background:\s*#151515 !important/)
 })
 
+test('首页提供紫黑工作台、快速生成器和真实最近项目入口', () => {
+  assert.match(filmListSource, /class="home-workbench"/)
+  assert.match(filmListSource, /你好，今天想生成点什么？/)
+  assert.match(filmListSource, /class="home-composer"/)
+  assert.match(filmListSource, /v-model="homePrompt"/)
+  assert.match(filmListSource, /@click="startFromComposer"/)
+  assert.match(filmListSource, /dramas\.slice\(0, 4\)/)
+  assert.match(filmListSource, /@click="openProject\(d\.id\)"/)
+  assert.match(filmListSource, /\.home-workbench[\s\S]*linear-gradient\(112deg/)
+})
+
 test('普通页面的全局头部不再把独立自由画布作为主要入口', () => {
   for (const view of ['DramaDetail.vue', 'FilmCreate.vue', 'FreeCreate.vue', 'MediaLibrary.vue', 'AiConfig.vue', 'BillingAdmin.vue']) {
     assert.doesNotMatch(readView(view), /show-home-canvas="true"/, view)
