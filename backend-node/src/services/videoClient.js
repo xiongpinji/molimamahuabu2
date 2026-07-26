@@ -5203,10 +5203,12 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   };
 }
 
+const { runWithGenerationLimit } = require('./generationConcurrency');
+
 module.exports = {
   getDefaultVideoConfig,
   callAihubccVideoApi,
-  callVideoApi,
+  callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,

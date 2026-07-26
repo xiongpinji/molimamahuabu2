@@ -1901,17 +1901,22 @@ function createAndGenerateImage(db, log, opts) {
   scheduleTask(async () => {
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
-      const result = await taskService.withTaskHeartbeat(db, taskId, '正在等待图片生成服务...', () => callImageApi(db, log, {
-        prompt,
-        model,
-        size,
-        quality,
-        drama_id: drama_id,
-        character_id: character_id,
-        image_type,
-        image_gen_id: imageGenId,
-        user_negative_prompt: user_negative_prompt || undefined,
-      }));
+      const result = await taskService.withTaskHeartbeat(
+        db,
+        taskId,
+        '正在等待图片生成服务...',
+        () => runWithGenerationLimit('image', () => callImageApi(db, log, {
+          prompt,
+          model,
+          size,
+          quality,
+          drama_id: drama_id,
+          character_id: character_id,
+          image_type,
+          image_gen_id: imageGenId,
+          user_negative_prompt: user_negative_prompt || undefined,
+        }))
+      );
       const now2 = new Date().toISOString();
       if (result.error) {
         db.prepare(
@@ -2140,6 +2145,8 @@ function refListHasCanonical(list, ref) {
   return (list || []).some((item) => canonicalRefKey(item) === key);
 }
 
+const { runWithGenerationLimit } = require('./generationConcurrency');
+
 module.exports = {
   getDefaultImageConfig,
   callAihubccImageApi,
@@ -2149,7 +2156,7 @@ module.exports = {
   formatGptImageUnknownResultError,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
-  callImageApi,
+  callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),
   createAndGenerateImage,
   settleImageCredit,
   resolveAssetUserNegativeForApi,

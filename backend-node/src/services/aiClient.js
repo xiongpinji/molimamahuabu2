@@ -696,14 +696,16 @@ function isRefusalResponse(text) {
   return refusalPatterns.some(p => p.test(text));
 }
 
+const { runWithGenerationLimit } = require('./generationConcurrency');
+
 module.exports = {
   getDefaultConfig,
   getConfigForModel,
   getConfigFromModelMap,
   getModelFromConfig,
-  generateText,
-  streamGenerateText,
-  generateTextWithVision,
+  generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
+  streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
+  generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),
   resolveEntityImageSource,
   extractDescriptionFromImage,
   EXTRACT_PROMPTS,
