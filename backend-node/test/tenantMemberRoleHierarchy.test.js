@@ -77,6 +77,103 @@ test('admin 不能移除 owner', () => {
   );
 });
 
+test('admin 不能通过重复邀请修改 owner 或 admin 的角色', () => {
+  const { db, tenant } = setup();
+
+  assert.throws(
+    () => tenantService.addMemberByEmail(db, tenant.id, 'admin-1', {
+      email: 'owner1@example.com',
+      role: 'member',
+    }),
+    (error) => error.code === 'TENANT_ROLE_FORBIDDEN',
+  );
+  assert.throws(
+    () => tenantService.addMemberByEmail(db, tenant.id, 'admin-1', {
+      email: 'admin2@example.com',
+      role: 'member',
+    }),
+    (error) => error.code === 'TENANT_ROLE_FORBIDDEN',
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT user_id, role FROM tenant_members
+      WHERE tenant_id = ? AND user_id IN ('owner-1', 'admin-2')
+      ORDER BY user_id`).all(tenant.id),
+    [
+      { user_id: 'admin-2', role: 'admin' },
+      { user_id: 'owner-1', role: 'owner' },
+    ],
+  );
+});
+
+test('admin 只能邀请 member，不能授予 admin 或 owner', () => {
+  const { db, tenant } = setup();
+  db.prepare('DELETE FROM tenant_members WHERE tenant_id = ? AND user_id = ?')
+    .run(tenant.id, 'member-1');
+
+  for (const role of ['admin', 'owner']) {
+    assert.throws(
+      () => tenantService.addMemberByEmail(db, tenant.id, 'admin-1', {
+        email: 'member1@example.com',
+        role,
+      }),
+      (error) => error.code === 'TENANT_ROLE_FORBIDDEN',
+    );
+  }
+  assert.equal(
+    db.prepare(`SELECT role FROM tenant_members
+      WHERE tenant_id = ? AND user_id = ?`).get(tenant.id, 'member-1'),
+    undefined,
+  );
+});
+
+test('owner 可显式调整成员角色，但不能降级最后一个 owner', () => {
+  const { db, tenant } = setup();
+
+  const promoted = tenantService.changeMemberRole(
+    db,
+    tenant.id,
+    'owner-1',
+    'member-1',
+    'admin',
+  );
+  assert.equal(promoted.role, 'admin');
+  assert.throws(
+    () => tenantService.changeMemberRole(
+      db,
+      tenant.id,
+      'owner-1',
+      'owner-1',
+      'member',
+    ),
+    (error) => error.code === 'LAST_TENANT_OWNER',
+  );
+  assert.equal(
+    db.prepare(`SELECT role FROM tenant_members
+      WHERE tenant_id = ? AND user_id = ?`).get(tenant.id, 'owner-1').role,
+    'owner',
+  );
+});
+
+test('修改成员角色必须显式提供有效角色', () => {
+  const { db, tenant } = setup();
+
+  assert.throws(
+    () => tenantService.changeMemberRole(
+      db,
+      tenant.id,
+      'owner-1',
+      'admin-1',
+      undefined,
+    ),
+    (error) => error.code === 'INVALID_TENANT_ROLE',
+  );
+  assert.equal(
+    db.prepare(`SELECT role FROM tenant_members
+      WHERE tenant_id = ? AND user_id = ?`).get(tenant.id, 'admin-1').role,
+    'admin',
+  );
+});
+
 test('owner 不能移除最后一个活跃 owner', () => {
   const { db, tenant } = setup();
 

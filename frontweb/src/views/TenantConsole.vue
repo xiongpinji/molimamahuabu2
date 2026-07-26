@@ -60,7 +60,7 @@
             <el-input v-model.trim="memberForm.email" placeholder="成员邮箱" />
             <el-select v-model="memberForm.role">
               <el-option label="成员" value="member" />
-              <el-option label="管理员" value="admin" />
+              <el-option v-if="currentTenant.role === 'owner'" label="管理员" value="admin" />
               <el-option v-if="currentTenant.role === 'owner'" label="所有者" value="owner" />
             </el-select>
             <el-button type="primary" :loading="addingMember" @click="addMember">添加</el-button>
@@ -70,13 +70,25 @@
         <el-table :data="members" empty-text="暂无成员">
           <el-table-column prop="email" label="邮箱" min-width="220" />
           <el-table-column label="角色" width="120">
-            <template #default="{ row }">{{ roleLabel(row.role) }}</template>
+            <template #default="{ row }">
+              <el-select
+                v-if="canChangeMemberRole(row)"
+                :model-value="row.role"
+                :loading="memberRoleSaving === row.user_id"
+                @change="changeMemberRole(row, $event)"
+              >
+                <el-option label="成员" value="member" />
+                <el-option v-if="currentTenant.role === 'owner'" label="管理员" value="admin" />
+                <el-option v-if="currentTenant.role === 'owner'" label="所有者" value="owner" />
+              </el-select>
+              <span v-else>{{ roleLabel(row.role) }}</span>
+            </template>
           </el-table-column>
           <el-table-column prop="status" label="状态" width="100" />
           <el-table-column label="操作" width="100" align="right">
             <template #default="{ row }">
               <el-button
-                v-if="row.user_id !== sessionUserId"
+                v-if="canRemoveMember(row)"
                 link
                 type="danger"
                 @click="removeMember(row)"
@@ -143,6 +155,7 @@ import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import { getCreditAccount } from '@/api/auth'
 import {
   addTenantMember,
+  changeTenantMemberRole,
   createTenant,
   listTenantMembers,
   listTenants,
@@ -171,12 +184,23 @@ const redeeming = ref(false)
 const showCreate = ref(false)
 const creatingWorkspace = ref(false)
 const addingMember = ref(false)
+const memberRoleSaving = ref('')
 const workspaceForm = reactive({ name: '', slug: '' })
 const memberForm = reactive({ email: '', role: 'member' })
 const sessionUserId = readSession()?.user?.id || ''
 
 const currentTenant = computed(() => tenants.value.find((tenant) => tenant.id === tenantId.value) || null)
 const isManager = computed(() => ['owner', 'admin'].includes(currentTenant.value?.role))
+
+function canChangeMemberRole(row) {
+  return Boolean(row && row.user_id !== sessionUserId && currentTenant.value?.role === 'owner')
+}
+
+function canRemoveMember(row) {
+  if (!row || row.user_id === sessionUserId) return false
+  return currentTenant.value?.role === 'owner'
+    || (currentTenant.value?.role === 'admin' && row.role === 'member')
+}
 
 function roleLabel(role) {
   return ({ owner: '所有者', admin: '管理员', member: '成员' })[role] || role || '成员'
@@ -220,6 +244,7 @@ async function load() {
 async function switchWorkspace(id) {
   if (id === tenantId.value) return
   tenantId.value = id
+  if (currentTenant.value?.role !== 'owner') memberForm.role = 'member'
   saveCurrentTenantId(id)
   loading.value = true
   try {
@@ -257,6 +282,16 @@ async function addMember() {
     ElMessage.success('成员已添加')
   } finally {
     addingMember.value = false
+  }
+}
+
+async function changeMemberRole(row, role) {
+  memberRoleSaving.value = row.user_id
+  try {
+    Object.assign(row, await changeTenantMemberRole(tenantId.value, row.user_id, role))
+    ElMessage.success('成员角色已更新')
+  } finally {
+    memberRoleSaving.value = ''
   }
 }
 

@@ -101,6 +101,7 @@ function setupRouter(cfg, db, log) {
   r.post('/tenants', tenants.create);
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
+  r.patch('/tenants/:tenantId/members/:userId/role', tenants.changeMemberRole);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
   r.get('/platform-admin/users', requirePlatformPermission(PERMISSIONS.USERS_READ), platformAccounts.listUsers);
   r.patch('/platform-admin/users/:userId/role', requirePlatformPermission(PERMISSIONS.USERS_ROLE), platformAccounts.changeRole);
