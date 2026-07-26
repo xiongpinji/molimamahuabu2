@@ -615,7 +615,7 @@ watch(isSelected, (selected) => {
   right: 24px;
   bottom: 24px;
   left: 50%;
-  z-index: 5000;
+  z-index: 1900;
   width: min(960px, calc(100vw - 48px));
   max-height: min(78vh, 760px);
   overflow-y: auto;

@@ -475,7 +475,7 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
   const nodeId = 'free:image:same-chain'
   const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
   await expect(node).toContainText('真实图片节点')
-  await node.click()
+  await node.locator('.media-stage').click({ position: { x: 24, y: 24 } })
   const imageEditor = page.getByRole('region', { name: '图片节点编辑器' })
   await expect(imageEditor).toBeVisible()
   await imageEditor.getByRole('button', { name: '配置', exact: true }).click()
