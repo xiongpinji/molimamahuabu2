@@ -1,6 +1,6 @@
 <template>
   <div class="film-list">
-    <PlatformHeader>
+    <PlatformHeader :show-theme="false">
       <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
@@ -202,6 +202,7 @@
     <!-- 新建项目：先填标题和描述 -->
     <el-dialog
       v-model="showNewDialog"
+      class="project-dialog"
       :title="isCanvasMode ? '新建画布项目' : '新建项目'"
       width="480px"
       :close-on-click-modal="false"
@@ -450,6 +451,7 @@
     <!-- 编辑项目：修改标题和故事 -->
     <el-dialog
       v-model="showEditDialog"
+      class="project-dialog"
       title="编辑项目"
       width="480px"
       :close-on-click-modal="false"
@@ -1239,12 +1241,15 @@ html.light .btn-settings {
   --el-button-active-border-color: rgba(180, 83, 9, 0.6);
 }
 
-/* 导入按钮 —— 亮色模式下提升可读性 */
+/* 导入按钮 */
+.btn-import,
 html.light .btn-import {
-  --el-button-text-color: #374151;
-  --el-button-border-color: #d1d5db;
-  --el-button-hover-text-color: #1f2937;
-  --el-button-hover-border-color: #9ca3af;
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
 }
 
 .main {
@@ -1367,6 +1372,11 @@ html.light .btn-import {
   background: #151515;
   transform: translateY(-3px);
   box-shadow: 0 18px 48px rgba(0, 0, 0, .42), 0 0 0 1px rgba(255, 113, 57, .08);
+}
+.project-card:focus-visible {
+  outline: 2px solid #ff7139;
+  outline-offset: 3px;
+  border-color: rgba(255, 113, 57, 0.72);
 }
 
 /* 操作卡片 */
@@ -1640,6 +1650,97 @@ html.light .btn-import {
 
 /* 公共库弹窗 */
 :global(.library-dialog .el-dialog__body) { padding-top: 8px; }
+
+:global(.project-dialog.el-dialog) {
+  --el-bg-color: #111111;
+  --el-bg-color-overlay: #111111;
+  --el-fill-color-blank: #161616;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #888888;
+  border: 1px solid #2b2b2b;
+  border-radius: 16px;
+  background: #111111 !important;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .66);
+}
+:global(.project-dialog .el-dialog__title) {
+  color: #f5f5f5 !important;
+}
+:global(.project-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
+  color: #ff8f64;
+}
+:global(.project-dialog .el-form-item__label) {
+  color: #a8a8a8 !important;
+}
+:global(.project-dialog .el-input__wrapper),
+:global(.project-dialog .el-select__wrapper),
+:global(.project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+:global(.project-dialog .el-input__wrapper:hover),
+:global(.project-dialog .el-select__wrapper:hover),
+:global(.project-dialog .el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px #484848 inset !important;
+}
+:global(.project-dialog .el-input__wrapper.is-focus),
+:global(.project-dialog .el-select__wrapper.is-focused),
+:global(.project-dialog .el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px #ff7139 inset !important;
+}
+:global(.project-dialog .el-input__inner),
+:global(.project-dialog .el-select__selected-item),
+:global(.project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+}
+:global(.project-dialog .el-input__inner::placeholder),
+:global(.project-dialog .el-textarea__inner::placeholder) {
+  color: #676767 !important;
+}
+:global(.project-dialog .el-input__count) {
+  color: #707070 !important;
+  background: transparent !important;
+}
+:global(.project-dialog .el-dialog__footer .el-button:not(.el-button--primary)) {
+  --el-button-bg-color: #161616;
+  --el-button-border-color: #343434;
+  --el-button-text-color: #bdbdbd;
+  --el-button-hover-bg-color: rgba(255, 113, 57, .1);
+  --el-button-hover-border-color: rgba(255, 113, 57, .55);
+  --el-button-hover-text-color: #ff9a72;
+}
+:global(html.light .project-dialog.el-dialog) {
+  --el-bg-color: #111111;
+  --el-bg-color-overlay: #111111;
+  --el-fill-color-blank: #161616;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #888888;
+  background: #111111 !important;
+}
+:global(html.light .project-dialog .el-dialog__title) {
+  color: #f5f5f5 !important;
+}
+:global(html.light .project-dialog .el-form-item__label) {
+  color: #a8a8a8 !important;
+}
+:global(html.light .project-dialog .el-input__wrapper),
+:global(html.light .project-dialog .el-select__wrapper),
+:global(html.light .project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+:global(html.light .project-dialog .el-input__inner),
+:global(html.light .project-dialog .el-select__selected-item),
+:global(html.light .project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+}
 
 /* 编辑弹框内图片区 */
 .lib-img-editor { display: flex; align-items: center; gap: 14px; }
