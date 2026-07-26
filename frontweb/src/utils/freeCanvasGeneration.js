@@ -133,20 +133,35 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 }
 
 export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNodeId = '') {
+  return uniqueStrings(collectDirectUpstreamImageReferences(nodes, edges, targetNodeId)
+    .map((reference) => reference.url)
+    .filter(Boolean))
+}
+
+export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
   const target = String(targetNodeId || '')
   if (!target) return []
   const byId = new Map((Array.isArray(nodes) ? nodes : [])
     .filter((node) => node?.id)
     .map((node) => [String(node.id), node]))
-  const urls = []
+  const references = []
+  const seen = new Set()
   for (const edge of edges || []) {
     if (String(edge?.target || '') !== target) continue
     if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
     const source = byId.get(String(edge.source || ''))
+    const sourceKind = cleanString(source?.data?.kind || source?.data?.asset?.type)
+    if (sourceKind !== 'image' || seen.has(String(source?.id || ''))) continue
+    seen.add(String(source.id))
     const url = resultUrlFromNode(source)
-    if (url) urls.push(url)
+    references.push({
+      nodeId: String(source.id),
+      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || '图片节点',
+      url,
+      ready: Boolean(url),
+    })
   }
-  return uniqueStrings(urls)
+  return references
 }
 
 export function buildFreeCanvasProjectAssetPayload({

@@ -32,46 +32,83 @@
       <el-icon><Pointer /></el-icon>
     </button>
 
-    <section v-if="data.kind === 'text'" class="text-editor nodrag nopan" @mousedown.stop>
-      <div class="text-toolbar" aria-label="文本格式工具栏">
-        <button type="button" aria-label="一级标题" @click="prefixSelection('# ')">H1</button>
-        <button type="button" aria-label="二级标题" @click="prefixSelection('## ')">H2</button>
-        <button type="button" aria-label="加粗" @click="wrapSelection('**')"><b>B</b></button>
-        <button type="button" aria-label="斜体" @click="wrapSelection('_')"><i>I</i></button>
-        <button type="button" aria-label="项目列表" @click="prefixSelection('- ')">☷</button>
-      </div>
-      <textarea
-        ref="contentInput"
-        v-model="draft.content"
-        class="node-textarea"
-        aria-label="文本内容"
-        placeholder="开启你的创作…"
-        @blur="saveDraft"
-      />
+    <section v-if="data.kind === 'text'" class="text-preview nodrag nopan" @mousedown.stop>
+      <span class="text-preview-icon" aria-hidden="true">☰</span>
+      <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
     </section>
 
-    <template v-else>
-      <section class="media-stage nodrag nopan" @mousedown.stop>
-        <img v-if="data.kind === 'image' && data.url" :src="data.url" :alt="data.title || '图片节点预览'" class="node-media" />
-        <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
-        <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
-        <div v-else class="media-empty">
-          <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
-          <span>{{ mediaEmptyLabel }}</span>
+    <section v-else class="media-stage nodrag nopan" @mousedown.stop>
+      <img v-if="data.kind === 'image' && data.url" :src="data.url" :alt="data.title || '图片节点预览'" class="node-media" />
+      <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
+      <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
+      <div v-else class="media-empty">
+        <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
+        <span>{{ mediaEmptyLabel }}</span>
+      </div>
+      <div v-if="canUpload || canMountAsset" class="media-actions">
+        <button v-if="canMountAsset" type="button" class="upload-button" @click="openAssetLibrary">素材库</button>
+        <button v-if="canUpload" type="button" class="upload-button" @click="chooseFile">上传</button>
+      </div>
+      <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
+    </section>
+
+    <section
+      v-if="selected"
+      class="node-expanded-editor canvas-node-panel nodrag nopan"
+      role="region"
+      :aria-label="editorLabel"
+      @mousedown.stop
+    >
+      <div class="editor-heading">
+        <span class="editor-kind">{{ editorKindLabel }}</span>
+        <span class="editor-hint">连线和参数会随当前节点保存</span>
+      </div>
+
+      <section v-if="data.kind === 'video'" class="reference-panel" aria-label="自动参考图">
+        <div class="reference-heading">
+          <strong>自动参考图</strong>
+          <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
         </div>
-        <div v-if="canUpload || canMountAsset" class="media-actions">
-          <button v-if="canMountAsset" type="button" class="upload-button" @click="openAssetLibrary">素材库</button>
-          <button v-if="canUpload" type="button" class="upload-button" @click="chooseFile">上传</button>
+        <div v-if="inputReferences.length" class="reference-list">
+          <figure
+            v-for="(reference, index) in inputReferences"
+            :key="reference.nodeId"
+            class="reference-card"
+            :data-reference-state="reference.ready ? 'ready' : 'pending'"
+          >
+            <span class="reference-index">{{ index + 1 }}</span>
+            <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
+            <span v-else class="reference-placeholder">等待图片</span>
+            <figcaption>{{ reference.title }}</figcaption>
+          </figure>
         </div>
-        <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
+        <p v-else class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
       </section>
 
-      <section class="generation-panel nodrag nopan" @mousedown.stop>
+      <template v-if="data.kind === 'text'">
+        <div class="text-toolbar" aria-label="文本格式工具栏">
+          <button type="button" aria-label="一级标题" @click="prefixSelection('# ')">H1</button>
+          <button type="button" aria-label="二级标题" @click="prefixSelection('## ')">H2</button>
+          <button type="button" aria-label="加粗" @click="wrapSelection('**')"><b>B</b></button>
+          <button type="button" aria-label="斜体" @click="wrapSelection('_')"><i>I</i></button>
+          <button type="button" aria-label="项目列表" @click="prefixSelection('- ')">☷</button>
+        </div>
+        <textarea
+          ref="contentInput"
+          v-model="draft.content"
+          class="node-textarea"
+          aria-label="文本内容"
+          placeholder="开启你的创作…"
+          @blur="saveDraft"
+        />
+      </template>
+
+      <template v-else>
         <textarea
           v-model="draft.content"
           class="prompt-input"
           aria-label="生成提示词"
-          placeholder="描述任何你想要生成的内容"
+          :placeholder="promptPlaceholder"
           @blur="saveDraft"
         />
         <div v-if="canGenerate" class="generation-controls">
@@ -108,8 +145,8 @@
           </button>
         </div>
         <div v-else class="local-draft-note">本地草稿仅保存节点内容；项目画布可挂载素材并运行模型。</div>
-      </section>
-    </template>
+      </template>
+    </section>
 
     <div v-if="data.error" class="node-error">{{ data.error }}</div>
     <div v-if="assetSaveFailed" class="node-asset-error">
@@ -145,10 +182,19 @@ const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio:
 const mediaEmptyLabel = computed(() => ({ image: '添加图片', video: '添加视频或参考帧', audio: '添加音频' }[props.data.kind] || '添加素材'))
 const accept = computed(() => ({ image: 'image/*', video: 'video/*,image/*', audio: 'audio/*' }[props.data.kind] || '*/*'))
 const defaultModelLabel = computed(() => props.data.kind === 'image' ? '默认图片模型' : props.data.kind === 'video' ? '默认视频模型' : '默认音频模型')
+const editorKindLabel = computed(() => ({ text: '文本编辑', image: '图片生成', video: '视频生成', audio: '语音合成' }[props.data.kind] || '节点编辑'))
+const editorLabel = computed(() => `${({ text: '文本', image: '图片', video: '视频', audio: '音频' }[props.data.kind] || '自由')}节点编辑器`)
+const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入要合成的文本' : '描述任何你想要生成的内容')
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
+const inputReferences = computed(() => (
+  props.data.kind === 'video'
+    ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
+    : []
+))
+const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
 const modelListId = computed(() => `free-node-models-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
 const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || (canGenerate.value ? '待配置' : '本地草稿')))
@@ -229,7 +275,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 <style scoped>
 .home-canvas-node {
   position: relative;
-  width: 430px;
+  width: 340px;
   padding: 0;
   color: #e4e4e7;
   cursor: default;
@@ -320,7 +366,103 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 }
 .node-drag-grip:hover { border-color: #fb7b3b; color: #fb7b3b; }
 .node-drag-grip:active { cursor: grabbing; transform: translate(-50%, -50%) scale(0.94); }
-.text-editor, .media-stage, .generation-panel { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.text-preview, .media-stage { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.text-preview {
+  display: grid;
+  min-height: 220px;
+  padding: 26px;
+  place-content: center;
+  gap: 14px;
+  color: #71717a;
+  text-align: center;
+  box-sizing: border-box;
+}
+.text-preview-icon { color: #52525b; font-size: 42px; }
+.text-preview p {
+  display: -webkit-box;
+  max-width: 230px;
+  margin: 0;
+  overflow: hidden;
+  color: #a1a1aa;
+  font-size: 12px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+.node-expanded-editor {
+  position: absolute;
+  top: calc(100% + 14px);
+  left: 50%;
+  z-index: 20;
+  width: 720px;
+  padding: 22px;
+  border: 1px solid #3f3f46;
+  border-radius: 24px;
+  background: #1c1c1f;
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+  transform: translateX(-50%);
+}
+.editor-heading, .reference-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.editor-heading { margin-bottom: 18px; }
+.editor-kind { color: #f4f4f5; font-size: 14px; font-weight: 650; }
+.editor-hint, .reference-heading span { color: #71717a; font-size: 11px; }
+.reference-panel {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid #35353a;
+  border-radius: 16px;
+  background: #161618;
+}
+.reference-heading strong { color: #d4d4d8; font-size: 12px; }
+.reference-list { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; }
+.reference-card {
+  position: relative;
+  width: 94px;
+  flex: 0 0 94px;
+  margin: 0;
+}
+.reference-card img, .reference-placeholder {
+  display: grid;
+  width: 94px;
+  height: 72px;
+  place-items: center;
+  border: 1px solid #52525b;
+  border-radius: 12px;
+  background: #27272a;
+  color: #71717a;
+  object-fit: cover;
+  font-size: 11px;
+}
+.reference-card[data-reference-state='ready'] img { border-color: #60a5fa; }
+.reference-index {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(9, 9, 11, 0.84);
+  color: #f4f4f5;
+  font-size: 10px;
+}
+.reference-card figcaption {
+  margin-top: 6px;
+  overflow: hidden;
+  color: #a1a1aa;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-empty { margin: 10px 0 0; color: #71717a; font-size: 11px; }
 .text-toolbar { display: flex; gap: 3px; padding: 8px 10px; border-bottom: 1px solid #2f2f33; }
 .text-toolbar button {
   min-width: 32px;
@@ -342,7 +484,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
   font: inherit;
   box-sizing: border-box;
 }
-.node-textarea { min-height: 170px; padding: 18px; font-size: 14px; line-height: 1.7; }
+.node-textarea { min-height: 240px; padding: 18px; font-size: 14px; line-height: 1.7; }
 .media-stage { position: relative; min-height: 230px; overflow: hidden; }
 .node-media { display: block; width: 100%; height: 230px; background: #09090b; object-fit: contain; }
 .node-audio { width: calc(100% - 32px); margin: 96px 16px; }
@@ -358,8 +500,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 }
 .media-actions { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 8px; }
 .file-input { display: none; }
-.generation-panel { padding: 14px; }
-.prompt-input { min-height: 86px; padding: 0; font-size: 13px; line-height: 1.6; }
+.prompt-input { min-height: 180px; padding: 0 0 18px; font-size: 14px; line-height: 1.7; }
 .generation-controls { display: flex; align-items: center; gap: 8px; }
 .model-input, .generation-controls select {
   min-width: 0;

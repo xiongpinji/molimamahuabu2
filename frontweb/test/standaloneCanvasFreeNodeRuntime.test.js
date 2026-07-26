@@ -41,6 +41,17 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /@click\.stop="runNode"/)
 })
 
+test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的图片连线', () => {
+  assert.match(nodeSource, /v-if="selected"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
+  assert.match(nodeSource, /:aria-label="editorLabel"/)
+  assert.match(nodeSource, /data\.kind === 'video'[\s\S]*aria-label="自动参考图"/)
+  assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
+  assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
+  assert.match(nodeSource, /把图片节点连接到视频节点，生成时会自动采用为首帧和参考图/)
+  assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
+  assert.match(canvasSource, /视频节点已自动采用该图片作为参考图/)
+})
+
 test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改不兼容节点', () => {
   assert.match(nodeSource, /ctx\?\.openFreeNodeAssetLibrary\?\.\(props\.id\)/)
   assert.match(nodeSource, /v-if="canMountAsset"[\s\S]*素材库/)
@@ -66,13 +77,13 @@ test('自由节点右键支持复制和删除，复制节点清除运行任务�
 
 test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanvasNodeStep', () => {
   assert.match(canvasSource, /import request from '@\/utils\/request'/)
-  assert.match(canvasSource, /collectDirectUpstreamResultUrls/)
+  assert.match(canvasSource, /collectDirectUpstreamImageReferences/)
   assert.match(canvasSource, /buildFreeCanvasGenerationRequest/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload/)
   assert.match(canvasSource, /resolveFreeCanvasResultUrl/)
   assert.match(canvasSource, /async function runFreeCanvasNode\(nodeOrId\)/)
   assert.match(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode'\)/)
-  assert.match(canvasSource, /requestPayload = buildFreeCanvasGenerationRequest\(node\.data, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls/)
+  assert.match(canvasSource, /const upstreamUrls = freeCanvasNodeInputReferences\(node\)[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(node\.data, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls/)
   assert.match(canvasSource, /if \(kind === 'image'\) submitResult = await imagesAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'video'\) submitResult = await videosAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'audio'\) submitResult = await request\.post\('\/audio\/extract', requestPayload\)/)

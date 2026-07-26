@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
+  collectDirectUpstreamImageReferences,
   collectDirectUpstreamResultUrls,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
@@ -147,6 +148,25 @@ test('collectDirectUpstreamResultUrls 只收集直接手动上游真实结果 UR
   ]
 
   assert.deepEqual(collectDirectUpstreamResultUrls(nodes, edges, 'd'), ['https://cdn.example/a.png'])
+})
+
+test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成的图片连线', () => {
+  const nodes = [
+    { id: 'image-ready', data: { kind: 'image', title: '首帧', url: '/static/first.png' } },
+    { id: 'image-pending', data: { kind: 'image', title: '尾帧', url: '' } },
+    { id: 'audio', data: { kind: 'audio', title: '旁白', url: '/static/voice.mp3' } },
+    { id: 'video', data: { kind: 'video', title: '视频' } },
+  ]
+  const edges = [
+    { id: 'manual:ready', source: 'image-ready', target: 'video', data: { manual: true } },
+    { id: 'manual:pending', source: 'image-pending', target: 'video', data: { manual: true } },
+    { id: 'manual:audio', source: 'audio', target: 'video', data: { manual: true } },
+  ]
+
+  assert.deepEqual(collectDirectUpstreamImageReferences(nodes, edges, 'video'), [
+    { nodeId: 'image-ready', title: '首帧', url: '/static/first.png', ready: true },
+    { nodeId: 'image-pending', title: '尾帧', url: '', ready: false },
+  ])
 })
 
 test('buildFreeCanvasProjectAssetPayload 生成 canvas-result 素材入库 payload', () => {

@@ -279,6 +279,8 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.goto('/canvas/3')
     const node = page.locator('.vue-flow__node[data-id="free:image:mount"]')
     await expect(node).toBeVisible()
+    await node.click()
+    await expect(node.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
     await expect(node.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
     await node.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
     await node.getByRole('combobox', { name: '生成模型' }).blur()
@@ -348,6 +350,8 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.goto('/canvas/3')
     const node = page.locator('.vue-flow__node[data-id="free:image:1"]')
     await expect(node).toContainText('E2E 图片节点')
+    await node.click()
+    await expect(node.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
     await node.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.imageRequests).toEqual([{
@@ -440,6 +444,12 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.goto('/canvas/3')
     const node = page.locator('.vue-flow__node[data-id="free:video:1"]')
     await expect(node).toContainText('E2E 视频节点')
+    await node.click()
+    await expect(node.getByRole('region', { name: '视频节点编辑器' })).toBeVisible()
+    const automaticReferences = node.getByRole('region', { name: '自动参考图' })
+    await expect(automaticReferences).toContainText('1/1 已就绪')
+    await expect(automaticReferences.locator('img[alt="上游首帧"]')).toBeVisible()
+    await expect(automaticReferences.locator('[data-reference-state="ready"]')).toHaveCount(1)
     await node.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.videoRequests.length).toBe(1)
@@ -505,6 +515,8 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.goto('/canvas/3')
     const node = page.locator('.vue-flow__node[data-id="free:audio:1"]')
     await expect(node).toContainText('E2E 音频节点')
+    await node.click()
+    await expect(node.getByRole('region', { name: '音频节点编辑器' })).toBeVisible()
     await node.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.audioRequests).toEqual([{

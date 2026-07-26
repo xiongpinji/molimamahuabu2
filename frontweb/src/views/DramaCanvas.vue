@@ -551,7 +551,7 @@ import {
 import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
-  collectDirectUpstreamResultUrls,
+  collectDirectUpstreamImageReferences,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
@@ -2145,6 +2145,12 @@ async function completeFreeCanvasNodeGeneration({
   if (notify) ElMessage.success('自由节点生成完成')
   return resultUrl
 }
+function freeCanvasNodeInputReferences(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!node || !['image', 'video'].includes(node.data?.kind)) return []
+  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+}
+
 async function runFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
@@ -2156,7 +2162,9 @@ async function runFreeCanvasNode(nodeOrId) {
     ElMessage.warning('文本节点无需生成')
     return
   }
-  const upstreamUrls = collectDirectUpstreamResultUrls(allGraphNodes.value, allGraphEdges.value, node.id)
+  const upstreamUrls = freeCanvasNodeInputReferences(node)
+    .map((reference) => reference.url)
+    .filter(Boolean)
   let requestPayload
   try {
     requestPayload = buildFreeCanvasGenerationRequest(node.data, {
@@ -4508,6 +4516,7 @@ provide(CANVAS_CONTEXT_KEY, {
   uploadFreeCanvasNodeFile,
   openFreeNodeAssetLibrary,
   getFreeNodeModelOptions,
+  getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   runFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })
@@ -4617,7 +4626,18 @@ function onConnect(connection) {
   allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
   applyVirtualizedGraph()
   scheduleLayoutSave()
-  ElMessage.success('已添加画布连线')
+  const sourceNode = findGraphNode(connection.source)
+  const targetNode = findGraphNode(connection.target)
+  if (
+    sourceNode?.type === 'homeCanvasNode'
+    && sourceNode.data?.kind === 'image'
+    && targetNode?.type === 'homeCanvasNode'
+    && targetNode.data?.kind === 'video'
+  ) {
+    ElMessage.success(sourceNode.data?.url ? '视频节点已自动采用该图片作为参考图' : '图片已连接，生成完成后会自动作为视频参考图')
+  } else {
+    ElMessage.success('已添加画布连线')
+  }
 }
 
 function onEdgesChange(changes = []) {
@@ -5432,6 +5452,12 @@ function onNodeClick({ node, event }) {
 
   if (PANEL_NODE_TYPES.has(node.type)) {
     focusNodeForConfig(node, { syncStoryboard: false })
+  }
+
+  if (node.type === 'homeCanvasNode') {
+    focusedNodeId.value = node.id
+    scheduleVirtualization()
+    return
   }
 
   if (node.type === 'canvasAsset') {
