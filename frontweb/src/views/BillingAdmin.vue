@@ -1,14 +1,16 @@
 <template>
-  <main class="admin-page">
-    <PlatformHeader title="平台管理后台" back-to="/" back-label="返回" />
-    <section class="admin-shell">
-      <header class="page-heading">
-        <div>
-          <h1>平台管理后台</h1>
-          <p>统一管理账号、兑换码、积分流水和每个模型的独立计费规则。</p>
-        </div>
-      </header>
-
+  <AdminWorkspaceShell
+    title="运营与计费"
+    header-title="平台管理后台"
+    eyebrow="平台运营控制台"
+    description="统一管理兑换码、积分流水、对账和每个模型的独立计费规则。"
+  >
+    <section v-if="!unlocked" class="unlock-panel" aria-labelledby="unlock-title">
+      <div>
+        <p class="panel-kicker">敏感操作保护</p>
+        <h2 id="unlock-title">验证管理员身份</h2>
+        <p>令牌仅保存在当前浏览器会话，用于调用现有平台管理接口。</p>
+      </div>
       <div class="admin-auth">
         <el-input
           v-model="adminToken"
@@ -20,13 +22,33 @@
         <el-button type="primary" :loading="loading" @click="unlock">验证并读取</el-button>
       </div>
       <el-alert
-        v-if="!unlocked"
         title="管理员令牌只保存在当前浏览器会话，不会写入长期存储。"
         type="info"
         :closable="false"
       />
+    </section>
 
-      <el-tabs v-else v-model="activeTab" class="admin-tabs">
+    <template v-else>
+      <section class="billing-summary" aria-label="运营概览">
+        <article>
+          <span>计费模型</span>
+          <strong>{{ prices.length }}</strong>
+        </article>
+        <article>
+          <span>平台账号</span>
+          <strong>{{ users.length }}</strong>
+        </article>
+        <article>
+          <span>工作区</span>
+          <strong>{{ tenants.length }}</strong>
+        </article>
+        <article>
+          <span>积分流水</span>
+          <strong>{{ transactions.length }}</strong>
+        </article>
+      </section>
+
+      <el-tabs v-model="activeTab" class="admin-tabs">
         <el-tab-pane label="模型计费" name="models">
           <section class="panel">
             <div class="panel-heading">
@@ -138,14 +160,14 @@
           <BillingReconciliationPanel />
         </el-tab-pane>
       </el-tabs>
-    </section>
-  </main>
+    </template>
+  </AdminWorkspaceShell>
 </template>
 
 <script setup>
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import PlatformHeader from '@/components/PlatformHeader.vue'
+import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
 import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
 import {
@@ -288,17 +310,28 @@ async function submitAdjustment() {
 </script>
 
 <style scoped>
-.admin-page { min-height: 100vh; padding: 0 20px 56px; color: #f5f5f7; background: #111214; }
-.admin-shell { width: min(1180px, 100%); margin: 24px auto 0; }
-.page-heading { margin-bottom: 20px; }
-.page-heading h1, .panel h2 { margin: 0 0 8px; }
-.page-heading p, .panel-heading p, .field-hint { margin: 0; color: #a8a9af; }
-.admin-auth { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 18px; }
-.admin-tabs { margin-top: 22px; }
-.panel { padding: 22px; border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
+.unlock-panel,
+.billing-summary article,
+.panel {
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
+}
+.unlock-panel { display: grid; gap: 20px; padding: 24px; }
+.unlock-panel h2, .panel h2 { margin: 0 0 8px; }
+.unlock-panel p, .panel-heading p, .field-hint { margin: 0; color: #929292; }
+.panel-kicker { margin-bottom: 8px !important; color: #ff7139 !important; font-size: 12px; font-weight: 700; letter-spacing: .12em; }
+.admin-auth { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+.billing-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.billing-summary article { display: grid; gap: 7px; padding: 18px 20px; }
+.billing-summary span { color: #858585; font-size: 12px; }
+.billing-summary strong { font-size: 24px; }
+.admin-tabs { margin-top: 10px; }
+.panel { padding: 22px; }
 .panel-heading { margin-bottom: 18px; }
 .model-list { display: grid; gap: 10px; }
-.model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #303136; border-radius: 12px; }
+.model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #292929; border-radius: 12px; }
 .model-row small { grid-column: 1 / -1; color: #8f9098; }
 .new-model, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
 .new-model { grid-template-columns: 1.2fr 1fr 120px 150px auto; }
@@ -306,6 +339,10 @@ async function submitAdjustment() {
 .panel :deep(.el-table) { margin-top: 18px; }
 .field-hint { font-size: 12px; }
 @media (max-width: 900px) {
+  .billing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .model-row, .new-model, .credit-form, .admin-auth { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .billing-summary { grid-template-columns: 1fr; }
 }
 </style>

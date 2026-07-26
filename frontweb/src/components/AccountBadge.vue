@@ -21,8 +21,9 @@
       <strong>{{ account.available }}</strong>
     </div>
     <div v-if="account.held" class="held">冻结 {{ account.held }}</div>
-    <router-link class="manage-link" to="/tenant-console">管理</router-link>
+    <router-link class="manage-link" to="/tenant-console">工作区</router-link>
     <router-link v-if="canManageAccounts" class="manage-link" to="/account-admin">账号</router-link>
+    <router-link v-if="canManageBilling" class="manage-link" to="/billing-admin">计费</router-link>
     <button type="button" @click="logout">退出</button>
   </aside>
 </template>
@@ -54,6 +55,7 @@ const canManageAccounts = computed(() => {
   const role = readSession()?.user?.role
   return canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ)
 })
+const canManageBilling = computed(() => readSession()?.user?.role === 'admin')
 
 async function loadAccount() {
   accountError.value = ''
@@ -99,8 +101,8 @@ async function logout() {
 .account-badge strong { color: #ffd36a; font-size: 18px; }
 .account-badge button { padding: 5px 8px; border: 0; color: #ccc; background: transparent; cursor: pointer; }
 .tenant-select { width: 156px; }
-.manage-link { color: #c4b5fd; font-size: 13px; text-decoration: none; }
-.manage-link:hover { color: #ddd6fe; }
+.manage-link { color: #ff9a73; font-size: 13px; text-decoration: none; }
+.manage-link:hover { color: #ffc0a6; }
 @media (max-width: 680px) {
   .account-badge { left: 10px; right: 10px; bottom: 10px; overflow-x: auto; }
   .tenant-select { min-width: 132px; }

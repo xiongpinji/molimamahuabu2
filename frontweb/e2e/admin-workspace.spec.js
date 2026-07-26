@@ -1,0 +1,158 @@
+import { test, expect } from '@playwright/test'
+
+function json(data) {
+  return {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, data }),
+  }
+}
+
+async function mockAdminWorkspace(page, calls) {
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const { pathname } = new URL(request.url())
+    const method = request.method()
+
+    if (method === 'GET' && pathname === '/api/v1/platform-admin/users') {
+      return route.fulfill(json([
+        { id: 'user-1', email: 'creator@example.com', role: 'user', status: 'active', tenant_count: 1 },
+        { id: 'user-2', email: 'paused@example.com', role: 'support', status: 'disabled', tenant_count: 2 },
+      ]))
+    }
+
+    if (method === 'PATCH' && pathname === '/api/v1/platform-admin/users/user-1/status') {
+      calls.accountStatus += 1
+      return route.fulfill(json({
+        id: 'user-1',
+        email: 'creator@example.com',
+        role: 'user',
+        status: 'disabled',
+        tenant_count: 1,
+      }))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/prices') {
+      return route.fulfill(json([
+        {
+          model: 'grok-imagine-video',
+          display_name: 'Grok Imagine Video',
+          category: 'video',
+          credits: 20,
+          status: 'enabled',
+        },
+      ]))
+    }
+
+    if (method === 'PUT' && pathname === '/api/v1/billing/prices/grok-imagine-video') {
+      calls.modelSave += 1
+      return route.fulfill(json({
+        model: 'grok-imagine-video',
+        display_name: 'Grok Imagine Video',
+        category: 'video',
+        credits: 20,
+        status: 'enabled',
+      }))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/users') {
+      return route.fulfill(json([
+        { id: 'user-1', email: 'creator@example.com', role: 'user', status: 'active', tenant_count: 1 },
+      ]))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/tenants') {
+      return route.fulfill(json([
+        { id: 'tenant-1', name: '茉莉工作室', available: 3200 },
+      ]))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/credit-transactions') {
+      return route.fulfill(json([
+        {
+          id: 'tx-1',
+          tenant_name: '茉莉工作室',
+          amount: 100,
+          reason: '测试调账',
+          event_type: 'admin_adjustment',
+          created_at: '2026-07-26T09:00:00Z',
+        },
+      ]))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/redeem-codes') {
+      return route.fulfill(json([]))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/reconciliation/anomalies') {
+      return route.fulfill(json([]))
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/billing/admin/reconciliation/history') {
+      return route.fulfill(json([]))
+    }
+
+    return route.fulfill(json({}))
+  })
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'browser-session-token',
+      user: { id: 'current-admin', email: 'admin@example.com', role: 'admin' },
+    }))
+  })
+})
+
+test('管理中心导航统一三个真实管理入口', async ({ page }) => {
+  const calls = { accountStatus: 0, modelSave: 0 }
+  await mockAdminWorkspace(page, calls)
+
+  await page.goto('/account-admin')
+  await expect(page.getByRole('navigation', { name: '管理中心' })).toBeVisible()
+  await expect(page.getByRole('link', { name: /账号与权限/ })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('heading', { name: '账号与权限', exact: true })).toBeVisible()
+  await expect(page.getByText('2', { exact: true }).first()).toBeVisible()
+  await expect.poll(() => page.locator('.admin-workspace').evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  )).toBe('rgb(8, 8, 8)')
+
+  await page.getByRole('link', { name: /工作区与积分/ }).click()
+  await expect(page).toHaveURL(/\/tenant-console$/)
+  await expect(page.getByRole('heading', { name: '工作区与积分', exact: true })).toBeVisible()
+  await expect(page.getByText('租户控制台仅在公开平台模式启用')).toBeVisible()
+
+  await page.getByRole('link', { name: /运营与计费/ }).click()
+  await expect(page).toHaveURL(/\/billing-admin$/)
+  await expect(page.getByRole('heading', { name: '运营与计费', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '验证管理员身份' })).toBeVisible()
+})
+
+test('账号状态修改继续调用原有 RBAC 接口', async ({ page }) => {
+  const calls = { accountStatus: 0, modelSave: 0 }
+  await mockAdminWorkspace(page, calls)
+
+  await page.goto('/account-admin')
+  await page.getByRole('button', { name: '暂停账号' }).first().click()
+  await page.getByRole('button', { name: '确定' }).click()
+
+  await expect.poll(() => calls.accountStatus).toBe(1)
+  await expect(page.locator('.account-panel .el-tag').filter({ hasText: '已暂停' })).toHaveCount(2)
+})
+
+test('管理员令牌解锁后可读取并保存模型计费', async ({ page }) => {
+  const calls = { accountStatus: 0, modelSave: 0 }
+  await mockAdminWorkspace(page, calls)
+
+  await page.goto('/billing-admin')
+  await page.getByPlaceholder('输入平台管理员令牌').fill('admin-token-with-at-least-32-characters')
+  await page.getByRole('button', { name: '验证并读取' }).click()
+
+  await expect(page.getByRole('tab', { name: '模型计费' })).toBeVisible()
+  await expect(page.locator('.model-row').first().locator('input').first()).toHaveValue('Grok Imagine Video')
+  await page.locator('.model-row').first().getByRole('button', { name: '保存' }).click()
+
+  await expect.poll(() => calls.modelSave).toBe(1)
+  await expect(page.getByText('Grok Imagine Video 已保存')).toBeVisible()
+})

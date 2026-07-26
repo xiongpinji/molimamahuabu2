@@ -37,6 +37,9 @@ const factoryActive = computed(() => [
   'material-props',
   'media-library',
   'ai-config',
+  'tenant-console',
+  'account-admin',
+  'billing-admin',
 ].includes(route.name))
 </script>
 

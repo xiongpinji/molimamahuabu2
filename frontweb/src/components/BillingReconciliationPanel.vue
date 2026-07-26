@@ -118,9 +118,10 @@ onMounted(refresh)
 <style scoped>
 .reconciliation-panel {
   padding: 22px;
-  border: 1px solid #303136;
-  border-radius: 16px;
-  background: #1b1c20;
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
 }
 .panel-heading {
   display: flex;
