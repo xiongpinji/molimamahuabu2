@@ -41,6 +41,10 @@ test('统一导航暴露首页、画布、短剧工厂与右上角登录入口',
   assert.match(primaryNavSource, /to="\/canvas"/)
   assert.match(primaryNavSource, /to="\/factory"/)
   assert.match(dramaCanvasSource, /v-if="!isStandaloneCanvas" mode="canvas"/)
+  assert.match(dramaCanvasSource, /\.header\.canvas-topbar[\s\S]*background:\s*#080808/)
+  assert.match(dramaCanvasSource, /\.canvas-topbar[\s\S]*--el-button-text-color:\s*#f5f5f5/)
+  assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.header\.canvas-topbar[\s\S]*background:\s*#080808 !important/)
+  assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.canvas-topbar \.header-actions \.el-button[\s\S]*background:\s*#151515 !important/)
 })
 
 test('普通页面的全局头部不再把独立自由画布作为主要入口', () => {
