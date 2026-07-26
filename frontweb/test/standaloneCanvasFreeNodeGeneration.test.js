@@ -6,6 +6,7 @@ import {
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
   collectDirectUpstreamResultUrls,
+  collectDirectUpstreamTextInputs,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
   resolveFreeCanvasResultUrl,
@@ -155,6 +156,24 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
   assert.equal('storyboard_id' in audioPayload, false)
 })
 
+test('文本连线内容按契约进入下游图片、视频和音频模型输入', () => {
+  assert.equal(buildFreeCanvasGenerationRequest({
+    kind: 'audio',
+    content: '目标节点补充',
+  }, {
+    dramaId: 7,
+    upstreamTexts: ['上游对白'],
+  }).text, '上游对白\n\n目标节点补充')
+
+  assert.equal(buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '电影光影',
+  }, {
+    dramaId: 7,
+    upstreamTexts: ['雨夜车站'],
+  }).prompt, '雨夜车站\n\n电影光影')
+})
+
 test('文本自由节点构造真实 AI 生成请求', () => {
   assert.deepEqual(buildFreeCanvasGenerationRequest({
     kind: 'text',
@@ -221,6 +240,21 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
     { nodeId: 'image-ready', title: '首帧', url: '/static/first.png', ready: true },
     { nodeId: 'image-pending', title: '尾帧', url: '', ready: false },
   ])
+})
+
+test('collectDirectUpstreamTextInputs 只按手动直连契约收集文本输入并去重', () => {
+  const nodes = [
+    { id: 'text-a', data: { kind: 'text', content: '上游对白' } },
+    { id: 'image-a', data: { kind: 'image', content: '不是文本输入' } },
+  ]
+  const edges = [
+    { id: 'manual:text-a:video', source: 'text-a', target: 'video', data: { manual: true } },
+    { id: 'manual:text-a:video-copy', source: 'text-a', target: 'video', data: { manual: true } },
+    { id: 'manual:image-a:video', source: 'image-a', target: 'video', data: { manual: true } },
+    { id: 'auto:text-a:other', source: 'text-a', target: 'other' },
+  ]
+
+  assert.deepEqual(collectDirectUpstreamTextInputs(nodes, edges, 'video'), ['上游对白'])
 })
 
 test('buildFreeCanvasProjectAssetPayload 生成 canvas-result 素材入库 payload', () => {

@@ -130,6 +130,10 @@ export function normalizeFreeCanvasNode(node = {}) {
 export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const nodeData = normalizeFreeCanvasNodeData(data)
   if (!nodeData) return null
+  const content = uniqueStrings([
+    ...(options.upstreamTexts || []),
+    nodeData.content,
+  ]).join('\n\n')
   const upstreamUrls = uniqueStrings(options.upstreamUrls)
   const referenceUrls = uniqueStrings([
     ...upstreamUrls,
@@ -140,7 +144,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: nodeData.content,
+      prompt: content,
       model: nodeData.model,
     })
   }
@@ -149,7 +153,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: nodeData.content,
+      prompt: content,
       model: nodeData.model,
       aspect_ratio: nodeData.aspectRatio,
       style: nodeData.style,
@@ -164,7 +168,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const firstFrameUrl = referenceUrls[0] || ''
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: decoratedVideoPrompt(nodeData),
+      prompt: decoratedVideoPrompt({ ...nodeData, content }),
       model: nodeData.model,
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
@@ -180,7 +184,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
       drama_id: dramaId,
-      text: nodeData.content,
+      text: content,
       tts_model: nodeData.model,
       voice_id: nodeData.voiceId,
       speed: nodeData.speechRate,
@@ -220,6 +224,28 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
     })
   }
   return references
+}
+
+export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNodeId = '') {
+  const target = String(targetNodeId || '')
+  if (!target) return []
+  const byId = new Map((Array.isArray(nodes) ? nodes : [])
+    .filter((node) => node?.id)
+    .map((node) => [String(node.id), node]))
+  const texts = []
+  const seen = new Set()
+  for (const edge of edges || []) {
+    if (String(edge?.target || '') !== target) continue
+    if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
+    const source = byId.get(String(edge.source || ''))
+    const sourceKind = cleanString(source?.data?.kind)
+    const sourceId = String(source?.id || '')
+    if (!['text', 'universal'].includes(sourceKind) || !sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    const content = cleanString(source?.data?.content)
+    if (content) texts.push(content)
+  }
+  return uniqueStrings(texts)
 }
 
 export function buildFreeCanvasProjectAssetPayload({

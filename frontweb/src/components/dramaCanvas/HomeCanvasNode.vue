@@ -21,17 +21,6 @@
 
     <Handle class="node-handle node-handle-input" type="target" :position="Position.Left" />
     <Handle class="node-handle node-handle-output" type="source" :position="Position.Right" />
-    <button
-      type="button"
-      class="node-drag-grip"
-      tabindex="-1"
-      aria-label="拖动节点"
-      title="按住拖动节点"
-      @click.prevent
-    >
-      <el-icon><Pointer /></el-icon>
-    </button>
-
     <section v-if="data.kind === 'text'" class="text-preview">
       <span class="text-preview-icon" aria-hidden="true">☰</span>
       <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
@@ -90,7 +79,7 @@
           </div>
         </div>
 
-        <section v-if="data.kind === 'video'" class="reference-panel" aria-label="自动参考图">
+        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考图">
           <div class="reference-heading">
             <strong>参考图 · 连线自动采用</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
@@ -108,7 +97,8 @@
               <figcaption>{{ reference.title }}</figcaption>
             </figure>
           </div>
-          <p v-else class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
+          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
+          <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
 
         <div v-if="data.kind === 'text'" class="text-toolbar" aria-label="文本格式工具栏">
@@ -279,7 +269,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
-import { Pointer } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const props = defineProps({
@@ -328,7 +317,7 @@ const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'f
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
-  props.data.kind === 'video'
+  ['image', 'video'].includes(props.data.kind)
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
@@ -549,45 +538,21 @@ watch(isSelected, (selected) => {
 }
 .node-delete:hover { color: #fb7185; }
 .node-handle {
-  width: 28px;
-  height: 28px;
+  width: 18px;
+  height: 18px;
   top: calc(50% + 19px);
   z-index: 4;
   border: 1px solid #52525b;
   background: #18181b;
 }
-.node-handle::after { content: '+'; display: grid; height: 100%; place-items: center; color: #d4d4d8; font-size: 19px; line-height: 1; }
-.node-handle-input { left: -24px; }
-.node-handle-output { right: -24px; }
-.node-drag-grip {
-  position: absolute;
-  top: calc(50% + 19px);
-  left: 50%;
-  z-index: 7;
-  display: grid;
-  width: 42px;
-  height: 42px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid rgba(161, 161, 170, 0.52);
-  border-radius: 50%;
-  background: rgba(24, 24, 27, 0.9);
-  color: #f4f4f5;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
-  opacity: 0;
-  pointer-events: none;
-  cursor: grab;
-  transform: translate(-50%, -50%) scale(0.86);
-  transition: opacity 120ms ease, transform 120ms ease, border-color 120ms ease;
-}
-.home-canvas-node:hover .node-drag-grip {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translate(-50%, -50%) scale(1);
-}
-.node-drag-grip:hover { border-color: #fb7b3b; color: #fb7b3b; }
-.node-drag-grip:active { cursor: grabbing; transform: translate(-50%, -50%) scale(0.94); }
+.node-handle::after { content: '+'; display: grid; height: 100%; place-items: center; color: #d4d4d8; font-size: 13px; line-height: 1; }
+.node-handle-input { left: -15px; }
+.node-handle-output { right: -15px; }
 .text-preview, .media-stage { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.home-canvas-node.is-selected .text-preview,
+.home-canvas-node.is-selected .media-stage { cursor: grab; }
+.home-canvas-node.is-selected .text-preview:active,
+.home-canvas-node.is-selected .media-stage:active { cursor: grabbing; }
 .text-preview {
   display: grid;
   min-height: 220px;
@@ -616,10 +581,10 @@ watch(isSelected, (selected) => {
   bottom: 24px;
   left: 50%;
   z-index: 1900;
-  width: min(960px, calc(100vw - 48px));
-  max-height: min(78vh, 760px);
+  width: min(860px, calc(100vw - 48px));
+  max-height: min(58vh, 560px);
   overflow-y: auto;
-  padding: 22px;
+  padding: 18px;
   border: 1px solid #3f3f46;
   border-radius: 24px;
   background: #1c1c1f;
@@ -734,7 +699,7 @@ watch(isSelected, (selected) => {
   font: inherit;
   box-sizing: border-box;
 }
-.node-textarea { min-height: 240px; padding: 18px; font-size: 14px; line-height: 1.7; }
+.node-textarea { min-height: 160px; padding: 16px; font-size: 14px; line-height: 1.7; }
 .media-stage { position: relative; min-height: 230px; overflow: hidden; }
 .node-media { display: block; width: 100%; height: 230px; background: #09090b; object-fit: contain; }
 .node-audio { width: calc(100% - 32px); margin: 96px 16px; }
@@ -773,7 +738,7 @@ watch(isSelected, (selected) => {
 .result-strip img { width: 100%; height: 100%; object-fit: cover; }
 .result-actions { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
 .file-input { display: none; }
-.prompt-input { min-height: 150px; padding: 0 0 18px; font-size: 14px; line-height: 1.7; }
+.prompt-input { min-height: 112px; padding: 0 0 14px; font-size: 14px; line-height: 1.7; }
 .editor-options {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));

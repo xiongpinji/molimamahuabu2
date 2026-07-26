@@ -279,10 +279,13 @@
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :edge-types="edgeTypes"
+          :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
           :nodes-connectable="true"
+          :nodes-draggable="true"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -552,8 +555,15 @@ import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamTextInputs,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import {
+  canvasModelServiceType,
+  canvasNodeKind,
+  resolveCanvasNodeConnection,
+  toLibTvCanvasEdge,
+} from '@/utils/canvasNodeContracts'
 import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
@@ -606,6 +616,7 @@ import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
 import CanvasProjectAssetNode from '@/components/dramaCanvas/CanvasProjectAssetNode.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
+import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
@@ -697,12 +708,7 @@ const dragHistorySnapshot = ref(null)
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 
 function getFreeNodeModelOptions(kind) {
-  const serviceType = {
-    text: 'text',
-    image: 'storyboard_image',
-    video: 'video',
-    audio: 'tts',
-  }[kind]
+  const serviceType = canvasModelServiceType(kind)
   return serviceType ? getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType) : []
 }
 
@@ -1621,7 +1627,19 @@ function rebuildGraph() {
       },
     }
   })
-  let nextEdges = stampEdgeBaseStyles(graph.edges)
+  const nodesById = new Map(nextNodes.map((node) => [String(node.id), node]))
+  let nextEdges = stampEdgeBaseStyles(graph.edges
+    .filter((edge) => {
+      const sourceNode = nodesById.get(String(edge.source))
+      const targetNode = nodesById.get(String(edge.target))
+      if (sourceNode?.type !== 'homeCanvasNode' || targetNode?.type !== 'homeCanvasNode') return true
+      return resolveCanvasNodeConnection(canvasNodeKind(sourceNode), canvasNodeKind(targetNode)).allowed
+    })
+    .map((edge) => toLibTvCanvasEdge(
+      edge,
+      canvasNodeKind(nodesById.get(String(edge.source))),
+      canvasNodeKind(nodesById.get(String(edge.target)))
+    )))
   if (highlightAssetId.value) {
     const highlighted = applyCanvasHighlight(nextNodes, nextEdges, highlightAssetId.value, drama.value)
     nextNodes = highlighted.nodes
@@ -2184,11 +2202,17 @@ async function runFreeCanvasNode(nodeOrId) {
   const upstreamUrls = freeCanvasNodeInputReferences(node)
     .map((reference) => reference.url)
     .filter(Boolean)
+  const upstreamTexts = collectDirectUpstreamTextInputs(
+    allGraphNodes.value,
+    allGraphEdges.value,
+    node.id
+  )
   let requestPayload
   try {
     requestPayload = buildFreeCanvasGenerationRequest(node.data, {
       dramaId: dramaId.value,
       upstreamUrls,
+      upstreamTexts,
     })
   } catch (error) {
     ElMessage.error(error?.message || '自由节点生成参数不完整')
@@ -2253,6 +2277,7 @@ async function runFreeCanvasNode(nodeOrId) {
     ElMessage.error(errorMessage)
   }
 }
+const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
 
 async function translateFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
@@ -2577,16 +2602,14 @@ async function appendDownstreamStoryboard(node, options = {}) {
   const targetNodeId = `sb:${storyboardId}`
   const sourcePosition = node.position || { x: 0, y: 0 }
   const targetPosition = { x: sourcePosition.x + 420, y: sourcePosition.y }
-  const edge = {
+  const edge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: node.id, target: targetNodeId }),
     source: node.id,
     target: targetNodeId,
     sourceHandle: null,
     targetHandle: null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
+  })
 
   layoutCache.value = {
     ...(layoutCache.value || { version: 1 }),
@@ -2684,26 +2707,22 @@ async function insertDownstreamStoryboard(node) {
     x: sourcePosition.x + Math.max(180, Math.round((downstreamPosition.x - sourcePosition.x) / 2)),
     y: sourcePosition.y + Math.round((downstreamPosition.y - sourcePosition.y) / 2),
   }
-  const firstEdge = {
+  const firstEdge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: node.id, target: targetNodeId }),
     source: node.id,
     target: targetNodeId,
     sourceHandle: null,
     targetHandle: null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
-  const secondEdge = {
+  })
+  const secondEdge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: targetNodeId, target: downstreamEdge.target }),
     source: targetNodeId,
     target: downstreamEdge.target,
     sourceHandle: null,
     targetHandle: downstreamEdge.targetHandle || null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
+  })
 
   layoutCache.value = {
     ...(layoutCache.value || { version: 1 }),
@@ -4687,21 +4706,31 @@ function onConnect(connection) {
     return
   }
 
-  const edge = {
+  const sourceNode = findGraphNode(connection.source)
+  const targetNode = findGraphNode(connection.target)
+  const sourceKind = canvasNodeKind(sourceNode)
+  const targetKind = canvasNodeKind(targetNode)
+  const contract = resolveCanvasNodeConnection(sourceKind, targetKind)
+  if (
+    sourceNode?.type === 'homeCanvasNode'
+    && targetNode?.type === 'homeCanvasNode'
+    && !contract.allowed
+  ) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
+
+  const edge = toLibTvCanvasEdge({
     id: manualEdgeId(connection),
     source: connection.source,
     target: connection.target,
     sourceHandle: connection.sourceHandle || null,
     targetHandle: connection.targetHandle || null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
+  }, sourceKind, targetKind)
   allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
   applyVirtualizedGraph()
   scheduleLayoutSave()
-  const sourceNode = findGraphNode(connection.source)
-  const targetNode = findGraphNode(connection.target)
   if (
     sourceNode?.type === 'homeCanvasNode'
     && sourceNode.data?.kind === 'image'

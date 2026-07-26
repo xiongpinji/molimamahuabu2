@@ -41,10 +41,13 @@
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :edge-types="edgeTypes"
+          :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
           :nodes-connectable="true"
+          :nodes-draggable="true"
           :edges-updatable="true"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
@@ -197,6 +200,12 @@ import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
+import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
+import {
+  canvasNodeKind,
+  resolveCanvasNodeConnection,
+  toLibTvCanvasEdge,
+} from '@/utils/canvasNodeContracts'
 import {
   HOME_CANVAS_STORAGE_KEY,
   createHomeCanvasState,
@@ -233,6 +242,7 @@ let canvasPasteSequence = 0
 let saveTimer = null
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
+const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
 const initialViewport = computed(() => currentViewport.value)
 const zoomLabel = computed(() => `${Math.round(Number(currentViewport.value.zoom || 0.75) * 100)}%`)
 const layoutStatusLabel = computed(() => ({ saving: '保存中…', saved: '已保存', error: '保存失败' }[layoutSaveState.value] || '本地画布'))
@@ -249,11 +259,38 @@ const showStarterPanel = computed(() => {
   return nodes.value.length === 1 && nodes.value[0]?.id === 'home:welcome'
 })
 
+function nodeById(id, nodeList = nodes.value) {
+  return nodeList.find((node) => String(node.id) === String(id))
+}
+
+function decorateEdge(edge, nodeList = nodes.value) {
+  return toLibTvCanvasEdge(
+    edge,
+    canvasNodeKind(nodeById(edge.source, nodeList)),
+    canvasNodeKind(nodeById(edge.target, nodeList))
+  )
+}
+
+function decorateEdges(edgeList, nodeList = nodes.value) {
+  return (edgeList || []).filter((edge) => {
+    const sourceKind = canvasNodeKind(nodeById(edge.source, nodeList))
+    const targetKind = canvasNodeKind(nodeById(edge.target, nodeList))
+    return !sourceKind || !targetKind || resolveCanvasNodeConnection(sourceKind, targetKind).allowed
+  }).map((edge) => decorateEdge(edge, nodeList))
+}
+
+function connectionContract(source, target) {
+  return resolveCanvasNodeConnection(
+    canvasNodeKind(nodeById(source)),
+    canvasNodeKind(nodeById(target))
+  )
+}
+
 function loadState() {
   const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(HOME_CANVAS_STORAGE_KEY)
   const state = normalizeHomeCanvasState(raw || createHomeCanvasState())
   nodes.value = state.nodes
-  edges.value = state.edges
+  edges.value = decorateEdges(state.edges, state.nodes)
   currentViewport.value = state.viewport
   hasSavedViewport.value = Boolean(raw)
   historyState.value = createHomeCanvasHistory(state)
@@ -274,7 +311,7 @@ function commitHistory(previousState) {
 function applyCanvasState(state) {
   const next = normalizeHomeCanvasState(state)
   nodes.value = next.nodes
-  edges.value = next.edges
+  edges.value = decorateEdges(next.edges, next.nodes)
   currentViewport.value = next.viewport
 }
 
@@ -321,17 +358,21 @@ function onConnect(connection) {
   const targetHandle = connection?.targetHandle ? String(connection.targetHandle) : undefined
   const exists = hasDuplicateHomeCanvasEdge(edges.value, { source, target, sourceHandle, targetHandle })
   if (exists) return
+  if (!connectionContract(source, target).allowed) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
   const previousState = currentCanvasState()
   edges.value = [
     ...edges.value,
-    {
+    decorateEdge({
       id: String(connection.id || `home:edge:${source}:${target}:${Date.now()}`),
       source,
       target,
       ...(sourceHandle ? { sourceHandle } : {}),
       ...(targetHandle ? { targetHandle } : {}),
-      type: 'smoothstep',
-    },
+      data: { manual: true },
+    }),
   ]
   commitHistory(previousState)
   scheduleSave()
@@ -374,6 +415,10 @@ function onEdgeUpdate({ edge, connection } = {}) {
     ElMessage.warning('该连接已存在')
     return
   }
+  if (!connectionContract(source, target).allowed) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
   const previousState = edgeHistorySnapshot.value || currentCanvasState()
   edges.value = edges.value.map((item) => {
     if (item.id !== edge.id) return item
@@ -382,7 +427,7 @@ function onEdgeUpdate({ edge, connection } = {}) {
     else delete updated.sourceHandle
     if (connection.targetHandle) updated.targetHandle = String(connection.targetHandle)
     else delete updated.targetHandle
-    return updated
+    return decorateEdge(updated)
   })
   edgeHistorySnapshot.value = null
   commitHistory(previousState)
@@ -643,9 +688,10 @@ function pasteCanvasElements() {
     ...nodes.value.map((node) => ({ ...node, selected: false })),
     ...pastedNodes,
   ]
+  const nextNodes = nodes.value
   edges.value = [
     ...edges.value.map((edge) => ({ ...edge, selected: false })),
-    ...pastedEdges,
+    ...decorateEdges(pastedEdges, nextNodes),
   ]
   commitHistory(previousState)
   scheduleSave()

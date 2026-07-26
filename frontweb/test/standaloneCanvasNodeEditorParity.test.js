@@ -11,6 +11,10 @@ const localCanvasSource = readFileSync(
   fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)),
   'utf8'
 )
+const edgeSource = readFileSync(
+  fileURLToPath(new URL('../src/components/dramaCanvas/LibTvCanvasEdge.vue', import.meta.url)),
+  'utf8'
+)
 
 test('独立画布节点编辑器固定在视口并支持全屏和关闭', () => {
   assert.match(nodeSource, /<Teleport to="body">/)
@@ -56,4 +60,18 @@ test('多结果可切换主结果并提供下载、复制引用和重试闭环',
   assert.match(nodeSource, /aria-label="下载结果"/)
   assert.match(nodeSource, /aria-label="复制结果引用"/)
   assert.match(nodeSource, /data\.status === 'failed' \? '重试' : '生成'/)
+})
+
+test('LibTV 连线使用细贝塞尔底线和循环蓝色流光', () => {
+  assert.match(edgeSource, /getBezierPath/)
+  assert.match(edgeSource, /class="libtv-edge-glow"/)
+  assert.match(edgeSource, /stroke-dasharray/)
+  assert.match(edgeSource, /@keyframes libtv-edge-flow/)
+})
+
+test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () => {
+  assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
+  assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
+  assert.match(nodeSource, /width:\s*min\(860px/)
+  assert.match(nodeSource, /max-height:\s*min\(58vh,\s*560px\)/)
 })

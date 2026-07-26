@@ -223,32 +223,19 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     })
 
     const originalPosition = { ...state.canvasLayout.free_nodes[0].position }
-    const dragHandle = node.locator('.node-drag-grip')
-    await expect(dragHandle).toHaveCount(1)
     await editor.getByRole('button', { name: '关闭编辑器' }).click()
-    await page.mouse.move(20, 20)
-    await expect.poll(() => dragHandle.evaluate((element) => ({
-      opacity: getComputedStyle(element).opacity,
-      pointerEvents: getComputedStyle(element).pointerEvents,
-    }))).toEqual({ opacity: '0', pointerEvents: 'none' })
-
-    await node.hover()
-    await expect.poll(() => dragHandle.evaluate((element) => ({
-      opacity: getComputedStyle(element).opacity,
-      pointerEvents: getComputedStyle(element).pointerEvents,
-      cursor: getComputedStyle(element).cursor,
-    }))).toEqual({ opacity: '1', pointerEvents: 'auto', cursor: 'grab' })
-
-    const dragHandleBox = await dragHandle.boundingBox()
-    expect(dragHandleBox).not.toBeNull()
+    const dragSurface = node.locator('.media-stage')
+    await expect(dragSurface).toHaveCSS('cursor', 'grab')
+    const dragSurfaceBox = await dragSurface.boundingBox()
+    expect(dragSurfaceBox).not.toBeNull()
     await page.mouse.move(
-      dragHandleBox.x + dragHandleBox.width / 2,
-      dragHandleBox.y + dragHandleBox.height / 2,
+      dragSurfaceBox.x + 28,
+      dragSurfaceBox.y + 28,
     )
     await page.mouse.down()
     await page.mouse.move(
-      dragHandleBox.x + dragHandleBox.width / 2 + 120,
-      dragHandleBox.y + dragHandleBox.height / 2 + 80,
+      dragSurfaceBox.x + 148,
+      dragSurfaceBox.y + 108,
       { steps: 8 },
     )
     await page.mouse.up()
