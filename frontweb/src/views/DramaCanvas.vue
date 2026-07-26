@@ -63,6 +63,7 @@
                   <el-dropdown-item command="image">添加图片节点</el-dropdown-item>
                   <el-dropdown-item command="video">添加视频节点</el-dropdown-item>
                   <el-dropdown-item command="audio">添加音频节点</el-dropdown-item>
+                  <el-dropdown-item divided command="run-selected-free">运行所选自由节点</el-dropdown-item>
                 </template>
                 <template v-else>
                   <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
@@ -564,6 +565,8 @@ import {
   resolveCanvasNodeConnection,
   toLibTvCanvasEdge,
 } from '@/utils/canvasNodeContracts'
+import { buildCanvasExecutionPlan } from '@/utils/canvasExecutionPlan'
+import { canvasModelCapability, estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
 import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
@@ -692,6 +695,7 @@ const freeNodeEditingId = ref('')
 const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
 const freeCanvasModelConfigs = ref([])
+const freeCanvasModelCatalog = ref([])
 const freeCanvasVoiceOptions = ref([])
 let freeCanvasModelConfigsLoaded = false
 let freeCanvasVoiceOptionsLoaded = false
@@ -708,20 +712,34 @@ const dragHistorySnapshot = ref(null)
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 
 function getFreeNodeModelOptions(kind) {
+  const catalogModels = freeCanvasModelCatalog.value.filter((item) => item.kind === kind).map((item) => item.model)
+  if (catalogModels.length) return catalogModels
   const serviceType = canvasModelServiceType(kind)
   return serviceType ? getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType) : []
+}
+
+function getFreeNodeModelCapability(kind, model) {
+  return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeEstimatedCredits(kind, model, quantity) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity)
 }
 
 async function loadFreeCanvasModelConfigs() {
   if (freeCanvasModelConfigsLoaded) return
   const results = await Promise.allSettled([
+    request.get('/canvas/model-catalog'),
     aiAPI.list('text'),
     aiAPI.list('image'),
     aiAPI.list('storyboard_image'),
     aiAPI.list('video'),
     aiAPI.list('tts'),
   ])
-  freeCanvasModelConfigs.value = results.flatMap((result) => (
+  freeCanvasModelCatalog.value = normalizeCanvasModelCatalog(
+    results[0].status === 'fulfilled' && Array.isArray(results[0].value) ? results[0].value : []
+  )
+  freeCanvasModelConfigs.value = results.slice(1).flatMap((result) => (
     result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []
   ))
   freeCanvasModelConfigsLoaded = true
@@ -2188,6 +2206,24 @@ function freeCanvasNodeInputReferences(nodeOrId) {
   return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
 }
 
+function updateFreeCanvasReference(edgeId, patch = {}) {
+  const mutate = (edge) => {
+    if (String(edge.id) !== String(edgeId)) return edge
+    const source = findGraphNode(edge.source)
+    const target = findGraphNode(edge.target)
+    return toLibTvCanvasEdge({
+      ...edge,
+      data: {
+        ...(edge.data || {}),
+        contract: { ...(edge.data?.contract || {}), ...patch },
+      },
+    }, canvasNodeKind(source), canvasNodeKind(target))
+  }
+  allGraphEdges.value = allGraphEdges.value.map(mutate)
+  edges.value = edges.value.map(mutate)
+  scheduleSave()
+}
+
 async function runFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
@@ -2199,7 +2235,9 @@ async function runFreeCanvasNode(nodeOrId) {
     ElMessage.warning('暂不支持该自由节点类型')
     return
   }
-  const upstreamUrls = freeCanvasNodeInputReferences(node)
+  const upstreamReferences = freeCanvasNodeInputReferences(node)
+  const upstreamUrls = upstreamReferences
+    .filter((reference) => reference.enabled !== false)
     .map((reference) => reference.url)
     .filter(Boolean)
   const upstreamTexts = collectDirectUpstreamTextInputs(
@@ -2209,10 +2247,13 @@ async function runFreeCanvasNode(nodeOrId) {
   )
   let requestPayload
   try {
+    const capability = getFreeNodeModelCapability(kind, node.data?.model)
     requestPayload = buildFreeCanvasGenerationRequest(node.data, {
       dramaId: dramaId.value,
       upstreamUrls,
+      upstreamReferences,
       upstreamTexts,
+      maxReferences: capability.maxReferences,
     })
   } catch (error) {
     ElMessage.error(error?.message || '自由节点生成参数不完整')
@@ -2234,7 +2275,7 @@ async function runFreeCanvasNode(nodeOrId) {
         error: '',
       })
       ElMessage.success('文本节点生成完成')
-      return
+      return { ok: true, nodeId: String(node.id) }
     }
 
     const quantity = ['image', 'video'].includes(kind)
@@ -2265,6 +2306,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedResultUrls.push(resultUrl)
       await patchFreeCanvasNodeData(node.id, { resultUrls: [...completedResultUrls] })
     }
+    return { ok: true, nodeId: String(node.id) }
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
     await patchFreeCanvasNodeData(node.id, {
@@ -2275,7 +2317,32 @@ async function runFreeCanvasNode(nodeOrId) {
       error: errorMessage,
     })
     ElMessage.error(errorMessage)
+    return { ok: false, nodeId: String(node.id), error: errorMessage }
   }
+}
+
+async function runFreeCanvasSubgraph(nodeIds, includeDownstream = false) {
+  const plan = buildCanvasExecutionPlan(allGraphNodes.value, allGraphEdges.value, {
+    rootNodeIds: nodeIds,
+    includeDownstream,
+  })
+  if (plan.cycleNodeIds.length) {
+    ElMessage.error(`检测到画布环路：${plan.cycleNodeIds.join('、')}`)
+    return { ok: false, cycleNodeIds: plan.cycleNodeIds }
+  }
+  if (!plan.orderedNodeIds.length) {
+    ElMessage.warning('请先选择可运行的自由节点')
+    return { ok: false }
+  }
+  for (const nodeId of plan.orderedNodeIds) {
+    const result = await runFreeCanvasNode(nodeId)
+    if (!result?.ok) {
+      ElMessage.error(`子图已在节点 ${nodeId} 停止，下游未提交`)
+      return { ok: false, failedNodeId: nodeId }
+    }
+  }
+  ElMessage.success(`子图运行完成，共 ${plan.orderedNodeIds.length} 个节点`)
+  return { ok: true, orderedNodeIds: plan.orderedNodeIds }
 }
 const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
 
@@ -4607,9 +4674,17 @@ provide(CANVAS_CONTEXT_KEY, {
   uploadFreeCanvasNodeFile,
   openFreeNodeAssetLibrary,
   getFreeNodeModelOptions,
+  getFreeNodeModelCapability,
+  getFreeNodeEstimatedCredits,
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
+  updateFreeCanvasReference,
   runFreeCanvasNode,
+  runFreeCanvasSubgraph: (nodeId) => runFreeCanvasSubgraph([nodeId], true),
+  runSelectedFreeCanvasNodes: () => runFreeCanvasSubgraph(
+    allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && node.selected).map((node) => node.id),
+    false,
+  ),
   translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })
@@ -4726,7 +4801,12 @@ function onConnect(connection) {
     target: connection.target,
     sourceHandle: connection.sourceHandle || null,
     targetHandle: connection.targetHandle || null,
-    data: { manual: true },
+    data: {
+      manual: true,
+      contract: {
+        order: allGraphEdges.value.filter((item) => String(item.target) === String(connection.target)).length,
+      },
+    },
   }, sourceKind, targetKind)
   allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
   applyVirtualizedGraph()
@@ -5195,6 +5275,12 @@ async function focusScriptNode(flowPosition = null) {
 function onTopbarMoreCommand(command) {
   if (command === 'script') focusScriptNode()
   else if (command === 'align') onAlignNodes()
+  else if (command === 'run-selected-free') {
+    void runFreeCanvasSubgraph(
+      allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && node.selected).map((node) => node.id),
+      false,
+    )
+  }
   else openCreateDialog(command)
 }
 

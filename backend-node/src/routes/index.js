@@ -141,6 +141,10 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
+  r.get('/canvas/model-catalog', (req, res) => {
+    const catalog = require('../services/canvasModelCatalogService').list(db);
+    response.success(res, catalog);
+  });
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);

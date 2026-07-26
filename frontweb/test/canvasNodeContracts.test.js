@@ -13,12 +13,14 @@ test('自由节点连接只允许真实模型能够消费的输入契约', () =>
     output: 'text',
     input: 'prompt',
     label: '文本 → 图片提示词',
+    slots: ['prompt', 'style-prompt'],
   })
   assert.deepEqual(resolveCanvasNodeConnection('image', 'video'), {
     allowed: true,
     output: 'image',
     input: 'reference-image',
     label: '图片 → 视频参考图',
+    slots: ['reference-image', 'first-frame', 'last-frame', 'character-reference', 'style-reference'],
   })
   assert.equal(resolveCanvasNodeConnection('image', 'audio').allowed, false)
   assert.equal(resolveCanvasNodeConnection('video', 'image').allowed, false)
@@ -45,5 +47,9 @@ test('合法连接统一转换为 LibTV 贝塞尔高光边并写入契约', () =
     output: 'text',
     input: 'prompt',
     label: '文本 → 图片提示词',
+    slots: ['prompt', 'style-prompt'],
+    enabled: true,
+    order: 0,
+    weight: 1,
   })
 })

@@ -83,7 +83,7 @@ test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanv
   assert.match(canvasSource, /resolveFreeCanvasResultUrl/)
   assert.match(canvasSource, /async function runFreeCanvasNode\(nodeOrId\)/)
   assert.match(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode'\)/)
-  assert.match(canvasSource, /const upstreamUrls = freeCanvasNodeInputReferences\(node\)[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(node\.data, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls/)
+  assert.match(canvasSource, /const upstreamReferences = freeCanvasNodeInputReferences\(node\)[\s\S]*const upstreamUrls = upstreamReferences[\s\S]*requestPayload = buildFreeCanvasGenerationRequest\(node\.data, \{[\s\S]*dramaId: dramaId\.value,[\s\S]*upstreamUrls,[\s\S]*upstreamReferences/)
   assert.match(canvasSource, /if \(kind === 'image'\) submitResult = await imagesAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'video'\) submitResult = await videosAPI\.create\(requestPayload\)/)
   assert.match(canvasSource, /else if \(kind === 'audio'\) submitResult = await request\.post\('\/audio\/extract', requestPayload\)/)

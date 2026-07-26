@@ -7,14 +7,14 @@ const MODEL_SERVICE_TYPES = {
 
 const CONNECTION_CONTRACTS = {
   text: {
-    text: { output: 'text', input: 'context', label: '文本 → 文本上下文' },
-    image: { output: 'text', input: 'prompt', label: '文本 → 图片提示词' },
-    video: { output: 'text', input: 'prompt', label: '文本 → 视频提示词' },
-    audio: { output: 'text', input: 'speech', label: '文本 → 语音内容' },
+    text: { output: 'text', input: 'context', label: '文本 → 文本上下文', slots: ['context'] },
+    image: { output: 'text', input: 'prompt', label: '文本 → 图片提示词', slots: ['prompt', 'style-prompt'] },
+    video: { output: 'text', input: 'prompt', label: '文本 → 视频提示词', slots: ['prompt', 'style-prompt'] },
+    audio: { output: 'text', input: 'speech', label: '文本 → 语音内容', slots: ['speech'] },
   },
   image: {
-    image: { output: 'image', input: 'reference-image', label: '图片 → 图片参考图' },
-    video: { output: 'image', input: 'reference-image', label: '图片 → 视频参考图' },
+    image: { output: 'image', input: 'reference-image', label: '图片 → 图片参考图', slots: ['reference-image', 'character-reference', 'style-reference'] },
+    video: { output: 'image', input: 'reference-image', label: '图片 → 视频参考图', slots: ['reference-image', 'first-frame', 'last-frame', 'character-reference', 'style-reference'] },
   },
 }
 
@@ -33,13 +33,23 @@ export function canvasNodeKind(node) {
 
 export function resolveCanvasNodeConnection(sourceKind, targetKind) {
   const contract = CONNECTION_CONTRACTS[sourceKind]?.[targetKind]
-  return contract ? { allowed: true, ...contract } : { allowed: false }
+  return contract ? { allowed: true, ...contract, slots: [...contract.slots] } : { allowed: false }
 }
 
 export function toLibTvCanvasEdge(edge, sourceKind = '', targetKind = '') {
   const contract = resolveCanvasNodeConnection(sourceKind, targetKind)
+  const previous = edge?.data?.contract || {}
+  const input = contract.allowed && contract.slots.includes(previous.input) ? previous.input : contract.input
   const edgeContract = contract.allowed
-    ? { output: contract.output, input: contract.input, label: contract.label }
+    ? {
+        output: contract.output,
+        input,
+        label: contract.label,
+        slots: contract.slots,
+        enabled: previous.enabled !== false,
+        order: Number.isFinite(Number(previous.order)) ? Number(previous.order) : 0,
+        weight: Number.isFinite(Number(previous.weight)) ? Number(previous.weight) : 1,
+      }
     : null
   return {
     ...edge,

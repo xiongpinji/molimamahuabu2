@@ -7,6 +7,10 @@
         <span class="layout-status" :class="layoutSaveState">{{ layoutStatusLabel }}</span>
 
         <div class="header-actions">
+          <el-select v-model="bindingProjectId" class="project-bind-select" size="small" placeholder="选择项目接入运行" filterable>
+            <el-option v-for="project in bindingProjects" :key="project.id" :label="project.title || project.name" :value="String(project.id)" />
+          </el-select>
+          <el-button size="small" :loading="bindingProject" :disabled="!bindingProjectId" @click="bindToProject">接入项目</el-button>
           <div class="topbar-history" aria-label="画布历史操作">
             <button type="button" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
               <el-icon><RefreshLeft /></el-icon>
@@ -197,6 +201,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
+import { dramaAPI } from '@/api/drama'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
@@ -218,6 +223,8 @@ import {
   serializeHomeCanvasState,
   undoHomeCanvasHistory,
 } from '@/utils/homeCanvasState'
+import { parseCanvasLayout } from '@/utils/canvasLayout'
+import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 
 const router = useRouter()
 
@@ -240,6 +247,9 @@ const edgeHistorySnapshot = ref(null)
 const canvasClipboard = ref(null)
 let canvasPasteSequence = 0
 let saveTimer = null
+const bindingProjects = ref([])
+const bindingProjectId = ref('')
+const bindingProject = ref(false)
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
 const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
@@ -363,6 +373,7 @@ function onConnect(connection) {
     return
   }
   const previousState = currentCanvasState()
+  const order = edges.value.filter((edge) => String(edge.target) === target).length
   edges.value = [
     ...edges.value,
     decorateEdge({
@@ -371,7 +382,7 @@ function onConnect(connection) {
       target,
       ...(sourceHandle ? { sourceHandle } : {}),
       ...(targetHandle ? { targetHandle } : {}),
-      data: { manual: true },
+      data: { manual: true, contract: { order } },
     }),
   ]
   commitHistory(previousState)
@@ -523,6 +534,36 @@ function openStarter(preset) {
 function onNodeClick({ node }) {
   if (!node?.id) return
   selectNodeById(node.id)
+}
+
+async function loadBindingProjects() {
+  try {
+    const result = await dramaAPI.list({ page: 1, page_size: 100 })
+    bindingProjects.value = Array.isArray(result) ? result : (result?.items || result?.data || [])
+  } catch (error) {
+    console.warn('load projects for local canvas binding failed', error)
+  }
+}
+
+async function bindToProject() {
+  if (!bindingProjectId.value || bindingProject.value) return
+  bindingProject.value = true
+  try {
+    persistState()
+    const project = await dramaAPI.get(bindingProjectId.value)
+    const merged = mergeLocalCanvasIntoProjectLayout(
+      parseCanvasLayout(project?.metadata),
+      currentCanvasState(),
+      `local:${Date.now()}`,
+    )
+    await dramaAPI.saveCanvasLayout(bindingProjectId.value, merged, project?.workflow_groups)
+    ElMessage.success('本地节点已合并到项目画布，生成与素材闭环已启用')
+    await router.push(`/canvas/${bindingProjectId.value}`)
+  } catch (error) {
+    ElMessage.error(error?.message || '接入项目失败')
+  } finally {
+    bindingProject.value = false
+  }
 }
 
 function selectNodeById(nodeId) {
@@ -777,7 +818,10 @@ provide(CANVAS_CONTEXT_KEY, {
   deleteFreeCanvasNode,
 })
 
-onMounted(() => window.addEventListener('keydown', onCanvasKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onCanvasKeydown)
+  void loadBindingProjects()
+})
 
 watch([nodes, edges], scheduleSave, { deep: true })
 

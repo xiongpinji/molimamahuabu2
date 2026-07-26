@@ -95,6 +95,23 @@
               <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
               <span v-else class="reference-placeholder">等待图片</span>
               <figcaption>{{ reference.title }}</figcaption>
+              <select
+                :value="reference.slot"
+                aria-label="参考图用途"
+                @change="updateReference(reference, { input: $event.target.value })"
+              >
+                <option value="reference-image">普通参考</option>
+                <option v-if="data.kind === 'video'" value="first-frame">首帧</option>
+                <option v-if="data.kind === 'video'" value="last-frame">尾帧</option>
+                <option value="character-reference">角色</option>
+                <option value="style-reference">风格</option>
+              </select>
+              <div class="reference-controls">
+                <button type="button" title="前移" @click="moveReference(reference, -1)">←</button>
+                <button type="button" title="后移" @click="moveReference(reference, 1)">→</button>
+                <label>权重 <input type="number" min="0.1" max="2" step="0.1" :value="reference.weight" @change="updateReference(reference, { weight: Number($event.target.value) })" /></label>
+                <label><input type="checkbox" :checked="reference.enabled" @change="updateReference(reference, { enabled: $event.target.checked })" />启用</label>
+              </div>
             </figure>
           </div>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
@@ -145,36 +162,19 @@
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>比例</span>
             <select v-model="draft.aspectRatio" aria-label="画面比例" @change="saveDraft">
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-              <option value="3:4">3:4</option>
-              <option value="1:1">1:1</option>
-              <option value="4:3">4:3</option>
-              <option value="21:9">21:9</option>
+              <option v-for="value in capability.aspectRatios || []" :key="value" :value="value">{{ value }}</option>
             </select>
           </label>
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
-              <template v-if="data.kind === 'image'">
-                <option value="1K">1K</option>
-                <option value="2K">2K</option>
-                <option value="4K">4K</option>
-              </template>
-              <template v-else>
-                <option value="480p">480P</option>
-                <option value="720p">720P</option>
-                <option value="1080p">1080P</option>
-              </template>
+              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ value }}</option>
             </select>
           </label>
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>数量</span>
             <select v-model.number="draft.quantity" aria-label="生成数量" @change="saveDraft">
-              <option :value="1">1 个</option>
-              <option :value="2">2 个</option>
-              <option :value="3">3 个</option>
-              <option :value="4">4 个</option>
+              <option v-for="value in capability.quantities || [1]" :key="value" :value="value">{{ value }} 个</option>
             </select>
           </label>
           <label v-if="data.kind === 'image'" class="editor-field field-wide">
@@ -184,9 +184,7 @@
           <label v-if="data.kind === 'video'" class="editor-field">
             <span>时长</span>
             <select v-model.number="draft.duration" aria-label="视频时长" @change="saveDraft">
-              <option :value="5">5 秒</option>
-              <option :value="10">10 秒</option>
-              <option :value="15">15 秒</option>
+              <option v-for="value in capability.durations || []" :key="value" :value="value">{{ value }} 秒</option>
             </select>
           </label>
           <label v-if="data.kind === 'video'" class="editor-field">
@@ -211,7 +209,7 @@
               <option value="light-leak">漏光</option>
             </select>
           </label>
-          <label v-if="data.kind === 'video'" class="editor-check">
+          <label v-if="data.kind === 'video' && capability.supportsAudio !== false" class="editor-check">
             <input v-model="draft.includeAudio" type="checkbox" aria-label="生成音频" @change="saveDraft" />
             <span>同步音频</span>
           </label>
@@ -240,10 +238,12 @@
         </div>
 
         <div class="editor-footer">
-          <span v-if="canGenerate" class="billing-note">将按所选模型实际计费 · {{ draft.quantity || 1 }} 次</span>
+          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `预计 ${estimatedCredits} 积分` : '以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
+          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
           <span v-else class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
+          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" @click.stop="runSubgraph">运行下游</button>
           <button
             v-if="canGenerate"
             type="button"
@@ -315,6 +315,8 @@ const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'fun
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
+const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
+const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(props.data.kind, draft.model, draft.quantity) || null)
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
@@ -434,6 +436,25 @@ async function runNode() {
 
 function retryAssetSave() {
   ctx?.retryFreeCanvasAssetSave?.(props.id)
+}
+
+async function runSubgraph() {
+  await saveDraft()
+  await ctx?.runFreeCanvasSubgraph?.(props.id)
+}
+
+function updateReference(reference, patch) {
+  ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
+}
+
+function moveReference(reference, delta) {
+  const index = inputReferences.value.findIndex((item) => item.edgeId === reference.edgeId)
+  const targetIndex = index + delta
+  if (index < 0 || targetIndex < 0 || targetIndex >= inputReferences.value.length) return
+  const reordered = [...inputReferences.value]
+  const [moved] = reordered.splice(index, 1)
+  reordered.splice(targetIndex, 0, moved)
+  reordered.forEach((item, order) => updateReference(item, { order }))
 }
 
 async function translateNode() {

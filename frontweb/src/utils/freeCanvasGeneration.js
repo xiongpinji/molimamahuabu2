@@ -134,7 +134,15 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     ...(options.upstreamTexts || []),
     nodeData.content,
   ]).join('\n\n')
-  const upstreamUrls = uniqueStrings(options.upstreamUrls)
+  const maxReferences = positiveInteger(options.maxReferences) || 10
+  const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
+    .filter((reference) => reference?.enabled !== false && reference?.url)
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
+    .slice(0, maxReferences)
+  const upstreamUrls = uniqueStrings([
+    ...(references.length ? [] : (options.upstreamUrls || [])),
+    ...references.map((reference) => reference.url),
+  ])
   const referenceUrls = uniqueStrings([
     ...upstreamUrls,
     ...(nodeData.characterReferenceUrls || []),
@@ -165,13 +173,15 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 
   if (nodeData.kind === 'video') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const firstFrameUrl = referenceUrls[0] || ''
+    const firstFrameUrl = references.find((reference) => reference.slot === 'first-frame')?.url || referenceUrls[0] || ''
+    const lastFrameUrl = references.find((reference) => reference.slot === 'last-frame')?.url || ''
     return withoutEmptyFields({
       drama_id: dramaId,
       prompt: decoratedVideoPrompt({ ...nodeData, content }),
       model: nodeData.model,
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
+      last_frame_url: lastFrameUrl,
       reference_image_urls: referenceUrls,
       aspect_ratio: nodeData.aspectRatio,
       duration: nodeData.duration,
@@ -213,17 +223,23 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
     if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
     const source = byId.get(String(edge.source || ''))
     const sourceKind = cleanString(source?.data?.kind || source?.data?.asset?.type)
-    if (sourceKind !== 'image' || seen.has(String(source?.id || ''))) continue
-    seen.add(String(source.id))
+    if (sourceKind !== 'image' || seen.has(String(edge?.id || source?.id || ''))) continue
+    seen.add(String(edge?.id || source.id))
+    const contract = edge?.data?.contract || {}
     const url = resultUrlFromNode(source)
     references.push({
       nodeId: String(source.id),
+      edgeId: String(edge?.id || ''),
       title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || '图片节点',
       url,
       ready: Boolean(url),
+      slot: cleanString(contract.input) || 'reference-image',
+      enabled: contract.enabled !== false,
+      order: Number.isFinite(Number(contract.order)) ? Number(contract.order) : references.length,
+      weight: Number.isFinite(Number(contract.weight)) ? Number(contract.weight) : 1,
     })
   }
-  return references
+  return references.sort((a, b) => a.order - b.order)
 }
 
 export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNodeId = '') {

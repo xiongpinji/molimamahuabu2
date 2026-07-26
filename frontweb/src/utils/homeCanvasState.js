@@ -59,7 +59,8 @@ function normalizeNode(node, index) {
       y: Number.isFinite(y) ? y : 0,
     },
     data: {
-      kind: ['text', 'image', 'video'].includes(node.data?.kind) ? node.data.kind : 'text',
+      ...(node.data || {}),
+      kind: ['text', 'image', 'video', 'audio'].includes(node.data?.kind) ? node.data.kind : 'text',
       title: String(node.data?.title || '未命名节点'),
       content: String(node.data?.content || ''),
       url: node.data?.url ? String(node.data.url) : '',
