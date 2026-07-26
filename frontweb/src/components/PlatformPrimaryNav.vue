@@ -1,6 +1,14 @@
 <template>
   <nav class="platform-primary-nav" aria-label="主要功能">
     <RouterLink
+      to="/"
+      class="platform-primary-nav__link"
+      :class="{ 'is-active': homeActive }"
+      :aria-current="homeActive ? 'page' : undefined"
+    >
+      首页
+    </RouterLink>
+    <RouterLink
       to="/canvas"
       class="platform-primary-nav__link"
       :class="{ 'is-active': canvasActive }"
@@ -25,9 +33,9 @@ import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
 
+const homeActive = computed(() => route.name === 'list')
 const canvasActive = computed(() => ['canvas-projects', 'standalone-canvas', 'home-canvas-local'].includes(route.name))
 const factoryActive = computed(() => [
-  'list',
   'factory',
   'drama-detail',
   'film',

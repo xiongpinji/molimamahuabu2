@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
 
 function isTrue(value) {
   return /^(1|true|yes)$/i.test(String(value || ''));
@@ -23,11 +24,16 @@ function createEmailService(env = process.env) {
     }
     const isReset = purpose === 'password_reset';
     const action = isReset ? '重置密码' : '完成注册';
+    const { address } = await dns.promises.lookup(host, { family: 4 });
     const transporter = nodemailer.createTransport({
-      host,
+      host: address,
       port,
       secure: isTrue(env.SMTP_SECURE),
       auth: { user, pass: password },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 12000,
+      tls: { servername: host },
     });
     await transporter.sendMail({
       from,

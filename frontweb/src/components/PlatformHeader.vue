@@ -41,17 +41,46 @@
           <el-icon><ArrowLeft /></el-icon>
           <span class="platform-header__button-label">{{ backLabel }}</span>
         </el-button>
+        <el-dropdown
+          v-if="loggedIn"
+          class="platform-header__account"
+          trigger="click"
+          placement="bottom-end"
+          @command="handleAccountCommand"
+        >
+          <el-button class="platform-header__button platform-header__account-button">
+            <el-icon><UserFilled /></el-icon>
+            <span class="platform-header__account-label">{{ accountLabel }}</span>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="workspace">工作区与积分</el-dropdown-item>
+              <el-dropdown-item v-if="isAdmin" command="models">模型配置</el-dropdown-item>
+              <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button
+          v-else-if="publicMode"
+          class="platform-header__button platform-header__account"
+          @click="goLogin"
+        >
+          <el-icon><UserFilled /></el-icon>
+          <span class="platform-header__button-label">登录</span>
+        </el-button>
       </div>
     </div>
   </header>
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
-import { ArrowLeft, Grid, Moon, Sunny } from '@element-plus/icons-vue'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, Grid, Moon, Sunny, UserFilled } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
+import { clearSession, readSession } from '@/utils/authSession'
 
 const props = defineProps({
   title: { type: String, default: '' },
@@ -63,7 +92,16 @@ const props = defineProps({
 })
 
 const router = useRouter()
+const route = useRoute()
 const { isDark, toggle: toggleTheme } = useTheme()
+const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
+const session = computed(() => {
+  void route.fullPath
+  return readSession()
+})
+const loggedIn = computed(() => Boolean(session.value?.token))
+const accountLabel = computed(() => session.value?.user?.email || '账号')
+const isAdmin = computed(() => session.value?.user?.role === 'admin')
 
 function goBack() {
   router.push(props.backTo)
@@ -71,6 +109,22 @@ function goBack() {
 
 function goHomeCanvas() {
   router.push({ name: 'home-canvas-local' })
+}
+
+function goLogin() {
+  router.push({
+    name: 'login',
+    query: route.fullPath === '/' ? undefined : { redirect: route.fullPath },
+  })
+}
+
+async function handleAccountCommand(command) {
+  if (command === 'workspace') return router.push({ name: 'tenant-console' })
+  if (command === 'models') return router.push({ name: 'ai-config' })
+  if (command === 'logout') {
+    clearSession()
+    await router.replace({ name: 'login' })
+  }
 }
 </script>
 
@@ -152,6 +206,16 @@ function goHomeCanvas() {
   border-color: rgba(255, 113, 57, .36) !important;
 }
 
+.platform-header__account-button {
+  max-width: 230px;
+}
+
+.platform-header__account-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 :global(html.light) .platform-header__inner {
   border-color: #272727;
   background: rgba(8, 8, 8, .92);
@@ -183,6 +247,7 @@ function goHomeCanvas() {
   .platform-header__inner { gap: 8px; padding: 0 12px; }
   .platform-header__separator,
   .platform-header__button-label { display: none; }
+  .platform-header__account-label { display: none; }
   .platform-header__title { max-width: 34vw; }
   .platform-header__button { width: 40px; padding: 0 !important; }
 }
