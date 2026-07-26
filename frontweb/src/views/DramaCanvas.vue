@@ -1832,6 +1832,43 @@ async function patchFreeCanvasNodeData(nodeId, patch) {
   return updated
 }
 
+async function deleteFreeCanvasNode(nodeId) {
+  const id = String(nodeId || '')
+  if (!isStandaloneCanvas.value || !id) return
+  const previousState = currentInteractionState()
+  const previousLength = allGraphNodes.value.length
+  allGraphNodes.value = allGraphNodes.value.filter((node) => String(node.id) !== id)
+  if (allGraphNodes.value.length === previousLength) return
+  allGraphEdges.value = allGraphEdges.value.filter((edge) => String(edge.source) !== id && String(edge.target) !== id)
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+}
+
+async function uploadFreeCanvasNodeFile(nodeId, file) {
+  const node = freeCanvasNodeById(nodeId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !file) return
+  try {
+    await patchFreeCanvasNodeData(node.id, { status: 'running', error: '' })
+    const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+    const url = assetDisplayUrl(asset)
+    if (!url) throw new Error('素材上传成功但未返回可用地址')
+    await patchFreeCanvasNodeData(node.id, {
+      url,
+      status: 'success',
+      error: '',
+      savedAssetId: String(asset?.id || ''),
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+    })
+    ElMessage.success('素材已上传并写入当前节点')
+  } catch (error) {
+    const message = error?.message || '节点素材上传失败'
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: message })
+    ElMessage.error(message)
+  }
+}
+
 function freeCanvasNodeById(nodeOrId) {
   if (typeof nodeOrId === 'object' && nodeOrId?.id) return findGraphNode(nodeOrId.id) || nodeOrId
   return findGraphNode(nodeOrId)
@@ -4300,6 +4337,9 @@ provide(CANVAS_CONTEXT_KEY, {
     const node = freeCanvasNodeById(nodeId)
     if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
   },
+  updateFreeCanvasNode: patchFreeCanvasNodeData,
+  deleteFreeCanvasNode,
+  uploadFreeCanvasNodeFile,
   runFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })

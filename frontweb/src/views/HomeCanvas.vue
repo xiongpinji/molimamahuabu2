@@ -184,7 +184,7 @@
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -199,6 +199,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { useTheme } from '@/composables/useTheme'
+import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
@@ -500,6 +501,28 @@ function submitNode() {
   ElMessage.success(editingNodeId.value ? '节点已更新' : '节点已添加')
 }
 
+async function updateFreeCanvasNode(nodeId, patch) {
+  const previousState = currentCanvasState()
+  let changed = false
+  nodes.value = nodes.value.map((node) => {
+    if (String(node.id) !== String(nodeId)) return node
+    changed = true
+    return { ...node, data: { ...node.data, ...patch } }
+  })
+  if (!changed) return
+  commitHistory(previousState)
+  scheduleSave()
+}
+
+async function deleteFreeCanvasNode(nodeId) {
+  const previousState = currentCanvasState()
+  const id = String(nodeId)
+  nodes.value = nodes.value.filter((node) => String(node.id) !== id)
+  edges.value = edges.value.filter((edge) => String(edge.source) !== id && String(edge.target) !== id)
+  commitHistory(previousState)
+  scheduleSave()
+}
+
 function onPaneClick() {
   closeContextMenu()
 }
@@ -681,6 +704,11 @@ async function shareCanvas() {
 }
 
 loadState()
+
+provide(CANVAS_CONTEXT_KEY, {
+  updateFreeCanvasNode,
+  deleteFreeCanvasNode,
+})
 
 onMounted(() => window.addEventListener('keydown', onCanvasKeydown))
 

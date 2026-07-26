@@ -24,13 +24,13 @@ const edgeHomeCanvasState = {
     {
       id: 'e2e:target-a',
       type: 'homeCanvasNode',
-      position: { x: 760, y: 420 },
+      position: { x: 960, y: 420 },
       data: { kind: 'text', title: 'E2E 目标节点 A', content: '边重连旧目标' },
     },
     {
       id: 'e2e:target-b',
       type: 'homeCanvasNode',
-      position: { x: 760, y: 700 },
+      position: { x: 960, y: 680 },
       data: { kind: 'text', title: 'E2E 目标节点 B', content: '边重连新目标' },
     },
   ],
@@ -46,6 +46,25 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('.home-starter-panel')).toHaveCount(0)
 })
 
+test('文本节点在节点内直接编辑，不再依赖配置弹窗', async ({ page }) => {
+  const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+
+  await seedNode.click()
+  await expect(seedNode).toHaveClass(/selected/)
+  await expect(seedNode.locator('.home-canvas-node')).toHaveClass(/is-selected/)
+  await expect(seedNode.getByRole('textbox', { name: '节点标题' })).toHaveValue('E2E 种子节点')
+  await expect(seedNode.getByRole('textbox', { name: '文本内容' })).toHaveValue('用于覆盖画布事件层。')
+  await expect(seedNode.getByRole('button', { name: '配置' })).toHaveCount(0)
+
+  await seedNode.getByRole('textbox', { name: '文本内容' }).fill('节点内直接编辑后的内容')
+  await seedNode.getByRole('textbox', { name: '文本内容' }).blur()
+
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:seed')?.data?.content || ''
+  }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
+})
+
 test('右键添加文本节点并支持删除、撤销和重做', async ({ page }) => {
   const canvas = page.locator('.canvas-main')
 
@@ -58,9 +77,11 @@ test('右键添加文本节点并支持删除、撤销和重做', async ({ page 
   await dialog.getByLabel('标题').fill('E2E 回归节点')
   await dialog.getByLabel('内容').fill('验证首页自由画布关键交互')
   await dialog.getByRole('button', { name: '保存' }).click()
+  await expect(dialog).toBeHidden()
   await expect(page.getByText('E2E 回归节点')).toBeVisible()
 
-  await page.locator('.vue-flow__node').filter({ hasText: 'E2E 回归节点' }).click()
+  const createdNode = page.locator('.vue-flow__node').filter({ hasText: 'E2E 回归节点' })
+  await createdNode.locator('.node-icon').click()
   await page.keyboard.press('Delete')
   await expect(page.getByText('E2E 回归节点')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '撤销' })).toBeEnabled()
@@ -74,13 +95,13 @@ test('右键添加文本节点并支持删除、撤销和重做', async ({ page 
 test('复制粘贴选中节点会生成带偏移的副本', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node').filter({ hasText: 'E2E 种子节点' })
 
-  await seedNode.click()
+  await seedNode.locator('.node-icon').click()
   await expect(seedNode).toHaveClass(/selected/)
   await page.keyboard.press('Control+c')
   await page.keyboard.press('Control+v')
 
-  const pastedNodes = page.locator('.vue-flow__node').filter({ hasText: 'E2E 种子节点' })
-  await expect(pastedNodes).toHaveCount(2)
+  const pastedTitles = page.getByRole('textbox', { name: '节点标题' })
+  await expect(pastedTitles).toHaveCount(2)
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.nodes?.map((node) => [node.position.x, node.position.y]) || []
