@@ -3,7 +3,7 @@
     class="home-canvas-node"
     :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': selected }]"
   >
-    <header class="node-heading nodrag nopan">
+    <header class="node-heading">
       <span class="node-icon" aria-hidden="true">{{ kindIcon }}</span>
       <input
         v-model="draft.title"
@@ -16,7 +16,7 @@
       />
       <span class="sr-only">{{ draft.title }}</span>
       <span class="node-status">{{ statusLabel }}</span>
-      <button class="node-delete" type="button" aria-label="删除节点" title="删除节点" @click.stop="deleteNode">×</button>
+      <button class="node-delete nodrag nopan" type="button" aria-label="删除节点" title="删除节点" @mousedown.stop @click.stop="deleteNode">×</button>
     </header>
 
     <Handle class="node-handle node-handle-input" type="target" :position="Position.Left" />
@@ -225,7 +225,8 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 :global(.vue-flow__node:has(.home-canvas-node:focus-within)) {
   z-index: 2000 !important;
 }
-.node-heading { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+.node-heading { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 4px; cursor: grab; user-select: none; }
+.node-heading:active { cursor: grabbing; }
 .node-icon { color: #a1a1aa; font-size: 15px; }
 .node-title-input {
   min-width: 0;
@@ -235,6 +236,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
   background: transparent;
   color: #d4d4d8;
   font-size: 13px;
+  cursor: text;
 }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .node-status { color: #71717a; font-size: 10px; }

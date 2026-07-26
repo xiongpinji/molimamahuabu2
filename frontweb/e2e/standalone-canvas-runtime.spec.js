@@ -165,7 +165,7 @@ function freeNode(layout, id) {
 }
 
 test.describe('独立自由画布节点真实运行闭环', () => {
-  test('右键新增图片节点直接进入节点内编辑且不弹创建表单', async ({ page }) => {
+  test('右键新增图片节点直接进入节点内编辑、可拖动且不弹创建表单', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout(),
       assets: [],
@@ -200,6 +200,24 @@ test.describe('独立自由画布节点真实运行闭环', () => {
       model: '',
       aspectRatio: '16:9',
     })
+
+    const originalPosition = { ...state.canvasLayout.free_nodes[0].position }
+    const dragHandle = node.locator('.node-icon')
+    const dragHandleBox = await dragHandle.boundingBox()
+    expect(dragHandleBox).not.toBeNull()
+    await page.mouse.move(
+      dragHandleBox.x + dragHandleBox.width / 2,
+      dragHandleBox.y + dragHandleBox.height / 2,
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      dragHandleBox.x + dragHandleBox.width / 2 + 120,
+      dragHandleBox.y + dragHandleBox.height / 2 + 80,
+      { steps: 8 },
+    )
+    await page.mouse.up()
+
+    await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
   })
 
   test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {
