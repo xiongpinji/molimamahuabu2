@@ -37,6 +37,7 @@ test('canvas provider configs come from server env without exposing api keys', (
     { kind: 'image', model: 'gpt-image-2-2k' },
     { kind: 'video', model: 'lingjing-video-v1' },
   ]);
+  assert.deepEqual(safe.find((item) => item.kind === 'image').capabilities.quantities, [1, 2, 3, 4]);
+  assert.deepEqual(safe.find((item) => item.kind === 'video').capabilities.aspectRatios, ['16:9', '9:16', '1:1', '21:9']);
   assert.equal(JSON.stringify(safe).includes('secret'), false);
 });
-

@@ -18,10 +18,10 @@ const DEFINITIONS = {
     apiProtocol: 'aihubcc',
     endpoint: '/chat/completions',
     capabilities: {
-      ratios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+      aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
       resolutions: ['2K'],
       maxReferences: 6,
-      maxQuantity: 4,
+      quantities: [1, 2, 3, 4],
     },
   },
   video: {
@@ -33,11 +33,11 @@ const DEFINITIONS = {
     endpoint: '/videos',
     queryEndpoint: '/videos/{taskId}',
     capabilities: {
-      ratios: ['16:9', '9:16', '1:1', '21:9'],
+      aspectRatios: ['16:9', '9:16', '1:1', '21:9'],
       durations: [5],
-      resolutions: [''],
+      resolutions: [],
       maxReferences: 12,
-      maxQuantity: 1,
+      quantities: [1],
       supportsFirstFrame: true,
       supportsLastFrame: false,
       supportsAudio: false,

@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { callAihubccVideoApi, pollVideoTask } = require('../src/services/videoClient');
+const {
+  assertPublicImageUrl,
+  callAihubccVideoApi,
+  downloadPublicImage,
+  pollVideoTask,
+} = require('../src/services/videoClient');
 
 function jsonResponse(payload, status = 200) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(payload) };
@@ -48,13 +53,11 @@ test('lingjing uploads ordered references before creating video task', async () 
   const calls = [];
   global.fetch = async (url, options = {}) => {
     calls.push({ url: String(url), options });
-    if (String(url) === 'https://assets.example/ref.png') {
-      return {
-        ok: true,
+    if (String(url) === 'https://8.8.8.8/ref.png') {
+      return new Response(Buffer.from('image'), {
         status: 200,
-        headers: { get: () => 'image/png' },
-        arrayBuffer: async () => Buffer.from('image'),
-      };
+        headers: { 'content-type': 'image/png', 'content-length': '5' },
+      });
     }
     if (String(url).endsWith('/uploads')) return jsonResponse({ path: 'uploads/ref.png' });
     return jsonResponse({ id: 19502, status: 'pending' });
@@ -73,7 +76,7 @@ test('lingjing uploads ordered references before creating video task', async () 
         prompt: 'animate reference',
         duration: 5,
         aspect_ratio: '16:9',
-        reference_urls: ['https://assets.example/ref.png'],
+        reference_urls: ['https://8.8.8.8/ref.png'],
       }
     );
     assert.deepEqual(result, { task_id: '19502', status: 'pending' });
@@ -83,6 +86,22 @@ test('lingjing uploads ordered references before creating video task', async () 
     const submitBody = JSON.parse(submitCall.options.body);
     assert.deepEqual(submitBody.reference_images, ['uploads/ref.png']);
     assert.equal(submitBody.ratio, '16:9');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('lingjing reference downloader rejects local and non-image responses', async () => {
+  await assert.rejects(() => assertPublicImageUrl('http://127.0.0.1/ref.png'), /私网/);
+  await assert.rejects(() => assertPublicImageUrl('http://localhost/ref.png'), /本机/);
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response('not an image', {
+    status: 200,
+    headers: { 'content-type': 'text/plain' },
+  });
+  try {
+    await assert.rejects(() => downloadPublicImage('https://8.8.8.8/ref.png'), /不是图片/);
   } finally {
     global.fetch = originalFetch;
   }
