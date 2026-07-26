@@ -21,7 +21,7 @@ function routes(db, log, options = {}) {
           return response.badRequest(res, error.message);
         }
         log.error('canvas text generation', { error: error.message });
-        response.internalError(res, error.message);
+        response.internalError(res, '画布文本生成失败，请稍后重试');
       }
     },
   };

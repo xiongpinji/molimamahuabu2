@@ -1,7 +1,10 @@
 // ? Go pkg/video + VideoGenerationService ????????? API??????(????)
 const fs = require('fs');
 const path = require('path');
+const dnsCore = require('dns');
 const dns = require('dns').promises;
+const http = require('http');
+const https = require('https');
 const net = require('net');
 const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
@@ -4354,6 +4357,8 @@ function isPrivateAddress(address) {
   }
   if (net.isIPv6(address)) {
     const normalized = address.toLowerCase();
+    const mappedIpv4 = normalized.replace(/^::ffff:/, '');
+    if (net.isIPv4(mappedIpv4)) return isPrivateAddress(mappedIpv4);
     return normalized === '::1'
       || normalized === '::'
       || normalized.startsWith('fc')
@@ -4382,32 +4387,73 @@ async function assertPublicImageUrl(value) {
 async function downloadPublicImage(value, maxBytes = 20 * 1024 * 1024) {
   let current = String(value || '').trim();
   for (let redirect = 0; redirect <= 3; redirect += 1) {
-    await assertPublicImageUrl(current);
-    const response = await fetch(current, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(30_000),
-    });
+    const url = await assertPublicImageUrl(current);
+    const response = await requestPublicImage(url, maxBytes);
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
+      const location = response.headers.location;
       if (!location || redirect === 3) throw new Error('图片重定向无效或过多');
       current = new URL(location, current).toString();
       continue;
     }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const mimeType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!mimeType.startsWith('image/')) throw new Error('响应不是图片');
-    const declaredLength = Number(response.headers.get('content-length') || 0);
-    if (declaredLength > maxBytes) throw new Error('图片超过 20MB 限制');
-    const chunks = [];
-    let total = 0;
-    for await (const chunk of response.body) {
-      total += chunk.length;
-      if (total > maxBytes) throw new Error('图片超过 20MB 限制');
-      chunks.push(Buffer.from(chunk));
-    }
-    return { bytes: Buffer.concat(chunks), mimeType };
+    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+    return { bytes: response.bytes, mimeType: response.mimeType };
   }
   throw new Error('图片下载失败');
+}
+
+function requestPublicImage(url, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === 'https:' ? https : http;
+    const request = transport.get(url, {
+      timeout: 30_000,
+      lookup(hostname, options, callback) {
+        dnsCore.lookup(hostname, { ...options, all: true }, (error, addresses) => {
+          if (error) return callback(error);
+          if (!addresses.length || addresses.some((item) => isPrivateAddress(item.address))) {
+            return callback(new Error('拒绝私网图片地址'));
+          }
+          const selected = addresses[0];
+          callback(null, selected.address, selected.family);
+        });
+      },
+    }, (response) => {
+      const status = response.statusCode || 0;
+      const headers = response.headers;
+      if (status >= 300 && status < 400) {
+        response.resume();
+        return resolve({ status, headers });
+      }
+      const mimeType = String(headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!mimeType.startsWith('image/')) {
+        response.destroy();
+        return reject(new Error('响应不是图片'));
+      }
+      const declaredLength = Number(headers['content-length'] || 0);
+      if (declaredLength > maxBytes) {
+        response.destroy();
+        return reject(new Error('图片超过 20MB 限制'));
+      }
+      const chunks = [];
+      let total = 0;
+      response.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          response.destroy(new Error('图片超过 20MB 限制'));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.on('end', () => resolve({
+        status,
+        headers,
+        bytes: Buffer.concat(chunks),
+        mimeType,
+      }));
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('图片下载超时')));
+    request.on('error', reject);
+  });
 }
 
 /**
@@ -5349,4 +5395,5 @@ module.exports = {
   selectStoryboardCharacterVoiceRef,
   assertPublicImageUrl,
   downloadPublicImage,
+  requestPublicImage,
 };
