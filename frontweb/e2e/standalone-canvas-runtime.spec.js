@@ -165,6 +165,43 @@ function freeNode(layout, id) {
 }
 
 test.describe('独立自由画布节点真实运行闭环', () => {
+  test('右键新增图片节点直接进入节点内编辑且不弹创建表单', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout(),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const pane = page.locator('.vue-flow__pane')
+    await expect(pane).toBeVisible()
+    await pane.click({ button: 'right', position: { x: 760, y: 420 } })
+    await page.getByRole('menu', { name: '添加画布节点' })
+      .getByRole('menuitem', { name: /^图片 图片生成节点$/ })
+      .click()
+
+    await expect(page.getByRole('dialog', { name: '添加图片节点' })).toHaveCount(0)
+    const node = page.locator('.vue-flow__node').filter({
+      has: page.getByRole('textbox', { name: '生成提示词' }),
+    })
+    await expect(node).toHaveCount(1)
+    await expect(node).toHaveClass(/selected/)
+    await expect(node.getByRole('textbox', { name: '节点标题' })).toHaveValue('图片')
+    await expect(node.getByRole('button', { name: '上传' })).toBeVisible()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+    expect(state.canvasLayout.free_nodes[0].data).toMatchObject({
+      kind: 'image',
+      title: '图片',
+      content: '',
+      model: '',
+      aspectRatio: '16:9',
+    })
+  })
+
   test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout({

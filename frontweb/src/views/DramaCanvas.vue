@@ -1782,6 +1782,46 @@ function openFreeNodeDialog(kind, flowPosition = null, node = null) {
   freeNodeDialogVisible.value = true
 }
 
+async function createFreeCanvasNode(kind, flowPosition = null) {
+  if (!FREE_NODE_KINDS.has(kind)) return null
+  closeContextMenu()
+  const previousState = currentInteractionState()
+  const id = `free:${kind}:${Date.now()}`
+  const title = {
+    text: '文本',
+    image: '图片',
+    video: '视频',
+    audio: '音频',
+  }[kind]
+  const data = {
+    kind,
+    title,
+    content: '',
+    url: '',
+  }
+  if (kind !== 'text') data.model = ''
+  if (['image', 'video'].includes(kind)) data.aspectRatio = '16:9'
+  if (kind === 'video') data.duration = 5
+
+  allGraphNodes.value = [
+    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
+    {
+      id,
+      type: 'homeCanvasNode',
+      position: flowPosition || canvasCenterFlowPosition(),
+      selected: true,
+      data,
+    },
+  ]
+  focusedNodeId.value = id
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+  await nextTick()
+  document.querySelector(`.vue-flow__node[data-id="${id}"] .node-title-input`)?.focus()
+  return id
+}
+
 async function submitFreeNode() {
   const title = freeNodeForm.value.title.trim()
   if (!title) return
@@ -4841,7 +4881,7 @@ const {
 
 function openCreateDialog(type, flowPosition = null) {
   if (isStandaloneCanvas.value && FREE_NODE_KINDS.has(type)) {
-    openFreeNodeDialog(type, flowPosition)
+    void createFreeCanvasNode(type, flowPosition)
     return
   }
   openProductionCreateDialog(type, flowPosition)
