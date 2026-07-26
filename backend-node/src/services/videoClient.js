@@ -4346,6 +4346,7 @@ async function callAihubccVideoApi(config, log, opts = {}) {
 }
 
 function isPrivateAddress(address) {
+  address = String(address || '').replace(/^\[|\]$/g, '');
   if (net.isIPv4(address)) {
     const parts = address.split('.').map(Number);
     return parts[0] === 10
@@ -4357,6 +4358,7 @@ function isPrivateAddress(address) {
   }
   if (net.isIPv6(address)) {
     const normalized = address.toLowerCase();
+    if (normalized.startsWith('::ffff:')) return true;
     const mappedIpv4 = normalized.replace(/^::ffff:/, '');
     if (net.isIPv4(mappedIpv4)) return isPrivateAddress(mappedIpv4);
     return normalized === '::1'
@@ -4375,7 +4377,7 @@ async function assertPublicImageUrl(value) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('只允许 HTTP(S) 图片');
   if (url.username || url.password) throw new Error('图片地址不得包含认证信息');
-  const hostname = url.hostname.toLowerCase();
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('拒绝本机图片地址');
   const addresses = net.isIP(hostname)
     ? [hostname]
