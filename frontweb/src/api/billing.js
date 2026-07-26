@@ -4,6 +4,10 @@ export function listModelPrices() {
   return request.get('/billing/prices')
 }
 
+export function listGenerationCatalog() {
+  return request.get('/billing/catalog')
+}
+
 export function updateModelPrice(model, value) {
   const data = value && typeof value === 'object' ? value : { credits: value }
   return request.put(`/billing/prices/${encodeURIComponent(model)}`, data)

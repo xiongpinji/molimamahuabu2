@@ -63,13 +63,55 @@
                       <option value="canvas">自由画布</option>
                     </select>
                   </label>
-                  <span class="home-control home-control--static">16:9</span>
-                  <span class="home-control home-control--static">5s</span>
-                  <span class="home-control home-control--static">720P</span>
+                  <label class="home-control">
+                    <select v-model="homeModel" aria-label="生成模型">
+                      <option v-if="!homeModelOptions.length" value="">暂无可用模型</option>
+                      <option
+                        v-for="item in homeModelOptions"
+                        :key="item.model"
+                        :value="item.model"
+                      >
+                        {{ item.display_name || item.model }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="home-control">
+                    <select v-model="homeAspectRatio" aria-label="画面比例">
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                      <option value="1:1">1:1</option>
+                      <option value="4:3">4:3</option>
+                      <option value="3:4">3:4</option>
+                      <option value="21:9">21:9</option>
+                    </select>
+                  </label>
+                  <label v-if="homeMediaType === 'video'" class="home-control">
+                    <select v-model.number="homeDuration" aria-label="视频时长">
+                      <option :value="5">5s</option>
+                      <option :value="10">10s</option>
+                      <option :value="15">15s</option>
+                    </select>
+                  </label>
+                  <label v-if="homeMediaType === 'video'" class="home-control">
+                    <select v-model="homeResolution" aria-label="视频清晰度">
+                      <option value="480p">480P</option>
+                      <option value="720p">720P</option>
+                      <option value="1080p">1080P</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="home-composer__submit">
-                  <span class="home-composer__credits" aria-label="预计消耗积分">✦ 35</span>
-                  <button type="button" class="home-generate" @click="startFromComposer">
+                  <span
+                    class="home-composer__credits"
+                    aria-label="预计消耗积分"
+                    :title="`可用积分 ${homeBalance}`"
+                  >✦ {{ homeSelectedPrice }}</span>
+                  <button
+                    type="button"
+                    class="home-generate"
+                    :disabled="homeWorkflow !== 'canvas' && !homeModel"
+                    @click="startFromComposer"
+                  >
                     <span>✦</span>生成
                   </button>
                 </div>
@@ -387,6 +429,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
+import { listGenerationCatalog } from '@/api/billing'
+import { getCreditAccount } from '@/api/auth'
 import {
   normalizeProjectMode,
   projectCanvasPath,
@@ -407,6 +451,12 @@ const total = ref(0)
 const homePrompt = ref('')
 const homeMediaType = ref('video')
 const homeWorkflow = ref('reference')
+const homeModel = ref('')
+const homeAspectRatio = ref('16:9')
+const homeDuration = ref(5)
+const homeResolution = ref('720p')
+const homeGenerationCatalog = ref([])
+const homeBalance = ref(0)
 const homeProjectsRef = ref(null)
 const searchKeyword = ref('')
 const projectFolders = ref([])
@@ -425,14 +475,40 @@ function openMediaLibrary() {
   router.push({ name: 'media-library' })
 }
 
+const homeModelOptions = computed(() => {
+  const category = homeMediaType.value === 'video' ? 'video' : 'image'
+  return homeGenerationCatalog.value.filter((item) => item.category === category)
+})
+
+const homeSelectedPrice = computed(() => {
+  return homeModelOptions.value.find((item) => item.model === homeModel.value)?.credits ?? 0
+})
+
+async function loadHomeGenerationConfig() {
+  const [catalog, account] = await Promise.allSettled([
+    listGenerationCatalog(),
+    getCreditAccount(),
+  ])
+  homeGenerationCatalog.value = catalog.status === 'fulfilled' && Array.isArray(catalog.value)
+    ? catalog.value
+    : []
+  homeBalance.value = account.status === 'fulfilled' ? Number(account.value?.available || 0) : 0
+  homeModel.value = homeModelOptions.value[0]?.model || ''
+}
+
 function startFromComposer() {
   if (homeWorkflow.value === 'canvas') {
     router.push({ name: 'canvas-projects' })
     return
   }
+  if (!homeModel.value) {
+    ElMessage.warning('当前没有管理员已启用并配置计费的模型')
+    return
+  }
   const prompt = homePrompt.value.trim()
   newForm.value.title = prompt ? prompt.slice(0, 24) : ''
   newForm.value.description = prompt
+  newForm.value.aspect_ratio = homeAspectRatio.value
   showNewDialog.value = true
 }
 
@@ -678,7 +754,17 @@ async function submitNew() {
       title,
       description: isCanvasMode.value ? undefined : newForm.value.description?.trim() || undefined,
       folder_id: newForm.value.folder_id === '' ? null : newForm.value.folder_id,
-      metadata: projectMetadata(newForm.value.aspect_ratio, projectMode.value),
+      metadata: {
+        ...projectMetadata(newForm.value.aspect_ratio, projectMode.value),
+        ...(!isCanvasMode.value ? {
+          generation_workflow: homeWorkflow.value,
+          output_type: homeMediaType.value,
+          video_model: homeMediaType.value === 'video' ? homeModel.value : null,
+          image_model: homeMediaType.value !== 'video' ? homeModel.value : null,
+          video_duration: homeDuration.value,
+          video_resolution: homeResolution.value,
+        } : {}),
+      },
     })
     showNewDialog.value = false
     ElMessage.success('项目已创建')
@@ -801,7 +887,10 @@ async function onDelete(d) {
 onMounted(() => {
   loadList()
   if (isCanvasMode.value) loadProjectFolders()
-  else loadExamples()
+  else {
+    loadExamples()
+    loadHomeGenerationConfig()
+  }
 })
 
 watch(projectMode, () => {
@@ -814,6 +903,10 @@ watch(projectMode, () => {
     exampleList.value = []
     loadProjectFolders()
   }
+})
+
+watch(homeMediaType, () => {
+  homeModel.value = homeModelOptions.value[0]?.model || ''
 })
 </script>
 

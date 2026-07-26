@@ -58,6 +58,18 @@ test('首页提供紫黑工作台、快速生成器和真实最近项目入口',
   assert.match(filmListSource, /\.home-workbench[\s\S]*linear-gradient\(112deg/)
 })
 
+test('首页生成参数由后端模型目录和计费配置驱动并写入项目元数据', () => {
+  assert.match(filmListSource, /listGenerationCatalog/)
+  assert.match(filmListSource, /getCreditAccount/)
+  assert.match(filmListSource, /v-model="homeModel"/)
+  assert.match(filmListSource, /v-for="item in homeModelOptions"/)
+  assert.match(filmListSource, /homeSelectedPrice/)
+  assert.match(filmListSource, /video_model:\s*homeMediaType\.value === 'video'/)
+  assert.match(filmListSource, /image_model:\s*homeMediaType\.value !== 'video'/)
+  assert.match(filmListSource, /video_duration:\s*homeDuration\.value/)
+  assert.match(filmListSource, /video_resolution:\s*homeResolution\.value/)
+})
+
 test('普通页面的全局头部不再把独立自由画布作为主要入口', () => {
   for (const view of ['DramaDetail.vue', 'FilmCreate.vue', 'FreeCreate.vue', 'MediaLibrary.vue', 'AiConfig.vue', 'BillingAdmin.vue']) {
     assert.doesNotMatch(readView(view), /show-home-canvas="true"/, view)

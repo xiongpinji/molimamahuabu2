@@ -131,6 +131,24 @@ function list(db) {
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))];
 }
 
+function listPublic(db) {
+  if (!hasTable(db, 'ai_service_configs')) return [];
+  const activeModels = new Set(
+    db.prepare(`SELECT model, default_model
+      FROM ai_service_configs
+      WHERE deleted_at IS NULL AND is_active = 1`).all()
+      .flatMap((row) => [...parseConfiguredModels(row.model), String(row.default_model || '').trim()])
+      .filter(Boolean)
+      .map((model) => model.toLowerCase()),
+  );
+  return list(db).filter((row) => (
+    row.status === 'enabled'
+    && Number.isSafeInteger(row.credits)
+    && row.credits > 0
+    && activeModels.has(row.model.toLowerCase())
+  ));
+}
+
 function set(db, value, creditsValue, options = {}) {
   ensureSchema(db);
   const model = canonicalModel(value);
@@ -180,6 +198,7 @@ module.exports = {
   MODEL_STATUSES,
   ensureSchema,
   list,
+  listPublic,
   set,
   requirePrice,
   canonicalModel,
