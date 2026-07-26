@@ -26,7 +26,18 @@ import { RouterLink, useRoute } from 'vue-router'
 const route = useRoute()
 
 const canvasActive = computed(() => ['canvas-projects', 'standalone-canvas', 'home-canvas-local'].includes(route.name))
-const factoryActive = computed(() => ['list', 'factory', 'drama-detail', 'film', 'film-canvas'].includes(route.name))
+const factoryActive = computed(() => [
+  'list',
+  'factory',
+  'drama-detail',
+  'film',
+  'film-canvas',
+  'material-characters',
+  'material-scenes',
+  'material-props',
+  'media-library',
+  'ai-config',
+].includes(route.name))
 </script>
 
 <style scoped>

@@ -3,19 +3,19 @@
     <PlatformHeader :show-theme="false">
       <template #leading>
         <div class="header-library">
-          <el-button class="btn-library" @click="showCharLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('characters')">
             <el-icon><User /></el-icon>素材角色
           </el-button>
-          <el-button class="btn-library" @click="showSceneLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('scenes')">
             <el-icon><PictureFilled /></el-icon>素材场景
           </el-button>
-          <el-button class="btn-library" @click="showPropLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('props')">
             <el-icon><Box /></el-icon>素材道具
           </el-button>
         </div>
       </template>
       <template #actions>
-        <el-button class="btn-settings" @click="showAiConfigDialog = true">
+        <el-button class="btn-settings" @click="goAiConfig">
           <el-icon><Setting /></el-icon>AI配置
         </el-button>
         <el-button v-if="!isCanvasMode" class="btn-import" :loading="importing" @click="triggerImport">
@@ -273,181 +273,6 @@
       </div>
     </el-dialog>
 
-    <!-- AI 配置弹窗 -->
-    <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close>
-      <AIConfigContent v-if="showAiConfigDialog" />
-    </el-dialog>
-
-    <!-- 公共角色库 -->
-    <el-dialog v-model="showCharLibrary" title="素材库 · 角色" width="720px" destroy-on-close class="library-dialog" @open="loadCharLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="charLibraryKeyword" placeholder="搜索名称或描述" clearable style="width: 200px" @input="debouncedLoadCharLibrary()" />
-      </div>
-      <div v-loading="charLibraryLoading" class="library-list">
-        <div v-for="item in charLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.name || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || '').slice(0, 60) }}{{ (item.description || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditCharLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeleteCharLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!charLibraryLoading && charLibraryList.length === 0" class="library-empty">素材库暂无角色，可在项目中将角色「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="charLibraryPage" v-model:page-size="charLibraryPageSize" :total="charLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadCharLibraryList" @size-change="loadCharLibraryList" />
-      </div>
-      <template #footer><el-button @click="showCharLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共角色 -->
-    <el-dialog v-model="showEditCharLibrary" title="编辑素材角色" width="480px" @close="editCharLibraryForm = null">
-      <el-form v-if="editCharLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editCharLibraryForm))">
-              <img v-if="editCharLibraryForm.image_url || editCharLibraryForm.local_path" :src="assetImageUrl(editCharLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editCharLibraryForm.imgUploading" @click="charLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editCharLibraryForm.imgGenerating" @click="doGenerateLibImg(editCharLibraryForm, (editCharLibraryForm.name + (editCharLibraryForm.description ? ', ' + editCharLibraryForm.description : '')), characterLibraryAPI, loadCharLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="charLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editCharLibraryForm, characterLibraryAPI, loadCharLibraryList)" />
-        </el-form-item>
-        <el-form-item label="名称"><el-input v-model="editCharLibraryForm.name" placeholder="角色名称" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editCharLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editCharLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editCharLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditCharLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editCharLibrarySaving" @click="submitEditCharLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 公共场景库 -->
-    <el-dialog v-model="showSceneLibrary" title="素材库 · 场景" width="720px" destroy-on-close class="library-dialog" @open="loadSceneLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="sceneLibraryKeyword" placeholder="搜索地点或描述" clearable style="width: 200px" @input="debouncedLoadSceneLibrary()" />
-      </div>
-      <div v-loading="sceneLibraryLoading" class="library-list">
-        <div v-for="item in sceneLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.location || item.time || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditSceneLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeleteSceneLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!sceneLibraryLoading && sceneLibraryList.length === 0" class="library-empty">素材库暂无场景，可在项目中将场景「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="sceneLibraryPage" v-model:page-size="sceneLibraryPageSize" :total="sceneLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadSceneLibraryList" @size-change="loadSceneLibraryList" />
-      </div>
-      <template #footer><el-button @click="showSceneLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共场景 -->
-    <el-dialog v-model="showEditSceneLibrary" title="编辑素材场景" width="480px" @close="editSceneLibraryForm = null">
-      <el-form v-if="editSceneLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editSceneLibraryForm))">
-              <img v-if="editSceneLibraryForm.image_url || editSceneLibraryForm.local_path" :src="assetImageUrl(editSceneLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editSceneLibraryForm.imgUploading" @click="sceneLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editSceneLibraryForm.imgGenerating" @click="doGenerateLibImg(editSceneLibraryForm, ([editSceneLibraryForm.location, editSceneLibraryForm.time, editSceneLibraryForm.description].filter(Boolean).join(', ')), sceneLibraryAPI, loadSceneLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="sceneLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editSceneLibraryForm, sceneLibraryAPI, loadSceneLibraryList)" />
-        </el-form-item>
-        <el-form-item label="地点"><el-input v-model="editSceneLibraryForm.location" placeholder="场景地点" /></el-form-item>
-        <el-form-item label="时间"><el-input v-model="editSceneLibraryForm.time" placeholder="如：浅色/夜晚" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editSceneLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editSceneLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editSceneLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditSceneLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editSceneLibrarySaving" @click="submitEditSceneLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 公共道具库 -->
-    <el-dialog v-model="showPropLibrary" title="素材库 · 道具" width="720px" destroy-on-close class="library-dialog" @open="loadPropLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="propLibraryKeyword" placeholder="搜索名称或描述" clearable style="width: 200px" @input="debouncedLoadPropLibrary()" />
-      </div>
-      <div v-loading="propLibraryLoading" class="library-list">
-        <div v-for="item in propLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.name || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditPropLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeletePropLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!propLibraryLoading && propLibraryList.length === 0" class="library-empty">素材库暂无道具，可在项目中将道具「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="propLibraryPage" v-model:page-size="propLibraryPageSize" :total="propLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadPropLibraryList" @size-change="loadPropLibraryList" />
-      </div>
-      <template #footer><el-button @click="showPropLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共道具 -->
-    <el-dialog v-model="showEditPropLibrary" title="编辑素材道具" width="480px" @close="editPropLibraryForm = null">
-      <el-form v-if="editPropLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editPropLibraryForm))">
-              <img v-if="editPropLibraryForm.image_url || editPropLibraryForm.local_path" :src="assetImageUrl(editPropLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editPropLibraryForm.imgUploading" @click="propLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editPropLibraryForm.imgGenerating" @click="doGenerateLibImg(editPropLibraryForm, (editPropLibraryForm.name + (editPropLibraryForm.description ? ', ' + editPropLibraryForm.description : '')), propLibraryAPI, loadPropLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="propLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editPropLibraryForm, propLibraryAPI, loadPropLibraryList)" />
-        </el-form-item>
-        <el-form-item label="名称"><el-input v-model="editPropLibraryForm.name" placeholder="道具名称" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editPropLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editPropLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editPropLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditPropLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editPropLibrarySaving" @click="submitEditPropLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 图片放大预览 -->
-    <Teleport to="body">
-      <div v-if="previewImageUrl" class="image-preview-overlay" @click="previewImageUrl = null">
-        <img :src="previewImageUrl" alt="" class="image-preview-img" @click.stop="previewImageUrl = null" />
-      </div>
-    </Teleport>
-
     <!-- 编辑项目：修改标题和故事 -->
     <el-dialog
       v-model="showEditDialog"
@@ -480,13 +305,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
-import { characterLibraryAPI } from '@/api/characterLibrary'
-import { sceneLibraryAPI } from '@/api/sceneLibrary'
-import { propLibraryAPI } from '@/api/propLibrary'
-import AIConfigContent from '@/components/AIConfigContent.vue'
-import { uploadAPI } from '@/api/upload'
-import { imagesAPI } from '@/api/images'
-import { taskAPI } from '@/api/task'
 import {
   normalizeProjectMode,
   projectCanvasPath,
@@ -501,62 +319,6 @@ const props = defineProps({
 const projectMode = computed(() => normalizeProjectMode(props.projectMode))
 const isCanvasMode = computed(() => projectMode.value === 'canvas')
 
-// 库编辑图片 – 文件输入 refs
-const charLibFileRef  = ref(null)
-const sceneLibFileRef = ref(null)
-const propLibFileRef  = ref(null)
-
-// 共享：上传图片
-async function doUploadLibImg(event, form, api, reloadFn) {
-  const file = event.target?.files?.[0]
-  if (event.target) event.target.value = ''
-  if (!file || !form?.id) return
-  form.imgUploading = true
-  try {
-    const res = await uploadAPI.uploadImage(file)
-    const data = res?.data ?? res
-    const url = data?.url || data?.path || data?.local_path
-    if (!url) { ElMessage.error('上传未返回地址'); return }
-    form.image_url = url
-    form.local_path = data?.local_path ?? null
-    await api.update(form.id, { image_url: url, local_path: null })
-    reloadFn()
-    ElMessage.success('图片已更新')
-  } catch (e) { ElMessage.error(e.message || '上传失败') }
-  finally { form.imgUploading = false }
-}
-
-// 共享：AI 生成图片
-async function doGenerateLibImg(form, prompt, api, reloadFn) {
-  if (!prompt?.trim()) { ElMessage.warning('请先填写名称或描述'); return }
-  form.imgGenerating = true
-  try {
-    const res = await imagesAPI.create({ prompt: prompt.trim(), drama_id: null })
-    const imgData = res?.data ?? res
-    const taskId = imgData?.task_id
-    if (!taskId) throw new Error('未返回任务ID')
-    let task = null
-    for (let i = 0; i < 300; i++) {
-      await new Promise(r => setTimeout(r, 1500))
-      const tr = await taskAPI.get(taskId)
-      task = tr?.data ?? tr
-      if (task.status === 'completed') break
-      if (task.status === 'failed') throw new Error(task.error || '生成失败')
-    }
-    if (!task || task.status !== 'completed') throw new Error('生成超时')
-    const result = task.result
-    const imageUrl = result?.image_url
-    const localPath = result?.local_path ?? null
-    if (!imageUrl && !localPath) throw new Error('未获取到图片地址')
-    form.image_url = imageUrl || ''
-    form.local_path = localPath
-    await api.update(form.id, { image_url: imageUrl || null, local_path: localPath })
-    reloadFn()
-    ElMessage.success('AI 图片已生成')
-  } catch (e) { ElMessage.error(e.message || '生成失败') }
-  finally { form.imgGenerating = false }
-}
-
 const loading = ref(false)
 const dramas = ref([])
 const total = ref(0)
@@ -569,161 +331,12 @@ const newFolderName = ref('')
 const folderSaving = ref(false)
 const movingProjectId = ref(null)
 
-const showAiConfigDialog = ref(false)
-
-// 图片预览
-const previewImageUrl = ref(null)
-function assetImageUrl(item) {
-  if (!item) return ''
-  if (typeof item === 'string') return item.startsWith('http') ? item : item
-  const localPath = item.local_path && String(item.local_path).trim()
-  if (localPath) return '/static/' + localPath.replace(/^\//, '')
-  return item.image_url || ''
-}
-function openImagePreview(url) {
-  if (url) previewImageUrl.value = url
+function goMaterialLibrary(type) {
+  router.push({ name: `material-${type}` })
 }
 
-// 公共角色库
-const showCharLibrary = ref(false)
-const charLibraryList = ref([])
-const charLibraryLoading = ref(false)
-const charLibraryPage = ref(1)
-const charLibraryPageSize = ref(20)
-const charLibraryTotal = ref(0)
-const charLibraryKeyword = ref('')
-const showEditCharLibrary = ref(false)
-const editCharLibraryForm = ref(null)
-const editCharLibrarySaving = ref(false)
-let charLibraryKeywordTimer = null
-
-async function loadCharLibraryList() {
-  charLibraryLoading.value = true
-  try {
-    const res = await characterLibraryAPI.list({ page: charLibraryPage.value, page_size: charLibraryPageSize.value, keyword: charLibraryKeyword.value || undefined, global: 1 })
-    charLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    charLibraryTotal.value = p.total ?? 0
-    if (p.page != null) charLibraryPage.value = p.page
-    if (p.page_size != null) charLibraryPageSize.value = p.page_size
-  } catch { charLibraryList.value = [] } finally { charLibraryLoading.value = false }
-}
-function debouncedLoadCharLibrary() {
-  if (charLibraryKeywordTimer) clearTimeout(charLibraryKeywordTimer)
-  charLibraryKeywordTimer = setTimeout(() => { charLibraryPage.value = 1; loadCharLibraryList() }, 300)
-}
-function openEditCharLibrary(item) {
-  editCharLibraryForm.value = { id: item.id, name: item.name ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditCharLibrary.value = true
-}
-async function submitEditCharLibrary() {
-  if (!editCharLibraryForm.value?.id) return
-  editCharLibrarySaving.value = true
-  try {
-    await characterLibraryAPI.update(editCharLibraryForm.value.id, { name: editCharLibraryForm.value.name, category: editCharLibraryForm.value.category || null, description: editCharLibraryForm.value.description || null, tags: editCharLibraryForm.value.tags || null, image_url: editCharLibraryForm.value.image_url || null, local_path: editCharLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditCharLibrary.value = false
-    loadCharLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editCharLibrarySaving.value = false }
-}
-async function onDeleteCharLibrary(item) {
-  try { await ElMessageBox.confirm(`确定删除公共角色「${(item.name || '未命名').slice(0, 20)}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await characterLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadCharLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
-}
-
-// 公共场景库
-const showSceneLibrary = ref(false)
-const sceneLibraryList = ref([])
-const sceneLibraryLoading = ref(false)
-const sceneLibraryPage = ref(1)
-const sceneLibraryPageSize = ref(20)
-const sceneLibraryTotal = ref(0)
-const sceneLibraryKeyword = ref('')
-const showEditSceneLibrary = ref(false)
-const editSceneLibraryForm = ref(null)
-const editSceneLibrarySaving = ref(false)
-let sceneLibraryKeywordTimer = null
-
-async function loadSceneLibraryList() {
-  sceneLibraryLoading.value = true
-  try {
-    const res = await sceneLibraryAPI.list({ page: sceneLibraryPage.value, page_size: sceneLibraryPageSize.value, keyword: sceneLibraryKeyword.value || undefined, global: 1 })
-    sceneLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    sceneLibraryTotal.value = p.total ?? 0
-    if (p.page != null) sceneLibraryPage.value = p.page
-    if (p.page_size != null) sceneLibraryPageSize.value = p.page_size
-  } catch { sceneLibraryList.value = [] } finally { sceneLibraryLoading.value = false }
-}
-function debouncedLoadSceneLibrary() {
-  if (sceneLibraryKeywordTimer) clearTimeout(sceneLibraryKeywordTimer)
-  sceneLibraryKeywordTimer = setTimeout(() => { sceneLibraryPage.value = 1; loadSceneLibraryList() }, 300)
-}
-function openEditSceneLibrary(item) {
-  editSceneLibraryForm.value = { id: item.id, location: item.location ?? '', time: item.time ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditSceneLibrary.value = true
-}
-async function submitEditSceneLibrary() {
-  if (!editSceneLibraryForm.value?.id) return
-  editSceneLibrarySaving.value = true
-  try {
-    await sceneLibraryAPI.update(editSceneLibraryForm.value.id, { location: editSceneLibraryForm.value.location, time: editSceneLibraryForm.value.time || null, category: editSceneLibraryForm.value.category || null, description: editSceneLibraryForm.value.description || null, tags: editSceneLibraryForm.value.tags || null, image_url: editSceneLibraryForm.value.image_url || null, local_path: editSceneLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditSceneLibrary.value = false
-    loadSceneLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editSceneLibrarySaving.value = false }
-}
-async function onDeleteSceneLibrary(item) {
-  const name = (item.location || item.time || '未命名').slice(0, 20)
-  try { await ElMessageBox.confirm(`确定删除公共场景「${name}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await sceneLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadSceneLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
-}
-
-// 公共道具库
-const showPropLibrary = ref(false)
-const propLibraryList = ref([])
-const propLibraryLoading = ref(false)
-const propLibraryPage = ref(1)
-const propLibraryPageSize = ref(20)
-const propLibraryTotal = ref(0)
-const propLibraryKeyword = ref('')
-const showEditPropLibrary = ref(false)
-const editPropLibraryForm = ref(null)
-const editPropLibrarySaving = ref(false)
-let propLibraryKeywordTimer = null
-
-async function loadPropLibraryList() {
-  propLibraryLoading.value = true
-  try {
-    const res = await propLibraryAPI.list({ page: propLibraryPage.value, page_size: propLibraryPageSize.value, keyword: propLibraryKeyword.value || undefined, global: 1 })
-    propLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    propLibraryTotal.value = p.total ?? 0
-    if (p.page != null) propLibraryPage.value = p.page
-    if (p.page_size != null) propLibraryPageSize.value = p.page_size
-  } catch { propLibraryList.value = [] } finally { propLibraryLoading.value = false }
-}
-function debouncedLoadPropLibrary() {
-  if (propLibraryKeywordTimer) clearTimeout(propLibraryKeywordTimer)
-  propLibraryKeywordTimer = setTimeout(() => { propLibraryPage.value = 1; loadPropLibraryList() }, 300)
-}
-function openEditPropLibrary(item) {
-  editPropLibraryForm.value = { id: item.id, name: item.name ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditPropLibrary.value = true
-}
-async function submitEditPropLibrary() {
-  if (!editPropLibraryForm.value?.id) return
-  editPropLibrarySaving.value = true
-  try {
-    await propLibraryAPI.update(editPropLibraryForm.value.id, { name: editPropLibraryForm.value.name, category: editPropLibraryForm.value.category || null, description: editPropLibraryForm.value.description || null, tags: editPropLibraryForm.value.tags || null, image_url: editPropLibraryForm.value.image_url || null, local_path: editPropLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditPropLibrary.value = false
-    loadPropLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editPropLibrarySaving.value = false }
-}
-async function onDeletePropLibrary(item) {
-  try { await ElMessageBox.confirm(`确定删除公共道具「${(item.name || '未命名').slice(0, 20)}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await propLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadPropLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
+function goAiConfig() {
+  router.push({ name: 'ai-config' })
 }
 
 const showNewDialog = ref(false)
@@ -1648,9 +1261,6 @@ html.light .btn-import {
   }
 }
 
-/* 公共库弹窗 */
-:global(.library-dialog .el-dialog__body) { padding-top: 8px; }
-
 :global(.project-dialog.el-dialog) {
   --el-bg-color: #111111;
   --el-bg-color-overlay: #111111;
@@ -1742,50 +1352,6 @@ html.light .btn-import {
   color: #e8e8e8 !important;
 }
 
-/* 编辑弹框内图片区 */
-.lib-img-editor { display: flex; align-items: center; gap: 14px; }
-.lib-img-thumb { width: 88px; height: 88px; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-inner, #1c1c1e); border: 1px solid var(--border-color, #27272a); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.lib-img-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.lib-img-empty { color: var(--text-faint, #52525b); font-size: 26px; }
-.lib-img-btns { display: flex; flex-direction: column; gap: 8px; }
-.library-toolbar { margin-bottom: 12px; }
-.library-list {
-  min-height: 200px;
-  max-height: 420px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.library-item {
-  display: flex;
-  gap: 12px;
-  padding: 10px;
-  background: #1c1c1e;
-  border: 1px solid #27272a;
-  border-radius: 8px;
-}
-.library-item-cover {
-  width: 72px;
-  height: 72px;
-  flex-shrink: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #27272a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.library-item-cover img { width: 100%; height: 100%; object-fit: cover; }
-.library-item-placeholder { font-size: 0.8rem; color: #71717a; }
-.library-item-info { flex: 1; min-width: 0; }
-.library-item-name { font-weight: 500; margin-bottom: 4px; color: #fafafa; }
-.library-item-desc { font-size: 0.85rem; color: #a1a1aa; margin-bottom: 8px; }
-.library-item-actions { display: flex; gap: 8px; }
-.library-empty { text-align: center; color: #71717a; padding: 40px 20px; }
-.library-pagination { margin-top: 12px; display: flex; justify-content: center; }
-
 /* 项目入口固定为 OpenVideo 风格的暗色工作区，避免历史主题设置覆盖 */
 html.light .film-list {
   background: #080808;
@@ -1837,39 +1403,10 @@ html.light .project-title { color: #f5f5f5 !important; }
 html.light .project-desc { color: #a3a3a3 !important; }
 html.light .project-meta { color: #737373 !important; }
 html.light .example-hint-text { color: #8c8c8c !important; }
-html.light .library-item {
-  background: #141414 !important;
-  border-color: #272727 !important;
-}
-html.light .library-item-name { color: #f5f5f5 !important; }
-html.light .library-item-desc { color: #a3a3a3 !important; }
-html.light .library-empty { color: #737373 !important; }
-html.light .lib-img-thumb {
-  background: #111111 !important;
-  border-color: #272727 !important;
-}
-html.light .lib-img-empty { color: #737373 !important; }
 html.light .badge-status--draft {
   background: rgba(115, 115, 115, 0.12);
   color: #a3a3a3;
   border-color: rgba(115, 115, 115, 0.28);
 }
 
-/* ===== 图片放大预览 ===== */
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  cursor: zoom-out;
-}
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  border-radius: 8px;
-  object-fit: contain;
-}
 </style>

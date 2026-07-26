@@ -1,9 +1,22 @@
 <template>
   <div class="ai-config">
-    <PlatformHeader title="AI 配置" back-to="/" back-label="返回" />
+    <PlatformHeader
+      title="AI 配置"
+      back-to="/factory"
+      back-label="返回项目"
+      :show-theme="false"
+    />
 
-    <main class="main">
-      <AIConfigContent />
+    <main class="ai-config-main">
+      <section class="ai-config-hero" aria-labelledby="ai-config-title">
+        <p class="hero-eyebrow">模型与生成中枢</p>
+        <h1 id="ai-config-title">管理所有 AI 生成能力</h1>
+        <p>统一配置文本、图片、视频和声音模型，保存后将直接用于流水线与自由画布。</p>
+      </section>
+
+      <section class="ai-config-workspace" aria-label="AI 模型配置">
+        <AIConfigContent />
+      </section>
     </main>
   </div>
 </template>
@@ -15,100 +28,160 @@ import AIConfigContent from '@/components/AIConfigContent.vue'
 
 <style scoped>
 .ai-config {
+  --el-color-primary: #ff7139;
+  --el-color-primary-light-3: #ff8f64;
+  --el-color-primary-light-5: #ffab8c;
+  --el-color-primary-light-8: #4c281d;
+  --el-color-primary-light-9: #291813;
+  --el-bg-color: #121212;
+  --el-bg-color-overlay: #171717;
+  --el-fill-color-blank: #121212;
+  --el-fill-color-light: #1d1d1d;
+  --el-fill-color-lighter: #232323;
+  --el-border-color: #333;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #8d8d8d;
   min-height: 100vh;
-  background: #0f0f12;
+  color: #f5f5f5;
+  background: #080808;
   background-image:
-    radial-gradient(ellipse 80% 50% at 20% -20%, rgba(120, 60, 220, 0.18) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 40% at 80% 110%, rgba(60, 100, 220, 0.12) 0%, transparent 60%);
+    radial-gradient(circle at 14% -8%, rgba(255, 113, 57, 0.14), transparent 28rem),
+    radial-gradient(circle at 92% 42%, rgba(255, 113, 57, 0.07), transparent 32rem);
 }
-html.light .ai-config {
-  background: #f5f3ff;
+
+:global(html.light) .ai-config {
+  color: #f5f5f5;
+  background: #080808;
   background-image:
-    radial-gradient(ellipse 80% 50% at 20% -20%, rgba(139, 92, 246, 0.12) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 40% at 80% 110%, rgba(99, 102, 241, 0.08) 0%, transparent 60%);
+    radial-gradient(circle at 14% -8%, rgba(255, 113, 57, 0.14), transparent 28rem),
+    radial-gradient(circle at 92% 42%, rgba(255, 113, 57, 0.07), transparent 32rem);
 }
-.header {
-  background: rgba(18, 18, 22, 0.82);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid rgba(139, 92, 246, 0.18);
-  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.4);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-html.light .header {
-  background: rgba(255, 255, 255, 0.85);
-  border-bottom-color: rgba(139, 92, 246, 0.2);
-  box-shadow: 0 2px 16px rgba(139, 92, 246, 0.08);
-}
-.header-inner {
-  max-width: 1200px;
+
+.ai-config-main {
+  width: min(1480px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 12px 24px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  padding: 48px 0 72px;
 }
-.logo {
-  margin: 0;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  line-height: 1;
-  transition: filter 0.3s;
+
+.ai-config-hero {
+  max-width: 760px;
+  margin-bottom: 28px;
 }
-.brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
-.brand-copy { display: flex; flex-direction: column; gap: 3px; }
-.logo:hover {
-  filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.5));
-}
-.logo-main {
-  font-size: 1.1rem;
+
+.hero-eyebrow {
+  margin: 0 0 12px;
+  color: #ff7139;
+  font-size: 12px;
   font-weight: 700;
-  background: linear-gradient(135deg, #c4b5fd 0%, #818cf8 50%, #a78bfa 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  letter-spacing: 0.14em;
 }
-.logo-sub {
-  font-size: 0.68rem;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  color: #6d6d7a;
-  -webkit-text-fill-color: #6d6d7a;
+
+.ai-config-hero h1 {
+  margin: 0;
+  font-size: clamp(32px, 4vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
 }
-html.light .logo-main {
-  background: linear-gradient(135deg, #7c3aed, #6366f1);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+
+.ai-config-hero p:last-child {
+  max-width: 680px;
+  margin: 18px 0 0;
+  color: #919191;
+  font-size: 15px;
+  line-height: 1.8;
 }
-html.light .logo-sub {
-  color: #9ca3af;
-  -webkit-text-fill-color: #9ca3af;
+
+.ai-config-workspace {
+  padding: 28px;
+  overflow: hidden;
+  background: rgba(17, 17, 17, 0.96);
+  border: 1px solid #292929;
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
 }
-.page-title {
-  flex: 1;
-  font-size: 16px;
-  color: #a1a1aa;
+
+.ai-config-workspace :deep(.el-tabs__item) {
+  color: #898989;
 }
-html.light .page-title { color: #6b7280; }
-.main {
-  max-width: 1200px;
-  margin: 24px auto;
-  background: rgba(24, 24, 27, 0.75);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 16px;
-  padding: 20px 24px;
-  border: 1px solid rgba(63, 63, 70, 0.7);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+
+.ai-config-workspace :deep(.el-tabs__item.is-active),
+.ai-config-workspace :deep(.el-tabs__item:hover) {
+  color: #ff7139;
 }
-html.light .main {
-  background: rgba(255, 255, 255, 0.88);
-  border-color: rgba(139, 92, 246, 0.15);
-  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.08);
+
+.ai-config-workspace :deep(.el-tabs__active-bar) {
+  background-color: #ff7139;
+}
+
+.ai-config-workspace :deep(.el-tabs__nav-wrap::after) {
+  background-color: #292929;
+}
+
+.ai-config-workspace :deep(.el-input__wrapper),
+.ai-config-workspace :deep(.el-select__wrapper),
+.ai-config-workspace :deep(.el-textarea__inner),
+.ai-config-workspace :deep(.el-input-number),
+.ai-config-workspace :deep(.el-table),
+.ai-config-workspace :deep(.el-table tr),
+.ai-config-workspace :deep(.el-table th.el-table__cell),
+.ai-config-workspace :deep(.el-table td.el-table__cell) {
+  color: #dedede;
+  background: #151515;
+  box-shadow: none;
+}
+
+.ai-config-workspace :deep(.el-input__wrapper),
+.ai-config-workspace :deep(.el-select__wrapper),
+.ai-config-workspace :deep(.el-textarea__inner) {
+  border: 1px solid #303030;
+}
+
+.ai-config-workspace :deep(.el-input__wrapper.is-focus),
+.ai-config-workspace :deep(.el-select__wrapper.is-focused),
+.ai-config-workspace :deep(.el-textarea__inner:focus) {
+  border-color: #ff7139;
+}
+
+.ai-config-workspace :deep(.el-table) {
+  --el-table-border-color: #2a2a2a;
+  --el-table-header-bg-color: #191919;
+  --el-table-row-hover-bg-color: #202020;
+  --el-table-tr-bg-color: #151515;
+}
+
+.ai-config-workspace :deep(.el-button--primary) {
+  --el-button-bg-color: #ff7139;
+  --el-button-border-color: #ff7139;
+  --el-button-hover-bg-color: #ff875a;
+  --el-button-hover-border-color: #ff875a;
+  color: #111;
+  font-weight: 700;
+}
+
+.ai-config-workspace :deep(.default-tip),
+.ai-config-workspace :deep(.one-key-tip),
+.ai-config-workspace :deep(.ph-tip),
+.ai-config-workspace :deep(.one-key-section) {
+  color: #a7a7a7;
+  background: #151515;
+  border-color: #303030;
+}
+
+.ai-config-workspace :deep(.ph-section-title) {
+  color: #f0f0f0;
+}
+
+@media (max-width: 760px) {
+  .ai-config-main {
+    width: min(100% - 28px, 1480px);
+    padding-top: 28px;
+  }
+
+  .ai-config-workspace {
+    padding: 18px 14px;
+    border-radius: 16px;
+  }
 }
 </style>

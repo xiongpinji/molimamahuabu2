@@ -71,6 +71,27 @@ const router = createRouter({
       meta: { title: 'AI 配置' }
     },
     {
+      path: '/materials/characters',
+      name: 'material-characters',
+      component: () => import('@/views/MaterialLibrary.vue'),
+      props: { kind: 'character' },
+      meta: { title: '素材角色' }
+    },
+    {
+      path: '/materials/scenes',
+      name: 'material-scenes',
+      component: () => import('@/views/MaterialLibrary.vue'),
+      props: { kind: 'scene' },
+      meta: { title: '素材场景' }
+    },
+    {
+      path: '/materials/props',
+      name: 'material-props',
+      component: () => import('@/views/MaterialLibrary.vue'),
+      props: { kind: 'prop' },
+      meta: { title: '素材道具' }
+    },
+    {
       path: '/billing-admin',
       name: 'billing-admin',
       component: () => import('@/views/BillingAdmin.vue'),
