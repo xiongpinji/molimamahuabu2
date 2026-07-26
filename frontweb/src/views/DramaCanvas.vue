@@ -640,6 +640,7 @@ const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflo
 ))
 let canvasPersistQueue = Promise.resolve()
 const freeCanvasAssetSaveFlights = new Map()
+const freeCanvasTaskResumeFlights = new Map()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
@@ -1847,7 +1848,8 @@ function freeCanvasTaskId(response) {
 }
 
 function freeCanvasGenerationId(kind, submitResult, taskResult) {
-  const result = taskResult?.result || taskResult || {}
+  const persistedResult = taskResultObject(taskResult)
+  const result = Object.keys(persistedResult).length ? persistedResult : taskResult || {}
   if (kind === 'image') {
     return result.image_generation_id
       || result.generation_id
@@ -1880,9 +1882,13 @@ async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 
 }
 
 async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
-  let resultUrl = resolveFreeCanvasResultUrl(kind, taskResult) || resolveFreeCanvasResultUrl(kind, submitResult)
+  const persistedResult = taskResultObject(taskResult)
+  const normalizedTaskResult = Object.keys(persistedResult).length
+    ? { ...taskResult, result: persistedResult }
+    : taskResult
+  let resultUrl = resolveFreeCanvasResultUrl(kind, normalizedTaskResult) || resolveFreeCanvasResultUrl(kind, submitResult)
   if (resultUrl || kind === 'audio') return resultUrl
-  const generationId = freeCanvasGenerationId(kind, submitResult, taskResult)
+  const generationId = freeCanvasGenerationId(kind, submitResult, normalizedTaskResult)
   if (!generationId) return ''
   const record = kind === 'image'
     ? await imagesAPI.get(generationId)
@@ -1949,6 +1955,40 @@ async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, 
   }
 }
 
+function freeCanvasTaskPollOptions(kind) {
+  return { maxAttempts: kind === 'video' ? 600 : 60, intervalMs: 3000 }
+}
+
+async function completeFreeCanvasNodeGeneration({
+  node,
+  kind,
+  submitResult,
+  taskResult,
+  requestPayload,
+  taskId,
+  notify = true,
+}) {
+  const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
+  if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
+  await patchFreeCanvasNodeData(node.id, {
+    status: 'success',
+    url: resultUrl,
+    taskId,
+    error: '',
+    savedAssetId: '',
+    assetSaveStatus: 'running',
+    assetSaveError: '',
+  })
+  try {
+    const latestNode = findGraphNode(node.id) || { ...node, data: { ...node.data, url: resultUrl } }
+    await saveFreeCanvasResultAsset(latestNode, kind, resultUrl, requestPayload, taskId)
+  } catch (assetError) {
+    console.warn('auto save free canvas result asset failed', assetError)
+    if (notify) ElMessage.warning('生成完成，但自动存入素材库失败')
+  }
+  if (notify) ElMessage.success('自由节点生成完成')
+  return resultUrl
+}
 async function runFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
@@ -1986,27 +2026,16 @@ async function runFreeCanvasNode(nodeOrId) {
     taskId = freeCanvasTaskId(submitResult)
     if (taskId) {
       await patchFreeCanvasNodeData(node.id, { taskId })
-      taskResult = await pollFreeCanvasTask(taskId)
+      taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
     }
-    const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
-    if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
-    await patchFreeCanvasNodeData(node.id, {
-      status: 'success',
-      url: resultUrl,
+    await completeFreeCanvasNodeGeneration({
+      node,
+      kind,
+      submitResult,
+      taskResult,
+      requestPayload,
       taskId,
-      error: '',
-      savedAssetId: '',
-      assetSaveStatus: 'running',
-      assetSaveError: '',
     })
-    try {
-      const latestNode = findGraphNode(node.id) || { ...node, data: { ...node.data, url: resultUrl } }
-      await saveFreeCanvasResultAsset(latestNode, kind, resultUrl, requestPayload, taskId)
-    } catch (assetError) {
-      console.warn('auto save free canvas result asset failed', assetError)
-      ElMessage.warning('生成完成，但自动存入素材库失败')
-    }
-    ElMessage.success('自由节点生成完成')
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
     await patchFreeCanvasNodeData(node.id, {
@@ -2019,6 +2048,63 @@ async function runFreeCanvasNode(nodeOrId) {
   }
 }
 
+async function resumeFreeCanvasNodeTask(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  const taskId = String(node?.data?.taskId || '')
+  const kind = node?.data?.kind
+  if (!taskId || node?.data?.status !== 'running' || !['image', 'video', 'audio'].includes(kind)) return
+  const resumeKey = `${node.id}::${taskId}`
+  const existingFlight = freeCanvasTaskResumeFlights.get(resumeKey)
+  if (existingFlight) return existingFlight
+
+  const resumePromise = (async () => {
+    try {
+      const taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      await completeFreeCanvasNodeGeneration({
+        node,
+        kind,
+        submitResult: null,
+        taskResult,
+        requestPayload: null,
+        taskId,
+        notify: false,
+      })
+      ElMessage.success('已恢复自由节点生成结果')
+    } catch (error) {
+      const latestNode = freeCanvasNodeById(node.id)
+      if (String(latestNode?.data?.taskId || '') !== taskId || latestNode?.data?.status !== 'running') return
+      const errorMessage = error?.message || '自由节点生成失败'
+      await patchFreeCanvasNodeData(node.id, {
+        status: 'failed',
+        url: latestNode?.data?.url || '',
+        taskId,
+        error: errorMessage,
+      })
+      ElMessage.error(errorMessage)
+    }
+  })()
+
+  freeCanvasTaskResumeFlights.set(resumeKey, resumePromise)
+  try {
+    return await resumePromise
+  } finally {
+    if (freeCanvasTaskResumeFlights.get(resumeKey) === resumePromise) {
+      freeCanvasTaskResumeFlights.delete(resumeKey)
+    }
+  }
+}
+
+function resumePendingFreeCanvasTasks() {
+  if (!isStandaloneCanvas.value) return
+  for (const node of allGraphNodes.value) {
+    if (
+      node?.type !== 'homeCanvasNode'
+      || node?.data?.status !== 'running'
+      || !node?.data?.taskId
+    ) continue
+    void resumeFreeCanvasNodeTask(node)
+  }
+}
 async function retryFreeCanvasAssetSave(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !node.data?.url) {
@@ -4839,6 +4925,7 @@ async function loadDrama(silent = false) {
     if (route.query.episode) filterEpisodeId.value = Number(route.query.episode)
     await loadForDrama(drama.value, filterEpisodeId.value)
     rebuildGraph()
+    resumePendingFreeCanvasTasks()
   } catch (e) {
     if (!silent) ElMessage.error(e?.message || '加载项目失败')
   } finally {
