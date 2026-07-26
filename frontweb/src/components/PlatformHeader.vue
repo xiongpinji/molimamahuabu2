@@ -93,24 +93,19 @@ function goHomeCanvas() {
   position: sticky;
   top: 0;
   z-index: 220;
-  padding: 10px 16px 0;
-  pointer-events: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(8, 8, 8, .88);
+  backdrop-filter: blur(18px);
 }
 
 .platform-header__inner {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 58px;
-  max-width: 1440px;
+  gap: 18px;
+  min-height: 64px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 8px 10px;
-  border: 1px solid rgba(82, 82, 91, .72);
-  border-radius: 16px;
-  background: rgba(24, 24, 27, .88);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, .28);
-  backdrop-filter: blur(18px);
-  pointer-events: auto;
+  padding: 0 28px;
 }
 
 .platform-header__separator {
@@ -123,8 +118,8 @@ function goHomeCanvas() {
   min-width: 0;
   max-width: min(30vw, 420px);
   overflow: hidden;
-  color: #e4e4e7;
-  font-size: 15px;
+  color: #f5f5f5;
+  font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -148,19 +143,19 @@ function goHomeCanvas() {
 }
 
 .platform-header__button {
-  min-height: 40px;
-  border-color: rgba(255, 255, 255, .1) !important;
-  border-radius: 12px !important;
+  min-height: 38px;
+  border-color: rgba(255, 255, 255, .09) !important;
+  border-radius: 10px !important;
   color: #e4e4e7 !important;
-  background: rgba(39, 39, 42, .84) !important;
+  background: #151515 !important;
   transition: background-color .18s ease, border-color .18s ease, transform .18s ease;
 }
 
 .platform-header__button:hover,
 .platform-header__button:focus-visible {
-  border-color: rgba(167, 139, 250, .62) !important;
+  border-color: rgba(255, 113, 57, .72) !important;
   color: #fff !important;
-  background: rgba(63, 63, 70, .96) !important;
+  background: #1c1c1c !important;
 }
 
 .platform-header__button:active {
@@ -168,39 +163,38 @@ function goHomeCanvas() {
 }
 
 .platform-header__back {
-  border-color: rgba(167, 139, 250, .34) !important;
+  border-color: rgba(255, 113, 57, .36) !important;
 }
 
 :global(html.light) .platform-header__inner {
-  border-color: #e4e4e7;
-  background: rgba(255, 255, 255, .92);
-  box-shadow: 0 12px 28px rgba(24, 24, 27, .12);
+  border-color: #272727;
+  background: rgba(8, 8, 8, .92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .34);
 }
 
 :global(html.light) .platform-header__title {
-  color: #18181b;
+  color: #f5f5f5;
 }
 
 :global(html.light) .platform-header__separator {
-  color: #71717a;
+  color: #707070;
 }
 
 :global(html.light) .platform-header__button {
-  border-color: #e4e4e7 !important;
-  color: #27272a !important;
-  background: rgba(255, 255, 255, .96) !important;
+  border-color: #2b2b2b !important;
+  color: #d4d4d4 !important;
+  background: #121212 !important;
 }
 
 :global(html.light) .platform-header__button:hover,
 :global(html.light) .platform-header__button:focus-visible {
-  border-color: #a78bfa !important;
-  color: #18181b !important;
-  background: #f4f4f5 !important;
+  border-color: #ff7139 !important;
+  color: #ffffff !important;
+  background: #1d1d1d !important;
 }
 
 @media (max-width: 860px) {
-  .platform-header { padding: 8px 10px 0; }
-  .platform-header__inner { gap: 8px; }
+  .platform-header__inner { gap: 8px; padding: 0 12px; }
   .platform-header__separator,
   .platform-header__button-label { display: none; }
   .platform-header__title { max-width: 34vw; }

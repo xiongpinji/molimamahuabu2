@@ -3,12 +3,18 @@
     <header class="header canvas-topbar">
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
-        <span class="breadcrumb-sep">›</span>
-        <span class="page-title">首页自由画布</span>
-        <span class="canvas-name">画布 1</span>
+        <span class="page-title">自由画布</span>
         <span class="layout-status" :class="layoutSaveState">{{ layoutStatusLabel }}</span>
 
         <div class="header-actions">
+          <div class="topbar-history" aria-label="画布历史操作">
+            <button type="button" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
+              <el-icon><RefreshLeft /></el-icon>
+            </button>
+            <button type="button" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redoCanvas">
+              <el-icon><RefreshRight /></el-icon>
+            </button>
+          </div>
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
@@ -19,10 +25,6 @@
           <el-button class="topbar-home" plain @click="router.push('/')">
             <el-icon><List /></el-icon>
             <span>返回首页</span>
-          </el-button>
-          <el-button class="btn-theme" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
           </el-button>
         </div>
       </div>
@@ -162,24 +164,6 @@
         <button type="button" class="ctx-item" @click="openNodeEditor('video', pendingFlowPosition)">视频节点</button>
       </div>
     </Teleport>
-
-    <el-dialog v-model="editorVisible" :title="editingNodeId ? '编辑节点' : '添加节点'" width="460px" destroy-on-close>
-      <el-form label-position="top" @submit.prevent="submitNode">
-        <el-form-item label="标题" required>
-          <el-input v-model="editorForm.title" maxlength="80" placeholder="例如：开场氛围" />
-        </el-form-item>
-        <el-form-item :label="editorKind === 'text' ? '内容' : '说明'">
-          <el-input v-model="editorForm.content" type="textarea" :rows="4" placeholder="填写节点内容" />
-        </el-form-item>
-        <el-form-item v-if="editorKind !== 'text'" :label="editorKind === 'image' ? '图片地址' : '视频地址'">
-          <el-input v-model="editorForm.url" placeholder="支持 http(s) 或本地静态资源地址" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editorVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!editorForm.title.trim()" @click="submitNode">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -190,7 +174,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { Delete, FullScreen, List, Moon, Plus, QuestionFilled, RefreshLeft, RefreshRight, Share, Sunny, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Delete, FullScreen, List, Plus, QuestionFilled, RefreshLeft, RefreshRight, Share, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -198,7 +182,6 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
-import { useTheme } from '@/composables/useTheme'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
@@ -217,7 +200,6 @@ import {
 } from '@/utils/homeCanvasState'
 
 const router = useRouter()
-const { isDark, toggle: toggleTheme } = useTheme()
 
 const canvasMainRef = ref(null)
 const nodes = ref([])
@@ -230,11 +212,6 @@ const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const pendingFlowPosition = ref(null)
-const editorVisible = ref(false)
-const editingNodeId = ref(null)
-const editorKind = ref('text')
-const editorForm = ref({ title: '', content: '', url: '' })
-const activeStarterId = ref(null)
 const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
 const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
@@ -441,15 +418,30 @@ function closeContextMenu() {
 
 function openNodeEditor(kind, position = null, initial = null) {
   closeContextMenu()
-  editorKind.value = kind
-  editingNodeId.value = null
-  pendingFlowPosition.value = position || centerFlowPosition()
-  editorForm.value = initial || { title: '', content: '', url: '' }
-  editorVisible.value = true
+  const previousState = currentCanvasState()
+  const titles = { text: '文本', image: '图片', video: '视频', audio: '音频' }
+  const nodeId = `home:${kind}:${Date.now()}`
+  nodes.value = nodes.value
+    .filter((node) => node.id !== 'home:welcome')
+    .map((node) => ({ ...node, selected: false }))
+  nodes.value.push({
+    id: nodeId,
+    type: 'homeCanvasNode',
+    position: position || centerFlowPosition(),
+    selected: true,
+    data: {
+      kind,
+      title: initial?.title || titles[kind] || '节点',
+      content: initial?.content || '',
+      url: initial?.url || '',
+    },
+  })
+  pendingFlowPosition.value = null
+  commitHistory(previousState)
+  scheduleSave()
 }
 
 function openStarter(preset) {
-  activeStarterId.value = preset.id
   openNodeEditor(preset.kind, centerFlowPosition(), {
     title: preset.nodeTitle,
     content: preset.nodeContent,
@@ -458,47 +450,8 @@ function openStarter(preset) {
 }
 
 function onNodeDoubleClick({ node }) {
-  if (!node?.data) return
-  editingNodeId.value = node.id
-  editorKind.value = node.data.kind || 'text'
-  editorForm.value = {
-    title: node.data.title || '',
-    content: node.data.content || '',
-    url: node.data.url || '',
-  }
-  editorVisible.value = true
-}
-
-function submitNode() {
-  const title = editorForm.value.title.trim()
-  if (!title) return
-  const previousState = currentCanvasState()
-  if (editingNodeId.value) {
-    nodes.value = nodes.value.map((node) => node.id === editingNodeId.value
-      ? { ...node, data: { ...node.data, kind: editorKind.value, title, content: editorForm.value.content, url: editorForm.value.url } }
-      : node)
-  } else {
-    if (activeStarterId.value) {
-      nodes.value = nodes.value.filter((node) => node.id !== 'home:welcome')
-    }
-    nodes.value.push({
-      id: `home:${editorKind.value}:${Date.now()}`,
-      type: 'homeCanvasNode',
-      position: pendingFlowPosition.value || centerFlowPosition(),
-      data: {
-        kind: editorKind.value,
-        title,
-        content: editorForm.value.content,
-        url: editorForm.value.url,
-      },
-    })
-  }
-  editorVisible.value = false
-  activeStarterId.value = null
-  pendingFlowPosition.value = null
-  commitHistory(previousState)
-  scheduleSave()
-  ElMessage.success(editingNodeId.value ? '节点已更新' : '节点已添加')
+  if (!node?.id) return
+  nodes.value = nodes.value.map((item) => ({ ...item, selected: item.id === node.id }))
 }
 
 async function updateFreeCanvasNode(nodeId, patch) {
@@ -713,9 +666,6 @@ provide(CANVAS_CONTEXT_KEY, {
 onMounted(() => window.addEventListener('keydown', onCanvasKeydown))
 
 watch([nodes, edges], scheduleSave, { deep: true })
-watch(editorVisible, (visible) => {
-  if (!visible) activeStarterId.value = null
-})
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCanvasKeydown)
@@ -725,19 +675,22 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.home-canvas-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-page, #0f0f12); color: var(--text-primary, #e4e4e7); }
+.home-canvas-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #080808; color: var(--text-primary, #e4e4e7); }
 .header { flex-shrink: 0; border-bottom: 1px solid var(--border-color, #27272a); background: var(--bg-card, #18181b); }
 .canvas-topbar { position: absolute; inset: 0 0 auto; z-index: 30; border-bottom: 0; background: transparent; pointer-events: none; }
-.header-inner { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 12px 16px 0; padding: 8px 10px; flex-wrap: nowrap; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 16px; background: rgba(24, 24, 27, 0.82); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28); backdrop-filter: blur(18px); pointer-events: auto; }
+.header-inner { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 20px 24px 0; padding: 7px 8px; flex-wrap: nowrap; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; background: rgba(12, 12, 12, 0.9); box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34); backdrop-filter: blur(18px); pointer-events: auto; }
 .logo { cursor: pointer; display: flex; align-items: center; gap: 10px; line-height: 1.2; }
 .brand-logo { width: 40px; height: 40px; object-fit: cover; border-radius: 11px; flex: 0 0 auto; }
 .brand-copy { display: flex; flex-direction: column; }
 .logo-main { font-size: 15px; font-weight: 700; color: var(--text-bright, #fafafa); }
 .logo-sub { font-size: 11px; color: #818cf8; }
-.breadcrumb-sep { color: var(--text-faint, #52525b); }
-.page-title { max-width: 220px; min-width: 0; overflow: hidden; flex: 0 1 auto; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--text-muted, #a1a1aa); }
+.page-title { max-width: 220px; min-width: 0; overflow: hidden; flex: 0 1 auto; padding-left: 13px; border-left: 1px solid #303030; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; color: #efefef; }
 .canvas-name { padding-left: 12px; border-left: 1px solid #3f3f46; color: #a1a1aa; font-size: 12px; white-space: nowrap; }
 .header-actions { min-width: 0; margin-left: auto; display: flex; flex: 0 0 auto; gap: 6px; }
+.topbar-history { display: inline-flex; align-items: center; padding: 3px; border: 1px solid #292929; border-radius: 10px; background: #111; }
+.topbar-history button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 7px; color: #9a9a9a; background: transparent; cursor: pointer; }
+.topbar-history button:hover:not(:disabled) { color: #fff; background: #202020; }
+.topbar-history button:disabled { opacity: .34; cursor: not-allowed; }
 .topbar-share { width: 38px; padding: 0; }
 .layout-status { font-size: 11px; white-space: nowrap; }
 .layout-status.saving { color: #60a5fa; }
@@ -745,43 +698,43 @@ onBeforeUnmount(() => {
 .layout-status.error { color: #f87171; }
 .canvas-shell { flex: 1; display: flex; min-height: 0; width: 100%; }
 .canvas-main { position: relative; flex: 1; min-width: 0; width: 100%; height: 100%; }
-.vue-flow-canvas { width: 100%; height: 100%; background: #101014; }
-:deep(.vue-flow__minimap) { background: rgba(24, 24, 27, 0.92); border: 1px solid #3f3f46; }
-:deep(.vue-flow__controls) { box-shadow: none; border: 1px solid #3f3f46; }
+.vue-flow-canvas { width: 100%; height: 100%; background: #0b0b0b; }
+:deep(.vue-flow__minimap),
+:deep(.vue-flow__controls) { display: none; }
 :deep(.vue-flow__controls button) { background: #18181b; border-color: #3f3f46; color: #e4e4e7; }
 .home-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none; color: #a1a1aa; }
 .home-empty strong { color: #e4e4e7; font-size: 16px; }
 .home-empty span { font-size: 12px; color: #71717a; }
 .quick-start-visible :deep(.vue-flow__node) { opacity: 0; pointer-events: none; }
-.home-starter-panel { position: absolute; top: 50%; left: 50%; z-index: 20; width: min(900px, calc(100% - 36px)); padding: 22px; border: 1px solid rgba(82, 82, 91, 0.78); border-radius: 18px; background: rgba(24, 24, 27, 0.86); box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4); backdrop-filter: blur(20px); transform: translate(-50%, -42%); }
+.home-starter-panel { position: absolute; top: 50%; left: 50%; z-index: 20; width: min(900px, calc(100% - 36px)); padding: 22px; border: 1px solid #292929; border-radius: 18px; background: rgba(14, 14, 14, 0.92); box-shadow: 0 24px 68px rgba(0, 0, 0, 0.48); backdrop-filter: blur(20px); transform: translate(-50%, -42%); }
 .starter-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .starter-heading strong { color: #f4f4f5; font-size: 18px; }
 .starter-heading span { color: #a1a1aa; font-size: 12px; }
 .starter-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.starter-card { min-height: 112px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #3f3f46; border-radius: 14px; background: linear-gradient(145deg, rgba(39, 39, 42, 0.96), rgba(24, 24, 27, 0.96)); color: #e4e4e7; text-align: left; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease, background 160ms ease; }
-.starter-card:hover { border-color: #818cf8; background: linear-gradient(145deg, rgba(67, 56, 202, 0.32), rgba(24, 24, 27, 0.96)); transform: translateY(-2px); }
-.starter-card:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
-.starter-icon { color: #c4b5fd; font-size: 24px; line-height: 1; }
+.starter-card { min-height: 112px; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #2c2c2c; border-radius: 14px; background: #151515; color: #e4e4e7; text-align: left; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease, background 160ms ease; }
+.starter-card:hover { border-color: rgba(255, 113, 57, .68); background: rgba(255, 113, 57, .08); transform: translateY(-2px); }
+.starter-card:focus-visible { outline: 2px solid #ff7139; outline-offset: 2px; }
+.starter-icon { color: #ff8b5d; font-size: 24px; line-height: 1; }
 .starter-copy { display: flex; flex-direction: column; gap: 5px; }
 .starter-copy strong { font-size: 13px; }
 .starter-copy small { color: #a1a1aa; font-size: 11px; line-height: 1.45; }
 .starter-note { display: block; margin-top: 14px; color: #71717a; font-size: 11px; }
-.home-floating-toolbar { position: absolute; left: 50%; bottom: 18px; z-index: 25; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 28px); padding: 6px 10px; border: 1px solid rgba(82, 82, 91, 0.72); border-radius: 17px; background: rgba(24, 24, 27, 0.92); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4); backdrop-filter: blur(18px); transform: translateX(-50%); }
+.home-floating-toolbar { position: absolute; left: 50%; bottom: 18px; z-index: 25; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 28px); padding: 6px 10px; border: 1px solid #2d2d2d; border-radius: 17px; background: rgba(15, 15, 15, 0.94); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44); backdrop-filter: blur(18px); transform: translateX(-50%); }
 .toolbar-primary, .toolbar-button, .toolbar-icon { min-width: 42px; min-height: 42px; border: 0; border-radius: 10px; background: transparent; color: #d4d4d8; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.toolbar-primary { width: 46px; background: #f4f4f5; color: #18181b; font-size: 21px; }
+.toolbar-primary { width: 46px; background: #ff7139; color: #111; font-size: 21px; }
 .toolbar-button { padding: 0 10px; font-size: 12px; }
 .toolbar-icon { width: 42px; font-size: 17px; }
 .toolbar-icon:disabled { opacity: 0.38; cursor: not-allowed; }
 .toolbar-icon:disabled:hover { background: transparent; color: #d4d4d8; }
-.toolbar-button:hover, .toolbar-icon:hover { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; }
+.toolbar-button:hover, .toolbar-icon:hover { background: rgba(255, 113, 57, 0.14); color: #ff9a72; }
 .toolbar-icon.danger:hover { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
 .toolbar-divider { width: 1px; height: 24px; margin: 0 4px; background: #3f3f46; }
 .zoom-label { width: 40px; color: #a1a1aa; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
 .home-context-backdrop { position: fixed; inset: 0; z-index: 2999; }
-.home-context-menu { position: fixed; z-index: 3000; min-width: 150px; padding: 6px 0; border: 1px solid #3f3f46; border-radius: 8px; background: #18181b; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+.home-context-menu { position: fixed; z-index: 3000; min-width: 170px; padding: 7px; border: 1px solid #303030; border-radius: 12px; background: #121212; box-shadow: 0 16px 38px rgba(0, 0, 0, 0.48); }
 .ctx-title { padding: 4px 12px 6px; color: #71717a; font-size: 10px; }
-.ctx-item { display: block; width: 100%; padding: 8px 12px; border: 0; background: transparent; color: #e4e4e7; font-size: 13px; text-align: left; cursor: pointer; }
-.ctx-item:hover { background: rgba(129, 140, 248, 0.15); color: #c7d2fe; }
+.ctx-item { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-size: 13px; text-align: left; cursor: pointer; }
+.ctx-item:hover { background: rgba(255, 113, 57, 0.13); color: #ff9b75; }
 @media (max-width: 820px) {
   .header-inner { margin: 8px 10px 0; padding: 7px 8px; }
   .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status, .btn-theme { display: none; }
@@ -812,6 +765,6 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-html.light .home-canvas-page { background: var(--bg-page); }
-html.light .vue-flow-canvas { background: #eef2ff; }
+html.light .home-canvas-page { background: #080808; }
+html.light .home-canvas-page .vue-flow-canvas { background: #080808; }
 </style>

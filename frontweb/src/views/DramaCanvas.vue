@@ -3,10 +3,7 @@
     <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
-        <PlatformPrimaryNav />
-        <span class="breadcrumb-sep">›</span>
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
-        <span class="canvas-name">画布 1</span>
         <span
           v-if="canvasVirtualized"
           class="canvas-virtualization-status"
@@ -37,6 +34,14 @@
         <span v-else-if="layoutSaveState === 'error'" class="layout-status error">保存失败</span>
 
         <div class="header-actions">
+          <div class="topbar-history" aria-label="画布历史操作">
+            <button type="button" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
+              <el-icon><RefreshLeft /></el-icon>
+            </button>
+            <button type="button" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redoCanvas">
+              <el-icon><RefreshRight /></el-icon>
+            </button>
+          </div>
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
@@ -72,10 +77,6 @@
             </template>
           </el-dropdown>
           <CanvasModeSwitch v-if="!isStandaloneCanvas" mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
-          <el-button class="btn-theme" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button>
         </div>
       </div>
 
@@ -495,7 +496,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { Moon, MoreFilled, Plus, Sunny, Operation, Share } from '@element-plus/icons-vue'
+import { MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -512,7 +513,6 @@ import { characterAPI } from '@/api/characters'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
 import request from '@/utils/request'
-import { useTheme } from '@/composables/useTheme'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
@@ -605,13 +605,11 @@ import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOp
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
-import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const isStandaloneCanvas = computed(() => route.name === 'standalone-canvas')
-const { isDark, toggle: toggleTheme } = useTheme()
 const { imagesBySbId, videosBySbId, loadForDrama } = useCanvasStoryboardMedia()
 
 const loading = ref(false)
@@ -4359,7 +4357,6 @@ provide(CANVAS_CONTEXT_KEY, {
   toggleWorkflowPanel,
   focusScript: focusScriptNode,
   goListMode,
-  toggleTheme,
   alignNodes: onAlignNodes,
   fitCanvasView,
   focusCanvasNode,
@@ -5646,9 +5643,9 @@ onBeforeUnmount(() => {
 }
 
 :deep(.vue-flow__node.selected) {
-  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.8);
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, 0.86);
 }
-/* LibTV 风格画布工作区覆盖层 */
+/* OpenVideo 风格画布工作区覆盖层 */
 .header.canvas-topbar {
   position: absolute;
   inset: 0 0 auto;
@@ -5658,18 +5655,23 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .canvas-topbar .header-inner {
-  margin: 12px 16px 0;
-  padding: 8px 10px;
+  margin: 20px 24px 0;
+  padding: 0;
   min-width: 0;
   flex-wrap: nowrap;
-  border: 1px solid rgba(82, 82, 91, 0.7);
-  border-radius: 16px;
-  background: rgba(24, 24, 27, 0.82);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(18px);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   pointer-events: auto;
 }
-.workspace-switcher { min-width: 156px; }
+.canvas-topbar :deep(.canvas-workspace-switcher) {
+  padding: 5px 10px 5px 5px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 14px;
+  background: rgba(12, 12, 12, .9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(18px);
+}
 .canvas-name {
   padding-left: 12px;
   border-left: 1px solid #3f3f46;
@@ -5677,8 +5679,54 @@ onBeforeUnmount(() => {
   font-size: 12px;
   white-space: nowrap;
 }
-.canvas-topbar .header-actions { gap: 6px; min-width: 0; flex: 0 0 auto; }
-.canvas-topbar .page-title { min-width: 0; flex: 0 1 auto; }
+.canvas-topbar .header-actions {
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+  padding: 5px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 14px;
+  background: rgba(12, 12, 12, .9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(18px);
+}
+.canvas-topbar .page-title {
+  min-width: 0;
+  max-width: 280px;
+  padding: 10px 14px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  color: #efefef;
+  background: rgba(12, 12, 12, .9);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-history {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid #292929;
+  border-radius: 9px;
+  background: #111;
+}
+.topbar-history button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  color: #969696;
+  background: transparent;
+  cursor: pointer;
+}
+.topbar-history button:hover:not(:disabled) { color: #fff; background: #202020; }
+.topbar-history button:disabled { opacity: .34; cursor: not-allowed; }
 .canvas-topbar .topbar-workflow-toggle { min-width: 92px; }
 .canvas-topbar .topbar-share { width: 38px; padding: 0; }
 .canvas-topbar .topbar-more { flex: 0 0 auto; }
@@ -5692,9 +5740,9 @@ onBeforeUnmount(() => {
 .canvas-topbar .generate-bar {
   margin: 8px 16px 0;
   padding: 10px 14px;
-  border: 1px solid rgba(82, 82, 91, 0.65);
+  border: 1px solid #303030;
   border-radius: 14px;
-  background: rgba(24, 24, 27, 0.92);
+  background: rgba(15, 15, 15, 0.94);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(18px);
 }
@@ -5719,7 +5767,7 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(18px);
 }
 .canvas-main { width: 100%; height: 100%; }
-.vue-flow-canvas { background: #101014; }
+.vue-flow-canvas { background: #0b0b0b; }
 .canvas-topbar .layout-status { font-size: 11px; white-space: nowrap; }
 .canvas-run-queue {
   position: absolute;
@@ -5921,7 +5969,6 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 980px) {
   .canvas-topbar .header-inner { margin: 8px 10px 0; }
-  .canvas-topbar .btn-theme { display: none; }
   .page-title { max-width: 160px; }
   .canvas-topbar .episode-select { width: 130px !important; }
 }
@@ -5950,6 +5997,6 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-html.light .drama-canvas-page { background: var(--bg-page); }
-html.light .vue-flow-canvas { background: #eef2ff; }
+html.light .drama-canvas-page { background: #080808; }
+html.light .drama-canvas-page .vue-flow-canvas { background: #080808; }
 </style>

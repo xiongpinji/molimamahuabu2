@@ -164,9 +164,9 @@ onBeforeUnmount(() => {
   gap: 4px;
   min-height: 54px;
   padding: 6px 10px;
-  border: 1px solid rgba(82, 82, 91, 0.72);
+  border: 1px solid #2d2d2d;
   border-radius: 17px;
-  background: rgba(24, 24, 27, 0.92);
+  background: rgba(15, 15, 15, 0.94);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.24);
   backdrop-filter: blur(18px);
 }
@@ -191,16 +191,16 @@ button {
 }
 .toolbar-primary {
   width: 48px;
-  background: #f4f4f5;
-  color: #18181b;
+  background: #ff7139;
+  color: #111;
   font-size: 22px;
 }
 .toolbar-button { padding: 0 11px; font-size: 12px; }
 .toolbar-icon { width: 44px; font-size: 18px; }
 .toolbar-button:hover,
-.toolbar-icon:hover { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; }
-.toolbar-button.active { background: rgba(129, 140, 248, 0.2); color: #c4b5fd; }
-.toolbar-primary:hover { transform: scale(1.03); background: #ffffff; }
+.toolbar-icon:hover { background: rgba(255, 113, 57, 0.14); color: #ff9a72; }
+.toolbar-button.active { background: rgba(255, 113, 57, 0.18); color: #ff956d; }
+.toolbar-primary:hover { transform: scale(1.03); background: #ff8757; }
 .toolbar-divider { width: 1px; height: 24px; margin: 0 4px; background: #3f3f46; }
 .toolbar-divider-spacer { margin-left: 8px; }
 .zoom-label { width: 42px; color: #a1a1aa; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -210,9 +210,9 @@ button {
   bottom: 66px;
   width: 236px;
   padding: 8px;
-  border: 1px solid #3f3f46;
+  border: 1px solid #303030;
   border-radius: 14px;
-  background: rgba(24, 24, 27, 0.97);
+  background: rgba(17, 17, 17, 0.98);
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
 }
 .add-menu-title { padding: 4px 8px 7px; color: #71717a; font-size: 11px; }
@@ -230,7 +230,7 @@ button {
   text-align: left;
   cursor: pointer;
 }
-.add-menu-item:hover { background: rgba(129, 140, 248, 0.14); }
+.add-menu-item:hover { background: rgba(255, 113, 57, 0.13); }
 .add-menu-item span { font-size: 13px; color: #e4e4e7; }
 .add-menu-item small { color: #71717a; font-size: 10px; }
 @media (max-width: 760px) {

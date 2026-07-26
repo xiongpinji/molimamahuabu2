@@ -1,6 +1,6 @@
 <template>
   <div class="film-list">
-    <PlatformHeader :title="isCanvasMode ? '画布项目' : '短剧工厂'">
+    <PlatformHeader>
       <template #leading>
         <div class="header-library">
           <el-button class="btn-library" @click="showCharLibrary = true">
@@ -29,6 +29,25 @@
     </PlatformHeader>
 
     <main class="main">
+      <section class="workspace-heading" aria-labelledby="workspace-heading-title">
+        <span class="workspace-heading__eyebrow">AI 原生创作工作区</span>
+        <div class="workspace-heading__row">
+          <div>
+            <h1 id="workspace-heading-title">
+              {{ isCanvasMode ? '一块自由画布，承载完整创作过程' : '从剧本到成片，全程不换工具' }}
+            </h1>
+            <p>
+              {{ isCanvasMode
+                ? '自由组织文本、图片、视频与音频节点，连接灵感并直接调用真实模型。'
+                : '统一管理剧本、角色、场景、分镜、音色与视频生成。' }}
+            </p>
+          </div>
+          <el-button type="primary" size="large" class="workspace-heading__action" @click="goNewProject">
+            <el-icon><Plus /></el-icon>{{ isCanvasMode ? '新建画布' : '新建短剧' }}
+          </el-button>
+        </div>
+      </section>
+
       <section v-if="isCanvasMode" class="canvas-project-toolbar" aria-label="画布项目搜索与筛选">
         <el-input
           v-model="searchKeyword"
@@ -1085,12 +1104,13 @@ watch(projectMode, () => {
 <style scoped>
 .film-list {
   min-height: 100vh;
-  background: #08080d;
+  background: #080808;
   color: #e4e4e7;
   background-image:
-    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(99, 102, 241, 0.18) 0%, transparent 70%),
-    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(139, 92, 246, 0.1) 0%, transparent 60%),
-    radial-gradient(ellipse 40% 30% at 10% 80%, rgba(79, 70, 229, 0.08) 0%, transparent 60%);
+    radial-gradient(ellipse 60% 36% at 50% -10%, rgba(255, 113, 57, 0.12) 0%, transparent 72%),
+    linear-gradient(rgba(255, 255, 255, .018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .018) 1px, transparent 1px);
+  background-size: auto, 40px 40px, 40px 40px;
 }
 .header {
   background: rgba(12, 12, 18, 0.82);
@@ -1156,26 +1176,26 @@ watch(projectMode, () => {
   gap: 6px;
 }
 
-/* 资源库按钮 —— 靛紫调 */
+/* 资源库按钮 */
 .btn-library {
-  --el-button-bg-color: rgba(99, 102, 241, 0.12);
-  --el-button-border-color: rgba(99, 102, 241, 0.35);
-  --el-button-text-color: #a5b4fc;
-  --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
-  --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
-  --el-button-hover-text-color: #c7d2fe;
-  --el-button-active-bg-color: rgba(99, 102, 241, 0.3);
-  --el-button-active-border-color: rgba(99, 102, 241, 0.7);
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-active-bg-color: rgba(255, 113, 57, 0.2);
+  --el-button-active-border-color: rgba(255, 113, 57, 0.75);
 }
 html.light .btn-library {
-  --el-button-bg-color: rgba(79, 70, 229, 0.08);
-  --el-button-border-color: rgba(79, 70, 229, 0.3);
-  --el-button-text-color: #3730a3;
-  --el-button-hover-bg-color: rgba(79, 70, 229, 0.14);
-  --el-button-hover-border-color: rgba(79, 70, 229, 0.5);
-  --el-button-hover-text-color: #312e81;
-  --el-button-active-bg-color: rgba(79, 70, 229, 0.2);
-  --el-button-active-border-color: rgba(79, 70, 229, 0.65);
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-active-bg-color: rgba(255, 113, 57, 0.2);
+  --el-button-active-border-color: rgba(255, 113, 57, 0.75);
 }
 
 /* 主题切换按钮 */
@@ -1189,12 +1209,12 @@ html.light .btn-library {
   transition: all 0.2s;
 }
 html.light .btn-theme {
-  --el-button-bg-color: rgba(99, 102, 241, 0.08);
-  --el-button-border-color: rgba(99, 102, 241, 0.3);
-  --el-button-text-color: #6366f1;
-  --el-button-hover-bg-color: rgba(99, 102, 241, 0.15);
-  --el-button-hover-border-color: rgba(99, 102, 241, 0.5);
-  --el-button-hover-text-color: #4f46e5;
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #a3a3a3;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.5);
+  --el-button-hover-text-color: #ff9a72;
 }
 
 /* AI配置按钮 —— 琥珀调 */
@@ -1228,16 +1248,64 @@ html.light .btn-import {
 }
 
 .main {
-  max-width: min(1400px, 96vw);
+  max-width: min(1500px, calc(100vw - 56px));
   margin: 0 auto;
-  padding: 24px 16px 48px;
+  padding: 58px 0 72px;
+}
+.workspace-heading {
+  margin-bottom: 42px;
+}
+.workspace-heading__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(255, 113, 57, .32);
+  border-radius: 999px;
+  color: #ff9167;
+  background: rgba(255, 113, 57, .08);
+  font-size: 12px;
+  font-weight: 600;
+}
+.workspace-heading__row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-top: 18px;
+}
+.workspace-heading h1 {
+  max-width: 760px;
+  margin: 0;
+  color: #f6f6f6;
+  font-size: clamp(32px, 4vw, 54px);
+  font-weight: 650;
+  letter-spacing: -.045em;
+  line-height: 1.08;
+}
+.workspace-heading p {
+  max-width: 680px;
+  margin: 16px 0 0;
+  color: #878787;
+  font-size: 15px;
+  line-height: 1.7;
+}
+.workspace-heading__action {
+  min-width: 132px;
+  min-height: 46px;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(255, 113, 57, .18);
 }
 .canvas-project-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 22px;
+  padding: 12px;
+  border: 1px solid #272727;
+  border-radius: 14px;
+  background: rgba(15, 15, 15, .86);
 }
 .canvas-project-search {
   width: min(420px, 100%);
@@ -1276,9 +1344,9 @@ html.light .btn-import {
 }
 .project-card {
   position: relative;
-  background: rgba(24, 24, 30, 0.75);
-  border: 1px solid rgba(63, 63, 70, 0.6);
-  border-radius: 14px;
+  background: rgba(17, 17, 17, 0.9);
+  border: 1px solid #272727;
+  border-radius: 16px;
   padding: 20px;
   cursor: pointer;
   transition: border-color 0.25s, background 0.25s, transform 0.25s, box-shadow 0.25s;
@@ -1291,30 +1359,30 @@ html.light .btn-import {
   position: absolute;
   inset: 0;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.04) 0%, transparent 60%);
   pointer-events: none;
 }
 .project-card:hover {
-  border-color: rgba(99, 102, 241, 0.55);
-  background: rgba(28, 28, 36, 0.9);
+  border-color: rgba(255, 113, 57, 0.58);
+  background: #151515;
   transform: translateY(-3px);
-  box-shadow: 0 12px 40px rgba(99, 102, 241, 0.15), 0 0 0 1px rgba(99, 102, 241, 0.1), 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .42), 0 0 0 1px rgba(255, 113, 57, .08);
 }
 
 /* 操作卡片 */
 .action-card {
   cursor: default;
   border-style: dashed;
-  border-color: rgba(99, 102, 241, 0.4);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
+  border-color: rgba(255, 113, 57, 0.42);
+  background: linear-gradient(145deg, rgba(255, 113, 57, 0.07), rgba(17, 17, 17, .92));
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: inset 0 0 40px rgba(99, 102, 241, 0.04);
 }
 .action-card:hover {
-  border-color: rgba(99, 102, 241, 0.65);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.07) 100%);
+  border-color: rgba(255, 113, 57, 0.72);
+  background: linear-gradient(145deg, rgba(255, 113, 57, 0.11), rgba(20, 20, 20, .96));
   transform: translateY(-2px);
   box-shadow: 0 8px 30px rgba(99, 102, 241, 0.12), inset 0 0 40px rgba(99, 102, 241, 0.06);
 }
@@ -1331,7 +1399,7 @@ html.light .btn-import {
 .action-card-title {
   font-size: 1rem;
   font-weight: 600;
-  color: #a5b4fc;
+  color: #ff956d;
   margin: 0;
 }
 .action-card-buttons {
@@ -1546,6 +1614,23 @@ html.light .btn-import {
 }
 
 @media (max-width: 760px) {
+  .main {
+    max-width: calc(100vw - 24px);
+    padding-top: 34px;
+  }
+  .workspace-heading {
+    margin-bottom: 28px;
+  }
+  .workspace-heading__row {
+    display: block;
+  }
+  .workspace-heading h1 {
+    font-size: 34px;
+  }
+  .workspace-heading__action {
+    width: 100%;
+    margin-top: 22px;
+  }
   .canvas-project-search,
   .canvas-project-filter,
   .canvas-project-sort {
@@ -1600,73 +1685,73 @@ html.light .btn-import {
 .library-empty { text-align: center; color: #71717a; padding: 40px 20px; }
 .library-pagination { margin-top: 12px; display: flex; justify-content: center; }
 
-/* ===== 亮色模式适配 ===== */
+/* 项目入口固定为 OpenVideo 风格的暗色工作区，避免历史主题设置覆盖 */
 html.light .film-list {
-  background: #f5f3ff;
-  color: #1e1b4b;
+  background: #080808;
+  color: #f5f5f5;
   background-image:
-    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(99, 102, 241, 0.1) 0%, transparent 70%),
-    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(139, 92, 246, 0.06) 0%, transparent 60%);
+    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(255, 113, 57, 0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(255, 113, 57, 0.05) 0%, transparent 60%);
 }
 html.light .header {
-  background: rgba(248, 246, 255, 0.88);
-  border-bottom-color: rgba(99, 102, 241, 0.2);
-  box-shadow: 0 1px 0 rgba(99, 102, 241, 0.1), 0 4px 16px rgba(99, 102, 241, 0.06);
+  background: rgba(8, 8, 8, 0.92) !important;
+  border-bottom-color: #272727 !important;
+  box-shadow: 0 1px 0 rgba(255, 113, 57, 0.06), 0 4px 16px rgba(0, 0, 0, 0.28) !important;
 }
 html.light .logo-main {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #9333ea 100%);
+  background: linear-gradient(135deg, #ff7139 0%, #ff9a72 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.2));
+  filter: drop-shadow(0 0 8px rgba(255, 113, 57, 0.2));
 }
 html.light .logo-sub {
-  color: #9ca3af;
-  -webkit-text-fill-color: #9ca3af;
+  color: #8c8c8c;
+  -webkit-text-fill-color: #8c8c8c;
 }
 html.light .project-card {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(199, 210, 254, 0.8);
-  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.06), 0 2px 12px rgba(0, 0, 0, 0.04);
+  background: rgba(17, 17, 17, 0.94) !important;
+  border-color: #272727 !important;
+  box-shadow: 0 1px 4px rgba(255, 113, 57, 0.04), 0 2px 12px rgba(0, 0, 0, 0.22) !important;
   backdrop-filter: none;
 }
 html.light .project-card::before {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.03) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.04) 0%, transparent 60%);
 }
 html.light .project-card:hover {
-  border-color: rgba(99, 102, 241, 0.5);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 36px rgba(99, 102, 241, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-color: rgba(255, 113, 57, 0.6) !important;
+  background: #151515 !important;
+  box-shadow: 0 12px 36px rgba(255, 113, 57, 0.1), 0 0 0 1px rgba(255, 113, 57, 0.12), 0 2px 8px rgba(0, 0, 0, 0.32) !important;
 }
 html.light .action-card {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
-  border-color: rgba(99, 102, 241, 0.35);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.08) 0%, rgba(255, 113, 57, 0.03) 100%) !important;
+  border-color: rgba(255, 113, 57, 0.4) !important;
 }
 html.light .action-card:hover {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.07) 100%);
-  border-color: rgba(99, 102, 241, 0.55);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.13) 0%, rgba(255, 113, 57, 0.06) 100%) !important;
+  border-color: rgba(255, 113, 57, 0.65) !important;
 }
-html.light .action-card-title { color: #4f46e5; }
-html.light .project-title { color: #1e1b4b; }
-html.light .project-desc { color: #4b5563; }
-html.light .project-meta { color: #6b7280; }
-html.light .example-hint-text { color: #6b7280; }
+html.light .action-card-title { color: #ff8c5e !important; }
+html.light .project-title { color: #f5f5f5 !important; }
+html.light .project-desc { color: #a3a3a3 !important; }
+html.light .project-meta { color: #737373 !important; }
+html.light .example-hint-text { color: #8c8c8c !important; }
 html.light .library-item {
-  background: #faf9ff;
-  border-color: #e5e7eb;
+  background: #141414 !important;
+  border-color: #272727 !important;
 }
-html.light .library-item-name { color: #1e1b4b; }
-html.light .library-item-desc { color: #4b5563; }
-html.light .library-empty { color: #6b7280; }
+html.light .library-item-name { color: #f5f5f5 !important; }
+html.light .library-item-desc { color: #a3a3a3 !important; }
+html.light .library-empty { color: #737373 !important; }
 html.light .lib-img-thumb {
-  background: #f3f4f6;
-  border-color: #e5e7eb;
+  background: #111111 !important;
+  border-color: #272727 !important;
 }
-html.light .lib-img-empty { color: #9ca3af; }
+html.light .lib-img-empty { color: #737373 !important; }
 html.light .badge-status--draft {
-  background: rgba(107, 114, 128, 0.1);
-  color: #4b5563;
-  border-color: rgba(107, 114, 128, 0.25);
+  background: rgba(115, 115, 115, 0.12);
+  color: #a3a3a3;
+  border-color: rgba(115, 115, 115, 0.28);
 }
 
 /* ===== 图片放大预览 ===== */

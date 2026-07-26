@@ -33,21 +33,18 @@ const factoryActive = computed(() => ['list', 'factory', 'drama-detail', 'film',
 .platform-primary-nav {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid rgba(82, 82, 91, .65);
-  border-radius: 12px;
-  background: rgba(9, 9, 11, .42);
+  align-self: stretch;
+  gap: 22px;
 }
 
 .platform-primary-nav__link {
-  min-height: 34px;
-  padding: 7px 12px;
-  border-radius: 9px;
-  color: #a1a1aa;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  color: #8f8f8f;
   font-size: 13px;
   font-weight: 600;
-  line-height: 20px;
   text-decoration: none;
   white-space: nowrap;
 }
@@ -56,36 +53,44 @@ const factoryActive = computed(() => ['list', 'factory', 'drama-detail', 'film',
 .platform-primary-nav__link:focus-visible {
   outline: none;
   color: #f4f4f5;
-  background: rgba(63, 63, 70, .72);
 }
 
 .platform-primary-nav__link:focus-visible {
-  box-shadow: 0 0 0 2px rgba(167, 139, 250, .72);
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, .72);
 }
 
 .platform-primary-nav__link.is-active {
   color: #fff;
-  background: rgba(124, 58, 237, .88);
+}
+
+.platform-primary-nav__link.is-active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px 999px 0 0;
+  background: #ff7139;
 }
 
 :global(html.light) .platform-primary-nav {
-  border-color: #e4e4e7;
-  background: rgba(244, 244, 245, .75);
+  border-color: #272727;
+  background: rgba(8, 8, 8, .75);
 }
 
 :global(html.light) .platform-primary-nav__link {
-  color: #52525b;
+  color: #a3a3a3;
 }
 
 :global(html.light) .platform-primary-nav__link:hover,
 :global(html.light) .platform-primary-nav__link:focus-visible {
-  color: #18181b;
-  background: #e4e4e7;
+  color: #ffffff;
+  background: #1a1a1a;
 }
 
 :global(html.light) .platform-primary-nav__link.is-active {
-  color: #fff;
-  background: #7c3aed;
+  color: #ffffff;
 }
 
 @media (max-width: 720px) {

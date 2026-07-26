@@ -3,18 +3,28 @@
    ===================================================== */
 :root,
 html.dark {
-  --bg-page:       #0f0f12;
-  --bg-card:       #18181b;
-  --bg-inner:      #1c1c1e;
-  --bg-hover:      #27272a;
-  --border-color:  #27272a;
-  --border-muted:  #3f3f46;
-  --text-primary:  #e4e4e7;
-  --text-bright:   #fafafa;
-  --text-muted:    #a1a1aa;
-  --text-subtle:   #71717a;
-  --text-faint:    #52525b;
-  --shadow:        0 2px 12px rgba(0,0,0,.4);
+  --bg-page:       #080808;
+  --bg-card:       #111111;
+  --bg-inner:      #161616;
+  --bg-hover:      #202020;
+  --border-color:  #272727;
+  --border-muted:  #353535;
+  --text-primary:  #e8e8e8;
+  --text-bright:   #f8f8f8;
+  --text-muted:    #a3a3a3;
+  --text-subtle:   #737373;
+  --text-faint:    #555555;
+  --accent:        #ff7139;
+  --accent-hover:  #ff8757;
+  --accent-soft:   rgba(255, 113, 57, .14);
+  --shadow:        0 16px 44px rgba(0,0,0,.42);
+  --el-color-primary: #ff7139;
+  --el-color-primary-light-3: #ff966f;
+  --el-color-primary-light-5: #ffb499;
+  --el-color-primary-light-7: #ffd2c2;
+  --el-color-primary-light-8: #ffe1d7;
+  --el-color-primary-light-9: #fff0eb;
+  --el-color-primary-dark-2: #cc5a2e;
 }
 
 /* =====================================================
@@ -32,13 +42,27 @@ html.light {
   --text-muted:    #52525b;
   --text-subtle:   #71717a;
   --text-faint:    #a1a1aa;
+  --accent:        #ea5a22;
+  --accent-hover:  #cf4915;
+  --accent-soft:   rgba(234, 90, 34, .11);
   --shadow:        0 2px 12px rgba(0,0,0,.08);
+  --el-color-primary: #ea5a22;
 }
 
 /* ── 通用基础 ── */
 html, body, #app, .app {
   background: var(--bg-page) !important;
   color: var(--text-primary) !important;
+}
+
+html,
+body,
+button,
+input,
+textarea,
+select {
+  font-family: "Geist Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 /* ── 各页面结构 ── */
@@ -245,15 +269,15 @@ html.light span, html.light label, html.light p {
    亮色模式增强 — 更现代的视觉效果
    ===================================================== */
 
-/* 主色改为紫色系 */
+/* 亮色兼容层也统一使用 OpenVideo 风格的橙色主色 */
 html.light {
-  --el-color-primary: #7c3aed;
-  --el-color-primary-light-3: #a78bfa;
-  --el-color-primary-light-5: #c4b5fd;
-  --el-color-primary-light-7: #ddd6fe;
-  --el-color-primary-light-8: #ede9fe;
-  --el-color-primary-light-9: #f5f3ff;
-  --el-color-primary-dark-2: #6d28d9;
+  --el-color-primary: #ea5a22;
+  --el-color-primary-light-3: #ef845a;
+  --el-color-primary-light-5: #f4aa8c;
+  --el-color-primary-light-7: #f9cfbe;
+  --el-color-primary-light-8: #fbe0d5;
+  --el-color-primary-light-9: #fdf0eb;
+  --el-color-primary-dark-2: #bc481b;
 }
 
 /* 卡片升级 */
@@ -271,9 +295,9 @@ html.light .header {
   box-shadow: 0 1px 8px rgba(0,0,0,.05) !important;
 }
 
-/* Logo 加紫色渐变 */
+/* Logo 统一橙色渐变 */
 html.light .logo {
-  background: linear-gradient(135deg, #7c3aed, #a78bfa) !important;
+  background: linear-gradient(135deg, #ff7139, #ff9a72) !important;
   -webkit-background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
   background-clip: text !important;
@@ -289,21 +313,21 @@ html.light .project-card {
 }
 html.light .project-card:hover {
   transform: translateY(-2px) !important;
-  box-shadow: 0 4px 12px rgba(124,58,237,.12), 0 12px 32px rgba(124,58,237,.06) !important;
-  border-color: #a78bfa !important;
+  box-shadow: 0 4px 12px rgba(255,113,57,.12), 0 12px 32px rgba(255,113,57,.06) !important;
+  border-color: #ff9a72 !important;
 }
 
 /* 操作卡片（快速开始）美化 */
 html.light .action-card {
-  background: linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%) !important;
-  border: 2px dashed #c4b5fd !important;
+  background: linear-gradient(135deg, #fff7f3 0%, #fff0eb 100%) !important;
+  border: 2px dashed #ffc4ad !important;
 }
 html.light .action-card:hover {
-  border-color: #a78bfa !important;
-  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%) !important;
+  border-color: #ff9a72 !important;
+  background: linear-gradient(135deg, #fff0eb 0%, #ffe3d8 100%) !important;
 }
 html.light .action-card-title {
-  color: #7c3aed !important;
+  color: #ea5a22 !important;
 }
 
 /* Section card 美化 */
@@ -320,8 +344,8 @@ html.light .library-item {
   transition: box-shadow 0.15s, border-color 0.15s !important;
 }
 html.light .library-item:hover {
-  box-shadow: 0 2px 8px rgba(124,58,237,.1) !important;
-  border-color: #c4b5fd !important;
+  box-shadow: 0 2px 8px rgba(255,113,57,.1) !important;
+  border-color: #ffc4ad !important;
 }
 
 /* Storyboard 卡片 */
@@ -361,13 +385,13 @@ html.light .el-button {
 }
 /* 勿作用于 is-plain：否则背景被强制为实色渐变而字色仍为 plain 主色，对比度丢失 */
 html.light .el-button--primary:not(.is-link):not(.is-plain) {
-  background: linear-gradient(135deg, #7c3aed, #6d28d9) !important;
+  background: linear-gradient(135deg, #ff7139, #ea5a22) !important;
   border-color: transparent !important;
-  box-shadow: 0 2px 8px rgba(124,58,237,.25) !important;
+  box-shadow: 0 2px 8px rgba(255,113,57,.25) !important;
 }
 html.light .el-button--primary:not(.is-link):not(.is-plain):hover {
-  background: linear-gradient(135deg, #6d28d9, #5b21b6) !important;
-  box-shadow: 0 4px 12px rgba(124,58,237,.35) !important;
+  background: linear-gradient(135deg, #ea5a22, #bc481b) !important;
+  box-shadow: 0 4px 12px rgba(255,113,57,.35) !important;
 }
 html.light .el-button.is-link {
   background: transparent !important;
@@ -378,21 +402,21 @@ html.light .el-button.is-link {
 /* 输入框 */
 html.light .el-input__wrapper {
   border-radius: 8px !important;
-  box-shadow: 0 0 0 1px #ddd6fe !important;
+  box-shadow: 0 0 0 1px #f9cfbe !important;
   transition: box-shadow 0.2s !important;
 }
 html.light .el-input__wrapper:hover {
-  box-shadow: 0 0 0 1px #a78bfa !important;
+  box-shadow: 0 0 0 1px #ff9a72 !important;
 }
 html.light .el-input__wrapper.is-focus {
-  box-shadow: 0 0 0 2px #7c3aed !important;
+  box-shadow: 0 0 0 2px #ea5a22 !important;
 }
 html.light .el-textarea__wrapper {
   border-radius: 8px !important;
-  box-shadow: 0 0 0 1px #ddd6fe !important;
+  box-shadow: 0 0 0 1px #f9cfbe !important;
 }
 html.light .el-textarea__wrapper:hover {
-  box-shadow: 0 0 0 1px #a78bfa !important;
+  box-shadow: 0 0 0 1px #ff9a72 !important;
 }
 
 /* 对话框 */
@@ -409,8 +433,8 @@ html.light .episode-card {
 }
 html.light .episode-card:hover {
   transform: translateY(-1px) !important;
-  box-shadow: 0 4px 16px rgba(124,58,237,.1) !important;
-  border-color: #a78bfa !important;
+  box-shadow: 0 4px 16px rgba(255,113,57,.1) !important;
+  border-color: #ff9a72 !important;
 }
 
 /* page bg 更细腻 */
@@ -433,11 +457,11 @@ html.light .el-tabs__item {
   font-weight: 500 !important;
 }
 html.light .el-tabs__item.is-active {
-  color: #7c3aed !important;
+  color: #ea5a22 !important;
   font-weight: 600 !important;
 }
 html.light .el-tabs__active-bar {
-  background: #7c3aed !important;
+  background: #ea5a22 !important;
   border-radius: 2px !important;
 }
 html.light .el-tabs__nav-wrap::after {
