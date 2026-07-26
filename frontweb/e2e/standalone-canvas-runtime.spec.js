@@ -100,15 +100,28 @@ function installStaticAndApiMocks(page, state) {
     if (method === 'POST' && pathname === '/api/v1/images') {
       const payload = request.postDataJSON() || {}
       state.imageRequests.push(payload)
-      await route.fulfill(apiData({ id: 401, task_id: 'img-task-1' }))
+      const attempt = state.imageRequests.length
+      await route.fulfill(apiData({ id: 400 + attempt, task_id: `img-task-${attempt}` }))
       return
     }
 
-    if (method === 'GET' && pathname === '/api/v1/tasks/img-task-1') {
+    if (method === 'GET' && /^\/api\/v1\/tasks\/img-task-\d+$/.test(pathname)) {
+      const attempt = Number(pathname.split('-').at(-1))
       await route.fulfill(apiData({
-        id: 'img-task-1',
+        id: `img-task-${attempt}`,
         status: 'completed',
-        result: { image_url: '/static/free-image.png' },
+        result: { image_url: attempt === 1 ? '/static/free-image.png' : `/static/free-image-${attempt}.png` },
+      }))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/canvas/text/generate') {
+      const payload = request.postDataJSON() || {}
+      state.textRequests ||= []
+      state.textRequests.push(payload)
+      await route.fulfill(apiData({
+        content: payload.prompt.includes('翻译') ? 'A natural English translation.' : 'AI 生成后的完整文本',
+        model: payload.model || 'text-default',
       }))
       return
     }
@@ -192,12 +205,14 @@ test.describe('独立自由画布节点真实运行闭环', () => {
 
     await expect(page.getByRole('dialog', { name: '添加图片节点' })).toHaveCount(0)
     const node = page.locator('.vue-flow__node').filter({
-      has: page.getByRole('textbox', { name: '生成提示词' }),
+      has: page.getByRole('textbox', { name: '节点标题' }),
     })
     await expect(node).toHaveCount(1)
     await expect(node).toHaveClass(/selected/)
     await expect(node.getByRole('textbox', { name: '节点标题' })).toHaveValue('图片')
     await expect(node.getByRole('button', { name: '上传' })).toBeVisible()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor.getByRole('textbox', { name: '生成提示词' })).toBeVisible()
     await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
     expect(state.canvasLayout.free_nodes[0].data).toMatchObject({
       kind: 'image',
@@ -210,6 +225,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const originalPosition = { ...state.canvasLayout.free_nodes[0].position }
     const dragHandle = node.locator('.node-drag-grip')
     await expect(dragHandle).toHaveCount(1)
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
     await page.mouse.move(20, 20)
     await expect.poll(() => dragHandle.evaluate((element) => ({
       opacity: getComputedStyle(element).opacity,
@@ -280,10 +296,11 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const node = page.locator('.vue-flow__node[data-id="free:image:mount"]')
     await expect(node).toBeVisible()
     await node.click()
-    await expect(node.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
-    await expect(node.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
-    await node.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
-    await node.getByRole('combobox', { name: '生成模型' }).blur()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor).toBeVisible()
+    await expect(editor.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
+    await editor.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
+    await editor.getByRole('combobox', { name: '生成模型' }).blur()
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
 
     await node.getByRole('button', { name: '素材库' }).click()
@@ -351,14 +368,16 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const node = page.locator('.vue-flow__node[data-id="free:image:1"]')
     await expect(node).toContainText('E2E 图片节点')
     await node.click()
-    await expect(node.getByRole('region', { name: '图片节点编辑器' })).toBeVisible()
-    await node.getByRole('button', { name: '生成', exact: true }).click()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.imageRequests).toEqual([{
       drama_id: 3,
       prompt: '生成一张雨夜花园图',
       model: 'lib-image-e2e',
       aspect_ratio: '16:9',
+      size: '2048x1152',
     }])
     expect(state.imageRequests[0]).not.toHaveProperty('storyboard_id')
     expect(state.imageRequests[0]).not.toHaveProperty('storyboardId')
@@ -392,6 +411,99 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const restored = page.locator('.vue-flow__node[data-id="free:image:1"]')
     await expect(restored).toContainText('已生成')
     await expect(restored.locator('img[alt="E2E 图片节点"]')).toBeVisible()
+  })
+
+  test('文本节点可调用真实文本入口、写回结果并执行中英互译', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:text:1',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'text',
+            title: 'E2E 文本节点',
+            content: '写一段雨夜花园旁白',
+            model: 'text-e2e',
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      textRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:text:1"]')
+    await node.click()
+    const editor = page.getByRole('region', { name: '文本节点编辑器' })
+    await editor.getByRole('button', { name: 'AI 生成文本' }).click()
+
+    await expect.poll(() => state.textRequests[0]).toEqual({
+      drama_id: 3,
+      prompt: '写一段雨夜花园旁白',
+      model: 'text-e2e',
+    })
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:text:1')?.data).toMatchObject({
+      content: 'AI 生成后的完整文本',
+      status: 'success',
+      error: '',
+    })
+
+    await editor.getByRole('button', { name: '中英互译' }).click()
+    await expect.poll(() => state.textRequests.length).toBe(2)
+    expect(state.textRequests[1].prompt).toContain('翻译成自然、准确的英文')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:text:1')?.data?.content)
+      .toBe('A natural English translation.')
+  })
+
+  test('图片节点多结果逐个生成、自动入库并可切换主结果', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:multi',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: 'E2E 多结果图片',
+            content: '雨夜茉莉花',
+            model: 'lib-image-e2e',
+            aspectRatio: '1:1',
+            quantity: 2,
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:image:multi"]')
+    await node.click()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
+
+    await expect.poll(() => state.imageRequests.length).toBe(2)
+    await expect.poll(() => state.assetRequests.length).toBe(2)
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data).toMatchObject({
+      status: 'success',
+      url: '/static/free-image-2.png',
+      resultUrls: ['/static/free-image.png', '/static/free-image-2.png'],
+      savedAssetId: '902',
+    })
+    await expect(node.getByRole('button', { name: '设为当前结果' })).toHaveCount(2)
+    await node.getByRole('button', { name: '设为当前结果' }).first().click()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data?.url)
+      .toBe('/static/free-image.png')
   })
 
   test('视频节点失败后可重试，并携带上游首帧引用且不污染分镜字段', async ({ page }) => {
@@ -445,18 +557,19 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const node = page.locator('.vue-flow__node[data-id="free:video:1"]')
     await expect(node).toContainText('E2E 视频节点')
     await node.click()
-    await expect(node.getByRole('region', { name: '视频节点编辑器' })).toBeVisible()
-    const automaticReferences = node.getByRole('region', { name: '自动参考图' })
+    const editor = page.getByRole('region', { name: '视频节点编辑器' })
+    await expect(editor).toBeVisible()
+    const automaticReferences = editor.getByRole('region', { name: '自动参考图' })
     await expect(automaticReferences).toContainText('1/1 已就绪')
     await expect(automaticReferences.locator('img[alt="上游首帧"]')).toBeVisible()
     await expect(automaticReferences.locator('[data-reference-state="ready"]')).toHaveCount(1)
-    await node.getByRole('button', { name: '生成', exact: true }).click()
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.videoRequests.length).toBe(1)
     await expect(node).toContainText('失败')
     await expect(node).toContainText('视频模型临时失败')
 
-    await node.getByRole('button', { name: '重试', exact: true }).click()
+    await editor.getByRole('button', { name: '重试', exact: true }).click()
     await expect.poll(() => state.videoRequests.length).toBe(2)
     expect(state.videoRequests[1]).toMatchObject({
       drama_id: 3,
@@ -516,13 +629,15 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const node = page.locator('.vue-flow__node[data-id="free:audio:1"]')
     await expect(node).toContainText('E2E 音频节点')
     await node.click()
-    await expect(node.getByRole('region', { name: '音频节点编辑器' })).toBeVisible()
-    await node.getByRole('button', { name: '生成', exact: true }).click()
+    const editor = page.getByRole('region', { name: '音频节点编辑器' })
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
 
     await expect.poll(() => state.audioRequests).toEqual([{
       drama_id: 3,
       text: '茉莉妈妈短剧制作平台欢迎你',
       tts_model: 'voice-e2e',
+      speed: 1,
     }])
     expect(state.audioRequests[0]).not.toHaveProperty('storyboard_id')
     expect(state.audioRequests[0]).not.toHaveProperty('storyboardId')

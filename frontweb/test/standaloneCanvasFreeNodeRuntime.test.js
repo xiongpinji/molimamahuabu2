@@ -13,7 +13,7 @@ const videosSource = readFileSync(resolve(__dirname, '../src/api/videos.js'), 'u
 
 test('自由节点配置面板保存并回填模型、比例和时长字段', () => {
   assert.match(canvasSource, /freeNodeForm = ref\(\{ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 \}\)/)
-  assert.match(canvasSource, /v-if="freeNodeKind !== 'text'" label="模型"/)
+  assert.match(canvasSource, /<el-form-item label="模型">/)
   assert.match(canvasSource, /v-model="freeNodeForm\.model"/)
   assert.match(canvasSource, /v-if="\['image', 'video'\]\.includes\(freeNodeKind\)" label="画面比例"/)
   assert.match(canvasSource, /v-if="freeNodeKind === 'video'" label="视频时长/)
@@ -42,7 +42,7 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
 })
 
 test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的图片连线', () => {
-  assert.match(nodeSource, /v-if="selected"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
+  assert.match(nodeSource, /v-if="isSelected && !editorHidden"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
   assert.match(nodeSource, /:aria-label="editorLabel"/)
   assert.match(nodeSource, /data\.kind === 'video'[\s\S]*aria-label="自动参考图"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
@@ -99,6 +99,9 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'running'[\s\S]*error: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'success'[\s\S]*url: resultUrl[\s\S]*assetSaveStatus: 'running'[\s\S]*assetSaveError: ''/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(node\.id, \{[\s\S]*status: 'failed'[\s\S]*error: errorMessage/)
+  assert.match(canvasSource, /const completedResultUrls = \[\]/)
+  assert.match(canvasSource, /url: completedResultUrls\.at\(-1\) \|\| previousUrl/)
+  assert.match(canvasSource, /resultUrls: \[\.\.\.completedResultUrls\]/)
   assert.match(canvasSource, /buildFreeCanvasProjectAssetPayload\(\{[\s\S]*storyboard_id: null/)
   assert.match(canvasSource, /patchFreeCanvasNodeData\(nodeId, \{ assetSaveStatus: 'running', assetSaveError: '' \}/)
   assert.match(canvasSource, /await assetsAPI\.create\(assetPayload\)/)

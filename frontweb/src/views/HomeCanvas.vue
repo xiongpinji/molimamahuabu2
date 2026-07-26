@@ -59,6 +59,7 @@
           :zoom-on-scroll="false"
           :fit-view-on-init="!hasSavedViewport"
           class="vue-flow-canvas"
+          @node-click="onNodeClick"
           @node-double-click="onNodeDoubleClick"
           @node-context-menu="onNodeContextMenu"
           @pane-click="onPaneClick"
@@ -223,6 +224,7 @@ const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const pendingFlowPosition = ref(null)
 const contextMenuNode = ref(null)
+const activeNodeId = ref('')
 const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
 const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
@@ -459,6 +461,7 @@ function openNodeEditor(kind, position = null, initial = null) {
       url: initial?.url || '',
     },
   })
+  activeNodeId.value = nodeId
   pendingFlowPosition.value = null
   commitHistory(previousState)
   scheduleSave()
@@ -472,9 +475,18 @@ function openStarter(preset) {
   })
 }
 
-function onNodeDoubleClick({ node }) {
+function onNodeClick({ node }) {
   if (!node?.id) return
-  nodes.value = nodes.value.map((item) => ({ ...item, selected: item.id === node.id }))
+  selectNodeById(node.id)
+}
+
+function selectNodeById(nodeId) {
+  activeNodeId.value = String(nodeId)
+  nodes.value = nodes.value.map((item) => ({ ...item, selected: String(item.id) === String(nodeId) }))
+}
+
+function onNodeDoubleClick(payload) {
+  onNodeClick(payload)
 }
 
 async function updateFreeCanvasNode(nodeId, patch) {
@@ -714,6 +726,7 @@ async function shareCanvas() {
 loadState()
 
 provide(CANVAS_CONTEXT_KEY, {
+  isFreeCanvasNodeSelected: (nodeId) => activeNodeId.value === String(nodeId),
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
 })

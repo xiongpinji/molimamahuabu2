@@ -25,6 +25,14 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     model: 'kling',
     aspectRatio: '9:16',
     duration: '8',
+    style: 'cinematic',
+    resolution: '1080p',
+    quantity: '2',
+    voiceId: 'female-shaonv',
+    speechRate: '1.15',
+    cameraMovement: 'push-in',
+    effect: 'film-grain',
+    characterReferenceUrls: [' https://cdn.example/character.png ', ''],
     taskId: 42,
     status: 'success',
     error: ' ',
@@ -39,6 +47,14 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     model: 'kling',
     aspectRatio: '9:16',
     duration: 8,
+    style: 'cinematic',
+    resolution: '1080p',
+    quantity: 2,
+    voiceId: 'female-shaonv',
+    speechRate: 1.15,
+    cameraMovement: 'push-in',
+    effect: 'film-grain',
+    characterReferenceUrls: ['https://cdn.example/character.png'],
     taskId: '42',
     status: 'success',
     error: '',
@@ -65,6 +81,11 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     content: '一张雨夜街道',
     model: 'flux',
     aspectRatio: '16:9',
+    style: 'cinematic',
+    resolution: '2K',
+    quantity: 2,
+    negativePrompt: '模糊，低清晰度',
+    characterReferenceUrls: ['https://cdn.example/character.png'],
   }, {
     dramaId: 7,
     upstreamUrls: ['https://cdn.example/a.png', '', 'https://cdn.example/a.png'],
@@ -74,7 +95,13 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     prompt: '一张雨夜街道',
     model: 'flux',
     aspect_ratio: '16:9',
-    reference_images: ['https://cdn.example/a.png'],
+    style: 'cinematic',
+    size: '2048x1152',
+    negative_prompt: '模糊，低清晰度',
+    reference_images: [
+      'https://cdn.example/a.png',
+      'https://cdn.example/character.png',
+    ],
   })
   assert.equal('storyboard_id' in imagePayload, false)
   assert.equal('storyboardId' in imagePayload, false)
@@ -85,32 +112,59 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'kling',
     aspectRatio: '9:16',
     duration: 5,
+    resolution: '1080p',
+    quantity: 2,
+    cameraMovement: 'push-in',
+    effect: 'film-grain',
+    includeAudio: true,
+    characterReferenceUrls: ['https://cdn.example/character.png'],
   }, {
     dramaId: 7,
     upstreamUrls: ['https://cdn.example/first.png', 'https://cdn.example/ref.png'],
   })
   assert.deepEqual(videoPayload, {
     drama_id: 7,
-    prompt: '镜头推近',
+    prompt: '镜头推近\n镜头运动：push-in\n视觉特效：film-grain\n音频要求：生成与画面同步的对白、环境音或音效。',
     model: 'kling',
     image_url: 'https://cdn.example/first.png',
     first_frame_url: 'https://cdn.example/first.png',
-    reference_image_urls: ['https://cdn.example/first.png', 'https://cdn.example/ref.png'],
+    reference_image_urls: [
+      'https://cdn.example/first.png',
+      'https://cdn.example/ref.png',
+      'https://cdn.example/character.png',
+    ],
     aspect_ratio: '9:16',
     duration: 5,
+    resolution: '1080p',
   })
 
   const audioPayload = buildFreeCanvasGenerationRequest({
     kind: 'audio',
     content: '欢迎来到茉莉妈妈',
     model: 'cosyvoice',
+    voiceId: 'female-shaonv',
+    speechRate: 1.15,
   }, { dramaId: 7 })
   assert.deepEqual(audioPayload, {
     drama_id: 7,
     text: '欢迎来到茉莉妈妈',
     tts_model: 'cosyvoice',
+    voice_id: 'female-shaonv',
+    speed: 1.15,
   })
   assert.equal('storyboard_id' in audioPayload, false)
+})
+
+test('文本自由节点构造真实 AI 生成请求', () => {
+  assert.deepEqual(buildFreeCanvasGenerationRequest({
+    kind: 'text',
+    content: '写一段雨夜车站的开场旁白',
+    model: 'GPT-5.5',
+  }, { dramaId: 7 }), {
+    drama_id: 7,
+    prompt: '写一段雨夜车站的开场旁白',
+    model: 'GPT-5.5',
+  })
 })
 
 test('自由节点图片、视频和音频请求强制要求正整数 dramaId', () => {

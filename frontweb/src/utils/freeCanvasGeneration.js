@@ -23,6 +23,31 @@ function uniqueStrings(values) {
     .filter(Boolean))]
 }
 
+function booleanValue(value) {
+  return value === true
+}
+
+function imageSizeFromResolution(aspectRatio, resolution) {
+  const longEdge = { '1K': 1024, '2K': 2048, '4K': 4096 }[cleanString(resolution)]
+  if (!longEdge) return ''
+  const [rawWidth, rawHeight] = cleanString(aspectRatio).split(':').map(Number)
+  if (!rawWidth || !rawHeight) return ''
+  const landscape = rawWidth >= rawHeight
+  const width = landscape ? longEdge : Math.round(longEdge * rawWidth / rawHeight)
+  const height = landscape ? Math.round(longEdge * rawHeight / rawWidth) : longEdge
+  const even = (value) => Math.max(2, Math.round(value / 2) * 2)
+  return `${even(width)}x${even(height)}`
+}
+
+function decoratedVideoPrompt(nodeData) {
+  return [
+    nodeData.content,
+    nodeData.cameraMovement ? `镜头运动：${nodeData.cameraMovement}` : '',
+    nodeData.effect ? `视觉特效：${nodeData.effect}` : '',
+    nodeData.includeAudio ? '音频要求：生成与画面同步的对白、环境音或音效。' : '',
+  ].filter(Boolean).join('\n')
+}
+
 function withoutEmptyFields(payload) {
   return Object.fromEntries(
     Object.entries(payload).filter(([, value]) => {
@@ -60,6 +85,19 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   if (Object.hasOwn(data, 'model')) normalized.model = cleanString(data.model)
   if (Object.hasOwn(data, 'aspectRatio')) normalized.aspectRatio = cleanString(data.aspectRatio)
   if (Object.hasOwn(data, 'duration')) normalized.duration = positiveNumber(data.duration)
+  if (Object.hasOwn(data, 'style')) normalized.style = cleanString(data.style)
+  if (Object.hasOwn(data, 'resolution')) normalized.resolution = cleanString(data.resolution)
+  if (Object.hasOwn(data, 'quantity')) normalized.quantity = positiveInteger(data.quantity)
+  if (Object.hasOwn(data, 'negativePrompt')) normalized.negativePrompt = cleanString(data.negativePrompt)
+  if (Object.hasOwn(data, 'voiceId')) normalized.voiceId = cleanString(data.voiceId)
+  if (Object.hasOwn(data, 'speechRate')) normalized.speechRate = positiveNumber(data.speechRate)
+  if (Object.hasOwn(data, 'cameraMovement')) normalized.cameraMovement = cleanString(data.cameraMovement)
+  if (Object.hasOwn(data, 'effect')) normalized.effect = cleanString(data.effect)
+  if (Object.hasOwn(data, 'includeAudio')) normalized.includeAudio = booleanValue(data.includeAudio)
+  if (Object.hasOwn(data, 'characterReferenceUrls')) {
+    normalized.characterReferenceUrls = uniqueStrings(data.characterReferenceUrls)
+  }
+  if (Object.hasOwn(data, 'resultUrls')) normalized.resultUrls = uniqueStrings(data.resultUrls)
   if (Object.hasOwn(data, 'taskId')) normalized.taskId = cleanString(data.taskId)
   if (Object.hasOwn(data, 'status')) {
     const status = cleanString(data.status)
@@ -93,6 +131,19 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const nodeData = normalizeFreeCanvasNodeData(data)
   if (!nodeData) return null
   const upstreamUrls = uniqueStrings(options.upstreamUrls)
+  const referenceUrls = uniqueStrings([
+    ...upstreamUrls,
+    ...(nodeData.characterReferenceUrls || []),
+  ])
+
+  if (nodeData.kind === 'text') {
+    const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
+    return withoutEmptyFields({
+      drama_id: dramaId,
+      prompt: nodeData.content,
+      model: nodeData.model,
+    })
+  }
 
   if (nodeData.kind === 'image') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
@@ -101,22 +152,27 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       prompt: nodeData.content,
       model: nodeData.model,
       aspect_ratio: nodeData.aspectRatio,
-      reference_images: upstreamUrls,
+      style: nodeData.style,
+      size: imageSizeFromResolution(nodeData.aspectRatio, nodeData.resolution),
+      negative_prompt: nodeData.negativePrompt,
+      reference_images: referenceUrls,
     })
   }
 
   if (nodeData.kind === 'video') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const firstFrameUrl = upstreamUrls[0] || ''
+    const firstFrameUrl = referenceUrls[0] || ''
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: nodeData.content,
+      prompt: decoratedVideoPrompt(nodeData),
       model: nodeData.model,
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
-      reference_image_urls: upstreamUrls,
+      reference_image_urls: referenceUrls,
       aspect_ratio: nodeData.aspectRatio,
       duration: nodeData.duration,
+      style: nodeData.style,
+      resolution: nodeData.resolution,
     })
   }
 
@@ -126,6 +182,8 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       drama_id: dramaId,
       text: nodeData.content,
       tts_model: nodeData.model,
+      voice_id: nodeData.voiceId,
+      speed: nodeData.speechRate,
     })
   }
 

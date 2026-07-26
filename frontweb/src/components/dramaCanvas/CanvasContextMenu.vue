@@ -228,11 +228,11 @@ function close() {
 .canvas-context-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2999;
+  z-index: 5999;
 }
 .canvas-context-menu {
   position: fixed;
-  z-index: 3000;
+  z-index: 6000;
   width: 236px;
   max-height: calc(100vh - 16px);
   overflow-y: auto;

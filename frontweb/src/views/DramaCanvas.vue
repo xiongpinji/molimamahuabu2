@@ -463,7 +463,7 @@
         <el-form-item v-if="freeNodeKind !== 'text'" label="媒体地址（选填）">
           <el-input v-model="freeNodeForm.url" placeholder="可粘贴已有素材地址；本地文件请使用右键“上传”" />
         </el-form-item>
-        <el-form-item v-if="freeNodeKind !== 'text'" label="模型">
+        <el-form-item label="模型">
           <el-select
             v-model="freeNodeForm.model"
             filterable
@@ -681,7 +681,9 @@ const freeNodeEditingId = ref('')
 const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
 const freeCanvasModelConfigs = ref([])
+const freeCanvasVoiceOptions = ref([])
 let freeCanvasModelConfigsLoaded = false
+let freeCanvasVoiceOptionsLoaded = false
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
@@ -696,6 +698,7 @@ const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 
 function getFreeNodeModelOptions(kind) {
   const serviceType = {
+    text: 'text',
     image: 'storyboard_image',
     video: 'video',
     audio: 'tts',
@@ -706,6 +709,7 @@ function getFreeNodeModelOptions(kind) {
 async function loadFreeCanvasModelConfigs() {
   if (freeCanvasModelConfigsLoaded) return
   const results = await Promise.allSettled([
+    aiAPI.list('text'),
     aiAPI.list('image'),
     aiAPI.list('storyboard_image'),
     aiAPI.list('video'),
@@ -715,6 +719,21 @@ async function loadFreeCanvasModelConfigs() {
     result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []
   ))
   freeCanvasModelConfigsLoaded = true
+}
+
+async function loadFreeCanvasVoiceOptions() {
+  if (freeCanvasVoiceOptionsLoaded || !isStandaloneCanvas.value || !dramaId.value) return
+  try {
+    const catalog = await characterAPI.listBuiltinVoices(dramaId.value)
+    const items = Array.isArray(catalog) ? catalog : (catalog?.items || [])
+    freeCanvasVoiceOptions.value = items.map((voice) => ({
+      label: voice.label || voice.name || voice.voice_id || voice.id,
+      value: voice.voice_id || voice.id,
+    })).filter((voice) => voice.value)
+    freeCanvasVoiceOptionsLoaded = true
+  } catch (error) {
+    console.warn('load free canvas voice options failed', error)
+  }
 }
 
 const freeNodeKindLabel = computed(() => ({
@@ -1840,7 +1859,7 @@ async function createFreeCanvasNode(kind, flowPosition = null) {
     content: '',
     url: '',
   }
-  if (kind !== 'text') data.model = ''
+  data.model = ''
   if (['image', 'video'].includes(kind)) data.aspectRatio = '16:9'
   if (kind === 'video') data.duration = 5
 
@@ -1873,7 +1892,7 @@ async function submitFreeNode() {
     content: freeNodeForm.value.content.trim(),
     url: freeNodeForm.value.url.trim(),
   }
-  if (freeNodeKind.value !== 'text') nodeData.model = freeNodeForm.value.model.trim()
+  nodeData.model = freeNodeForm.value.model.trim()
   if (['image', 'video'].includes(freeNodeKind.value)) nodeData.aspectRatio = freeNodeForm.value.aspectRatio
   if (freeNodeKind.value === 'video') nodeData.duration = Number(freeNodeForm.value.duration) || 5
   if (freeNodeEditingId.value) {
@@ -2158,8 +2177,8 @@ async function runFreeCanvasNode(nodeOrId) {
     return
   }
   const kind = node.data?.kind
-  if (!['image', 'video', 'audio'].includes(kind)) {
-    ElMessage.warning('文本节点无需生成')
+  if (!['text', 'image', 'video', 'audio'].includes(kind)) {
+    ElMessage.warning('暂不支持该自由节点类型')
     return
   }
   const upstreamUrls = freeCanvasNodeInputReferences(node)
@@ -2177,38 +2196,91 @@ async function runFreeCanvasNode(nodeOrId) {
   }
 
   const previousUrl = node.data?.url || ''
+  const completedResultUrls = []
   await patchFreeCanvasNodeData(node.id, { status: 'running', taskId: '', error: '' })
   let taskId = ''
   try {
-    let submitResult = null
-    let taskResult = null
-    if (kind === 'image') submitResult = await imagesAPI.create(requestPayload)
-    else if (kind === 'video') submitResult = await videosAPI.create(requestPayload)
-    else if (kind === 'audio') submitResult = await request.post('/audio/extract', requestPayload)
-    else throw new Error(`暂不支持自由节点生成类型：${kind}`)
-
-    taskId = freeCanvasTaskId(submitResult)
-    if (taskId) {
-      await patchFreeCanvasNodeData(node.id, { taskId })
-      taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+    if (kind === 'text') {
+      const textResult = await request.post('/canvas/text/generate', requestPayload)
+      const content = String(textResult?.content || '').trim()
+      if (!content) throw new Error('文本生成完成但未返回内容')
+      await patchFreeCanvasNodeData(node.id, {
+        content,
+        status: 'success',
+        error: '',
+      })
+      ElMessage.success('文本节点生成完成')
+      return
     }
-    await completeFreeCanvasNodeGeneration({
-      node,
-      kind,
-      submitResult,
-      taskResult,
-      requestPayload,
-      taskId,
-    })
+
+    const quantity = ['image', 'video'].includes(kind)
+      ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
+      : 1
+    for (let index = 0; index < quantity; index += 1) {
+      let submitResult = null
+      let taskResult = null
+      if (kind === 'image') submitResult = await imagesAPI.create(requestPayload)
+      else if (kind === 'video') submitResult = await videosAPI.create(requestPayload)
+      else if (kind === 'audio') submitResult = await request.post('/audio/extract', requestPayload)
+      else throw new Error(`暂不支持自由节点生成类型：${kind}`)
+
+      taskId = freeCanvasTaskId(submitResult)
+      if (taskId) {
+        await patchFreeCanvasNodeData(node.id, { taskId })
+        taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      }
+      const resultUrl = await completeFreeCanvasNodeGeneration({
+        node,
+        kind,
+        submitResult,
+        taskResult,
+        requestPayload,
+        taskId,
+        notify: index === quantity - 1,
+      })
+      completedResultUrls.push(resultUrl)
+      await patchFreeCanvasNodeData(node.id, { resultUrls: [...completedResultUrls] })
+    }
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
-      url: previousUrl,
+      url: completedResultUrls.at(-1) || previousUrl,
+      resultUrls: [...completedResultUrls],
       taskId,
       error: errorMessage,
     })
     ElMessage.error(errorMessage)
+  }
+}
+
+async function translateFreeCanvasNode(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  const content = String(node?.data?.content || '').trim()
+  if (!isStandaloneCanvas.value || !node || !content) return
+  const containsChinese = /[\u3400-\u9fff]/.test(content)
+  const prompt = containsChinese
+    ? `将以下内容翻译成自然、准确的英文，只输出译文：\n\n${content}`
+    : `将以下内容翻译成自然、准确的中文，只输出译文：\n\n${content}`
+  const previousContent = content
+  await patchFreeCanvasNodeData(node.id, { status: 'running', error: '' })
+  try {
+    const result = await request.post('/canvas/text/generate', {
+      drama_id: dramaId.value,
+      prompt,
+      model: node.data?.kind === 'text' ? node.data?.model || undefined : undefined,
+    })
+    const translated = String(result?.content || '').trim()
+    if (!translated) throw new Error('翻译完成但未返回内容')
+    await patchFreeCanvasNodeData(node.id, { content: translated, status: 'success', error: '' })
+    ElMessage.success('已完成中英互译')
+  } catch (error) {
+    await patchFreeCanvasNodeData(node.id, {
+      content: previousContent,
+      status: 'failed',
+      error: error?.message || '翻译失败',
+    })
+    ElMessage.error(error?.message || '翻译失败')
   }
 }
 
@@ -4516,8 +4588,10 @@ provide(CANVAS_CONTEXT_KEY, {
   uploadFreeCanvasNodeFile,
   openFreeNodeAssetLibrary,
   getFreeNodeModelOptions,
+  getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   runFreeCanvasNode,
+  translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })
 
@@ -5507,6 +5581,8 @@ watch(() => route.params.id, () => {
   selectedStoryboardIds.value = []
   focusedNodeId.value = null
   generationOverrides.value = {}
+  freeCanvasVoiceOptions.value = []
+  freeCanvasVoiceOptionsLoaded = false
   loadDrama()
 }, { immediate: true })
 
@@ -5514,7 +5590,10 @@ watch(isStandaloneCanvas, (standalone) => {
   if (standalone) void loadFreeCanvasModelConfigs()
 }, { immediate: true })
 
-watch(drama, () => startStatusPoll())
+watch(drama, () => {
+  startStatusPoll()
+  void loadFreeCanvasVoiceOptions()
+})
 
 onMounted(() => {
   scheduleVirtualization()
