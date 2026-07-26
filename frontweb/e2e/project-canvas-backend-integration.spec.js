@@ -403,7 +403,7 @@ test.beforeAll(async () => {
       api_protocol: 'aihubcc',
       base_url: `http://127.0.0.1:${videoProvider.address().port}`,
       api_key: 'integration-secret',
-      model: ['seedance-2.0-720p'],
+      model: ['seedance-2.0-720p', 'canvas-video-alpha', 'canvas-video-beta'],
       default_model: 'seedance-2.0-720p',
       endpoint: '/videos',
       query_endpoint: '/videos/{taskId}',
