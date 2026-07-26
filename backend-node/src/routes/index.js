@@ -144,6 +144,7 @@ function setupRouter(cfg, db, log) {
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
+  r.get('/billing/catalog', billing.listPublicCatalog);
   r.get('/billing/audit-events', billing.listAuditEvents);
   r.post('/billing/redeem', billing.redeemCredits);
   r.get('/billing/credit-transactions', billing.listCreditTransactions);

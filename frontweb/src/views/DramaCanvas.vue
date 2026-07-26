@@ -6007,13 +6007,16 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0 0 auto;
   z-index: 30;
-  border-bottom: 0;
-  background: transparent;
+  min-height: 64px;
+  border-bottom: 1px solid #242424;
+  background: #080808;
+  color: #f5f5f5;
   pointer-events: none;
 }
 .canvas-topbar .header-inner {
-  margin: 20px 24px 0;
-  padding: 0;
+  min-height: 64px;
+  margin: 0;
+  padding: 8px 18px;
   min-width: 0;
   flex-wrap: nowrap;
   border: 0;
@@ -6047,6 +6050,26 @@ onBeforeUnmount(() => {
   background: rgba(12, 12, 12, .9);
   box-shadow: 0 14px 38px rgba(0, 0, 0, .32);
   backdrop-filter: blur(18px);
+}
+.canvas-topbar {
+  --el-text-color-regular: #d4d4d8;
+  --el-text-color-primary: #f5f5f5;
+  --el-button-text-color: #f5f5f5;
+  --el-button-bg-color: #151515;
+  --el-button-border-color: #303030;
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-hover-bg-color: rgba(255, 113, 57, .12);
+  --el-button-hover-border-color: rgba(255, 113, 57, .48);
+}
+.canvas-topbar :deep(.platform-primary-nav__link) {
+  color: #a1a1aa;
+}
+.canvas-topbar :deep(.platform-primary-nav__link:hover),
+.canvas-topbar :deep(.platform-primary-nav__link.is-active) {
+  color: #f5f5f5;
+}
+.canvas-topbar :deep(.platform-primary-nav__link.is-active)::after {
+  background: #ff7139;
 }
 .canvas-topbar .page-title {
   min-width: 0;
@@ -6325,7 +6348,7 @@ onBeforeUnmount(() => {
   50% { opacity: 1; transform: scale(1.12); }
 }
 @media (max-width: 980px) {
-  .canvas-topbar .header-inner { margin: 8px 10px 0; }
+  .canvas-topbar .header-inner { margin: 0; padding: 8px 10px; }
   .page-title { max-width: 160px; }
   .canvas-topbar .episode-select { width: 130px !important; }
 }
@@ -6345,7 +6368,7 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 480px) {
   .canvas-topbar .page-title { display: none; }
-  .canvas-topbar .header-inner { gap: 6px; margin-left: 8px; margin-right: 8px; }
+  .canvas-topbar .header-inner { gap: 6px; margin: 0; }
   .canvas-topbar .episode-select { width: 96px !important; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -6356,4 +6379,19 @@ onBeforeUnmount(() => {
 <style>
 html.light .drama-canvas-page { background: #080808; }
 html.light .drama-canvas-page .vue-flow-canvas { background: #080808; }
+html.light .drama-canvas-page .header.canvas-topbar {
+  border-bottom-color: #242424 !important;
+  background: #080808 !important;
+  color: #f5f5f5 !important;
+}
+html.light .drama-canvas-page .canvas-topbar .header-actions .el-button {
+  border-color: #303030 !important;
+  background: #151515 !important;
+  color: #f5f5f5 !important;
+}
+html.light .drama-canvas-page .canvas-topbar .header-actions .el-button:hover {
+  border-color: rgba(255, 113, 57, .48) !important;
+  background: rgba(255, 113, 57, .12) !important;
+  color: #ff9a72 !important;
+}
 </style>

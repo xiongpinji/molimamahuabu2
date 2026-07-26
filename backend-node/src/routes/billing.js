@@ -316,6 +316,14 @@ function routes(db, log) {
         response.internalError(res, error.message);
       }
     },
+    listPublicCatalog: (_req, res) => {
+      try {
+        response.success(res, modelPrice.listPublic(db));
+      } catch (error) {
+        log.error('billing list public catalog', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
     updatePrice: (req, res) => {
       try {
         response.success(res, modelPrice.set(db, req.params.model, req.body?.credits, req.body || {}));
