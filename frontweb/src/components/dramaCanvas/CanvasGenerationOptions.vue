@@ -7,7 +7,7 @@
       size="small"
       class="model-select"
       :disabled="!imageModelOptions.length"
-      :placeholder="imageModelOptions.length ? '图像模型' : 'AI 配置默认'"
+      :placeholder="imageModelOptions.length ? '图像模型' : '平台默认'"
       @change="update('imageModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
@@ -19,7 +19,7 @@
       size="small"
       class="model-select"
       :disabled="!videoModelOptions.length"
-      :placeholder="videoModelOptions.length ? '视频模型' : 'AI 配置默认'"
+      :placeholder="videoModelOptions.length ? '视频模型' : '平台默认'"
       @change="update('videoModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
@@ -31,7 +31,7 @@
       size="small"
       class="model-select"
       :disabled="!audioModelOptions.length"
-      :placeholder="audioModelOptions.length ? '音频模型' : 'AI 配置默认'"
+      :placeholder="audioModelOptions.length ? '音频模型' : '平台默认'"
       @change="update('audioModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
@@ -82,7 +82,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { aiAPI } from '@/api/ai'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { getSelectableModels, getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 
 const props = defineProps({
   mode: { type: String, default: 'both' },
@@ -100,17 +99,23 @@ const audioConfigs = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
 
 const imageModelOptions = computed(() => withCurrent(
-  getSelectableModels(imageConfigs.value, 'storyboard_image'),
+  publicModelNames(imageConfigs.value),
   options.value.imageModel,
 ))
 const videoModelOptions = computed(() => withCurrent(
-  getSelectableModels(videoConfigs.value, 'video'),
+  publicModelNames(videoConfigs.value),
   options.value.videoModel,
 ))
 const audioModelOptions = computed(() => withCurrent(
-  getSelectableModelsAcrossConfigs(audioConfigs.value, 'tts'),
+  publicModelNames(audioConfigs.value),
   options.value.audioModel,
 ))
+
+function publicModelNames(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((model) => String(model || '').trim())
+    .filter(Boolean))]
+}
 
 function withCurrent(models, current) {
   const value = String(current || '').trim()
@@ -131,15 +136,12 @@ function update(field, value) {
 }
 
 onMounted(async () => {
-  const [images, storyboardImages, videos, audios] = await Promise.allSettled([
-    aiAPI.list('image'),
-    aiAPI.list('storyboard_image'),
-    aiAPI.list('video'),
-    aiAPI.list('tts'),
+  const [images, videos, audios] = await Promise.allSettled([
+    aiAPI.listImageModels(),
+    aiAPI.listVideoModels(),
+    aiAPI.listAudioModels(),
   ])
-  const imageList = images.status === 'fulfilled' && Array.isArray(images.value) ? images.value : []
-  const storyboardImageList = storyboardImages.status === 'fulfilled' && Array.isArray(storyboardImages.value) ? storyboardImages.value : []
-  imageConfigs.value = [...storyboardImageList, ...imageList]
+  if (images.status === 'fulfilled') imageConfigs.value = Array.isArray(images.value) ? images.value : []
   if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []
   if (audios.status === 'fulfilled') audioConfigs.value = Array.isArray(audios.value) ? audios.value : []
 })

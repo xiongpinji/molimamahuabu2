@@ -30,10 +30,14 @@ test('独立画布入口直接复用完整 DramaCanvas 并保留旧本地画布�
   assert.match(routerSource, /path: '\/canvas'[\s\S]*name: 'canvas-projects'[\s\S]*FilmList\.vue/)
 })
 
-test('统一导航在项目页和完整画布页都暴露画布与短剧工厂入口', () => {
+test('统一导航暴露首页、画布、短剧工厂与右上角登录入口', () => {
   assert.match(platformHeaderSource, /<PlatformPrimaryNav \/>/)
+  assert.match(platformHeaderSource, /class="platform-header__account"/)
+  assert.match(platformHeaderSource, /name: 'login'/)
   assert.match(platformHeaderSource, /router\.push\(\{ name: 'home-canvas-local' \}\)/)
   assert.match(dramaCanvasSource, /<PlatformPrimaryNav \/>/)
+  assert.match(primaryNavSource, /to="\/"/)
+  assert.match(primaryNavSource, />\s*首页\s*</)
   assert.match(primaryNavSource, /to="\/canvas"/)
   assert.match(primaryNavSource, /to="\/factory"/)
   assert.match(dramaCanvasSource, /v-if="!isStandaloneCanvas" mode="canvas"/)

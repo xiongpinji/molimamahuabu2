@@ -4,10 +4,6 @@ function isTrue(value) {
   return value === true || value === 1 || String(value || '').trim().toLowerCase() === 'true';
 }
 
-function isFalse(value) {
-  return value === false || value === 0 || String(value || '').trim().toLowerCase() === 'false';
-}
-
 function isHttpsUrl(value) {
   try {
     const url = new URL(String(value || ''));
@@ -44,11 +40,19 @@ function runProductionPreflight({ config, env = process.env, db }) {
     isTrue(env.PUBLIC_PLATFORM_MODE),
     '公开平台模式必须启用',
   );
+  const smtpPort = Number(env.SMTP_PORT || 0);
+  const emailVerificationReady = isTrue(env.PLATFORM_EMAIL_VERIFICATION_ENABLED)
+    && Boolean(String(env.SMTP_HOST || '').trim())
+    && smtpPort > 0
+    && smtpPort <= 65535
+    && Boolean(String(env.SMTP_USER || '').trim())
+    && Boolean(String(env.SMTP_PASSWORD || ''))
+    && Boolean(String(env.SMTP_FROM || '').trim());
   addCheck(
     checks,
-    'registration_disabled',
-    isFalse(env.PLATFORM_REGISTRATION_ENABLED),
-    '预发布阶段必须关闭公开注册',
+    'registration_email_verification',
+    emailVerificationReady,
+    '公开平台必须启用邮箱验证码并完整配置 SMTP，以支持注册和找回密码',
   );
   addCheck(
     checks,

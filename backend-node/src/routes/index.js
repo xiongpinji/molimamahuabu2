@@ -28,6 +28,7 @@ const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
+const { createEmailService } = require('../services/emailService');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
@@ -53,9 +54,17 @@ function setupRouter(cfg, db, log) {
     token: process.env.PLATFORM_ADMIN_TOKEN,
     requireRole: false,
   });
+  const registrationEnabled = /^(1|true|yes)$/i.test(
+    String(process.env.PLATFORM_REGISTRATION_ENABLED || ''),
+  );
+  const emailVerificationEnabled = publicPlatformEnabled
+    && !/^(0|false|no)$/i.test(String(process.env.PLATFORM_EMAIL_VERIFICATION_ENABLED || 'true'));
   const auth = authRoutes(db, {
-    registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
+    registrationEnabled,
+    emailVerificationEnabled,
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    verificationSecret: process.env.PLATFORM_VERIFICATION_SECRET || process.env.PLATFORM_JWT_SECRET,
+    mailer: createEmailService(process.env),
     bootstrapAdminEmail: publicPlatformEnabled
       ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
       : undefined,
@@ -90,13 +99,17 @@ function setupRouter(cfg, db, log) {
   });
   const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
 
+  r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
+  r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
+  r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
+  r.post('/auth/password/change', authRateLimit, auth.changePassword);
   r.get('/auth/me', auth.me);
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);
@@ -145,6 +158,7 @@ function setupRouter(cfg, db, log) {
     const catalog = require('../services/canvasModelCatalogService').list(db);
     response.success(res, catalog);
   });
+  r.get('/audio-models', aiConfig.listPublicAudioModels);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);

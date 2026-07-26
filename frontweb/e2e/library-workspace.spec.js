@@ -145,13 +145,13 @@ test('媒体素材支持键盘选择并保留分镜回填入口', async ({ page 
   await expect(page.getByText('目标项目', { exact: true })).toBeVisible()
 })
 
-test('AI 配置使用独立深色模型工作区', async ({ page }) => {
+test('模型配置只在管理员独立工作区展示', async ({ page }) => {
   await page.goto('/ai-config')
 
-  await expect(page.getByRole('heading', { name: '管理所有 AI 生成能力' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '模型配置', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /浅色|暗色/ })).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'AI 模型配置' })).toBeVisible()
-  await expect.poll(() => page.locator('.ai-config').evaluate(
+  await expect.poll(() => page.locator('.admin-workspace').evaluate(
     (element) => getComputedStyle(element).backgroundColor,
   )).toBe('rgb(8, 8, 8)')
 })

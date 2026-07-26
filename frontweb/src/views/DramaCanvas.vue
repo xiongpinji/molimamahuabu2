@@ -3,6 +3,7 @@
     <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
+        <PlatformPrimaryNav />
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
         <span
           v-if="canvasVirtualized"
@@ -629,6 +630,7 @@ import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vu
 import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
+import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 

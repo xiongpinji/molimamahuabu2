@@ -41,17 +41,27 @@ async function mockAdminWorkspace(page, calls) {
           credits: 20,
           status: 'enabled',
         },
+        {
+          model: 'gpt-image-2',
+          display_name: 'GPT Image 2',
+          category: 'image',
+          credits: null,
+          status: 'unconfigured',
+        },
       ]))
     }
 
-    if (method === 'PUT' && pathname === '/api/v1/billing/prices/grok-imagine-video') {
+    if (method === 'PUT' && pathname.startsWith('/api/v1/billing/prices/')) {
       calls.modelSave += 1
+      const model = decodeURIComponent(pathname.split('/').pop())
+      const body = request.postDataJSON()
+      calls.modelUpdates.push({ model, body })
       return route.fulfill(json({
-        model: 'grok-imagine-video',
-        display_name: 'Grok Imagine Video',
-        category: 'video',
-        credits: 20,
-        status: 'enabled',
+        model,
+        display_name: body.display_name,
+        category: body.category,
+        credits: body.credits,
+        status: body.status,
       }))
     }
 
@@ -106,7 +116,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('管理中心导航统一三个真实管理入口', async ({ page }) => {
-  const calls = { accountStatus: 0, modelSave: 0 }
+  const calls = { accountStatus: 0, modelSave: 0, modelUpdates: [] }
   await mockAdminWorkspace(page, calls)
 
   await page.goto('/account-admin')
@@ -130,7 +140,7 @@ test('管理中心导航统一三个真实管理入口', async ({ page }) => {
 })
 
 test('账号状态修改继续调用原有 RBAC 接口', async ({ page }) => {
-  const calls = { accountStatus: 0, modelSave: 0 }
+  const calls = { accountStatus: 0, modelSave: 0, modelUpdates: [] }
   await mockAdminWorkspace(page, calls)
 
   await page.goto('/account-admin')
@@ -142,7 +152,7 @@ test('账号状态修改继续调用原有 RBAC 接口', async ({ page }) => {
 })
 
 test('管理员令牌解锁后可读取并保存模型计费', async ({ page }) => {
-  const calls = { accountStatus: 0, modelSave: 0 }
+  const calls = { accountStatus: 0, modelSave: 0, modelUpdates: [] }
   await mockAdminWorkspace(page, calls)
 
   await page.goto('/billing-admin')
@@ -155,4 +165,34 @@ test('管理员令牌解锁后可读取并保存模型计费', async ({ page }) 
 
   await expect.poll(() => calls.modelSave).toBe(1)
   await expect(page.getByText('Grok Imagine Video 已保存')).toBeVisible()
+})
+
+test('管理员可筛选模型并为每个模型设置独立积分', async ({ page }) => {
+  const calls = { accountStatus: 0, modelSave: 0, modelUpdates: [] }
+  await mockAdminWorkspace(page, calls)
+
+  await page.goto('/billing-admin')
+  await page.getByPlaceholder('输入平台管理员令牌').fill('admin-token-with-at-least-32-characters')
+  await page.getByRole('button', { name: '验证并读取' }).click()
+
+  await expect(page.getByText('未定价 1')).toBeVisible()
+  await page.getByPlaceholder('搜索模型名称或 ID').fill('gpt-image')
+  await expect(page.locator('.model-row')).toHaveCount(1)
+
+  const imageRow = page.locator('.model-row').filter({ hasText: 'gpt-image-2' })
+  await imageRow.getByRole('spinbutton').fill('8')
+  await imageRow.getByRole('button', { name: '保存' }).click()
+
+  await page.getByPlaceholder('搜索模型名称或 ID').fill('grok')
+  const videoRow = page.locator('.model-row').filter({ hasText: 'grok-imagine-video' })
+  await videoRow.getByRole('spinbutton').fill('35')
+  await videoRow.getByRole('button', { name: '保存' }).click()
+
+  await expect.poll(() => calls.modelUpdates.map(({ model, body }) => ({
+    model,
+    credits: body.credits,
+  }))).toEqual([
+    { model: 'gpt-image-2', credits: 8 },
+    { model: 'grok-imagine-video', credits: 35 },
+  ])
 })
