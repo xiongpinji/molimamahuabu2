@@ -410,8 +410,8 @@
     />
     <AssetPickerDialog
       v-model="canvasAssetPickerVisible"
-      type="all"
-      title="从素材库加入画布"
+      :type="canvasAssetPickerType"
+      :title="canvasAssetPickerTitle"
       :drama-id="dramaId"
       @pick="onCanvasAssetLibraryPick"
     />
@@ -464,7 +464,16 @@
           <el-input v-model="freeNodeForm.url" placeholder="可粘贴已有素材地址；本地文件请使用右键“上传”" />
         </el-form-item>
         <el-form-item v-if="freeNodeKind !== 'text'" label="模型">
-          <el-input v-model="freeNodeForm.model" placeholder="留空使用系统默认模型" />
+          <el-select
+            v-model="freeNodeForm.model"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="留空使用系统默认模型"
+          >
+            <el-option v-for="model in getFreeNodeModelOptions(freeNodeKind)" :key="model" :label="model" :value="model" />
+          </el-select>
         </el-form-item>
         <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
           <el-select v-model="freeNodeForm.aspectRatio" placeholder="选择比例">
@@ -506,6 +515,7 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
+import { aiAPI } from '@/api/ai'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
@@ -553,6 +563,7 @@ import {
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import { assetImageUrl, assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
+import { getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 import {
   imageRecordUrl,
   resolveSbFirstImageRecord,
@@ -655,6 +666,7 @@ const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
 const canvasAssetPickerTargetStoryboardId = ref(null)
+const canvasAssetPickerTargetFreeNodeId = ref('')
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
@@ -668,6 +680,8 @@ const freeNodeKind = ref('text')
 const freeNodeEditingId = ref('')
 const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
+const freeCanvasModelConfigs = ref([])
+let freeCanvasModelConfigsLoaded = false
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
@@ -679,6 +693,29 @@ const NODE_STATUS_STORAGE_PREFIX = 'moli_canvas_node_status'
 const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
 const dragHistorySnapshot = ref(null)
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
+
+function getFreeNodeModelOptions(kind) {
+  const serviceType = {
+    image: 'storyboard_image',
+    video: 'video',
+    audio: 'tts',
+  }[kind]
+  return serviceType ? getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType) : []
+}
+
+async function loadFreeCanvasModelConfigs() {
+  if (freeCanvasModelConfigsLoaded) return
+  const results = await Promise.allSettled([
+    aiAPI.list('image'),
+    aiAPI.list('storyboard_image'),
+    aiAPI.list('video'),
+    aiAPI.list('tts'),
+  ])
+  freeCanvasModelConfigs.value = results.flatMap((result) => (
+    result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []
+  ))
+  freeCanvasModelConfigsLoaded = true
+}
 
 const freeNodeKindLabel = computed(() => ({
   text: '文本',
@@ -714,6 +751,12 @@ const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsse
 
 const contextMenuNodeLabel = computed(() => canvasNodeLabel(contextMenuNode.value))
 const contextMenuNodeActions = computed(() => canvasNodeActions(contextMenuNode.value))
+const canvasAssetPickerType = computed(() => (
+  freeCanvasNodeById(canvasAssetPickerTargetFreeNodeId.value)?.data?.kind || 'all'
+))
+const canvasAssetPickerTitle = computed(() => (
+  canvasAssetPickerTargetFreeNodeId.value ? '挂载素材到当前节点' : '从素材库加入画布'
+))
 
 let saveTimer = null
 let savedHintTimer = null
@@ -1883,6 +1926,44 @@ async function deleteFreeCanvasNode(nodeId) {
   await persistCanvasState({ layoutOnly: true })
 }
 
+async function duplicateFreeCanvasNode(nodeOrId) {
+  const source = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || source?.type !== 'homeCanvasNode') return null
+  const previousState = currentInteractionState()
+  const kind = source.data?.kind || 'text'
+  const id = `free:${kind}:${Date.now()}`
+  const hasResult = Boolean(source.data?.url)
+  const data = {
+    ...source.data,
+    title: `${source.data?.title || '未命名节点'} 副本`,
+    status: hasResult ? 'success' : 'idle',
+    error: '',
+    taskId: '',
+    assetSaveStatus: source.data?.savedAssetId ? 'success' : '',
+    assetSaveError: '',
+  }
+  allGraphNodes.value = [
+    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
+    {
+      ...source,
+      id,
+      position: {
+        x: Number(source.position?.x || 0) + 40,
+        y: Number(source.position?.y || 0) + 40,
+      },
+      selected: true,
+      dragging: false,
+      data,
+    },
+  ]
+  focusedNodeId.value = id
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+  ElMessage.success('已复制节点')
+  return id
+}
+
 async function uploadFreeCanvasNodeFile(nodeId, file) {
   const node = freeCanvasNodeById(nodeId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !file) return
@@ -2208,8 +2289,10 @@ function canvasNodeLabel(node) {
 function canvasNodeActions(node) {
   if (!node) return []
   if (node.type === 'homeCanvasNode') {
-    const actions = ['open-node-config', 'copy-node-ref']
-    if (['image', 'video', 'audio'].includes(node.data?.kind)) actions.push(`run-node-${node.data.kind}`)
+    const actions = ['open-node-config', 'duplicate-free-node', 'delete-free-node', 'copy-node-ref']
+    if (['image', 'video', 'audio'].includes(node.data?.kind)) {
+      actions.push('mount-free-node-asset', `run-node-${node.data.kind}`)
+    }
     if (nodeResultUrl(node)) actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
     if (nodeResultUrl(node) && !node.data?.savedAssetId) actions.unshift('save-node-result-asset')
     if (node.data?.savedAssetId) actions.unshift('copy-node-asset-ref')
@@ -3385,6 +3468,17 @@ function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerFlowPos.value = flowPosition
   canvasAssetPickerRetryNodeId.value = ''
   canvasAssetPickerTargetStoryboardId.value = selectedStoryboardIdForAssetAttach()
+  canvasAssetPickerTargetFreeNodeId.value = ''
+  canvasAssetPickerVisible.value = true
+}
+
+function openFreeNodeAssetLibrary(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind === 'text') return
+  canvasAssetPickerFlowPos.value = node.position || null
+  canvasAssetPickerRetryNodeId.value = ''
+  canvasAssetPickerTargetStoryboardId.value = null
+  canvasAssetPickerTargetFreeNodeId.value = String(node.id)
   canvasAssetPickerVisible.value = true
 }
 
@@ -3510,8 +3604,31 @@ async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
   const retryNodeId = canvasAssetPickerRetryNodeId.value
+  const targetFreeNodeId = canvasAssetPickerTargetFreeNodeId.value
   const targetStoryboardId = canvasAssetPickerTargetStoryboardId.value || selectedStoryboardIdForAssetAttach()
   try {
+    if (targetFreeNodeId) {
+      const targetNode = freeCanvasNodeById(targetFreeNodeId)
+      if (!targetNode) throw new Error('目标节点已不存在，请重新选择')
+      const assetType = normalizePickedAssetType(asset)
+      if (assetType !== targetNode.data?.kind) {
+        throw new Error(`当前${targetNode.data?.kind === 'image' ? '图片' : targetNode.data?.kind === 'video' ? '视频' : '音频'}节点不能挂载${assetType === 'image' ? '图片' : assetType === 'video' ? '视频' : '音频'}素材`)
+      }
+      projectAsset = await ensureProjectMediaAsset(asset)
+      const url = assetDisplayUrl(projectAsset)
+      if (!url) throw new Error('所选素材没有可用地址')
+      await patchFreeCanvasNodeData(targetFreeNodeId, {
+        url,
+        status: 'success',
+        error: '',
+        savedAssetId: String(projectAssetId(projectAsset) || ''),
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        taskId: '',
+      })
+      ElMessage.success('素材已挂载到当前节点')
+      return
+    }
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (retryNodeId) clearCanvasAssetFailureNode(retryNodeId)
@@ -3533,6 +3650,10 @@ async function onCanvasAssetLibraryPick(asset) {
       })
     }
   } catch (e) {
+    if (targetFreeNodeId) {
+      ElMessage.error(e?.message || '素材挂载失败')
+      return
+    }
     if (!nodeId) nodeId = canvasAssetFailureNode(e?.message || '素材库素材加入画布失败', canvasAssetPickerFlowPos.value, asset, targetStoryboardId)
     if (nodeId) {
       const message = e?.message || '素材库素材加入画布失败'
@@ -3550,6 +3671,7 @@ async function onCanvasAssetLibraryPick(asset) {
     canvasAssetPickerFlowPos.value = null
     canvasAssetPickerRetryNodeId.value = ''
     canvasAssetPickerTargetStoryboardId.value = null
+    canvasAssetPickerTargetFreeNodeId.value = ''
   }
 }
 
@@ -4076,6 +4198,12 @@ async function removeNodeFromWorkflowGroup(node) {
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     openNodeConfig(node)
+  } else if (type === 'duplicate-free-node') {
+    await duplicateFreeCanvasNode(node)
+  } else if (type === 'mount-free-node-asset') {
+    openFreeNodeAssetLibrary(node)
+  } else if (type === 'delete-free-node') {
+    await deleteFreeCanvasNode(node.id)
   } else if (type === 'open-node-production') {
     onNodeDoubleClick({ node })
   } else if (type === 'open-node-result') {
@@ -4376,7 +4504,10 @@ provide(CANVAS_CONTEXT_KEY, {
   },
   updateFreeCanvasNode: patchFreeCanvasNodeData,
   deleteFreeCanvasNode,
+  duplicateFreeCanvasNode,
   uploadFreeCanvasNodeFile,
+  openFreeNodeAssetLibrary,
+  getFreeNodeModelOptions,
   runFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })
@@ -5351,6 +5482,10 @@ watch(() => route.params.id, () => {
   focusedNodeId.value = null
   generationOverrides.value = {}
   loadDrama()
+}, { immediate: true })
+
+watch(isStandaloneCanvas, (standalone) => {
+  if (standalone) void loadFreeCanvasModelConfigs()
 }, { immediate: true })
 
 watch(drama, () => startStatusPoll())

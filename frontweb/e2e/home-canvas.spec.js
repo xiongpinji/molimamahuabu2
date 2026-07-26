@@ -111,6 +111,30 @@ test('复制粘贴选中节点会生成带偏移的副本', async ({ page }) => 
   }, homeCanvasStorageKey)).toBe(2)
 })
 
+test('本地画布右键节点可复制删除，媒体节点不展示无效运行入口', async ({ page }) => {
+  const canvas = page.locator('.canvas-main')
+  await canvas.click({ button: 'right', position: { x: 1080, y: 680 } })
+  await expect(page.getByRole('button', { name: '音频节点' })).toBeVisible()
+  await page.getByRole('button', { name: '图片节点' }).click()
+
+  const imageNode = page.locator('.vue-flow__node.selected')
+  await expect(imageNode).toContainText('本地草稿仅保存节点内容')
+  await expect(imageNode.getByRole('button', { name: '上传' })).toHaveCount(0)
+  await expect(imageNode.getByRole('button', { name: '生成' })).toHaveCount(0)
+  await expect(imageNode.getByRole('button', { name: '配置' })).toHaveCount(0)
+
+  await imageNode.click({ button: 'right' })
+  await expect(page.getByText(/节点操作 · 图片/)).toBeVisible()
+  await page.getByRole('button', { name: '复制节点' }).click()
+  await expect(page.getByRole('textbox', { name: '节点标题' })).toHaveCount(3)
+  const duplicate = page.locator('.vue-flow__node.selected')
+  await expect(duplicate.getByRole('textbox', { name: '节点标题' })).toHaveValue('图片 副本')
+
+  await duplicate.click({ button: 'right' })
+  await page.locator('.home-context-menu').getByRole('button', { name: '删除节点' }).click()
+  await expect(page.getByRole('textbox', { name: '节点标题' })).toHaveCount(2)
+})
+
 test('拖动边目标端点会更新连接目标并持久化', async ({ page }) => {
   await page.addInitScript(({ storageKey, state }) => {
     window.localStorage.setItem(storageKey, JSON.stringify(state))

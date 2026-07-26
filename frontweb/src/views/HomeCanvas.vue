@@ -60,6 +60,7 @@
           :fit-view-on-init="!hasSavedViewport"
           class="vue-flow-canvas"
           @node-double-click="onNodeDoubleClick"
+          @node-context-menu="onNodeContextMenu"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
           @connect="onConnect"
@@ -116,6 +117,7 @@
           <button type="button" class="toolbar-button" @click="openNodeEditor('text')">文本</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('image')">图片</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('video')">视频</button>
+          <button type="button" class="toolbar-button" @click="openNodeEditor('audio')">音频</button>
           <span class="toolbar-divider" />
           <button type="button" class="toolbar-icon" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
             <el-icon><RefreshLeft /></el-icon>
@@ -158,10 +160,18 @@
         @mousedown.stop
         @contextmenu.prevent
       >
-        <div class="ctx-title">在此添加</div>
-        <button type="button" class="ctx-item" @click="openNodeEditor('text', pendingFlowPosition)">文本节点</button>
-        <button type="button" class="ctx-item" @click="openNodeEditor('image', pendingFlowPosition)">图片节点</button>
-        <button type="button" class="ctx-item" @click="openNodeEditor('video', pendingFlowPosition)">视频节点</button>
+        <template v-if="contextMenuNode">
+          <div class="ctx-title">节点操作 · {{ contextMenuNode.data?.title || '未命名节点' }}</div>
+          <button type="button" class="ctx-item" @click="duplicateContextNode">复制节点</button>
+          <button type="button" class="ctx-item danger" @click="deleteContextNode">删除节点</button>
+        </template>
+        <template v-else>
+          <div class="ctx-title">在此添加</div>
+          <button type="button" class="ctx-item" @click="openNodeEditor('text', pendingFlowPosition)">文本节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('image', pendingFlowPosition)">图片节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('video', pendingFlowPosition)">视频节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('audio', pendingFlowPosition)">音频节点</button>
+        </template>
       </div>
     </Teleport>
   </div>
@@ -212,6 +222,7 @@ const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const pendingFlowPosition = ref(null)
+const contextMenuNode = ref(null)
 const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
 const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
@@ -405,15 +416,27 @@ function centerFlowPosition() {
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   event?.preventDefault?.()
+  contextMenuNode.value = null
   pendingFlowPosition.value = payload?.flowPosition || screenToFlowPosition(event?.clientX || 0, event?.clientY || 0)
   contextMenuX.value = event?.clientX || 0
   contextMenuY.value = event?.clientY || 0
   contextMenuVisible.value = true
 }
 
+function onNodeContextMenu(payload) {
+  const event = payload?.event || payload
+  event?.preventDefault?.()
+  contextMenuNode.value = payload?.node || null
+  pendingFlowPosition.value = null
+  contextMenuX.value = event?.clientX || 0
+  contextMenuY.value = event?.clientY || 0
+  contextMenuVisible.value = Boolean(contextMenuNode.value)
+}
+
 function closeContextMenu() {
   contextMenuVisible.value = false
   pendingFlowPosition.value = null
+  contextMenuNode.value = null
 }
 
 function openNodeEditor(kind, position = null, initial = null) {
@@ -474,6 +497,38 @@ async function deleteFreeCanvasNode(nodeId) {
   edges.value = edges.value.filter((edge) => String(edge.source) !== id && String(edge.target) !== id)
   commitHistory(previousState)
   scheduleSave()
+}
+
+function duplicateContextNode() {
+  const source = contextMenuNode.value
+  if (!source) return
+  const previousState = currentCanvasState()
+  const clone = cloneCanvasValue(source)
+  clone.id = `${source.id}:copy:${Date.now()}`
+  clone.position = {
+    x: Number(source.position?.x || 0) + 40,
+    y: Number(source.position?.y || 0) + 40,
+  }
+  clone.selected = true
+  clone.dragging = false
+  clone.data = {
+    ...clone.data,
+    title: `${clone.data?.title || '未命名节点'} 副本`,
+  }
+  nodes.value = [
+    ...nodes.value.map((node) => ({ ...node, selected: false })),
+    clone,
+  ]
+  closeContextMenu()
+  commitHistory(previousState)
+  scheduleSave()
+  ElMessage.success('已复制节点')
+}
+
+async function deleteContextNode() {
+  const nodeId = contextMenuNode.value?.id
+  closeContextMenu()
+  if (nodeId) await deleteFreeCanvasNode(nodeId)
 }
 
 function onPaneClick() {
@@ -626,7 +681,7 @@ function onCanvasKeydown(event) {
 }
 
 function showHelp() {
-  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；Ctrl/Cmd+C/V 复制粘贴；右键添加节点。')
+  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；Ctrl/Cmd+C/V 复制粘贴；空白处右键添加，节点右键复制或删除。')
 }
 
 async function shareCanvas() {

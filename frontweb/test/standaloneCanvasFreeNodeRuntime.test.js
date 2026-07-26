@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const canvasSource = readFileSync(resolve(__dirname, '../src/views/DramaCanvas.vue'), 'utf8')
 const nodeSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/HomeCanvasNode.vue'), 'utf8')
+const contextMenuSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/CanvasContextMenu.vue'), 'utf8')
 const imagesSource = readFileSync(resolve(__dirname, '../src/api/images.js'), 'utf8')
 const videosSource = readFileSync(resolve(__dirname, '../src/api/videos.js'), 'utf8')
 
@@ -19,6 +20,11 @@ test('自由节点配置面板保存并回填模型、比例和时长字段', ()
   assert.match(canvasSource, /model: node\?\.data\?\.model \|\| ''/)
   assert.match(canvasSource, /aspectRatio: node\?\.data\?\.aspectRatio \|\| '16:9'/)
   assert.match(canvasSource, /duration: node\?\.data\?\.duration \|\| 5/)
+  assert.match(canvasSource, /aiAPI\.list\('storyboard_image'\)/)
+  assert.match(canvasSource, /getSelectableModelsAcrossConfigs\(freeCanvasModelConfigs\.value, serviceType\)/)
+  assert.match(canvasSource, /allow-create/)
+  assert.match(nodeSource, /ctx\?\.getFreeNodeModelOptions\?\.\(props\.data\.kind\)/)
+  assert.match(nodeSource, /<datalist v-if="modelOptions\.length"/)
 })
 
 test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布上下文调用父级', () => {
@@ -33,6 +39,29 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /data\.status === 'failed'/)
   assert.match(nodeSource, /@click\.stop="openConfig"/)
   assert.match(nodeSource, /@click\.stop="runNode"/)
+})
+
+test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改不兼容节点', () => {
+  assert.match(nodeSource, /ctx\?\.openFreeNodeAssetLibrary\?\.\(props\.id\)/)
+  assert.match(nodeSource, /v-if="canMountAsset"[\s\S]*素材库/)
+  assert.match(contextMenuSource, /type: 'mount-free-node-asset'[\s\S]*label: '挂载素材'/)
+  assert.match(canvasSource, /const canvasAssetPickerTargetFreeNodeId = ref\(''\)/)
+  assert.match(canvasSource, /function openFreeNodeAssetLibrary\(nodeOrId\)/)
+  assert.match(canvasSource, /canvasAssetPickerTargetFreeNodeId\.value = String\(node\.id\)/)
+  assert.match(canvasSource, /if \(assetType !== targetNode\.data\?\.kind\)/)
+  assert.match(canvasSource, /await patchFreeCanvasNodeData\(targetFreeNodeId, \{[\s\S]*url,[\s\S]*savedAssetId: String\(projectAssetId\(projectAsset\) \|\| ''\),[\s\S]*assetSaveStatus: 'success'/)
+  assert.match(canvasSource, /if \(targetFreeNodeId\) \{[\s\S]*ElMessage\.error\(e\?\.message \|\| '素材挂载失败'\)[\s\S]*return/)
+})
+
+test('自由节点右键支持复制和删除，复制节点清除运行任务并偏移落点', () => {
+  assert.match(contextMenuSource, /type: 'duplicate-free-node'[\s\S]*label: '复制节点'/)
+  assert.match(contextMenuSource, /type: 'delete-free-node'[\s\S]*label: '删除节点'/)
+  assert.match(canvasSource, /async function duplicateFreeCanvasNode\(nodeOrId\)/)
+  assert.match(canvasSource, /x: Number\(source\.position\?\.x \|\| 0\) \+ 40/)
+  assert.match(canvasSource, /y: Number\(source\.position\?\.y \|\| 0\) \+ 40/)
+  assert.match(canvasSource, /taskId: ''/)
+  assert.match(canvasSource, /type === 'duplicate-free-node'[\s\S]*await duplicateFreeCanvasNode\(node\)/)
+  assert.match(canvasSource, /type === 'delete-free-node'[\s\S]*await deleteFreeCanvasNode\(node\.id\)/)
 })
 
 test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanvasNodeStep', () => {

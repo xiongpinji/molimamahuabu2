@@ -58,7 +58,10 @@
         <div v-else class="media-empty">
           <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
           <span>{{ mediaEmptyLabel }}</span>
-          <button type="button" class="upload-button" @click="chooseFile">上传</button>
+        </div>
+        <div v-if="canUpload || canMountAsset" class="media-actions">
+          <button v-if="canMountAsset" type="button" class="upload-button" @click="openAssetLibrary">素材库</button>
+          <button v-if="canUpload" type="button" class="upload-button" @click="chooseFile">上传</button>
         </div>
         <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
       </section>
@@ -71,14 +74,18 @@
           placeholder="描述任何你想要生成的内容"
           @blur="saveDraft"
         />
-        <div class="generation-controls">
+        <div v-if="canGenerate" class="generation-controls">
           <input
             v-model="draft.model"
             class="model-input"
             aria-label="生成模型"
             :placeholder="defaultModelLabel"
+            :list="modelOptions.length ? modelListId : undefined"
             @blur="saveDraft"
           />
+          <datalist v-if="modelOptions.length" :id="modelListId">
+            <option v-for="model in modelOptions" :key="model" :value="model" />
+          </datalist>
           <select v-if="['image', 'video'].includes(data.kind)" v-model="draft.aspectRatio" aria-label="画面比例" @change="saveDraft">
             <option value="16:9">16:9</option>
             <option value="9:16">9:16</option>
@@ -100,6 +107,7 @@
             {{ data.status === 'running' ? '生成中…' : '↑' }}
           </button>
         </div>
+        <div v-else class="local-draft-note">本地草稿仅保存节点内容；项目画布可挂载素材并运行模型。</div>
       </section>
     </template>
 
@@ -137,8 +145,13 @@ const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio:
 const mediaEmptyLabel = computed(() => ({ image: '添加图片', video: '添加视频或参考帧', audio: '添加音频' }[props.data.kind] || '添加素材'))
 const accept = computed(() => ({ image: 'image/*', video: 'video/*,image/*', audio: 'audio/*' }[props.data.kind] || '*/*'))
 const defaultModelLabel = computed(() => props.data.kind === 'image' ? '默认图片模型' : props.data.kind === 'video' ? '默认视频模型' : '默认音频模型')
+const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
+const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
+const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
+const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
+const modelListId = computed(() => `free-node-models-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
-const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || '待配置'))
+const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || (canGenerate.value ? '待配置' : '本地草稿')))
 
 function syncDraft() {
   draft.title = props.data.title || ''
@@ -185,6 +198,10 @@ function chooseFile() {
 
 function openConfig() {
   ctx?.openFreeNodeConfig?.(props.id)
+}
+
+function openAssetLibrary() {
+  ctx?.openFreeNodeAssetLibrary?.(props.id)
 }
 
 async function uploadFile(event) {
@@ -235,6 +252,9 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
 :global(.vue-flow__node:has(.home-canvas-node:hover)),
 :global(.vue-flow__node:has(.home-canvas-node:focus-within)) {
   z-index: 2000 !important;
+}
+:global(.vue-flow__node.selected:has(.home-canvas-node)) {
+  z-index: 2001 !important;
 }
 .node-heading { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 4px; cursor: grab; user-select: none; }
 .node-heading:active { cursor: grabbing; }
@@ -323,7 +343,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
   box-sizing: border-box;
 }
 .node-textarea { min-height: 170px; padding: 18px; font-size: 14px; line-height: 1.7; }
-.media-stage { min-height: 230px; overflow: hidden; }
+.media-stage { position: relative; min-height: 230px; overflow: hidden; }
 .node-media { display: block; width: 100%; height: 230px; background: #09090b; object-fit: contain; }
 .node-audio { width: calc(100% - 32px); margin: 96px 16px; }
 .media-empty { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #71717a; }
@@ -336,6 +356,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
   color: #d4d4d8;
   cursor: pointer;
 }
+.media-actions { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 8px; }
 .file-input { display: none; }
 .generation-panel { padding: 14px; }
 .prompt-input { min-height: 86px; padding: 0; font-size: 13px; line-height: 1.6; }
@@ -374,6 +395,7 @@ watch(() => props.data, syncDraft, { deep: true, immediate: true })
   cursor: pointer;
 }
 .run-button:disabled { cursor: wait; opacity: 0.6; }
+.local-draft-note { color: #71717a; font-size: 11px; line-height: 1.5; }
 .node-error, .node-asset-error { margin: 10px 14px; color: #f87171; font-size: 11px; }
 .node-asset-error { color: #fbbf24; }
 .node-asset-error button { margin-left: 8px; }

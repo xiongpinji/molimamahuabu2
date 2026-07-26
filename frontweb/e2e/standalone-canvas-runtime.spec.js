@@ -77,6 +77,13 @@ function installStaticAndApiMocks(page, state) {
       return
     }
 
+    if (method === 'GET' && pathname === '/api/v1/ai-configs') {
+      const serviceType = url.searchParams.get('service_type')
+      const configs = (state.aiConfigs || []).filter((config) => !serviceType || config.service_type === serviceType)
+      await route.fulfill(apiData(configs))
+      return
+    }
+
     if (method === 'POST' && pathname === '/api/v1/assets') {
       const payload = request.postDataJSON() || {}
       state.assetRequests.push(payload)
@@ -145,7 +152,6 @@ function installStaticAndApiMocks(page, state) {
     }
 
     if (method === 'GET' && [
-      '/api/v1/ai-configs',
       '/api/v1/video-models',
       '/api/v1/voice-catalog',
       '/api/v1/character-library',
@@ -232,6 +238,87 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.mouse.up()
 
     await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
+  })
+
+  test('自由节点可选择已配置模型、右键复制并直接挂载项目素材', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:mount',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: '待挂载图片',
+            content: '雨夜站台',
+            model: '',
+            aspectRatio: '16:9',
+          },
+        }],
+      }),
+      assets: [{
+        id: 77,
+        name: '项目雨夜参考图',
+        type: 'image',
+        url: '/static/library-rain.png',
+      }],
+      aiConfigs: [{
+        id: 11,
+        service_type: 'image',
+        is_active: true,
+        is_default: true,
+        model: ['canvas-image-alpha', 'canvas-image-beta'],
+      }],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:image:mount"]')
+    await expect(node).toBeVisible()
+    await expect(node.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
+    await node.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
+    await node.getByRole('combobox', { name: '生成模型' }).blur()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
+
+    await node.getByRole('button', { name: '素材库' }).click()
+    const picker = page.getByRole('dialog', { name: '挂载素材到当前节点' })
+    await expect(picker).toBeVisible()
+    const assetCard = picker.locator('.picker-card').filter({ hasText: '项目雨夜参考图' })
+    await assetCard.getByRole('button', { name: '选用', exact: true }).click()
+    await expect(picker).toBeHidden()
+    await expect(node.locator('img[alt="待挂载图片"]')).toBeVisible()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data).toMatchObject({
+      url: '/static/library-rain.png',
+      savedAssetId: '77',
+      status: 'success',
+      assetSaveStatus: 'success',
+    })
+    expect(state.assetRequests).toHaveLength(0)
+
+    await node.click({ button: 'right' })
+    const menu = page.getByRole('menu', { name: '节点操作' })
+    await menu.getByRole('menuitem', { name: /^复制节点 克隆到右下方$/ }).click()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(2)
+    const copied = state.canvasLayout.free_nodes.find((item) => item.id !== 'free:image:mount')
+    expect(copied).toMatchObject({
+      position: { x: 280, y: 260 },
+      data: {
+        title: '待挂载图片 副本',
+        url: '/static/library-rain.png',
+        savedAssetId: '77',
+        status: 'success',
+        taskId: '',
+      },
+    })
+
+    const copiedNode = page.locator(`.vue-flow__node[data-id="${copied.id}"]`)
+    await copiedNode.click({ button: 'right' })
+    await page.getByRole('menu', { name: '节点操作' }).getByRole('menuitem', { name: /删除节点/ }).click()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
   })
 
   test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {
