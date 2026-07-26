@@ -5,6 +5,7 @@
       :title="dramaId ? (store.drama?.title || '项目') : '新建故事'"
       :back-to="dramaId ? '/drama/' + dramaId : '/'"
       back-label="返回剧集"
+      :show-theme="false"
     >
       <template #leading>
         <el-select
@@ -37,10 +38,17 @@
     <!-- 左侧固定侧边栏 -->
     <nav class="quick-nav" :class="{ collapsed: navCollapsed }" aria-label="快捷导航">
       <div class="nav-sidebar-header">
-        <span v-if="!navCollapsed" class="nav-sidebar-title">导航</span>
-        <div class="nav-toggle" :title="navCollapsed ? '展开导航' : '收起导航'" @click="toggleNav()">
+        <span v-if="!navCollapsed" class="nav-sidebar-title">制作流程</span>
+        <button
+          type="button"
+          class="nav-toggle"
+          :title="navCollapsed ? '展开制作流程' : '收起制作流程'"
+          :aria-label="navCollapsed ? '展开制作流程' : '收起制作流程'"
+          :aria-expanded="String(!navCollapsed)"
+          @click="toggleNav()"
+        >
           <el-icon><Expand v-if="navCollapsed" /><Fold v-else /></el-icon>
-        </div>
+        </button>
       </div>
 
       <!-- 步骤列表 -->
@@ -50,7 +58,12 @@
           :key="step.key"
           class="nav-step"
           :class="['status-' + step.status]"
+          role="button"
+          tabindex="0"
+          :aria-label="`跳转到${step.label}`"
           @click="scrollToAnchor(step.anchor)"
+          @keydown.enter="scrollToAnchor(step.anchor)"
+          @keydown.space.prevent="scrollToAnchor(step.anchor)"
         >
           <!-- 左侧连接线 -->
           <div class="step-connector-wrap">
@@ -11287,5 +11300,289 @@ html.light .frame-layout-anchor {
   color: #64748b;
   margin-top: 4px;
   line-height: 1.4;
+}
+
+/* OpenVideo 对齐层：保持业务结构，只统一流水线工作区与交互外壳 */
+.film-create,
+html.light .film-create {
+  --el-color-primary: #ff7139;
+  --el-color-primary-light-3: #ff966f;
+  --el-color-primary-light-5: #ffb499;
+  --el-color-primary-dark-2: #d85a29;
+  --el-bg-color: #151515;
+  --el-bg-color-overlay: #181818;
+  --el-fill-color-blank: #151515;
+  --el-fill-color-light: #1d1d1d;
+  --el-fill-color-lighter: #232323;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c7c7c7;
+  --el-text-color-secondary: #8c8c8c;
+  background:
+    radial-gradient(circle at 72% -18%, rgba(255, 113, 57, .11), transparent 30%),
+    linear-gradient(rgba(255, 255, 255, .018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .018) 1px, transparent 1px),
+    #080808;
+  background-size: auto, 48px 48px, 48px 48px, auto;
+  color: #e8e8e8;
+}
+
+.quick-nav,
+html.light .quick-nav {
+  top: 64px;
+  width: 196px;
+  padding: 18px 10px 14px;
+  background: rgba(10, 10, 10, .96);
+  border-right: 1px solid #262626;
+  box-shadow: none;
+}
+
+.quick-nav.collapsed {
+  width: 52px;
+  padding: 18px 4px 14px;
+}
+
+.nav-sidebar-header,
+html.light .nav-sidebar-header {
+  padding: 0 4px 14px;
+  border-bottom-color: #252525;
+}
+
+.nav-sidebar-title,
+html.light .nav-sidebar-title {
+  color: #b8b8b8;
+  font-size: 12px;
+  letter-spacing: .08em;
+}
+
+.nav-toggle {
+  padding: 0;
+  border: 1px solid transparent;
+  color: #858585;
+  background: transparent;
+}
+
+.nav-toggle:hover,
+.nav-toggle:focus-visible,
+html.light .nav-toggle:hover {
+  outline: none;
+  color: #fff;
+  border-color: #343434;
+  background: #1b1b1b;
+}
+
+.nav-toggle:focus-visible,
+.nav-step:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, .58);
+}
+
+.nav-steps {
+  gap: 3px;
+  padding: 0;
+}
+
+.nav-step {
+  min-height: 38px;
+  padding: 3px 7px 3px 2px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.nav-step:hover,
+.nav-step:focus-visible,
+html.light .nav-step:hover {
+  outline: none;
+  border-color: #2c2c2c;
+  background: #171717;
+}
+
+.step-line,
+html.light .step-line {
+  background: #292929;
+}
+
+.dot-pending,
+html.light .dot-pending {
+  color: #777;
+  border-color: #353535;
+  background: #191919;
+}
+
+.dot-generating {
+  color: #ff966f;
+  border-color: rgba(255, 113, 57, .58);
+  background: rgba(255, 113, 57, .14);
+  box-shadow: 0 0 10px rgba(255, 113, 57, .16);
+}
+
+.step-label,
+html.light .step-label {
+  color: #858585;
+}
+
+.nav-step:hover .step-label,
+.nav-step:focus-visible .step-label,
+html.light .nav-step:hover .step-label {
+  color: #f5f5f5;
+}
+
+.status-generating .step-label,
+html.light .status-generating .step-label,
+.gen-badge {
+  color: #ff966f;
+}
+
+.atp-title,
+html.light .atp-title,
+.atp-collapsed-count {
+  color: #ff966f;
+}
+
+.atp-spin-dot,
+.atp-item-dot {
+  background: #ff7139;
+}
+
+.atp-count-badge {
+  color: #ffb499;
+  background: rgba(255, 113, 57, .18);
+}
+
+.main {
+  margin-left: 196px;
+  padding: 28px clamp(18px, 3vw, 46px) 72px;
+}
+
+.sidebar-collapsed .main {
+  margin-left: 52px;
+}
+
+.card,
+html.light .card {
+  padding: 24px;
+  border: 1px solid #282828;
+  border-radius: 18px;
+  background: rgba(17, 17, 17, .96);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .26);
+  backdrop-filter: none;
+}
+
+.card:hover,
+html.light .card:hover {
+  border-color: #343434;
+  box-shadow: 0 20px 54px rgba(0, 0, 0, .34);
+}
+
+.section {
+  max-width: 1420px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.section-title,
+html.light .section-title,
+.resource-block-title,
+html.light .resource-block-title {
+  color: #f5f5f5;
+}
+
+.section-desc,
+html.light .section-desc {
+  color: #808080;
+}
+
+.script-workbench-tabs :deep(.el-tabs__nav-wrap::after) {
+  background: #2b2b2b;
+}
+
+.script-workbench-tabs :deep(.el-tabs__item) {
+  color: #858585;
+}
+
+.script-workbench-tabs :deep(.el-tabs__item:hover),
+.script-workbench-tabs :deep(.el-tabs__item.is-active) {
+  color: #ff8e62;
+}
+
+.script-workbench-tabs :deep(.el-tabs__active-bar) {
+  background: #ff7139;
+}
+
+.film-create :deep(.el-input__wrapper),
+.film-create :deep(.el-select__wrapper),
+.film-create :deep(.el-textarea__inner),
+.film-create :deep(.el-input-number) {
+  color: #e8e8e8;
+  background: #161616;
+  box-shadow: 0 0 0 1px #303030 inset;
+}
+
+.film-create :deep(.el-input__wrapper:hover),
+.film-create :deep(.el-select__wrapper:hover),
+.film-create :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px #494949 inset;
+}
+
+.film-create :deep(.el-input__wrapper.is-focus),
+.film-create :deep(.el-select__wrapper.is-focused),
+.film-create :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px #ff7139 inset, 0 0 0 3px rgba(255, 113, 57, .1);
+}
+
+.film-create :deep(.el-input__inner),
+.film-create :deep(.el-textarea__inner),
+.film-create :deep(.el-select__placeholder) {
+  color: #d6d6d6;
+}
+
+.film-create :deep(.el-input__inner::placeholder),
+.film-create :deep(.el-textarea__inner::placeholder) {
+  color: #666;
+}
+
+html.light .film-create :deep(.el-input__wrapper),
+html.light .film-create :deep(.el-select__wrapper),
+html.light .film-create :deep(.el-textarea__inner),
+html.light .film-create :deep(.el-input-number) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+
+html.light .film-create :deep(.el-input__inner),
+html.light .film-create :deep(.el-textarea__inner),
+html.light .film-create :deep(.el-select__placeholder) {
+  color: #d6d6d6 !important;
+}
+
+html.light .film-create :deep(.el-input__inner::placeholder),
+html.light .film-create :deep(.el-textarea__inner::placeholder) {
+  color: #666 !important;
+}
+
+.card :deep(.el-button:not(.el-button--primary):not(.is-link):not(.el-button--danger)) {
+  color: #c9c9c9;
+  border-color: #343434;
+  background: #171717;
+}
+
+.card :deep(.el-button:not(.el-button--primary):not(.is-link):not(.el-button--danger):hover) {
+  color: #fff;
+  border-color: rgba(255, 113, 57, .56);
+  background: rgba(255, 113, 57, .1);
+}
+
+@media (max-width: 768px) {
+  .quick-nav,
+  html.light .quick-nav {
+    width: 52px;
+    padding: 14px 4px;
+  }
+
+  .main {
+    margin-left: 52px !important;
+    padding: 18px 12px 52px;
+  }
 }
 </style>
