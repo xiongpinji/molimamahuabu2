@@ -24,18 +24,15 @@ test('AIHubCC 1K image body keeps reference images and quality', () => {
   assert.equal('image' in body, false);
 });
 
-test('AIHubCC high-resolution image models use async video task contract', () => {
-  assert.equal(client.isAsyncImageModel('gpt-image-2-2k'), true);
-  assert.equal(client.isAsyncImageModel('gpt-image-2-4k'), false);
-  const body = client.buildImageBody({
-    model: 'gpt-image-2-3.5k',
+test('AIHubCC gpt-image-2-2k uses synchronous chat image contract', () => {
+  assert.equal(client.isFlowImageModel('gpt-image-2-2k'), true);
+  const body = client.buildFlowImageBody({
+    model: 'gpt-image-2-2k',
     prompt: 'portrait',
-    size: '1024x1536',
-    referenceUrls: ['https://example.com/character.png'],
   });
-  assert.equal(body.aspect_ratio, '9:16');
-  assert.equal(body.image_url, 'https://example.com/character.png');
-  assert.equal('image' in body, false);
+  assert.equal(body.model, 'gpt-image-2-2k');
+  assert.equal(body.stream, false);
+  assert.equal(body.messages[0].content, 'portrait');
 });
 
 test('AIHubCC Flow image uses chat completion multimodal contract', () => {
@@ -89,6 +86,23 @@ test('AIHubCC video body maps Omni and Seedance fields', () => {
   assert.deepEqual(seedance.reference_image_urls, ['https://example.com/character.png']);
 });
 
+test('lingjing video body uses ratio and ordered reference_images', () => {
+  assert.deepEqual(client.buildVideoBody({
+    model: 'lingjing-video-v1',
+    prompt: 'animate',
+    duration: 5,
+    aspect_ratio: '9:16',
+    reference_urls: ['uploads/one.png', 'uploads/two.png'],
+  }), {
+    model: 'lingjing-video-v1',
+    prompt: 'animate',
+    duration: 5,
+    ratio: '9:16',
+    reference_images: ['uploads/one.png', 'uploads/two.png'],
+  });
+});
+
+
 test('AIHubCC Flow video relies on model name for duration and aspect ratio', () => {
   const flow = client.buildVideoBody({
     model: 'veo_3_1_i2v_s_fast_portrait_6s_fl',
@@ -129,4 +143,6 @@ test('AIHubCC extracts direct, nested and relative media URLs', () => {
   assert.equal(client.extractMediaUrl({ data: [{ url: '/files/a.png' }] }, config), 'https://aihubcc.cc/v1/files/a.png');
   assert.equal(client.extractTaskId({ data: { id: 'task_123' } }), 'task_123');
   assert.equal(client.extractStatus({ data: { task_status: 'SUCCESS' } }), 'success');
+  assert.equal(client.extractUploadPath({ path: 'uploads/a.png' }), 'uploads/a.png');
+  assert.equal(client.extractUploadPath({ data: { path: 'uploads/b.png' } }), 'uploads/b.png');
 });

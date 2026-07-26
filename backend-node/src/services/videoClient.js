@@ -6,6 +6,7 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
@@ -997,7 +998,11 @@ function parseKlingOmniPollVideoUrl(data) {
 function getDefaultVideoConfig(db, preferredModel) {
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
-  if (active.length === 0) return null;
+  if (active.length === 0) {
+    return preferredModel
+      ? canvasProviderConfigService.getConfig('video', preferredModel)
+      : null;
+  }
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
@@ -1010,7 +1015,7 @@ function getDefaultVideoConfig(db, preferredModel) {
       const requested = normalize(preferredModel);
       if (models.some((model) => normalize(model) === requested)) return c;
     }
-    return null;
+    return canvasProviderConfigService.getConfig('video', preferredModel);
   }
   const defaultOne = active.find((c) => c.is_default);
   return defaultOne != null ? defaultOne : active[0];
@@ -4253,6 +4258,44 @@ async function callAihubccVideoApi(config, log, opts = {}) {
     const value = await resolve(opts.reference_urls[i], `ref${i}`);
     if (value && !refs.includes(value)) refs.push(value);
   }
+  let submittedRefs = refs;
+  if (model.toLowerCase() === 'lingjing-video-v1') {
+    const ordered = [first, last, ...refs].filter((value, index, values) => value && values.indexOf(value) === index);
+    submittedRefs = [];
+    for (let index = 0; index < ordered.length; index += 1) {
+      const source = ordered[index];
+      let bytes;
+      let mimeType = 'image/png';
+      if (/^data:image\//i.test(source)) {
+        const match = source.match(/^data:([^;,]+);base64,(.+)$/i);
+        if (!match) return { error: `灵境参考图 ${index + 1} 的 data URL 无效` };
+        mimeType = match[1];
+        bytes = Buffer.from(match[2], 'base64');
+      } else {
+        const sourceResponse = await fetch(source);
+        if (!sourceResponse.ok) return { error: `灵境参考图 ${index + 1} 下载失败: ${sourceResponse.status}` };
+        mimeType = sourceResponse.headers.get('content-type') || mimeType;
+        bytes = Buffer.from(await sourceResponse.arrayBuffer());
+      }
+      const form = new FormData();
+      form.append('file', new Blob([bytes], { type: mimeType }), `canvas-reference-${index + 1}.png`);
+      const uploadResult = await aihubccClient.requestJson(
+        aihubccClient.joinAihubccUrl(config, '/uploads'),
+        {
+          method: 'POST',
+          headers: aihubccClient.authHeaders(config),
+          body: form,
+          timeoutMs: 120000,
+        }
+      );
+      if (!uploadResult.response.ok) {
+        return { error: `灵境参考图 ${index + 1} 上传失败: ${uploadResult.response.status}` };
+      }
+      const uploadPath = aihubccClient.extractUploadPath(uploadResult.data);
+      if (!uploadPath) return { error: `灵境参考图 ${index + 1} 上传后未返回 path` };
+      submittedRefs.push(uploadPath);
+    }
+  }
   const body = aihubccClient.buildVideoBody({
     model,
     prompt: opts.prompt,
@@ -4261,7 +4304,7 @@ async function callAihubccVideoApi(config, log, opts = {}) {
     image_url: first,
     first_image_url: first,
     last_image_url: last,
-    reference_urls: refs,
+    reference_urls: submittedRefs,
     video_url: opts.video_url,
   });
   const url = aihubccClient.getSubmitUrl(config, config.endpoint || '/videos');

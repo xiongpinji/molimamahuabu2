@@ -1,5 +1,6 @@
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 const KIND_BY_SERVICE = {
   text: 'text',
@@ -36,7 +37,7 @@ function list(db) {
     .filter((row) => row.status === 'enabled')
     .map((row) => [String(row.model).toLowerCase(), row]));
   const seen = new Set();
-  return aiConfigService.listConfigs(db)
+  const configured = aiConfigService.listConfigs(db)
     .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
     .flatMap((config) => parseModels(config.model, config.default_model).map((model) => {
       const key = `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`;
@@ -52,6 +53,14 @@ function list(db) {
       };
     }))
     .filter(Boolean);
+  for (const item of canvasProviderConfigService.listSafe()) {
+    const key = `${item.kind}:${item.model.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      configured.push(item);
+    }
+  }
+  return configured;
 }
 
 module.exports = { list, parseModels, safeCapabilities };

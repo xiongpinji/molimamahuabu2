@@ -43,6 +43,51 @@ test('AIHubCC video uses async submit and poll contract', async () => {
   }
 });
 
+test('lingjing uploads ordered references before creating video task', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url) === 'https://assets.example/ref.png') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'image/png' },
+        arrayBuffer: async () => Buffer.from('image'),
+      };
+    }
+    if (String(url).endsWith('/uploads')) return jsonResponse({ path: 'uploads/ref.png' });
+    return jsonResponse({ id: 19502, status: 'pending' });
+  };
+  try {
+    const result = await callAihubccVideoApi(
+      {
+        base_url: 'https://seed.example/api/open/v1',
+        api_key: 'test-key',
+        endpoint: '/videos',
+        provider: 'aihubcc_video',
+      },
+      { info() {}, warn() {}, error() {} },
+      {
+        model: 'lingjing-video-v1',
+        prompt: 'animate reference',
+        duration: 5,
+        aspect_ratio: '16:9',
+        reference_urls: ['https://assets.example/ref.png'],
+      }
+    );
+    assert.deepEqual(result, { task_id: '19502', status: 'pending' });
+    const uploadCall = calls.find((call) => call.url.endsWith('/uploads'));
+    const submitCall = calls.find((call) => call.url.endsWith('/videos'));
+    assert.equal(uploadCall.options.body instanceof FormData, true);
+    const submitBody = JSON.parse(submitCall.options.body);
+    assert.deepEqual(submitBody.reference_images, ['uploads/ref.png']);
+    assert.equal(submitBody.ratio, '16:9');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('AIHubCC veo-clean uploads input video as multipart task', async () => {
   const originalFetch = global.fetch;
   const calls = [];
