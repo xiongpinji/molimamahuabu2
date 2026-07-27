@@ -59,7 +59,8 @@ function isAsyncImageModel(model) {
 
 function isFlowImageModel(model) {
   const name = String(model || '').trim().toLowerCase();
-  return /^gemini-3\.[01]-(?:pro|flash)-image-/.test(name)
+  return name === 'gpt-image-2-2k'
+    || /^gemini-3\.[01]-(?:pro|flash)-image-/.test(name)
     || /^imagen-4\.0-generate-preview-/.test(name);
 }
 
@@ -127,6 +128,16 @@ function buildVideoBody({
   video_url,
 } = {}) {
   const name = String(model || '').trim();
+  if (name.toLowerCase() === 'lingjing-video-v1') {
+    const length = Number(seconds ?? duration);
+    return {
+      model: name,
+      prompt: prompt || '',
+      duration: Number.isFinite(length) ? Math.min(15, Math.max(1, Math.round(length))) : 5,
+      ratio: normalizeAspectRatio(aspect_ratio),
+      reference_images: reference_urls.filter(Boolean).slice(0, 12),
+    };
+  }
   const isOmni = /^omni-fast/i.test(name);
   const isFlow = isFlowVideoModel(name);
   const body = {
@@ -159,6 +170,11 @@ function extractTaskId(payload) {
   const data = payload?.data && !Array.isArray(payload.data) ? payload.data : payload;
   const id = payload?.task_id || payload?.id || data?.task_id || data?.id || payload?.task?.id;
   return id == null || String(id).trim() === '' ? null : String(id);
+}
+
+function extractUploadPath(payload) {
+  const value = payload?.path || payload?.data?.path || payload?.upload?.path || payload?.file?.path;
+  return value == null || String(value).trim() === '' ? null : String(value).trim();
 }
 
 function normalizeMediaUrl(value, config) {
@@ -266,6 +282,7 @@ module.exports = {
   extractFlowImageUrl,
   buildVideoBody,
   extractTaskId,
+  extractUploadPath,
   extractMediaUrl,
   extractStatus,
   isFailedStatus,

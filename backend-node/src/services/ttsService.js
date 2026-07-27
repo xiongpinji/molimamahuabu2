@@ -8,6 +8,62 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
+const MPEG1_BITRATES = {
+  3: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+  2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+  1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+};
+const MPEG2_BITRATES = {
+  3: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+  2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+  1: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+};
+const MPEG_SAMPLE_RATES = {
+  0: [11025, 12000, 8000],
+  2: [22050, 24000, 16000],
+  3: [44100, 48000, 32000],
+};
+
+function getMpegFrameLength(buffer, offset) {
+  if (offset < 0 || offset + 4 > buffer.length) return 0;
+  if (buffer[offset] !== 0xff || (buffer[offset + 1] & 0xe0) !== 0xe0) return 0;
+
+  const version = (buffer[offset + 1] >> 3) & 0x03;
+  const layer = (buffer[offset + 1] >> 1) & 0x03;
+  const bitrateIndex = (buffer[offset + 2] >> 4) & 0x0f;
+  const sampleRateIndex = (buffer[offset + 2] >> 2) & 0x03;
+  const padding = (buffer[offset + 2] >> 1) & 0x01;
+  if (version === 0x01 || layer === 0x00 || bitrateIndex === 0 || bitrateIndex === 0x0f || sampleRateIndex === 0x03) {
+    return 0;
+  }
+
+  const bitrate = (version === 0x03 ? MPEG1_BITRATES : MPEG2_BITRATES)[layer][bitrateIndex];
+  const sampleRate = MPEG_SAMPLE_RATES[version][sampleRateIndex];
+  if (layer === 0x03) return Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4;
+  const coefficient = layer === 0x01 && version !== 0x03 ? 72 : 144;
+  return Math.floor((coefficient * bitrate * 1000) / sampleRate) + padding;
+}
+
+function id3AudioOffset(buffer) {
+  if (buffer[0] !== 0x49 || buffer[1] !== 0x44 || buffer[2] !== 0x33) return 0;
+  if (buffer.length < 10 || buffer[3] < 2 || buffer[3] > 4) return -1;
+  const sizeBytes = buffer.subarray(6, 10);
+  if ([...sizeBytes].some((byte) => (byte & 0x80) !== 0)) return -1;
+  const tagSize = (sizeBytes[0] << 21) | (sizeBytes[1] << 14) | (sizeBytes[2] << 7) | sizeBytes[3];
+  const footerSize = buffer[3] === 4 && (buffer[5] & 0x10) !== 0 ? 10 : 0;
+  const offset = 10 + tagSize + footerSize;
+  return offset <= buffer.length ? offset : -1;
+}
+
+function isProbableMp3(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  let offset = id3AudioOffset(buffer);
+  if (offset < 0) return false;
+
+  const frameLength = getMpegFrameLength(buffer, offset);
+  return Boolean(frameLength && offset + frameLength <= buffer.length);
+}
+
 /**
  * 使用 MiniMax T2A v2 合成语音
  */
@@ -116,7 +172,15 @@ async function synthesizeWithOpenai(text, voice, apiKey, baseUrl, model, speed) 
  * 合成 TTS 并保存到本地文件
  * @returns {{ local_path: string, audio_url: string }}
  */
-async function synthesize(db, log, { text, storyboard_id, config, storage_base, voice_id, speed }) {
+async function synthesize(db, log, {
+  text,
+  storyboard_id,
+  config,
+  storage_base,
+  storage_subdir,
+  voice_id,
+  speed,
+}) {
   if (!text || !text.trim()) throw new Error('text 不能为空');
   const aiConfigService = require('./aiConfigService');
   const ttsConfig = config || (() => {
@@ -132,7 +196,8 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   // 外部传入的 voice_id / speed 优先（海外化场景），否则取配置值
   const voiceId = voice_id || ttsConfig.voice_id || ttsSettings.voice_id || '';
   const groupId = ttsConfig.group_id || ttsSettings.group_id || '';
-  const ttsModel = ttsConfig.default_model || (Array.isArray(ttsConfig.model) ? ttsConfig.model[0] : ttsConfig.model) || '';
+  const { resolveTtsModel } = require('./ttsConfigSelectionService');
+  const ttsModel = resolveTtsModel(ttsConfig);
   const finalSpeed = speed || ttsSettings.speed || 1.0;
   let audioBuffer;
 
@@ -142,7 +207,7 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
       voiceId || 'female-shaonv',
       ttsConfig.api_key,
       groupId,
-      ttsModel || 'speech-02-hd'
+      ttsModel
     );
   } else if (provider === 'openai' || ttsConfig.base_url) {
     audioBuffer = await synthesizeWithOpenai(
@@ -150,23 +215,28 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
       voiceId || 'alloy',
       ttsConfig.api_key,
       ttsConfig.base_url,
-      ttsModel || 'tts-1',
+      ttsModel,
       finalSpeed
     );
   } else {
     throw new Error(`不支持的 TTS provider: ${provider}，目前支持 openai、minimax`);
   }
 
+  if (!isProbableMp3(audioBuffer)) {
+    throw new Error('TTS 未返回有效 MP3 音频');
+  }
+
   // 保存到本地
-  const audioDir = path.join(storage_base, 'audio');
+  const relativeAudioDir = String(storage_subdir || 'audio').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const audioDir = path.join(storage_base, relativeAudioDir);
   if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
   const filename = `tts_sb${storyboard_id || 'x'}_${randomUUID().slice(0, 8)}.mp3`;
   const filePath = path.join(audioDir, filename);
   fs.writeFileSync(filePath, audioBuffer);
-  const localPath = `audio/${filename}`;
+  const localPath = `${relativeAudioDir}/${filename}`;
   log.info('[TTS] 合成完成', { storyboard_id, local_path: localPath, provider });
   try { const cs = require('./cloudService'); cs.reportUsage('tts', ttsModel || '', '', 0); } catch (_) {}
   return { local_path: localPath };
 }
 
-module.exports = { synthesize };
+module.exports = { synthesize, isProbableMp3 };

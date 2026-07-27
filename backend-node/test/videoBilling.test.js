@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const videoService = require('../src/services/videoService');
 const videoClient = require('../src/services/videoClient');
+const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -153,6 +154,46 @@ test('持久化分镜提示词和模型会传入实际视频供应商请求', as
     assert.match(captured.prompt, /VOICE CONTINUITY/);
     assert.match(captured.prompt, /bright youthful voice, clear diction/);
   } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('已失败的视频任务不会被生成处理重新拉回 processing', async () => {
+  const db = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  const originalUpdateTaskStatus = taskService.updateTaskStatus;
+  const processingUpdates = [];
+  let providerCalls = 0;
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: '验证失败任务状态保持不变',
+      reference_image_urls: ['https://example.com/ref.png'],
+    }, { billingEnabled: false, schedule() {} });
+    db.prepare("UPDATE async_tasks SET status = 'failed' WHERE id = ?").run(created.task_id);
+
+    videoClient.getDefaultVideoConfig = () => ({ model: 'seedance 2.0', api_url: 'https://example.com' });
+    videoClient.callVideoApi = async () => {
+      providerCalls += 1;
+      return { error: 'expected provider failure' };
+    };
+    taskService.updateTaskStatus = (...args) => {
+      if (args[2] === 'processing') processingUpdates.push(args);
+      return originalUpdateTaskStatus(...args);
+    };
+
+    await videoService.processVideoGeneration(db, log, created.id);
+
+    assert.equal(taskService.getTask(db, created.task_id).status, 'failed');
+    assert.equal(processingUpdates.length, 0);
+    assert.equal(providerCalls, 1);
+  } finally {
+    taskService.updateTaskStatus = originalUpdateTaskStatus;
     videoClient.callVideoApi = originalCallVideoApi;
     videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
     db.close();

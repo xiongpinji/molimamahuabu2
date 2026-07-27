@@ -9,6 +9,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const taskService = require('../src/services/taskService');
 const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
+const { MINIMAL_MP4, isoBmffTopLevelBoxes } = require('./fixtures/media');
 
 const log = { info() {}, warn() {}, error() {} };
 
@@ -99,7 +100,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
     global.fetch = async () => ({
       ok: true,
       status: 200,
-      arrayBuffer: async () => Buffer.from('local-recovered-video-artifact'),
+      arrayBuffer: async () => MINIMAL_MP4,
     });
 
     videoService.resumeProcessingVideoGenerations(db, log);
@@ -115,7 +116,12 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
     assert.equal(completed.provider_task_id, 'provider-task-83047');
     assert.equal(completed.video_url, 'https://cdn.example/resumed.mp4');
     assert.ok(completed.local_path);
-    assert.equal(fs.existsSync(path.join(storageRoot, completed.local_path)), true);
+    const localVideoBytes = fs.readFileSync(path.join(storageRoot, completed.local_path.replace(/^\/static\//, '')));
+    assert.ok(localVideoBytes.length > 16);
+    const boxes = isoBmffTopLevelBoxes(localVideoBytes);
+    assert.equal(boxes[0]?.type, 'ftyp');
+    assert.ok(boxes.some((box) => box.type === 'moov' && box.size > 16));
+    assert.ok(boxes.some((box) => box.type === 'mdat' && box.size > 8));
     const completedTask = taskService.getTask(db, task.id);
     assert.equal(completedTask.status, 'completed');
     assert.equal(JSON.parse(completedTask.result).video_generation_id, videoId);

@@ -61,16 +61,23 @@ test('CV-IMG-001 分镜图模型与宫格设置可保存恢复并用于生图', 
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { ...storyboard } }) })
       return
     }
-    if (path === '/api/v1/ai-configs' && method === 'GET') {
-      const serviceType = url.searchParams.get('service_type')
-      const data = serviceType === 'video'
-        ? [{ service_type: 'video', is_active: true, is_default: true, model: 'grok-video-3' }]
-        : [{ service_type: 'image', is_active: true, is_default: true, model: 'lib-image-default,lib-image-grid' }]
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data }) })
+    if (path === '/api/v1/video-models' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: ['grok-video-3'] }) })
       return
     }
-    if (path === '/api/v1/video-models' && method === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: [{ model: 'grok-video-3', is_active: true }] }) })
+    if (path === '/api/v1/image-models' && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: ['lib-image-default', 'lib-image-grid'],
+        }),
+      })
+      return
+    }
+    if (path === '/api/v1/audio-models' && method === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: [] }) })
       return
     }
     if (path === '/api/v1/images' && method === 'GET') {

@@ -16,6 +16,13 @@ export function addTenantMember(tenantId, data) {
   return request.post(`/tenants/${encodeURIComponent(tenantId)}/members`, data)
 }
 
+export function changeTenantMemberRole(tenantId, userId, role) {
+  return request.patch(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/role`,
+    { role },
+  )
+}
+
 export function removeTenantMember(tenantId, userId) {
   return request.delete(`/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`)
 }

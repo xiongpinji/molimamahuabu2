@@ -77,7 +77,7 @@ test('buildCanvasLayoutPayload 写入节点位置、视口和手动连线', () =
 })
 
 test('buildDramaCanvasGraph 合并 canvas_layout 手动连线且过滤无效节点', () => {
-  assert.match(adapterSource, /import \{ normalizeManualCanvasEdges, parseCanvasLayout, resolveNodePosition \} from '\.\/canvasLayout'/)
+  assert.match(adapterSource, /import \{ normalizeManualCanvasEdges, parseCanvasLayout, resolveFreeCanvasNodes, resolveNodePosition \} from '\.\/canvasLayout'/)
   assert.match(adapterSource, /function appendManualEdges\(edges, savedLayout, nodes\)/)
   assert.match(adapterSource, /const nodeIds = new Set\(nodes\.map\(\(node\) => String\(node\.id\)\)\)/)
   assert.match(adapterSource, /if \(!nodeIds\.has\(edge\.source\) \|\| !nodeIds\.has\(edge\.target\)\) continue/)

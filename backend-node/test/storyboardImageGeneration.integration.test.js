@@ -187,7 +187,12 @@ test('分镜图片通过本地 OpenAI 兼容供应商完成提交、轮询与结
     assert.equal(image.body.data.storyboard_id, storyboardId);
     assert.match(image.body.data.image_url, /^\/static\//);
     assert.ok(image.body.data.local_path);
-    assert.ok(fs.existsSync(path.join(storagePath, image.body.data.local_path)));
+    const savedPath = path.join(storagePath, image.body.data.local_path);
+    assert.ok(fs.existsSync(savedPath));
+    const savedBytes = fs.readFileSync(savedPath);
+    const fixtureBytes = Buffer.from(ONE_PIXEL_PNG, 'base64');
+    assert.equal(savedBytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.deepEqual(savedBytes, fixtureBytes);
 
     assert.equal(providerRequest.authorization, 'Bearer integration-secret');
     assert.equal(providerRequest.body.model, 'dall-e-3');

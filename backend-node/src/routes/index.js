@@ -19,6 +19,7 @@ const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const audioRoutes = require('./audio');
+const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
@@ -27,6 +28,7 @@ const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
+const { createEmailService } = require('../services/emailService');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
@@ -52,9 +54,17 @@ function setupRouter(cfg, db, log) {
     token: process.env.PLATFORM_ADMIN_TOKEN,
     requireRole: false,
   });
+  const registrationEnabled = /^(1|true|yes)$/i.test(
+    String(process.env.PLATFORM_REGISTRATION_ENABLED || ''),
+  );
+  const emailVerificationEnabled = publicPlatformEnabled
+    && !/^(0|false|no)$/i.test(String(process.env.PLATFORM_EMAIL_VERIFICATION_ENABLED || 'true'));
   const auth = authRoutes(db, {
-    registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
+    registrationEnabled,
+    emailVerificationEnabled,
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    verificationSecret: process.env.PLATFORM_VERIFICATION_SECRET || process.env.PLATFORM_JWT_SECRET,
+    mailer: createEmailService(process.env),
     bootstrapAdminEmail: publicPlatformEnabled
       ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
       : undefined,
@@ -89,18 +99,23 @@ function setupRouter(cfg, db, log) {
   });
   const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
 
+  r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
+  r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
+  r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
+  r.post('/auth/password/change', authRateLimit, auth.changePassword);
   r.get('/auth/me', auth.me);
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
+  r.patch('/tenants/:tenantId/members/:userId/role', tenants.changeMemberRole);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
   r.get('/platform-admin/users', requirePlatformPermission(PERMISSIONS.USERS_READ), platformAccounts.listUsers);
   r.patch('/platform-admin/users/:userId/role', requirePlatformPermission(PERMISSIONS.USERS_ROLE), platformAccounts.changeRole);
@@ -129,6 +144,7 @@ function setupRouter(cfg, db, log) {
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
+  r.get('/billing/catalog', billing.listPublicCatalog);
   r.get('/billing/audit-events', billing.listAuditEvents);
   r.post('/billing/redeem', billing.redeemCredits);
   r.get('/billing/credit-transactions', billing.listCreditTransactions);
@@ -139,21 +155,27 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
+  r.get('/canvas/model-catalog', (req, res) => {
+    const catalog = require('../services/canvasModelCatalogService').list(db);
+    response.success(res, catalog);
+  });
+  r.get('/audio-models', aiConfig.listPublicAudioModels);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);
   const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
   const propLibrary = propLibraryRoutes(db, cfg, log);
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
-  const uploadHandlers = uploadModule.routes(cfg, log, db);
+  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
   const images = imageRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const videoMerges = videoMergeRoutes(db, log);
-  const assets = assetRoutes(db, log);
-  const audio = audioRoutes(db, log, cfg);
+  const assets = assetRoutes(db, log, { publicPlatformEnabled });
+  const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
+  const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
   r.get('/voice-catalog', voiceCatalog.list);
@@ -161,9 +183,14 @@ function setupRouter(cfg, db, log) {
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
   r.post('/dramas', drama.createDrama);
+  r.get('/project-folders', drama.listProjectFolders);
+  r.post('/project-folders', drama.createProjectFolder);
+  r.put('/project-folders/:folderId', drama.renameProjectFolder);
+  r.delete('/project-folders/:folderId', drama.deleteProjectFolder);
   r.get('/dramas/stats', drama.getDramaStats);
   // 导出/导入（放在 :id 路由前，避免被 :id 捕获）
   r.get('/dramas/:id/export', drama.exportDrama);
+  r.post('/dramas/:id/duplicate', drama.duplicateDrama);
   const multer = require('multer');
   const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
   r.post('/dramas/import', importUpload.single('file'), drama.importDrama);
@@ -366,6 +393,7 @@ function setupRouter(cfg, db, log) {
   // ---------- upload ----------
   r.post('/upload/image', uploadModule.multerSingle, uploadHandlers.uploadImage);
   r.post('/upload/model', uploadHandlers.multerModelSingle, uploadHandlers.uploadModel);
+  r.post('/upload/media', uploadHandlers.multerMediaSingle, uploadHandlers.uploadMedia);
 
   // ---------- episodes ----------
   // 注意：drama.generateStoryboard 已处理所有逻辑（包括参数解析），这里统一使用 drama 模块的实现
@@ -458,6 +486,7 @@ function setupRouter(cfg, db, log) {
   // ---------- audio ----------
   r.post('/audio/extract', audio.extract);
   r.post('/audio/extract/batch', audio.extractBatch);
+  r.post('/canvas/text/generate', canvasText.generate);
 
   // ---------- settings ----------
   r.get('/settings/language', settings.getLanguage);

@@ -3,7 +3,13 @@ function list(db, query) {
   const params = [];
   if (query.drama_id) {
     if (query.include_global === '1' || query.include_global === 1 || query.include_global === true) {
-      sql += ' AND (drama_id = ? OR drama_id IS NULL)';
+      sql += query.public_system_global_only
+        ? ` AND (drama_id = ? OR (
+          drama_id IS NULL
+          AND json_valid(metadata) = 1
+          AND json_extract(metadata, '$.system_shared') = 1
+        ))`
+        : ' AND (drama_id = ? OR drama_id IS NULL)';
     } else {
       sql += ' AND drama_id = ?';
     }

@@ -1,106 +1,144 @@
 <template>
   <div class="media-library-page">
-    <PlatformHeader title="媒体素材库" back-to="/" back-label="返回">
+    <PlatformHeader
+      title="媒体素材库"
+      back-to="/factory"
+      back-label="返回项目"
+      :show-theme="false"
+    >
       <template #actions>
-        <el-button type="primary" plain @click="triggerUpload">
+        <el-button type="primary" @click="triggerUpload">
           <el-icon><Upload /></el-icon>
           上传素材
         </el-button>
-        <input ref="uploadInput" type="file" accept="image/*,video/*,audio/*" multiple style="display:none" @change="onUpload" />
+        <input ref="uploadInput" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac" multiple style="display:none" @change="onUpload" />
       </template>
     </PlatformHeader>
 
-    <!-- 筛选栏 -->
-    <div class="filter-bar">
-        <el-radio-group v-model="mediaType" class="type-filter" @change="loadMedia">
-          <el-radio-button value="all">全部</el-radio-button>
-          <el-radio-button value="image">图片</el-radio-button>
-          <el-radio-button value="video">视频</el-radio-button>
-          <el-radio-button value="audio">音频</el-radio-button>
-        </el-radio-group>
-      <el-input
-        v-model="keyword"
-        placeholder="搜索素材..."
-        class="search-input"
-        clearable
-        @input="debouncedLoad"
-      >
-        <template #prefix><el-icon><Search /></el-icon></template>
-      </el-input>
-    </div>
+    <main class="media-library-main">
+      <section class="media-library-hero" aria-labelledby="media-library-title">
+        <div>
+          <p class="hero-eyebrow">创作资产中心</p>
+          <h1 id="media-library-title">媒体素材库</h1>
+          <p>统一管理图片、视频和音频，并将选中的素材直接回填到分镜或项目画布。</p>
+        </div>
+        <span class="asset-count">{{ total }} 项素材</span>
+      </section>
 
-    <!-- 上传进度 -->
-    <div v-if="uploading" class="upload-progress">
-      <el-icon class="is-loading"><Loading /></el-icon>
-      <span>正在上传 {{ uploadProgress.current }}/{{ uploadProgress.total }}...</span>
-    </div>
+      <section class="media-workspace" aria-label="媒体素材">
+        <!-- 筛选栏 -->
+        <div class="filter-bar">
+          <el-select
+            v-model="libraryDramaId"
+            class="project-filter"
+            aria-label="选择素材项目"
+            placeholder="选择素材项目"
+            filterable
+            @change="onLibraryDramaChange"
+          >
+            <el-option
+              v-for="drama in libraryDramas"
+              :key="drama.id"
+              :label="drama.title || ('项目' + drama.id)"
+              :value="drama.id"
+            />
+          </el-select>
+          <el-radio-group v-model="mediaType" class="type-filter" aria-label="素材类型" @change="loadMedia">
+            <el-radio-button value="all">全部</el-radio-button>
+            <el-radio-button value="image">图片</el-radio-button>
+            <el-radio-button value="video">视频</el-radio-button>
+            <el-radio-button value="audio">音频</el-radio-button>
+          </el-radio-group>
+          <el-input
+            v-model="keyword"
+            placeholder="搜索素材..."
+            class="search-input"
+            aria-label="搜索素材"
+            clearable
+            @input="debouncedLoad"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+        </div>
 
-    <!-- 媒体网格 -->
-    <div v-loading="loading" class="media-grid">
-      <div
-        v-for="item in mediaItems"
-        :key="item.id"
-        class="media-card"
-        :class="{ selected: selectedIds.has(item.id), targeted: isTargetAsset(item) }"
-        @click="toggleSelect(item)"
-      >
-        <div class="media-thumb">
-          <video v-if="item.type === 'video'" :src="itemUrl(item)" class="thumb-video" muted />
-          <div v-else-if="item.type === 'audio'" class="thumb-audio">♪</div>
-          <img v-else :src="itemUrl(item)" class="thumb-img" />
-          <span v-if="isTargetAsset(item)" class="locate-badge">画布结果定位</span>
-          <div class="media-overlay">
-            <el-icon v-if="selectedIds.has(item.id)" class="check-icon"><CircleCheck /></el-icon>
-            <div class="overlay-actions" @click.stop>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                @click.stop="openUseDialog(item)"
-              >
-                使用
-              </el-button>
-              <el-button
-                size="small"
-                plain
-                class="preview-btn"
-                @click.stop="openPreview(item)"
-              >
-                <el-icon><ZoomIn /></el-icon>
-              </el-button>
-              <el-button
-                size="small"
-                type="danger"
-                plain
-                @click.stop="deleteItem(item)"
-              >
-                <el-icon><Delete /></el-icon>
-              </el-button>
+        <!-- 上传进度 -->
+        <div v-if="uploading" class="upload-progress">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>正在上传 {{ uploadProgress.current }}/{{ uploadProgress.total }}...</span>
+        </div>
+
+        <!-- 媒体网格 -->
+        <div v-loading="loading" class="media-grid">
+          <div
+            v-for="item in mediaItems"
+            :key="item.id"
+            class="media-card"
+            :class="{ selected: selectedIds.has(item.id), targeted: isTargetAsset(item) }"
+            role="button"
+            tabindex="0"
+            @click="toggleSelect(item)"
+            @keydown.enter="toggleSelect(item)"
+            @keydown.space.prevent="toggleSelect(item)"
+          >
+            <div class="media-thumb">
+              <video v-if="item.type === 'video'" :src="itemUrl(item)" class="thumb-video" muted />
+              <div v-else-if="item.type === 'audio'" class="thumb-audio">♪</div>
+              <img v-else :src="itemUrl(item)" class="thumb-img" />
+              <span v-if="isTargetAsset(item)" class="locate-badge">画布结果定位</span>
+              <div class="media-overlay">
+                <el-icon v-if="selectedIds.has(item.id)" class="check-icon"><CircleCheck /></el-icon>
+                <div class="overlay-actions" @click.stop>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    @click.stop="openUseDialog(item)"
+                  >
+                    使用
+                  </el-button>
+                  <el-button
+                    size="small"
+                    plain
+                    class="preview-btn"
+                    @click.stop="openPreview(item)"
+                  >
+                    <el-icon><ZoomIn /></el-icon>
+                  </el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    @click.stop="deleteItem(item)"
+                  >
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
+              </div>
+            </div>
+            <div class="media-info">
+              <span class="media-name" :title="item.name">{{ item.name || '未命名' }}</span>
+              <span class="media-meta">{{ formatSize(item.size) }}</span>
             </div>
           </div>
-        </div>
-        <div class="media-info">
-          <span class="media-name" :title="item.name">{{ item.name || '未命名' }}</span>
-          <span class="media-meta">{{ formatSize(item.size) }}</span>
-        </div>
-      </div>
 
-      <div v-if="!loading && mediaItems.length === 0" class="empty-media">
-        <el-icon class="empty-icon"><Files /></el-icon>
-        <p>暂无素材，点击上传按钮添加</p>
-      </div>
-    </div>
+          <div v-if="!loading && mediaItems.length === 0" class="empty-media">
+            <el-icon class="empty-icon"><Files /></el-icon>
+            <p>暂无素材，点击上传按钮添加</p>
+          </div>
+        </div>
 
-    <!-- 分页 -->
-    <div v-if="total > pageSize" class="pagination">
-      <el-pagination
-        v-model:current-page="page"
-        :page-size="pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="loadMedia"
-      />
-    </div>
+        <!-- 分页 -->
+        <div v-if="total > pageSize" class="pagination">
+          <el-pagination
+            v-model:current-page="page"
+            :page-size="pageSize"
+            :total="total"
+            layout="prev, pager, next"
+            @current-change="loadMedia"
+          />
+        </div>
+      </section>
+    </main>
 
     <!-- 批量操作 -->
     <div v-if="selectedIds.size > 0" class="batch-bar">
@@ -110,7 +148,7 @@
     </div>
 
     <!-- 预览弹窗 -->
-    <el-dialog v-model="showPreview" title="素材预览" width="800px" destroy-on-close>
+    <el-dialog v-model="showPreview" title="素材预览" width="800px" class="media-dialog" destroy-on-close>
       <div class="preview-content">
         <video
           v-if="previewItem?.type === 'video'"
@@ -135,7 +173,7 @@
     </el-dialog>
 
     <!-- 使用素材弹窗 -->
-    <el-dialog v-model="useDialogVisible" :title="useDialogTitle" width="520px" destroy-on-close>
+    <el-dialog v-model="useDialogVisible" :title="useDialogTitle" width="520px" class="media-dialog" destroy-on-close>
       <div class="use-dialog">
         <div class="use-row">
           <span class="use-label">用途</span>
@@ -208,6 +246,8 @@ const showPreview = ref(false)
 const previewItem = ref(null)
 const uploadInput = ref(null)
 const highlightedAssetId = ref(null)
+const libraryDramas = ref([])
+const libraryDramaId = ref(null)
 let keywordTimer = null
 
 function applyRouteAssetFocus() {
@@ -215,29 +255,66 @@ function applyRouteAssetFocus() {
   highlightedAssetId.value = Number.isFinite(id) && id > 0 ? id : null
   const type = String(route.query.type || '')
   if (['image', 'video', 'audio'].includes(type)) mediaType.value = type
+  const routeDramaId = Number(route.query.dramaId)
+  if (Number.isInteger(routeDramaId) && routeDramaId > 0) libraryDramaId.value = routeDramaId
   page.value = 1
 }
 
+async function loadLibraryDramas() {
+  const res = await dramaAPI.list({ page: 1, page_size: 100 })
+  libraryDramas.value = res?.items || []
+  const selected = Number(libraryDramaId.value)
+  if (!libraryDramas.value.some((item) => Number(item.id) === selected)) {
+    libraryDramaId.value = libraryDramas.value[0]?.id || null
+  }
+}
+
+async function onLibraryDramaChange() {
+  page.value = 1
+  selectedIds.clear()
+  await loadMedia()
+}
+
 function triggerUpload() {
+  if (!libraryDramaId.value) {
+    ElMessage.warning('请先选择素材所属项目')
+    return
+  }
   uploadInput.value?.click()
 }
 
 async function onUpload(e) {
   const files = Array.from(e.target.files || [])
   if (!files.length) return
+  if (!libraryDramaId.value) {
+    ElMessage.warning('请先选择素材所属项目')
+    e.target.value = ''
+    return
+  }
   uploading.value = true
   uploadProgress.value = { current: 0, total: files.length }
+  let successCount = 0
+  let failureCount = 0
   for (const file of files) {
     try {
-      await uploadAPI.uploadMedia(file)
+      await uploadAPI.uploadMedia(file, { dramaId: libraryDramaId.value })
+      successCount++
       uploadProgress.value.current++
     } catch (err) {
+      failureCount++
+      uploadProgress.value.current++
       ElMessage.warning(`${file.name} 上传失败: ${err.message}`)
     }
   }
   uploading.value = false
   e.target.value = ''
-  ElMessage.success(`${files.length} 个素材上传完成`)
+  if (successCount === 0) {
+    ElMessage.error('全部上传失败')
+  } else if (failureCount > 0) {
+    ElMessage.warning(`成功 ${successCount} 个，失败 ${failureCount} 个`)
+  } else {
+    ElMessage.success(`${successCount} 个素材上传完成`)
+  }
   loadMedia()
 }
 
@@ -247,12 +324,20 @@ function debouncedLoad() {
 }
 
 async function loadMedia() {
+  const isAssetDeepLink = Boolean(highlightedAssetId.value)
+  if (!libraryDramaId.value && !isAssetDeepLink) {
+    mediaItems.value = []
+    total.value = 0
+    return
+  }
   loading.value = true
   try {
     const params = {
       page: page.value,
       page_size: pageSize.value,
     }
+    if (libraryDramaId.value) params.drama_id = libraryDramaId.value
+    params.include_global = 1
     if (mediaType.value !== 'all') params.type = mediaType.value
     if (keyword.value) params.keyword = keyword.value
     const res = await request.get('/assets', { params })
@@ -447,22 +532,103 @@ async function batchDelete() {
   loadMedia()
 }
 
-watch(() => [route.query.assetId, route.query.type], async () => {
+watch(() => [route.query.assetId, route.query.type, route.query.dramaId], async () => {
   applyRouteAssetFocus()
+  await loadLibraryDramas()
   await loadMedia()
 })
 
-onMounted(() => {
+onMounted(async () => {
   applyRouteAssetFocus()
-  loadMedia()
+  await loadLibraryDramas()
+  await loadMedia()
 })
 </script>
 
 <style scoped>
 .media-library-page {
+  --el-color-primary: #ff7139;
+  --el-color-primary-light-3: #ff8f64;
+  --el-color-primary-light-5: #ffab8c;
+  --el-color-primary-light-8: #4c281d;
+  --el-color-primary-light-9: #291813;
+  --el-bg-color: #121212;
+  --el-bg-color-overlay: #171717;
+  --el-fill-color-blank: #121212;
+  --el-fill-color-light: #1d1d1d;
+  --el-fill-color-lighter: #232323;
+  --el-border-color: #333;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #8d8d8d;
   min-height: 100vh;
-  background: #f5f7fa;
-  padding: 20px;
+  color: #f5f5f5;
+  background:
+    radial-gradient(circle at 14% -8%, rgba(255, 113, 57, 0.14), transparent 28rem),
+    #080808;
+}
+
+:global(html.light) .media-library-page {
+  color: #f5f5f5;
+  background:
+    radial-gradient(circle at 14% -8%, rgba(255, 113, 57, 0.14), transparent 28rem),
+    #080808;
+}
+
+.media-library-main {
+  width: min(1480px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+
+.media-library-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 32px;
+  margin-bottom: 28px;
+}
+
+.hero-eyebrow {
+  margin: 0 0 12px;
+  color: #ff7139;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.media-library-hero h1 {
+  margin: 0;
+  font-size: clamp(32px, 4vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+}
+
+.media-library-hero p:last-child {
+  max-width: 680px;
+  margin: 18px 0 0;
+  color: #919191;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.asset-count {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  color: #d7d7d7;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.media-workspace {
+  padding: 24px;
+  background: rgba(17, 17, 17, 0.96);
+  border: 1px solid #292929;
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
 }
 
 .page-header {
@@ -489,7 +655,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
 
@@ -497,48 +663,57 @@ onMounted(() => {
   width: 240px;
 }
 
+.project-filter {
+  width: 220px;
+}
+
 .upload-progress {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  color: #409eff;
+  color: #ff8f64;
   font-size: 14px;
 }
 
 .media-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px;
   min-height: 200px;
 }
 
 .media-card {
-  background: #fff;
-  border-radius: 8px;
+  background: #151515;
+  border-radius: 14px;
   overflow: hidden;
-  border: 2px solid transparent;
+  border: 1px solid #292929;
   cursor: pointer;
   transition: all .2s;
-  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
 }
 
-.media-card:hover {
-  box-shadow: 0 4px 12px rgba(0,0,0,.1);
+.media-card:hover,
+.media-card:focus-visible {
+  border-color: #4a4a4a;
+  outline: none;
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(0,0,0,.28);
 }
 
 .media-card.selected {
-  border-color: #409eff;
+  border-color: #ff7139;
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, .18), 0 16px 36px rgba(0,0,0,.28);
 }
 
 .media-card.targeted {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, .18), 0 8px 24px rgba(80, 53, 150, .18);
+  border-color: #ff9a70;
+  box-shadow: 0 0 0 3px rgba(255, 113, 57, .16), 0 8px 24px rgba(0, 0, 0, .28);
 }
 
 .media-thumb {
   aspect-ratio: 1;
-  background: #f3f4f6;
+  background: #0d0d0d;
   overflow: hidden;
   position: relative;
 }
@@ -550,7 +725,7 @@ onMounted(() => {
   z-index: 2;
   padding: 3px 7px;
   border-radius: 999px;
-  background: rgba(109, 40, 217, .92);
+  background: rgba(255, 113, 57, .92);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
@@ -569,8 +744,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #312e81, #111827);
-  color: #c4b5fd;
+  background: linear-gradient(135deg, #452215, #101010);
+  color: #ff9a70;
   font-size: 44px;
 }
 
@@ -598,8 +773,8 @@ onMounted(() => {
   top: 8px;
   right: 8px;
   font-size: 20px;
-  color: #409eff;
-  background: #fff;
+  color: #ff7139;
+  background: #111;
   border-radius: 50%;
 }
 
@@ -609,13 +784,13 @@ onMounted(() => {
 }
 
 .media-info {
-  padding: 8px;
+  padding: 12px;
 }
 
 .media-name {
   display: block;
   font-size: 12px;
-  color: #374151;
+  color: #e9e9e9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -623,7 +798,7 @@ onMounted(() => {
 
 .media-meta {
   font-size: 11px;
-  color: #9ca3af;
+  color: #777;
 }
 
 .empty-media {
@@ -633,7 +808,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   height: 300px;
-  color: #9ca3af;
+  color: #777;
   gap: 12px;
 }
 
@@ -652,7 +827,7 @@ onMounted(() => {
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  background: #1a1a2e;
+  background: #171717;
   color: #fff;
   padding: 10px 20px;
   border-radius: 24px;
@@ -660,7 +835,8 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   font-size: 14px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.2);
+  border: 1px solid #333;
+  box-shadow: 0 12px 40px rgba(0,0,0,.45);
 }
 
 .preview-content {
@@ -695,13 +871,13 @@ onMounted(() => {
 
 .meta-row {
   font-size: 13px;
-  color: #6b7280;
+  color: #9a9a9a;
   margin-bottom: 4px;
 }
 
 .meta-row span {
   font-weight: 500;
-  color: #374151;
+  color: #e7e7e7;
 }
 
 .use-dialog {
@@ -713,14 +889,14 @@ onMounted(() => {
 .use-label {
   display: block;
   font-size: 12px;
-  color: #6b7280;
+  color: #a7a7a7;
   margin-bottom: 6px;
 }
 
 .use-hint {
   margin: 0;
   font-size: 12px;
-  color: #9ca3af;
+  color: #858585;
   line-height: 1.5;
 }
 
@@ -732,5 +908,78 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.media-library-page :deep(.el-input__wrapper),
+.media-library-page :deep(.el-select__wrapper) {
+  color: #dedede;
+  background: #151515;
+  border: 1px solid #303030;
+  box-shadow: none;
+}
+
+.media-library-page :deep(.el-input__wrapper.is-focus),
+.media-library-page :deep(.el-select__wrapper.is-focused) {
+  border-color: #ff7139;
+}
+
+.media-library-page :deep(.el-radio-button__inner) {
+  color: #9a9a9a;
+  background: #151515;
+  border-color: #303030;
+  box-shadow: none;
+}
+
+.media-library-page :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  color: #111;
+  background: #ff7139;
+  border-color: #ff7139;
+  box-shadow: none;
+}
+
+.media-library-page :deep(.el-button--primary) {
+  --el-button-bg-color: #ff7139;
+  --el-button-border-color: #ff7139;
+  --el-button-hover-bg-color: #ff875a;
+  --el-button-hover-border-color: #ff875a;
+  color: #111;
+  font-weight: 700;
+}
+
+:global(.media-dialog) {
+  --el-bg-color: #171717;
+  --el-bg-color-overlay: #171717;
+  --el-border-color: #333;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  background: #171717;
+  border: 1px solid #333;
+}
+
+@media (max-width: 760px) {
+  .media-library-main {
+    width: min(100% - 28px, 1480px);
+    padding-top: 28px;
+  }
+
+  .media-library-hero {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .media-workspace {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .project-filter,
+  .search-input {
+    width: 100%;
+  }
+
+  .media-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
 }
 </style>

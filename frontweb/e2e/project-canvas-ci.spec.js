@@ -318,7 +318,10 @@ test('项目画布持久化节点拖拽、手工连线和工作流分组并在�
   await expect.poll(() => savedCanvasLayout?.manual_edges || []).toContainEqual(expect.objectContaining({
     source: 'sbimg:1001',
     target: 'sbtxt:1001',
-    data: { manual: true },
+    data: expect.objectContaining({
+      manual: true,
+      contract: expect.objectContaining({ order: 1 }),
+    }),
   }))
 
   await page.keyboard.press('Control+a')

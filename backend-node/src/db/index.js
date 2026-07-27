@@ -15,7 +15,9 @@ function getDb(config) {
     verbose: config.type === 'sqlite' && process.env.DEBUG ? console.log : undefined,
   });
   db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
   db.pragma('busy_timeout = 5000');
+  db.pragma('foreign_keys = ON');
   return db;
 }
 

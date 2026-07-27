@@ -529,14 +529,10 @@ const LIGHTING_STYLES = [
 const voicePolicy = computed(() => {
   const model = effectiveVideoModel.value
   if (!model) return null
-  for (const config of videoConfigs.value) {
-    const policies = Array.isArray(config?.voice_policies) ? config.voice_policies : []
-    const exact = policies.find((policy) => String(policy?.model || '').trim() === model)
-    if (exact) return { ...exact, type: exact.type || exact.tone || 'info', label: exact.label || exact.name || '声音策略' }
-    const fallback = videoVoicePolicyForConfig(config)
-    if (fallback?.model === model) return fallback
-  }
-  return null
+  return videoVoicePolicyForConfig({
+    model: [model],
+    default_model: model,
+  })
 })
 const voicePromptPreview = computed(() => buildVoicePromptPreview({
   policy: voicePolicy.value,
@@ -697,7 +693,9 @@ onMounted(async () => {
 async function loadVideoModels() {
   try {
     const rows = await aiAPI.listVideoModels()
-    videoConfigs.value = Array.isArray(rows) ? rows.filter((row) => row?.is_active !== false) : []
+    videoConfigs.value = [...new Set((Array.isArray(rows) ? rows : [])
+      .map((model) => String(model || '').trim())
+      .filter(Boolean))]
   } catch (_) {
     videoConfigs.value = []
   }

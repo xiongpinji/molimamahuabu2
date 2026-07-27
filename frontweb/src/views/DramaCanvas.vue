@@ -3,9 +3,8 @@
     <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
-        <span class="breadcrumb-sep">›</span>
+        <PlatformPrimaryNav />
         <span class="page-title">{{ drama?.title || '加载中…' }}</span>
-        <span class="canvas-name">画布 1</span>
         <span
           v-if="canvasVirtualized"
           class="canvas-virtualization-status"
@@ -15,6 +14,7 @@
         </span>
 
         <el-select
+          v-if="!isStandaloneCanvas"
           v-model="filterEpisodeId"
           class="episode-select"
           placeholder="全部集数"
@@ -35,10 +35,18 @@
         <span v-else-if="layoutSaveState === 'error'" class="layout-status error">保存失败</span>
 
         <div class="header-actions">
+          <div class="topbar-history" aria-label="画布历史操作">
+            <button type="button" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
+              <el-icon><RefreshLeft /></el-icon>
+            </button>
+            <button type="button" aria-label="重做" title="重做（Ctrl/Cmd+Shift+Z）" :disabled="!canRedo" @click="redoCanvas">
+              <el-icon><RefreshRight /></el-icon>
+            </button>
+          </div>
           <el-button class="topbar-share" size="small" circle aria-label="分享画布" title="复制画布链接" @click="shareCanvas">
             <el-icon><Share /></el-icon>
           </el-button>
-          <el-tooltip content="工作流：框选分镜后创建，可拖拽排序并按步骤整组重跑" placement="bottom">
+          <el-tooltip v-if="!isStandaloneCanvas" content="工作流：框选分镜后创建，可拖拽排序并按步骤整组重跑" placement="bottom">
             <el-button class="topbar-workflow-toggle" size="small" :type="showWorkflowPanel ? 'primary' : 'default'" plain @click="toggleWorkflowPanel">
               <el-icon><Operation /></el-icon>
               工作流
@@ -51,21 +59,26 @@
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
-                <el-dropdown-item command="storyboard">添加分镜</el-dropdown-item>
-                <el-dropdown-item command="character">添加角色</el-dropdown-item>
-                <el-dropdown-item command="scene">添加场景</el-dropdown-item>
-                <el-dropdown-item command="prop">添加道具</el-dropdown-item>
-                <el-dropdown-item command="episode">添加集数</el-dropdown-item>
+                <template v-if="isStandaloneCanvas">
+                  <el-dropdown-item command="text">添加文本节点</el-dropdown-item>
+                  <el-dropdown-item command="image">添加图片节点</el-dropdown-item>
+                  <el-dropdown-item command="video">添加视频节点</el-dropdown-item>
+                  <el-dropdown-item command="audio">添加音频节点</el-dropdown-item>
+                  <el-dropdown-item divided command="run-selected-free">运行所选自由节点</el-dropdown-item>
+                </template>
+                <template v-else>
+                  <el-dropdown-item command="script">编辑剧本</el-dropdown-item>
+                  <el-dropdown-item command="storyboard">添加分镜</el-dropdown-item>
+                  <el-dropdown-item command="character">添加角色</el-dropdown-item>
+                  <el-dropdown-item command="scene">添加场景</el-dropdown-item>
+                  <el-dropdown-item command="prop">添加道具</el-dropdown-item>
+                  <el-dropdown-item command="episode">添加集数</el-dropdown-item>
+                </template>
                 <el-dropdown-item command="align" :disabled="aligningNodes">自动对齐节点</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <CanvasModeSwitch mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
-          <el-button class="btn-theme" @click="toggleTheme">
-            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-            {{ isDark ? '浅色' : '暗色' }}
-          </el-button>
+          <CanvasModeSwitch v-if="!isStandaloneCanvas" mode="canvas" :drama-id="dramaId" :episode-id="filterEpisodeId" />
         </div>
       </div>
 
@@ -264,14 +277,17 @@
         @wheel.capture="onCanvasWheel"
       >
         <VueFlow
-          v-if="allGraphNodes.length"
+          v-if="isStandaloneCanvas || allGraphNodes.length"
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :edge-types="edgeTypes"
+          :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
           :nodes-connectable="true"
+          :nodes-draggable="true"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -374,7 +390,10 @@
             <span v-else class="run-action">定位</span>
           </div>
         </div>
-        <CanvasFloatingToolbar v-if="drama && allGraphNodes.length" />
+        <CanvasFloatingToolbar
+          v-if="drama && (isStandaloneCanvas || allGraphNodes.length)"
+          :standalone="isStandaloneCanvas"
+        />
       </div>
     </div>
 
@@ -389,14 +408,15 @@
     />
 
     <CanvasCreateDialog
+      v-if="!isStandaloneCanvas"
       v-model="createDialogVisible"
       :type="createDialogType"
       :on-submit="onCreateSubmit"
     />
     <AssetPickerDialog
       v-model="canvasAssetPickerVisible"
-      type="all"
-      title="从素材库加入画布"
+      :type="canvasAssetPickerType"
+      :title="canvasAssetPickerTitle"
       :drama-id="dramaId"
       @pick="onCanvasAssetLibraryPick"
     />
@@ -415,9 +435,71 @@
       :mode="contextMenuNode ? 'node' : 'create'"
       :node-label="contextMenuNodeLabel"
       :node-actions="contextMenuNodeActions"
+      :standalone="isStandaloneCanvas"
       @select="onContextMenuSelect"
       @close="closeContextMenu"
     />
+    <el-dialog
+      v-model="freeNodeDialogVisible"
+      class="canvas-free-node-dialog"
+      :title="freeNodeEditingId ? `编辑${freeNodeKindLabel}节点` : `添加${freeNodeKindLabel}节点`"
+      width="480px"
+      destroy-on-close
+      :close-on-click-modal="false"
+      @closed="resetFreeNodeDialog"
+    >
+      <el-form label-position="top" @submit.prevent="submitFreeNode">
+        <el-form-item label="标题" required>
+          <el-input
+            v-model="freeNodeForm.title"
+            maxlength="80"
+            :placeholder="freeNodeTitlePlaceholder"
+            autofocus
+          />
+        </el-form-item>
+        <el-form-item :label="freeNodeKind === 'text' ? '内容' : '描述 / 提示词'">
+          <el-input
+            v-model="freeNodeForm.content"
+            type="textarea"
+            :rows="5"
+            :placeholder="freeNodeContentPlaceholder"
+          />
+        </el-form-item>
+        <el-form-item v-if="freeNodeKind !== 'text'" label="媒体地址（选填）">
+          <el-input v-model="freeNodeForm.url" placeholder="可粘贴已有素材地址；本地文件请使用右键“上传”" />
+        </el-form-item>
+        <el-form-item label="模型">
+          <el-select
+            v-model="freeNodeForm.model"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="留空使用系统默认模型"
+          >
+            <el-option v-for="model in getFreeNodeModelOptions(freeNodeKind)" :key="model" :label="model" :value="model" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
+          <el-select v-model="freeNodeForm.aspectRatio" placeholder="选择比例">
+            <el-option label="16:9" value="16:9" />
+            <el-option label="9:16" value="9:16" />
+            <el-option label="1:1" value="1:1" />
+            <el-option label="4:3" value="4:3" />
+            <el-option label="3:4" value="3:4" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="freeNodeKind === 'video'" label="视频时长(秒)">
+          <el-input-number v-model="freeNodeForm.duration" :min="1" :max="30" :step="1" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="freeNodeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!freeNodeForm.title.trim()" @click="submitFreeNode">
+          {{ freeNodeEditingId ? '保存修改' : '添加到画布' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -428,7 +510,7 @@ import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { Moon, MoreFilled, Plus, Sunny, Operation, Share } from '@element-plus/icons-vue'
+import { MoreFilled, Operation, Plus, RefreshLeft, RefreshRight, Share } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -438,13 +520,14 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
+import { aiAPI } from '@/api/ai'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
-import { useTheme } from '@/composables/useTheme'
+import request from '@/utils/request'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
@@ -471,6 +554,21 @@ import {
   resolveViewport,
 } from '@/utils/canvasLayout'
 import {
+  buildFreeCanvasGenerationRequest,
+  buildFreeCanvasProjectAssetPayload,
+  collectDirectUpstreamImageReferences,
+  collectDirectUpstreamTextInputs,
+  resolveFreeCanvasResultUrl,
+} from '@/utils/freeCanvasGeneration'
+import {
+  canvasModelServiceType,
+  canvasNodeKind,
+  resolveCanvasNodeConnection,
+  toLibTvCanvasEdge,
+} from '@/utils/canvasNodeContracts'
+import { buildCanvasExecutionPlan } from '@/utils/canvasExecutionPlan'
+import { canvasModelCapability, estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
+import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
   createCanvasInteractionState,
@@ -479,6 +577,7 @@ import {
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import { assetImageUrl, assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
+import { getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 import {
   imageRecordUrl,
   resolveSbFirstImageRecord,
@@ -520,6 +619,8 @@ import CanvasScriptNode from '@/components/dramaCanvas/CanvasScriptNode.vue'
 import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.vue'
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
 import CanvasProjectAssetNode from '@/components/dramaCanvas/CanvasProjectAssetNode.vue'
+import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
+import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
@@ -529,12 +630,13 @@ import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vu
 import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
+import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
 import AssetPickerDialog from '@/components/AssetPickerDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { isDark, toggle: toggleTheme } = useTheme()
+const isStandaloneCanvas = computed(() => route.name === 'standalone-canvas')
 const { imagesBySbId, videosBySbId, loadForDrama } = useCanvasStoryboardMedia()
 
 const loading = ref(false)
@@ -561,6 +663,9 @@ const layoutDirty = ref(false)
 const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflowGroups }) => (
   dramaAPI.saveCanvasLayout(dramaId.value, canvasLayout, workflowGroups)
 ))
+let canvasPersistQueue = Promise.resolve()
+const freeCanvasAssetSaveFlights = new Map()
+const freeCanvasTaskResumeFlights = new Map()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
@@ -577,10 +682,25 @@ const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
 const canvasAssetPickerTargetStoryboardId = ref(null)
+const canvasAssetPickerTargetFreeNodeId = ref('')
 const canvasAssetFailureNodes = ref([])
 const canvasUploadInput = ref(null)
 const canvasUploadFlowPos = ref(null)
-const canvasUploadAccept = ref('image/*,video/*,audio/*')
+const CANVAS_MEDIA_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac'
+const CANVAS_IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp'
+const CANVAS_VIDEO_ACCEPT = '.mp4,.mov,.webm'
+const CANVAS_AUDIO_ACCEPT = '.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac'
+const canvasUploadAccept = ref(CANVAS_MEDIA_ACCEPT)
+const freeNodeDialogVisible = ref(false)
+const freeNodeKind = ref('text')
+const freeNodeEditingId = ref('')
+const freeNodeFlowPosition = ref(null)
+const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
+const freeCanvasModelConfigs = ref([])
+const freeCanvasModelCatalog = ref([])
+const freeCanvasVoiceOptions = ref([])
+let freeCanvasModelConfigsLoaded = false
+let freeCanvasVoiceOptionsLoaded = false
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
 const paneClickSuppressed = ref(false)
@@ -591,6 +711,74 @@ const canvasFlowApi = ref(null)
 const NODE_STATUS_STORAGE_PREFIX = 'moli_canvas_node_status'
 const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
 const dragHistorySnapshot = ref(null)
+const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
+
+function getFreeNodeModelOptions(kind) {
+  const catalogModels = freeCanvasModelCatalog.value.filter((item) => item.kind === kind).map((item) => item.model)
+  if (catalogModels.length) return catalogModels
+  const serviceType = canvasModelServiceType(kind)
+  return serviceType ? getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType) : []
+}
+
+function getFreeNodeModelCapability(kind, model) {
+  return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeEstimatedCredits(kind, model, quantity) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity)
+}
+
+async function loadFreeCanvasModelConfigs() {
+  if (freeCanvasModelConfigsLoaded) return
+  const results = await Promise.allSettled([
+    request.get('/canvas/model-catalog'),
+    aiAPI.list('text'),
+    aiAPI.list('image'),
+    aiAPI.list('storyboard_image'),
+    aiAPI.list('video'),
+    aiAPI.list('tts'),
+  ])
+  freeCanvasModelCatalog.value = normalizeCanvasModelCatalog(
+    results[0].status === 'fulfilled' && Array.isArray(results[0].value) ? results[0].value : []
+  )
+  freeCanvasModelConfigs.value = results.slice(1).flatMap((result) => (
+    result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []
+  ))
+  freeCanvasModelConfigsLoaded = true
+}
+
+async function loadFreeCanvasVoiceOptions() {
+  if (freeCanvasVoiceOptionsLoaded || !isStandaloneCanvas.value || !dramaId.value) return
+  try {
+    const catalog = await characterAPI.listBuiltinVoices(dramaId.value)
+    const items = Array.isArray(catalog) ? catalog : (catalog?.items || [])
+    freeCanvasVoiceOptions.value = items.map((voice) => ({
+      label: voice.label || voice.name || voice.voice_id || voice.id,
+      value: voice.voice_id || voice.id,
+    })).filter((voice) => voice.value)
+    freeCanvasVoiceOptionsLoaded = true
+  } catch (error) {
+    console.warn('load free canvas voice options failed', error)
+  }
+}
+
+const freeNodeKindLabel = computed(() => ({
+  text: '文本',
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+}[freeNodeKind.value] || '自由'))
+const freeNodeTitlePlaceholder = computed(() => ({
+  text: '例如：第一幕故事设定',
+  image: '例如：雨夜街道首帧',
+  video: '例如：主角走入车站',
+  audio: '例如：车站环境音',
+}[freeNodeKind.value] || '输入节点标题'))
+const freeNodeContentPlaceholder = computed(() => (
+  freeNodeKind.value === 'text'
+    ? '输入文本、脚本或创作要求'
+    : `描述希望生成的${freeNodeKindLabel.value}内容`
+))
 
 function openDirectorStage() {
   directorReturnFocus = document.activeElement
@@ -608,6 +796,12 @@ const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsse
 
 const contextMenuNodeLabel = computed(() => canvasNodeLabel(contextMenuNode.value))
 const contextMenuNodeActions = computed(() => canvasNodeActions(contextMenuNode.value))
+const canvasAssetPickerType = computed(() => (
+  freeCanvasNodeById(canvasAssetPickerTargetFreeNodeId.value)?.data?.kind || 'all'
+))
+const canvasAssetPickerTitle = computed(() => (
+  canvasAssetPickerTargetFreeNodeId.value ? '挂载素材到当前节点' : '从素材库加入画布'
+))
 
 let saveTimer = null
 let savedHintTimer = null
@@ -626,6 +820,7 @@ const nodeTypes = {
   canvasMedia: markRaw(CanvasMediaNode),
   canvasProjectAsset: markRaw(CanvasProjectAssetNode),
   canvasAddButton: markRaw(CanvasAddButtonNode),
+  homeCanvasNode: markRaw(HomeCanvasNode),
 }
 
 const dramaId = computed(() => Number(route.params.id))
@@ -1433,6 +1628,7 @@ function rebuildGraph() {
     return
   }
   const graph = buildDramaCanvasGraph(drama.value, {
+    standalone: isStandaloneCanvas.value,
     episodeId: filterEpisodeId.value,
     savedLayout: savedLayout.value,
     workflowGroups: workflowGroups.value,
@@ -1451,7 +1647,19 @@ function rebuildGraph() {
       },
     }
   })
-  let nextEdges = stampEdgeBaseStyles(graph.edges)
+  const nodesById = new Map(nextNodes.map((node) => [String(node.id), node]))
+  let nextEdges = stampEdgeBaseStyles(graph.edges
+    .filter((edge) => {
+      const sourceNode = nodesById.get(String(edge.source))
+      const targetNode = nodesById.get(String(edge.target))
+      if (sourceNode?.type !== 'homeCanvasNode' || targetNode?.type !== 'homeCanvasNode') return true
+      return resolveCanvasNodeConnection(canvasNodeKind(sourceNode), canvasNodeKind(targetNode)).allowed
+    })
+    .map((edge) => toLibTvCanvasEdge(
+      edge,
+      canvasNodeKind(nodesById.get(String(edge.source))),
+      canvasNodeKind(nodesById.get(String(edge.target)))
+    )))
   if (highlightAssetId.value) {
     const highlighted = applyCanvasHighlight(nextNodes, nextEdges, highlightAssetId.value, drama.value)
     nextNodes = highlighted.nodes
@@ -1525,6 +1733,7 @@ function refreshLayoutCacheFromGraph() {
     currentViewport.value,
     layoutCache.value,
     allGraphEdges.value,
+    { persistFreeNodes: isStandaloneCanvas.value },
   )
 }
 
@@ -1641,8 +1850,608 @@ function screenToFlowPosition(clientX, clientY) {
   }
 }
 
+function canvasCenterFlowPosition() {
+  const rect = canvasMainRef.value?.getBoundingClientRect?.()
+  if (!rect) return { x: 80, y: 80 }
+  return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
+}
+
+function resetFreeNodeDialog() {
+  freeNodeKind.value = 'text'
+  freeNodeEditingId.value = ''
+  freeNodeFlowPosition.value = null
+  freeNodeForm.value = { title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 }
+}
+
+function openFreeNodeDialog(kind, flowPosition = null, node = null) {
+  if (!FREE_NODE_KINDS.has(kind)) return
+  closeContextMenu()
+  freeNodeKind.value = kind
+  freeNodeEditingId.value = node?.id || ''
+  freeNodeFlowPosition.value = node?.position || flowPosition || canvasCenterFlowPosition()
+  freeNodeForm.value = {
+    title: node?.data?.title || '',
+    content: node?.data?.content || '',
+    url: node?.data?.url || '',
+    model: node?.data?.model || '',
+    aspectRatio: node?.data?.aspectRatio || '16:9',
+    duration: node?.data?.duration || 5,
+  }
+  freeNodeDialogVisible.value = true
+}
+
+async function createFreeCanvasNode(kind, flowPosition = null) {
+  if (!FREE_NODE_KINDS.has(kind)) return null
+  closeContextMenu()
+  const previousState = currentInteractionState()
+  const id = `free:${kind}:${Date.now()}`
+  const title = {
+    text: '文本',
+    image: '图片',
+    video: '视频',
+    audio: '音频',
+  }[kind]
+  const data = {
+    kind,
+    title,
+    content: '',
+    url: '',
+  }
+  data.model = ''
+  if (['image', 'video'].includes(kind)) data.aspectRatio = '16:9'
+  if (kind === 'video') data.duration = 5
+
+  allGraphNodes.value = [
+    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
+    {
+      id,
+      type: 'homeCanvasNode',
+      position: flowPosition || canvasCenterFlowPosition(),
+      selected: true,
+      data,
+    },
+  ]
+  focusedNodeId.value = id
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+  await nextTick()
+  document.querySelector(`.vue-flow__node[data-id="${id}"] .node-title-input`)?.focus()
+  return id
+}
+
+async function submitFreeNode() {
+  const title = freeNodeForm.value.title.trim()
+  if (!title) return
+  const previousState = currentInteractionState()
+  const nodeData = {
+    kind: freeNodeKind.value,
+    title,
+    content: freeNodeForm.value.content.trim(),
+    url: freeNodeForm.value.url.trim(),
+  }
+  nodeData.model = freeNodeForm.value.model.trim()
+  if (['image', 'video'].includes(freeNodeKind.value)) nodeData.aspectRatio = freeNodeForm.value.aspectRatio
+  if (freeNodeKind.value === 'video') nodeData.duration = Number(freeNodeForm.value.duration) || 5
+  if (freeNodeEditingId.value) {
+    allGraphNodes.value = allGraphNodes.value.map((node) => (
+      String(node.id) === String(freeNodeEditingId.value)
+        ? { ...node, data: { ...node.data, ...nodeData } }
+        : node
+    ))
+  } else {
+    allGraphNodes.value.push({
+      id: `free:${freeNodeKind.value}:${Date.now()}`,
+      type: 'homeCanvasNode',
+      position: freeNodeFlowPosition.value || canvasCenterFlowPosition(),
+      data: nodeData,
+    })
+  }
+  const editing = Boolean(freeNodeEditingId.value)
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  freeNodeDialogVisible.value = false
+  const saved = await persistCanvasState({ layoutOnly: true })
+  if (saved) ElMessage.success(editing ? '节点已更新' : '节点已添加')
+}
+
+async function patchFreeCanvasNodeData(nodeId, patch) {
+  const id = String(nodeId || '')
+  if (!id) return null
+  let updated = null
+  allGraphNodes.value = allGraphNodes.value.map((node) => {
+    if (String(node.id) !== id) return node
+    updated = { ...node, data: { ...node.data, ...patch } }
+    return updated
+  })
+  if (!updated) return null
+  applyVirtualizedGraph()
+  await persistCanvasState({ layoutOnly: true })
+  return updated
+}
+
+async function deleteFreeCanvasNode(nodeId) {
+  const id = String(nodeId || '')
+  if (!isStandaloneCanvas.value || !id) return
+  const previousState = currentInteractionState()
+  const previousLength = allGraphNodes.value.length
+  allGraphNodes.value = allGraphNodes.value.filter((node) => String(node.id) !== id)
+  if (allGraphNodes.value.length === previousLength) return
+  allGraphEdges.value = allGraphEdges.value.filter((edge) => String(edge.source) !== id && String(edge.target) !== id)
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+}
+
+async function duplicateFreeCanvasNode(nodeOrId) {
+  const source = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || source?.type !== 'homeCanvasNode') return null
+  const previousState = currentInteractionState()
+  const kind = source.data?.kind || 'text'
+  const id = `free:${kind}:${Date.now()}`
+  const hasResult = Boolean(source.data?.url)
+  const data = {
+    ...source.data,
+    title: `${source.data?.title || '未命名节点'} 副本`,
+    status: hasResult ? 'success' : 'idle',
+    error: '',
+    taskId: '',
+    assetSaveStatus: source.data?.savedAssetId ? 'success' : '',
+    assetSaveError: '',
+  }
+  allGraphNodes.value = [
+    ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
+    {
+      ...source,
+      id,
+      position: {
+        x: Number(source.position?.x || 0) + 40,
+        y: Number(source.position?.y || 0) + 40,
+      },
+      selected: true,
+      dragging: false,
+      data,
+    },
+  ]
+  focusedNodeId.value = id
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  await persistCanvasState({ layoutOnly: true })
+  ElMessage.success('已复制节点')
+  return id
+}
+
+async function uploadFreeCanvasNodeFile(nodeId, file) {
+  const node = freeCanvasNodeById(nodeId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !file) return
+  try {
+    await patchFreeCanvasNodeData(node.id, { status: 'running', error: '' })
+    const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+    const url = assetDisplayUrl(asset)
+    if (!url) throw new Error('素材上传成功但未返回可用地址')
+    await patchFreeCanvasNodeData(node.id, {
+      url,
+      status: 'success',
+      error: '',
+      savedAssetId: String(asset?.id || ''),
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+    })
+    ElMessage.success('素材已上传并写入当前节点')
+  } catch (error) {
+    const message = error?.message || '节点素材上传失败'
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: message })
+    ElMessage.error(message)
+  }
+}
+
+function freeCanvasNodeById(nodeOrId) {
+  if (typeof nodeOrId === 'object' && nodeOrId?.id) return findGraphNode(nodeOrId.id) || nodeOrId
+  return findGraphNode(nodeOrId)
+}
+
+function freeCanvasTaskId(response) {
+  return String(
+    response?.task_id
+    || response?.taskId
+    || response?.image_generation?.task_id
+    || response?.video_generation?.task_id
+    || ''
+  )
+}
+
+function freeCanvasGenerationId(kind, submitResult, taskResult) {
+  const persistedResult = taskResultObject(taskResult)
+  const result = Object.keys(persistedResult).length ? persistedResult : taskResult || {}
+  if (kind === 'image') {
+    return result.image_generation_id
+      || result.generation_id
+      || submitResult?.image_generation?.id
+      || submitResult?.id
+      || ''
+  }
+  if (kind === 'video') {
+    return result.video_generation_id
+      || result.generation_id
+      || submitResult?.video_generation?.id
+      || submitResult?.id
+      || ''
+  }
+  return ''
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await sleep(intervalMs)
+    const task = await taskAPI.get(taskId)
+    if (task?.status === 'completed') return task
+    if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
+  }
+  throw new Error('自由节点生成超时')
+}
+
+async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
+  const persistedResult = taskResultObject(taskResult)
+  const normalizedTaskResult = Object.keys(persistedResult).length
+    ? { ...taskResult, result: persistedResult }
+    : taskResult
+  let resultUrl = resolveFreeCanvasResultUrl(kind, normalizedTaskResult) || resolveFreeCanvasResultUrl(kind, submitResult)
+  if (resultUrl || kind === 'audio') return resultUrl
+  const generationId = freeCanvasGenerationId(kind, submitResult, normalizedTaskResult)
+  if (!generationId) return ''
+  const record = kind === 'image'
+    ? await imagesAPI.get(generationId)
+    : await videosAPI.get(generationId)
+  return resolveFreeCanvasResultUrl(kind, record)
+}
+
+async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, taskId) {
+  const nodeId = String(node?.id || '')
+  const url = String(resultUrl || '')
+  const saveKey = `${nodeId}::${url}`
+  if (!nodeId || !url) throw new Error('自由节点素材入库缺少结果地址')
+
+  const existingFlight = freeCanvasAssetSaveFlights.get(saveKey)
+  if (existingFlight) return existingFlight
+
+  const savePromise = (async () => {
+    const latestBeforeRun = freeCanvasNodeById(nodeId) || node
+    if (latestBeforeRun?.data?.savedAssetId) {
+      return { id: latestBeforeRun.data.savedAssetId, skipped: true }
+    }
+
+    await patchFreeCanvasNodeData(nodeId, { assetSaveStatus: 'running', assetSaveError: '' })
+    const assetPayload = buildFreeCanvasProjectAssetPayload({
+      dramaId: dramaId.value,
+      nodeId,
+      name: latestBeforeRun.data?.title,
+      taskId,
+      model: latestBeforeRun.data?.model,
+      type: kind,
+      url,
+      requestPayload,
+    })
+    try {
+      const latestBeforeCreate = freeCanvasNodeById(nodeId) || latestBeforeRun
+      if (latestBeforeCreate?.data?.savedAssetId) {
+        await patchFreeCanvasNodeData(nodeId, { assetSaveStatus: 'success', assetSaveError: '' })
+        return { id: latestBeforeCreate.data.savedAssetId, skipped: true }
+      }
+      if (assetPayload.storyboard_id !== null) throw new Error('自由节点素材入库必须隔离分镜')
+      const savedAsset = await assetsAPI.create(assetPayload)
+      await patchFreeCanvasNodeData(nodeId, {
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        savedAssetId: String(savedAsset?.id || ''),
+      })
+      return savedAsset
+    } catch (error) {
+      await patchFreeCanvasNodeData(nodeId, {
+        assetSaveStatus: 'failed',
+        assetSaveError: error?.message || '自动存入素材库失败',
+      })
+      throw error
+    }
+  })()
+
+  freeCanvasAssetSaveFlights.set(saveKey, savePromise)
+  try {
+    return await savePromise
+  } finally {
+    if (freeCanvasAssetSaveFlights.get(saveKey) === savePromise) {
+      freeCanvasAssetSaveFlights.delete(saveKey)
+    }
+  }
+}
+
+function freeCanvasTaskPollOptions(kind) {
+  return { maxAttempts: kind === 'video' ? 600 : 60, intervalMs: 3000 }
+}
+
+async function completeFreeCanvasNodeGeneration({
+  node,
+  kind,
+  submitResult,
+  taskResult,
+  requestPayload,
+  taskId,
+  notify = true,
+}) {
+  const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
+  if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
+  await patchFreeCanvasNodeData(node.id, {
+    status: 'success',
+    url: resultUrl,
+    taskId,
+    error: '',
+    savedAssetId: '',
+    assetSaveStatus: 'running',
+    assetSaveError: '',
+  })
+  try {
+    const latestNode = findGraphNode(node.id) || { ...node, data: { ...node.data, url: resultUrl } }
+    await saveFreeCanvasResultAsset(latestNode, kind, resultUrl, requestPayload, taskId)
+  } catch (assetError) {
+    console.warn('auto save free canvas result asset failed', assetError)
+    if (notify) ElMessage.warning('生成完成，但自动存入素材库失败')
+  }
+  if (notify) ElMessage.success('自由节点生成完成')
+  return resultUrl
+}
+function freeCanvasNodeInputReferences(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!node || !['image', 'video'].includes(node.data?.kind)) return []
+  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+}
+
+function updateFreeCanvasReference(edgeId, patch = {}) {
+  const mutate = (edge) => {
+    if (String(edge.id) !== String(edgeId)) return edge
+    const source = findGraphNode(edge.source)
+    const target = findGraphNode(edge.target)
+    return toLibTvCanvasEdge({
+      ...edge,
+      data: {
+        ...(edge.data || {}),
+        contract: { ...(edge.data?.contract || {}), ...patch },
+      },
+    }, canvasNodeKind(source), canvasNodeKind(target))
+  }
+  allGraphEdges.value = allGraphEdges.value.map(mutate)
+  edges.value = edges.value.map(mutate)
+  scheduleSave()
+}
+
+async function runFreeCanvasNode(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
+    ElMessage.warning('只有独立画布自由节点可直接运行')
+    return
+  }
+  const kind = node.data?.kind
+  if (!['text', 'image', 'video', 'audio'].includes(kind)) {
+    ElMessage.warning('暂不支持该自由节点类型')
+    return
+  }
+  const upstreamReferences = freeCanvasNodeInputReferences(node)
+  const upstreamUrls = upstreamReferences
+    .filter((reference) => reference.enabled !== false)
+    .map((reference) => reference.url)
+    .filter(Boolean)
+  const upstreamTexts = collectDirectUpstreamTextInputs(
+    allGraphNodes.value,
+    allGraphEdges.value,
+    node.id
+  )
+  let requestPayload
+  try {
+    const capability = getFreeNodeModelCapability(kind, node.data?.model)
+    requestPayload = buildFreeCanvasGenerationRequest(node.data, {
+      dramaId: dramaId.value,
+      upstreamUrls,
+      upstreamReferences,
+      upstreamTexts,
+      maxReferences: capability.maxReferences,
+    })
+  } catch (error) {
+    ElMessage.error(error?.message || '自由节点生成参数不完整')
+    return
+  }
+
+  const previousUrl = node.data?.url || ''
+  const completedResultUrls = []
+  await patchFreeCanvasNodeData(node.id, { status: 'running', taskId: '', error: '' })
+  let taskId = ''
+  try {
+    if (kind === 'text') {
+      const textResult = await request.post('/canvas/text/generate', requestPayload)
+      const content = String(textResult?.content || '').trim()
+      if (!content) throw new Error('文本生成完成但未返回内容')
+      await patchFreeCanvasNodeData(node.id, {
+        content,
+        status: 'success',
+        error: '',
+      })
+      ElMessage.success('文本节点生成完成')
+      return { ok: true, nodeId: String(node.id) }
+    }
+
+    const quantity = ['image', 'video'].includes(kind)
+      ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
+      : 1
+    for (let index = 0; index < quantity; index += 1) {
+      let submitResult = null
+      let taskResult = null
+      if (kind === 'image') submitResult = await imagesAPI.create(requestPayload)
+      else if (kind === 'video') submitResult = await videosAPI.create(requestPayload)
+      else if (kind === 'audio') submitResult = await request.post('/audio/extract', requestPayload)
+      else throw new Error(`暂不支持自由节点生成类型：${kind}`)
+
+      taskId = freeCanvasTaskId(submitResult)
+      if (taskId) {
+        await patchFreeCanvasNodeData(node.id, { taskId })
+        taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      }
+      const resultUrl = await completeFreeCanvasNodeGeneration({
+        node,
+        kind,
+        submitResult,
+        taskResult,
+        requestPayload,
+        taskId,
+        notify: index === quantity - 1,
+      })
+      completedResultUrls.push(resultUrl)
+      await patchFreeCanvasNodeData(node.id, { resultUrls: [...completedResultUrls] })
+    }
+    return { ok: true, nodeId: String(node.id) }
+  } catch (error) {
+    const errorMessage = error?.message || '自由节点生成失败'
+    await patchFreeCanvasNodeData(node.id, {
+      status: 'failed',
+      url: completedResultUrls.at(-1) || previousUrl,
+      resultUrls: [...completedResultUrls],
+      taskId,
+      error: errorMessage,
+    })
+    ElMessage.error(errorMessage)
+    return { ok: false, nodeId: String(node.id), error: errorMessage }
+  }
+}
+
+async function runFreeCanvasSubgraph(nodeIds, includeDownstream = false) {
+  const plan = buildCanvasExecutionPlan(allGraphNodes.value, allGraphEdges.value, {
+    rootNodeIds: nodeIds,
+    includeDownstream,
+  })
+  if (plan.cycleNodeIds.length) {
+    ElMessage.error(`检测到画布环路：${plan.cycleNodeIds.join('、')}`)
+    return { ok: false, cycleNodeIds: plan.cycleNodeIds }
+  }
+  if (!plan.orderedNodeIds.length) {
+    ElMessage.warning('请先选择可运行的自由节点')
+    return { ok: false }
+  }
+  for (const nodeId of plan.orderedNodeIds) {
+    const result = await runFreeCanvasNode(nodeId)
+    if (!result?.ok) {
+      ElMessage.error(`子图已在节点 ${nodeId} 停止，下游未提交`)
+      return { ok: false, failedNodeId: nodeId }
+    }
+  }
+  ElMessage.success(`子图运行完成，共 ${plan.orderedNodeIds.length} 个节点`)
+  return { ok: true, orderedNodeIds: plan.orderedNodeIds }
+}
+const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
+
+async function translateFreeCanvasNode(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  const content = String(node?.data?.content || '').trim()
+  if (!isStandaloneCanvas.value || !node || !content) return
+  const containsChinese = /[\u3400-\u9fff]/.test(content)
+  const prompt = containsChinese
+    ? `将以下内容翻译成自然、准确的英文，只输出译文：\n\n${content}`
+    : `将以下内容翻译成自然、准确的中文，只输出译文：\n\n${content}`
+  const previousContent = content
+  await patchFreeCanvasNodeData(node.id, { status: 'running', error: '' })
+  try {
+    const result = await request.post('/canvas/text/generate', {
+      drama_id: dramaId.value,
+      prompt,
+      model: node.data?.kind === 'text' ? node.data?.model || undefined : undefined,
+    })
+    const translated = String(result?.content || '').trim()
+    if (!translated) throw new Error('翻译完成但未返回内容')
+    await patchFreeCanvasNodeData(node.id, { content: translated, status: 'success', error: '' })
+    ElMessage.success('已完成中英互译')
+  } catch (error) {
+    await patchFreeCanvasNodeData(node.id, {
+      content: previousContent,
+      status: 'failed',
+      error: error?.message || '翻译失败',
+    })
+    ElMessage.error(error?.message || '翻译失败')
+  }
+}
+
+async function resumeFreeCanvasNodeTask(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  const taskId = String(node?.data?.taskId || '')
+  const kind = node?.data?.kind
+  if (!taskId || node?.data?.status !== 'running' || !['image', 'video', 'audio'].includes(kind)) return
+  const resumeKey = `${node.id}::${taskId}`
+  const existingFlight = freeCanvasTaskResumeFlights.get(resumeKey)
+  if (existingFlight) return existingFlight
+
+  const resumePromise = (async () => {
+    try {
+      const taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      await completeFreeCanvasNodeGeneration({
+        node,
+        kind,
+        submitResult: null,
+        taskResult,
+        requestPayload: null,
+        taskId,
+        notify: false,
+      })
+      ElMessage.success('已恢复自由节点生成结果')
+    } catch (error) {
+      const latestNode = freeCanvasNodeById(node.id)
+      if (String(latestNode?.data?.taskId || '') !== taskId || latestNode?.data?.status !== 'running') return
+      const errorMessage = error?.message || '自由节点生成失败'
+      await patchFreeCanvasNodeData(node.id, {
+        status: 'failed',
+        url: latestNode?.data?.url || '',
+        taskId,
+        error: errorMessage,
+      })
+      ElMessage.error(errorMessage)
+    }
+  })()
+
+  freeCanvasTaskResumeFlights.set(resumeKey, resumePromise)
+  try {
+    return await resumePromise
+  } finally {
+    if (freeCanvasTaskResumeFlights.get(resumeKey) === resumePromise) {
+      freeCanvasTaskResumeFlights.delete(resumeKey)
+    }
+  }
+}
+
+function resumePendingFreeCanvasTasks() {
+  if (!isStandaloneCanvas.value) return
+  for (const node of allGraphNodes.value) {
+    if (
+      node?.type !== 'homeCanvasNode'
+      || node?.data?.status !== 'running'
+      || !node?.data?.taskId
+    ) continue
+    void resumeFreeCanvasNodeTask(node)
+  }
+}
+async function retryFreeCanvasAssetSave(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !node.data?.url) {
+    ElMessage.warning('该自由节点暂无可入库结果')
+    return
+  }
+  try {
+    await saveFreeCanvasResultAsset(node, node.data?.kind, node.data.url, null, node.data?.taskId || '')
+    ElMessage.success('已重新存入素材库')
+  } catch (error) {
+    ElMessage.error(error?.message || '存入素材库失败')
+  }
+}
+
 function canvasNodeLabel(node) {
   if (!node) return ''
+  if (node.type === 'homeCanvasNode') return node.data?.title || '未命名自由节点'
   if (node.data?.label) return node.data.label
   if (node.data?.entity) return node.data.entity.name || node.data.entity.location || node.id
   if (node.data?.storyboard) return node.data.storyboard.shot_title || `分镜 ${node.data.storyboard.shot_number || node.data.storyboard.id}`
@@ -1653,6 +2462,16 @@ function canvasNodeLabel(node) {
 
 function canvasNodeActions(node) {
   if (!node) return []
+  if (node.type === 'homeCanvasNode') {
+    const actions = ['open-node-config', 'duplicate-free-node', 'delete-free-node', 'copy-node-ref']
+    if (['image', 'video', 'audio'].includes(node.data?.kind)) {
+      actions.push('mount-free-node-asset', `run-node-${node.data.kind}`)
+    }
+    if (nodeResultUrl(node)) actions.unshift('open-node-result', 'copy-node-result', 'download-node-result')
+    if (nodeResultUrl(node) && !node.data?.savedAssetId) actions.unshift('save-node-result-asset')
+    if (node.data?.savedAssetId) actions.unshift('copy-node-asset-ref')
+    return [...new Set(actions)]
+  }
   const actions = ['copy-node-ref']
   const sb = storyboardForNode(node)
   const runtimeStatus = nodeRuntimeStatus(node)
@@ -1852,16 +2671,14 @@ async function appendDownstreamStoryboard(node, options = {}) {
   const targetNodeId = `sb:${storyboardId}`
   const sourcePosition = node.position || { x: 0, y: 0 }
   const targetPosition = { x: sourcePosition.x + 420, y: sourcePosition.y }
-  const edge = {
+  const edge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: node.id, target: targetNodeId }),
     source: node.id,
     target: targetNodeId,
     sourceHandle: null,
     targetHandle: null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
+  })
 
   layoutCache.value = {
     ...(layoutCache.value || { version: 1 }),
@@ -1959,26 +2776,22 @@ async function insertDownstreamStoryboard(node) {
     x: sourcePosition.x + Math.max(180, Math.round((downstreamPosition.x - sourcePosition.x) / 2)),
     y: sourcePosition.y + Math.round((downstreamPosition.y - sourcePosition.y) / 2),
   }
-  const firstEdge = {
+  const firstEdge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: node.id, target: targetNodeId }),
     source: node.id,
     target: targetNodeId,
     sourceHandle: null,
     targetHandle: null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
-  const secondEdge = {
+  })
+  const secondEdge = toLibTvCanvasEdge({
     id: manualEdgeId({ source: targetNodeId, target: downstreamEdge.target }),
     source: targetNodeId,
     target: downstreamEdge.target,
     sourceHandle: null,
     targetHandle: downstreamEdge.targetHandle || null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
     data: { manual: true },
-  }
+  })
 
   layoutCache.value = {
     ...(layoutCache.value || { version: 1 }),
@@ -2539,6 +3352,15 @@ async function copyNodeResult(node) {
 }
 
 function nodeSavedAsset(node, status = nodeRuntimeStatus(node)) {
+  if (node?.type === 'homeCanvasNode' && node.data?.savedAssetId) {
+    return {
+      id: node.data.savedAssetId,
+      name: node.data.title || '自由节点结果素材',
+      type: node.data.kind || 'image',
+      category: 'canvas-result',
+      url: node.data.url || '',
+    }
+  }
   if (!status?.savedAssetId) return null
   return {
     id: status.savedAssetId,
@@ -2814,31 +3636,30 @@ function openCanvasAssetLibrary(flowPosition = null) {
   canvasAssetPickerFlowPos.value = flowPosition
   canvasAssetPickerRetryNodeId.value = ''
   canvasAssetPickerTargetStoryboardId.value = selectedStoryboardIdForAssetAttach()
+  canvasAssetPickerTargetFreeNodeId.value = ''
   canvasAssetPickerVisible.value = true
 }
 
-function openCanvasUpload(flowPosition = null, accept = 'image/*,video/*,audio/*') {
+function openFreeNodeAssetLibrary(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind === 'text') return
+  canvasAssetPickerFlowPos.value = node.position || null
+  canvasAssetPickerRetryNodeId.value = ''
+  canvasAssetPickerTargetStoryboardId.value = null
+  canvasAssetPickerTargetFreeNodeId.value = String(node.id)
+  canvasAssetPickerVisible.value = true
+}
+
+function openCanvasUpload(flowPosition = null, accept = CANVAS_MEDIA_ACCEPT) {
   canvasUploadFlowPos.value = flowPosition
-  canvasUploadAccept.value = accept || 'image/*,video/*,audio/*'
+  canvasUploadAccept.value = accept || CANVAS_MEDIA_ACCEPT
   canvasUploadInput.value?.click()
 }
 
 async function createCanvasProjectAssetFromUpload(file, flowPosition = null, offsetIndex = 0) {
   if (!drama.value?.id) throw new Error('项目信息不完整，无法上传素材')
-  const uploaded = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
-  const localPath = uploaded?.local_path || uploaded?.path || ''
-  const url = uploaded?.url || uploaded?.display_url || ''
-  const asset = await assetsAPI.create({
-    drama_id: drama.value.id,
-    name: file.name || '上传素材',
-    type: mediaTypeFromFile(file),
-    category: 'canvas-upload',
-    url,
-    local_path: localPath || undefined,
-    file_size: file.size || undefined,
-    mime_type: file.type || undefined,
-    metadata: { source: 'canvas_context_upload' },
-  })
+  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!asset?.id) throw new Error('素材上传成功但未返回资产记录')
   const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
   const nodeId = await placeProjectAssetNode(asset, targetPos)
   const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
@@ -2883,7 +3704,7 @@ async function onCanvasUpload(event) {
   }
   if (ok) ElMessage.success(`已上传 ${ok} 个素材到画布`)
   canvasUploadFlowPos.value = null
-  canvasUploadAccept.value = 'image/*,video/*,audio/*'
+  canvasUploadAccept.value = CANVAS_MEDIA_ACCEPT
   if (event?.target) event.target.value = ''
 }
 
@@ -2951,8 +3772,31 @@ async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
   const retryNodeId = canvasAssetPickerRetryNodeId.value
+  const targetFreeNodeId = canvasAssetPickerTargetFreeNodeId.value
   const targetStoryboardId = canvasAssetPickerTargetStoryboardId.value || selectedStoryboardIdForAssetAttach()
   try {
+    if (targetFreeNodeId) {
+      const targetNode = freeCanvasNodeById(targetFreeNodeId)
+      if (!targetNode) throw new Error('目标节点已不存在，请重新选择')
+      const assetType = normalizePickedAssetType(asset)
+      if (assetType !== targetNode.data?.kind) {
+        throw new Error(`当前${targetNode.data?.kind === 'image' ? '图片' : targetNode.data?.kind === 'video' ? '视频' : '音频'}节点不能挂载${assetType === 'image' ? '图片' : assetType === 'video' ? '视频' : '音频'}素材`)
+      }
+      projectAsset = await ensureProjectMediaAsset(asset)
+      const url = assetDisplayUrl(projectAsset)
+      if (!url) throw new Error('所选素材没有可用地址')
+      await patchFreeCanvasNodeData(targetFreeNodeId, {
+        url,
+        status: 'success',
+        error: '',
+        savedAssetId: String(projectAssetId(projectAsset) || ''),
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        taskId: '',
+      })
+      ElMessage.success('素材已挂载到当前节点')
+      return
+    }
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
     if (retryNodeId) clearCanvasAssetFailureNode(retryNodeId)
@@ -2974,6 +3818,10 @@ async function onCanvasAssetLibraryPick(asset) {
       })
     }
   } catch (e) {
+    if (targetFreeNodeId) {
+      ElMessage.error(e?.message || '素材挂载失败')
+      return
+    }
     if (!nodeId) nodeId = canvasAssetFailureNode(e?.message || '素材库素材加入画布失败', canvasAssetPickerFlowPos.value, asset, targetStoryboardId)
     if (nodeId) {
       const message = e?.message || '素材库素材加入画布失败'
@@ -2991,6 +3839,7 @@ async function onCanvasAssetLibraryPick(asset) {
     canvasAssetPickerFlowPos.value = null
     canvasAssetPickerRetryNodeId.value = ''
     canvasAssetPickerTargetStoryboardId.value = null
+    canvasAssetPickerTargetFreeNodeId.value = ''
   }
 }
 
@@ -3291,6 +4140,10 @@ function nodeStepTaskStatusOptions(statusIds, basePayload) {
 }
 
 async function runCanvasNodeStep(node, step) {
+  if (isStandaloneCanvas.value && node?.type === 'homeCanvasNode') {
+    await runFreeCanvasNode(node)
+    return
+  }
   if (node?.type === 'canvasProjectAsset') {
     await runCanvasProjectAssetNodeStep(node, step)
     return
@@ -3513,6 +4366,12 @@ async function removeNodeFromWorkflowGroup(node) {
 async function runNodeMenuAction(type, node) {
   if (type === 'open-node-config') {
     openNodeConfig(node)
+  } else if (type === 'duplicate-free-node') {
+    await duplicateFreeCanvasNode(node)
+  } else if (type === 'mount-free-node-asset') {
+    openFreeNodeAssetLibrary(node)
+  } else if (type === 'delete-free-node') {
+    await deleteFreeCanvasNode(node.id)
   } else if (type === 'open-node-production') {
     onNodeDoubleClick({ node })
   } else if (type === 'open-node-result') {
@@ -3522,7 +4381,16 @@ async function runNodeMenuAction(type, node) {
   } else if (type === 'download-node-result') {
     downloadNodeResult(node)
   } else if (type === 'save-node-result-asset') {
-    await saveNodeResultAssetFromMenu(node)
+    if (isStandaloneCanvas.value && node?.type === 'homeCanvasNode') {
+      try {
+        await saveFreeCanvasResultAsset(node, node.data?.kind, nodeResultUrl(node), null, node.data?.taskId || '')
+        ElMessage.success('已存入素材库')
+      } catch (error) {
+        ElMessage.error(error?.message || '存入素材库失败')
+      }
+    } else {
+      await saveNodeResultAssetFromMenu(node)
+    }
   } else if (type === 'copy-node-asset-ref') {
     await copyNodeAssetReference(node)
   } else if (type === 'assign-node-asset-selected') {
@@ -3670,17 +4538,17 @@ async function onContextMenuSelect(type) {
   }
   if (type === 'upload-image') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'image/*')
+    openCanvasUpload(flowPosition, CANVAS_IMAGE_ACCEPT)
     return
   }
   if (type === 'upload-video') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'video/*')
+    openCanvasUpload(flowPosition, CANVAS_VIDEO_ACCEPT)
     return
   }
   if (type === 'upload-audio') {
     closeContextMenu()
-    openCanvasUpload(flowPosition, 'audio/*')
+    openCanvasUpload(flowPosition, CANVAS_AUDIO_ACCEPT)
     return
   }
   if (type === 'paste-media') {
@@ -3785,7 +4653,6 @@ provide(CANVAS_CONTEXT_KEY, {
   toggleWorkflowPanel,
   focusScript: focusScriptNode,
   goListMode,
-  toggleTheme,
   alignNodes: onAlignNodes,
   fitCanvasView,
   focusCanvasNode,
@@ -3799,6 +4666,29 @@ provide(CANVAS_CONTEXT_KEY, {
   selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
   assignProjectAssetToSelectedStoryboard,
   runNodeStep: runCanvasNodeStep,
+  openFreeNodeConfig: (nodeId) => {
+    const node = freeCanvasNodeById(nodeId)
+    if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
+  },
+  updateFreeCanvasNode: patchFreeCanvasNodeData,
+  deleteFreeCanvasNode,
+  duplicateFreeCanvasNode,
+  uploadFreeCanvasNodeFile,
+  openFreeNodeAssetLibrary,
+  getFreeNodeModelOptions,
+  getFreeNodeModelCapability,
+  getFreeNodeEstimatedCredits,
+  getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
+  getFreeNodeInputReferences: freeCanvasNodeInputReferences,
+  updateFreeCanvasReference,
+  runFreeCanvasNode,
+  runFreeCanvasSubgraph: (nodeId) => runFreeCanvasSubgraph([nodeId], true),
+  runSelectedFreeCanvasNodes: () => runFreeCanvasSubgraph(
+    allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && node.selected).map((node) => node.id),
+    false,
+  ),
+  translateFreeCanvasNode,
+  retryFreeCanvasAssetSave,
 })
 
 function clearAssetHighlight() {
@@ -3836,6 +4726,20 @@ function applySelectedStoryboardIds(ids = []) {
 }
 
 function onNodesChange(changes = []) {
+  const removedFreeNodeIds = new Set(
+    changes
+      .filter((change) => change?.type === 'remove' && findGraphNode(change.id)?.type === 'homeCanvasNode')
+      .map((change) => String(change.id))
+  )
+  if (removedFreeNodeIds.size) {
+    allGraphNodes.value = allGraphNodes.value.filter((node) => !removedFreeNodeIds.has(String(node.id)))
+    allGraphEdges.value = allGraphEdges.value.filter((edge) => (
+      !removedFreeNodeIds.has(String(edge.source)) && !removedFreeNodeIds.has(String(edge.target))
+    ))
+    applyVirtualizedGraph()
+    scheduleLayoutSave()
+  }
+
   const selectionChanges = changes.filter((change) => change?.type === 'select')
   if (!selectionChanges.length) return
 
@@ -3879,20 +4783,46 @@ function onConnect(connection) {
     return
   }
 
-  const edge = {
+  const sourceNode = findGraphNode(connection.source)
+  const targetNode = findGraphNode(connection.target)
+  const sourceKind = canvasNodeKind(sourceNode)
+  const targetKind = canvasNodeKind(targetNode)
+  const contract = resolveCanvasNodeConnection(sourceKind, targetKind)
+  if (
+    sourceNode?.type === 'homeCanvasNode'
+    && targetNode?.type === 'homeCanvasNode'
+    && !contract.allowed
+  ) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
+
+  const edge = toLibTvCanvasEdge({
     id: manualEdgeId(connection),
     source: connection.source,
     target: connection.target,
     sourceHandle: connection.sourceHandle || null,
     targetHandle: connection.targetHandle || null,
-    type: 'smoothstep',
-    style: { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray: '5 5' },
-    data: { manual: true },
-  }
+    data: {
+      manual: true,
+      contract: {
+        order: allGraphEdges.value.filter((item) => String(item.target) === String(connection.target)).length,
+      },
+    },
+  }, sourceKind, targetKind)
   allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
   applyVirtualizedGraph()
   scheduleLayoutSave()
-  ElMessage.success('已添加画布连线')
+  if (
+    sourceNode?.type === 'homeCanvasNode'
+    && sourceNode.data?.kind === 'image'
+    && targetNode?.type === 'homeCanvasNode'
+    && targetNode.data?.kind === 'video'
+  ) {
+    ElMessage.success(sourceNode.data?.url ? '视频节点已自动采用该图片作为参考图' : '图片已连接，生成完成后会自动作为视频参考图')
+  } else {
+    ElMessage.success('已添加画布连线')
+  }
 }
 
 function onEdgesChange(changes = []) {
@@ -4157,7 +5087,13 @@ function onCanvasBlur() {
   setSpacePanning(false)
 }
 
-async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {}) {
+function persistCanvasState(options = {}) {
+  const runPersist = () => persistCanvasStateNow(options)
+  canvasPersistQueue = canvasPersistQueue.then(runPersist, runPersist)
+  return canvasPersistQueue
+}
+
+async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } = {}) {
   if (!dramaId.value) return
 
   let layoutPayload = null
@@ -4167,7 +5103,8 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
       allGraphNodes.value,
       currentViewport.value,
       layoutCache.value,
-      allGraphEdges.value
+      allGraphEdges.value,
+      { persistFreeNodes: isStandaloneCanvas.value }
     )
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
@@ -4264,7 +5201,7 @@ const {
   createDialogVisible,
   createDialogType,
   pendingFlowPosition,
-  openCreateDialog,
+  openCreateDialog: openProductionCreateDialog,
   submitCreate,
 } = useCanvasCrud({
   drama,
@@ -4274,6 +5211,14 @@ const {
   refreshCanvas,
   persistCanvasState,
 })
+
+function openCreateDialog(type, flowPosition = null) {
+  if (isStandaloneCanvas.value && FREE_NODE_KINDS.has(type)) {
+    void createFreeCanvasNode(type, flowPosition)
+    return
+  }
+  openProductionCreateDialog(type, flowPosition)
+}
 
 const {
   episodeGenerating,
@@ -4332,6 +5277,12 @@ async function focusScriptNode(flowPosition = null) {
 function onTopbarMoreCommand(command) {
   if (command === 'script') focusScriptNode()
   else if (command === 'align') onAlignNodes()
+  else if (command === 'run-selected-free') {
+    void runFreeCanvasSubgraph(
+      allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && node.selected).map((node) => node.id),
+      false,
+    )
+  }
   else openCreateDialog(command)
 }
 
@@ -4393,6 +5344,7 @@ async function loadDrama(silent = false) {
     if (route.query.episode) filterEpisodeId.value = Number(route.query.episode)
     await loadForDrama(drama.value, filterEpisodeId.value)
     rebuildGraph()
+    resumePendingFreeCanvasTasks()
   } catch (e) {
     if (!silent) ElMessage.error(e?.message || '加载项目失败')
   } finally {
@@ -4617,6 +5569,10 @@ function stopStatusPoll() {
 }
 
 function goListMode() {
+  if (isStandaloneCanvas.value) {
+    router.push('/canvas')
+    return
+  }
   const query = filterEpisodeId.value ? { episode: String(filterEpisodeId.value) } : {}
   router.push({ path: `/film/${dramaId.value}`, query })
 }
@@ -4634,6 +5590,10 @@ function navigateToStoryboard(episodeId, storyboardId) {
 }
 
 function onNodeDoubleClick({ node }) {
+  if (node.type === 'homeCanvasNode') {
+    openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
+    return
+  }
   if (node.type === 'canvasStoryboard') {
     navigateToStoryboard(node.data.episodeId || node.data.storyboard?.episode_id, node.data.storyboard?.id)
     return
@@ -4685,6 +5645,12 @@ function onNodeClick({ node, event }) {
     focusNodeForConfig(node, { syncStoryboard: false })
   }
 
+  if (node.type === 'homeCanvasNode') {
+    focusedNodeId.value = node.id
+    scheduleVirtualization()
+    return
+  }
+
   if (node.type === 'canvasAsset') {
     const prefix = node.data.kind === 'character' ? 'char' : node.data.kind === 'scene' ? 'scene' : 'prop'
     selectSidebarAsset(`${prefix}:${node.data.entity.id}`)
@@ -4732,10 +5698,19 @@ watch(() => route.params.id, () => {
   selectedStoryboardIds.value = []
   focusedNodeId.value = null
   generationOverrides.value = {}
+  freeCanvasVoiceOptions.value = []
+  freeCanvasVoiceOptionsLoaded = false
   loadDrama()
 }, { immediate: true })
 
-watch(drama, () => startStatusPoll())
+watch(isStandaloneCanvas, (standalone) => {
+  if (standalone) void loadFreeCanvasModelConfigs()
+}, { immediate: true })
+
+watch(drama, () => {
+  startStatusPoll()
+  void loadFreeCanvasVoiceOptions()
+})
 
 onMounted(() => {
   scheduleVirtualization()
@@ -5025,30 +6000,38 @@ onBeforeUnmount(() => {
 }
 
 :deep(.vue-flow__node.selected) {
-  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.8);
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, 0.86);
 }
-/* LibTV 风格画布工作区覆盖层 */
+/* OpenVideo 风格画布工作区覆盖层 */
 .header.canvas-topbar {
   position: absolute;
   inset: 0 0 auto;
   z-index: 30;
-  border-bottom: 0;
-  background: transparent;
+  min-height: 64px;
+  border-bottom: 1px solid #242424;
+  background: #080808;
+  color: #f5f5f5;
   pointer-events: none;
 }
 .canvas-topbar .header-inner {
-  margin: 12px 16px 0;
-  padding: 8px 10px;
+  min-height: 64px;
+  margin: 0;
+  padding: 8px 18px;
   min-width: 0;
   flex-wrap: nowrap;
-  border: 1px solid rgba(82, 82, 91, 0.7);
-  border-radius: 16px;
-  background: rgba(24, 24, 27, 0.82);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(18px);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   pointer-events: auto;
 }
-.workspace-switcher { min-width: 156px; }
+.canvas-topbar :deep(.canvas-workspace-switcher) {
+  padding: 5px 10px 5px 5px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 14px;
+  background: rgba(12, 12, 12, .9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(18px);
+}
 .canvas-name {
   padding-left: 12px;
   border-left: 1px solid #3f3f46;
@@ -5056,8 +6039,74 @@ onBeforeUnmount(() => {
   font-size: 12px;
   white-space: nowrap;
 }
-.canvas-topbar .header-actions { gap: 6px; min-width: 0; flex: 0 0 auto; }
-.canvas-topbar .page-title { min-width: 0; flex: 0 1 auto; }
+.canvas-topbar .header-actions {
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+  padding: 5px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 14px;
+  background: rgba(12, 12, 12, .9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(18px);
+}
+.canvas-topbar {
+  --el-text-color-regular: #d4d4d8;
+  --el-text-color-primary: #f5f5f5;
+  --el-button-text-color: #f5f5f5;
+  --el-button-bg-color: #151515;
+  --el-button-border-color: #303030;
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-hover-bg-color: rgba(255, 113, 57, .12);
+  --el-button-hover-border-color: rgba(255, 113, 57, .48);
+}
+.canvas-topbar :deep(.platform-primary-nav__link) {
+  color: #a1a1aa;
+}
+.canvas-topbar :deep(.platform-primary-nav__link:hover),
+.canvas-topbar :deep(.platform-primary-nav__link.is-active) {
+  color: #f5f5f5;
+}
+.canvas-topbar :deep(.platform-primary-nav__link.is-active)::after {
+  background: #ff7139;
+}
+.canvas-topbar .page-title {
+  min-width: 0;
+  max-width: 280px;
+  padding: 10px 14px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  color: #efefef;
+  background: rgba(12, 12, 12, .9);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-history {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid #292929;
+  border-radius: 9px;
+  background: #111;
+}
+.topbar-history button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  color: #969696;
+  background: transparent;
+  cursor: pointer;
+}
+.topbar-history button:hover:not(:disabled) { color: #fff; background: #202020; }
+.topbar-history button:disabled { opacity: .34; cursor: not-allowed; }
 .canvas-topbar .topbar-workflow-toggle { min-width: 92px; }
 .canvas-topbar .topbar-share { width: 38px; padding: 0; }
 .canvas-topbar .topbar-more { flex: 0 0 auto; }
@@ -5071,9 +6120,9 @@ onBeforeUnmount(() => {
 .canvas-topbar .generate-bar {
   margin: 8px 16px 0;
   padding: 10px 14px;
-  border: 1px solid rgba(82, 82, 91, 0.65);
+  border: 1px solid #303030;
   border-radius: 14px;
-  background: rgba(24, 24, 27, 0.92);
+  background: rgba(15, 15, 15, 0.94);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(18px);
 }
@@ -5098,7 +6147,7 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(18px);
 }
 .canvas-main { width: 100%; height: 100%; }
-.vue-flow-canvas { background: #101014; }
+.vue-flow-canvas { background: #0b0b0b; }
 .canvas-topbar .layout-status { font-size: 11px; white-space: nowrap; }
 .canvas-run-queue {
   position: absolute;
@@ -5299,8 +6348,7 @@ onBeforeUnmount(() => {
   50% { opacity: 1; transform: scale(1.12); }
 }
 @media (max-width: 980px) {
-  .canvas-topbar .header-inner { margin: 8px 10px 0; }
-  .canvas-topbar .btn-theme { display: none; }
+  .canvas-topbar .header-inner { margin: 0; padding: 8px 10px; }
   .page-title { max-width: 160px; }
   .canvas-topbar .episode-select { width: 130px !important; }
 }
@@ -5320,7 +6368,7 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 480px) {
   .canvas-topbar .page-title { display: none; }
-  .canvas-topbar .header-inner { gap: 6px; margin-left: 8px; margin-right: 8px; }
+  .canvas-topbar .header-inner { gap: 6px; margin: 0; }
   .canvas-topbar .episode-select { width: 96px !important; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5329,6 +6377,21 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-html.light .drama-canvas-page { background: var(--bg-page); }
-html.light .vue-flow-canvas { background: #eef2ff; }
+html.light .drama-canvas-page { background: #080808; }
+html.light .drama-canvas-page .vue-flow-canvas { background: #080808; }
+html.light .drama-canvas-page .header.canvas-topbar {
+  border-bottom-color: #242424 !important;
+  background: #080808 !important;
+  color: #f5f5f5 !important;
+}
+html.light .drama-canvas-page .canvas-topbar .header-actions .el-button {
+  border-color: #303030 !important;
+  background: #151515 !important;
+  color: #f5f5f5 !important;
+}
+html.light .drama-canvas-page .canvas-topbar .header-actions .el-button:hover {
+  border-color: rgba(255, 113, 57, .48) !important;
+  background: rgba(255, 113, 57, .12) !important;
+  color: #ff9a72 !important;
+}
 </style>

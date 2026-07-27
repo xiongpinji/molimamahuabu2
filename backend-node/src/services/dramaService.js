@@ -26,6 +26,8 @@ function parseJsonColumn(value) {
 
 function createDrama(db, log, req) {
   const now = new Date().toISOString();
+  const tenantId = req.tenant_id || req.tenantId || null;
+  const folderId = resolveProjectFolderId(db, req.folder_id ?? req.folderId, tenantId);
   let meta = {};
   if (req.metadata) {
     try {
@@ -42,12 +44,13 @@ function createDrama(db, log, req) {
   }
   const metadataStr = Object.keys(meta).length ? JSON.stringify(meta) : null;
   const stmt = db.prepare(`
-    INSERT INTO dramas (tenant_id, user_id, title, description, genre, style, metadata, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+    INSERT INTO dramas (tenant_id, user_id, folder_id, title, description, genre, style, metadata, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
   `);
   const info = stmt.run(
-    req.tenant_id || req.tenantId || null,
+    tenantId,
     req.user_id || req.userId || null,
+    folderId,
     req.title || '',
     req.description || null,
     req.genre || null,
@@ -59,6 +62,120 @@ function createDrama(db, log, req) {
   const id = info.lastInsertRowid;
   log.info('Drama created', { drama_id: id });
   return getDramaById(db, id, req.user_id || req.userId, req.tenant_id || req.tenantId);
+}
+
+function projectFolderError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+const LOCAL_PROJECT_FOLDER_TENANT_ID = '__local__';
+
+function projectFolderTenantId(tenantId) {
+  return tenantId || LOCAL_PROJECT_FOLDER_TENANT_ID;
+}
+
+function resolveProjectFolderId(db, folderId, tenantId) {
+  if (folderId == null || folderId === '') return null;
+  const id = Number(folderId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw projectFolderError('PROJECT_FOLDER_NOT_FOUND', '项目文件夹不存在');
+  }
+  const folder = db.prepare('SELECT id FROM project_folders WHERE id = ? AND tenant_id = ?')
+    .get(id, projectFolderTenantId(tenantId));
+  if (!folder) throw projectFolderError('PROJECT_FOLDER_NOT_FOUND', '项目文件夹不存在');
+  return folder.id;
+}
+
+function createProjectFolder(db, { tenantId, name }) {
+  const normalized = String(name || '').trim();
+  if (!normalized || normalized.length > 50) {
+    throw projectFolderError('INVALID_PROJECT_FOLDER', '文件夹名称应为 1-50 个字符');
+  }
+  const now = new Date().toISOString();
+  try {
+    const result = db.prepare(`
+      INSERT INTO project_folders (tenant_id, name, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+    `).run(projectFolderTenantId(tenantId), normalized, now, now);
+    return db.prepare('SELECT id, name, created_at, updated_at FROM project_folders WHERE id = ?')
+      .get(result.lastInsertRowid);
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      throw projectFolderError('PROJECT_FOLDER_EXISTS', '同名文件夹已存在');
+    }
+    throw error;
+  }
+}
+
+function listProjectFolders(db, { tenantId, project_type }) {
+  const projectType = project_type === 'canvas' ? 'canvas' : project_type === 'factory' ? 'factory' : null;
+  const tenantJoinSql = tenantId ? 'd.tenant_id = pf.tenant_id' : 'd.tenant_id IS NULL';
+  const typeSql = projectType
+    ? ` AND (
+        CASE
+          WHEN d.metadata IS NOT NULL AND json_valid(d.metadata)
+            THEN COALESCE(json_extract(d.metadata, '$.project_type'), 'factory')
+          ELSE 'factory'
+        END
+      ) = ?`
+    : '';
+  return db.prepare(`
+    SELECT pf.id, pf.name, pf.created_at, pf.updated_at, COUNT(d.id) AS project_count
+    FROM project_folders pf
+    LEFT JOIN dramas d
+      ON d.folder_id = pf.id
+      AND ${tenantJoinSql}
+      AND d.deleted_at IS NULL
+      ${typeSql}
+    WHERE pf.tenant_id = ?
+    GROUP BY pf.id
+    ORDER BY pf.name COLLATE NOCASE ASC
+  `).all(...(projectType
+    ? [projectType, projectFolderTenantId(tenantId)]
+    : [projectFolderTenantId(tenantId)]));
+}
+
+function renameProjectFolder(db, folderId, tenantId, name) {
+  const normalized = String(name || '').trim();
+  if (!normalized || normalized.length > 50) {
+    throw projectFolderError('INVALID_PROJECT_FOLDER', '文件夹名称应为 1-50 个字符');
+  }
+  try {
+    const result = db.prepare(`
+      UPDATE project_folders SET name = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(normalized, new Date().toISOString(), Number(folderId), projectFolderTenantId(tenantId));
+    if (!result.changes) throw projectFolderError('PROJECT_FOLDER_NOT_FOUND', '项目文件夹不存在');
+    return db.prepare(`
+      SELECT id, name, created_at, updated_at FROM project_folders
+      WHERE id = ? AND tenant_id = ?
+    `).get(Number(folderId), projectFolderTenantId(tenantId));
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      throw projectFolderError('PROJECT_FOLDER_EXISTS', '同名文件夹已存在');
+    }
+    throw error;
+  }
+}
+
+function deleteProjectFolder(db, folderId, tenantId) {
+  return db.transaction(() => {
+    const folder = db.prepare('SELECT id FROM project_folders WHERE id = ? AND tenant_id = ?')
+      .get(Number(folderId), projectFolderTenantId(tenantId));
+    if (!folder) throw projectFolderError('PROJECT_FOLDER_NOT_FOUND', '项目文件夹不存在');
+    if (tenantId) {
+      db.prepare('UPDATE dramas SET folder_id = NULL WHERE folder_id = ? AND tenant_id = ?')
+        .run(folder.id, tenantId);
+    } else {
+      db.prepare('UPDATE dramas SET folder_id = NULL WHERE folder_id = ? AND tenant_id IS NULL')
+        .run(folder.id);
+    }
+    db.prepare('DELETE FROM project_folders WHERE id = ? AND tenant_id = ?')
+      .run(folder.id, projectFolderTenantId(tenantId));
+    return true;
+  })();
 }
 
 function getDramaById(db, id, userId, tenantId) {
@@ -195,13 +312,39 @@ function listDramas(db, query) {
     const k = '%' + query.keyword + '%';
     params.push(k, k);
   }
+  if (query.project_type) {
+    const projectType = query.project_type === 'canvas' ? 'canvas' : 'factory';
+    sql += ` AND (
+      CASE
+        WHEN metadata IS NOT NULL AND json_valid(metadata)
+          THEN COALESCE(json_extract(metadata, '$.project_type'), 'factory')
+        ELSE 'factory'
+      END
+    ) = ?`;
+    params.push(projectType);
+  }
+  if (query.folder_id === 'unfiled') {
+    sql += ' AND folder_id IS NULL';
+  } else if (query.folder_id != null && query.folder_id !== '') {
+    const folderId = Number(query.folder_id);
+    if (!Number.isInteger(folderId) || folderId <= 0) {
+      throw projectFolderError('INVALID_PROJECT_FOLDER', '文件夹筛选无效');
+    }
+    sql += ' AND folder_id = ?';
+    params.push(folderId);
+  }
   const countRow = db.prepare('SELECT COUNT(*) as total ' + sql).get(...params);
   const total = countRow.total || 0;
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, parseInt(query.page_size, 10) || 20));
   const offset = (page - 1) * pageSize;
+  const sortSql = {
+    created_desc: 'created_at DESC, id DESC',
+    title_asc: 'title COLLATE NOCASE ASC, id DESC',
+    updated_desc: 'updated_at DESC, id DESC',
+  }[query.sort] || 'updated_at DESC, id DESC';
   const list = db.prepare(
-    'SELECT * ' + sql + ' ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+    'SELECT * ' + sql + ' ORDER BY ' + sortSql + ' LIMIT ? OFFSET ?'
   ).all(...params, pageSize, offset);
   const dramas = list.map((r) => rowToDrama(r));
   for (const d of dramas) {
@@ -258,6 +401,10 @@ function updateDrama(db, log, dramaId, req, userId, tenantId) {
   if (req.status != null) {
     updates.push('status = ?');
     params.push(req.status);
+  }
+  if (Object.prototype.hasOwnProperty.call(req, 'folder_id')) {
+    updates.push('folder_id = ?');
+    params.push(resolveProjectFolderId(db, req.folder_id, tenantId));
   }
   if (updates.length === 0) return drama;
   params.push(new Date().toISOString(), dramaId);
@@ -342,6 +489,7 @@ function rowToDrama(r) {
   }
   return {
     id: r.id,
+    folder_id: r.folder_id ?? null,
     title: r.title,
     description: r.description,
     genre: r.genre,
@@ -916,4 +1064,8 @@ module.exports = {
   finalizeEpisode,
   downloadEpisodeVideo,
   generateStoryboard,
+  createProjectFolder,
+  listProjectFolders,
+  renameProjectFolder,
+  deleteProjectFolder,
 };

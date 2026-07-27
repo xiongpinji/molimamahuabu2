@@ -37,10 +37,12 @@ function createApp() {
     })
   );
 
-  app.use((req, res, next) => {
-    log.info(req.method, req.path);
-    next();
-  });
+  if (/^(1|true|yes)$/i.test(String(process.env.HTTP_REQUEST_LOGGING || ''))) {
+    app.use((req, res, next) => {
+      log.info(req.method, req.path);
+      next();
+    });
+  }
 
   // 静态资源目录：统一转为绝对路径（打包 exe 下相对路径可能解析异常）
   const storageRoot = config.storage?.local_path

@@ -234,7 +234,13 @@ onMounted(loadCodes)
 </script>
 
 <style scoped>
-.panel { padding: 22px; border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
+.panel {
+  padding: 22px;
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
+}
 .code-form { display: grid; grid-template-columns: 120px 180px 1fr 130px 150px 220px auto; gap: 10px; align-items: center; margin-bottom: 8px; }
 .field-hint { margin: 0; color: #a8a9af; font-size: 12px; }
 .expiry-editor { display: grid; grid-template-columns: 1fr auto; gap: 8px; }

@@ -1,8 +1,14 @@
 <template>
-  <main class="tenant-page">
-    <PlatformHeader title="工作区与积分" back-to="/" back-label="返回项目" />
+  <AdminWorkspaceShell
+    title="工作区与积分"
+    eyebrow="团队与用量"
+    description="切换团队空间、管理成员、兑换积分，并核对当前工作区的积分流水。"
+  >
+    <template v-if="publicMode" #actions>
+      <el-button type="primary" @click="showCreate = true">新建工作区</el-button>
+    </template>
 
-    <section v-if="!publicMode" class="tenant-shell">
+    <section v-if="!publicMode" class="mode-panel">
       <el-alert
         title="租户控制台仅在公开平台模式启用"
         description="本地单用户模式继续使用原有数据和配置。"
@@ -11,15 +17,7 @@
       />
     </section>
 
-    <section v-else v-loading="loading" class="tenant-shell">
-      <header class="page-heading">
-        <div>
-          <h1>工作区与积分</h1>
-          <p>切换团队空间、管理成员，并查看当前工作区的积分。</p>
-        </div>
-        <el-button type="primary" @click="showCreate = true">新建工作区</el-button>
-      </header>
-
+    <section v-else v-loading="loading" class="tenant-content">
       <div class="workspace-strip">
         <button
           v-for="tenant in tenants"
@@ -62,7 +60,7 @@
             <el-input v-model.trim="memberForm.email" placeholder="成员邮箱" />
             <el-select v-model="memberForm.role">
               <el-option label="成员" value="member" />
-              <el-option label="管理员" value="admin" />
+              <el-option v-if="currentTenant.role === 'owner'" label="管理员" value="admin" />
               <el-option v-if="currentTenant.role === 'owner'" label="所有者" value="owner" />
             </el-select>
             <el-button type="primary" :loading="addingMember" @click="addMember">添加</el-button>
@@ -72,13 +70,25 @@
         <el-table :data="members" empty-text="暂无成员">
           <el-table-column prop="email" label="邮箱" min-width="220" />
           <el-table-column label="角色" width="120">
-            <template #default="{ row }">{{ roleLabel(row.role) }}</template>
+            <template #default="{ row }">
+              <el-select
+                v-if="canChangeMemberRole(row)"
+                :model-value="row.role"
+                :loading="memberRoleSaving === row.user_id"
+                @change="changeMemberRole(row, $event)"
+              >
+                <el-option label="成员" value="member" />
+                <el-option v-if="currentTenant.role === 'owner'" label="管理员" value="admin" />
+                <el-option v-if="currentTenant.role === 'owner'" label="所有者" value="owner" />
+              </el-select>
+              <span v-else>{{ roleLabel(row.role) }}</span>
+            </template>
           </el-table-column>
           <el-table-column prop="status" label="状态" width="100" />
           <el-table-column label="操作" width="100" align="right">
             <template #default="{ row }">
               <el-button
-                v-if="row.user_id !== sessionUserId"
+                v-if="canRemoveMember(row)"
                 link
                 type="danger"
                 @click="removeMember(row)"
@@ -135,16 +145,17 @@
         <el-button type="primary" :loading="creatingWorkspace" @click="createWorkspace">创建</el-button>
       </template>
     </el-dialog>
-  </main>
+  </AdminWorkspaceShell>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import PlatformHeader from '@/components/PlatformHeader.vue'
+import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import { getCreditAccount } from '@/api/auth'
 import {
   addTenantMember,
+  changeTenantMemberRole,
   createTenant,
   listTenantMembers,
   listTenants,
@@ -173,12 +184,23 @@ const redeeming = ref(false)
 const showCreate = ref(false)
 const creatingWorkspace = ref(false)
 const addingMember = ref(false)
+const memberRoleSaving = ref('')
 const workspaceForm = reactive({ name: '', slug: '' })
 const memberForm = reactive({ email: '', role: 'member' })
 const sessionUserId = readSession()?.user?.id || ''
 
 const currentTenant = computed(() => tenants.value.find((tenant) => tenant.id === tenantId.value) || null)
 const isManager = computed(() => ['owner', 'admin'].includes(currentTenant.value?.role))
+
+function canChangeMemberRole(row) {
+  return Boolean(row && row.user_id !== sessionUserId && currentTenant.value?.role === 'owner')
+}
+
+function canRemoveMember(row) {
+  if (!row || row.user_id === sessionUserId) return false
+  return currentTenant.value?.role === 'owner'
+    || (currentTenant.value?.role === 'admin' && row.role === 'member')
+}
 
 function roleLabel(role) {
   return ({ owner: '所有者', admin: '管理员', member: '成员' })[role] || role || '成员'
@@ -222,6 +244,7 @@ async function load() {
 async function switchWorkspace(id) {
   if (id === tenantId.value) return
   tenantId.value = id
+  if (currentTenant.value?.role !== 'owner') memberForm.role = 'member'
   saveCurrentTenantId(id)
   loading.value = true
   try {
@@ -262,6 +285,16 @@ async function addMember() {
   }
 }
 
+async function changeMemberRole(row, role) {
+  memberRoleSaving.value = row.user_id
+  try {
+    Object.assign(row, await changeTenantMemberRole(tenantId.value, row.user_id, role))
+    ElMessage.success('成员角色已更新')
+  } finally {
+    memberRoleSaving.value = ''
+  }
+}
+
 async function removeMember(row) {
   try {
     await ElMessageBox.confirm(`确定移除 ${row.email}？`, '移除成员', { type: 'warning' })
@@ -291,18 +324,27 @@ onMounted(load)
 </script>
 
 <style scoped>
-.tenant-page { min-height: 100vh; padding: 0 20px 56px; color: #f5f5f7; background: #111214; }
-.tenant-shell { width: min(1120px, 100%); margin: 24px auto 0; }
-.page-heading, .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.page-heading h1, .panel h2 { margin: 0 0 8px; }
-.page-heading p, .panel-heading p { margin: 0; color: #a8a9af; }
-.workspace-strip { display: flex; gap: 12px; margin: 24px 0; overflow-x: auto; padding-bottom: 4px; }
-.workspace-card { min-width: 210px; padding: 15px; border: 1px solid #303136; border-radius: 14px; color: #e4e4e7; background: #1b1c20; text-align: left; cursor: pointer; }
+.mode-panel,
+.info-card,
+.panel {
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
+}
+.mode-panel { padding: 22px; }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.panel h2 { margin: 0 0 8px; }
+.panel-heading p { margin: 0; color: #929292; }
+.workspace-strip { display: flex; gap: 12px; margin: 0 0 18px; overflow-x: auto; padding-bottom: 4px; }
+.workspace-card { min-width: 210px; padding: 15px; border: 1px solid #292929; border-radius: 14px; color: #e4e4e7; background: #141414; text-align: left; cursor: pointer; }
 .workspace-card strong, .workspace-card span { display: block; }
 .workspace-card span { margin-top: 6px; color: #92939a; font-size: 12px; }
-.workspace-card.active { border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139, 92, 246, .16); }
+.workspace-card:hover,
+.workspace-card:focus-visible { outline: none; border-color: #65402f; }
+.workspace-card:focus-visible { box-shadow: 0 0 0 2px rgba(255, 113, 57, .48); }
+.workspace-card.active { border-color: #ff7139; box-shadow: 0 0 0 2px rgba(255, 113, 57, .14); }
 .overview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-.info-card, .panel { border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
 .info-card { display: grid; gap: 7px; padding: 20px; }
 .info-card span, .info-card small, .plan-card span { color: #a8a9af; }
 .info-card strong { font-size: 22px; }
@@ -312,7 +354,7 @@ onMounted(load)
 .redeem-form { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 8px; width: min(480px, 100%); }
 @media (max-width: 820px) {
   .overview-grid { grid-template-columns: 1fr; }
-  .page-heading, .panel-heading { flex-direction: column; }
+  .panel-heading { flex-direction: column; }
   .member-form, .redeem-form { grid-template-columns: 1fr; }
 }
 </style>

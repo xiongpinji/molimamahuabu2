@@ -3,6 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
+const dramaDuplicateService = require('../services/dramaDuplicateService');
 const textGenerationBilling = require('../services/text-generation-billing-service');
 
 function createDrama(db, log) {
@@ -20,6 +21,9 @@ function createDrama(db, log) {
       response.created(res, drama);
     } catch (err) {
       log.error('Create drama failed', { error: err.message, stack: err.stack });
+      if (err.code === 'PROJECT_FOLDER_NOT_FOUND') {
+        return response.notFound(res, err.message);
+      }
       response.internalError(res, err.message || '创建失败');
     }
   };
@@ -40,6 +44,9 @@ function listDramas(db, log) {
     const status = req.query.status || '';
     const genre = req.query.genre || '';
     const keyword = req.query.keyword || '';
+    const project_type = req.query.project_type || '';
+    const folder_id = req.query.folder_id;
+    const sort = req.query.sort || 'updated_desc';
     try {
       const { dramas, total, page: p, pageSize: ps } = dramaService.listDramas(db, {
         page,
@@ -47,12 +54,18 @@ function listDramas(db, log) {
         status,
         genre,
         keyword,
+        project_type,
+        folder_id,
+        sort,
         userId: req.user?.id,
         tenantId: req.tenant?.id,
       });
       response.successWithPagination(res, dramas, total, p, ps);
     } catch (err) {
       log.errorw('List dramas failed', { error: err.message });
+      if (err.code === 'INVALID_PROJECT_FOLDER') {
+        return response.badRequest(res, err.message);
+      }
       response.internalError(res, '获取列表失败');
     }
   };
@@ -60,9 +73,92 @@ function listDramas(db, log) {
 
 function updateDrama(db, log) {
   return (req, res) => {
-    const drama = dramaService.updateDrama(db, log, req.params.id, req.body || {}, req.user?.id, req.tenant?.id);
-    if (!drama) return response.notFound(res, '剧本不存在');
-    response.success(res, drama);
+    try {
+      const drama = dramaService.updateDrama(db, log, req.params.id, req.body || {}, req.user?.id, req.tenant?.id);
+      if (!drama) return response.notFound(res, '剧本不存在');
+      response.success(res, drama);
+    } catch (err) {
+      if (err.code === 'PROJECT_FOLDER_NOT_FOUND') {
+        return response.notFound(res, err.message);
+      }
+      log.error('Update drama failed', { error: err.message });
+      response.internalError(res, '保存失败');
+    }
+  };
+}
+
+function respondProjectFolderError(res, err) {
+  if (err.code === 'PROJECT_FOLDER_NOT_FOUND') {
+    response.notFound(res, err.message);
+    return true;
+  }
+  if (err.code === 'INVALID_PROJECT_FOLDER') {
+    response.badRequest(res, err.message);
+    return true;
+  }
+  if (err.code === 'PROJECT_FOLDER_EXISTS') {
+    response.error(res, 409, err.code, err.message);
+    return true;
+  }
+  return false;
+}
+
+function listProjectFolders(db, log) {
+  return (req, res) => {
+    try {
+      response.success(res, dramaService.listProjectFolders(db, {
+        tenantId: req.tenant?.id,
+        project_type: req.query.project_type,
+      }));
+    } catch (err) {
+      log.error('List project folders failed', { error: err.message });
+      response.internalError(res, '获取文件夹失败');
+    }
+  };
+}
+
+function createProjectFolder(db, log) {
+  return (req, res) => {
+    try {
+      response.created(res, dramaService.createProjectFolder(db, {
+        tenantId: req.tenant?.id,
+        name: req.body?.name,
+      }));
+    } catch (err) {
+      if (respondProjectFolderError(res, err)) return;
+      log.error('Create project folder failed', { error: err.message });
+      response.internalError(res, '创建文件夹失败');
+    }
+  };
+}
+
+function renameProjectFolder(db, log) {
+  return (req, res) => {
+    try {
+      response.success(res, dramaService.renameProjectFolder(
+        db,
+        req.params.folderId,
+        req.tenant?.id,
+        req.body?.name,
+      ));
+    } catch (err) {
+      if (respondProjectFolderError(res, err)) return;
+      log.error('Rename project folder failed', { error: err.message });
+      response.internalError(res, '重命名文件夹失败');
+    }
+  };
+}
+
+function deleteProjectFolder(db, log) {
+  return (req, res) => {
+    try {
+      dramaService.deleteProjectFolder(db, req.params.folderId, req.tenant?.id);
+      response.success(res, { deleted: true });
+    } catch (err) {
+      if (respondProjectFolderError(res, err)) return;
+      log.error('Delete project folder failed', { error: err.message });
+      response.internalError(res, '删除文件夹失败');
+    }
   };
 }
 
@@ -211,6 +307,22 @@ function importDrama(db, cfg, log) {
   };
 }
 
+function duplicateDrama(db, cfg, log) {
+  return (req, res) => {
+    try {
+      const result = dramaDuplicateService.duplicateDrama(db, cfg, log, req.params.id, {
+        userId: req.user?.id,
+        tenantId: req.tenant?.id,
+      });
+      if (!result) return response.notFound(res, '剧本不存在');
+      response.created(res, result);
+    } catch (err) {
+      log.error('Duplicate drama failed', { error: err.message, stack: err.stack });
+      response.internalError(res, err.message || '复制失败');
+    }
+  };
+}
+
 function getExampleDramaDir() {
   const path = require('path');
   const fs = require('fs');
@@ -315,8 +427,13 @@ module.exports = function dramaRoutes(db, cfg, log, generationOptions = {}) {
     downloadEpisodeVideo: downloadEpisodeVideo(db),
     generateStoryboard: generateStoryboard(db, log, generationOptions),
     exportDrama: exportDrama(db, cfg, log),
+    duplicateDrama: duplicateDrama(db, cfg, log),
     importDrama: importDrama(db, cfg, log),
     listExamples: listExamples(log),
     importExample: importExample(db, cfg, log),
+    listProjectFolders: listProjectFolders(db, log),
+    createProjectFolder: createProjectFolder(db, log),
+    renameProjectFolder: renameProjectFolder(db, log),
+    deleteProjectFolder: deleteProjectFolder(db, log),
   };
 };

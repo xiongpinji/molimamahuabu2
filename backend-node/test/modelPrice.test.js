@@ -77,3 +77,49 @@ test('停用模型即使已有价格也禁止生成', () => {
     (error) => error.code === 'MODEL_DISABLED',
   );
 });
+
+test('自动列出 AI 配置中的每个实际模型并标记未定价状态', () => {
+  const db = makeDb();
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT NOT NULL,
+    model TEXT,
+    default_model TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    deleted_at TEXT
+  )`);
+  const insert = db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, model, default_model, is_active, deleted_at)
+    VALUES (?, ?, ?, ?, ?, ?)`);
+  insert.run(1, 'image', JSON.stringify(['gpt-image-2', 'gemini-image-pro']), null, 1, null);
+  insert.run(2, 'video', JSON.stringify(['grok-video-3']), 'grok-video-3-pro', 1, null);
+  insert.run(3, 'tts', JSON.stringify(['speech-02-hd']), null, 0, null);
+  insert.run(4, 'video', JSON.stringify(['deleted-video-model']), null, 1, '2026-07-26T00:00:00Z');
+
+  prices.set(db, 'grok-video-3', 35, {
+    displayName: 'Grok Video 3',
+    category: 'video',
+  });
+
+  const rows = prices.list(db);
+  const byModel = new Map(rows.map((row) => [row.model.toLowerCase(), row]));
+
+  assert.deepEqual(
+    {
+      model: byModel.get('gemini-image-pro')?.model,
+      category: byModel.get('gemini-image-pro')?.category,
+      credits: byModel.get('gemini-image-pro')?.credits,
+      status: byModel.get('gemini-image-pro')?.status,
+    },
+    {
+      model: 'gemini-image-pro',
+      category: 'image',
+      credits: null,
+      status: 'unconfigured',
+    },
+  );
+  assert.equal(byModel.get('grok-video-3')?.credits, 35);
+  assert.equal(byModel.get('grok-video-3-pro')?.category, 'video');
+  assert.equal(byModel.get('speech-02-hd')?.category, 'audio');
+  assert.equal(byModel.has('deleted-video-model'), false);
+});

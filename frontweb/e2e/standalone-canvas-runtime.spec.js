@@ -1,0 +1,650 @@
+import { test, expect } from '@playwright/test'
+
+function apiData(data) {
+  return {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, data }),
+  }
+}
+
+function standaloneDrama(canvasLayout) {
+  return {
+    id: 3,
+    title: 'E2E 自由画布',
+    metadata: {
+      project_type: 'canvas',
+      canvas_layout: canvasLayout,
+    },
+    characters: [],
+    scenes: [],
+    props: [],
+    episodes: [],
+  }
+}
+
+function baseCanvasLayout(extra = {}) {
+  return {
+    version: 1,
+    viewport: { x: 0, y: 0, zoom: 0.75 },
+    nodes: {},
+    manual_edges: [],
+    free_nodes: [],
+    ...extra,
+  }
+}
+
+function installStaticAndApiMocks(page, state) {
+  return page.route('**/*', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const { pathname } = url
+    const method = request.method()
+
+    if (pathname.startsWith('/static/')) {
+      const contentType = pathname.endsWith('.mp4')
+        ? 'video/mp4'
+        : pathname.endsWith('.mp3')
+          ? 'audio/mpeg'
+          : 'image/png'
+      await route.fulfill({
+        status: 200,
+        contentType,
+        body: Buffer.from([0x00, 0x00, 0x00, 0x18]),
+      })
+      return
+    }
+
+    if (!pathname.startsWith('/api/v1/')) {
+      await route.continue()
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/dramas/3') {
+      await route.fulfill(apiData(standaloneDrama(state.canvasLayout)))
+      return
+    }
+
+    if (method === 'PUT' && pathname === '/api/v1/dramas/3/canvas-layout') {
+      const payload = request.postDataJSON() || {}
+      if (payload.canvas_layout) state.canvasLayout = payload.canvas_layout
+      await route.fulfill(apiData(standaloneDrama(state.canvasLayout)))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/assets') {
+      await route.fulfill(apiData({ items: state.assets, total: state.assets.length }))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/ai-configs') {
+      const serviceType = url.searchParams.get('service_type')
+      const configs = (state.aiConfigs || []).filter((config) => !serviceType || config.service_type === serviceType)
+      await route.fulfill(apiData(configs))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/assets') {
+      const payload = request.postDataJSON() || {}
+      state.assetRequests.push(payload)
+      const asset = {
+        id: 900 + state.assetRequests.length,
+        name: payload.name || `自由画布素材 ${state.assetRequests.length}`,
+        ...payload,
+      }
+      state.assets.push(asset)
+      await route.fulfill(apiData(asset))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/images') {
+      const payload = request.postDataJSON() || {}
+      state.imageRequests.push(payload)
+      const attempt = state.imageRequests.length
+      await route.fulfill(apiData({ id: 400 + attempt, task_id: `img-task-${attempt}` }))
+      return
+    }
+
+    if (method === 'GET' && /^\/api\/v1\/tasks\/img-task-\d+$/.test(pathname)) {
+      const attempt = Number(pathname.split('-').at(-1))
+      await route.fulfill(apiData({
+        id: `img-task-${attempt}`,
+        status: 'completed',
+        result: { image_url: attempt === 1 ? '/static/free-image.png' : `/static/free-image-${attempt}.png` },
+      }))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/canvas/text/generate') {
+      const payload = request.postDataJSON() || {}
+      state.textRequests ||= []
+      state.textRequests.push(payload)
+      await route.fulfill(apiData({
+        content: payload.prompt.includes('翻译') ? 'A natural English translation.' : 'AI 生成后的完整文本',
+        model: payload.model || 'text-default',
+      }))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/videos') {
+      const payload = request.postDataJSON() || {}
+      state.videoRequests.push(payload)
+      const attempt = state.videoRequests.length
+      await route.fulfill(apiData({ id: 501 + attempt, task_id: `video-task-${attempt}` }))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/tasks/video-task-1') {
+      await route.fulfill(apiData({
+        id: 'video-task-1',
+        status: 'failed',
+        error: '视频模型临时失败',
+      }))
+      return
+    }
+
+    if (method === 'GET' && pathname === '/api/v1/tasks/video-task-2') {
+      await route.fulfill(apiData({
+        id: 'video-task-2',
+        status: 'completed',
+        result: { video_url: '/static/free-video.mp4' },
+      }))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/v1/audio/extract') {
+      const payload = request.postDataJSON() || {}
+      state.audioRequests.push(payload)
+      await route.fulfill(apiData({ url: '/static/free-audio.mp3' }))
+      return
+    }
+
+    if (method === 'GET' && ['/api/v1/images', '/api/v1/videos'].includes(pathname)) {
+      await route.fulfill(apiData({ items: [] }))
+      return
+    }
+
+    if (method === 'GET' && [
+      '/api/v1/video-models',
+      '/api/v1/voice-catalog',
+      '/api/v1/character-library',
+      '/api/v1/scene-library',
+      '/api/v1/prop-library',
+    ].includes(pathname)) {
+      await route.fulfill(apiData({ items: [] }))
+      return
+    }
+
+    await route.fulfill(apiData({ items: [] }))
+  })
+}
+
+function freeNode(layout, id) {
+  return layout.free_nodes.find((node) => node.id === id)
+}
+
+test.describe('独立自由画布节点真实运行闭环', () => {
+  test('右键新增图片节点直接进入节点内编辑、可拖动且不弹创建表单', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout(),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const pane = page.locator('.vue-flow__pane')
+    await expect(pane).toBeVisible()
+    await pane.click({ button: 'right', position: { x: 760, y: 420 } })
+    await page.getByRole('menu', { name: '添加画布节点' })
+      .getByRole('menuitem', { name: /^图片 图片生成节点$/ })
+      .click()
+
+    await expect(page.getByRole('dialog', { name: '添加图片节点' })).toHaveCount(0)
+    const node = page.locator('.vue-flow__node').filter({
+      has: page.getByRole('textbox', { name: '节点标题' }),
+    })
+    await expect(node).toHaveCount(1)
+    await expect(node).toHaveClass(/selected/)
+    await expect(node.getByRole('textbox', { name: '节点标题' })).toHaveValue('图片')
+    await expect(node.getByRole('button', { name: '上传' })).toBeVisible()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor.getByRole('textbox', { name: '生成提示词' })).toBeVisible()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+    expect(state.canvasLayout.free_nodes[0].data).toMatchObject({
+      kind: 'image',
+      title: '图片',
+      content: '',
+      model: '',
+      aspectRatio: '16:9',
+    })
+
+    const originalPosition = { ...state.canvasLayout.free_nodes[0].position }
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    const dragSurface = node.locator('.media-stage')
+    await expect(dragSurface).toHaveCSS('cursor', 'grab')
+    const dragSurfaceBox = await dragSurface.boundingBox()
+    expect(dragSurfaceBox).not.toBeNull()
+    await page.mouse.move(
+      dragSurfaceBox.x + 28,
+      dragSurfaceBox.y + 28,
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      dragSurfaceBox.x + 148,
+      dragSurfaceBox.y + 108,
+      { steps: 8 },
+    )
+    await page.mouse.up()
+
+    await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
+  })
+
+  test('自由节点可选择已配置模型、右键复制并直接挂载项目素材', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:mount',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: '待挂载图片',
+            content: '雨夜站台',
+            model: '',
+            aspectRatio: '16:9',
+          },
+        }],
+      }),
+      assets: [{
+        id: 77,
+        name: '项目雨夜参考图',
+        type: 'image',
+        url: '/static/library-rain.png',
+      }],
+      aiConfigs: [{
+        id: 11,
+        service_type: 'image',
+        is_active: true,
+        is_default: true,
+        model: ['canvas-image-alpha', 'canvas-image-beta'],
+      }],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:image:mount"]')
+    await expect(node).toBeVisible()
+    await node.click()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor).toBeVisible()
+    await expect(editor.locator('datalist option[value="canvas-image-alpha"]')).toHaveCount(1)
+    await editor.getByRole('combobox', { name: '生成模型' }).fill('canvas-image-beta')
+    await editor.getByRole('combobox', { name: '生成模型' }).blur()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
+
+    await node.getByRole('button', { name: '素材库' }).click()
+    const picker = page.getByRole('dialog', { name: '挂载素材到当前节点' })
+    await expect(picker).toBeVisible()
+    const assetCard = picker.locator('.picker-card').filter({ hasText: '项目雨夜参考图' })
+    await assetCard.getByRole('button', { name: '选用', exact: true }).click()
+    await expect(picker).toBeHidden()
+    await expect(node.locator('img[alt="待挂载图片"]')).toBeVisible()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data).toMatchObject({
+      url: '/static/library-rain.png',
+      savedAssetId: '77',
+      status: 'success',
+      assetSaveStatus: 'success',
+    })
+    expect(state.assetRequests).toHaveLength(0)
+
+    await node.click({ button: 'right' })
+    const menu = page.getByRole('menu', { name: '节点操作' })
+    await menu.getByRole('menuitem', { name: /^复制节点 克隆到右下方$/ }).click()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(2)
+    const copied = state.canvasLayout.free_nodes.find((item) => item.id !== 'free:image:mount')
+    expect(copied).toMatchObject({
+      position: { x: 280, y: 260 },
+      data: {
+        title: '待挂载图片 副本',
+        url: '/static/library-rain.png',
+        savedAssetId: '77',
+        status: 'success',
+        taskId: '',
+      },
+    })
+
+    const copiedNode = page.locator(`.vue-flow__node[data-id="${copied.id}"]`)
+    await copiedNode.click({ button: 'right' })
+    await page.getByRole('menu', { name: '节点操作' }).getByRole('menuitem', { name: /删除节点/ }).click()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+  })
+
+  test('图片节点生成后使用项目 ID 请求、自动入库并刷新恢复', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:1',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: 'E2E 图片节点',
+            content: '生成一张雨夜花园图',
+            model: 'lib-image-e2e',
+            aspectRatio: '16:9',
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:image:1"]')
+    await expect(node).toContainText('E2E 图片节点')
+    await node.click()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
+
+    await expect.poll(() => state.imageRequests).toEqual([{
+      drama_id: 3,
+      prompt: '生成一张雨夜花园图',
+      model: 'lib-image-e2e',
+      aspect_ratio: '16:9',
+      size: '2048x1152',
+    }])
+    expect(state.imageRequests[0]).not.toHaveProperty('storyboard_id')
+    expect(state.imageRequests[0]).not.toHaveProperty('storyboardId')
+
+    await expect.poll(() => state.assetRequests.length).toBe(1)
+    expect(state.assetRequests[0]).toMatchObject({
+      drama_id: 3,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'image',
+      url: '/static/free-image.png',
+      metadata: {
+        canvas_node_id: 'free:image:1',
+        task_id: 'img-task-1',
+        model: 'lib-image-e2e',
+      },
+    })
+
+    await expect(node).toContainText('已生成')
+    await expect(node.locator('img[alt="E2E 图片节点"]')).toBeVisible()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:1')?.data).toMatchObject({
+      kind: 'image',
+      status: 'success',
+      url: '/static/free-image.png',
+      taskId: 'img-task-1',
+      savedAssetId: '901',
+      assetSaveStatus: 'success',
+    })
+
+    await page.reload()
+    const restored = page.locator('.vue-flow__node[data-id="free:image:1"]')
+    await expect(restored).toContainText('已生成')
+    await expect(restored.locator('img[alt="E2E 图片节点"]')).toBeVisible()
+  })
+
+  test('文本节点可调用真实文本入口、写回结果并执行中英互译', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:text:1',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'text',
+            title: 'E2E 文本节点',
+            content: '写一段雨夜花园旁白',
+            model: 'text-e2e',
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      textRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:text:1"]')
+    await node.click()
+    const editor = page.getByRole('region', { name: '文本节点编辑器' })
+    await editor.getByRole('button', { name: 'AI 生成文本' }).click()
+
+    await expect.poll(() => state.textRequests[0]).toEqual({
+      drama_id: 3,
+      prompt: '写一段雨夜花园旁白',
+      model: 'text-e2e',
+    })
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:text:1')?.data).toMatchObject({
+      content: 'AI 生成后的完整文本',
+      status: 'success',
+      error: '',
+    })
+
+    await editor.getByRole('button', { name: '中英互译' }).click()
+    await expect.poll(() => state.textRequests.length).toBe(2)
+    expect(state.textRequests[1].prompt).toContain('翻译成自然、准确的英文')
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:text:1')?.data?.content)
+      .toBe('A natural English translation.')
+  })
+
+  test('图片节点多结果逐个生成、自动入库并可切换主结果', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:multi',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: 'E2E 多结果图片',
+            content: '雨夜茉莉花',
+            model: 'lib-image-e2e',
+            aspectRatio: '1:1',
+            quantity: 2,
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:image:multi"]')
+    await node.click()
+    const editor = page.getByRole('region', { name: '图片节点编辑器' })
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
+
+    await expect.poll(() => state.imageRequests.length).toBe(2)
+    await expect.poll(() => state.assetRequests.length).toBe(2)
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data).toMatchObject({
+      status: 'success',
+      url: '/static/free-image-2.png',
+      resultUrls: ['/static/free-image.png', '/static/free-image-2.png'],
+      savedAssetId: '902',
+    })
+    await expect(node.getByRole('button', { name: '设为当前结果' })).toHaveCount(2)
+    await node.getByRole('button', { name: '设为当前结果' }).first().click()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:image:multi')?.data?.url)
+      .toBe('/static/free-image.png')
+  })
+
+  test('视频节点失败后可重试，并携带上游首帧引用且不污染分镜字段', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        manual_edges: [{
+          id: 'manual:free:image:1::free:video:1:',
+          source: 'free:image:1',
+          target: 'free:video:1',
+          type: 'smoothstep',
+          data: { manual: true },
+        }],
+        free_nodes: [
+          {
+            id: 'free:image:1',
+            type: 'homeCanvasNode',
+            position: { x: 160, y: 220 },
+            data: {
+              kind: 'image',
+              title: '上游首帧',
+              content: '已生成首帧',
+              url: '/static/upstream-first.png',
+              status: 'success',
+              savedAssetId: '800',
+            },
+          },
+          {
+            id: 'free:video:1',
+            type: 'homeCanvasNode',
+            position: { x: 520, y: 220 },
+            data: {
+              kind: 'video',
+              title: 'E2E 视频节点',
+              content: '镜头从花园推向人物',
+              model: 'grok-video-e2e',
+              aspectRatio: '16:9',
+              duration: 5,
+            },
+          },
+        ],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:video:1"]')
+    await expect(node).toContainText('E2E 视频节点')
+    await node.click()
+    const editor = page.getByRole('region', { name: '视频节点编辑器' })
+    await expect(editor).toBeVisible()
+    const automaticReferences = editor.getByRole('region', { name: '自动参考图' })
+    await expect(automaticReferences).toContainText('1/1 已就绪')
+    await expect(automaticReferences.locator('img[alt="上游首帧"]')).toBeVisible()
+    await expect(automaticReferences.locator('[data-reference-state="ready"]')).toHaveCount(1)
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
+
+    await expect.poll(() => state.videoRequests.length).toBe(1)
+    await expect(node).toContainText('失败')
+    await expect(node).toContainText('视频模型临时失败')
+
+    await editor.getByRole('button', { name: '重试', exact: true }).click()
+    await expect.poll(() => state.videoRequests.length).toBe(2)
+    expect(state.videoRequests[1]).toMatchObject({
+      drama_id: 3,
+      prompt: '镜头从花园推向人物',
+      model: 'grok-video-e2e',
+      image_url: '/static/upstream-first.png',
+      first_frame_url: '/static/upstream-first.png',
+      reference_image_urls: ['/static/upstream-first.png'],
+      aspect_ratio: '16:9',
+      duration: 5,
+    })
+    expect(state.videoRequests[1]).not.toHaveProperty('storyboard_id')
+    expect(state.videoRequests[1]).not.toHaveProperty('storyboardId')
+
+    await expect.poll(() => state.assetRequests.length).toBe(1)
+    expect(state.assetRequests[0]).toMatchObject({
+      drama_id: 3,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'video',
+      url: '/static/free-video.mp4',
+    })
+    await expect(node).toContainText('已生成')
+    await expect(node.locator('video')).toBeAttached()
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:video:1')?.data).toMatchObject({
+      status: 'success',
+      url: '/static/free-video.mp4',
+      taskId: 'video-task-2',
+      savedAssetId: '901',
+    })
+  })
+
+  test('音频节点同步返回 URL 时成功预览并自动入库', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:audio:1',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'audio',
+            title: 'E2E 音频节点',
+            content: '茉莉妈妈短剧制作平台欢迎你',
+            model: 'voice-e2e',
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const node = page.locator('.vue-flow__node[data-id="free:audio:1"]')
+    await expect(node).toContainText('E2E 音频节点')
+    await node.click()
+    const editor = page.getByRole('region', { name: '音频节点编辑器' })
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '生成', exact: true }).click()
+
+    await expect.poll(() => state.audioRequests).toEqual([{
+      drama_id: 3,
+      text: '茉莉妈妈短剧制作平台欢迎你',
+      tts_model: 'voice-e2e',
+      speed: 1,
+    }])
+    expect(state.audioRequests[0]).not.toHaveProperty('storyboard_id')
+    expect(state.audioRequests[0]).not.toHaveProperty('storyboardId')
+
+    await expect(node).toContainText('已生成')
+    await expect(node.locator('audio')).toBeAttached()
+    await expect.poll(() => state.assetRequests.length).toBe(1)
+    await expect.poll(() => state.assetRequests[0]).toMatchObject({
+      drama_id: 3,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'audio',
+      url: '/static/free-audio.mp3',
+    })
+    await expect.poll(() => freeNode(state.canvasLayout, 'free:audio:1')?.data).toMatchObject({
+      status: 'success',
+      url: '/static/free-audio.mp3',
+      savedAssetId: '901',
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+    })
+  })
+})

@@ -91,3 +91,164 @@ test('当前用户接口只返回令牌中的公开身份', () => {
   assert.equal(result.status, 200);
   assert.deepEqual(result.body.data, { id: 'u1', email: 'user@example.com', role: 'user' });
 });
+
+test('邮箱验证码注册后创建账户且验证码不能重复使用', async () => {
+  const db = makeDb();
+  const sent = [];
+  const handlers = createAuthRoutes(db, {
+    registrationEnabled: true,
+    emailVerificationEnabled: true,
+    jwtSecret: 's'.repeat(32),
+    verificationSecret: 'v'.repeat(32),
+    generateVerificationCode: () => '123456',
+    mailer: {
+      isConfigured: () => true,
+      sendVerificationCode: async (message) => sent.push(message),
+    },
+  });
+
+  const codeCapture = responseCapture();
+  await handlers.requestRegistrationCode(
+    { body: { email: 'user@example.com' } },
+    codeCapture.res,
+  );
+  assert.equal(codeCapture.result.status, 200);
+  assert.equal(sent[0].to, 'user@example.com');
+  assert.equal(sent[0].purpose, 'register');
+  assert.equal(sent[0].code, '123456');
+
+  const registerCapture = responseCapture();
+  handlers.register({
+    body: {
+      email: 'user@example.com',
+      password: 'correct horse battery staple',
+      verification_code: '123456',
+    },
+  }, registerCapture.res);
+  assert.equal(registerCapture.result.status, 201);
+
+  const replayCapture = responseCapture();
+  handlers.register({
+    body: {
+      email: 'another@example.com',
+      password: 'correct horse battery staple',
+      verification_code: '123456',
+    },
+  }, replayCapture.res);
+  assert.equal(replayCapture.result.status, 400);
+  assert.equal(replayCapture.result.body.error.code, 'VERIFICATION_INVALID');
+});
+
+test('注册验证码接口不暴露邮箱是否已注册', async () => {
+  const db = makeDb();
+  require('../src/services/userAuthService').register(db, {
+    email: 'user@example.com',
+    password: 'correct horse battery staple',
+  });
+  const sent = [];
+  const handlers = createAuthRoutes(db, {
+    registrationEnabled: true,
+    emailVerificationEnabled: true,
+    verificationSecret: 'v'.repeat(32),
+    generateVerificationCode: () => '123456',
+    mailer: {
+      isConfigured: () => true,
+      sendVerificationCode: async (message) => sent.push(message),
+    },
+  });
+
+  const existingCapture = responseCapture();
+  await handlers.requestRegistrationCode(
+    { body: { email: 'user@example.com' } },
+    existingCapture.res,
+  );
+
+  assert.equal(existingCapture.result.status, 200);
+  assert.deepEqual(existingCapture.result.body.data, {
+    message: '如该邮箱可用于注册，验证码将发送至邮箱',
+  });
+  assert.equal(sent.length, 0);
+});
+
+test('找回密码验证码可重置密码并使旧令牌立即失效', async () => {
+  const db = makeDb();
+  const secret = 's'.repeat(32);
+  const user = require('../src/services/userAuthService').register(db, {
+    email: 'user@example.com',
+    password: 'correct horse battery staple',
+  });
+  const oldToken = require('../src/services/userAuthService').issueToken(user, secret, 0);
+  const sent = [];
+  const handlers = createAuthRoutes(db, {
+    registrationEnabled: true,
+    emailVerificationEnabled: true,
+    jwtSecret: secret,
+    verificationSecret: 'v'.repeat(32),
+    generateVerificationCode: () => '654321',
+    mailer: {
+      isConfigured: () => true,
+      sendVerificationCode: async (message) => sent.push(message),
+    },
+  });
+
+  const codeCapture = responseCapture();
+  await handlers.requestPasswordResetCode(
+    { body: { email: 'user@example.com' } },
+    codeCapture.res,
+  );
+  assert.equal(codeCapture.result.status, 200);
+  assert.equal(sent[0].purpose, 'password_reset');
+
+  const resetCapture = responseCapture();
+  handlers.resetPassword({
+    body: {
+      email: 'user@example.com',
+      verification_code: '654321',
+      new_password: 'a new correct horse battery staple',
+    },
+  }, resetCapture.res);
+  assert.equal(resetCapture.result.status, 200);
+
+  const userAuth = require('../src/services/userAuthService');
+  assert.equal(
+    userAuth.authenticate(db, 'user@example.com', 'a new correct horse battery staple').id,
+    user.id,
+  );
+  assert.throws(
+    () => userAuth.authenticate(db, 'user@example.com', 'correct horse battery staple'),
+    (error) => error.code === 'INVALID_CREDENTIALS',
+  );
+  const claims = userAuth.verifyToken(oldToken, secret);
+  assert.notEqual(userAuth.getTokenVersion(db, claims.id), claims.tokenVersion);
+});
+
+test('已登录用户可用当前密码修改密码并使旧令牌失效', () => {
+  const db = makeDb();
+  const secret = 's'.repeat(32);
+  const userAuth = require('../src/services/userAuthService');
+  const user = userAuth.register(db, {
+    email: 'user@example.com',
+    password: 'correct horse battery staple',
+  });
+  const oldToken = userAuth.issueToken(user, secret, 0);
+  const handlers = createAuthRoutes(db, {
+    registrationEnabled: true,
+    jwtSecret: secret,
+  });
+  const changeCapture = responseCapture();
+  handlers.changePassword({
+    user,
+    body: {
+      current_password: 'correct horse battery staple',
+      new_password: 'a new correct horse battery staple',
+    },
+  }, changeCapture.res);
+
+  assert.equal(changeCapture.result.status, 200);
+  assert.equal(
+    userAuth.authenticate(db, user.email, 'a new correct horse battery staple').id,
+    user.id,
+  );
+  const claims = userAuth.verifyToken(oldToken, secret);
+  assert.notEqual(userAuth.getTokenVersion(db, claims.id), claims.tokenVersion);
+});

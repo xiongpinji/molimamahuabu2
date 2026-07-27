@@ -9,6 +9,7 @@ test('首管理员必须同时通过登录、配置邮箱和独立管理员令�
   const previous = {
     mode: process.env.PUBLIC_PLATFORM_MODE,
     registration: process.env.PLATFORM_REGISTRATION_ENABLED,
+    verification: process.env.PLATFORM_EMAIL_VERIFICATION_ENABLED,
     jwt: process.env.PLATFORM_JWT_SECRET,
     admin: process.env.PLATFORM_ADMIN_TOKEN,
     bootstrap: process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL,
@@ -17,6 +18,7 @@ test('首管理员必须同时通过登录、配置邮箱和独立管理员令�
   const adminToken = 'bootstrap-admin-token-value-12345678';
   process.env.PUBLIC_PLATFORM_MODE = 'true';
   process.env.PLATFORM_REGISTRATION_ENABLED = 'true';
+  process.env.PLATFORM_EMAIL_VERIFICATION_ENABLED = 'false';
   process.env.PLATFORM_JWT_SECRET = jwtSecret;
   process.env.PLATFORM_ADMIN_TOKEN = adminToken;
   process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL = 'founder@example.com';
@@ -36,6 +38,7 @@ test('首管理员必须同时通过登录、配置邮箱和独立管理员令�
       const envName = {
         mode: 'PUBLIC_PLATFORM_MODE',
         registration: 'PLATFORM_REGISTRATION_ENABLED',
+        verification: 'PLATFORM_EMAIL_VERIFICATION_ENABLED',
         jwt: 'PLATFORM_JWT_SECRET',
         admin: 'PLATFORM_ADMIN_TOKEN',
         bootstrap: 'PLATFORM_BOOTSTRAP_ADMIN_EMAIL',

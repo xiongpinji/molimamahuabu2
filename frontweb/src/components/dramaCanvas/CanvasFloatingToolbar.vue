@@ -19,13 +19,13 @@
         <el-icon><Plus /></el-icon>
       </button>
       <span class="toolbar-divider" aria-hidden="true" />
-      <button type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
+      <button v-if="!props.standalone" type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
         <el-icon><Operation /></el-icon><span>工作流</span>
       </button>
       <button type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" title="素材库" @click="toggleSidebar">
         <el-icon><FolderOpened /></el-icon><span>素材库</span>
       </button>
-      <button type="button" class="toolbar-button" aria-label="打开剧本节点" title="剧本" @click="focusScript">
+      <button v-if="!props.standalone" type="button" class="toolbar-button" aria-label="打开剧本节点" title="剧本" @click="focusScript">
         <el-icon><Document /></el-icon><span>剧本</span>
       </button>
       <button type="button" class="toolbar-button" aria-label="整理画布节点" title="整理节点" @click="alignNodes">
@@ -64,20 +64,30 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Document, FolderOpened, FullScreen, Grid, List, Operation, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
+const props = defineProps({
+  standalone: { type: Boolean, default: false },
+})
 const ctx = useCanvasContext()
 const addMenuVisible = ref(false)
 const toolbarRef = ref(null)
 
-const addItems = [
+const productionAddItems = [
   { type: 'storyboard', label: '分镜', hint: '镜头与首尾帧', icon: Document },
   { type: 'character', label: '角色', hint: '角色设定', icon: FolderOpened },
   { type: 'scene', label: '场景', hint: '空间与氛围', icon: FullScreen },
   { type: 'prop', label: '道具', hint: '关键物件', icon: Operation },
   { type: 'episode', label: '新集', hint: '从剧本开始', icon: List },
 ]
+const standaloneAddItems = [
+  { type: 'text', label: '文本', hint: '内容与提示词', icon: Document },
+  { type: 'image', label: '图片', hint: '图片生成节点', icon: Picture },
+  { type: 'video', label: '视频', hint: '视频生成节点', icon: VideoPlay },
+  { type: 'audio', label: '音频', hint: '音频生成节点', icon: Microphone },
+]
+const addItems = computed(() => props.standalone ? standaloneAddItems : productionAddItems)
 
 const workflowOpen = computed(() => Boolean(ctx?.showWorkflowPanel?.value))
 const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))
@@ -154,9 +164,9 @@ onBeforeUnmount(() => {
   gap: 4px;
   min-height: 54px;
   padding: 6px 10px;
-  border: 1px solid rgba(82, 82, 91, 0.72);
+  border: 1px solid #2d2d2d;
   border-radius: 17px;
-  background: rgba(24, 24, 27, 0.92);
+  background: rgba(15, 15, 15, 0.94);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.24);
   backdrop-filter: blur(18px);
 }
@@ -181,16 +191,16 @@ button {
 }
 .toolbar-primary {
   width: 48px;
-  background: #f4f4f5;
-  color: #18181b;
+  background: #ff7139;
+  color: #111;
   font-size: 22px;
 }
 .toolbar-button { padding: 0 11px; font-size: 12px; }
 .toolbar-icon { width: 44px; font-size: 18px; }
 .toolbar-button:hover,
-.toolbar-icon:hover { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; }
-.toolbar-button.active { background: rgba(129, 140, 248, 0.2); color: #c4b5fd; }
-.toolbar-primary:hover { transform: scale(1.03); background: #ffffff; }
+.toolbar-icon:hover { background: rgba(255, 113, 57, 0.14); color: #ff9a72; }
+.toolbar-button.active { background: rgba(255, 113, 57, 0.18); color: #ff956d; }
+.toolbar-primary:hover { transform: scale(1.03); background: #ff8757; }
 .toolbar-divider { width: 1px; height: 24px; margin: 0 4px; background: #3f3f46; }
 .toolbar-divider-spacer { margin-left: 8px; }
 .zoom-label { width: 42px; color: #a1a1aa; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -200,9 +210,9 @@ button {
   bottom: 66px;
   width: 236px;
   padding: 8px;
-  border: 1px solid #3f3f46;
+  border: 1px solid #303030;
   border-radius: 14px;
-  background: rgba(24, 24, 27, 0.97);
+  background: rgba(17, 17, 17, 0.98);
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
 }
 .add-menu-title { padding: 4px 8px 7px; color: #71717a; font-size: 11px; }
@@ -220,7 +230,7 @@ button {
   text-align: left;
   cursor: pointer;
 }
-.add-menu-item:hover { background: rgba(129, 140, 248, 0.14); }
+.add-menu-item:hover { background: rgba(255, 113, 57, 0.13); }
 .add-menu-item span { font-size: 13px; color: #e4e4e7; }
 .add-menu-item small { color: #71717a; font-size: 10px; }
 @media (max-width: 760px) {

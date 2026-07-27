@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const mediaLibrarySource = readFileSync(fileURLToPath(new URL('../src/views/MediaLibrary.vue', import.meta.url)), 'utf8')
+const uploadApiSource = readFileSync(fileURLToPath(new URL('../src/api/upload.js', import.meta.url)), 'utf8')
 
 test('素材库消费画布结果跳转参数并高亮目标素材', () => {
   assert.match(mediaLibrarySource, /import \{ useRoute \} from 'vue-router'/)
@@ -15,14 +16,24 @@ test('素材库消费画布结果跳转参数并高亮目标素材', () => {
   assert.match(mediaLibrarySource, /function isTargetAsset\(item\)/)
   assert.match(mediaLibrarySource, /targeted: isTargetAsset\(item\)/)
   assert.match(mediaLibrarySource, /画布结果定位/)
-  assert.match(mediaLibrarySource, /watch\(\(\) => \[route\.query\.assetId, route\.query\.type\]/)
-  assert.match(mediaLibrarySource, /applyRouteAssetFocus\(\)\s*\n\s*loadMedia\(\)/)
+  assert.match(mediaLibrarySource, /watch\(\(\) => \[route\.query\.assetId, route\.query\.type, route\.query\.dramaId\]/)
+  assert.match(mediaLibrarySource, /applyRouteAssetFocus\(\)\s*\n\s*await loadLibraryDramas\(\)\s*\n\s*await loadMedia\(\)/)
+})
+
+test('素材库列表始终绑定当前项目并允许切换自有项目', () => {
+  assert.match(mediaLibrarySource, /v-model="libraryDramaId"[\s\S]*placeholder="选择素材项目"/)
+  assert.match(mediaLibrarySource, /const libraryDramas = ref\(\[\]\)/)
+  assert.match(mediaLibrarySource, /const libraryDramaId = ref\(null\)/)
+  assert.match(mediaLibrarySource, /async function loadLibraryDramas\(\)/)
+  assert.match(mediaLibrarySource, /params\.drama_id = libraryDramaId\.value/)
+  assert.match(mediaLibrarySource, /params\.include_global = 1/)
+  assert.match(mediaLibrarySource, /if \(!libraryDramaId\.value\)[\s\S]*mediaItems\.value = \[\][\s\S]*return/)
 })
 
 test('素材库页面支持音频素材上传、筛选、预览和复用为分镜音频', () => {
-  assert.match(mediaLibrarySource, /accept="image\/\*,video\/\*,audio\/\*"/)
+  assert.match(mediaLibrarySource, /accept="\.png,\.jpg,\.jpeg,\.gif,\.webp,\.mp4,\.mov,\.m4a,\.m4b,\.webm,\.wav,\.mp3,\.ogg,\.oga,\.flac,\.aac"/)
   assert.match(mediaLibrarySource, /<el-radio-button value="audio">音频<\/el-radio-button>/)
-  assert.match(mediaLibrarySource, /await uploadAPI\.uploadMedia\(file\)/)
+  assert.match(mediaLibrarySource, /await uploadAPI\.uploadMedia\(file, \{ dramaId: libraryDramaId\.value \}\)/)
   assert.match(mediaLibrarySource, /item\.audio_url \|\| item\.voice_url/)
   assert.match(mediaLibrarySource, /const isAudio = url\.match\(\/\\\.\(mp3\|wav\|m4a\|aac\|ogg\|flac\)\$\/i\) \|\| item\.type === 'audio'/)
   assert.match(mediaLibrarySource, /type: isVideo \? 'video' : isAudio \? 'audio' : 'image'/)
@@ -37,6 +48,22 @@ test('素材库页面支持音频素材上传、筛选、预览和复用为分�
   assert.match(mediaLibrarySource, /audio_local_path: localPath \|\| undefined/)
   assert.match(mediaLibrarySource, /audio_url: localPath \? undefined : itemUrl\(item\)/)
   assert.match(mediaLibrarySource, /已设为该分镜音频，可到画布查看/)
+})
+
+test('素材库通用上传绑定项目且按真实成功失败数量提示', () => {
+  assert.match(uploadApiSource, /uploadMedia\(file, opts = \{\}\)/)
+  assert.match(uploadApiSource, /form\.append\('drama_id', String\(did\)\)/)
+  assert.match(uploadApiSource, /request\.post\('\/upload\/media', form/)
+  assert.match(mediaLibrarySource, /let successCount = 0/)
+  assert.match(mediaLibrarySource, /let failureCount = 0/)
+  assert.match(mediaLibrarySource, /successCount\+\+/)
+  assert.match(mediaLibrarySource, /failureCount\+\+/)
+  assert.match(mediaLibrarySource, /uploadProgress\.value\.current\+\+/)
+  assert.match(mediaLibrarySource, /if \(successCount === 0\)/)
+  assert.match(mediaLibrarySource, /全部上传失败/)
+  assert.match(mediaLibrarySource, /成功 \$\{successCount\} 个，失败 \$\{failureCount\} 个/)
+  assert.match(mediaLibrarySource, /ElMessage\.success\(`\$\{successCount\} 个素材上传完成`\)/)
+  assert.doesNotMatch(mediaLibrarySource, /ElMessage\.success\(`\$\{files\.length\} 个素材上传完成`\)/)
 })
 
 test('素材复用创建派生记录且提交期间拒绝重复点击，不迁移原素材', () => {

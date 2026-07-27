@@ -50,7 +50,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Connection, Document, Download, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
+import { Connection, Delete, Document, Download, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -59,13 +59,35 @@ const props = defineProps({
   mode: { type: String, default: 'create' },
   nodeLabel: { type: String, default: '' },
   nodeActions: { type: Array, default: () => [] },
+  standalone: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['select', 'close'])
 const menuRef = ref(null)
 const menuStyle = ref({ left: '8px', top: '8px' })
 
-const addGroups = [
+const standaloneAddGroups = [
+  {
+    title: '自由创作',
+    items: [
+      { key: 'text', type: 'text', label: '文本', hint: '内容与提示词', icon: Document },
+      { key: 'image', type: 'image', label: '图片', hint: '图片生成节点', icon: Picture },
+      { key: 'video', type: 'video', label: '视频', hint: '视频生成节点', icon: VideoPlay },
+      { key: 'audio', type: 'audio', label: '音频', hint: '音频生成节点', icon: Microphone },
+    ],
+  },
+  {
+    title: '资源',
+    items: [
+      { key: 'media-library', type: 'open-media-library', label: '素材库', hint: '选择已有素材', icon: FolderOpened },
+      { key: 'upload', type: 'upload-media', label: '上传', hint: '本地文件加入画布', icon: Upload },
+      { key: 'paste', type: 'paste-media', label: '粘贴', hint: '剪贴板素材加入画布', icon: Document },
+      { key: 'director-stage', type: 'open-director-stage', label: '3D 导演台', hint: '机位与角色调度', icon: VideoPlay },
+    ],
+  },
+]
+
+const productionAddGroups = [
   {
     title: '创作',
     items: [
@@ -95,12 +117,16 @@ const addGroups = [
     ],
   },
 ]
+const addGroups = computed(() => props.standalone ? standaloneAddGroups : productionAddGroups)
 
 const nodeGroups = [
   {
     title: '编辑',
     items: [
       { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
+      { type: 'duplicate-free-node', label: '复制节点', hint: '克隆到右下方', icon: Document },
+      { type: 'mount-free-node-asset', label: '挂载素材', hint: '替换当前节点素材', icon: FolderOpened },
+      { type: 'delete-free-node', label: '删除节点', hint: '可通过撤销恢复', icon: Delete },
       { type: 'open-node-production', label: '进入制作页', hint: '等同双击节点', icon: FullScreen },
       { type: 'preview-node-video', label: '预览视频', hint: '打开成片', icon: View },
       { type: 'duplicate-storyboard-node', label: '复制分镜', hint: '克隆到旁边', icon: Document },
@@ -202,11 +228,11 @@ function close() {
 .canvas-context-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2999;
+  z-index: 5999;
 }
 .canvas-context-menu {
   position: fixed;
-  z-index: 3000;
+  z-index: 6000;
   width: 236px;
   max-height: calc(100vh - 16px);
   overflow-y: auto;

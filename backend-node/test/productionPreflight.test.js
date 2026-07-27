@@ -45,9 +45,16 @@ function productionEnv() {
   return {
     PUBLIC_PLATFORM_MODE: 'true',
     PLATFORM_REGISTRATION_ENABLED: 'false',
+    PLATFORM_EMAIL_VERIFICATION_ENABLED: 'true',
     PLATFORM_JWT_SECRET: 'j'.repeat(40),
     PLATFORM_ADMIN_TOKEN: 'a'.repeat(40),
     PLATFORM_BOOTSTRAP_ADMIN_EMAIL: 'admin@example.com',
+    SMTP_HOST: 'smtp.example.com',
+    SMTP_PORT: '465',
+    SMTP_SECURE: 'true',
+    SMTP_USER: 'mailer@example.com',
+    SMTP_PASSWORD: 'smtp-app-password',
+    SMTP_FROM: '茉莉妈妈 <mailer@example.com>',
   };
 }
 
@@ -153,6 +160,67 @@ test('即使使用 HTTPS 也拒绝 localhost 作为生产 CORS 和素材地址',
     );
     assert.equal(
       report.checks.find((check) => check.id === 'storage_public_url')?.status,
+      'fail',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('开放注册时必须同时启用邮箱验证并完整配置 SMTP', () => {
+  const db = createDb();
+  try {
+    const missingMail = productionEnv();
+    missingMail.PLATFORM_REGISTRATION_ENABLED = 'true';
+    missingMail.PLATFORM_EMAIL_VERIFICATION_ENABLED = 'false';
+    const blocked = runProductionPreflight({
+      config: productionConfig(),
+      env: missingMail,
+      db,
+    });
+    assert.equal(
+      blocked.checks.find((check) => check.id === 'registration_email_verification')?.status,
+      'fail',
+    );
+
+    const readyMail = {
+      ...missingMail,
+      PLATFORM_EMAIL_VERIFICATION_ENABLED: 'true',
+      SMTP_HOST: 'smtp.example.com',
+      SMTP_PORT: '465',
+      SMTP_SECURE: 'true',
+      SMTP_USER: 'mailer@example.com',
+      SMTP_PASSWORD: 'smtp-app-password',
+      SMTP_FROM: '茉莉妈妈 <mailer@example.com>',
+    };
+    const ready = runProductionPreflight({
+      config: productionConfig(),
+      env: readyMail,
+      db,
+    });
+    assert.equal(
+      ready.checks.find((check) => check.id === 'registration_email_verification')?.status,
+      'pass',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('关闭新用户注册时仍要求邮箱服务可用于已有用户找回密码', () => {
+  const db = createDb();
+  try {
+    const env = productionEnv();
+    delete env.SMTP_PASSWORD;
+
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env,
+      db,
+    });
+
+    assert.equal(
+      report.checks.find((check) => check.id === 'registration_email_verification')?.status,
       'fail',
     );
   } finally {

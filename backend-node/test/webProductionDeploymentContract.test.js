@@ -46,6 +46,10 @@ test('生产示例环境文件只包含占位符且公开注册默认关闭', ()
   assert.match(example, /^PLATFORM_REGISTRATION_ENABLED=false$/m);
   assert.match(example, /^PLATFORM_JWT_SECRET=CHANGE_ME_/m);
   assert.match(example, /^PLATFORM_ADMIN_TOKEN=CHANGE_ME_/m);
+  assert.match(example, /^PLATFORM_EMAIL_VERIFICATION_ENABLED=true$/m);
+  assert.match(example, /^SMTP_HOST=/m);
+  assert.match(example, /^SMTP_FROM=/m);
+  assert.match(example, /^SMTP_PASSWORD=CHANGE_ME_/m);
   assert.doesNotMatch(example, /sk-[A-Za-z0-9]/);
 });
 

@@ -27,6 +27,17 @@ export const uploadAPI = {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
   },
+  /** 上传素材库媒体文件（图片/视频/音频），并在后端登记为项目素材。 */
+  uploadMedia(file, opts = {}) {
+    const form = new FormData()
+    form.append('file', file)
+    const did = opts.dramaId
+    if (did != null && did !== '' && Number(did) > 0) form.append('drama_id', String(did))
+    if (opts.name) form.append('name', String(opts.name))
+    return request.post('/upload/media', form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+  },
   /**
    * 从图片（base64 data URL 或 http URL）提取实体特征描述，不依赖已有实体 ID。
    * entityType: 'character' | 'scene' | 'prop'

@@ -355,6 +355,7 @@ function viewSavedAsset() {
     query: {
       assetId: String(asset.id),
       type: resultPreviewType.value,
+      ...(asset.drama_id ? { dramaId: String(asset.drama_id) } : {}),
     },
   })
 }

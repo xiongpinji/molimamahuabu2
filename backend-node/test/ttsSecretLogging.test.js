@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { synthesize } = require('../src/services/ttsService');
+const minimalMp3 = require('./fixtures/minimalMp3');
 
 test('TTS 服务的日志调用不得直接引用 API Key', () => {
   const servicePath = path.join(__dirname, '..', 'src', 'services', 'ttsService.js');
@@ -25,7 +26,7 @@ test('OpenAI 兼容 TTS 请求使用 API Key 但日志不泄露密钥', async ()
     req.resume();
     req.on('end', () => {
       res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
-      res.end(Buffer.from('test-audio'));
+      res.end(minimalMp3);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

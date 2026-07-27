@@ -1,14 +1,16 @@
 <template>
-  <main class="admin-page">
-    <PlatformHeader title="平台管理后台" back-to="/" back-label="返回" />
-    <section class="admin-shell">
-      <header class="page-heading">
-        <div>
-          <h1>平台管理后台</h1>
-          <p>统一管理账号、兑换码、积分流水和每个模型的独立计费规则。</p>
-        </div>
-      </header>
-
+  <AdminWorkspaceShell
+    title="运营与计费"
+    header-title="平台管理后台"
+    eyebrow="平台运营控制台"
+    description="统一管理兑换码、积分流水、对账和每个模型的独立计费规则。"
+  >
+    <section v-if="!unlocked" class="unlock-panel" aria-labelledby="unlock-title">
+      <div>
+        <p class="panel-kicker">敏感操作保护</p>
+        <h2 id="unlock-title">验证管理员身份</h2>
+        <p>令牌仅保存在当前浏览器会话，用于调用现有平台管理接口。</p>
+      </div>
       <div class="admin-auth">
         <el-input
           v-model="adminToken"
@@ -20,23 +22,69 @@
         <el-button type="primary" :loading="loading" @click="unlock">验证并读取</el-button>
       </div>
       <el-alert
-        v-if="!unlocked"
         title="管理员令牌只保存在当前浏览器会话，不会写入长期存储。"
         type="info"
         :closable="false"
       />
+    </section>
 
-      <el-tabs v-else v-model="activeTab" class="admin-tabs">
+    <template v-else>
+      <section class="billing-summary" aria-label="运营概览">
+        <article>
+          <span>计费模型</span>
+          <strong>{{ prices.length }}</strong>
+        </article>
+        <article>
+          <span>平台账号</span>
+          <strong>{{ users.length }}</strong>
+        </article>
+        <article>
+          <span>工作区</span>
+          <strong>{{ tenants.length }}</strong>
+        </article>
+        <article>
+          <span>积分流水</span>
+          <strong>{{ transactions.length }}</strong>
+        </article>
+      </section>
+
+      <el-tabs v-model="activeTab" class="admin-tabs">
         <el-tab-pane label="模型计费" name="models">
           <section class="panel">
             <div class="panel-heading">
               <div>
                 <h2>模型计费</h2>
-                <p>每个实际模型单独配置积分、类型和启停状态；停用后立即禁止新生成。</p>
+                <p>自动汇总 AI 配置中的实际模型；每个模型单独设置积分、类型和启停状态。</p>
               </div>
             </div>
+            <div class="model-pricing-summary" aria-label="模型计费状态">
+              <el-tag type="success">已定价 {{ configuredModelCount }}</el-tag>
+              <el-tag type="warning">未定价 {{ unconfiguredModelCount }}</el-tag>
+              <el-tag type="info">已停用 {{ disabledModelCount }}</el-tag>
+            </div>
+            <div class="model-filters">
+              <el-input
+                v-model.trim="modelSearch"
+                clearable
+                placeholder="搜索模型名称或 ID"
+              />
+              <el-select v-model="modelCategory" aria-label="模型类型筛选">
+                <el-option label="全部类型" value="all" />
+                <el-option label="文本" value="text" />
+                <el-option label="图片" value="image" />
+                <el-option label="视频" value="video" />
+                <el-option label="音频" value="audio" />
+                <el-option label="其他" value="other" />
+              </el-select>
+              <el-select v-model="modelPricingState" aria-label="计费状态筛选">
+                <el-option label="全部状态" value="all" />
+                <el-option label="已定价" value="configured" />
+                <el-option label="未定价" value="unconfigured" />
+                <el-option label="已停用" value="disabled" />
+              </el-select>
+            </div>
             <div class="model-list">
-              <div v-for="item in prices" :key="item.model" class="model-row">
+              <div v-for="item in filteredPrices" :key="item.model" class="model-row">
                 <el-input v-model="item.display_name" placeholder="展示名称" />
                 <el-select v-model="item.category">
                   <el-option label="文本" value="text" />
@@ -51,8 +99,12 @@
                   <el-option label="停用" value="disabled" />
                 </el-select>
                 <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
-                <small>{{ item.model }}</small>
+                <small>
+                  {{ item.model }}
+                  <el-tag v-if="!item.configured" type="warning" size="small">未定价</el-tag>
+                </small>
               </div>
+              <el-empty v-if="filteredPrices.length === 0" description="没有匹配的模型" />
             </div>
             <div class="new-model">
               <el-input v-model.trim="newModel.model" placeholder="模型 ID" />
@@ -138,14 +190,14 @@
           <BillingReconciliationPanel />
         </el-tab-pane>
       </el-tabs>
-    </section>
-  </main>
+    </template>
+  </AdminWorkspaceShell>
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import PlatformHeader from '@/components/PlatformHeader.vue'
+import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
 import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
 import {
@@ -170,6 +222,9 @@ const transactions = ref([])
 const savingModel = ref('')
 const savingUser = ref('')
 const adjustingCredits = ref(false)
+const modelSearch = ref('')
+const modelCategory = ref('all')
+const modelPricingState = ref('all')
 const newModel = reactive({
   model: '',
   display_name: '',
@@ -186,6 +241,28 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '永久'
 }
 
+const configuredModelCount = computed(() => prices.value.filter(
+  (item) => item.configured && item.status === 'enabled',
+).length)
+const unconfiguredModelCount = computed(() => prices.value.filter((item) => !item.configured).length)
+const disabledModelCount = computed(() => prices.value.filter(
+  (item) => item.configured && item.status === 'disabled',
+).length)
+const filteredPrices = computed(() => {
+  const query = modelSearch.value.toLowerCase()
+  return prices.value.filter((item) => {
+    const matchesSearch = !query
+      || String(item.model).toLowerCase().includes(query)
+      || String(item.display_name || '').toLowerCase().includes(query)
+    const matchesCategory = modelCategory.value === 'all' || item.category === modelCategory.value
+    const matchesState = modelPricingState.value === 'all'
+      || (modelPricingState.value === 'configured' && item.configured && item.status === 'enabled')
+      || (modelPricingState.value === 'unconfigured' && !item.configured)
+      || (modelPricingState.value === 'disabled' && item.configured && item.status === 'disabled')
+    return matchesSearch && matchesCategory && matchesState
+  })
+})
+
 async function loadAll() {
   const [modelRows, userRows, tenantRows, transactionRows] = await Promise.all([
     listModelPrices(),
@@ -195,6 +272,7 @@ async function loadAll() {
   ])
   prices.value = modelRows.map((item) => ({
     ...item,
+    configured: item.credits != null && item.status !== 'unconfigured',
     status: item.status === 'unconfigured' ? 'enabled' : item.status,
   }))
   users.value = userRows
@@ -216,6 +294,9 @@ async function unlock() {
 }
 
 async function saveModel(item) {
+  if (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0) {
+    return ElMessage.warning('请填写正整数积分')
+  }
   savingModel.value = item.model
   try {
     const saved = await updateModelPrice(item.model, {
@@ -224,7 +305,7 @@ async function saveModel(item) {
       category: item.category,
       status: item.status === 'unconfigured' ? 'enabled' : item.status,
     })
-    Object.assign(item, saved)
+    Object.assign(item, saved, { configured: true })
     ElMessage.success(`${saved.display_name || saved.model} 已保存`)
   } finally {
     savingModel.value = ''
@@ -242,8 +323,8 @@ async function addModel() {
       status: 'enabled',
     })
     const index = prices.value.findIndex((item) => item.model === saved.model)
-    if (index >= 0) prices.value[index] = saved
-    else prices.value.push(saved)
+    if (index >= 0) prices.value[index] = { ...saved, configured: true }
+    else prices.value.push({ ...saved, configured: true })
     Object.assign(newModel, { model: '', display_name: '', category: 'video', credits: 1 })
     ElMessage.success('模型计费规则已新增')
   } finally {
@@ -288,24 +369,41 @@ async function submitAdjustment() {
 </script>
 
 <style scoped>
-.admin-page { min-height: 100vh; padding: 0 20px 56px; color: #f5f5f7; background: #111214; }
-.admin-shell { width: min(1180px, 100%); margin: 24px auto 0; }
-.page-heading { margin-bottom: 20px; }
-.page-heading h1, .panel h2 { margin: 0 0 8px; }
-.page-heading p, .panel-heading p, .field-hint { margin: 0; color: #a8a9af; }
-.admin-auth { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 18px; }
-.admin-tabs { margin-top: 22px; }
-.panel { padding: 22px; border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
+.unlock-panel,
+.billing-summary article,
+.panel {
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
+}
+.unlock-panel { display: grid; gap: 20px; padding: 24px; }
+.unlock-panel h2, .panel h2 { margin: 0 0 8px; }
+.unlock-panel p, .panel-heading p, .field-hint { margin: 0; color: #929292; }
+.panel-kicker { margin-bottom: 8px !important; color: #ff7139 !important; font-size: 12px; font-weight: 700; letter-spacing: .12em; }
+.admin-auth { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+.billing-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.billing-summary article { display: grid; gap: 7px; padding: 18px 20px; }
+.billing-summary span { color: #858585; font-size: 12px; }
+.billing-summary strong { font-size: 24px; }
+.admin-tabs { margin-top: 10px; }
+.panel { padding: 22px; }
 .panel-heading { margin-bottom: 18px; }
+.model-pricing-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.model-filters { display: grid; grid-template-columns: minmax(220px, 1fr) 150px 150px; gap: 10px; margin-bottom: 14px; }
 .model-list { display: grid; gap: 10px; }
-.model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #303136; border-radius: 12px; }
-.model-row small { grid-column: 1 / -1; color: #8f9098; }
+.model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #292929; border-radius: 12px; }
+.model-row small { display: flex; grid-column: 1 / -1; gap: 8px; align-items: center; color: #8f9098; }
 .new-model, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
 .new-model { grid-template-columns: 1.2fr 1fr 120px 150px auto; }
 .credit-form { grid-template-columns: 1.2fr 160px 1.5fr auto; }
 .panel :deep(.el-table) { margin-top: 18px; }
 .field-hint { font-size: 12px; }
 @media (max-width: 900px) {
-  .model-row, .new-model, .credit-form, .admin-auth { grid-template-columns: 1fr; }
+  .billing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .model-row, .model-filters, .new-model, .credit-form, .admin-auth { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .billing-summary { grid-template-columns: 1fr; }
 }
 </style>

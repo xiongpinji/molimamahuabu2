@@ -23,6 +23,7 @@ test('keeps primary image and video generation endpoints registered', () => {
     assert.equal(routes.has('POST /videos'), true);
     assert.equal(routes.has('GET /video-models'), true);
     assert.equal(routes.has('GET /image-models'), true);
+    assert.equal(routes.has('GET /audio-models'), true);
     assert.equal(routes.has('GET /voice-catalog'), true);
     assert.equal(routes.has('GET /voice-catalog/:id/preview'), true);
     assert.equal(routes.has('POST /characters/:id/sd2-voice-catalog'), true);
@@ -43,10 +44,15 @@ test('keeps voice preview before user auth middleware', () => {
 test('keeps tenant recovery routes before tenant context middleware', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
   const listTenantsIndex = source.indexOf("r.get('/tenants'");
+  const changeMemberRoleIndex = source.indexOf(
+    "r.patch('/tenants/:tenantId/members/:userId/role'",
+  );
   const tenantContextIndex = source.indexOf('r.use(createTenantContextMiddleware');
   assert.notEqual(listTenantsIndex, -1);
+  assert.notEqual(changeMemberRoleIndex, -1);
   assert.notEqual(tenantContextIndex, -1);
   assert.equal(listTenantsIndex < tenantContextIndex, true);
+  assert.equal(changeMemberRoleIndex < tenantContextIndex, true);
 });
 
 test('keeps global billing admin routes before tenant context and tenant billing routes after it', () => {

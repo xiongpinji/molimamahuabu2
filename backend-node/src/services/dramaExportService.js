@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
 
-const EXPORT_VERSION = '1.4';  // 1.4: 完整导出分镜图片历史（含首尾帧 first/last 绑定）、frame_prompts、layout_description 等，支持导入后恢复首尾帧模式数据
+const EXPORT_VERSION = '1.5';  // 1.5: 增加项目素材及其分镜/生成记录关联，支持完整复制画布素材
 
 function getStoragePath(cfg) {
   const raw = cfg?.storage?.local_path || './data/storage';
@@ -113,7 +113,7 @@ function exportDrama(db, cfg, log, dramaId) {
     allImagesBySb[sbId] = igs.filter(ig => ig && ig.local_path);
 
     const vg = db.prepare(
-      "SELECT video_url, local_path FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
+      "SELECT id, video_url, local_path FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
     ).get(sbId);
     if (vg) videosBySb[sbId] = vg;
   }
@@ -151,6 +151,9 @@ function exportDrama(db, cfg, log, dramaId) {
   // ---- 7. 读取道具 ----
   const props = db.prepare(
     'SELECT * FROM props WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id'
+  ).all(Number(dramaId));
+  const assets = db.prepare(
+    'SELECT * FROM assets WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id'
   ).all(Number(dramaId));
 
   // ---- 场景去重（数据库中可能存在同 location+time 的重复记录，导出时只保留第一条）----
@@ -215,6 +218,7 @@ function exportDrama(db, cfg, log, dramaId) {
     episodes: episodes.map(ep => {
       const sbs = storyboardsByEp[ep.id] || [];
       return {
+        original_id: ep.id,
         episode_number: ep.episode_number,
         title: ep.title,
         description: ep.description,
@@ -251,6 +255,7 @@ function exportDrama(db, cfg, log, dramaId) {
 
           return {
             storyboard_number: sb.storyboard_number,
+            original_id: sb.id,
             title: sb.title,
             description: sb.description,
             location: sb.location,
@@ -290,6 +295,7 @@ function exportDrama(db, cfg, log, dramaId) {
             prop_indices: propIndices,
             image_file: sbImageFile,
             video_file: sbVideoFile,
+            video_original_id: vg?.id ?? null,
             audio_file: sbAudioFile,
             narration_audio_file: sbNarrationAudioFile,
             // 完整分镜图片历史（含首尾帧），导入后可恢复 getSbAllImages + 绑定
@@ -324,6 +330,7 @@ function exportDrama(db, cfg, log, dramaId) {
         return zipPath;
       });
       return {
+        original_id: c.id,
         name: c.name,
         role: c.role,
         description: c.description,
@@ -344,6 +351,7 @@ function exportDrama(db, cfg, log, dramaId) {
         return zipPath;
       });
       return {
+        original_id: s.id,
         location: s.location,
         time: s.time,
         prompt: s.prompt,
@@ -362,6 +370,7 @@ function exportDrama(db, cfg, log, dramaId) {
         return zipPath;
       });
       return {
+        original_id: p.id,
         name: p.name,
         type: p.type,
         description: p.description,
@@ -369,6 +378,31 @@ function exportDrama(db, cfg, log, dramaId) {
         episode_index: epIdx >= 0 ? epIdx : null,
         image_file: p.local_path ? `media/props/prop_${p.id}${extOf(p.local_path)}` : null,
         extra_image_files: extraFiles,
+      };
+    }),
+    assets: assets.map((asset) => {
+      const localFile = asset.local_path
+        ? `media/assets/asset_${asset.id}${extOf(asset.local_path)}`
+        : null;
+      if (localFile) {
+        extraFilesToPack.push({ localRelPath: asset.local_path, zipPath: localFile });
+      }
+      return {
+        original_id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        category: asset.category,
+        url: asset.url,
+        local_file: localFile,
+        file_size: asset.file_size,
+        mime_type: asset.mime_type,
+        width: asset.width,
+        height: asset.height,
+        duration: asset.duration,
+        metadata: asset.metadata,
+        storyboard_original_id: asset.storyboard_id,
+        image_generation_original_id: asset.image_gen_id,
+        video_generation_original_id: asset.video_gen_id,
       };
     }),
   };
