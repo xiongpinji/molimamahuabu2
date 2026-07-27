@@ -620,6 +620,7 @@ import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
 import CanvasProjectAssetNode from '@/components/dramaCanvas/CanvasProjectAssetNode.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
+import CanvasGroupNode from '@/components/dramaCanvas/CanvasGroupNode.vue'
 import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
@@ -654,6 +655,7 @@ const layoutCache = ref(null)
 const workflowGroups = ref([])
 const activeGroupId = ref(null)
 const selectedStoryboardIds = ref([])
+const selectedFreeNodeIds = ref([])
 const pipelineSteps = ref(['image', 'video', 'audio'])
 const workflowRunning = ref(false)
 const workflowProgress = ref('')
@@ -821,6 +823,7 @@ const nodeTypes = {
   canvasProjectAsset: markRaw(CanvasProjectAssetNode),
   canvasAddButton: markRaw(CanvasAddButtonNode),
   homeCanvasNode: markRaw(HomeCanvasNode),
+  canvasGroup: markRaw(CanvasGroupNode),
 }
 
 const dramaId = computed(() => Number(route.params.id))
@@ -1647,6 +1650,25 @@ function rebuildGraph() {
       },
     }
   })
+  if (isStandaloneCanvas.value) {
+    const freeNodeIds = new Set(nextNodes.filter((node) => node.type === 'homeCanvasNode').map((node) => String(node.id)))
+    const groupNodes = (savedLayout.value?.groups || [])
+      .filter((group) => (group?.child_node_ids || []).filter((id) => freeNodeIds.has(String(id))).length >= 2)
+      .map((group) => ({
+        id: String(group.id),
+        type: 'canvasGroup',
+        position: { x: Number(group.x) || 0, y: Number(group.y) || 0 },
+        data: {
+          title: String(group.title || '节点组'),
+          childNodeIds: group.child_node_ids.map(String).filter((id) => freeNodeIds.has(id)),
+          width: Math.max(260, Number(group.width) || 260),
+          height: Math.max(180, Number(group.height) || 180),
+        },
+        zIndex: -1,
+        selectable: true,
+      }))
+    nextNodes = [...groupNodes, ...nextNodes]
+  }
   const nodesById = new Map(nextNodes.map((node) => [String(node.id), node]))
   let nextEdges = stampEdgeBaseStyles(graph.edges
     .filter((edge) => {
@@ -4506,6 +4528,67 @@ function clearCanvasInteractionState() {
   focusedNodeId.value = null
   activeGroupId.value = null
   applySelectedStoryboardIds([])
+  selectedFreeNodeIds.value = []
+}
+
+function selectedStandaloneNodes() {
+  const selected = new Set(selectedFreeNodeIds.value)
+  return allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && selected.has(String(node.id)))
+}
+
+function createStandaloneGroup() {
+  if (!isStandaloneCanvas.value) return
+  const members = selectedStandaloneNodes()
+  if (members.length < 2) {
+    ElMessage.warning('请先框选至少 2 个节点')
+    return
+  }
+  const padding = 34
+  const minX = Math.min(...members.map((node) => node.position.x)) - padding
+  const minY = Math.min(...members.map((node) => node.position.y)) - padding
+  const maxX = Math.max(...members.map((node) => node.position.x + Number(node.dimensions?.width || 460))) + padding
+  const maxY = Math.max(...members.map((node) => node.position.y + Number(node.dimensions?.height || 300))) + padding
+  allGraphNodes.value = [{
+    id: `canvas-group:${Date.now()}`,
+    type: 'canvasGroup',
+    position: { x: minX, y: minY },
+    data: {
+      title: `节点组 ${allGraphNodes.value.filter((node) => node.type === 'canvasGroup').length + 1}`,
+      childNodeIds: members.map((node) => String(node.id)),
+      width: maxX - minX,
+      height: maxY - minY,
+    },
+    zIndex: -1,
+    selectable: true,
+  }, ...allGraphNodes.value]
+  selectedFreeNodeIds.value = []
+  applyVirtualizedGraph()
+  scheduleLayoutSave()
+  ElMessage.success(`已将 ${members.length} 个节点打组`)
+}
+
+function ungroupStandaloneSelection() {
+  if (!isStandaloneCanvas.value) return
+  const selectedGroups = allGraphNodes.value.filter((node) => node.type === 'canvasGroup' && node.selected)
+  if (!selectedGroups.length) {
+    ElMessage.warning('请先选中组框')
+    return
+  }
+  const groupIds = new Set(selectedGroups.map((group) => String(group.id)))
+  allGraphNodes.value = allGraphNodes.value.filter((node) => !groupIds.has(String(node.id)))
+  applyVirtualizedGraph()
+  scheduleLayoutSave()
+  ElMessage.success('已解组，组内节点已保留')
+}
+
+async function runSelectedStandaloneGroup() {
+  if (!isStandaloneCanvas.value) return
+  const group = allGraphNodes.value.find((node) => node.type === 'canvasGroup' && node.selected)
+  if (!group) {
+    ElMessage.warning('请先选中组框')
+    return
+  }
+  await runFreeCanvasSubgraph(group.data?.childNodeIds || [], true)
 }
 
 async function onContextMenuSelect(type) {
@@ -4614,6 +4697,8 @@ const scriptActionsHolder = {}
 
 provide(CANVAS_CONTEXT_KEY, {
   focusedNodeId,
+  allGraphNodes,
+  selectedFreeNodeIds,
   currentViewport,
   drama,
   imagesBySbId,
@@ -4687,6 +4772,9 @@ provide(CANVAS_CONTEXT_KEY, {
     allGraphNodes.value.filter((node) => node.type === 'homeCanvasNode' && node.selected).map((node) => node.id),
     false,
   ),
+  createStandaloneGroup,
+  ungroupStandaloneSelection,
+  runSelectedStandaloneGroup,
   translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
 })
@@ -4736,12 +4824,34 @@ function onNodesChange(changes = []) {
     allGraphEdges.value = allGraphEdges.value.filter((edge) => (
       !removedFreeNodeIds.has(String(edge.source)) && !removedFreeNodeIds.has(String(edge.target))
     ))
+    allGraphNodes.value = allGraphNodes.value
+      .map((node) => node.type === 'canvasGroup'
+        ? { ...node, data: { ...node.data, childNodeIds: (node.data?.childNodeIds || []).filter((id) => !removedFreeNodeIds.has(String(id))) } }
+        : node)
+      .filter((node) => node.type !== 'canvasGroup' || node.data.childNodeIds.length >= 2)
     applyVirtualizedGraph()
     scheduleLayoutSave()
   }
 
   const selectionChanges = changes.filter((change) => change?.type === 'select')
   if (!selectionChanges.length) return
+
+  if (isStandaloneCanvas.value) {
+    const selectedIds = new Set(selectedFreeNodeIds.value)
+    for (const change of selectionChanges) {
+      const node = findGraphNode(change.id)
+      if (node?.type === 'homeCanvasNode') {
+        if (change.selected) selectedIds.add(String(change.id))
+        else selectedIds.delete(String(change.id))
+      } else if (node?.type === 'canvasGroup') {
+        allGraphNodes.value = allGraphNodes.value.map((item) => String(item.id) === String(change.id)
+          ? { ...item, selected: Boolean(change.selected) }
+          : item)
+      }
+    }
+    selectedFreeNodeIds.value = [...selectedIds]
+    return
+  }
 
   const selectedIds = new Set(selectedStoryboardIds.value.map(Number))
   for (const change of selectionChanges) {
@@ -4989,15 +5099,39 @@ function scheduleLayoutSave() {
   }, 700)
 }
 
-function onNodeDragStart() {
+let draggedGroupSnapshot = null
+function onNodeDragStart(payload) {
   syncRenderedNodesToGraph()
   dragHistorySnapshot.value = currentInteractionState()
+  const node = payload?.node
+  if (node?.type === 'canvasGroup') {
+    const childIds = new Set(node.data?.childNodeIds || [])
+    draggedGroupSnapshot = {
+      id: String(node.id),
+      position: { ...node.position },
+      children: Object.fromEntries(allGraphNodes.value
+        .filter((item) => childIds.has(String(item.id)))
+        .map((item) => [String(item.id), { ...item.position }])),
+    }
+  }
 }
 
 function onNodeDragStop() {
   syncRenderedNodesToGraph()
   syncCanvasViewportFromFlow()
   refreshLayoutCacheFromGraph()
+  const node = arguments[0]?.node
+  if (node?.type === 'canvasGroup' && draggedGroupSnapshot?.id === String(node.id)) {
+    const currentGroup = findGraphNode(node.id)
+    const dx = currentGroup.position.x - draggedGroupSnapshot.position.x
+    const dy = currentGroup.position.y - draggedGroupSnapshot.position.y
+    allGraphNodes.value = allGraphNodes.value.map((item) => {
+      const start = draggedGroupSnapshot.children[String(item.id)]
+      return start ? { ...item, position: { x: start.x + dx, y: start.y + dy } } : item
+    })
+    applyVirtualizedGraph()
+  }
+  draggedGroupSnapshot = null
   if (dragHistorySnapshot.value) commitInteractionHistory(dragHistorySnapshot.value)
   dragHistorySnapshot.value = null
   scheduleLayoutSave()
@@ -5062,7 +5196,10 @@ function onCanvasKeydown(event) {
   }
   if (key === 'g') {
     event.preventDefault()
-    void onCreateWorkflowGroup()
+    if (isStandaloneCanvas.value) createStandaloneGroup()
+    else {
+      void onCreateWorkflowGroup()
+    }
     return
   }
   if (key === 'z') {
