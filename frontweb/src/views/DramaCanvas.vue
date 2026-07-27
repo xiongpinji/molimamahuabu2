@@ -5441,6 +5441,7 @@ async function onAlignNodes() {
       return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n
     })
     applyVirtualizedGraph()
+    canvasFlowApi.value?.setNodes?.(nodes.value)
     layoutCache.value = {
       version: 1,
       nodes: { ...positions },
