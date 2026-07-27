@@ -5438,7 +5438,15 @@ async function onAlignNodes() {
       }).positions
     allGraphNodes.value = allGraphNodes.value.map((n) => {
       const pos = positions[n.id]
-      return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n
+      return pos
+        ? {
+            ...n,
+            position: { x: pos.x, y: pos.y },
+            ...(n.computedPosition
+              ? { computedPosition: { ...n.computedPosition, x: pos.x, y: pos.y } }
+              : {}),
+          }
+        : n
     })
     applyVirtualizedGraph()
     canvasFlowApi.value?.setNodes?.(nodes.value)
