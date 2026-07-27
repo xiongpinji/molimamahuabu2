@@ -360,11 +360,11 @@ async function generate() {
 
 async function pollImageTask(taskId, item, maxMs = 180000) {
   const start = Date.now()
+  const { taskAPI } = await import('@/api/task')
   while (Date.now() - start < maxMs) {
     await new Promise((r) => setTimeout(r, 3000))
     try {
-      const res = await imagesAPI.getTask ? imagesAPI.getTask(taskId) : null
-      if (!res) break
+      const res = await taskAPI.get(taskId)
       if (res.status === 'completed' && res.result) {
         const r = res.result
         item.url = r.image_url ? r.image_url : (r.local_path ? '/static/' + r.local_path : null)

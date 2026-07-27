@@ -78,6 +78,8 @@ test('独立创作页承接图片、视频和剧本真实生成且不依赖项�
   assert.match(freeCreateSource, /name="script"/)
   assert.match(freeCreateSource, /imagesAPI\.create/)
   assert.match(freeCreateSource, /videosAPI\.create/)
+  assert.match(freeCreateSource, /taskAPI\.get\(taskId\)/)
+  assert.doesNotMatch(freeCreateSource, /imagesAPI\.getTask/)
   assert.match(freeCreateSource, /generationAPI\.generateStory/)
   assert.match(freeCreateSource, /episode_count:\s*episodeCount\.value/)
   assert.match(freeCreateSource, /model:\s*model\.value/)
