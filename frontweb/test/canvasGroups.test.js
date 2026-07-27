@@ -58,4 +58,5 @@ test('group toolbar exposes grouping and ungrouping actions', () => {
   assert.match(toolbarSource, /@click="createGroup"/)
   assert.match(toolbarSource, /<span>解组<\/span>/)
   assert.match(toolbarSource, /@click="ungroup"/)
+  assert.match(toolbarSource, /'panel-open': panelOpen && selectedFreeCount < 2 && selectedGroupCount === 0/)
 })

@@ -2,7 +2,7 @@
   <div
     ref="toolbarRef"
     class="canvas-floating-toolbar nodrag nopan"
-    :class="{ 'panel-open': panelOpen }"
+    :class="{ 'panel-open': panelOpen && selectedFreeCount < 2 && selectedGroupCount === 0 }"
     @mousedown.stop
   >
     <div v-if="addMenuVisible" class="canvas-add-menu" role="menu" aria-label="添加节点菜单">
