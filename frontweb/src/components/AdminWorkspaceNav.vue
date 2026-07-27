@@ -23,31 +23,32 @@ import { ACCOUNT_PERMISSIONS, BILLING_PERMISSIONS, canPlatformAccount } from '@/
 const route = useRoute()
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const role = readSession()?.user?.role
+const legacyAdminMode = !role && !publicMode
 
 const items = [
   {
     name: 'tenant-console',
     label: '工作区与积分',
     description: '成员、兑换与流水',
-    visible: true,
+    visible: role !== 'redeem_admin',
   },
   {
     name: 'account-admin',
     label: '账号与权限',
     description: '角色、状态与会话',
-    visible: !publicMode || canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ),
+    visible: legacyAdminMode || canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ),
   },
   {
     name: 'billing-admin',
     label: '运营与计费',
     description: '模型、兑换码与对账',
-    visible: !publicMode || canPlatformAccount(role, BILLING_PERMISSIONS.REDEEM_CODES_MANAGE),
+    visible: legacyAdminMode || canPlatformAccount(role, BILLING_PERMISSIONS.REDEEM_CODES_MANAGE),
   },
   {
     name: 'ai-config',
     label: '模型配置',
     description: '供应商、密钥与模型',
-    visible: !publicMode || role === 'admin',
+    visible: legacyAdminMode || role === 'admin',
   },
 ]
 
