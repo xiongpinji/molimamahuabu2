@@ -748,7 +748,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
       storyboard_id: null,
       category: 'canvas-result',
       type: 'video',
-      url: expect.stringMatching(/\/output\.mp4$/),
+      url: expect.stringMatching(/^\/static\/projects\/.+\/videos\/.+\.mp4$/),
       metadata: {
         canvas_node_id: videoNodeId,
         task_id: expect.any(String),
@@ -760,7 +760,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
       data: expect.objectContaining({
         kind: 'video',
         status: 'success',
-        url: expect.stringMatching(/\/output\.mp4$/),
+        url: expect.stringMatching(/^\/static\/projects\/.+\/videos\/.+\.mp4$/),
         taskId: expect.any(String),
         savedAssetId: expect.any(String),
         assetSaveStatus: 'success',

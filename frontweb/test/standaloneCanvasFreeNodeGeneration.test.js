@@ -312,6 +312,12 @@ test('resolveFreeCanvasResultUrl 兼容图片、视频任务/记录和同步音�
     result: { video_url: '' },
     video: { local_path: 'videos/out.mp4' },
   }), '/static/videos/out.mp4')
+  assert.equal(resolveFreeCanvasResultUrl('video', {
+    result: {
+      video_url: 'https://provider.example/protected-download',
+      local_path: 'videos/local-out.mp4',
+    },
+  }), '/static/videos/local-out.mp4')
   assert.equal(resolveFreeCanvasResultUrl('audio', {
     url: 'https://cdn.example/audio.mp3',
   }), 'https://cdn.example/audio.mp3')
