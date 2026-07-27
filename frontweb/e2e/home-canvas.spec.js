@@ -42,6 +42,12 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(({ storageKey, state }) => {
     window.localStorage.setItem(storageKey, JSON.stringify(state))
   }, { storageKey: homeCanvasStorageKey, state: seededHomeCanvasState })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'canvas-e2e-session',
+      user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+    }))
+  })
   await page.goto('/canvas/local')
   await expect(page.locator('.home-starter-panel')).toHaveCount(0)
 })

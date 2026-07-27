@@ -1,4 +1,13 @@
 import { test, expect } from '@playwright/test'
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'canvas-e2e-session',
+      user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+    }))
+  })
+})
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'

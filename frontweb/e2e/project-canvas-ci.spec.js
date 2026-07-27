@@ -69,6 +69,12 @@ async function seedNodeStatus(page, statusMap) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'canvas-e2e-session',
+      user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+    }))
+  })
   mockAssets = []
   createdAssetPayload = null
   updatedAssetPayloads = []
