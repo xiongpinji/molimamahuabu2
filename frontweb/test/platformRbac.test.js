@@ -48,7 +48,8 @@ test('统一管理后台在进入页面前要求管理员登录态', () => {
 
 test('兑换码管理员后台不加载或展示总管理员数据', () => {
   const view = fs.readFileSync(path.join(root, 'src/views/BillingAdmin.vue'), 'utf8')
-  assert.match(view, /const isSuperAdmin = !publicMode \|\| readSession\(\)\?\.user\?\.role === 'admin'/)
+  assert.match(view, /const sessionRole = readSession\(\)\?\.user\?\.role/)
+  assert.match(view, /const isSuperAdmin = sessionRole \? sessionRole === 'admin' : !publicMode/)
   assert.match(view, /const activeTab = ref\(isSuperAdmin \? 'models' : 'codes'\)/)
   assert.match(view, /<el-tab-pane v-if="isSuperAdmin" label="模型计费"/)
   assert.match(view, /<el-tab-pane v-if="isSuperAdmin" label="经营台账"/)

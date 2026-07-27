@@ -301,7 +301,8 @@ import {
 import { readSession, saveAdminToken } from '@/utils/authSession'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
-const isSuperAdmin = !publicMode || readSession()?.user?.role === 'admin'
+const sessionRole = readSession()?.user?.role
+const isSuperAdmin = sessionRole ? sessionRole === 'admin' : !publicMode
 const adminToken = ref('')
 const loading = ref(false)
 const unlocked = ref(!isSuperAdmin)
