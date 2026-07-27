@@ -57,6 +57,15 @@ test('兑换码管理员后台不加载或展示总管理员数据', () => {
   assert.match(view, /if \(!isSuperAdmin\) return/)
 })
 
+test('兑换码管理员的管理导航只保留兑换码后台入口', () => {
+  const nav = fs.readFileSync(path.join(root, 'src/components/AdminWorkspaceNav.vue'), 'utf8')
+  assert.match(nav, /const legacyAdminMode = !role && !publicMode/)
+  assert.match(nav, /visible: role !== 'redeem_admin'/)
+  assert.match(nav, /visible: legacyAdminMode \|\| canPlatformAccount\(role, ACCOUNT_PERMISSIONS\.READ\)/)
+  assert.match(nav, /visible: legacyAdminMode \|\| canPlatformAccount\(role, BILLING_PERMISSIONS\.REDEEM_CODES_MANAGE\)/)
+  assert.match(nav, /visible: legacyAdminMode \|\| role === 'admin'/)
+})
+
 test('首页头部在未登录时始终提供登录入口', () => {
   const header = fs.readFileSync(path.join(root, 'src/components/PlatformHeader.vue'), 'utf8')
   assert.match(header, /v-else\s+class="platform-header__button platform-header__account"/)
