@@ -162,6 +162,18 @@ function resolveVideoProtocol(config, modelHint) {
   return protocol;
 }
 
+function getVideoArtifactFetchOptions(config, videoUrl) {
+  if (resolveVideoProtocol(config) !== 'aihubcc') return {};
+  try {
+    const providerOrigin = new URL(String(config?.base_url || '')).origin;
+    const artifactOrigin = new URL(String(videoUrl || '')).origin;
+    if (providerOrigin !== artifactOrigin) return {};
+  } catch (_) {
+    return {};
+  }
+  return { headers: aihubccClient.authHeaders(config) };
+}
+
 /** 可灵 Omni / 多图生视频（飞儿 ffir.cn 等中转）：可用环境变量临时覆盖配置 */
 function applyKlingOmniEnvOverrides(config) {
   const c = { ...config };
@@ -5369,6 +5381,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getDefaultVideoConfig,
+  getVideoArtifactFetchOptions,
   callAihubccVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
