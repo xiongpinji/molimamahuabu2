@@ -243,12 +243,21 @@ function startStoryGeneration(db, log, req, options = {}) {
   let taskRequest = req;
   if (billingEnabled) {
     try {
+      const resolvedModel = aiClient.resolveTextModel(
+        db,
+        'text',
+        req.model || undefined,
+        'story_generation',
+      );
+      if (!resolvedModel) {
+        throw new Error('未配置文本模型，请在「AI 配置」中添加 text 类型且已启用的配置');
+      }
       const prepared = reserveStoryCredit(db, {
         tenantId,
         userId,
         resourceId: task.id,
         operationKey: 'story_task:' + task.id,
-        model: req.model || 'GPT-5.5',
+        model: resolvedModel,
       });
       db.prepare(`UPDATE async_tasks
         SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ? WHERE id = ?`)

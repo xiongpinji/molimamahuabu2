@@ -278,6 +278,27 @@ function getConfigFromModelMap(db, sceneKey) {
   }
 }
 
+function resolveTextModel(db, serviceType, preferredModel, sceneKey = null) {
+  let config = null;
+  let routedModelOverride = null;
+  if (sceneKey) {
+    const mapped = getConfigFromModelMap(db, sceneKey);
+    if (mapped) {
+      config = mapped.config;
+      routedModelOverride = mapped.modelOverride;
+    }
+  }
+  if (!config) {
+    config = preferredModel
+      ? getConfigForModel(db, serviceType, preferredModel)
+      : getDefaultConfig(db, serviceType);
+  }
+  if (!config && preferredModel === undefined) {
+    config = getDefaultConfig(db, 'text');
+  }
+  return config ? getModelFromConfig(config, routedModelOverride || preferredModel) : '';
+}
+
 async function generateText(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
   const { model: preferredModel, temperature = 0.7, json_mode = false, min_max_tokens = null, streamCallback = null, scene_key = null } = options;
 
@@ -760,6 +781,7 @@ module.exports = {
   getConfigForModel,
   getConfigFromModelMap,
   getModelFromConfig,
+  resolveTextModel,
   generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
   streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
   generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),

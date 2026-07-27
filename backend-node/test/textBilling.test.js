@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const aiClient = require('../src/services/aiClient');
+const aiConfig = require('../src/services/aiConfigService');
 const storyService = require('../src/services/storyGenerationService');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
@@ -14,6 +15,16 @@ const log = { info() {}, warn() {}, error() {} };
 function setup() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
+  aiConfig.createConfig(db, log, {
+    service_type: 'text',
+    provider: 'openai',
+    name: '测试文本模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['GPT-5.5'],
+    default_model: 'GPT-5.5',
+    is_default: true,
+  });
   db.prepare(`INSERT INTO dramas (title, style, status, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?)`).run(
     '测试项目', 'realistic', new Date().toISOString(), new Date().toISOString()
   );
