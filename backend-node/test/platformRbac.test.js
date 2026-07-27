@@ -24,6 +24,7 @@ function createDb() {
     ['ops', 'ops'],
     ['support', 'support'],
     ['reader', 'read_only'],
+    ['redeemAdmin', 'redeem_admin'],
     ['user', 'user'],
   ]) {
     const created = auth.register(db, {
@@ -75,6 +76,7 @@ test('admin/ops/support/read-only 严格符合账号管理权限矩阵', () => {
     ops: [PERMISSIONS.USERS_READ, PERMISSIONS.USERS_STATUS, PERMISSIONS.USERS_FORCE_LOGOUT],
     support: [PERMISSIONS.USERS_READ, PERMISSIONS.USERS_FORCE_LOGOUT],
     read_only: [PERMISSIONS.USERS_READ],
+    redeem_admin: [PERMISSIONS.REDEEM_CODES_MANAGE],
     user: [],
   }
   for (const role of Object.keys(allowed)) {
@@ -87,6 +89,33 @@ test('admin/ops/support/read-only 严格符合账号管理权限矩阵', () => {
       }
     }
   }
+})
+
+test('兑换码管理员只能管理兑换码，不能读取财务、模型或账号数据', () => {
+  assert.equal(runPermission('redeem_admin', PERMISSIONS.REDEEM_CODES_MANAGE).next, true)
+  for (const permission of [
+    PERMISSIONS.BILLING_MANAGE,
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.USERS_ROLE,
+    PERMISSIONS.USERS_STATUS,
+    PERMISSIONS.USERS_FORCE_LOGOUT,
+  ]) {
+    const denied = runPermission('redeem_admin', permission)
+    assert.equal(denied.status, 403)
+    assert.equal(denied.body.error.code, 'PLATFORM_PERMISSION_DENIED')
+  }
+})
+
+test('总管理员可以授予兑换码管理员角色', () => {
+  const { db, users } = createDb()
+  const changed = admin.changeUserRole(db, {
+    actorUserId: users.admin,
+    targetUserId: users.user,
+    role: 'redeem_admin',
+  })
+  assert.equal(changed.role, 'redeem_admin')
+  assert.equal(changed.token_version, 1)
+  db.close()
 })
 
 test('强制退出递增账号版本并使旧 JWT 立即失效', () => {

@@ -1,6 +1,7 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const generationUsageContext = require('./generationUsageContext');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
 const https = require('https');
 const http = require('http');
@@ -178,6 +179,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       let accumulated = '';
       let sseBuffer = '';
       let firstToken = true;
+      let usage = null;
       resetSilenceTimer();
 
       res.on('data', (chunk) => {
@@ -193,6 +195,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
           if (data === '[DONE]') continue;
           try {
             const evt = JSON.parse(data);
+            if (evt.usage) usage = evt.usage;
             const delta = evt.choices?.[0]?.delta?.content;
             if (delta) {
               if (firstToken) {
@@ -208,7 +211,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
       res.on('end', () => {
         clearTimeout(silenceTimer);
-        resolve({ status: statusCode, body: accumulated });
+        resolve({ status: statusCode, body: accumulated, usage });
       });
       res.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
     });
@@ -379,6 +382,9 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       responseBody,
       240000,
     );
+    try {
+      generationUsageContext.capture(JSON.parse(response.raw || '{}').usage);
+    } catch (_) {}
     if (!response.body) throw new Error('AI 返回内容为空');
     return response.body;
   }
@@ -395,6 +401,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   });
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
+  generationUsageContext.capture(res.usage);
   const elapsedMs = Date.now() - startMs;
   if (!content) {
     throw new Error('AI 返回内容为空');
@@ -503,6 +510,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     }
   );
   const content = res.body;
+  generationUsageContext.capture(res.usage);
   if (!content) {
     throw new Error('AI 返回内容为空');
   }
@@ -644,6 +652,9 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     throw httpErr;
   }
   const content = res.body;
+  try {
+    generationUsageContext.capture(JSON.parse(res.raw || '{}').usage);
+  } catch (_) {}
   if (!content) {
     log.error('[Vision] 返回内容为空', {
       model,

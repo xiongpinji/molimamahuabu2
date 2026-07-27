@@ -123,3 +123,50 @@ test('自动列出 AI 配置中的每个实际模型并标记未定价状态', (
   assert.equal(byModel.get('speech-02-hd')?.category, 'audio');
   assert.equal(byModel.has('deleted-video-model'), false);
 });
+
+test('图片、视频和文本推理模型按各自单位计算 API 成本', () => {
+  const db = makeDb();
+  prices.set(db, 'image-model', 2, {
+    category: 'image',
+    cost_unit: 'image',
+    cost_micros_per_unit: 120000,
+  });
+  prices.set(db, 'video-model', 9, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_unit: 80000,
+  });
+  prices.set(db, 'reasoning-model', 3, {
+    category: 'text',
+    cost_unit: 'token',
+    input_cost_micros_per_1k: 2000,
+    output_cost_micros_per_1k: 4000,
+  });
+
+  assert.equal(prices.quoteCost(db, 'image-model', { quantity: 1 }).cost_micros, 120000);
+  assert.equal(prices.quoteCost(db, 'video-model', { quantity: 5 }).cost_micros, 400000);
+  assert.deepEqual(
+    prices.quoteCost(db, 'reasoning-model', {
+      inputTokens: 1500,
+      outputTokens: 500,
+      reasoningTokens: 300,
+    }),
+    {
+      model: 'reasoning-model',
+      cost_unit: 'token',
+      quantity: 1,
+      cost_micros: 5000,
+      input_tokens: 1500,
+      output_tokens: 500,
+      reasoning_tokens: 300,
+    },
+  );
+});
+
+test('拒绝负数 API 成本', () => {
+  const db = makeDb();
+  assert.throws(
+    () => prices.set(db, 'bad-model', 1, { cost_micros_per_unit: -1 }),
+    (error) => error.code === 'INVALID_MODEL_PRICE',
+  );
+});

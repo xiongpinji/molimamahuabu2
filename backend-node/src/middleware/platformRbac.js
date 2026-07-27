@@ -3,6 +3,8 @@ const PERMISSIONS = Object.freeze({
   USERS_ROLE: 'platform.users.role',
   USERS_STATUS: 'platform.users.status',
   USERS_FORCE_LOGOUT: 'platform.users.force_logout',
+  BILLING_MANAGE: 'platform.billing.manage',
+  REDEEM_CODES_MANAGE: 'platform.redeem_codes.manage',
 });
 
 const ROLE_PERMISSIONS = Object.freeze({
@@ -17,6 +19,7 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.USERS_FORCE_LOGOUT,
   ]),
   read_only: Object.freeze([PERMISSIONS.USERS_READ]),
+  redeem_admin: Object.freeze([PERMISSIONS.REDEEM_CODES_MANAGE]),
   user: Object.freeze([]),
 });
 

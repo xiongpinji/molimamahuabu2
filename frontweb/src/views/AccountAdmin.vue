@@ -104,7 +104,8 @@ const loading = ref(false)
 const saving = ref('')
 const roles = [
   { label: '普通用户', value: 'user' },
-  { label: '管理员', value: 'admin' },
+  { label: '总管理员', value: 'admin' },
+  { label: '兑换码管理员', value: 'redeem_admin' },
   { label: '运营', value: 'ops' },
   { label: '客服', value: 'support' },
   { label: '只读', value: 'read_only' },

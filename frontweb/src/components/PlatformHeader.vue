@@ -55,6 +55,7 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="workspace">工作区与积分</el-dropdown-item>
+              <el-dropdown-item v-if="canManageBilling" command="billing">运营与计费</el-dropdown-item>
               <el-dropdown-item v-if="isAdmin" command="models">模型配置</el-dropdown-item>
               <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
@@ -81,6 +82,7 @@ import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import { clearSession, readSession } from '@/utils/authSession'
+import { BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
 const props = defineProps({
   title: { type: String, default: '' },
@@ -101,6 +103,10 @@ const session = computed(() => {
 const loggedIn = computed(() => Boolean(session.value?.token))
 const accountLabel = computed(() => session.value?.user?.email || '账号')
 const isAdmin = computed(() => session.value?.user?.role === 'admin')
+const canManageBilling = computed(() => canPlatformAccount(
+  session.value?.user?.role,
+  BILLING_PERMISSIONS.REDEEM_CODES_MANAGE,
+))
 
 function goBack() {
   router.push(props.backTo)
@@ -119,6 +125,7 @@ function goLogin() {
 
 async function handleAccountCommand(command) {
   if (command === 'workspace') return router.push({ name: 'tenant-console' })
+  if (command === 'billing') return router.push({ name: 'billing-admin' })
   if (command === 'models') return router.push({ name: 'ai-config' })
   if (command === 'logout') {
     clearSession()

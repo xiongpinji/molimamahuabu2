@@ -2,6 +2,8 @@ const { randomUUID } = require('crypto');
 const aiClient = require('./aiClient');
 const auditEvent = require('./auditEventService');
 const creditLedger = require('./creditLedgerService');
+const generationCost = require('./generationCostLedgerService');
+const usageContext = require('./generationUsageContext');
 const modelPrice = require('./modelPriceService');
 
 function codedError(code, message) {
@@ -55,18 +57,37 @@ function begin(db, input) {
     outcome: 'success',
     code: 'CREATED',
   });
-  return {
+  const billing = {
     model,
     reservationId: reservation.id,
     operation: input.operation,
     resourceType: input.resourceType,
     resourceId: String(input.resourceId),
   };
+  generationCost.record(db, {
+    reservationId: reservation.id,
+    model,
+    quantity: 1,
+    usageSource: 'unavailable',
+  });
+  usageContext.activate(billing);
+  return billing;
 }
 
 function settle(db, log, billing, outcome, message = '') {
   if (!billing?.reservationId) return null;
   try {
+    if (outcome === 'completed') {
+      generationCost.record(db, {
+        reservationId: billing.reservationId,
+        model: billing.model,
+        quantity: 1,
+        inputTokens: billing.usage?.inputTokens,
+        outputTokens: billing.usage?.outputTokens,
+        reasoningTokens: billing.usage?.reasoningTokens,
+        usageSource: billing.usage?.source || 'unavailable',
+      });
+    }
     const settled = creditLedger.settleGeneration(
       db,
       billing.reservationId,
@@ -89,6 +110,8 @@ function settle(db, log, billing, outcome, message = '') {
       error: error.message,
     });
     return null;
+  } finally {
+    usageContext.clear(billing);
   }
 }
 

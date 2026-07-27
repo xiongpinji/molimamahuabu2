@@ -76,6 +76,8 @@ function setupRouter(cfg, db, log) {
     permission,
     { enabled: publicPlatformEnabled },
   );
+  const requireBillingManager = requirePlatformPermission(PERMISSIONS.BILLING_MANAGE);
+  const requireRedeemCodeManager = requirePlatformPermission(PERMISSIONS.REDEEM_CODES_MANAGE);
   const authRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'auth',
@@ -122,23 +124,26 @@ function setupRouter(cfg, db, log) {
   r.patch('/platform-admin/users/:userId/status', requirePlatformPermission(PERMISSIONS.USERS_STATUS), platformAccounts.changeStatus);
   r.post('/platform-admin/users/:userId/force-logout', requirePlatformPermission(PERMISSIONS.USERS_FORCE_LOGOUT), platformAccounts.forceLogout);
   // 平台管理接口不依赖当前租户，避免管理员因浏览器残留了无效租户 ID 而无法进入后台。
-  r.get('/billing/admin/users', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_READ), billing.listAdminUsers);
-  r.put('/billing/admin/users/:userId', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_ROLE), billing.updateAdminUser);
-  r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
-  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
-  r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
-  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, billing.listReconciliationAnomalies);
-  r.get('/billing/admin/reconciliation/history', requireAdmin, billing.listReconciliationHistory);
-  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, billing.refundReconciliationReservation);
-  r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
-  r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
-  r.post('/billing/admin/redeem-codes/batch', requireAdmin, billing.createAdminRedeemCodes);
-  r.get('/billing/admin/redeem-codes/:codeId/usages', requireAdmin, billing.listAdminRedeemCodeUsages);
-  r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
-  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
-  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
-  r.get('/billing/prices', requireAdmin, billing.listPrices);
-  r.put('/billing/prices/:model', requireAdmin, billing.updatePrice);
+  r.get('/billing/admin/users', requireAdmin, requireBillingManager, requirePlatformPermission(PERMISSIONS.USERS_READ), billing.listAdminUsers);
+  r.put('/billing/admin/users/:userId', requireAdmin, requireBillingManager, requirePlatformPermission(PERMISSIONS.USERS_ROLE), billing.updateAdminUser);
+  r.get('/billing/admin/tenants', requireAdmin, requireBillingManager, billing.listAdminTenants);
+  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, requireBillingManager, billing.adjustAdminTenantCredits);
+  r.get('/billing/admin/credit-transactions', requireAdmin, requireBillingManager, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.getLedgerSettings);
+  r.put('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.updateLedgerSettings);
+  r.get('/billing/admin/ledger/report', requireAdmin, requireBillingManager, billing.getLedgerReport);
+  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, requireBillingManager, billing.listReconciliationAnomalies);
+  r.get('/billing/admin/reconciliation/history', requireAdmin, requireBillingManager, billing.listReconciliationHistory);
+  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, requireBillingManager, billing.refundReconciliationReservation);
+  r.get('/billing/admin/redeem-codes', requireRedeemCodeManager, billing.listAdminRedeemCodes);
+  r.post('/billing/admin/redeem-codes', requireRedeemCodeManager, billing.createAdminRedeemCode);
+  r.post('/billing/admin/redeem-codes/batch', requireRedeemCodeManager, billing.createAdminRedeemCodes);
+  r.get('/billing/admin/redeem-codes/:codeId/usages', requireRedeemCodeManager, billing.listAdminRedeemCodeUsages);
+  r.put('/billing/admin/redeem-codes/:codeId', requireRedeemCodeManager, billing.updateAdminRedeemCode);
+  r.get('/billing/admin/plans', requireAdmin, requireBillingManager, billing.listAdminPlans);
+  r.put('/billing/plans/:planId', requireAdmin, requireBillingManager, billing.upsertPlan);
+  r.get('/billing/prices', requireAdmin, requireBillingManager, billing.listPrices);
+  r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));

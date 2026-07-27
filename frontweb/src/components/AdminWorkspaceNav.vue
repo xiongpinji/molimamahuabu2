@@ -18,7 +18,7 @@
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { readSession } from '@/utils/authSession'
-import { ACCOUNT_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
+import { ACCOUNT_PERMISSIONS, BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
 const route = useRoute()
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
@@ -41,7 +41,7 @@ const items = [
     name: 'billing-admin',
     label: '运营与计费',
     description: '模型、兑换码与对账',
-    visible: !publicMode || role === 'admin',
+    visible: !publicMode || canPlatformAccount(role, BILLING_PERMISSIONS.REDEEM_CODES_MANAGE),
   },
   {
     name: 'ai-config',

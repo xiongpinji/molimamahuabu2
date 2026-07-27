@@ -776,6 +776,7 @@ function create(db, log, req, options = {}) {
     if (!imageGenId) throw new Error('insert failed');
     if (options.billingEnabled) {
       const creditLedger = require('./creditLedgerService');
+      const generationCost = require('./generationCostLedgerService');
       const reservation = creditLedger.reserve(db, {
         tenantId: options.tenantId,
         actorUserId: options.userId,
@@ -785,6 +786,12 @@ function create(db, log, req, options = {}) {
         model: billedModel,
         resourceType: 'image',
         resourceId: String(imageGenId),
+      });
+      generationCost.record(db, {
+        reservationId: reservation.id,
+        model: billedModel,
+        quantity: 1,
+        usageSource: 'configured',
       });
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?')
         .run(reservation.id, imageGenId);

@@ -124,6 +124,7 @@ const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
+const generationCost = require('./generationCostLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
@@ -264,6 +265,13 @@ function create(db, log, req, options = {}) {
         model: billingModel,
         resourceType: 'video',
         resourceId: id,
+      });
+      const duration = Number(body.duration);
+      generationCost.record(db, {
+        reservationId: reservation.id,
+        model: billingModel,
+        quantity: Number.isFinite(duration) && duration > 0 ? duration : 1,
+        usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
       auditEvent.record(db, {
