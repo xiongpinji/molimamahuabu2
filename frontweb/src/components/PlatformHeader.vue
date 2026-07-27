@@ -61,7 +61,7 @@
           </template>
         </el-dropdown>
         <el-button
-          v-else-if="publicMode"
+          v-else
           class="platform-header__button platform-header__account"
           @click="goLogin"
         >
@@ -94,7 +94,6 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const { isDark, toggle: toggleTheme } = useTheme()
-const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const session = computed(() => {
   void route.fullPath
   return readSession()

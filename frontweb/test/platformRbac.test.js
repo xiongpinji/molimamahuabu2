@@ -38,6 +38,12 @@ test('统一管理后台在进入页面前要求管理员登录态', () => {
   assert.equal(authRedirect(true, target, { token: 'token', user: { role: 'admin' } }), null)
 })
 
+test('首页头部在未登录时始终提供登录入口', () => {
+  const header = fs.readFileSync(path.join(root, 'src/components/PlatformHeader.vue'), 'utf8')
+  assert.match(header, /v-else\s+class="platform-header__button platform-header__account"/)
+  assert.doesNotMatch(header, /v-else-if="publicMode"/)
+})
+
 test('账号管理页使用独立 JWT API 并按权限控制敏感操作', () => {
   const view = fs.readFileSync(path.join(root, 'src/views/AccountAdmin.vue'), 'utf8')
   const api = fs.readFileSync(path.join(root, 'src/api/platformAccounts.js'), 'utf8')
