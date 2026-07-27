@@ -55,13 +55,14 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="workspace">工作区与积分</el-dropdown-item>
+              <el-dropdown-item v-if="canManageBilling" command="billing">运营与计费</el-dropdown-item>
               <el-dropdown-item v-if="isAdmin" command="models">模型配置</el-dropdown-item>
               <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
         <el-button
-          v-else-if="publicMode"
+          v-else
           class="platform-header__button platform-header__account"
           @click="goLogin"
         >
@@ -80,7 +81,9 @@ import { ArrowLeft, Grid, Moon, Sunny, UserFilled } from '@element-plus/icons-vu
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
+import { logout as logoutApi } from '@/api/auth'
 import { clearSession, readSession } from '@/utils/authSession'
+import { BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
 const props = defineProps({
   title: { type: String, default: '' },
@@ -94,7 +97,6 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const { isDark, toggle: toggleTheme } = useTheme()
-const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const session = computed(() => {
   void route.fullPath
   return readSession()
@@ -102,6 +104,10 @@ const session = computed(() => {
 const loggedIn = computed(() => Boolean(session.value?.token))
 const accountLabel = computed(() => session.value?.user?.email || '账号')
 const isAdmin = computed(() => session.value?.user?.role === 'admin')
+const canManageBilling = computed(() => canPlatformAccount(
+  session.value?.user?.role,
+  BILLING_PERMISSIONS.REDEEM_CODES_MANAGE,
+))
 
 function goBack() {
   router.push(props.backTo)
@@ -120,8 +126,10 @@ function goLogin() {
 
 async function handleAccountCommand(command) {
   if (command === 'workspace') return router.push({ name: 'tenant-console' })
+  if (command === 'billing') return router.push({ name: 'billing-admin' })
   if (command === 'models') return router.push({ name: 'ai-config' })
   if (command === 'logout') {
+    await logoutApi().catch(() => undefined)
     clearSession()
     await router.replace({ name: 'login' })
   }

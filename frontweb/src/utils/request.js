@@ -7,8 +7,6 @@ import {
   clearSessionOnUnauthorized,
 } from './authSession'
 
-const publicPlatformMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
-
 const request = axios.create({
   baseURL: '/api/v1',
   timeout: 600000,
@@ -30,8 +28,15 @@ request.interceptors.response.use(
     return Promise.reject(new Error(res.error?.message || '请求失败'))
   },
   (error) => {
-    if (clearSessionOnUnauthorized(error.response?.status, publicPlatformMode)
+    const unauthorized = Number(error.response?.status) === 401
+    const authorization = error.config?.headers?.get?.('Authorization')
+      || error.config?.headers?.Authorization
+      || error.config?.headers?.authorization
+      || ''
+    const requestToken = /^Bearer\s+(.+)$/i.exec(String(authorization))?.[1] || ''
+    if (clearSessionOnUnauthorized(error.response?.status, true, undefined, requestToken)
       && typeof window !== 'undefined'
+      && window.location.pathname !== '/'
       && window.location.pathname !== '/login') {
       const redirect = `${window.location.pathname}${window.location.search}`
       window.location.assign(`/login?redirect=${encodeURIComponent(redirect)}`)
@@ -39,7 +44,7 @@ request.interceptors.response.use(
     // 提取后端实际错误信息（优先 API 返回的 message，而非 axios 通用 "status code 500"）
     const backendMsg = error.response?.data?.error?.message
     const msg = backendMsg || error.message || '网络错误'
-    if (!error.config?.silentError) ElMessage.error(msg)
+    if (!unauthorized && !error.config?.silentError) ElMessage.error(msg)
     // 将真实错误信息写回 message，使组件 catch 块可直接用 e.message 获取可读内容
     if (backendMsg) error.message = backendMsg
     return Promise.reject(error)

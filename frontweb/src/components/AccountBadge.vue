@@ -51,7 +51,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { changePassword, getCreditAccount } from '@/api/auth'
+import { changePassword, getCreditAccount, logout as logoutApi } from '@/api/auth'
 import { listTenants } from '@/api/tenants'
 import {
   clearSession,
@@ -60,7 +60,7 @@ import {
   saveCurrentTenantId,
 } from '@/utils/authSession'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
-import { ACCOUNT_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
+import { ACCOUNT_PERMISSIONS, BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
 const route = useRoute()
 const router = useRouter()
@@ -78,7 +78,10 @@ const canManageAccounts = computed(() => {
   const role = readSession()?.user?.role
   return canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ)
 })
-const canManageBilling = computed(() => readSession()?.user?.role === 'admin')
+const canManageBilling = computed(() => canPlatformAccount(
+  readSession()?.user?.role,
+  BILLING_PERMISSIONS.REDEEM_CODES_MANAGE,
+))
 
 async function loadAccount() {
   accountError.value = ''
@@ -133,6 +136,7 @@ async function submitPasswordChange() {
 }
 
 async function logout() {
+  await logoutApi().catch(() => undefined)
   clearSession()
   await router.replace({ name: 'login' })
 }

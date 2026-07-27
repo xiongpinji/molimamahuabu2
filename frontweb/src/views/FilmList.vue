@@ -52,15 +52,7 @@
                     <select v-model="homeMediaType" aria-label="生成类型">
                       <option value="video">视频</option>
                       <option value="image">图片</option>
-                      <option value="storyboard">分镜</option>
-                    </select>
-                  </label>
-                  <label class="home-control">
-                    <span class="home-control__icon">◇</span>
-                    <select v-model="homeWorkflow" aria-label="生成模式">
-                      <option value="reference">全能参考生成</option>
-                      <option value="script">剧本生成</option>
-                      <option value="canvas">自由画布</option>
+                      <option value="script">剧本</option>
                     </select>
                   </label>
                   <label class="home-control">
@@ -109,7 +101,7 @@
                   <button
                     type="button"
                     class="home-generate"
-                    :disabled="homeWorkflow !== 'canvas' && !homeModel"
+                    :disabled="!homeModel"
                     @click="startFromComposer"
                   >
                     <span>✦</span>生成
@@ -450,7 +442,6 @@ const dramas = ref([])
 const total = ref(0)
 const homePrompt = ref('')
 const homeMediaType = ref('video')
-const homeWorkflow = ref('reference')
 const homeModel = ref('')
 const homeAspectRatio = ref('16:9')
 const homeDuration = ref(5)
@@ -476,7 +467,7 @@ function openMediaLibrary() {
 }
 
 const homeModelOptions = computed(() => {
-  const category = homeMediaType.value === 'video' ? 'video' : 'image'
+  const category = homeMediaType.value === 'script' ? 'text' : homeMediaType.value
   return homeGenerationCatalog.value.filter((item) => item.category === category)
 })
 
@@ -497,19 +488,19 @@ async function loadHomeGenerationConfig() {
 }
 
 function startFromComposer() {
-  if (homeWorkflow.value === 'canvas') {
-    router.push({ name: 'canvas-projects' })
-    return
-  }
   if (!homeModel.value) {
     ElMessage.warning('当前没有管理员已启用并配置计费的模型')
     return
   }
-  const prompt = homePrompt.value.trim()
-  newForm.value.title = prompt ? prompt.slice(0, 24) : ''
-  newForm.value.description = prompt
-  newForm.value.aspect_ratio = homeAspectRatio.value
-  showNewDialog.value = true
+  sessionStorage.setItem('moli_quick_create_draft', JSON.stringify({
+    mode: homeMediaType.value,
+    prompt: homePrompt.value.trim(),
+    model: homeModel.value,
+    aspectRatio: homeAspectRatio.value,
+    duration: homeDuration.value,
+    resolution: homeResolution.value,
+  }))
+  router.push({ name: 'free-create', query: { mode: homeMediaType.value, source: 'home' } })
 }
 
 function scrollToProjects() {
@@ -756,14 +747,6 @@ async function submitNew() {
       folder_id: newForm.value.folder_id === '' ? null : newForm.value.folder_id,
       metadata: {
         ...projectMetadata(newForm.value.aspect_ratio, projectMode.value),
-        ...(!isCanvasMode.value ? {
-          generation_workflow: homeWorkflow.value,
-          output_type: homeMediaType.value,
-          video_model: homeMediaType.value === 'video' ? homeModel.value : null,
-          image_model: homeMediaType.value !== 'video' ? homeModel.value : null,
-          video_duration: homeDuration.value,
-          video_resolution: homeResolution.value,
-        } : {}),
       },
     })
     showNewDialog.value = false

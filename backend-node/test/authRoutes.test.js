@@ -10,6 +10,14 @@ function responseCapture() {
     res: {
       status(code) { result.status = code; return this; },
       json(body) { result.body = body; return this; },
+      cookie(name, value, options) {
+        result.cookie = { name, value, options };
+        return this;
+      },
+      clearCookie(name, options) {
+        result.clearedCookie = { name, options };
+        return this;
+      },
     },
   };
 }
@@ -82,6 +90,41 @@ test('登录成功记录用户编号但不记录邮箱和密码', () => {
   assert.equal(event.tenant_id, `personal:${loginCapture.result.body.data.user.id}`);
   assert.equal('email' in event, false);
   assert.equal('password' in event, false);
+});
+
+test('登录写入仅供浏览器媒体请求使用的安全会话 Cookie，退出时清除', () => {
+  const db = makeDb();
+  const secret = 's'.repeat(32);
+  const handlers = createAuthRoutes(db, {
+    registrationEnabled: true,
+    jwtSecret: secret,
+    secureCookies: true,
+  });
+  const registerCapture = responseCapture();
+  handlers.register({
+    body: { email: 'user@example.com', password: 'correct horse battery staple' },
+  }, registerCapture.res);
+
+  assert.equal(registerCapture.result.cookie.name, 'moli_media_session');
+  assert.equal(registerCapture.result.cookie.value, registerCapture.result.body.data.token);
+  assert.deepEqual(registerCapture.result.cookie.options, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: true,
+    path: '/',
+    maxAge: 2 * 60 * 60 * 1000,
+  });
+
+  const logoutCapture = responseCapture();
+  handlers.logout({}, logoutCapture.res);
+  assert.equal(logoutCapture.result.status, 200);
+  assert.equal(logoutCapture.result.clearedCookie.name, 'moli_media_session');
+  assert.deepEqual(logoutCapture.result.clearedCookie.options, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: true,
+    path: '/',
+  });
 });
 
 test('当前用户接口只返回令牌中的公开身份', () => {

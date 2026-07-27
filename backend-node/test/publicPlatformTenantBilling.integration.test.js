@@ -49,14 +49,21 @@ test('公开平台租户隔离、兑换码入账和模型独立计费形成真�
     email: 'member@example.com',
     password: 'correct horse battery staple',
   });
+  const redeemAdmin = userAuth.register(db, {
+    email: 'redeem-admin@example.com',
+    password: 'correct horse battery staple',
+  });
   db.prepare("UPDATE platform_users SET role = 'admin', platform_role = 'admin' WHERE id = ?")
     .run(admin.id);
+  db.prepare("UPDATE platform_users SET platform_role = 'redeem_admin' WHERE id = ?")
+    .run(redeemAdmin.id);
 
   const tokens = Object.fromEntries([
     ['admin', admin.id],
     ['ownerA', ownerA.id],
     ['ownerB', ownerB.id],
     ['member', member.id],
+    ['redeemAdmin', redeemAdmin.id],
   ].map(([key, userId]) => {
     const user = userAuth.getUserById(db, userId);
     return [key, userAuth.issueToken(user, jwtSecret, userAuth.getTokenVersion(db, userId))];
@@ -119,14 +126,11 @@ test('公开平台租户隔离、兑换码入账和模型独立计费形成真�
     body: JSON.stringify({ tenant_id: tenantA, credits: 120 }),
   });
   assert.equal(deniedAdmin.response.status, 403);
-  assert.equal(deniedAdmin.body.error.code, 'ADMIN_ROLE_REQUIRED');
+  assert.equal(deniedAdmin.body.error.code, 'PLATFORM_PERMISSION_DENIED');
 
   const codeResult = await request(baseUrl, '/billing/admin/redeem-codes', {
     method: 'POST',
-    headers: {
-      ...authHeaders(tokens.admin),
-      'X-Platform-Admin-Token': adminToken,
-    },
+    headers: authHeaders(tokens.redeemAdmin),
     body: JSON.stringify({
       tenant_id: tenantA,
       credits: 120,
@@ -135,6 +139,17 @@ test('公开平台租户隔离、兑换码入账和模型独立计费形成真�
     }),
   });
   assert.equal(codeResult.response.status, 201);
+
+  for (const path of ['/billing/prices', '/billing/admin/ledger/report']) {
+    const deniedFinancialData = await request(baseUrl, path, {
+      headers: {
+        ...authHeaders(tokens.redeemAdmin),
+        'X-Platform-Admin-Token': adminToken,
+      },
+    });
+    assert.equal(deniedFinancialData.response.status, 403);
+    assert.equal(deniedFinancialData.body.error.code, 'ADMIN_ROLE_REQUIRED');
+  }
 
   const redeemed = await request(baseUrl, '/billing/redeem', {
     method: 'POST',

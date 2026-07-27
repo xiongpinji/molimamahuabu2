@@ -31,6 +31,15 @@
       <button type="button" class="toolbar-button" aria-label="整理画布节点" title="整理节点" @click="alignNodes">
         <el-icon><Grid /></el-icon><span>整理</span>
       </button>
+      <button v-if="props.standalone && selectedFreeCount >= 2" type="button" class="toolbar-button group-action" title="将所选节点打组（Ctrl/Cmd+G）" @click="createGroup">
+        <el-icon><Connection /></el-icon><span>打组 {{ selectedFreeCount }}</span>
+      </button>
+      <button v-if="props.standalone && selectedGroupCount" type="button" class="toolbar-button" title="执行组内节点" @click="runGroup">
+        <el-icon><VideoPlay /></el-icon><span>整组执行</span>
+      </button>
+      <button v-if="props.standalone && selectedGroupCount" type="button" class="toolbar-button" title="解散所选组" @click="ungroup">
+        <span>解组</span>
+      </button>
       <button type="button" class="toolbar-button" :class="{ active: directorOpen }" aria-label="打开 3D 导演台" title="3D 导演台" @click="openDirectorStage">
         <el-icon><VideoCamera /></el-icon><span>导演台</span>
       </button>
@@ -64,7 +73,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Connection, Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
 const props = defineProps({
@@ -95,6 +104,8 @@ const directorOpen = computed(() => Boolean(ctx?.directorStageVisible?.value))
 const canUndo = computed(() => Boolean(ctx?.canUndo?.value))
 const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
 const panelOpen = computed(() => Boolean(ctx?.focusedNodeId?.value))
+const selectedFreeCount = computed(() => ctx?.selectedFreeNodeIds?.value?.length || 0)
+const selectedGroupCount = computed(() => ctx?.allGraphNodes?.value?.filter?.((node) => node.type === 'canvasGroup' && node.selected).length || 0)
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
@@ -131,6 +142,9 @@ function goList() { ctx?.goListMode?.() }
 function zoomIn() { ctx?.zoomIn?.() }
 function zoomOut() { ctx?.zoomOut?.() }
 function fitView() { ctx?.fitCanvasView?.() }
+function createGroup() { ctx?.createStandaloneGroup?.() }
+function runGroup() { ctx?.runSelectedStandaloneGroup?.() }
+function ungroup() { ctx?.ungroupStandaloneSelection?.() }
 
 onMounted(() => {
   document.addEventListener('pointerdown', closeAddMenuOnOutside)

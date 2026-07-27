@@ -80,6 +80,10 @@ test('registers redeem operations routes before tenant context', () => {
   assert.equal(usagesIndex < tenantContextIndex, true);
   assert.match(
     source,
+    /r\.get\('\/billing\/admin\/redeem-codes\/:codeId\/usages', requireRedeemCodeManager,/,
+  );
+  assert.doesNotMatch(
+    source,
     /r\.get\('\/billing\/admin\/redeem-codes\/:codeId\/usages', requireAdmin,/,
   );
 });

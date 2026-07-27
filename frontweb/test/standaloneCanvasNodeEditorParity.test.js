@@ -15,6 +15,10 @@ const edgeSource = readFileSync(
   fileURLToPath(new URL('../src/components/dramaCanvas/LibTvCanvasEdge.vue', import.meta.url)),
   'utf8'
 )
+const dramaCanvasSource = readFileSync(
+  fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)),
+  'utf8'
+)
 
 test('独立画布节点编辑器固定在视口并支持全屏和关闭', () => {
   assert.match(nodeSource, /<Teleport to="body">/)
@@ -74,4 +78,9 @@ test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () =>
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
   assert.match(nodeSource, /width:\s*min\(860px/)
   assert.match(nodeSource, /max-height:\s*min\(58vh,\s*560px\)/)
+})
+
+test('独立画布只读取用户可访问的模型目录，不请求管理员模型配置接口', () => {
+  assert.match(dramaCanvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
+  assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)
 })

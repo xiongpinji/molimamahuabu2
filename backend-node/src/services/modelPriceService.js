@@ -1,6 +1,7 @@
 const SUPPORTED_MODELS = ['GPT-5.5', 'gpt-image-2', 'seedance 2.0'];
 const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
+const COST_UNITS = ['request', 'image', 'second', 'token'];
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -42,10 +43,16 @@ function ensureSchema(db) {
   ensureColumn(db, 'display_name', 'ALTER TABLE model_credit_prices ADD COLUMN display_name TEXT');
   ensureColumn(db, 'category', "ALTER TABLE model_credit_prices ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
   ensureColumn(db, 'status', "ALTER TABLE model_credit_prices ADD COLUMN status TEXT NOT NULL DEFAULT 'enabled'");
+  ensureColumn(db, 'cost_unit', "ALTER TABLE model_credit_prices ADD COLUMN cost_unit TEXT NOT NULL DEFAULT 'request'");
+  ensureColumn(db, 'cost_micros_per_unit', 'ALTER TABLE model_credit_prices ADD COLUMN cost_micros_per_unit INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'input_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'output_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
 }
 
 function readRow(db, model) {
-  return db.prepare(`SELECT model, display_name, category, credits, status, updated_at
+  return db.prepare(`SELECT model, display_name, category, credits, status,
+      cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
+      output_cost_micros_per_1k, updated_at
     FROM model_credit_prices WHERE model = ? COLLATE NOCASE`).get(model) || null;
 }
 
@@ -103,7 +110,9 @@ function defaultCategory(model) {
 
 function list(db) {
   ensureSchema(db);
-  const rows = db.prepare(`SELECT model, display_name, category, credits, status, updated_at
+  const rows = db.prepare(`SELECT model, display_name, category, credits, status,
+      cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
+      output_cost_micros_per_1k, updated_at
     FROM model_credit_prices ORDER BY category, model COLLATE NOCASE`).all();
   const byModel = new Map(rows.map((row) => [row.model.toLowerCase(), row]));
   const catalog = [
@@ -126,6 +135,10 @@ function list(db) {
     ...item,
     credits: null,
     status: 'unconfigured',
+    cost_unit: item.category === 'text' ? 'token' : item.category === 'image' ? 'image' : 'request',
+    cost_micros_per_unit: 0,
+    input_cost_micros_per_1k: 0,
+    output_cost_micros_per_1k: 0,
     updated_at: null,
   });
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))];
@@ -160,27 +173,77 @@ function set(db, value, creditsValue, options = {}) {
   const category = String(options.category || existing?.category || 'other').trim().toLowerCase();
   const status = String(options.status || existing?.status || 'enabled').trim().toLowerCase();
   const displayName = String(options.displayName || options.display_name || existing?.display_name || model).trim();
+  const costUnit = String(options.costUnit || options.cost_unit || existing?.cost_unit
+    || (category === 'text' ? 'token' : category === 'image' ? 'image' : 'request')).trim().toLowerCase();
+  const costMicrosPerUnit = parseCost(options.cost_micros_per_unit ?? existing?.cost_micros_per_unit ?? 0);
+  const inputCostMicrosPer1k = parseCost(options.input_cost_micros_per_1k ?? existing?.input_cost_micros_per_1k ?? 0);
+  const outputCostMicrosPer1k = parseCost(options.output_cost_micros_per_1k ?? existing?.output_cost_micros_per_1k ?? 0);
   if (!MODEL_CATEGORIES.includes(category)) {
     throw priceError('INVALID_MODEL_PRICE', '模型类型必须是 text、image、video、audio 或 other');
   }
   if (!MODEL_STATUSES.includes(status)) {
     throw priceError('INVALID_MODEL_PRICE', '模型状态必须是 enabled 或 disabled');
   }
+  if (!COST_UNITS.includes(costUnit)) {
+    throw priceError('INVALID_MODEL_PRICE', '成本单位必须是 request、image、second 或 token');
+  }
   if (!displayName || displayName.length > 120) {
     throw priceError('INVALID_MODEL_PRICE', '模型显示名称必须是 1 到 120 个字符');
   }
   const updatedAt = new Date().toISOString();
   db.prepare(`INSERT INTO model_credit_prices
-      (model, display_name, category, credits, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+      (model, display_name, category, credits, status, cost_unit, cost_micros_per_unit,
+       input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model) DO UPDATE SET
       display_name = excluded.display_name,
       category = excluded.category,
       credits = excluded.credits,
       status = excluded.status,
+      cost_unit = excluded.cost_unit,
+      cost_micros_per_unit = excluded.cost_micros_per_unit,
+      input_cost_micros_per_1k = excluded.input_cost_micros_per_1k,
+      output_cost_micros_per_1k = excluded.output_cost_micros_per_1k,
       updated_at = excluded.updated_at`)
-    .run(model, displayName, category, credits, status, updatedAt);
+    .run(model, displayName, category, credits, status, costUnit, costMicrosPerUnit,
+      inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
   return readRow(db, model);
+}
+
+function parseCost(value) {
+  const cost = Number(value);
+  if (!Number.isSafeInteger(cost) || cost < 0) {
+    throw priceError('INVALID_MODEL_PRICE', '模型成本必须是非负整数微元');
+  }
+  return cost;
+}
+
+function quoteCost(db, value, usage = {}) {
+  ensureSchema(db);
+  const model = canonicalModel(value);
+  const row = readRow(db, model);
+  if (!row) throw priceError('MODEL_PRICE_NOT_CONFIGURED', `${model} 尚未配置积分价格，已禁止生成`);
+  if (row.status !== 'enabled') throw priceError('MODEL_DISABLED', `${row.model} 已被管理员停用`);
+  const quantity = Number(usage.quantity ?? 1);
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw priceError('INVALID_MODEL_PRICE', '成本数量必须大于零');
+  }
+  const inputTokens = Math.max(0, Math.trunc(Number(usage.inputTokens) || 0));
+  const outputTokens = Math.max(0, Math.trunc(Number(usage.outputTokens) || 0));
+  const reasoningTokens = Math.max(0, Math.trunc(Number(usage.reasoningTokens) || 0));
+  const costMicros = row.cost_unit === 'token'
+    ? Math.ceil((inputTokens * row.input_cost_micros_per_1k
+      + outputTokens * row.output_cost_micros_per_1k) / 1000)
+    : Math.ceil(quantity * row.cost_micros_per_unit);
+  return {
+    model: row.model,
+    cost_unit: row.cost_unit,
+    quantity,
+    cost_micros: costMicros,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    reasoning_tokens: reasoningTokens,
+  };
 }
 
 function requirePrice(db, value) {
@@ -196,10 +259,12 @@ module.exports = {
   SUPPORTED_MODELS,
   MODEL_CATEGORIES,
   MODEL_STATUSES,
+  COST_UNITS,
   ensureSchema,
   list,
   listPublic,
   set,
   requirePrice,
+  quoteCost,
   canonicalModel,
 };

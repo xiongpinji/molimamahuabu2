@@ -7,6 +7,7 @@ const redeemCodes = require('../services/redeem-code-service');
 const platformAdmin = require('../services/platform-admin-service');
 const tenants = require('../services/tenantService');
 const reconciliation = require('../services/billingReconciliationService');
+const generationCost = require('../services/generationCostLedgerService');
 
 function adminRedeemInput(db, req) {
   const input = {
@@ -332,6 +333,39 @@ function routes(db, log) {
         if (error.code === 'INVALID_MODEL_PRICE' || error.code === 'UNSUPPORTED_BILLING_MODEL') {
           return response.badRequest(res, error.message);
         }
+        response.internalError(res, error.message);
+      }
+    },
+    getLedgerSettings: (_req, res) => {
+      try {
+        response.success(res, generationCost.getSettings(db));
+      } catch (error) {
+        log.error('billing get ledger settings', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    updateLedgerSettings: (req, res) => {
+      try {
+        response.success(res, generationCost.updateSettings(
+          db,
+          req.body?.credit_value_micros,
+        ));
+      } catch (error) {
+        if (error.code === 'INVALID_BILLING_SETTING') {
+          return response.badRequest(res, error.message);
+        }
+        log.error('billing update ledger settings', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    getLedgerReport: (req, res) => {
+      try {
+        response.success(res, generationCost.report(db, req.query?.period || 'day'));
+      } catch (error) {
+        if (error.code === 'INVALID_LEDGER_PERIOD') {
+          return response.badRequest(res, error.message);
+        }
+        log.error('billing get ledger report', { error: error.message });
         response.internalError(res, error.message);
       }
     },
