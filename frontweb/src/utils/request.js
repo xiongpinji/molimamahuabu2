@@ -29,7 +29,12 @@ request.interceptors.response.use(
   },
   (error) => {
     const unauthorized = Number(error.response?.status) === 401
-    if (clearSessionOnUnauthorized(error.response?.status, true)
+    const authorization = error.config?.headers?.get?.('Authorization')
+      || error.config?.headers?.Authorization
+      || error.config?.headers?.authorization
+      || ''
+    const requestToken = /^Bearer\s+(.+)$/i.exec(String(authorization))?.[1] || ''
+    if (clearSessionOnUnauthorized(error.response?.status, true, undefined, requestToken)
       && typeof window !== 'undefined'
       && window.location.pathname !== '/'
       && window.location.pathname !== '/login') {
