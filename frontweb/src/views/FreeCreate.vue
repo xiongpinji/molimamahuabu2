@@ -2,7 +2,7 @@
   <div class="free-create-page">
     <PlatformHeader title="自由创作" back-to="/" back-label="返回">
       <template #leading>
-        <p class="page-desc">不绑定剧集，直接输入文字生成图片或视频</p>
+        <p class="page-desc">不绑定项目，直接生成图片、视频或剧本</p>
       </template>
     </PlatformHeader>
 
@@ -16,6 +16,9 @@
           <el-tab-pane name="video">
             <template #label><span class="mode-tab-label"><el-icon><VideoCamera /></el-icon>生成视频</span></template>
           </el-tab-pane>
+          <el-tab-pane name="script">
+            <template #label><span class="mode-tab-label"><el-icon><Document /></el-icon>生成剧本</span></template>
+          </el-tab-pane>
         </el-tabs>
 
         <div class="form-section">
@@ -24,7 +27,7 @@
             v-model="prompt"
             type="textarea"
             :rows="5"
-            placeholder="描述你想要生成的画面内容..."
+            :placeholder="mode === 'script' ? '输入故事梗概、人物关系和期望风格...' : '描述你想要生成的画面内容...'"
             class="prompt-input"
           />
         </div>
@@ -47,7 +50,7 @@
         </div>
 
         <div class="form-section form-row">
-          <div class="form-item">
+          <div v-if="mode !== 'script'" class="form-item">
             <div class="form-label">风格</div>
             <el-input v-model="style" placeholder="例如: cinematic, anime..." />
           </div>
@@ -69,17 +72,37 @@
               <el-option label="10秒" :value="10" />
             </el-select>
           </div>
+          <div v-if="mode === 'script'" class="form-item">
+            <div class="form-label">剧本集数</div>
+            <el-select v-model="episodeCount">
+              <el-option label="1集" :value="1" />
+              <el-option label="3集" :value="3" />
+              <el-option label="5集" :value="5" />
+              <el-option label="10集" :value="10" />
+            </el-select>
+          </div>
+          <div class="form-item">
+            <div class="form-label">模型</div>
+            <el-select v-model="model" placeholder="请选择模型">
+              <el-option
+                v-for="item in modelOptions"
+                :key="item.model"
+                :label="item.display_name || item.model"
+                :value="item.model"
+              />
+            </el-select>
+          </div>
         </div>
 
         <el-button
           type="primary"
           size="large"
           :loading="generating"
-          :disabled="!prompt.trim()"
+          :disabled="!prompt.trim() || !model"
           class="generate-btn"
           @click="generate"
         >
-          {{ generating ? '生成中...' : (mode === 'image' ? '生成图片' : '生成视频') }}
+          {{ generating ? '生成中...' : ({ image: '生成图片', video: '生成视频', script: '生成剧本' }[mode]) }}
         </el-button>
       </div>
 
@@ -101,7 +124,11 @@
         </div>
 
         <div class="result-grid">
-          <div v-for="(item, idx) in results" :key="idx" class="result-item">
+          <div
+            v-for="(item, idx) in results"
+            :key="idx"
+            :class="['result-item', { 'result-item--script': item.type === 'script' }]"
+          >
             <div class="result-media">
               <video
                 v-if="item.type === 'video' && item.url"
@@ -116,6 +143,12 @@
                 class="result-image"
                 @click="previewUrl = item.url"
               />
+              <article v-else-if="item.type === 'script' && item.status === 'completed'" class="script-result">
+                <section v-for="episode in item.episodes" :key="episode.episode" class="script-episode">
+                  <h3>第{{ episode.episode }}集 · {{ episode.title }}</h3>
+                  <pre>{{ episode.content }}</pre>
+                </section>
+              </article>
               <div v-else-if="item.status === 'pending' || item.status === 'processing'" class="media-loading">
                 <el-icon class="is-loading"><Loading /></el-icon>
                 <span>{{ item.status === 'processing' ? '生成中...' : '排队中...' }}</span>
@@ -144,20 +177,28 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Picture, VideoCamera, MagicStick, Loading, CircleClose } from '@element-plus/icons-vue'
+import { Picture, VideoCamera, MagicStick, Loading, CircleClose, Document } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
 import { generationSettingsAPI } from '@/api/prompts'
+import { generationAPI } from '@/api/generation'
+import { listGenerationCatalog } from '@/api/billing'
 
+const route = useRoute()
 const mode = ref('image')
 const prompt = ref('')
 const style = ref('')
 const aspectRatio = ref('16:9')
 const duration = ref(5)
+const resolution = ref('720p')
+const episodeCount = ref(1)
+const model = ref('')
+const generationCatalog = ref([])
 const generating = ref(false)
 const results = ref([])
 const previewUrl = ref(null)
@@ -166,13 +207,44 @@ const refImageLocalPath = ref(null)
 const refImageInput = ref(null)
 /** 与后端视频异步超时一致（分钟 → 毫秒） */
 const videoPollMaxMs = ref(30 * 60 * 1000)
+const modelOptions = computed(() => {
+  const category = mode.value === 'script' ? 'text' : mode.value
+  return generationCatalog.value.filter((item) => item.category === category)
+})
 
 onMounted(async () => {
+  try {
+    generationCatalog.value = await listGenerationCatalog()
+  } catch (_) {
+    generationCatalog.value = []
+  }
+  const routeMode = ['image', 'video', 'script'].includes(String(route.query.mode))
+    ? String(route.query.mode)
+    : null
+  let draft = null
+  try {
+    draft = JSON.parse(sessionStorage.getItem('moli_quick_create_draft') || 'null')
+  } catch (_) {}
+  mode.value = routeMode || (['image', 'video', 'script'].includes(draft?.mode) ? draft.mode : 'image')
+  prompt.value = typeof draft?.prompt === 'string' ? draft.prompt : ''
+  aspectRatio.value = draft?.aspectRatio || '16:9'
+  duration.value = Number(draft?.duration) || 5
+  resolution.value = draft?.resolution || '720p'
+  model.value = modelOptions.value.some((item) => item.model === draft?.model)
+    ? draft.model
+    : (modelOptions.value[0]?.model || '')
+  sessionStorage.removeItem('moli_quick_create_draft')
   try {
     const res = await generationSettingsAPI.get()
     const m = Math.max(1, Number(res?.video_generation_timeout_minutes) || 30)
     videoPollMaxMs.value = m * 60 * 1000
   } catch (_) {}
+})
+
+watch(mode, () => {
+  if (!modelOptions.value.some((item) => item.model === model.value)) {
+    model.value = modelOptions.value[0]?.model || ''
+  }
 })
 
 function triggerRefImageUpload() {
@@ -230,14 +302,25 @@ async function generate() {
     status: 'processing',
     url: null,
     error: null,
+    episodes: [],
   }
   results.value.unshift(newItem)
   try {
-    if (mode.value === 'image') {
+    if (mode.value === 'script') {
+      const res = await generationAPI.generateStory({
+        premise: prompt.value,
+        episode_count: episodeCount.value,
+        model: model.value,
+      })
+      newItem.episodes = Array.isArray(res?.episodes) ? res.episodes : []
+      newItem.status = newItem.episodes.length ? 'completed' : 'failed'
+      if (!newItem.episodes.length) newItem.error = '模型未返回有效剧本'
+    } else if (mode.value === 'image') {
       const res = await imagesAPI.create({
         prompt: prompt.value,
         style: style.value || undefined,
         aspect_ratio: aspectRatio.value,
+        model: model.value,
       })
       if (res?.task_id) {
         await pollImageTask(res.task_id, newItem)
@@ -251,6 +334,8 @@ async function generate() {
         style: style.value || undefined,
         aspect_ratio: aspectRatio.value,
         duration: duration.value,
+        resolution: resolution.value,
+        model: model.value,
       }
       if (refImageLocalPath.value) {
         body.first_frame_url = refImageLocalPath.value
@@ -330,8 +415,45 @@ async function pollVideoTask(taskId, item) {
 <style scoped>
 .free-create-page {
   min-height: 100vh;
-  background: #f5f7fa;
-  padding: 20px;
+  padding: 28px;
+  color: #f5f5f5;
+  background:
+    radial-gradient(circle at 12% 15%, rgba(84, 44, 156, .38), transparent 30%),
+    radial-gradient(circle at 90% 75%, rgba(52, 31, 117, .32), transparent 34%),
+    #070708;
+}
+
+.script-result {
+  width: 100%;
+  max-height: 560px;
+  padding: 8px;
+  overflow: auto;
+}
+
+.script-episode {
+  padding: 18px;
+  border: 1px solid #2c2c2c;
+  border-radius: 12px;
+  background: #151515;
+}
+
+.script-episode + .script-episode {
+  margin-top: 12px;
+}
+
+.script-episode h3 {
+  margin: 0 0 12px;
+  color: #ff8a5b;
+  font-size: 16px;
+}
+
+.script-episode pre {
+  margin: 0;
+  color: #e7e7e7;
+  font: inherit;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .page-header {
@@ -348,12 +470,12 @@ async function pollVideoTask(taskId, item) {
 .page-title {
   font-size: 22px;
   font-weight: 600;
-  color: #1a1a2e;
+  color: #f5f5f5;
   margin: 0;
 }
 
 .page-desc {
-  color: #6b7280;
+  color: #8f8f98;
   font-size: 14px;
   margin: 0;
 }
@@ -367,10 +489,11 @@ async function pollVideoTask(taskId, item) {
 .input-panel {
   width: 380px;
   flex-shrink: 0;
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  padding: 22px;
+  border: 1px solid #292929;
+  border-radius: 16px;
+  background: rgba(16, 16, 18, .96);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
 }
 
 .mode-tabs {
@@ -390,7 +513,7 @@ async function pollVideoTask(taskId, item) {
 .form-label {
   font-size: 13px;
   font-weight: 500;
-  color: #374151;
+  color: #b8b8be;
   margin-bottom: 6px;
 }
 
@@ -416,7 +539,7 @@ async function pollVideoTask(taskId, item) {
 }
 
 .ref-image-zone {
-  border: 2px dashed #d1d5db;
+  border: 1px dashed #3a3a3d;
   border-radius: 8px;
   padding: 20px;
   text-align: center;
@@ -432,7 +555,7 @@ async function pollVideoTask(taskId, item) {
 }
 
 .ref-image-zone:hover {
-  border-color: #409eff;
+  border-color: #ff7139;
 }
 
 .ref-preview {
@@ -458,14 +581,17 @@ async function pollVideoTask(taskId, item) {
 .generate-btn {
   width: 100%;
   margin-top: 4px;
+  border: 0;
+  background: #ef7443;
 }
 
 .result-panel {
   flex: 1;
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  padding: 22px;
+  border: 1px solid #292929;
+  border-radius: 16px;
+  background: rgba(16, 16, 18, .96);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
   min-height: 400px;
 }
 
@@ -479,7 +605,7 @@ async function pollVideoTask(taskId, item) {
 .result-title {
   font-size: 16px;
   font-weight: 600;
-  color: #1a1a2e;
+  color: #f5f5f5;
 }
 
 .empty-result {
@@ -512,18 +638,28 @@ async function pollVideoTask(taskId, item) {
 }
 
 .result-item {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border: 1px solid #2c2c2f;
+  border-radius: 12px;
   overflow: hidden;
+  background: #121214;
+}
+
+.result-item--script {
+  grid-column: 1 / -1;
 }
 
 .result-media {
-  background: #f9fafb;
+  background: #0b0b0c;
   aspect-ratio: 16/9;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+}
+
+.result-item--script .result-media {
+  aspect-ratio: auto;
+  justify-content: stretch;
 }
 
 .result-image {
@@ -559,7 +695,7 @@ async function pollVideoTask(taskId, item) {
 
 .result-prompt {
   font-size: 12px;
-  color: #6b7280;
+  color: #8f8f98;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -588,5 +724,34 @@ async function pollVideoTask(taskId, item) {
   max-height: 90vh;
   object-fit: contain;
   border-radius: 8px;
+}
+
+.free-create-page :deep(.el-tabs__item) {
+  color: #8f8f98;
+}
+
+.free-create-page :deep(.el-tabs__item.is-active),
+.free-create-page :deep(.el-tabs__item:hover) {
+  color: #ff8757;
+}
+
+.free-create-page :deep(.el-tabs__active-bar) {
+  background: #ff7139;
+}
+
+.free-create-page :deep(.el-input__wrapper),
+.free-create-page :deep(.el-select__wrapper),
+.free-create-page :deep(.el-textarea__inner) {
+  color: #ededed;
+  background: #171719;
+  box-shadow: 0 0 0 1px #303034 inset;
+}
+
+@media (max-width: 900px) {
+  .free-create-page { padding: 18px; }
+  .create-layout { flex-direction: column; }
+  .input-panel { width: auto; }
+  .input-panel,
+  .result-panel { box-sizing: border-box; width: 100%; }
 }
 </style>

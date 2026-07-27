@@ -8,6 +8,7 @@ function readView(name) {
 }
 
 const filmListSource = readView('FilmList.vue')
+const freeCreateSource = readView('FreeCreate.vue')
 const routerSource = readFileSync(fileURLToPath(new URL('../src/router/index.js', import.meta.url)), 'utf8')
 const dramaCanvasSource = readView('DramaCanvas.vue')
 const platformHeaderSource = readFileSync(fileURLToPath(new URL('../src/components/PlatformHeader.vue', import.meta.url)), 'utf8')
@@ -58,16 +59,29 @@ test('首页提供紫黑工作台、快速生成器和真实最近项目入口',
   assert.match(filmListSource, /\.home-workbench[\s\S]*linear-gradient\(112deg/)
 })
 
-test('首页生成参数由后端模型目录和计费配置驱动并写入项目元数据', () => {
+test('首页单次生成由后端模型目录驱动且不创建项目', () => {
   assert.match(filmListSource, /listGenerationCatalog/)
   assert.match(filmListSource, /getCreditAccount/)
   assert.match(filmListSource, /v-model="homeModel"/)
   assert.match(filmListSource, /v-for="item in homeModelOptions"/)
   assert.match(filmListSource, /homeSelectedPrice/)
-  assert.match(filmListSource, /video_model:\s*homeMediaType\.value === 'video'/)
-  assert.match(filmListSource, /image_model:\s*homeMediaType\.value !== 'video'/)
-  assert.match(filmListSource, /video_duration:\s*homeDuration\.value/)
-  assert.match(filmListSource, /video_resolution:\s*homeResolution\.value/)
+  assert.match(filmListSource, /<option value="script">剧本<\/option>/)
+  assert.match(filmListSource, /sessionStorage\.setItem\('moli_quick_create_draft'/)
+  assert.match(filmListSource, /name:\s*'free-create'/)
+  const startFromComposer = filmListSource.match(/function startFromComposer\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+  assert.doesNotMatch(startFromComposer, /dramaAPI\.create/)
+})
+
+test('独立创作页承接图片、视频和剧本真实生成且不依赖项目', () => {
+  assert.match(freeCreateSource, /name="image"/)
+  assert.match(freeCreateSource, /name="video"/)
+  assert.match(freeCreateSource, /name="script"/)
+  assert.match(freeCreateSource, /imagesAPI\.create/)
+  assert.match(freeCreateSource, /videosAPI\.create/)
+  assert.match(freeCreateSource, /generationAPI\.generateStory/)
+  assert.match(freeCreateSource, /episode_count:\s*episodeCount\.value/)
+  assert.match(freeCreateSource, /model:\s*model\.value/)
+  assert.doesNotMatch(freeCreateSource, /dramaAPI\.create/)
 })
 
 test('普通页面的全局头部不再把独立自由画布作为主要入口', () => {
