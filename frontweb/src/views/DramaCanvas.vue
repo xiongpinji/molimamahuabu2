@@ -575,6 +575,10 @@ import {
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
+import {
+  computeStandaloneAutoLayoutPositions,
+  computeStandaloneNodePosition,
+} from '@/utils/canvasStandaloneLayout'
 import { assetImageUrl, assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
 import { getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 import {
@@ -1918,7 +1922,7 @@ async function createFreeCanvasNode(kind, flowPosition = null) {
     {
       id,
       type: 'homeCanvasNode',
-      position: flowPosition || canvasCenterFlowPosition(),
+      position: flowPosition || computeStandaloneNodePosition(allGraphNodes.value, canvasCenterFlowPosition()),
       selected: true,
       data,
     },
@@ -5418,12 +5422,14 @@ async function onAlignNodes() {
   aligningNodes.value = true
   focusedNodeId.value = null
   try {
-    const { positions } = computeAutoLayoutPositions(drama.value, {
-      episodeId: filterEpisodeId.value,
-      workflowGroups: workflowGroups.value,
-      imagesBySbId: imagesBySbId.value,
-      videosBySbId: videosBySbId.value,
-    })
+    const positions = isStandaloneCanvas.value
+      ? computeStandaloneAutoLayoutPositions(allGraphNodes.value)
+      : computeAutoLayoutPositions(drama.value, {
+        episodeId: filterEpisodeId.value,
+        workflowGroups: workflowGroups.value,
+        imagesBySbId: imagesBySbId.value,
+        videosBySbId: videosBySbId.value,
+      }).positions
     allGraphNodes.value = allGraphNodes.value.map((n) => {
       const pos = positions[n.id]
       return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n
