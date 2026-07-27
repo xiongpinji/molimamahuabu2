@@ -524,6 +524,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     taskService.updateTaskResult(db, row.task_id, {
       video_generation_id: videoGenId,
       video_url: videoUrl,
+      local_path: localPath,
       status: 'completed',
     });
   }

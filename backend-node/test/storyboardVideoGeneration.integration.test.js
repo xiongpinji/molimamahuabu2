@@ -257,6 +257,7 @@ test('分镜视频通过本地 DeepWL 兼容供应商完成提交、下载与结
     assert.equal(task.status, 'completed');
     const taskResult = JSON.parse(task.result);
     assert.equal(taskResult.video_generation_id, generated.body.data.id);
+    assert.ok(taskResult.local_path);
 
     const video = await readJson(await fetch(`${backendBaseUrl}/videos/${generated.body.data.id}`));
     assert.equal(video.status, 200);
@@ -267,6 +268,7 @@ test('分镜视频通过本地 DeepWL 兼容供应商完成提交、下载与结
     assert.equal(video.body.data.last_frame_url, lastFrameUrl);
     assert.equal(video.body.data.video_url, `${providerBaseUrl}/output.mp4`);
     assert.ok(video.body.data.local_path);
+    assert.equal(taskResult.local_path, video.body.data.local_path);
     const localVideoRelPath = video.body.data.local_path.replace(/^\/?static\//, '').replace(/^\/+/, '');
     let localVideoPath = path.join(storagePath, localVideoRelPath);
     if (!fs.existsSync(localVideoPath)) {

@@ -317,13 +317,13 @@ export function resolveFreeCanvasResultUrl(kind, response = {}) {
   if (resultKind === 'video') {
     const record = normalizedResponse?.video || normalizedResponse?.videoRecord || normalizedResponse?.record || {}
     return firstString(
+      staticLocalPathUrl(result.local_path || normalizedResponse.local_path || record.local_path),
       result.video_url,
       result.url,
       normalizedResponse.video_url,
       normalizedResponse.url,
       record.video_url,
-      record.url,
-      staticLocalPathUrl(result.local_path || normalizedResponse.local_path || record.local_path)
+      record.url
     )
   }
   if (resultKind === 'audio') {
