@@ -520,7 +520,6 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
-import { aiAPI } from '@/api/ai'
 import { imagesAPI } from '@/api/images'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
@@ -732,20 +731,11 @@ function getFreeNodeEstimatedCredits(kind, model, quantity) {
 
 async function loadFreeCanvasModelConfigs() {
   if (freeCanvasModelConfigsLoaded) return
-  const results = await Promise.allSettled([
-    request.get('/canvas/model-catalog'),
-    aiAPI.list('text'),
-    aiAPI.list('image'),
-    aiAPI.list('storyboard_image'),
-    aiAPI.list('video'),
-    aiAPI.list('tts'),
-  ])
+  const catalog = await request.get('/canvas/model-catalog').catch(() => [])
   freeCanvasModelCatalog.value = normalizeCanvasModelCatalog(
-    results[0].status === 'fulfilled' && Array.isArray(results[0].value) ? results[0].value : []
+    Array.isArray(catalog) ? catalog : []
   )
-  freeCanvasModelConfigs.value = results.slice(1).flatMap((result) => (
-    result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []
-  ))
+  freeCanvasModelConfigs.value = []
   freeCanvasModelConfigsLoaded = true
 }
 

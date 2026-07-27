@@ -51,7 +51,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { changePassword, getCreditAccount } from '@/api/auth'
+import { changePassword, getCreditAccount, logout as logoutApi } from '@/api/auth'
 import { listTenants } from '@/api/tenants'
 import {
   clearSession,
@@ -136,6 +136,7 @@ async function submitPasswordChange() {
 }
 
 async function logout() {
+  await logoutApi().catch(() => undefined)
   clearSession()
   await router.replace({ name: 'login' })
 }

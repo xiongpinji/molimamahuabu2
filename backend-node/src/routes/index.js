@@ -64,6 +64,8 @@ function setupRouter(cfg, db, log) {
     emailVerificationEnabled,
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
     verificationSecret: process.env.PLATFORM_VERIFICATION_SECRET || process.env.PLATFORM_JWT_SECRET,
+    secureCookies: publicPlatformEnabled
+      && !/^(0|false|no)$/i.test(String(process.env.PLATFORM_SECURE_COOKIES || 'true')),
     mailer: createEmailService(process.env),
     bootstrapAdminEmail: publicPlatformEnabled
       ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
@@ -104,6 +106,7 @@ function setupRouter(cfg, db, log) {
   r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
+  r.post('/auth/logout', auth.logout);
   r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
   r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。

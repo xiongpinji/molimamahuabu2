@@ -60,12 +60,16 @@ function runUserAuth(db, token) {
 }
 
 function captureResponse() {
-  const result = { status: null, body: null }
+  const result = { status: null, body: null, cookie: null }
   return {
     result,
     res: {
       status(code) { result.status = code; return this },
       json(body) { result.body = body; return this },
+      cookie(name, value, options) {
+        result.cookie = { name, value, options }
+        return this
+      },
     },
   }
 }

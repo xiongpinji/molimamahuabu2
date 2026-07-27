@@ -62,6 +62,15 @@ test('首页头部在未登录时始终提供登录入口', () => {
   assert.doesNotMatch(header, /v-else-if="publicMode"/)
 })
 
+test('账户退出同时清除服务端媒体会话和本地登录状态', () => {
+  const header = fs.readFileSync(path.join(root, 'src/components/PlatformHeader.vue'), 'utf8')
+  const badge = fs.readFileSync(path.join(root, 'src/components/AccountBadge.vue'), 'utf8')
+  const authApi = fs.readFileSync(path.join(root, 'src/api/auth.js'), 'utf8')
+  assert.match(authApi, /request\.post\('\/auth\/logout'\)/)
+  assert.match(header, /await logoutApi\(\)\.catch\(\(\) => undefined\)/)
+  assert.match(badge, /await logoutApi\(\)\.catch\(\(\) => undefined\)/)
+})
+
 test('账号管理页使用独立 JWT API 并按权限控制敏感操作', () => {
   const view = fs.readFileSync(path.join(root, 'src/views/AccountAdmin.vue'), 'utf8')
   const api = fs.readFileSync(path.join(root, 'src/api/platformAccounts.js'), 'utf8')

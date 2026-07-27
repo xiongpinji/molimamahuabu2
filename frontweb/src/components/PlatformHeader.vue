@@ -81,6 +81,7 @@ import { ArrowLeft, Grid, Moon, Sunny, UserFilled } from '@element-plus/icons-vu
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
+import { logout as logoutApi } from '@/api/auth'
 import { clearSession, readSession } from '@/utils/authSession'
 import { BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 
@@ -128,6 +129,7 @@ async function handleAccountCommand(command) {
   if (command === 'billing') return router.push({ name: 'billing-admin' })
   if (command === 'models') return router.push({ name: 'ai-config' })
   if (command === 'logout') {
+    await logoutApi().catch(() => undefined)
     clearSession()
     await router.replace({ name: 'login' })
   }

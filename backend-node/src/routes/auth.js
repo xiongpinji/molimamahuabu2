@@ -4,6 +4,7 @@ const credits = require('../services/creditLedgerService');
 const audit = require('../services/auditEventService');
 const tenants = require('../services/tenantService');
 const verification = require('../services/authVerificationService');
+const sessionCookie = require('../services/sessionCookieService');
 
 function createAuthRoutes(db, options = {}) {
   auth.ensureSchema(db);
@@ -111,6 +112,7 @@ function createAuthRoutes(db, options = {}) {
         return created;
       })();
       const token = auth.issueToken(user, options.jwtSecret, auth.getTokenVersion(db, user.id));
+      sessionCookie.setSessionCookie(res, token, options.secureCookies);
       return response.created(res, { user, token });
     } catch (error) {
       if (error.code === 'EMAIL_EXISTS') return response.error(res, 409, error.code, error.message);
@@ -140,6 +142,7 @@ function createAuthRoutes(db, options = {}) {
           outcome: 'success',
         });
       })();
+      sessionCookie.clearSessionCookie(res, options.secureCookies);
       return response.success(res, { message: '密码已重置，请重新登录' });
     } catch (error) {
       if (error.code === 'VERIFICATION_INVALID') {
@@ -163,6 +166,7 @@ function createAuthRoutes(db, options = {}) {
         eventType: 'auth.password_change.success',
         outcome: 'success',
       });
+      sessionCookie.clearSessionCookie(res, options.secureCookies);
       return response.success(res, { message: '密码已修改，请重新登录' });
     } catch (error) {
       if (error.code === 'INVALID_CREDENTIALS') {
@@ -185,6 +189,7 @@ function createAuthRoutes(db, options = {}) {
         eventType: 'auth.login.success',
         outcome: 'success',
       });
+      sessionCookie.setSessionCookie(res, token, options.secureCookies);
       return response.success(res, { user, token });
     } catch (error) {
       if (error.code === 'INVALID_CREDENTIALS' || error.code === 'INVALID_INPUT') {
@@ -200,6 +205,11 @@ function createAuthRoutes(db, options = {}) {
     return response.success(res, req.user);
   }
 
+  function logout(req, res) {
+    sessionCookie.clearSessionCookie(res, options.secureCookies);
+    return response.success(res, { message: '已退出登录' });
+  }
+
   function bootstrapAdmin(req, res) {
     const configuredEmail = String(options.bootstrapAdminEmail || '').trim().toLowerCase();
     if (!configuredEmail) {
@@ -213,6 +223,7 @@ function createAuthRoutes(db, options = {}) {
       return response.error(res, 409, 'ADMIN_BOOTSTRAP_CLOSED', '系统已存在管理员账号');
     }
     const token = auth.issueToken(user, options.jwtSecret, auth.getTokenVersion(db, user.id));
+    sessionCookie.setSessionCookie(res, token, options.secureCookies);
     return response.success(res, { user, token });
   }
 
@@ -224,6 +235,7 @@ function createAuthRoutes(db, options = {}) {
     resetPassword,
     changePassword,
     me,
+    logout,
     bootstrapAdmin,
   };
 }
