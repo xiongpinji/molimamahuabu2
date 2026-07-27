@@ -1,9 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  canAlignCanvasNodes,
   computeStandaloneAutoLayoutPositions,
   computeStandaloneNodePosition,
 } from '../src/utils/canvasStandaloneLayout.js'
+
+test('独立画布无需剧集项目也可以执行整理', () => {
+  assert.equal(canAlignCanvasNodes({
+    standalone: true,
+    hasDrama: false,
+    nodeCount: 3,
+    aligning: false,
+  }), true)
+  assert.equal(canAlignCanvasNodes({
+    standalone: false,
+    hasDrama: false,
+    nodeCount: 3,
+    aligning: false,
+  }), false)
+})
 
 test('连续从顶栏添加独立画布节点时不会重叠在同一坐标', () => {
   const center = { x: 800, y: 480 }
