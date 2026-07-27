@@ -67,13 +67,13 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       `INSERT INTO ai_service_configs
         (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
          is_active, is_default, priority, created_at, updated_at)
-       VALUES ('video', 'djpsd', 'djpsd', ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+       VALUES ('video', 'aihubcc_video', 'aihubcc', ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
     ).run(
       '本地恢复轮询供应商',
-      'http://127.0.0.1:9',
-      'test-only',
-      JSON.stringify(['seedance 2.0']),
-      'seedance 2.0',
+      'https://seed.alimyun.xyz/api/open/v1',
+      'artifact-secret',
+      JSON.stringify(['lingjing-video-v1']),
+      'lingjing-video-v1',
       now,
       now
     );
@@ -83,7 +83,7 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       db.prepare(
         `INSERT INTO video_generations
           (provider, prompt, model, status, task_id, provider_task_id, created_at, updated_at)
-         VALUES ('djpsd', ?, 'seedance 2.0', 'processing', ?, ?, ?, ?)`
+         VALUES ('aihubcc_video', ?, 'lingjing-video-v1', 'processing', ?, ?, ?, ?)`
       ).run('恢复轮询测试', task.id, 'provider-task-83047', now, now).lastInsertRowid
     );
 
@@ -95,13 +95,16 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
       pollCount += 1;
       assert.equal(receivedVideoId, videoId);
       assert.equal(providerTaskId, 'provider-task-83047');
-      return { video_url: 'https://cdn.example/resumed.mp4' };
+      return { video_url: 'https://seed.alimyun.xyz/api/open/v1/videos/provider-task-83047/content' };
     };
-    global.fetch = async () => ({
-      ok: true,
-      status: 200,
-      arrayBuffer: async () => MINIMAL_MP4,
-    });
+    global.fetch = async (_url, options = {}) => {
+      assert.equal(options.headers?.Authorization, 'Bearer artifact-secret');
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => MINIMAL_MP4,
+      };
+    };
 
     videoService.resumeProcessingVideoGenerations(db, log);
     const completed = await waitFor(() => {
@@ -114,7 +117,10 @@ test('服务重启后按 provider_task_id 恢复轮询且不重复提交供应�
     assert.equal(submitCount, 0);
     assert.equal(pollCount, 1);
     assert.equal(completed.provider_task_id, 'provider-task-83047');
-    assert.equal(completed.video_url, 'https://cdn.example/resumed.mp4');
+    assert.equal(
+      completed.video_url,
+      'https://seed.alimyun.xyz/api/open/v1/videos/provider-task-83047/content'
+    );
     assert.ok(completed.local_path);
     const localVideoBytes = fs.readFileSync(path.join(storageRoot, completed.local_path.replace(/^\/static\//, '')));
     assert.ok(localVideoBytes.length > 16);

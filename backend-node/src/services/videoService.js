@@ -347,7 +347,7 @@ function validateDownloadedVideoBuffer(buffer, ext) {
  * 将远程 video_url 下载到本地
  * @returns {Promise<{localPath: string|null, error?: string}>} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
-async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
+async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, fetchOptions = {}) {
   if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
   try {
@@ -355,7 +355,7 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
     const filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, { method: 'GET' });
+    const res = await fetch(videoUrl, { method: 'GET', ...fetchOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
       return { localPath: null };
@@ -466,7 +466,7 @@ function resolveStoragePath(cfg) {
     : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
 }
 
-async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel) {
+async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, providerConfig) {
   const now = new Date().toISOString();
   let localPath = null;
   let downloadError = null;
@@ -474,7 +474,15 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-    const downloaded = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
+    const fetchOptions = videoClient.getVideoArtifactFetchOptions(providerConfig, videoUrl);
+    const downloaded = await downloadVideoToLocal(
+      storagePath,
+      videoUrl,
+      videoGenId,
+      log,
+      projectSubdir,
+      fetchOptions
+    );
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
@@ -549,7 +557,16 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
   const now = new Date().toISOString();
   const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
   if (polledVideo.ok) {
-    await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, polledVideo.video_url, 'after poll');
+    await finalizeSuccessfulVideo(
+      db,
+      log,
+      videoGenId,
+      row,
+      rowForAspect,
+      polledVideo.video_url,
+      'after poll',
+      config
+    );
   } else if (pollResult.indeterminate) {
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
     db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
@@ -756,7 +773,16 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
     if (directVideo.ok) {
-      await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, directVideo.video_url, '');
+      await finalizeSuccessfulVideo(
+        db,
+        log,
+        videoGenId,
+        row,
+        rowForAspect,
+        directVideo.video_url,
+        '',
+        config
+      );
       return;
     }
     if (result.video_url) {
