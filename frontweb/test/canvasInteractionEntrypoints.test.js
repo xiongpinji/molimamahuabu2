@@ -131,6 +131,7 @@ test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
 test('自动整理后同步 VueFlow 内部节点仓库避免界面坐标停留', () => {
   assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
   assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(canvasSource, /computedPosition: \{ \.\.\.n\.computedPosition, x: pos\.x, y: pos\.y \}/)
   assert.match(canvasSource, /applyVirtualizedGraph\(\)\s*\n\s*canvasFlowApi\.value\?\.setNodes\?\.\(nodes\.value\)/)
 })
 
