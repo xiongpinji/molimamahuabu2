@@ -163,7 +163,7 @@ function resolveVideoProtocol(config, modelHint) {
 }
 
 function getVideoArtifactFetchOptions(config, videoUrl) {
-  if (resolveVideoProtocol(config) !== 'aihubcc') return {};
+  if (!String(config?.api_key || '').trim()) return {};
   try {
     const providerOrigin = new URL(String(config?.base_url || '')).origin;
     const artifactOrigin = new URL(String(videoUrl || '')).origin;
