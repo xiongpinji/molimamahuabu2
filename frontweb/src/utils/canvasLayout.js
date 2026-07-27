@@ -82,7 +82,11 @@ export function normalizeManualCanvasEdges(edges) {
       sourceHandle,
       targetHandle,
       type: edge.type || 'smoothstep',
-      data: { manual: true },
+      data: {
+        ...(edge.data || {}),
+        manual: true,
+        ...(edge.data?.contract ? { contract: { ...edge.data.contract } } : {}),
+      },
     })
   }
   return result

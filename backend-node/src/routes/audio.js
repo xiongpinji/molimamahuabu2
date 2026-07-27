@@ -18,11 +18,16 @@ function routes(db, log, cfg, options = {}) {
   return {
     /** 为单条分镜生成 TTS：对白 → audio_local_path；旁白 → narration_audio_local_path（body.tts_kind === 'narration'） */
     extract: async (req, res) => {
-      const { drama_id, storyboard_id, text, tts_kind, tts_model } = req.body || {};
+      const { drama_id, storyboard_id, text, tts_kind, tts_model, voice_id, speed } = req.body || {};
       if (!text && !storyboard_id) return response.badRequest(res, '请提供 storyboard_id 或 text');
       const dramaId = Number(drama_id);
       if (options.billingEnabled && (!Number.isInteger(dramaId) || dramaId <= 0)) {
         return response.badRequest(res, 'drama_id 必须是正整数');
+      }
+      const speechSpeed = speed == null || speed === '' ? undefined : Number(speed);
+      if (speechSpeed !== undefined
+        && (!Number.isFinite(speechSpeed) || speechSpeed < 0.5 || speechSpeed > 2)) {
+        return response.badRequest(res, 'speed 必须是 0.5 到 2 之间的数字');
       }
       if (options.billingEnabled) {
         const owner = req.tenant?.id
@@ -103,6 +108,8 @@ function routes(db, log, cfg, options = {}) {
             ? path.posix.join(storageLayout.getProjectStorageSubdir(db, dramaId), 'audio')
             : 'audio',
           config: selectedConfig,
+          voice_id: voice_id || undefined,
+          speed: speechSpeed,
         });
         if (reservation) {
           creditLedger.settleGeneration(db, reservation.id, 'completed');

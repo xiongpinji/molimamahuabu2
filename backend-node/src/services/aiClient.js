@@ -1,8 +1,31 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
 const https = require('https');
 const http = require('http');
+
+function extractTextResponseContent(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (typeof payload.output_text === 'string') return payload.output_text;
+  for (const item of Array.isArray(payload.output) ? payload.output : []) {
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      if (typeof content?.text === 'string') return content.text;
+    }
+  }
+  return payload.choices?.[0]?.message?.content
+    || payload.choices?.[0]?.message?.reasoning_content
+    || '';
+}
+
+function buildResponsesBody({ model, prompt, systemPrompt, maxTokens }) {
+  return {
+    model,
+    input: prompt,
+    ...(systemPrompt ? { instructions: systemPrompt } : {}),
+    ...(maxTokens != null ? { max_output_tokens: maxTokens } : {}),
+  };
+}
 
 /**
  * 非流式 POST，发送 JSON body，等待完整 HTTP 响应后返回。
@@ -37,9 +60,7 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
         try {
           const json = JSON.parse(raw);
           // 兼容标准 OpenAI 格式与推理模型
-          const content = json.choices?.[0]?.message?.content
-            || json.choices?.[0]?.message?.reasoning_content
-            || null;
+          const content = extractTextResponseContent(json) || null;
           resolve({ status: res.statusCode, body: content, raw });
         } catch (_) {
           resolve({ status: res.statusCode, body: null, raw });
@@ -215,7 +236,7 @@ function getConfigForModel(db, serviceType, modelName) {
     const models = Array.isArray(config.model) ? config.model : [config.model];
     if (models.includes(modelName)) return config;
   }
-  return null;
+  return canvasProviderConfigService.getConfig(serviceType, modelName);
 }
 
 function buildChatUrl(config) {
@@ -324,6 +345,8 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     }
   }
 
+  const usesResponses = String(config.api_protocol || '').toLowerCase() === 'responses'
+    || /\/responses(?:\?|$)/i.test(url);
   let body = {
     model,
     messages: [
@@ -336,6 +359,29 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   };
   body = applyDeepSeekChatOptions(config, body);
   const startMs = Date.now();
+  if (usesResponses) {
+    const responseBody = buildResponsesBody({
+      model,
+      prompt: userPrompt,
+      systemPrompt,
+      maxTokens: finalMaxTokens,
+    });
+    log.info('AI generateText request', {
+      url: url.slice(0, 60),
+      model,
+      max_output_tokens: finalMaxTokens ?? '(model default)',
+      protocol: 'responses',
+      stream: false,
+    });
+    const response = await postJSONNonStream(
+      url,
+      { Authorization: 'Bearer ' + (config.api_key || '') },
+      responseBody,
+      240000,
+    );
+    if (!response.body) throw new Error('AI 返回内容为空');
+    return response.body;
+  }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
   const res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 60000, (receivedLen, event, accumulated) => {
     if (event === 'first_token') {
@@ -711,4 +757,6 @@ module.exports = {
   EXTRACT_PROMPTS,
   isRefusalResponse,
   postJSONWithTimeout,
+  extractTextResponseContent,
+  buildResponsesBody,
 };

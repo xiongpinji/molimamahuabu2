@@ -19,6 +19,7 @@ const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const audioRoutes = require('./audio');
+const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
@@ -154,6 +155,10 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
+  r.get('/canvas/model-catalog', (req, res) => {
+    const catalog = require('../services/canvasModelCatalogService').list(db);
+    response.success(res, catalog);
+  });
   r.get('/audio-models', aiConfig.listPublicAudioModels);
   
   const uploadService = require('../services/uploadService');
@@ -170,6 +175,7 @@ function setupRouter(cfg, db, log) {
   const videoMerges = videoMergeRoutes(db, log);
   const assets = assetRoutes(db, log, { publicPlatformEnabled });
   const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
+  const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
   r.get('/voice-catalog', voiceCatalog.list);
@@ -480,6 +486,7 @@ function setupRouter(cfg, db, log) {
   // ---------- audio ----------
   r.post('/audio/extract', audio.extract);
   r.post('/audio/extract/batch', audio.extractBatch);
+  r.post('/canvas/text/generate', canvasText.generate);
 
   // ---------- settings ----------
   r.get('/settings/language', settings.getLanguage);

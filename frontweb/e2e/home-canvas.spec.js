@@ -46,18 +46,19 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('.home-starter-panel')).toHaveCount(0)
 })
 
-test('文本节点在节点内直接编辑，不再依赖配置弹窗', async ({ page }) => {
+test('文本节点单击后在专属编辑器直接编辑，不再依赖配置弹窗', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
 
   await seedNode.click()
+  const editor = page.locator('.node-expanded-editor')
   await expect(seedNode).toHaveClass(/selected/)
   await expect(seedNode.locator('.home-canvas-node')).toHaveClass(/is-selected/)
   await expect(seedNode.getByRole('textbox', { name: '节点标题' })).toHaveValue('E2E 种子节点')
-  await expect(seedNode.getByRole('textbox', { name: '文本内容' })).toHaveValue('用于覆盖画布事件层。')
+  await expect(editor.getByRole('textbox', { name: '文本内容' })).toHaveValue('用于覆盖画布事件层。')
   await expect(seedNode.getByRole('button', { name: '配置' })).toHaveCount(0)
 
-  await seedNode.getByRole('textbox', { name: '文本内容' }).fill('节点内直接编辑后的内容')
-  await seedNode.getByRole('textbox', { name: '文本内容' }).blur()
+  await editor.getByRole('textbox', { name: '文本内容' }).fill('节点内直接编辑后的内容')
+  await editor.getByRole('textbox', { name: '文本内容' }).blur()
 
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
@@ -74,13 +75,15 @@ test('右键添加文本节点并支持删除、撤销和重做', async ({ page 
 
   await expect(page.getByRole('dialog')).toHaveCount(0)
   const createdNode = page.locator('.vue-flow__node.selected')
+  const editor = page.locator('.node-expanded-editor')
   await expect(createdNode).toHaveCount(1)
   await createdNode.getByRole('textbox', { name: '节点标题' }).fill('E2E 回归节点')
-  await createdNode.getByRole('textbox', { name: '文本内容' }).fill('验证首页自由画布关键交互')
-  await createdNode.getByRole('textbox', { name: '文本内容' }).blur()
+  await editor.getByRole('textbox', { name: '文本内容' }).fill('验证首页自由画布关键交互')
+  await editor.getByRole('textbox', { name: '文本内容' }).blur()
   await expect(page.getByText('E2E 回归节点')).toBeVisible()
 
-  await createdNode.locator('.node-icon').click()
+  await page.keyboard.press('Escape')
+  await expect(editor).toHaveCount(0)
   await page.keyboard.press('Delete')
   await expect(page.getByText('E2E 回归节点')).toHaveCount(0)
   await expect(page.getByLabel('画布历史操作').getByRole('button', { name: '撤销' })).toBeEnabled()
@@ -109,6 +112,31 @@ test('复制粘贴选中节点会生成带偏移的副本', async ({ page }) => 
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.nodes?.length || 0
   }, homeCanvasStorageKey)).toBe(2)
+})
+
+test('本地画布右键节点可复制删除，媒体节点不展示无效运行入口', async ({ page }) => {
+  const canvas = page.locator('.canvas-main')
+  await canvas.click({ button: 'right', position: { x: 1080, y: 680 } })
+  await expect(page.getByRole('button', { name: '音频节点' })).toBeVisible()
+  await page.getByRole('button', { name: '图片节点' }).click()
+
+  const imageNode = page.locator('.vue-flow__node.selected')
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toContainText('本地草稿仅保存内容')
+  await expect(editor.getByRole('button', { name: '上传' })).toHaveCount(0)
+  await expect(editor.getByRole('button', { name: '生成' })).toHaveCount(0)
+  await expect(editor.getByRole('button', { name: '配置' })).toHaveCount(0)
+
+  await imageNode.click({ button: 'right' })
+  await expect(page.getByText(/节点操作 · 图片/)).toBeVisible()
+  await page.getByRole('button', { name: '复制节点' }).click()
+  await expect(page.getByRole('textbox', { name: '节点标题' })).toHaveCount(3)
+  const duplicate = page.locator('.vue-flow__node.selected')
+  await expect(duplicate.getByRole('textbox', { name: '节点标题' })).toHaveValue('图片 副本')
+
+  await duplicate.click({ button: 'right' })
+  await page.locator('.home-context-menu').getByRole('button', { name: '删除节点' }).click()
+  await expect(page.getByRole('textbox', { name: '节点标题' })).toHaveCount(2)
 })
 
 test('拖动边目标端点会更新连接目标并持久化', async ({ page }) => {

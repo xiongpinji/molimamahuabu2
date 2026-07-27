@@ -7,6 +7,10 @@
         <span class="layout-status" :class="layoutSaveState">{{ layoutStatusLabel }}</span>
 
         <div class="header-actions">
+          <el-select v-model="bindingProjectId" class="project-bind-select" size="small" placeholder="选择项目接入运行" filterable>
+            <el-option v-for="project in bindingProjects" :key="project.id" :label="project.title || project.name" :value="String(project.id)" />
+          </el-select>
+          <el-button size="small" :loading="bindingProject" :disabled="!bindingProjectId" @click="bindToProject">接入项目</el-button>
           <div class="topbar-history" aria-label="画布历史操作">
             <button type="button" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
               <el-icon><RefreshLeft /></el-icon>
@@ -41,10 +45,13 @@
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :edge-types="edgeTypes"
+          :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="2"
           :nodes-connectable="true"
+          :nodes-draggable="true"
           :edges-updatable="true"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
@@ -59,7 +66,9 @@
           :zoom-on-scroll="false"
           :fit-view-on-init="!hasSavedViewport"
           class="vue-flow-canvas"
+          @node-click="onNodeClick"
           @node-double-click="onNodeDoubleClick"
+          @node-context-menu="onNodeContextMenu"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
           @connect="onConnect"
@@ -116,6 +125,7 @@
           <button type="button" class="toolbar-button" @click="openNodeEditor('text')">文本</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('image')">图片</button>
           <button type="button" class="toolbar-button" @click="openNodeEditor('video')">视频</button>
+          <button type="button" class="toolbar-button" @click="openNodeEditor('audio')">音频</button>
           <span class="toolbar-divider" />
           <button type="button" class="toolbar-icon" aria-label="撤销" title="撤销（Ctrl/Cmd+Z）" :disabled="!canUndo" @click="undoCanvas">
             <el-icon><RefreshLeft /></el-icon>
@@ -158,10 +168,18 @@
         @mousedown.stop
         @contextmenu.prevent
       >
-        <div class="ctx-title">在此添加</div>
-        <button type="button" class="ctx-item" @click="openNodeEditor('text', pendingFlowPosition)">文本节点</button>
-        <button type="button" class="ctx-item" @click="openNodeEditor('image', pendingFlowPosition)">图片节点</button>
-        <button type="button" class="ctx-item" @click="openNodeEditor('video', pendingFlowPosition)">视频节点</button>
+        <template v-if="contextMenuNode">
+          <div class="ctx-title">节点操作 · {{ contextMenuNode.data?.title || '未命名节点' }}</div>
+          <button type="button" class="ctx-item" @click="duplicateContextNode">复制节点</button>
+          <button type="button" class="ctx-item danger" @click="deleteContextNode">删除节点</button>
+        </template>
+        <template v-else>
+          <div class="ctx-title">在此添加</div>
+          <button type="button" class="ctx-item" @click="openNodeEditor('text', pendingFlowPosition)">文本节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('image', pendingFlowPosition)">图片节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('video', pendingFlowPosition)">视频节点</button>
+          <button type="button" class="ctx-item" @click="openNodeEditor('audio', pendingFlowPosition)">音频节点</button>
+        </template>
       </div>
     </Teleport>
   </div>
@@ -183,9 +201,16 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
+import { dramaAPI } from '@/api/drama'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
+import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
+import {
+  canvasNodeKind,
+  resolveCanvasNodeConnection,
+  toLibTvCanvasEdge,
+} from '@/utils/canvasNodeContracts'
 import {
   HOME_CANVAS_STORAGE_KEY,
   createHomeCanvasState,
@@ -198,6 +223,8 @@ import {
   serializeHomeCanvasState,
   undoHomeCanvasHistory,
 } from '@/utils/homeCanvasState'
+import { parseCanvasLayout } from '@/utils/canvasLayout'
+import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 
 const router = useRouter()
 
@@ -212,14 +239,20 @@ const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const pendingFlowPosition = ref(null)
+const contextMenuNode = ref(null)
+const activeNodeId = ref('')
 const historyState = ref(createHomeCanvasHistory(createHomeCanvasState()))
 const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
 const canvasClipboard = ref(null)
 let canvasPasteSequence = 0
 let saveTimer = null
+const bindingProjects = ref([])
+const bindingProjectId = ref('')
+const bindingProject = ref(false)
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
+const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
 const initialViewport = computed(() => currentViewport.value)
 const zoomLabel = computed(() => `${Math.round(Number(currentViewport.value.zoom || 0.75) * 100)}%`)
 const layoutStatusLabel = computed(() => ({ saving: '保存中…', saved: '已保存', error: '保存失败' }[layoutSaveState.value] || '本地画布'))
@@ -236,11 +269,38 @@ const showStarterPanel = computed(() => {
   return nodes.value.length === 1 && nodes.value[0]?.id === 'home:welcome'
 })
 
+function nodeById(id, nodeList = nodes.value) {
+  return nodeList.find((node) => String(node.id) === String(id))
+}
+
+function decorateEdge(edge, nodeList = nodes.value) {
+  return toLibTvCanvasEdge(
+    edge,
+    canvasNodeKind(nodeById(edge.source, nodeList)),
+    canvasNodeKind(nodeById(edge.target, nodeList))
+  )
+}
+
+function decorateEdges(edgeList, nodeList = nodes.value) {
+  return (edgeList || []).filter((edge) => {
+    const sourceKind = canvasNodeKind(nodeById(edge.source, nodeList))
+    const targetKind = canvasNodeKind(nodeById(edge.target, nodeList))
+    return !sourceKind || !targetKind || resolveCanvasNodeConnection(sourceKind, targetKind).allowed
+  }).map((edge) => decorateEdge(edge, nodeList))
+}
+
+function connectionContract(source, target) {
+  return resolveCanvasNodeConnection(
+    canvasNodeKind(nodeById(source)),
+    canvasNodeKind(nodeById(target))
+  )
+}
+
 function loadState() {
   const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(HOME_CANVAS_STORAGE_KEY)
   const state = normalizeHomeCanvasState(raw || createHomeCanvasState())
   nodes.value = state.nodes
-  edges.value = state.edges
+  edges.value = decorateEdges(state.edges, state.nodes)
   currentViewport.value = state.viewport
   hasSavedViewport.value = Boolean(raw)
   historyState.value = createHomeCanvasHistory(state)
@@ -261,7 +321,7 @@ function commitHistory(previousState) {
 function applyCanvasState(state) {
   const next = normalizeHomeCanvasState(state)
   nodes.value = next.nodes
-  edges.value = next.edges
+  edges.value = decorateEdges(next.edges, next.nodes)
   currentViewport.value = next.viewport
 }
 
@@ -308,17 +368,22 @@ function onConnect(connection) {
   const targetHandle = connection?.targetHandle ? String(connection.targetHandle) : undefined
   const exists = hasDuplicateHomeCanvasEdge(edges.value, { source, target, sourceHandle, targetHandle })
   if (exists) return
+  if (!connectionContract(source, target).allowed) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
   const previousState = currentCanvasState()
+  const order = edges.value.filter((edge) => String(edge.target) === target).length
   edges.value = [
     ...edges.value,
-    {
+    decorateEdge({
       id: String(connection.id || `home:edge:${source}:${target}:${Date.now()}`),
       source,
       target,
       ...(sourceHandle ? { sourceHandle } : {}),
       ...(targetHandle ? { targetHandle } : {}),
-      type: 'smoothstep',
-    },
+      data: { manual: true, contract: { order } },
+    }),
   ]
   commitHistory(previousState)
   scheduleSave()
@@ -361,6 +426,10 @@ function onEdgeUpdate({ edge, connection } = {}) {
     ElMessage.warning('该连接已存在')
     return
   }
+  if (!connectionContract(source, target).allowed) {
+    ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
+    return
+  }
   const previousState = edgeHistorySnapshot.value || currentCanvasState()
   edges.value = edges.value.map((item) => {
     if (item.id !== edge.id) return item
@@ -369,7 +438,7 @@ function onEdgeUpdate({ edge, connection } = {}) {
     else delete updated.sourceHandle
     if (connection.targetHandle) updated.targetHandle = String(connection.targetHandle)
     else delete updated.targetHandle
-    return updated
+    return decorateEdge(updated)
   })
   edgeHistorySnapshot.value = null
   commitHistory(previousState)
@@ -405,15 +474,27 @@ function centerFlowPosition() {
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   event?.preventDefault?.()
+  contextMenuNode.value = null
   pendingFlowPosition.value = payload?.flowPosition || screenToFlowPosition(event?.clientX || 0, event?.clientY || 0)
   contextMenuX.value = event?.clientX || 0
   contextMenuY.value = event?.clientY || 0
   contextMenuVisible.value = true
 }
 
+function onNodeContextMenu(payload) {
+  const event = payload?.event || payload
+  event?.preventDefault?.()
+  contextMenuNode.value = payload?.node || null
+  pendingFlowPosition.value = null
+  contextMenuX.value = event?.clientX || 0
+  contextMenuY.value = event?.clientY || 0
+  contextMenuVisible.value = Boolean(contextMenuNode.value)
+}
+
 function closeContextMenu() {
   contextMenuVisible.value = false
   pendingFlowPosition.value = null
+  contextMenuNode.value = null
 }
 
 function openNodeEditor(kind, position = null, initial = null) {
@@ -436,6 +517,7 @@ function openNodeEditor(kind, position = null, initial = null) {
       url: initial?.url || '',
     },
   })
+  activeNodeId.value = nodeId
   pendingFlowPosition.value = null
   commitHistory(previousState)
   scheduleSave()
@@ -449,9 +531,48 @@ function openStarter(preset) {
   })
 }
 
-function onNodeDoubleClick({ node }) {
+function onNodeClick({ node }) {
   if (!node?.id) return
-  nodes.value = nodes.value.map((item) => ({ ...item, selected: item.id === node.id }))
+  selectNodeById(node.id)
+}
+
+async function loadBindingProjects() {
+  try {
+    const result = await dramaAPI.list({ page: 1, page_size: 100 })
+    bindingProjects.value = Array.isArray(result) ? result : (result?.items || result?.data || [])
+  } catch (error) {
+    console.warn('load projects for local canvas binding failed', error)
+  }
+}
+
+async function bindToProject() {
+  if (!bindingProjectId.value || bindingProject.value) return
+  bindingProject.value = true
+  try {
+    persistState()
+    const project = await dramaAPI.get(bindingProjectId.value)
+    const merged = mergeLocalCanvasIntoProjectLayout(
+      parseCanvasLayout(project?.metadata),
+      currentCanvasState(),
+      `local:${Date.now()}`,
+    )
+    await dramaAPI.saveCanvasLayout(bindingProjectId.value, merged, project?.workflow_groups)
+    ElMessage.success('本地节点已合并到项目画布，生成与素材闭环已启用')
+    await router.push(`/canvas/${bindingProjectId.value}`)
+  } catch (error) {
+    ElMessage.error(error?.message || '接入项目失败')
+  } finally {
+    bindingProject.value = false
+  }
+}
+
+function selectNodeById(nodeId) {
+  activeNodeId.value = String(nodeId)
+  nodes.value = nodes.value.map((item) => ({ ...item, selected: String(item.id) === String(nodeId) }))
+}
+
+function onNodeDoubleClick(payload) {
+  onNodeClick(payload)
 }
 
 async function updateFreeCanvasNode(nodeId, patch) {
@@ -474,6 +595,38 @@ async function deleteFreeCanvasNode(nodeId) {
   edges.value = edges.value.filter((edge) => String(edge.source) !== id && String(edge.target) !== id)
   commitHistory(previousState)
   scheduleSave()
+}
+
+function duplicateContextNode() {
+  const source = contextMenuNode.value
+  if (!source) return
+  const previousState = currentCanvasState()
+  const clone = cloneCanvasValue(source)
+  clone.id = `${source.id}:copy:${Date.now()}`
+  clone.position = {
+    x: Number(source.position?.x || 0) + 40,
+    y: Number(source.position?.y || 0) + 40,
+  }
+  clone.selected = true
+  clone.dragging = false
+  clone.data = {
+    ...clone.data,
+    title: `${clone.data?.title || '未命名节点'} 副本`,
+  }
+  nodes.value = [
+    ...nodes.value.map((node) => ({ ...node, selected: false })),
+    clone,
+  ]
+  closeContextMenu()
+  commitHistory(previousState)
+  scheduleSave()
+  ElMessage.success('已复制节点')
+}
+
+async function deleteContextNode() {
+  const nodeId = contextMenuNode.value?.id
+  closeContextMenu()
+  if (nodeId) await deleteFreeCanvasNode(nodeId)
 }
 
 function onPaneClick() {
@@ -576,9 +729,10 @@ function pasteCanvasElements() {
     ...nodes.value.map((node) => ({ ...node, selected: false })),
     ...pastedNodes,
   ]
+  const nextNodes = nodes.value
   edges.value = [
     ...edges.value.map((edge) => ({ ...edge, selected: false })),
-    ...pastedEdges,
+    ...decorateEdges(pastedEdges, nextNodes),
   ]
   commitHistory(previousState)
   scheduleSave()
@@ -626,7 +780,7 @@ function onCanvasKeydown(event) {
 }
 
 function showHelp() {
-  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；Ctrl/Cmd+C/V 复制粘贴；右键添加节点。')
+  ElMessage.info('空格 + 鼠标左键拖动画布；Ctrl + 滚轮缩放；普通滚轮上下滚动画布；Ctrl/Cmd+C/V 复制粘贴；空白处右键添加，节点右键复制或删除。')
 }
 
 async function shareCanvas() {
@@ -659,11 +813,15 @@ async function shareCanvas() {
 loadState()
 
 provide(CANVAS_CONTEXT_KEY, {
+  isFreeCanvasNodeSelected: (nodeId) => activeNodeId.value === String(nodeId),
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
 })
 
-onMounted(() => window.addEventListener('keydown', onCanvasKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onCanvasKeydown)
+  void loadBindingProjects()
+})
 
 watch([nodes, edges], scheduleSave, { deep: true })
 
