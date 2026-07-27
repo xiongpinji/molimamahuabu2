@@ -576,6 +576,7 @@ import {
 } from '@/utils/canvasInteractionHistory'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
+  canAlignCanvasNodes,
   computeStandaloneAutoLayoutPositions,
   computeStandaloneNodePosition,
 } from '@/utils/canvasStandaloneLayout'
@@ -5418,7 +5419,12 @@ function onTopbarMoreCommand(command) {
 }
 
 async function onAlignNodes() {
-  if (!drama.value || !allGraphNodes.value.length || aligningNodes.value) return
+  if (!canAlignCanvasNodes({
+    standalone: isStandaloneCanvas.value,
+    hasDrama: Boolean(drama.value),
+    nodeCount: allGraphNodes.value.length,
+    aligning: aligningNodes.value,
+  })) return
   aligningNodes.value = true
   focusedNodeId.value = null
   try {

@@ -10,6 +10,10 @@ export function computeStandaloneNodePosition(nodes = [], center = { x: 80, y: 8
   }
 }
 
+export function canAlignCanvasNodes({ standalone = false, hasDrama = false, nodeCount = 0, aligning = false } = {}) {
+  return !aligning && nodeCount > 0 && (standalone || hasDrama)
+}
+
 export function computeStandaloneAutoLayoutPositions(nodes = [], options = {}) {
   const columns = Math.max(1, Number(options.columns) || DEFAULT_COLUMNS)
   const startX = Number(options.startX ?? 80)
