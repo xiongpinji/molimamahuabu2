@@ -43,7 +43,7 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
 })
 
 test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的图片连线', () => {
-  assert.match(nodeSource, /v-if="isSelected && !editorHidden"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
+  assert.match(nodeSource, /v-if="isSelected && !hasMultiSelection && !editorHidden"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
   assert.match(nodeSource, /:aria-label="editorLabel"/)
   assert.match(nodeSource, /data\.kind === 'video'[\s\S]*aria-label="自动参考图"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
