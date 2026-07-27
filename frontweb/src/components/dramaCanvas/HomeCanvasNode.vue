@@ -61,7 +61,7 @@
 
     <Teleport to="body">
       <section
-        v-if="isSelected && !editorHidden"
+        v-if="isSelected && !hasMultiSelection && !editorHidden"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
         :class="{ 'is-fullscreen': editorFullscreen }"
         role="region"
@@ -331,6 +331,7 @@ const resultUrls = computed(() => [...new Set([
   props.data.url,
 ].filter(Boolean))])
 const isSelected = computed(() => props.selected || Boolean(ctx?.isFreeCanvasNodeSelected?.(props.id)))
+const hasMultiSelection = computed(() => (ctx?.selectedFreeNodeIds?.value?.length || 0) > 1)
 const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
 const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || (canGenerate.value ? '待配置' : '本地草稿')))
 

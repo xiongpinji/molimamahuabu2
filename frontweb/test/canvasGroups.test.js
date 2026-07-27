@@ -5,6 +5,7 @@ import { buildCanvasLayoutPayload, resolveCanvasGroups } from '../src/utils/canv
 
 const canvasSource = fs.readFileSync(new URL('../src/views/DramaCanvas.vue', import.meta.url), 'utf8')
 const toolbarSource = fs.readFileSync(new URL('../src/components/dramaCanvas/CanvasFloatingToolbar.vue', import.meta.url), 'utf8')
+const homeCanvasNodeSource = fs.readFileSync(new URL('../src/components/dramaCanvas/HomeCanvasNode.vue', import.meta.url), 'utf8')
 
 test('standalone canvas groups persist member ids and geometry', () => {
   const payload = buildCanvasLayoutPayload([
@@ -59,4 +60,9 @@ test('group toolbar exposes grouping and ungrouping actions', () => {
   assert.match(toolbarSource, /<span>解组<\/span>/)
   assert.match(toolbarSource, /@click="ungroup"/)
   assert.match(toolbarSource, /'panel-open': panelOpen && selectedFreeCount < 2 && selectedGroupCount === 0/)
+})
+
+test('multi-selected free nodes keep batch mode without opening a single-node editor', () => {
+  assert.match(homeCanvasNodeSource, /const hasMultiSelection = computed\(\(\) => \(ctx\?\.selectedFreeNodeIds\?\.value\?\.length \|\| 0\) > 1\)/)
+  assert.match(homeCanvasNodeSource, /v-if="isSelected && !hasMultiSelection && !editorHidden"/)
 })
