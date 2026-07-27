@@ -30,7 +30,7 @@ test('统一管理后台在进入页面前要求管理员登录态', () => {
   const router = fs.readFileSync(path.join(root, 'src/router/index.js'), 'utf8')
   assert.match(
     router,
-    /path:\s*'\/billing-admin'[\s\S]*?meta:\s*\{\s*title:\s*'平台管理后台',\s*roles:\s*\['admin'\]\s*\}/,
+    /path:\s*'\/billing-admin'[\s\S]*?meta:\s*\{\s*title:\s*'平台管理后台',\s*roles:\s*\['admin'\],\s*requiresAuth:\s*true\s*\}/,
   )
   const target = { path: '/billing-admin', meta: { roles: ['admin'] } }
   assert.deepEqual(authRedirect(true, target, null), { name: 'login', query: { redirect: '/billing-admin' } })

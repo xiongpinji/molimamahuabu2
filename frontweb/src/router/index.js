@@ -18,84 +18,84 @@ const router = createRouter({
       name: 'list',
       component: () => import('@/views/FilmList.vue'),
       props: { projectMode: 'factory' },
-      meta: { title: '项目列表' }
+      meta: { title: '项目列表', public: true }
     },
     {
       path: '/factory',
       name: 'factory',
       component: () => import('@/views/FilmList.vue'),
       props: { projectMode: 'factory' },
-      meta: { title: '短剧工厂' }
+      meta: { title: '短剧工厂', requiresAuth: true }
     },
     {
       path: '/drama/:id',
       name: 'drama-detail',
       component: () => import('@/views/DramaDetail.vue'),
-      meta: { title: '剧集管理' }
+      meta: { title: '剧集管理', requiresAuth: true }
     },
     {
       path: '/film/:id',
       name: 'film',
       component: () => import('@/views/FilmCreate.vue'),
-      meta: { title: 'AI 视频生成' }
+      meta: { title: 'AI 视频生成', requiresAuth: true }
     },
     {
       path: '/film/:id/canvas',
       name: 'film-canvas',
       component: () => import('@/views/DramaCanvas.vue'),
-      meta: { title: '画布模式' }
+      meta: { title: '画布模式', requiresAuth: true }
     },
     {
       path: '/canvas/local',
       name: 'home-canvas-local',
       component: () => import('@/views/HomeCanvas.vue'),
-      meta: { title: '本地临时画布' }
+      meta: { title: '本地临时画布', requiresAuth: true }
     },
     {
       path: '/canvas/:id',
       name: 'standalone-canvas',
       component: () => import('@/views/DramaCanvas.vue'),
-      meta: { title: '独立画布' }
+      meta: { title: '独立画布', requiresAuth: true }
     },
     {
       path: '/canvas',
       name: 'canvas-projects',
       component: () => import('@/views/FilmList.vue'),
       props: { projectMode: 'canvas' },
-      meta: { title: '画布项目' }
+      meta: { title: '画布项目', requiresAuth: true }
     },
     {
       path: '/ai-config',
       name: 'ai-config',
       component: () => import('@/views/AiConfig.vue'),
-      meta: { title: '模型配置', roles: ['admin'] }
+      meta: { title: '模型配置', roles: ['admin'], requiresAuth: true }
     },
     {
       path: '/materials/characters',
       name: 'material-characters',
       component: () => import('@/views/MaterialLibrary.vue'),
       props: { kind: 'character' },
-      meta: { title: '素材角色' }
+      meta: { title: '素材角色', requiresAuth: true }
     },
     {
       path: '/materials/scenes',
       name: 'material-scenes',
       component: () => import('@/views/MaterialLibrary.vue'),
       props: { kind: 'scene' },
-      meta: { title: '素材场景' }
+      meta: { title: '素材场景', requiresAuth: true }
     },
     {
       path: '/materials/props',
       name: 'material-props',
       component: () => import('@/views/MaterialLibrary.vue'),
       props: { kind: 'prop' },
-      meta: { title: '素材道具' }
+      meta: { title: '素材道具', requiresAuth: true }
     },
     {
       path: '/billing-admin',
       name: 'billing-admin',
       component: () => import('@/views/BillingAdmin.vue'),
-      meta: { title: '平台管理后台', roles: ['admin'] }
+      meta: { title: '平台管理后台', roles: ['admin'], requiresAuth: true }
     },
     {
       path: '/account-admin',
@@ -103,26 +103,27 @@ const router = createRouter({
       component: () => import('@/views/AccountAdmin.vue'),
       meta: {
         title: '账号与权限',
-        roles: ['admin', 'ops', 'support', 'read_only']
+        roles: ['admin', 'ops', 'support', 'read_only'],
+        requiresAuth: true
       }
     },
     {
       path: '/tenant-console',
       name: 'tenant-console',
       component: () => import('@/views/TenantConsole.vue'),
-      meta: { title: '工作区与积分' }
+      meta: { title: '工作区与积分', requiresAuth: true }
     },
     {
       path: '/free-create',
       name: 'free-create',
       component: () => import('@/views/FreeCreate.vue'),
-      meta: { title: '自由创作' }
+      meta: { title: '自由创作', requiresAuth: true }
     },
     {
       path: '/media-library',
       name: 'media-library',
       component: () => import('@/views/MediaLibrary.vue'),
-      meta: { title: '媒体素材库' }
+      meta: { title: '媒体素材库', requiresAuth: true }
     }
   ]
 })
