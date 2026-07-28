@@ -274,6 +274,7 @@
         ref="canvasMainRef"
         class="canvas-main"
         :class="{ 'space-panning': spacePanning }"
+        @pointerdown.capture="onCanvasPointerDown"
         @wheel.capture="onCanvasWheel"
       >
         <VueFlow
@@ -292,6 +293,7 @@
           :select-nodes-on-drag="true"
           selection-mode="partial"
           :selection-key-code="true"
+          :delete-key-code="null"
           :pan-on-drag="spacePanning"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
@@ -557,6 +559,7 @@ import {
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
   collectDirectUpstreamTextInputs,
+  getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
@@ -660,6 +663,7 @@ const workflowGroups = ref([])
 const activeGroupId = ref(null)
 const selectedStoryboardIds = ref([])
 const selectedFreeNodeIds = ref([])
+const selectionModifierActive = ref(false)
 const pipelineSteps = ref(['image', 'video', 'audio'])
 const workflowRunning = ref(false)
 const workflowProgress = ref('')
@@ -2233,12 +2237,12 @@ function freeCanvasReferenceCandidates(nodeOrId) {
       node.type === 'homeCanvasNode'
       && String(node.id) !== String(targetNode.id)
       && node.data?.kind === 'image'
-      && node.data?.url
+      && getFreeCanvasNodeResultUrl(node)
     ))
     .map((node) => ({
       nodeId: String(node.id),
       title: node.data?.title || '画布图片',
-      url: node.data.url,
+      url: getFreeCanvasNodeResultUrl(node),
     }))
 }
 
@@ -2247,7 +2251,7 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   const sourceNode = freeCanvasNodeById(sourceNodeOrId)
   if (!targetNode || !sourceNode) return false
   if (!['image', 'video'].includes(targetNode.data?.kind)) return false
-  if (sourceNode.data?.kind !== 'image' || !sourceNode.data?.url) return false
+  if (sourceNode.data?.kind !== 'image' || !getFreeCanvasNodeResultUrl(sourceNode)) return false
   if (String(sourceNode.id) === String(targetNode.id)) return false
   onConnect({ source: sourceNode.id, target: targetNode.id })
   allGraphNodes.value = allGraphNodes.value.map((node) => ({
@@ -2319,6 +2323,19 @@ function updateFreeCanvasReference(edgeId, patch = {}) {
   scheduleSave()
 }
 
+function detachFreeCanvasReference(edgeId) {
+  const normalizedId = String(edgeId || '')
+  const edge = allGraphEdges.value.find((item) => String(item.id) === normalizedId)
+  if (!isStandaloneFreeNodeEdge(edge)) return false
+  const previousState = currentInteractionState()
+  allGraphEdges.value = allGraphEdges.value.filter((item) => String(item.id) !== normalizedId)
+  edges.value = edges.value.filter((item) => String(item.id) !== normalizedId)
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  void persistCanvasState({ layoutOnly: true })
+  return true
+}
+
 async function runFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
@@ -2351,13 +2368,15 @@ async function runFreeCanvasNode(nodeOrId) {
       maxReferences: capability.maxReferences,
     })
   } catch (error) {
-    ElMessage.error(error?.message || '自由节点生成参数不完整')
-    return
+    const errorMessage = error?.message || '自由节点生成参数不完整'
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: errorMessage })
+    ElMessage.error(errorMessage)
+    return { ok: false, nodeId: String(node.id), error: errorMessage }
   }
 
   const previousUrl = node.data?.url || ''
   const completedResultUrls = []
-  await patchFreeCanvasNodeData(node.id, { status: 'running', taskId: '', error: '' })
+  await patchFreeCanvasNodeData(node.id, { status: 'running', progress: 0, taskId: '', error: '' })
   let taskId = ''
   try {
     if (kind === 'text') {
@@ -2367,6 +2386,7 @@ async function runFreeCanvasNode(nodeOrId) {
       await patchFreeCanvasNodeData(node.id, {
         content,
         status: 'success',
+        progress: 100,
         error: '',
       })
       ElMessage.success('文本节点生成完成')
@@ -2399,7 +2419,10 @@ async function runFreeCanvasNode(nodeOrId) {
         notify: index === quantity - 1,
       })
       completedResultUrls.push(resultUrl)
-      await patchFreeCanvasNodeData(node.id, { resultUrls: [...completedResultUrls] })
+      await patchFreeCanvasNodeData(node.id, {
+        resultUrls: [...completedResultUrls],
+        progress: Math.round((completedResultUrls.length / quantity) * 100),
+      })
     }
     return { ok: true, nodeId: String(node.id) }
   } catch (error) {
@@ -4840,6 +4863,7 @@ provide(CANVAS_CONTEXT_KEY, {
   uploadFreeCanvasReferenceImage,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
+  detachFreeCanvasReference,
   runFreeCanvasNode,
   runFreeCanvasSubgraph: (nodeId) => runFreeCanvasSubgraph([nodeId], true),
   runSelectedFreeCanvasNodes: () => runFreeCanvasSubgraph(
@@ -4901,6 +4925,13 @@ function applySelectedFreeNodeIds(ids = []) {
   }))
 }
 
+function onCanvasPointerDown(event) {
+  selectionModifierActive.value = Boolean(event?.ctrlKey || event?.metaKey)
+  requestAnimationFrame(() => {
+    selectionModifierActive.value = false
+  })
+}
+
 function onNodesChange(changes = []) {
   const removedFreeNodeIds = new Set(
     changes
@@ -4925,6 +4956,14 @@ function onNodesChange(changes = []) {
   if (!selectionChanges.length) return
 
   if (isStandaloneCanvas.value) {
+    const homeSelectionChanges = selectionChanges.filter((change) => (
+      findGraphNode(change.id)?.type === 'homeCanvasNode'
+    ))
+    const selectedHomeChange = [...homeSelectionChanges].reverse().find((change) => change.selected)
+    if (homeSelectionChanges.length && !selectionModifierActive.value) {
+      applySelectedFreeNodeIds(selectedHomeChange ? [selectedHomeChange.id] : [])
+      return
+    }
     const selectedIds = new Set(selectedFreeNodeIds.value)
     for (const change of selectionChanges) {
       const node = findGraphNode(change.id)
@@ -4968,6 +5007,12 @@ function hasSameEdgeConnection(candidate, edgeList = allGraphEdges.value) {
     && String(edge.sourceHandle || '') === String(candidate.sourceHandle || '')
     && String(edge.targetHandle || '') === String(candidate.targetHandle || '')
   ))
+}
+
+function isStandaloneFreeNodeEdge(edge) {
+  if (!isStandaloneCanvas.value || !edge) return false
+  return findGraphNode(edge.source)?.type === 'homeCanvasNode'
+    && findGraphNode(edge.target)?.type === 'homeCanvasNode'
 }
 
 function onConnect(connection) {
@@ -5024,12 +5069,16 @@ function onConnect(connection) {
 }
 
 function onEdgesChange(changes = []) {
-  const removedManualIds = changes
-    .filter((change) => change?.type === 'remove' && String(change.id || '').startsWith('manual:'))
+  const removedEdgeIds = changes
+    .filter((change) => {
+      if (change?.type !== 'remove') return false
+      const edge = allGraphEdges.value.find((item) => String(item.id) === String(change.id))
+      return edge?.data?.manual === true || isStandaloneFreeNodeEdge(edge)
+    })
     .map((change) => String(change.id))
-  if (!removedManualIds.length) return
+  if (!removedEdgeIds.length) return
 
-  const removed = new Set(removedManualIds)
+  const removed = new Set(removedEdgeIds)
   allGraphEdges.value = allGraphEdges.value.filter((edge) => !removed.has(String(edge.id)))
   applyVirtualizedGraph()
   scheduleLayoutSave()
@@ -5266,6 +5315,21 @@ function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
   if (isStandaloneCanvas.value && (key === 'delete' || key === 'del')) {
+    const selectedEdgeIds = edges.value
+      .filter((edge) => edge.selected && isStandaloneFreeNodeEdge(edge))
+      .map((edge) => String(edge.id))
+    if (selectedEdgeIds.length) {
+      event.preventDefault()
+      const previousState = currentInteractionState()
+      const idSet = new Set(selectedEdgeIds)
+      allGraphEdges.value = allGraphEdges.value.filter((edge) => !idSet.has(String(edge.id)))
+      edges.value = edges.value.filter((edge) => !idSet.has(String(edge.id)))
+      applyVirtualizedGraph()
+      commitInteractionHistory(previousState)
+      void persistCanvasState({ layoutOnly: true })
+      ElMessage.success('已删除画布连线')
+      return
+    }
     const selectedIds = selectedFreeNodeIds.value.length
       ? selectedFreeNodeIds.value
       : [focusedNodeId.value].filter(Boolean)
@@ -5892,6 +5956,7 @@ function onPaneClick(event) {
     return
   }
   focusedNodeId.value = null
+  if (isStandaloneCanvas.value) applySelectedFreeNodeIds([])
   activeGroupId.value = null
   closeContextMenu()
 }

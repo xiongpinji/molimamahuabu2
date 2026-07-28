@@ -11,6 +11,7 @@
         aria-label="节点标题"
         maxlength="80"
         @mousedown.stop
+        @input="scheduleDraftSave"
         @blur="saveDraft"
         @keydown.enter.prevent="$event.target.blur()"
       />
@@ -27,9 +28,18 @@
     </section>
 
     <section v-else class="media-stage">
-      <img v-if="data.kind === 'image' && data.url" :src="data.url" :alt="data.title || '图片节点预览'" class="node-media" />
-      <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
-      <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
+      <img
+        v-if="data.kind === 'image' && primaryResultUrl"
+        :src="primaryResultUrl"
+        :alt="data.title || '图片节点预览'"
+        class="node-media nodrag nopan"
+        title="双击全屏查看"
+        @mousedown.stop
+        @click.stop
+        @dblclick.stop="openImagePreview(primaryResultUrl)"
+      />
+      <video v-else-if="data.kind === 'video' && primaryResultUrl" :src="primaryResultUrl" class="node-media" controls muted playsinline />
+      <audio v-else-if="data.kind === 'audio' && primaryResultUrl" :src="primaryResultUrl" class="node-audio" controls />
       <div v-else class="media-empty">
         <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
         <span>{{ mediaEmptyLabel }}</span>
@@ -44,11 +54,19 @@
           :title="`结果 ${index + 1}`"
           @click="selectResult(url)"
         >
-          <img v-if="data.kind === 'image'" :src="url" alt="" />
+          <img
+            v-if="data.kind === 'image'"
+            :src="url"
+            alt=""
+            class="nodrag nopan"
+            @mousedown.stop
+            @click.stop="selectResult(url)"
+            @dblclick.stop="openImagePreview(url)"
+          />
           <span v-else>{{ index + 1 }}</span>
         </button>
       </div>
-      <div v-if="data.url" class="result-actions">
+      <div v-if="primaryResultUrl" class="result-actions">
         <button type="button" aria-label="下载结果" title="下载结果" @click="downloadResult">↓</button>
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
       </div>
@@ -103,6 +121,13 @@
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
             >
               <span class="reference-index">{{ index + 1 }}</span>
+              <button
+                class="reference-remove"
+                type="button"
+                aria-label="取消参考图"
+                title="取消参考图"
+                @click.stop="removeReference(reference)"
+              >×</button>
               <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
               <span v-else class="reference-placeholder">等待图片</span>
               <figcaption>{{ reference.title }}</figcaption>
@@ -144,7 +169,7 @@
             :class="data.kind === 'text' ? 'node-textarea' : 'prompt-input'"
             :aria-label="data.kind === 'text' ? '文本内容' : '生成提示词'"
             :placeholder="data.kind === 'text' ? '写下内容，或输入要求后让 AI 继续创作…' : promptPlaceholder"
-            @input="handlePromptInput"
+            @input="handleEditorInput"
             @blur="saveDraft"
           />
           <div
@@ -292,10 +317,24 @@
           </label>
         </div>
 
+        <div
+          v-if="data.status === 'running'"
+          class="generation-progress"
+          role="progressbar"
+          aria-label="生成进度"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="generationProgress"
+        >
+          <div><span>生成进度</span><strong>{{ generationProgress }}%</strong></div>
+          <span class="generation-progress-track"><i :style="{ width: `${generationProgress}%` }" /></span>
+        </div>
+        <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
+
         <div class="editor-footer">
-          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `预计 ${estimatedCredits} 积分` : '以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
+          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `本次预计扣除 ${estimatedCredits} 积分` : '本次消耗以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
           <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
-          <span v-else class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
+          <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" @click.stop="runSubgraph">运行下游</button>
@@ -311,6 +350,20 @@
           </button>
         </div>
       </section>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="imagePreviewUrl"
+        class="image-lightbox nodrag nopan"
+        role="dialog"
+        aria-modal="true"
+        aria-label="图片全屏预览"
+        @click.self="closeImagePreview"
+      >
+        <button type="button" aria-label="关闭图片预览" title="关闭" @click="closeImagePreview">×</button>
+        <img :src="imagePreviewUrl" :alt="data.title || '图片预览'" />
+      </div>
     </Teleport>
 
     <div v-if="data.error" class="node-error">{{ data.error }}</div>
@@ -338,6 +391,9 @@ const fileInput = ref(null)
 const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
+const imagePreviewUrl = ref('')
+let draftSaveTimer = null
+let draftDirty = false
 const mentionStart = ref(-1)
 const mentionEnd = ref(-1)
 const mentionQuery = ref('')
@@ -385,6 +441,7 @@ const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'f
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(props.data.kind, draft.model, draft.quantity) || null)
+const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
@@ -409,13 +466,14 @@ const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
   props.data.url,
 ].filter(Boolean))])
+const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
 const isSelected = computed(() => (
   props.selected
   || ctx?.focusedNodeId?.value === props.id
   || Boolean(ctx?.isFreeCanvasNodeSelected?.(props.id))
 ))
 const hasMultiSelection = computed(() => (ctx?.selectedFreeNodeIds?.value?.length || 0) > 1)
-const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
+const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(primaryResultUrl.value))
 const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || (canGenerate.value ? '待配置' : '本地草稿')))
 
 function syncDraft() {
@@ -442,6 +500,10 @@ function syncDraft() {
 }
 
 async function saveDraft() {
+  if (draftSaveTimer) {
+    window.clearTimeout(draftSaveTimer)
+    draftSaveTimer = null
+  }
   await ctx?.updateFreeCanvasNode?.(props.id, {
     title: draft.title.trim() || '未命名节点',
     content: draft.content,
@@ -465,6 +527,16 @@ async function saveDraft() {
     effect: draft.effect,
     includeAudio: draft.includeAudio === true,
   })
+  draftDirty = false
+}
+
+function scheduleDraftSave() {
+  draftDirty = true
+  if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
+  draftSaveTimer = window.setTimeout(() => {
+    draftSaveTimer = null
+    void saveDraft()
+  }, 250)
 }
 
 function selectionRange() {
@@ -505,8 +577,9 @@ function chooseFile() {
 
 function handlePromptInput(event) {
   if (props.data.kind !== 'video') return
-  const cursor = Number(event.target.selectionStart ?? draft.content.length)
-  const beforeCursor = draft.content.slice(0, cursor)
+  const value = String(event.target.value || '')
+  const cursor = Number(event.target.selectionStart ?? value.length)
+  const beforeCursor = value.slice(0, cursor)
   const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/)
   if (!match) {
     mentionStart.value = -1
@@ -517,6 +590,11 @@ function handlePromptInput(event) {
   mentionStart.value = cursor - match[1].length - 1
   mentionEnd.value = cursor
   mentionQuery.value = match[1]
+}
+
+function handleEditorInput(event) {
+  handlePromptInput(event)
+  scheduleDraftSave()
 }
 
 async function selectReferenceMention(candidate) {
@@ -545,6 +623,14 @@ function openConfig() {
 function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
+}
+
+function openImagePreview(url) {
+  if (url) imagePreviewUrl.value = String(url)
+}
+
+function closeImagePreview() {
+  imagePreviewUrl.value = ''
 }
 
 function openAssetLibrary() {
@@ -585,6 +671,11 @@ function updateReference(reference, patch) {
   ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
 }
 
+function removeReference(reference) {
+  if (!reference?.edgeId) return
+  ctx?.detachFreeCanvasReference?.(reference.edgeId)
+}
+
 function moveReference(reference, delta) {
   const index = inputReferences.value.findIndex((item) => item.edgeId === reference.edgeId)
   const targetIndex = index + delta
@@ -605,7 +696,7 @@ async function selectResult(url) {
 }
 
 function downloadResult() {
-  const url = String(props.data.url || '')
+  const url = primaryResultUrl.value
   if (!url) return
   const link = document.createElement('a')
   link.href = url
@@ -615,7 +706,7 @@ function downloadResult() {
 }
 
 async function copyResultReference() {
-  const url = String(props.data.url || '')
+  const url = primaryResultUrl.value
   if (!url) return
   try {
     await navigator.clipboard.writeText(url)
@@ -625,19 +716,33 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
-  if (!isSelected.value || editorHidden.value || event.key !== 'Escape') return
+  if (event.key !== 'Escape') return
+  if (imagePreviewUrl.value) {
+    event.preventDefault()
+    closeImagePreview()
+    return
+  }
+  if (!isSelected.value || editorHidden.value) return
   event.preventDefault()
   if (editorFullscreen.value) editorFullscreen.value = false
   else closeEditor()
 }
 
 onMounted(() => window.addEventListener('keydown', onEditorKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onEditorKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onEditorKeydown)
+  if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
+})
 
-watch(() => props.data, syncDraft, { deep: true, immediate: true })
+watch(() => props.data, () => {
+  if (!draftDirty) syncDraft()
+}, { deep: true, immediate: true })
 watch(isSelected, (selected) => {
   if (selected) editorHidden.value = false
-  else editorFullscreen.value = false
+  else {
+    editorFullscreen.value = false
+    imagePreviewUrl.value = ''
+  }
 })
 </script>
 
@@ -743,7 +848,7 @@ watch(isSelected, (selected) => {
   right: 24px;
   bottom: 24px;
   left: 50%;
-  z-index: 1900;
+  z-index: 3200;
   width: min(860px, calc(100vw - 48px));
   max-height: min(58vh, 560px);
   overflow-y: auto;
@@ -834,6 +939,23 @@ watch(isSelected, (selected) => {
   color: #f4f4f5;
   font-size: 10px;
 }
+.reference-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 2;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(9, 9, 11, 0.84);
+  color: #f4f4f5;
+  cursor: pointer;
+}
+.reference-remove:hover { border-color: #fb7185; color: #fb7185; }
 .reference-card figcaption {
   margin-top: 6px;
   overflow: hidden;
@@ -1011,6 +1133,39 @@ watch(isSelected, (selected) => {
   margin-top: 18px;
 }
 .billing-note, .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
+.generation-progress { display: grid; gap: 7px; margin-top: 16px; }
+.generation-progress > div { display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
+.generation-progress strong { color: #d4d4d8; font-weight: 600; }
+.generation-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: #303036; }
+.generation-progress-track i { display: block; height: 100%; border-radius: inherit; background: #fb7b3b; transition: width 180ms ease; }
+.editor-error { margin: 14px 0 0; padding: 10px 12px; border: 1px solid rgba(248, 113, 113, 0.32); border-radius: 10px; background: rgba(127, 29, 29, 0.22); color: #fca5a5; font-size: 12px; line-height: 1.5; }
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 3300;
+  display: grid;
+  padding: 28px;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.9);
+  box-sizing: border-box;
+}
+.image-lightbox > button {
+  position: absolute;
+  top: 22px;
+  right: 22px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #52525b;
+  border-radius: 50%;
+  background: #18181b;
+  color: #f4f4f5;
+  font-size: 24px;
+  cursor: pointer;
+}
+.image-lightbox > img { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .run-button {
   width: 40px;
   height: 40px;
