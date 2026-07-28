@@ -939,6 +939,7 @@ function qwenImageSize(size) {
 function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   if (!value || !String(value).trim()) return null;
   const s = String(value).trim();
+  if (s.startsWith('data:')) return s;
   const baseUrl = (filesBaseUrl || '').replace(/\/$/, '');
   // isLocalhost: 只要 URL 本身或配置的 base_url 含 localhost/127，都视为本地
   const isLocalhostUrl = /localhost|127\.0\.0\.1/i.test(s);
@@ -963,10 +964,20 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
   } else if (storageLocalPath) {
-    relPath = s.replace(/^\//, '');
+    relPath = s.split(/[?#]/, 1)[0].replace(/^\/?static\//, '').replace(/^\/+/, '');
   }
   if (!relPath) return toPublicUrl(s);
-  const filePath = path.join(storageLocalPath, relPath);
+  let decodedRelPath;
+  try {
+    decodedRelPath = decodeURIComponent(relPath);
+  } catch (_) {
+    return toPublicUrl(s);
+  }
+  const storageRoot = path.resolve(storageLocalPath);
+  const filePath = path.resolve(storageRoot, decodedRelPath);
+  if (filePath !== storageRoot && !filePath.startsWith(storageRoot + path.sep)) {
+    return toPublicUrl(s);
+  }
   try {
     if (!fs.existsSync(filePath)) return toPublicUrl(s);
     const buf = fs.readFileSync(filePath);

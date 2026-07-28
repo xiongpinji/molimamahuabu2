@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { callAihubccImageApi } = require('../src/services/imageClient');
 
@@ -64,5 +67,43 @@ test('AIHubCC Flow image posts chat completion and extracts markdown image URL',
     assert.equal(body.messages[0].content[1].type, 'image_url');
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test('AIHubCC resolves generated /static image references from local storage', async () => {
+  const originalFetch = global.fetch;
+  const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-ref-'));
+  const imagePath = path.join(storagePath, 'projects', 'demo', 'generated.png');
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.from('generated-image'));
+
+  let requestBody;
+  global.fetch = async (_url, options = {}) => {
+    requestBody = JSON.parse(options.body);
+    return jsonResponse({
+      data: [{ url: 'https://cdn.example.com/generated.png' }],
+    });
+  };
+
+  try {
+    await callAihubccImageApi(
+      { base_url: 'https://aihubcc.cc/v1', api_key: 'test-key', endpoint: '/images/generations' },
+      { info() {}, warn() {}, error() {} },
+      {
+        model: 'gpt-image-2-2k',
+        prompt: 'change the clothes',
+        reference_image_urls: ['/static/projects/demo/generated.png'],
+        files_base_url: 'http://localhost:5679/static',
+        storage_local_path: storagePath,
+      }
+    );
+
+    assert.equal(
+      requestBody.messages[0].content[1].image_url.url,
+      `data:image/png;base64,${Buffer.from('generated-image').toString('base64')}`
+    );
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(storagePath, { recursive: true, force: true });
   }
 });
