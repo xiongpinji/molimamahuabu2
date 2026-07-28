@@ -67,17 +67,27 @@ function isProbableMp3(buffer) {
 /**
  * 使用 MiniMax T2A v2 合成语音
  */
-async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model) {
+async function synthesizeWithMinimax(text, voiceId, apiKey, baseUrl, model, options = {}) {
+  const normalizedBaseUrl = String(baseUrl || 'https://api.minimaxi.com/v1').replace(/\/+$/, '');
+  const url = normalizedBaseUrl.endsWith('/t2a_v2')
+    ? normalizedBaseUrl
+    : `${normalizedBaseUrl}/t2a_v2`;
+  const pronunciationTones = Array.isArray(options.pronunciationTones)
+    ? options.pronunciationTones.filter(Boolean)
+    : [];
   const body = JSON.stringify({
-    model: model || 'speech-02-hd',
+    model: model || 'speech-2.8-hd',
     text,
     stream: false,
+    output_format: 'hex',
     voice_setting: {
       voice_id: voiceId || 'female-shaonv',
-      speed: 1.0,
-      vol: 1.0,
-      pitch: 0,
+      speed: options.speed ?? 1,
+      vol: options.volume ?? 1,
+      pitch: options.pitch ?? 0,
+      ...(options.emotion ? { emotion: options.emotion } : {}),
     },
+    ...(pronunciationTones.length ? { pronunciation_dict: { tone: pronunciationTones } } : {}),
     audio_setting: {
       sample_rate: 32000,
       bitrate: 128000,
@@ -85,7 +95,6 @@ async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model) {
       channel: 1,
     },
   });
-  const url = `https://api.minimax.chat/v1/t2a_v2?GroupId=${groupId}`;
   return new Promise((resolve, reject) => {
     const reqOpts = {
       method: 'POST',
@@ -180,6 +189,10 @@ async function synthesize(db, log, {
   storage_subdir,
   voice_id,
   speed,
+  volume,
+  pitch,
+  emotion,
+  pronunciation_tones,
 }) {
   if (!text || !text.trim()) throw new Error('text 不能为空');
   const aiConfigService = require('./aiConfigService');
@@ -195,10 +208,13 @@ async function synthesize(db, log, {
   try { ttsSettings = JSON.parse(ttsConfig.settings || '{}'); } catch (_) {}
   // 外部传入的 voice_id / speed 优先（海外化场景），否则取配置值
   const voiceId = voice_id || ttsConfig.voice_id || ttsSettings.voice_id || '';
-  const groupId = ttsConfig.group_id || ttsSettings.group_id || '';
   const { resolveTtsModel } = require('./ttsConfigSelectionService');
   const ttsModel = resolveTtsModel(ttsConfig);
-  const finalSpeed = speed || ttsSettings.speed || 1.0;
+  const finalSpeed = speed ?? ttsSettings.speed ?? 1;
+  const finalVolume = volume ?? ttsSettings.volume ?? 1;
+  const finalPitch = pitch ?? ttsSettings.pitch ?? 0;
+  const finalEmotion = emotion || ttsSettings.emotion || '';
+  const finalPronunciationTones = pronunciation_tones || ttsSettings.pronunciation_tones || [];
   let audioBuffer;
 
   if (provider === 'minimax') {
@@ -206,8 +222,15 @@ async function synthesize(db, log, {
       text,
       voiceId || 'female-shaonv',
       ttsConfig.api_key,
-      groupId,
-      ttsModel
+      ttsConfig.base_url,
+      ttsModel,
+      {
+        speed: finalSpeed,
+        volume: finalVolume,
+        pitch: finalPitch,
+        emotion: finalEmotion,
+        pronunciationTones: finalPronunciationTones,
+      }
     );
   } else if (provider === 'openai' || ttsConfig.base_url) {
     audioBuffer = await synthesizeWithOpenai(

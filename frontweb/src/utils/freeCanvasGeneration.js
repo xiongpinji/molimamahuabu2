@@ -12,6 +12,11 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : undefined
 }
 
+function finiteNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
 function positiveInteger(value) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : undefined
@@ -91,6 +96,12 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   if (Object.hasOwn(data, 'negativePrompt')) normalized.negativePrompt = cleanString(data.negativePrompt)
   if (Object.hasOwn(data, 'voiceId')) normalized.voiceId = cleanString(data.voiceId)
   if (Object.hasOwn(data, 'speechRate')) normalized.speechRate = positiveNumber(data.speechRate)
+  if (Object.hasOwn(data, 'speechVolume')) normalized.speechVolume = positiveNumber(data.speechVolume)
+  if (Object.hasOwn(data, 'speechPitch')) normalized.speechPitch = finiteNumber(data.speechPitch)
+  if (Object.hasOwn(data, 'speechEmotion')) normalized.speechEmotion = cleanString(data.speechEmotion)
+  if (Object.hasOwn(data, 'pronunciationTones')) {
+    normalized.pronunciationTones = uniqueStrings(data.pronunciationTones)
+  }
   if (Object.hasOwn(data, 'cameraMovement')) normalized.cameraMovement = cleanString(data.cameraMovement)
   if (Object.hasOwn(data, 'effect')) normalized.effect = cleanString(data.effect)
   if (Object.hasOwn(data, 'includeAudio')) normalized.includeAudio = booleanValue(data.includeAudio)
@@ -198,6 +209,10 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       tts_model: nodeData.model,
       voice_id: nodeData.voiceId,
       speed: nodeData.speechRate,
+      volume: nodeData.speechVolume,
+      pitch: nodeData.speechPitch,
+      emotion: nodeData.speechEmotion,
+      pronunciation_tones: nodeData.pronunciationTones,
     })
   }
 

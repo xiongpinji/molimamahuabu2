@@ -18,7 +18,10 @@ function routes(db, log, cfg, options = {}) {
   return {
     /** 为单条分镜生成 TTS：对白 → audio_local_path；旁白 → narration_audio_local_path（body.tts_kind === 'narration'） */
     extract: async (req, res) => {
-      const { drama_id, storyboard_id, text, tts_kind, tts_model, voice_id, speed } = req.body || {};
+      const {
+        drama_id, storyboard_id, text, tts_kind, tts_model, voice_id, speed,
+        volume, pitch, emotion, pronunciation_tones,
+      } = req.body || {};
       if (!text && !storyboard_id) return response.badRequest(res, '请提供 storyboard_id 或 text');
       const dramaId = Number(drama_id);
       if (options.billingEnabled && (!Number.isInteger(dramaId) || dramaId <= 0)) {
@@ -28,6 +31,26 @@ function routes(db, log, cfg, options = {}) {
       if (speechSpeed !== undefined
         && (!Number.isFinite(speechSpeed) || speechSpeed < 0.5 || speechSpeed > 2)) {
         return response.badRequest(res, 'speed 必须是 0.5 到 2 之间的数字');
+      }
+      const speechVolume = volume == null || volume === '' ? undefined : Number(volume);
+      if (speechVolume !== undefined
+        && (!Number.isFinite(speechVolume) || speechVolume < 0.1 || speechVolume > 10)) {
+        return response.badRequest(res, 'volume 必须是 0.1 到 10 之间的数字');
+      }
+      const speechPitch = pitch == null || pitch === '' ? undefined : Number(pitch);
+      if (speechPitch !== undefined
+        && (!Number.isFinite(speechPitch) || speechPitch < -12 || speechPitch > 12)) {
+        return response.badRequest(res, 'pitch 必须是 -12 到 12 之间的数字');
+      }
+      const speechEmotion = String(emotion || '').trim();
+      if (!new Set(['', 'happy', 'sad', 'angry', 'fearful', 'disgusted', 'surprised', 'neutral']).has(speechEmotion)) {
+        return response.badRequest(res, 'emotion 参数不受支持');
+      }
+      const pronunciationTones = Array.isArray(pronunciation_tones)
+        ? pronunciation_tones.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      if (pronunciationTones.length > 100) {
+        return response.badRequest(res, 'pronunciation_tones 最多支持 100 条');
       }
       if (options.billingEnabled) {
         const owner = req.tenant?.id
@@ -110,6 +133,10 @@ function routes(db, log, cfg, options = {}) {
           config: selectedConfig,
           voice_id: voice_id || undefined,
           speed: speechSpeed,
+          volume: speechVolume,
+          pitch: speechPitch,
+          emotion: speechEmotion || undefined,
+          pronunciation_tones: pronunciationTones,
         });
         if (reservation) {
           creditLedger.settleGeneration(db, reservation.id, 'completed');

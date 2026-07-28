@@ -116,7 +116,9 @@
             </el-table-column>
             <el-table-column label="操作" width="240" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="openTest(row)">测试</el-button>
+                <el-button link type="primary" size="small" @click="openTest(row)">
+                  {{ row.service_type === 'tts' && row.provider === 'minimax' ? '测试合成' : '测试' }}
+                </el-button>
                 <el-button link type="primary" size="small" @click="openPricing(row)">设置定价</el-button>
                 <el-button link type="primary" size="small" @click="onRowEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
                 <el-button v-if="!vendorLock.enabled" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
@@ -708,8 +710,7 @@ input_reference = (图片文件，可选)</pre>
                 <el-tooltip placement="top" popper-class="cfg-tip-popper">
                   <template #content>
                     <div class="cfg-tip-content">
-                      MiniMax 账号的 GroupId，调用 T2A v2 接口时附在 URL 参数里。<br>
-                      登录 <b>platform.minimaxi.com</b> → 账户设置 → 即可查看 GroupId。
+                      当前 MiniMax T2A v2 接口仅需 API Key；GroupId 只用于兼容旧配置。
                     </div>
                   </template>
                   <el-icon class="tip-icon"><QuestionFilled /></el-icon>
@@ -717,7 +718,7 @@ input_reference = (图片文件，可选)</pre>
               </span>
             </template>
             <el-input v-model="form.group_id" placeholder="MiniMax GroupId，如 1234567890" />
-            <p class="field-tip">仅 MiniMax T2A 需要此字段。</p>
+            <p class="field-tip">旧版 MiniMax 配置兼容字段，新接入可留空。</p>
           </el-form-item>
         </template>
 
@@ -1095,6 +1096,14 @@ input_reference = (图片文件，可选)</pre>
           :closable="false"
         />
         <el-alert
+          v-else-if="testServiceType === 'tts' && testProvider === 'minimax'"
+          type="success"
+          title="测试合成成功"
+          description="已通过 MiniMax 生成极短测试音频。该操作可能产生供应商费用，但不会写入平台用户积分账单。"
+          show-icon
+          :closable="false"
+        />
+        <el-alert
           v-else
           type="success"
           title="连接成功"
@@ -1340,6 +1349,7 @@ const rules = computed(() => ({
 const testVisible = ref(false)
 const testResult = ref(null)
 const testServiceType = ref('')
+const testProvider = ref('')
 const testError = ref('')
 const oneKeyTongyiVisible = ref(false)
 const oneKeyTongyiKey = ref('')
@@ -1416,7 +1426,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
   ],
   tts: [
-    { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
+    { id: 'minimax', name: 'MiniMax T2A', models: ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo'] },
   ],
   jimeng2_character_auth: [
     { id: 'jimeng_material_api', name: '即梦业务素材 API（/api/business/v1）', models: ['-'] },
@@ -1590,7 +1600,7 @@ const endpointPreviewInfo = computed(() => {
     submitPath = '/chat/completions'
   } else if (service_type === 'tts') {
     if (p === 'minimax') {
-      submitPath = '/t2a_v2?GroupId={group_id}'
+      submitPath = '/t2a_v2'
     } else {
       submitPath = endpoint || '/tts'
     }
@@ -2123,10 +2133,22 @@ async function openTest(row) {
     ElMessage.info('SD2 资产库请在「SD2 资产管理」标签页使用「刷新列表」验证连接。')
     return
   }
+  if (row.service_type === 'tts' && row.provider === 'minimax') {
+    try {
+      await ElMessageBox.confirm(
+        'MiniMax 暂无只读连接探针，本次会生成极短测试音频，可能产生供应商费用；不会扣除平台用户积分。是否继续？',
+        '确认测试合成',
+        { type: 'warning', confirmButtonText: '继续测试', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
   testVisible.value = true
   testResult.value = null
   testError.value = ''
   testServiceType.value = row.service_type || 'text'
+  testProvider.value = row.provider || ''
   try {
     await aiAPI.testConnection({
       config_id: row.id,
