@@ -99,12 +99,23 @@ test('执行图片工具成功才替换节点结果，失败保留旧图并写�
   assert.match(canvasSource, /runImageNodeTool,\s*\n/)
 })
 
-test('P1 图片调整包含色温，旋转走 Sharp 派生链，导演台未桥接当前图片时保持禁用', () => {
+test('P1 图片调整包含色温，旋转走 Sharp 派生链', () => {
   assert.match(toolbarSource, /adjustForm = ref\(\{[^}]*temperature: 0/)
   assert.match(toolbarSource, /色温/)
   assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
+})
+
+test('生成导演台桥接当前图片且不冒充灯光、姿势或角度图片处理', () => {
   assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage' \}/)
-  assert.doesNotMatch(toolbarSource, /customAction: 'director'/)
+  assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage'\]\)/)
+  assert.match(toolbarSource, /ctx\?\.openDirectorStage\?\.\(\{[\s\S]*mode: item\.operation/)
+  assert.match(toolbarSource, /imageUrl: props\.data\.url/)
+  assert.match(toolbarSource, /sourceNodeId: props\.nodeId/)
+  assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
+  assert.match(canvasSource, /:entry-context="directorStageEntry"/)
+  assert.match(canvasSource, /function openDirectorStage\(entryContext = null\)/)
+  assert.match(canvasSource, /directorStageEntry\.value = entryContext/)
+  assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:lighting|pose|angle)/)
 })
 
 test('工具栏提供替换、下载、全屏、历史与标记色入口', () => {

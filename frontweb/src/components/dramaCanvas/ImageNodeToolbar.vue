@@ -262,6 +262,8 @@ const upscaleScale = ref(2)
 let cropper = null
 let CropperClass = null
 
+const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage'])
+
 const quickActions = [
   { label: '720全景', operation: 'panorama' },
   { label: '灯光', operation: 'lighting' },
@@ -358,6 +360,15 @@ function selectOperation(item) {
   const capability = operationCapability(item.operation)
   if (!capability.available) {
     ElMessage.warning(capability.reason || '该能力尚未接通')
+    return
+  }
+  if (DIRECTOR_STAGE_OPERATIONS.has(item.operation)) {
+    ctx?.openDirectorStage?.({
+      mode: item.operation,
+      imageUrl: props.data.url,
+      sourceNodeId: props.nodeId,
+      sourceTitle: props.data.title || '图片节点',
+    })
     return
   }
   editorOperation.value = item.operation

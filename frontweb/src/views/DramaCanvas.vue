@@ -396,6 +396,7 @@
       :visible="directorStageVisible"
       :drama="drama"
       :initial-state="directorTimeline"
+      :entry-context="directorStageEntry"
       @close="closeDirectorStage"
       @state-change="onDirectorStateChange"
       @asset-created="onDirectorAssetCreated"
@@ -646,6 +647,7 @@ const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
+const directorStageEntry = ref(null)
 let directorReturnFocus = null
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
@@ -700,13 +702,22 @@ const freeNodeContentPlaceholder = computed(() => (
     : `描述希望生成的${freeNodeKindLabel.value}内容`
 ))
 
-function openDirectorStage() {
+function openDirectorStage(entryContext = null) {
   directorReturnFocus = document.activeElement
+  directorStageEntry.value = entryContext?.mode === 'director_stage'
+    ? {
+        mode: 'director_stage',
+        imageUrl: String(entryContext.imageUrl || ''),
+        sourceNodeId: String(entryContext.sourceNodeId || ''),
+        sourceTitle: String(entryContext.sourceTitle || '图片节点'),
+      }
+    : null
   directorStageVisible.value = true
 }
 
 async function closeDirectorStage() {
   directorStageVisible.value = false
+  directorStageEntry.value = null
   await nextTick()
   directorReturnFocus?.focus?.()
   directorReturnFocus = null

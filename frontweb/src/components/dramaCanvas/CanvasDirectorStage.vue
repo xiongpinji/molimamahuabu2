@@ -260,6 +260,12 @@
           <span><i class="stage-dot stage-dot--prop" />道具</span>
           <span v-if="activeShot">当前：{{ activeShot.name }}</span>
         </div>
+        <section v-if="entryReferenceUrl" class="director-entry-reference" aria-label="图片节点参考图">
+          <strong>当前图片参考</strong>
+          <img :src="entryReferenceUrl" :alt="entryReferenceTitle" />
+          <small>{{ entryReferenceTitle }}</small>
+          <span>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
+        </section>
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
         <div v-else-if="errorMessage" class="director-stage__error">{{ errorMessage }}</div>
 
@@ -623,6 +629,7 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   drama: { type: Object, default: null },
   initialState: { type: Object, default: null },
+  entryContext: { type: Object, default: null },
 })
 
 const emit = defineEmits(['close', 'state-change', 'asset-created'])
@@ -688,6 +695,8 @@ let pickingPlugin = null
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
 const propsList = computed(() => props.drama?.props || [])
+const entryReferenceUrl = computed(() => String(props.entryContext?.imageUrl || '').trim())
+const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitle || '图片节点参考图').trim())
 const characterEntries = computed(() => characters.value.map((character, index) => ({
   id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
   name: character?.name || `角色 ${index + 1}`,
@@ -1348,6 +1357,12 @@ function selectSceneObject(objectId) {
 function selectEnvironmentInspector() {
   selectedObjectId.value = ''
   inspectorTab.value = 'properties'
+}
+
+function applyEntryContext() {
+  if (props.entryContext?.mode !== 'director_stage') return
+  workspaceMode.value = 'scene'
+  viewMode.value = 'director'
 }
 
 function updateSelectedObject(patch) {
@@ -2532,11 +2547,14 @@ onMounted(async () => {
   await nextTick()
   applyTimelineState(props.initialState || createDirectorTimeline(characters.value), { emitChange: false })
   await initialize()
+  applyEntryContext()
 })
 
 watch(() => props.drama?.id, () => {
   void loadProjectAssets()
 })
+
+watch(() => props.entryContext, applyEntryContext, { deep: true })
 
 watch(selectedCharacterId, (characterId) => {
   const bones = characterBones.value[String(characterId)] || []
@@ -2688,6 +2706,10 @@ onBeforeUnmount(() => {
 .director-stage__canvas { width: 100%; height: 100%; display: block; outline: none; }
 .director-stage__legend { position: absolute; right: 16px; top: 16px; display: flex; gap: 12px; padding: 8px 10px; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 9px; background: rgba(24, 24, 27, 0.82); color: #a1a1aa; font-size: 11px; }
 .director-stage__legend span { display: inline-flex; align-items: center; gap: 5px; }
+.director-entry-reference { position: absolute; top: 54px; left: 16px; z-index: 4; display: grid; gap: 6px; width: 168px; padding: 10px; border: 1px solid rgba(129, 140, 248, 0.5); border-radius: 10px; background: rgba(9, 9, 11, 0.88); color: #d4d4d8; font-size: 10px; }
+.director-entry-reference img { width: 100%; max-height: 120px; border-radius: 6px; object-fit: contain; background: #09090b; }
+.director-entry-reference small { overflow: hidden; color: #a5b4fc; text-overflow: ellipsis; white-space: nowrap; }
+.director-entry-reference span { color: #a1a1aa; line-height: 1.4; }
 .director-stage__loading, .director-stage__error { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); color: #a1a1aa; font-size: 13px; }
 .director-stage__error { color: #fca5a5; }
 .timeline-panel { position: absolute; right: 12px; bottom: 74px; left: 12px; z-index: 3; padding: 10px 12px 12px; border: 1px solid #3f3f46; border-radius: 12px; background: rgba(24, 24, 27, 0.94); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32); backdrop-filter: blur(14px); }

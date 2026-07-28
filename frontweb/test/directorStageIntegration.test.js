@@ -215,6 +215,18 @@ test('DR-013 导演台支持初始焦点、Esc 分层关闭、焦点圈闭与入
   assert.match(canvasSource, /@close="closeDirectorStage"/)
 })
 
+test('图片节点导演台入口显示当前参考图并保持其他入口兼容', () => {
+  assert.match(stageSource, /entryContext: \{ type: Object, default: null \}/)
+  assert.match(stageSource, /aria-label="图片节点参考图"/)
+  assert.match(stageSource, /entryReferenceUrl/)
+  assert.match(stageSource, /entryReferenceTitle/)
+  assert.match(stageSource, /function applyEntryContext\(\)/)
+  assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
+  assert.match(canvasSource, /:entry-context="directorStageEntry"/)
+  assert.match(canvasSource, /directorStageEntry\.value = entryContext/)
+  assert.match(canvasSource, /directorStageEntry\.value = null/)
+})
+
 test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和查看器', () => {
   assert.match(stageSource, /removeEventListener\('keydown', onDirectorKeydown\)/)
   assert.match(stageSource, /transformControls\?\.removeEventListener\?\.\('mouseUp', persistTransformControlChange\)/)

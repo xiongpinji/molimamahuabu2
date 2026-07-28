@@ -144,6 +144,12 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.match(operations.selection_cutout.reason, /许可证审计/);
   assert.equal(operations.upscale.available, false);
   assert.match(operations.upscale.reason, /许可证审计/);
+  assert.equal(operations.director_stage.available, true);
+  assert.equal(operations.director_stage.engine, 'director-stage');
+  assert.equal(operations.director_stage.action, 'open');
+  assert.equal(operations.lighting.available, false);
+  assert.equal(operations.pose.available, false);
+  assert.equal(operations.angle.available, false);
   assert.equal(operations.panorama.available, false);
   assert.match(operations.panorama.reason, /模型能力/);
   assert.equal(
