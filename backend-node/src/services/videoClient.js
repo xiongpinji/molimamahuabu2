@@ -3295,6 +3295,10 @@ async function callXaiVideoApi(config, log, opts) {
     video_gen_id,
   } = opts;
 
+  if (String(model || '').toLowerCase() === 'lingjing-video-v1') {
+    return callAihubccVideoApi(config, log, opts);
+  }
+
   const base = (config.base_url || 'https://api.x.ai').replace(/\/$/, '');
   let ep = config.endpoint || '/v1/videos/generations';
   if (!ep.startsWith('/')) ep = '/' + ep;
@@ -3409,7 +3413,7 @@ async function callXaiVideoApi(config, log, opts) {
     let errMsg = 'xAI 视频请求失败: ' + res.status;
     try {
       const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
+      const msg = errJson.detail || errJson.error?.message || errJson.message || errJson.error;
       if (msg) errMsg += ' - ' + String(msg).slice(0, 220);
     } catch (_) {
       if (raw) errMsg += ' - ' + raw.slice(0, 200);
