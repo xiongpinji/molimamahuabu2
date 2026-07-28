@@ -60,6 +60,7 @@ function routes(db, log, options = {}) {
     options.modelTools,
     options.env,
     options.auditedModelHashes,
+    options.auditedUpscaleFiles,
   );
   return {
     capabilities: (_req, res) => response.success(res, {

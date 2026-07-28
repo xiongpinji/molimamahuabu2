@@ -10,6 +10,7 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   grid_crop: ['rows', 'columns'],
   smart_cutout: [],
   selection_cutout: ['left', 'top', 'width', 'height'],
+  upscale: ['scale'],
   adjust: ['brightness', 'saturation', 'contrast', 'temperature'],
   lut: ['preset'],
 })

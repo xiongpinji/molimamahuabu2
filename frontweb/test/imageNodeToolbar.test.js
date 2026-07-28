@@ -48,12 +48,26 @@ test('工具栏按后端能力启用并保留不可用原因', () => {
   assert.match(toolbarSource, /宫格裁剪/)
   assert.match(toolbarSource, /smart_cutout: '智能抠图'/)
   assert.match(toolbarSource, /selection_cutout: '框选抠图'/)
+  assert.match(toolbarSource, /upscale: '高清增强'/)
   assert.match(toolbarSource, /图片调整/)
   assert.match(toolbarSource, /LUT 调色/)
   assert.match(toolbarSource, /720全景/)
   assert.match(toolbarSource, /灯光/)
   assert.match(toolbarSource, /高清/)
   assert.equal(/核验|侵权检测|版权检测/.test(toolbarSource), false)
+})
+
+test('高清入口只提交 Real-ESRGAN 支持的 2x、3x、4x 倍率', () => {
+  assert.match(toolbarSource, /upscaleScale = ref\(2\)/)
+  assert.match(toolbarSource, /editorOperation === 'upscale'/)
+  assert.match(toolbarSource, /<el-option label="2x" :value="2" \/>/)
+  assert.match(toolbarSource, /<el-option label="3x" :value="3" \/>/)
+  assert.match(toolbarSource, /<el-option label="4x" :value="4" \/>/)
+  assert.match(
+    toolbarSource,
+    /editorOperation\.value === 'upscale'\) return \{ scale: upscaleScale\.value \}/,
+  )
+  assert.match(toolbarSource, /本地 Real-ESRGAN/)
 })
 
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {

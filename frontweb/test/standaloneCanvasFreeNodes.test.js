@@ -176,6 +176,39 @@ test('框选抠图重试只持久化矩形像素参数', () => {
   })
 })
 
+test('高清增强重试只持久化倍率参数', () => {
+  const node = {
+    id: 'free:image:upscale-retry',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '高清增强失败',
+      content: '',
+      url: '/static/source.png',
+      imageToolStatus: 'failed',
+      imageToolRetryOperation: 'upscale',
+      imageToolRetryParameters: {
+        scale: 3,
+        command: 'never-persist-this',
+        modelDir: 'never-persist-this',
+      },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageToolRetryOperation, 'upscale')
+  assert.deepEqual(restored.data.imageToolRetryParameters, { scale: 3 })
+})
+
 test('独立画布图谱不生成剧集骨架且保留自由节点和连线', () => {
   assert.match(adapterSource, /function buildStandaloneCanvasGraph\(savedLayout, projectAssets = \[\]\)/)
   assert.match(adapterSource, /resolveFreeCanvasNodes\(savedLayout\)/)

@@ -3,12 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
 
 const createImageToolRoutes = require('../src/routes/imageTools');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const assetService = require('../src/services/assetService');
+const storageLayout = require('../src/services/storageLayout');
 const taskService = require('../src/services/taskService');
 const userAuthService = require('../src/services/userAuthService');
 const tenantService = require('../src/services/tenantService');
@@ -17,6 +19,45 @@ sharp.cache(false);
 
 const TEST_MODEL_SHA256 = '9A72F871A95D3689B4F1DF8249FFC4280F47A54571A30E12CD5AA86A23B8A13A';
 const TEST_AUDITED_MODEL_HASHES = Object.freeze({ u2netp: TEST_MODEL_SHA256 });
+const TEST_NODE_COPY = path.join(os.tmpdir(), `molimama-image-tools-node-${process.pid}.exe`);
+const TEST_UPSCALE_FILES = Object.freeze({
+  runtime: {
+    'vcomp140.dll': 'test release runtime',
+  },
+  models: {
+    'realesrgan-x4plus.bin': 'test Real-ESRGAN model weights',
+    'realesrgan-x4plus.param': 'test Real-ESRGAN model graph',
+  },
+});
+
+function bufferSha256(value) {
+  return createHash('sha256').update(value).digest('hex').toUpperCase();
+}
+
+function fileSha256(filePath) {
+  return bufferSha256(fs.readFileSync(filePath));
+}
+
+function isPathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+const TEST_AUDITED_UPSCALE_FILES = Object.freeze({
+  executable: fileSha256(process.execPath),
+  runtime: Object.fromEntries(
+    Object.entries(TEST_UPSCALE_FILES.runtime).map(([name, contents]) => [
+      name,
+      bufferSha256(contents),
+    ]),
+  ),
+  models: Object.fromEntries(
+    Object.entries(TEST_UPSCALE_FILES.models).map(([name, contents]) => [
+      name,
+      bufferSha256(contents),
+    ]),
+  ),
+});
 
 function responseRecorder() {
   return {
@@ -47,6 +88,34 @@ function fakeSmartCutoutTool(root, extraArgs = [], overrides = {}) {
   };
 }
 
+function fakeUpscaleTool(root, extraArgs = [], overrides = {}) {
+  const packageRoot = path.join(root, 'realesrgan-package');
+  const modelDir = path.join(packageRoot, 'models');
+  fs.mkdirSync(modelDir, { recursive: true });
+  const command = path.join(packageRoot, 'realesrgan-ncnn-vulkan.exe');
+  if (!fs.existsSync(command)) {
+    if (!fs.existsSync(TEST_NODE_COPY)) fs.copyFileSync(process.execPath, TEST_NODE_COPY);
+    fs.linkSync(TEST_NODE_COPY, command);
+  }
+  for (const [name, contents] of Object.entries(TEST_UPSCALE_FILES.runtime)) {
+    fs.writeFileSync(path.join(packageRoot, name), contents);
+  }
+  for (const [name, contents] of Object.entries(TEST_UPSCALE_FILES.models)) {
+    fs.writeFileSync(path.join(modelDir, name), contents);
+  }
+  return {
+    command,
+    args: [path.join(__dirname, 'fixtures', 'fake-realesrgan.js'), ...extraArgs],
+    engineVersion: '0.2.5.0',
+    model: 'realesrgan-x4plus',
+    packageRoot,
+    modelDir,
+    ...overrides,
+  };
+}
+
+process.once('exit', () => fs.rmSync(TEST_NODE_COPY, { force: true }));
+
 test('图片工具能力只公布真实可用处理器并明确未配置原因', () => {
   const handlers = createImageToolRoutes(null, { error() {} });
   const res = responseRecorder();
@@ -73,6 +142,8 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.match(operations.smart_cutout.reason, /许可证审计/);
   assert.equal(operations.selection_cutout.available, false);
   assert.match(operations.selection_cutout.reason, /许可证审计/);
+  assert.equal(operations.upscale.available, false);
+  assert.match(operations.upscale.reason, /许可证审计/);
   assert.equal(operations.panorama.available, false);
   assert.match(operations.panorama.reason, /模型能力/);
   assert.equal(
@@ -130,6 +201,160 @@ test('智能抠图能力探针拒绝目录、错误版本、缺失模型和错�
     handlers.capabilities({}, res);
     assert.equal(res.payload.data.operations.smart_cutout.available, false);
   }
+});
+
+test('固定二进制和模型哈希通过后才公布 Real-ESRGAN 高清能力', (t) => {
+  const toolRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-realesrgan-tool-'));
+  t.after(() => fs.rmSync(toolRoot, { recursive: true, force: true }));
+  const handlers = createImageToolRoutes(null, { error() {} }, {
+    modelTools: {
+      upscale: fakeUpscaleTool(toolRoot),
+    },
+    auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+  });
+  const res = responseRecorder();
+
+  handlers.capabilities({}, res);
+
+  assert.equal(res.payload.data.operations.upscale.available, true);
+  assert.equal(res.payload.data.operations.upscale.engine, 'realesrgan-ncnn-vulkan');
+  assert.equal(res.payload.data.operations.upscale.engineVersion, '0.2.5.0');
+  assert.equal(res.payload.data.operations.upscale.model, 'realesrgan-x4plus');
+  assert.deepEqual(res.payload.data.operations.upscale.scales, [2, 3, 4]);
+});
+
+test('Real-ESRGAN 审计清单不包含不可再分发的调试运行库', () => {
+  const serviceSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'services', 'imageToolService.js'),
+    'utf8',
+  );
+
+  assert.doesNotMatch(serviceSource, /vcomp140d\.dll/i);
+});
+
+test('Real-ESRGAN 能力探针拒绝错误版本、缺失运行库和损坏模型', (t) => {
+  const toolRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-realesrgan-probe-'));
+  t.after(() => fs.rmSync(toolRoot, { recursive: true, force: true }));
+  const wrongVersion = fakeUpscaleTool(path.join(toolRoot, 'wrong-version'), [], {
+    engineVersion: '9.9.9',
+  });
+  const missingRuntime = fakeUpscaleTool(path.join(toolRoot, 'missing-runtime'));
+  fs.rmSync(path.join(missingRuntime.packageRoot, 'vcomp140.dll'));
+  const damagedModel = fakeUpscaleTool(path.join(toolRoot, 'damaged-model'));
+  fs.writeFileSync(path.join(damagedModel.modelDir, 'realesrgan-x4plus.bin'), 'damaged model');
+  const relocatedExecutable = fakeUpscaleTool(path.join(toolRoot, 'relocated-executable'), [], {
+    command: process.execPath,
+  });
+
+  for (const upscale of [wrongVersion, missingRuntime, damagedModel, relocatedExecutable]) {
+    const handlers = createImageToolRoutes(null, { error() {} }, {
+      modelTools: { upscale },
+      auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+    });
+    const res = responseRecorder();
+    handlers.capabilities({}, res);
+    assert.equal(res.payload.data.operations.upscale.available, false);
+  }
+});
+
+test('Real-ESRGAN 高清增强生成指定倍率派生素材并清洗失败错误', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-upscale-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('高清增强测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 8,
+      height: 6,
+      channels: 3,
+      background: '#5b8def',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      upscale: fakeUpscaleTool(storageRoot),
+    },
+    auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+  });
+  const successRes = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-upscale',
+      operation: 'upscale',
+      parameters: { scale: 2 },
+    },
+  }, successRes);
+
+  assert.equal(successRes.statusCode, 201, JSON.stringify(successRes.payload));
+  const resultAsset = assetService.getById(db, successRes.payload.data.resultAssetId);
+  const resultMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(resultMetadata.width, 16);
+  assert.equal(resultMetadata.height, 12);
+  assert.equal(resultMetadata.format, 'png');
+  assert.equal(resultAsset.metadata.operation, 'upscale');
+  assert.equal(resultAsset.metadata.engine, 'realesrgan-ncnn-vulkan');
+  assert.equal(resultAsset.metadata.engineVersion, '0.2.5.0');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    scale: 2,
+    model: 'realesrgan-x4plus',
+  });
+  assert.equal(fs.existsSync(sourcePath), true);
+
+  const invalidRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-upscale-invalid',
+      operation: 'upscale',
+      parameters: { scale: 5 },
+    },
+  }, invalidRes);
+  assert.equal(invalidRes.statusCode, 400);
+
+  const failureHandlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      upscale: fakeUpscaleTool(storageRoot, ['--fail']),
+    },
+    auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+  });
+  const failureRes = responseRecorder();
+  await failureHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-upscale-failure',
+      operation: 'upscale',
+      parameters: { scale: 2 },
+    },
+  }, failureRes);
+  assert.equal(failureRes.statusCode, 503);
+  assert.equal(failureRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.equal(failureRes.payload.error.message, '高清增强处理失败');
+  assert.doesNotMatch(failureRes.payload.error.message, /fake Real-ESRGAN|molimama-upscale/i);
+  const failedTask = db.prepare(
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_upscale' ORDER BY created_at DESC LIMIT 1",
+  ).get();
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.error, '高清增强处理失败');
 });
 
 test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', async (t) => {
@@ -714,6 +939,173 @@ test('公开模式拒绝处理其他租户的图片素材', async (t) => {
   assert.equal(res.payload.success, false);
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+});
+
+test('公开模式拒绝用本项目素材行别名读取其他项目的物理文件', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const owner = userAuthService.register(db, {
+    email: 'path-owner@example.com',
+    password: 'correct horse battery staple',
+  });
+  const attacker = userAuthService.register(db, {
+    email: 'path-attacker@example.com',
+    password: 'correct horse battery staple',
+  });
+  const ownerTenant = tenantService.createTenant(db, owner.id, {
+    name: '物理文件所属团队',
+    slug: 'path-owner',
+  });
+  const attackerTenant = tenantService.createTenant(db, attacker.id, {
+    name: '伪造路径团队',
+    slug: 'path-attacker',
+  });
+  const now = new Date().toISOString();
+  const createDrama = db.prepare(
+    `INSERT INTO dramas (tenant_id, user_id, title, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'draft', ?, ?)`,
+  );
+  const ownerDramaId = createDrama.run(
+    ownerTenant.id,
+    owner.id,
+    '物理文件所属项目',
+    now,
+    now,
+  ).lastInsertRowid;
+  const attackerDramaId = createDrama.run(
+    attackerTenant.id,
+    attacker.id,
+    '伪造素材所属项目',
+    now,
+    now,
+  ).lastInsertRowid;
+  const ownerDir = path.join(
+    storageRoot,
+    storageLayout.getProjectStorageSubdir(db, ownerDramaId),
+    'uploads',
+  );
+  const attackerDir = path.join(
+    storageRoot,
+    storageLayout.getProjectStorageSubdir(db, attackerDramaId),
+    'uploads',
+  );
+  fs.mkdirSync(ownerDir, { recursive: true });
+  fs.mkdirSync(attackerDir, { recursive: true });
+  const ownerPath = path.join(ownerDir, 'private.png');
+  await sharp({
+    create: {
+      width: 4,
+      height: 3,
+      channels: 4,
+      background: '#ff0000',
+    },
+  }).png().toFile(ownerPath);
+  const aliasedAsset = assetService.create(db, { info() {} }, {
+    drama_id: attackerDramaId,
+    name: 'aliased-private.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/aliased-private.png',
+    local_path: path.relative(storageRoot, ownerPath),
+    mime_type: 'image/png',
+    width: 4,
+    height: 3,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    publicPlatformEnabled: true,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    user: { id: attacker.id },
+    tenant: { id: attackerTenant.id },
+    body: {
+      assetId: aliasedAsset.id,
+      operation: 'crop',
+      parameters: { left: 0, top: 0, width: 1, height: 1 },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.payload.success, false);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+  assert.equal(fs.existsSync(path.join(ownerDir, 'derived')), false);
+
+  const attackerPath = path.join(attackerDir, 'owned.png');
+  fs.copyFileSync(ownerPath, attackerPath);
+  const ownedAsset = assetService.create(db, { info() {} }, {
+    drama_id: attackerDramaId,
+    name: 'owned.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/owned.png',
+    local_path: path.relative(storageRoot, attackerPath),
+    mime_type: 'image/png',
+    width: 4,
+    height: 3,
+  });
+  const ownedRes = responseRecorder();
+
+  await handlers.createOperation({
+    user: { id: attacker.id },
+    tenant: { id: attackerTenant.id },
+    body: {
+      assetId: ownedAsset.id,
+      operation: 'crop',
+      parameters: { left: 0, top: 0, width: 1, height: 1 },
+    },
+  }, ownedRes);
+
+  assert.equal(ownedRes.statusCode, 201, JSON.stringify(ownedRes.payload));
+  const derivedAsset = assetService.getById(db, ownedRes.payload.data.resultAssetId);
+  assert.equal(isPathInside(attackerDir, derivedAsset.local_path), true);
+  assert.equal(isPathInside(ownerDir, derivedAsset.local_path), false);
+
+  const ownerProjectRoot = path.dirname(ownerDir);
+  const attackerProjectRoot = path.dirname(attackerDir);
+  fs.rmSync(attackerProjectRoot, { recursive: true, force: true });
+  fs.symlinkSync(
+    ownerProjectRoot,
+    attackerProjectRoot,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  const junctionAsset = assetService.create(db, { info() {} }, {
+    drama_id: attackerDramaId,
+    name: 'junction-private.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/junction-private.png',
+    local_path: path.relative(storageRoot, path.join(attackerDir, 'private.png')),
+    mime_type: 'image/png',
+    width: 4,
+    height: 3,
+  });
+  const taskCountBeforeJunctionAttack = db.prepare(
+    'SELECT COUNT(*) AS total FROM async_tasks',
+  ).get().total;
+  const junctionRes = responseRecorder();
+
+  await handlers.createOperation({
+    user: { id: attacker.id },
+    tenant: { id: attackerTenant.id },
+    body: {
+      assetId: junctionAsset.id,
+      operation: 'crop',
+      parameters: { left: 0, top: 0, width: 1, height: 1 },
+    },
+  }, junctionRes);
+
+  assert.equal(junctionRes.statusCode, 400);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total,
+    taskCountBeforeJunctionAttack,
+  );
+  assert.equal(fs.existsSync(path.join(ownerDir, 'derived')), false);
 });
 
 test('公开模式任务回读拒绝匿名请求和其他租户', async (t) => {

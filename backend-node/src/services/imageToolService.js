@@ -8,12 +8,24 @@ const { promisify } = require('node:util');
 const sharp = require('sharp');
 
 const assetService = require('./assetService');
+const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const execFileAsync = promisify(execFile);
 const SMART_CUTOUT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const SMART_CUTOUT_MAX_PIXELS = 40_000_000;
+const REALESRGAN_ENGINE_VERSION = '0.2.5.0';
 const AUDITED_REMBG_MODEL_HASHES = Object.freeze({
   u2netp: '309C8469258DDA742793DCE0EBEA8E6DD393174F89934733ECC8B14C76F4DDD8',
+});
+const AUDITED_REALESRGAN_FILES = Object.freeze({
+  executable: '07E49F7CBB4EDE01AE4DD4C399D3A7E5846E3D2085C3128EFF881E55CB7B1A0C',
+  runtime: Object.freeze({
+    'vcomp140.dll': '8F72EF2E483465444B2059FC6744D6CB22CD8D8A27F6FA56BEFD2A42DCD0F78B',
+  }),
+  models: Object.freeze({
+    'realesrgan-x4plus.bin': '713EE713B0353AFAA27976F0563A64A5043BD70B9BD8936C2E26E25EBCDBCDDF',
+    'realesrgan-x4plus.param': '35330ECECCEA33B6C397A72548E788D5D53BECEE4734C50B7FADA36E89F10A86',
+  }),
 });
 
 const FORMAT_INFO = {
@@ -51,7 +63,12 @@ function fail(code, message) {
 
 function resolveStorageRoot(cfg) {
   const configured = cfg?.storage?.local_path;
-  return path.resolve(configured || path.join(process.cwd(), 'data', 'storage'));
+  const resolved = path.resolve(configured || path.join(process.cwd(), 'data', 'storage'));
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch (_) {
+    return resolved;
+  }
 }
 
 function isInside(root, candidate) {
@@ -59,7 +76,14 @@ function isInside(root, candidate) {
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-function resolveSourcePath(asset, storageRoot) {
+function samePath(left, right) {
+  const normalize = process.platform === 'win32'
+    ? (value) => value.toLowerCase()
+    : (value) => value;
+  return normalize(path.resolve(left)) === normalize(path.resolve(right));
+}
+
+function resolveSourcePath(asset, storageRoot, allowedRoot) {
   if (!asset.local_path) fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片没有可处理的本地文件');
   const sourcePath = path.resolve(
     path.isAbsolute(asset.local_path)
@@ -69,8 +93,30 @@ function resolveSourcePath(asset, storageRoot) {
   if (!isInside(storageRoot, sourcePath)) {
     fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片不在允许的素材目录中');
   }
-  if (!fs.existsSync(sourcePath)) fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片文件不存在');
-  return sourcePath;
+  try {
+    const realAllowedRoot = fs.realpathSync.native(allowedRoot);
+    const realSourcePath = fs.realpathSync.native(sourcePath);
+    if (
+      !samePath(realAllowedRoot, allowedRoot)
+      || (
+        !isInside(storageRoot, realAllowedRoot)
+        && !samePath(storageRoot, realAllowedRoot)
+      )
+    ) {
+      fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片不在允许的素材目录中');
+    }
+    if (
+      !isInside(storageRoot, realSourcePath)
+      || !isInside(realAllowedRoot, realSourcePath)
+      || !fs.statSync(realSourcePath).isFile()
+    ) {
+      fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片不在当前项目的素材目录中');
+    }
+    return realSourcePath;
+  } catch (error) {
+    if (error.code === 'IMAGE_TOOL_SOURCE_UNAVAILABLE') throw error;
+    fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片文件不存在');
+  }
 }
 
 function resolveDerivedDir(sourcePath) {
@@ -84,6 +130,20 @@ function resolveDerivedDir(sourcePath) {
     current = parent;
   }
   return derivedDir || path.join(sourceDir, 'derived');
+}
+
+function ensureDerivedDir(sourcePath, allowedRoot) {
+  const derivedDir = resolveDerivedDir(sourcePath);
+  fs.mkdirSync(derivedDir, { recursive: true });
+  const realAllowedRoot = fs.realpathSync.native(allowedRoot);
+  const realDerivedDir = fs.realpathSync.native(derivedDir);
+  if (
+    !samePath(realAllowedRoot, allowedRoot)
+    || !isInside(realAllowedRoot, realDerivedDir)
+  ) {
+    fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '派生素材目录不在当前项目中');
+  }
+  return realDerivedDir;
 }
 
 function requireOwnedImageAsset(db, assetId, context) {
@@ -154,7 +214,7 @@ function fileSha256(filePath) {
   return hash.digest('hex').toUpperCase();
 }
 
-function createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency) {
+function createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency, busyMessage) {
   let active = 0;
   const activeByTenant = new Map();
   return {
@@ -162,7 +222,7 @@ function createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency) {
       const tenantKey = String(tenantId || 'local');
       const tenantActive = activeByTenant.get(tenantKey) || 0;
       if (active >= maxConcurrency || tenantActive >= maxTenantConcurrency) {
-        fail('IMAGE_TOOL_BUSY', '智能抠图任务繁忙，请稍后重试');
+        fail('IMAGE_TOOL_BUSY', busyMessage);
       }
       active += 1;
       activeByTenant.set(tenantKey, tenantActive + 1);
@@ -228,7 +288,93 @@ function normalizeSmartCutoutTool(tool, auditedModelHashes = AUDITED_REMBG_MODEL
     model,
     modelHome,
     modelSha256: expectedModelSha256,
-    limiter: createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency),
+    limiter: createConcurrencyLimiter(
+      maxConcurrency,
+      maxTenantConcurrency,
+      '智能抠图任务繁忙，请稍后重试',
+    ),
+  };
+}
+
+function normalizeUpscaleTool(tool, auditedFiles = AUDITED_REALESRGAN_FILES) {
+  if (!tool?.command || !path.isAbsolute(tool.command) || !fs.existsSync(tool.command)) return null;
+  const expectedExecutableSha256 = String(auditedFiles?.executable || '').toUpperCase();
+  if (!/^[A-F0-9]{64}$/.test(expectedExecutableSha256)) return null;
+  const packageRoot = String(tool.packageRoot || '').trim();
+  const modelDir = String(tool.modelDir || '').trim();
+  const model = String(tool.model || 'realesrgan-x4plus').trim();
+  const engineVersion = String(tool.engineVersion || '').trim();
+  if (
+    engineVersion !== REALESRGAN_ENGINE_VERSION
+    || !path.isAbsolute(packageRoot)
+    || !path.isAbsolute(modelDir)
+  ) return null;
+  try {
+    const commandPath = fs.realpathSync.native(tool.command);
+    const packagePath = fs.realpathSync.native(packageRoot);
+    const modelPath = fs.realpathSync.native(modelDir);
+    if (
+      !samePath(path.dirname(commandPath), packagePath)
+      || !samePath(modelPath, fs.realpathSync.native(path.join(packageRoot, 'models')))
+      || !fs.statSync(commandPath).isFile()
+      || fileSha256(commandPath) !== expectedExecutableSha256
+    ) {
+      return null;
+    }
+    if (!fs.statSync(packageRoot).isDirectory() || !fs.statSync(modelDir).isDirectory()) return null;
+    for (const [name, expectedHash] of Object.entries(auditedFiles.runtime || {})) {
+      const runtimePath = path.join(packageRoot, name);
+      if (
+        !/^[A-F0-9]{64}$/.test(String(expectedHash).toUpperCase())
+        || !fs.statSync(runtimePath).isFile()
+        || fileSha256(runtimePath) !== String(expectedHash).toUpperCase()
+      ) return null;
+    }
+    for (const extension of ['bin', 'param']) {
+      const name = `${model}.${extension}`;
+      const expectedHash = String(auditedFiles.models?.[name] || '').toUpperCase();
+      const modelPath = path.join(modelDir, name);
+      if (
+        !/^[A-F0-9]{64}$/.test(expectedHash)
+        || !fs.statSync(modelPath).isFile()
+        || fileSha256(modelPath) !== expectedHash
+      ) return null;
+    }
+  } catch (_) {
+    return null;
+  }
+  const args = Array.isArray(tool.args) ? tool.args.map(String) : [];
+  const probe = spawnSync(tool.command, [...args, '-h'], {
+    cwd: packageRoot,
+    encoding: 'utf8',
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  const probeOutput = `${probe.stdout || ''}\n${probe.stderr || ''}`;
+  if (probe.error || !/Usage:.*realesrgan/is.test(probeOutput)) return null;
+  const maxConcurrency = positiveLimit(tool.maxConcurrency, 1);
+  const maxTenantConcurrency = Math.min(
+    positiveLimit(tool.maxTenantConcurrency, 1),
+    maxConcurrency,
+  );
+  return {
+    command: tool.command,
+    args,
+    engine: 'realesrgan-ncnn-vulkan',
+    engineVersion,
+    executableSha256: expectedExecutableSha256,
+    model,
+    modelDir,
+    modelSha256: {
+      bin: String(auditedFiles.models[`${model}.bin`]).toUpperCase(),
+      param: String(auditedFiles.models[`${model}.param`]).toUpperCase(),
+    },
+    packageRoot,
+    limiter: createConcurrencyLimiter(
+      maxConcurrency,
+      maxTenantConcurrency,
+      '高清增强任务繁忙，请稍后重试',
+    ),
   };
 }
 
@@ -236,12 +382,18 @@ function resolveModelTools(
   explicitTools,
   env = process.env,
   auditedModelHashes = AUDITED_REMBG_MODEL_HASHES,
+  auditedUpscaleFiles = AUDITED_REALESRGAN_FILES,
 ) {
   if (explicitTools) {
     return {
       smart_cutout: normalizeSmartCutoutTool(explicitTools.smart_cutout, auditedModelHashes),
+      upscale: normalizeUpscaleTool(explicitTools.upscale, auditedUpscaleFiles),
     };
   }
+  const upscaleCommand = String(env.IMAGE_TOOL_REALESRGAN_PATH || '').trim();
+  const upscalePackageRoot = String(
+    env.IMAGE_TOOL_REALESRGAN_PACKAGE_ROOT || path.dirname(upscaleCommand),
+  ).trim();
   return {
     smart_cutout: normalizeSmartCutoutTool({
       command: String(env.IMAGE_TOOL_REMBG_PATH || '').trim(),
@@ -251,6 +403,17 @@ function resolveModelTools(
       maxConcurrency: env.IMAGE_TOOL_REMBG_MAX_CONCURRENCY,
       maxTenantConcurrency: env.IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY,
     }, auditedModelHashes),
+    upscale: normalizeUpscaleTool({
+      command: upscaleCommand,
+      engineVersion: String(env.IMAGE_TOOL_REALESRGAN_VERSION || '').trim(),
+      model: String(env.IMAGE_TOOL_REALESRGAN_MODEL || 'realesrgan-x4plus').trim(),
+      packageRoot: upscalePackageRoot,
+      modelDir: String(
+        env.IMAGE_TOOL_REALESRGAN_MODEL_DIR || path.join(upscalePackageRoot, 'models'),
+      ).trim(),
+      maxConcurrency: env.IMAGE_TOOL_REALESRGAN_MAX_CONCURRENCY,
+      maxTenantConcurrency: env.IMAGE_TOOL_REALESRGAN_MAX_TENANT_CONCURRENCY,
+    }, auditedUpscaleFiles),
   };
 }
 
@@ -268,9 +431,24 @@ function modelCapabilities(modelTools) {
       available: false,
       reason: '未配置已通过许可证审计的本地 rembg 与 U²-Net 模型',
     };
+  const upscale = modelTools?.upscale
+    ? {
+      available: true,
+      engine: modelTools.upscale.engine,
+      engineVersion: modelTools.upscale.engineVersion,
+      executableSha256: modelTools.upscale.executableSha256,
+      model: modelTools.upscale.model,
+      modelSha256: modelTools.upscale.modelSha256,
+      scales: [2, 3, 4],
+    }
+    : {
+      available: false,
+      reason: '未配置已通过许可证审计的 Real-ESRGAN 本地引擎与模型',
+    };
   return {
     smart_cutout: { ...available },
     selection_cutout: { ...available },
+    upscale,
   };
 }
 
@@ -343,6 +521,115 @@ async function runSmartCutoutUnlocked(sourcePath, outputPath, tool, log) {
     engine: tool.engine,
     engineVersion: tool.engineVersion,
   };
+}
+
+async function prepareUpscaleSource(sourcePath, parameters) {
+  const source = sharp(sourcePath, {
+    failOn: 'warning',
+    limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+  });
+  const metadata = await source.metadata();
+  if (!FORMAT_INFO[metadata.format] || !metadata.width || !metadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const scale = requireInteger(parameters.scale ?? 2, 'scale', 2);
+  if (scale > 4) fail('IMAGE_TOOL_INVALID_INPUT', 'scale 参数不能大于 4');
+  const width = metadata.width * scale;
+  const height = metadata.height * scale;
+  if (width * height > SMART_CUTOUT_MAX_PIXELS) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '高清增强产物超过像素限制');
+  }
+  return {
+    normalized: { scale },
+    expectedWidth: width,
+    expectedHeight: height,
+  };
+}
+
+async function runUpscaleUnlocked(sourcePath, outputPath, prepared, tool, log) {
+  try {
+    await execFileAsync(
+      tool.command,
+      [
+        ...tool.args,
+        '-i', sourcePath,
+        '-o', outputPath,
+        '-n', tool.model,
+        '-s', String(prepared.normalized.scale),
+        '-m', tool.modelDir,
+        '-f', 'png',
+      ],
+      {
+        cwd: tool.packageRoot,
+        timeout: 300_000,
+        maxBuffer: 2 * 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    log?.error?.('upscale processing failed', {
+      error: String(error.stderr || error.message || '').trim().slice(-400),
+      exitCode: error.code,
+      signal: error.signal,
+    });
+    fail(
+      'IMAGE_TOOL_PROCESSING_FAILED',
+      error.killed || error.signal === 'SIGTERM' ? '高清增强处理超时' : '高清增强处理失败',
+    );
+  }
+  if (!fs.existsSync(outputPath)) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强处理失败');
+  }
+  try {
+    const outputSize = fs.statSync(outputPath).size;
+    if (outputSize <= 0 || outputSize > SMART_CUTOUT_MAX_OUTPUT_BYTES) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+    }
+    const output = sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    });
+    const metadata = await output.metadata();
+    if (
+      metadata.format !== 'png'
+      || metadata.width !== prepared.expectedWidth
+      || metadata.height !== prepared.expectedHeight
+      || metadata.width * metadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+    }
+    await output.stats();
+    return {
+      format: FORMAT_INFO.png,
+      normalized: {
+        ...prepared.normalized,
+        model: tool.model,
+      },
+      outputInfo: {
+        size: outputSize,
+        width: metadata.width,
+        height: metadata.height,
+      },
+      engine: tool.engine,
+      engineVersion: tool.engineVersion,
+    };
+  } catch (error) {
+    log?.error?.('upscale output validation failed', {
+      error: String(error.message || '').trim().slice(-400),
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+  }
+}
+
+function sanitizeUpscaleError(error, log) {
+  if (String(error?.code || '').startsWith('IMAGE_TOOL_')) return error;
+  log.error('image tool upscale processing', {
+    error: String(error?.message || error),
+  });
+  return Object.assign(
+    new Error('高清增强处理失败'),
+    { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+  );
 }
 
 async function writeLimitedSelectionPng(source, selection, outputPath) {
@@ -555,12 +842,16 @@ async function createOperation(db, log, request, context = {}) {
   const deterministicOperations = ['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'];
   const cutoutOperations = ['smart_cutout', 'selection_cutout'];
   if (!deterministicOperations.includes(operation)
-    && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)) {
+    && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)
+    && !(operation === 'upscale' && modelTools.upscale)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
   const storageRoot = resolveStorageRoot(context.cfg);
-  const sourcePath = resolveSourcePath(asset, storageRoot);
+  const allowedRoot = context.publicPlatformEnabled
+    ? path.join(storageRoot, storageLayout.getProjectStorageSubdir(db, asset.drama_id))
+    : storageRoot;
+  const sourcePath = resolveSourcePath(asset, storageRoot, allowedRoot);
   const task = taskService.createTask(
     db,
     log,
@@ -577,8 +868,7 @@ async function createOperation(db, log, request, context = {}) {
   try {
     if (operation === 'grid_crop') {
       const prepared = await runGridCrop(sourcePath, request.parameters || {});
-      const outputDir = resolveDerivedDir(sourcePath);
-      fs.mkdirSync(outputDir, { recursive: true });
+      const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
       const outputRecords = [];
       for (const cell of prepared.cells) {
         const outputPath = path.join(
@@ -641,8 +931,7 @@ async function createOperation(db, log, request, context = {}) {
     if (cutoutOperations.includes(operation)) {
       const release = modelTools.smart_cutout.limiter.acquire(context.tenantId);
       try {
-        const outputDir = resolveDerivedDir(sourcePath);
-        fs.mkdirSync(outputDir, { recursive: true });
+        const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
         const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
         outputPaths.push(outputPath);
         let cutoutSourcePath = sourcePath;
@@ -707,6 +996,56 @@ async function createOperation(db, log, request, context = {}) {
       }
     }
 
+    if (operation === 'upscale') {
+      const release = modelTools.upscale.limiter.acquire(context.tenantId);
+      try {
+        const preparedSource = await prepareUpscaleSource(
+          sourcePath,
+          request.parameters || {},
+        );
+        const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+        const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+        outputPaths.push(outputPath);
+        const prepared = await runUpscaleUnlocked(
+          sourcePath,
+          outputPath,
+          preparedSource,
+          modelTools.upscale,
+          log,
+        );
+        let result;
+        db.transaction(() => {
+          const resultAsset = createDerivedAsset(db, log, {
+            asset,
+            request,
+            operation,
+            task,
+            format: prepared.format,
+            outputPath,
+            outputInfo: prepared.outputInfo,
+            parameters: prepared.normalized,
+            storageRoot,
+            engine: prepared.engine,
+            engineVersion: prepared.engineVersion,
+          });
+          result = {
+            taskId: task.id,
+            status: 'success',
+            sourceAssetId: asset.id,
+            resultAssetId: resultAsset.id,
+            resultUrl: resultAsset.url,
+            operation,
+          };
+          taskService.updateTaskResult(db, task.id, result);
+        })();
+        return result;
+      } catch (error) {
+        throw sanitizeUpscaleError(error, log);
+      } finally {
+        release();
+      }
+    }
+
     let prepared;
     if (operation === 'crop') prepared = await runCrop(sourcePath, request.parameters || {});
     else if (operation === 'compress') prepared = await runCompress(sourcePath, request.parameters || {});
@@ -714,8 +1053,7 @@ async function createOperation(db, log, request, context = {}) {
     else if (operation === 'rotate') prepared = await runRotate(sourcePath, request.parameters || {});
     else if (operation === 'adjust') prepared = await runAdjust(sourcePath, request.parameters || {});
     else prepared = await runLut(sourcePath, request.parameters || {});
-    const outputDir = resolveDerivedDir(sourcePath);
-    fs.mkdirSync(outputDir, { recursive: true });
+    const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
     const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}${prepared.format.extension}`);
     outputPaths.push(outputPath);
     let pipeline;

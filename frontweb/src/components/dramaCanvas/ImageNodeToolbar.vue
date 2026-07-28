@@ -144,7 +144,20 @@
       </div>
 
       <el-form v-else label-position="top">
-        <template v-if="editorOperation === 'compress'">
+        <template v-if="editorOperation === 'upscale'">
+          <el-form-item label="增强倍率">
+            <el-select v-model="upscaleScale">
+              <el-option label="2x" :value="2" />
+              <el-option label="3x" :value="3" />
+              <el-option label="4x" :value="4" />
+            </el-select>
+          </el-form-item>
+          <p class="crop-hint">
+            使用已审计的本地 Real-ESRGAN 生成 PNG 新素材；原图保持不变。
+          </p>
+        </template>
+
+        <template v-else-if="editorOperation === 'compress'">
           <el-form-item label="输出格式">
             <el-select v-model="compressForm.format">
               <el-option label="WebP" value="webp" />
@@ -245,6 +258,7 @@ const rotateAngle = ref(90)
 const gridForm = ref({ rows: 3, columns: 3 })
 const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1, temperature: 0 })
 const lutPreset = ref('cinematic')
+const upscaleScale = ref(2)
 let cropper = null
 let CropperClass = null
 
@@ -412,6 +426,7 @@ function operationParameters() {
   if (editorOperation.value === 'grid_crop') return { ...gridForm.value }
   if (editorOperation.value === 'adjust') return { ...adjustForm.value }
   if (editorOperation.value === 'lut') return { preset: lutPreset.value }
+  if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
   return {}
 }
 
@@ -457,6 +472,7 @@ function operationLabel(operation) {
     grid_crop: '宫格裁剪',
     smart_cutout: '智能抠图',
     selection_cutout: '框选抠图',
+    upscale: '高清增强',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }
