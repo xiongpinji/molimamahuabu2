@@ -1,5 +1,9 @@
 <template>
-  <div class="home-canvas-node" :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`]">
+  <div
+    class="home-canvas-node"
+    :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`]"
+    :style="data.imageMarkerColor ? { '--image-node-marker': data.imageMarkerColor } : undefined"
+  >
     <Handle type="target" :position="Position.Left" />
     <Handle type="source" :position="Position.Right" />
     <div class="node-heading">
@@ -13,6 +17,11 @@
     <video v-else-if="data.kind === 'video' && data.url" :src="data.url" class="node-media" controls muted playsinline />
     <audio v-else-if="data.kind === 'audio' && data.url" :src="data.url" class="node-audio" controls />
     <div v-else class="node-empty">{{ data.content || emptyHint }}</div>
+    <ImageNodeToolbar
+      v-if="data.kind === 'image' && data.url"
+      :node-id="id"
+      :data="data"
+    />
     <div v-if="data.error" class="node-error">{{ data.error }}</div>
     <div v-if="assetSaveFailed" class="node-asset-error">入库失败：{{ data.assetSaveError || '请重试' }}</div>
     <div class="node-actions">
@@ -44,6 +53,7 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import ImageNodeToolbar from './ImageNodeToolbar.vue'
 
 const props = defineProps({
   id: { type: String, default: '' },
@@ -114,7 +124,7 @@ function retryAssetSave() {
 .state-running { border-color: rgba(96, 165, 250, 0.8); }
 .state-success { border-color: rgba(52, 211, 153, 0.8); }
 .state-failed { border-color: rgba(248, 113, 113, 0.8); }
-.kind-image { border-color: rgba(96, 165, 250, 0.55); }
+.kind-image { border-color: var(--image-node-marker, rgba(96, 165, 250, 0.55)); }
 .kind-image .node-icon { color: #93c5fd; }
 .kind-video { border-color: rgba(244, 114, 182, 0.55); }
 .kind-video .node-icon { color: #f9a8d4; }

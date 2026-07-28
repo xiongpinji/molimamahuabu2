@@ -51,6 +51,51 @@ test('自由节点写入 canvas_layout 并可恢复', () => {
   assert.deepEqual(resolveFreeCanvasNodes(layout), [node])
 })
 
+test('图片工具状态、历史、标记色和多结果随自由节点持久化', () => {
+  const node = {
+    id: 'free:image:tool-state',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '图片工具状态',
+      content: '',
+      url: '/static/derived/result.webp',
+      imageMarkerColor: '#34d399',
+      imageToolTaskId: 'task-1',
+      imageToolStatus: 'success',
+      imageToolError: '',
+      imageToolHistory: [{
+        taskId: 'task-1',
+        operation: 'grid_crop',
+        status: 'success',
+        resultAssetId: 42,
+        resultUrl: '/static/derived/result.webp',
+        createdAt: '2026-07-28T12:00:00.000Z',
+      }],
+      imageToolResultAssets: [
+        { id: 42, url: '/static/derived/result.webp' },
+        { id: 43, url: '/static/derived/result-2.webp' },
+      ],
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageMarkerColor, '#34d399')
+  assert.equal(restored.data.imageToolTaskId, 'task-1')
+  assert.equal(restored.data.imageToolStatus, 'success')
+  assert.deepEqual(restored.data.imageToolHistory, node.data.imageToolHistory)
+  assert.deepEqual(restored.data.imageToolResultAssets, node.data.imageToolResultAssets)
+})
+
 test('独立画布图谱不生成剧集骨架且保留自由节点和连线', () => {
   assert.match(adapterSource, /function buildStandaloneCanvasGraph\(savedLayout, projectAssets = \[\]\)/)
   assert.match(adapterSource, /resolveFreeCanvasNodes\(savedLayout\)/)

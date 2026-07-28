@@ -1,6 +1,7 @@
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
+const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
@@ -47,6 +48,34 @@ function firstString(...values) {
   return ''
 }
 
+function normalizeImageToolHistory(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 20).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const taskId = cleanString(item.taskId)
+    const operation = cleanString(item.operation)
+    if (!taskId || !operation) return null
+    return withoutEmptyFields({
+      taskId,
+      operation,
+      status: cleanString(item.status),
+      resultAssetId: positiveInteger(item.resultAssetId),
+      resultUrl: cleanString(item.resultUrl),
+      createdAt: cleanString(item.createdAt),
+    })
+  }).filter(Boolean)
+}
+
+function normalizeImageToolResultAssets(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 25).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const id = positiveInteger(item.id)
+    const url = cleanString(item.url)
+    return id && url ? { id, url } : null
+  }).filter(Boolean)
+}
+
 export function normalizeFreeCanvasNodeData(data = {}) {
   const kind = cleanString(data.kind)
   if (!FREE_NODE_KINDS.has(kind)) return null
@@ -72,6 +101,24 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     if (FREE_NODE_ASSET_SAVE_STATUSES.has(assetSaveStatus)) normalized.assetSaveStatus = assetSaveStatus
   }
   if (Object.hasOwn(data, 'assetSaveError')) normalized.assetSaveError = cleanString(data.assetSaveError)
+  if (kind === 'image') {
+    const markerColor = cleanString(data.imageMarkerColor)
+    if (/^#[0-9a-f]{6}$/i.test(markerColor)) normalized.imageMarkerColor = markerColor
+    if (Object.hasOwn(data, 'imageToolTaskId')) {
+      normalized.imageToolTaskId = cleanString(data.imageToolTaskId)
+    }
+    const imageToolStatus = cleanString(data.imageToolStatus)
+    if (IMAGE_TOOL_STATUSES.has(imageToolStatus)) normalized.imageToolStatus = imageToolStatus
+    if (Object.hasOwn(data, 'imageToolError')) {
+      normalized.imageToolError = cleanString(data.imageToolError)
+    }
+    if (Object.hasOwn(data, 'imageToolHistory')) {
+      normalized.imageToolHistory = normalizeImageToolHistory(data.imageToolHistory)
+    }
+    if (Object.hasOwn(data, 'imageToolResultAssets')) {
+      normalized.imageToolResultAssets = normalizeImageToolResultAssets(data.imageToolResultAssets)
+    }
+  }
   return Object.fromEntries(
     Object.entries(normalized).filter(([, value]) => value !== undefined)
   )

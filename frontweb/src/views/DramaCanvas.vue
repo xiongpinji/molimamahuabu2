@@ -506,6 +506,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
+import { imageToolsAPI } from '@/api/imageTools'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
@@ -2031,6 +2032,100 @@ async function retryFreeCanvasAssetSave(nodeOrId) {
   } catch (error) {
     ElMessage.error(error?.message || '存入素材库失败')
   }
+}
+
+async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
+  let node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可处理的独立画布图片节点')
+  }
+  const previousUrl = String(node.data?.url || '')
+  if (!previousUrl) throw new Error('图片节点暂无可处理结果')
+
+  let sourceAssetId = node.data?.savedAssetId
+  if (!sourceAssetId) {
+    const savedAsset = await saveFreeCanvasResultAsset(
+      node,
+      'image',
+      previousUrl,
+      null,
+      node.data?.taskId || '',
+    )
+    sourceAssetId = savedAsset?.id
+    node = freeCanvasNodeById(node.id) || node
+  }
+  if (!sourceAssetId) throw new Error('图片尚未存入素材库，无法执行处理')
+
+  const previousHistory = Array.isArray(node.data?.imageToolHistory)
+    ? node.data.imageToolHistory
+    : []
+  await patchFreeCanvasNodeData(node.id, {
+    imageToolStatus: 'running',
+    imageToolError: '',
+  })
+  try {
+    const result = await imageToolsAPI.createOperation({
+      assetId: node.data?.savedAssetId || sourceAssetId,
+      sourceNodeId: String(node.id),
+      operation,
+      parameters,
+    })
+    const historyItem = {
+      taskId: result.taskId,
+      operation,
+      status: result.status,
+      resultAssetId: result.resultAssetId,
+      resultUrl: result.resultUrl,
+      createdAt: new Date().toISOString(),
+    }
+    await patchFreeCanvasNodeData(node.id, {
+      url: result.resultUrl,
+      savedAssetId: String(result.resultAssetId || ''),
+      imageToolTaskId: result.taskId,
+      imageToolStatus: 'success',
+      imageToolError: '',
+      imageToolResultAssets: result.resultAssets || [],
+      imageToolHistory: [historyItem, ...previousHistory].slice(0, 20),
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+    })
+    return result
+  } catch (error) {
+    await patchFreeCanvasNodeData(node.id, {
+      url: previousUrl,
+      imageToolStatus: 'failed',
+      imageToolError: error?.message || '图片处理失败',
+    })
+    throw error
+  }
+}
+
+async function replaceFreeCanvasNodeImage(nodeOrId, file) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可替换的独立画布图片节点')
+  }
+  if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件')
+  if (!drama.value?.id) throw new Error('项目信息不完整，无法上传图片')
+  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!asset?.id || !asset?.url) throw new Error('图片上传成功但未返回素材记录')
+  await patchFreeCanvasNodeData(node.id, {
+    url: asset.url,
+    savedAssetId: String(asset.id),
+    status: 'success',
+    error: '',
+    assetSaveStatus: 'success',
+    assetSaveError: '',
+    imageToolStatus: '',
+    imageToolError: '',
+  })
+  return asset
+}
+
+function setFreeCanvasNodeMarker(nodeOrId, color) {
+  return patchFreeCanvasNodeData(nodeOrId, {
+    imageMarkerColor: String(color || ''),
+  })
 }
 
 function canvasNodeLabel(node) {
@@ -4216,6 +4311,9 @@ provide(CANVAS_CONTEXT_KEY, {
   },
   runFreeCanvasNode,
   retryFreeCanvasAssetSave,
+  runImageNodeTool,
+  replaceFreeCanvasNodeImage,
+  setFreeCanvasNodeMarker,
 })
 
 function clearAssetHighlight() {
