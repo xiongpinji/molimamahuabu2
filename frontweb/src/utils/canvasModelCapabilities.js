@@ -1,6 +1,6 @@
 const DEFAULTS = {
   image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 4, declared: false },
-  video: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['720p'], durations: [5], quantities: [1], maxReferences: 3, supportsAudio: false, declared: false },
+  video: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['720p'], durations: [5, 10, 15], quantities: [1], maxReferences: 3, supportsAudio: false, declared: false },
   text: { quantities: [1] },
   audio: { quantities: [1] },
 }
