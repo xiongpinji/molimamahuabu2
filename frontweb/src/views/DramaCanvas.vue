@@ -5172,6 +5172,27 @@ function selectVisibleStoryboards() {
 function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
+  if (isStandaloneCanvas.value && (key === 'delete' || key === 'del')) {
+    const selectedIds = selectedFreeNodeIds.value.length
+      ? selectedFreeNodeIds.value
+      : [focusedNodeId.value].filter(Boolean)
+    const removableIds = selectedIds.filter((id) => findGraphNode(id)?.type === 'homeCanvasNode')
+    if (removableIds.length) {
+      event.preventDefault()
+      const previousState = currentInteractionState()
+      const idSet = new Set(removableIds.map(String))
+      allGraphNodes.value = allGraphNodes.value.filter((node) => !idSet.has(String(node.id)))
+      allGraphEdges.value = allGraphEdges.value.filter((edge) => (
+        !idSet.has(String(edge.source)) && !idSet.has(String(edge.target))
+      ))
+      selectedFreeNodeIds.value = []
+      focusedNodeId.value = null
+      applyVirtualizedGraph()
+      commitInteractionHistory(previousState)
+      void persistCanvasState({ layoutOnly: true })
+    }
+    return
+  }
   if (key === 'escape' || key === 'esc') {
     event.preventDefault()
     clearCanvasInteractionState()
@@ -5794,6 +5815,9 @@ function onNodeClick({ node, event }) {
   }
 
   if (node.type === 'homeCanvasNode') {
+    if (!event?.ctrlKey && !event?.metaKey && !event?.shiftKey) {
+      selectedFreeNodeIds.value = [String(node.id)]
+    }
     focusedNodeId.value = node.id
     scheduleVirtualization()
     return

@@ -339,7 +339,7 @@
     </main>
 
     <!-- 制作角色 编辑 -->
-    <el-dialog v-model="editDramaCharVisible" title="编辑制作角色" width="500px" @close="editDramaCharForm = null">
+    <el-dialog v-model="editDramaCharVisible" class="moli-dark-dialog" title="编辑制作角色" width="500px" @close="editDramaCharForm = null">
       <el-form v-if="editDramaCharForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -373,7 +373,7 @@
     </el-dialog>
 
     <!-- 制作场景 编辑 -->
-    <el-dialog v-model="editDramaSceneVisible" title="编辑制作场景" width="500px" @close="editDramaSceneForm = null">
+    <el-dialog v-model="editDramaSceneVisible" class="moli-dark-dialog" title="编辑制作场景" width="500px" @close="editDramaSceneForm = null">
       <el-form v-if="editDramaSceneForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -400,7 +400,7 @@
     </el-dialog>
 
     <!-- 制作道具 编辑 -->
-    <el-dialog v-model="editDramaPropVisible" title="编辑制作道具" width="500px" @close="editDramaPropForm = null">
+    <el-dialog v-model="editDramaPropVisible" class="moli-dark-dialog" title="编辑制作道具" width="500px" @close="editDramaPropForm = null">
       <el-form v-if="editDramaPropForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -427,7 +427,7 @@
     </el-dialog>
 
     <!-- 编辑角色 -->
-    <el-dialog v-model="editCharVisible" title="编辑角色库" width="480px" @close="editCharForm = null">
+    <el-dialog v-model="editCharVisible" class="moli-dark-dialog" title="编辑角色库" width="480px" @close="editCharForm = null">
       <el-form v-if="editCharForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -454,7 +454,7 @@
     </el-dialog>
 
     <!-- 编辑场景 -->
-    <el-dialog v-model="editSceneVisible" title="编辑场景库" width="480px" @close="editSceneForm = null">
+    <el-dialog v-model="editSceneVisible" class="moli-dark-dialog" title="编辑场景库" width="480px" @close="editSceneForm = null">
       <el-form v-if="editSceneForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -482,7 +482,7 @@
     </el-dialog>
 
     <!-- 编辑道具 -->
-    <el-dialog v-model="editPropVisible" title="编辑道具库" width="480px" @close="editPropForm = null">
+    <el-dialog v-model="editPropVisible" class="moli-dark-dialog" title="编辑道具库" width="480px" @close="editPropForm = null">
       <el-form v-if="editPropForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -511,6 +511,7 @@
     <!-- 从素材库导入 -->
     <el-dialog
       v-model="importVisible"
+      class="moli-dark-dialog"
       :title="`从素材库导入${importType === 'char' ? '角色' : importType === 'scene' ? '场景' : '道具'}`"
       width="760px"
       destroy-on-close

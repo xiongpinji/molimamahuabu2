@@ -216,6 +216,7 @@
     <!-- 添加/编辑 -->
     <el-dialog
       v-model="dialogVisible"
+      class="moli-dark-dialog"
       :title="vendorLock.enabled ? '修改 API Key / 默认模型' : (editingId ? '编辑配置' : '添加配置')"
       width="520px"
       :close-on-click-modal="false"
@@ -362,7 +363,7 @@
         />
 
         <!-- 接口规范帮助 Dialog -->
-        <el-dialog v-model="showProtocolHelp" title="接口规范说明" width="700px" top="5vh">
+        <el-dialog v-model="showProtocolHelp" class="moli-dark-dialog" title="接口规范说明" width="700px" top="5vh">
           <div class="protocol-help">
             <div class="ph-section-title">🖼 图片 / 分镜图 协议</div>
             <el-collapse accordion>
@@ -897,6 +898,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置通义 -->
     <el-dialog
       v-model="oneKeyTongyiVisible"
+      class="moli-dark-dialog"
       title="一键配置通义千问 / 万象（不推荐）"
       width="520px"
       :close-on-click-modal="false"
@@ -946,6 +948,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置火山 -->
     <el-dialog
       v-model="oneKeyVolcVisible"
+      class="moli-dark-dialog"
       title="一键配置火山引擎（方舟）"
       width="520px"
       :close-on-click-modal="false"
@@ -995,6 +998,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置 Agnes -->
     <el-dialog
       v-model="oneKeyAgnesVisible"
+      class="moli-dark-dialog"
       title="一键配置 Agnes AI"
       width="520px"
       :close-on-click-modal="false"
@@ -1045,7 +1049,7 @@ input_reference = (图片文件，可选)</pre>
       v-model="jimeng2AssetsDialogVisible"
       title="素材库列表（GET /api/business/v1/assets）"
       width="720px"
-      class="jimeng2-assets-dialog"
+      class="jimeng2-assets-dialog moli-dark-dialog"
       destroy-on-close
       @closed="onJimeng2AssetsDialogClosed"
     >
@@ -1078,7 +1082,7 @@ input_reference = (图片文件，可选)</pre>
     </el-dialog>
 
     <!-- 测试连接 -->
-    <el-dialog v-model="testVisible" title="测试连接" width="420px">
+    <el-dialog v-model="testVisible" class="moli-dark-dialog" title="测试连接" width="420px">
       <p v-if="testResult === null">正在测试…</p>
       <template v-else-if="testResult">
         <el-alert
@@ -1105,7 +1109,7 @@ input_reference = (图片文件，可选)</pre>
     </el-dialog>
 
     <!-- 一键换Key（锁定模式） -->
-    <el-dialog v-model="bulkKeyVisible" title="一键换Key" width="440px" :close-on-click-modal="false">
+    <el-dialog v-model="bulkKeyVisible" class="moli-dark-dialog" title="一键换Key" width="440px" :close-on-click-modal="false">
       <el-alert
         type="warning"
         :closable="false"
