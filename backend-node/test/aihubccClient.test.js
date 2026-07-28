@@ -90,13 +90,13 @@ test('lingjing video body uses ratio and ordered reference_images', () => {
   assert.deepEqual(client.buildVideoBody({
     model: 'lingjing-video-v1',
     prompt: 'animate',
-    duration: 5,
+    duration: 15,
     aspect_ratio: '9:16',
     reference_urls: ['uploads/one.png', 'uploads/two.png'],
   }), {
     model: 'lingjing-video-v1',
     prompt: 'animate',
-    duration: 5,
+    duration: 15,
     ratio: '9:16',
     reference_images: ['uploads/one.png', 'uploads/two.png'],
   });
