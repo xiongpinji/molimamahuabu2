@@ -423,6 +423,16 @@ test('固定二进制和模型哈希通过后才公布 Real-ESRGAN 高清能力'
   assert.equal(res.payload.data.operations.upscale.engineVersion, '0.2.5.0');
   assert.equal(res.payload.data.operations.upscale.model, 'realesrgan-x4plus');
   assert.deepEqual(res.payload.data.operations.upscale.scales, [2, 3, 4]);
+  assert.equal(res.payload.data.operations.detail_enhance.available, true);
+  assert.equal(
+    res.payload.data.operations.detail_enhance.engine,
+    'realesrgan-ncnn-vulkan+sharp',
+  );
+  assert.deepEqual(
+    res.payload.data.operations.detail_enhance.presets,
+    ['natural', 'balanced', 'strong'],
+  );
+  assert.equal(res.payload.data.operations.detail_enhance.preservesDimensions, true);
 });
 
 test('Real-ESRGAN 审计清单不包含不可再分发的调试运行库', () => {
@@ -557,6 +567,117 @@ test('Real-ESRGAN 高清增强生成指定倍率派生素材并清洗失败错�
   ).get();
   assert.equal(failedTask.status, 'failed');
   assert.equal(failedTask.error, '高清增强处理失败');
+});
+
+test('细节纹理增强复用 Real-ESRGAN 并保持源图尺寸', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-detail-enhance-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('细节纹理增强测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 12,
+      height: 8,
+      channels: 3,
+      background: '#6b7280',
+    },
+  }).png().toFile(sourcePath);
+  const sourceBytes = fs.readFileSync(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      upscale: fakeUpscaleTool(storageRoot),
+    },
+    auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+  });
+  const successRes = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-detail-enhance',
+      operation: 'detail_enhance',
+      parameters: { preset: 'balanced' },
+    },
+  }, successRes);
+
+  assert.equal(successRes.statusCode, 201, JSON.stringify(successRes.payload));
+  const resultAsset = assetService.getById(db, successRes.payload.data.resultAssetId);
+  const resultMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(resultMetadata.width, 12);
+  assert.equal(resultMetadata.height, 8);
+  assert.equal(resultMetadata.format, 'png');
+  assert.equal(resultAsset.metadata.operation, 'detail_enhance');
+  assert.equal(resultAsset.metadata.engine, 'realesrgan-ncnn-vulkan+sharp');
+  assert.match(resultAsset.metadata.engineVersion, /^0\.2\.5\.0\+sharp-/);
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    preset: 'balanced',
+    scale: 2,
+    model: 'realesrgan-x4plus',
+    preserveDimensions: true,
+  });
+  assert.deepEqual(fs.readFileSync(sourcePath), sourceBytes);
+  assert.equal(
+    fs.readdirSync(path.dirname(resultAsset.local_path))
+      .some((name) => name.includes('detail-enhance-upscale')),
+    false,
+  );
+
+  const invalidRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-detail-enhance-invalid',
+      operation: 'detail_enhance',
+      parameters: { preset: 'maximum' },
+    },
+  }, invalidRes);
+  assert.equal(invalidRes.statusCode, 400);
+
+  const failureHandlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      upscale: fakeUpscaleTool(storageRoot, ['--fail']),
+    },
+    auditedUpscaleFiles: TEST_AUDITED_UPSCALE_FILES,
+  });
+  const failureRes = responseRecorder();
+  await failureHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-detail-enhance-failure',
+      operation: 'detail_enhance',
+      parameters: { preset: 'natural' },
+    },
+  }, failureRes);
+  assert.equal(failureRes.statusCode, 503);
+  assert.equal(failureRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.equal(failureRes.payload.error.message, '细节纹理增强处理失败');
+  assert.doesNotMatch(
+    failureRes.payload.error.message,
+    /fake Real-ESRGAN|molimama-detail-enhance/i,
+  );
+  const failedTask = db.prepare(
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_detail_enhance' ORDER BY created_at DESC LIMIT 1",
+  ).get();
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.error, '细节纹理增强处理失败');
 });
 
 test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', async (t) => {

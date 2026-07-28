@@ -80,6 +80,12 @@ const LUT_PRESETS = Object.freeze({
   ],
 });
 
+const DETAIL_ENHANCE_PRESETS = Object.freeze({
+  natural: 0.8,
+  balanced: 1.2,
+  strong: 1.8,
+});
+
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
 }
@@ -468,10 +474,26 @@ function modelCapabilities(modelTools) {
       available: false,
       reason: '未配置已通过许可证审计的 Real-ESRGAN 本地引擎与模型',
     };
+  const detailEnhance = modelTools?.upscale
+    ? {
+      available: true,
+      engine: `${modelTools.upscale.engine}+sharp`,
+      engineVersion: modelTools.upscale.engineVersion,
+      executableSha256: modelTools.upscale.executableSha256,
+      model: modelTools.upscale.model,
+      modelSha256: modelTools.upscale.modelSha256,
+      presets: Object.keys(DETAIL_ENHANCE_PRESETS),
+      preservesDimensions: true,
+    }
+    : {
+      ...upscale,
+      reason: '未配置已通过许可证审计的 Real-ESRGAN 细节增强引擎与模型',
+    };
   return {
     smart_cutout: { ...available },
     selection_cutout: { ...available },
     upscale,
+    detail_enhance: detailEnhance,
   };
 }
 
@@ -998,7 +1020,14 @@ async function prepareUpscaleSource(sourcePath, parameters) {
   };
 }
 
-async function runUpscaleUnlocked(sourcePath, outputPath, prepared, tool, log) {
+async function runUpscaleUnlocked(
+  sourcePath,
+  outputPath,
+  prepared,
+  tool,
+  log,
+  operationLabel = '高清增强',
+) {
   try {
     await execFileAsync(
       tool.command,
@@ -1019,23 +1048,25 @@ async function runUpscaleUnlocked(sourcePath, outputPath, prepared, tool, log) {
       },
     );
   } catch (error) {
-    log?.error?.('upscale processing failed', {
+    log?.error?.('Real-ESRGAN processing failed', {
       error: String(error.stderr || error.message || '').trim().slice(-400),
       exitCode: error.code,
       signal: error.signal,
     });
     fail(
       'IMAGE_TOOL_PROCESSING_FAILED',
-      error.killed || error.signal === 'SIGTERM' ? '高清增强处理超时' : '高清增强处理失败',
+      error.killed || error.signal === 'SIGTERM'
+        ? `${operationLabel}处理超时`
+        : `${operationLabel}处理失败`,
     );
   }
   if (!fs.existsSync(outputPath)) {
-    fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强处理失败');
+    fail('IMAGE_TOOL_PROCESSING_FAILED', `${operationLabel}处理失败`);
   }
   try {
     const outputSize = fs.statSync(outputPath).size;
     if (outputSize <= 0 || outputSize > SMART_CUTOUT_MAX_OUTPUT_BYTES) {
-      fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+      fail('IMAGE_TOOL_PROCESSING_FAILED', `${operationLabel}产物校验失败`);
     }
     const output = sharp(outputPath, {
       failOn: 'warning',
@@ -1048,7 +1079,7 @@ async function runUpscaleUnlocked(sourcePath, outputPath, prepared, tool, log) {
       || metadata.height !== prepared.expectedHeight
       || metadata.width * metadata.height > SMART_CUTOUT_MAX_PIXELS
     ) {
-      fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+      fail('IMAGE_TOOL_PROCESSING_FAILED', `${operationLabel}产物校验失败`);
     }
     await output.stats();
     return {
@@ -1066,10 +1097,113 @@ async function runUpscaleUnlocked(sourcePath, outputPath, prepared, tool, log) {
       engineVersion: tool.engineVersion,
     };
   } catch (error) {
-    log?.error?.('upscale output validation failed', {
+    log?.error?.('Real-ESRGAN output validation failed', {
       error: String(error.message || '').trim().slice(-400),
     });
-    fail('IMAGE_TOOL_PROCESSING_FAILED', '高清增强产物校验失败');
+    fail('IMAGE_TOOL_PROCESSING_FAILED', `${operationLabel}产物校验失败`);
+  }
+}
+
+async function prepareDetailEnhanceSource(sourcePath, parameters) {
+  const preset = String(parameters.preset || 'balanced').trim().toLowerCase();
+  if (!DETAIL_ENHANCE_PRESETS[preset]) {
+    fail(
+      'IMAGE_TOOL_INVALID_INPUT',
+      'preset 参数仅支持 natural、balanced 或 strong',
+    );
+  }
+  const metadata = await sharp(sourcePath, {
+    failOn: 'warning',
+    limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+  }).metadata();
+  if (!FORMAT_INFO[metadata.format] || !metadata.width || !metadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const expectedWidth = metadata.width * 2;
+  const expectedHeight = metadata.height * 2;
+  if (expectedWidth * expectedHeight > SMART_CUTOUT_MAX_PIXELS) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '细节纹理增强临时产物超过像素限制');
+  }
+  return {
+    preset,
+    width: metadata.width,
+    height: metadata.height,
+    upscale: {
+      normalized: { scale: 2 },
+      expectedWidth,
+      expectedHeight,
+    },
+  };
+}
+
+async function runDetailEnhanceUnlocked({
+  sourcePath,
+  intermediatePath,
+  outputPath,
+  prepared,
+  tool,
+  log,
+}) {
+  try {
+    await runUpscaleUnlocked(
+      sourcePath,
+      intermediatePath,
+      prepared.upscale,
+      tool,
+      log,
+      '细节纹理增强',
+    );
+    const outputInfo = await sharp(intermediatePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(prepared.width, prepared.height, { kernel: 'lanczos3' })
+      .sharpen(DETAIL_ENHANCE_PRESETS[prepared.preset])
+      .png()
+      .toFile(outputPath);
+    const metadata = await sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      metadata.format !== 'png'
+      || metadata.width !== prepared.width
+      || metadata.height !== prepared.height
+      || outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '细节纹理增强处理失败');
+    }
+    await sharp(outputPath).stats();
+    return {
+      format: FORMAT_INFO.png,
+      normalized: {
+        preset: prepared.preset,
+        scale: 2,
+        model: tool.model,
+        preserveDimensions: true,
+      },
+      outputInfo: {
+        size: outputInfo.size,
+        width: metadata.width,
+        height: metadata.height,
+      },
+      engine: `${tool.engine}+sharp`,
+      engineVersion: `${tool.engineVersion}+sharp-${sharp.versions.sharp}`,
+    };
+  } catch (error) {
+    if (
+      error?.code === 'IMAGE_TOOL_PROCESSING_FAILED'
+      && /^细节纹理增强处理/.test(error.message)
+    ) {
+      throw error;
+    }
+    log?.error?.('detail enhance processing failed', {
+      error: String(error?.message || error).trim().slice(-400),
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '细节纹理增强处理失败');
+  } finally {
+    if (fs.existsSync(intermediatePath)) fs.rmSync(intermediatePath, { force: true });
   }
 }
 
@@ -1080,6 +1214,17 @@ function sanitizeUpscaleError(error, log) {
   });
   return Object.assign(
     new Error('高清增强处理失败'),
+    { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+  );
+}
+
+function sanitizeDetailEnhanceError(error, log) {
+  if (String(error?.code || '').startsWith('IMAGE_TOOL_')) return error;
+  log.error('image tool detail enhance processing', {
+    error: String(error?.message || error),
+  });
+  return Object.assign(
+    new Error('细节纹理增强处理失败'),
     { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
   );
 }
@@ -1297,6 +1442,7 @@ async function createOperation(db, log, request, context = {}) {
   if (!deterministicOperations.includes(operation)
     && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)
     && !(operation === 'upscale' && modelTools.upscale)
+    && !(operation === 'detail_enhance' && modelTools.upscale)
     && !(operation === 'outpaint' && referenceImageTool)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
@@ -1497,6 +1643,69 @@ async function createOperation(db, log, request, context = {}) {
         throw sanitizeUpscaleError(error, log);
       } finally {
         release();
+      }
+    }
+
+    if (operation === 'detail_enhance') {
+      let release;
+      try {
+        try {
+          release = modelTools.upscale.limiter.acquire(context.tenantId);
+        } catch (error) {
+          if (error?.code === 'IMAGE_TOOL_BUSY') {
+            fail('IMAGE_TOOL_BUSY', '细节纹理增强任务繁忙，请稍后重试');
+          }
+          throw error;
+        }
+        const preparedSource = await prepareDetailEnhanceSource(
+          sourcePath,
+          request.parameters || {},
+        );
+        const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+        const intermediatePath = path.join(
+          outputDir,
+          `${Date.now()}-${randomUUID()}-detail-enhance-upscale.png`,
+        );
+        const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+        outputPaths.push(intermediatePath, outputPath);
+        const prepared = await runDetailEnhanceUnlocked({
+          sourcePath,
+          intermediatePath,
+          outputPath,
+          prepared: preparedSource,
+          tool: modelTools.upscale,
+          log,
+        });
+        let result;
+        db.transaction(() => {
+          const resultAsset = createDerivedAsset(db, log, {
+            asset,
+            request,
+            operation,
+            task,
+            format: prepared.format,
+            outputPath,
+            outputInfo: prepared.outputInfo,
+            parameters: prepared.normalized,
+            storageRoot,
+            engine: prepared.engine,
+            engineVersion: prepared.engineVersion,
+          });
+          result = {
+            taskId: task.id,
+            status: 'success',
+            sourceAssetId: asset.id,
+            resultAssetId: resultAsset.id,
+            resultUrl: resultAsset.url,
+            operation,
+          };
+          taskService.updateTaskResult(db, task.id, result);
+        })();
+        return result;
+      } catch (error) {
+        throw sanitizeDetailEnhanceError(error, log);
+      } finally {
+        release?.();
       }
     }
 

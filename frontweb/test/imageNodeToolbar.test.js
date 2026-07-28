@@ -70,6 +70,20 @@ test('高清入口只提交 Real-ESRGAN 支持的 2x、3x、4x 倍率', () => {
   assert.match(toolbarSource, /本地 Real-ESRGAN/)
 })
 
+test('细节纹理增强只提交三档预设并声明保持原尺寸', () => {
+  assert.match(toolbarSource, /detailEnhancePreset = ref\('balanced'\)/)
+  assert.match(toolbarSource, /editorOperation === 'detail_enhance'/)
+  assert.match(toolbarSource, /<el-option label="自然" value="natural" \/>/)
+  assert.match(toolbarSource, /<el-option label="标准" value="balanced" \/>/)
+  assert.match(toolbarSource, /<el-option label="强烈" value="strong" \/>/)
+  assert.match(
+    toolbarSource,
+    /editorOperation\.value === 'detail_enhance'\) return \{ preset: detailEnhancePreset\.value \}/,
+  )
+  assert.match(toolbarSource, /2x 超分取样后回落到原尺寸/)
+  assert.match(toolbarSource, /detail_enhance: '细节纹理增强'/)
+})
+
 test('扩图入口提交目标画幅、扩展方向和用户补充描述', () => {
   assert.match(toolbarSource, /editorOperation === 'outpaint'/)
   assert.match(toolbarSource, /outpaintForm = ref\(\{[\s\S]*aspectRatio: '16:9'/)

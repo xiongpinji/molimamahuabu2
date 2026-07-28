@@ -157,6 +157,19 @@
           </p>
         </template>
 
+        <template v-else-if="editorOperation === 'detail_enhance'">
+          <el-form-item label="增强强度">
+            <el-select v-model="detailEnhancePreset">
+              <el-option label="自然" value="natural" />
+              <el-option label="标准" value="balanced" />
+              <el-option label="强烈" value="strong" />
+            </el-select>
+          </el-form-item>
+          <p class="crop-hint">
+            使用已审计的本地 Real-ESRGAN 做 2x 超分取样后回落到原尺寸；原图保持不变。
+          </p>
+        </template>
+
         <template v-else-if="editorOperation === 'outpaint'">
           <el-form-item label="目标画幅">
             <el-select v-model="outpaintForm.aspectRatio">
@@ -294,6 +307,7 @@ const gridForm = ref({ rows: 3, columns: 3 })
 const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1, temperature: 0 })
 const lutPreset = ref('cinematic')
 const upscaleScale = ref(2)
+const detailEnhancePreset = ref('balanced')
 const outpaintForm = ref({
   aspectRatio: '16:9',
   direction: 'auto',
@@ -478,6 +492,7 @@ function operationParameters() {
   if (editorOperation.value === 'adjust') return { ...adjustForm.value }
   if (editorOperation.value === 'lut') return { preset: lutPreset.value }
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
+  if (editorOperation.value === 'detail_enhance') return { preset: detailEnhancePreset.value }
   if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
   return {}
 }
@@ -525,6 +540,7 @@ function operationLabel(operation) {
     smart_cutout: '智能抠图',
     selection_cutout: '框选抠图',
     upscale: '高清增强',
+    detail_enhance: '细节纹理增强',
     outpaint: '扩图',
     adjust: '图片调整',
     lut: 'LUT 调色',
