@@ -84,6 +84,31 @@
             <strong>参考图 · 连线自动采用</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
+          <div class="reference-actions">
+            <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
+            <select
+              v-if="data.kind === 'video'"
+              aria-label="@选择参考图"
+              @change="attachReference"
+            >
+              <option value="">@ 选择画布图片</option>
+              <option
+                v-for="candidate in referenceCandidates"
+                :key="candidate.nodeId"
+                :value="candidate.nodeId"
+              >
+                {{ candidate.title }}
+              </option>
+            </select>
+            <input
+              v-if="canUpload"
+              ref="referenceFileInput"
+              class="file-input"
+              type="file"
+              accept="image/*"
+              @change="uploadReferenceFile"
+            />
+          </div>
           <div v-if="inputReferences.length" class="reference-list">
             <figure
               v-for="(reference, index) in inputReferences"
@@ -280,6 +305,7 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const contentInput = ref(null)
 const fileInput = ref(null)
+const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
 const draft = reactive({
@@ -299,7 +325,12 @@ const draft = reactive({
   includeAudio: false,
 })
 const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio: '♫' }[props.data.kind] || '◈'))
-const mediaEmptyLabel = computed(() => ({ image: '添加图片', video: '添加视频或参考帧', audio: '添加音频' }[props.data.kind] || '添加素材'))
+const mediaEmptyLabel = computed(() => {
+  if (props.data.status === 'running') {
+    return props.data.kind === 'video' ? '视频生成中…' : '图片生成中…'
+  }
+  return ({ image: '添加图片', video: '添加视频或参考帧', audio: '添加音频' }[props.data.kind] || '添加素材')
+})
 const accept = computed(() => ({ image: 'image/*', video: 'video/*,image/*', audio: 'audio/*' }[props.data.kind] || '*/*'))
 const defaultModelLabel = computed(() => ({
   text: '默认文本模型',
@@ -321,6 +352,11 @@ const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
+    : []
+))
+const referenceCandidates = computed(() => (
+  props.data.kind === 'video'
+    ? (ctx?.getFreeNodeReferenceCandidates?.(props.id) || [])
     : []
 ))
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
@@ -411,6 +447,10 @@ function chooseFile() {
   fileInput.value?.click()
 }
 
+function chooseReferenceFile() {
+  referenceFileInput.value?.click()
+}
+
 function openConfig() {
   ctx?.openFreeNodeConfig?.(props.id)
 }
@@ -428,6 +468,18 @@ async function uploadFile(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
   if (file) await ctx?.uploadFreeCanvasNodeFile?.(props.id, file)
+}
+
+async function uploadReferenceFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (file) await ctx?.uploadFreeCanvasReferenceImage?.(props.id, file)
+}
+
+function attachReference(event) {
+  const sourceNodeId = String(event.target.value || '')
+  event.target.value = ''
+  if (sourceNodeId) ctx?.attachFreeCanvasReference?.(props.id, sourceNodeId)
 }
 
 async function deleteNode() {
@@ -515,6 +567,10 @@ watch(isSelected, (selected) => {
   padding: 0;
   color: #e4e4e7;
   cursor: default;
+}
+.home-canvas-node.kind-image,
+.home-canvas-node.kind-video {
+  width: 640px;
 }
 .home-canvas-node::before {
   content: '';
@@ -652,6 +708,17 @@ watch(isSelected, (selected) => {
   background: #161618;
 }
 .reference-heading strong { color: #d4d4d8; font-size: 12px; }
+.reference-actions { display: flex; gap: 10px; margin-top: 12px; }
+.reference-actions button,
+.reference-actions select {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #3f3f46;
+  border-radius: 10px;
+  background: #202024;
+  color: #d4d4d8;
+}
+.reference-actions select { min-width: 190px; }
 .reference-list { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; }
 .reference-card {
   position: relative;
@@ -728,6 +795,12 @@ watch(isSelected, (selected) => {
 .node-textarea { min-height: 160px; padding: 16px; font-size: 14px; line-height: 1.7; }
 .media-stage { position: relative; min-height: 230px; overflow: hidden; }
 .node-media { display: block; width: 100%; height: 230px; background: #09090b; object-fit: contain; }
+.kind-image .media-stage,
+.kind-video .media-stage,
+.kind-image .media-empty,
+.kind-video .media-empty { min-height: 360px; }
+.kind-image .node-media,
+.kind-video .node-media { height: 360px; }
 .node-audio { width: calc(100% - 32px); margin: 96px 16px; }
 .media-empty { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #71717a; }
 .media-empty-icon { color: #d4d4d8; font-size: 42px; }
