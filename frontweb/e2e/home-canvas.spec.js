@@ -126,6 +126,35 @@ test('视频提示词输入 @ 可选择图片节点并生成真实参考连线',
   })
 })
 
+test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
+  const connectedState = {
+    ...mentionHomeCanvasState,
+    edges: [{
+      id: 'e2e:image-reference-to-video',
+      source: 'e2e:image-reference',
+      target: 'e2e:video-target',
+      type: 'smoothstep',
+    }],
+  }
+  await page.addInitScript(({ storageKey, state }) => {
+    window.localStorage.setItem(storageKey, JSON.stringify(state))
+  }, { storageKey: homeCanvasStorageKey, state: connectedState })
+  await page.reload()
+
+  const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
+  await videoNode.click()
+  const promptInput = page.getByRole('textbox', { name: '生成提示词' })
+  await promptInput.fill('沿用参考角色 @')
+
+  const mentionMenu = page.getByLabel('@选择参考图')
+  await expect(mentionMenu).toBeVisible()
+  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toBeVisible()
+  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
+
+  await expect(promptInput).toHaveValue('沿用参考角色 @女主角定妆照 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+})
+
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
   await seedNode.locator('.node-icon').click()
