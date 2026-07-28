@@ -4808,6 +4808,20 @@ function applySelectedStoryboardIds(ids = []) {
   }
 }
 
+function applySelectedFreeNodeIds(ids = []) {
+  const normalizedIds = [...new Set(ids.map(String))]
+  const selectedIds = new Set(normalizedIds)
+  selectedFreeNodeIds.value = normalizedIds
+  allGraphNodes.value = allGraphNodes.value.map((node) => ({
+    ...node,
+    selected: node.type === 'homeCanvasNode' && selectedIds.has(String(node.id)),
+  }))
+  nodes.value = nodes.value.map((node) => ({
+    ...node,
+    selected: node.type === 'homeCanvasNode' && selectedIds.has(String(node.id)),
+  }))
+}
+
 function onNodesChange(changes = []) {
   const removedFreeNodeIds = new Set(
     changes
@@ -5815,8 +5829,8 @@ function onNodeClick({ node, event }) {
   }
 
   if (node.type === 'homeCanvasNode') {
-    if (!event?.ctrlKey && !event?.metaKey && !event?.shiftKey) {
-      selectedFreeNodeIds.value = [String(node.id)]
+    if (!event?.ctrlKey && !event?.metaKey) {
+      applySelectedFreeNodeIds([node.id])
     }
     focusedNodeId.value = node.id
     scheduleVirtualization()

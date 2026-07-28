@@ -43,6 +43,14 @@ test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', ()
   assert.match(canvasSource, /function onPaneClick\(event\) \{\s*\n\s*if \(paneClickSuppressed\.value\) return/)
 })
 
+test('自由画布普通点击仅保留当前节点，Ctrl 或 Cmd 才允许多选', () => {
+  assert.match(canvasSource, /function applySelectedFreeNodeIds\(ids = \[\]\)/)
+  assert.match(canvasSource, /selectedFreeNodeIds\.value = normalizedIds/)
+  assert.match(canvasSource, /selected: node\.type === 'homeCanvasNode' && selectedIds\.has\(String\(node\.id\)\)/)
+  assert.match(canvasSource, /if \(!event\?\.ctrlKey && !event\?\.metaKey\) \{\s*\n\s*applySelectedFreeNodeIds\(\[node\.id\]\)/)
+  assert.doesNotMatch(canvasSource, /!event\?\.shiftKey/)
+})
+
 test('节点拖拽停止后立即刷新布局缓存并同步视口', () => {
   assert.match(canvasSource, /function refreshLayoutCacheFromGraph\(\) \{[\s\S]*layoutCache\.value = buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value,[\s\S]*allGraphEdges\.value,/)
   assert.match(canvasSource, /function onNodeDragStop\(\) \{\s*\n\s*syncRenderedNodesToGraph\(\)\s*\n\s*syncCanvasViewportFromFlow\(\)\s*\n\s*refreshLayoutCacheFromGraph\(\)/)
