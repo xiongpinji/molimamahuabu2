@@ -338,6 +338,27 @@ test('G005 程序化角色类型和素体种类随场景对象保存', () => {
   assert.equal(normalizeDirectorTimeline(state).objects[0].assetRef.kind, 'female')
 })
 
+test('独立画布程序化角色可建立动作轨道并在项目角色并存时恢复', () => {
+  let state = appendDirectorObject(createDirectorTimeline(), 'humanoid', {
+    id: 'role-standalone', name: '男性素体 1', assetRef: { kind: 'male' },
+  })
+  state = appendActionClip(state, 'role-standalone', 'Run', { start: 1, duration: 2 })
+
+  const restored = normalizeDirectorTimeline(JSON.parse(JSON.stringify(state)), characters)
+  const track = restored.tracks.find((entry) => entry.characterId === 'role-standalone')
+  assert.ok(track)
+  assert.equal(track.clips.at(-1).action, 'Run')
+})
+
+test('删除独立画布程序化角色会同步清理动作轨道', () => {
+  let state = appendDirectorObject(createDirectorTimeline(), 'humanoid', {
+    id: 'role-to-remove', name: '女性素体 1', assetRef: { kind: 'female' },
+  })
+  state = appendActionClip(state, 'role-to-remove', 'Walk', { start: 0, duration: 1 })
+  state = removeDirectorObject(state, 'role-to-remove')
+  assert.equal(state.tracks.some((entry) => entry.characterId === 'role-to-remove'), false)
+})
+
 test('DR-007 程序化角色姿势旋转随场景对象持久化', () => {
   let state = appendDirectorObject(createDirectorTimeline(), 'humanoid', { id: 'role-pose', assetRef: { kind: 'female' } })
   state = updateDirectorObject(state, 'role-pose', {
