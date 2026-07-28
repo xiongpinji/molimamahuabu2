@@ -40,6 +40,10 @@ test('工具栏按后端能力启用并保留不可用原因', () => {
   assert.match(toolbarSource, /imageToolsAPI\.getCapabilities\(\)/)
   assert.match(toolbarSource, /operationCapability\(item\.operation\)/)
   assert.match(toolbarSource, /capability\.reason/)
+  assert.match(toolbarSource, /:disabled="nodeBusy \|\| !itemAvailable\(item\)"/)
+  assert.match(toolbarSource, /:disabled="nodeBusy \|\| !operationCapability\(item\.operation\)\.available"/)
+  assert.match(toolbarSource, /props\.data\.status === 'running'/)
+  assert.match(toolbarSource, /图片节点正在生成或处理，请稍后/)
   assert.match(toolbarSource, /裁剪\/压缩\/镜像/)
   assert.match(toolbarSource, /宫格裁剪/)
   assert.match(toolbarSource, /图片调整/)
@@ -71,7 +75,19 @@ test('执行图片工具成功才替换节点结果，失败保留旧图并写�
   assert.match(canvasSource, /savedAssetId: String\(result\.resultAssetId/)
   assert.match(canvasSource, /imageToolHistory:/)
   assert.match(canvasSource, /url: previousUrl,[\s\S]*imageToolStatus: 'failed'/)
+  assert.match(canvasSource, /imageToolRetryOperation: operation/)
+  assert.match(canvasSource, /imageToolRetryParameters: parameters/)
+  assert.match(toolbarSource, /data\.imageToolError/)
+  assert.match(toolbarSource, /retryLastOperation/)
   assert.match(canvasSource, /runImageNodeTool,\s*\n/)
+})
+
+test('P1 图片调整包含色温，旋转走 Sharp 派生链，导演台未桥接当前图片时保持禁用', () => {
+  assert.match(toolbarSource, /adjustForm = ref\(\{[^}]*temperature: 0/)
+  assert.match(toolbarSource, /色温/)
+  assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
+  assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage' \}/)
+  assert.doesNotMatch(toolbarSource, /customAction: 'director'/)
 })
 
 test('工具栏提供替换、下载、全屏、历史与标记色入口', () => {

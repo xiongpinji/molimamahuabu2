@@ -167,6 +167,20 @@ async function runMirror(sourcePath, parameters) {
   return { source, metadata, format, normalized: { direction } };
 }
 
+async function runRotate(sourcePath, parameters) {
+  const source = sharp(sourcePath);
+  const metadata = await source.metadata();
+  const format = FORMAT_INFO[metadata.format];
+  if (!format || !metadata.width || !metadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const angle = Number(parameters.angle);
+  if (![90, 180, 270].includes(angle)) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'angle 参数仅支持 90、180 或 270');
+  }
+  return { source, metadata, format, normalized: { angle } };
+}
+
 async function runGridCrop(sourcePath, parameters) {
   const metadata = await sharp(sourcePath).metadata();
   const format = FORMAT_INFO[metadata.format];
@@ -214,6 +228,7 @@ async function runAdjust(sourcePath, parameters) {
       brightness: requireNumber(parameters.brightness ?? 1, 'brightness', 0.1, 3),
       saturation: requireNumber(parameters.saturation ?? 1, 'saturation', 0, 3),
       contrast: requireNumber(parameters.contrast ?? 1, 'contrast', 0.1, 3),
+      temperature: requireNumber(parameters.temperature ?? 0, 'temperature', -1, 1),
     },
   };
 }
@@ -278,7 +293,7 @@ function createDerivedAsset(db, log, {
 
 async function createOperation(db, log, request, context = {}) {
   const operation = String(request.operation || '').trim();
-  if (!['crop', 'compress', 'mirror', 'grid_crop', 'adjust', 'lut'].includes(operation)) {
+  if (!['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'].includes(operation)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
@@ -365,6 +380,7 @@ async function createOperation(db, log, request, context = {}) {
     if (operation === 'crop') prepared = await runCrop(sourcePath, request.parameters || {});
     else if (operation === 'compress') prepared = await runCompress(sourcePath, request.parameters || {});
     else if (operation === 'mirror') prepared = await runMirror(sourcePath, request.parameters || {});
+    else if (operation === 'rotate') prepared = await runRotate(sourcePath, request.parameters || {});
     else if (operation === 'adjust') prepared = await runAdjust(sourcePath, request.parameters || {});
     else prepared = await runLut(sourcePath, request.parameters || {});
     const outputDir = resolveDerivedDir(sourcePath);
@@ -384,7 +400,13 @@ async function createOperation(db, log, request, context = {}) {
         ? prepared.source.flop()
         : prepared.source.flip();
       pipeline = pipeline.toFormat(prepared.metadata.format);
+    } else if (operation === 'rotate') {
+      pipeline = prepared.source
+        .rotate(prepared.normalized.angle)
+        .toFormat(prepared.metadata.format);
     } else if (operation === 'adjust') {
+      const redGain = 1 + (prepared.normalized.temperature * 0.15);
+      const blueGain = 1 - (prepared.normalized.temperature * 0.15);
       pipeline = prepared.source
         .modulate({
           brightness: prepared.normalized.brightness,
@@ -394,6 +416,11 @@ async function createOperation(db, log, request, context = {}) {
           prepared.normalized.contrast,
           128 * (1 - prepared.normalized.contrast),
         )
+        .recomb([
+          [redGain, 0, 0],
+          [0, 1, 0],
+          [0, 0, blueGain],
+        ])
         .toFormat(prepared.metadata.format);
     } else {
       pipeline = prepared.source

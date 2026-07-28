@@ -2062,6 +2062,8 @@ async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
   await patchFreeCanvasNodeData(node.id, {
     imageToolStatus: 'running',
     imageToolError: '',
+    imageToolRetryOperation: operation,
+    imageToolRetryParameters: parameters,
   })
   try {
     const result = await imageToolsAPI.createOperation({
@@ -2084,6 +2086,8 @@ async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
       imageToolTaskId: result.taskId,
       imageToolStatus: 'success',
       imageToolError: '',
+      imageToolRetryOperation: '',
+      imageToolRetryParameters: null,
       imageToolResultAssets: result.resultAssets || [],
       imageToolHistory: [historyItem, ...previousHistory].slice(0, 20),
       assetSaveStatus: 'success',
@@ -2095,6 +2099,8 @@ async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
       url: previousUrl,
       imageToolStatus: 'failed',
       imageToolError: error?.message || '图片处理失败',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: parameters,
     })
     throw error
   }
@@ -2118,6 +2124,8 @@ async function replaceFreeCanvasNodeImage(nodeOrId, file) {
     assetSaveError: '',
     imageToolStatus: '',
     imageToolError: '',
+    imageToolRetryOperation: '',
+    imageToolRetryParameters: null,
   })
   return asset
 }

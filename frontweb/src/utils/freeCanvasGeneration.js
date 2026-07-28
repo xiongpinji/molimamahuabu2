@@ -2,6 +2,15 @@ const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
+  crop: ['left', 'top', 'width', 'height'],
+  compress: ['format', 'quality'],
+  mirror: ['direction'],
+  rotate: ['angle'],
+  grid_crop: ['rows', 'columns'],
+  adjust: ['brightness', 'saturation', 'contrast', 'temperature'],
+  lut: ['preset'],
+})
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
@@ -76,6 +85,22 @@ function normalizeImageToolResultAssets(value) {
   }).filter(Boolean)
 }
 
+function normalizeImageToolRetryParameters(operation, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const keys = IMAGE_TOOL_RETRY_PARAMETERS[operation]
+  if (!keys) return undefined
+  const parameters = {}
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'string' && candidate.length <= 32) {
+      parameters[key] = candidate
+    }
+  }
+  return Object.keys(parameters).length ? parameters : undefined
+}
+
 export function normalizeFreeCanvasNodeData(data = {}) {
   const kind = cleanString(data.kind)
   if (!FREE_NODE_KINDS.has(kind)) return null
@@ -111,6 +136,15 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     if (IMAGE_TOOL_STATUSES.has(imageToolStatus)) normalized.imageToolStatus = imageToolStatus
     if (Object.hasOwn(data, 'imageToolError')) {
       normalized.imageToolError = cleanString(data.imageToolError)
+    }
+    const retryOperation = cleanString(data.imageToolRetryOperation)
+    const retryParameters = normalizeImageToolRetryParameters(
+      retryOperation,
+      data.imageToolRetryParameters,
+    )
+    if (retryParameters) {
+      normalized.imageToolRetryOperation = retryOperation
+      normalized.imageToolRetryParameters = retryParameters
     }
     if (Object.hasOwn(data, 'imageToolHistory')) {
       normalized.imageToolHistory = normalizeImageToolHistory(data.imageToolHistory)

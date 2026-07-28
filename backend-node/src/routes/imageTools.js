@@ -7,6 +7,7 @@ const OPERATIONS = Object.freeze({
   crop: { available: true, engine: 'sharp' },
   compress: { available: true, engine: 'sharp' },
   mirror: { available: true, engine: 'sharp' },
+  rotate: { available: true, engine: 'sharp' },
   grid_crop: { available: true, engine: 'sharp' },
   adjust: { available: true, engine: 'sharp' },
   lut: { available: true, engine: 'sharp', presets: ['cinematic', 'warm', 'cool', 'mono'] },
@@ -28,7 +29,7 @@ const OPERATIONS = Object.freeze({
   narrative_grid: unavailable('多机位九宫格模型能力尚未配置'),
   frame_forward: unavailable('画面后推模型能力尚未配置'),
   frame_backward: unavailable('画面前推模型能力尚未配置'),
-  director_stage: unavailable('导演台生成能力尚未配置'),
+  director_stage: unavailable('导演台尚未接通当前图片素材'),
   lip_sync: unavailable('对口型模型能力尚未配置'),
 });
 

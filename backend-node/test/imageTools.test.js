@@ -45,6 +45,8 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.equal(operations.compress.engine, 'sharp');
   assert.equal(operations.mirror.available, true);
   assert.equal(operations.mirror.engine, 'sharp');
+  assert.equal(operations.rotate.available, true);
+  assert.equal(operations.rotate.engine, 'sharp');
   assert.equal(operations.grid_crop.available, true);
   assert.equal(operations.grid_crop.engine, 'sharp');
   assert.equal(operations.adjust.available, true);
@@ -411,6 +413,22 @@ test('镜像操作按指定方向翻转像素且保留原图', async (t) => {
   assert.deepEqual(Array.from(data.subarray(4, 8)), [255, 0, 0, 255]);
   assert.deepEqual(resultAsset.metadata.parameters, { direction: 'horizontal' });
   assert.equal(fs.existsSync(sourcePath), true);
+
+  const rotateRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-rotate',
+      operation: 'rotate',
+      parameters: { angle: 90 },
+    },
+  }, rotateRes);
+  assert.equal(rotateRes.statusCode, 201, JSON.stringify(rotateRes.payload));
+  const rotatedAsset = assetService.getById(db, rotateRes.payload.data.resultAssetId);
+  const rotatedMetadata = await sharp(rotatedAsset.local_path).metadata();
+  assert.equal(rotatedMetadata.width, 1);
+  assert.equal(rotatedMetadata.height, 2);
+  assert.deepEqual(rotatedAsset.metadata.parameters, { angle: 90 });
 });
 
 test('宫格裁剪返回全部派生素材并保留首图兼容字段', async (t) => {
@@ -514,6 +532,7 @@ test('图片调整保存亮度饱和度对比度参数并生成新素材', async
         brightness: 1.2,
         saturation: 0.8,
         contrast: 1.1,
+        temperature: 0.4,
       },
     },
   }, res);
@@ -524,6 +543,7 @@ test('图片调整保存亮度饱和度对比度参数并生成新素材', async
     brightness: 1.2,
     saturation: 0.8,
     contrast: 1.1,
+    temperature: 0.4,
   });
   assert.notEqual(
     fs.readFileSync(resultAsset.local_path).toString('base64'),

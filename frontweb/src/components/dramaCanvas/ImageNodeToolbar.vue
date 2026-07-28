@@ -10,6 +10,7 @@
       :key="item.operation"
       type="button"
       :class="{ unavailable: !operationCapability(item.operation).available }"
+      :disabled="nodeBusy || !operationCapability(item.operation).available"
       :title="operationTitle(item)"
       @click="selectOperation(item)"
     >
@@ -17,13 +18,21 @@
     </button>
 
     <div class="toolbar-menu-wrap">
-      <button type="button" @click="toggleMenu('tools')">工具⌄</button>
+      <button
+        type="button"
+        :disabled="nodeBusy"
+        :title="busyTitle('工具')"
+        @click="toggleMenu('tools')"
+      >
+        工具⌄
+      </button>
       <div v-if="openMenu === 'tools'" class="toolbar-menu">
         <button
           v-for="item in toolActions"
           :key="item.label"
           type="button"
           :class="{ unavailable: !itemAvailable(item) }"
+          :disabled="nodeBusy || !itemAvailable(item)"
           :title="itemTitle(item)"
           @click="selectOperation(item)"
         >
@@ -34,13 +43,21 @@
     </div>
 
     <div class="toolbar-menu-wrap">
-      <button type="button" @click="toggleMenu('settings')">设定⌄</button>
+      <button
+        type="button"
+        :disabled="nodeBusy"
+        :title="busyTitle('设定')"
+        @click="toggleMenu('settings')"
+      >
+        设定⌄
+      </button>
       <div v-if="openMenu === 'settings'" class="toolbar-menu settings-menu">
         <button
           v-for="item in settingActions"
           :key="item.operation"
           type="button"
           :class="{ unavailable: !operationCapability(item.operation).available }"
+          :disabled="nodeBusy || !operationCapability(item.operation).available"
           :title="operationTitle(item)"
           @click="selectOperation(item)"
         >
@@ -51,11 +68,18 @@
     </div>
 
     <span class="toolbar-separator" />
-    <button type="button" title="标记色" @click="cycleMarkerColor">
+    <button type="button" :title="busyTitle('标记色')" :disabled="nodeBusy" @click="cycleMarkerColor">
       <span class="marker-dot" :style="{ background: data.imageMarkerColor || markerColors[0] }" />
     </button>
     <button type="button" title="处理历史" @click="toggleHistory">◷</button>
-    <button type="button" title="替换图片" @click="replaceInput?.click()">▧</button>
+    <button
+      type="button"
+      :title="busyTitle('替换图片')"
+      :disabled="nodeBusy"
+      @click="replaceInput?.click()"
+    >
+      ▧
+    </button>
     <button type="button" title="下载图片" @click="downloadImage">⇩</button>
     <button type="button" title="全屏预览" @click="requestFullscreen">⛶</button>
     <input
@@ -65,6 +89,21 @@
       accept=".png,.jpg,.jpeg,.webp"
       @change="replaceImage"
     />
+
+    <div
+      v-if="data.imageToolStatus === 'failed' && data.imageToolError"
+      class="toolbar-error"
+      role="alert"
+    >
+      <span>{{ data.imageToolError }}</span>
+      <button
+        type="button"
+        :disabled="nodeBusy || !data.imageToolRetryOperation"
+        @click="retryLastOperation"
+      >
+        重试
+      </button>
+    </div>
 
     <div v-if="historyVisible" class="toolbar-history">
       <strong>处理历史</strong>
@@ -84,12 +123,13 @@
       :close-on-click-modal="false"
       @closed="destroyCropper"
     >
-      <div v-if="['crop', 'compress', 'mirror'].includes(editorOperation)" class="operation-tabs">
+      <div v-if="['crop', 'compress', 'mirror', 'rotate'].includes(editorOperation)" class="operation-tabs">
         <button
           v-for="item in primaryEditorOperations"
           :key="item.operation"
           type="button"
           :class="{ active: editorOperation === item.operation }"
+          :disabled="nodeBusy"
           @click="switchEditorOperation(item.operation)"
         >
           {{ item.label }}
@@ -121,6 +161,14 @@
           </el-radio-group>
         </el-form-item>
 
+        <el-form-item v-else-if="editorOperation === 'rotate'" label="旋转角度">
+          <el-radio-group v-model="rotateAngle">
+            <el-radio-button :value="90">顺时针 90°</el-radio-button>
+            <el-radio-button :value="180">180°</el-radio-button>
+            <el-radio-button :value="270">逆时针 90°</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+
         <template v-else-if="editorOperation === 'grid_crop'">
           <el-form-item label="行数">
             <el-input-number v-model="gridForm.rows" :min="1" :max="5" />
@@ -140,6 +188,9 @@
           <el-form-item :label="`对比度 ${adjustForm.contrast.toFixed(1)}`">
             <el-slider v-model="adjustForm.contrast" :min="0.1" :max="3" :step="0.1" />
           </el-form-item>
+          <el-form-item :label="`色温 ${Math.round(adjustForm.temperature * 100)}`">
+            <el-slider v-model="adjustForm.temperature" :min="-1" :max="1" :step="0.1" />
+          </el-form-item>
         </template>
 
         <el-form-item v-else-if="editorOperation === 'lut'" label="内置调色预设">
@@ -154,7 +205,7 @@
 
       <template #footer>
         <el-button @click="editorVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitOperation">
+        <el-button type="primary" :loading="submitting" :disabled="nodeBusy" @click="submitOperation">
           {{ submitting ? '处理中…' : '应用并生成新素材' }}
         </el-button>
       </template>
@@ -187,8 +238,9 @@ const resolvedHistory = ref([])
 const markerColors = ['#a1a1aa', '#60a5fa', '#34d399', '#fbbf24', '#f87171']
 const compressForm = ref({ format: 'webp', quality: 80 })
 const mirrorDirection = ref('horizontal')
+const rotateAngle = ref(90)
 const gridForm = ref({ rows: 3, columns: 3 })
-const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1 })
+const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1, temperature: 0 })
 const lutPreset = ref('cinematic')
 let cropper = null
 let CropperClass = null
@@ -203,6 +255,7 @@ const primaryEditorOperations = [
   { label: '裁剪', operation: 'crop' },
   { label: '压缩', operation: 'compress' },
   { label: '镜像', operation: 'mirror' },
+  { label: '旋转', operation: 'rotate' },
 ]
 
 const toolActions = [
@@ -213,7 +266,7 @@ const toolActions = [
   { label: '框选抠图', operation: 'selection_cutout' },
   { label: '图片调整', operation: 'adjust' },
   { label: 'LUT 调色', operation: 'lut' },
-  { label: '生成导演台', customAction: 'director' },
+  { label: '生成导演台', operation: 'director_stage' },
   { label: '姿势', operation: 'pose' },
   { label: '角度', operation: 'angle' },
   { label: '扩图', operation: 'outpaint' },
@@ -235,6 +288,10 @@ const settingActions = [
 const history = computed(() => Array.isArray(props.data.imageToolHistory)
   ? props.data.imageToolHistory
   : [])
+const busyReason = '图片节点正在生成或处理，请稍后'
+const nodeBusy = computed(() => submitting.value
+  || props.data.status === 'running'
+  || props.data.imageToolStatus === 'running')
 
 onMounted(async () => {
   try {
@@ -255,30 +312,32 @@ function operationCapability(operation) {
 }
 
 function itemAvailable(item) {
-  return item.customAction === 'director' || operationCapability(item.operation).available
+  return operationCapability(item.operation).available
 }
 
 function operationTitle(item) {
+  if (nodeBusy.value) return `${item.label}：${busyReason}`
   const capability = operationCapability(item.operation)
   return capability.available ? item.label : `${item.label}：${capability.reason}`
 }
 
 function itemTitle(item) {
-  if (item.customAction === 'director') return item.label
   return operationTitle(item)
 }
 
+function busyTitle(label) {
+  return nodeBusy.value ? `${label}：${busyReason}` : label
+}
+
 function toggleMenu(menu) {
+  if (nodeBusy.value) return
   openMenu.value = openMenu.value === menu ? '' : menu
   historyVisible.value = false
 }
 
 function selectOperation(item) {
   openMenu.value = ''
-  if (item.customAction === 'director') {
-    ctx?.openDirectorStage?.()
-    return
-  }
+  if (nodeBusy.value) return
   const capability = operationCapability(item.operation)
   if (!capability.available) {
     ElMessage.warning(capability.reason || '该能力尚未接通')
@@ -289,6 +348,7 @@ function selectOperation(item) {
 }
 
 function switchEditorOperation(operation) {
+  if (nodeBusy.value) return
   const capability = operationCapability(operation)
   if (!capability.available) {
     ElMessage.warning(capability.reason || '该能力尚未接通')
@@ -336,6 +396,7 @@ function operationParameters() {
   }
   if (editorOperation.value === 'compress') return { ...compressForm.value }
   if (editorOperation.value === 'mirror') return { direction: mirrorDirection.value }
+  if (editorOperation.value === 'rotate') return { angle: rotateAngle.value }
   if (editorOperation.value === 'grid_crop') return { ...gridForm.value }
   if (editorOperation.value === 'adjust') return { ...adjustForm.value }
   if (editorOperation.value === 'lut') return { preset: lutPreset.value }
@@ -343,6 +404,7 @@ function operationParameters() {
 }
 
 async function submitOperation() {
+  if (nodeBusy.value) return
   submitting.value = true
   try {
     await ctx?.runImageNodeTool?.(
@@ -359,11 +421,27 @@ async function submitOperation() {
   }
 }
 
+async function retryLastOperation() {
+  const operation = String(props.data.imageToolRetryOperation || '').trim()
+  const parameters = props.data.imageToolRetryParameters
+  if (!operation || !parameters || nodeBusy.value) return
+  submitting.value = true
+  try {
+    await ctx?.runImageNodeTool?.(props.nodeId, operation, parameters)
+    ElMessage.success('图片处理重试成功，已生成新素材')
+  } catch (error) {
+    ElMessage.error(error?.message || '图片处理重试失败')
+  } finally {
+    submitting.value = false
+  }
+}
+
 function operationLabel(operation) {
   const labels = {
     crop: '裁剪',
     compress: '压缩',
     mirror: '镜像',
+    rotate: '旋转',
     grid_crop: '宫格裁剪',
     adjust: '图片调整',
     lut: 'LUT 调色',
@@ -474,6 +552,16 @@ function requestFullscreen() {
   color: #fff;
 }
 
+.image-node-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.image-node-toolbar button:disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+
 .image-node-toolbar button.unavailable {
   color: #71717a;
 }
@@ -531,6 +619,34 @@ function requestFullscreen() {
 
 .replace-input {
   display: none;
+}
+
+.toolbar-error {
+  position: absolute;
+  top: 44px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 360px;
+  padding: 9px 10px;
+  border: 1px solid #7f1d1d;
+  border-radius: 10px;
+  background: #2a1215;
+  color: #fecaca;
+  font-size: 12px;
+}
+
+.toolbar-error span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-error button {
+  flex: 0 0 auto;
+  border: 1px solid #b91c1c;
+  color: #fecaca;
 }
 
 .toolbar-history {

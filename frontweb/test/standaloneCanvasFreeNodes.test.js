@@ -65,6 +65,13 @@ test('图片工具状态、历史、标记色和多结果随自由节点持久�
       imageToolTaskId: 'task-1',
       imageToolStatus: 'success',
       imageToolError: '',
+      imageToolRetryOperation: 'adjust',
+      imageToolRetryParameters: {
+        brightness: 1.2,
+        saturation: 0.8,
+        contrast: 1.1,
+        temperature: 0.4,
+      },
       imageToolHistory: [{
         taskId: 'task-1',
         operation: 'grid_crop',
@@ -92,6 +99,8 @@ test('图片工具状态、历史、标记色和多结果随自由节点持久�
   assert.equal(restored.data.imageMarkerColor, '#34d399')
   assert.equal(restored.data.imageToolTaskId, 'task-1')
   assert.equal(restored.data.imageToolStatus, 'success')
+  assert.equal(restored.data.imageToolRetryOperation, 'adjust')
+  assert.deepEqual(restored.data.imageToolRetryParameters, node.data.imageToolRetryParameters)
   assert.deepEqual(restored.data.imageToolHistory, node.data.imageToolHistory)
   assert.deepEqual(restored.data.imageToolResultAssets, node.data.imageToolResultAssets)
 })
