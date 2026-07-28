@@ -4430,6 +4430,7 @@ function requestPublicImage(url, maxBytes) {
           if (!addresses.length || addresses.some((item) => isPrivateAddress(item.address))) {
             return callback(new Error('拒绝私网图片地址'));
           }
+          if (options?.all) return callback(null, addresses);
           const selected = addresses[0];
           callback(null, selected.address, selected.family);
         });

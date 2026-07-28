@@ -8,6 +8,8 @@ const {
   requestPublicImage,
 } = require('../src/services/videoClient');
 const dns = require('dns');
+const http = require('http');
+const { EventEmitter } = require('events');
 
 function jsonResponse(payload, status = 200) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(payload) };
@@ -96,6 +98,36 @@ test('lingjing reference downloader rejects local, mapped IPv6 and DNS rebinding
   try {
     await assert.rejects(() => requestPublicImage(new URL('http://public.example/ref.png'), 1024), /私网/);
   } finally {
+    dns.lookup = originalLookup;
+  }
+});
+
+test('lingjing reference downloader preserves the all-address DNS callback contract', async () => {
+  const originalGet = http.get;
+  const originalLookup = dns.lookup;
+  dns.lookup = (_hostname, options, callback) => {
+    assert.equal(options.all, true);
+    callback(null, [{ address: '203.0.113.10', family: 4 }]);
+  };
+  http.get = (_url, options) => {
+    const request = new EventEmitter();
+    request.destroy = (error) => request.emit('error', error);
+    process.nextTick(() => {
+      options.lookup('public.example', { all: true }, (error, addresses) => {
+        assert.ifError(error);
+        assert.deepEqual(addresses, [{ address: '203.0.113.10', family: 4 }]);
+        request.emit('error', new Error('test complete'));
+      });
+    });
+    return request;
+  };
+  try {
+    await assert.rejects(
+      () => requestPublicImage(new URL('http://public.example/ref.png'), 1024),
+      /test complete/
+    );
+  } finally {
+    http.get = originalGet;
     dns.lookup = originalLookup;
   }
 });
