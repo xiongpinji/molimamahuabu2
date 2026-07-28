@@ -1,4 +1,7 @@
 const fs = require('node:fs');
+const dns = require('node:dns').promises;
+const https = require('node:https');
+const net = require('node:net');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { execFile, spawnSync } = require('node:child_process');
@@ -8,11 +11,14 @@ const { promisify } = require('node:util');
 const sharp = require('sharp');
 
 const assetService = require('./assetService');
+const imageClient = require('./imageClient');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const execFileAsync = promisify(execFile);
 const SMART_CUTOUT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const SMART_CUTOUT_MAX_PIXELS = 40_000_000;
+const OUTPAINT_MAX_REDIRECTS = 3;
+const OUTPAINT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const REALESRGAN_ENGINE_VERSION = '0.2.5.0';
 const AUDITED_REMBG_MODEL_HASHES = Object.freeze({
   u2netp: '309C8469258DDA742793DCE0EBEA8E6DD393174F89934733ECC8B14C76F4DDD8',
@@ -33,6 +39,23 @@ const FORMAT_INFO = {
   png: { extension: '.png', mimeType: 'image/png' },
   webp: { extension: '.webp', mimeType: 'image/webp' },
 };
+
+const OUTPAINT_SIZES = Object.freeze({
+  '16:9': '1536x864',
+  '9:16': '864x1536',
+  '1:1': '1024x1024',
+  '4:3': '1280x960',
+  '3:4': '960x1280',
+});
+
+const OUTPAINT_DIRECTIONS = Object.freeze({
+  auto: '根据原图构图向最自然的边界扩展',
+  left: '仅向左延伸画布',
+  right: '仅向右延伸画布',
+  top: '仅向上延伸画布',
+  bottom: '仅向下延伸画布',
+  all: '向四周均匀延伸画布',
+});
 
 const LUT_PRESETS = Object.freeze({
   cinematic: [
@@ -452,6 +475,435 @@ function modelCapabilities(modelTools) {
   };
 }
 
+function normalizeReferenceImageTool(tool) {
+  if (!tool || typeof tool.generate !== 'function') return null;
+  const engine = String(tool.engine || 'provider-image-edit').trim();
+  const provider = String(tool.provider || '').trim();
+  const protocol = String(tool.protocol || provider).trim();
+  const model = String(tool.model || '').trim();
+  if (!engine || !provider || !protocol || !model) return null;
+  return {
+    engine,
+    provider,
+    protocol,
+    model,
+    generate: tool.generate,
+    limiter: createConcurrencyLimiter(
+      positiveLimit(tool.maxConcurrency, 1),
+      positiveLimit(tool.maxTenantConcurrency, 1),
+      '供应商图片编辑任务繁忙，请稍后重试',
+    ),
+  };
+}
+
+function resolveReferenceImageTool(db, log, explicitTool) {
+  if (explicitTool) return normalizeReferenceImageTool(explicitTool);
+  if (!db) return null;
+  const capability = imageClient.getReferenceImageCapability(db, 'storyboard_image');
+  if (!capability.available) return null;
+  return normalizeReferenceImageTool({
+    ...capability,
+    async generate(request) {
+      const referenceImage = path.relative(request.storageRoot, request.referenceImage);
+      if (
+        !referenceImage
+        || referenceImage.startsWith('..')
+        || path.isAbsolute(referenceImage)
+      ) {
+        fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '扩图参考图不在允许的素材目录中');
+      }
+      return imageClient.callImageApi(db, log, {
+        prompt: request.prompt,
+        model: capability.model,
+        preferred_provider: capability.provider,
+        size: OUTPAINT_SIZES[request.aspectRatio],
+        drama_id: request.dramaId,
+        image_gen_id: request.taskId,
+        imageServiceType: 'storyboard_image',
+        reference_image_urls: [referenceImage.replace(/\\/g, '/')],
+        storage_local_path: request.storageRoot,
+        system_prompt: 'Image 1: source image whose subject, identity, style, lighting, and existing composition must be preserved.',
+      });
+    },
+  });
+}
+
+function referenceImageCapabilities(referenceImageTool, unavailableReason) {
+  return {
+    outpaint: referenceImageTool
+      ? {
+        available: true,
+        engine: referenceImageTool.engine,
+        provider: referenceImageTool.provider,
+        protocol: referenceImageTool.protocol,
+        model: referenceImageTool.model,
+        aspectRatios: Object.keys(OUTPAINT_SIZES),
+        directions: Object.keys(OUTPAINT_DIRECTIONS),
+      }
+      : {
+        available: false,
+        reason: unavailableReason || '未配置已显式声明且通过审计的扩图模型',
+      },
+  };
+}
+
+function normalizeOutpaintParameters(parameters) {
+  const aspectRatio = String(parameters.aspectRatio || '').trim();
+  const direction = String(parameters.direction || '').trim();
+  const prompt = String(parameters.prompt || '').trim();
+  if (!OUTPAINT_SIZES[aspectRatio]) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'aspectRatio 参数无效');
+  }
+  if (!OUTPAINT_DIRECTIONS[direction]) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'direction 参数无效');
+  }
+  if (prompt.length > 500) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '扩图补充描述不能超过 500 字');
+  }
+  return { aspectRatio, direction, prompt };
+}
+
+function buildOutpaintPrompt(parameters) {
+  const extra = parameters.prompt
+    ? `补充要求：${parameters.prompt}。`
+    : '';
+  return [
+    `基于输入原图进行扩图，目标画幅为 ${parameters.aspectRatio}，${OUTPAINT_DIRECTIONS[parameters.direction]}。`,
+    '保留原图已有主体、人物身份、面部、服装、姿势、画风、光线、透视和原有画面内容，不要裁掉或重绘原图中心内容。',
+    '只在新增画布区域自然补全连续环境、纹理与光影，边缘衔接必须无缝，输出一张连续完整图片，不要拼图、边框、文字或水印。',
+    extra,
+  ].filter(Boolean).join('\n');
+}
+
+function isPrivateNetworkAddress(address) {
+  const normalized = String(address || '').toLowerCase().split('%')[0];
+  const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  const candidate = mappedIpv4 || normalized;
+  const family = net.isIP(candidate);
+  if (family === 4) {
+    const parts = candidate.split('.').map(Number);
+    const [first, second] = parts;
+    return first === 0
+      || first === 10
+      || first === 127
+      || first >= 224
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 192 && second === 0)
+      || (first === 198 && (second === 18 || second === 19))
+      || (first === 198 && second === 51)
+      || (first === 203 && second === 0);
+  }
+  if (family === 6) {
+    return normalized === '::'
+      || normalized === '::1'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || /^fe[89ab]/.test(normalized)
+      || normalized.startsWith('ff')
+      || normalized.startsWith('2001:db8:');
+  }
+  return true;
+}
+
+async function resolveOutpaintHttpsTarget(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (_) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果地址无效');
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || !parsed.hostname
+  ) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果地址无效');
+  }
+  let addresses;
+  try {
+    addresses = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+  } catch (_) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果地址不可访问');
+  }
+  if (
+    addresses.length === 0
+    || addresses.some((entry) => isPrivateNetworkAddress(entry.address))
+  ) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果地址不可访问');
+  }
+  return { parsed, ...addresses[0] };
+}
+
+async function streamOutpaintHttpsToFile(rawUrl, outputPath, maxBytes, redirectCount = 0) {
+  if (redirectCount > OUTPAINT_MAX_REDIRECTS) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果重定向次数过多');
+  }
+  const target = await resolveOutpaintHttpsTarget(rawUrl);
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      protocol: 'https:',
+      hostname: target.parsed.hostname,
+      port: target.parsed.port || 443,
+      path: `${target.parsed.pathname}${target.parsed.search}`,
+      method: 'GET',
+      headers: {
+        Accept: 'image/png,image/jpeg,image/webp',
+        'User-Agent': 'MoliMama-ImageTool/1.0',
+      },
+      timeout: OUTPAINT_DOWNLOAD_TIMEOUT_MS,
+      lookup: (_hostname, _options, callback) => {
+        callback(null, target.address, target.family);
+      },
+      ...(net.isIP(target.parsed.hostname)
+        ? {}
+        : { servername: target.parsed.hostname }),
+    }, (response) => {
+      const statusCode = Number(response.statusCode || 0);
+      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+        response.resume();
+        let nextUrl;
+        try {
+          nextUrl = new URL(response.headers.location, target.parsed).toString();
+        } catch (_) {
+          reject(Object.assign(
+            new Error('invalid redirect'),
+            { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+          ));
+          return;
+        }
+        streamOutpaintHttpsToFile(nextUrl, outputPath, maxBytes, redirectCount + 1)
+          .then(resolve, reject);
+        return;
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume();
+        reject(Object.assign(
+          new Error('unexpected download status'),
+          { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+        ));
+        return;
+      }
+      const contentLength = Number(response.headers['content-length'] || 0);
+      if (contentLength > maxBytes) {
+        response.resume();
+        reject(Object.assign(
+          new Error('download too large'),
+          { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+        ));
+        return;
+      }
+      const contentType = String(response.headers['content-type'] || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      if (
+        contentType
+        && !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream']
+          .includes(contentType)
+      ) {
+        response.resume();
+        reject(Object.assign(
+          new Error('unexpected content type'),
+          { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+        ));
+        return;
+      }
+      let size = 0;
+      const limiter = new Transform({
+        transform(chunk, _encoding, callback) {
+          size += chunk.length;
+          if (size > maxBytes) {
+            callback(Object.assign(
+              new Error('download too large'),
+              { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+            ));
+            return;
+          }
+          callback(null, chunk);
+        },
+      });
+      pipelineAsync(
+        response,
+        limiter,
+        fs.createWriteStream(outputPath, { flags: 'wx', mode: 0o600 }),
+      ).then(() => resolve(size), reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('download timeout')));
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}) {
+  const maxBytes = positiveLimit(options.maxBytes, SMART_CUTOUT_MAX_OUTPUT_BYTES);
+  let realAllowedRoot;
+  let realOutputDir;
+  try {
+    realAllowedRoot = fs.realpathSync.native(allowedRoot);
+    realOutputDir = fs.realpathSync.native(outputDir);
+  } catch (_) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果目录不可用');
+  }
+  if (
+    !samePath(realAllowedRoot, allowedRoot)
+    || !isInside(realAllowedRoot, realOutputDir)
+  ) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果目录不在当前项目中');
+  }
+  const outputPath = path.join(realOutputDir, `outpaint-${randomUUID()}.image`);
+  try {
+    if (String(imageUrl || '').startsWith('data:')) {
+      const match = String(imageUrl).match(
+        /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/,
+      );
+      if (!match) fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果格式无效');
+      const estimatedBytes = Math.floor((match[2].length * 3) / 4);
+      if (estimatedBytes > maxBytes) {
+        fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果超过大小限制');
+      }
+      const buffer = Buffer.from(match[2], 'base64');
+      if (buffer.length <= 0 || buffer.length > maxBytes) {
+        fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果超过大小限制');
+      }
+      fs.writeFileSync(outputPath, buffer, { flag: 'wx', mode: 0o600 });
+    } else {
+      await streamOutpaintHttpsToFile(imageUrl, outputPath, maxBytes);
+    }
+    const realOutputPath = fs.realpathSync.native(outputPath);
+    if (
+      !isInside(realOutputDir, realOutputPath)
+      || !fs.statSync(realOutputPath).isFile()
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果不在当前项目中');
+    }
+    return realOutputPath;
+  } catch (error) {
+    if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if (String(error?.code || '').startsWith('IMAGE_TOOL_')) throw error;
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果保存失败');
+  }
+}
+
+async function runOutpaint({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+}) {
+  const sourceMetadata = await sharp(sourcePath, { limitInputPixels: SMART_CUTOUT_MAX_PIXELS })
+    .metadata();
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const parameters = normalizeOutpaintParameters(request.parameters || {});
+  const release = referenceImageTool.limiter.acquire(tenantId);
+  let outputPath = null;
+  try {
+    const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      '正在等待参考图扩展服务...',
+      () => referenceImageTool.generate({
+        prompt: buildOutpaintPrompt(parameters),
+        aspectRatio: parameters.aspectRatio,
+        referenceImage: sourcePath,
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      log.warn('image outpaint provider failed', {
+        provider: referenceImageTool.provider,
+        protocol: referenceImageTool.protocol,
+        model: referenceImageTool.model,
+        reason: 'provider returned no image',
+      });
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图处理失败');
+    }
+    outputPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+    );
+    const outputSize = fs.statSync(outputPath).size;
+    if (outputSize <= 0 || outputSize > SMART_CUTOUT_MAX_OUTPUT_BYTES) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图产物校验失败');
+    }
+    const outputMetadata = await sharp(outputPath, {
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    const format = FORMAT_INFO[outputMetadata.format];
+    if (!format || !outputMetadata.width || !outputMetadata.height) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果格式无效');
+    }
+    if (outputMetadata.width * outputMetadata.height > SMART_CUTOUT_MAX_PIXELS) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图产物超过像素限制');
+    }
+    const [targetWidth, targetHeight] = OUTPAINT_SIZES[parameters.aspectRatio]
+      .split('x')
+      .map(Number);
+    const targetRatio = targetWidth / targetHeight;
+    const outputRatio = outputMetadata.width / outputMetadata.height;
+    if (Math.abs(outputRatio - targetRatio) / targetRatio > 0.03) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图产物与目标画幅不符');
+    }
+    if (
+      outputMetadata.width < sourceMetadata.width
+      || outputMetadata.height < sourceMetadata.height
+      || (
+        outputMetadata.width === sourceMetadata.width
+        && outputMetadata.height === sourceMetadata.height
+      )
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图产物没有扩展原画布');
+    }
+    await sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).stats();
+    const finalPath = path.join(
+      path.dirname(outputPath),
+      `${path.parse(outputPath).name}${format.extension}`,
+    );
+    fs.renameSync(outputPath, finalPath);
+    outputPath = finalPath;
+    return {
+      outputPath,
+      format,
+      outputInfo: {
+        size: outputSize,
+        width: outputMetadata.width,
+        height: outputMetadata.height,
+      },
+      parameters,
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if (error?.code === 'IMAGE_TOOL_SOURCE_UNAVAILABLE') throw error;
+    log.warn('image outpaint failed', {
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图处理失败');
+  } finally {
+    release();
+  }
+}
+
 async function runSmartCutoutUnlocked(sourcePath, outputPath, tool, log) {
   const childEnv = { ...process.env };
   if (tool.modelHome) childEnv.U2NET_HOME = tool.modelHome;
@@ -839,11 +1291,13 @@ function createDerivedAsset(db, log, {
 async function createOperation(db, log, request, context = {}) {
   const operation = String(request.operation || '').trim();
   const modelTools = context.modelTools || resolveModelTools(undefined, context.env);
+  const referenceImageTool = context.referenceImageTool || null;
   const deterministicOperations = ['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'];
   const cutoutOperations = ['smart_cutout', 'selection_cutout'];
   if (!deterministicOperations.includes(operation)
     && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)
-    && !(operation === 'upscale' && modelTools.upscale)) {
+    && !(operation === 'upscale' && modelTools.upscale)
+    && !(operation === 'outpaint' && referenceImageTool)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
@@ -1046,6 +1500,48 @@ async function createOperation(db, log, request, context = {}) {
       }
     }
 
+    if (operation === 'outpaint') {
+      const prepared = await runOutpaint({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
     let prepared;
     if (operation === 'crop') prepared = await runCrop(sourcePath, request.parameters || {});
     else if (operation === 'compress') prepared = await runCompress(sourcePath, request.parameters || {});
@@ -1145,5 +1641,8 @@ module.exports = {
   createOperation,
   getOperation,
   modelCapabilities,
+  referenceImageCapabilities,
   resolveModelTools,
+  resolveReferenceImageTool,
+  saveOutpaintResult,
 };

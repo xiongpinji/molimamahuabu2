@@ -205,6 +205,61 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
   return active[0];
 }
 
+function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') {
+  let config = null;
+  try {
+    config = getDefaultImageConfig(db, null, null, imageServiceType);
+  } catch (_) {
+    return {
+      available: false,
+      reason: '图片模型配置尚未就绪',
+    };
+  }
+  if (!config) {
+    return {
+      available: false,
+      reason: '未配置已启用的参考图图片模型',
+    };
+  }
+  const model = getModelFromConfig(config);
+  const provider = String(config.provider || '').trim().toLowerCase();
+  const protocol = String(config.api_protocol || '').trim().toLowerCase()
+    || inferProtocol(provider, model);
+  let settings = {};
+  try {
+    settings = typeof config.settings === 'string'
+      ? JSON.parse(config.settings || '{}')
+      : (config.settings || {});
+  } catch (_) {}
+  if (settings.supports_outpaint !== true) {
+    return {
+      available: false,
+      reason: `当前默认图片模型 ${model} 未显式声明扩图能力`,
+    };
+  }
+  const auditedAdapter = protocol === 'volcengine'
+    && /seedream|doubao/i.test(model);
+  if (!auditedAdapter) {
+    return {
+      available: false,
+      reason: `当前默认图片模型 ${model} 的扩图适配器尚未通过审计`,
+    };
+  }
+  if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {
+    return {
+      available: false,
+      reason: '扩图供应商配置不完整',
+    };
+  }
+  return {
+    available: true,
+    engine: 'provider-image-edit',
+    provider: provider || protocol,
+    protocol,
+    model,
+  };
+}
+
 // 与 Go image_generation_service 一致：openai/chatfire 使用 "/images/generations"，base_url 通常已含 /v1
 function buildImageUrl(config) {
   const base = (config.base_url || '').replace(/\/$/, '');
@@ -933,6 +988,7 @@ function qwenImageSize(size) {
 function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   if (!value || !String(value).trim()) return null;
   const s = String(value).trim();
+  if (s.startsWith('data:')) return s;
   const baseUrl = (filesBaseUrl || '').replace(/\/$/, '');
   // isLocalhost: 只要 URL 本身或配置的 base_url 含 localhost/127，都视为本地
   const isLocalhostUrl = /localhost|127\.0\.0\.1/i.test(s);
@@ -959,16 +1015,30 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   } else if (storageLocalPath) {
     relPath = s.replace(/^\//, '');
   }
+  if (path.isAbsolute(s) && !storageLocalPath) return null;
   if (!relPath) return toPublicUrl(s);
-  const filePath = path.join(storageLocalPath, relPath);
+  const storageRoot = path.resolve(storageLocalPath);
+  const filePath = path.isAbsolute(s)
+    ? path.resolve(s)
+    : path.resolve(storageRoot, relPath);
   try {
-    if (!fs.existsSync(filePath)) return toPublicUrl(s);
-    const buf = fs.readFileSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
+    const realStorageRoot = fs.realpathSync.native(storageRoot);
+    const realFilePath = fs.realpathSync.native(filePath);
+    const relative = path.relative(realStorageRoot, realFilePath);
+    if (
+      !relative
+      || relative.startsWith('..')
+      || path.isAbsolute(relative)
+      || !fs.statSync(realFilePath).isFile()
+    ) {
+      return null;
+    }
+    const buf = fs.readFileSync(realFilePath);
+    const ext = path.extname(realFilePath).toLowerCase();
     const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
     return 'data:' + mime + ';base64,' + buf.toString('base64');
-  } catch (e) {
-    return toPublicUrl(s);
+  } catch (_) {
+    return path.isAbsolute(s) ? null : toPublicUrl(s);
   }
 }
 
@@ -2142,6 +2212,7 @@ function refListHasCanonical(list, ref) {
 
 module.exports = {
   getDefaultImageConfig,
+  getReferenceImageCapability,
   callAihubccImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,

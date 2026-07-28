@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
@@ -10,6 +11,9 @@ const sharp = require('sharp');
 const createImageToolRoutes = require('../src/routes/imageTools');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const assetService = require('../src/services/assetService');
+const aiConfigService = require('../src/services/aiConfigService');
+const imageClient = require('../src/services/imageClient');
+const imageToolService = require('../src/services/imageToolService');
 const storageLayout = require('../src/services/storageLayout');
 const taskService = require('../src/services/taskService');
 const userAuthService = require('../src/services/userAuthService');
@@ -156,6 +160,198 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
     Object.keys(operations).some((key) => /verify|review|copyright|infringement/i.test(key)),
     false,
   );
+});
+
+test('扩图只在本地参考图供应商能力可用时开放', async () => {
+  const referenceImageTool = {
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    generate: async () => ({ image_url: '' }),
+  };
+  const localHandlers = createImageToolRoutes(null, { error() {} }, {
+    referenceImageTool,
+  });
+  const localRes = responseRecorder();
+
+  localHandlers.capabilities({}, localRes);
+
+  assert.equal(localRes.payload.data.operations.outpaint.available, true);
+  assert.equal(localRes.payload.data.operations.outpaint.engine, 'provider-image-edit');
+  assert.equal(localRes.payload.data.operations.outpaint.provider, 'volcengine');
+  assert.equal(localRes.payload.data.operations.outpaint.model, 'doubao-seedream-4-5');
+  assert.deepEqual(
+    localRes.payload.data.operations.outpaint.aspectRatios,
+    ['16:9', '9:16', '1:1', '4:3', '3:4'],
+  );
+
+  const publicHandlers = createImageToolRoutes(null, { error() {} }, {
+    publicPlatformEnabled: true,
+    referenceImageTool,
+  });
+  const publicRes = responseRecorder();
+  publicHandlers.capabilities({}, publicRes);
+  assert.equal(publicRes.payload.data.operations.outpaint.available, false);
+  assert.match(publicRes.payload.data.operations.outpaint.reason, /计费与审计链/);
+
+  const publicCreateRes = responseRecorder();
+  await publicHandlers.createOperation({
+    body: {
+      assetId: 1,
+      operation: 'outpaint',
+      parameters: { aspectRatio: '16:9', direction: 'auto' },
+    },
+  }, publicCreateRes);
+  assert.equal(publicCreateRes.statusCode, 503);
+  assert.equal(publicCreateRes.payload.error.code, 'IMAGE_TOOL_OPERATION_UNAVAILABLE');
+});
+
+test('扩图能力从默认参考图模型配置解析且不误开放纯文生图模型', (t) => {
+  const log = { info() {}, error() {} };
+  const supportedDb = new Database(':memory:');
+  t.after(() => supportedDb.close());
+  runMigrationsAndEnsure(supportedDb);
+  aiConfigService.createConfig(supportedDb, log, {
+    service_type: 'storyboard_image',
+    provider: 'volcengine',
+    api_protocol: 'volcengine',
+    name: 'Seedream 参考图',
+    base_url: 'https://example.invalid/api/v3',
+    api_key: 'test-key',
+    model: ['doubao-seedream-4-5'],
+    default_model: 'doubao-seedream-4-5',
+    is_default: true,
+    settings: JSON.stringify({ supports_outpaint: true }),
+  });
+  const supportedHandlers = createImageToolRoutes(supportedDb, log);
+  const supportedRes = responseRecorder();
+  supportedHandlers.capabilities({}, supportedRes);
+  assert.equal(supportedRes.payload.data.operations.outpaint.available, true);
+  assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'volcengine');
+
+  const undeclaredDb = new Database(':memory:');
+  t.after(() => undeclaredDb.close());
+  runMigrationsAndEnsure(undeclaredDb);
+  aiConfigService.createConfig(undeclaredDb, log, {
+    service_type: 'storyboard_image',
+    provider: 'volcengine',
+    api_protocol: 'volcengine',
+    name: '未声明扩图的 Seedream',
+    base_url: 'https://example.invalid/api/v3',
+    api_key: 'test-key',
+    model: ['doubao-seedream-4-5'],
+    default_model: 'doubao-seedream-4-5',
+    is_default: true,
+  });
+  const undeclaredHandlers = createImageToolRoutes(undeclaredDb, log);
+  const undeclaredRes = responseRecorder();
+  undeclaredHandlers.capabilities({}, undeclaredRes);
+  assert.equal(undeclaredRes.payload.data.operations.outpaint.available, false);
+  assert.match(undeclaredRes.payload.data.operations.outpaint.reason, /显式声明/);
+
+  const unsupportedDb = new Database(':memory:');
+  t.after(() => unsupportedDb.close());
+  runMigrationsAndEnsure(unsupportedDb);
+  aiConfigService.createConfig(unsupportedDb, log, {
+    service_type: 'storyboard_image',
+    provider: 'openai',
+    api_protocol: 'openai',
+    name: '纯文生图',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['dall-e-3'],
+    default_model: 'dall-e-3',
+    is_default: true,
+  });
+  const unsupportedHandlers = createImageToolRoutes(unsupportedDb, log);
+  const unsupportedRes = responseRecorder();
+  unsupportedHandlers.capabilities({}, unsupportedRes);
+  assert.equal(unsupportedRes.payload.data.operations.outpaint.available, false);
+  assert.match(unsupportedRes.payload.data.operations.outpaint.reason, /扩图/);
+});
+
+test('真实图片供应商请求把存储根内绝对参考图编码为 data URL', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-outpaint-ref-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 4,
+      height: 4,
+      channels: 3,
+      background: '#3267d6',
+    },
+  }).png().toFile(sourcePath);
+
+  let requestBody = null;
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [{ b64_json: Buffer.from('provider-result').toString('base64') }],
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  aiConfigService.createConfig(db, { info() {} }, {
+    service_type: 'storyboard_image',
+    provider: 'volcengine',
+    api_protocol: 'volcengine',
+    name: '参考图请求体测试',
+    base_url: `http://127.0.0.1:${server.address().port}`,
+    endpoint: '/images/generations',
+    api_key: 'test-key',
+    model: ['doubao-seedream-4-5'],
+    default_model: 'doubao-seedream-4-5',
+    is_default: true,
+    settings: JSON.stringify({ supports_outpaint: true }),
+  });
+
+  const result = await imageClient.callImageApi(db, {
+    info() {},
+    warn() {},
+    error() {},
+  }, {
+    prompt: '扩图',
+    model: 'doubao-seedream-4-5',
+    preferred_provider: 'volcengine',
+    size: '1536x864',
+    imageServiceType: 'storyboard_image',
+    reference_image_urls: [sourcePath],
+    storage_local_path: storageRoot,
+  });
+
+  assert.ok(result.image_url);
+  assert.equal(Array.isArray(requestBody.image), true);
+  assert.match(requestBody.image[0], /^data:image\/png;base64,/);
+  assert.doesNotMatch(requestBody.image[0], /molimama-outpaint-ref|source\.png/i);
+});
+
+test('扩图下载在解码前执行大小限制', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-outpaint-limit-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const outputDir = path.join(storageRoot, 'derived');
+  fs.mkdirSync(outputDir);
+
+  await assert.rejects(
+    imageToolService.saveOutpaintResult(
+      `data:image/png;base64,${Buffer.alloc(2048).toString('base64')}`,
+      outputDir,
+      storageRoot,
+      { maxBytes: 1024 },
+    ),
+    (error) => error.code === 'IMAGE_TOOL_PROCESSING_FAILED',
+  );
+  assert.equal(fs.readdirSync(outputDir).length, 0);
 });
 
 test('配置真实 rembg 命令后才公布智能抠图能力', (t) => {
@@ -812,6 +1008,251 @@ test('智能抠图处理失败时写回失败任务且不残留派生素材', as
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 4);
   assert.equal(fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).length : 0, 0);
+});
+
+test('扩图通过参考图供应商生成本地派生素材并保留原图', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-outpaint-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('扩图测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 80,
+      height: 80,
+      channels: 3,
+      background: '#5b8def',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const generatedBuffer = await sharp({
+    create: {
+      width: 160,
+      height: 90,
+      channels: 3,
+      background: '#f2c94c',
+    },
+  }).png().toBuffer();
+  let generationRequest = null;
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      async generate(request) {
+        generationRequest = request;
+        return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+      },
+    },
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-outpaint',
+      operation: 'outpaint',
+      parameters: {
+        aspectRatio: '16:9',
+        direction: 'right',
+        prompt: '向右延伸室内窗景',
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.operation, 'outpaint');
+  assert.equal(generationRequest.referenceImage, sourcePath);
+  assert.equal(generationRequest.aspectRatio, '16:9');
+  assert.match(generationRequest.prompt, /向右延伸/);
+  assert.match(generationRequest.prompt, /向右延伸室内窗景/);
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.ok(resultAsset);
+  assert.notEqual(resultAsset.id, sourceAsset.id);
+  assert.equal(resultAsset.metadata.operation, 'outpaint');
+  assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
+  assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    aspectRatio: '16:9',
+    direction: 'right',
+    prompt: '向右延伸室内窗景',
+  });
+  assert.equal(fs.existsSync(sourcePath), true);
+  assert.equal(fs.existsSync(resultAsset.local_path), true);
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.width, 160);
+  assert.equal(outputMetadata.height, 90);
+  const task = taskService.getTask(db, res.payload.data.taskId);
+  assert.equal(task.status, 'completed');
+  assert.equal(JSON.parse(task.result).resultAssetId, resultAsset.id);
+
+  const failedLogs = [];
+  const failedLog = {
+    info() {},
+    warn(message, details) {
+      failedLogs.push({ message, details });
+    },
+    error(message, details) {
+      failedLogs.push({ message, details });
+    },
+  };
+  const failedHandlers = createImageToolRoutes(db, failedLog, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      async generate() {
+        return { error: 'upstream-secret-token' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-outpaint-failure',
+      operation: 'outpaint',
+      parameters: { aspectRatio: '16:9', direction: 'auto' },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '扩图处理失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /upstream-secret-token/);
+  const failedTaskId = db.prepare(
+    "SELECT id FROM async_tasks WHERE type = 'image_tool_outpaint' AND status = 'failed' ORDER BY created_at DESC LIMIT 1",
+  ).get().id;
+  const failedTask = taskService.getTask(db, failedTaskId);
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.error, '扩图处理失败');
+  assert.doesNotMatch(JSON.stringify(failedLogs), /upstream-secret-token/);
+
+  const privateUrlHandlers = createImageToolRoutes(db, failedLog, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      async generate() {
+        return { image_url: 'https://127.0.0.1/private-image.png?token=secret-query' };
+      },
+    },
+  });
+  const privateUrlRes = responseRecorder();
+  await privateUrlHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-outpaint-ssrf',
+      operation: 'outpaint',
+      parameters: { aspectRatio: '16:9', direction: 'auto' },
+    },
+  }, privateUrlRes);
+  assert.equal(privateUrlRes.statusCode, 503);
+  assert.equal(privateUrlRes.payload.error.message, '扩图处理失败');
+  assert.doesNotMatch(JSON.stringify(failedLogs), /secret-query|private-image/);
+
+  const invalidOutputBuffers = [
+    await sharp({
+      create: {
+        width: 160,
+        height: 160,
+        channels: 3,
+        background: '#e05252',
+      },
+    }).png().toBuffer(),
+    fs.readFileSync(sourcePath),
+  ];
+  for (const [index, invalidBuffer] of invalidOutputBuffers.entries()) {
+    const invalidOutputHandlers = createImageToolRoutes(db, failedLog, {
+      cfg: { storage: { local_path: storageRoot } },
+      referenceImageTool: {
+        engine: 'provider-image-edit',
+        provider: 'volcengine',
+        protocol: 'volcengine',
+        model: 'doubao-seedream-4-5',
+        async generate() {
+          return {
+            image_url: `data:image/png;base64,${invalidBuffer.toString('base64')}`,
+          };
+        },
+      },
+    });
+    const invalidOutputRes = responseRecorder();
+    await invalidOutputHandlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: `image-node-outpaint-invalid-${index}`,
+        operation: 'outpaint',
+        parameters: { aspectRatio: '16:9', direction: 'auto' },
+      },
+    }, invalidOutputRes);
+    assert.equal(invalidOutputRes.statusCode, 503);
+    assert.equal(invalidOutputRes.payload.error.message, '扩图处理失败');
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 2);
+
+  const junctionSourceDir = path.join(storageRoot, 'junction-case');
+  const escapedOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-outpaint-escape-'));
+  fs.mkdirSync(junctionSourceDir);
+  const junctionSourcePath = path.join(junctionSourceDir, 'source.png');
+  fs.copyFileSync(sourcePath, junctionSourcePath);
+  const junctionDerivedDir = path.join(junctionSourceDir, 'derived');
+  fs.symlinkSync(
+    escapedOutputDir,
+    junctionDerivedDir,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  const junctionSourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'junction-source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/junction-case/source.png',
+    local_path: junctionSourcePath,
+  });
+  const junctionHandlers = createImageToolRoutes(db, failedLog, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      async generate() {
+        return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+      },
+    },
+  });
+  const junctionRes = responseRecorder();
+  await junctionHandlers.createOperation({
+    body: {
+      assetId: junctionSourceAsset.id,
+      sourceNodeId: 'image-node-outpaint-junction',
+      operation: 'outpaint',
+      parameters: { aspectRatio: '16:9', direction: 'auto' },
+    },
+  }, junctionRes);
+  assert.equal(junctionRes.statusCode, 400);
+  assert.equal(fs.readdirSync(escapedOutputDir).length, 0);
+  fs.rmSync(junctionDerivedDir, { force: true });
+  fs.rmSync(escapedOutputDir, { recursive: true, force: true });
 });
 
 test('裁剪操作生成可回读的派生资产且不覆盖原图', async (t) => {

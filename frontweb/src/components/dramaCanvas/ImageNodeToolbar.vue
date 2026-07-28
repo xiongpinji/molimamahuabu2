@@ -157,6 +157,41 @@
           </p>
         </template>
 
+        <template v-else-if="editorOperation === 'outpaint'">
+          <el-form-item label="目标画幅">
+            <el-select v-model="outpaintForm.aspectRatio">
+              <el-option label="横屏 16:9" value="16:9" />
+              <el-option label="竖屏 9:16" value="9:16" />
+              <el-option label="方形 1:1" value="1:1" />
+              <el-option label="横幅 4:3" value="4:3" />
+              <el-option label="竖幅 3:4" value="3:4" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="扩展方向">
+            <el-select v-model="outpaintForm.direction">
+              <el-option label="自动" value="auto" />
+              <el-option label="向左扩展" value="left" />
+              <el-option label="向右扩展" value="right" />
+              <el-option label="向上扩展" value="top" />
+              <el-option label="向下扩展" value="bottom" />
+              <el-option label="向四周扩展" value="all" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="补充描述（可选）">
+            <el-input
+              v-model="outpaintForm.prompt"
+              type="textarea"
+              :rows="3"
+              maxlength="500"
+              show-word-limit
+              placeholder="例如：向右补出落地窗和连续的室内灯光"
+            />
+          </el-form-item>
+          <p class="crop-hint">
+            使用已配置的参考图供应商生成新素材；原图保持不变。
+          </p>
+        </template>
+
         <template v-else-if="editorOperation === 'compress'">
           <el-form-item label="输出格式">
             <el-select v-model="compressForm.format">
@@ -259,6 +294,11 @@ const gridForm = ref({ rows: 3, columns: 3 })
 const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1, temperature: 0 })
 const lutPreset = ref('cinematic')
 const upscaleScale = ref(2)
+const outpaintForm = ref({
+  aspectRatio: '16:9',
+  direction: 'auto',
+  prompt: '',
+})
 let cropper = null
 let CropperClass = null
 
@@ -438,6 +478,7 @@ function operationParameters() {
   if (editorOperation.value === 'adjust') return { ...adjustForm.value }
   if (editorOperation.value === 'lut') return { preset: lutPreset.value }
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
+  if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
   return {}
 }
 
@@ -484,6 +525,7 @@ function operationLabel(operation) {
     smart_cutout: '智能抠图',
     selection_cutout: '框选抠图',
     upscale: '高清增强',
+    outpaint: '扩图',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }

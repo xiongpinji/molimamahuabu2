@@ -70,6 +70,21 @@ test('高清入口只提交 Real-ESRGAN 支持的 2x、3x、4x 倍率', () => {
   assert.match(toolbarSource, /本地 Real-ESRGAN/)
 })
 
+test('扩图入口提交目标画幅、扩展方向和用户补充描述', () => {
+  assert.match(toolbarSource, /editorOperation === 'outpaint'/)
+  assert.match(toolbarSource, /outpaintForm = ref\(\{[\s\S]*aspectRatio: '16:9'/)
+  assert.match(toolbarSource, /direction: 'auto'/)
+  assert.match(toolbarSource, /<el-option label="横屏 16:9" value="16:9" \/>/)
+  assert.match(toolbarSource, /<el-option label="向右扩展" value="right" \/>/)
+  assert.match(toolbarSource, /v-model="outpaintForm\.prompt"/)
+  assert.match(
+    toolbarSource,
+    /editorOperation\.value === 'outpaint'\) return \{ \.\.\.outpaintForm\.value \}/,
+  )
+  assert.match(toolbarSource, /参考图供应商生成新素材；原图保持不变/)
+  assert.match(toolbarSource, /outpaint: '扩图'/)
+})
+
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {
   assert.match(toolbarSource, /import\('cropperjs'\)/)
   assert.match(toolbarSource, /import\('cropperjs\/dist\/cropper\.css'\)/)

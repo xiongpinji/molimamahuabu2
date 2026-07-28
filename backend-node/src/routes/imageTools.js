@@ -66,11 +66,21 @@ function routes(db, log, options = {}) {
     options.auditedModelHashes,
     options.auditedUpscaleFiles,
   );
+  const referenceImageTool = options.publicPlatformEnabled
+    ? null
+    : imageToolService.resolveReferenceImageTool(db, log, options.referenceImageTool);
+  const referenceImageUnavailableReason = options.publicPlatformEnabled
+    ? '公开平台计费与审计链尚未接入，当前仅本地版可用'
+    : undefined;
   return {
     capabilities: (_req, res) => response.success(res, {
       operations: {
         ...BASE_OPERATIONS,
         ...imageToolService.modelCapabilities(modelTools),
+        ...imageToolService.referenceImageCapabilities(
+          referenceImageTool,
+          referenceImageUnavailableReason,
+        ),
       },
     }),
     createOperation: async (req, res) => {
@@ -81,6 +91,7 @@ function routes(db, log, options = {}) {
           tenantId: req.tenant?.id,
           userId: req.user?.id,
           modelTools,
+          referenceImageTool,
         });
         response.created(res, result);
       } catch (error) {
