@@ -265,6 +265,31 @@
               <option :value="1.35">1.35×</option>
             </select>
           </label>
+          <label v-if="data.kind === 'audio'" class="editor-field">
+            <span>情绪</span>
+            <select v-model="draft.speechEmotion" aria-label="情绪" @change="saveDraft">
+              <option value="">自动</option>
+              <option value="neutral">中性</option>
+              <option value="happy">开心</option>
+              <option value="sad">悲伤</option>
+              <option value="angry">愤怒</option>
+              <option value="fearful">害怕</option>
+              <option value="disgusted">厌恶</option>
+              <option value="surprised">惊讶</option>
+            </select>
+          </label>
+          <label v-if="data.kind === 'audio'" class="editor-field">
+            <span>音量</span>
+            <input v-model.number="draft.speechVolume" aria-label="音量" type="number" min="0.1" max="10" step="0.1" @change="saveDraft" />
+          </label>
+          <label v-if="data.kind === 'audio'" class="editor-field">
+            <span>音高</span>
+            <input v-model.number="draft.speechPitch" aria-label="音高" type="number" min="-12" max="12" step="1" @change="saveDraft" />
+          </label>
+          <label v-if="data.kind === 'audio'" class="editor-field audio-pronunciation-field">
+            <span>多音字（每行一条，如“燕少飞/(yan4)(shao3)(fei1)”）</span>
+            <textarea v-model="draft.pronunciationTonesText" aria-label="多音字" rows="2" @blur="saveDraft" />
+          </label>
         </div>
 
         <div class="editor-footer">
@@ -328,6 +353,10 @@ const draft = reactive({
   negativePrompt: '',
   voiceId: '',
   speechRate: 1,
+  speechVolume: 1,
+  speechPitch: 0,
+  speechEmotion: '',
+  pronunciationTonesText: '',
   cameraMovement: '',
   effect: '',
   includeAudio: false,
@@ -401,6 +430,12 @@ function syncDraft() {
   draft.negativePrompt = props.data.negativePrompt || ''
   draft.voiceId = props.data.voiceId || ''
   draft.speechRate = Number(props.data.speechRate) || 1
+  draft.speechVolume = Number(props.data.speechVolume) || 1
+  draft.speechPitch = Number(props.data.speechPitch) || 0
+  draft.speechEmotion = props.data.speechEmotion || ''
+  draft.pronunciationTonesText = Array.isArray(props.data.pronunciationTones)
+    ? props.data.pronunciationTones.join('\n')
+    : ''
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
@@ -419,6 +454,13 @@ async function saveDraft() {
     negativePrompt: draft.negativePrompt.trim(),
     voiceId: draft.voiceId.trim(),
     speechRate: Number(draft.speechRate) || 1,
+    speechVolume: Math.min(10, Math.max(0.1, Number(draft.speechVolume) || 1)),
+    speechPitch: Math.min(12, Math.max(-12, Number(draft.speechPitch) || 0)),
+    speechEmotion: draft.speechEmotion,
+    pronunciationTones: draft.pronunciationTonesText
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean),
     cameraMovement: draft.cameraMovement,
     effect: draft.effect,
     includeAudio: draft.includeAudio === true,
@@ -943,6 +985,20 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
   padding: 0 12px;
   font-size: 11px;
+}
+.audio-pronunciation-field { grid-column: span 2; }
+.audio-pronunciation-field textarea {
+  width: 100%;
+  min-height: 58px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid #3f3f46;
+  border-radius: 10px;
+  outline: 0;
+  background: #202024;
+  color: #d4d4d8;
+  padding: 9px 12px;
+  font: inherit;
 }
 .field-model { grid-column: span 2; }
 .field-wide { grid-column: span 2; }

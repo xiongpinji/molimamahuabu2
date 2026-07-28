@@ -31,6 +31,10 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     quantity: '2',
     voiceId: 'female-shaonv',
     speechRate: '1.15',
+    speechVolume: '1.2',
+    speechPitch: '-2',
+    speechEmotion: 'disgusted',
+    pronunciationTones: [' 重庆/(chong2)(qing4) ', ''],
     cameraMovement: 'push-in',
     effect: 'film-grain',
     characterReferenceUrls: [' https://cdn.example/character.png ', ''],
@@ -53,6 +57,10 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     quantity: 2,
     voiceId: 'female-shaonv',
     speechRate: 1.15,
+    speechVolume: 1.2,
+    speechPitch: -2,
+    speechEmotion: 'disgusted',
+    pronunciationTones: ['重庆/(chong2)(qing4)'],
     cameraMovement: 'push-in',
     effect: 'film-grain',
     characterReferenceUrls: ['https://cdn.example/character.png'],
@@ -145,6 +153,10 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'cosyvoice',
     voiceId: 'female-shaonv',
     speechRate: 1.15,
+    speechVolume: 1.2,
+    speechPitch: -2,
+    speechEmotion: 'disgusted',
+    pronunciationTones: ['重庆/(chong2)(qing4)'],
   }, { dramaId: 7 })
   assert.deepEqual(audioPayload, {
     drama_id: 7,
@@ -152,6 +164,10 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     tts_model: 'cosyvoice',
     voice_id: 'female-shaonv',
     speed: 1.15,
+    volume: 1.2,
+    pitch: -2,
+    emotion: 'disgusted',
+    pronunciation_tones: ['重庆/(chong2)(qing4)'],
   })
   assert.equal('storyboard_id' in audioPayload, false)
 })
