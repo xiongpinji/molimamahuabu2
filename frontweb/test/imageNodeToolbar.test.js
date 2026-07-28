@@ -46,6 +46,7 @@ test('工具栏按后端能力启用并保留不可用原因', () => {
   assert.match(toolbarSource, /图片节点正在生成或处理，请稍后/)
   assert.match(toolbarSource, /裁剪\/压缩\/镜像/)
   assert.match(toolbarSource, /宫格裁剪/)
+  assert.match(toolbarSource, /smart_cutout: '智能抠图'/)
   assert.match(toolbarSource, /图片调整/)
   assert.match(toolbarSource, /LUT 调色/)
   assert.match(toolbarSource, /720全景/)

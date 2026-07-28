@@ -15,6 +15,9 @@ const tenantService = require('../src/services/tenantService');
 
 sharp.cache(false);
 
+const TEST_MODEL_SHA256 = '9A72F871A95D3689B4F1DF8249FFC4280F47A54571A30E12CD5AA86A23B8A13A';
+const TEST_AUDITED_MODEL_HASHES = Object.freeze({ u2netp: TEST_MODEL_SHA256 });
+
 function responseRecorder() {
   return {
     statusCode: 200,
@@ -27,6 +30,20 @@ function responseRecorder() {
       this.payload = payload;
       return this;
     },
+  };
+}
+
+function fakeSmartCutoutTool(root, extraArgs = [], overrides = {}) {
+  const modelHome = path.join(root, 'models');
+  fs.mkdirSync(modelHome, { recursive: true });
+  fs.writeFileSync(path.join(modelHome, 'u2netp.onnx'), 'test model fixture');
+  return {
+    command: process.execPath,
+    args: [path.join(__dirname, 'fixtures', 'fake-rembg.js'), ...extraArgs],
+    engineVersion: '2.0.77',
+    model: 'u2netp',
+    modelHome,
+    ...overrides,
   };
 }
 
@@ -60,6 +77,330 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
     Object.keys(operations).some((key) => /verify|review|copyright|infringement/i.test(key)),
     false,
   );
+});
+
+test('配置真实 rembg 命令后才公布智能抠图能力', (t) => {
+  const toolRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-rembg-tool-'));
+  t.after(() => fs.rmSync(toolRoot, { recursive: true, force: true }));
+  const handlers = createImageToolRoutes(null, { error() {} }, {
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(toolRoot),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const res = responseRecorder();
+
+  handlers.capabilities({}, res);
+
+  assert.equal(res.payload.data.operations.smart_cutout.available, true);
+  assert.equal(res.payload.data.operations.smart_cutout.engine, 'rembg');
+  assert.equal(res.payload.data.operations.smart_cutout.engineVersion, '2.0.77');
+  assert.equal(res.payload.data.operations.smart_cutout.model, 'u2netp');
+});
+
+test('智能抠图能力探针拒绝目录、错误版本、缺失模型和错误模型哈希', (t) => {
+  const toolRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-rembg-probe-'));
+  t.after(() => fs.rmSync(toolRoot, { recursive: true, force: true }));
+  const cases = [
+    fakeSmartCutoutTool(toolRoot, [], { command: toolRoot }),
+    fakeSmartCutoutTool(toolRoot, [], { engineVersion: '9.9.9' }),
+    {
+      command: process.execPath,
+      args: [path.join(__dirname, 'fixtures', 'fake-rembg.js')],
+      engineVersion: '2.0.77',
+      model: 'u2netp',
+    },
+    fakeSmartCutoutTool(toolRoot, [], {
+      modelHome: path.join(toolRoot, 'wrong-hash-models'),
+    }),
+  ];
+  fs.mkdirSync(cases.at(-1).modelHome, { recursive: true });
+  fs.writeFileSync(path.join(cases.at(-1).modelHome, 'u2netp.onnx'), 'damaged model');
+
+  for (const smartCutout of cases) {
+    const handlers = createImageToolRoutes(null, { error() {} }, {
+      modelTools: { smart_cutout: smartCutout },
+      auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+    });
+    const res = responseRecorder();
+    handlers.capabilities({}, res);
+    assert.equal(res.payload.data.operations.smart_cutout.available, false);
+  }
+});
+
+test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('智能抠图测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.jpg');
+  await sharp({
+    create: {
+      width: 8,
+      height: 6,
+      channels: 3,
+      background: '#ffffff',
+    },
+  }).jpeg().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.jpg',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.jpg',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout',
+      operation: 'smart_cutout',
+      parameters: {},
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.equal(resultAsset.mime_type, 'image/png');
+  assert.equal(resultAsset.metadata.engine, 'rembg');
+  assert.equal(resultAsset.metadata.engineVersion, '2.0.77');
+  assert.deepEqual(resultAsset.metadata.parameters, { model: 'u2netp' });
+  const resultMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(resultMetadata.format, 'png');
+  assert.equal(resultMetadata.hasAlpha, true);
+  assert.equal(fs.existsSync(sourcePath), true);
+});
+
+test('智能抠图限制同租户和全局并发并返回 429', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-limit-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('智能抠图并发测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 8,
+      height: 6,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+
+  async function assertSecondRequestBusy(toolOverrides, tenantIds) {
+    const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+      cfg: { storage: { local_path: storageRoot } },
+      modelTools: {
+        smart_cutout: fakeSmartCutoutTool(
+          storageRoot,
+          ['--delay-ms=250'],
+          toolOverrides,
+        ),
+      },
+      auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+    });
+    const firstRes = responseRecorder();
+    const secondRes = responseRecorder();
+    const body = {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout-concurrency',
+      operation: 'smart_cutout',
+      parameters: {},
+    };
+    const first = handlers.createOperation({
+      tenant: { id: tenantIds[0] },
+      body,
+    }, firstRes);
+    await handlers.createOperation({
+      tenant: { id: tenantIds[1] },
+      body,
+    }, secondRes);
+    await first;
+
+    assert.equal(firstRes.statusCode, 201);
+    assert.equal(secondRes.statusCode, 429);
+    assert.equal(secondRes.payload.error.code, 'IMAGE_TOOL_BUSY');
+  }
+
+  await assertSecondRequestBusy(
+    { maxConcurrency: 2, maxTenantConcurrency: 1 },
+    ['tenant-a', 'tenant-a'],
+  );
+  await assertSecondRequestBusy(
+    { maxConcurrency: 1, maxTenantConcurrency: 2 },
+    ['tenant-a', 'tenant-b'],
+  );
+});
+
+test('智能抠图处理失败时写回失败任务且不残留派生素材', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('智能抠图失败测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 8,
+      height: 6,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot, ['--fail']),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout-failure',
+      operation: 'smart_cutout',
+      parameters: {},
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.doesNotMatch(res.payload.error.message, /fake rembg processing failure/);
+  assert.equal(fs.existsSync(sourcePath), true);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+  const tasks = db.prepare('SELECT * FROM async_tasks').all();
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].status, 'failed');
+  assert.match(tasks[0].error, /智能抠图处理失败/);
+  assert.doesNotMatch(tasks[0].error, /fake rembg processing failure/);
+  const derivedDir = path.join(storageRoot, 'derived');
+  assert.equal(
+    fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).length : 0,
+    0,
+  );
+
+  const invalidHandlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot, ['--invalid']),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const invalidRes = responseRecorder();
+
+  await invalidHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout-invalid-output',
+      operation: 'smart_cutout',
+      parameters: {},
+    },
+  }, invalidRes);
+
+  assert.equal(invalidRes.statusCode, 503);
+  assert.equal(invalidRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.match(invalidRes.payload.error.message, /产物校验失败/);
+  assert.doesNotMatch(invalidRes.payload.error.message, /derived|input buffer/i);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 2);
+  assert.equal(fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).length : 0, 0);
+
+  const truncatedHandlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot, ['--truncated']),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const truncatedRes = responseRecorder();
+
+  await truncatedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout-truncated-output',
+      operation: 'smart_cutout',
+      parameters: {},
+    },
+  }, truncatedRes);
+
+  assert.equal(truncatedRes.statusCode, 503);
+  assert.equal(truncatedRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.match(truncatedRes.payload.error.message, /产物校验失败/);
+  assert.doesNotMatch(truncatedRes.payload.error.message, /derived|pngload/i);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 3);
+  assert.equal(fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).length : 0, 0);
+
+  const oversizedHandlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot, ['--oversized']),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+  const oversizedRes = responseRecorder();
+
+  await oversizedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cutout-oversized-output',
+      operation: 'smart_cutout',
+      parameters: {},
+    },
+  }, oversizedRes);
+
+  assert.equal(oversizedRes.statusCode, 503);
+  assert.equal(oversizedRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.match(oversizedRes.payload.error.message, /产物校验失败/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM async_tasks').get().total, 4);
+  assert.equal(fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).length : 0, 0);
 });
 
 test('裁剪操作生成可回读的派生资产且不覆盖原图', async (t) => {

@@ -1,10 +1,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
+const { execFile, spawnSync } = require('node:child_process');
+const { promisify } = require('node:util');
 const sharp = require('sharp');
 
 const assetService = require('./assetService');
 const taskService = require('./taskService');
+const execFileAsync = promisify(execFile);
+const SMART_CUTOUT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const SMART_CUTOUT_MAX_PIXELS = 40_000_000;
+const AUDITED_REMBG_MODEL_HASHES = Object.freeze({
+  u2netp: '309C8469258DDA742793DCE0EBEA8E6DD393174F89934733ECC8B14C76F4DDD8',
+});
 
 const FORMAT_INFO = {
   jpeg: { extension: '.jpg', mimeType: 'image/jpeg' },
@@ -121,6 +129,225 @@ function cropParameters(parameters, metadata) {
 function resultUrl(storageRoot, resultPath) {
   const relative = path.relative(storageRoot, resultPath).split(path.sep).join('/');
   return `/static/${relative}`;
+}
+
+function positiveLimit(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function fileSha256(filePath) {
+  const hash = createHash('sha256');
+  const handle = fs.openSync(filePath, 'r');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(handle, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(handle);
+  }
+  return hash.digest('hex').toUpperCase();
+}
+
+function createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency) {
+  let active = 0;
+  const activeByTenant = new Map();
+  return {
+    acquire(tenantId) {
+      const tenantKey = String(tenantId || 'local');
+      const tenantActive = activeByTenant.get(tenantKey) || 0;
+      if (active >= maxConcurrency || tenantActive >= maxTenantConcurrency) {
+        fail('IMAGE_TOOL_BUSY', '智能抠图任务繁忙，请稍后重试');
+      }
+      active += 1;
+      activeByTenant.set(tenantKey, tenantActive + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        active -= 1;
+        const remaining = (activeByTenant.get(tenantKey) || 1) - 1;
+        if (remaining > 0) activeByTenant.set(tenantKey, remaining);
+        else activeByTenant.delete(tenantKey);
+      };
+    },
+  };
+}
+
+function normalizeSmartCutoutTool(tool, auditedModelHashes = AUDITED_REMBG_MODEL_HASHES) {
+  if (!tool?.command || !path.isAbsolute(tool.command) || !fs.existsSync(tool.command)) return null;
+  try {
+    if (!fs.statSync(tool.command).isFile()) return null;
+    fs.accessSync(tool.command, fs.constants.R_OK);
+  } catch (_) {
+    return null;
+  }
+  const model = String(tool.model || 'u2netp').trim();
+  const expectedModelSha256 = String(auditedModelHashes?.[model] || '').trim().toUpperCase();
+  if (!/^[A-F0-9]{64}$/.test(expectedModelSha256)) return null;
+  const expectedVersion = String(tool.engineVersion || '').trim();
+  if (!expectedVersion) return null;
+  const modelHome = String(tool.modelHome || '').trim();
+  if (!modelHome || !path.isAbsolute(modelHome)) return null;
+  const modelPath = path.join(modelHome, `${model}.onnx`);
+  try {
+    if (!fs.statSync(modelPath).isFile()) return null;
+    fs.accessSync(modelPath, fs.constants.R_OK);
+    if (fileSha256(modelPath) !== expectedModelSha256) return null;
+  } catch (_) {
+    return null;
+  }
+  const args = Array.isArray(tool.args) ? tool.args.map(String) : [];
+  const childEnv = { ...process.env, U2NET_HOME: modelHome };
+  const probe = spawnSync(tool.command, [...args, '--version'], {
+    env: childEnv,
+    encoding: 'utf8',
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (probe.error || probe.status !== 0) return null;
+  const versionMatch = `${probe.stdout || ''}\n${probe.stderr || ''}`
+    .match(/\brembg\b[^\d]*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/i);
+  const engineVersion = versionMatch?.[1] || '';
+  if (!engineVersion || engineVersion !== expectedVersion) return null;
+  const maxConcurrency = positiveLimit(tool.maxConcurrency, 1);
+  const maxTenantConcurrency = Math.min(
+    positiveLimit(tool.maxTenantConcurrency, 1),
+    maxConcurrency,
+  );
+  return {
+    command: tool.command,
+    args,
+    engine: 'rembg',
+    engineVersion,
+    model,
+    modelHome,
+    modelSha256: expectedModelSha256,
+    limiter: createConcurrencyLimiter(maxConcurrency, maxTenantConcurrency),
+  };
+}
+
+function resolveModelTools(
+  explicitTools,
+  env = process.env,
+  auditedModelHashes = AUDITED_REMBG_MODEL_HASHES,
+) {
+  if (explicitTools) {
+    return {
+      smart_cutout: normalizeSmartCutoutTool(explicitTools.smart_cutout, auditedModelHashes),
+    };
+  }
+  return {
+    smart_cutout: normalizeSmartCutoutTool({
+      command: String(env.IMAGE_TOOL_REMBG_PATH || '').trim(),
+      engineVersion: String(env.IMAGE_TOOL_REMBG_VERSION || '').trim(),
+      model: String(env.IMAGE_TOOL_REMBG_MODEL || 'u2netp').trim(),
+      modelHome: String(env.IMAGE_TOOL_REMBG_MODEL_HOME || '').trim(),
+      maxConcurrency: env.IMAGE_TOOL_REMBG_MAX_CONCURRENCY,
+      maxTenantConcurrency: env.IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY,
+    }, auditedModelHashes),
+  };
+}
+
+function modelCapabilities(modelTools) {
+  const smartCutout = modelTools?.smart_cutout;
+  return {
+    smart_cutout: smartCutout
+      ? {
+        available: true,
+        engine: smartCutout.engine,
+        engineVersion: smartCutout.engineVersion,
+        model: smartCutout.model,
+        modelSha256: smartCutout.modelSha256,
+      }
+      : {
+        available: false,
+        reason: '未配置已通过许可证审计的本地 rembg 与 U²-Net 模型',
+      },
+  };
+}
+
+async function runSmartCutoutUnlocked(sourcePath, outputPath, tool, log) {
+  const childEnv = { ...process.env };
+  if (tool.modelHome) childEnv.U2NET_HOME = tool.modelHome;
+  try {
+    await execFileAsync(
+      tool.command,
+      [...tool.args, 'i', '-m', tool.model, sourcePath, outputPath],
+      {
+        env: childEnv,
+        timeout: 180_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    const detail = String(error.stderr || error.message || '').trim().slice(-400);
+    log?.error?.('smart cutout processing failed', {
+      error: detail,
+      exitCode: error.code,
+      signal: error.signal,
+    });
+    const reason = error.killed || error.signal === 'SIGTERM'
+      ? '智能抠图处理超时'
+      : '智能抠图处理失败，请检查本地引擎配置';
+    fail('IMAGE_TOOL_PROCESSING_FAILED', reason);
+  }
+  if (!fs.existsSync(outputPath)) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '智能抠图未生成输出文件');
+  }
+  let metadata;
+  let outputSize;
+  try {
+    outputSize = fs.statSync(outputPath).size;
+    if (outputSize > SMART_CUTOUT_MAX_OUTPUT_BYTES) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '智能抠图产物超过大小限制');
+    }
+    const output = sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    });
+    metadata = await output.metadata();
+    if (
+      !metadata.width
+      || !metadata.height
+      || metadata.width * metadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '智能抠图产物超过像素限制');
+    }
+    await output.stats();
+  } catch (error) {
+    log?.error?.('smart cutout output validation failed', {
+      error: String(error.message || '').trim().slice(-400),
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '智能抠图产物校验失败');
+  }
+  if (metadata.format !== 'png' || !metadata.hasAlpha || !metadata.width || !metadata.height) {
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '智能抠图产物不是有效的透明 PNG');
+  }
+  return {
+    format: FORMAT_INFO.png,
+    normalized: { model: tool.model },
+    outputInfo: {
+      size: outputSize,
+      width: metadata.width,
+      height: metadata.height,
+    },
+    engine: tool.engine,
+    engineVersion: tool.engineVersion,
+  };
+}
+
+async function runSmartCutout(sourcePath, outputPath, tool, log, tenantId) {
+  const release = tool.limiter.acquire(tenantId);
+  try {
+    return await runSmartCutoutUnlocked(sourcePath, outputPath, tool, log);
+  } finally {
+    release();
+  }
 }
 
 async function runCrop(sourcePath, parameters) {
@@ -264,6 +491,8 @@ function createDerivedAsset(db, log, {
   parameters,
   suffix,
   storageRoot,
+  engine = 'sharp',
+  engineVersion = sharp.versions.sharp,
 }) {
   const url = resultUrl(storageRoot, outputPath);
   return assetService.create(db, log, {
@@ -283,8 +512,8 @@ function createDerivedAsset(db, log, {
       sourceNodeId: request.sourceNodeId || null,
       operation,
       parameters,
-      engine: 'sharp',
-      engineVersion: sharp.versions.sharp,
+      engine,
+      engineVersion,
       taskId: task.id,
       createdAt: new Date().toISOString(),
     },
@@ -293,7 +522,10 @@ function createDerivedAsset(db, log, {
 
 async function createOperation(db, log, request, context = {}) {
   const operation = String(request.operation || '').trim();
-  if (!['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'].includes(operation)) {
+  const modelTools = context.modelTools || resolveModelTools(undefined, context.env);
+  const deterministicOperations = ['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'];
+  if (!deterministicOperations.includes(operation)
+    && !(operation === 'smart_cutout' && modelTools.smart_cutout)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
@@ -369,6 +601,46 @@ async function createOperation(db, log, request, context = {}) {
           resultAssetId: resultAssets[0].id,
           resultUrl: resultAssets[0].url,
           resultAssets,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
+    if (operation === 'smart_cutout') {
+      const outputDir = resolveDerivedDir(sourcePath);
+      fs.mkdirSync(outputDir, { recursive: true });
+      const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+      outputPaths.push(outputPath);
+      const prepared = await runSmartCutout(
+        sourcePath,
+        outputPath,
+        modelTools.smart_cutout,
+        log,
+        context.tenantId,
+      );
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.normalized,
+          storageRoot,
+          engine: prepared.engine,
+          engineVersion: prepared.engineVersion,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
           operation,
         };
         taskService.updateTaskResult(db, task.id, result);
@@ -475,4 +747,6 @@ function getOperation(db, taskId, context = {}) {
 module.exports = {
   createOperation,
   getOperation,
+  modelCapabilities,
+  resolveModelTools,
 };

@@ -443,6 +443,7 @@ function operationLabel(operation) {
     mirror: '镜像',
     rotate: '旋转',
     grid_crop: '宫格裁剪',
+    smart_cutout: '智能抠图',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }

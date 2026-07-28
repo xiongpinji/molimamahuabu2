@@ -105,6 +105,37 @@ test('图片工具状态、历史、标记色和多结果随自由节点持久�
   assert.deepEqual(restored.data.imageToolResultAssets, node.data.imageToolResultAssets)
 })
 
+test('智能抠图失败重试操作随自由节点持久化且不接受额外参数', () => {
+  const node = {
+    id: 'free:image:smart-cutout-retry',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '智能抠图失败',
+      content: '',
+      url: '/static/source.png',
+      imageToolStatus: 'failed',
+      imageToolError: '智能抠图处理失败，请检查本地引擎配置',
+      imageToolRetryOperation: 'smart_cutout',
+      imageToolRetryParameters: { command: 'never-persist-this' },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageToolStatus, 'failed')
+  assert.equal(restored.data.imageToolRetryOperation, 'smart_cutout')
+  assert.deepEqual(restored.data.imageToolRetryParameters, {})
+})
+
 test('独立画布图谱不生成剧集骨架且保留自由节点和连线', () => {
   assert.match(adapterSource, /function buildStandaloneCanvasGraph\(savedLayout, projectAssets = \[\]\)/)
   assert.match(adapterSource, /resolveFreeCanvasNodes\(savedLayout\)/)

@@ -3,7 +3,7 @@ const imageToolService = require('../services/imageToolService');
 
 const unavailable = (reason) => ({ available: false, reason });
 
-const OPERATIONS = Object.freeze({
+const BASE_OPERATIONS = Object.freeze({
   crop: { available: true, engine: 'sharp' },
   compress: { available: true, engine: 'sharp' },
   mirror: { available: true, engine: 'sharp' },
@@ -45,14 +45,28 @@ function handleError(res, log, error) {
   if (error.code === 'IMAGE_TOOL_OPERATION_UNAVAILABLE') {
     return response.error(res, 503, error.code, error.message);
   }
+  if (error.code === 'IMAGE_TOOL_PROCESSING_FAILED') {
+    return response.error(res, 503, error.code, error.message);
+  }
+  if (error.code === 'IMAGE_TOOL_BUSY') {
+    return response.error(res, 429, error.code, error.message);
+  }
   log.error('image tools operation', { error: error.message });
   return response.internalError(res, error.message);
 }
 
 function routes(db, log, options = {}) {
+  const modelTools = imageToolService.resolveModelTools(
+    options.modelTools,
+    options.env,
+    options.auditedModelHashes,
+  );
   return {
     capabilities: (_req, res) => response.success(res, {
-      operations: OPERATIONS,
+      operations: {
+        ...BASE_OPERATIONS,
+        ...imageToolService.modelCapabilities(modelTools),
+      },
     }),
     createOperation: async (req, res) => {
       try {
@@ -61,6 +75,7 @@ function routes(db, log, options = {}) {
           publicPlatformEnabled: Boolean(options.publicPlatformEnabled),
           tenantId: req.tenant?.id,
           userId: req.user?.id,
+          modelTools,
         });
         response.created(res, result);
       } catch (error) {

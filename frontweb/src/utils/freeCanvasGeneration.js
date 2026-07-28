@@ -8,6 +8,7 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   mirror: ['direction'],
   rotate: ['angle'],
   grid_crop: ['rows', 'columns'],
+  smart_cutout: [],
   adjust: ['brightness', 'saturation', 'contrast', 'temperature'],
   lut: ['preset'],
 })
@@ -86,9 +87,10 @@ function normalizeImageToolResultAssets(value) {
 }
 
 function normalizeImageToolRetryParameters(operation, value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const keys = IMAGE_TOOL_RETRY_PARAMETERS[operation]
   if (!keys) return undefined
+  if (keys.length === 0) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const parameters = {}
   for (const key of keys) {
     const candidate = value[key]
