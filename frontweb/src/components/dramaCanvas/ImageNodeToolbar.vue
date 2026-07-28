@@ -136,8 +136,11 @@
         </button>
       </div>
 
-      <div v-if="editorOperation === 'crop'" class="crop-stage">
-        <img ref="cropImage" :src="data.url" alt="裁剪预览" @load="initCropper" />
+      <div v-if="['crop', 'selection_cutout'].includes(editorOperation)" class="crop-stage">
+        <p v-if="editorOperation === 'selection_cutout'" class="crop-hint">
+          框选需要保留的主体区域；本地抠图模型只处理该区域并生成透明 PNG。
+        </p>
+        <img ref="cropImage" :src="data.url" alt="框选预览" @load="initCropper" />
       </div>
 
       <el-form v-else label-position="top">
@@ -345,6 +348,7 @@ function selectOperation(item) {
   }
   editorOperation.value = item.operation
   editorVisible.value = true
+  if (['crop', 'selection_cutout'].includes(item.operation)) nextTick(initCropper)
 }
 
 function switchEditorOperation(operation) {
@@ -356,11 +360,15 @@ function switchEditorOperation(operation) {
   }
   destroyCropper()
   editorOperation.value = operation
-  if (operation === 'crop') nextTick(initCropper)
+  if (['crop', 'selection_cutout'].includes(operation)) nextTick(initCropper)
 }
 
 async function initCropper() {
-  if (!editorVisible.value || editorOperation.value !== 'crop' || !cropImage.value) return
+  if (
+    !editorVisible.value
+    || !['crop', 'selection_cutout'].includes(editorOperation.value)
+    || !cropImage.value
+  ) return
   if (!CropperClass) {
     const [cropperModule] = await Promise.all([
       import('cropperjs'),
@@ -368,7 +376,11 @@ async function initCropper() {
     ])
     CropperClass = cropperModule.default
   }
-  if (!editorVisible.value || editorOperation.value !== 'crop' || !cropImage.value) return
+  if (
+    !editorVisible.value
+    || !['crop', 'selection_cutout'].includes(editorOperation.value)
+    || !cropImage.value
+  ) return
   destroyCropper()
   cropper = new CropperClass(cropImage.value, {
     viewMode: 1,
@@ -384,7 +396,7 @@ function destroyCropper() {
 }
 
 function operationParameters() {
-  if (editorOperation.value === 'crop') {
+  if (['crop', 'selection_cutout'].includes(editorOperation.value)) {
     if (!cropper) throw new Error('裁剪器尚未就绪')
     const data = cropper.getData(true)
     return {
@@ -444,6 +456,7 @@ function operationLabel(operation) {
     rotate: '旋转',
     grid_crop: '宫格裁剪',
     smart_cutout: '智能抠图',
+    selection_cutout: '框选抠图',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }
@@ -696,6 +709,13 @@ function requestFullscreen() {
   height: 430px;
   overflow: hidden;
   background: #09090b;
+}
+
+.crop-hint {
+  margin: 0;
+  padding: 10px 14px;
+  color: #d4d4d8;
+  background: #18181b;
 }
 
 .crop-stage img {

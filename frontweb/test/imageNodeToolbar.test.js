@@ -47,6 +47,7 @@ test('工具栏按后端能力启用并保留不可用原因', () => {
   assert.match(toolbarSource, /裁剪\/压缩\/镜像/)
   assert.match(toolbarSource, /宫格裁剪/)
   assert.match(toolbarSource, /smart_cutout: '智能抠图'/)
+  assert.match(toolbarSource, /selection_cutout: '框选抠图'/)
   assert.match(toolbarSource, /图片调整/)
   assert.match(toolbarSource, /LUT 调色/)
   assert.match(toolbarSource, /720全景/)
@@ -64,6 +65,7 @@ test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父�
   assert.match(toolbarSource, /top: data\.y/)
   assert.match(toolbarSource, /width: data\.width/)
   assert.match(toolbarSource, /height: data\.height/)
+  assert.match(toolbarSource, /\['crop', 'selection_cutout'\]\.includes\(editorOperation/)
 })
 
 test('执行图片工具成功才替换节点结果，失败保留旧图并写回错误', () => {

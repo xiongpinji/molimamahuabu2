@@ -71,6 +71,8 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.deepEqual(operations.lut.presets, ['cinematic', 'warm', 'cool', 'mono']);
   assert.equal(operations.smart_cutout.available, false);
   assert.match(operations.smart_cutout.reason, /许可证审计/);
+  assert.equal(operations.selection_cutout.available, false);
+  assert.match(operations.selection_cutout.reason, /许可证审计/);
   assert.equal(operations.panorama.available, false);
   assert.match(operations.panorama.reason, /模型能力/);
   assert.equal(
@@ -96,6 +98,8 @@ test('配置真实 rembg 命令后才公布智能抠图能力', (t) => {
   assert.equal(res.payload.data.operations.smart_cutout.engine, 'rembg');
   assert.equal(res.payload.data.operations.smart_cutout.engineVersion, '2.0.77');
   assert.equal(res.payload.data.operations.smart_cutout.model, 'u2netp');
+  assert.equal(res.payload.data.operations.selection_cutout.available, true);
+  assert.equal(res.payload.data.operations.selection_cutout.engine, 'rembg');
 });
 
 test('智能抠图能力探针拒绝目录、错误版本、缺失模型和错误模型哈希', (t) => {
@@ -185,6 +189,47 @@ test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', as
   assert.equal(resultMetadata.format, 'png');
   assert.equal(resultMetadata.hasAlpha, true);
   assert.equal(fs.existsSync(sourcePath), true);
+
+  const selectionRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-selection-cutout',
+      operation: 'selection_cutout',
+      parameters: { left: 2, top: 1, width: 4, height: 3 },
+    },
+  }, selectionRes);
+
+  assert.equal(selectionRes.statusCode, 201, JSON.stringify(selectionRes.payload));
+  const selectionAsset = assetService.getById(db, selectionRes.payload.data.resultAssetId);
+  const selectionMetadata = await sharp(selectionAsset.local_path).metadata();
+  assert.equal(selectionMetadata.width, 4);
+  assert.equal(selectionMetadata.height, 3);
+  assert.equal(selectionAsset.metadata.operation, 'selection_cutout');
+  assert.deepEqual(selectionAsset.metadata.parameters, {
+    model: 'u2netp',
+    left: 2,
+    top: 1,
+    width: 4,
+    height: 3,
+  });
+  assert.equal(
+    fs.readdirSync(path.dirname(selectionAsset.local_path))
+      .some((name) => name.endsWith('-selection.png')),
+    false
+  );
+
+  const invalidSelectionRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-selection-cutout-invalid',
+      operation: 'selection_cutout',
+      parameters: { left: 7, top: 5, width: 2, height: 2 },
+    },
+  }, invalidSelectionRes);
+  assert.equal(invalidSelectionRes.statusCode, 400);
+  assert.match(invalidSelectionRes.payload.error.message, /超出源图片/);
 });
 
 test('智能抠图限制同租户和全局并发并返回 429', async (t) => {
@@ -216,8 +261,18 @@ test('智能抠图限制同租户和全局并发并返回 429', async (t) => {
     url: '/static/source.png',
     local_path: sourcePath,
   });
+  const corruptSourcePath = path.join(storageRoot, 'corrupt-source.png');
+  fs.writeFileSync(corruptSourcePath, 'not an image');
+  const corruptSourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'corrupt-source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/corrupt-source.png',
+    local_path: corruptSourcePath,
+  });
 
-  async function assertSecondRequestBusy(toolOverrides, tenantIds) {
+  async function assertSecondRequestBusy(toolOverrides, tenantIds, requestOptions = {}) {
     const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
       cfg: { storage: { local_path: storageRoot } },
       modelTools: {
@@ -231,19 +286,23 @@ test('智能抠图限制同租户和全局并发并返回 429', async (t) => {
     });
     const firstRes = responseRecorder();
     const secondRes = responseRecorder();
-    const body = {
+    const firstBody = {
       assetId: sourceAsset.id,
       sourceNodeId: 'image-node-cutout-concurrency',
-      operation: 'smart_cutout',
-      parameters: {},
+      operation: requestOptions.operation || 'smart_cutout',
+      parameters: requestOptions.parameters || {},
     };
     const first = handlers.createOperation({
       tenant: { id: tenantIds[0] },
-      body,
+      body: firstBody,
     }, firstRes);
     await handlers.createOperation({
       tenant: { id: tenantIds[1] },
-      body,
+      body: {
+        ...firstBody,
+        assetId: requestOptions.secondAssetId || sourceAsset.id,
+        sourceNodeId: 'image-node-cutout-concurrency-second',
+      },
     }, secondRes);
     await first;
 
@@ -260,6 +319,127 @@ test('智能抠图限制同租户和全局并发并返回 429', async (t) => {
     { maxConcurrency: 1, maxTenantConcurrency: 2 },
     ['tenant-a', 'tenant-b'],
   );
+  await assertSecondRequestBusy(
+    { maxConcurrency: 2, maxTenantConcurrency: 1 },
+    ['tenant-a', 'tenant-a'],
+    {
+      operation: 'selection_cutout',
+      parameters: { left: 0, top: 0, width: 4, height: 3 },
+      secondAssetId: corruptSourceAsset.id,
+    },
+  );
+});
+
+test('框选抠图清洗损坏、超限源图和临时文件写入错误', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-selection-cutout-errors-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('框选抠图错误清洗测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const logEntries = [];
+  const handlers = createImageToolRoutes(db, {
+    info() {},
+    error(message, details) {
+      logEntries.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    modelTools: {
+      smart_cutout: fakeSmartCutoutTool(storageRoot),
+    },
+    auditedModelHashes: TEST_AUDITED_MODEL_HASHES,
+  });
+
+  const sources = [
+    {
+      name: 'corrupt-source.png',
+      contents: 'not an image',
+    },
+    {
+      name: 'oversized-source.svg',
+      contents: '<svg xmlns="http://www.w3.org/2000/svg" width="10000" height="10000"></svg>',
+    },
+  ];
+  for (const source of sources) {
+    const sourcePath = path.join(storageRoot, source.name);
+    fs.writeFileSync(sourcePath, source.contents);
+    const sourceAsset = assetService.create(db, { info() {} }, {
+      drama_id: dramaId,
+      name: source.name,
+      type: 'image',
+      category: 'canvas',
+      url: `/static/${source.name}`,
+      local_path: sourcePath,
+    });
+    const res = responseRecorder();
+
+    await handlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: `image-node-${source.name}`,
+        operation: 'selection_cutout',
+        parameters: { left: 0, top: 0, width: 1, height: 1 },
+      },
+    }, res);
+
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+    assert.equal(res.payload.error.message, '框选抠图处理失败');
+    assert.doesNotMatch(
+      res.payload.error.message,
+      /input|limit|pixel|svg|pngload|libvips|molimama-selection-cutout-errors/i,
+    );
+  }
+
+  const validSourcePath = path.join(storageRoot, 'valid-source.png');
+  await sharp({
+    create: {
+      width: 8,
+      height: 6,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(validSourcePath);
+  const validSourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'valid-source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/valid-source.png',
+    local_path: validSourcePath,
+  });
+  const derivedPath = path.join(storageRoot, 'derived');
+  fs.rmSync(derivedPath, { recursive: true, force: true });
+  fs.writeFileSync(derivedPath, 'block derived directory creation');
+  const writeFailureRes = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: validSourceAsset.id,
+      sourceNodeId: 'image-node-selection-cutout-write-failure',
+      operation: 'selection_cutout',
+      parameters: { left: 0, top: 0, width: 4, height: 3 },
+    },
+  }, writeFailureRes);
+
+  assert.equal(writeFailureRes.statusCode, 503);
+  assert.equal(writeFailureRes.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
+  assert.equal(writeFailureRes.payload.error.message, '框选抠图处理失败');
+  assert.doesNotMatch(
+    writeFailureRes.payload.error.message,
+    /EEXIST|derived|molimama-selection-cutout-errors/i,
+  );
+  const tasks = db.prepare('SELECT status, error FROM async_tasks ORDER BY created_at, id').all();
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks.every((task) => task.status === 'failed'), true);
+  assert.equal(tasks.every((task) => task.error === '框选抠图处理失败'), true);
+  assert.equal(logEntries.length, 3);
 });
 
 test('智能抠图处理失败时写回失败任务且不残留派生素材', async (t) => {

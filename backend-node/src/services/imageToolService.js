@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { execFile, spawnSync } = require('node:child_process');
+const { Transform } = require('node:stream');
+const { pipeline: pipelineAsync } = require('node:stream/promises');
 const { promisify } = require('node:util');
 const sharp = require('sharp');
 
@@ -254,19 +256,21 @@ function resolveModelTools(
 
 function modelCapabilities(modelTools) {
   const smartCutout = modelTools?.smart_cutout;
+  const available = smartCutout
+    ? {
+      available: true,
+      engine: smartCutout.engine,
+      engineVersion: smartCutout.engineVersion,
+      model: smartCutout.model,
+      modelSha256: smartCutout.modelSha256,
+    }
+    : {
+      available: false,
+      reason: '未配置已通过许可证审计的本地 rembg 与 U²-Net 模型',
+    };
   return {
-    smart_cutout: smartCutout
-      ? {
-        available: true,
-        engine: smartCutout.engine,
-        engineVersion: smartCutout.engineVersion,
-        model: smartCutout.model,
-        modelSha256: smartCutout.modelSha256,
-      }
-      : {
-        available: false,
-        reason: '未配置已通过许可证审计的本地 rembg 与 U²-Net 模型',
-      },
+    smart_cutout: { ...available },
+    selection_cutout: { ...available },
   };
 }
 
@@ -341,13 +345,38 @@ async function runSmartCutoutUnlocked(sourcePath, outputPath, tool, log) {
   };
 }
 
-async function runSmartCutout(sourcePath, outputPath, tool, log, tenantId) {
-  const release = tool.limiter.acquire(tenantId);
-  try {
-    return await runSmartCutoutUnlocked(sourcePath, outputPath, tool, log);
-  } finally {
-    release();
-  }
+async function writeLimitedSelectionPng(source, selection, outputPath) {
+  let size = 0;
+  const sizeLimiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      size += chunk.length;
+      if (size > SMART_CUTOUT_MAX_OUTPUT_BYTES) {
+        callback(Object.assign(
+          new Error('框选抠图临时产物超过大小限制'),
+          { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+        ));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  await pipelineAsync(
+    source.extract(selection).png(),
+    sizeLimiter,
+    fs.createWriteStream(outputPath, { flags: 'wx' }),
+  );
+}
+
+function sanitizeCutoutError(error, operation, log) {
+  if (String(error?.code || '').startsWith('IMAGE_TOOL_')) return error;
+  log.error('image tool cutout processing', {
+    operation,
+    error: String(error?.message || error),
+  });
+  return Object.assign(
+    new Error(operation === 'selection_cutout' ? '框选抠图处理失败' : '智能抠图处理失败'),
+    { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+  );
 }
 
 async function runCrop(sourcePath, parameters) {
@@ -524,8 +553,9 @@ async function createOperation(db, log, request, context = {}) {
   const operation = String(request.operation || '').trim();
   const modelTools = context.modelTools || resolveModelTools(undefined, context.env);
   const deterministicOperations = ['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'];
+  const cutoutOperations = ['smart_cutout', 'selection_cutout'];
   if (!deterministicOperations.includes(operation)
-    && !(operation === 'smart_cutout' && modelTools.smart_cutout)) {
+    && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
@@ -608,44 +638,73 @@ async function createOperation(db, log, request, context = {}) {
       return result;
     }
 
-    if (operation === 'smart_cutout') {
-      const outputDir = resolveDerivedDir(sourcePath);
-      fs.mkdirSync(outputDir, { recursive: true });
-      const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
-      outputPaths.push(outputPath);
-      const prepared = await runSmartCutout(
-        sourcePath,
-        outputPath,
-        modelTools.smart_cutout,
-        log,
-        context.tenantId,
-      );
-      let result;
-      db.transaction(() => {
-        const resultAsset = createDerivedAsset(db, log, {
-          asset,
-          request,
-          operation,
-          task,
-          format: prepared.format,
+    if (cutoutOperations.includes(operation)) {
+      const release = modelTools.smart_cutout.limiter.acquire(context.tenantId);
+      try {
+        const outputDir = resolveDerivedDir(sourcePath);
+        fs.mkdirSync(outputDir, { recursive: true });
+        const outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+        outputPaths.push(outputPath);
+        let cutoutSourcePath = sourcePath;
+        let selection = null;
+        if (operation === 'selection_cutout') {
+          const source = sharp(sourcePath, { limitInputPixels: SMART_CUTOUT_MAX_PIXELS });
+          const metadata = await source.metadata();
+          if (!FORMAT_INFO[metadata.format] || !metadata.width || !metadata.height) {
+            fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+          }
+          selection = cropParameters(request.parameters || {}, metadata);
+          if (selection.width * selection.height > SMART_CUTOUT_MAX_PIXELS) {
+            fail('IMAGE_TOOL_INVALID_INPUT', '框选范围超过像素限制');
+          }
+          cutoutSourcePath = path.join(
+            outputDir,
+            `${Date.now()}-${randomUUID()}-selection.png`,
+          );
+          outputPaths.push(cutoutSourcePath);
+          await writeLimitedSelectionPng(source, selection, cutoutSourcePath);
+        }
+        const prepared = await runSmartCutoutUnlocked(
+          cutoutSourcePath,
           outputPath,
-          outputInfo: prepared.outputInfo,
-          parameters: prepared.normalized,
-          storageRoot,
-          engine: prepared.engine,
-          engineVersion: prepared.engineVersion,
-        });
-        result = {
-          taskId: task.id,
-          status: 'success',
-          sourceAssetId: asset.id,
-          resultAssetId: resultAsset.id,
-          resultUrl: resultAsset.url,
-          operation,
-        };
-        taskService.updateTaskResult(db, task.id, result);
-      })();
-      return result;
+          modelTools.smart_cutout,
+          log,
+        );
+        if (selection) {
+          prepared.normalized = { ...prepared.normalized, ...selection };
+          fs.rmSync(cutoutSourcePath, { force: true });
+        }
+        let result;
+        db.transaction(() => {
+          const resultAsset = createDerivedAsset(db, log, {
+            asset,
+            request,
+            operation,
+            task,
+            format: prepared.format,
+            outputPath,
+            outputInfo: prepared.outputInfo,
+            parameters: prepared.normalized,
+            storageRoot,
+            engine: prepared.engine,
+            engineVersion: prepared.engineVersion,
+          });
+          result = {
+            taskId: task.id,
+            status: 'success',
+            sourceAssetId: asset.id,
+            resultAssetId: resultAsset.id,
+            resultUrl: resultAsset.url,
+            operation,
+          };
+          taskService.updateTaskResult(db, task.id, result);
+        })();
+        return result;
+      } catch (error) {
+        throw sanitizeCutoutError(error, operation, log);
+      } finally {
+        release();
+      }
     }
 
     let prepared;
