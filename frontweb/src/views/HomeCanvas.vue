@@ -391,18 +391,12 @@ function onConnect(connection) {
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetId = String(nodeOrId || '')
-  const connectedNodeIds = new Set(
-    edges.value
-      .filter((edge) => String(edge.target) === targetId)
-      .map((edge) => String(edge.source))
-  )
   return nodes.value
     .filter((node) => (
       node.type === 'homeCanvasNode'
       && String(node.id) !== targetId
       && node.data?.kind === 'image'
       && node.data?.url
-      && !connectedNodeIds.has(String(node.id))
     ))
     .map((node) => ({
       nodeId: String(node.id),

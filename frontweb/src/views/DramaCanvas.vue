@@ -2228,16 +2228,12 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  const connectedNodeIds = new Set(
-    freeCanvasNodeInputReferences(targetNode).map((reference) => String(reference.nodeId)),
-  )
   return allGraphNodes.value
     .filter((node) => (
       node.type === 'homeCanvasNode'
       && String(node.id) !== String(targetNode.id)
       && node.data?.kind === 'image'
       && node.data?.url
-      && !connectedNodeIds.has(String(node.id))
     ))
     .map((node) => ({
       nodeId: String(node.id),

@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const canvasSource = readFileSync(resolve(__dirname, '../src/views/DramaCanvas.vue'), 'utf8')
+const homeCanvasSource = readFileSync(resolve(__dirname, '../src/views/HomeCanvas.vue'), 'utf8')
 const nodeSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/HomeCanvasNode.vue'), 'utf8')
 const contextMenuSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/CanvasContextMenu.vue'), 'utf8')
 const imagesSource = readFileSync(resolve(__dirname, '../src/api/images.js'), 'utf8')
@@ -68,6 +69,8 @@ test('图片和视频编辑器可上传参考图，视频可用 @ 主动选择�
   assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
   assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceImage,\s*\n\s*attachFreeCanvasReference,/)
+  assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
+  assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
 })
 
 test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改不兼容节点', () => {
