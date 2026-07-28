@@ -37,6 +37,30 @@ const edgeHomeCanvasState = {
   edges: [{ id: 'e2e:edge', source: 'e2e:source', target: 'e2e:target-a', type: 'smoothstep' }],
   viewport: { x: 0, y: 0, zoom: 0.75 },
 }
+const mentionHomeCanvasState = {
+  version: 1,
+  nodes: [
+    {
+      id: 'e2e:image-reference',
+      type: 'homeCanvasNode',
+      position: { x: 360, y: 420 },
+      data: {
+        kind: 'image',
+        title: '女主角定妆照',
+        content: '',
+        url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
+      },
+    },
+    {
+      id: 'e2e:video-target',
+      type: 'homeCanvasNode',
+      position: { x: 900, y: 420 },
+      data: { kind: 'video', title: '出场镜头', content: '女主角走入画面 ' },
+    },
+  ],
+  edges: [],
+  viewport: { x: 0, y: 0, zoom: 0.75 },
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(({ storageKey, state }) => {
@@ -70,6 +94,36 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.nodes?.find((node) => node.id === 'e2e:seed')?.data?.content || ''
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
+})
+
+test('视频提示词输入 @ 可选择图片节点并生成真实参考连线', async ({ page }) => {
+  await page.addInitScript(({ storageKey, state }) => {
+    window.localStorage.setItem(storageKey, JSON.stringify(state))
+  }, { storageKey: homeCanvasStorageKey, state: mentionHomeCanvasState })
+  await page.reload()
+
+  const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
+  await videoNode.click()
+  const promptInput = page.getByRole('textbox', { name: '生成提示词' })
+  await promptInput.fill('女主角走入画面 @')
+
+  const mentionMenu = page.getByLabel('@选择参考图')
+  await expect(mentionMenu).toBeVisible()
+  await expect(mentionMenu.locator('img')).toHaveCount(1)
+  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
+
+  await expect(promptInput).toHaveValue('女主角走入画面 @女主角定妆照 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return {
+      content: state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.content || '',
+      edge: state.edges?.map(({ source, target }) => ({ source, target })) || [],
+    }
+  }, homeCanvasStorageKey)).toEqual({
+    content: '女主角走入画面 @女主角定妆照 ',
+    edge: [{ source: 'e2e:image-reference', target: 'e2e:video-target' }],
+  })
 })
 
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
