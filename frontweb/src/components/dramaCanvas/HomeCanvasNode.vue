@@ -85,7 +85,7 @@
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
           <div class="reference-actions">
-            <button type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
+            <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
             <select
               v-if="data.kind === 'video'"
               aria-label="@选择参考图"
@@ -101,6 +101,7 @@
               </option>
             </select>
             <input
+              v-if="canUpload"
               ref="referenceFileInput"
               class="file-input"
               type="file"

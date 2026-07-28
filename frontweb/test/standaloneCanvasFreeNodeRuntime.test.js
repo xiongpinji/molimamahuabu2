@@ -54,7 +54,8 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
 })
 
 test('图片和视频编辑器可上传参考图，视频可用 @ 主动选择画布图片并形成真实连线', () => {
-  assert.match(nodeSource, /aria-label="上传参考图"/)
+  assert.match(nodeSource, /v-if="canUpload" type="button" aria-label="上传参考图"/)
+  assert.match(nodeSource, /v-if="canUpload"\s+ref="referenceFileInput"/)
   assert.match(nodeSource, /ctx\?\.uploadFreeCanvasReferenceImage\?\.\(props\.id, file\)/)
   assert.match(nodeSource, /aria-label="@选择参考图"/)
   assert.match(nodeSource, /ctx\?\.attachFreeCanvasReference\?\.\(props\.id, sourceNodeId\)/)
