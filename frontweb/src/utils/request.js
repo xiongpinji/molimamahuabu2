@@ -34,7 +34,8 @@ request.interceptors.response.use(
       || error.config?.headers?.authorization
       || ''
     const requestToken = /^Bearer\s+(.+)$/i.exec(String(authorization))?.[1] || ''
-    if (clearSessionOnUnauthorized(error.response?.status, true, undefined, requestToken)
+    const errorCode = error.response?.data?.error?.code
+    if (clearSessionOnUnauthorized(error.response?.status, true, undefined, requestToken, errorCode)
       && typeof window !== 'undefined'
       && window.location.pathname !== '/'
       && window.location.pathname !== '/login') {

@@ -4,6 +4,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 
 const { setupRouter } = require('../src/routes');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 test('首管理员必须同时通过登录、配置邮箱和独立管理员令牌完成引导', async (t) => {
   const previous = {
@@ -24,7 +25,7 @@ test('首管理员必须同时通过登录、配置邮箱和独立管理员令�
   process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL = 'founder@example.com';
 
   const db = new Database(':memory:');
-  db.exec('CREATE TABLE prompt_overrides (key TEXT PRIMARY KEY, content TEXT, updated_at TEXT)');
+  runMigrationsAndEnsure(db);
   const app = express();
   app.use(express.json());
   app.use('/api/v1', setupRouter({}, db, { error() {}, warn() {}, info() {} }));
@@ -81,4 +82,9 @@ test('首管理员必须同时通过登录、配置邮箱和独立管理员令�
     db.prepare("SELECT COUNT(*) AS count FROM platform_users WHERE platform_role = 'admin'").get().count,
     1,
   );
+
+  const aiConfigsResponse = await fetch(`${baseUrl}/ai-configs`, {
+    headers: { Authorization: `Bearer ${bootstrapped.data.token}` },
+  });
+  assert.equal(aiConfigsResponse.status, 200);
 });
