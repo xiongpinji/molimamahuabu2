@@ -34,7 +34,7 @@ const DEFINITIONS = {
     queryEndpoint: '/videos/{taskId}',
     capabilities: {
       aspectRatios: ['16:9', '9:16', '1:1', '21:9'],
-      durations: [5],
+      durations: [5, 10, 15],
       resolutions: [],
       maxReferences: 12,
       quantities: [1],

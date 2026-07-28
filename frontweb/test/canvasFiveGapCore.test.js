@@ -31,6 +31,10 @@ test('model capabilities restrict parameters and estimate quantity cost', () => 
   assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 3), 36)
 })
 
+test('video capability fallback includes the supported 15 second duration', () => {
+  assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 10, 15])
+})
+
 test('local canvas binding preserves existing project nodes and remaps collisions', () => {
   const merged = mergeLocalCanvasIntoProjectLayout(
     { nodes: { a: { x: 1, y: 2 } }, free_nodes: [node('a', 'text')], manual_edges: [] },
