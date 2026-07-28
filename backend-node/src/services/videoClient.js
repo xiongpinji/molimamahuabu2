@@ -3361,10 +3361,10 @@ async function callXaiVideoApi(config, log, opts) {
       body.image = { url: imageUrlForApi };
       const extraRefs = mergedImages.filter((u) => u !== imageUrlForApi);
       if (extraRefs.length > 0) {
-        body.reference_images = extraRefs.map((u) => ({ url: u }));
+        body.reference_images = extraRefs;
       }
     } else if (mergedImages.length > 0) {
-      body.reference_images = mergedImages.map((u) => ({ url: u }));
+      body.reference_images = mergedImages;
     }
     logExtra = {
       body_shape: 'grok-imagine',
@@ -3390,7 +3390,7 @@ async function callXaiVideoApi(config, log, opts) {
     images: body.images,
     image_url_head: body.image?.url ? String(body.image.url).slice(0, 100) : null,
     reference_images_heads: Array.isArray(body.reference_images)
-      ? body.reference_images.map((r) => String(r?.url || '').slice(0, 100))
+      ? body.reference_images.map((r) => String(r || '').slice(0, 100))
       : undefined,
   });
 
@@ -5383,6 +5383,7 @@ module.exports = {
   getDefaultVideoConfig,
   getVideoArtifactFetchOptions,
   callAihubccVideoApi,
+  callXaiVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
   normalizeAspectRatioForApi,
