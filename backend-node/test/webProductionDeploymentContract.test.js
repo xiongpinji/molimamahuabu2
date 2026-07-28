@@ -12,7 +12,7 @@ function read(relativePath) {
 
 test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查', () => {
   const dockerfile = read('Dockerfile');
-  assert.match(dockerfile, /npm run build/);
+  assert.match(dockerfile, /npm run build:public/);
   assert.match(dockerfile, /WEB_DIST_PATH=/);
   assert.match(dockerfile, /ffmpeg/);
   assert.match(dockerfile, /python3/);
@@ -21,6 +21,16 @@ test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查'
   assert.match(dockerfile, /HEALTHCHECK/);
   assert.doesNotMatch(dockerfile, /PLATFORM_JWT_SECRET\s*=/);
   assert.doesNotMatch(dockerfile, /PLATFORM_ADMIN_TOKEN\s*=/);
+});
+
+test('网页生产构建显式启用公开平台模式', () => {
+  const packageJson = JSON.parse(read('frontweb/package.json'));
+  const buildScript = read('frontweb/scripts/build-public.mjs');
+
+  assert.equal(packageJson.scripts['build:public'], 'node scripts/build-public.mjs');
+  assert.match(buildScript, /VITE_PUBLIC_PLATFORM_MODE/);
+  assert.match(buildScript, /true/);
+  assert.match(buildScript, /build\(\)/);
 });
 
 test('生产 Compose 使用 HTTPS 入口、持久卷、健康检查和自动重启', () => {

@@ -9,6 +9,10 @@ const redeemOperationsSource = fs.readFileSync(
 )
 const tenantSource = fs.readFileSync(new URL('../src/views/TenantConsole.vue', import.meta.url), 'utf8')
 const aiConfigSource = fs.readFileSync(new URL('../src/views/AiConfig.vue', import.meta.url), 'utf8')
+const aiConfigContentSource = fs.readFileSync(
+  new URL('../src/components/AIConfigContent.vue', import.meta.url),
+  'utf8',
+)
 const platformHeaderSource = fs.readFileSync(
   new URL('../src/components/PlatformHeader.vue', import.meta.url),
   'utf8',
@@ -45,6 +49,9 @@ test('模型收费、兑换码生成和用户兑换都有明确入口与字段',
     assert.match(redeemOperationsSource, new RegExp(label))
   }
   assert.match(tenantSource, /id="redeem-credits"/)
+  assert.match(aiConfigContentSource, /设置定价/)
+  assert.match(aiConfigContentSource, /tab:\s*'models'/)
+  assert.match(aiConfigContentSource, /model:/)
 })
 
 test('租户控制台使用兑换码而不是创建支付订单', () => {
@@ -52,6 +59,19 @@ test('租户控制台使用兑换码而不是创建支付订单', () => {
   assert.match(tenantSource, /redeemCredits/)
   assert.doesNotMatch(tenantSource, /createBillingOrder/)
   assert.doesNotMatch(tenantSource, /待支付订单/)
+})
+
+test('用户端明确分开展示积分消耗明细和积分兑换记录', () => {
+  assert.match(tenantSource, /积分消耗明细/)
+  assert.match(tenantSource, /积分兑换记录/)
+  assert.match(tenantSource, /consumptionTransactions/)
+  assert.match(tenantSource, /redemptionTransactions/)
+})
+
+test('公开平台管理员登录后无需再次输入静态管理令牌', () => {
+  assert.match(adminSource, /requiresAdminToken/)
+  assert.match(adminSource, /onMounted/)
+  assert.match(adminSource, /modelSearch\.value\s*=\s*requestedModel/)
 })
 
 test('前端 API 覆盖兑换和管理员控制接口', () => {
