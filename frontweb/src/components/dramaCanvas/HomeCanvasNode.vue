@@ -617,6 +617,7 @@ function chooseReferenceFile() {
 }
 
 function openConfig() {
+  editorFullscreen.value = false
   ctx?.openFreeNodeConfig?.(props.id)
 }
 
@@ -846,9 +847,9 @@ watch(isSelected, (selected) => {
 .node-expanded-editor {
   position: fixed;
   right: 24px;
-  bottom: 24px;
+  bottom: 82px;
   left: 50%;
-  z-index: 3200;
+  z-index: 1999;
   width: min(860px, calc(100vw - 48px));
   max-height: min(58vh, 560px);
   overflow-y: auto;
@@ -862,6 +863,7 @@ watch(isSelected, (selected) => {
 }
 .node-expanded-editor.is-fullscreen {
   inset: 16px;
+  z-index: 3200;
   width: auto;
   max-height: none;
   transform: none;
@@ -1196,7 +1198,7 @@ watch(isSelected, (selected) => {
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
 @media (max-width: 760px) {
-  .node-expanded-editor { right: 12px; bottom: 12px; width: calc(100vw - 24px); padding: 16px; }
+  .node-expanded-editor { right: 12px; bottom: 82px; width: calc(100vw - 24px); padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-heading .editor-hint { display: none; }
 }

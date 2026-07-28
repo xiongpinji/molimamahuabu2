@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 const homeCanvasStorageKey = 'moli-mama.home-canvas.v1'
+const pendingHomeCanvasStateKey = 'moli-mama.e2e.pending-home-canvas-state'
 const seededHomeCanvasState = {
   version: 1,
   nodes: [{
@@ -78,10 +79,10 @@ const generatedMentionHomeCanvasState = {
 }
 
 async function loadHomeCanvasState(page, state) {
-  await page.evaluate(({ storageKey, nextState }) => {
-    window.localStorage.setItem(storageKey, JSON.stringify(nextState))
+  await page.evaluate(({ pendingKey, nextState }) => {
+    window.localStorage.setItem(pendingKey, JSON.stringify(nextState))
   }, {
-    storageKey: homeCanvasStorageKey,
+    pendingKey: pendingHomeCanvasStateKey,
     nextState: state,
   })
   await page.reload()
@@ -89,11 +90,19 @@ async function loadHomeCanvasState(page, state) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+  await page.addInitScript(({ storageKey, pendingKey }) => {
     window.localStorage.setItem('moli_mama_session', JSON.stringify({
       token: 'canvas-e2e-session',
       user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
     }))
+    const pendingState = window.localStorage.getItem(pendingKey)
+    if (pendingState) {
+      window.localStorage.setItem(storageKey, pendingState)
+      window.localStorage.removeItem(pendingKey)
+    }
+  }, {
+    storageKey: homeCanvasStorageKey,
+    pendingKey: pendingHomeCanvasStateKey,
   })
   await page.goto('/canvas/local')
   await loadHomeCanvasState(page, seededHomeCanvasState)
