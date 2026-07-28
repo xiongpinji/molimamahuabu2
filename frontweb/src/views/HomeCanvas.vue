@@ -389,6 +389,35 @@ function onConnect(connection) {
   scheduleSave()
 }
 
+function freeCanvasReferenceCandidates(nodeOrId) {
+  const targetId = String(nodeOrId || '')
+  const connectedNodeIds = new Set(
+    edges.value
+      .filter((edge) => String(edge.target) === targetId)
+      .map((edge) => String(edge.source))
+  )
+  return nodes.value
+    .filter((node) => (
+      node.type === 'homeCanvasNode'
+      && String(node.id) !== targetId
+      && node.data?.kind === 'image'
+      && node.data?.url
+      && !connectedNodeIds.has(String(node.id))
+    ))
+    .map((node) => ({
+      nodeId: String(node.id),
+      title: node.data?.title || '未命名图片',
+      url: node.data.url,
+    }))
+}
+
+function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
+  onConnect({
+    source: String(sourceNodeId || ''),
+    target: String(targetNodeId || ''),
+  })
+}
+
 function onNodesChange(changes = []) {
   if (changes.some((change) => change.type !== 'select')) scheduleSave()
 }
@@ -816,6 +845,8 @@ provide(CANVAS_CONTEXT_KEY, {
   isFreeCanvasNodeSelected: (nodeId) => activeNodeId.value === String(nodeId),
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
+  getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
+  attachFreeCanvasReference,
 })
 
 onMounted(() => {

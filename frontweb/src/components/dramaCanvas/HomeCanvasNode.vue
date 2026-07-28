@@ -86,20 +86,6 @@
           </div>
           <div class="reference-actions">
             <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
-            <select
-              v-if="data.kind === 'video'"
-              aria-label="@选择参考图"
-              @change="attachReference"
-            >
-              <option value="">@ 选择画布图片</option>
-              <option
-                v-for="candidate in referenceCandidates"
-                :key="candidate.nodeId"
-                :value="candidate.nodeId"
-              >
-                {{ candidate.title }}
-              </option>
-            </select>
             <input
               v-if="canUpload"
               ref="referenceFileInput"
@@ -151,14 +137,33 @@
           <button type="button" aria-label="项目列表" @click="prefixSelection('- ')">☷</button>
         </div>
 
-        <textarea
-          ref="contentInput"
-          v-model="draft.content"
-          :class="data.kind === 'text' ? 'node-textarea' : 'prompt-input'"
-          :aria-label="data.kind === 'text' ? '文本内容' : '生成提示词'"
-          :placeholder="data.kind === 'text' ? '写下内容，或输入要求后让 AI 继续创作…' : promptPlaceholder"
-          @blur="saveDraft"
-        />
+        <div class="prompt-editor">
+          <textarea
+            ref="contentInput"
+            v-model="draft.content"
+            :class="data.kind === 'text' ? 'node-textarea' : 'prompt-input'"
+            :aria-label="data.kind === 'text' ? '文本内容' : '生成提示词'"
+            :placeholder="data.kind === 'text' ? '写下内容，或输入要求后让 AI 继续创作…' : promptPlaceholder"
+            @input="handlePromptInput"
+            @blur="saveDraft"
+          />
+          <div
+            v-if="showReferenceMention"
+            class="reference-mention-menu"
+            aria-label="@选择参考图"
+          >
+            <button
+              v-for="candidate in filteredReferenceCandidates"
+              :key="candidate.nodeId"
+              type="button"
+              @mousedown.prevent="selectReferenceMention(candidate)"
+            >
+              <img :src="candidate.url" alt="" />
+              <span>{{ candidate.title }}</span>
+            </button>
+            <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
+          </div>
+        </div>
 
         <div v-if="data.kind === 'audio'" class="audio-toolbar" aria-label="语音文本工具栏">
           <button type="button" aria-label="插入停顿" @mousedown.prevent @click="insertAudioText('……')">停顿</button>
@@ -292,7 +297,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
@@ -308,6 +313,9 @@ const fileInput = ref(null)
 const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
+const mentionStart = ref(-1)
+const mentionEnd = ref(-1)
+const mentionQuery = ref('')
 const draft = reactive({
   title: '',
   content: '',
@@ -359,6 +367,12 @@ const referenceCandidates = computed(() => (
     ? (ctx?.getFreeNodeReferenceCandidates?.(props.id) || [])
     : []
 ))
+const filteredReferenceCandidates = computed(() => {
+  const query = mentionQuery.value.trim().toLowerCase()
+  if (!query) return referenceCandidates.value
+  return referenceCandidates.value.filter((candidate) => String(candidate.title || '').toLowerCase().includes(query))
+})
+const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
 const modelListId = computed(() => `free-node-models-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
@@ -447,6 +461,37 @@ function chooseFile() {
   fileInput.value?.click()
 }
 
+function handlePromptInput(event) {
+  if (props.data.kind !== 'video') return
+  const cursor = Number(event.target.selectionStart ?? draft.content.length)
+  const beforeCursor = draft.content.slice(0, cursor)
+  const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/)
+  if (!match) {
+    mentionStart.value = -1
+    mentionEnd.value = -1
+    mentionQuery.value = ''
+    return
+  }
+  mentionStart.value = cursor - match[1].length - 1
+  mentionEnd.value = cursor
+  mentionQuery.value = match[1]
+}
+
+async function selectReferenceMention(candidate) {
+  const sourceNodeId = String(candidate?.nodeId || '')
+  if (!sourceNodeId || mentionStart.value < 0) return
+  const cursor = mentionStart.value + String(candidate.title || '').length + 2
+  draft.content = `${draft.content.slice(0, mentionStart.value)}@${candidate.title} ${draft.content.slice(mentionEnd.value)}`
+  mentionStart.value = -1
+  mentionEnd.value = -1
+  mentionQuery.value = ''
+  ctx?.attachFreeCanvasReference?.(props.id, sourceNodeId)
+  await saveDraft()
+  await nextTick()
+  contentInput.value?.focus()
+  contentInput.value?.setSelectionRange(cursor, cursor)
+}
+
 function chooseReferenceFile() {
   referenceFileInput.value?.click()
 }
@@ -474,12 +519,6 @@ async function uploadReferenceFile(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
   if (file) await ctx?.uploadFreeCanvasReferenceImage?.(props.id, file)
-}
-
-function attachReference(event) {
-  const sourceNodeId = String(event.target.value || '')
-  event.target.value = ''
-  if (sourceNodeId) ctx?.attachFreeCanvasReference?.(props.id, sourceNodeId)
 }
 
 async function deleteNode() {
@@ -837,7 +876,51 @@ watch(isSelected, (selected) => {
 .result-strip img { width: 100%; height: 100%; object-fit: cover; }
 .result-actions { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
 .file-input { display: none; }
+.prompt-editor { position: relative; }
 .prompt-input { min-height: 112px; padding: 0 0 14px; font-size: 14px; line-height: 1.7; }
+.reference-mention-menu {
+  position: absolute;
+  z-index: 8;
+  top: 42px;
+  left: 12px;
+  display: grid;
+  width: min(360px, calc(100% - 24px));
+  max-height: 240px;
+  gap: 4px;
+  padding: 8px;
+  overflow-y: auto;
+  border: 1px solid #3f3f46;
+  border-radius: 12px;
+  background: #202024;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
+}
+.reference-mention-menu button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 7px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #e4e4e7;
+  cursor: pointer;
+  text-align: left;
+}
+.reference-mention-menu button:hover { background: #303036; }
+.reference-mention-menu img {
+  width: 44px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  object-fit: cover;
+}
+.reference-mention-menu span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-mention-menu p { margin: 8px; color: #71717a; font-size: 12px; }
 .editor-options {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
