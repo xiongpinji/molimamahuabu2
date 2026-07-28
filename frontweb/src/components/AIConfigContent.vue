@@ -114,9 +114,10 @@
                 <span v-else class="no-default">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="240" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openTest(row)">测试</el-button>
+                <el-button link type="primary" size="small" @click="openPricing(row)">设置定价</el-button>
                 <el-button link type="primary" size="small" @click="onRowEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
                 <el-button v-if="!vendorLock.enabled" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
               </template>
@@ -1138,6 +1139,7 @@ input_reference = (图片文件，可选)</pre>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
@@ -1154,6 +1156,12 @@ import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
+const router = useRouter()
+
+function openPricing(row) {
+  const model = row.default_model || (Array.isArray(row.model) ? row.model[0] : '')
+  router.push({ name: 'billing-admin', query: { tab: 'models', model } })
+}
 
 // ---- 生成设置 ----
 const genConcurrencyInput = ref(3)

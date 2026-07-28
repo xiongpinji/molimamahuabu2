@@ -116,14 +116,31 @@
       <section class="panel">
         <div class="panel-heading">
           <div>
-            <h2>积分流水</h2>
-            <p>展示兑换和管理员调账记录，便于核对工作区积分变化。</p>
+            <h2>积分消耗明细</h2>
+            <p>展示已经完成的模型调用、消耗积分和对应生成资源。</p>
           </div>
         </div>
-        <el-table :data="transactions" empty-text="暂无积分流水">
+        <el-table :data="consumptionTransactions" empty-text="暂无积分消耗记录">
           <el-table-column prop="amount" label="积分变动" width="120" />
+          <el-table-column prop="model" label="模型" min-width="180" />
+          <el-table-column prop="resource_type" label="资源类型" width="120" />
           <el-table-column prop="reason" label="原因" min-width="220" />
-          <el-table-column prop="event_type" label="类型" width="130" />
+          <el-table-column label="时间" min-width="180">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+        </el-table>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>积分兑换记录</h2>
+            <p>展示当前工作区通过兑换码获得积分的历史记录。</p>
+          </div>
+        </div>
+        <el-table :data="redemptionTransactions" empty-text="暂无积分兑换记录">
+          <el-table-column prop="amount" label="兑换积分" width="120" />
+          <el-table-column prop="reason" label="兑换说明" min-width="260" />
           <el-table-column label="时间" min-width="180">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
           </el-table-column>
@@ -194,6 +211,12 @@ const sessionUserId = readSession()?.user?.id || ''
 
 const currentTenant = computed(() => tenants.value.find((tenant) => tenant.id === tenantId.value) || null)
 const isManager = computed(() => ['owner', 'admin'].includes(currentTenant.value?.role))
+const consumptionTransactions = computed(() => transactions.value.filter(
+  (item) => item.event_type === 'confirm',
+))
+const redemptionTransactions = computed(() => transactions.value.filter(
+  (item) => item.event_type === 'redeem',
+))
 
 function canChangeMemberRole(row) {
   return Boolean(row && row.user_id !== sessionUserId && currentTenant.value?.role === 'owner')

@@ -7,7 +7,7 @@
       ? '统一管理兑换码、积分流水、成本利润、对账和每个模型的独立计费规则。'
       : '生成、查询和停用平台兑换码。'"
   >
-    <section v-if="isSuperAdmin && !unlocked" class="unlock-panel" aria-labelledby="unlock-title">
+    <section v-if="requiresAdminToken && !unlocked" class="unlock-panel" aria-labelledby="unlock-title">
       <div>
         <p class="panel-kicker">敏感操作保护</p>
         <h2 id="unlock-title">验证管理员身份</h2>
@@ -301,7 +301,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
@@ -325,10 +325,12 @@ const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLA
 const route = useRoute()
 const sessionRole = readSession()?.user?.role
 const isSuperAdmin = sessionRole ? sessionRole === 'admin' : !publicMode
+const requiresAdminToken = isSuperAdmin && publicMode && !sessionRole
 const adminToken = ref('')
 const loading = ref(false)
-const unlocked = ref(!isSuperAdmin)
+const unlocked = ref(!requiresAdminToken)
 const requestedTab = String(route.query.tab || '')
+const requestedModel = String(route.query.model || '').trim()
 const activeTab = ref(isSuperAdmin && ['models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
   ? requestedTab
   : (isSuperAdmin ? 'models' : 'codes'))
@@ -339,7 +341,7 @@ const transactions = ref([])
 const savingModel = ref('')
 const savingUser = ref('')
 const adjustingCredits = ref(false)
-const modelSearch = ref('')
+const modelSearch = ref(requestedModel)
 const modelCategory = ref('all')
 const modelPricingState = ref('all')
 const ledgerPeriod = ref('day')
@@ -577,6 +579,18 @@ async function submitAdjustment() {
     adjustingCredits.value = false
   }
 }
+
+onMounted(async () => {
+  if (isSuperAdmin && unlocked.value) {
+    loading.value = true
+    try {
+      await loadAll()
+      modelSearch.value = requestedModel
+    } finally {
+      loading.value = false
+    }
+  }
+})
 </script>
 
 <style scoped>
