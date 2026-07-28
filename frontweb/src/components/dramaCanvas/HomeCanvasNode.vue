@@ -330,7 +330,11 @@ const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),
   props.data.url,
 ].filter(Boolean))])
-const isSelected = computed(() => props.selected || Boolean(ctx?.isFreeCanvasNodeSelected?.(props.id)))
+const isSelected = computed(() => (
+  props.selected
+  || ctx?.focusedNodeId?.value === props.id
+  || Boolean(ctx?.isFreeCanvasNodeSelected?.(props.id))
+))
 const hasMultiSelection = computed(() => (ctx?.selectedFreeNodeIds?.value?.length || 0) > 1)
 const assetSaveFailed = computed(() => props.data.status === 'success' && props.data.assetSaveStatus === 'failed' && Boolean(props.data.url))
 const statusLabel = computed(() => ({ running: '运行中', success: '已生成', failed: '失败' }[props.data.status] || (canGenerate.value ? '待配置' : '本地草稿')))

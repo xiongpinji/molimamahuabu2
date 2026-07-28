@@ -506,3 +506,83 @@ html.dark .el-message--error {
 html.light .el-message--error {
   box-shadow: 0 4px 20px rgba(245, 108, 108, 0.18);
 }
+
+/* 茉莉妈妈创作后台：与首页一致的紫黑底、暖橙强调。
+   对话框由 Element Plus Teleport 到 body，必须使用显式类，不能依赖页面祖先选择器。 */
+.moli-dark-dialog.el-dialog {
+  --el-bg-color: #121018;
+  --el-bg-color-overlay: #17141f;
+  --el-fill-color-blank: #17141f;
+  --el-fill-color-light: #211d2b;
+  --el-border-color: #342d40;
+  --el-border-color-light: #2a2534;
+  --el-text-color-primary: #f7f3fb;
+  --el-text-color-regular: #d2cad9;
+  --el-text-color-secondary: #978da1;
+  --el-color-primary: #f17845;
+  border: 1px solid #342d40 !important;
+  border-radius: 18px !important;
+  background: linear-gradient(145deg, #17141f 0%, #100e16 100%) !important;
+  color: #d2cad9 !important;
+  box-shadow: 0 26px 80px rgba(0, 0, 0, .58), 0 0 42px rgba(83, 51, 140, .12) !important;
+}
+.moli-dark-dialog .el-dialog__header {
+  border-bottom: 1px solid #2a2534 !important;
+}
+.moli-dark-dialog .el-dialog__title,
+.moli-dark-dialog .el-form-item__label,
+.moli-dark-dialog .el-radio,
+.moli-dark-dialog .el-checkbox {
+  color: #f7f3fb !important;
+}
+.moli-dark-dialog .el-dialog__body,
+.moli-dark-dialog .el-dialog__footer,
+.moli-dark-dialog p,
+.moli-dark-dialog small {
+  color: #d2cad9 !important;
+}
+.moli-dark-dialog .el-input__wrapper,
+.moli-dark-dialog .el-select__wrapper,
+.moli-dark-dialog .el-textarea__inner,
+.moli-dark-dialog .el-input-number,
+.moli-dark-dialog .el-collapse-item__wrap,
+.moli-dark-dialog .el-collapse-item__header {
+  border-color: #342d40 !important;
+  background: #0d0c12 !important;
+  color: #f7f3fb !important;
+  box-shadow: 0 0 0 1px #342d40 inset !important;
+}
+.moli-dark-dialog .el-input__inner,
+.moli-dark-dialog .el-textarea__inner {
+  color: #f7f3fb !important;
+}
+.moli-dark-dialog .el-input__wrapper.is-focus,
+.moli-dark-dialog .el-select__wrapper.is-focused,
+.moli-dark-dialog .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px #f17845 inset, 0 0 0 3px rgba(241, 120, 69, .12) !important;
+}
+
+/* 剧集工作台使用同一深色层级，避免 light 根主题把业务卡片覆盖成纯白。 */
+html.light .drama-detail {
+  background:
+    radial-gradient(circle at 82% 8%, rgba(73, 45, 125, .18), transparent 32%),
+    #08070d !important;
+  color: #f7f3fb !important;
+}
+html.light .drama-detail .section.card {
+  border: 1px solid #2b2635 !important;
+  background: linear-gradient(145deg, rgba(22, 19, 29, .98), rgba(13, 12, 18, .98)) !important;
+  color: #f7f3fb !important;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, .26) !important;
+}
+html.light .drama-detail .el-input__wrapper,
+html.light .drama-detail .el-select__wrapper,
+html.light .drama-detail .el-textarea__inner {
+  background: #0d0c12 !important;
+  color: #f7f3fb !important;
+  box-shadow: 0 0 0 1px #342d40 inset !important;
+}
+html.light .drama-detail .el-input__inner,
+html.light .drama-detail .el-textarea__inner {
+  color: #f7f3fb !important;
+}

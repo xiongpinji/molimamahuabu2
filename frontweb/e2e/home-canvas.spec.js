@@ -72,6 +72,22 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
+test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
+  const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  await seedNode.locator('.node-icon').click()
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+
+  const contentInput = editor.getByRole('textbox', { name: '文本内容' })
+  await contentInput.click()
+  await page.keyboard.press('Delete')
+  await expect(seedNode).toHaveCount(1)
+
+  await seedNode.locator('.node-icon').click()
+  await page.keyboard.press('Delete')
+  await expect(seedNode).toHaveCount(0)
+})
+
 test('右键添加文本节点并支持删除、撤销和重做', async ({ page }) => {
   const canvas = page.locator('.canvas-main')
 
