@@ -87,19 +87,28 @@
             </div>
             <div class="model-list">
               <div v-for="item in filteredPrices" :key="item.model" class="model-row">
-                <el-input v-model="item.display_name" placeholder="展示名称" />
-                <el-select v-model="item.category">
-                  <el-option label="文本" value="text" />
-                  <el-option label="图片" value="image" />
-                  <el-option label="视频" value="video" />
-                  <el-option label="音频" value="audio" />
-                  <el-option label="其他" value="other" />
-                </el-select>
-                <el-input-number v-model="item.credits" :min="1" :step="1" step-strictly />
-                <el-select v-model="item.status">
-                  <el-option label="启用" value="enabled" />
-                  <el-option label="停用" value="disabled" />
-                </el-select>
+                <label class="model-field"><span>展示名称</span><el-input v-model="item.display_name" /></label>
+                <label class="model-field">
+                  <span>模型类型</span>
+                  <el-select v-model="item.category">
+                    <el-option label="文本" value="text" />
+                    <el-option label="图片" value="image" />
+                    <el-option label="视频" value="video" />
+                    <el-option label="音频" value="audio" />
+                    <el-option label="其他" value="other" />
+                  </el-select>
+                </label>
+                <label class="model-field">
+                  <span>用户收费（积分）</span>
+                  <el-input-number v-model="item.credits" :min="1" :step="1" step-strictly />
+                </label>
+                <label class="model-field">
+                  <span>计费状态</span>
+                  <el-select v-model="item.status">
+                    <el-option label="启用" value="enabled" />
+                    <el-option label="停用" value="disabled" />
+                  </el-select>
+                </label>
                 <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
                 <small>
                   {{ item.model }}
@@ -128,22 +137,33 @@
               <el-empty v-if="filteredPrices.length === 0" description="没有匹配的模型" />
             </div>
             <div class="new-model">
-              <el-input v-model.trim="newModel.model" placeholder="模型 ID" />
-              <el-input v-model.trim="newModel.display_name" placeholder="展示名称" />
-              <el-select v-model="newModel.category">
-                <el-option label="文本" value="text" />
-                <el-option label="图片" value="image" />
-                <el-option label="视频" value="video" />
-                <el-option label="音频" value="audio" />
-                <el-option label="其他" value="other" />
-              </el-select>
-              <el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly />
-              <el-select v-model="newModel.cost_unit">
-                <el-option label="按次成本" value="request" />
-                <el-option label="按张成本" value="image" />
-                <el-option label="按秒成本" value="second" />
-                <el-option label="按 Token 成本" value="token" />
-              </el-select>
+              <label class="model-field"><span>模型 ID</span><el-input v-model.trim="newModel.model" /></label>
+              <label class="model-field"><span>展示名称</span><el-input v-model.trim="newModel.display_name" /></label>
+              <label class="model-field">
+                <span>模型类型</span>
+                <el-select v-model="newModel.category">
+                  <el-option label="文本" value="text" />
+                  <el-option label="图片" value="image" />
+                  <el-option label="视频" value="video" />
+                  <el-option label="音频" value="audio" />
+                  <el-option label="其他" value="other" />
+                </el-select>
+              </label>
+              <label class="model-field"><span>用户收费（积分）</span><el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly /></label>
+              <label class="model-field">
+                <span>平台成本单位</span>
+                <el-select v-model="newModel.cost_unit">
+                  <el-option label="按次成本" value="request" />
+                  <el-option label="按张成本" value="image" />
+                  <el-option label="按秒成本" value="second" />
+                  <el-option label="按 Token 成本" value="token" />
+                </el-select>
+              </label>
+              <template v-if="newModel.cost_unit === 'token'">
+                <label class="model-field"><span>千输入 Token 成本（元）</span><el-input-number v-model="newModel.input_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
+                <label class="model-field"><span>千输出 Token 成本（元）</span><el-input-number v-model="newModel.output_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
+              </template>
+              <label v-else class="model-field"><span>单位成本（元）</span><el-input-number v-model="newModel.cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" /></label>
               <el-button type="primary" :loading="savingModel === newModel.model" @click="addModel">
                 新增模型
               </el-button>
@@ -282,6 +302,7 @@
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
@@ -301,12 +322,16 @@ import {
 import { readSession, saveAdminToken } from '@/utils/authSession'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
+const route = useRoute()
 const sessionRole = readSession()?.user?.role
 const isSuperAdmin = sessionRole ? sessionRole === 'admin' : !publicMode
 const adminToken = ref('')
 const loading = ref(false)
 const unlocked = ref(!isSuperAdmin)
-const activeTab = ref(isSuperAdmin ? 'models' : 'codes')
+const requestedTab = String(route.query.tab || '')
+const activeTab = ref(isSuperAdmin && ['models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
+  ? requestedTab
+  : (isSuperAdmin ? 'models' : 'codes'))
 const prices = ref([])
 const users = ref([])
 const tenants = ref([])
@@ -416,7 +441,12 @@ async function loadAll() {
   tenants.value = tenantRows
   transactions.value = transactionRows
   creditValueYuan.value = microsToYuan(ledgerSettings.credit_value_micros)
-  ledgerReport.value = report
+  ledgerReport.value = {
+    ...emptyLedgerReport(),
+    ...report,
+    summary: { ...emptyLedgerReport().summary, ...(report?.summary || {}) },
+    rows: Array.isArray(report?.rows) ? report.rows : [],
+  }
   if (!creditForm.tenant_id) creditForm.tenant_id = tenantRows[0]?.id || ''
 }
 
@@ -490,7 +520,13 @@ async function addModel() {
 }
 
 async function loadLedgerReport() {
-  ledgerReport.value = await getLedgerReport(ledgerPeriod.value)
+  const report = await getLedgerReport(ledgerPeriod.value)
+  ledgerReport.value = {
+    ...emptyLedgerReport(),
+    ...report,
+    summary: { ...emptyLedgerReport().summary, ...(report?.summary || {}) },
+    rows: Array.isArray(report?.rows) ? report.rows : [],
+  }
 }
 
 async function saveLedgerSettings() {
@@ -571,7 +607,9 @@ async function submitAdjustment() {
 .model-row small { display: flex; grid-column: 1 / -1; gap: 8px; align-items: center; color: #8f9098; }
 .cost-editor { display: grid; grid-column: 1 / -1; grid-template-columns: auto 140px 180px auto 180px auto; gap: 10px; align-items: center; padding-top: 10px; border-top: 1px dashed #353535; color: #9a9a9a; font-size: 12px; }
 .new-model, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
-.new-model { grid-template-columns: 1.2fr 1fr 120px 150px 150px auto; }
+.model-field { display: grid; gap: 6px; color: #a8a9af; font-size: 12px; }
+.model-field :deep(.el-input-number), .model-field :deep(.el-select) { width: 100%; }
+.new-model { grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; }
 .credit-form { grid-template-columns: 1.2fr 160px 1.5fr auto; }
 .ledger-heading { display: flex; justify-content: space-between; gap: 20px; align-items: end; }
 .ledger-controls { display: flex; gap: 8px; align-items: center; color: #929292; font-size: 12px; }

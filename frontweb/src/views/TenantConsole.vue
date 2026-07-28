@@ -100,7 +100,7 @@
         </el-table>
       </section>
 
-      <section class="panel redeem-panel">
+      <section id="redeem-credits" ref="redeemSection" class="panel redeem-panel">
         <div class="panel-heading">
           <div>
             <h2>兑换码</h2>
@@ -149,7 +149,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import { getCreditAccount } from '@/api/auth'
@@ -172,6 +173,8 @@ import {
 } from '@/utils/authSession'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
 
+const route = useRoute()
+const redeemSection = ref(null)
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const loading = ref(false)
 const tenants = ref([])
@@ -320,7 +323,13 @@ async function redeem() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  if (route.query.section === 'redeem') {
+    await nextTick()
+    redeemSection.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+})
 </script>
 
 <style scoped>

@@ -180,12 +180,12 @@ test('管理员可筛选模型并为每个模型设置独立积分', async ({ pa
   await expect(page.locator('.model-row')).toHaveCount(1)
 
   const imageRow = page.locator('.model-row').filter({ hasText: 'gpt-image-2' })
-  await imageRow.getByRole('spinbutton').fill('8')
+  await imageRow.locator('.model-field').filter({ hasText: '用户收费（积分）' }).getByRole('spinbutton').fill('8')
   await imageRow.getByRole('button', { name: '保存' }).click()
 
   await page.getByPlaceholder('搜索模型名称或 ID').fill('grok')
   const videoRow = page.locator('.model-row').filter({ hasText: 'grok-imagine-video' })
-  await videoRow.getByRole('spinbutton').fill('35')
+  await videoRow.locator('.model-field').filter({ hasText: '用户收费（积分）' }).getByRole('spinbutton').fill('35')
   await videoRow.getByRole('button', { name: '保存' }).click()
 
   await expect.poll(() => calls.modelUpdates.map(({ model, body }) => ({

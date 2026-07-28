@@ -1,32 +1,21 @@
 <template>
   <section class="panel">
     <div class="code-form">
-      <el-input-number
-        v-model="newCode.quantity"
-        :min="1"
-        :max="500"
-        :step="1"
-        step-strictly
-        aria-label="生成数量"
-      />
-      <el-select v-model="newCode.tenant_id" placeholder="指定租户">
-        <el-option label="平台通用" value="" />
-        <el-option
-          v-for="tenant in tenants"
-          :key="tenant.id"
-          :label="tenant.name"
-          :value="tenant.id"
-        />
-      </el-select>
-      <el-input v-model.trim="newCode.label" placeholder="用途说明" />
-      <el-input-number v-model="newCode.credits" :min="1" :step="100" step-strictly />
-      <el-input-number v-model="newCode.max_redemptions" :min="1" :step="1" step-strictly />
-      <el-date-picker
-        v-model="newCode.expires_at"
-        type="datetime"
-        value-format="YYYY-MM-DDTHH:mm:ss.SSSZ"
-        placeholder="到期时间（可选）"
-      />
+      <label class="code-field"><span>生成数量</span><el-input-number v-model="newCode.quantity" :min="1" :max="500" :step="1" step-strictly /></label>
+      <label class="code-field">
+        <span>适用工作区</span>
+        <el-select v-model="newCode.tenant_id" placeholder="指定租户">
+          <el-option label="平台通用" value="" />
+          <el-option v-for="tenant in tenants" :key="tenant.id" :label="tenant.name" :value="tenant.id" />
+        </el-select>
+      </label>
+      <label class="code-field"><span>用途说明</span><el-input v-model.trim="newCode.label" /></label>
+      <label class="code-field"><span>每次兑换积分</span><el-input-number v-model="newCode.credits" :min="1" :step="100" step-strictly /></label>
+      <label class="code-field"><span>每码可兑换次数</span><el-input-number v-model="newCode.max_redemptions" :min="1" :step="1" step-strictly /></label>
+      <label class="code-field">
+        <span>到期时间</span>
+        <el-date-picker v-model="newCode.expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss.SSSZ" placeholder="永久有效" />
+      </label>
       <el-button type="primary" :loading="creating" @click="generateCodes">批量生成并导出</el-button>
     </div>
     <p class="field-hint">
@@ -241,7 +230,9 @@ onMounted(loadCodes)
   background: rgba(18, 18, 18, .96);
   box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
 }
-.code-form { display: grid; grid-template-columns: 120px 180px 1fr 130px 150px 220px auto; gap: 10px; align-items: center; margin-bottom: 8px; }
+.code-form { display: grid; grid-template-columns: 120px 180px 1fr 150px 160px 220px auto; gap: 10px; align-items: end; margin-bottom: 8px; }
+.code-field { display: grid; gap: 6px; color: #a8a9af; font-size: 12px; }
+.code-field :deep(.el-input-number), .code-field :deep(.el-select), .code-field :deep(.el-date-editor) { width: 100%; }
 .field-hint { margin: 0; color: #a8a9af; font-size: 12px; }
 .expiry-editor { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .panel :deep(.el-table) { margin-top: 18px; }

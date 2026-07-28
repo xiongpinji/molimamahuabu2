@@ -21,7 +21,7 @@
       <strong>{{ account.available }}</strong>
     </div>
     <div v-if="account.held" class="held">冻结 {{ account.held }}</div>
-    <router-link class="manage-link" to="/tenant-console">工作区</router-link>
+    <router-link class="manage-link" :to="{ name: 'tenant-console', query: { section: 'redeem' } }">兑换积分</router-link>
     <router-link v-if="canManageAccounts" class="manage-link" to="/account-admin">账号</router-link>
     <router-link v-if="canManageBilling" class="manage-link" to="/billing-admin">计费</router-link>
     <button type="button" @click="passwordDialog = true">改密</button>

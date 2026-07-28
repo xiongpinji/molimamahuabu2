@@ -15,6 +15,15 @@
       <div class="platform-header__actions">
         <slot name="actions" />
         <el-button
+          v-if="loggedIn"
+          class="platform-header__button"
+          title="兑换积分"
+          @click="goRedeem"
+        >
+          <el-icon><Ticket /></el-icon>
+          <span class="platform-header__button-label">兑换积分</span>
+        </el-button>
+        <el-button
           v-if="showHomeCanvas"
           class="platform-header__button"
           title="打开首页自由画布"
@@ -77,7 +86,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Grid, Moon, Sunny, UserFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, Grid, Moon, Sunny, Ticket, UserFilled } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
@@ -115,6 +124,10 @@ function goBack() {
 
 function goHomeCanvas() {
   router.push({ name: 'home-canvas-local' })
+}
+
+function goRedeem() {
+  router.push({ name: 'tenant-console', query: { section: 'redeem' } })
 }
 
 function goLogin() {
