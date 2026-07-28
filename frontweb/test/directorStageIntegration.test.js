@@ -134,6 +134,12 @@ test('G005 程序化角色库、空对象和群众阵列进入统一场景系统
   assert.match(stageSource, /parentId: groupId/)
 })
 
+test('独立画布程序化角色进入角色列表并绑定动作播放对象', () => {
+  assert.match(stageSource, /timeline\.value\.objects\.filter\(\(entry\) => entry\.type === 'humanoid'\)/)
+  assert.match(stageSource, /entry\.assetRef\?\.characterId \|\| entry\.id/)
+  assert.match(stageSource, /characterObjects\.set\(characterId, humanoid\)/)
+})
+
 test('DR-002 默认程序化角色使用光滑人体曲面而不是方块人偶', () => {
   assert.match(stageSource, /const makeEllipsoid =/)
   assert.match(stageSource, /const makeTapered =/)
