@@ -188,7 +188,7 @@ import { uploadAPI } from '@/api/upload'
 import { generationSettingsAPI } from '@/api/prompts'
 import { generationAPI } from '@/api/generation'
 import { listGenerationCatalog } from '@/api/billing'
-import { parseTaskResult } from '@/utils/taskResult'
+import { parseTaskResult, resolveTaskMediaUrl } from '@/utils/taskResult'
 
 const route = useRoute()
 const mode = ref('image')
@@ -395,8 +395,9 @@ async function pollVideoTask(taskId, item) {
       if (res?.status === 'completed' && res?.result) {
         const r = parseTaskResult(res.result)
         if (!r) throw new Error('任务结果格式无效')
+        item.url = resolveTaskMediaUrl(r)
         const vgId = r.video_generation_id
-        if (vgId) {
+        if (!item.url && vgId) {
           const vRes = await videosAPI.get(vgId)
           item.url = vRes?.local_path ? '/static/' + vRes.local_path : vRes?.video_url
         }
