@@ -53,6 +53,18 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
   assert.match(canvasSource, /视频节点已自动采用该图片作为参考图/)
 })
 
+test('图片和视频编辑器可上传参考图，视频可用 @ 主动选择画布图片并形成真实连线', () => {
+  assert.match(nodeSource, /aria-label="上传参考图"/)
+  assert.match(nodeSource, /ctx\?\.uploadFreeCanvasReferenceImage\?\.\(props\.id, file\)/)
+  assert.match(nodeSource, /aria-label="@选择参考图"/)
+  assert.match(nodeSource, /ctx\?\.attachFreeCanvasReference\?\.\(props\.id, sourceNodeId\)/)
+  assert.match(canvasSource, /async function uploadFreeCanvasReferenceImage\(nodeOrId, file\)/)
+  assert.match(canvasSource, /await createFreeCanvasReferenceNode\(\{[\s\S]*targetNode,[\s\S]*url,/)
+  assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
+  assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
+  assert.match(canvasSource, /uploadFreeCanvasReferenceImage,\s*\n\s*attachFreeCanvasReference,/)
+})
+
 test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改不兼容节点', () => {
   assert.match(nodeSource, /ctx\?\.openFreeNodeAssetLibrary\?\.\(props\.id\)/)
   assert.match(nodeSource, /v-if="canMountAsset"[\s\S]*素材库/)

@@ -80,6 +80,15 @@ test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () =>
   assert.match(nodeSource, /max-height:\s*min\(58vh,\s*560px\)/)
 })
 
+test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {
+  assert.match(nodeSource, /\.home-canvas-node\.kind-image,[\s\S]*\.home-canvas-node\.kind-video[\s\S]*width:\s*640px/)
+  assert.match(nodeSource, /\.kind-image \.node-media,[\s\S]*\.kind-video \.node-media[\s\S]*height:\s*360px/)
+  assert.match(nodeSource, /props\.data\.status === 'running'[\s\S]*生成中/)
+  assert.match(dramaCanvasSource, /:max-zoom="8"/)
+  assert.match(dramaCanvasSource, /:zoom-on-scroll="false"/)
+  assert.match(dramaCanvasSource, /zoom-activation-key-code="Control"/)
+})
+
 test('独立画布只读取用户可访问的模型目录，不请求管理员模型配置接口', () => {
   assert.match(dramaCanvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.doesNotMatch(dramaCanvasSource, /aiAPI\.list\(/)

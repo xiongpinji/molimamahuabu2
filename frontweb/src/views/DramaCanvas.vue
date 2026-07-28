@@ -285,7 +285,7 @@
           :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
-          :max-zoom="2"
+          :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
           :elements-selectable="true"
@@ -2223,6 +2223,86 @@ function freeCanvasNodeInputReferences(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!node || !['image', 'video'].includes(node.data?.kind)) return []
   return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+}
+
+function freeCanvasReferenceCandidates(nodeOrId) {
+  const targetNode = freeCanvasNodeById(nodeOrId)
+  if (!targetNode) return []
+  const connectedNodeIds = new Set(
+    freeCanvasNodeInputReferences(targetNode).map((reference) => String(reference.nodeId)),
+  )
+  return allGraphNodes.value
+    .filter((node) => (
+      node.type === 'homeCanvasNode'
+      && String(node.id) !== String(targetNode.id)
+      && node.data?.kind === 'image'
+      && node.data?.url
+      && !connectedNodeIds.has(String(node.id))
+    ))
+    .map((node) => ({
+      nodeId: String(node.id),
+      title: node.data?.title || '画布图片',
+      url: node.data.url,
+    }))
+}
+
+function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
+  const targetNode = freeCanvasNodeById(targetNodeOrId)
+  const sourceNode = freeCanvasNodeById(sourceNodeOrId)
+  if (!targetNode || !sourceNode) return false
+  if (!['image', 'video'].includes(targetNode.data?.kind)) return false
+  if (sourceNode.data?.kind !== 'image' || !sourceNode.data?.url) return false
+  if (String(sourceNode.id) === String(targetNode.id)) return false
+  onConnect({ source: sourceNode.id, target: targetNode.id })
+  allGraphNodes.value = allGraphNodes.value.map((node) => ({
+    ...node,
+    selected: String(node.id) === String(targetNode.id),
+  }))
+  selectedFreeNodeIds.value = [String(targetNode.id)]
+  focusedNodeId.value = String(targetNode.id)
+  applyVirtualizedGraph()
+  return true
+}
+
+async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAssetId = '' }) {
+  const inputCount = freeCanvasNodeInputReferences(targetNode).length
+  const nodeId = await createFreeCanvasNode('image', {
+    x: Number(targetNode.position?.x || 0) - 700,
+    y: Number(targetNode.position?.y || 0) + inputCount * 48,
+  })
+  await patchFreeCanvasNodeData(nodeId, {
+    title: title || '参考图',
+    url,
+    status: 'success',
+    savedAssetId,
+    assetSaveStatus: 'success',
+    assetSaveError: '',
+  })
+  attachFreeCanvasReference(targetNode, nodeId)
+  return nodeId
+}
+
+async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
+  const targetNode = freeCanvasNodeById(nodeOrId)
+  if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
+  if (!file?.type?.startsWith('image/')) {
+    ElMessage.warning('请选择图片文件')
+    return
+  }
+  try {
+    const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+    const url = assetDisplayUrl(asset)
+    if (!url) throw new Error('参考图上传成功但未返回可用地址')
+    await createFreeCanvasReferenceNode({
+      targetNode,
+      url,
+      title: file.name || '参考图',
+      savedAssetId: String(asset?.id || ''),
+    })
+    ElMessage.success('参考图已上传并连接')
+  } catch (error) {
+    ElMessage.error(error?.message || '参考图上传失败')
+  }
 }
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
@@ -4760,6 +4840,9 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeEstimatedCredits,
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
+  getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
+  uploadFreeCanvasReferenceImage,
+  attachFreeCanvasReference,
   updateFreeCanvasReference,
   runFreeCanvasNode,
   runFreeCanvasSubgraph: (nodeId) => runFreeCanvasSubgraph([nodeId], true),
