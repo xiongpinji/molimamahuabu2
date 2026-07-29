@@ -4320,7 +4320,7 @@ function openCanvasAssetLibrary(flowPosition = null) {
 
 function openFreeNodeAssetLibrary(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
-  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind === 'text') return
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind === 'text') return
   canvasAssetPickerFlowPos.value = node.position || null
   canvasAssetPickerRetryNodeId.value = ''
   canvasAssetPickerTargetStoryboardId.value = null
