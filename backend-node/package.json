@@ -12,7 +12,9 @@
     "backup:create": "node scripts/database-backup.js create",
     "backup:list": "node scripts/database-backup.js list",
     "backup:verify": "node scripts/database-backup.js verify",
-    "backup:restore-drill": "node scripts/database-backup.js restore-drill"
+    "backup:restore-drill": "node scripts/database-backup.js restore-drill",
+    "audit:licenses": "node scripts/audit-production-licenses.js",
+    "audit:image-node-release": "node scripts/audit-image-node-release.js"
   },
   "engines": {
     "node": ">=20.9.0"

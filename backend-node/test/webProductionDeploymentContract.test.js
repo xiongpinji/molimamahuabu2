@@ -107,6 +107,8 @@ test('网页生产门禁不审计或构建已退出交付路径的桌面安装�
   assert.doesNotMatch(dependencyWorkflow, /npm --prefix desktop/);
   assert.match(dependencyWorkflow, /pip-audit==2\.10\.0/);
   assert.match(dependencyWorkflow, /deploy\/rembg\/requirements\.lock/);
+  assert.match(dependencyWorkflow, /npm --prefix backend-node run audit:licenses/);
+  assert.match(dependencyWorkflow, /npm --prefix backend-node run audit:image-node-release/);
   assert.doesNotMatch(desktopWorkflow, /-\s+'frontweb\/\*\*'/);
   assert.doesNotMatch(desktopWorkflow, /-\s+'backend-node\/\*\*'/);
 });
