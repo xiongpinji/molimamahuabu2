@@ -76,6 +76,25 @@ test('buildCanvasLayoutPayload 写入节点位置、视口和手动连线', () =
   ])
 })
 
+test('剪线抑制列表可持久化且自定义边不会污染手动连线类型', () => {
+  const payload = buildCanvasLayoutPayload(
+    [],
+    {},
+    null,
+    [{
+      id: 'manual:a:b',
+      source: 'a',
+      target: 'b',
+      type: 'cuttable',
+      data: { manual: true, lineType: 'smoothstep' },
+    }],
+    { suppressedEdgeIds: ['auto:b:c', 'auto:b:c'] },
+  )
+
+  assert.equal(payload.manual_edges[0].type, 'smoothstep')
+  assert.deepEqual(payload.suppressed_edge_ids, ['auto:b:c'])
+})
+
 test('buildDramaCanvasGraph 合并 canvas_layout 手动连线且过滤无效节点', () => {
   assert.match(adapterSource, /import \{ normalizeManualCanvasEdges, parseCanvasLayout, resolveFreeCanvasNodes, resolveNodePosition \} from '\.\/canvasLayout'/)
   assert.match(adapterSource, /function appendManualEdges\(edges, savedLayout, nodes\)/)

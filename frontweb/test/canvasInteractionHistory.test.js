@@ -38,3 +38,19 @@ test('无效节点位置不会进入历史快照，历史分支提交会清空�
   assert.deepEqual(Object.keys(history.present.nodes), ['ok'])
   assert.equal(history.future.length, 0)
 })
+
+test('画布历史快照保留剪线前后的连线和抑制列表', () => {
+  const edge = { id: 'auto:a:b', source: 'a', target: 'b' }
+  const connected = createCanvasInteractionState([], {}, [edge], [])
+  const cut = createCanvasInteractionState([], {}, [], ['auto:a:b', 'auto:a:b'])
+  let history = createCanvasInteractionHistory(connected)
+
+  history = commitCanvasInteractionHistory(history, connected, cut)
+  history = undoCanvasInteractionHistory(history)
+  assert.deepEqual(history.present.edges, [edge])
+  assert.deepEqual(history.present.suppressedEdgeIds, [])
+
+  history = redoCanvasInteractionHistory(history)
+  assert.deepEqual(history.present.edges, [])
+  assert.deepEqual(history.present.suppressedEdgeIds, ['auto:a:b'])
+})

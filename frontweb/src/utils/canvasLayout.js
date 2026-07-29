@@ -100,7 +100,7 @@ export function normalizeManualCanvasEdges(edges) {
       target,
       sourceHandle,
       targetHandle,
-      type: edge.type || 'smoothstep',
+      type: edge.data?.lineType || edge.type || 'smoothstep',
       data: {
         ...(edge.data || {}),
         manual: true,
@@ -134,6 +134,9 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
     },
     nodes,
     manual_edges: manualEdges,
+    suppressed_edge_ids: options.suppressedEdgeIds == null
+      ? [...new Set((existingLayout?.suppressed_edge_ids || []).map(String))].sort()
+      : [...new Set((options.suppressedEdgeIds || []).map(String))].sort(),
     updated_at: new Date().toISOString(),
   }
   if (options.persistFreeNodes) {
