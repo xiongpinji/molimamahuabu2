@@ -2046,7 +2046,7 @@ function openFreeNodeDialog(kind, flowPosition = null, node = null) {
   freeNodeDialogVisible.value = true
 }
 
-async function createFreeCanvasNode(kind, flowPosition = null) {
+async function createFreeCanvasNode(kind, flowPosition = null, initialData = {}) {
   if (!FREE_NODE_KINDS.has(kind)) return null
   const defaults = loadFreeCanvasNodeDefaults()
   const kindDefaults = defaults[kind] || {}
@@ -2071,6 +2071,7 @@ async function createFreeCanvasNode(kind, flowPosition = null) {
     data.resolution = kindDefaults.resolution || (kind === 'video' ? '720p' : '2K')
   }
   if (kind === 'video') data.duration = Number(kindDefaults.duration) || 5
+  Object.assign(data, initialData)
 
   allGraphNodes.value = [
     ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
@@ -2089,6 +2090,32 @@ async function createFreeCanvasNode(kind, flowPosition = null) {
   await nextTick()
   document.querySelector(`.vue-flow__node[data-id="${id}"] .node-title-input`)?.focus()
   return id
+}
+
+async function createImageNodeFromVideoLastFrame(nodeOrId) {
+  const videoNode = freeCanvasNodeById(nodeOrId)
+  if (videoNode?.type !== 'homeCanvasNode' || videoNode.data?.kind !== 'video') return null
+  const lastFrameUrl = String(
+    videoNode.data?.outputLastFrameUrl
+    || videoNode.data?.output_last_frame_url
+    || '',
+  ).trim()
+  if (!lastFrameUrl) {
+    ElMessage.warning('当前视频没有可用尾帧，请重新生成视频后再试')
+    return null
+  }
+  const nodeId = await createFreeCanvasNode('image', {
+    x: Number(videoNode.position?.x || 0) + 700,
+    y: Number(videoNode.position?.y || 0),
+  }, {
+    title: `${videoNode.data?.title || '视频'} · 尾帧`,
+    url: lastFrameUrl,
+    resultUrls: [lastFrameUrl],
+    status: 'success',
+    sourceVideoNodeId: String(videoNode.id),
+  })
+  if (nodeId) ElMessage.success('尾帧已提取为图片节点')
+  return nodeId
 }
 
 async function submitFreeNode() {
@@ -5353,6 +5380,7 @@ provide(CANVAS_CONTEXT_KEY, {
     if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
   },
   updateFreeCanvasNode: patchFreeCanvasNodeData,
+  createImageNodeFromVideoLastFrame,
   deleteFreeCanvasNode,
   duplicateFreeCanvasNode,
   uploadFreeCanvasNodeFile,
