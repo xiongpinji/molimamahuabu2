@@ -143,6 +143,16 @@ const REFERENCE_VARIATION_CONFIGS = Object.freeze({
 const MARKUP_MAX_STROKES = 16;
 const MARKUP_MAX_POINTS_PER_STROKE = 128;
 const MARKUP_COLORS = new Set(['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']);
+const MARKUP_KINDS = new Set([
+  'brush',
+  'line',
+  'arrow',
+  'rectangle',
+  'ellipse',
+  'mosaic',
+  'number',
+  'text',
+]);
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
@@ -671,18 +681,21 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
         available: false,
         reason: unavailableReason || '未配置已显式声明且通过审计的扩图模型',
       },
-    markup_retouch: markupRetouchAvailable
-      ? {
-        available: true,
-        ...common,
-        maxStrokes: MARKUP_MAX_STROKES,
-        maxPointsPerStroke: MARKUP_MAX_POINTS_PER_STROKE,
-        preservesDimensions: true,
-      }
-      : {
-        available: false,
-        reason: unavailableReason || '未配置已显式声明且通过审计的标记修图模型',
-      },
+    markup_retouch: {
+      available: true,
+      ...(markupRetouchAvailable
+        ? common
+        : {
+          engine: 'sharp',
+          providerAvailable: false,
+          providerReason: unavailableReason || '未配置已显式声明且通过审计的标记修图模型',
+        }),
+      ...(markupRetouchAvailable ? { providerAvailable: true } : {}),
+      modes: ['markup_only', ...(markupRetouchAvailable ? ['retouch'] : [])],
+      maxStrokes: MARKUP_MAX_STROKES,
+      maxPointsPerStroke: MARKUP_MAX_POINTS_PER_STROKE,
+      preservesDimensions: true,
+    },
     cinematic_relight: cinematicRelightAvailable
       ? {
         available: true,
@@ -751,7 +764,17 @@ function normalizeOutpaintParameters(parameters) {
   if (prompt.length > 500) {
     fail('IMAGE_TOOL_INVALID_INPUT', '扩图补充描述不能超过 500 字');
   }
-  return { aspectRatio, direction, prompt };
+  const top = requireInteger(parameters.top ?? 25, 'top', 0);
+  const bottom = requireInteger(parameters.bottom ?? 25, 'bottom', 0);
+  const left = requireInteger(parameters.left ?? 25, 'left', 0);
+  const right = requireInteger(parameters.right ?? 25, 'right', 0);
+  if ([top, bottom, left, right].some((value) => value > 100)) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '扩图边界比例必须在 0 到 100 之间');
+  }
+  if (top + bottom + left + right === 0) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '至少需要扩展一个方向');
+  }
+  return { aspectRatio, direction, top, bottom, left, right, prompt };
 }
 
 function buildOutpaintPrompt(parameters) {
@@ -760,6 +783,7 @@ function buildOutpaintPrompt(parameters) {
     : '';
   return [
     `基于输入原图进行扩图，目标画幅为 ${parameters.aspectRatio}，${OUTPAINT_DIRECTIONS[parameters.direction]}。`,
+    `新增画布比例：上方 ${parameters.top}%，下方 ${parameters.bottom}%，左侧 ${parameters.left}%，右侧 ${parameters.right}%。`,
     '保留原图已有主体、人物身份、面部、服装、姿势、画风、光线、透视和原有画面内容，不要裁掉或重绘原图中心内容。',
     '只在新增画布区域自然补全连续环境、纹理与光影，边缘衔接必须无缝，输出一张连续完整图片，不要拼图、边框、文字或水印。',
     extra,
@@ -859,8 +883,9 @@ function buildReferenceVariationPrompt(operation, parameters) {
 }
 
 function normalizeMarkupRetouchParameters(parameters) {
+  const mode = parameters.mode === 'markup_only' ? 'markup_only' : 'retouch';
   const instruction = String(parameters.instruction || '').trim();
-  if (!instruction || instruction.length > 500) {
+  if ((mode === 'retouch' && !instruction) || instruction.length > 500) {
     fail('IMAGE_TOOL_INVALID_INPUT', '修图指令必须为 1 到 500 个字符');
   }
   if (
@@ -872,6 +897,8 @@ function normalizeMarkupRetouchParameters(parameters) {
   }
   let pointCount = 0;
   const strokes = parameters.strokes.map((stroke) => {
+    const kind = MARKUP_KINDS.has(stroke?.kind) ? stroke.kind : 'brush';
+    const label = String(stroke?.label || '').trim();
     const color = String(stroke?.color || '').trim().toLowerCase();
     const width = Number(stroke?.width);
     if (!MARKUP_COLORS.has(color)) {
@@ -879,6 +906,9 @@ function normalizeMarkupRetouchParameters(parameters) {
     }
     if (!Number.isFinite(width) || width < 0.005 || width > 0.08) {
       fail('IMAGE_TOOL_INVALID_INPUT', '标记笔宽参数无效');
+    }
+    if (label.length > 32 || (['number', 'text'].includes(kind) && !label)) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '文字标记必须为 1 到 32 个字符');
     }
     if (
       !Array.isArray(stroke?.points)
@@ -910,21 +940,34 @@ function normalizeMarkupRetouchParameters(parameters) {
     });
     pointCount += points.length;
     return {
+      kind,
+      ...(label ? { label } : {}),
       color,
       width: Number(width.toFixed(5)),
       points,
     };
   });
   return {
+    mode,
     instruction,
     strokes,
     summary: {
+      mode,
       instruction,
       strokeCount: strokes.length,
       pointCount,
       preserveDimensions: true,
     },
   };
+}
+
+function escapeMarkupXml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
 function buildMarkupReferenceSvg(parameters, width, height) {
@@ -934,10 +977,86 @@ function buildMarkupReferenceSvg(parameters, width, height) {
       .map((point) => `${(point.x * width).toFixed(2)},${(point.y * height).toFixed(2)}`)
       .join(' ');
     const strokeWidth = Math.max(2, stroke.width * minDimension).toFixed(2);
+    if (['number', 'text'].includes(stroke.kind)) {
+      const point = stroke.points[0];
+      const fontSize = Math.max(16, stroke.width * minDimension * 4).toFixed(2);
+      return `<text x="${(point.x * width).toFixed(2)}" y="${(point.y * height).toFixed(2)}" fill="${stroke.color}" font-size="${fontSize}" font-family="sans-serif" font-weight="700">${escapeMarkupXml(stroke.label)}</text>`;
+    }
+    if (stroke.kind === 'mosaic') {
+      return `<polyline points="${points}" fill="none" stroke="${stroke.color}" stroke-opacity="0.65" stroke-width="${Math.max(12, Number(strokeWidth) * 3).toFixed(2)}" stroke-linecap="square" stroke-linejoin="round"/>`;
+    }
     return `<polyline points="${points}" fill="none" stroke="${stroke.color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
   }).join('');
   return Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${polylines}</svg>`,
+  );
+}
+
+function normalizeSelectionBrushParameters(parameters, metadata) {
+  if (
+    !Array.isArray(parameters.brushStrokes)
+    || parameters.brushStrokes.length === 0
+    || parameters.brushStrokes.length > MARKUP_MAX_STROKES
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', `画笔选区必须包含 1 到 ${MARKUP_MAX_STROKES} 条笔迹`);
+  }
+  const strokes = parameters.brushStrokes.map((stroke) => {
+    const width = Number(stroke?.width);
+    if (!Number.isFinite(width) || width < 0.005 || width > 0.2) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '画笔选区笔宽参数无效');
+    }
+    if (
+      !Array.isArray(stroke?.points)
+      || stroke.points.length < 2
+      || stroke.points.length > MARKUP_MAX_POINTS_PER_STROKE
+    ) {
+      fail(
+        'IMAGE_TOOL_INVALID_INPUT',
+        `每条画笔选区必须包含 2 到 ${MARKUP_MAX_POINTS_PER_STROKE} 个点`,
+      );
+    }
+    const points = stroke.points.map((point) => {
+      const x = Number(point?.x);
+      const y = Number(point?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+        fail('IMAGE_TOOL_INVALID_INPUT', '画笔选区坐标必须位于图片范围内');
+      }
+      return { x: Number(x.toFixed(5)), y: Number(y.toFixed(5)) };
+    });
+    return { width: Number(width.toFixed(5)), points };
+  });
+  const points = strokes.flatMap((stroke) => stroke.points);
+  const padding = Math.max(...strokes.map((stroke) => stroke.width)) / 2;
+  const minX = Math.max(0, Math.min(...points.map((point) => point.x)) - padding);
+  const minY = Math.max(0, Math.min(...points.map((point) => point.y)) - padding);
+  const maxX = Math.min(1, Math.max(...points.map((point) => point.x)) + padding);
+  const maxY = Math.min(1, Math.max(...points.map((point) => point.y)) + padding);
+  const left = Math.floor(minX * metadata.width);
+  const top = Math.floor(minY * metadata.height);
+  const right = Math.max(left + 1, Math.ceil(maxX * metadata.width));
+  const bottom = Math.max(top + 1, Math.ceil(maxY * metadata.height));
+  return {
+    selection: {
+      left,
+      top,
+      width: Math.min(metadata.width, right) - left,
+      height: Math.min(metadata.height, bottom) - top,
+    },
+    strokes,
+  };
+}
+
+function buildSelectionBrushMaskSvg(strokes, metadata, selection) {
+  const minDimension = Math.min(metadata.width, metadata.height);
+  const polylines = strokes.map((stroke) => {
+    const points = stroke.points.map((point) => (
+      `${((point.x * metadata.width) - selection.left).toFixed(2)},${((point.y * metadata.height) - selection.top).toFixed(2)}`
+    )).join(' ');
+    const strokeWidth = Math.max(2, stroke.width * minDimension).toFixed(2);
+    return `<polyline points="${points}" fill="none" stroke="#fff" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${selection.width}" height="${selection.height}" viewBox="0 0 ${selection.width} ${selection.height}">${polylines}</svg>`,
   );
 }
 
@@ -1354,19 +1473,45 @@ async function runMarkupRetouch({
     fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
   }
   const parameters = normalizeMarkupRetouchParameters(request.parameters || {});
+  if (parameters.mode === 'retouch' && !referenceImageTool?.operations.includes('markup_retouch')) {
+    fail('IMAGE_TOOL_NOT_CONFIGURED', '未配置可用的标记修图模型');
+  }
   const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
   let release;
   let markedReferencePath = null;
   let providerDownloadPath = null;
   let outputPath = null;
   try {
-    release = referenceImageTool.limiter.acquire(tenantId);
+    if (parameters.mode === 'retouch') {
+      release = referenceImageTool.limiter.acquire(tenantId);
+    }
     markedReferencePath = await createMarkupReference(
       sourcePath,
       outputDir,
       parameters,
       sourceMetadata,
     );
+    if (parameters.mode === 'markup_only') {
+      outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+      fs.renameSync(markedReferencePath, outputPath);
+      markedReferencePath = null;
+      const outputInfo = await sharp(outputPath, {
+        failOn: 'warning',
+        limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+      }).metadata();
+      return {
+        outputPath,
+        format: FORMAT_INFO.png,
+        outputInfo: {
+          size: fs.statSync(outputPath).size,
+          width: outputInfo.width,
+          height: outputInfo.height,
+        },
+        parameters: parameters.summary,
+        engine: 'sharp',
+        engineVersion: `sharp-${sharp.versions.sharp}`,
+      };
+    }
     const result = await taskService.withTaskHeartbeat(
       db,
       task.id,
@@ -1438,6 +1583,8 @@ async function runMarkupRetouch({
       format: FORMAT_INFO.png,
       outputInfo,
       parameters: parameters.summary,
+      engine: referenceImageTool.engine,
+      engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
     };
   } catch (error) {
     if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
@@ -1450,9 +1597,9 @@ async function runMarkupRetouch({
       throw error;
     }
     log.warn('image markup retouch failed', {
-      provider: referenceImageTool.provider,
-      protocol: referenceImageTool.protocol,
-      model: referenceImageTool.model,
+      provider: referenceImageTool?.provider,
+      protocol: referenceImageTool?.protocol,
+      model: referenceImageTool?.model,
       reason: 'provider request or output validation failed',
     });
     fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图处理失败');
@@ -2468,6 +2615,22 @@ async function runGridCrop(sourcePath, parameters) {
   if (rows > metadata.height || columns > metadata.width) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过图片像素尺寸');
   }
+  const allCellKeys = new Set(Array.from(
+    { length: rows * columns },
+    (_, index) => `${Math.floor(index / columns)}:${index % columns}`,
+  ));
+  const selectedCells = parameters.selectedCells === undefined
+    ? [...allCellKeys]
+    : parameters.selectedCells;
+  if (
+    !Array.isArray(selectedCells)
+    || selectedCells.length === 0
+    || selectedCells.some((key) => typeof key !== 'string' || !allCellKeys.has(key))
+    || new Set(selectedCells).size !== selectedCells.length
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'selectedCells 必须包含至少一个有效且不重复的宫格坐标');
+  }
+  const selectedCellKeys = new Set(selectedCells);
   const cells = [];
   for (let row = 0; row < rows; row += 1) {
     const top = Math.floor((row * metadata.height) / rows);
@@ -2475,6 +2638,8 @@ async function runGridCrop(sourcePath, parameters) {
     for (let column = 0; column < columns; column += 1) {
       const left = Math.floor((column * metadata.width) / columns);
       const right = Math.floor(((column + 1) * metadata.width) / columns);
+      const key = `${row}:${column}`;
+      if (!selectedCellKeys.has(key)) continue;
       cells.push({
         row,
         column,
@@ -2485,7 +2650,12 @@ async function runGridCrop(sourcePath, parameters) {
       });
     }
   }
-  return { metadata, format, normalized: { rows, columns }, cells };
+  return {
+    metadata,
+    format,
+    normalized: { rows, columns, selectedCells },
+    cells,
+  };
 }
 
 async function runAdjust(sourcePath, parameters) {
@@ -2500,10 +2670,17 @@ async function runAdjust(sourcePath, parameters) {
     metadata,
     format,
     normalized: {
+      exposure: requireNumber(parameters.exposure ?? 0, 'exposure', -2, 2),
       brightness: requireNumber(parameters.brightness ?? 1, 'brightness', 0.1, 3),
+      vibrance: requireNumber(parameters.vibrance ?? 1, 'vibrance', 0, 2),
       saturation: requireNumber(parameters.saturation ?? 1, 'saturation', 0, 3),
       contrast: requireNumber(parameters.contrast ?? 1, 'contrast', 0.1, 3),
       temperature: requireNumber(parameters.temperature ?? 0, 'temperature', -1, 1),
+      tint: requireNumber(parameters.tint ?? 0, 'tint', -1, 1),
+      hue: requireNumber(parameters.hue ?? 0, 'hue', -180, 180),
+      sharpness: requireNumber(parameters.sharpness ?? 0, 'sharpness', 0, 1),
+      clarity: requireNumber(parameters.clarity ?? 0, 'clarity', 0, 1),
+      blur: requireNumber(parameters.blur ?? 0, 'blur', 0, 2),
     },
   };
 }
@@ -2516,16 +2693,92 @@ async function runLut(sourcePath, parameters) {
     fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
   }
   const preset = String(parameters.preset || '').toLowerCase();
-  if (!LUT_PRESETS[preset]) {
-    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数仅支持 cinematic、warm、cool 或 mono');
+  const intensity = requireNumber(parameters.intensity ?? 1, 'intensity', 0, 1);
+  if (preset === 'custom') {
+    const size = requireInteger(parameters.customLut?.size, 'customLut.size', 2);
+    if (size > 17) fail('IMAGE_TOOL_INVALID_INPUT', '3D LUT 尺寸不能超过 17');
+    const values = parameters.customLut?.values;
+    if (
+      !Array.isArray(values)
+      || values.length !== size ** 3
+      || values.some((entry) => (
+        !Array.isArray(entry)
+        || entry.length !== 3
+        || entry.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 1)
+      ))
+    ) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '3D LUT 数据无效');
+    }
+    return {
+      source,
+      metadata,
+      format,
+      normalized: {
+        preset,
+        intensity,
+        customLut: {
+          name: String(parameters.customLut?.name || '自定义 LUT').slice(0, 80),
+          size,
+        },
+      },
+      customLut: {
+        size,
+        values: values.map((entry) => entry.map(Number)),
+      },
+    };
   }
+  if (!LUT_PRESETS[preset]) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数仅支持 cinematic、warm、cool、mono 或 custom');
+  }
+  const matrix = LUT_PRESETS[preset].map((row, rowIndex) => (
+    row.map((value, columnIndex) => {
+      const identity = rowIndex === columnIndex ? 1 : 0;
+      return identity + ((value - identity) * intensity);
+    })
+  ));
   return {
     source,
     metadata,
     format,
-    normalized: { preset },
-    matrix: LUT_PRESETS[preset],
+    normalized: { preset, intensity },
+    matrix,
   };
+}
+
+function interpolateCubeLutChannel(values, size, red, green, blue, channel) {
+  const scaled = [red, green, blue].map((value) => (value / 255) * (size - 1));
+  const lower = scaled.map(Math.floor);
+  const upper = lower.map((value) => Math.min(size - 1, value + 1));
+  const ratio = scaled.map((value, index) => value - lower[index]);
+  const sample = (r, g, b) => values[(b * size * size) + (g * size) + r][channel];
+  const lerp = (start, end, amount) => start + ((end - start) * amount);
+  const c00 = lerp(sample(lower[0], lower[1], lower[2]), sample(upper[0], lower[1], lower[2]), ratio[0]);
+  const c10 = lerp(sample(lower[0], upper[1], lower[2]), sample(upper[0], upper[1], lower[2]), ratio[0]);
+  const c01 = lerp(sample(lower[0], lower[1], upper[2]), sample(upper[0], lower[1], upper[2]), ratio[0]);
+  const c11 = lerp(sample(lower[0], upper[1], upper[2]), sample(upper[0], upper[1], upper[2]), ratio[0]);
+  return lerp(lerp(c00, c10, ratio[1]), lerp(c01, c11, ratio[1]), ratio[2]);
+}
+
+async function applyCustomCubeLut(sourcePath, customLut, intensity) {
+  const { data, info } = await sharp(sourcePath)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  for (let offset = 0; offset < data.length; offset += info.channels) {
+    const original = [data[offset], data[offset + 1], data[offset + 2]];
+    for (let channel = 0; channel < 3; channel += 1) {
+      const transformed = interpolateCubeLutChannel(
+        customLut.values,
+        customLut.size,
+        original[0],
+        original[1],
+        original[2],
+        channel,
+      ) * 255;
+      data[offset + channel] = Math.round(original[channel] + ((transformed - original[channel]) * intensity));
+    }
+  }
+  return sharp(data, { raw: info });
 }
 
 function createDerivedAsset(db, log, {
@@ -2570,6 +2823,8 @@ function createDerivedAsset(db, log, {
 
 async function createOperation(db, log, request, context = {}) {
   const operation = String(request.operation || '').trim();
+  const isLocalMarkup = operation === 'markup_retouch'
+    && String(request.parameters?.mode || '').trim() === 'markup_only';
   const modelTools = context.modelTools || resolveModelTools(undefined, context.env);
   const referenceImageTool = context.referenceImageTool || null;
   const deterministicOperations = ['crop', 'compress', 'mirror', 'rotate', 'grid_crop', 'adjust', 'lut'];
@@ -2588,7 +2843,10 @@ async function createOperation(db, log, request, context = {}) {
     )
     && !(
       operation === 'markup_retouch'
-      && referenceImageTool?.operations.includes('markup_retouch')
+      && (
+        isLocalMarkup
+        || referenceImageTool?.operations.includes('markup_retouch')
+      )
     )
     && !(
       operation === 'cinematic_relight'
@@ -2695,13 +2953,19 @@ async function createOperation(db, log, request, context = {}) {
         outputPaths.push(outputPath);
         let cutoutSourcePath = sourcePath;
         let selection = null;
+        let brushSelection = null;
         if (operation === 'selection_cutout') {
           const source = sharp(sourcePath, { limitInputPixels: SMART_CUTOUT_MAX_PIXELS });
           const metadata = await source.metadata();
           if (!FORMAT_INFO[metadata.format] || !metadata.width || !metadata.height) {
             fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
           }
-          selection = cropParameters(request.parameters || {}, metadata);
+          if (request.parameters?.selectionMode === 'brush') {
+            brushSelection = normalizeSelectionBrushParameters(request.parameters, metadata);
+            selection = brushSelection.selection;
+          } else {
+            selection = cropParameters(request.parameters || {}, metadata);
+          }
           if (selection.width * selection.height > SMART_CUTOUT_MAX_PIXELS) {
             fail('IMAGE_TOOL_INVALID_INPUT', '框选范围超过像素限制');
           }
@@ -2718,8 +2982,32 @@ async function createOperation(db, log, request, context = {}) {
           modelTools.smart_cutout,
           log,
         );
+        if (brushSelection) {
+          const masked = await sharp(outputPath)
+            .composite([{
+              input: buildSelectionBrushMaskSvg(
+                brushSelection.strokes,
+                await sharp(sourcePath).metadata(),
+                selection,
+              ),
+              blend: 'dest-in',
+            }])
+            .png()
+            .toBuffer({ resolveWithObject: true });
+          fs.writeFileSync(outputPath, masked.data);
+          prepared.outputInfo = masked.info;
+          prepared.normalized = {
+            ...prepared.normalized,
+            selectionMode: 'brush',
+            brushStrokes: brushSelection.strokes,
+          };
+        }
         if (selection) {
-          prepared.normalized = { ...prepared.normalized, ...selection };
+          prepared.normalized = {
+            ...prepared.normalized,
+            selectionMode: brushSelection ? 'brush' : 'rectangle',
+            ...selection,
+          };
           fs.rmSync(cutoutSourcePath, { force: true });
         }
         let result;
@@ -2983,8 +3271,8 @@ async function createOperation(db, log, request, context = {}) {
           parameters: prepared.parameters,
           suffix: 'markup-retouch',
           storageRoot,
-          engine: referenceImageTool.engine,
-          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+          engine: prepared.engine,
+          engineVersion: prepared.engineVersion,
         });
         result = {
           taskId: task.id,
@@ -3160,10 +3448,14 @@ async function createOperation(db, log, request, context = {}) {
     } else if (operation === 'adjust') {
       const redGain = 1 + (prepared.normalized.temperature * 0.15);
       const blueGain = 1 - (prepared.normalized.temperature * 0.15);
+      const greenGain = 1 + (prepared.normalized.tint * 0.12);
+      const brightness = prepared.normalized.brightness * (2 ** prepared.normalized.exposure);
+      const saturation = prepared.normalized.saturation * prepared.normalized.vibrance;
       pipeline = prepared.source
         .modulate({
-          brightness: prepared.normalized.brightness,
-          saturation: prepared.normalized.saturation,
+          brightness,
+          saturation,
+          hue: prepared.normalized.hue,
         })
         .linear(
           prepared.normalized.contrast,
@@ -3171,14 +3463,30 @@ async function createOperation(db, log, request, context = {}) {
         )
         .recomb([
           [redGain, 0, 0],
-          [0, 1, 0],
+          [0, greenGain, 0],
           [0, 0, blueGain],
-        ])
-        .toFormat(prepared.metadata.format);
+        ]);
+      const detailAmount = Math.max(
+        prepared.normalized.sharpness,
+        prepared.normalized.clarity,
+      );
+      if (detailAmount > 0) {
+        pipeline = pipeline.sharpen(0.5 + (detailAmount * 1.5));
+      }
+      if (prepared.normalized.blur >= 0.3) {
+        pipeline = pipeline.blur(prepared.normalized.blur);
+      }
+      pipeline = pipeline.toFormat(prepared.metadata.format);
     } else {
-      pipeline = prepared.source
-        .recomb(prepared.matrix)
-        .toFormat(prepared.metadata.format);
+      pipeline = prepared.customLut
+        ? (await applyCustomCubeLut(
+          sourcePath,
+          prepared.customLut,
+          prepared.normalized.intensity,
+        )).toFormat(prepared.metadata.format)
+        : prepared.source
+          .recomb(prepared.matrix)
+          .toFormat(prepared.metadata.format);
     }
     const outputInfo = await pipeline.toFile(outputPath);
     let result;

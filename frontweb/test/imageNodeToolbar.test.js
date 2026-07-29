@@ -111,12 +111,23 @@ test('标记修图采集受限笔迹与指令并提交真实参考图编辑操�
   assert.match(toolbarSource, /v-model="markupInstruction"/)
   assert.match(toolbarSource, /undoMarkupStroke/)
   assert.match(toolbarSource, /clearMarkupStrokes/)
+  assert.match(toolbarSource, /选择\/移动/)
+  assert.match(toolbarSource, /马赛克/)
+  assert.match(toolbarSource, /数字标记/)
+  assert.match(toolbarSource, /文本/)
+  assert.match(toolbarSource, /class="markup-layers"/)
+  assert.match(toolbarSource, /toggleMarkupLayer/)
+  assert.match(toolbarSource, /removeMarkupLayer/)
+  assert.match(toolbarSource, /标记工具教程/)
+  assert.match(toolbarSource, /submitOperation\('markup_only'\)/)
   assert.match(toolbarSource, /const MARKUP_MAX_STROKES = 16/)
   assert.match(toolbarSource, /const MARKUP_MAX_POINTS = 128/)
   assert.match(toolbarSource, /activeMarkupStroke = markupStrokes\.value\[markupStrokes\.value\.length - 1\]/)
   assert.match(toolbarSource, /editorOperation\.value === 'markup_retouch'/)
-  assert.match(toolbarSource, /instruction: markupInstruction\.value\.trim\(\)/)
-  assert.match(toolbarSource, /strokes: markupStrokes\.value\.map/)
+  assert.match(toolbarSource, /const instruction = markupInstruction\.value\.trim\(\)/)
+  assert.match(toolbarSource, /instruction,\s*\n/)
+  assert.match(toolbarSource, /const visibleStrokes = markupStrokes\.value\.filter/)
+  assert.match(toolbarSource, /strokes: visibleStrokes\.map/)
   assert.match(toolbarSource, /markup_retouch: '标记修图'/)
 })
 
@@ -143,8 +154,8 @@ test('电影级光影校正提交受控预设、强度和补充要求并生成�
 })
 
 test('全景入口提交受限描述并明确生成固定 2:1 等距柱状新素材', () => {
-  assert.match(toolbarSource, /\{ label: '720全景', operation: 'panorama' \}/)
-  assert.match(toolbarSource, /\{ label: '生成全景场景', operation: 'panorama_scene' \}/)
+  assert.match(toolbarSource, /\{ label: '720全景', operation: 'panorama', icon: \w+ \}/)
+  assert.match(toolbarSource, /\{ label: '生成全景场景', operation: 'panorama_scene', icon: \w+ \}/)
   assert.match(toolbarSource, /\['panorama', 'panorama_scene'\]\.includes\(editorOperation\)/)
   assert.match(toolbarSource, /panoramaDescription = ref\(''\)/)
   assert.match(toolbarSource, /v-model="panoramaDescription"/)
@@ -159,7 +170,7 @@ test('全景入口提交受限描述并明确生成固定 2:1 等距柱状新素
 })
 
 test('参考图生成与推演入口提交 300 字以内的补充要求并显示真实输出约束', () => {
-  assert.match(toolbarSource, /\{ label: '画面联想', operation: 'image_ideation' \}/)
+  assert.match(toolbarSource, /\{ label: '画面联想', operation: 'image_ideation', icon: \w+ \}/)
   assert.match(toolbarSource, /REFERENCE_VARIATION_OPERATIONS\.includes\(editorOperation\)/)
   assert.match(toolbarSource, /referenceVariationDescription = ref\(''\)/)
   assert.match(toolbarSource, /v-model="referenceVariationDescription"/)
@@ -191,6 +202,10 @@ test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父�
   assert.match(toolbarSource, /width: data\.width/)
   assert.match(toolbarSource, /height: data\.height/)
   assert.match(toolbarSource, /\['crop', 'selection_cutout'\]\.includes\(editorOperation/)
+  assert.match(toolbarSource, /selectionMode = ref\('rectangle'\)/)
+  assert.match(toolbarSource, /selectionBrushStrokes = ref\(\[\]\)/)
+  assert.match(toolbarSource, /selectionMode: 'brush'/)
+  assert.match(toolbarSource, /brushStrokes: selectionBrushStrokes\.value/)
 })
 
 test('执行图片工具成功才替换节点结果，失败保留旧图并写回错误', () => {
@@ -214,14 +229,37 @@ test('执行图片工具成功才替换节点结果，失败保留旧图并写�
   assert.match(canvasSource, /runImageNodeTool,\s*\n/)
 })
 
-test('P1 图片调整包含色温，旋转走 Sharp 派生链', () => {
-  assert.match(toolbarSource, /adjustForm = ref\(\{[^}]*temperature: 0/)
+test('P1 图片调整覆盖完整参数，LUT 支持强度，旋转走 Sharp 派生链', () => {
+  assert.match(toolbarSource, /const DEFAULT_ADJUST_FORM = Object\.freeze\(\{[\s\S]*temperature: 0/)
+  assert.match(toolbarSource, /adjustForm = ref\(\{ \.\.\.DEFAULT_ADJUST_FORM \}\)/)
+  for (const parameter of [
+    'exposure',
+    'brightness',
+    'contrast',
+    'vibrance',
+    'saturation',
+    'temperature',
+    'tint',
+    'hue',
+    'sharpness',
+    'clarity',
+    'blur',
+  ]) {
+    assert.match(toolbarSource, new RegExp(`${parameter}:`))
+  }
   assert.match(toolbarSource, /色温/)
+  assert.match(toolbarSource, /lutIntensity = ref\(1\)/)
+  assert.match(toolbarSource, /intensity: lutIntensity\.value/)
+  assert.match(toolbarSource, /上传 3D LUT/)
+  assert.match(toolbarSource, /async function loadCubeLut/)
+  assert.match(toolbarSource, /LUT_3D_SIZE/)
+  assert.match(toolbarSource, /preset: lutPreset\.value/)
+  assert.match(toolbarSource, /customLut: customLut\.value/)
   assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
 })
 
 test('生成导演台、灯光、角度和姿势入口桥接当前图片且不冒充模型图片处理', () => {
-  assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage' \}/)
+  assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage', icon: \w+ \}/)
   assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
   assert.match(toolbarSource, /ctx\?\.openDirectorStage\?\.\(\{[\s\S]*mode: item\.operation/)
   assert.match(toolbarSource, /imageUrl: props\.data\.url/)
@@ -243,4 +281,13 @@ test('工具栏提供替换、下载、全屏、历史与标记色入口', () =>
   assert.match(toolbarSource, /ctx\?\.setFreeCanvasNodeMarker/)
   assert.match(nodeSource, /--image-node-marker/)
   assert.match(nodeSource, /var\(--image-node-marker/)
+})
+
+test('宫格裁剪只提交用户选中的格子且保留全选与取消入口', () => {
+  assert.match(toolbarSource, /gridSelectedCells = ref\(\[\]\)/)
+  assert.match(toolbarSource, /const gridCells = computed/)
+  assert.match(toolbarSource, /toggleGridCell\(cell\.key\)/)
+  assert.match(toolbarSource, /selectAllGridCells/)
+  assert.match(toolbarSource, /gridSelectedCells = \[\]/)
+  assert.match(toolbarSource, /selectedCells: \[\.\.\.gridSelectedCells\.value\]/)
 })
