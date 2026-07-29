@@ -186,7 +186,7 @@
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -455,7 +455,7 @@ function detachFreeCanvasReference(edgeId) {
 }
 
 function onNodesChange(changes = []) {
-  if (changes.some((change) => change.type !== 'select')) scheduleSave()
+  if (changes.some((change) => !['select', 'position', 'dimensions'].includes(change.type))) scheduleSave()
 }
 
 function onEdgesChange(changes = []) {
@@ -895,8 +895,6 @@ onMounted(() => {
   window.addEventListener('keydown', onCanvasKeydown)
   void loadBindingProjects()
 })
-
-watch([nodes, edges], scheduleSave, { deep: true })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCanvasKeydown)

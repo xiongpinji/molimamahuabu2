@@ -41,9 +41,19 @@
         title="双击全屏查看"
         @dragstart.prevent
         @click="openEditor"
-        @dblclick.stop="openImagePreview(primaryResultUrl)"
+        @dblclick.stop="openMediaPreview(primaryResultUrl, 'image')"
       />
-      <video v-else-if="data.kind === 'video' && primaryResultUrl" :src="primaryResultUrl" class="node-media" controls muted playsinline />
+      <video
+        v-else-if="data.kind === 'video' && primaryResultUrl"
+        :src="primaryResultUrl"
+        class="node-media"
+        controls
+        muted
+        playsinline
+        title="双击全屏查看"
+        @click="openEditor"
+        @dblclick.stop="openMediaPreview(primaryResultUrl, 'video')"
+      />
       <audio v-else-if="data.kind === 'audio' && primaryResultUrl" :src="primaryResultUrl" class="node-audio" controls />
       <div v-else class="media-empty">
         <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
@@ -66,7 +76,7 @@
             class="nodrag nopan"
             @mousedown.stop
             @click.stop="selectResult(url)"
-            @dblclick.stop="openImagePreview(url)"
+            @dblclick.stop="openMediaPreview(url, 'image')"
           />
           <span v-else>{{ index + 1 }}</span>
         </button>
@@ -355,15 +365,16 @@
 
     <Teleport to="body">
       <div
-        v-if="imagePreviewUrl"
+        v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
         role="dialog"
         aria-modal="true"
-        aria-label="图片全屏预览"
-        @click.self="closeImagePreview"
+        aria-label="媒体全屏预览"
+        @click.self="closeMediaPreview"
       >
-        <button type="button" aria-label="关闭图片预览" title="关闭" @click="closeImagePreview">×</button>
-        <img :src="imagePreviewUrl" :alt="data.title || '图片预览'" />
+        <button type="button" aria-label="关闭媒体预览" title="关闭" @click="closeMediaPreview">×</button>
+        <img v-if="mediaPreviewKind === 'image'" :src="mediaPreviewUrl" :alt="data.title || '图片预览'" />
+        <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
     </Teleport>
 
@@ -392,7 +403,8 @@ const fileInput = ref(null)
 const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
-const imagePreviewUrl = ref('')
+const mediaPreviewUrl = ref('')
+const mediaPreviewKind = ref('image')
 let draftSaveTimer = null
 let draftDirty = false
 const mentionStart = ref(-1)
@@ -632,12 +644,15 @@ function closeEditor() {
   editorFullscreen.value = false
 }
 
-function openImagePreview(url) {
-  if (url) imagePreviewUrl.value = String(url)
+function openMediaPreview(url, kind = 'image') {
+  if (!url) return
+  mediaPreviewUrl.value = String(url)
+  mediaPreviewKind.value = kind
 }
 
-function closeImagePreview() {
-  imagePreviewUrl.value = ''
+function closeMediaPreview() {
+  mediaPreviewUrl.value = ''
+  mediaPreviewKind.value = 'image'
 }
 
 function openAssetLibrary() {
@@ -724,9 +739,9 @@ async function copyResultReference() {
 
 function onEditorKeydown(event) {
   if (event.key !== 'Escape') return
-  if (imagePreviewUrl.value) {
+  if (mediaPreviewUrl.value) {
     event.preventDefault()
-    closeImagePreview()
+    closeMediaPreview()
     return
   }
   if (!isSelected.value || editorHidden.value) return
@@ -748,7 +763,7 @@ watch(isSelected, (selected) => {
   if (selected) editorHidden.value = false
   else {
     editorFullscreen.value = false
-    imagePreviewUrl.value = ''
+    closeMediaPreview()
   }
 })
 </script>
@@ -1181,7 +1196,8 @@ watch(isSelected, (selected) => {
   font-size: 24px;
   cursor: pointer;
 }
-.image-lightbox > img { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.image-lightbox > img,
+.image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .run-button {
   width: 40px;
   height: 40px;
