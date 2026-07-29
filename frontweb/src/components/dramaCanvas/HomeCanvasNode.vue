@@ -59,28 +59,6 @@
         <span class="media-empty-icon" aria-hidden="true">{{ kindIcon }}</span>
         <span>{{ mediaEmptyLabel }}</span>
       </div>
-      <div v-if="resultUrls.length > 1" class="result-strip" aria-label="生成结果列表">
-        <button
-          v-for="(url, index) in resultUrls"
-          :key="url"
-          type="button"
-          :class="{ active: url === data.url }"
-          aria-label="设为当前结果"
-          :title="`结果 ${index + 1}`"
-          @click="selectResult(url)"
-        >
-          <img
-            v-if="data.kind === 'image'"
-            :src="url"
-            alt=""
-            class="nodrag nopan"
-            @mousedown.stop
-            @click.stop="selectResult(url)"
-            @dblclick.stop="openMediaPreview(url, 'image')"
-          />
-          <span v-else>{{ index + 1 }}</span>
-        </button>
-      </div>
       <div v-if="primaryResultUrl" class="result-actions">
         <button type="button" aria-label="下载结果" title="下载结果" @click="downloadResult">↓</button>
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
@@ -718,10 +696,6 @@ async function translateNode() {
   await ctx?.translateFreeCanvasNode?.(props.id)
 }
 
-async function selectResult(url) {
-  await ctx?.updateFreeCanvasNode?.(props.id, { url })
-}
-
 function downloadResult() {
   const url = primaryResultUrl.value
   if (!url) return
@@ -1052,14 +1026,7 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
   cursor: pointer;
 }
-.result-strip {
-  position: absolute;
-  bottom: 12px;
-  left: 12px;
-  display: flex;
-  gap: 6px;
-}
-.result-strip button, .result-actions button {
+.result-actions button {
   display: grid;
   width: 34px;
   height: 34px;
@@ -1072,8 +1039,6 @@ watch(isSelected, (selected) => {
   color: #e4e4e7;
   cursor: pointer;
 }
-.result-strip button.active { border-color: #fb7b3b; }
-.result-strip img { width: 100%; height: 100%; object-fit: cover; }
 .result-actions { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
 .file-input { display: none; }
 .prompt-editor { position: relative; }

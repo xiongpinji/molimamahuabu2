@@ -5708,6 +5708,22 @@ function selectVisibleStoryboards() {
   ElMessage.success(`已选中 ${ids.length} 个可见分镜`)
 }
 
+function selectVisibleCanvasNodes() {
+  if (!isStandaloneCanvas.value) {
+    selectVisibleStoryboards()
+    return
+  }
+  const ids = nodes.value
+    .filter((node) => node.type === 'homeCanvasNode' && !node.hidden)
+    .map((node) => String(node.id))
+  if (!ids.length) {
+    ElMessage.warning('当前画布暂无可选节点')
+    return
+  }
+  applySelectedFreeNodeIds(ids)
+  ElMessage.success(`已选中 ${ids.length} 个节点`)
+}
+
 function panCanvasByKeyboard(key) {
   const deltas = {
     w: { x: 0, y: CANVAS_KEYBOARD_PAN_STEP },
@@ -5788,7 +5804,7 @@ function onCanvasKeydown(event) {
   if (!modifier || event.altKey) return
   if (key === 'a') {
     event.preventDefault()
-    selectVisibleStoryboards()
+    selectVisibleCanvasNodes()
     return
   }
   if (key === 'g') {
