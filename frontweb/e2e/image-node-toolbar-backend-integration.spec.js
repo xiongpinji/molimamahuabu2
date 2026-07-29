@@ -25,6 +25,10 @@ let storagePath
 let dramaId
 let sourceAssetId
 const nodeId = 'free:image:toolbar-same-chain'
+const realSeedreamEnabled = process.env.RUN_REAL_SEEDREAM_IMAGE_NODE_CHAIN === '1'
+const realSeedreamBaseUrl = String(process.env.SEEDREAM_BASE_URL || '').trim()
+const realSeedreamApiKey = String(process.env.SEEDREAM_API_KEY || '').trim()
+const realSeedreamModel = String(process.env.SEEDREAM_MODEL || '').trim()
 
 test.setTimeout(90_000)
 test.describe.configure({ mode: 'serial' })
@@ -216,6 +220,40 @@ test.beforeAll(async () => {
     }
     db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(metadata), now, dramaId)
+    if (realSeedreamEnabled) {
+      db.prepare(
+        `INSERT INTO ai_service_configs
+          (service_type, provider, api_protocol, name, base_url, api_key, model,
+           default_model, endpoint, priority, is_default, is_active, settings,
+           created_at, updated_at)
+         VALUES
+          ('storyboard_image', 'volcengine', 'volcengine', ?, ?, ?, ?, ?,
+           '/images/generations', 100, 1, 1, ?, ?, ?)`,
+      ).run(
+        'Seedream 4.5 图片节点真实同链',
+        realSeedreamBaseUrl,
+        realSeedreamApiKey,
+        JSON.stringify([realSeedreamModel]),
+        realSeedreamModel,
+        JSON.stringify({
+          supports_upscale: true,
+          supports_detail_enhance: true,
+          supports_outpaint: true,
+          supports_markup_retouch: true,
+          supports_panorama: true,
+          supports_panorama_scene: true,
+          supports_image_ideation: true,
+          supports_angle_ideation: true,
+          supports_character_views: true,
+          supports_narrative_grid: true,
+          supports_frame_forward: true,
+          supports_frame_backward: true,
+          supports_cinematic_relight: true,
+        }),
+        now,
+        now,
+      )
+    }
   } finally {
     db.close()
   }
@@ -387,4 +425,86 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   await expect(finalNode.locator('.image-node-toolbar')).toBeVisible()
   await finalNode.locator('.image-node-toolbar button[title="处理历史"]').click()
   await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
+})
+
+test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
+  test.skip(!realSeedreamEnabled, '需要显式启用真实 Seedream 付费同链')
+  testInfo.setTimeout(360_000)
+  await proxyBackend(page)
+  await page.goto(`/canvas/${dramaId}`)
+
+  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(node).toContainText('图片工具同链节点')
+  await node.click()
+  const toolbar = node.locator('.image-node-toolbar')
+  await expect(toolbar).toBeVisible()
+  await expect(toolbar.getByRole('button', { name: '高清', exact: true })).toBeEnabled()
+  await toolbar.getByRole('button', { name: '高清', exact: true }).click()
+
+  const dialog = page.getByRole('dialog', { name: '高清增强' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
+  await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible({ timeout: 300_000 })
+
+  await expect.poll(() => readDatabase((db) => {
+    const task = db.prepare(
+      `SELECT id, status, error, result
+       FROM async_tasks WHERE type = 'image_tool_upscale'
+       ORDER BY created_at DESC LIMIT 1`,
+    ).get()
+    const asset = db.prepare(
+      `SELECT id, url, local_path, width, height, file_size, metadata
+       FROM assets WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
+    ).get(dramaId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    return {
+      task,
+      asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
+      freeNode,
+    }
+  }), { timeout: 30_000 }).toMatchObject({
+    task: {
+      status: 'completed',
+      error: null,
+      result: expect.stringContaining('"resultAssetId"'),
+    },
+    asset: {
+      width: expect.any(Number),
+      height: expect.any(Number),
+      file_size: expect.any(Number),
+      metadata: {
+        operation: 'upscale',
+        engine: 'provider-image-edit',
+        engineVersion: expect.stringContaining(realSeedreamModel),
+        taskId: expect.any(String),
+      },
+    },
+    freeNode: {
+      data: expect.objectContaining({
+        imageToolStatus: 'success',
+        savedAssetId: expect.any(String),
+        url: expect.stringMatching(/^\/static\//),
+        imageToolHistory: expect.arrayContaining([
+          expect.objectContaining({ operation: 'upscale', status: 'success' }),
+        ]),
+      }),
+    },
+  })
+
+  const resultAsset = readDatabase((db) => db.prepare(
+    `SELECT local_path, width, height, file_size FROM assets
+     WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
+  ).get(dramaId))
+  expect(resultAsset.width).toBeGreaterThan(320)
+  expect(resultAsset.height).toBeGreaterThan(180)
+  expect(resultAsset.file_size).toBeGreaterThan(0)
+  expect(fs.existsSync(resultAsset.local_path)).toBe(true)
+
+  await page.reload({ waitUntil: 'networkidle' })
+  const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await restored.click()
+  await restored.locator('.image-node-toolbar button[title="处理历史"]').click()
+  await expect(restored.locator('.toolbar-history')).toContainText('高清增强')
+  await expect(restored.locator('.toolbar-history')).toContainText('已完成')
 })

@@ -91,6 +91,29 @@ test('镜像 CI 会实际启动容器、检查网页并发布不可变镜像', (
   assert.doesNotMatch(workflow, /actions\/checkout@v\d/);
 });
 
+test('真实 Seedream 图片节点同链要求显式付费确认并使用隔离浏览器端口', () => {
+  const packageJson = JSON.parse(read('frontweb/package.json'));
+  const runner = read('frontweb/scripts/run-real-seedream-image-node-chain.mjs');
+  const browserSpec = read('frontweb/e2e/image-node-toolbar-backend-integration.spec.js');
+
+  assert.equal(
+    packageJson.scripts['test:e2e:image-node-real'],
+    'node scripts/run-real-seedream-image-node-chain.mjs',
+  );
+  assert.match(runner, /RUN_REAL_SEEDREAM_IMAGE_NODE_CHAIN/);
+  assert.match(runner, /SEEDREAM_API_KEY/);
+  assert.match(runner, /SEEDREAM_BASE_URL/);
+  assert.match(runner, /SEEDREAM_MODEL/);
+  assert.match(runner, /protocol !== 'https:'/);
+  assert.match(runner, /server\.listen\(0, '127\.0\.0\.1'/);
+  assert.match(runner, /PLAYWRIGHT_REUSE_SERVER: '0'/);
+  assert.doesNotMatch(runner, /console\.log\(.*apiKey|process\.stdout\.write\(.*apiKey/);
+  assert.match(browserSpec, /真实触发 Seedream/);
+  assert.match(browserSpec, /engine: 'provider-image-edit'/);
+  assert.match(browserSpec, /imageToolHistory/);
+  assert.match(browserSpec, /page\.reload/);
+});
+
 test('生产手册拉取已验证镜像且安全政策覆盖网页端责任边界', () => {
   const deployment = read('docs/WEB_PRODUCTION_DEPLOYMENT.md');
   const security = read('SECURITY.md');

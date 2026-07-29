@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:image-node-real": "node scripts/run-real-seedream-image-node-chain.mjs",
     "test:e2e:home": "playwright test e2e/home-canvas.spec.js",
     "test:e2e:canvas": "playwright test e2e/home-canvas.spec.js e2e/project-canvas-ci.spec.js e2e/project-canvas-backend-integration.spec.js e2e/image-node-toolbar-backend-integration.spec.js",
     "test:e2e:install": "playwright install chromium"
