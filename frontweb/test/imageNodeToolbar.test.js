@@ -120,6 +120,28 @@ test('标记修图采集受限笔迹与指令并提交真实参考图编辑操�
   assert.match(toolbarSource, /markup_retouch: '标记修图'/)
 })
 
+test('电影级光影校正提交受控预设、强度和补充要求并生成同尺寸新素材', () => {
+  assert.match(toolbarSource, /editorOperation === 'cinematic_relight'/)
+  assert.match(toolbarSource, /relightForm = ref\(\{[\s\S]*preset: 'cinematic'/)
+  assert.match(toolbarSource, /intensity: 3/)
+  assert.match(toolbarSource, /description: ''/)
+  assert.match(toolbarSource, /<el-option label="电影感" value="cinematic" \/>/)
+  assert.match(toolbarSource, /<el-option label="黄金时刻" value="golden_hour" \/>/)
+  assert.match(toolbarSource, /<el-option label="月夜" value="moonlight" \/>/)
+  assert.match(toolbarSource, /<el-option label="影棚柔光" value="studio_soft" \/>/)
+  assert.match(toolbarSource, /<el-option label="高反差" value="high_contrast" \/>/)
+  assert.match(toolbarSource, /v-model="relightForm\.intensity"/)
+  assert.match(toolbarSource, /:min="1" :max="5"/)
+  assert.match(toolbarSource, /v-model="relightForm\.description"/)
+  assert.match(toolbarSource, /maxlength="300"/)
+  assert.match(
+    toolbarSource,
+    /editorOperation\.value === 'cinematic_relight'\) return \{[\s\S]*description: relightForm\.value\.description\.trim\(\)/,
+  )
+  assert.match(toolbarSource, /参考图供应商生成同尺寸新素材；原图保持不变/)
+  assert.match(toolbarSource, /cinematic_relight: '电影级光影校正'/)
+})
+
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {
   assert.match(toolbarSource, /import\('cropperjs'\)/)
   assert.match(toolbarSource, /import\('cropperjs\/dist\/cropper\.css'\)/)

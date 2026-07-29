@@ -267,6 +267,34 @@
           </p>
         </template>
 
+        <template v-else-if="editorOperation === 'cinematic_relight'">
+          <el-form-item label="光影预设">
+            <el-select v-model="relightForm.preset">
+              <el-option label="电影感" value="cinematic" />
+              <el-option label="黄金时刻" value="golden_hour" />
+              <el-option label="月夜" value="moonlight" />
+              <el-option label="影棚柔光" value="studio_soft" />
+              <el-option label="高反差" value="high_contrast" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="`校正强度 ${relightForm.intensity}/5`">
+            <el-slider v-model="relightForm.intensity" :min="1" :max="5" :step="1" />
+          </el-form-item>
+          <el-form-item label="补充要求（可选）">
+            <el-input
+              v-model="relightForm.description"
+              type="textarea"
+              :rows="3"
+              maxlength="300"
+              show-word-limit
+              placeholder="例如：保留人物面部，增加窗外暖色轮廓光"
+            />
+          </el-form-item>
+          <p class="crop-hint">
+            使用已配置的参考图供应商生成同尺寸新素材；原图保持不变。
+          </p>
+        </template>
+
         <template v-else-if="editorOperation === 'compress'">
           <el-form-item label="输出格式">
             <el-select v-model="compressForm.format">
@@ -374,6 +402,11 @@ const outpaintForm = ref({
   aspectRatio: '16:9',
   direction: 'auto',
   prompt: '',
+})
+const relightForm = ref({
+  preset: 'cinematic',
+  intensity: 3,
+  description: '',
 })
 const MARKUP_MAX_STROKES = 16
 const MARKUP_MAX_POINTS = 128
@@ -643,6 +676,11 @@ function operationParameters() {
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
   if (editorOperation.value === 'detail_enhance') return { preset: detailEnhancePreset.value }
   if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
+  if (editorOperation.value === 'cinematic_relight') return {
+    preset: relightForm.value.preset,
+    intensity: relightForm.value.intensity,
+    description: relightForm.value.description.trim(),
+  }
   if (editorOperation.value === 'markup_retouch') {
     const instruction = markupInstruction.value.trim()
     if (!instruction) throw new Error('请填写修图要求')
@@ -705,6 +743,7 @@ function operationLabel(operation) {
     detail_enhance: '细节纹理增强',
     outpaint: '扩图',
     markup_retouch: '标记修图',
+    cinematic_relight: '电影级光影校正',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }

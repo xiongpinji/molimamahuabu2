@@ -234,10 +234,24 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   const operations = [];
   if (settings.supports_outpaint === true) operations.push('outpaint');
   if (settings.supports_markup_retouch === true) operations.push('markup_retouch');
+  const cinematicRelightDeclared = settings.supports_cinematic_relight === true;
+  const cinematicRelightAdapterAudited = config.service_type === 'storyboard_image'
+    && provider === 'volcengine'
+    && protocol === 'volcengine'
+    && model === 'doubao-seedream-4-5';
+  if (cinematicRelightDeclared && cinematicRelightAdapterAudited) {
+    operations.push('cinematic_relight');
+  }
   if (operations.length === 0) {
+    if (cinematicRelightDeclared && !cinematicRelightAdapterAudited) {
+      return {
+        available: false,
+        reason: `当前默认图片模型 ${model} 的电影光影校正适配器尚未通过审计`,
+      };
+    }
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 未显式声明扩图或标记修图能力`,
+      reason: `当前默认图片模型 ${model} 未显式声明扩图、标记修图或电影光影校正能力`,
     };
   }
   const auditedAdapter = protocol === 'volcengine'
@@ -245,7 +259,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (!auditedAdapter) {
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 的扩图或标记修图适配器尚未通过审计`,
+      reason: `当前默认图片模型 ${model} 的扩图、标记修图或电影光影校正适配器尚未通过审计`,
     };
   }
   if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {
@@ -1786,7 +1800,10 @@ async function callImageApi(db, log, opts) {
       : ('图片生成网络请求失败: ' + e.message) };
   }
   if (httpStatus < 200 || httpStatus >= 300) {
-    log.error('Image API failed', { status: httpStatus, body: raw.slice(0, 300) });
+    log.error('Image API failed', {
+      status: httpStatus,
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
+    });
     let errMsg = '图片生成请求失败: ' + httpStatus;
     try {
       const errJson = JSON.parse(raw);
@@ -1801,7 +1818,10 @@ async function callImageApi(db, log, opts) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    log.warn('Image API response parse error', { image_gen_id, raw_preview: raw.slice(0, 200) });
+    log.warn('Image API response parse error', {
+      image_gen_id,
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
+    });
     return { error: '图片生成返回格式异常' };
   }
   // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
@@ -1823,7 +1843,7 @@ async function callImageApi(db, log, opts) {
       image_gen_id,
       model,
       response_keys: data ? Object.keys(data) : [],
-      data_preview: data ? JSON.stringify(data).slice(0, 500) : '',
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
       has_data_array: !!(data.data && Array.isArray(data.data)),
       first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
     });

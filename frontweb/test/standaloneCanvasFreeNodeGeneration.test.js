@@ -58,6 +58,40 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
   })
 })
 
+test('电影级光影校正失败重试参数可安全持久化并在刷新后恢复', () => {
+  const normalized = normalizeFreeCanvasNodeData({
+    kind: 'image',
+    url: '/static/source.png',
+    imageToolStatus: 'failed',
+    imageToolError: '电影级光影校正处理失败',
+    imageToolRetryOperation: 'cinematic_relight',
+    imageToolRetryParameters: {
+      preset: 'moonlight',
+      intensity: 5,
+      description: '失败后必须保留这一组重试参数',
+      ignored: '不应持久化',
+    },
+  })
+  assert.equal(normalized.imageToolRetryOperation, 'cinematic_relight')
+  assert.deepEqual(normalized.imageToolRetryParameters, {
+    preset: 'moonlight',
+    intensity: 5,
+    description: '失败后必须保留这一组重试参数',
+  })
+
+  const tooLong = normalizeFreeCanvasNodeData({
+    kind: 'image',
+    imageToolRetryOperation: 'cinematic_relight',
+    imageToolRetryParameters: {
+      preset: 'cinematic',
+      intensity: 3,
+      description: 'x'.repeat(301),
+    },
+  })
+  assert.equal(tooLong.imageToolRetryOperation, undefined)
+  assert.equal(tooLong.imageToolRetryParameters, undefined)
+})
+
 test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => {
   const imagePayload = buildFreeCanvasGenerationRequest({
     kind: 'image',

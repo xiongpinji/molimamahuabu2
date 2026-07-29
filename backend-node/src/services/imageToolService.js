@@ -85,7 +85,18 @@ const DETAIL_ENHANCE_PRESETS = Object.freeze({
   balanced: 1.2,
   strong: 1.8,
 });
-const REFERENCE_IMAGE_OPERATIONS = Object.freeze(['outpaint', 'markup_retouch']);
+const CINEMATIC_RELIGHT_PRESETS = Object.freeze({
+  cinematic: '电影感光影，克制的明暗层次与自然色彩分离',
+  golden_hour: '黄金时刻暖光，柔和轮廓光与自然长阴影',
+  moonlight: '月夜冷调光影，保留可读暗部与自然高光',
+  studio_soft: '影棚柔光，均匀柔和的人物或主体塑形',
+  high_contrast: '高反差戏剧光，明确主次但保留关键细节',
+});
+const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
+  'outpaint',
+  'markup_retouch',
+  'cinematic_relight',
+]);
 const MARKUP_MAX_STROKES = 16;
 const MARKUP_MAX_POINTS_PER_STROKE = 128;
 const MARKUP_COLORS = new Set(['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']);
@@ -573,6 +584,7 @@ function resolveReferenceImageTool(db, log, explicitTool) {
 function referenceImageCapabilities(referenceImageTool, unavailableReason) {
   const outpaintAvailable = referenceImageTool?.operations.includes('outpaint');
   const markupRetouchAvailable = referenceImageTool?.operations.includes('markup_retouch');
+  const cinematicRelightAvailable = referenceImageTool?.operations.includes('cinematic_relight');
   const common = referenceImageTool
     ? {
       engine: referenceImageTool.engine,
@@ -605,6 +617,18 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
         available: false,
         reason: unavailableReason || '未配置已显式声明且通过审计的标记修图模型',
       },
+    cinematic_relight: cinematicRelightAvailable
+      ? {
+        available: true,
+        ...common,
+        presets: Object.keys(CINEMATIC_RELIGHT_PRESETS),
+        intensityRange: [1, 5],
+        preservesDimensions: true,
+      }
+      : {
+        available: false,
+        reason: unavailableReason || '未配置已显式声明且通过审计的电影光影校正模型',
+      },
   };
 }
 
@@ -632,6 +656,45 @@ function buildOutpaintPrompt(parameters) {
     `基于输入原图进行扩图，目标画幅为 ${parameters.aspectRatio}，${OUTPAINT_DIRECTIONS[parameters.direction]}。`,
     '保留原图已有主体、人物身份、面部、服装、姿势、画风、光线、透视和原有画面内容，不要裁掉或重绘原图中心内容。',
     '只在新增画布区域自然补全连续环境、纹理与光影，边缘衔接必须无缝，输出一张连续完整图片，不要拼图、边框、文字或水印。',
+    extra,
+  ].filter(Boolean).join('\n');
+}
+
+function normalizeCinematicRelightParameters(parameters) {
+  if (typeof parameters.preset !== 'string') {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数无效');
+  }
+  if (typeof parameters.intensity !== 'number') {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'intensity 必须是 1 到 5 的整数');
+  }
+  const rawDescription = parameters.description === undefined ? '' : parameters.description;
+  if (typeof rawDescription !== 'string') {
+    fail('IMAGE_TOOL_INVALID_INPUT', '光影补充要求必须是字符串');
+  }
+  const preset = parameters.preset.trim();
+  const intensity = parameters.intensity;
+  const description = rawDescription.trim();
+  if (!CINEMATIC_RELIGHT_PRESETS[preset]) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数无效');
+  }
+  if (!Number.isInteger(intensity) || intensity < 1 || intensity > 5) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'intensity 必须是 1 到 5 的整数');
+  }
+  if (description.length > 300) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '光影补充要求不能超过 300 字');
+  }
+  return { preset, intensity, description };
+}
+
+function buildCinematicRelightPrompt(parameters) {
+  const extra = parameters.description
+    ? `补充要求：${parameters.description}。`
+    : '';
+  return [
+    '基于输入原图执行电影级光影校正，只调整照明、曝光、色温、阴影、高光与氛围。',
+    `光影预设：${CINEMATIC_RELIGHT_PRESETS[parameters.preset]}；强度 ${parameters.intensity}/5。`,
+    '必须保持人物身份、面部、发型、服装、姿势、物体、构图、镜头、透视、纹理、画风和画面尺寸不变。',
+    '不得增加、删除或移动主体，不得改写背景结构，不要拼图、边框、文字、水印或前后对比图。',
     extra,
   ].filter(Boolean).join('\n');
 }
@@ -923,9 +986,10 @@ async function streamOutpaintHttpsToFile(rawUrl, outputPath, maxBytes, redirectC
 
 async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}) {
   const maxBytes = positiveLimit(options.maxBytes, SMART_CUTOUT_MAX_OUTPUT_BYTES);
-  const outputPrefix = options.operation === 'markup_retouch'
-    ? 'markup-provider-download'
-    : 'outpaint';
+  const outputPrefix = {
+    markup_retouch: 'markup-provider-download',
+    cinematic_relight: 'relight-provider-download',
+  }[options.operation] || 'outpaint';
   let realAllowedRoot;
   let realOutputDir;
   try {
@@ -1223,6 +1287,144 @@ async function runMarkupRetouch({
       if (temporaryPath && fs.existsSync(temporaryPath)) {
         fs.rmSync(temporaryPath, { force: true });
       }
+    }
+  }
+}
+
+async function runCinematicRelight({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+}) {
+  let sourceMetadata;
+  try {
+    sourceMetadata = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+  } catch {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const parameters = normalizeCinematicRelightParameters(request.parameters || {});
+  const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+  let release;
+  let providerDownloadPath = null;
+  let outputPath = null;
+  try {
+    release = referenceImageTool.limiter.acquire(tenantId);
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      '正在执行电影级光影校正...',
+      () => referenceImageTool.generate({
+        prompt: buildCinematicRelightPrompt(parameters),
+        size: `${sourceMetadata.width}x${sourceMetadata.height}`,
+        referenceImage: sourcePath,
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+        systemPrompt: 'The source image is the immutable content reference. Preserve identity, geometry, composition, texture, style, and dimensions; change only lighting.',
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      log.warn('image cinematic relight provider failed', {
+        provider: referenceImageTool.provider,
+        protocol: referenceImageTool.protocol,
+        model: referenceImageTool.model,
+        reason: 'provider returned no image',
+      });
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正处理失败');
+    }
+    providerDownloadPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+      { operation: 'cinematic_relight' },
+    );
+    if (fileSha256(providerDownloadPath) === fileSha256(sourcePath)) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正产物校验失败');
+    }
+    const providerMetadata = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      !FORMAT_INFO[providerMetadata.format]
+      || !providerMetadata.width
+      || !providerMetadata.height
+      || providerMetadata.width * providerMetadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正结果格式无效');
+    }
+    const sourceRatio = sourceMetadata.width / sourceMetadata.height;
+    const providerRatio = providerMetadata.width / providerMetadata.height;
+    if (Math.abs(providerRatio - sourceRatio) / sourceRatio > 0.03) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正结果画幅与原图不符');
+    }
+    outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+    const outputInfo = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(sourceMetadata.width, sourceMetadata.height, {
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== sourceMetadata.width
+      || outputInfo.height !== sourceMetadata.height
+      || fileSha256(outputPath) === fileSha256(sourcePath)
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正产物校验失败');
+    }
+    await sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).stats();
+    return {
+      outputPath,
+      format: FORMAT_INFO.png,
+      outputInfo,
+      parameters: {
+        ...parameters,
+        preserveDimensions: true,
+      },
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if ([
+      'IMAGE_TOOL_INVALID_INPUT',
+      'IMAGE_TOOL_SOURCE_UNAVAILABLE',
+      'IMAGE_TOOL_UNSUPPORTED_IMAGE',
+      'IMAGE_TOOL_BUSY',
+    ].includes(error?.code)) {
+      throw error;
+    }
+    log.warn('image cinematic relight failed', {
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正处理失败');
+  } finally {
+    release?.();
+    if (providerDownloadPath && fs.existsSync(providerDownloadPath)) {
+      fs.rmSync(providerDownloadPath, { force: true });
     }
   }
 }
@@ -1751,6 +1953,10 @@ async function createOperation(db, log, request, context = {}) {
     && !(
       operation === 'markup_retouch'
       && referenceImageTool?.operations.includes('markup_retouch')
+    )
+    && !(
+      operation === 'cinematic_relight'
+      && referenceImageTool?.operations.includes('cinematic_relight')
     )) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
@@ -2085,6 +2291,49 @@ async function createOperation(db, log, request, context = {}) {
           outputInfo: prepared.outputInfo,
           parameters: prepared.parameters,
           suffix: 'markup-retouch',
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
+    if (operation === 'cinematic_relight') {
+      const prepared = await runCinematicRelight({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          suffix: 'cinematic-relight',
           storageRoot,
           engine: referenceImageTool.engine,
           engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,

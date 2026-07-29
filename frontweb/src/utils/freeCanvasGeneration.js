@@ -13,6 +13,7 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   upscale: ['scale'],
   adjust: ['brightness', 'saturation', 'contrast', 'temperature'],
   lut: ['preset'],
+  cinematic_relight: ['preset', 'intensity', 'description'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
@@ -93,12 +94,17 @@ function normalizeImageToolRetryParameters(operation, value) {
   if (!keys) return undefined
   if (keys.length === 0) return {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const stringLimits = operation === 'cinematic_relight'
+    ? { preset: 32, description: 300 }
+    : {}
   const parameters = {}
   for (const key of keys) {
     const candidate = value[key]
     if (typeof candidate === 'number' && Number.isFinite(candidate)) {
       parameters[key] = candidate
-    } else if (typeof candidate === 'string' && candidate.length <= 32) {
+    } else if (typeof candidate === 'string') {
+      const limit = stringLimits[key] || 32
+      if (candidate.length > limit) return undefined
       parameters[key] = candidate
     }
   }

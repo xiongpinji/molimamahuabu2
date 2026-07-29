@@ -156,6 +156,7 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.equal(operations.lighting.action, 'open');
   assert.equal(operations.lighting.mode, 'lighting');
   assert.equal(operations.cinematic_relight.available, false);
+  assert.match(operations.cinematic_relight.reason, /显式声明|电影光影/);
   assert.equal(operations.angle.available, true);
   assert.equal(operations.angle.engine, 'director-stage');
   assert.equal(operations.angle.action, 'open');
@@ -179,7 +180,7 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
     provider: 'volcengine',
     protocol: 'volcengine',
     model: 'doubao-seedream-4-5',
-    operations: ['outpaint', 'markup_retouch'],
+    operations: ['outpaint', 'markup_retouch', 'cinematic_relight'],
     generate: async () => ({ image_url: '' }),
   };
   const localHandlers = createImageToolRoutes(null, { error() {} }, {
@@ -201,6 +202,17 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   assert.equal(localRes.payload.data.operations.markup_retouch.engine, 'provider-image-edit');
   assert.equal(localRes.payload.data.operations.markup_retouch.maxStrokes, 16);
   assert.equal(localRes.payload.data.operations.markup_retouch.maxPointsPerStroke, 128);
+  assert.equal(localRes.payload.data.operations.cinematic_relight.available, true);
+  assert.equal(localRes.payload.data.operations.cinematic_relight.engine, 'provider-image-edit');
+  assert.deepEqual(localRes.payload.data.operations.cinematic_relight.presets, [
+    'cinematic',
+    'golden_hour',
+    'moonlight',
+    'studio_soft',
+    'high_contrast',
+  ]);
+  assert.deepEqual(localRes.payload.data.operations.cinematic_relight.intensityRange, [1, 5]);
+  assert.equal(localRes.payload.data.operations.cinematic_relight.preservesDimensions, true);
 
   const outpaintOnlyHandlers = createImageToolRoutes(null, { error() {} }, {
     referenceImageTool: {
@@ -234,6 +246,8 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   assert.match(publicRes.payload.data.operations.outpaint.reason, /计费与审计链/);
   assert.equal(publicRes.payload.data.operations.markup_retouch.available, false);
   assert.match(publicRes.payload.data.operations.markup_retouch.reason, /计费与审计链/);
+  assert.equal(publicRes.payload.data.operations.cinematic_relight.available, false);
+  assert.match(publicRes.payload.data.operations.cinematic_relight.reason, /计费与审计链/);
 
   const publicCreateRes = responseRecorder();
   await publicHandlers.createOperation({
@@ -265,6 +279,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     settings: JSON.stringify({
       supports_outpaint: true,
       supports_markup_retouch: true,
+      supports_cinematic_relight: true,
     }),
   });
   const supportedHandlers = createImageToolRoutes(supportedDb, log);
@@ -274,6 +289,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'volcengine');
   assert.equal(supportedRes.payload.data.operations.markup_retouch.available, true);
   assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.cinematic_relight.available, true);
+  assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'volcengine');
 
   const undeclaredDb = new Database(':memory:');
   t.after(() => undeclaredDb.close());
@@ -294,6 +311,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   undeclaredHandlers.capabilities({}, undeclaredRes);
   assert.equal(undeclaredRes.payload.data.operations.outpaint.available, false);
   assert.match(undeclaredRes.payload.data.operations.outpaint.reason, /显式声明/);
+  assert.equal(undeclaredRes.payload.data.operations.cinematic_relight.available, false);
+  assert.match(undeclaredRes.payload.data.operations.cinematic_relight.reason, /显式声明/);
 
   const unsupportedDb = new Database(':memory:');
   t.after(() => unsupportedDb.close());
@@ -314,6 +333,56 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   unsupportedHandlers.capabilities({}, unsupportedRes);
   assert.equal(unsupportedRes.payload.data.operations.outpaint.available, false);
   assert.match(unsupportedRes.payload.data.operations.outpaint.reason, /扩图/);
+  assert.equal(unsupportedRes.payload.data.operations.cinematic_relight.available, false);
+  assert.match(unsupportedRes.payload.data.operations.cinematic_relight.reason, /电影光影|显式声明/);
+
+  for (const config of [
+    {
+      service_type: 'image',
+      provider: 'volcengine',
+      api_protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      name: '普通图片配置不可开放电影光影',
+    },
+    {
+      service_type: 'storyboard_image',
+      provider: 'volcengine',
+      api_protocol: 'volcengine',
+      model: 'private-doubao-compatible',
+      name: '名称仿冒模型不可开放电影光影',
+    },
+    {
+      service_type: 'storyboard_image',
+      provider: 'proxy',
+      api_protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      name: '未审计供应商不可开放电影光影',
+    },
+  ]) {
+    const strictDb = new Database(':memory:');
+    t.after(() => strictDb.close());
+    runMigrationsAndEnsure(strictDb);
+    aiConfigService.createConfig(strictDb, log, {
+      service_type: config.service_type,
+      provider: config.provider,
+      api_protocol: config.api_protocol,
+      name: config.name,
+      base_url: 'https://example.invalid/api/v3',
+      api_key: 'test-key',
+      model: [config.model],
+      default_model: config.model,
+      is_default: true,
+      settings: JSON.stringify({ supports_cinematic_relight: true }),
+    });
+    const strictHandlers = createImageToolRoutes(strictDb, log);
+    const strictRes = responseRecorder();
+    strictHandlers.capabilities({}, strictRes);
+    assert.equal(
+      strictRes.payload.data.operations.cinematic_relight.available,
+      false,
+      config.name,
+    );
+  }
 });
 
 test('真实图片供应商请求把存储根内绝对参考图编码为 data URL', async (t) => {
@@ -391,6 +460,129 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
   assert.match(requestBody.image[1], /^data:image\/png;base64,/);
   assert.doesNotMatch(requestBody.image[0], /molimama-outpaint-ref|source\.png/i);
   assert.doesNotMatch(requestBody.image[1], /molimama-outpaint-ref|marked\.png/i);
+});
+
+test('真实图片供应商 HTTP 错误日志不记录上游响应正文', async (t) => {
+  const privateMessage = 'private-provider-response-secret';
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: privateMessage } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const logEntries = [];
+  const log = {
+    info(message, details) {
+      logEntries.push({ level: 'info', message, details });
+    },
+    warn(message, details) {
+      logEntries.push({ level: 'warn', message, details });
+    },
+    error(message, details) {
+      logEntries.push({ level: 'error', message, details });
+    },
+  };
+  aiConfigService.createConfig(db, log, {
+    service_type: 'storyboard_image',
+    provider: 'volcengine',
+    api_protocol: 'volcengine',
+    name: 'Seedream 错误日志脱敏',
+    base_url: `http://127.0.0.1:${server.address().port}/api/v3`,
+    api_key: 'local-test-key',
+    model: ['doubao-seedream-4-5'],
+    default_model: 'doubao-seedream-4-5',
+    is_default: true,
+  });
+
+  const result = await imageClient.callImageApi(db, log, {
+    prompt: '电影级光影校正',
+    model: 'doubao-seedream-4-5',
+    preferred_provider: 'volcengine',
+    size: '1024x1024',
+    imageServiceType: 'storyboard_image',
+  });
+
+  assert.match(result.error, /图片生成请求失败/);
+  assert.doesNotMatch(JSON.stringify(logEntries), new RegExp(privateMessage));
+  const failedEntry = logEntries.find((entry) => entry.message === 'Image API failed');
+  assert.equal(failedEntry.details.status, 500);
+  assert.ok(failedEntry.details.response_bytes > 0);
+  assert.equal('body' in failedEntry.details, false);
+});
+
+test('真实图片供应商成功响应解析失败或无图片时不记录上游正文', async (t) => {
+  const malformedSecret = 'private-malformed-response-secret';
+  const noImageSecret = 'private-no-image-response-secret';
+  let requestCount = 0;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      requestCount += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(requestCount === 1
+        ? `not-json-${malformedSecret}`
+        : JSON.stringify({ data: [], diagnostic: noImageSecret }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const logEntries = [];
+  const log = {
+    info(message, details) {
+      logEntries.push({ level: 'info', message, details });
+    },
+    warn(message, details) {
+      logEntries.push({ level: 'warn', message, details });
+    },
+    error(message, details) {
+      logEntries.push({ level: 'error', message, details });
+    },
+  };
+  aiConfigService.createConfig(db, log, {
+    service_type: 'storyboard_image',
+    provider: 'volcengine',
+    api_protocol: 'volcengine',
+    name: 'Seedream 成功响应日志脱敏',
+    base_url: `http://127.0.0.1:${server.address().port}/api/v3`,
+    api_key: 'local-test-key',
+    model: ['doubao-seedream-4-5'],
+    default_model: 'doubao-seedream-4-5',
+    is_default: true,
+  });
+
+  const request = {
+    prompt: '电影级光影校正',
+    model: 'doubao-seedream-4-5',
+    preferred_provider: 'volcengine',
+    size: '1024x1024',
+    imageServiceType: 'storyboard_image',
+  };
+  const malformedResult = await imageClient.callImageApi(db, log, request);
+  const noImageResult = await imageClient.callImageApi(db, log, request);
+
+  assert.equal(malformedResult.error, '图片生成返回格式异常');
+  assert.equal(noImageResult.error, '未返回图片地址');
+  const serializedLogs = JSON.stringify(logEntries);
+  assert.doesNotMatch(serializedLogs, new RegExp(malformedSecret));
+  assert.doesNotMatch(serializedLogs, new RegExp(noImageSecret));
+  const parseEntry = logEntries.find((entry) => entry.message === 'Image API response parse error');
+  assert.ok(parseEntry.details.response_bytes > 0);
+  assert.equal('raw_preview' in parseEntry.details, false);
+  const noImageEntry = logEntries.find((entry) => entry.message === 'Image API no image URL in response');
+  assert.ok(noImageEntry.details.response_bytes > 0);
+  assert.deepEqual(noImageEntry.details.response_keys, ['data', 'diagnostic']);
+  assert.equal('data_preview' in noImageEntry.details, false);
 });
 
 test('扩图下载在解码前执行大小限制', async (t) => {
@@ -2360,4 +2552,232 @@ test('LUT 调色使用可审计的内置矩阵并记录预设名', async (t) => 
     fs.readFileSync(resultAsset.local_path).toString('base64'),
     fs.readFileSync(sourcePath).toString('base64'),
   );
+});
+
+test('电影级光影校正通过参考图供应商生成同尺寸派生素材并保留原图', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-cinematic-relight-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('电影级光影校正测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 96,
+      height: 64,
+      channels: 3,
+      background: '#3468d4',
+    },
+  }).png().toFile(sourcePath);
+  const sourceHash = fileSha256(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const generatedBuffer = await sharp({
+    create: {
+      width: 120,
+      height: 80,
+      channels: 3,
+      background: '#e6b84f',
+    },
+  }).png().toBuffer();
+  let generationRequest = null;
+  const referenceImageTool = {
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    operations: ['cinematic_relight'],
+    async generate(request) {
+      generationRequest = request;
+      return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+    },
+  };
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cinematic-relight',
+      operation: 'cinematic_relight',
+      parameters: {
+        preset: 'golden_hour',
+        intensity: 4,
+        description: '保留人物面部，增加窗外暖色轮廓光',
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.operation, 'cinematic_relight');
+  assert.equal(generationRequest.referenceImage, sourcePath);
+  assert.equal(generationRequest.size, '96x64');
+  assert.match(generationRequest.prompt, /黄金时刻/);
+  assert.match(generationRequest.prompt, /强度 4\/5/);
+  assert.match(generationRequest.prompt, /增加窗外暖色轮廓光/);
+  assert.match(generationRequest.systemPrompt, /source image/i);
+  assert.equal(fileSha256(sourcePath), sourceHash);
+
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.ok(resultAsset);
+  assert.notEqual(resultAsset.id, sourceAsset.id);
+  assert.equal(resultAsset.metadata.operation, 'cinematic_relight');
+  assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
+  assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    preset: 'golden_hour',
+    intensity: 4,
+    description: '保留人物面部，增加窗外暖色轮廓光',
+    preserveDimensions: true,
+  });
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.format, 'png');
+  assert.equal(outputMetadata.width, 96);
+  assert.equal(outputMetadata.height, 64);
+  assert.notEqual(fileSha256(resultAsset.local_path), sourceHash);
+  assert.equal(taskService.getTask(db, res.payload.data.taskId).status, 'completed');
+
+  for (const parameters of [
+    { preset: 'unknown', intensity: 3, description: '' },
+    { preset: 'cinematic', intensity: 0, description: '' },
+    { preset: 'cinematic', intensity: 2.5, description: '' },
+    { preset: 'cinematic', intensity: '3', description: '' },
+    { preset: 'cinematic', intensity: true, description: '' },
+    { preset: ['cinematic'], intensity: 3, description: '' },
+    { preset: 'cinematic', intensity: 3, description: 123 },
+    { preset: 'cinematic', intensity: 3, description: 'x'.repeat(301) },
+    { preset: 'cinematic', intensity: 3, description: `${'x'.repeat(290)}${' '.repeat(20)}y` },
+  ]) {
+    const invalidRes = responseRecorder();
+    await handlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: 'image-node-cinematic-relight-invalid',
+        operation: 'cinematic_relight',
+        parameters,
+      },
+    }, invalidRes);
+    assert.equal(invalidRes.statusCode, 400);
+    assert.equal(invalidRes.payload.error.code, 'BAD_REQUEST');
+  }
+
+  const failedLogs = [];
+  const failedHandlers = createImageToolRoutes(db, {
+    info() {},
+    warn(message, details) {
+      failedLogs.push({ message, details });
+    },
+    error(message, details) {
+      failedLogs.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return { error: 'private-upstream-secret' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cinematic-relight-failure',
+      operation: 'cinematic_relight',
+      parameters: { preset: 'cinematic', intensity: 3, description: '' },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '电影级光影校正处理失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-upstream-secret/);
+  assert.doesNotMatch(JSON.stringify(failedLogs), /private-upstream-secret/);
+
+  const unchangedHandlers = createImageToolRoutes(db, {
+    info() {}, warn() {}, error() {},
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return {
+          image_url: `data:image/png;base64,${fs.readFileSync(sourcePath).toString('base64')}`,
+        };
+      },
+    },
+  });
+  const unchangedRes = responseRecorder();
+  await unchangedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-cinematic-relight-unchanged',
+      operation: 'cinematic_relight',
+      parameters: { preset: 'studio_soft', intensity: 2, description: '' },
+    },
+  }, unchangedRes);
+  assert.equal(unchangedRes.statusCode, 503);
+  assert.equal(unchangedRes.payload.error.message, '电影级光影校正处理失败');
+
+  const jpegSourcePath = path.join(storageRoot, 'source.jpg');
+  await sharp({
+    create: {
+      width: 96,
+      height: 64,
+      channels: 3,
+      background: '#7e5d36',
+    },
+  }).jpeg({ quality: 90 }).toFile(jpegSourcePath);
+  const jpegSourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.jpg',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.jpg',
+    local_path: jpegSourcePath,
+  });
+  const unchangedJpegHandlers = createImageToolRoutes(db, {
+    info() {}, warn() {}, error() {},
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return {
+          image_url: `data:image/jpeg;base64,${fs.readFileSync(jpegSourcePath).toString('base64')}`,
+        };
+      },
+    },
+  });
+  const unchangedJpegRes = responseRecorder();
+  await unchangedJpegHandlers.createOperation({
+    body: {
+      assetId: jpegSourceAsset.id,
+      sourceNodeId: 'image-node-cinematic-relight-unchanged-jpeg',
+      operation: 'cinematic_relight',
+      parameters: { preset: 'moonlight', intensity: 3, description: '' },
+    },
+  }, unchangedJpegRes);
+  assert.equal(unchangedJpegRes.statusCode, 503);
+  assert.equal(unchangedJpegRes.payload.error.message, '电影级光影校正处理失败');
+
+  const derivedDir = path.join(storageRoot, 'derived');
+  const temporaryFiles = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => /relight-provider-download/i.test(name))
+    : [];
+  assert.deepEqual(temporaryFiles, []);
 });
