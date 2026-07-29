@@ -291,6 +291,8 @@
           :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
+          :snap-to-grid="canvasSnapEnabled"
+          :snap-grid="[20, 20]"
           v-bind="canvasConnectionInteractionOptions"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
@@ -318,9 +320,9 @@
           @connect="onConnect"
         >
           <CanvasFlowAligner />
-          <Background pattern-color="#3f3f46" :gap="20" />
+          <Background v-if="canvasGridVisible" pattern-color="#3f3f46" :gap="20" />
           <Controls />
-          <MiniMap pannable zoomable />
+          <MiniMap v-if="canvasMiniMapVisible" pannable zoomable />
         </VueFlow>
         <el-empty v-else-if="!loading" description="暂无画布数据" />
         <div v-if="runQueueItems.length || dismissedRunQueueCount" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
@@ -737,6 +739,9 @@ const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
+const canvasGridVisible = ref(true)
+const canvasMiniMapVisible = ref(true)
+const canvasSnapEnabled = ref(false)
 const directorStageEntry = ref(null)
 const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose'])
 let directorReturnFocus = null
@@ -1267,6 +1272,13 @@ const runQueueItems = computed(() => {
   }
   return Array.from(grouped.values()).slice(0, 8)
 })
+const canvasNodeLocatorItems = computed(() => allGraphNodes.value
+  .filter((node) => node?.type !== 'canvasAddButton')
+  .map((node) => ({
+    id: String(node.id),
+    label: canvasNodeLabel(node),
+    type: node.type || '',
+  })))
 const runningQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'running').length)
 const successQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'success').length)
 const failedQueueCount = computed(() => runQueueItems.value.filter((item) => item.tone === 'failed').length)
@@ -5377,6 +5389,11 @@ provide(CANVAS_CONTEXT_KEY, {
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
+  canvasGridVisible,
+  canvasMiniMapVisible,
+  canvasSnapEnabled,
+  runQueueItems,
+  canvasNodeLocatorItems,
   canUndo,
   canRedo,
   openDirectorStage,
@@ -5387,6 +5404,16 @@ provide(CANVAS_CONTEXT_KEY, {
   alignNodes: onAlignNodes,
   fitCanvasView,
   focusCanvasNode,
+  focusQueueItem,
+  toggleCanvasGrid: () => {
+    canvasGridVisible.value = !canvasGridVisible.value
+  },
+  toggleCanvasMiniMap: () => {
+    canvasMiniMapVisible.value = !canvasMiniMapVisible.value
+  },
+  toggleCanvasSnap: () => {
+    canvasSnapEnabled.value = !canvasSnapEnabled.value
+  },
   findCanvasNode: findGraphNode,
   useNodeResultAsDownstreamReference,
   undoCanvas,

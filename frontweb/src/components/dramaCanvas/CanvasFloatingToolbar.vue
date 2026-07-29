@@ -5,7 +5,7 @@
     :class="{ 'panel-open': panelOpen && selectedFreeCount < 2 && selectedGroupCount === 0 }"
     @mousedown.stop
   >
-    <div v-if="addMenuVisible" class="canvas-add-menu" role="menu" aria-label="添加节点菜单">
+    <div v-if="addMenuVisible" class="canvas-tool-panel canvas-add-menu" role="menu" aria-label="添加节点菜单">
       <div class="add-menu-title">添加节点</div>
       <button v-for="item in addItems" :key="item.type" type="button" class="add-menu-item" role="menuitem" @click="create(item.type)">
         <el-icon><component :is="item.icon" /></el-icon>
@@ -14,16 +14,59 @@
       </button>
     </div>
 
+    <div v-if="props.standalone && activePanel === 'history'" class="canvas-tool-panel">
+      <div class="tool-panel-title">生成历史</div>
+      <div v-if="!historyItems.length" class="tool-panel-empty">暂无生成记录</div>
+      <button v-for="item in historyItems" v-else :key="item.key" type="button" class="tool-panel-item" @click="focusHistoryItem(item)">
+        <span>{{ item.label }}</span>
+        <small>{{ item.message || item.step || '查看节点' }}</small>
+      </button>
+    </div>
+
+    <div v-if="props.standalone && activePanel === 'locator'" class="canvas-tool-panel">
+      <div class="tool-panel-title">节点定位</div>
+      <div v-if="!locatorItems.length" class="tool-panel-empty">画布中暂无节点</div>
+      <button v-for="item in locatorItems" v-else :key="item.id" type="button" class="tool-panel-item" @click="focusLocatorItem(item)">
+        <span>{{ item.label }}</span>
+        <small>{{ item.type }}</small>
+      </button>
+    </div>
+
+    <div v-if="props.standalone && activePanel === 'settings'" class="canvas-tool-panel canvas-settings-panel">
+      <div class="tool-panel-title">画布设置</div>
+      <button type="button" class="setting-row" @click="toggleGrid">
+        <span>网格显示</span><b :class="{ enabled: gridVisible }">{{ gridVisible ? '开' : '关' }}</b>
+      </button>
+      <button type="button" class="setting-row" @click="toggleMiniMap">
+        <span>小地图</span><b :class="{ enabled: miniMapVisible }">{{ miniMapVisible ? '开' : '关' }}</b>
+      </button>
+      <button type="button" class="setting-row" @click="toggleSnap">
+        <span>自动吸附</span><b :class="{ enabled: snapEnabled }">{{ snapEnabled ? '开' : '关' }}</b>
+      </button>
+    </div>
+
     <div class="toolbar-main">
-      <button type="button" class="toolbar-primary" :aria-expanded="addMenuVisible" aria-label="添加节点" title="添加节点" @click="toggleAddMenu">
+      <button type="button" class="toolbar-primary" :aria-expanded="addMenuVisible" aria-label="添加元素" title="添加元素" @click="toggleAddMenu">
         <el-icon><Plus /></el-icon>
       </button>
       <span class="toolbar-divider" aria-hidden="true" />
       <button v-if="!props.standalone" type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
         <el-icon><Operation /></el-icon><span>工作流</span>
       </button>
-      <button type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" title="素材库" @click="toggleSidebar">
-        <el-icon><FolderOpened /></el-icon><span>素材库</span>
+      <button type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" :title="props.standalone ? '我的资产' : '素材库'" @click="toggleSidebar">
+        <el-icon><FolderOpened /></el-icon><span>{{ props.standalone ? '我的资产' : '素材库' }}</span>
+      </button>
+      <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'history' }" title="生成历史" @click="togglePanel('history')">
+        <el-icon><Document /></el-icon><span>生成历史</span>
+      </button>
+      <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'locator' }" title="节点定位" @click="togglePanel('locator')">
+        <el-icon><Operation /></el-icon><span>节点定位</span>
+      </button>
+      <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'settings' }" title="画布设置" @click="togglePanel('settings')">
+        <el-icon><Grid /></el-icon><span>画布设置</span>
+      </button>
+      <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: snapEnabled }" title="自动吸附" @click="toggleSnap">
+        <el-icon><Connection /></el-icon><span>自动吸附</span>
       </button>
       <button v-if="!props.standalone" type="button" class="toolbar-button" aria-label="打开剧本节点" title="剧本" @click="focusScript">
         <el-icon><Document /></el-icon><span>剧本</span>
@@ -80,7 +123,8 @@ const props = defineProps({
   standalone: { type: Boolean, default: false },
 })
 const ctx = useCanvasContext()
-const addMenuVisible = ref(false)
+const activePanel = ref('')
+const addMenuVisible = computed(() => activePanel.value === 'add')
 const toolbarRef = ref(null)
 
 const productionAddItems = [
@@ -106,30 +150,52 @@ const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
 const panelOpen = computed(() => Boolean(ctx?.focusedNodeId?.value))
 const selectedFreeCount = computed(() => ctx?.selectedFreeNodeIds?.value?.length || 0)
 const selectedGroupCount = computed(() => ctx?.allGraphNodes?.value?.filter?.((node) => node.type === 'canvasGroup' && node.selected).length || 0)
+const historyItems = computed(() => ctx?.runQueueItems?.value || [])
+const locatorItems = computed(() => ctx?.canvasNodeLocatorItems?.value || [])
+const gridVisible = computed(() => Boolean(ctx?.canvasGridVisible?.value))
+const miniMapVisible = computed(() => Boolean(ctx?.canvasMiniMapVisible?.value))
+const snapEnabled = computed(() => Boolean(ctx?.canvasSnapEnabled?.value))
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
 })
 
 function toggleAddMenu() {
-  addMenuVisible.value = !addMenuVisible.value
+  togglePanel('add')
+}
+
+function togglePanel(panel) {
+  activePanel.value = activePanel.value === panel ? '' : panel
 }
 
 function closeAddMenuOnOutside(event) {
-  if (!addMenuVisible.value || toolbarRef.value?.contains(event.target)) return
-  addMenuVisible.value = false
+  if (!activePanel.value || toolbarRef.value?.contains(event.target)) return
+  activePanel.value = ''
 }
 
 function closeAddMenuOnEscape(event) {
-  if (event.key !== 'Escape' || !addMenuVisible.value) return
-  addMenuVisible.value = false
+  if (event.key !== 'Escape' || !activePanel.value) return
+  activePanel.value = ''
 }
 
 function create(type) {
-  addMenuVisible.value = false
+  activePanel.value = ''
   ctx?.openCreateDialog?.(type)
 }
 
+function focusHistoryItem(item) {
+  activePanel.value = ''
+  ctx?.focusQueueItem?.(item)
+}
+
+function focusLocatorItem(item) {
+  activePanel.value = ''
+  ctx?.focusCanvasNode?.(item.id)
+}
+
+function toggleGrid() { ctx?.toggleCanvasGrid?.() }
+function toggleMiniMap() { ctx?.toggleCanvasMiniMap?.() }
+function toggleSnap() { ctx?.toggleCanvasSnap?.() }
 function toggleWorkflow() { ctx?.toggleWorkflowPanel?.() }
 function toggleSidebar() { ctx?.toggleSidebar?.() }
 function focusScript() { ctx?.focusScript?.() }
@@ -218,18 +284,44 @@ button {
 .toolbar-divider { width: 1px; height: 24px; margin: 0 4px; background: #3f3f46; }
 .toolbar-divider-spacer { margin-left: 8px; }
 .zoom-label { width: 42px; color: #a1a1aa; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
-.canvas-add-menu {
+.canvas-tool-panel {
   position: absolute;
   left: 0;
   bottom: 66px;
-  width: 236px;
+  width: 250px;
+  max-height: min(360px, calc(100vh - 150px));
+  overflow: auto;
   padding: 8px;
   border: 1px solid #303030;
   border-radius: 14px;
   background: rgba(17, 17, 17, 0.98);
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
 }
-.add-menu-title { padding: 4px 8px 7px; color: #71717a; font-size: 11px; }
+.tool-panel-title,
+.add-menu-title { padding: 4px 8px 7px; color: #a1a1aa; font-size: 12px; font-weight: 600; }
+.tool-panel-empty { padding: 18px 8px; color: #71717a; font-size: 12px; text-align: center; }
+.tool-panel-item,
+.setting-row {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-panel-item:hover,
+.setting-row:hover { background: rgba(255, 113, 57, 0.13); }
+.tool-panel-item span,
+.setting-row span { color: #e4e4e7; font-size: 12px; }
+.tool-panel-item small { max-width: 118px; overflow: hidden; color: #71717a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.setting-row b { min-width: 30px; color: #71717a; font-size: 11px; font-weight: 500; text-align: right; }
+.setting-row b.enabled { color: #ff956d; }
 .add-menu-item {
   width: 100%;
   min-height: 44px;
