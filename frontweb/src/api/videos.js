@@ -11,6 +11,9 @@ export const videosAPI = {
   get(id) {
     return request.get(`/videos/${id}`)
   },
+  extractBoundaryFrames(body) {
+    return request.post('/videos/extract-boundary-frames', body)
+  },
   /** 素材库视频复用：把已有视频直接挂到分镜作为成片（不生成、不计费） */
   attach(body) {
     return request.post('/videos/attach', body)

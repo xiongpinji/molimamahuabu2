@@ -22,3 +22,10 @@ test('尾帧存在时直接创建已填充结果的图片节点', () => {
   const creationIndex = canvasSource.indexOf("createFreeCanvasNode('image'", validationIndex)
   assert.ok(validationIndex >= 0 && creationIndex > validationIndex, '应先校验尾帧，再创建图片节点')
 })
+
+test('尾帧字段缺失时按视频生成记录或视频地址请求后端补抽', () => {
+  assert.match(canvasSource, /videosAPI\.extractBoundaryFrames/)
+  assert.match(canvasSource, /videoGenerationId/)
+  assert.match(canvasSource, /video_url:\s*videoNode\.data\?\.url/)
+  assert.match(canvasSource, /output_last_frame_url/)
+})
