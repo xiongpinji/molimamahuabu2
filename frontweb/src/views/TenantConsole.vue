@@ -122,6 +122,7 @@
         </div>
         <el-table :data="consumptionTransactions" empty-text="暂无积分消耗记录">
           <el-table-column prop="amount" label="积分变动" width="120" />
+          <el-table-column prop="balanceAfter" label="剩余积分" width="120" />
           <el-table-column prop="model" label="模型" min-width="180" />
           <el-table-column prop="resource_type" label="资源类型" width="120" />
           <el-table-column prop="reason" label="原因" min-width="220" />
@@ -140,6 +141,7 @@
         </div>
         <el-table :data="redemptionTransactions" empty-text="暂无积分兑换记录">
           <el-table-column prop="amount" label="兑换积分" width="120" />
+          <el-table-column prop="balanceAfter" label="剩余积分" width="120" />
           <el-table-column prop="reason" label="兑换说明" min-width="260" />
           <el-table-column label="时间" min-width="180">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
@@ -211,10 +213,21 @@ const sessionUserId = readSession()?.user?.id || ''
 
 const currentTenant = computed(() => tenants.value.find((tenant) => tenant.id === tenantId.value) || null)
 const isManager = computed(() => ['owner', 'admin'].includes(currentTenant.value?.role))
-const consumptionTransactions = computed(() => transactions.value.filter(
+const transactionsWithBalance = computed(() => {
+  let runningBalance = Number(account.value.available || 0)
+  return transactions.value.map((item) => {
+    const explicitBalance = Number(
+      item.balance_after ?? item.remaining_balance ?? item.available_after
+    )
+    const balanceAfter = Number.isFinite(explicitBalance) ? explicitBalance : runningBalance
+    runningBalance = balanceAfter - Number(item.amount || 0)
+    return { ...item, balanceAfter }
+  })
+})
+const consumptionTransactions = computed(() => transactionsWithBalance.value.filter(
   (item) => item.event_type === 'confirm',
 ))
-const redemptionTransactions = computed(() => transactions.value.filter(
+const redemptionTransactions = computed(() => transactionsWithBalance.value.filter(
   (item) => item.event_type === 'redeem',
 ))
 

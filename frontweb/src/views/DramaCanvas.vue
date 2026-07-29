@@ -276,6 +276,8 @@
         :class="{ 'space-panning': spacePanning }"
         @pointerdown.capture="onCanvasPointerDown"
         @wheel.capture="onCanvasWheel"
+        @dragover="onCanvasImageDragOver"
+        @drop="onCanvasImageDrop"
       >
         <VueFlow
           v-if="isStandaloneCanvas || allGraphNodes.length"
@@ -1985,6 +1987,26 @@ function canvasCenterFlowPosition() {
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
 }
 
+function droppedCanvasImageFile(event) {
+  return [...(event.dataTransfer?.files || [])].find((file) => file.type?.startsWith('image/')) || null
+}
+
+function onCanvasImageDragOver(event) {
+  if (!isStandaloneCanvas.value || !droppedCanvasImageFile(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+async function onCanvasImageDrop(event) {
+  const file = droppedCanvasImageFile(event)
+  if (!isStandaloneCanvas.value || !file) return
+  event.preventDefault()
+  event.stopPropagation()
+  const position = screenToFlowPosition(event.clientX, event.clientY)
+  const nodeId = await createFreeCanvasNode('image', position)
+  if (nodeId) await uploadFreeCanvasNodeFile(nodeId, file)
+}
+
 function resetFreeNodeDialog() {
   freeNodeKind.value = 'text'
   freeNodeEditingId.value = ''
@@ -2364,14 +2386,41 @@ async function completeFreeCanvasNodeGeneration({
   taskId,
   notify = true,
 }) {
+  const resolved = await resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult })
+  return commitFreeCanvasNodeGeneration({
+    node,
+    kind,
+    ...resolved,
+    requestPayload,
+    taskId,
+    notify,
+  })
+}
+
+async function resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult }) {
   const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
   if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
   const boundaryFrames = await resolveFreeCanvasVideoBoundaryFrames(kind, submitResult, taskResult)
+  return { resultUrl, boundaryFrames }
+}
+
+async function commitFreeCanvasNodeGeneration({
+  node,
+  kind,
+  resultUrl,
+  boundaryFrames = {},
+  requestPayload,
+  taskId,
+  resultUrls = [],
+  notify = true,
+}) {
   await patchFreeCanvasNodeData(node.id, {
     status: 'success',
     url: resultUrl,
+    resultUrls: resultUrls.length ? resultUrls : [resultUrl],
     ...boundaryFrames,
     taskId,
+    progress: 100,
     error: '',
     savedAssetId: '',
     assetSaveStatus: 'running',
@@ -2588,7 +2637,8 @@ async function runFreeCanvasNode(nodeOrId) {
   }
 
   const previousUrl = node.data?.url || ''
-  const completedResultUrls = []
+  const previousResultUrls = Array.isArray(node.data?.resultUrls) ? [...node.data.resultUrls] : []
+  const completedResults = []
   await appendFreeCanvasGenerationHistory(node.id, {
     id: historyId,
     kind,
@@ -2636,21 +2686,27 @@ async function runFreeCanvasNode(nodeOrId) {
         await patchFreeCanvasNodeData(node.id, { taskId })
         taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
       }
-      const resultUrl = await completeFreeCanvasNodeGeneration({
-        node,
+      const resolvedResult = await resolveFreeCanvasNodeGeneration({
         kind,
         submitResult,
         taskResult,
-        requestPayload,
-        taskId,
-        notify: index === quantity - 1,
       })
-      completedResultUrls.push(resultUrl)
+      completedResults.push(resolvedResult)
       await patchFreeCanvasNodeData(node.id, {
-        resultUrls: [...completedResultUrls],
-        progress: Math.round((completedResultUrls.length / quantity) * 100),
+        progress: Math.round((completedResults.length / quantity) * 100),
       })
     }
+    const completedResultUrls = completedResults.map((result) => result.resultUrl)
+    const visibleResult = completedResults[0]
+    await commitFreeCanvasNodeGeneration({
+      node,
+      kind,
+      resultUrl: visibleResult.resultUrl,
+      boundaryFrames: visibleResult.boundaryFrames,
+      requestPayload,
+      taskId,
+      resultUrls: completedResultUrls,
+    })
     await updateFreeCanvasGenerationHistory(node.id, historyId, {
       status: 'success',
       completedAt: new Date().toISOString(),
@@ -2660,6 +2716,7 @@ async function runFreeCanvasNode(nodeOrId) {
     return { ok: true, nodeId: String(node.id) }
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
+    const completedResultUrls = completedResults.map((result) => result.resultUrl)
     await updateFreeCanvasGenerationHistory(node.id, historyId, {
       status: 'failed',
       completedAt: new Date().toISOString(),
@@ -2669,8 +2726,8 @@ async function runFreeCanvasNode(nodeOrId) {
     })
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
-      url: completedResultUrls.at(-1) || previousUrl,
-      resultUrls: [...completedResultUrls],
+      url: previousUrl,
+      resultUrls: previousResultUrls,
       taskId,
       error: errorMessage,
     })
@@ -5296,6 +5353,29 @@ function cutCanvasEdges(edgeIds = [], source = 'remove') {
 }
 
 provide('cut-canvas-edges', cutCanvasEdges)
+
+function canvasEdgeTarget(edgeId) {
+  const edge = allGraphEdges.value.find((item) => String(item.id) === String(edgeId))
+  return edge ? findGraphNode(edge.target) : null
+}
+
+function canRunCanvasEdgeTarget(edgeId) {
+  const target = canvasEdgeTarget(edgeId)
+  return Boolean(
+    isStandaloneCanvas.value
+    && target?.type === 'homeCanvasNode'
+    && target.data?.kind === 'image'
+  )
+}
+
+async function runCanvasEdgeTarget(edgeId) {
+  const target = canvasEdgeTarget(edgeId)
+  if (!canRunCanvasEdgeTarget(edgeId) || !target) return
+  await runFreeCanvasNode(target)
+}
+
+provide('can-run-canvas-edge-target', canRunCanvasEdgeTarget)
+provide('run-canvas-edge-target', runCanvasEdgeTarget)
 
 function onConnect(connection) {
   if (!connection?.source || !connection?.target) return
