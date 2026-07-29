@@ -20,14 +20,22 @@ const dramaCanvasSource = readFileSync(
   'utf8'
 )
 
-test('独立画布节点编辑器固定在视口并支持全屏和关闭', () => {
-  assert.match(nodeSource, /<Teleport to="body">/)
+test('独立画布节点编辑器默认跟随节点并仅在全屏时挂载到视口', () => {
+  assert.match(nodeSource, /<Teleport to="body" :disabled="!editorFullscreen">/)
   assert.match(nodeSource, /class="node-expanded-editor/)
-  assert.match(nodeSource, /position:\s*fixed/)
+  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*position:\s*absolute/)
+  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*top:\s*calc\(100%\s*\+\s*18px\)/)
+  assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen\s*\{[\s\S]*position:\s*fixed/)
+  assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen \.prompt-input,[\s\S]*min-height:\s*min\(54vh,\s*640px\)/)
   assert.match(nodeSource, /aria-label="全屏编辑"/)
   assert.match(nodeSource, /aria-label="关闭编辑器"/)
   assert.match(nodeSource, /window\.addEventListener\('keydown', onEditorKeydown\)/)
   assert.match(nodeSource, /event\.key !== 'Escape'/)
+})
+
+test('已生成图片单击后重新聚焦节点并展开编辑器', () => {
+  assert.match(nodeSource, /v-if="data\.kind === 'image' && primaryResultUrl"[\s\S]*@click="openEditor"/)
+  assert.match(nodeSource, /function openEditor\(\) \{[\s\S]*editorHidden\.value = false[\s\S]*ctx\?\.setFocusedNode\?\.\(props\.id\)/)
 })
 
 test('/canvas/local 单击节点即可展开同一套节点编辑器', () => {

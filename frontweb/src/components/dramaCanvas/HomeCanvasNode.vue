@@ -35,7 +35,7 @@
         class="node-media nodrag nopan"
         title="双击全屏查看"
         @mousedown.stop
-        @click.stop
+        @click="openEditor"
         @dblclick.stop="openImagePreview(primaryResultUrl)"
       />
       <video v-else-if="data.kind === 'video' && primaryResultUrl" :src="primaryResultUrl" class="node-media" controls muted playsinline />
@@ -77,7 +77,7 @@
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
     </section>
 
-    <Teleport to="body">
+    <Teleport to="body" :disabled="!editorFullscreen">
       <section
         v-if="isSelected && !hasMultiSelection && !editorHidden"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
@@ -621,6 +621,11 @@ function openConfig() {
   ctx?.openFreeNodeConfig?.(props.id)
 }
 
+function openEditor() {
+  editorHidden.value = false
+  ctx?.setFocusedNode?.(props.id)
+}
+
 function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
@@ -845,9 +850,10 @@ watch(isSelected, (selected) => {
   -webkit-line-clamp: 4;
 }
 .node-expanded-editor {
-  position: fixed;
-  right: 24px;
-  bottom: 82px;
+  position: absolute;
+  top: calc(100% + 18px);
+  right: auto;
+  bottom: auto;
   left: 50%;
   z-index: 1999;
   width: min(860px, calc(100vw - 48px));
@@ -862,11 +868,17 @@ watch(isSelected, (selected) => {
   transform: translateX(-50%);
 }
 .node-expanded-editor.is-fullscreen {
+  position: fixed;
   inset: 16px;
   z-index: 3200;
   width: auto;
   max-height: none;
   transform: none;
+}
+.node-expanded-editor.is-fullscreen .prompt-input,
+.node-expanded-editor.is-fullscreen .node-textarea {
+  min-height: min(54vh, 640px);
+  resize: vertical;
 }
 .editor-heading, .reference-heading {
   display: flex;
@@ -1198,7 +1210,7 @@ watch(isSelected, (selected) => {
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
 @media (max-width: 760px) {
-  .node-expanded-editor { right: 12px; bottom: 82px; width: calc(100vw - 24px); padding: 16px; }
+  .node-expanded-editor { width: calc(100vw - 24px); padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-heading .editor-hint { display: none; }
 }

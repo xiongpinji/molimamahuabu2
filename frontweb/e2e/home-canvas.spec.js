@@ -70,7 +70,6 @@ const generatedMentionHomeCanvasState = {
           ...node,
           data: {
             ...node.data,
-            url: '',
             resultUrls: [node.data.url],
           },
         }
@@ -128,6 +127,45 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
+test('节点编辑器显示在节点下方、随节点拖动并支持提示词全屏编辑', async ({ page }) => {
+  const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  await seedNode.locator('.node-icon').click()
+
+  const editor = page.locator('.node-expanded-editor')
+  const visualNode = seedNode.locator('.home-canvas-node')
+  const nodeBefore = await visualNode.boundingBox()
+  const editorBefore = await editor.boundingBox()
+  expect(nodeBefore).not.toBeNull()
+  expect(editorBefore).not.toBeNull()
+  expect(editorBefore.y).toBeGreaterThanOrEqual(nodeBefore.y + nodeBefore.height - 2)
+
+  const dragHandle = seedNode.locator('.node-icon')
+  const dragBox = await dragHandle.boundingBox()
+  expect(dragBox).not.toBeNull()
+  await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(dragBox.x + dragBox.width / 2 + 140, dragBox.y + dragBox.height / 2 + 80, { steps: 8 })
+  await page.mouse.up()
+
+  const nodeAfter = await visualNode.boundingBox()
+  const editorAfter = await editor.boundingBox()
+  expect(nodeAfter).not.toBeNull()
+  expect(editorAfter).not.toBeNull()
+  expect(Math.abs((editorAfter.x - editorBefore.x) - (nodeAfter.x - nodeBefore.x))).toBeLessThan(3)
+  expect(Math.abs((editorAfter.y - editorBefore.y) - (nodeAfter.y - nodeBefore.y))).toBeLessThan(3)
+
+  await editor.getByRole('button', { name: '全屏编辑' }).click()
+  await expect(editor).toHaveClass(/is-fullscreen/)
+  const fullscreenInput = editor.getByRole('textbox', { name: '文本内容' })
+  await expect.poll(() => fullscreenInput.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(450)
+
+  await editor.getByRole('button', { name: '全屏编辑' }).click()
+  await expect(editor).not.toHaveClass(/is-fullscreen/)
+  const restoredNode = await visualNode.boundingBox()
+  const restoredEditor = await editor.boundingBox()
+  expect(restoredEditor.y).toBeGreaterThanOrEqual(restoredNode.y + restoredNode.height - 2)
+})
+
 test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
   await loadHomeCanvasState(page, mentionHomeCanvasState)
 
@@ -157,6 +195,7 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
+  await page.getByRole('button', { name: '全屏编辑' }).click()
   const promptInput = page.getByRole('textbox', { name: '生成提示词' })
   await promptInput.fill('沿用参考角色 @')
 
@@ -190,6 +229,10 @@ test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览',
   await imageNode.locator('.node-media').dblclick()
   await expect(page.getByRole('dialog', { name: '图片全屏预览' })).toBeVisible()
   await page.getByRole('button', { name: '关闭图片预览' }).click()
+  await page.getByRole('button', { name: '关闭编辑器' }).click()
+  await expect(page.locator('.node-expanded-editor')).toHaveCount(0)
+  await imageNode.locator('.node-media').click()
+  await expect(page.locator('.node-expanded-editor')).toBeVisible()
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
