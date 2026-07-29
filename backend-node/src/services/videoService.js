@@ -485,7 +485,7 @@ function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, opt
     {
       key: 'output_last_frame_url',
       path: lastPath,
-      args: ['-y', '-sseof', '-0.1', '-i', videoPath, '-frames:v', '1', '-q:v', '2', lastPath],
+      args: ['-y', '-sseof', '-1', '-i', videoPath, '-map', '0:v:0', '-update', '1', '-q:v', '2', lastPath],
     },
   ];
   const result = { ...emptyResult };

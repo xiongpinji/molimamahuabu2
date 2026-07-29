@@ -36,7 +36,10 @@ test('视频完成后提取首帧和尾帧并返回可访问地址', () => {
   assert.equal(result.output_last_frame_url, '/static/videos/vg_42_last.jpg');
   assert.equal(commands.length, 2);
   assert.ok(commands[0].args.includes('-frames:v'));
-  assert.ok(commands[1].args.includes('-sseof'));
+  assert.deepEqual(
+    commands[1].args.slice(0, -1),
+    ['-y', '-sseof', '-1', '-i', videoPath, '-map', '0:v:0', '-update', '1', '-q:v', '2']
+  );
 });
 
 test('本地无 ffmpeg 时首尾帧提取保持可选且不影响视频完成', () => {
