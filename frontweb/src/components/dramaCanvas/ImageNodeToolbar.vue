@@ -215,7 +215,7 @@
             </el-select>
           </el-form-item>
           <p class="crop-hint">
-            使用已审计的本地 Real-ESRGAN 生成 PNG 新素材；原图保持不变。
+            使用已审计的高清增强处理器生成 PNG 新素材；轻量服务器优先使用远程模型，原图保持不变。
           </p>
         </template>
 
@@ -228,7 +228,7 @@
             </el-select>
           </el-form-item>
           <p class="crop-hint">
-            使用已审计的本地 Real-ESRGAN 做 2x 超分取样后回落到原尺寸；原图保持不变。
+            使用已审计的细节增强处理器改善纹理并保持原尺寸；轻量服务器优先使用远程模型，原图保持不变。
           </p>
         </template>
 

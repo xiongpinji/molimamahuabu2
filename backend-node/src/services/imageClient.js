@@ -251,6 +251,12 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (settings.supports_markup_retouch === true && strictReferenceAdapterAudited) {
     operations.push('markup_retouch');
   }
+  if (settings.supports_upscale === true && strictReferenceAdapterAudited) {
+    operations.push('upscale');
+  }
+  if (settings.supports_detail_enhance === true && strictReferenceAdapterAudited) {
+    operations.push('detail_enhance');
+  }
   const panoramaDeclared = settings.supports_panorama === true;
   const panoramaSceneDeclared = settings.supports_panorama_scene === true;
   const imageIdeationDeclared = settings.supports_image_ideation === true;
@@ -276,6 +282,8 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
       (
         settings.supports_outpaint === true
         || settings.supports_markup_retouch === true
+        || settings.supports_upscale === true
+        || settings.supports_detail_enhance === true
         || panoramaDeclared
         || panoramaSceneDeclared
         || imageIdeationDeclared

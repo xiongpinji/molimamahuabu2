@@ -68,7 +68,7 @@ test('高清入口只提交 Real-ESRGAN 支持的 2x、3x、4x 倍率', () => {
     toolbarSource,
     /editorOperation\.value === 'upscale'\) return \{ scale: upscaleScale\.value \}/,
   )
-  assert.match(toolbarSource, /本地 Real-ESRGAN/)
+  assert.match(toolbarSource, /轻量服务器优先使用远程模型/)
 })
 
 test('细节纹理增强只提交三档预设并声明保持原尺寸', () => {
@@ -81,7 +81,7 @@ test('细节纹理增强只提交三档预设并声明保持原尺寸', () => {
     toolbarSource,
     /editorOperation\.value === 'detail_enhance'\) return \{ preset: detailEnhancePreset\.value \}/,
   )
-  assert.match(toolbarSource, /2x 超分取样后回落到原尺寸/)
+  assert.match(toolbarSource, /改善纹理并保持原尺寸/)
   assert.match(toolbarSource, /detail_enhance: '细节纹理增强'/)
 })
 

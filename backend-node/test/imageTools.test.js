@@ -340,6 +340,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     settings: JSON.stringify({
       supports_outpaint: true,
       supports_markup_retouch: true,
+      supports_upscale: true,
+      supports_detail_enhance: true,
       supports_cinematic_relight: true,
       supports_panorama: true,
       supports_panorama_scene: true,
@@ -358,6 +360,11 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'volcengine');
   assert.equal(supportedRes.payload.data.operations.markup_retouch.available, true);
   assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.upscale.available, true);
+  assert.equal(supportedRes.payload.data.operations.upscale.engine, 'provider-image-edit');
+  assert.deepEqual(supportedRes.payload.data.operations.upscale.scales, [2, 3, 4]);
+  assert.equal(supportedRes.payload.data.operations.detail_enhance.available, true);
+  assert.equal(supportedRes.payload.data.operations.detail_enhance.preservesDimensions, true);
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.available, true);
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'volcengine');
   assert.equal(supportedRes.payload.data.operations.panorama.available, true);
@@ -489,6 +496,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       settings: JSON.stringify({
         supports_outpaint: true,
         supports_markup_retouch: true,
+        supports_upscale: true,
+        supports_detail_enhance: true,
         supports_cinematic_relight: true,
         supports_panorama: true,
         supports_panorama_scene: true,
@@ -505,6 +514,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     strictHandlers.capabilities({}, strictRes);
     assert.equal(strictRes.payload.data.operations.outpaint.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.markup_retouch.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.upscale.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.detail_enhance.available, false, config.name);
     assert.equal(
       strictRes.payload.data.operations.cinematic_relight.available,
       false,
@@ -2920,6 +2931,147 @@ test('电影级光影校正通过参考图供应商生成同尺寸派生素材�
     ? fs.readdirSync(derivedDir).filter((name) => /relight-provider-download/i.test(name))
     : [];
   assert.deepEqual(temporaryFiles, []);
+});
+
+test('无 GPU 环境通过 Seedream 参考图供应商完成高清与细节增强', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-provider-enhance-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('远程增强测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 32,
+      height: 24,
+      channels: 3,
+      background: '#305ea8',
+    },
+  }).png().toFile(sourcePath);
+  const sourceHash = fileSha256(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const generatedBuffer = await sharp({
+    create: {
+      width: 80,
+      height: 60,
+      channels: 3,
+      background: '#d6a43a',
+    },
+  }).png().toBuffer();
+  const requests = [];
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5-251128',
+      operations: ['upscale', 'detail_enhance'],
+      async generate(request) {
+        requests.push(request);
+        return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+      },
+    },
+  });
+
+  const upscaleRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-provider-upscale',
+      operation: 'upscale',
+      parameters: { scale: 2 },
+    },
+  }, upscaleRes);
+  assert.equal(upscaleRes.statusCode, 201, JSON.stringify(upscaleRes.payload));
+  assert.equal(requests[0].referenceImage, sourcePath);
+  assert.equal(requests[0].size, '64x48');
+  assert.match(requests[0].prompt, /高清增强/);
+  const upscaleAsset = assetService.getById(db, upscaleRes.payload.data.resultAssetId);
+  const upscaleMetadata = await sharp(upscaleAsset.local_path).metadata();
+  assert.equal(upscaleMetadata.width, 64);
+  assert.equal(upscaleMetadata.height, 48);
+  assert.equal(upscaleAsset.metadata.engine, 'provider-image-edit');
+  assert.equal(upscaleAsset.metadata.parameters.scale, 2);
+
+  const detailRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-provider-detail',
+      operation: 'detail_enhance',
+      parameters: { preset: 'strong' },
+    },
+  }, detailRes);
+  assert.equal(detailRes.statusCode, 201, JSON.stringify(detailRes.payload));
+  assert.equal(requests[1].size, '32x24');
+  assert.match(requests[1].prompt, /细节纹理增强/);
+  assert.match(requests[1].prompt, /强烈/);
+  const detailAsset = assetService.getById(db, detailRes.payload.data.resultAssetId);
+  const detailMetadata = await sharp(detailAsset.local_path).metadata();
+  assert.equal(detailMetadata.width, 32);
+  assert.equal(detailMetadata.height, 24);
+  assert.equal(detailAsset.metadata.parameters.preset, 'strong');
+  assert.equal(detailAsset.metadata.parameters.preserveDimensions, true);
+  assert.equal(fileSha256(sourcePath), sourceHash);
+
+  const invalidRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      operation: 'upscale',
+      parameters: { scale: 5 },
+    },
+  }, invalidRes);
+  assert.equal(invalidRes.statusCode, 400);
+
+  const failureLogs = [];
+  const failedHandlers = createImageToolRoutes(db, {
+    info() {},
+    warn(message, details) {
+      failureLogs.push({ message, details });
+    },
+    error(message, details) {
+      failureLogs.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5-251128',
+      operations: ['upscale'],
+      async generate() {
+        return { error: 'private-provider-enhance-secret' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      operation: 'upscale',
+      parameters: { scale: 2 },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '高清增强处理失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-provider-enhance-secret/);
+  assert.doesNotMatch(JSON.stringify(failureLogs), /private-provider-enhance-secret/);
 });
 
 test('720全景通过参考图供应商生成固定 2:1 等距柱状新素材', async (t) => {

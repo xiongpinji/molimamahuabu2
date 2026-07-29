@@ -1,6 +1,8 @@
 export const IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS = Object.freeze([
   'supports_outpaint',
   'supports_markup_retouch',
+  'supports_upscale',
+  'supports_detail_enhance',
   'supports_cinematic_relight',
   'supports_panorama',
   'supports_panorama_scene',

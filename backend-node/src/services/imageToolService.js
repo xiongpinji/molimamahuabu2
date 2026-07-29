@@ -95,6 +95,8 @@ const CINEMATIC_RELIGHT_PRESETS = Object.freeze({
 const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
   'outpaint',
   'markup_retouch',
+  'upscale',
+  'detail_enhance',
   'cinematic_relight',
   'panorama',
   'panorama_scene',
@@ -645,6 +647,19 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
     }
     : {};
   return {
+    ...(referenceImageTool?.operations.includes('upscale') ? {
+      upscale: variationCapability('upscale', '远程高清增强', {
+        scales: [2, 3, 4],
+        remote: true,
+      }),
+    } : {}),
+    ...(referenceImageTool?.operations.includes('detail_enhance') ? {
+      detail_enhance: variationCapability('detail_enhance', '远程细节增强', {
+        presets: Object.keys(DETAIL_ENHANCE_PRESETS),
+        preservesDimensions: true,
+        remote: true,
+      }),
+    } : {}),
     outpaint: outpaintAvailable
       ? {
         available: true,
@@ -1581,6 +1596,176 @@ async function runCinematicRelight({
   }
 }
 
+async function runReferenceEnhance({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+  operation,
+}) {
+  let sourceMetadata;
+  try {
+    sourceMetadata = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+  } catch {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+
+  let parameters;
+  let targetWidth;
+  let targetHeight;
+  let prompt;
+  let progressMessage;
+  let failureMessage;
+  if (operation === 'upscale') {
+    const prepared = await prepareUpscaleSource(sourcePath, request.parameters || {});
+    parameters = prepared.normalized;
+    targetWidth = prepared.expectedWidth;
+    targetHeight = prepared.expectedHeight;
+    progressMessage = '正在通过远程模型执行高清增强...';
+    failureMessage = '高清增强处理失败';
+    prompt = [
+      `对输入图片执行 ${parameters.scale} 倍高清增强，目标尺寸 ${targetWidth}×${targetHeight}。`,
+      '恢复真实纹理、边缘与微小细节，减少压缩噪点、锯齿和模糊。',
+      '严格保持人物身份、面部、文字、物体、构图、镜头、比例、颜色、光影和画风不变。',
+      '不得增加、删除或移动任何主体，不得生成拼图、边框、水印或前后对比图。',
+    ].join('\n');
+  } else {
+    const preset = String(request.parameters?.preset || 'balanced').trim().toLowerCase();
+    if (!DETAIL_ENHANCE_PRESETS[preset]) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数仅支持 natural、balanced 或 strong');
+    }
+    const presetLabel = {
+      natural: '自然',
+      balanced: '标准',
+      strong: '强烈',
+    }[preset];
+    parameters = { preset, preserveDimensions: true };
+    targetWidth = sourceMetadata.width;
+    targetHeight = sourceMetadata.height;
+    progressMessage = '正在通过远程模型执行细节纹理增强...';
+    failureMessage = '细节纹理增强处理失败';
+    prompt = [
+      `对输入图片执行${presetLabel}强度的细节纹理增强，保持原尺寸 ${targetWidth}×${targetHeight}。`,
+      '改善可见纹理、局部清晰度、边缘层次和轻微压缩噪点，不做内容重绘。',
+      '严格保持人物身份、面部、文字、物体、构图、镜头、比例、颜色、光影和画风不变。',
+      '不得增加、删除或移动任何主体，不得生成拼图、边框、水印或前后对比图。',
+    ].join('\n');
+  }
+
+  const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+  let release;
+  let providerDownloadPath = null;
+  let outputPath = null;
+  try {
+    release = referenceImageTool.limiter.acquire(tenantId);
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      progressMessage,
+      () => referenceImageTool.generate({
+        prompt,
+        size: `${targetWidth}x${targetHeight}`,
+        referenceImage: sourcePath,
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+        systemPrompt: 'The source image is immutable content reference. Improve only fidelity and visible detail while preserving identity, geometry, composition, text, colors, lighting, and style.',
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    providerDownloadPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+      { operation },
+    );
+    const providerMetadata = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      !FORMAT_INFO[providerMetadata.format]
+      || !providerMetadata.width
+      || !providerMetadata.height
+      || providerMetadata.width * providerMetadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    const sourceRatio = sourceMetadata.width / sourceMetadata.height;
+    const providerRatio = providerMetadata.width / providerMetadata.height;
+    if (Math.abs(providerRatio - sourceRatio) / sourceRatio > 0.03) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+    const outputInfo = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(targetWidth, targetHeight, {
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== targetWidth
+      || outputInfo.height !== targetHeight
+      || fileSha256(outputPath) === fileSha256(sourcePath)
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    await sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).stats();
+    return {
+      outputPath,
+      format: FORMAT_INFO.png,
+      outputInfo,
+      parameters,
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if ([
+      'IMAGE_TOOL_INVALID_INPUT',
+      'IMAGE_TOOL_SOURCE_UNAVAILABLE',
+      'IMAGE_TOOL_UNSUPPORTED_IMAGE',
+      'IMAGE_TOOL_BUSY',
+    ].includes(error?.code)) {
+      throw error;
+    }
+    log.warn('image reference enhance failed', {
+      operation,
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+  } finally {
+    release?.();
+    if (providerDownloadPath && fs.existsSync(providerDownloadPath)) {
+      fs.rmSync(providerDownloadPath, { force: true });
+    }
+  }
+}
+
 async function runPanorama({
   db,
   log,
@@ -2378,6 +2563,10 @@ async function createOperation(db, log, request, context = {}) {
     && !(operation === 'upscale' && modelTools.upscale)
     && !(operation === 'detail_enhance' && modelTools.upscale)
     && !(
+      ['upscale', 'detail_enhance'].includes(operation)
+      && referenceImageTool?.operations.includes(operation)
+    )
+    && !(
       operation === 'outpaint'
       && referenceImageTool?.operations.includes('outpaint')
     )
@@ -2547,6 +2736,52 @@ async function createOperation(db, log, request, context = {}) {
       } finally {
         release();
       }
+    }
+
+    if (
+      ['upscale', 'detail_enhance'].includes(operation)
+      && referenceImageTool?.operations.includes(operation)
+    ) {
+      const prepared = await runReferenceEnhance({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+        operation,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
     }
 
     if (operation === 'upscale') {
