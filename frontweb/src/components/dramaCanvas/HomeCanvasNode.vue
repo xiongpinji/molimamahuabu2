@@ -87,7 +87,7 @@
       <section
         v-if="isSelected && !hasMultiSelection && !editorHidden"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
-        :class="{ 'is-fullscreen': editorFullscreen }"
+        :class="[`editor-${data.kind}`, { 'is-fullscreen': editorFullscreen }]"
         role="region"
         :aria-label="editorLabel"
         @mousedown.stop
@@ -101,6 +101,44 @@
             <button type="button" aria-label="全屏编辑" :title="editorFullscreen ? '退出全屏' : '全屏编辑'" @click="editorFullscreen = !editorFullscreen">⛶</button>
             <button type="button" aria-label="关闭编辑器" title="关闭编辑器" @click="closeEditor">×</button>
           </div>
+        </div>
+
+        <div v-if="data.kind === 'video'" class="video-mode-toolbar">
+          <div class="video-mode-tabs" role="tablist" aria-label="视频参考模式">
+            <button
+              type="button"
+              :class="{ active: videoReferenceMode === 'first-last' }"
+              role="tab"
+              :aria-selected="videoReferenceMode === 'first-last'"
+              @click="setVideoReferenceMode('first-last')"
+            >
+              首尾帧
+            </button>
+            <button
+              type="button"
+              :class="{ active: videoReferenceMode === 'multi' }"
+              role="tab"
+              :aria-selected="videoReferenceMode === 'multi'"
+              @click="setVideoReferenceMode('multi')"
+            >
+              多图参考
+            </button>
+            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放全能参考">全能参考</button>
+            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
+          </div>
+          <label class="camera-pill">
+            <span>运镜</span>
+            <select v-model="draft.cameraMovement" aria-label="视频运镜" @change="saveDraft">
+              <option value="">自动</option>
+              <option value="push-in">推进</option>
+              <option value="pull-out">拉远</option>
+              <option value="pan-left">左摇</option>
+              <option value="pan-right">右摇</option>
+              <option value="orbit">环绕</option>
+              <option value="handheld">手持</option>
+            </select>
+          </label>
         </div>
 
         <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考图">
@@ -136,7 +174,7 @@
               >×</button>
               <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
               <span v-else class="reference-placeholder">等待图片</span>
-              <figcaption>{{ reference.title }}</figcaption>
+              <figcaption :title="reference.title">图片{{ index + 1 }}</figcaption>
               <select
                 :value="reference.slot"
                 aria-label="参考图用途"
@@ -246,18 +284,6 @@
             <span>时长</span>
             <select v-model.number="draft.duration" aria-label="视频时长" @change="saveDraft">
               <option v-for="value in capability.durations || []" :key="value" :value="value">{{ value }} 秒</option>
-            </select>
-          </label>
-          <label v-if="data.kind === 'video'" class="editor-field">
-            <span>运镜</span>
-            <select v-model="draft.cameraMovement" aria-label="镜头运动" @change="saveDraft">
-              <option value="">自动</option>
-              <option value="push-in">推进</option>
-              <option value="pull-out">拉远</option>
-              <option value="pan-left">左摇</option>
-              <option value="pan-right">右摇</option>
-              <option value="orbit">环绕</option>
-              <option value="handheld">手持</option>
             </select>
           </label>
           <label v-if="data.kind === 'video'" class="editor-field">
@@ -461,6 +487,11 @@ const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
+))
+const videoReferenceMode = computed(() => (
+  inputReferences.value.some((reference) => ['first-frame', 'last-frame'].includes(reference.slot))
+    ? 'first-last'
+    : 'multi'
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -698,6 +729,16 @@ async function runSubgraph() {
 
 function updateReference(reference, patch) {
   ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
+}
+
+function setVideoReferenceMode(mode) {
+  if (props.data.kind !== 'video') return
+  inputReferences.value.forEach((reference, index) => {
+    const input = mode === 'first-last'
+      ? (index === 0 ? 'first-frame' : index === 1 ? 'last-frame' : 'reference-image')
+      : 'reference-image'
+    updateReference(reference, { input })
+  })
 }
 
 function removeReference(reference) {
@@ -942,6 +983,61 @@ watch(isSelected, (selected) => {
   background: #202024;
   color: #d4d4d8;
   cursor: pointer;
+}
+.video-mode-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px 0 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #2f2f33;
+}
+.video-mode-tabs {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  padding: 4px;
+  overflow-x: auto;
+  border-radius: 14px;
+  background: #27272a;
+}
+.video-mode-tabs button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+.video-mode-tabs button.active {
+  background: #52525b;
+  color: #fafafa;
+}
+.video-mode-tabs button:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+}
+.camera-pill {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #3f3f46;
+  border-radius: 999px;
+  color: #d4d4d8;
+  background: #202024;
+}
+.camera-pill select {
+  max-width: 100px;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
 }
 .reference-panel {
   margin-bottom: 16px;
@@ -1248,5 +1344,6 @@ watch(isSelected, (selected) => {
   .node-expanded-editor { width: calc(100vw - 24px); padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-heading .editor-hint { display: none; }
+  .video-mode-toolbar { align-items: flex-start; flex-direction: column; }
 }
 </style>
