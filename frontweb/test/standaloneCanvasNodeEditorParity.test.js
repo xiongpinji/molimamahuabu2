@@ -66,9 +66,8 @@ test('四类节点编辑器暴露 LibTV 核心参数且不隐藏在假配置按�
   assert.match(nodeSource, /aria-label="中英互译"/)
 })
 
-test('多结果可切换主结果并提供下载、复制引用和重试闭环', () => {
-  assert.match(nodeSource, /class="result-strip"/)
-  assert.match(nodeSource, /aria-label="设为当前结果"/)
+test('节点不展示小结果缩略条并保留下载、复制引用和重试闭环', () => {
+  assert.doesNotMatch(nodeSource, /class="result-strip"/)
   assert.match(nodeSource, /aria-label="下载结果"/)
   assert.match(nodeSource, /aria-label="复制结果引用"/)
   assert.match(nodeSource, /data\.status === 'failed' \? '重试' : '生成'/)
