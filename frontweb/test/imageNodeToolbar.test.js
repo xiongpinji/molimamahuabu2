@@ -142,6 +142,22 @@ test('电影级光影校正提交受控预设、强度和补充要求并生成�
   assert.match(toolbarSource, /cinematic_relight: '电影级光影校正'/)
 })
 
+test('全景入口提交受限描述并明确生成固定 2:1 等距柱状新素材', () => {
+  assert.match(toolbarSource, /\{ label: '720全景', operation: 'panorama' \}/)
+  assert.match(toolbarSource, /\{ label: '生成全景场景', operation: 'panorama_scene' \}/)
+  assert.match(toolbarSource, /\['panorama', 'panorama_scene'\]\.includes\(editorOperation\)/)
+  assert.match(toolbarSource, /panoramaDescription = ref\(''\)/)
+  assert.match(toolbarSource, /v-model="panoramaDescription"/)
+  assert.match(toolbarSource, /maxlength="300"/)
+  assert.match(
+    toolbarSource,
+    /\['panorama', 'panorama_scene'\]\.includes\(editorOperation\.value\)[\s\S]*description: panoramaDescription\.value\.trim\(\)/,
+  )
+  assert.match(toolbarSource, /固定输出 3840×1920 PNG/)
+  assert.match(toolbarSource, /panorama: '720全景'/)
+  assert.match(toolbarSource, /panorama_scene: '生成全景场景'/)
+})
+
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {
   assert.match(toolbarSource, /import\('cropperjs'\)/)
   assert.match(toolbarSource, /import\('cropperjs\/dist\/cropper\.css'\)/)

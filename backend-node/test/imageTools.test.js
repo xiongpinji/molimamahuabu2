@@ -174,6 +174,52 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   );
 });
 
+test('全景能力必须分别显式声明且只开放已审计的 Seedream 参考图适配器', () => {
+  const baseTool = {
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    generate: async () => ({ image_url: '' }),
+  };
+  const panoramaHandlers = createImageToolRoutes(null, { error() {} }, {
+    referenceImageTool: {
+      ...baseTool,
+      operations: ['panorama'],
+    },
+  });
+  const panoramaRes = responseRecorder();
+  panoramaHandlers.capabilities({}, panoramaRes);
+
+  assert.deepEqual(panoramaRes.payload.data.operations.panorama, {
+    available: true,
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    projection: 'equirectangular',
+    outputSize: '3840x1920',
+  });
+  assert.equal(panoramaRes.payload.data.operations.panorama_scene.available, false);
+
+  const sceneHandlers = createImageToolRoutes(null, { error() {} }, {
+    referenceImageTool: {
+      ...baseTool,
+      operations: ['panorama_scene'],
+    },
+  });
+  const sceneRes = responseRecorder();
+  sceneHandlers.capabilities({}, sceneRes);
+
+  assert.equal(sceneRes.payload.data.operations.panorama.available, false);
+  assert.equal(sceneRes.payload.data.operations.panorama_scene.available, true);
+  assert.equal(
+    sceneRes.payload.data.operations.panorama_scene.projection,
+    'equirectangular',
+  );
+  assert.equal(sceneRes.payload.data.operations.panorama_scene.outputSize, '3840x1920');
+});
+
 test('扩图只在本地参考图供应商能力可用时开放', async () => {
   const referenceImageTool = {
     engine: 'provider-image-edit',
@@ -248,6 +294,10 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   assert.match(publicRes.payload.data.operations.markup_retouch.reason, /计费与审计链/);
   assert.equal(publicRes.payload.data.operations.cinematic_relight.available, false);
   assert.match(publicRes.payload.data.operations.cinematic_relight.reason, /计费与审计链/);
+  assert.equal(publicRes.payload.data.operations.panorama.available, false);
+  assert.match(publicRes.payload.data.operations.panorama.reason, /计费与审计链/);
+  assert.equal(publicRes.payload.data.operations.panorama_scene.available, false);
+  assert.match(publicRes.payload.data.operations.panorama_scene.reason, /计费与审计链/);
 
   const publicCreateRes = responseRecorder();
   await publicHandlers.createOperation({
@@ -280,6 +330,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       supports_outpaint: true,
       supports_markup_retouch: true,
       supports_cinematic_relight: true,
+      supports_panorama: true,
+      supports_panorama_scene: true,
     }),
   });
   const supportedHandlers = createImageToolRoutes(supportedDb, log);
@@ -291,6 +343,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'volcengine');
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.available, true);
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.panorama.available, true);
+  assert.equal(supportedRes.payload.data.operations.panorama_scene.available, true);
 
   const undeclaredDb = new Database(':memory:');
   t.after(() => undeclaredDb.close());
@@ -313,6 +367,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.match(undeclaredRes.payload.data.operations.outpaint.reason, /显式声明/);
   assert.equal(undeclaredRes.payload.data.operations.cinematic_relight.available, false);
   assert.match(undeclaredRes.payload.data.operations.cinematic_relight.reason, /显式声明/);
+  assert.equal(undeclaredRes.payload.data.operations.panorama.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.panorama_scene.available, false);
 
   const unsupportedDb = new Database(':memory:');
   t.after(() => unsupportedDb.close());
@@ -335,6 +391,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.match(unsupportedRes.payload.data.operations.outpaint.reason, /扩图/);
   assert.equal(unsupportedRes.payload.data.operations.cinematic_relight.available, false);
   assert.match(unsupportedRes.payload.data.operations.cinematic_relight.reason, /电影光影|显式声明/);
+  assert.equal(unsupportedRes.payload.data.operations.panorama.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.panorama_scene.available, false);
 
   for (const config of [
     {
@@ -372,7 +430,11 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       model: [config.model],
       default_model: config.model,
       is_default: true,
-      settings: JSON.stringify({ supports_cinematic_relight: true }),
+      settings: JSON.stringify({
+        supports_cinematic_relight: true,
+        supports_panorama: true,
+        supports_panorama_scene: true,
+      }),
     });
     const strictHandlers = createImageToolRoutes(strictDb, log);
     const strictRes = responseRecorder();
@@ -382,6 +444,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       false,
       config.name,
     );
+    assert.equal(strictRes.payload.data.operations.panorama.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.panorama_scene.available, false, config.name);
   }
 });
 
@@ -2778,6 +2842,215 @@ test('电影级光影校正通过参考图供应商生成同尺寸派生素材�
   const derivedDir = path.join(storageRoot, 'derived');
   const temporaryFiles = fs.existsSync(derivedDir)
     ? fs.readdirSync(derivedDir).filter((name) => /relight-provider-download/i.test(name))
+    : [];
+  assert.deepEqual(temporaryFiles, []);
+});
+
+test('720全景通过参考图供应商生成固定 2:1 等距柱状新素材', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-panorama-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('720全景测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 96,
+      height: 64,
+      channels: 3,
+      background: '#35668a',
+    },
+  }).png().toFile(sourcePath);
+  const sourceHash = fileSha256(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const panoramaBuffer = await sharp({
+    create: {
+      width: 384,
+      height: 192,
+      channels: 3,
+      background: '#d79b55',
+    },
+  }).png().toBuffer();
+  let generationRequest = null;
+  const referenceImageTool = {
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    operations: ['panorama'],
+    async generate(request) {
+      generationRequest = request;
+      return { image_url: `data:image/png;base64,${panoramaBuffer.toString('base64')}` };
+    },
+  };
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-panorama',
+      operation: 'panorama',
+      parameters: { description: '保持山谷中央的木屋' },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.operation, 'panorama');
+  assert.equal(generationRequest.referenceImage, sourcePath);
+  assert.equal(generationRequest.size, '3840x1920');
+  assert.match(generationRequest.prompt, /360/);
+  assert.match(generationRequest.prompt, /等距柱状/);
+  assert.match(generationRequest.prompt, /左右边缘必须无缝/);
+  assert.match(generationRequest.prompt, /保持山谷中央的木屋/);
+  assert.equal(fileSha256(sourcePath), sourceHash);
+
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.ok(resultAsset);
+  assert.notEqual(resultAsset.id, sourceAsset.id);
+  assert.equal(resultAsset.metadata.operation, 'panorama');
+  assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
+  assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    description: '保持山谷中央的木屋',
+    projection: 'equirectangular',
+    outputSize: '3840x1920',
+  });
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.format, 'png');
+  assert.equal(outputMetadata.width, 3840);
+  assert.equal(outputMetadata.height, 1920);
+  assert.notEqual(fileSha256(resultAsset.local_path), sourceHash);
+  assert.equal(taskService.getTask(db, res.payload.data.taskId).status, 'completed');
+
+  let sceneRequest = null;
+  const sceneHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      operations: ['panorama_scene'],
+      async generate(request) {
+        sceneRequest = request;
+        return { image_url: `data:image/png;base64,${panoramaBuffer.toString('base64')}` };
+      },
+    },
+  });
+  const sceneRes = responseRecorder();
+  await sceneHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-panorama-scene',
+      operation: 'panorama_scene',
+      parameters: { description: '扩展为夜间森林营地' },
+    },
+  }, sceneRes);
+  assert.equal(sceneRes.statusCode, 201, JSON.stringify(sceneRes.payload));
+  assert.equal(sceneRes.payload.data.operation, 'panorama_scene');
+  assert.match(sceneRequest.prompt, /完整 360° 环境/);
+  assert.match(sceneRequest.prompt, /扩展为夜间森林营地/);
+  const sceneAsset = assetService.getById(db, sceneRes.payload.data.resultAssetId);
+  assert.equal(sceneAsset.metadata.operation, 'panorama_scene');
+  assert.equal(sceneAsset.metadata.parameters.projection, 'equirectangular');
+
+  for (const description of [123, ['场景'], 'x'.repeat(301)]) {
+    const invalidRes = responseRecorder();
+    await handlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: 'image-node-panorama-invalid',
+        operation: 'panorama',
+        parameters: { description },
+      },
+    }, invalidRes);
+    assert.equal(invalidRes.statusCode, 400);
+    assert.equal(invalidRes.payload.error.code, 'BAD_REQUEST');
+  }
+
+  const failedLogs = [];
+  const failedHandlers = createImageToolRoutes(db, {
+    info() {},
+    warn(message, details) {
+      failedLogs.push({ message, details });
+    },
+    error(message, details) {
+      failedLogs.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return { error: 'private-panorama-upstream-secret' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-panorama-failure',
+      operation: 'panorama',
+      parameters: { description: '' },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '720全景处理失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-panorama-upstream-secret/);
+  assert.doesNotMatch(JSON.stringify(failedLogs), /private-panorama-upstream-secret/);
+
+  const wrongRatioBuffer = await sharp({
+    create: {
+      width: 300,
+      height: 200,
+      channels: 3,
+      background: '#657f42',
+    },
+  }).png().toBuffer();
+  for (const imageUrl of [
+    `data:image/png;base64,${wrongRatioBuffer.toString('base64')}`,
+    `data:image/png;base64,${fs.readFileSync(sourcePath).toString('base64')}`,
+  ]) {
+    const rejectedHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+      cfg: { storage: { local_path: storageRoot } },
+      referenceImageTool: {
+        ...referenceImageTool,
+        async generate() {
+          return { image_url: imageUrl };
+        },
+      },
+    });
+    const rejectedRes = responseRecorder();
+    await rejectedHandlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: 'image-node-panorama-rejected',
+        operation: 'panorama',
+        parameters: { description: '' },
+      },
+    }, rejectedRes);
+    assert.equal(rejectedRes.statusCode, 503);
+    assert.equal(rejectedRes.payload.error.message, '720全景处理失败');
+  }
+
+  const derivedDir = path.join(storageRoot, 'derived');
+  const temporaryFiles = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => /panorama-provider-download/i.test(name))
     : [];
   assert.deepEqual(temporaryFiles, []);
 });

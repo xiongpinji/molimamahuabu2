@@ -267,6 +267,22 @@
           </p>
         </template>
 
+        <template v-else-if="['panorama', 'panorama_scene'].includes(editorOperation)">
+          <el-form-item label="补充要求（可选）">
+            <el-input
+              v-model="panoramaDescription"
+              type="textarea"
+              :rows="3"
+              maxlength="300"
+              show-word-limit
+              placeholder="例如：保持中央主体并补全四周连续环境"
+            />
+          </el-form-item>
+          <p class="crop-hint">
+            使用已配置的参考图供应商生成等距柱状全景；固定输出 3840×1920 PNG，原图保持不变。
+          </p>
+        </template>
+
         <template v-else-if="editorOperation === 'cinematic_relight'">
           <el-form-item label="光影预设">
             <el-select v-model="relightForm.preset">
@@ -403,6 +419,7 @@ const outpaintForm = ref({
   direction: 'auto',
   prompt: '',
 })
+const panoramaDescription = ref('')
 const relightForm = ref({
   preset: 'cinematic',
   intensity: 3,
@@ -457,6 +474,7 @@ const settingActions = [
   { label: '多机位叙事九宫格', operation: 'narrative_grid' },
   { label: '画面推演-3秒后', operation: 'frame_forward' },
   { label: '画面推演-5秒前', operation: 'frame_backward' },
+  { label: '720全景', operation: 'panorama' },
   { label: '电影级光影校正', operation: 'cinematic_relight' },
   { label: '细节纹理增强', operation: 'detail_enhance' },
 ]
@@ -676,6 +694,9 @@ function operationParameters() {
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
   if (editorOperation.value === 'detail_enhance') return { preset: detailEnhancePreset.value }
   if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
+  if (['panorama', 'panorama_scene'].includes(editorOperation.value)) return {
+    description: panoramaDescription.value.trim(),
+  }
   if (editorOperation.value === 'cinematic_relight') return {
     preset: relightForm.value.preset,
     intensity: relightForm.value.intensity,
@@ -743,6 +764,8 @@ function operationLabel(operation) {
     detail_enhance: '细节纹理增强',
     outpaint: '扩图',
     markup_retouch: '标记修图',
+    panorama: '720全景',
+    panorama_scene: '生成全景场景',
     cinematic_relight: '电影级光影校正',
     adjust: '图片调整',
     lut: 'LUT 调色',

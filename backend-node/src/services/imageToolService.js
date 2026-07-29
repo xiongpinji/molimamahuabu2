@@ -96,7 +96,10 @@ const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
   'outpaint',
   'markup_retouch',
   'cinematic_relight',
+  'panorama',
+  'panorama_scene',
 ]);
+const PANORAMA_OUTPUT_SIZE = '3840x1920';
 const MARKUP_MAX_STROKES = 16;
 const MARKUP_MAX_POINTS_PER_STROKE = 128;
 const MARKUP_COLORS = new Set(['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']);
@@ -585,6 +588,8 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
   const outpaintAvailable = referenceImageTool?.operations.includes('outpaint');
   const markupRetouchAvailable = referenceImageTool?.operations.includes('markup_retouch');
   const cinematicRelightAvailable = referenceImageTool?.operations.includes('cinematic_relight');
+  const panoramaAvailable = referenceImageTool?.operations.includes('panorama');
+  const panoramaSceneAvailable = referenceImageTool?.operations.includes('panorama_scene');
   const common = referenceImageTool
     ? {
       engine: referenceImageTool.engine,
@@ -628,6 +633,28 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
       : {
         available: false,
         reason: unavailableReason || '未配置已显式声明且通过审计的电影光影校正模型',
+      },
+    panorama: panoramaAvailable
+      ? {
+        available: true,
+        ...common,
+        projection: 'equirectangular',
+        outputSize: PANORAMA_OUTPUT_SIZE,
+      }
+      : {
+        available: false,
+        reason: unavailableReason || '未配置已显式声明且通过审计的全景模型能力',
+      },
+    panorama_scene: panoramaSceneAvailable
+      ? {
+        available: true,
+        ...common,
+        projection: 'equirectangular',
+        outputSize: PANORAMA_OUTPUT_SIZE,
+      }
+      : {
+        available: false,
+        reason: unavailableReason || '未配置已显式声明且通过审计的全景场景模型',
       },
   };
 }
@@ -695,6 +722,34 @@ function buildCinematicRelightPrompt(parameters) {
     `光影预设：${CINEMATIC_RELIGHT_PRESETS[parameters.preset]}；强度 ${parameters.intensity}/5。`,
     '必须保持人物身份、面部、发型、服装、姿势、物体、构图、镜头、透视、纹理、画风和画面尺寸不变。',
     '不得增加、删除或移动主体，不得改写背景结构，不要拼图、边框、文字、水印或前后对比图。',
+    extra,
+  ].filter(Boolean).join('\n');
+}
+
+function normalizePanoramaParameters(parameters) {
+  const rawDescription = parameters.description === undefined ? '' : parameters.description;
+  if (typeof rawDescription !== 'string') {
+    fail('IMAGE_TOOL_INVALID_INPUT', '全景补充要求必须是字符串');
+  }
+  const description = rawDescription.trim();
+  if (description.length > 300) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '全景补充要求不能超过 300 字');
+  }
+  return { description };
+}
+
+function buildPanoramaPrompt(operation, parameters) {
+  const extra = parameters.description
+    ? `补充要求：${parameters.description}。`
+    : '';
+  const goal = operation === 'panorama_scene'
+    ? '以输入图片为场景参考，生成一个可环视的完整 360° 环境'
+    : '将输入图片转换为完整的 360° 全景画面';
+  return [
+    `${goal}，输出必须是单张 2:1 等距柱状投影（equirectangular panorama）。`,
+    '保持输入图中的主体身份、关键物体、场景线索、画风、材质、光线与空间关系。',
+    '补全相机四周、天空和地面，地平线保持水平；左右边缘必须无缝连续，顶部与底部符合球面投影。',
+    '不要输出普通广角图、立方体六面图、拼图、分栏、边框、文字、水印或前后对比图。',
     extra,
   ].filter(Boolean).join('\n');
 }
@@ -989,6 +1044,8 @@ async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}
   const outputPrefix = {
     markup_retouch: 'markup-provider-download',
     cinematic_relight: 'relight-provider-download',
+    panorama: 'panorama-provider-download',
+    panorama_scene: 'panorama-scene-provider-download',
   }[options.operation] || 'outpaint';
   let realAllowedRoot;
   let realOutputDir;
@@ -1421,6 +1478,150 @@ async function runCinematicRelight({
       reason: 'provider request or output validation failed',
     });
     fail('IMAGE_TOOL_PROCESSING_FAILED', '电影级光影校正处理失败');
+  } finally {
+    release?.();
+    if (providerDownloadPath && fs.existsSync(providerDownloadPath)) {
+      fs.rmSync(providerDownloadPath, { force: true });
+    }
+  }
+}
+
+async function runPanorama({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+  operation,
+}) {
+  const failureMessage = operation === 'panorama_scene'
+    ? '全景场景生成失败'
+    : '720全景处理失败';
+  let sourceMetadata;
+  try {
+    sourceMetadata = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+  } catch {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const parameters = normalizePanoramaParameters(request.parameters || {});
+  const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+  let release;
+  let providerDownloadPath = null;
+  let outputPath = null;
+  try {
+    release = referenceImageTool.limiter.acquire(tenantId);
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      operation === 'panorama_scene' ? '正在生成全景场景...' : '正在生成720全景...',
+      () => referenceImageTool.generate({
+        prompt: buildPanoramaPrompt(operation, parameters),
+        size: PANORAMA_OUTPUT_SIZE,
+        referenceImage: sourcePath,
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+        systemPrompt: 'The source image is the visual reference. Create one seamless 360-degree 2:1 equirectangular panorama; never create a collage, labels, borders, or comparison image.',
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      log.warn('image panorama provider failed', {
+        operation,
+        provider: referenceImageTool.provider,
+        protocol: referenceImageTool.protocol,
+        model: referenceImageTool.model,
+        reason: 'provider returned no image',
+      });
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    providerDownloadPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+      { operation },
+    );
+    if (fileSha256(providerDownloadPath) === fileSha256(sourcePath)) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    const providerMetadata = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      !FORMAT_INFO[providerMetadata.format]
+      || !providerMetadata.width
+      || !providerMetadata.height
+      || providerMetadata.width * providerMetadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    const outputRatio = providerMetadata.width / providerMetadata.height;
+    if (Math.abs(outputRatio - 2) / 2 > 0.01) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+    const outputInfo = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(3840, 1920, {
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== 3840
+      || outputInfo.height !== 1920
+      || fileSha256(outputPath) === fileSha256(sourcePath)
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    await sharp(outputPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).stats();
+    return {
+      outputPath,
+      format: FORMAT_INFO.png,
+      outputInfo,
+      parameters: {
+        ...parameters,
+        projection: 'equirectangular',
+        outputSize: PANORAMA_OUTPUT_SIZE,
+      },
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if ([
+      'IMAGE_TOOL_INVALID_INPUT',
+      'IMAGE_TOOL_SOURCE_UNAVAILABLE',
+      'IMAGE_TOOL_UNSUPPORTED_IMAGE',
+      'IMAGE_TOOL_BUSY',
+    ].includes(error?.code)) {
+      throw error;
+    }
+    log.warn('image panorama failed', {
+      operation,
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
   } finally {
     release?.();
     if (providerDownloadPath && fs.existsSync(providerDownloadPath)) {
@@ -1957,6 +2158,10 @@ async function createOperation(db, log, request, context = {}) {
     && !(
       operation === 'cinematic_relight'
       && referenceImageTool?.operations.includes('cinematic_relight')
+    )
+    && !(
+      ['panorama', 'panorama_scene'].includes(operation)
+      && referenceImageTool?.operations.includes(operation)
     )) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
@@ -2334,6 +2539,50 @@ async function createOperation(db, log, request, context = {}) {
           outputInfo: prepared.outputInfo,
           parameters: prepared.parameters,
           suffix: 'cinematic-relight',
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
+    if (['panorama', 'panorama_scene'].includes(operation)) {
+      const prepared = await runPanorama({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+        operation,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          suffix: operation === 'panorama_scene' ? 'panorama-scene' : 'panorama',
           storageRoot,
           engine: referenceImageTool.engine,
           engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,

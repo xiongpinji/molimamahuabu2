@@ -92,6 +92,33 @@ test('电影级光影校正失败重试参数可安全持久化并在刷新后�
   assert.equal(tooLong.imageToolRetryParameters, undefined)
 })
 
+test('全景失败重试只保留 300 字以内的补充要求', () => {
+  for (const operation of ['panorama', 'panorama_scene']) {
+    const normalized = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: '保持中央主体并补全四周环境',
+        ignored: '不应持久化',
+      },
+    })
+    assert.equal(normalized.imageToolRetryOperation, operation)
+    assert.deepEqual(normalized.imageToolRetryParameters, {
+      description: '保持中央主体并补全四周环境',
+    })
+
+    const tooLong = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: 'x'.repeat(301),
+      },
+    })
+    assert.equal(tooLong.imageToolRetryOperation, undefined)
+    assert.equal(tooLong.imageToolRetryParameters, undefined)
+  }
+})
+
 test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => {
   const imagePayload = buildFreeCanvasGenerationRequest({
     kind: 'image',

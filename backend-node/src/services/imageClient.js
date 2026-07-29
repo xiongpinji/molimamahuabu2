@@ -234,24 +234,31 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   const operations = [];
   if (settings.supports_outpaint === true) operations.push('outpaint');
   if (settings.supports_markup_retouch === true) operations.push('markup_retouch');
+  const panoramaDeclared = settings.supports_panorama === true;
+  const panoramaSceneDeclared = settings.supports_panorama_scene === true;
   const cinematicRelightDeclared = settings.supports_cinematic_relight === true;
-  const cinematicRelightAdapterAudited = config.service_type === 'storyboard_image'
+  const strictReferenceAdapterAudited = config.service_type === 'storyboard_image'
     && provider === 'volcengine'
     && protocol === 'volcengine'
     && model === 'doubao-seedream-4-5';
-  if (cinematicRelightDeclared && cinematicRelightAdapterAudited) {
+  if (panoramaDeclared && strictReferenceAdapterAudited) operations.push('panorama');
+  if (panoramaSceneDeclared && strictReferenceAdapterAudited) operations.push('panorama_scene');
+  if (cinematicRelightDeclared && strictReferenceAdapterAudited) {
     operations.push('cinematic_relight');
   }
   if (operations.length === 0) {
-    if (cinematicRelightDeclared && !cinematicRelightAdapterAudited) {
+    if (
+      (panoramaDeclared || panoramaSceneDeclared || cinematicRelightDeclared)
+      && !strictReferenceAdapterAudited
+    ) {
       return {
         available: false,
-        reason: `当前默认图片模型 ${model} 的电影光影校正适配器尚未通过审计`,
+        reason: `当前默认图片模型 ${model} 的全景或电影光影适配器尚未通过审计`,
       };
     }
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 未显式声明扩图、标记修图或电影光影校正能力`,
+      reason: `当前默认图片模型 ${model} 未显式声明扩图、标记修图、全景或电影光影校正能力`,
     };
   }
   const auditedAdapter = protocol === 'volcengine'
@@ -259,7 +266,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (!auditedAdapter) {
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 的扩图、标记修图或电影光影校正适配器尚未通过审计`,
+      reason: `当前默认图片模型 ${model} 的扩图、标记修图、全景或电影光影校正适配器尚未通过审计`,
     };
   }
   if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {
