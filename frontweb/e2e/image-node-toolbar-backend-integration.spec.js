@@ -1,0 +1,390 @@
+import { test, expect } from '@playwright/test'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import fs from 'node:fs'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+
+const require = createRequire(import.meta.url)
+const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
+const backendServer = path.join(backendRoot, 'src', 'server.js')
+const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
+const sharp = require(path.join(backendRoot, 'node_modules', 'sharp'))
+const assetService = require(path.join(backendRoot, 'src', 'services', 'assetService'))
+
+let backendProcess
+let backendOrigin
+let backendLogs = ''
+let databasePath
+let tempRoot
+let storagePath
+let dramaId
+let sourceAssetId
+const nodeId = 'free:image:toolbar-same-chain'
+
+test.setTimeout(90_000)
+test.describe.configure({ mode: 'serial' })
+
+function reservePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      server.close((error) => (error ? reject(error) : resolve(port)))
+    })
+  })
+}
+
+async function waitForHealth(url, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  while (Date.now() < deadline) {
+    if (backendProcess?.exitCode != null) {
+      throw new Error(`图片工具后端提前退出（${backendProcess.exitCode}）\n${backendLogs}`)
+    }
+    try {
+      const response = await fetch(url)
+      if (response.ok) return
+      lastError = new Error(`health status ${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`图片工具后端未就绪：${lastError?.message || 'timeout'}\n${backendLogs}`)
+}
+
+async function stopBackend() {
+  if (!backendProcess || backendProcess.exitCode != null) return
+  const gracefulExit = Promise.race([
+    once(backendProcess, 'exit').then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 3_000)),
+  ])
+  backendProcess.kill('SIGTERM')
+  if (!await gracefulExit && backendProcess.exitCode == null) {
+    backendProcess.kill('SIGKILL')
+    await Promise.race([
+      once(backendProcess, 'exit'),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ])
+  }
+}
+
+function readDatabase(callback) {
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true })
+  try {
+    return callback(db)
+  } finally {
+    db.close()
+  }
+}
+
+function sha256(filePath) {
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+}
+
+async function proxyBackend(page) {
+  await page.route('**/api/v1/**', async (route) => {
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    await route.fulfill({ response })
+  })
+  await page.route('**/static/**', async (route) => {
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    await route.fulfill({ response })
+  })
+}
+
+test.beforeAll(async () => {
+  const port = await reservePort()
+  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-image-toolbar-browser-'))
+  databasePath = path.join(tempRoot, 'toolbar.sqlite')
+  storagePath = path.join(tempRoot, 'storage')
+  const configRoot = path.join(tempRoot, 'configs')
+  fs.mkdirSync(configRoot, { recursive: true })
+  fs.mkdirSync(storagePath, { recursive: true })
+  fs.writeFileSync(
+    path.join(configRoot, 'config.yaml'),
+    [
+      'app:',
+      '  name: LocalMiniDrama image toolbar integration',
+      '  version: test',
+      'server:',
+      '  host: 127.0.0.1',
+      `  port: ${port}`,
+      '  cors_origins:',
+      '    - http://127.0.0.1:3013',
+      'database:',
+      '  type: sqlite',
+      `  path: ${databasePath.replace(/\\/g, '/')}`,
+      'storage:',
+      '  type: local',
+      `  local_path: ${storagePath.replace(/\\/g, '/')}`,
+      `  base_url: http://127.0.0.1:${port}/static`,
+      'vendor_lock:',
+      '  enabled: false',
+    ].join('\n'),
+    'utf8',
+  )
+
+  backendOrigin = `http://127.0.0.1:${port}`
+  backendProcess = spawn(process.execPath, [backendServer], {
+    cwd: tempRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(port),
+      PUBLIC_PLATFORM_MODE: '0',
+      WEB_DIST_PATH: path.join(tempRoot, 'missing-web-dist'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  backendProcess.stdout.on('data', (chunk) => { backendLogs += chunk.toString() })
+  backendProcess.stderr.on('data', (chunk) => { backendLogs += chunk.toString() })
+  await waitForHealth(`${backendOrigin}/health`)
+
+  const sourcePath = path.join(storagePath, 'toolbar-source.png')
+  await sharp({
+    create: {
+      width: 320,
+      height: 180,
+      channels: 3,
+      background: '#ead9bd',
+    },
+  })
+    .composite([{
+      input: Buffer.from(
+        '<svg width="320" height="180"><rect x="80" y="30" width="160" height="120" rx="16" fill="#375a7f"/></svg>',
+      ),
+    }])
+    .png()
+    .toFile(sourcePath)
+
+  const db = new Database(databasePath)
+  try {
+    const now = new Date().toISOString()
+    dramaId = Number(db.prepare(
+      `INSERT INTO dramas (title, style, status, metadata, created_at, updated_at)
+       VALUES (?, 'realistic', 'draft', '{}', ?, ?)`,
+    ).run('图片工具栏真实同链验收', now, now).lastInsertRowid)
+    const sourceAsset = assetService.create(db, { info() {} }, {
+      drama_id: dramaId,
+      name: 'toolbar-source.png',
+      type: 'image',
+      category: 'canvas',
+      url: '/static/toolbar-source.png',
+      local_path: sourcePath,
+      mime_type: 'image/png',
+      width: 320,
+      height: 180,
+      file_size: fs.statSync(sourcePath).size,
+    })
+    sourceAssetId = sourceAsset.id
+    const metadata = {
+      project_type: 'canvas',
+      canvas_layout: {
+        version: 1,
+        viewport: { x: 120, y: 80, zoom: 1 },
+        nodes: {},
+        manual_edges: [],
+        free_nodes: [{
+          id: nodeId,
+          type: 'homeCanvasNode',
+          position: { x: 300, y: 220 },
+          data: {
+            kind: 'image',
+            title: '图片工具同链节点',
+            content: '验证真实图片处理',
+            status: 'success',
+            url: sourceAsset.url,
+            savedAssetId: String(sourceAsset.id),
+            assetSaveStatus: 'success',
+            imageToolHistory: [],
+          },
+        }],
+      },
+    }
+    db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), now, dramaId)
+  } finally {
+    db.close()
+  }
+})
+
+test.afterAll(async () => {
+  await stopBackend()
+  if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
+})
+
+test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同链', async ({ page }) => {
+  await proxyBackend(page)
+  await page.goto(`/canvas/${dramaId}`)
+
+  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(node).toContainText('图片工具同链节点')
+  await node.click()
+  const toolbar = node.locator('.image-node-toolbar')
+  await expect(toolbar).toBeVisible()
+  await toolbar.getByRole('button', { name: /工具/ }).click()
+  await toolbar.getByRole('button', { name: '裁剪/压缩/镜像', exact: true }).click()
+
+  const cropDialog = page.getByRole('dialog', { name: '裁剪' })
+  await expect(cropDialog).toBeVisible()
+  await expect(cropDialog.locator('.cropper-container')).toBeVisible()
+  await cropDialog.getByRole('button', { name: '应用并生成新素材' }).click()
+  await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible()
+  await expect(cropDialog).toBeHidden()
+
+  await expect.poll(() => readDatabase((db) => {
+    const asset = db.prepare(
+      `SELECT id, url, local_path, width, height, mime_type, metadata
+       FROM assets WHERE id != ? AND drama_id = ? ORDER BY id DESC LIMIT 1`,
+    ).get(sourceAssetId, dramaId)
+    const task = db.prepare(
+      `SELECT id, type, status, error, result
+       FROM async_tasks WHERE type = 'image_tool_crop' ORDER BY created_at DESC LIMIT 1`,
+    ).get()
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    return {
+      asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
+      task,
+      freeNode,
+    }
+  })).toMatchObject({
+    asset: {
+      mime_type: 'image/png',
+      metadata: {
+        sourceAssetId,
+        sourceNodeId: nodeId,
+        operation: 'crop',
+        engine: 'sharp',
+        taskId: expect.any(String),
+      },
+    },
+    task: {
+      type: 'image_tool_crop',
+      status: 'completed',
+      error: null,
+      result: expect.stringContaining('"resultAssetId"'),
+    },
+    freeNode: {
+      data: expect.objectContaining({
+        imageToolStatus: 'success',
+        savedAssetId: expect.any(String),
+        url: expect.stringMatching(/^\/static\//),
+        imageToolHistory: expect.arrayContaining([
+          expect.objectContaining({ operation: 'crop', status: 'success' }),
+        ]),
+      }),
+    },
+  })
+
+  const cropAsset = readDatabase((db) => db.prepare(
+    `SELECT id, url, local_path, width, height
+     FROM assets WHERE id != ? AND drama_id = ? ORDER BY id DESC LIMIT 1`,
+  ).get(sourceAssetId, dramaId))
+  expect(cropAsset.width).toBeLessThan(320)
+  expect(cropAsset.height).toBeLessThan(180)
+  expect(fs.existsSync(cropAsset.local_path)).toBe(true)
+  expect(sha256(path.join(storagePath, 'toolbar-source.png'))).not.toBe(sha256(cropAsset.local_path))
+  const cropBytes = fs.readFileSync(cropAsset.local_path)
+
+  await page.reload({ waitUntil: 'networkidle' })
+  const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(restored).toContainText('图片工具同链节点')
+  await restored.click()
+  const restoredToolbar = restored.locator('.image-node-toolbar')
+  await expect(restoredToolbar).toBeVisible()
+  await restoredToolbar.locator('button[title="处理历史"]').click()
+  await expect(restoredToolbar.locator('.toolbar-history')).toContainText('裁剪')
+  await expect(restoredToolbar.locator('.toolbar-history')).toContainText('已完成')
+  await restoredToolbar.locator('button[title="处理历史"]').click()
+
+  fs.writeFileSync(cropAsset.local_path, 'not-a-valid-image')
+  const previousImageUrl = await restored.locator('img[alt="图片工具同链节点"]').getAttribute('src')
+  await restoredToolbar.getByRole('button', { name: /工具/ }).click()
+  await restoredToolbar.getByRole('button', { name: '裁剪/压缩/镜像', exact: true }).click()
+  const editor = page.getByRole('dialog', { name: '裁剪' })
+  await editor.getByRole('button', { name: '镜像', exact: true }).click()
+  const mirrorDialog = page.getByRole('dialog', { name: '镜像' })
+  await mirrorDialog.getByRole('button', { name: '应用并生成新素材' }).click()
+  await expect(restoredToolbar.getByRole('alert')).toContainText('图片处理失败')
+  await expect(restored.locator('img[alt="图片工具同链节点"]')).toHaveAttribute('src', previousImageUrl)
+
+  await expect.poll(() => readDatabase((db) => {
+    const task = db.prepare(
+      `SELECT status, error FROM async_tasks
+       WHERE type = 'image_tool_mirror' ORDER BY created_at DESC LIMIT 1`,
+    ).get()
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    return { task, freeNode }
+  })).toMatchObject({
+    task: {
+      status: 'failed',
+      error: '图片处理失败',
+    },
+    freeNode: {
+      data: expect.objectContaining({
+        imageToolStatus: 'failed',
+        imageToolError: '图片处理失败',
+        savedAssetId: String(cropAsset.id),
+      }),
+    },
+  })
+
+  fs.writeFileSync(cropAsset.local_path, cropBytes)
+  await restoredToolbar.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(page.getByText('图片处理重试成功，已生成新素材')).toBeVisible()
+
+  await expect.poll(() => readDatabase((db) => {
+    const asset = db.prepare(
+      `SELECT id, local_path, metadata FROM assets
+       WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
+    ).get(dramaId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    return {
+      asset: { ...asset, metadata: JSON.parse(asset.metadata || '{}') },
+      freeNode,
+    }
+  })).toMatchObject({
+    asset: {
+      metadata: {
+        sourceAssetId: cropAsset.id,
+        sourceNodeId: nodeId,
+        operation: 'mirror',
+        engine: 'sharp',
+      },
+    },
+    freeNode: {
+      data: expect.objectContaining({
+        imageToolStatus: 'success',
+        imageToolError: '',
+        imageToolHistory: expect.arrayContaining([
+          expect.objectContaining({ operation: 'mirror', status: 'success' }),
+          expect.objectContaining({ operation: 'crop', status: 'success' }),
+        ]),
+      }),
+    },
+  })
+
+  await page.reload({ waitUntil: 'networkidle' })
+  const finalNode = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(finalNode).toContainText('图片工具同链节点')
+  await finalNode.click()
+  await expect(finalNode.locator('.image-node-toolbar')).toBeVisible()
+  await finalNode.locator('.image-node-toolbar button[title="处理历史"]').click()
+  await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
+})

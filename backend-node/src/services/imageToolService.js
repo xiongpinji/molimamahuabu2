@@ -2382,6 +2382,18 @@ function sanitizeCutoutError(error, operation, log) {
   );
 }
 
+function sanitizeDeterministicError(error, operation, log) {
+  if (String(error?.code || '').startsWith('IMAGE_TOOL_')) return error;
+  log.error('image tool deterministic processing failed', {
+    operation,
+    error: String(error?.message || error),
+  });
+  return Object.assign(
+    new Error('图片处理失败'),
+    { code: 'IMAGE_TOOL_PROCESSING_FAILED' },
+  );
+}
+
 async function runCrop(sourcePath, parameters) {
   const source = sharp(sourcePath);
   const metadata = await source.metadata();
@@ -3192,8 +3204,11 @@ async function createOperation(db, log, request, context = {}) {
     for (const outputPath of outputPaths) {
       if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
     }
-    taskService.updateTaskError(db, task.id, error.message);
-    throw error;
+    const exposedError = deterministicOperations.includes(operation)
+      ? sanitizeDeterministicError(error, operation, log)
+      : error;
+    taskService.updateTaskError(db, task.id, exposedError.message);
+    throw exposedError;
   }
 }
 
