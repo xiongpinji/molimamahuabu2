@@ -143,6 +143,9 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.equal(operations.adjust.available, true);
   assert.equal(operations.lut.available, true);
   assert.deepEqual(operations.lut.presets, ['cinematic', 'warm', 'cool', 'mono']);
+  assert.equal(operations.markup_retouch.available, true);
+  assert.equal(operations.markup_retouch.providerAvailable, false);
+  assert.deepEqual(operations.markup_retouch.modes, ['markup_only']);
   assert.equal(operations.smart_cutout.available, false);
   assert.match(operations.smart_cutout.reason, /许可证审计/);
   assert.equal(operations.selection_cutout.available, false);
@@ -270,7 +273,9 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   const outpaintOnlyRes = responseRecorder();
   outpaintOnlyHandlers.capabilities({}, outpaintOnlyRes);
   assert.equal(outpaintOnlyRes.payload.data.operations.outpaint.available, true);
-  assert.equal(outpaintOnlyRes.payload.data.operations.markup_retouch.available, false);
+  assert.equal(outpaintOnlyRes.payload.data.operations.markup_retouch.available, true);
+  assert.equal(outpaintOnlyRes.payload.data.operations.markup_retouch.providerAvailable, false);
+  assert.deepEqual(outpaintOnlyRes.payload.data.operations.markup_retouch.modes, ['markup_only']);
 
   const markupOnlyHandlers = createImageToolRoutes(null, { error() {} }, {
     referenceImageTool: {
@@ -290,9 +295,11 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   const publicRes = responseRecorder();
   publicHandlers.capabilities({}, publicRes);
   assert.equal(publicRes.payload.data.operations.outpaint.available, false);
-    assert.match(publicRes.payload.data.operations.outpaint.reason, /积分价格/);
-  assert.equal(publicRes.payload.data.operations.markup_retouch.available, false);
-    assert.match(publicRes.payload.data.operations.markup_retouch.reason, /积分价格/);
+  assert.match(publicRes.payload.data.operations.outpaint.reason, /积分价格/);
+  assert.equal(publicRes.payload.data.operations.markup_retouch.available, true);
+  assert.equal(publicRes.payload.data.operations.markup_retouch.providerAvailable, false);
+  assert.deepEqual(publicRes.payload.data.operations.markup_retouch.modes, ['markup_only']);
+  assert.match(publicRes.payload.data.operations.markup_retouch.providerReason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.cinematic_relight.available, false);
   assert.match(publicRes.payload.data.operations.cinematic_relight.reason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.panorama.available, false);
@@ -539,7 +546,17 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     const strictRes = responseRecorder();
     strictHandlers.capabilities({}, strictRes);
     assert.equal(strictRes.payload.data.operations.outpaint.available, false, config.name);
-    assert.equal(strictRes.payload.data.operations.markup_retouch.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.markup_retouch.available, true, config.name);
+    assert.equal(
+      strictRes.payload.data.operations.markup_retouch.providerAvailable,
+      false,
+      config.name,
+    );
+    assert.deepEqual(
+      strictRes.payload.data.operations.markup_retouch.modes,
+      ['markup_only'],
+      config.name,
+    );
     assert.equal(strictRes.payload.data.operations.upscale.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.detail_enhance.available, false, config.name);
     assert.equal(
@@ -1247,6 +1264,7 @@ test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', as
   assert.equal(selectionAsset.metadata.operation, 'selection_cutout');
   assert.deepEqual(selectionAsset.metadata.parameters, {
     model: 'u2netp',
+    selectionMode: 'rectangle',
     left: 2,
     top: 1,
     width: 4,
@@ -1257,6 +1275,37 @@ test('智能抠图通过配置的 rembg 命令生成透明 PNG 派生素材', as
       .some((name) => name.endsWith('-selection.png')),
     false
   );
+
+  const brushSelectionRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-selection-brush',
+      operation: 'selection_cutout',
+      parameters: {
+        selectionMode: 'brush',
+        brushStrokes: [{
+          width: 0.2,
+          points: [
+            { x: 0.25, y: 0.2 },
+            { x: 0.5, y: 0.5 },
+            { x: 0.75, y: 0.8 },
+          ],
+        }],
+      },
+    },
+  }, brushSelectionRes);
+
+  assert.equal(brushSelectionRes.statusCode, 201, JSON.stringify(brushSelectionRes.payload));
+  const brushAsset = assetService.getById(db, brushSelectionRes.payload.data.resultAssetId);
+  assert.equal(brushAsset.metadata.parameters.selectionMode, 'brush');
+  assert.equal(brushAsset.metadata.parameters.brushStrokes.length, 1);
+  const brushMetadata = await sharp(brushAsset.local_path).metadata();
+  assert.equal(brushMetadata.format, 'png');
+  assert.equal(brushMetadata.hasAlpha, true);
+  const alphaStats = await sharp(brushAsset.local_path).extractChannel('alpha').stats();
+  assert.equal(alphaStats.channels[0].min, 0);
+  assert.equal(alphaStats.channels[0].max, 255);
 
   const invalidSelectionRes = responseRecorder();
   await handlers.createOperation({
@@ -1683,6 +1732,10 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
       parameters: {
         aspectRatio: '16:9',
         direction: 'right',
+        top: 10,
+        bottom: 20,
+        left: 0,
+        right: 60,
         prompt: '向右延伸室内窗景',
       },
     },
@@ -1693,6 +1746,7 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
   assert.equal(generationRequest.referenceImage, sourcePath);
   assert.equal(generationRequest.aspectRatio, '16:9');
   assert.match(generationRequest.prompt, /向右延伸/);
+  assert.match(generationRequest.prompt, /上方 10%.*右侧 60%/);
   assert.match(generationRequest.prompt, /向右延伸室内窗景/);
   const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
   assert.ok(resultAsset);
@@ -1703,6 +1757,10 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
   assert.deepEqual(resultAsset.metadata.parameters, {
     aspectRatio: '16:9',
     direction: 'right',
+    top: 10,
+    bottom: 20,
+    left: 0,
+    right: 60,
     prompt: '向右延伸室内窗景',
   });
   assert.equal(fs.existsSync(sourcePath), true);
@@ -1906,6 +1964,7 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
     },
   }).png().toBuffer();
   let generationRequest = null;
+  let generationCalls = 0;
   let markedReferenceHash = '';
   const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
     cfg: { storage: { local_path: storageRoot } },
@@ -1916,6 +1975,7 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
       model: 'doubao-seedream-4-5',
       operations: ['markup_retouch'],
       async generate(request) {
+        generationCalls += 1;
         generationRequest = request;
         assert.equal(request.referenceImages.length, 2);
         assert.equal(request.referenceImages[0], sourcePath);
@@ -1963,6 +2023,7 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
   assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
   assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
   assert.deepEqual(resultAsset.metadata.parameters, {
+    mode: 'retouch',
     instruction: '把标记区域改为暖黄色，其他内容保持不变',
     strokeCount: 1,
     pointCount: 3,
@@ -1973,6 +2034,78 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
   assert.equal(outputMetadata.width, 100);
   assert.equal(outputMetadata.height, 80);
   assert.equal(taskService.getTask(db, res.payload.data.taskId).status, 'completed');
+
+  const markupOnlyRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-markup-only',
+      operation: 'markup_retouch',
+      parameters: {
+        mode: 'markup_only',
+        strokes: [{
+          kind: 'text',
+          label: '重点',
+          color: '#3b82f6',
+          width: 0.02,
+          points: [{ x: 0.2, y: 0.3 }, { x: 0.2, y: 0.3 }],
+        }],
+      },
+    },
+  }, markupOnlyRes);
+  assert.equal(markupOnlyRes.statusCode, 201, JSON.stringify(markupOnlyRes.payload));
+  assert.equal(generationCalls, 1);
+  const markupOnlyAsset = assetService.getById(db, markupOnlyRes.payload.data.resultAssetId);
+  assert.equal(markupOnlyAsset.metadata.parameters.mode, 'markup_only');
+  assert.equal(markupOnlyAsset.metadata.engine, 'sharp');
+  assert.match(markupOnlyAsset.metadata.engineVersion, /^sharp-/);
+  assert.notEqual(fileSha256(markupOnlyAsset.local_path), sourceHash);
+  assert.equal((await sharp(markupOnlyAsset.local_path).metadata()).format, 'png');
+
+  const localOnlyHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+  });
+  const localOnlyRes = responseRecorder();
+  await localOnlyHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-markup-only-without-provider',
+      operation: 'markup_retouch',
+      parameters: {
+        mode: 'markup_only',
+        strokes: [{
+          kind: 'rectangle',
+          color: '#22c55e',
+          width: 0.02,
+          points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.6 }],
+        }],
+      },
+    },
+  }, localOnlyRes);
+  assert.equal(localOnlyRes.statusCode, 201, JSON.stringify(localOnlyRes.payload));
+  const localOnlyAsset = assetService.getById(db, localOnlyRes.payload.data.resultAssetId);
+  assert.equal(localOnlyAsset.metadata.engine, 'sharp');
+  assert.equal(localOnlyAsset.metadata.parameters.mode, 'markup_only');
+
+  const unconfiguredRetouchRes = responseRecorder();
+  await localOnlyHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-retouch-without-provider',
+      operation: 'markup_retouch',
+      parameters: {
+        instruction: '修改矩形区域',
+        strokes: [{
+          kind: 'rectangle',
+          color: '#22c55e',
+          width: 0.02,
+          points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.6 }],
+        }],
+      },
+    },
+  }, unconfiguredRetouchRes);
+  assert.equal(unconfiguredRetouchRes.statusCode, 503);
+  assert.equal(unconfiguredRetouchRes.payload.error.code, 'IMAGE_TOOL_OPERATION_UNAVAILABLE');
 
   const invalidRes = responseRecorder();
   await handlers.createOperation({
@@ -2624,7 +2757,7 @@ test('镜像操作按指定方向翻转像素且保留原图', async (t) => {
   assert.deepEqual(rotatedAsset.metadata.parameters, { angle: 90 });
 });
 
-test('宫格裁剪返回全部派生素材并保留首图兼容字段', async (t) => {
+test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async (t) => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
   t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
   const db = new Database(':memory:');
@@ -2663,26 +2796,27 @@ test('宫格裁剪返回全部派生素材并保留首图兼容字段', async (t
       assetId: sourceAsset.id,
       sourceNodeId: 'image-node-grid',
       operation: 'grid_crop',
-      parameters: { rows: 2, columns: 2 },
+      parameters: { rows: 2, columns: 2, selectedCells: ['0:1', '1:0'] },
     },
   }, res);
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
-  assert.equal(res.payload.data.resultAssets.length, 4);
+  assert.equal(res.payload.data.resultAssets.length, 2);
   assert.equal(res.payload.data.resultAssetId, res.payload.data.resultAssets[0].id);
   assert.equal(res.payload.data.resultUrl, res.payload.data.resultAssets[0].url);
   for (const item of res.payload.data.resultAssets) {
+    assert.equal(['0:1', '1:0'].includes(`${item.row}:${item.column}`), true);
     const resultAsset = assetService.getById(db, item.id);
     assert.equal(resultAsset.metadata.operation, 'grid_crop');
     const metadata = await sharp(resultAsset.local_path).metadata();
     assert.equal(metadata.width, 2);
     assert.equal(metadata.height, 2);
   }
-  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 5);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 3);
   assert.equal(fs.existsSync(sourcePath), true);
 });
 
-test('图片调整保存亮度饱和度对比度参数并生成新素材', async (t) => {
+test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t) => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
   t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
   const db = new Database(':memory:');
@@ -2722,10 +2856,17 @@ test('图片调整保存亮度饱和度对比度参数并生成新素材', async
       sourceNodeId: 'image-node-adjust',
       operation: 'adjust',
       parameters: {
+        exposure: 0.4,
         brightness: 1.2,
+        vibrance: 1.1,
         saturation: 0.8,
         contrast: 1.1,
         temperature: 0.4,
+        tint: -0.2,
+        hue: 12,
+        sharpness: 0.3,
+        clarity: 0.2,
+        blur: 0,
       },
     },
   }, res);
@@ -2733,15 +2874,56 @@ test('图片调整保存亮度饱和度对比度参数并生成新素材', async
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
   const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
   assert.deepEqual(resultAsset.metadata.parameters, {
+    exposure: 0.4,
     brightness: 1.2,
+    vibrance: 1.1,
     saturation: 0.8,
     contrast: 1.1,
     temperature: 0.4,
+    tint: -0.2,
+    hue: 12,
+    sharpness: 0.3,
+    clarity: 0.2,
+    blur: 0,
   });
   assert.notEqual(
     fs.readFileSync(resultAsset.local_path).toString('base64'),
     fs.readFileSync(sourcePath).toString('base64'),
   );
+
+  const customRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-custom-lut',
+      operation: 'lut',
+      parameters: {
+        preset: 'custom',
+        intensity: 1,
+        customLut: {
+          name: 'invert-2.cube',
+          size: 2,
+          values: [
+            [1, 1, 1], [0, 1, 1],
+            [1, 0, 1], [0, 0, 1],
+            [1, 1, 0], [0, 1, 0],
+            [1, 0, 0], [0, 0, 0],
+          ],
+        },
+      },
+    },
+  }, customRes);
+  assert.equal(customRes.statusCode, 201, JSON.stringify(customRes.payload));
+  const customAsset = assetService.getById(db, customRes.payload.data.resultAssetId);
+  assert.deepEqual(customAsset.metadata.parameters, {
+    preset: 'custom',
+    intensity: 1,
+    customLut: { name: 'invert-2.cube', size: 2 },
+  });
+  const customPixel = await sharp(customAsset.local_path).raw().toBuffer();
+  assert.ok(customPixel[0] > 140);
+  assert.ok(customPixel[1] > 100);
+  assert.ok(customPixel[2] < 100);
 });
 
 test('LUT 调色使用可审计的内置矩阵并记录预设名', async (t) => {
@@ -2783,13 +2965,13 @@ test('LUT 调色使用可审计的内置矩阵并记录预设名', async (t) => 
       assetId: sourceAsset.id,
       sourceNodeId: 'image-node-lut',
       operation: 'lut',
-      parameters: { preset: 'cinematic' },
+      parameters: { preset: 'cinematic', intensity: 0.65 },
     },
   }, res);
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
   const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
-  assert.deepEqual(resultAsset.metadata.parameters, { preset: 'cinematic' });
+  assert.deepEqual(resultAsset.metadata.parameters, { preset: 'cinematic', intensity: 0.65 });
   assert.notEqual(
     fs.readFileSync(resultAsset.local_path).toString('base64'),
     fs.readFileSync(sourcePath).toString('base64'),

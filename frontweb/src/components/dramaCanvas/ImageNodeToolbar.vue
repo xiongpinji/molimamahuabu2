@@ -14,17 +14,21 @@
       :title="operationTitle(item)"
       @click="selectOperation(item)"
     >
+      <component :is="item.icon" class="toolbar-icon" />
       {{ item.label }}
     </button>
 
-    <div class="toolbar-menu-wrap">
+    <span class="toolbar-separator" />
+    <div class="toolbar-menu-wrap" @mouseenter="openToolbarMenu('tools')" @mouseleave="scheduleMenuClose">
       <button
         type="button"
         :disabled="nodeBusy"
         :title="busyTitle('工具')"
         @click="toggleMenu('tools')"
       >
-        工具⌄
+        <Operation class="toolbar-icon" />
+        工具
+        <ArrowDown class="toolbar-chevron" :class="{ open: openMenu === 'tools' }" />
       </button>
       <div v-if="openMenu === 'tools'" class="toolbar-menu">
         <button
@@ -36,20 +40,22 @@
           :title="itemTitle(item)"
           @click="selectOperation(item)"
         >
-          {{ item.label }}
-          <small v-if="!itemAvailable(item)">未接通</small>
+          <component :is="item.icon" class="menu-icon" />
+          <span>{{ item.label }}</span>
         </button>
       </div>
     </div>
 
-    <div class="toolbar-menu-wrap">
+    <div class="toolbar-menu-wrap" @mouseenter="openToolbarMenu('settings')" @mouseleave="scheduleMenuClose">
       <button
         type="button"
         :disabled="nodeBusy"
         :title="busyTitle('设定')"
         @click="toggleMenu('settings')"
       >
-        设定⌄
+        <Setting class="toolbar-icon" />
+        设定
+        <ArrowDown class="toolbar-chevron" :class="{ open: openMenu === 'settings' }" />
       </button>
       <div v-if="openMenu === 'settings'" class="toolbar-menu settings-menu">
         <button
@@ -61,8 +67,8 @@
           :title="operationTitle(item)"
           @click="selectOperation(item)"
         >
-          {{ item.label }}
-          <small v-if="!operationCapability(item.operation).available">未接通</small>
+          <component :is="item.icon" class="menu-icon" />
+          <span>{{ item.label }}</span>
         </button>
       </div>
     </div>
@@ -71,17 +77,18 @@
     <button type="button" :title="busyTitle('标记色')" :disabled="nodeBusy" @click="cycleMarkerColor">
       <span class="marker-dot" :style="{ background: data.imageMarkerColor || markerColors[0] }" />
     </button>
-    <button type="button" title="处理历史" @click="toggleHistory">◷</button>
+    <button type="button" title="处理历史" aria-label="处理历史" @click="toggleHistory"><Clock class="toolbar-icon icon-only" /></button>
     <button
       type="button"
       :title="busyTitle('替换图片')"
+      aria-label="替换图片"
       :disabled="nodeBusy"
       @click="replaceInput?.click()"
     >
-      ▧
+      <Picture class="toolbar-icon icon-only" />
     </button>
-    <button type="button" title="下载图片" @click="downloadImage">⇩</button>
-    <button type="button" title="全屏预览" @click="requestFullscreen">⛶</button>
+    <button type="button" title="下载图片" aria-label="下载图片" @click="downloadImage"><Download class="toolbar-icon icon-only" /></button>
+    <button type="button" title="全屏预览" aria-label="全屏预览" @click="requestFullscreen"><FullScreen class="toolbar-icon icon-only" /></button>
     <input
       ref="replaceInput"
       class="replace-input"
@@ -147,7 +154,18 @@
         class="editor-preview"
         aria-label="图片效果预览"
       >
-        <div class="preview-badge">实时预览</div>
+        <div class="preview-badge">
+          <span>{{ previewOriginal ? '原图' : '实时预览' }}</span>
+          <button
+            v-if="['adjust', 'lut'].includes(editorOperation)"
+            type="button"
+            @pointerdown="previewOriginal = true"
+            @pointerup="previewOriginal = false"
+            @pointerleave="previewOriginal = false"
+          >
+            按住看原图
+          </button>
+        </div>
         <div class="preview-canvas">
           <img
             :src="data.url"
@@ -157,10 +175,20 @@
           />
           <div
             v-if="editorOperation === 'grid_crop'"
-            class="grid-preview"
+            class="grid-preview grid-selection"
             :style="gridPreviewStyle"
-            aria-hidden="true"
-          />
+            aria-label="宫格选择"
+          >
+            <button
+              v-for="cell in gridCells"
+              :key="cell.key"
+              type="button"
+              :class="{ selected: gridSelectedCells.includes(cell.key) }"
+              :aria-label="`第 ${cell.row + 1} 行第 ${cell.column + 1} 列`"
+              :aria-pressed="gridSelectedCells.includes(cell.key)"
+              @click="toggleGridCell(cell.key)"
+            />
+          </div>
         </div>
         <div class="preview-caption">
           <strong>{{ operationLabel(editorOperation) }}</strong>
@@ -172,7 +200,68 @@
         <p v-if="editorOperation === 'selection_cutout'" class="crop-hint">
           框选需要保留的主体区域；本地抠图模型只处理该区域并生成透明 PNG。
         </p>
-        <img ref="cropImage" :src="data.url" alt="框选预览" @load="initCropper" />
+        <div class="crop-stage-toolbar" aria-label="裁剪快捷控制">
+          <template v-if="editorOperation === 'selection_cutout'">
+            <button
+              type="button"
+              :class="{ active: selectionMode === 'rectangle' }"
+              @click="setSelectionMode('rectangle')"
+            >
+              矩形选区
+            </button>
+            <button
+              type="button"
+              :class="{ active: selectionMode === 'brush' }"
+              @click="setSelectionMode('brush')"
+            >
+              画笔选区
+            </button>
+            <label v-if="selectionMode === 'brush'" class="selection-brush-width">
+              笔宽
+              <input v-model.number="selectionBrushWidth" type="range" min="0.02" max="0.2" step="0.01" />
+            </label>
+          </template>
+          <template v-if="editorOperation === 'crop'">
+            <button
+              v-for="preset in cropAspectPresets"
+              :key="preset.label"
+              type="button"
+              :class="{ active: sameAspectRatio(cropAspectRatio, preset.value) }"
+              @click="setCropAspectRatio(preset.value)"
+            >
+              {{ preset.label }}
+            </button>
+          </template>
+          <button type="button" @click="resetCropSelection">重置选区</button>
+        </div>
+        <div
+          v-if="editorOperation === 'selection_cutout' && selectionMode === 'brush'"
+          class="selection-brush-canvas"
+        >
+          <img :src="data.url" alt="画笔选区预览" draggable="false" />
+          <svg
+            ref="selectionBrushSurface"
+            viewBox="0 0 1000 1000"
+            preserveAspectRatio="none"
+            aria-label="画笔选区画布"
+            @pointerdown="beginSelectionBrush"
+            @pointermove="extendSelectionBrush"
+            @pointerup="finishSelectionBrush"
+            @pointercancel="finishSelectionBrush"
+          >
+            <polyline
+              v-for="(stroke, index) in selectionBrushStrokes"
+              :key="index"
+              :points="markupPolylinePoints(stroke)"
+              :stroke-width="stroke.width * 1000"
+              fill="none"
+              stroke="#60a5fa"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+        <img v-else ref="cropImage" :src="data.url" alt="框选预览" @load="initCropper" />
       </div>
 
       <div v-else-if="editorOperation === 'markup_retouch'" class="markup-editor">
@@ -191,20 +280,42 @@
               @pointerup="finishMarkupStroke"
               @pointercancel="finishMarkupStroke"
             >
-              <polyline
-                v-for="(stroke, index) in markupStrokes"
-                :key="index"
-                :points="markupPolylinePoints(stroke)"
-                :stroke="stroke.color"
-                :stroke-width="stroke.width * 1000"
-                fill="none"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
+              <template v-for="(stroke, index) in markupStrokes" :key="index">
+                <text
+                  v-if="stroke.visible !== false && ['number', 'text'].includes(stroke.kind)"
+                  :x="stroke.points[0].x * 1000"
+                  :y="stroke.points[0].y * 1000"
+                  :fill="stroke.color"
+                  :font-size="Math.max(24, stroke.width * 4000)"
+                  font-family="sans-serif"
+                  font-weight="700"
+                >{{ stroke.label }}</text>
+                <polyline
+                  v-else-if="stroke.visible !== false"
+                  :points="markupPolylinePoints(stroke)"
+                  :stroke="stroke.color"
+                  :stroke-width="stroke.width * 1000 * (stroke.kind === 'mosaic' ? 3 : 1)"
+                  :stroke-opacity="stroke.kind === 'mosaic' ? 0.65 : 1"
+                  fill="none"
+                  :stroke-linecap="stroke.kind === 'mosaic' ? 'square' : 'round'"
+                  stroke-linejoin="round"
+                />
+              </template>
             </svg>
           </div>
         </div>
         <div class="markup-controls">
+          <div class="markup-tools" aria-label="标记工具">
+            <button
+              v-for="tool in markupTools"
+              :key="tool.value"
+              type="button"
+              :class="{ active: markupTool === tool.value }"
+              @click="markupTool = tool.value"
+            >
+              {{ tool.label }}
+            </button>
+          </div>
           <span>标记颜色</span>
           <button
             v-for="color in MARKUP_COLORS"
@@ -216,13 +327,38 @@
             :aria-label="`选择标记颜色 ${color}`"
             @click="markupColor = color"
           />
+          <label class="markup-width">
+            粗细
+            <input v-model.number="markupWidth" type="range" min="0.005" max="0.08" step="0.005" />
+          </label>
+          <label v-if="markupTool === 'text'" class="markup-text">
+            文字
+            <input v-model.trim="markupText" maxlength="32" placeholder="输入文字后点击图片放置" />
+          </label>
           <el-button size="small" :disabled="!markupStrokes.length" @click="undoMarkupStroke">
-            撤销一笔
+            撤销
+          </el-button>
+          <el-button size="small" :disabled="!markupRedoStrokes.length" @click="redoMarkupStroke">
+            重做
           </el-button>
           <el-button size="small" :disabled="!markupStrokes.length" @click="clearMarkupStrokes">
             清空
           </el-button>
         </div>
+        <div class="markup-layers" aria-label="标记图层">
+          <strong>图层（{{ markupStrokes.length }}）</strong>
+          <div v-for="(stroke, index) in [...markupStrokes].reverse()" :key="markupStrokes.length - index - 1">
+            <button type="button" @click="toggleMarkupLayer(markupStrokes.length - index - 1)">
+              {{ stroke.visible === false ? '显示' : '隐藏' }}
+            </button>
+            <span>{{ markupToolLabel(stroke.kind) }} {{ stroke.label || `#${markupStrokes.length - index}` }}</span>
+            <button type="button" @click="removeMarkupLayer(markupStrokes.length - index - 1)">删除</button>
+          </div>
+        </div>
+        <details class="markup-tutorial">
+          <summary>标记工具教程</summary>
+          <p>选择工具后在图片上拖动；文字和数字工具点击图片即可放置。隐藏的图层不会提交。</p>
+        </details>
         <el-form label-position="top">
           <el-form-item label="修图要求">
             <el-input
@@ -284,6 +420,21 @@
               <el-option label="向四周扩展" value="all" />
             </el-select>
           </el-form-item>
+          <div class="outpaint-sides" aria-label="扩边范围">
+            <el-form-item :label="`上方 ${outpaintForm.top}%`">
+              <el-slider v-model="outpaintForm.top" :min="0" :max="100" :step="5" />
+            </el-form-item>
+            <el-form-item :label="`下方 ${outpaintForm.bottom}%`">
+              <el-slider v-model="outpaintForm.bottom" :min="0" :max="100" :step="5" />
+            </el-form-item>
+            <el-form-item :label="`左侧 ${outpaintForm.left}%`">
+              <el-slider v-model="outpaintForm.left" :min="0" :max="100" :step="5" />
+            </el-form-item>
+            <el-form-item :label="`右侧 ${outpaintForm.right}%`">
+              <el-slider v-model="outpaintForm.right" :min="0" :max="100" :step="5" />
+            </el-form-item>
+          </div>
+          <el-button class="adjust-reset" @click="resetOutpaintSides">重置扩边</el-button>
           <el-form-item label="补充描述（可选）">
             <el-input
               v-model="outpaintForm.prompt"
@@ -316,6 +467,21 @@
         </template>
 
         <template v-else-if="REFERENCE_VARIATION_OPERATIONS.includes(editorOperation)">
+          <div
+            v-if="referenceVariationTags.length"
+            class="variation-tags"
+            :aria-label="`${operationLabel(editorOperation)}灵感标签`"
+          >
+            <button
+              v-for="tag in referenceVariationTags"
+              :key="tag"
+              type="button"
+              :class="{ active: referenceVariationDescription.includes(tag) }"
+              @click="toggleVariationTag(tag)"
+            >
+              {{ tag }}
+            </button>
+          </div>
           <el-form-item label="补充要求（可选）">
             <el-input
               v-model="referenceVariationDescription"
@@ -390,43 +556,137 @@
 
         <template v-else-if="editorOperation === 'grid_crop'">
           <el-form-item label="行数">
-            <el-input-number v-model="gridForm.rows" :min="1" :max="5" />
+            <el-input-number v-model="gridForm.rows" :min="1" :max="5" @change="resetGridSelection" />
           </el-form-item>
           <el-form-item label="列数">
-            <el-input-number v-model="gridForm.columns" :min="1" :max="5" />
+            <el-input-number v-model="gridForm.columns" :min="1" :max="5" @change="resetGridSelection" />
           </el-form-item>
+          <div class="grid-selection-actions">
+            <el-button size="small" @click="selectAllGridCells">全选</el-button>
+            <el-button size="small" @click="gridSelectedCells = []">取消全选</el-button>
+            <span>已选择 {{ gridSelectedCells.length }} / {{ gridCells.length }} 格</span>
+          </div>
+          <p class="crop-hint">点击左侧宫格选择需要分别导出的区域，每个选中区域会生成一份新素材。</p>
         </template>
 
         <template v-else-if="editorOperation === 'adjust'">
-          <el-form-item :label="`亮度 ${adjustForm.brightness.toFixed(1)}`">
-            <el-slider v-model="adjustForm.brightness" :min="0.1" :max="3" :step="0.1" />
-          </el-form-item>
-          <el-form-item :label="`饱和度 ${adjustForm.saturation.toFixed(1)}`">
-            <el-slider v-model="adjustForm.saturation" :min="0" :max="3" :step="0.1" />
-          </el-form-item>
-          <el-form-item :label="`对比度 ${adjustForm.contrast.toFixed(1)}`">
-            <el-slider v-model="adjustForm.contrast" :min="0.1" :max="3" :step="0.1" />
-          </el-form-item>
-          <el-form-item :label="`色温 ${Math.round(adjustForm.temperature * 100)}`">
-            <el-slider v-model="adjustForm.temperature" :min="-1" :max="1" :step="0.1" />
-          </el-form-item>
+          <div class="adjust-tabs" role="tablist" aria-label="图片调整分类">
+            <button
+              v-for="section in adjustSections"
+              :key="section.key"
+              type="button"
+              role="tab"
+              :aria-selected="adjustSection === section.key"
+              :class="{ active: adjustSection === section.key }"
+              @click="adjustSection = section.key"
+            >
+              {{ section.label }}
+            </button>
+          </div>
+          <div class="adjust-presets" aria-label="图片调整预设">
+            <button v-for="preset in adjustPresets" :key="preset.name" type="button" @click="applyAdjustPreset(preset)">
+              {{ preset.name }}
+            </button>
+          </div>
+          <template v-if="adjustSection === 'light'">
+            <el-form-item :label="`曝光 ${formatSigned(adjustForm.exposure)}`">
+              <el-slider v-model="adjustForm.exposure" :min="-2" :max="2" :step="0.1" />
+            </el-form-item>
+            <el-form-item :label="`亮度 ${Math.round(adjustForm.brightness * 100)}`">
+              <el-slider v-model="adjustForm.brightness" :min="0.1" :max="2" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`对比度 ${Math.round(adjustForm.contrast * 100)}`">
+              <el-slider v-model="adjustForm.contrast" :min="0.1" :max="2" :step="0.05" />
+            </el-form-item>
+          </template>
+          <template v-else-if="adjustSection === 'color'">
+            <el-form-item :label="`自然饱和度 ${Math.round(adjustForm.vibrance * 100)}`">
+              <el-slider v-model="adjustForm.vibrance" :min="0" :max="2" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`饱和度 ${Math.round(adjustForm.saturation * 100)}`">
+              <el-slider v-model="adjustForm.saturation" :min="0" :max="2" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`色温 ${Math.round(adjustForm.temperature * 100)}`">
+              <el-slider v-model="adjustForm.temperature" :min="-1" :max="1" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`色调 ${Math.round(adjustForm.tint * 100)}`">
+              <el-slider v-model="adjustForm.tint" :min="-1" :max="1" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`色相 ${Math.round(adjustForm.hue)}°`">
+              <el-slider v-model="adjustForm.hue" :min="-180" :max="180" :step="1" />
+            </el-form-item>
+          </template>
+          <template v-else-if="adjustSection === 'detail'">
+            <el-form-item :label="`锐化 ${Math.round(adjustForm.sharpness * 100)}`">
+              <el-slider v-model="adjustForm.sharpness" :min="0" :max="1" :step="0.05" />
+            </el-form-item>
+            <el-form-item :label="`清晰度 ${Math.round(adjustForm.clarity * 100)}`">
+              <el-slider v-model="adjustForm.clarity" :min="0" :max="1" :step="0.05" />
+            </el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item :label="`柔光 ${Math.round(adjustForm.blur * 10)}`">
+              <el-slider v-model="adjustForm.blur" :min="0" :max="2" :step="0.1" />
+            </el-form-item>
+          </template>
+          <el-button class="adjust-reset" @click="resetAdjustForm">全部重置</el-button>
         </template>
 
-        <el-form-item v-else-if="editorOperation === 'lut'" label="内置调色预设">
-          <el-select v-model="lutPreset">
-            <el-option label="电影感" value="cinematic" />
-            <el-option label="暖色" value="warm" />
-            <el-option label="冷色" value="cool" />
-            <el-option label="黑白" value="mono" />
-          </el-select>
-        </el-form-item>
+        <template v-else-if="editorOperation === 'lut'">
+          <div class="adjust-tabs" role="tablist" aria-label="LUT 分类">
+            <button type="button" class="active">推荐</button>
+            <button type="button" :disabled="!recentLutPresets.length">最近使用</button>
+            <button type="button">电影</button>
+            <button type="button">风格化</button>
+          </div>
+          <div class="lut-presets" aria-label="LUT 调色预设">
+            <button
+              v-for="preset in lutPresets"
+              :key="preset.value"
+              type="button"
+              :class="{ active: lutPreset === preset.value }"
+              @click="lutPreset = preset.value"
+            >
+              <span :class="`lut-swatch lut-${preset.value}`" />
+              {{ preset.label }}
+            </button>
+          </div>
+          <el-form-item :label="`LUT 强度 ${Math.round(lutIntensity * 100)}%`">
+            <el-slider v-model="lutIntensity" :min="0" :max="1" :step="0.05" />
+          </el-form-item>
+          <div class="lut-upload">
+            <el-button @click="lutFileInput?.click()">上传 3D LUT</el-button>
+            <span v-if="customLut">{{ customLut.name }}（{{ customLut.size }}³）</span>
+            <input
+              ref="lutFileInput"
+              type="file"
+              accept=".cube,text/plain"
+              @change="loadCubeLut"
+            />
+          </div>
+          <el-button class="adjust-reset" @click="resetLutForm">重置调色</el-button>
+        </template>
       </el-form>
       </div>
 
       <template #footer>
         <el-button @click="editorVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="nodeBusy" @click="submitOperation">
-          {{ submitting ? '处理中…' : '应用并生成新素材' }}
+        <el-button
+          v-if="editorOperation === 'markup_retouch'"
+          :loading="submitting"
+          :disabled="nodeBusy"
+          @click="submitOperation('markup_only')"
+        >
+          仅确认标记
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="submitting"
+          :disabled="nodeBusy || (editorOperation === 'markup_retouch' && !markupRetouchProviderAvailable)"
+          :title="editorOperation === 'markup_retouch' && !markupRetouchProviderAvailable ? markupRetouchProviderReason : ''"
+          @click="submitOperation('retouch')"
+        >
+          {{ submitting ? '处理中…' : editorOperation === 'markup_retouch' ? '标记并修改' : '应用并生成新素材' }}
         </el-button>
       </template>
     </el-dialog>
@@ -436,6 +696,27 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import {
+  Aim,
+  ArrowDown,
+  Brush,
+  Clock,
+  Crop,
+  Download,
+  FullScreen,
+  Grid,
+  MagicStick,
+  Operation,
+  Picture,
+  PictureRounded,
+  Rank,
+  Refresh,
+  Setting,
+  Sunny,
+  User,
+  View,
+  ZoomIn,
+} from '@element-plus/icons-vue'
 import { imageToolsAPI } from '@/api/imageTools'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 
@@ -447,10 +728,25 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const toolbarRef = ref(null)
 const replaceInput = ref(null)
+const lutFileInput = ref(null)
 const cropImage = ref(null)
+const selectionBrushSurface = ref(null)
+const selectionMode = ref('rectangle')
+const selectionBrushStrokes = ref([])
+const selectionBrushWidth = ref(0.08)
+const cropAspectRatio = ref(Number.NaN)
+const cropAspectPresets = Object.freeze([
+  { label: '自由', value: Number.NaN },
+  { label: '1:1', value: 1 },
+  { label: '4:3', value: 4 / 3 },
+  { label: '3:4', value: 3 / 4 },
+  { label: '16:9', value: 16 / 9 },
+  { label: '9:16', value: 9 / 16 },
+])
 const capabilities = ref({})
 const openMenu = ref('')
 const editorVisible = ref(false)
+const previewOriginal = ref(false)
 const editorOperation = ref('crop')
 const submitting = ref(false)
 const historyVisible = ref(false)
@@ -460,13 +756,56 @@ const compressForm = ref({ format: 'webp', quality: 80 })
 const mirrorDirection = ref('horizontal')
 const rotateAngle = ref(90)
 const gridForm = ref({ rows: 3, columns: 3 })
-const adjustForm = ref({ brightness: 1, saturation: 1, contrast: 1, temperature: 0 })
+const gridSelectedCells = ref([])
+const DEFAULT_ADJUST_FORM = Object.freeze({
+  exposure: 0,
+  brightness: 1,
+  contrast: 1,
+  vibrance: 1,
+  saturation: 1,
+  temperature: 0,
+  tint: 0,
+  hue: 0,
+  sharpness: 0,
+  clarity: 0,
+  blur: 0,
+})
+const adjustForm = ref({ ...DEFAULT_ADJUST_FORM })
+const adjustSection = ref('light')
+const adjustSections = Object.freeze([
+  { key: 'light', label: '光线' },
+  { key: 'color', label: '颜色' },
+  { key: 'detail', label: '细节' },
+  { key: 'effect', label: '效果' },
+])
+const adjustPresets = Object.freeze([
+  { name: '原图', values: {} },
+  { name: '鲜艳', values: { vibrance: 1.25, saturation: 1.15, contrast: 1.08 } },
+  { name: '柔和', values: { brightness: 1.05, contrast: 0.9, saturation: 0.9, blur: 0.3 } },
+  { name: '暖色', values: { temperature: 0.35, vibrance: 1.08 } },
+  { name: '冷色', values: { temperature: -0.35, contrast: 1.05 } },
+  { name: '电影', values: { exposure: -0.15, contrast: 1.18, saturation: 0.88, clarity: 0.35 } },
+  { name: '复古', values: { temperature: 0.25, saturation: 0.78, contrast: 0.92, blur: 0.15 } },
+])
 const lutPreset = ref('cinematic')
+const lutIntensity = ref(1)
+const customLut = ref(null)
+const recentLutPresets = ref([])
+const lutPresets = Object.freeze([
+  { label: '电影感', value: 'cinematic' },
+  { label: '暖色', value: 'warm' },
+  { label: '冷色', value: 'cool' },
+  { label: '黑白', value: 'mono' },
+])
 const upscaleScale = ref(2)
 const detailEnhancePreset = ref('balanced')
 const outpaintForm = ref({
   aspectRatio: '16:9',
   direction: 'auto',
+  top: 25,
+  bottom: 25,
+  left: 25,
+  right: 25,
   prompt: '',
 })
 const panoramaDescription = ref('')
@@ -479,6 +818,10 @@ const REFERENCE_VARIATION_OPERATIONS = Object.freeze([
   'frame_backward',
 ])
 const referenceVariationDescription = ref('')
+const referenceVariationTagMap = Object.freeze({
+  image_ideation: ['雨后黄昏', '电影叙事', '梦境氛围', '季节变化', '未来都市', '古典绘画'],
+  angle_ideation: ['低机位仰拍', '高机位俯拍', '侧面跟拍', '过肩视角', '广角全景', '特写镜头'],
+})
 const relightForm = ref({
   preset: 'cinematic',
   intensity: 3,
@@ -489,18 +832,37 @@ const MARKUP_MAX_POINTS = 128
 const MARKUP_COLORS = ['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']
 const markupSurface = ref(null)
 const markupStrokes = ref([])
+const markupRedoStrokes = ref([])
 const markupInstruction = ref('')
 const markupColor = ref(MARKUP_COLORS[0])
+const markupWidth = ref(0.02)
+const markupTool = ref('brush')
+const markupText = ref('')
+let markupNumber = 1
+const markupTools = Object.freeze([
+  { label: '选择/移动', value: 'select' },
+  { label: '画笔', value: 'brush' },
+  { label: '直线', value: 'line' },
+  { label: '箭头', value: 'arrow' },
+  { label: '矩形', value: 'rectangle' },
+  { label: '圆形', value: 'ellipse' },
+  { label: '马赛克', value: 'mosaic' },
+  { label: '数字标记', value: 'number' },
+  { label: '文本', value: 'text' },
+])
 let cropper = null
 let CropperClass = null
 let activeMarkupStroke = null
+let activeMarkupStart = null
+let activeSelectionBrushStroke = null
+let menuCloseTimer = null
 
 const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage', 'lighting', 'angle', 'pose'])
 
 const quickActions = [
-  { label: '720全景', operation: 'panorama' },
-  { label: '灯光', operation: 'lighting' },
-  { label: '高清', operation: 'upscale' },
+  { label: '720全景', operation: 'panorama', icon: PictureRounded },
+  { label: '灯光', operation: 'lighting', icon: Sunny },
+  { label: '高清', operation: 'upscale', icon: ZoomIn },
 ]
 
 const primaryEditorOperations = [
@@ -511,30 +873,30 @@ const primaryEditorOperations = [
 ]
 
 const toolActions = [
-  { label: '裁剪/压缩/镜像', operation: 'crop' },
-  { label: '标记修图', operation: 'markup_retouch' },
-  { label: '宫格裁剪', operation: 'grid_crop' },
-  { label: '智能抠图', operation: 'smart_cutout' },
-  { label: '框选抠图', operation: 'selection_cutout' },
-  { label: '图片调整', operation: 'adjust' },
-  { label: 'LUT 调色', operation: 'lut' },
-  { label: '生成导演台', operation: 'director_stage' },
-  { label: '姿势', operation: 'pose' },
-  { label: '角度', operation: 'angle' },
-  { label: '扩图', operation: 'outpaint' },
-  { label: '画面联想', operation: 'image_ideation' },
-  { label: '角度联想', operation: 'angle_ideation' },
+  { label: '裁剪/压缩/镜像', operation: 'crop', icon: Crop },
+  { label: '标记修图', operation: 'markup_retouch', icon: Brush },
+  { label: '宫格裁剪', operation: 'grid_crop', icon: Grid },
+  { label: '智能抠图', operation: 'smart_cutout', icon: MagicStick },
+  { label: '框选抠图', operation: 'selection_cutout', icon: Aim },
+  { label: '图片调整', operation: 'adjust', icon: Operation },
+  { label: 'LUT 调色', operation: 'lut', icon: PictureRounded },
+  { label: '生成导演台', operation: 'director_stage', icon: Rank },
+  { label: '姿势', operation: 'pose', icon: User },
+  { label: '角度', operation: 'angle', icon: Refresh },
+  { label: '扩图', operation: 'outpaint', icon: FullScreen },
+  { label: '画面联想', operation: 'image_ideation', icon: View },
+  { label: '角度联想', operation: 'angle_ideation', icon: Grid },
 ]
 
 const settingActions = [
-  { label: '生成全景场景', operation: 'panorama_scene' },
-  { label: '角色三视图', operation: 'character_views' },
-  { label: '多机位叙事九宫格', operation: 'narrative_grid' },
-  { label: '画面推演-3秒后', operation: 'frame_forward' },
-  { label: '画面推演-5秒前', operation: 'frame_backward' },
-  { label: '720全景', operation: 'panorama' },
-  { label: '电影级光影校正', operation: 'cinematic_relight' },
-  { label: '细节纹理增强', operation: 'detail_enhance' },
+  { label: '生成全景场景', operation: 'panorama_scene', icon: PictureRounded },
+  { label: '角色三视图', operation: 'character_views', icon: User },
+  { label: '多机位叙事九宫格', operation: 'narrative_grid', icon: Grid },
+  { label: '画面推演-3秒后', operation: 'frame_forward', icon: Refresh },
+  { label: '画面推演-5秒前', operation: 'frame_backward', icon: Refresh },
+  { label: '720全景', operation: 'panorama', icon: PictureRounded },
+  { label: '电影级光影校正', operation: 'cinematic_relight', icon: Sunny },
+  { label: '细节纹理增强', operation: 'detail_enhance', icon: MagicStick },
 ]
 
 const history = computed(() => Array.isArray(props.data.imageToolHistory)
@@ -544,24 +906,50 @@ const busyReason = '图片节点正在生成或处理，请稍后'
 const nodeBusy = computed(() => submitting.value
   || props.data.status === 'running'
   || props.data.imageToolStatus === 'running')
+const markupRetouchProviderAvailable = computed(
+  () => capabilities.value?.markup_retouch?.providerAvailable !== false,
+)
+const markupRetouchProviderReason = computed(
+  () => capabilities.value?.markup_retouch?.providerReason || '未配置可用的标记修图模型',
+)
 
 const editorPreviewStyle = computed(() => {
   const style = {
     filter: 'none',
     transform: 'none',
   }
+  if (previewOriginal.value) return style
   if (editorOperation.value === 'adjust') {
-    const { brightness, saturation, contrast, temperature } = adjustForm.value
+    const {
+      exposure,
+      brightness,
+      saturation,
+      vibrance,
+      contrast,
+      temperature,
+      tint,
+      hue,
+      blur,
+    } = adjustForm.value
     const warmth = temperature >= 0
       ? `sepia(${Math.abs(temperature) * 0.28}) saturate(${1 + temperature * 0.18})`
       : `hue-rotate(${temperature * 18}deg)`
-    style.filter = `brightness(${brightness}) saturate(${saturation}) contrast(${contrast}) ${warmth}`
+    const tintRotation = tint * -12
+    style.filter = [
+      `brightness(${brightness * (2 ** exposure)})`,
+      `saturate(${saturation * vibrance})`,
+      `contrast(${contrast})`,
+      `hue-rotate(${hue + tintRotation}deg)`,
+      warmth,
+      blur > 0 ? `blur(${blur}px)` : '',
+    ].filter(Boolean).join(' ')
   } else if (editorOperation.value === 'lut') {
+    const strength = lutIntensity.value
     const filters = {
-      cinematic: 'contrast(1.12) saturate(0.9) sepia(0.08)',
-      warm: 'sepia(0.22) saturate(1.14)',
-      cool: 'hue-rotate(178deg) saturate(0.82) hue-rotate(-164deg)',
-      mono: 'grayscale(1) contrast(1.08)',
+      cinematic: `contrast(${1 + (0.12 * strength)}) saturate(${1 - (0.1 * strength)}) sepia(${0.08 * strength})`,
+      warm: `sepia(${0.22 * strength}) saturate(${1 + (0.14 * strength)})`,
+      cool: `hue-rotate(${14 * strength}deg) saturate(${1 - (0.18 * strength)})`,
+      mono: `grayscale(${strength}) contrast(${1 + (0.08 * strength)})`,
     }
     style.filter = filters[lutPreset.value] || 'none'
   } else if (editorOperation.value === 'mirror') {
@@ -576,6 +964,14 @@ const gridPreviewStyle = computed(() => ({
   '--grid-rows': gridForm.value.rows,
   '--grid-columns': gridForm.value.columns,
 }))
+const gridCells = computed(() => Array.from(
+  { length: gridForm.value.rows * gridForm.value.columns },
+  (_, index) => {
+    const row = Math.floor(index / gridForm.value.columns)
+    const column = index % gridForm.value.columns
+    return { row, column, key: `${row}:${column}` }
+  },
+))
 
 const editorPreviewHint = computed(() => {
   if (['adjust', 'lut', 'mirror', 'rotate', 'grid_crop'].includes(editorOperation.value)) {
@@ -583,6 +979,9 @@ const editorPreviewHint = computed(() => {
   }
   return '左侧保留原图作为生成参考；右侧设置参数后再提交处理'
 })
+const referenceVariationTags = computed(() => (
+  referenceVariationTagMap[editorOperation.value] || []
+))
 
 onMounted(async () => {
   try {
@@ -622,8 +1021,23 @@ function busyTitle(label) {
 
 function toggleMenu(menu) {
   if (nodeBusy.value) return
-  openMenu.value = openMenu.value === menu ? '' : menu
+  clearTimeout(menuCloseTimer)
+  openMenu.value = menu
   historyVisible.value = false
+}
+
+function openToolbarMenu(menu) {
+  if (nodeBusy.value) return
+  clearTimeout(menuCloseTimer)
+  openMenu.value = menu
+  historyVisible.value = false
+}
+
+function scheduleMenuClose() {
+  clearTimeout(menuCloseTimer)
+  menuCloseTimer = setTimeout(() => {
+    openMenu.value = ''
+  }, 140)
 }
 
 function selectOperation(item) {
@@ -644,6 +1058,8 @@ function selectOperation(item) {
     return
   }
   editorOperation.value = item.operation
+  if (item.operation === 'grid_crop') resetGridSelection()
+  if (item.operation === 'selection_cutout') resetSelectionEditor()
   if (item.operation === 'markup_retouch') resetMarkupEditor()
   editorVisible.value = true
   if (['crop', 'selection_cutout'].includes(item.operation)) nextTick(initCropper)
@@ -658,6 +1074,8 @@ function switchEditorOperation(operation) {
   }
   destroyCropper()
   editorOperation.value = operation
+  if (operation === 'grid_crop') resetGridSelection()
+  if (operation === 'selection_cutout') resetSelectionEditor()
   if (['crop', 'selection_cutout'].includes(operation)) nextTick(initCropper)
 }
 
@@ -665,6 +1083,7 @@ async function initCropper() {
   if (
     !editorVisible.value
     || !['crop', 'selection_cutout'].includes(editorOperation.value)
+    || (editorOperation.value === 'selection_cutout' && selectionMode.value === 'brush')
     || !cropImage.value
   ) return
   if (!CropperClass) {
@@ -677,6 +1096,7 @@ async function initCropper() {
   if (
     !editorVisible.value
     || !['crop', 'selection_cutout'].includes(editorOperation.value)
+    || (editorOperation.value === 'selection_cutout' && selectionMode.value === 'brush')
     || !cropImage.value
   ) return
   destroyCropper()
@@ -685,6 +1105,7 @@ async function initCropper() {
     autoCropArea: 0.85,
     background: false,
     responsive: true,
+    aspectRatio: editorOperation.value === 'crop' ? cropAspectRatio.value : Number.NaN,
   })
 }
 
@@ -693,16 +1114,101 @@ function destroyCropper() {
   cropper = null
 }
 
+function setCropAspectRatio(value) {
+  cropAspectRatio.value = value
+  cropper?.setAspectRatio(value)
+}
+
+function sameAspectRatio(left, right) {
+  return (Number.isNaN(left) && Number.isNaN(right)) || left === right
+}
+
+function resetCropSelection() {
+  if (editorOperation.value === 'selection_cutout' && selectionMode.value === 'brush') {
+    selectionBrushStrokes.value = []
+    activeSelectionBrushStroke = null
+    return
+  }
+  cropper?.reset()
+  if (editorOperation.value === 'crop') cropper?.setAspectRatio(cropAspectRatio.value)
+}
+
+function resetSelectionEditor() {
+  selectionMode.value = 'rectangle'
+  selectionBrushStrokes.value = []
+  activeSelectionBrushStroke = null
+}
+
+function setSelectionMode(mode) {
+  if (!['rectangle', 'brush'].includes(mode) || selectionMode.value === mode) return
+  destroyCropper()
+  selectionMode.value = mode
+  activeSelectionBrushStroke = null
+  if (mode === 'rectangle') nextTick(initCropper)
+}
+
+function selectionBrushPoint(event) {
+  const bounds = selectionBrushSurface.value?.getBoundingClientRect()
+  if (!bounds?.width || !bounds?.height) return null
+  return {
+    x: Number(Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)).toFixed(5)),
+    y: Number(Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height)).toFixed(5)),
+  }
+}
+
+function beginSelectionBrush(event) {
+  if (nodeBusy.value || event.button !== 0 || selectionBrushStrokes.value.length >= MARKUP_MAX_STROKES) return
+  const point = selectionBrushPoint(event)
+  if (!point) return
+  const stroke = { width: selectionBrushWidth.value, points: [point] }
+  selectionBrushStrokes.value.push(stroke)
+  activeSelectionBrushStroke = stroke
+  selectionBrushSurface.value?.setPointerCapture?.(event.pointerId)
+  event.preventDefault()
+}
+
+function extendSelectionBrush(event) {
+  if (!activeSelectionBrushStroke || activeSelectionBrushStroke.points.length >= MARKUP_MAX_POINTS) return
+  const point = selectionBrushPoint(event)
+  if (!point) return
+  const previous = activeSelectionBrushStroke.points[activeSelectionBrushStroke.points.length - 1]
+  if (Math.hypot(point.x - previous.x, point.y - previous.y) < 0.004) return
+  activeSelectionBrushStroke.points.push(point)
+  event.preventDefault()
+}
+
+function finishSelectionBrush(event) {
+  if (!activeSelectionBrushStroke) return
+  if (activeSelectionBrushStroke.points.length === 1) {
+    activeSelectionBrushStroke.points.push({ ...activeSelectionBrushStroke.points[0] })
+  }
+  activeSelectionBrushStroke = null
+  if (
+    event?.pointerId !== undefined
+    && selectionBrushSurface.value?.hasPointerCapture?.(event.pointerId)
+  ) {
+    selectionBrushSurface.value.releasePointerCapture(event.pointerId)
+  }
+}
+
 function destroyEditor() {
+  clearTimeout(menuCloseTimer)
   destroyCropper()
   activeMarkupStroke = null
+  activeSelectionBrushStroke = null
 }
 
 function resetMarkupEditor() {
   markupStrokes.value = []
+  markupRedoStrokes.value = []
   markupInstruction.value = ''
   markupColor.value = MARKUP_COLORS[0]
+  markupWidth.value = 0.02
+  markupTool.value = 'brush'
+  markupText.value = ''
+  markupNumber = 1
   activeMarkupStroke = null
+  activeMarkupStart = null
 }
 
 function markupPoint(event) {
@@ -719,18 +1225,37 @@ function markupPoint(event) {
 function beginMarkupStroke(event) {
   if (
     nodeBusy.value
+    || markupTool.value === 'select'
     || markupStrokes.value.length >= MARKUP_MAX_STROKES
     || event.button !== 0
   ) return
   const point = markupPoint(event)
   if (!point) return
   const stroke = {
+    kind: markupTool.value,
     color: markupColor.value,
-    width: 0.02,
+    width: markupWidth.value,
     points: [point],
+    visible: true,
+  }
+  if (markupTool.value === 'text') {
+    if (!markupText.value) {
+      ElMessage.warning('请先输入要放置的文字')
+      return
+    }
+    stroke.label = markupText.value.slice(0, 32)
+  }
+  if (markupTool.value === 'number') {
+    stroke.label = String(markupNumber)
+    markupNumber += 1
+  }
+  if (['text', 'number'].includes(markupTool.value)) {
+    stroke.points.push({ ...point })
   }
   markupStrokes.value.push(stroke)
+  markupRedoStrokes.value = []
   activeMarkupStroke = markupStrokes.value[markupStrokes.value.length - 1]
+  activeMarkupStart = point
   markupSurface.value?.setPointerCapture?.(event.pointerId)
   event.preventDefault()
 }
@@ -739,6 +1264,11 @@ function extendMarkupStroke(event) {
   if (!activeMarkupStroke || activeMarkupStroke.points.length >= MARKUP_MAX_POINTS) return
   const point = markupPoint(event)
   if (!point) return
+  if (markupTool.value !== 'brush') {
+    activeMarkupStroke.points = markupShapePoints(markupTool.value, activeMarkupStart, point)
+    event.preventDefault()
+    return
+  }
   const previous = activeMarkupStroke.points[activeMarkupStroke.points.length - 1]
   const distance = Math.hypot(point.x - previous.x, point.y - previous.y)
   if (distance < 0.004) return
@@ -752,9 +1282,47 @@ function finishMarkupStroke(event) {
     activeMarkupStroke.points.push({ ...activeMarkupStroke.points[0] })
   }
   activeMarkupStroke = null
+  activeMarkupStart = null
   if (event?.pointerId !== undefined && markupSurface.value?.hasPointerCapture?.(event.pointerId)) {
     markupSurface.value.releasePointerCapture(event.pointerId)
   }
+}
+
+function markupShapePoints(tool, start, end) {
+  if (!start || !end) return []
+  if (tool === 'line') return [start, end]
+  if (tool === 'arrow') {
+    const angle = Math.atan2(end.y - start.y, end.x - start.x)
+    const size = 0.035
+    const wing = (offset) => ({
+      x: Math.min(1, Math.max(0, end.x - (Math.cos(angle + offset) * size))),
+      y: Math.min(1, Math.max(0, end.y - (Math.sin(angle + offset) * size))),
+    })
+    return [start, end, wing(Math.PI / 6), end, wing(-Math.PI / 6)]
+  }
+  if (tool === 'rectangle') {
+    return [
+      start,
+      { x: end.x, y: start.y },
+      end,
+      { x: start.x, y: end.y },
+      start,
+    ]
+  }
+  if (tool === 'ellipse') {
+    const centerX = (start.x + end.x) / 2
+    const centerY = (start.y + end.y) / 2
+    const radiusX = Math.abs(end.x - start.x) / 2
+    const radiusY = Math.abs(end.y - start.y) / 2
+    return Array.from({ length: 33 }, (_, index) => {
+      const angle = (index / 32) * Math.PI * 2
+      return {
+        x: centerX + (Math.cos(angle) * radiusX),
+        y: centerY + (Math.sin(angle) * radiusY),
+      }
+    })
+  }
+  return [start, end]
 }
 
 function markupPolylinePoints(stroke) {
@@ -763,15 +1331,74 @@ function markupPolylinePoints(stroke) {
 
 function undoMarkupStroke() {
   activeMarkupStroke = null
-  markupStrokes.value.pop()
+  activeMarkupStart = null
+  const stroke = markupStrokes.value.pop()
+  if (stroke) markupRedoStrokes.value.push(stroke)
+}
+
+function redoMarkupStroke() {
+  const stroke = markupRedoStrokes.value.pop()
+  if (stroke) markupStrokes.value.push(stroke)
 }
 
 function clearMarkupStrokes() {
   activeMarkupStroke = null
+  activeMarkupStart = null
   markupStrokes.value = []
+  markupRedoStrokes.value = []
+}
+
+function markupToolLabel(kind) {
+  return markupTools.find((tool) => tool.value === kind)?.label || '标记'
+}
+
+function toggleMarkupLayer(index) {
+  const stroke = markupStrokes.value[index]
+  if (stroke) stroke.visible = stroke.visible === false
+}
+
+function removeMarkupLayer(index) {
+  if (index < 0 || index >= markupStrokes.value.length) return
+  markupStrokes.value.splice(index, 1)
+  markupRedoStrokes.value = []
+}
+
+function selectAllGridCells() {
+  gridSelectedCells.value = gridCells.value.map((cell) => cell.key)
+}
+
+function resetGridSelection() {
+  nextTick(selectAllGridCells)
+}
+
+function toggleGridCell(key) {
+  gridSelectedCells.value = gridSelectedCells.value.includes(key)
+    ? gridSelectedCells.value.filter((value) => value !== key)
+    : [...gridSelectedCells.value, key]
+}
+
+function toggleVariationTag(tag) {
+  const tokens = referenceVariationDescription.value
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const next = tokens.includes(tag)
+    ? tokens.filter((item) => item !== tag)
+    : [...tokens, tag]
+  referenceVariationDescription.value = next.join('，')
 }
 
 function operationParameters() {
+  if (editorOperation.value === 'selection_cutout' && selectionMode.value === 'brush') {
+    if (!selectionBrushStrokes.value.length) throw new Error('请先用画笔涂选需要保留的主体')
+    return {
+      selectionMode: 'brush',
+      brushStrokes: selectionBrushStrokes.value.map((stroke) => ({
+        width: stroke.width,
+        points: stroke.points.map((point) => ({ ...point })),
+      })),
+    }
+  }
   if (['crop', 'selection_cutout'].includes(editorOperation.value)) {
     if (!cropper) throw new Error('裁剪器尚未就绪')
     const data = cropper.getData(true)
@@ -785,9 +1412,21 @@ function operationParameters() {
   if (editorOperation.value === 'compress') return { ...compressForm.value }
   if (editorOperation.value === 'mirror') return { direction: mirrorDirection.value }
   if (editorOperation.value === 'rotate') return { angle: rotateAngle.value }
-  if (editorOperation.value === 'grid_crop') return { ...gridForm.value }
+  if (editorOperation.value === 'grid_crop') {
+    if (!gridSelectedCells.value.length) throw new Error('请至少选择一个宫格区域')
+    return {
+      ...gridForm.value,
+      selectedCells: [...gridSelectedCells.value],
+    }
+  }
   if (editorOperation.value === 'adjust') return { ...adjustForm.value }
-  if (editorOperation.value === 'lut') return { preset: lutPreset.value }
+  if (editorOperation.value === 'lut') return {
+    preset: lutPreset.value,
+    intensity: lutIntensity.value,
+    ...(lutPreset.value === 'custom' && customLut.value
+      ? { customLut: customLut.value }
+      : {}),
+  }
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
   if (editorOperation.value === 'detail_enhance') return { preset: detailEnhancePreset.value }
   if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
@@ -804,11 +1443,13 @@ function operationParameters() {
   }
   if (editorOperation.value === 'markup_retouch') {
     const instruction = markupInstruction.value.trim()
-    if (!instruction) throw new Error('请填写修图要求')
-    if (!markupStrokes.value.length) throw new Error('请先在图片上标记需要修改的区域')
+    const visibleStrokes = markupStrokes.value.filter((stroke) => stroke.visible !== false)
+    if (!visibleStrokes.length) throw new Error('请先在图片上标记需要修改的区域')
     return {
-      instruction: markupInstruction.value.trim(),
-      strokes: markupStrokes.value.map((stroke) => ({
+      instruction,
+      strokes: visibleStrokes.map((stroke) => ({
+        kind: stroke.kind,
+        ...(stroke.label ? { label: stroke.label } : {}),
         color: stroke.color,
         width: stroke.width,
         points: stroke.points.map((point) => ({ ...point })),
@@ -818,14 +1459,87 @@ function operationParameters() {
   return {}
 }
 
-async function submitOperation() {
+function resetAdjustForm() {
+  adjustForm.value = { ...DEFAULT_ADJUST_FORM }
+}
+
+function resetLutForm() {
+  lutPreset.value = 'cinematic'
+  lutIntensity.value = 1
+  customLut.value = null
+  if (lutFileInput.value) lutFileInput.value.value = ''
+}
+
+async function loadCubeLut(event) {
+  const file = event.target?.files?.[0]
+  if (!file) return
+  try {
+    if (file.size > 512 * 1024) throw new Error('3D LUT 文件不能超过 512 KB')
+    const lines = (await file.text())
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+    const sizeLine = lines.find((line) => /^LUT_3D_SIZE\s+/i.test(line))
+    const size = Number(sizeLine?.split(/\s+/)[1])
+    if (!Number.isInteger(size) || size < 2 || size > 17) {
+      throw new Error('仅支持尺寸 2 到 17 的 .cube 3D LUT')
+    }
+    const values = lines
+      .filter((line) => /^[-+]?\d*\.?\d+(?:e[-+]?\d+)?\s+[-+]?\d*\.?\d+(?:e[-+]?\d+)?\s+[-+]?\d*\.?\d+(?:e[-+]?\d+)?$/i.test(line))
+      .map((line) => line.split(/\s+/).map(Number))
+    if (values.length !== size ** 3 || values.some((entry) => entry.some((value) => value < 0 || value > 1))) {
+      throw new Error(`3D LUT 应包含 ${size ** 3} 行 0–1 RGB 数据`)
+    }
+    customLut.value = { name: file.name.slice(0, 80), size, values }
+    lutPreset.value = 'custom'
+    recentLutPresets.value = [
+      file.name,
+      ...recentLutPresets.value.filter((name) => name !== file.name),
+    ].slice(0, 5)
+    ElMessage.success('3D LUT 已载入，可调整强度后应用')
+  } catch (error) {
+    customLut.value = null
+    lutPreset.value = 'cinematic'
+    if (event.target) event.target.value = ''
+    ElMessage.error(error?.message || '3D LUT 解析失败')
+  }
+}
+
+function resetOutpaintSides() {
+  outpaintForm.value = {
+    ...outpaintForm.value,
+    top: 25,
+    bottom: 25,
+    left: 25,
+    right: 25,
+  }
+}
+
+function applyAdjustPreset(preset) {
+  resetAdjustForm()
+  adjustForm.value = { ...adjustForm.value, ...(preset?.values || {}) }
+}
+
+function formatSigned(value) {
+  const numeric = Number(value) || 0
+  return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)}`
+}
+
+async function submitOperation(markupMode = 'retouch') {
   if (nodeBusy.value) return
   submitting.value = true
   try {
+    const parameters = operationParameters()
+    if (editorOperation.value === 'markup_retouch') {
+      parameters.mode = markupMode
+      if (markupMode === 'retouch' && !parameters.instruction) {
+        throw new Error('请填写修图要求')
+      }
+    }
     await ctx?.runImageNodeTool?.(
       props.nodeId,
       editorOperation.value,
-      operationParameters(),
+      parameters,
     )
     editorVisible.value = false
     ElMessage.success('图片处理完成，已生成新素材')
@@ -947,13 +1661,13 @@ function requestFullscreen() {
   z-index: 12;
   display: none;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   width: max-content;
   max-width: 760px;
-  padding: 6px;
-  border: 1px solid #3f3f46;
+  padding: 8px 10px;
+  border: 1px solid #34343a;
   border-radius: 999px;
-  background: rgba(24, 24, 27, 0.98);
+  background: rgba(21, 21, 23, 0.98);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.45);
   transform: translateX(-50%);
 }
@@ -965,14 +1679,18 @@ function requestFullscreen() {
 }
 
 .image-node-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   min-width: 32px;
-  height: 30px;
-  padding: 0 9px;
+  height: 34px;
+  padding: 0 12px;
   border: 0;
   border-radius: 15px;
   background: transparent;
   color: #d4d4d8;
-  font-size: 11px;
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1006,9 +1724,9 @@ function requestFullscreen() {
   left: 0;
   z-index: 20;
   display: grid;
-  width: 210px;
+  width: 228px;
   max-height: 420px;
-  padding: 8px;
+  padding: 10px 8px;
   overflow: auto;
   border: 1px solid #3f3f46;
   border-radius: 14px;
@@ -1017,15 +1735,37 @@ function requestFullscreen() {
 }
 
 .toolbar-menu button {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  justify-content: start;
+  gap: 10px;
   width: 100%;
+  height: 40px;
+  padding: 0 12px;
   border-radius: 8px;
   text-align: left;
 }
 
-.toolbar-menu small {
-  color: #71717a;
+.toolbar-icon,
+.menu-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.toolbar-icon.icon-only {
+  width: 19px;
+  height: 19px;
+}
+
+.toolbar-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 140ms ease;
+}
+
+.toolbar-chevron.open {
+  transform: rotate(180deg);
 }
 
 .settings-menu {
@@ -1121,6 +1861,110 @@ function requestFullscreen() {
   color: white;
 }
 
+.adjust-tabs,
+.adjust-presets {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.adjust-tabs button,
+.adjust-presets button {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  color: #aeb1ba;
+  background: #202126;
+  border: 1px solid #33353c;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.adjust-tabs button.active,
+.adjust-tabs button:hover,
+.adjust-presets button:hover {
+  color: #fff;
+  background: #34363e;
+  border-color: #555863;
+}
+
+.adjust-reset {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.lut-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.lut-presets button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  color: #c4c6ce;
+  background: #202126;
+  border: 1px solid #33353c;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.lut-presets button.active {
+  color: #fff;
+  border-color: #7c83ff;
+  box-shadow: 0 0 0 1px #7c83ff inset;
+}
+
+.lut-swatch {
+  width: 34px;
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #172033, #d7a66a);
+}
+
+.lut-warm {
+  background: linear-gradient(135deg, #5f2415, #ffc77d);
+}
+
+.lut-cool {
+  background: linear-gradient(135deg, #173b60, #b8e1ff);
+}
+
+.lut-mono {
+  background: linear-gradient(135deg, #171717, #e5e5e5);
+}
+
+.outpaint-sides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+
+.variation-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.variation-tags button {
+  padding: 7px 12px;
+  color: #aeb1ba;
+  background: #202126;
+  border: 1px solid #373941;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.variation-tags button.active {
+  color: #fff;
+  background: #4f46e5;
+  border-color: #6366f1;
+}
+
 .image-editor-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.75fr);
@@ -1166,6 +2010,21 @@ function requestFullscreen() {
   backdrop-filter: blur(8px);
 }
 
+.preview-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-badge button {
+  padding: 2px 7px;
+  color: #fff;
+  background: #3f3f46;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
 .preview-canvas {
   position: relative;
   display: grid;
@@ -1196,6 +2055,35 @@ function requestFullscreen() {
   pointer-events: none;
 }
 
+.grid-selection {
+  grid-template-columns: repeat(var(--grid-columns), 1fr);
+  grid-template-rows: repeat(var(--grid-rows), 1fr);
+  pointer-events: auto;
+}
+
+.grid-selection button {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: 0;
+  background: rgb(9 9 11 / 58%);
+  border: 1px solid rgb(255 255 255 / 72%);
+  cursor: pointer;
+}
+
+.grid-selection button.selected {
+  background: rgb(99 102 241 / 16%);
+  box-shadow: 0 0 0 2px #818cf8 inset;
+}
+
+.grid-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #a1a1aa;
+}
+
 .grid-preview::before {
   grid-area: 1 / 1 / -1 / -1;
   content: "";
@@ -1219,9 +2107,78 @@ function requestFullscreen() {
 }
 
 .crop-stage {
+  position: relative;
   height: 430px;
   overflow: hidden;
   background: #09090b;
+}
+
+.crop-stage-toolbar {
+  position: absolute;
+  z-index: 4;
+  bottom: 14px;
+  left: 50%;
+  display: flex;
+  gap: 6px;
+  padding: 7px;
+  background: rgb(20 20 24 / 90%);
+  border: 1px solid #404047;
+  border-radius: 10px;
+  transform: translateX(-50%);
+}
+
+.crop-stage-toolbar button {
+  padding: 6px 9px;
+  color: #c4c4cc;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.crop-stage-toolbar button.active,
+.crop-stage-toolbar button:hover {
+  color: #fff;
+  background: #4f46e5;
+}
+
+.selection-brush-width {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 5px;
+  color: #d4d4d8;
+  font-size: 11px;
+}
+
+.selection-brush-width input {
+  width: 72px;
+}
+
+.selection-brush-canvas {
+  position: relative;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  height: 100%;
+  margin: 0 auto;
+}
+
+.selection-brush-canvas img {
+  width: auto;
+  max-width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.selection-brush-canvas svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: rgb(15 23 42 / 18%);
+  cursor: crosshair;
+  touch-action: none;
 }
 
 .crop-hint {
@@ -1280,8 +2237,85 @@ function requestFullscreen() {
 
 .markup-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.markup-tools {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.markup-tools button {
+  padding: 6px 10px;
+  color: #a1a1aa;
+  background: #232429;
+  border: 1px solid #3f4148;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.markup-tools button.active {
+  color: #fff;
+  background: #4f46e5;
+  border-color: #6366f1;
+}
+
+.markup-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markup-width input {
+  width: 90px;
+}
+
+.markup-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markup-text input {
+  width: 190px;
+  padding: 6px 8px;
+  color: #f4f4f5;
+  background: #18181b;
+  border: 1px solid #3f4148;
+  border-radius: 7px;
+}
+
+.markup-layers {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  padding: 10px;
+  overflow: auto;
+  color: #d4d4d8;
+  background: #18181b;
+  border: 1px solid #303136;
+  border-radius: 10px;
+}
+
+.markup-layers > div {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.markup-layers button,
+.markup-tutorial summary {
+  color: #a5b4fc;
+  cursor: pointer;
+}
+
+.markup-tutorial {
   color: #a1a1aa;
   font-size: 12px;
 }
@@ -1298,6 +2332,18 @@ function requestFullscreen() {
 .markup-controls .markup-color.active {
   border-color: #fff;
   box-shadow: 0 0 0 2px #52525b;
+}
+
+.lut-upload {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.lut-upload input {
+  display: none;
 }
 
 :global(.image-tool-dialog) {

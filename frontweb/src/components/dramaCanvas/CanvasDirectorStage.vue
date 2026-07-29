@@ -1,7 +1,16 @@
 <template>
-  <div v-if="visible" ref="dialogRef" class="director-stage" role="dialog" aria-modal="true" aria-label="3D 导演台" tabindex="-1">
+  <div
+    v-if="visible"
+    ref="dialogRef"
+    class="director-stage"
+    :class="`director-stage--${entryMode}`"
+    role="dialog"
+    aria-modal="true"
+    :aria-label="entryTitle"
+    tabindex="-1"
+  >
     <header class="director-stage__header">
-      <strong>3D 导演台</strong>
+      <strong>{{ entryTitle }}</strong>
       <div class="director-stage__view-switch" aria-label="视角切换">
         <button type="button" :class="{ active: viewMode === 'director' }" @click="setView('director')">导演视角</button>
         <button type="button" :class="{ active: viewMode === 'camera' }" @click="setView('camera')">机位视角</button>
@@ -754,6 +763,13 @@ const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitl
 const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
 const angleEntry = computed(() => props.entryContext?.mode === 'angle')
 const poseEntry = computed(() => props.entryContext?.mode === 'pose')
+const entryMode = computed(() => props.entryContext?.mode || 'director_stage')
+const entryTitle = computed(() => ({
+  lighting: '灯光调节',
+  angle: '相机角度调整',
+  pose: '姿势编辑器',
+  director_stage: '3D 导演台',
+}[entryMode.value] || '3D 导演台'))
 const characterEntries = computed(() => {
   const entries = characters.value.map((character, index) => ({
     id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
