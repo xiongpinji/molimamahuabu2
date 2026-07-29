@@ -75,7 +75,7 @@ jobs:
 
       - name: Verify embedded CPU cutout runtime
         run: |
-          docker exec molimama-web-ci /opt/rembg/bin/rembg-cpu --version | grep --quiet '^2.0.77$'
+          docker exec molimama-web-ci /opt/rembg/bin/rembg-cpu --version | grep --quiet '^rembg 2.0.77$'
           docker exec molimama-web-ci sh -c \
             'echo "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8  /opt/rembg-models/u2netp.onnx" | sha256sum --check'
           docker exec molimama-web-ci node -e \
