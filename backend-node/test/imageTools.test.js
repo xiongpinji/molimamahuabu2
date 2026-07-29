@@ -14,6 +14,7 @@ const assetService = require('../src/services/assetService');
 const aiConfigService = require('../src/services/aiConfigService');
 const imageClient = require('../src/services/imageClient');
 const imageToolService = require('../src/services/imageToolService');
+const modelPriceService = require('../src/services/modelPriceService');
 const storageLayout = require('../src/services/storageLayout');
 const taskService = require('../src/services/taskService');
 const userAuthService = require('../src/services/userAuthService');
@@ -289,15 +290,15 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   const publicRes = responseRecorder();
   publicHandlers.capabilities({}, publicRes);
   assert.equal(publicRes.payload.data.operations.outpaint.available, false);
-  assert.match(publicRes.payload.data.operations.outpaint.reason, /计费与审计链/);
+    assert.match(publicRes.payload.data.operations.outpaint.reason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.markup_retouch.available, false);
-  assert.match(publicRes.payload.data.operations.markup_retouch.reason, /计费与审计链/);
+    assert.match(publicRes.payload.data.operations.markup_retouch.reason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.cinematic_relight.available, false);
-  assert.match(publicRes.payload.data.operations.cinematic_relight.reason, /计费与审计链/);
+  assert.match(publicRes.payload.data.operations.cinematic_relight.reason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.panorama.available, false);
-  assert.match(publicRes.payload.data.operations.panorama.reason, /计费与审计链/);
+  assert.match(publicRes.payload.data.operations.panorama.reason, /积分价格/);
   assert.equal(publicRes.payload.data.operations.panorama_scene.available, false);
-  assert.match(publicRes.payload.data.operations.panorama_scene.reason, /计费与审计链/);
+  assert.match(publicRes.payload.data.operations.panorama_scene.reason, /积分价格/);
   for (const operation of [
     'image_ideation',
     'angle_ideation',
@@ -307,7 +308,7 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
     'frame_backward',
   ]) {
     assert.equal(publicRes.payload.data.operations[operation].available, false, operation);
-    assert.match(publicRes.payload.data.operations[operation].reason, /计费与审计链/, operation);
+    assert.match(publicRes.payload.data.operations[operation].reason, /积分价格/, operation);
   }
 
   const publicCreateRes = responseRecorder();
@@ -320,6 +321,31 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   }, publicCreateRes);
   assert.equal(publicCreateRes.statusCode, 503);
   assert.equal(publicCreateRes.payload.error.code, 'IMAGE_TOOL_OPERATION_UNAVAILABLE');
+});
+
+test('公开平台配置模型价格后公布已审计的参考图能力', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  modelPriceService.set(db, 'doubao-seedream-4-5-251128', 7, { category: 'image' });
+  const handlers = createImageToolRoutes(db, { error() {} }, {
+    publicPlatformEnabled: true,
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5-251128',
+      operations: ['outpaint', 'upscale'],
+      generate: async () => ({ image_url: '' }),
+    },
+  });
+  const res = responseRecorder();
+
+  handlers.capabilities({}, res);
+
+  assert.equal(res.payload.data.operations.outpaint.available, true);
+  assert.equal(res.payload.data.operations.upscale.available, true);
+  assert.equal(res.payload.data.operations.detail_enhance.available, false);
 });
 
 test('扩图能力从默认参考图模型配置解析且不误开放纯文生图模型', (t) => {

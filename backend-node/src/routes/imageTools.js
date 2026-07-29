@@ -1,5 +1,6 @@
 const response = require('../response');
 const imageToolService = require('../services/imageToolService');
+const imageToolBilling = require('../services/imageToolBillingService');
 
 const unavailable = (reason) => ({ available: false, reason });
 
@@ -53,6 +54,7 @@ const BASE_OPERATIONS = Object.freeze({
 });
 
 function handleError(res, log, error) {
+  if (imageToolBilling.respondError(response, res, error)) return;
   if (error.code === 'IMAGE_TOOL_ASSET_NOT_FOUND') return response.notFound(res, error.message);
   if ([
     'IMAGE_TOOL_INVALID_INPUT',
@@ -81,12 +83,16 @@ function routes(db, log, options = {}) {
     options.auditedModelHashes,
     options.auditedUpscaleFiles,
   );
-  const referenceImageTool = options.publicPlatformEnabled
-    ? null
-    : imageToolService.resolveReferenceImageTool(db, log, options.referenceImageTool);
-  const referenceImageUnavailableReason = options.publicPlatformEnabled
-    ? '公开平台计费与审计链尚未接入，当前仅本地版可用'
-    : undefined;
+  const resolvedReferenceImageTool = imageToolService.resolveReferenceImageTool(
+    db,
+    log,
+    options.referenceImageTool,
+  );
+  const publicReferenceAvailability = options.publicPlatformEnabled
+    ? imageToolBilling.availability(db, resolvedReferenceImageTool)
+    : { tool: resolvedReferenceImageTool, reason: undefined };
+  const referenceImageTool = publicReferenceAvailability.tool;
+  const referenceImageUnavailableReason = publicReferenceAvailability.reason;
   return {
     capabilities: (_req, res) => response.success(res, {
       operations: {
@@ -99,7 +105,20 @@ function routes(db, log, options = {}) {
       },
     }),
     createOperation: async (req, res) => {
+      let billing = null;
       try {
+        const operation = String(req.body?.operation || '').trim();
+        const isRemoteReferenceOperation = Boolean(
+          referenceImageTool?.operations?.includes(operation),
+        );
+        billing = imageToolBilling.begin(db, {
+          enabled: Boolean(options.publicPlatformEnabled && isRemoteReferenceOperation),
+          tenantId: req.tenant?.id,
+          userId: req.user?.id,
+          model: referenceImageTool?.model,
+          operation,
+          resourceId: req.body?.assetId,
+        });
         const result = await imageToolService.createOperation(db, log, req.body || {}, {
           cfg: options.cfg,
           publicPlatformEnabled: Boolean(options.publicPlatformEnabled),
@@ -108,8 +127,10 @@ function routes(db, log, options = {}) {
           modelTools,
           referenceImageTool,
         });
+        imageToolBilling.settle(db, log, billing, 'completed');
         response.created(res, result);
       } catch (error) {
+        imageToolBilling.settle(db, log, billing, 'failed', error.message);
         handleError(res, log, error);
       }
     },
