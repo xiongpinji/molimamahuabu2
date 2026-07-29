@@ -231,10 +231,13 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
       ? JSON.parse(config.settings || '{}')
       : (config.settings || {});
   } catch (_) {}
-  if (settings.supports_outpaint !== true) {
+  const operations = [];
+  if (settings.supports_outpaint === true) operations.push('outpaint');
+  if (settings.supports_markup_retouch === true) operations.push('markup_retouch');
+  if (operations.length === 0) {
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 未显式声明扩图能力`,
+      reason: `当前默认图片模型 ${model} 未显式声明扩图或标记修图能力`,
     };
   }
   const auditedAdapter = protocol === 'volcengine'
@@ -242,13 +245,13 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (!auditedAdapter) {
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 的扩图适配器尚未通过审计`,
+      reason: `当前默认图片模型 ${model} 的扩图或标记修图适配器尚未通过审计`,
     };
   }
   if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {
     return {
       available: false,
-      reason: '扩图供应商配置不完整',
+      reason: '参考图编辑供应商配置不完整',
     };
   }
   return {
@@ -257,6 +260,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
     provider: provider || protocol,
     protocol,
     model,
+    operations,
   };
 }
 

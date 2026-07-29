@@ -121,7 +121,7 @@
       width="680px"
       destroy-on-close
       :close-on-click-modal="false"
-      @closed="destroyCropper"
+      @closed="destroyEditor"
     >
       <div v-if="['crop', 'compress', 'mirror', 'rotate'].includes(editorOperation)" class="operation-tabs">
         <button
@@ -141,6 +141,68 @@
           框选需要保留的主体区域；本地抠图模型只处理该区域并生成透明 PNG。
         </p>
         <img ref="cropImage" :src="data.url" alt="框选预览" @load="initCropper" />
+      </div>
+
+      <div v-else-if="editorOperation === 'markup_retouch'" class="markup-editor">
+        <p class="crop-hint">
+          在需要修改的位置画线，再填写修图要求。原图和标记图会共同提交给已审计的参考图编辑模型。
+        </p>
+        <div class="markup-stage">
+          <div class="markup-canvas">
+            <img :src="data.url" alt="标记修图预览" draggable="false" />
+            <svg
+              ref="markupSurface"
+              viewBox="0 0 1000 1000"
+              preserveAspectRatio="none"
+              @pointerdown="beginMarkupStroke"
+              @pointermove="extendMarkupStroke"
+              @pointerup="finishMarkupStroke"
+              @pointercancel="finishMarkupStroke"
+            >
+              <polyline
+                v-for="(stroke, index) in markupStrokes"
+                :key="index"
+                :points="markupPolylinePoints(stroke)"
+                :stroke="stroke.color"
+                :stroke-width="stroke.width * 1000"
+                fill="none"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+        </div>
+        <div class="markup-controls">
+          <span>标记颜色</span>
+          <button
+            v-for="color in MARKUP_COLORS"
+            :key="color"
+            type="button"
+            class="markup-color"
+            :class="{ active: markupColor === color }"
+            :style="{ background: color }"
+            :aria-label="`选择标记颜色 ${color}`"
+            @click="markupColor = color"
+          />
+          <el-button size="small" :disabled="!markupStrokes.length" @click="undoMarkupStroke">
+            撤销一笔
+          </el-button>
+          <el-button size="small" :disabled="!markupStrokes.length" @click="clearMarkupStrokes">
+            清空
+          </el-button>
+        </div>
+        <el-form label-position="top">
+          <el-form-item label="修图要求">
+            <el-input
+              v-model="markupInstruction"
+              type="textarea"
+              :rows="3"
+              maxlength="500"
+              show-word-limit
+              placeholder="例如：删除标记区域的杂物，并自然补全背景"
+            />
+          </el-form-item>
+        </el-form>
       </div>
 
       <el-form v-else label-position="top">
@@ -313,8 +375,16 @@ const outpaintForm = ref({
   direction: 'auto',
   prompt: '',
 })
+const MARKUP_MAX_STROKES = 16
+const MARKUP_MAX_POINTS = 128
+const MARKUP_COLORS = ['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']
+const markupSurface = ref(null)
+const markupStrokes = ref([])
+const markupInstruction = ref('')
+const markupColor = ref(MARKUP_COLORS[0])
 let cropper = null
 let CropperClass = null
+let activeMarkupStroke = null
 
 const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage'])
 
@@ -375,7 +445,7 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(destroyCropper)
+onBeforeUnmount(destroyEditor)
 
 function operationCapability(operation) {
   return capabilities.value?.[operation] || {
@@ -426,6 +496,7 @@ function selectOperation(item) {
     return
   }
   editorOperation.value = item.operation
+  if (item.operation === 'markup_retouch') resetMarkupEditor()
   editorVisible.value = true
   if (['crop', 'selection_cutout'].includes(item.operation)) nextTick(initCropper)
 }
@@ -474,6 +545,84 @@ function destroyCropper() {
   cropper = null
 }
 
+function destroyEditor() {
+  destroyCropper()
+  activeMarkupStroke = null
+}
+
+function resetMarkupEditor() {
+  markupStrokes.value = []
+  markupInstruction.value = ''
+  markupColor.value = MARKUP_COLORS[0]
+  activeMarkupStroke = null
+}
+
+function markupPoint(event) {
+  const bounds = markupSurface.value?.getBoundingClientRect()
+  if (!bounds?.width || !bounds?.height) return null
+  const x = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width))
+  const y = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height))
+  return {
+    x: Number(x.toFixed(5)),
+    y: Number(y.toFixed(5)),
+  }
+}
+
+function beginMarkupStroke(event) {
+  if (
+    nodeBusy.value
+    || markupStrokes.value.length >= MARKUP_MAX_STROKES
+    || event.button !== 0
+  ) return
+  const point = markupPoint(event)
+  if (!point) return
+  const stroke = {
+    color: markupColor.value,
+    width: 0.02,
+    points: [point],
+  }
+  markupStrokes.value.push(stroke)
+  activeMarkupStroke = markupStrokes.value[markupStrokes.value.length - 1]
+  markupSurface.value?.setPointerCapture?.(event.pointerId)
+  event.preventDefault()
+}
+
+function extendMarkupStroke(event) {
+  if (!activeMarkupStroke || activeMarkupStroke.points.length >= MARKUP_MAX_POINTS) return
+  const point = markupPoint(event)
+  if (!point) return
+  const previous = activeMarkupStroke.points[activeMarkupStroke.points.length - 1]
+  const distance = Math.hypot(point.x - previous.x, point.y - previous.y)
+  if (distance < 0.004) return
+  activeMarkupStroke.points.push(point)
+  event.preventDefault()
+}
+
+function finishMarkupStroke(event) {
+  if (!activeMarkupStroke) return
+  if (activeMarkupStroke.points.length === 1) {
+    activeMarkupStroke.points.push({ ...activeMarkupStroke.points[0] })
+  }
+  activeMarkupStroke = null
+  if (event?.pointerId !== undefined && markupSurface.value?.hasPointerCapture?.(event.pointerId)) {
+    markupSurface.value.releasePointerCapture(event.pointerId)
+  }
+}
+
+function markupPolylinePoints(stroke) {
+  return stroke.points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(' ')
+}
+
+function undoMarkupStroke() {
+  activeMarkupStroke = null
+  markupStrokes.value.pop()
+}
+
+function clearMarkupStrokes() {
+  activeMarkupStroke = null
+  markupStrokes.value = []
+}
+
 function operationParameters() {
   if (['crop', 'selection_cutout'].includes(editorOperation.value)) {
     if (!cropper) throw new Error('裁剪器尚未就绪')
@@ -494,6 +643,19 @@ function operationParameters() {
   if (editorOperation.value === 'upscale') return { scale: upscaleScale.value }
   if (editorOperation.value === 'detail_enhance') return { preset: detailEnhancePreset.value }
   if (editorOperation.value === 'outpaint') return { ...outpaintForm.value }
+  if (editorOperation.value === 'markup_retouch') {
+    const instruction = markupInstruction.value.trim()
+    if (!instruction) throw new Error('请填写修图要求')
+    if (!markupStrokes.value.length) throw new Error('请先在图片上标记需要修改的区域')
+    return {
+      instruction: markupInstruction.value.trim(),
+      strokes: markupStrokes.value.map((stroke) => ({
+        color: stroke.color,
+        width: stroke.width,
+        points: stroke.points.map((point) => ({ ...point })),
+      })),
+    }
+  }
   return {}
 }
 
@@ -542,6 +704,7 @@ function operationLabel(operation) {
     upscale: '高清增强',
     detail_enhance: '细节纹理增强',
     outpaint: '扩图',
+    markup_retouch: '标记修图',
     adjust: '图片调整',
     lut: 'LUT 调色',
   }
@@ -806,5 +969,69 @@ function requestFullscreen() {
 .crop-stage img {
   display: block;
   max-width: 100%;
+}
+
+.markup-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.markup-stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  max-height: 380px;
+  overflow: hidden;
+  border: 1px solid #3f3f46;
+  border-radius: 10px;
+  background: #09090b;
+}
+
+.markup-canvas {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 380px;
+  line-height: 0;
+}
+
+.markup-stage img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 380px;
+  user-select: none;
+}
+
+.markup-stage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.markup-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.markup-controls .markup-color {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+}
+
+.markup-controls .markup-color.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px #52525b;
 }
 </style>

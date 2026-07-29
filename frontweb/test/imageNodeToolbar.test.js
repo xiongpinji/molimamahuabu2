@@ -99,6 +99,26 @@ test('扩图入口提交目标画幅、扩展方向和用户补充描述', () =>
   assert.match(toolbarSource, /outpaint: '扩图'/)
 })
 
+test('标记修图采集受限笔迹与指令并提交真实参考图编辑操作', () => {
+  assert.match(toolbarSource, /editorOperation === 'markup_retouch'/)
+  assert.match(toolbarSource, /class="markup-stage"/)
+  assert.match(toolbarSource, /ref="markupSurface"/)
+  assert.match(toolbarSource, /@pointerdown="beginMarkupStroke"/)
+  assert.match(toolbarSource, /@pointermove="extendMarkupStroke"/)
+  assert.match(toolbarSource, /@pointerup="finishMarkupStroke"/)
+  assert.match(toolbarSource, /v-for="\(stroke, index\) in markupStrokes"/)
+  assert.match(toolbarSource, /v-model="markupInstruction"/)
+  assert.match(toolbarSource, /undoMarkupStroke/)
+  assert.match(toolbarSource, /clearMarkupStrokes/)
+  assert.match(toolbarSource, /const MARKUP_MAX_STROKES = 16/)
+  assert.match(toolbarSource, /const MARKUP_MAX_POINTS = 128/)
+  assert.match(toolbarSource, /activeMarkupStroke = markupStrokes\.value\[markupStrokes\.value\.length - 1\]/)
+  assert.match(toolbarSource, /editorOperation\.value === 'markup_retouch'/)
+  assert.match(toolbarSource, /instruction: markupInstruction\.value\.trim\(\)/)
+  assert.match(toolbarSource, /strokes: markupStrokes\.value\.map/)
+  assert.match(toolbarSource, /markup_retouch: '标记修图'/)
+})
+
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {
   assert.match(toolbarSource, /import\('cropperjs'\)/)
   assert.match(toolbarSource, /import\('cropperjs\/dist\/cropper\.css'\)/)

@@ -85,6 +85,10 @@ const DETAIL_ENHANCE_PRESETS = Object.freeze({
   balanced: 1.2,
   strong: 1.8,
 });
+const REFERENCE_IMAGE_OPERATIONS = Object.freeze(['outpaint', 'markup_retouch']);
+const MARKUP_MAX_STROKES = 16;
+const MARKUP_MAX_POINTS_PER_STROKE = 128;
+const MARKUP_COLORS = new Set(['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']);
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
@@ -504,11 +508,19 @@ function normalizeReferenceImageTool(tool) {
   const protocol = String(tool.protocol || provider).trim();
   const model = String(tool.model || '').trim();
   if (!engine || !provider || !protocol || !model) return null;
+  const operations = (Array.isArray(tool.operations) ? tool.operations : ['outpaint'])
+    .map((operation) => String(operation || '').trim())
+    .filter((operation, index, values) => (
+      REFERENCE_IMAGE_OPERATIONS.includes(operation)
+      && values.indexOf(operation) === index
+    ));
+  if (operations.length === 0) return null;
   return {
     engine,
     provider,
     protocol,
     model,
+    operations,
     generate: tool.generate,
     limiter: createConcurrencyLimiter(
       positiveLimit(tool.maxConcurrency, 1),
@@ -526,45 +538,72 @@ function resolveReferenceImageTool(db, log, explicitTool) {
   return normalizeReferenceImageTool({
     ...capability,
     async generate(request) {
-      const referenceImage = path.relative(request.storageRoot, request.referenceImage);
-      if (
-        !referenceImage
-        || referenceImage.startsWith('..')
-        || path.isAbsolute(referenceImage)
-      ) {
-        fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '扩图参考图不在允许的素材目录中');
+      const referenceImages = (
+        Array.isArray(request.referenceImages)
+          ? request.referenceImages
+          : [request.referenceImage]
+      ).filter(Boolean);
+      if (referenceImages.length === 0 || referenceImages.length > 2) {
+        fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '参考图数量无效');
       }
+      const relativeReferences = referenceImages.map((referenceImage) => {
+        const relative = path.relative(request.storageRoot, referenceImage);
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+          fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '参考图不在允许的素材目录中');
+        }
+        return relative.replace(/\\/g, '/');
+      });
       return imageClient.callImageApi(db, log, {
         prompt: request.prompt,
         model: capability.model,
         preferred_provider: capability.provider,
-        size: OUTPAINT_SIZES[request.aspectRatio],
+        size: request.size || OUTPAINT_SIZES[request.aspectRatio],
         drama_id: request.dramaId,
         image_gen_id: request.taskId,
         imageServiceType: 'storyboard_image',
-        reference_image_urls: [referenceImage.replace(/\\/g, '/')],
+        reference_image_urls: relativeReferences,
         storage_local_path: request.storageRoot,
-        system_prompt: 'Image 1: source image whose subject, identity, style, lighting, and existing composition must be preserved.',
+        system_prompt: request.systemPrompt
+          || 'Image 1: source image whose subject, identity, style, lighting, and existing composition must be preserved.',
       });
     },
   });
 }
 
 function referenceImageCapabilities(referenceImageTool, unavailableReason) {
+  const outpaintAvailable = referenceImageTool?.operations.includes('outpaint');
+  const markupRetouchAvailable = referenceImageTool?.operations.includes('markup_retouch');
+  const common = referenceImageTool
+    ? {
+      engine: referenceImageTool.engine,
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+    }
+    : {};
   return {
-    outpaint: referenceImageTool
+    outpaint: outpaintAvailable
       ? {
         available: true,
-        engine: referenceImageTool.engine,
-        provider: referenceImageTool.provider,
-        protocol: referenceImageTool.protocol,
-        model: referenceImageTool.model,
+        ...common,
         aspectRatios: Object.keys(OUTPAINT_SIZES),
         directions: Object.keys(OUTPAINT_DIRECTIONS),
       }
       : {
         available: false,
         reason: unavailableReason || '未配置已显式声明且通过审计的扩图模型',
+      },
+    markup_retouch: markupRetouchAvailable
+      ? {
+        available: true,
+        ...common,
+        maxStrokes: MARKUP_MAX_STROKES,
+        maxPointsPerStroke: MARKUP_MAX_POINTS_PER_STROKE,
+        preservesDimensions: true,
+      }
+      : {
+        available: false,
+        reason: unavailableReason || '未配置已显式声明且通过审计的标记修图模型',
       },
   };
 }
@@ -595,6 +634,128 @@ function buildOutpaintPrompt(parameters) {
     '只在新增画布区域自然补全连续环境、纹理与光影，边缘衔接必须无缝，输出一张连续完整图片，不要拼图、边框、文字或水印。',
     extra,
   ].filter(Boolean).join('\n');
+}
+
+function normalizeMarkupRetouchParameters(parameters) {
+  const instruction = String(parameters.instruction || '').trim();
+  if (!instruction || instruction.length > 500) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '修图指令必须为 1 到 500 个字符');
+  }
+  if (
+    !Array.isArray(parameters.strokes)
+    || parameters.strokes.length === 0
+    || parameters.strokes.length > MARKUP_MAX_STROKES
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', `标记笔迹必须为 1 到 ${MARKUP_MAX_STROKES} 条`);
+  }
+  let pointCount = 0;
+  const strokes = parameters.strokes.map((stroke) => {
+    const color = String(stroke?.color || '').trim().toLowerCase();
+    const width = Number(stroke?.width);
+    if (!MARKUP_COLORS.has(color)) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '标记颜色不在允许范围内');
+    }
+    if (!Number.isFinite(width) || width < 0.005 || width > 0.08) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '标记笔宽参数无效');
+    }
+    if (
+      !Array.isArray(stroke?.points)
+      || stroke.points.length < 2
+      || stroke.points.length > MARKUP_MAX_POINTS_PER_STROKE
+    ) {
+      fail(
+        'IMAGE_TOOL_INVALID_INPUT',
+        `每条标记笔迹必须包含 2 到 ${MARKUP_MAX_POINTS_PER_STROKE} 个点`,
+      );
+    }
+    const points = stroke.points.map((point) => {
+      const x = Number(point?.x);
+      const y = Number(point?.y);
+      if (
+        !Number.isFinite(x)
+        || !Number.isFinite(y)
+        || x < 0
+        || x > 1
+        || y < 0
+        || y > 1
+      ) {
+        fail('IMAGE_TOOL_INVALID_INPUT', '标记坐标必须位于图片范围内');
+      }
+      return {
+        x: Number(x.toFixed(5)),
+        y: Number(y.toFixed(5)),
+      };
+    });
+    pointCount += points.length;
+    return {
+      color,
+      width: Number(width.toFixed(5)),
+      points,
+    };
+  });
+  return {
+    instruction,
+    strokes,
+    summary: {
+      instruction,
+      strokeCount: strokes.length,
+      pointCount,
+      preserveDimensions: true,
+    },
+  };
+}
+
+function buildMarkupReferenceSvg(parameters, width, height) {
+  const minDimension = Math.min(width, height);
+  const polylines = parameters.strokes.map((stroke) => {
+    const points = stroke.points
+      .map((point) => `${(point.x * width).toFixed(2)},${(point.y * height).toFixed(2)}`)
+      .join(' ');
+    const strokeWidth = Math.max(2, stroke.width * minDimension).toFixed(2);
+    return `<polyline points="${points}" fill="none" stroke="${stroke.color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${polylines}</svg>`,
+  );
+}
+
+async function createMarkupReference(sourcePath, outputDir, parameters, metadata) {
+  const outputPath = path.join(outputDir, `markup-reference-${randomUUID()}.png`);
+  try {
+    const outputInfo = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .composite([{
+        input: buildMarkupReferenceSvg(parameters, metadata.width, metadata.height),
+        blend: 'over',
+      }])
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== metadata.width
+      || outputInfo.height !== metadata.height
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '标记参考图校验失败');
+    }
+    return outputPath;
+  } catch (error) {
+    if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if (String(error?.code || '').startsWith('IMAGE_TOOL_')) throw error;
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '标记参考图生成失败');
+  }
+}
+
+function buildMarkupRetouchPrompt(parameters) {
+  return [
+    '图一是必须保留的原图，图二是同一张图叠加了彩色标记的编辑说明图。',
+    `只修改图二标记覆盖的区域：${parameters.instruction}。`,
+    '输出中必须移除全部彩色标记，不得保留涂鸦、线框、箭头、文字或水印。',
+    '标记区域之外的人物身份、面部、服装、姿势、构图、透视、画风、纹理和光线保持不变。',
+    '输出一张完整连续图片，不要拼图、边框或前后对比图。',
+  ].join('\n');
 }
 
 function isPrivateNetworkAddress(address) {
@@ -762,6 +923,9 @@ async function streamOutpaintHttpsToFile(rawUrl, outputPath, maxBytes, redirectC
 
 async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}) {
   const maxBytes = positiveLimit(options.maxBytes, SMART_CUTOUT_MAX_OUTPUT_BYTES);
+  const outputPrefix = options.operation === 'markup_retouch'
+    ? 'markup-provider-download'
+    : 'outpaint';
   let realAllowedRoot;
   let realOutputDir;
   try {
@@ -776,7 +940,7 @@ async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}
   ) {
     fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果目录不在当前项目中');
   }
-  const outputPath = path.join(realOutputDir, `outpaint-${randomUUID()}.image`);
+  const outputPath = path.join(realOutputDir, `${outputPrefix}-${randomUUID()}.image`);
   try {
     if (String(imageUrl || '').startsWith('data:')) {
       const match = String(imageUrl).match(
@@ -923,6 +1087,143 @@ async function runOutpaint({
     fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图处理失败');
   } finally {
     release();
+  }
+}
+
+async function runMarkupRetouch({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+}) {
+  let sourceMetadata;
+  try {
+    sourceMetadata = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+  } catch {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const parameters = normalizeMarkupRetouchParameters(request.parameters || {});
+  const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+  let release;
+  let markedReferencePath = null;
+  let providerDownloadPath = null;
+  let outputPath = null;
+  try {
+    release = referenceImageTool.limiter.acquire(tenantId);
+    markedReferencePath = await createMarkupReference(
+      sourcePath,
+      outputDir,
+      parameters,
+      sourceMetadata,
+    );
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      '正在执行标记区域修图...',
+      () => referenceImageTool.generate({
+        prompt: buildMarkupRetouchPrompt(parameters),
+        size: `${sourceMetadata.width}x${sourceMetadata.height}`,
+        referenceImages: [sourcePath, markedReferencePath],
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+        systemPrompt: 'Image 1 is the untouched source. Image 2 is the same image with visual marks that identify the only region allowed to change.',
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      log.warn('image markup retouch provider failed', {
+        provider: referenceImageTool.provider,
+        protocol: referenceImageTool.protocol,
+        model: referenceImageTool.model,
+        reason: 'provider returned no image',
+      });
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图处理失败');
+    }
+    providerDownloadPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+      { operation: 'markup_retouch' },
+    );
+    const providerMetadata = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      !FORMAT_INFO[providerMetadata.format]
+      || !providerMetadata.width
+      || !providerMetadata.height
+      || providerMetadata.width * providerMetadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图结果格式无效');
+    }
+    const sourceRatio = sourceMetadata.width / sourceMetadata.height;
+    const providerRatio = providerMetadata.width / providerMetadata.height;
+    if (Math.abs(providerRatio - sourceRatio) / sourceRatio > 0.03) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图结果画幅与原图不符');
+    }
+    outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+    const outputInfo = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(sourceMetadata.width, sourceMetadata.height, {
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== sourceMetadata.width
+      || outputInfo.height !== sourceMetadata.height
+      || fileSha256(outputPath) === fileSha256(sourcePath)
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图产物校验失败');
+    }
+    return {
+      outputPath,
+      format: FORMAT_INFO.png,
+      outputInfo,
+      parameters: parameters.summary,
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if ([
+      'IMAGE_TOOL_INVALID_INPUT',
+      'IMAGE_TOOL_SOURCE_UNAVAILABLE',
+      'IMAGE_TOOL_UNSUPPORTED_IMAGE',
+      'IMAGE_TOOL_BUSY',
+    ].includes(error?.code)) {
+      throw error;
+    }
+    log.warn('image markup retouch failed', {
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', '标记修图处理失败');
+  } finally {
+    release?.();
+    for (const temporaryPath of [markedReferencePath, providerDownloadPath]) {
+      if (temporaryPath && fs.existsSync(temporaryPath)) {
+        fs.rmSync(temporaryPath, { force: true });
+      }
+    }
   }
 }
 
@@ -1443,7 +1744,14 @@ async function createOperation(db, log, request, context = {}) {
     && !(cutoutOperations.includes(operation) && modelTools.smart_cutout)
     && !(operation === 'upscale' && modelTools.upscale)
     && !(operation === 'detail_enhance' && modelTools.upscale)
-    && !(operation === 'outpaint' && referenceImageTool)) {
+    && !(
+      operation === 'outpaint'
+      && referenceImageTool?.operations.includes('outpaint')
+    )
+    && !(
+      operation === 'markup_retouch'
+      && referenceImageTool?.operations.includes('markup_retouch')
+    )) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
   const asset = requireOwnedImageAsset(db, request.assetId, context);
@@ -1734,6 +2042,49 @@ async function createOperation(db, log, request, context = {}) {
           outputPath: prepared.outputPath,
           outputInfo: prepared.outputInfo,
           parameters: prepared.parameters,
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
+    if (operation === 'markup_retouch') {
+      const prepared = await runMarkupRetouch({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          suffix: 'markup-retouch',
           storageRoot,
           engine: referenceImageTool.engine,
           engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,

@@ -168,6 +168,7 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
     provider: 'volcengine',
     protocol: 'volcengine',
     model: 'doubao-seedream-4-5',
+    operations: ['outpaint', 'markup_retouch'],
     generate: async () => ({ image_url: '' }),
   };
   const localHandlers = createImageToolRoutes(null, { error() {} }, {
@@ -185,6 +186,32 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
     localRes.payload.data.operations.outpaint.aspectRatios,
     ['16:9', '9:16', '1:1', '4:3', '3:4'],
   );
+  assert.equal(localRes.payload.data.operations.markup_retouch.available, true);
+  assert.equal(localRes.payload.data.operations.markup_retouch.engine, 'provider-image-edit');
+  assert.equal(localRes.payload.data.operations.markup_retouch.maxStrokes, 16);
+  assert.equal(localRes.payload.data.operations.markup_retouch.maxPointsPerStroke, 128);
+
+  const outpaintOnlyHandlers = createImageToolRoutes(null, { error() {} }, {
+    referenceImageTool: {
+      ...referenceImageTool,
+      operations: ['outpaint'],
+    },
+  });
+  const outpaintOnlyRes = responseRecorder();
+  outpaintOnlyHandlers.capabilities({}, outpaintOnlyRes);
+  assert.equal(outpaintOnlyRes.payload.data.operations.outpaint.available, true);
+  assert.equal(outpaintOnlyRes.payload.data.operations.markup_retouch.available, false);
+
+  const markupOnlyHandlers = createImageToolRoutes(null, { error() {} }, {
+    referenceImageTool: {
+      ...referenceImageTool,
+      operations: ['markup_retouch'],
+    },
+  });
+  const markupOnlyRes = responseRecorder();
+  markupOnlyHandlers.capabilities({}, markupOnlyRes);
+  assert.equal(markupOnlyRes.payload.data.operations.outpaint.available, false);
+  assert.equal(markupOnlyRes.payload.data.operations.markup_retouch.available, true);
 
   const publicHandlers = createImageToolRoutes(null, { error() {} }, {
     publicPlatformEnabled: true,
@@ -194,6 +221,8 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   publicHandlers.capabilities({}, publicRes);
   assert.equal(publicRes.payload.data.operations.outpaint.available, false);
   assert.match(publicRes.payload.data.operations.outpaint.reason, /计费与审计链/);
+  assert.equal(publicRes.payload.data.operations.markup_retouch.available, false);
+  assert.match(publicRes.payload.data.operations.markup_retouch.reason, /计费与审计链/);
 
   const publicCreateRes = responseRecorder();
   await publicHandlers.createOperation({
@@ -222,13 +251,18 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
-    settings: JSON.stringify({ supports_outpaint: true }),
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      supports_markup_retouch: true,
+    }),
   });
   const supportedHandlers = createImageToolRoutes(supportedDb, log);
   const supportedRes = responseRecorder();
   supportedHandlers.capabilities({}, supportedRes);
   assert.equal(supportedRes.payload.data.operations.outpaint.available, true);
   assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.markup_retouch.available, true);
+  assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'volcengine');
 
   const undeclaredDb = new Database(':memory:');
   t.after(() => undeclaredDb.close());
@@ -275,6 +309,7 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-outpaint-ref-'));
   t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
   const sourcePath = path.join(storageRoot, 'source.png');
+  const markedPath = path.join(storageRoot, 'marked.png');
   await sharp({
     create: {
       width: 4,
@@ -283,6 +318,14 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
       background: '#3267d6',
     },
   }).png().toFile(sourcePath);
+  await sharp({
+    create: {
+      width: 4,
+      height: 4,
+      channels: 3,
+      background: '#ef4444',
+    },
+  }).png().toFile(markedPath);
 
   let requestBody = null;
   const server = http.createServer((req, res) => {
@@ -326,14 +369,17 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
     preferred_provider: 'volcengine',
     size: '1536x864',
     imageServiceType: 'storyboard_image',
-    reference_image_urls: [sourcePath],
+    reference_image_urls: [sourcePath, markedPath],
     storage_local_path: storageRoot,
   });
 
   assert.ok(result.image_url);
   assert.equal(Array.isArray(requestBody.image), true);
+  assert.equal(requestBody.image.length, 2);
   assert.match(requestBody.image[0], /^data:image\/png;base64,/);
+  assert.match(requestBody.image[1], /^data:image\/png;base64,/);
   assert.doesNotMatch(requestBody.image[0], /molimama-outpaint-ref|source\.png/i);
+  assert.doesNotMatch(requestBody.image[1], /molimama-outpaint-ref|marked\.png/i);
 });
 
 test('扩图下载在解码前执行大小限制', async (t) => {
@@ -1374,6 +1420,227 @@ test('扩图通过参考图供应商生成本地派生素材并保留原图', as
   assert.equal(fs.readdirSync(escapedOutputDir).length, 0);
   fs.rmSync(junctionDerivedDir, { force: true });
   fs.rmSync(escapedOutputDir, { recursive: true, force: true });
+});
+
+test('标记修图提交原图与临时标记图并生成同尺寸派生素材', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-markup-retouch-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('标记修图测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 100,
+      height: 80,
+      channels: 3,
+      background: '#3468d4',
+    },
+  }).png().toFile(sourcePath);
+  const sourceHash = fileSha256(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const generatedBuffer = await sharp({
+    create: {
+      width: 125,
+      height: 100,
+      channels: 3,
+      background: '#e6b84f',
+    },
+  }).png().toBuffer();
+  let generationRequest = null;
+  let markedReferenceHash = '';
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      operations: ['markup_retouch'],
+      async generate(request) {
+        generationRequest = request;
+        assert.equal(request.referenceImages.length, 2);
+        assert.equal(request.referenceImages[0], sourcePath);
+        assert.equal(fs.existsSync(request.referenceImages[1]), true);
+        markedReferenceHash = fileSha256(request.referenceImages[1]);
+        return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+      },
+    },
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-markup-retouch',
+      operation: 'markup_retouch',
+      parameters: {
+        instruction: '把标记区域改为暖黄色，其他内容保持不变',
+        strokes: [{
+          color: '#ef4444',
+          width: 0.02,
+          points: [
+            { x: 0.2, y: 0.2 },
+            { x: 0.45, y: 0.3 },
+            { x: 0.6, y: 0.5 },
+          ],
+        }],
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.operation, 'markup_retouch');
+  assert.match(generationRequest.prompt, /把标记区域改为暖黄色/);
+  assert.match(generationRequest.prompt, /只修改图二标记覆盖的区域/);
+  assert.match(generationRequest.prompt, /移除全部彩色标记/);
+  assert.notEqual(markedReferenceHash, sourceHash);
+  assert.equal(fs.existsSync(generationRequest.referenceImages[1]), false);
+  assert.equal(fileSha256(sourcePath), sourceHash);
+
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.ok(resultAsset);
+  assert.notEqual(resultAsset.id, sourceAsset.id);
+  assert.equal(resultAsset.metadata.operation, 'markup_retouch');
+  assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
+  assert.equal(resultAsset.metadata.engineVersion, 'volcengine:doubao-seedream-4-5');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    instruction: '把标记区域改为暖黄色，其他内容保持不变',
+    strokeCount: 1,
+    pointCount: 3,
+    preserveDimensions: true,
+  });
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.format, 'png');
+  assert.equal(outputMetadata.width, 100);
+  assert.equal(outputMetadata.height, 80);
+  assert.equal(taskService.getTask(db, res.payload.data.taskId).status, 'completed');
+
+  const invalidRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-markup-invalid',
+      operation: 'markup_retouch',
+      parameters: {
+        instruction: '',
+        strokes: [],
+      },
+    },
+  }, invalidRes);
+  assert.equal(invalidRes.statusCode, 400);
+  assert.equal(invalidRes.payload.error.code, 'BAD_REQUEST');
+
+  const failedLogs = [];
+  const failedHandlers = createImageToolRoutes(db, {
+    info() {},
+    warn(message, details) {
+      failedLogs.push({ message, details });
+    },
+    error(message, details) {
+      failedLogs.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      engine: 'provider-image-edit',
+      provider: 'volcengine',
+      protocol: 'volcengine',
+      model: 'doubao-seedream-4-5',
+      operations: ['markup_retouch'],
+      async generate() {
+        return { error: 'private-upstream-secret' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-markup-failure',
+      operation: 'markup_retouch',
+      parameters: {
+        instruction: '删除标记区域的物体',
+        strokes: [{
+          color: '#ef4444',
+          width: 0.02,
+          points: [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.3 }],
+        }],
+      },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '标记修图处理失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-upstream-secret/);
+  assert.doesNotMatch(JSON.stringify(failedLogs), /private-upstream-secret/);
+  const failedTask = db.prepare(
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY created_at DESC LIMIT 1",
+  ).get();
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.error, '标记修图处理失败');
+  const derivedDir = path.join(storageRoot, 'derived');
+  const remainingFiles = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => /markup-reference|provider-download/i.test(name))
+    : [];
+  assert.deepEqual(remainingFiles, []);
+
+  const corruptSourcePath = path.join(storageRoot, 'corrupt-markup-source.png');
+  fs.writeFileSync(corruptSourcePath, 'not an image');
+  const corruptSourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'corrupt-markup-source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/corrupt-markup-source.png',
+    local_path: corruptSourcePath,
+  });
+  const corruptRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: corruptSourceAsset.id,
+      sourceNodeId: 'image-node-markup-corrupt-source',
+      operation: 'markup_retouch',
+      parameters: {
+        instruction: '删除标记区域的物体',
+        strokes: [{
+          color: '#ef4444',
+          width: 0.02,
+          points: [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.3 }],
+        }],
+      },
+    },
+  }, corruptRes);
+  assert.equal(corruptRes.statusCode, 400);
+  assert.equal(corruptRes.payload.error.code, 'BAD_REQUEST');
+  assert.equal(corruptRes.payload.error.message, '仅支持 PNG、JPEG 和 WebP 图片');
+  const corruptTask = db.prepare(
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY created_at DESC LIMIT 1",
+  ).get();
+  assert.equal(corruptTask.status, 'failed');
+  assert.equal(corruptTask.error, '仅支持 PNG、JPEG 和 WebP 图片');
+  const exposedFailureText = JSON.stringify({
+    response: corruptRes.payload,
+    logs: failedLogs,
+    task: corruptTask,
+  });
+  assert.doesNotMatch(exposedFailureText, /sharp|corrupt-markup-source|not an image|Input file/i);
+  const remainingAfterCorruptSource = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => /markup-reference|provider-download/i.test(name))
+    : [];
+  assert.deepEqual(remainingAfterCorruptSource, []);
 });
 
 test('裁剪操作生成可回读的派生资产且不覆盖原图', async (t) => {
