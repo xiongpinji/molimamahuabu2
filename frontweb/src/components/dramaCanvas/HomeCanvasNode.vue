@@ -17,6 +17,16 @@
         @keydown.enter.prevent="$event.target.blur()"
       />
       <span class="sr-only">{{ draft.title }}</span>
+      <button
+        v-if="canExtractLastFrame"
+        type="button"
+        class="last-frame-button nodrag nopan"
+        :disabled="extractingLastFrame"
+        @mousedown.stop
+        @click.stop="extractLastFrame"
+      >
+        {{ extractingLastFrame ? '提取中…' : '一键提取尾帧' }}
+      </button>
       <div v-if="data.kind !== 'text' && (canUpload || canMountAsset)" class="node-media-actions nodrag nopan" @mousedown.stop>
         <button v-if="canMountAsset" type="button" class="upload-button" @click.stop="openAssetLibrary">素材库</button>
         <button v-if="canUpload" type="button" class="upload-button" @click.stop="chooseFile">上传</button>
@@ -471,6 +481,12 @@ const resultUrls = computed(() => [...new Set([
   props.data.url,
 ].filter(Boolean))])
 const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
+const extractingLastFrame = ref(false)
+const canExtractLastFrame = computed(() => (
+  props.data.kind === 'video'
+  && Boolean(primaryResultUrl.value)
+  && typeof ctx?.createImageNodeFromVideoLastFrame === 'function'
+))
 const isSelected = computed(() => (
   props.selected
   || ctx?.focusedNodeId?.value === props.id
@@ -704,6 +720,16 @@ async function translateNode() {
   await ctx?.translateFreeCanvasNode?.(props.id)
 }
 
+async function extractLastFrame() {
+  if (!canExtractLastFrame.value || extractingLastFrame.value) return
+  extractingLastFrame.value = true
+  try {
+    await ctx.createImageNodeFromVideoLastFrame?.(props.id)
+  } finally {
+    extractingLastFrame.value = false
+  }
+}
+
 function downloadResult() {
   const url = primaryResultUrl.value
   if (!url) return
@@ -804,6 +830,18 @@ watch(isSelected, (selected) => {
 }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .node-status { color: #71717a; font-size: 10px; }
+.last-frame-button {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid #7c2d12;
+  border-radius: 999px;
+  background: #2b1710;
+  color: #fb923c;
+  font-size: 11px;
+  cursor: pointer;
+}
+.last-frame-button:hover { border-color: #ea580c; background: #3a1d12; }
+.last-frame-button:disabled { cursor: wait; opacity: .65; }
 .node-media-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .node-media-actions .upload-button { padding: 4px 10px; border-radius: 8px; font-size: 11px; }
 .node-delete {
