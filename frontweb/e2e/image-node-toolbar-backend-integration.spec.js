@@ -88,6 +88,30 @@ function readDatabase(callback) {
   }
 }
 
+function resetImageNodeToSource() {
+  const db = new Database(databasePath)
+  try {
+    const row = db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId)
+    const metadata = JSON.parse(row.metadata)
+    const freeNode = metadata.canvas_layout.free_nodes.find((entry) => entry.id === nodeId)
+    freeNode.data = {
+      ...freeNode.data,
+      status: 'success',
+      url: '/static/toolbar-source.png',
+      savedAssetId: String(sourceAssetId),
+      assetSaveStatus: 'success',
+      imageToolStatus: '',
+      imageToolError: '',
+      imageToolRetryOperation: '',
+      imageToolRetryParameters: null,
+    }
+    db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), new Date().toISOString(), dramaId)
+  } finally {
+    db.close()
+  }
+}
+
 function sha256(filePath) {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 }
@@ -429,118 +453,202 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
 })
 
-test('图片工具栏真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
+test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
   test.skip(!realAihubccEnabled, '需要显式启用真实 AIHubCC 付费同链')
-  testInfo.setTimeout(960_000)
+  testInfo.setTimeout(28_800_000)
+  const requestedOperations = new Set(
+    String(process.env.AIHUBCC_REAL_IMAGE_OPERATIONS || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )
+  const cases = [
+    { operation: 'upscale', menu: null, button: '高清', dialog: '高清增强', width: 640, height: 360 },
+    { operation: 'detail_enhance', menu: '设定', button: '细节纹理增强', dialog: '细节纹理增强', width: 320, height: 180 },
+    { operation: 'outpaint', menu: '工具', button: '扩图', dialog: '扩图', aspectRatio: 16 / 9 },
+    { operation: 'markup_retouch', menu: '工具', button: '标记修图', dialog: '标记修图', width: 320, height: 180, markup: true },
+    { operation: 'cinematic_relight', menu: '设定', button: '电影级光影校正', dialog: '电影级光影校正', width: 320, height: 180 },
+    { operation: 'panorama', menu: null, button: '720全景', dialog: '720全景', aspectRatio: 2 },
+    { operation: 'panorama_scene', menu: '设定', button: '生成全景场景', dialog: '生成全景场景', aspectRatio: 2 },
+    { operation: 'image_ideation', menu: '工具', button: '画面联想', dialog: '画面联想', width: 320, height: 180 },
+    { operation: 'angle_ideation', menu: '工具', button: '角度联想', dialog: '角度联想', width: 320, height: 180 },
+    { operation: 'character_views', menu: '设定', button: '角色三视图', dialog: '角色三视图', aspectRatio: 4 / 3 },
+    { operation: 'narrative_grid', menu: '设定', button: '多机位叙事九宫格', dialog: '多机位叙事九宫格', aspectRatio: 1 },
+    { operation: 'frame_forward', menu: '设定', button: '画面推演-3秒后', dialog: '画面推演-3秒后', width: 320, height: 180 },
+    { operation: 'frame_backward', menu: '设定', button: '画面推演-5秒前', dialog: '画面推演-5秒前', width: 320, height: 180 },
+  ].filter((item) => requestedOperations.size === 0 || requestedOperations.has(item.operation))
   const capabilitiesResponse = await fetch(`${backendOrigin}/api/v1/image-tools/capabilities`)
   expect(capabilitiesResponse.ok).toBe(true)
   const capabilitiesPayload = await capabilitiesResponse.json()
-  const upscaleCapability = capabilitiesPayload?.data?.operations?.upscale
-  if (!upscaleCapability?.available) {
-    throw new Error(`AIHUBCC_CAPABILITY_UNAVAILABLE ${JSON.stringify(upscaleCapability)}`)
+  for (const item of cases) {
+    const capability = capabilitiesPayload?.data?.operations?.[item.operation]
+    if (!capability?.available) {
+      throw new Error(`AIHUBCC_CAPABILITY_UNAVAILABLE ${item.operation} ${JSON.stringify(capability)}`)
+    }
+    expect(capability).toMatchObject({
+      available: true,
+      engine: 'provider-image-edit',
+      protocol: 'aihubcc',
+      model: realAihubccModel,
+    })
   }
-  expect(upscaleCapability).toMatchObject({
-    available: true,
-    engine: 'provider-image-edit',
-    protocol: 'aihubcc',
-    model: realAihubccModel,
-  })
   await proxyBackend(page)
+  resetImageNodeToSource()
   await page.goto(`/canvas/${dramaId}`)
 
-  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
-  await expect(node).toContainText('图片工具同链节点')
-  await node.click()
-  const toolbar = node.locator('.image-node-toolbar')
-  await expect(toolbar).toBeVisible()
-  await expect(toolbar.getByRole('button', { name: '高清', exact: true })).toBeEnabled()
-  await toolbar.getByRole('button', { name: '高清', exact: true }).click()
-
-  const dialog = page.getByRole('dialog', { name: '高清增强' })
-  await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
-  const successMessage = page.getByText('图片处理完成，已生成新素材')
-  const failureAlert = toolbar.getByRole('alert')
-  const outcome = await Promise.race([
-    successMessage.waitFor({ state: 'visible', timeout: 900_000 }).then(() => 'success'),
-    failureAlert.waitFor({ state: 'visible', timeout: 900_000 }).then(() => 'failed'),
-  ])
-  if (outcome === 'failed') {
-    const safeLogs = backendLogs
-      .replaceAll(realAihubccApiKey, '[REDACTED]')
-      .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
-      .slice(-12_000)
-    throw new Error(`${await failureAlert.textContent()}\n${safeLogs}`)
-  }
-
-  await expect.poll(() => readDatabase((db) => {
-    const task = db.prepare(
-      `SELECT id, status, error, result
-       FROM async_tasks WHERE type = 'image_tool_upscale'
-       ORDER BY created_at DESC LIMIT 1`,
-    ).get()
-    const asset = db.prepare(
-      `SELECT id, url, local_path, mime_type, width, height, file_size, metadata
-       FROM assets WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
-    ).get(dramaId)
-    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
-    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
-    return {
-      task,
-      asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
-      freeNode,
+  for (const [index, item] of cases.entries()) {
+    const beforeTaskRowId = readDatabase((db) => (
+      db.prepare('SELECT COALESCE(MAX(rowid), 0) AS value FROM async_tasks').get().value
+    ))
+    const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+    await expect(node).toContainText('图片工具同链节点')
+    await node.click()
+    const toolbar = node.locator('.image-node-toolbar')
+    await expect(toolbar).toBeVisible()
+    if (item.menu) {
+      await toolbar.getByRole('button', { name: new RegExp(`^${item.menu}`) }).click()
     }
-  }), { timeout: 30_000 }).toMatchObject({
-    task: {
-      status: 'completed',
-      error: null,
-      result: expect.stringContaining('"resultAssetId"'),
-    },
-    asset: {
-      width: expect.any(Number),
-      height: expect.any(Number),
-      file_size: expect.any(Number),
-      metadata: {
-        operation: 'upscale',
-        engine: 'provider-image-edit',
-        engineVersion: expect.stringContaining(realAihubccModel),
-        taskId: expect.any(String),
+    const operationButton = toolbar.getByRole('button', { name: item.button, exact: true })
+    await expect(operationButton).toBeEnabled()
+    await operationButton.click()
+
+    const dialog = page.getByRole('dialog', { name: item.dialog })
+    await expect(dialog).toBeVisible()
+    if (item.markup) {
+      await dialog.getByRole('textbox', { name: '修图要求' }).fill('将标记区域调整为自然的浅蓝色，并保持其他内容不变')
+      const surface = dialog.locator('.markup-canvas svg')
+      await surface.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        element.setPointerCapture = () => {}
+        element.releasePointerCapture = () => {}
+        element.hasPointerCapture = () => false
+        const dispatch = (type, x, y) => element.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          pointerId: 1,
+          clientX: bounds.left + (bounds.width * x),
+          clientY: bounds.top + (bounds.height * y),
+        }))
+        dispatch('pointerdown', 0.4, 0.4)
+        dispatch('pointermove', 0.5, 0.5)
+        dispatch('pointermove', 0.6, 0.6)
+        dispatch('pointerup', 0.6, 0.6)
+      })
+      await expect(surface.locator('polyline')).toHaveCount(1)
+    }
+    await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
+    const successMessage = page.locator('.el-message--success').filter({
+      hasText: '图片处理完成，已生成新素材',
+    })
+    const failureAlert = toolbar.getByRole('alert')
+    const errorMessage = page.locator('.el-message--error').last()
+    const outcome = await Promise.race([
+      successMessage.waitFor({ state: 'visible', timeout: 3_900_000 }).then(() => 'success'),
+      failureAlert.waitFor({ state: 'visible', timeout: 3_900_000 }).then(() => 'failed'),
+      errorMessage.waitFor({ state: 'visible', timeout: 3_900_000 }).then(() => 'error'),
+    ])
+    if (outcome !== 'success') {
+      const safeLogs = backendLogs
+        .replaceAll(realAihubccApiKey, '[REDACTED]')
+        .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+        .slice(-12_000)
+      const message = outcome === 'failed'
+        ? await failureAlert.textContent()
+        : await errorMessage.textContent()
+      throw new Error(`${item.operation}: ${message}\n${safeLogs}`)
+    }
+
+    const persisted = await expect.poll(() => readDatabase((db) => {
+      const task = db.prepare(
+        `SELECT rowid, id, status, error, result
+         FROM async_tasks WHERE type = ? AND rowid > ?
+         ORDER BY rowid DESC LIMIT 1`,
+      ).get(`image_tool_${item.operation}`, beforeTaskRowId)
+      if (!task?.result) return null
+      const result = JSON.parse(task.result)
+      const asset = db.prepare(
+        `SELECT id, url, local_path, mime_type, width, height, file_size, metadata
+         FROM assets WHERE id = ?`,
+      ).get(result.resultAssetId)
+      const metadata = JSON.parse(db.prepare(
+        'SELECT metadata FROM dramas WHERE id = ?',
+      ).get(dramaId).metadata)
+      const freeNode = metadata.canvas_layout.free_nodes.find((entry) => entry.id === nodeId)
+      return {
+        task,
+        asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
+        freeNode,
+      }
+    }), { timeout: 30_000 }).toMatchObject({
+      task: {
+        status: 'completed',
+        error: null,
+        result: expect.stringContaining('"resultAssetId"'),
       },
-    },
-    freeNode: {
-      data: expect.objectContaining({
-        imageToolStatus: 'success',
-        savedAssetId: expect.any(String),
-        url: expect.stringMatching(/^\/static\//),
-        imageToolHistory: expect.arrayContaining([
-          expect.objectContaining({ operation: 'upscale', status: 'success' }),
-        ]),
-      }),
-    },
-  })
+      asset: {
+        ...(item.width ? { width: item.width, height: item.height } : {}),
+        file_size: expect.any(Number),
+        metadata: {
+          operation: item.operation,
+          engine: 'provider-image-edit',
+          engineVersion: expect.stringContaining(realAihubccModel),
+          taskId: expect.any(String),
+        },
+      },
+      freeNode: {
+        data: expect.objectContaining({
+          imageToolStatus: 'success',
+          savedAssetId: expect.any(String),
+          url: expect.stringMatching(/^\/static\//),
+          imageToolHistory: expect.arrayContaining([
+            expect.objectContaining({ operation: item.operation, status: 'success' }),
+          ]),
+        }),
+      },
+    })
+    expect(persisted).toBeUndefined()
 
-  const resultAsset = readDatabase((db) => db.prepare(
-    `SELECT local_path, mime_type, width, height, file_size FROM assets
-     WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
-  ).get(dramaId))
-  expect(resultAsset.mime_type).toBe('image/png')
-  expect(resultAsset.width).toBe(640)
-  expect(resultAsset.height).toBe(360)
-  expect(resultAsset.file_size).toBeGreaterThan(0)
-  expect(fs.existsSync(resultAsset.local_path)).toBe(true)
-  const resultArtifact = await sharp(resultAsset.local_path, {
-    failOn: 'warning',
-  }).metadata()
-  expect(resultArtifact).toMatchObject({
-    format: 'png',
-    width: 640,
-    height: 360,
-  })
+    const resultAsset = readDatabase((db) => {
+      const task = db.prepare(
+        `SELECT result FROM async_tasks WHERE type = ? AND rowid > ?
+         ORDER BY rowid DESC LIMIT 1`,
+      ).get(`image_tool_${item.operation}`, beforeTaskRowId)
+      const result = JSON.parse(task.result)
+      return db.prepare(
+        `SELECT local_path, mime_type, width, height, file_size
+         FROM assets WHERE id = ?`,
+      ).get(result.resultAssetId)
+    })
+    expect(resultAsset.file_size).toBeGreaterThan(0)
+    expect(fs.existsSync(resultAsset.local_path)).toBe(true)
+    const resultArtifact = await sharp(resultAsset.local_path, {
+      failOn: 'warning',
+    }).metadata()
+    const expectedMime = {
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      webp: 'image/webp',
+    }[resultArtifact.format]
+    expect(resultAsset.mime_type).toBe(expectedMime)
+    if (item.width) {
+      expect(resultArtifact.width).toBe(item.width)
+      expect(resultArtifact.height).toBe(item.height)
+    } else {
+      expect(resultArtifact.width).toBeGreaterThan(0)
+      expect(resultArtifact.height).toBeGreaterThan(0)
+      expect(resultArtifact.width / resultArtifact.height).toBeCloseTo(item.aspectRatio, 2)
+    }
 
-  await page.reload({ waitUntil: 'networkidle' })
-  const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
-  await restored.click()
-  await restored.locator('.image-node-toolbar button[title="处理历史"]').click()
-  await expect(restored.locator('.toolbar-history')).toContainText('高清增强')
-  await expect(restored.locator('.toolbar-history')).toContainText('已完成')
+    await page.reload({ waitUntil: 'networkidle' })
+    const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+    await restored.click()
+    await restored.locator('.image-node-toolbar button[title="处理历史"]').click()
+    await expect(restored.locator('.toolbar-history')).toContainText(item.dialog)
+    await expect(restored.locator('.toolbar-history')).toContainText('已完成')
+
+    if (index < cases.length - 1) {
+      resetImageNodeToSource()
+      await page.reload({ waitUntil: 'networkidle' })
+    }
+  }
 })

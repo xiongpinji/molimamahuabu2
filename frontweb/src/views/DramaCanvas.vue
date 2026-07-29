@@ -2046,6 +2046,57 @@ async function retryFreeCanvasAssetSave(nodeOrId) {
   }
 }
 
+const IMAGE_TOOL_POLL_INTERVAL_MS = 2000
+const IMAGE_TOOL_POLL_MAX_ATTEMPTS = 2400
+
+function parseImageToolTaskResult(task) {
+  if (task?.result && typeof task.result === 'object') return task.result
+  if (typeof task?.result === 'string' && task.result.trim()) {
+    try {
+      return JSON.parse(task.result)
+    } catch {
+      throw new Error('图片处理任务返回了无效结果')
+    }
+  }
+  throw new Error('图片处理任务未返回结果')
+}
+
+async function waitForImageToolOperation(taskId) {
+  for (let attempt = 0; attempt < IMAGE_TOOL_POLL_MAX_ATTEMPTS; attempt += 1) {
+    const task = await imageToolsAPI.getOperation(taskId)
+    if (task?.status === 'completed') return parseImageToolTaskResult(task)
+    if (task?.status === 'failed') throw new Error(task.error || task.message || '图片处理失败')
+    await new Promise((resolve) => setTimeout(resolve, IMAGE_TOOL_POLL_INTERVAL_MS))
+  }
+  const error = new Error('图片仍在后台处理中，请稍后刷新查看')
+  error.code = 'IMAGE_TOOL_POLL_TIMEOUT'
+  throw error
+}
+
+async function completeImageToolOperation(nodeId, operation, result, previousHistory = []) {
+  const historyItem = {
+    taskId: result.taskId,
+    operation,
+    status: result.status,
+    resultAssetId: result.resultAssetId,
+    resultUrl: result.resultUrl,
+    createdAt: new Date().toISOString(),
+  }
+  await patchFreeCanvasNodeData(nodeId, {
+    url: result.resultUrl,
+    savedAssetId: String(result.resultAssetId || ''),
+    imageToolTaskId: result.taskId,
+    imageToolStatus: 'success',
+    imageToolError: '',
+    imageToolRetryOperation: '',
+    imageToolRetryParameters: null,
+    imageToolResultAssets: result.resultAssets || [],
+    imageToolHistory: [historyItem, ...previousHistory].slice(0, 20),
+    assetSaveStatus: 'success',
+    assetSaveError: '',
+  })
+}
+
 async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
   let node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
@@ -2077,36 +2128,37 @@ async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
     imageToolRetryOperation: operation,
     imageToolRetryParameters: parameters,
   })
+  let activeTaskId = ''
   try {
-    const result = await imageToolsAPI.createOperation({
+    const accepted = await imageToolsAPI.createOperation({
       assetId: node.data?.savedAssetId || sourceAssetId,
       sourceNodeId: String(node.id),
       operation,
       parameters,
     })
-    const historyItem = {
-      taskId: result.taskId,
-      operation,
-      status: result.status,
-      resultAssetId: result.resultAssetId,
-      resultUrl: result.resultUrl,
-      createdAt: new Date().toISOString(),
+    if (accepted?.status === 'processing' && accepted?.taskId) {
+      activeTaskId = String(accepted.taskId)
+      resumedImageToolTasks.add(activeTaskId)
+      await patchFreeCanvasNodeData(node.id, {
+        imageToolTaskId: accepted.taskId,
+        imageToolStatus: 'running',
+      })
     }
-    await patchFreeCanvasNodeData(node.id, {
-      url: result.resultUrl,
-      savedAssetId: String(result.resultAssetId || ''),
-      imageToolTaskId: result.taskId,
-      imageToolStatus: 'success',
-      imageToolError: '',
-      imageToolRetryOperation: '',
-      imageToolRetryParameters: null,
-      imageToolResultAssets: result.resultAssets || [],
-      imageToolHistory: [historyItem, ...previousHistory].slice(0, 20),
-      assetSaveStatus: 'success',
-      assetSaveError: '',
-    })
+    const result = accepted?.status === 'processing'
+      ? await waitForImageToolOperation(accepted.taskId)
+      : accepted
+    await completeImageToolOperation(node.id, operation, result, previousHistory)
+    if (activeTaskId) resumedImageToolTasks.delete(activeTaskId)
     return result
   } catch (error) {
+    if (activeTaskId) resumedImageToolTasks.delete(activeTaskId)
+    if (error?.code === 'IMAGE_TOOL_POLL_TIMEOUT') {
+      await patchFreeCanvasNodeData(node.id, {
+        imageToolStatus: 'running',
+        imageToolError: error.message,
+      })
+      throw error
+    }
     await patchFreeCanvasNodeData(node.id, {
       url: previousUrl,
       imageToolStatus: 'failed',
@@ -2115,6 +2167,36 @@ async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
       imageToolRetryParameters: parameters,
     })
     throw error
+  }
+}
+
+const resumedImageToolTasks = new Set()
+
+function resumePendingImageToolOperations() {
+  for (const node of allGraphNodes.value) {
+    const taskId = String(node.data?.imageToolTaskId || '')
+    if (node.type !== 'homeCanvasNode'
+      || node.data?.kind !== 'image'
+      || node.data?.imageToolStatus !== 'running'
+      || !taskId
+      || resumedImageToolTasks.has(taskId)) continue
+    resumedImageToolTasks.add(taskId)
+    const operation = String(node.data?.imageToolRetryOperation || '')
+    const previousHistory = Array.isArray(node.data?.imageToolHistory)
+      ? node.data.imageToolHistory
+      : []
+    waitForImageToolOperation(taskId)
+      .then((result) => completeImageToolOperation(node.id, operation, result, previousHistory))
+      .catch(async (error) => {
+        if (error?.code === 'IMAGE_TOOL_POLL_TIMEOUT') {
+          resumedImageToolTasks.delete(taskId)
+          return
+        }
+        await patchFreeCanvasNodeData(node.id, {
+          imageToolStatus: 'failed',
+          imageToolError: error?.message || '图片处理失败',
+        })
+      })
   }
 }
 
@@ -5288,6 +5370,10 @@ watch(filterEpisodeId, async (val) => {
 })
 
 watch(focusedNodeId, () => scheduleVirtualization())
+
+watch(allGraphNodes, () => {
+  resumePendingImageToolOperations()
+})
 
 watch(() => dramaId.value, () => {
   restoreNodeStatusSnapshot()

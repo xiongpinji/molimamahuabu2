@@ -166,7 +166,7 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
   return aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
-    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 180),
+    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });

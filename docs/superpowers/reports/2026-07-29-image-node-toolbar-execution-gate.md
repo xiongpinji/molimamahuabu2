@@ -29,7 +29,7 @@
 | 门禁 | 结果 |
 | --- | --- |
 | 前端完整测试 | 346 / 346 通过 |
-| 后端完整测试 | 475 / 475 通过 |
+| 后端完整测试 | 477 / 477 通过 |
 | 前端生产构建 | 通过 |
 | 后端生产依赖审计 | 0 个漏洞 |
 | 前端生产依赖审计 | 0 个漏洞 |
@@ -41,8 +41,8 @@
 | 生产镜像本地门禁 | 构建、健康、网页、版本、模型哈希、断网 CPU 抠图、透明通道均通过 |
 | 真实浏览器 + 临时后端回归 | 6 / 6 通过 |
 | 图片工具栏本地专用同链回归 | 1 / 1 通过 |
-| AIHubCC 真实付费同链门禁 | 2 / 2 通过（含本地链与真实供应商链） |
-| CI 画布浏览器门禁 | 20 / 20 通过，已包含图片工具栏专用同链 |
+| AIHubCC 真实付费同链门禁 | 13 / 13 个远程操作通过 |
+| 本地画布浏览器门禁 | 20 通过、1 个付费门禁按预期跳过、0 失败 |
 | 禁区扫描 | 生产源码无核验、侵权或版权检测入口 |
 | 密钥扫描 | 未发现疑似硬编码密钥或私钥 |
 | `git diff --check` | 通过 |
@@ -77,9 +77,9 @@
 - AIHubCC `gpt-image-2-3.5k` 能力走远程服务，不占用服务器 GPU。
 - 对口型没有进入镜像、运行路由或发布门禁。
 
-本地生产镜像 `molimama-web:image-node-aihubcc-local` 已构建为不可变摘要
-`sha256:69f00a20a6089379e9b4a29942e6659a634fa0952d556c1d2d3050adf329472b`，
-大小 `598,420,071` 字节。隔离容器健康、网页入口、rembg 版本和模型哈希均
+本地生产镜像 `molimama-image-node-toolbar:local` 已构建为不可变摘要
+`sha256:979dfabbabb94f439bfea97a6daeb4af34659edac35b7ecd1f18ab414e33d363`。
+隔离容器健康、网页入口、rembg 版本和模型哈希均
 通过；断开容器网络后生成 32×32 四通道透明 PNG。容器日志未
 发现测试密钥值、Python 堆栈或模型下载错误，测试容器已删除。
 
@@ -102,12 +102,16 @@ npm --prefix frontweb run test:e2e:image-node-real
 `IMAGE_NODE_E2E_TEMP_ROOT` 放在隔离磁盘，且关闭 Playwright trace，避免高分辨率
 产物挤占系统盘。
 
-2026-07-29 当前真实门禁结果为 2 / 2 通过：
+2026-07-29 当前真实门禁结果为 13 / 13 个远程操作通过：
 
-1. 本地裁剪成功、损坏输入失败回写、旧图保留、修复输入后重试成功及刷新恢复。
-2. 从图片节点点击“高清”，后端使用 `gpt-image-2-3.5k` 提交 AIHubCC 异步任务并
-   轮询完成，下载供应商图片并生成经 MIME、格式、尺寸、文件存在性校验的 PNG
-   派生资产，写回任务与画布节点，刷新后历史和结果仍存在。
+- 高清增强、细节纹理增强、扩图、标记修图、电影级光影校正。
+- 720 全景、全景场景、画面联想、角度联想、角色三视图、叙事九宫格。
+- 前一画面推演、后一画面推演。
+
+每项均从真实浏览器触发，后端使用 `gpt-image-2-3.5k` 提交 AIHubCC 异步任务，
+下载供应商图片并生成经 MIME、格式、尺寸、文件存在性校验的派生资产，写回任务、
+画布节点和历史记录，刷新后结果仍存在。失败路径另由本地同链门禁验证：损坏输入
+会写回失败状态、保留旧图，修复输入后可重试成功。
 
 本轮同时修复两项真实运行缺陷：
 
@@ -123,9 +127,11 @@ npm --prefix frontweb run test:e2e:image-node-real
 - `real_provider_verified=true`
 - `production_image_built=true`
 - `production_image_local_smoke_verified=true`
-- `local_product_complete=false`（目前仅“高清”具备真实供应商同链证据，其余远程功能
-  尚需逐项补齐 `real_browser_verified`、`backend_readback`、`artifact_verified`
-  与 `failure_writeback`）
+- `local_product_complete=true`（本轮约定范围内；核验与对口型不在范围）
+- `real_browser_verified=true`
+- `backend_readback=true`
+- `artifact_verified=true`
+- `failure_writeback=true`
 - `pr_created=false`
 - `ci_verified=false`
 - `production_deployed=false`

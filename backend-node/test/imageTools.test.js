@@ -3396,31 +3396,52 @@ test('720全景通过参考图供应商生成固定 2:1 等距柱状新素材', 
       background: '#657f42',
     },
   }).png().toBuffer();
-  for (const imageUrl of [
-    `data:image/png;base64,${wrongRatioBuffer.toString('base64')}`,
-    `data:image/png;base64,${fs.readFileSync(sourcePath).toString('base64')}`,
-  ]) {
-    const rejectedHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
-      cfg: { storage: { local_path: storageRoot } },
-      referenceImageTool: {
-        ...referenceImageTool,
-        async generate() {
-          return { image_url: imageUrl };
-        },
+  const normalizedHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return { image_url: `data:image/png;base64,${wrongRatioBuffer.toString('base64')}` };
       },
-    });
-    const rejectedRes = responseRecorder();
-    await rejectedHandlers.createOperation({
-      body: {
-        assetId: sourceAsset.id,
-        sourceNodeId: 'image-node-panorama-rejected',
-        operation: 'panorama',
-        parameters: { description: '' },
+    },
+  });
+  const normalizedRes = responseRecorder();
+  await normalizedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-panorama-normalized',
+      operation: 'panorama',
+      parameters: { description: '' },
+    },
+  }, normalizedRes);
+  assert.equal(normalizedRes.statusCode, 201, JSON.stringify(normalizedRes.payload));
+  const normalizedAsset = assetService.getById(db, normalizedRes.payload.data.resultAssetId);
+  const normalizedMetadata = await sharp(normalizedAsset.local_path).metadata();
+  assert.equal(normalizedMetadata.width, 3840);
+  assert.equal(normalizedMetadata.height, 1920);
+
+  const rejectedHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return {
+          image_url: `data:image/png;base64,${fs.readFileSync(sourcePath).toString('base64')}`,
+        };
       },
-    }, rejectedRes);
-    assert.equal(rejectedRes.statusCode, 503);
-    assert.equal(rejectedRes.payload.error.message, '720全景处理失败');
-  }
+    },
+  });
+  const rejectedRes = responseRecorder();
+  await rejectedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-panorama-rejected',
+      operation: 'panorama',
+      parameters: { description: '' },
+    },
+  }, rejectedRes);
+  assert.equal(rejectedRes.statusCode, 503);
+  assert.equal(rejectedRes.payload.error.message, '720全景处理失败');
 
   const derivedDir = path.join(storageRoot, 'derived');
   const temporaryFiles = fs.existsSync(derivedDir)

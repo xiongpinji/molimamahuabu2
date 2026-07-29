@@ -37,6 +37,7 @@ function begin(db, input) {
   })();
   return {
     reservationId: reservation.id,
+    model,
     operation: input.operation,
     resourceId,
   };

@@ -1854,10 +1854,6 @@ async function runPanorama({
     ) {
       fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
     }
-    const outputRatio = providerMetadata.width / providerMetadata.height;
-    if (Math.abs(outputRatio - 2) / 2 > 0.01) {
-      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
-    }
     outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
     const outputInfo = await sharp(providerDownloadPath, {
       failOn: 'warning',
@@ -2625,6 +2621,7 @@ async function createOperation(db, log, request, context = {}) {
       .run(context.tenantId || null, context.userId || null, task.id);
   }
   taskService.updateTaskStatus(db, task.id, 'processing', 10, '正在处理图片');
+  context.onTaskCreated?.(task);
 
   const outputPaths = [];
   try {

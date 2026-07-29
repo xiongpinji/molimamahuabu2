@@ -123,14 +123,43 @@ function routes(db, log, options = {}) {
           operation,
           resourceId: req.body?.assetId,
         });
-        const result = await imageToolService.createOperation(db, log, req.body || {}, {
+        let acceptedTask = null;
+        const operationPromise = imageToolService.createOperation(db, log, req.body || {}, {
           cfg: options.cfg,
           publicPlatformEnabled: Boolean(options.publicPlatformEnabled),
           tenantId: req.tenant?.id,
           userId: req.user?.id,
           modelTools,
           referenceImageTool,
+          onTaskCreated: (task) => {
+            acceptedTask = {
+              taskId: task.id,
+              status: 'processing',
+              operation,
+            };
+            if (billing?.reservationId || billing?.model) {
+              db.prepare(
+                'UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?',
+              ).run(billing?.reservationId || null, billing?.model || null, task.id);
+            }
+          },
         });
+        if (options.backgroundOperations && isRemoteReferenceOperation && acceptedTask) {
+          operationPromise.then(
+            () => imageToolBilling.settle(db, log, billing, 'completed'),
+            (error) => {
+              imageToolBilling.settle(db, log, billing, 'failed', error.message);
+              log.error('图片工具后台任务失败', {
+                task_id: acceptedTask.taskId,
+                operation,
+                error: error.message,
+              });
+            },
+          );
+          response.accepted(res, acceptedTask);
+          return;
+        }
+        const result = await operationPromise;
         imageToolBilling.settle(db, log, billing, 'completed');
         response.created(res, result);
       } catch (error) {
