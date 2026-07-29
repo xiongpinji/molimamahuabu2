@@ -9,7 +9,12 @@ const charactersApiSource = readFileSync(fileURLToPath(new URL('../src/api/chara
 const useCharactersSource = readFileSync(fileURLToPath(new URL('../src/composables/filmCreate/useCharacters.js', import.meta.url)), 'utf8')
 
 test('请求层支持静默错误，供素材库多来源探测避免全局错误弹窗', () => {
-  assert.match(requestSource, /if \(!error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+})
+
+test('未登录响应不作为普通错误重复弹窗', () => {
+  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
+  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
 })
 
 test('素材和音色 API 列表方法可透传请求配置', () => {

@@ -1,6 +1,11 @@
 <template>
   <div class="drama-detail">
-    <PlatformHeader :title="drama?.title || '剧集管理'" back-to="/" back-label="返回列表">
+    <PlatformHeader
+      :title="drama?.title || '剧集管理'"
+      back-to="/factory"
+      back-label="返回列表"
+      :show-theme="false"
+    >
       <template #actions>
         <el-button type="primary" class="btn-canvas-mode" @click="goCanvasMode">
           <el-icon><Grid /></el-icon>打开画布
@@ -149,13 +154,15 @@
 
       <!-- 本剧资源库（Tab 切换） -->
       <section class="section card res-section">
-        <nav class="res-tabbar">
+        <nav class="res-tabbar" aria-label="项目资源分类">
           <span class="res-tab-group-label">资源库</span>
           <button
             v-for="t in [{v:'lib-char',label:'角色'},{v:'lib-scene',label:'场景'},{v:'lib-prop',label:'道具'}]"
             :key="t.v"
+            type="button"
             class="res-tab res-tab--lib"
             :class="{ active: activeResTab === t.v }"
+            :aria-pressed="activeResTab === t.v"
             @click="activeResTab = t.v"
           >{{ t.label }}</button>
           <span class="res-tab-spacer"></span>
@@ -163,8 +170,10 @@
           <button
             v-for="t in [{v:'drama-char',label:'角色'},{v:'drama-scene',label:'场景'},{v:'drama-prop',label:'道具'}]"
             :key="t.v"
+            type="button"
             class="res-tab res-tab--drama"
             :class="{ active: activeResTab === t.v }"
+            :aria-pressed="activeResTab === t.v"
             @click="activeResTab = t.v"
           >{{ t.label }}</button>
         </nav>
@@ -330,7 +339,7 @@
     </main>
 
     <!-- 制作角色 编辑 -->
-    <el-dialog v-model="editDramaCharVisible" title="编辑制作角色" width="500px" @close="editDramaCharForm = null">
+    <el-dialog v-model="editDramaCharVisible" class="moli-dark-dialog" title="编辑制作角色" width="500px" @close="editDramaCharForm = null">
       <el-form v-if="editDramaCharForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -364,7 +373,7 @@
     </el-dialog>
 
     <!-- 制作场景 编辑 -->
-    <el-dialog v-model="editDramaSceneVisible" title="编辑制作场景" width="500px" @close="editDramaSceneForm = null">
+    <el-dialog v-model="editDramaSceneVisible" class="moli-dark-dialog" title="编辑制作场景" width="500px" @close="editDramaSceneForm = null">
       <el-form v-if="editDramaSceneForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -391,7 +400,7 @@
     </el-dialog>
 
     <!-- 制作道具 编辑 -->
-    <el-dialog v-model="editDramaPropVisible" title="编辑制作道具" width="500px" @close="editDramaPropForm = null">
+    <el-dialog v-model="editDramaPropVisible" class="moli-dark-dialog" title="编辑制作道具" width="500px" @close="editDramaPropForm = null">
       <el-form v-if="editDramaPropForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -418,7 +427,7 @@
     </el-dialog>
 
     <!-- 编辑角色 -->
-    <el-dialog v-model="editCharVisible" title="编辑角色库" width="480px" @close="editCharForm = null">
+    <el-dialog v-model="editCharVisible" class="moli-dark-dialog" title="编辑角色库" width="480px" @close="editCharForm = null">
       <el-form v-if="editCharForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -445,7 +454,7 @@
     </el-dialog>
 
     <!-- 编辑场景 -->
-    <el-dialog v-model="editSceneVisible" title="编辑场景库" width="480px" @close="editSceneForm = null">
+    <el-dialog v-model="editSceneVisible" class="moli-dark-dialog" title="编辑场景库" width="480px" @close="editSceneForm = null">
       <el-form v-if="editSceneForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -473,7 +482,7 @@
     </el-dialog>
 
     <!-- 编辑道具 -->
-    <el-dialog v-model="editPropVisible" title="编辑道具库" width="480px" @close="editPropForm = null">
+    <el-dialog v-model="editPropVisible" class="moli-dark-dialog" title="编辑道具库" width="480px" @close="editPropForm = null">
       <el-form v-if="editPropForm" label-width="80px">
         <el-form-item label="图片">
           <div class="lib-img-editor">
@@ -502,6 +511,7 @@
     <!-- 从素材库导入 -->
     <el-dialog
       v-model="importVisible"
+      class="moli-dark-dialog"
       :title="`从素材库导入${importType === 'char' ? '角色' : importType === 'scene' ? '场景' : '道具'}`"
       width="760px"
       destroy-on-close
@@ -1538,5 +1548,234 @@ html.light .btn-theme {
   --el-button-hover-bg-color: rgba(99, 102, 241, 0.15);
   --el-button-hover-border-color: rgba(99, 102, 241, 0.5);
   --el-button-hover-text-color: #4f46e5;
+}
+
+/* 项目详情固定为 OpenVideo 风格工作区，避免历史主题状态覆盖 */
+.drama-detail,
+html.light .drama-detail {
+  --el-color-primary: #ff7139;
+  --el-color-primary-light-3: #ff8f64;
+  --el-color-primary-light-5: #ffa888;
+  --el-color-primary-light-7: #6c3825;
+  --el-color-primary-light-8: #44291f;
+  --el-color-primary-light-9: #281b17;
+  --el-fill-color-blank: #141414;
+  --el-bg-color: #141414;
+  --el-bg-color-overlay: #181818;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c6c6c6;
+  --el-text-color-secondary: #8c8c8c;
+  color: #f5f5f5;
+  background: #080808;
+  background-image:
+    radial-gradient(ellipse 66% 42% at 50% -12%, rgba(255, 113, 57, 0.12) 0%, transparent 72%),
+    linear-gradient(rgba(255, 255, 255, .018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .018) 1px, transparent 1px);
+  background-size: auto, 40px 40px, 40px 40px;
+}
+
+.main {
+  width: min(1420px, calc(100vw - 56px));
+  max-width: none;
+  padding: 32px 0 64px;
+  gap: 18px;
+}
+
+.section.card,
+html.light .section.card {
+  padding: 24px 26px;
+  border: 1px solid #282828;
+  border-radius: 18px;
+  background: rgba(17, 17, 17, .96);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .25);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.section.card:hover,
+html.light .section.card:hover {
+  border-color: #383838;
+  box-shadow: 0 16px 46px rgba(0, 0, 0, .32);
+}
+
+.section-title,
+html.light .section-title {
+  color: #f5f5f5;
+  font-size: 1.05rem;
+  letter-spacing: -.01em;
+}
+
+.section-count,
+.empty-tip,
+html.light .section-count,
+html.light .empty-tip {
+  color: #7f7f7f;
+}
+
+.drama-detail :deep(.el-form-item__label),
+html.light .drama-detail :deep(.el-form-item__label) {
+  color: #a8a8a8 !important;
+}
+
+.drama-detail :deep(.el-input__wrapper),
+.drama-detail :deep(.el-select__wrapper),
+.drama-detail :deep(.el-textarea__inner),
+.drama-detail :deep(.el-input-number),
+html.light .drama-detail :deep(.el-input__wrapper),
+html.light .drama-detail :deep(.el-select__wrapper),
+html.light .drama-detail :deep(.el-textarea__inner),
+html.light .drama-detail :deep(.el-input-number) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  border-color: #303030 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+
+.drama-detail :deep(.el-input__wrapper:hover),
+.drama-detail :deep(.el-select__wrapper:hover),
+.drama-detail :deep(.el-textarea__inner:hover),
+html.light .drama-detail :deep(.el-input__wrapper:hover),
+html.light .drama-detail :deep(.el-select__wrapper:hover),
+html.light .drama-detail :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px #484848 inset !important;
+}
+
+.drama-detail :deep(.el-input__wrapper.is-focus),
+.drama-detail :deep(.el-select__wrapper.is-focused),
+.drama-detail :deep(.el-textarea__inner:focus),
+html.light .drama-detail :deep(.el-input__wrapper.is-focus),
+html.light .drama-detail :deep(.el-select__wrapper.is-focused),
+html.light .drama-detail :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px #ff7139 inset !important;
+}
+
+.drama-detail :deep(.el-input__inner),
+.drama-detail :deep(.el-select__selected-item),
+.drama-detail :deep(.el-textarea__inner),
+html.light .drama-detail :deep(.el-input__inner),
+html.light .drama-detail :deep(.el-select__selected-item),
+html.light .drama-detail :deep(.el-textarea__inner) {
+  color: #e8e8e8 !important;
+}
+
+.drama-detail :deep(.el-input__inner::placeholder),
+.drama-detail :deep(.el-textarea__inner::placeholder),
+html.light .drama-detail :deep(.el-input__inner::placeholder),
+html.light .drama-detail :deep(.el-textarea__inner::placeholder) {
+  color: #686868 !important;
+}
+
+.btn-canvas-mode {
+  box-shadow: 0 10px 28px rgba(255, 113, 57, .18);
+}
+
+.btn-production-mode {
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #343434;
+  --el-button-text-color: #c7c7c7;
+  --el-button-hover-bg-color: rgba(255, 113, 57, .1);
+  --el-button-hover-border-color: rgba(255, 113, 57, .55);
+  --el-button-hover-text-color: #ff9a72;
+}
+
+.episode-card,
+html.light .episode-card {
+  border-color: #2a2a2a;
+  background: #151515;
+}
+
+.episode-card::before,
+html.light .episode-card::before {
+  background: linear-gradient(135deg, rgba(255, 113, 57, .08), transparent 62%);
+}
+
+.episode-card:hover,
+.episode-card:focus-visible,
+html.light .episode-card:hover,
+html.light .episode-card:focus-visible {
+  outline: none;
+  border-color: rgba(255, 113, 57, .62);
+  background: #191919;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, .38), 0 0 0 1px rgba(255, 113, 57, .08);
+}
+
+.episode-title,
+html.light .episode-title {
+  color: #f1f1f1;
+}
+
+.ep-stat-num,
+.episode-card:hover .episode-enter,
+.episode-card:focus-visible .episode-enter,
+html.light .episode-card:hover .episode-enter,
+html.light .episode-card:focus-visible .episode-enter {
+  color: #ff8f64;
+}
+
+.res-tabbar {
+  border-bottom-color: #282828;
+}
+
+.res-tab-group-label--prod {
+  color: #8c8c8c;
+}
+
+.res-tab:hover,
+html.light .res-tab:hover {
+  color: #e8e8e8;
+  background: rgba(255, 255, 255, .035);
+}
+
+.res-tab:focus-visible {
+  outline: 2px solid #ff7139;
+  outline-offset: -3px;
+  border-radius: 8px 8px 0 0;
+}
+
+.res-tab--lib.active,
+.res-tab--drama.active,
+html.light .res-tab--lib.active,
+html.light .res-tab--drama.active {
+  color: #ff8f64;
+}
+
+.res-tab--lib.active::after,
+.res-tab--drama.active::after,
+html.light .res-tab--lib.active::after,
+html.light .res-tab--drama.active::after {
+  background: #ff7139;
+}
+
+.library-item,
+.drama-res-item,
+html.light .library-item,
+html.light .drama-res-item {
+  border-color: #282828;
+  background: #141414;
+}
+
+.library-item-name,
+.drama-res-name,
+html.light .library-item-name,
+html.light .drama-res-name {
+  color: #f0f0f0;
+}
+
+@media (max-width: 760px) {
+  .main {
+    width: min(100% - 28px, 1420px);
+    padding-top: 20px;
+  }
+
+  .section.card,
+  html.light .section.card {
+    padding: 18px;
+  }
+
+  .res-tab-spacer {
+    min-width: 12px;
+  }
 }
 </style>

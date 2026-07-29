@@ -1,13 +1,34 @@
 <template>
-  <main class="account-admin">
-    <PlatformHeader title="账号与权限" back-to="/" back-label="返回" />
-    <section class="content">
-      <header>
+  <AdminWorkspaceShell
+    title="账号与权限"
+    eyebrow="平台治理"
+    description="管理平台角色、账号状态和登录会话。所有变更均由服务端鉴权并记录审计。"
+  >
+    <template #actions>
+      <el-button :loading="loading" @click="loadUsers">刷新账号</el-button>
+    </template>
+
+    <section class="account-summary" aria-label="账号概览">
+      <article>
+        <span>账号总数</span>
+        <strong>{{ users.length }}</strong>
+      </article>
+      <article>
+        <span>正常使用</span>
+        <strong>{{ activeUserCount }}</strong>
+      </article>
+      <article>
+        <span>已暂停</span>
+        <strong>{{ disabledUserCount }}</strong>
+      </article>
+    </section>
+
+    <section class="account-panel" aria-labelledby="account-list-title">
+      <header class="panel-heading">
         <div>
-          <h1>账号与权限</h1>
-          <p>管理平台角色、账号状态和登录会话。所有变更均由服务端鉴权并记录审计。</p>
+          <h2 id="account-list-title">平台账号</h2>
+          <p>角色与状态变更会立即影响后续登录和现有会话。</p>
         </div>
-        <el-button :loading="loading" @click="loadUsers">刷新</el-button>
       </header>
 
       <el-alert
@@ -59,13 +80,13 @@
         </el-table-column>
       </el-table>
     </section>
-  </main>
+  </AdminWorkspaceShell>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import PlatformHeader from '@/components/PlatformHeader.vue'
+import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import {
   changePlatformAccountRole,
   changePlatformAccountStatus,
@@ -83,7 +104,8 @@ const loading = ref(false)
 const saving = ref('')
 const roles = [
   { label: '普通用户', value: 'user' },
-  { label: '管理员', value: 'admin' },
+  { label: '总管理员', value: 'admin' },
+  { label: '兑换码管理员', value: 'redeem_admin' },
   { label: '运营', value: 'ops' },
   { label: '客服', value: 'support' },
   { label: '只读', value: 'read_only' },
@@ -91,6 +113,8 @@ const roles = [
 const canRole = computed(() => canPlatformAccount(currentRole, ACCOUNT_PERMISSIONS.ROLE))
 const canStatus = computed(() => canPlatformAccount(currentRole, ACCOUNT_PERMISSIONS.STATUS))
 const canForceLogout = computed(() => canPlatformAccount(currentRole, ACCOUNT_PERMISSIONS.FORCE_LOGOUT))
+const activeUserCount = computed(() => users.value.filter((user) => user.status === 'active').length)
+const disabledUserCount = computed(() => users.value.filter((user) => user.status !== 'active').length)
 
 async function loadUsers() {
   loading.value = true
@@ -142,14 +166,29 @@ onMounted(loadUsers)
 </script>
 
 <style scoped>
-.account-admin { min-height: 100vh; padding: 0 20px 56px; color: #f5f5f7; background: #111214; }
-.content { width: min(1100px, 100%); margin: 24px auto 0; padding: 22px; border: 1px solid #303136; border-radius: 16px; background: #1b1c20; }
-header { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
-h1 { margin: 0 0 8px; }
-p { margin: 0; color: #a8a9af; }
+.account-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.account-summary article,
+.account-panel {
+  border: 1px solid #292929;
+  border-radius: 18px;
+  background: rgba(18, 18, 18, .96);
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .22);
+}
+.account-summary article { display: grid; gap: 7px; padding: 18px 20px; }
+.account-summary span { color: #858585; font-size: 12px; }
+.account-summary strong { font-size: 24px; }
+.account-panel { padding: 22px; overflow: hidden; }
+.panel-heading { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+.panel-heading h2 { margin: 0 0 7px; font-size: 18px; }
+.panel-heading p { margin: 0; color: #8f8f8f; font-size: 13px; }
 .el-alert { margin-bottom: 18px; }
 @media (max-width: 680px) {
-  .account-admin { padding-inline: 10px; }
-  .content { padding: 14px; overflow-x: auto; }
+  .account-summary { grid-template-columns: 1fr; }
+  .account-panel { padding: 14px; overflow-x: auto; }
 }
 </style>

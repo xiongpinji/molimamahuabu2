@@ -44,7 +44,28 @@ function routes(db, log) {
       } catch (error) {
         if (error.code === 'TENANT_NOT_FOUND') return response.notFound(res, '租户不存在');
         if (['INVALID_TENANT_ROLE', 'USER_NOT_FOUND'].includes(error.code)) return response.badRequest(res, error.message);
+        if (error.code === 'TENANT_ROLE_FORBIDDEN') return response.error(res, 403, error.code, error.message);
+        if (error.code === 'LAST_TENANT_OWNER') return response.error(res, 409, error.code, error.message);
         log.error('tenant member add', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    changeMemberRole: (req, res) => {
+      try {
+        response.success(res, tenants.changeMemberRole(
+          db,
+          req.params.tenantId,
+          req.user.id,
+          req.params.userId,
+          req.body?.role,
+        ));
+      } catch (error) {
+        if (error.code === 'TENANT_NOT_FOUND') return response.notFound(res, '租户不存在');
+        if (error.code === 'USER_NOT_FOUND') return response.notFound(res, '成员不存在');
+        if (error.code === 'INVALID_TENANT_ROLE') return response.badRequest(res, error.message);
+        if (error.code === 'TENANT_ROLE_FORBIDDEN') return response.error(res, 403, error.code, error.message);
+        if (error.code === 'LAST_TENANT_OWNER') return response.error(res, 409, error.code, error.message);
+        log.error('tenant member role change', { error: error.message });
         response.internalError(res, error.message);
       }
     },

@@ -134,6 +134,12 @@ test('G005 程序化角色库、空对象和群众阵列进入统一场景系统
   assert.match(stageSource, /parentId: groupId/)
 })
 
+test('独立画布程序化角色进入角色列表并绑定动作播放对象', () => {
+  assert.match(stageSource, /timeline\.value\.objects\.filter\(\(entry\) => entry\.type === 'humanoid'\)/)
+  assert.match(stageSource, /entry\.assetRef\?\.characterId \|\| entry\.id/)
+  assert.match(stageSource, /characterObjects\.set\(characterId, humanoid\)/)
+})
+
 test('DR-002 默认程序化角色使用光滑人体曲面而不是方块人偶', () => {
   assert.match(stageSource, /const makeEllipsoid =/)
   assert.match(stageSource, /const makeTapered =/)
@@ -282,4 +288,10 @@ test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和�
   assert.match(stageSource, /clearStageObjects\(\)/)
   assert.match(stageSource, /viewer\.value\?\.dispose\?\.\(true\)/)
   assert.match(stageSource, /URL\.revokeObjectURL\(aiImportPreview\.value\)/)
+})
+
+test('导演台默认展示角色库，并提供女性角色与自由旋转快捷入口', () => {
+  assert.match(stageSource, /<details[^>]*class="role-create-library"[^>]*open/)
+  assert.match(stageSource, /aria-label="添加女性角色"[\s\S]*ROLE_ARCHETYPES\[1\]/)
+  assert.match(stageSource, /aria-label="旋转工具"[\s\S]*setTransformMode\('rotate'\)/)
 })

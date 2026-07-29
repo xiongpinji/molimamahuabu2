@@ -24,6 +24,7 @@ chmod 600 .env.production
 - `APP_IMAGE` 使用通过 `Web Production Image` 工作流验证并发布的不可变 `sha-<commit-sha>` 标签，不使用 `latest`。
 - `PLATFORM_JWT_SECRET` 与 `PLATFORM_ADMIN_TOKEN` 分别生成至少 32 字符的随机值，且不得相同。
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 填写首管理员邮箱。
+- `PLATFORM_EMAIL_VERIFICATION_ENABLED=true`，并填写真实的 `SMTP_HOST`、`SMTP_PORT`、`SMTP_SECURE`、`SMTP_USER`、`SMTP_PASSWORD` 与 `SMTP_FROM`。邮箱服务同时用于注册验证码和已有用户找回密码，即使关闭新用户注册也不能删除。
 - 首次启动保持 `PLATFORM_REGISTRATION_ENABLED=false`。
 
 检查最终 Compose 配置时不要把输出保存到公开日志：
@@ -49,10 +50,11 @@ Caddy 会自动申请和续期 HTTPS 证书。证书申请要求域名已正确�
 
 首次数据库没有用户。仅在创建首管理员期间：
 
-1. 把 `.env.production` 的 `PLATFORM_REGISTRATION_ENABLED` 改为 `true`。
-2. 重建应用容器，使用 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 对应邮箱注册并登录。
-3. 携带登录 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`。
-4. 确认获得管理员角色后，立即把公开注册改回 `false` 并重建应用容器。
+1. 先确认 SMTP 已配置，并用独立测试邮箱验证能收到验证码。
+2. 把 `.env.production` 的 `PLATFORM_REGISTRATION_ENABLED` 改为 `true`。
+3. 重建应用容器，使用 `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 对应邮箱完成验证码注册并登录。
+4. 携带登录 Bearer JWT 和 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`。
+5. 确认获得管理员角色后，立即把公开注册改回 `false` 并重建应用容器；找回密码仍保持可用。
 
 管理员令牌不得写入浏览器持久存储、前端构建变量或共享脚本。
 

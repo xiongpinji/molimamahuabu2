@@ -33,6 +33,15 @@ const realAihubccModel = String(process.env.AIHUBCC_IMAGE_MODEL || '').trim()
 test.setTimeout(90_000)
 test.describe.configure({ mode: 'serial' })
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'canvas-e2e-session',
+      user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+    }))
+  })
+})
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer()

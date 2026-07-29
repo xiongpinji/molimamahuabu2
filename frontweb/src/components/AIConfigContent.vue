@@ -114,9 +114,12 @@
                 <span v-else class="no-default">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="240" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="openTest(row)">测试</el-button>
+                <el-button link type="primary" size="small" @click="openTest(row)">
+                  {{ row.service_type === 'tts' && row.provider === 'minimax' ? '测试合成' : '测试' }}
+                </el-button>
+                <el-button link type="primary" size="small" @click="openPricing(row)">设置定价</el-button>
                 <el-button link type="primary" size="small" @click="onRowEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
                 <el-button v-if="!vendorLock.enabled" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
               </template>
@@ -216,6 +219,7 @@
     <!-- 添加/编辑 -->
     <el-dialog
       v-model="dialogVisible"
+      class="moli-dark-dialog"
       :title="vendorLock.enabled ? '修改 API Key / 默认模型' : (editingId ? '编辑配置' : '添加配置')"
       width="520px"
       :close-on-click-modal="false"
@@ -371,7 +375,7 @@
         />
 
         <!-- 接口规范帮助 Dialog -->
-        <el-dialog v-model="showProtocolHelp" title="接口规范说明" width="700px" top="5vh">
+        <el-dialog v-model="showProtocolHelp" class="moli-dark-dialog" title="接口规范说明" width="700px" top="5vh">
           <div class="protocol-help">
             <div class="ph-section-title">🖼 图片 / 分镜图 协议</div>
             <el-collapse accordion>
@@ -715,8 +719,7 @@ input_reference = (图片文件，可选)</pre>
                 <el-tooltip placement="top" popper-class="cfg-tip-popper">
                   <template #content>
                     <div class="cfg-tip-content">
-                      MiniMax 账号的 GroupId，调用 T2A v2 接口时附在 URL 参数里。<br>
-                      登录 <b>platform.minimaxi.com</b> → 账户设置 → 即可查看 GroupId。
+                      当前 MiniMax T2A v2 接口仅需 API Key；GroupId 只用于兼容旧配置。
                     </div>
                   </template>
                   <el-icon class="tip-icon"><QuestionFilled /></el-icon>
@@ -724,7 +727,7 @@ input_reference = (图片文件，可选)</pre>
               </span>
             </template>
             <el-input v-model="form.group_id" placeholder="MiniMax GroupId，如 1234567890" />
-            <p class="field-tip">仅 MiniMax T2A 需要此字段。</p>
+            <p class="field-tip">旧版 MiniMax 配置兼容字段，新接入可留空。</p>
           </el-form-item>
         </template>
 
@@ -906,6 +909,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置通义 -->
     <el-dialog
       v-model="oneKeyTongyiVisible"
+      class="moli-dark-dialog"
       title="一键配置通义千问 / 万象（不推荐）"
       width="520px"
       :close-on-click-modal="false"
@@ -955,6 +959,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置火山 -->
     <el-dialog
       v-model="oneKeyVolcVisible"
+      class="moli-dark-dialog"
       title="一键配置火山引擎（方舟）"
       width="520px"
       :close-on-click-modal="false"
@@ -1004,6 +1009,7 @@ input_reference = (图片文件，可选)</pre>
     <!-- 一键配置 Agnes -->
     <el-dialog
       v-model="oneKeyAgnesVisible"
+      class="moli-dark-dialog"
       title="一键配置 Agnes AI"
       width="520px"
       :close-on-click-modal="false"
@@ -1054,7 +1060,7 @@ input_reference = (图片文件，可选)</pre>
       v-model="jimeng2AssetsDialogVisible"
       title="素材库列表（GET /api/business/v1/assets）"
       width="720px"
-      class="jimeng2-assets-dialog"
+      class="jimeng2-assets-dialog moli-dark-dialog"
       destroy-on-close
       @closed="onJimeng2AssetsDialogClosed"
     >
@@ -1087,7 +1093,7 @@ input_reference = (图片文件，可选)</pre>
     </el-dialog>
 
     <!-- 测试连接 -->
-    <el-dialog v-model="testVisible" title="测试连接" width="420px">
+    <el-dialog v-model="testVisible" class="moli-dark-dialog" title="测试连接" width="420px">
       <p v-if="testResult === null">正在测试…</p>
       <template v-else-if="testResult">
         <el-alert
@@ -1095,6 +1101,14 @@ input_reference = (图片文件，可选)</pre>
           type="success"
           title="连接成功"
           description="API Key 有效，网络已连通。提示：测试仅验证 Key 合法性，不实际生成图片/视频，模型名填错、账号未开通该功能或配额不足时实际生成仍可能报错。"
+          show-icon
+          :closable="false"
+        />
+        <el-alert
+          v-else-if="testServiceType === 'tts' && testProvider === 'minimax'"
+          type="success"
+          title="测试合成成功"
+          description="已通过 MiniMax 生成极短测试音频。该操作可能产生供应商费用，但不会写入平台用户积分账单。"
           show-icon
           :closable="false"
         />
@@ -1114,7 +1128,7 @@ input_reference = (图片文件，可选)</pre>
     </el-dialog>
 
     <!-- 一键换Key（锁定模式） -->
-    <el-dialog v-model="bulkKeyVisible" title="一键换Key" width="440px" :close-on-click-modal="false">
+    <el-dialog v-model="bulkKeyVisible" class="moli-dark-dialog" title="一键换Key" width="440px" :close-on-click-modal="false">
       <el-alert
         type="warning"
         :closable="false"
@@ -1143,6 +1157,7 @@ input_reference = (图片文件，可选)</pre>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
@@ -1163,6 +1178,12 @@ import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
+const router = useRouter()
+
+function openPricing(row) {
+  const model = row.default_model || (Array.isArray(row.model) ? row.model[0] : '')
+  router.push({ name: 'billing-admin', query: { tab: 'models', model } })
+}
 
 // ---- 生成设置 ----
 const genConcurrencyInput = ref(3)
@@ -1349,6 +1370,7 @@ const rules = computed(() => ({
 const testVisible = ref(false)
 const testResult = ref(null)
 const testServiceType = ref('')
+const testProvider = ref('')
 const testError = ref('')
 const oneKeyTongyiVisible = ref(false)
 const oneKeyTongyiKey = ref('')
@@ -1425,7 +1447,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
   ],
   tts: [
-    { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
+    { id: 'minimax', name: 'MiniMax T2A', models: ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo'] },
   ],
   jimeng2_character_auth: [
     { id: 'jimeng_material_api', name: '即梦业务素材 API（/api/business/v1）', models: ['-'] },
@@ -1599,7 +1621,7 @@ const endpointPreviewInfo = computed(() => {
     submitPath = '/chat/completions'
   } else if (service_type === 'tts') {
     if (p === 'minimax') {
-      submitPath = '/t2a_v2?GroupId={group_id}'
+      submitPath = '/t2a_v2'
     } else {
       submitPath = endpoint || '/tts'
     }
@@ -2141,10 +2163,22 @@ async function openTest(row) {
     ElMessage.info('SD2 资产库请在「SD2 资产管理」标签页使用「刷新列表」验证连接。')
     return
   }
+  if (row.service_type === 'tts' && row.provider === 'minimax') {
+    try {
+      await ElMessageBox.confirm(
+        'MiniMax 暂无只读连接探针，本次会生成极短测试音频，可能产生供应商费用；不会扣除平台用户积分。是否继续？',
+        '确认测试合成',
+        { type: 'warning', confirmButtonText: '继续测试', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
   testVisible.value = true
   testResult.value = null
   testError.value = ''
   testServiceType.value = row.service_type || 'text'
+  testProvider.value = row.provider || ''
   try {
     await aiAPI.testConnection({
       config_id: row.id,

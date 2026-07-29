@@ -133,6 +133,27 @@ function getUserById(db, userId) {
   return publicUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(String(userId)));
 }
 
+function getUserByEmail(db, emailValue) {
+  ensureSchema(db);
+  const email = normalizeEmail(emailValue);
+  return publicUser(db.prepare('SELECT * FROM platform_users WHERE email = ?').get(email));
+}
+
+function resetPassword(db, emailValue, passwordValue) {
+  ensureSchema(db);
+  const email = normalizeEmail(emailValue);
+  const password = validatePassword(passwordValue);
+  const salt = crypto.randomBytes(16).toString('hex');
+  const result = db.prepare(`
+    UPDATE platform_users
+    SET password_hash = ?, password_salt = ?,
+      token_version = token_version + 1, updated_at = ?
+    WHERE email = ? AND status = 'active'
+  `).run(derivePassword(password, salt), salt, new Date().toISOString(), email);
+  if (result.changes !== 1) throw authError('VERIFICATION_INVALID', '验证码无效或已过期');
+  return getUserByEmail(db, email);
+}
+
 function getTokenVersion(db, userId) {
   ensureSchema(db);
   const row = db.prepare('SELECT token_version FROM platform_users WHERE id = ?').get(String(userId));
@@ -169,8 +190,11 @@ module.exports = {
   bootstrapFirstAdmin,
   authenticate,
   getUserById,
+  getUserByEmail,
   getTokenVersion,
+  resetPassword,
   issueToken,
   verifyToken,
   validSecret,
+  normalizeEmail,
 };

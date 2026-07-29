@@ -4,6 +4,10 @@ export function listModelPrices() {
   return request.get('/billing/prices')
 }
 
+export function listGenerationCatalog() {
+  return request.get('/billing/catalog')
+}
+
 export function updateModelPrice(model, value) {
   const data = value && typeof value === 'object' ? value : { credits: value }
   return request.put(`/billing/prices/${encodeURIComponent(model)}`, data)
@@ -35,6 +39,18 @@ export function adjustTenantCredits(tenantId, data) {
 
 export function listAdminCreditTransactions(params) {
   return request.get('/billing/admin/credit-transactions', { params })
+}
+
+export function getLedgerSettings() {
+  return request.get('/billing/admin/ledger/settings')
+}
+
+export function updateLedgerSettings(data) {
+  return request.put('/billing/admin/ledger/settings', data)
+}
+
+export function getLedgerReport(period = 'day') {
+  return request.get('/billing/admin/ledger/report', { params: { period } })
 }
 
 export function listRedeemCodes() {

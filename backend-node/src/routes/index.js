@@ -20,6 +20,7 @@ const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const imageToolRoutes = require('./imageTools');
 const audioRoutes = require('./audio');
+const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
@@ -28,6 +29,7 @@ const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
+const { createEmailService } = require('../services/emailService');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
@@ -53,9 +55,19 @@ function setupRouter(cfg, db, log) {
     token: process.env.PLATFORM_ADMIN_TOKEN,
     requireRole: false,
   });
+  const registrationEnabled = /^(1|true|yes)$/i.test(
+    String(process.env.PLATFORM_REGISTRATION_ENABLED || ''),
+  );
+  const emailVerificationEnabled = publicPlatformEnabled
+    && !/^(0|false|no)$/i.test(String(process.env.PLATFORM_EMAIL_VERIFICATION_ENABLED || 'true'));
   const auth = authRoutes(db, {
-    registrationEnabled: /^(1|true|yes)$/i.test(String(process.env.PLATFORM_REGISTRATION_ENABLED || '')),
+    registrationEnabled,
+    emailVerificationEnabled,
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    verificationSecret: process.env.PLATFORM_VERIFICATION_SECRET || process.env.PLATFORM_JWT_SECRET,
+    secureCookies: publicPlatformEnabled
+      && !/^(0|false|no)$/i.test(String(process.env.PLATFORM_SECURE_COOKIES || 'true')),
+    mailer: createEmailService(process.env),
     bootstrapAdminEmail: publicPlatformEnabled
       ? process.env.PLATFORM_BOOTSTRAP_ADMIN_EMAIL
       : undefined,
@@ -67,6 +79,8 @@ function setupRouter(cfg, db, log) {
     permission,
     { enabled: publicPlatformEnabled },
   );
+  const requireBillingManager = requirePlatformPermission(PERMISSIONS.BILLING_MANAGE);
+  const requireRedeemCodeManager = requirePlatformPermission(PERMISSIONS.REDEEM_CODES_MANAGE);
   const authRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'auth',
@@ -90,46 +104,56 @@ function setupRouter(cfg, db, log) {
   });
   const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
 
+  r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
   r.post('/auth/login', authRateLimit, auth.login);
+  r.post('/auth/logout', auth.logout);
+  r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
+  r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
+  r.post('/auth/password/change', authRateLimit, auth.changePassword);
   r.get('/auth/me', auth.me);
   r.get('/tenants', tenants.list);
   r.post('/tenants', tenants.create);
   r.get('/tenants/:tenantId/members', tenants.listMembers);
   r.post('/tenants/:tenantId/members', tenants.addMember);
+  r.patch('/tenants/:tenantId/members/:userId/role', tenants.changeMemberRole);
   r.delete('/tenants/:tenantId/members/:userId', tenants.removeMember);
   r.get('/platform-admin/users', requirePlatformPermission(PERMISSIONS.USERS_READ), platformAccounts.listUsers);
   r.patch('/platform-admin/users/:userId/role', requirePlatformPermission(PERMISSIONS.USERS_ROLE), platformAccounts.changeRole);
   r.patch('/platform-admin/users/:userId/status', requirePlatformPermission(PERMISSIONS.USERS_STATUS), platformAccounts.changeStatus);
   r.post('/platform-admin/users/:userId/force-logout', requirePlatformPermission(PERMISSIONS.USERS_FORCE_LOGOUT), platformAccounts.forceLogout);
   // 平台管理接口不依赖当前租户，避免管理员因浏览器残留了无效租户 ID 而无法进入后台。
-  r.get('/billing/admin/users', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_READ), billing.listAdminUsers);
-  r.put('/billing/admin/users/:userId', requireAdmin, requirePlatformPermission(PERMISSIONS.USERS_ROLE), billing.updateAdminUser);
-  r.get('/billing/admin/tenants', requireAdmin, billing.listAdminTenants);
-  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, billing.adjustAdminTenantCredits);
-  r.get('/billing/admin/credit-transactions', requireAdmin, billing.listAdminCreditTransactions);
-  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, billing.listReconciliationAnomalies);
-  r.get('/billing/admin/reconciliation/history', requireAdmin, billing.listReconciliationHistory);
-  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, billing.refundReconciliationReservation);
-  r.get('/billing/admin/redeem-codes', requireAdmin, billing.listAdminRedeemCodes);
-  r.post('/billing/admin/redeem-codes', requireAdmin, billing.createAdminRedeemCode);
-  r.post('/billing/admin/redeem-codes/batch', requireAdmin, billing.createAdminRedeemCodes);
-  r.get('/billing/admin/redeem-codes/:codeId/usages', requireAdmin, billing.listAdminRedeemCodeUsages);
-  r.put('/billing/admin/redeem-codes/:codeId', requireAdmin, billing.updateAdminRedeemCode);
-  r.get('/billing/admin/plans', requireAdmin, billing.listAdminPlans);
-  r.put('/billing/plans/:planId', requireAdmin, billing.upsertPlan);
-  r.get('/billing/prices', requireAdmin, billing.listPrices);
-  r.put('/billing/prices/:model', requireAdmin, billing.updatePrice);
+  r.get('/billing/admin/users', requireAdmin, requireBillingManager, requirePlatformPermission(PERMISSIONS.USERS_READ), billing.listAdminUsers);
+  r.put('/billing/admin/users/:userId', requireAdmin, requireBillingManager, requirePlatformPermission(PERMISSIONS.USERS_ROLE), billing.updateAdminUser);
+  r.get('/billing/admin/tenants', requireAdmin, requireBillingManager, billing.listAdminTenants);
+  r.post('/billing/admin/tenants/:tenantId/credits', requireAdmin, requireBillingManager, billing.adjustAdminTenantCredits);
+  r.get('/billing/admin/credit-transactions', requireAdmin, requireBillingManager, billing.listAdminCreditTransactions);
+  r.get('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.getLedgerSettings);
+  r.put('/billing/admin/ledger/settings', requireAdmin, requireBillingManager, billing.updateLedgerSettings);
+  r.get('/billing/admin/ledger/report', requireAdmin, requireBillingManager, billing.getLedgerReport);
+  r.get('/billing/admin/reconciliation/anomalies', requireAdmin, requireBillingManager, billing.listReconciliationAnomalies);
+  r.get('/billing/admin/reconciliation/history', requireAdmin, requireBillingManager, billing.listReconciliationHistory);
+  r.post('/billing/admin/reconciliation/:reservationId/refund', requireAdmin, requireBillingManager, billing.refundReconciliationReservation);
+  r.get('/billing/admin/redeem-codes', requireRedeemCodeManager, billing.listAdminRedeemCodes);
+  r.post('/billing/admin/redeem-codes', requireRedeemCodeManager, billing.createAdminRedeemCode);
+  r.post('/billing/admin/redeem-codes/batch', requireRedeemCodeManager, billing.createAdminRedeemCodes);
+  r.get('/billing/admin/redeem-codes/:codeId/usages', requireRedeemCodeManager, billing.listAdminRedeemCodeUsages);
+  r.put('/billing/admin/redeem-codes/:codeId', requireRedeemCodeManager, billing.updateAdminRedeemCode);
+  r.get('/billing/admin/plans', requireAdmin, requireBillingManager, billing.listAdminPlans);
+  r.put('/billing/plans/:planId', requireAdmin, requireBillingManager, billing.upsertPlan);
+  r.get('/billing/prices', requireAdmin, requireBillingManager, billing.listPrices);
+  r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
   r.use(modelGenerationGuard);
   r.get('/billing/account', billing.getAccount);
+  r.get('/billing/catalog', billing.listPublicCatalog);
   r.get('/billing/audit-events', billing.listAuditEvents);
   r.post('/billing/redeem', billing.redeemCredits);
   r.get('/billing/credit-transactions', billing.listCreditTransactions);
@@ -140,6 +164,11 @@ function setupRouter(cfg, db, log) {
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
+  r.get('/canvas/model-catalog', (req, res) => {
+    const catalog = require('../services/canvasModelCatalogService').list(db);
+    response.success(res, catalog);
+  });
+  r.get('/audio-models', aiConfig.listPublicAudioModels);
   
   const uploadService = require('../services/uploadService');
   const charLibrary = characterLibraryRoutes(db, cfg, log);
@@ -160,6 +189,7 @@ function setupRouter(cfg, db, log) {
     backgroundOperations: true,
   });
   const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
+  const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
   r.get('/voice-catalog', voiceCatalog.list);
@@ -223,7 +253,7 @@ function setupRouter(cfg, db, log) {
   r.delete('/dramas/:id', drama.deleteDrama);
 
   // ---------- ai-configs ----------
-  r.use('/ai-configs', requireAdmin);
+  r.use('/ai-configs', requireBillingManager);
   r.get('/ai-configs', aiConfig.list);
   r.post('/ai-configs', aiConfig.create);
   r.post('/ai-configs/test', aiConfig.testConnection);
@@ -473,6 +503,7 @@ function setupRouter(cfg, db, log) {
   // ---------- audio ----------
   r.post('/audio/extract', audio.extract);
   r.post('/audio/extract/batch', audio.extractBatch);
+  r.post('/canvas/text/generate', canvasText.generate);
 
   // ---------- settings ----------
   r.get('/settings/language', settings.getLanguage);

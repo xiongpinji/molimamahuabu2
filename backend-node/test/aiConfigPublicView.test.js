@@ -19,7 +19,7 @@ test('AI 配置公开视图不返回供应商密钥', () => {
   assert.equal(settings.deepseek_thinking, 'enabled');
 });
 
-test('普通用户视频模型接口只返回可选模型字段', () => {
+test('普通用户视频模型接口只返回管理员启用的模型名称', () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE ai_service_configs (
@@ -62,16 +62,11 @@ test('普通用户视频模型接口只返回可选模型字段', () => {
   aiConfigRoutes(db, {}, {}).listPublicVideoModels({ query: {} }, res);
 
   assert.equal(payload.success, true);
-  assert.equal(payload.data.length, 1);
-  assert.deepEqual(payload.data[0].model, ['grok-video-3', 'grok-video-3-fast']);
-  assert.equal(payload.data[0].service_type, 'video');
-  assert.equal(payload.data[0].default_model, 'grok-video-3');
-  assert.equal(payload.data[0].api_key, undefined);
-  assert.equal(payload.data[0].base_url, undefined);
+  assert.deepEqual(payload.data, ['grok-video-3', 'grok-video-3-fast']);
   db.close();
 });
 
-test('普通用户图像模型接口返回图片与分镜图片目录且不暴露凭据', () => {
+test('普通用户图像模型接口只返回管理员启用的模型名称', () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE ai_service_configs (
@@ -119,11 +114,48 @@ test('普通用户图像模型接口返回图片与分镜图片目录且不暴�
   aiConfigRoutes(db, {}, {}).listPublicImageModels({ query: {} }, res);
 
   assert.equal(payload.success, true);
-  assert.equal(payload.data.length, 2);
-  assert.deepEqual(new Set(payload.data.map((item) => item.service_type)), new Set(['image', 'storyboard_image']));
-  for (const item of payload.data) {
-    assert.equal(item.api_key, undefined);
-    assert.equal(item.base_url, undefined);
-  }
+  assert.deepEqual(payload.data, ['lib-image', 'lib-storyboard']);
+  db.close();
+});
+
+test('普通用户音频模型接口只返回管理员启用的模型名称', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      service_type TEXT NOT NULL,
+      provider TEXT,
+      api_protocol TEXT,
+      name TEXT,
+      base_url TEXT,
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      endpoint TEXT,
+      query_endpoint TEXT,
+      priority INTEGER DEFAULT 0,
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      settings TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active)
+    VALUES ('tts', 'voice', '平台音色', 'https://private.example', 'secret', ?, 'voice-1', 1, 1)
+  `).run(JSON.stringify(['voice-1']));
+
+  let payload;
+  const res = {
+    status() { return this; },
+    json(body) { payload = body; },
+  };
+  aiConfigRoutes(db, {}, {}).listPublicAudioModels({ query: {} }, res);
+
+  assert.equal(payload.success, true);
+  assert.deepEqual(payload.data, ['voice-1']);
   db.close();
 });

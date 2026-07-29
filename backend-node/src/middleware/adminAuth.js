@@ -9,6 +9,13 @@ function secureEqual(left, right) {
 function createAdminAuthMiddleware({ enabled, token, requireRole = true } = {}) {
   return (req, res, next) => {
     if (!enabled) return next();
+    if (requireRole && req.user) {
+      if (req.user.role === 'admin') return next();
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ADMIN_ROLE_REQUIRED', message: '当前账号不具备管理员权限' },
+      });
+    }
     const expected = String(token || '');
     if (expected.length < 32) {
       return res.status(503).json({

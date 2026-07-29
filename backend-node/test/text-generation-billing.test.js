@@ -7,8 +7,10 @@ const aiConfig = require('../src/services/aiConfigService');
 const characterGeneration = require('../src/services/characterGenerationService');
 const characterLibrary = require('../src/services/characterLibraryService');
 const credits = require('../src/services/creditLedgerService');
+const dramaService = require('../src/services/dramaService');
 const novelImport = require('../src/services/novelImportService');
 const prices = require('../src/services/modelPriceService');
+const storyGeneration = require('../src/services/storyGenerationService');
 const textBilling = require('../src/services/text-generation-billing-service');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -226,6 +228,51 @@ test('公开角色生成在模型未定价时不创建任务也不调用供应�
   assert.equal(db.prepare(
     "SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'character_generation'",
   ).get().count, 0);
+});
+
+test('公开剧本生成未指定模型时使用后台默认模型并按同一模型计费', async (t) => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const originalGenerate = aiClient.generateText;
+  t.after(() => {
+    aiClient.generateText = originalGenerate;
+    db.close();
+  });
+  aiConfig.createConfig(db, log, {
+    service_type: 'text',
+    provider: 'openai',
+    name: '后台默认文本模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['gpt-5.6-sol'],
+    default_model: 'gpt-5.6-sol',
+    is_default: true,
+  });
+  prices.set(db, 'gpt-5.6-sol', 6);
+  credits.setTenantAccountBalance(db, 'tenant-a', 20);
+  const drama = dramaService.createDrama(db, log, {
+    tenant_id: 'tenant-a',
+    user_id: 'user-1',
+    title: '默认模型验收项目',
+  });
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    assert.equal(options.model, 'gpt-5.6-sol');
+    return JSON.stringify([{ episode: 1, title: '雨夜重逢', content: '母亲在旧站台找到了孩子。' }]);
+  };
+
+  const taskId = storyGeneration.startStoryGeneration(
+    db,
+    log,
+    { drama_id: drama.id, premise: '雨夜车站重逢' },
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+  const task = await waitForTask(db, taskId);
+
+  assert.equal(task.status, 'completed');
+  assert.equal(task.model, 'gpt-5.6-sol');
+  assert.equal(credits.getReservation(db, task.credit_reservation_id).model, 'gpt-5.6-sol');
+  assert.equal(credits.getReservation(db, task.credit_reservation_id).status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 6);
 });
 
 test('小说导入按每个实际改写章节分别计费', async (t) => {

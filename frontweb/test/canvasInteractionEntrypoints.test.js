@@ -10,6 +10,7 @@ const addButtonSource = readFileSync(fileURLToPath(new URL('../src/components/dr
 const alignerSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFlowAligner.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 const workflowOrderPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasWorkflowOrderPanel.vue', import.meta.url)), 'utf8')
+const cuttableEdgeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasCuttableEdge.vue', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
@@ -36,11 +37,31 @@ test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /'Esc：清空选择、焦点和右键菜单'/)
 })
 
+test('每条画布连线提供居中剪线入口并统一进入可撤销持久化链路', () => {
+  assert.match(canvasSource, /:edge-types="edgeTypes"/)
+  assert.match(canvasSource, /v-bind="canvasConnectionInteractionOptions"/)
+  assert.match(canvasSource, /provide\('cut-canvas-edges', cutCanvasEdges\)/)
+  assert.match(canvasSource, /function cutCanvasEdges\(edgeIds = \[\], source = 'remove'\)/)
+  assert.match(canvasSource, /suppressedEdgeIds\.value\.add\(String\(edge\.id\)\)/)
+  assert.match(canvasSource, /commitInteractionHistory\(previousState\)/)
+  assert.match(cuttableEdgeSource, /aria-label="剪断连线"/)
+  assert.match(cuttableEdgeSource, /cutCanvasEdges\?\.\(\[props\.id\], 'scissor'\)/)
+  assert.match(cuttableEdgeSource, /:transform="`translate\(\$\{labelX\}, \$\{labelY\}\)`"/)
+})
+
 test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', () => {
   assert.match(canvasSource, /function setSpacePanning\(active\) \{\s*\n\s*if \(spacePanning\.value === active\) return\s*\n\s*spacePanning\.value = active\s*\n\s*if \(!active\) suppressPaneClick\(\)/)
   assert.match(canvasSource, /function onCanvasKeyup\(event\) \{[\s\S]*setSpacePanning\(false\)/)
   assert.match(canvasSource, /function onCanvasBlur\(\) \{[\s\S]*setSpacePanning\(false\)/)
   assert.match(canvasSource, /function onPaneClick\(event\) \{\s*\n\s*if \(paneClickSuppressed\.value\) return/)
+})
+
+test('自由画布普通点击仅保留当前节点，Ctrl 或 Cmd 才允许多选', () => {
+  assert.match(canvasSource, /function applySelectedFreeNodeIds\(ids = \[\]\)/)
+  assert.match(canvasSource, /selectedFreeNodeIds\.value = normalizedIds/)
+  assert.match(canvasSource, /selected: node\.type === 'homeCanvasNode' && selectedIds\.has\(String\(node\.id\)\)/)
+  assert.match(canvasSource, /if \(!event\?\.ctrlKey && !event\?\.metaKey\) \{\s*\n\s*applySelectedFreeNodeIds\(\[node\.id\]\)/)
+  assert.doesNotMatch(canvasSource, /!event\?\.shiftKey/)
 })
 
 test('节点拖拽停止后立即刷新布局缓存并同步视口', () => {
@@ -85,7 +106,7 @@ test('画布支持 LibTV 式键盘完成选择清理和工作流分组', () => {
   assert.match(canvasSource, /if \(key === 'escape' \|\| key === 'esc'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*clearCanvasInteractionState\(\)/)
   assert.match(canvasSource, /function selectVisibleStoryboards\(\) \{[\s\S]*const ids = \[\.\.\.visibleStoryboardIds\.value\][\s\S]*applySelectedStoryboardIds\(ids\)/)
   assert.match(canvasSource, /if \(key === 'a'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*selectVisibleStoryboards\(\)/)
-  assert.match(canvasSource, /if \(key === 'g'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*void onCreateWorkflowGroup\(\)/)
+  assert.match(canvasSource, /if \(key === 'g'\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*if \(isStandaloneCanvas\.value\) createStandaloneGroup\(\)[\s\S]*void onCreateWorkflowGroup\(\)/)
   assert.match(canvasSource, /if \(workflowRunning\.value \|\| layoutSaveState\.value === 'saving'\)/)
 })
 
@@ -118,14 +139,21 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
 })
 
 test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
-  assert.match(alignerSource, /const \{ fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
   assert.match(canvasSource, /const api = canvasFlowApi\.value/)
   assert.match(canvasSource, /const viewport = api\?\.getViewport\?\.\(\)/)
   assert.match(canvasSource, /currentViewport\.value = \{ x: viewport\.x, y: viewport\.y, zoom: viewport\.zoom \}/)
   assert.match(canvasSource, /const projectScreenPosition = api\?\.screenToFlowPosition \|\| api\?\.project/)
   assert.match(canvasSource, /const flowPosition = projectScreenPosition\(\{ x: clientX, y: clientY \}\)/)
   assert.match(canvasSource, /Number\.isFinite\(flowPosition\?\.x\) && Number\.isFinite\(flowPosition\?\.y\)/)
+})
+
+test('自动整理后同步 VueFlow 内部节点仓库避免界面坐标停留', () => {
+  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(canvasSource, /computedPosition: \{ \.\.\.n\.computedPosition, x: pos\.x, y: pos\.y \}/)
+  assert.match(canvasSource, /applyVirtualizedGraph\(\)\s*\n\s*canvasFlowApi\.value\?\.setNodes\?\.\(nodes\.value\)/)
 })
 
 test('画布加号节点新建内容时沿用加号所在画布落点', () => {
@@ -141,8 +169,10 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /import AssetPickerDialog from '@\/components\/AssetPickerDialog\.vue'/)
   assert.match(canvasSource, /import \{ videosAPI \} from '@\/api\/videos'/)
   assert.match(canvasSource, /v-model="canvasAssetPickerVisible"/)
-  assert.match(canvasSource, /type="all"/)
-  assert.match(canvasSource, /title="从素材库加入画布"/)
+  assert.match(canvasSource, /:type="canvasAssetPickerType"/)
+  assert.match(canvasSource, /:title="canvasAssetPickerTitle"/)
+  assert.match(canvasSource, /freeCanvasNodeById\(canvasAssetPickerTargetFreeNodeId\.value\)\?\.data\?\.kind \|\| 'all'/)
+  assert.match(canvasSource, /canvasAssetPickerTargetFreeNodeId\.value \? '挂载素材到当前节点' : '从素材库加入画布'/)
   assert.match(canvasSource, /function openCanvasAssetLibrary\(flowPosition = null\)/)
   assert.match(canvasSource, /canvasAssetPickerFlowPos\.value = flowPosition/)
   assert.match(canvasSource, /openCanvasAssetLibrary\(flowPosition\)/)
@@ -273,12 +303,13 @@ test('画布支持手动节点连线并持久化到布局', () => {
   assert.match(canvasSource, /function onConnect\(connection\)/)
   assert.match(canvasSource, /function onEdgesChange\(changes = \[\]\)/)
   assert.match(canvasSource, /data: \{ manual: true \}/)
-  assert.match(canvasSource, /String\(change\.id \|\| ''\)\.startsWith\('manual:'\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = allGraphEdges\.value\.filter\(\(edge\) => !removed\.has\(String\(edge\.id\)\)\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
+  assert.match(canvasSource, /function cutCanvasEdges\(edgeIds = \[\], source = 'remove'\)/)
+  assert.match(canvasSource, /if \(cutCanvasEdges\(removedEdgeIds\)\) ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /scheduleLayoutSave\(\)/)
-  assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value,\s*\{ persistFreeNodes: isStandaloneCanvas\.value \},?\s*\)/)
+  assert.match(canvasSource, /persistFreeNodes:\s*isStandaloneCanvas\.value/)
+  assert.match(canvasSource, /suppressedEdgeIds:\s*\[\.\.\.suppressedEdgeIds\.value\]/)
 })
 
 test('右键节点支持追加下游分镜并自动创建手动连线', () => {
@@ -293,7 +324,7 @@ test('右键节点支持追加下游分镜并自动创建手动连线', () => {
   assert.match(canvasSource, /node\?\.type === 'canvasAsset'[\s\S]*围绕\$\{canvasNodeLabel\(node\)\}设计新分镜/)
   assert.match(canvasSource, /\[targetNodeId\]: targetPosition/)
   assert.match(canvasSource, /id: manualEdgeId\(\{ source: node\.id, target: targetNodeId \}\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
 })
@@ -320,11 +351,11 @@ test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(canvasSource, /if \(!downstreamEdge\) \{[\s\S]*await appendDownstreamStoryboard\(node\)/)
   assert.match(canvasSource, /title: `插入分镜 \$\{maxNum \+ 1\}`/)
   assert.match(canvasSource, /const downstreamNode = findGraphNode\(downstreamEdge\.target\)/)
-  assert.match(canvasSource, /const firstEdge = \{[\s\S]*source: node\.id,[\s\S]*target: targetNodeId/)
-  assert.match(canvasSource, /const secondEdge = \{[\s\S]*source: targetNodeId,[\s\S]*target: downstreamEdge\.target/)
+  assert.match(canvasSource, /const firstEdge = toLibTvCanvasEdge\(\{[\s\S]*source: node\.id,[\s\S]*target: targetNodeId/)
+  assert.match(canvasSource, /const secondEdge = toLibTvCanvasEdge\(\{[\s\S]*source: targetNodeId,[\s\S]*target: downstreamEdge\.target/)
   assert.match(canvasSource, /const remainingEdges = allGraphEdges\.value\.filter\(\(edge\) => String\(edge\.id\) !== String\(downstreamEdge\.id\)\)/)
   assert.match(canvasSource, /const insertedEdges = \[firstEdge, secondEdge\]\.filter\(\(edge\) => !hasSameEdgeConnection\(edge, remainingEdges\)\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.remainingEdges, \.\.\.insertedEdges\]\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.remainingEdges, \.\.\.insertedEdges\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
   assert.match(canvasSource, /已插入下游分镜并重连/)

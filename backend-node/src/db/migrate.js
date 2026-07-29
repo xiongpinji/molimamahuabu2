@@ -375,6 +375,8 @@ function ensureAllColumns(database) {
     { name: 'image_url',            type: 'TEXT' },
     { name: 'first_frame_url',      type: 'TEXT' },
     { name: 'last_frame_url',       type: 'TEXT' },
+    { name: 'output_first_frame_url', type: 'TEXT' },
+    { name: 'output_last_frame_url',  type: 'TEXT' },
     { name: 'reference_image_urls', type: 'TEXT' },
     { name: 'video_url',            type: 'TEXT' },
     { name: 'local_path',           type: 'TEXT' },

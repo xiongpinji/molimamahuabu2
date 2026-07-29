@@ -1,0 +1,48 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { buildCanvasExecutionPlan } from '../src/utils/canvasExecutionPlan.js'
+import { estimateCanvasCredits, canvasModelCapability } from '../src/utils/canvasModelCapabilities.js'
+import { mergeLocalCanvasIntoProjectLayout } from '../src/utils/localCanvasBinding.js'
+
+const node = (id, kind) => ({ id, type: 'homeCanvasNode', position: { x: 0, y: 0 }, data: { kind } })
+const edge = (id, source, target) => ({ id: `manual:${id}`, source, target, data: { manual: true, contract: { enabled: true } } })
+
+test('subgraph follows valid dependencies in topological order', () => {
+  const plan = buildCanvasExecutionPlan(
+    [node('a', 'text'), node('b', 'image'), node('c', 'video')],
+    [edge('ab', 'a', 'b'), edge('bc', 'b', 'c')],
+    { rootNodeIds: ['a'], includeDownstream: true },
+  )
+  assert.deepEqual(plan, { orderedNodeIds: ['a', 'b', 'c'], cycleNodeIds: [] })
+})
+
+test('subgraph reports cycles before execution', () => {
+  const plan = buildCanvasExecutionPlan(
+    [node('a', 'image'), node('b', 'image')],
+    [edge('ab', 'a', 'b'), edge('ba', 'b', 'a')],
+    { rootNodeIds: ['a'], includeDownstream: true },
+  )
+  assert.deepEqual(new Set(plan.cycleNodeIds), new Set(['a', 'b']))
+})
+
+test('model capabilities restrict parameters and estimate quantity cost', () => {
+  const catalog = [{ kind: 'video', model: 'v1', credits: 12, capabilities: { durations: [5, 8] } }]
+  assert.deepEqual(canvasModelCapability(catalog, 'video', 'v1').durations, [5, 8])
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 3), 36)
+})
+
+test('video capability fallback includes the supported 15 second duration', () => {
+  assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 10, 15])
+})
+
+test('local canvas binding preserves existing project nodes and remaps collisions', () => {
+  const merged = mergeLocalCanvasIntoProjectLayout(
+    { nodes: { a: { x: 1, y: 2 } }, free_nodes: [node('a', 'text')], manual_edges: [] },
+    { nodes: [node('a', 'image'), node('b', 'video')], edges: [edge('ab', 'a', 'b')], viewport: { x: 0, y: 0, zoom: 1 } },
+    'bound',
+  )
+  assert.equal(merged.free_nodes.length, 3)
+  assert.equal(merged.free_nodes[1].id, 'bound:0')
+  assert.equal(merged.manual_edges[0].source, 'bound:0')
+  assert.equal(merged.manual_edges[0].target, 'b')
+})

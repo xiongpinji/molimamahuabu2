@@ -128,6 +128,25 @@ function requireManager(db, tenantId, requesterUserId) {
   return row;
 }
 
+function normalizeMemberRole(value) {
+  const role = String(value ?? '').trim();
+  if (!['owner', 'admin', 'member'].includes(role)) {
+    throw tenantError('INVALID_TENANT_ROLE', '租户角色无效');
+  }
+  return role;
+}
+
+function assertRoleChangeAllowed(db, tenantId, manager, target, nextRole) {
+  if (manager.role !== 'owner' && (nextRole !== 'member' || (target && target.role !== 'member'))) {
+    throw tenantError('TENANT_ROLE_FORBIDDEN', '只有所有者可以管理管理员和所有者角色');
+  }
+  if (target?.role === 'owner' && nextRole !== 'owner') {
+    const owners = db.prepare(`SELECT COUNT(*) AS count FROM tenant_members
+      WHERE tenant_id = ? AND role = 'owner' AND status = 'active'`).get(tenantId).count;
+    if (owners <= 1) throw tenantError('LAST_TENANT_OWNER', '不能降级租户最后一个所有者');
+  }
+}
+
 function listMembers(db, tenantId, requesterUserId) {
   requireManager(db, tenantId, requesterUserId);
   return db.prepare(`SELECT m.user_id, u.email, m.role, m.status, m.created_at, m.updated_at
@@ -141,12 +160,10 @@ function addMemberByEmail(db, tenantIdValue, requesterUserId, input = {}) {
   const tenantId = String(tenantIdValue);
   const manager = requireManager(db, tenantId, requesterUserId);
   const email = String(input.email || '').trim().toLowerCase();
-  const role = String(input.role || 'member');
-  if (!['owner', 'admin', 'member'].includes(role) || (role === 'owner' && manager.role !== 'owner')) {
-    throw tenantError('INVALID_TENANT_ROLE', '无权分配该租户角色');
-  }
+  const role = normalizeMemberRole(input.role || 'member');
   const user = db.prepare("SELECT id, email FROM platform_users WHERE email = ? AND status = 'active'").get(email);
   if (!user) throw tenantError('USER_NOT_FOUND', '用户不存在');
+  assertRoleChangeAllowed(db, tenantId, manager, membership(db, tenantId, user.id), role);
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO tenant_members
     (tenant_id, user_id, role, status, created_at, updated_at)
@@ -157,6 +174,22 @@ function addMemberByEmail(db, tenantIdValue, requesterUserId, input = {}) {
   return db.prepare(`SELECT m.user_id, u.email, m.role, m.status
     FROM tenant_members m JOIN platform_users u ON u.id = m.user_id
     WHERE m.tenant_id = ? AND m.user_id = ?`).get(tenantId, user.id);
+}
+
+function changeMemberRole(db, tenantIdValue, requesterUserId, targetUserIdValue, roleValue) {
+  const tenantId = String(tenantIdValue);
+  const manager = requireManager(db, tenantId, requesterUserId);
+  const targetUserId = String(targetUserIdValue);
+  const target = membership(db, tenantId, targetUserId);
+  if (!target) throw tenantError('USER_NOT_FOUND', '成员不存在');
+  const role = normalizeMemberRole(roleValue);
+  assertRoleChangeAllowed(db, tenantId, manager, target, role);
+  db.prepare(`UPDATE tenant_members SET role = ?, updated_at = ?
+    WHERE tenant_id = ? AND user_id = ?`)
+    .run(role, new Date().toISOString(), tenantId, targetUserId);
+  return db.prepare(`SELECT m.user_id, u.email, m.role, m.status, m.created_at, m.updated_at
+    FROM tenant_members m JOIN platform_users u ON u.id = m.user_id
+    WHERE m.tenant_id = ? AND m.user_id = ?`).get(tenantId, targetUserId);
 }
 
 function removeMember(db, tenantIdValue, requesterUserId, targetUserIdValue) {
@@ -188,5 +221,6 @@ module.exports = {
   requireManager,
   listMembers,
   addMemberByEmail,
+  changeMemberRole,
   removeMember,
 };

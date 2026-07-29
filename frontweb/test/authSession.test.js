@@ -90,3 +90,22 @@ test('公开模式收到 401 时清除已失效登录，本地模式和非 401 �
   assert.equal(clearSessionOnUnauthorized(401, true, store), true)
   assert.equal(readSession(store), null)
 });
+
+test('旧令牌请求延迟返回 401 时不能清除刚登录的新会话', () => {
+  const store = storage()
+  saveSession({ token: 'token-new', user: { id: 'u1', email: 'a@example.com', role: 'user' } }, store)
+  assert.equal(clearSessionOnUnauthorized(401, true, store, 'token-old'), false)
+  assert.equal(readSession(store)?.token, 'token-new')
+  assert.equal(clearSessionOnUnauthorized(401, true, store, 'token-new'), true)
+  assert.equal(readSession(store), null)
+});
+
+test('管理员二次鉴权失败不能清除已经登录的用户会话', () => {
+  const store = storage()
+  saveSession({ token: 'token-admin', user: { id: 'u1', email: 'admin@example.com', role: 'admin' } }, store)
+  assert.equal(
+    clearSessionOnUnauthorized(401, true, store, 'token-admin', 'ADMIN_AUTH_REQUIRED'),
+    false,
+  )
+  assert.equal(readSession(store)?.token, 'token-admin')
+});

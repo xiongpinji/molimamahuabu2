@@ -12,7 +12,7 @@ function read(relativePath) {
 
 test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查', () => {
   const dockerfile = read('Dockerfile');
-  assert.match(dockerfile, /npm run build/);
+  assert.match(dockerfile, /npm run build:public/);
   assert.match(dockerfile, /WEB_DIST_PATH=/);
   assert.match(dockerfile, /ffmpeg/);
   assert.match(dockerfile, /python3/);
@@ -48,6 +48,16 @@ test('生产镜像内置固定哈希的 CPU 抠图链且不要求专用 GPU 运�
   assert.match(notices, /Apache-2\.0/);
 });
 
+test('网页生产构建显式启用公开平台模式', () => {
+  const packageJson = JSON.parse(read('frontweb/package.json'));
+  const buildScript = read('frontweb/scripts/build-public.mjs');
+
+  assert.equal(packageJson.scripts['build:public'], 'node scripts/build-public.mjs');
+  assert.match(buildScript, /VITE_PUBLIC_PLATFORM_MODE/);
+  assert.match(buildScript, /true/);
+  assert.match(buildScript, /build\(\)/);
+});
+
 test('生产 Compose 使用 HTTPS 入口、持久卷、健康检查和自动重启', () => {
   const compose = yaml.load(read('compose.production.yml'));
   const app = compose.services.app;
@@ -71,6 +81,10 @@ test('生产示例环境文件只包含占位符且公开注册默认关闭', ()
   assert.match(example, /^PLATFORM_REGISTRATION_ENABLED=false$/m);
   assert.match(example, /^PLATFORM_JWT_SECRET=CHANGE_ME_/m);
   assert.match(example, /^PLATFORM_ADMIN_TOKEN=CHANGE_ME_/m);
+  assert.match(example, /^PLATFORM_EMAIL_VERIFICATION_ENABLED=true$/m);
+  assert.match(example, /^SMTP_HOST=/m);
+  assert.match(example, /^SMTP_FROM=/m);
+  assert.match(example, /^SMTP_PASSWORD=CHANGE_ME_/m);
   assert.doesNotMatch(example, /sk-[A-Za-z0-9]/);
 });
 

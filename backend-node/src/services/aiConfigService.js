@@ -489,13 +489,44 @@ async function testConnection(opts) {
     return;
   }
 
-  // --- TTS 语音合成 ---
+  // --- MiniMax TTS 语音合成 ---
+  if (serviceType === 'tts' && provider === 'minimax') {
+    const probeUrl = base + '/t2a_v2';
+    const probeBody = JSON.stringify({
+      model: model || 'speech-2.8-hd',
+      text: '测试',
+      stream: false,
+      output_format: 'hex',
+      voice_setting: {
+        voice_id: 'male-qn-qingse',
+        speed: 1,
+        vol: 1,
+        pitch: 0,
+      },
+      audio_setting: {
+        sample_rate: 32000,
+        bitrate: 128000,
+        format: 'mp3',
+        channel: 1,
+      },
+    });
+    const res = await fetch(probeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },
+      body: probeBody,
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    if (!res.ok || Number(data.base_resp?.status_code || 0) !== 0) {
+      throw new Error(data.base_resp?.status_msg || data.error?.message || data.message || `MiniMax TTS 连接失败 (${res.status})`);
+    }
+    return;
+  }
+
+  // 其他 TTS 供应商保持原有探针协议，避免 MiniMax 接入改变既有配置行为。
   if (serviceType === 'tts') {
-    // MiniMax T2A：用 /v1/models 或直接对 chat 端点做轻量探针
-    const ttsBase = base.includes('minimaxi.com') || base.includes('minimax') ? base : base;
-    // 尝试调用一个极简的 MiniMax T2A 请求（1 字，验证 key 合法性）
-    // 为避免真实扣费，使用非计费的 list-voices 或 models 接口
-    const probeUrl = ttsBase + '/text_to_speech';
+    const probeUrl = base + '/text_to_speech';
     const probeBody = JSON.stringify({ model: model || 'speech-02-hd', text: 'hi', stream: false });
     const res = await fetch(probeUrl, {
       method: 'POST',
@@ -505,10 +536,12 @@ async function testConnection(opts) {
     if (res.status === 401 || res.status === 403) {
       const text = await res.text();
       let errMsg = `API Key 无效 (${res.status})`;
-      try { const j = JSON.parse(text); errMsg = j.base_resp?.status_msg || j.error?.message || j.message || errMsg; } catch {}
+      try {
+        const data = JSON.parse(text);
+        errMsg = data.base_resp?.status_msg || data.error?.message || data.message || errMsg;
+      } catch (_) {}
       throw new Error(errMsg);
     }
-    // 其他状态（400 缺参数、404 端点不对等）说明网络通、key 疑似有效
     return;
   }
 

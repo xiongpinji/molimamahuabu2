@@ -290,7 +290,13 @@ export function normalizeDirectorTimeline(input, characters = []) {
     cursor += next.duration
     return next
   })
-  const characterIds = new Set((characters || []).map((character, index) => String(character?.id ?? character?.name ?? `character-${index + 1}`)))
+  const objects = mergeProjectCharacterObjects(normalizeObjects(source.objects), characters, arguments.length >= 2)
+  const characterIds = new Set([
+    ...(characters || []).map((character, index) => String(character?.id ?? character?.name ?? `character-${index + 1}`)),
+    ...objects
+      .filter((object) => object.type === 'character' || object.type === 'humanoid')
+      .map((object) => String(object.assetRef?.characterId || object.id)),
+  ])
   const tracks = (Array.isArray(source.tracks) ? source.tracks : []).map((track, index) => {
     const characterId = String(track?.characterId || `character-${index + 1}`)
     const clips = (Array.isArray(track?.clips) ? track.clips : []).map((clip, clipIndex) => normalizeClip(clip, characterId, clipIndex, cursor))
@@ -298,7 +304,6 @@ export function normalizeDirectorTimeline(input, characters = []) {
   }).filter((track) => !characterIds.size || characterIds.has(track.characterId))
   const duration = cursor
   const currentTime = Math.max(0, Math.min(duration, asNumber(sourceSequence.currentTime, 0)))
-  const objects = mergeProjectCharacterObjects(normalizeObjects(source.objects), characters, arguments.length >= 2)
   const motionTracks = normalizeMotionTracks(source.motionTracks, objects, duration)
   const cameras = normalizeCameras(source.cameras, shots)
   const cameraIds = new Set(cameras.map((camera) => camera.id))
@@ -516,12 +521,16 @@ export function removeDirectorObject(state, objectId) {
       }
     }
   }
+  const removedCharacterIds = new Set(current.objects
+    .filter((object) => removedIds.has(object.id) && (object.type === 'character' || object.type === 'humanoid'))
+    .map((object) => String(object.assetRef?.characterId || object.id)))
   const objects = current.objects.filter((object) => !removedIds.has(object.id))
+  const tracks = current.tracks.filter((track) => !removedCharacterIds.has(track.characterId))
   const removedCameraIds = new Set(current.cameras.filter((camera) => removedIds.has(camera.objectId)).map((camera) => camera.id))
   const cameras = current.cameras.filter((camera) => !removedCameraIds.has(camera.id))
   const fallbackCameraId = cameras[0]?.id || ''
   const shots = current.shots.map((shot) => removedCameraIds.has(shot.cameraId) ? { ...shot, cameraId: fallbackCameraId } : shot)
-  return normalizeDirectorTimeline({ ...current, objects, cameras, shots, revision: current.revision + 1 })
+  return normalizeDirectorTimeline({ ...current, objects, tracks, cameras, shots, revision: current.revision + 1 })
 }
 
 export function appendDirectorCamera(state, patch = {}) {

@@ -1,24 +1,21 @@
 <template>
   <div class="film-list">
-    <PlatformHeader :title="isCanvasMode ? '画布项目' : '短剧工厂'">
-      <template #leading>
+    <PlatformHeader :show-theme="false">
+      <template v-if="isCanvasMode" #leading>
         <div class="header-library">
-          <el-button class="btn-library" @click="showCharLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('characters')">
             <el-icon><User /></el-icon>素材角色
           </el-button>
-          <el-button class="btn-library" @click="showSceneLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('scenes')">
             <el-icon><PictureFilled /></el-icon>素材场景
           </el-button>
-          <el-button class="btn-library" @click="showPropLibrary = true">
+          <el-button class="btn-library" @click="goMaterialLibrary('props')">
             <el-icon><Box /></el-icon>素材道具
           </el-button>
         </div>
       </template>
-      <template #actions>
-        <el-button class="btn-settings" @click="showAiConfigDialog = true">
-          <el-icon><Setting /></el-icon>AI配置
-        </el-button>
-        <el-button v-if="!isCanvasMode" class="btn-import" :loading="importing" @click="triggerImport">
+      <template v-if="isCanvasMode" #actions>
+        <el-button class="btn-import" :loading="importing" @click="triggerImport">
           <el-icon><Upload /></el-icon>导入项目
         </el-button>
         <input ref="importFileInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
@@ -28,7 +25,145 @@
       </template>
     </PlatformHeader>
 
-    <main class="main">
+    <main :class="['main', { 'main--home': !isCanvasMode }]">
+      <section v-if="!isCanvasMode" class="home-workbench" aria-labelledby="home-workbench-title">
+        <div class="home-workbench__glow home-workbench__glow--left" aria-hidden="true"></div>
+        <div class="home-workbench__glow home-workbench__glow--right" aria-hidden="true"></div>
+        <div class="home-workbench__inner">
+          <p class="home-workbench__eyebrow">茉莉妈妈 AI 创作工作台</p>
+          <h1 id="home-workbench-title">你好，今天想生成点什么？</h1>
+
+          <section class="home-composer" aria-label="快速生成">
+            <button class="home-composer__reference" type="button" @click="openMediaLibrary">
+              <span class="home-composer__plus">＋</span>
+              <span>参考内容</span>
+            </button>
+            <div class="home-composer__body">
+              <textarea
+                v-model="homePrompt"
+                rows="3"
+                aria-label="描述想生成的内容"
+                placeholder="上传参考素材、输入文字，自由组合图片、文字、音频与视频。"
+              />
+              <div class="home-composer__toolbar">
+                <div class="home-composer__controls">
+                  <label class="home-control">
+                    <span class="home-control__icon">▣</span>
+                    <select v-model="homeMediaType" aria-label="生成类型">
+                      <option value="video">视频</option>
+                      <option value="image">图片</option>
+                      <option value="script">剧本</option>
+                    </select>
+                  </label>
+                  <label class="home-control">
+                    <select v-model="homeModel" aria-label="生成模型">
+                      <option v-if="!homeModelOptions.length" value="">暂无可用模型</option>
+                      <option
+                        v-for="item in homeModelOptions"
+                        :key="item.model"
+                        :value="item.model"
+                      >
+                        {{ item.display_name || item.model }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="home-control">
+                    <select v-model="homeAspectRatio" aria-label="画面比例">
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                      <option value="1:1">1:1</option>
+                      <option value="4:3">4:3</option>
+                      <option value="3:4">3:4</option>
+                      <option value="21:9">21:9</option>
+                    </select>
+                  </label>
+                  <label v-if="homeMediaType === 'video'" class="home-control">
+                    <select v-model.number="homeDuration" aria-label="视频时长">
+                      <option :value="5">5s</option>
+                      <option :value="10">10s</option>
+                      <option :value="15">15s</option>
+                    </select>
+                  </label>
+                  <label v-if="homeMediaType === 'video'" class="home-control">
+                    <select v-model="homeResolution" aria-label="视频清晰度">
+                      <option value="480p">480P</option>
+                      <option value="720p">720P</option>
+                      <option value="1080p">1080P</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="home-composer__submit">
+                  <span
+                    class="home-composer__credits"
+                    aria-label="预计消耗积分"
+                    :title="`可用积分 ${homeBalance}`"
+                  >✦ {{ homeSelectedPrice }}</span>
+                  <button
+                    type="button"
+                    class="home-generate"
+                    :disabled="!homeModel"
+                    @click="startFromComposer"
+                  >
+                    <span>✦</span>生成
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="home-recent" aria-labelledby="home-recent-title">
+            <div class="home-recent__heading">
+              <h2 id="home-recent-title">最近项目</h2>
+              <button type="button" @click="scrollToProjects">所有项目 <span>→</span></button>
+            </div>
+            <div ref="homeProjectsRef" v-loading="loading" class="home-project-grid">
+              <button class="home-project-card home-project-card--create" type="button" @click="goNewProject">
+                <span class="home-project-card__create-icon">＋</span>
+                <strong>创建新项目</strong>
+                <small>从灵感开始新的短剧</small>
+              </button>
+              <article
+                v-for="d in dramas.slice(0, 4)"
+                :key="d.id"
+                class="home-project-card"
+                role="button"
+                tabindex="0"
+                @click="openProject(d.id)"
+                @keydown.enter="openProject(d.id)"
+                @keydown.space.prevent="openProject(d.id)"
+              >
+                <div class="home-project-card__cover">
+                  <span>{{ (d.title || '未命名项目').slice(0, 1) }}</span>
+                </div>
+                <div class="home-project-card__copy">
+                  <strong>{{ d.title || '未命名项目' }}</strong>
+                  <small>{{ formatDate(d.updated_at) }} · {{ d.episodes?.length || 0 }} 集</small>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-else class="workspace-heading" aria-labelledby="workspace-heading-title">
+        <span class="workspace-heading__eyebrow">AI 原生创作工作区</span>
+        <div class="workspace-heading__row">
+          <div>
+            <h1 id="workspace-heading-title">
+              {{ isCanvasMode ? '一块自由画布，承载完整创作过程' : '从剧本到成片，全程不换工具' }}
+            </h1>
+            <p>
+              {{ isCanvasMode
+                ? '自由组织文本、图片、视频与音频节点，连接灵感并直接调用真实模型。'
+                : '统一管理剧本、角色、场景、分镜、音色与视频生成。' }}
+            </p>
+          </div>
+          <el-button type="primary" size="large" class="workspace-heading__action" @click="goNewProject">
+            <el-icon><Plus /></el-icon>{{ isCanvasMode ? '新建画布' : '新建短剧' }}
+          </el-button>
+        </div>
+      </section>
+
       <section v-if="isCanvasMode" class="canvas-project-toolbar" aria-label="画布项目搜索与筛选">
         <el-input
           v-model="searchKeyword"
@@ -69,7 +204,7 @@
         <el-button :icon="FolderOpened" @click="openFolderDialog">管理文件夹</el-button>
         <span class="canvas-project-count" aria-live="polite">共 {{ total }} 个画布</span>
       </section>
-      <div v-loading="loading" class="projects-wrap">
+      <div v-if="isCanvasMode" v-loading="loading" class="projects-wrap">
         <div class="project-grid">
           <!-- 操作卡片：始终作为第一个格子 -->
           <div class="project-card action-card">
@@ -183,6 +318,7 @@
     <!-- 新建项目：先填标题和描述 -->
     <el-dialog
       v-model="showNewDialog"
+      class="project-dialog"
       :title="isCanvasMode ? '新建画布项目' : '新建项目'"
       width="480px"
       :close-on-click-modal="false"
@@ -253,184 +389,10 @@
       </div>
     </el-dialog>
 
-    <!-- AI 配置弹窗 -->
-    <el-dialog v-model="showAiConfigDialog" title="AI 配置" width="90%" destroy-on-close>
-      <AIConfigContent v-if="showAiConfigDialog" />
-    </el-dialog>
-
-    <!-- 公共角色库 -->
-    <el-dialog v-model="showCharLibrary" title="素材库 · 角色" width="720px" destroy-on-close class="library-dialog" @open="loadCharLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="charLibraryKeyword" placeholder="搜索名称或描述" clearable style="width: 200px" @input="debouncedLoadCharLibrary()" />
-      </div>
-      <div v-loading="charLibraryLoading" class="library-list">
-        <div v-for="item in charLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.name || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || '').slice(0, 60) }}{{ (item.description || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditCharLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeleteCharLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!charLibraryLoading && charLibraryList.length === 0" class="library-empty">素材库暂无角色，可在项目中将角色「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="charLibraryPage" v-model:page-size="charLibraryPageSize" :total="charLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadCharLibraryList" @size-change="loadCharLibraryList" />
-      </div>
-      <template #footer><el-button @click="showCharLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共角色 -->
-    <el-dialog v-model="showEditCharLibrary" title="编辑素材角色" width="480px" @close="editCharLibraryForm = null">
-      <el-form v-if="editCharLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editCharLibraryForm))">
-              <img v-if="editCharLibraryForm.image_url || editCharLibraryForm.local_path" :src="assetImageUrl(editCharLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editCharLibraryForm.imgUploading" @click="charLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editCharLibraryForm.imgGenerating" @click="doGenerateLibImg(editCharLibraryForm, (editCharLibraryForm.name + (editCharLibraryForm.description ? ', ' + editCharLibraryForm.description : '')), characterLibraryAPI, loadCharLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="charLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editCharLibraryForm, characterLibraryAPI, loadCharLibraryList)" />
-        </el-form-item>
-        <el-form-item label="名称"><el-input v-model="editCharLibraryForm.name" placeholder="角色名称" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editCharLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editCharLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editCharLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditCharLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editCharLibrarySaving" @click="submitEditCharLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 公共场景库 -->
-    <el-dialog v-model="showSceneLibrary" title="素材库 · 场景" width="720px" destroy-on-close class="library-dialog" @open="loadSceneLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="sceneLibraryKeyword" placeholder="搜索地点或描述" clearable style="width: 200px" @input="debouncedLoadSceneLibrary()" />
-      </div>
-      <div v-loading="sceneLibraryLoading" class="library-list">
-        <div v-for="item in sceneLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.location || item.time || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditSceneLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeleteSceneLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!sceneLibraryLoading && sceneLibraryList.length === 0" class="library-empty">素材库暂无场景，可在项目中将场景「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="sceneLibraryPage" v-model:page-size="sceneLibraryPageSize" :total="sceneLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadSceneLibraryList" @size-change="loadSceneLibraryList" />
-      </div>
-      <template #footer><el-button @click="showSceneLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共场景 -->
-    <el-dialog v-model="showEditSceneLibrary" title="编辑素材场景" width="480px" @close="editSceneLibraryForm = null">
-      <el-form v-if="editSceneLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editSceneLibraryForm))">
-              <img v-if="editSceneLibraryForm.image_url || editSceneLibraryForm.local_path" :src="assetImageUrl(editSceneLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editSceneLibraryForm.imgUploading" @click="sceneLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editSceneLibraryForm.imgGenerating" @click="doGenerateLibImg(editSceneLibraryForm, ([editSceneLibraryForm.location, editSceneLibraryForm.time, editSceneLibraryForm.description].filter(Boolean).join(', ')), sceneLibraryAPI, loadSceneLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="sceneLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editSceneLibraryForm, sceneLibraryAPI, loadSceneLibraryList)" />
-        </el-form-item>
-        <el-form-item label="地点"><el-input v-model="editSceneLibraryForm.location" placeholder="场景地点" /></el-form-item>
-        <el-form-item label="时间"><el-input v-model="editSceneLibraryForm.time" placeholder="如：浅色/夜晚" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editSceneLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editSceneLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editSceneLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditSceneLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editSceneLibrarySaving" @click="submitEditSceneLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 公共道具库 -->
-    <el-dialog v-model="showPropLibrary" title="素材库 · 道具" width="720px" destroy-on-close class="library-dialog" @open="loadPropLibraryList">
-      <div class="library-toolbar">
-        <el-input v-model="propLibraryKeyword" placeholder="搜索名称或描述" clearable style="width: 200px" @input="debouncedLoadPropLibrary()" />
-      </div>
-      <div v-loading="propLibraryLoading" class="library-list">
-        <div v-for="item in propLibraryList" :key="item.id" class="library-item">
-          <div class="library-item-cover" @click="openImagePreview(assetImageUrl(item))">
-            <img v-if="item.image_url || item.local_path" :src="assetImageUrl(item)" alt="" />
-            <span v-else class="library-item-placeholder">暂无图</span>
-          </div>
-          <div class="library-item-info">
-            <div class="library-item-name">{{ item.name || '未命名' }}</div>
-            <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
-            <div class="library-item-actions">
-              <el-button size="small" @click="openEditPropLibrary(item)">编辑</el-button>
-              <el-button size="small" type="danger" plain @click="onDeletePropLibrary(item)">删除</el-button>
-            </div>
-          </div>
-        </div>
-        <div v-if="!propLibraryLoading && propLibraryList.length === 0" class="library-empty">素材库暂无道具，可在项目中将道具「加入素材库」后在此查看</div>
-      </div>
-      <div class="library-pagination">
-        <el-pagination v-model:current-page="propLibraryPage" v-model:page-size="propLibraryPageSize" :total="propLibraryTotal" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @current-change="loadPropLibraryList" @size-change="loadPropLibraryList" />
-      </div>
-      <template #footer><el-button @click="showPropLibrary = false">关闭</el-button></template>
-    </el-dialog>
-    <!-- 编辑公共道具 -->
-    <el-dialog v-model="showEditPropLibrary" title="编辑素材道具" width="480px" @close="editPropLibraryForm = null">
-      <el-form v-if="editPropLibraryForm" label-width="80px">
-        <el-form-item label="图片">
-          <div class="lib-img-editor">
-            <div class="lib-img-thumb" @click="openImagePreview(assetImageUrl(editPropLibraryForm))">
-              <img v-if="editPropLibraryForm.image_url || editPropLibraryForm.local_path" :src="assetImageUrl(editPropLibraryForm)" />
-              <div v-else class="lib-img-empty"><el-icon><PictureFilled /></el-icon></div>
-            </div>
-            <div class="lib-img-btns">
-              <el-button size="small" :loading="editPropLibraryForm.imgUploading" @click="propLibFileRef.click()">上传图片</el-button>
-              <el-button size="small" type="primary" :loading="editPropLibraryForm.imgGenerating" @click="doGenerateLibImg(editPropLibraryForm, (editPropLibraryForm.name + (editPropLibraryForm.description ? ', ' + editPropLibraryForm.description : '')), propLibraryAPI, loadPropLibraryList)">AI 生成</el-button>
-            </div>
-          </div>
-          <input ref="propLibFileRef" type="file" accept="image/*" style="display:none" @change="e => doUploadLibImg(e, editPropLibraryForm, propLibraryAPI, loadPropLibraryList)" />
-        </el-form-item>
-        <el-form-item label="名称"><el-input v-model="editPropLibraryForm.name" placeholder="道具名称" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="editPropLibraryForm.category" placeholder="可选" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="editPropLibraryForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
-        <el-form-item label="标签"><el-input v-model="editPropLibraryForm.tags" placeholder="可选，逗号分隔" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditPropLibrary = false">取消</el-button>
-        <el-button type="primary" :loading="editPropLibrarySaving" @click="submitEditPropLibrary">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 图片放大预览 -->
-    <Teleport to="body">
-      <div v-if="previewImageUrl" class="image-preview-overlay" @click="previewImageUrl = null">
-        <img :src="previewImageUrl" alt="" class="image-preview-img" @click.stop="previewImageUrl = null" />
-      </div>
-    </Teleport>
-
     <!-- 编辑项目：修改标题和故事 -->
     <el-dialog
       v-model="showEditDialog"
+      class="project-dialog"
       title="编辑项目"
       width="480px"
       :close-on-click-modal="false"
@@ -456,16 +418,11 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
+import { Edit, Delete, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
-import { characterLibraryAPI } from '@/api/characterLibrary'
-import { sceneLibraryAPI } from '@/api/sceneLibrary'
-import { propLibraryAPI } from '@/api/propLibrary'
-import AIConfigContent from '@/components/AIConfigContent.vue'
-import { uploadAPI } from '@/api/upload'
-import { imagesAPI } from '@/api/images'
-import { taskAPI } from '@/api/task'
+import { listGenerationCatalog } from '@/api/billing'
+import { getCreditAccount } from '@/api/auth'
 import {
   normalizeProjectMode,
   projectCanvasPath,
@@ -480,65 +437,18 @@ const props = defineProps({
 const projectMode = computed(() => normalizeProjectMode(props.projectMode))
 const isCanvasMode = computed(() => projectMode.value === 'canvas')
 
-// 库编辑图片 – 文件输入 refs
-const charLibFileRef  = ref(null)
-const sceneLibFileRef = ref(null)
-const propLibFileRef  = ref(null)
-
-// 共享：上传图片
-async function doUploadLibImg(event, form, api, reloadFn) {
-  const file = event.target?.files?.[0]
-  if (event.target) event.target.value = ''
-  if (!file || !form?.id) return
-  form.imgUploading = true
-  try {
-    const res = await uploadAPI.uploadImage(file)
-    const data = res?.data ?? res
-    const url = data?.url || data?.path || data?.local_path
-    if (!url) { ElMessage.error('上传未返回地址'); return }
-    form.image_url = url
-    form.local_path = data?.local_path ?? null
-    await api.update(form.id, { image_url: url, local_path: null })
-    reloadFn()
-    ElMessage.success('图片已更新')
-  } catch (e) { ElMessage.error(e.message || '上传失败') }
-  finally { form.imgUploading = false }
-}
-
-// 共享：AI 生成图片
-async function doGenerateLibImg(form, prompt, api, reloadFn) {
-  if (!prompt?.trim()) { ElMessage.warning('请先填写名称或描述'); return }
-  form.imgGenerating = true
-  try {
-    const res = await imagesAPI.create({ prompt: prompt.trim(), drama_id: null })
-    const imgData = res?.data ?? res
-    const taskId = imgData?.task_id
-    if (!taskId) throw new Error('未返回任务ID')
-    let task = null
-    for (let i = 0; i < 300; i++) {
-      await new Promise(r => setTimeout(r, 1500))
-      const tr = await taskAPI.get(taskId)
-      task = tr?.data ?? tr
-      if (task.status === 'completed') break
-      if (task.status === 'failed') throw new Error(task.error || '生成失败')
-    }
-    if (!task || task.status !== 'completed') throw new Error('生成超时')
-    const result = task.result
-    const imageUrl = result?.image_url
-    const localPath = result?.local_path ?? null
-    if (!imageUrl && !localPath) throw new Error('未获取到图片地址')
-    form.image_url = imageUrl || ''
-    form.local_path = localPath
-    await api.update(form.id, { image_url: imageUrl || null, local_path: localPath })
-    reloadFn()
-    ElMessage.success('AI 图片已生成')
-  } catch (e) { ElMessage.error(e.message || '生成失败') }
-  finally { form.imgGenerating = false }
-}
-
 const loading = ref(false)
 const dramas = ref([])
 const total = ref(0)
+const homePrompt = ref('')
+const homeMediaType = ref('video')
+const homeModel = ref('')
+const homeAspectRatio = ref('16:9')
+const homeDuration = ref(5)
+const homeResolution = ref('720p')
+const homeGenerationCatalog = ref([])
+const homeBalance = ref(0)
+const homeProjectsRef = ref(null)
 const searchKeyword = ref('')
 const projectFolders = ref([])
 const selectedFolderId = ref('')
@@ -548,161 +458,53 @@ const newFolderName = ref('')
 const folderSaving = ref(false)
 const movingProjectId = ref(null)
 
-const showAiConfigDialog = ref(false)
-
-// 图片预览
-const previewImageUrl = ref(null)
-function assetImageUrl(item) {
-  if (!item) return ''
-  if (typeof item === 'string') return item.startsWith('http') ? item : item
-  const localPath = item.local_path && String(item.local_path).trim()
-  if (localPath) return '/static/' + localPath.replace(/^\//, '')
-  return item.image_url || ''
-}
-function openImagePreview(url) {
-  if (url) previewImageUrl.value = url
+function goMaterialLibrary(type) {
+  router.push({ name: `material-${type}` })
 }
 
-// 公共角色库
-const showCharLibrary = ref(false)
-const charLibraryList = ref([])
-const charLibraryLoading = ref(false)
-const charLibraryPage = ref(1)
-const charLibraryPageSize = ref(20)
-const charLibraryTotal = ref(0)
-const charLibraryKeyword = ref('')
-const showEditCharLibrary = ref(false)
-const editCharLibraryForm = ref(null)
-const editCharLibrarySaving = ref(false)
-let charLibraryKeywordTimer = null
-
-async function loadCharLibraryList() {
-  charLibraryLoading.value = true
-  try {
-    const res = await characterLibraryAPI.list({ page: charLibraryPage.value, page_size: charLibraryPageSize.value, keyword: charLibraryKeyword.value || undefined, global: 1 })
-    charLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    charLibraryTotal.value = p.total ?? 0
-    if (p.page != null) charLibraryPage.value = p.page
-    if (p.page_size != null) charLibraryPageSize.value = p.page_size
-  } catch { charLibraryList.value = [] } finally { charLibraryLoading.value = false }
-}
-function debouncedLoadCharLibrary() {
-  if (charLibraryKeywordTimer) clearTimeout(charLibraryKeywordTimer)
-  charLibraryKeywordTimer = setTimeout(() => { charLibraryPage.value = 1; loadCharLibraryList() }, 300)
-}
-function openEditCharLibrary(item) {
-  editCharLibraryForm.value = { id: item.id, name: item.name ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditCharLibrary.value = true
-}
-async function submitEditCharLibrary() {
-  if (!editCharLibraryForm.value?.id) return
-  editCharLibrarySaving.value = true
-  try {
-    await characterLibraryAPI.update(editCharLibraryForm.value.id, { name: editCharLibraryForm.value.name, category: editCharLibraryForm.value.category || null, description: editCharLibraryForm.value.description || null, tags: editCharLibraryForm.value.tags || null, image_url: editCharLibraryForm.value.image_url || null, local_path: editCharLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditCharLibrary.value = false
-    loadCharLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editCharLibrarySaving.value = false }
-}
-async function onDeleteCharLibrary(item) {
-  try { await ElMessageBox.confirm(`确定删除公共角色「${(item.name || '未命名').slice(0, 20)}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await characterLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadCharLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
+function openMediaLibrary() {
+  router.push({ name: 'media-library' })
 }
 
-// 公共场景库
-const showSceneLibrary = ref(false)
-const sceneLibraryList = ref([])
-const sceneLibraryLoading = ref(false)
-const sceneLibraryPage = ref(1)
-const sceneLibraryPageSize = ref(20)
-const sceneLibraryTotal = ref(0)
-const sceneLibraryKeyword = ref('')
-const showEditSceneLibrary = ref(false)
-const editSceneLibraryForm = ref(null)
-const editSceneLibrarySaving = ref(false)
-let sceneLibraryKeywordTimer = null
+const homeModelOptions = computed(() => {
+  const category = homeMediaType.value === 'script' ? 'text' : homeMediaType.value
+  return homeGenerationCatalog.value.filter((item) => item.category === category)
+})
 
-async function loadSceneLibraryList() {
-  sceneLibraryLoading.value = true
-  try {
-    const res = await sceneLibraryAPI.list({ page: sceneLibraryPage.value, page_size: sceneLibraryPageSize.value, keyword: sceneLibraryKeyword.value || undefined, global: 1 })
-    sceneLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    sceneLibraryTotal.value = p.total ?? 0
-    if (p.page != null) sceneLibraryPage.value = p.page
-    if (p.page_size != null) sceneLibraryPageSize.value = p.page_size
-  } catch { sceneLibraryList.value = [] } finally { sceneLibraryLoading.value = false }
-}
-function debouncedLoadSceneLibrary() {
-  if (sceneLibraryKeywordTimer) clearTimeout(sceneLibraryKeywordTimer)
-  sceneLibraryKeywordTimer = setTimeout(() => { sceneLibraryPage.value = 1; loadSceneLibraryList() }, 300)
-}
-function openEditSceneLibrary(item) {
-  editSceneLibraryForm.value = { id: item.id, location: item.location ?? '', time: item.time ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditSceneLibrary.value = true
-}
-async function submitEditSceneLibrary() {
-  if (!editSceneLibraryForm.value?.id) return
-  editSceneLibrarySaving.value = true
-  try {
-    await sceneLibraryAPI.update(editSceneLibraryForm.value.id, { location: editSceneLibraryForm.value.location, time: editSceneLibraryForm.value.time || null, category: editSceneLibraryForm.value.category || null, description: editSceneLibraryForm.value.description || null, tags: editSceneLibraryForm.value.tags || null, image_url: editSceneLibraryForm.value.image_url || null, local_path: editSceneLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditSceneLibrary.value = false
-    loadSceneLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editSceneLibrarySaving.value = false }
-}
-async function onDeleteSceneLibrary(item) {
-  const name = (item.location || item.time || '未命名').slice(0, 20)
-  try { await ElMessageBox.confirm(`确定删除公共场景「${name}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await sceneLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadSceneLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
+const homeSelectedPrice = computed(() => {
+  return homeModelOptions.value.find((item) => item.model === homeModel.value)?.credits ?? 0
+})
+
+async function loadHomeGenerationConfig() {
+  const [catalog, account] = await Promise.allSettled([
+    listGenerationCatalog(),
+    getCreditAccount(),
+  ])
+  homeGenerationCatalog.value = catalog.status === 'fulfilled' && Array.isArray(catalog.value)
+    ? catalog.value
+    : []
+  homeBalance.value = account.status === 'fulfilled' ? Number(account.value?.available || 0) : 0
+  homeModel.value = homeModelOptions.value[0]?.model || ''
 }
 
-// 公共道具库
-const showPropLibrary = ref(false)
-const propLibraryList = ref([])
-const propLibraryLoading = ref(false)
-const propLibraryPage = ref(1)
-const propLibraryPageSize = ref(20)
-const propLibraryTotal = ref(0)
-const propLibraryKeyword = ref('')
-const showEditPropLibrary = ref(false)
-const editPropLibraryForm = ref(null)
-const editPropLibrarySaving = ref(false)
-let propLibraryKeywordTimer = null
+function startFromComposer() {
+  if (!homeModel.value) {
+    ElMessage.warning('当前没有管理员已启用并配置计费的模型')
+    return
+  }
+  sessionStorage.setItem('moli_quick_create_draft', JSON.stringify({
+    mode: homeMediaType.value,
+    prompt: homePrompt.value.trim(),
+    model: homeModel.value,
+    aspectRatio: homeAspectRatio.value,
+    duration: homeDuration.value,
+    resolution: homeResolution.value,
+  }))
+  router.push({ name: 'free-create', query: { mode: homeMediaType.value, source: 'home' } })
+}
 
-async function loadPropLibraryList() {
-  propLibraryLoading.value = true
-  try {
-    const res = await propLibraryAPI.list({ page: propLibraryPage.value, page_size: propLibraryPageSize.value, keyword: propLibraryKeyword.value || undefined, global: 1 })
-    propLibraryList.value = res?.items ?? []
-    const p = res?.pagination ?? {}
-    propLibraryTotal.value = p.total ?? 0
-    if (p.page != null) propLibraryPage.value = p.page
-    if (p.page_size != null) propLibraryPageSize.value = p.page_size
-  } catch { propLibraryList.value = [] } finally { propLibraryLoading.value = false }
-}
-function debouncedLoadPropLibrary() {
-  if (propLibraryKeywordTimer) clearTimeout(propLibraryKeywordTimer)
-  propLibraryKeywordTimer = setTimeout(() => { propLibraryPage.value = 1; loadPropLibraryList() }, 300)
-}
-function openEditPropLibrary(item) {
-  editPropLibraryForm.value = { id: item.id, name: item.name ?? '', category: item.category ?? '', description: item.description ?? '', tags: item.tags ?? '', image_url: item.image_url ?? '', local_path: item.local_path ?? null, imgUploading: false, imgGenerating: false }
-  showEditPropLibrary.value = true
-}
-async function submitEditPropLibrary() {
-  if (!editPropLibraryForm.value?.id) return
-  editPropLibrarySaving.value = true
-  try {
-    await propLibraryAPI.update(editPropLibraryForm.value.id, { name: editPropLibraryForm.value.name, category: editPropLibraryForm.value.category || null, description: editPropLibraryForm.value.description || null, tags: editPropLibraryForm.value.tags || null, image_url: editPropLibraryForm.value.image_url || null, local_path: editPropLibraryForm.value.local_path ?? null })
-    ElMessage.success('已保存')
-    showEditPropLibrary.value = false
-    loadPropLibraryList()
-  } catch (e) { ElMessage.error(e.message || '保存失败') } finally { editPropLibrarySaving.value = false }
-}
-async function onDeletePropLibrary(item) {
-  try { await ElMessageBox.confirm(`确定删除公共道具「${(item.name || '未命名').slice(0, 20)}」吗？`, '删除确认', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }) } catch { return }
-  try { await propLibraryAPI.delete(item.id); ElMessage.success('已删除'); loadPropLibraryList() } catch (e) { ElMessage.error(e.message || '删除失败') }
+function scrollToProjects() {
+  homeProjectsRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 const showNewDialog = ref(false)
@@ -943,7 +745,9 @@ async function submitNew() {
       title,
       description: isCanvasMode.value ? undefined : newForm.value.description?.trim() || undefined,
       folder_id: newForm.value.folder_id === '' ? null : newForm.value.folder_id,
-      metadata: projectMetadata(newForm.value.aspect_ratio, projectMode.value),
+      metadata: {
+        ...projectMetadata(newForm.value.aspect_ratio, projectMode.value),
+      },
     })
     showNewDialog.value = false
     ElMessage.success('项目已创建')
@@ -1066,7 +870,10 @@ async function onDelete(d) {
 onMounted(() => {
   loadList()
   if (isCanvasMode.value) loadProjectFolders()
-  else loadExamples()
+  else {
+    loadExamples()
+    loadHomeGenerationConfig()
+  }
 })
 
 watch(projectMode, () => {
@@ -1080,17 +887,22 @@ watch(projectMode, () => {
     loadProjectFolders()
   }
 })
+
+watch(homeMediaType, () => {
+  homeModel.value = homeModelOptions.value[0]?.model || ''
+})
 </script>
 
 <style scoped>
 .film-list {
   min-height: 100vh;
-  background: #08080d;
+  background: #080808;
   color: #e4e4e7;
   background-image:
-    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(99, 102, 241, 0.18) 0%, transparent 70%),
-    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(139, 92, 246, 0.1) 0%, transparent 60%),
-    radial-gradient(ellipse 40% 30% at 10% 80%, rgba(79, 70, 229, 0.08) 0%, transparent 60%);
+    radial-gradient(ellipse 60% 36% at 50% -10%, rgba(255, 113, 57, 0.12) 0%, transparent 72%),
+    linear-gradient(rgba(255, 255, 255, .018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .018) 1px, transparent 1px);
+  background-size: auto, 40px 40px, 40px 40px;
 }
 .header {
   background: rgba(12, 12, 18, 0.82);
@@ -1156,26 +968,26 @@ watch(projectMode, () => {
   gap: 6px;
 }
 
-/* 资源库按钮 —— 靛紫调 */
+/* 资源库按钮 */
 .btn-library {
-  --el-button-bg-color: rgba(99, 102, 241, 0.12);
-  --el-button-border-color: rgba(99, 102, 241, 0.35);
-  --el-button-text-color: #a5b4fc;
-  --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
-  --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
-  --el-button-hover-text-color: #c7d2fe;
-  --el-button-active-bg-color: rgba(99, 102, 241, 0.3);
-  --el-button-active-border-color: rgba(99, 102, 241, 0.7);
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-active-bg-color: rgba(255, 113, 57, 0.2);
+  --el-button-active-border-color: rgba(255, 113, 57, 0.75);
 }
 html.light .btn-library {
-  --el-button-bg-color: rgba(79, 70, 229, 0.08);
-  --el-button-border-color: rgba(79, 70, 229, 0.3);
-  --el-button-text-color: #3730a3;
-  --el-button-hover-bg-color: rgba(79, 70, 229, 0.14);
-  --el-button-hover-border-color: rgba(79, 70, 229, 0.5);
-  --el-button-hover-text-color: #312e81;
-  --el-button-active-bg-color: rgba(79, 70, 229, 0.2);
-  --el-button-active-border-color: rgba(79, 70, 229, 0.65);
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
+  --el-button-active-bg-color: rgba(255, 113, 57, 0.2);
+  --el-button-active-border-color: rgba(255, 113, 57, 0.75);
 }
 
 /* 主题切换按钮 */
@@ -1189,55 +1001,407 @@ html.light .btn-library {
   transition: all 0.2s;
 }
 html.light .btn-theme {
-  --el-button-bg-color: rgba(99, 102, 241, 0.08);
-  --el-button-border-color: rgba(99, 102, 241, 0.3);
-  --el-button-text-color: #6366f1;
-  --el-button-hover-bg-color: rgba(99, 102, 241, 0.15);
-  --el-button-hover-border-color: rgba(99, 102, 241, 0.5);
-  --el-button-hover-text-color: #4f46e5;
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #a3a3a3;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.5);
+  --el-button-hover-text-color: #ff9a72;
 }
 
-/* AI配置按钮 —— 琥珀调 */
-.btn-settings {
-  --el-button-bg-color: rgba(234, 179, 8, 0.1);
-  --el-button-border-color: rgba(234, 179, 8, 0.32);
-  --el-button-text-color: #fcd34d;
-  --el-button-hover-bg-color: rgba(234, 179, 8, 0.2);
-  --el-button-hover-border-color: rgba(234, 179, 8, 0.5);
-  --el-button-hover-text-color: #fde68a;
-  --el-button-active-bg-color: rgba(234, 179, 8, 0.28);
-  --el-button-active-border-color: rgba(234, 179, 8, 0.65);
-}
-html.light .btn-settings {
-  --el-button-bg-color: rgba(180, 83, 9, 0.07);
-  --el-button-border-color: rgba(180, 83, 9, 0.28);
-  --el-button-text-color: #92400e;
-  --el-button-hover-bg-color: rgba(180, 83, 9, 0.12);
-  --el-button-hover-border-color: rgba(180, 83, 9, 0.45);
-  --el-button-hover-text-color: #78350f;
-  --el-button-active-bg-color: rgba(180, 83, 9, 0.18);
-  --el-button-active-border-color: rgba(180, 83, 9, 0.6);
-}
-
-/* 导入按钮 —— 亮色模式下提升可读性 */
+/* 导入按钮 */
+.btn-import,
 html.light .btn-import {
-  --el-button-text-color: #374151;
-  --el-button-border-color: #d1d5db;
-  --el-button-hover-text-color: #1f2937;
-  --el-button-hover-border-color: #9ca3af;
+  --el-button-bg-color: #141414;
+  --el-button-border-color: #2b2b2b;
+  --el-button-text-color: #b8b8b8;
+  --el-button-hover-bg-color: rgba(255, 113, 57, 0.12);
+  --el-button-hover-border-color: rgba(255, 113, 57, 0.55);
+  --el-button-hover-text-color: #ff9a72;
 }
 
 .main {
-  max-width: min(1400px, 96vw);
+  max-width: min(1500px, calc(100vw - 56px));
   margin: 0 auto;
-  padding: 24px 16px 48px;
+  padding: 58px 0 72px;
+}
+.main--home {
+  max-width: none;
+  padding: 0;
+}
+.home-workbench {
+  position: relative;
+  min-height: calc(100vh - 72px);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(12, 9, 20, .08) 0 17%, rgba(5, 5, 8, .72) 52%, rgba(5, 5, 8, .96) 76%),
+    linear-gradient(112deg, #2d0d4c 0%, #0a0811 26%, #07070a 58%, #27125b 100%);
+}
+.home-workbench::before,
+.home-workbench::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.home-workbench::before {
+  width: 620px;
+  height: 620px;
+  right: -185px;
+  top: 150px;
+  border: 1px solid rgba(199, 171, 255, .12);
+  background: radial-gradient(circle at 40% 35%, rgba(133, 93, 231, .24), rgba(71, 38, 143, .22) 42%, rgba(20, 10, 42, .08) 67%, transparent 70%);
+  box-shadow: inset 42px 0 90px rgba(150, 106, 255, .15), 0 0 110px rgba(106, 63, 211, .12);
+}
+.home-workbench::after {
+  width: 340px;
+  height: 340px;
+  left: -120px;
+  bottom: -135px;
+  background: radial-gradient(circle at 60% 40%, rgba(129, 84, 232, .38), rgba(59, 30, 123, .12) 58%, transparent 70%);
+}
+.home-workbench__glow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffe09c;
+  box-shadow: 0 0 18px 6px rgba(255, 208, 112, .48);
+  pointer-events: none;
+}
+.home-workbench__glow--left {
+  left: 10%;
+  bottom: 16%;
+}
+.home-workbench__glow--right {
+  right: 10%;
+  top: 39%;
+}
+.home-workbench__inner {
+  position: relative;
+  z-index: 1;
+  width: min(1460px, calc(100vw - 64px));
+  margin: 0 auto;
+  padding: 104px 0 90px;
+}
+.home-workbench__eyebrow {
+  margin: 0 0 14px;
+  text-align: center;
+  color: rgba(232, 220, 255, .62);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .18em;
+}
+.home-workbench h1 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(48px, 5.4vw, 78px);
+  font-weight: 750;
+  letter-spacing: -.055em;
+  line-height: 1.08;
+  text-align: center;
+  text-shadow: 0 18px 55px rgba(0, 0, 0, .48);
+}
+.home-composer {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 22px;
+  width: min(1220px, 100%);
+  min-height: 188px;
+  margin: 72px auto 0;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 24px;
+  background: rgba(12, 12, 15, .96);
+  box-shadow: 0 34px 72px rgba(0, 0, 0, .48), 0 0 0 1px rgba(0, 0, 0, .34);
+}
+.home-composer__reference {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 136px;
+  border: 1px dashed #47474c;
+  border-radius: 17px;
+  color: #8d8d94;
+  background: #111114;
+  cursor: pointer;
+  transition: border-color .2s, color .2s, background .2s;
+}
+.home-composer__reference:hover,
+.home-composer__reference:focus-visible {
+  outline: none;
+  border-color: #ff7139;
+  color: #ff9a72;
+  background: rgba(255, 113, 57, .07);
+}
+.home-composer__plus {
+  color: #b4b4ba;
+  font-size: 32px;
+  font-weight: 300;
+  line-height: 1;
+}
+.home-composer__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.home-composer textarea {
+  width: 100%;
+  min-height: 90px;
+  padding: 2px 0 12px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: #f2f2f3;
+  background: transparent;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1.6;
+}
+.home-composer textarea::placeholder {
+  color: #68686f;
+}
+.home-composer__toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: auto;
+}
+.home-composer__controls,
+.home-composer__submit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.home-control,
+.home-composer__credits {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid #333338;
+  border-radius: 13px;
+  color: #dedee1;
+  background: #19191d;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.home-control select {
+  max-width: 190px;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.home-control select option {
+  color: #e8e8e8;
+  background: #18181b;
+}
+.home-control__icon {
+  color: #ff7139;
+}
+.home-control--static {
+  color: #bbb;
+}
+.home-composer__credits {
+  min-height: 44px;
+  border-color: rgba(255, 165, 43, .48);
+  color: #ffb34b;
+  background: rgba(140, 75, 12, .13);
+}
+.home-generate {
+  display: inline-flex;
+  min-width: 126px;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 14px;
+  color: #fff;
+  background: #ef6c3b;
+  box-shadow: 0 12px 28px rgba(239, 108, 59, .18);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .2s, background .2s, box-shadow .2s;
+}
+.home-generate:hover,
+.home-generate:focus-visible {
+  outline: none;
+  background: #ff7b46;
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px rgba(239, 108, 59, .28);
+}
+.home-recent {
+  width: min(1220px, 100%);
+  margin: 64px auto 0;
+}
+.home-recent__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+.home-recent__heading h2 {
+  margin: 0;
+  color: #efedf4;
+  font-size: 23px;
+  letter-spacing: -.02em;
+}
+.home-recent__heading button {
+  border: 0;
+  color: #9f9aa9;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+}
+.home-recent__heading button:hover,
+.home-recent__heading button:focus-visible {
+  outline: none;
+  color: #fff;
+}
+.home-project-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 18px;
+  scroll-margin-top: 90px;
+}
+.home-project-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 18px;
+  color: inherit;
+  background: rgba(12, 12, 15, .92);
+  text-align: left;
+  cursor: pointer;
+  transition: transform .2s, border-color .2s, box-shadow .2s;
+}
+.home-project-card:hover,
+.home-project-card:focus-visible {
+  outline: none;
+  border-color: rgba(255, 113, 57, .64);
+  transform: translateY(-4px);
+  box-shadow: 0 20px 38px rgba(0, 0, 0, .32);
+}
+.home-project-card__cover {
+  display: grid;
+  min-height: 148px;
+  place-items: center;
+  color: rgba(255, 255, 255, .78);
+  background:
+    radial-gradient(circle at 28% 25%, rgba(255, 128, 77, .62), transparent 33%),
+    radial-gradient(circle at 72% 72%, rgba(122, 81, 226, .76), transparent 38%),
+    linear-gradient(135deg, #231427, #101014);
+  font-size: 48px;
+  font-weight: 800;
+}
+.home-project-card__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 15px 16px 17px;
+}
+.home-project-card__copy strong {
+  overflow: hidden;
+  color: #f2f2f3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-project-card__copy small {
+  color: #777780;
+}
+.home-project-card--create {
+  display: flex;
+  min-height: 214px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  border-style: dashed;
+  border-color: rgba(255, 113, 57, .42);
+  background: rgba(17, 12, 20, .75);
+  text-align: center;
+}
+.home-project-card--create strong {
+  color: #f5f1f7;
+}
+.home-project-card--create small {
+  color: #7d7883;
+}
+.home-project-card__create-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  place-items: center;
+  border: 1px solid rgba(255, 113, 57, .54);
+  border-radius: 50%;
+  color: #ff9168;
+  background: rgba(255, 113, 57, .1);
+  font-size: 27px;
+}
+.workspace-heading {
+  margin-bottom: 42px;
+}
+.workspace-heading__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(255, 113, 57, .32);
+  border-radius: 999px;
+  color: #ff9167;
+  background: rgba(255, 113, 57, .08);
+  font-size: 12px;
+  font-weight: 600;
+}
+.workspace-heading__row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-top: 18px;
+}
+.workspace-heading h1 {
+  max-width: 760px;
+  margin: 0;
+  color: #f6f6f6;
+  font-size: clamp(32px, 4vw, 54px);
+  font-weight: 650;
+  letter-spacing: -.045em;
+  line-height: 1.08;
+}
+.workspace-heading p {
+  max-width: 680px;
+  margin: 16px 0 0;
+  color: #878787;
+  font-size: 15px;
+  line-height: 1.7;
+}
+.workspace-heading__action {
+  min-width: 132px;
+  min-height: 46px;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(255, 113, 57, .18);
 }
 .canvas-project-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 22px;
+  padding: 12px;
+  border: 1px solid #272727;
+  border-radius: 14px;
+  background: rgba(15, 15, 15, .86);
 }
 .canvas-project-search {
   width: min(420px, 100%);
@@ -1276,9 +1440,9 @@ html.light .btn-import {
 }
 .project-card {
   position: relative;
-  background: rgba(24, 24, 30, 0.75);
-  border: 1px solid rgba(63, 63, 70, 0.6);
-  border-radius: 14px;
+  background: rgba(17, 17, 17, 0.9);
+  border: 1px solid #272727;
+  border-radius: 16px;
   padding: 20px;
   cursor: pointer;
   transition: border-color 0.25s, background 0.25s, transform 0.25s, box-shadow 0.25s;
@@ -1291,30 +1455,35 @@ html.light .btn-import {
   position: absolute;
   inset: 0;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.04) 0%, transparent 60%);
   pointer-events: none;
 }
 .project-card:hover {
-  border-color: rgba(99, 102, 241, 0.55);
-  background: rgba(28, 28, 36, 0.9);
+  border-color: rgba(255, 113, 57, 0.58);
+  background: #151515;
   transform: translateY(-3px);
-  box-shadow: 0 12px 40px rgba(99, 102, 241, 0.15), 0 0 0 1px rgba(99, 102, 241, 0.1), 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .42), 0 0 0 1px rgba(255, 113, 57, .08);
+}
+.project-card:focus-visible {
+  outline: 2px solid #ff7139;
+  outline-offset: 3px;
+  border-color: rgba(255, 113, 57, 0.72);
 }
 
 /* 操作卡片 */
 .action-card {
   cursor: default;
   border-style: dashed;
-  border-color: rgba(99, 102, 241, 0.4);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
+  border-color: rgba(255, 113, 57, 0.42);
+  background: linear-gradient(145deg, rgba(255, 113, 57, 0.07), rgba(17, 17, 17, .92));
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: inset 0 0 40px rgba(99, 102, 241, 0.04);
 }
 .action-card:hover {
-  border-color: rgba(99, 102, 241, 0.65);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.07) 100%);
+  border-color: rgba(255, 113, 57, 0.72);
+  background: linear-gradient(145deg, rgba(255, 113, 57, 0.11), rgba(20, 20, 20, .96));
   transform: translateY(-2px);
   box-shadow: 0 8px 30px rgba(99, 102, 241, 0.12), inset 0 0 40px rgba(99, 102, 241, 0.06);
 }
@@ -1331,7 +1500,7 @@ html.light .btn-import {
 .action-card-title {
   font-size: 1rem;
   font-weight: 600;
-  color: #a5b4fc;
+  color: #ff956d;
   margin: 0;
 }
 .action-card-buttons {
@@ -1546,6 +1715,60 @@ html.light .btn-import {
 }
 
 @media (max-width: 760px) {
+  .main {
+    max-width: calc(100vw - 24px);
+    padding-top: 34px;
+  }
+  .main--home {
+    max-width: none;
+    padding-top: 0;
+  }
+  .home-workbench__inner {
+    width: calc(100vw - 28px);
+    padding: 62px 0 72px;
+  }
+  .home-workbench h1 {
+    font-size: 40px;
+    line-height: 1.14;
+  }
+  .home-composer {
+    grid-template-columns: 1fr;
+    margin-top: 42px;
+    padding: 16px;
+  }
+  .home-composer__reference {
+    min-height: 82px;
+  }
+  .home-composer__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .home-composer__controls {
+    overflow-x: auto;
+    padding-bottom: 5px;
+  }
+  .home-composer__submit {
+    justify-content: flex-end;
+  }
+  .home-project-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-project-card--create {
+    min-height: 196px;
+  }
+  .workspace-heading {
+    margin-bottom: 28px;
+  }
+  .workspace-heading__row {
+    display: block;
+  }
+  .workspace-heading h1 {
+    font-size: 34px;
+  }
+  .workspace-heading__action {
+    width: 100%;
+    margin-top: 22px;
+  }
   .canvas-project-search,
   .canvas-project-filter,
   .canvas-project-sort {
@@ -1553,137 +1776,162 @@ html.light .btn-import {
   }
 }
 
-/* 公共库弹窗 */
-:global(.library-dialog .el-dialog__body) { padding-top: 8px; }
+:global(.project-dialog.el-dialog) {
+  --el-bg-color: #111111;
+  --el-bg-color-overlay: #111111;
+  --el-fill-color-blank: #161616;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #888888;
+  border: 1px solid #2b2b2b;
+  border-radius: 16px;
+  background: #111111 !important;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .66);
+}
 
-/* 编辑弹框内图片区 */
-.lib-img-editor { display: flex; align-items: center; gap: 14px; }
-.lib-img-thumb { width: 88px; height: 88px; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-inner, #1c1c1e); border: 1px solid var(--border-color, #27272a); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.lib-img-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.lib-img-empty { color: var(--text-faint, #52525b); font-size: 26px; }
-.lib-img-btns { display: flex; flex-direction: column; gap: 8px; }
-.library-toolbar { margin-bottom: 12px; }
-.library-list {
-  min-height: 200px;
-  max-height: 420px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+@media (min-width: 761px) and (max-width: 1180px) {
+  .home-composer__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .home-project-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
-.library-item {
-  display: flex;
-  gap: 12px;
-  padding: 10px;
-  background: #1c1c1e;
-  border: 1px solid #27272a;
-  border-radius: 8px;
+:global(.project-dialog .el-dialog__title) {
+  color: #f5f5f5 !important;
 }
-.library-item-cover {
-  width: 72px;
-  height: 72px;
-  flex-shrink: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #27272a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+:global(.project-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
+  color: #ff8f64;
 }
-.library-item-cover img { width: 100%; height: 100%; object-fit: cover; }
-.library-item-placeholder { font-size: 0.8rem; color: #71717a; }
-.library-item-info { flex: 1; min-width: 0; }
-.library-item-name { font-weight: 500; margin-bottom: 4px; color: #fafafa; }
-.library-item-desc { font-size: 0.85rem; color: #a1a1aa; margin-bottom: 8px; }
-.library-item-actions { display: flex; gap: 8px; }
-.library-empty { text-align: center; color: #71717a; padding: 40px 20px; }
-.library-pagination { margin-top: 12px; display: flex; justify-content: center; }
+:global(.project-dialog .el-form-item__label) {
+  color: #a8a8a8 !important;
+}
+:global(.project-dialog .el-input__wrapper),
+:global(.project-dialog .el-select__wrapper),
+:global(.project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+:global(.project-dialog .el-input__wrapper:hover),
+:global(.project-dialog .el-select__wrapper:hover),
+:global(.project-dialog .el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px #484848 inset !important;
+}
+:global(.project-dialog .el-input__wrapper.is-focus),
+:global(.project-dialog .el-select__wrapper.is-focused),
+:global(.project-dialog .el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px #ff7139 inset !important;
+}
+:global(.project-dialog .el-input__inner),
+:global(.project-dialog .el-select__selected-item),
+:global(.project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+}
+:global(.project-dialog .el-input__inner::placeholder),
+:global(.project-dialog .el-textarea__inner::placeholder) {
+  color: #676767 !important;
+}
+:global(.project-dialog .el-input__count) {
+  color: #707070 !important;
+  background: transparent !important;
+}
+:global(.project-dialog .el-dialog__footer .el-button:not(.el-button--primary)) {
+  --el-button-bg-color: #161616;
+  --el-button-border-color: #343434;
+  --el-button-text-color: #bdbdbd;
+  --el-button-hover-bg-color: rgba(255, 113, 57, .1);
+  --el-button-hover-border-color: rgba(255, 113, 57, .55);
+  --el-button-hover-text-color: #ff9a72;
+}
+:global(html.light .project-dialog.el-dialog) {
+  --el-bg-color: #111111;
+  --el-bg-color-overlay: #111111;
+  --el-fill-color-blank: #161616;
+  --el-border-color: #303030;
+  --el-border-color-light: #292929;
+  --el-text-color-primary: #f5f5f5;
+  --el-text-color-regular: #c5c5c5;
+  --el-text-color-secondary: #888888;
+  background: #111111 !important;
+}
+:global(html.light .project-dialog .el-dialog__title) {
+  color: #f5f5f5 !important;
+}
+:global(html.light .project-dialog .el-form-item__label) {
+  color: #a8a8a8 !important;
+}
+:global(html.light .project-dialog .el-input__wrapper),
+:global(html.light .project-dialog .el-select__wrapper),
+:global(html.light .project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+  background: #161616 !important;
+  box-shadow: 0 0 0 1px #303030 inset !important;
+}
+:global(html.light .project-dialog .el-input__inner),
+:global(html.light .project-dialog .el-select__selected-item),
+:global(html.light .project-dialog .el-textarea__inner) {
+  color: #e8e8e8 !important;
+}
 
-/* ===== 亮色模式适配 ===== */
+/* 项目入口固定为 OpenVideo 风格的暗色工作区，避免历史主题设置覆盖 */
 html.light .film-list {
-  background: #f5f3ff;
-  color: #1e1b4b;
+  background: #080808;
+  color: #f5f5f5;
   background-image:
-    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(99, 102, 241, 0.1) 0%, transparent 70%),
-    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(139, 92, 246, 0.06) 0%, transparent 60%);
+    radial-gradient(ellipse 70% 45% at 50% -10%, rgba(255, 113, 57, 0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 35% at 85% 55%, rgba(255, 113, 57, 0.05) 0%, transparent 60%);
 }
 html.light .header {
-  background: rgba(248, 246, 255, 0.88);
-  border-bottom-color: rgba(99, 102, 241, 0.2);
-  box-shadow: 0 1px 0 rgba(99, 102, 241, 0.1), 0 4px 16px rgba(99, 102, 241, 0.06);
+  background: rgba(8, 8, 8, 0.92) !important;
+  border-bottom-color: #272727 !important;
+  box-shadow: 0 1px 0 rgba(255, 113, 57, 0.06), 0 4px 16px rgba(0, 0, 0, 0.28) !important;
 }
 html.light .logo-main {
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #9333ea 100%);
+  background: linear-gradient(135deg, #ff7139 0%, #ff9a72 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.2));
+  filter: drop-shadow(0 0 8px rgba(255, 113, 57, 0.2));
 }
 html.light .logo-sub {
-  color: #9ca3af;
-  -webkit-text-fill-color: #9ca3af;
+  color: #8c8c8c;
+  -webkit-text-fill-color: #8c8c8c;
 }
 html.light .project-card {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(199, 210, 254, 0.8);
-  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.06), 0 2px 12px rgba(0, 0, 0, 0.04);
+  background: rgba(17, 17, 17, 0.94) !important;
+  border-color: #272727 !important;
+  box-shadow: 0 1px 4px rgba(255, 113, 57, 0.04), 0 2px 12px rgba(0, 0, 0, 0.22) !important;
   backdrop-filter: none;
 }
 html.light .project-card::before {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.03) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.04) 0%, transparent 60%);
 }
 html.light .project-card:hover {
-  border-color: rgba(99, 102, 241, 0.5);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 36px rgba(99, 102, 241, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-color: rgba(255, 113, 57, 0.6) !important;
+  background: #151515 !important;
+  box-shadow: 0 12px 36px rgba(255, 113, 57, 0.1), 0 0 0 1px rgba(255, 113, 57, 0.12), 0 2px 8px rgba(0, 0, 0, 0.32) !important;
 }
 html.light .action-card {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
-  border-color: rgba(99, 102, 241, 0.35);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.08) 0%, rgba(255, 113, 57, 0.03) 100%) !important;
+  border-color: rgba(255, 113, 57, 0.4) !important;
 }
 html.light .action-card:hover {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.07) 100%);
-  border-color: rgba(99, 102, 241, 0.55);
+  background: linear-gradient(135deg, rgba(255, 113, 57, 0.13) 0%, rgba(255, 113, 57, 0.06) 100%) !important;
+  border-color: rgba(255, 113, 57, 0.65) !important;
 }
-html.light .action-card-title { color: #4f46e5; }
-html.light .project-title { color: #1e1b4b; }
-html.light .project-desc { color: #4b5563; }
-html.light .project-meta { color: #6b7280; }
-html.light .example-hint-text { color: #6b7280; }
-html.light .library-item {
-  background: #faf9ff;
-  border-color: #e5e7eb;
-}
-html.light .library-item-name { color: #1e1b4b; }
-html.light .library-item-desc { color: #4b5563; }
-html.light .library-empty { color: #6b7280; }
-html.light .lib-img-thumb {
-  background: #f3f4f6;
-  border-color: #e5e7eb;
-}
-html.light .lib-img-empty { color: #9ca3af; }
+html.light .action-card-title { color: #ff8c5e !important; }
+html.light .project-title { color: #f5f5f5 !important; }
+html.light .project-desc { color: #a3a3a3 !important; }
+html.light .project-meta { color: #737373 !important; }
+html.light .example-hint-text { color: #8c8c8c !important; }
 html.light .badge-status--draft {
-  background: rgba(107, 114, 128, 0.1);
-  color: #4b5563;
-  border-color: rgba(107, 114, 128, 0.25);
+  background: rgba(115, 115, 115, 0.12);
+  color: #a3a3a3;
+  border-color: rgba(115, 115, 115, 0.28);
 }
 
-/* ===== 图片放大预览 ===== */
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  cursor: zoom-out;
-}
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  border-radius: 8px;
-  object-fit: contain;
-}
 </style>

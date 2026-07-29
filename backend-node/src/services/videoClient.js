@@ -1,11 +1,17 @@
 // ? Go pkg/video + VideoGenerationService ????????? API??????(????)
 const fs = require('fs');
 const path = require('path');
+const dnsCore = require('dns');
+const dns = require('dns').promises;
+const http = require('http');
+const https = require('https');
+const net = require('net');
 const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
 const {
@@ -154,6 +160,18 @@ function resolveVideoProtocol(config, modelHint) {
     else if (provider === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
   }
   return protocol;
+}
+
+function getVideoArtifactFetchOptions(config, videoUrl) {
+  if (!String(config?.api_key || '').trim()) return {};
+  try {
+    const providerOrigin = new URL(String(config?.base_url || '')).origin;
+    const artifactOrigin = new URL(String(videoUrl || '')).origin;
+    if (providerOrigin !== artifactOrigin) return {};
+  } catch (_) {
+    return {};
+  }
+  return { headers: aihubccClient.authHeaders(config) };
 }
 
 /** 可灵 Omni / 多图生视频（飞儿 ffir.cn 等中转）：可用环境变量临时覆盖配置 */
@@ -997,7 +1015,11 @@ function parseKlingOmniPollVideoUrl(data) {
 function getDefaultVideoConfig(db, preferredModel) {
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
-  if (active.length === 0) return null;
+  if (active.length === 0) {
+    return preferredModel
+      ? canvasProviderConfigService.getConfig('video', preferredModel)
+      : null;
+  }
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
@@ -1010,7 +1032,7 @@ function getDefaultVideoConfig(db, preferredModel) {
       const requested = normalize(preferredModel);
       if (models.some((model) => normalize(model) === requested)) return c;
     }
-    return null;
+    return canvasProviderConfigService.getConfig('video', preferredModel);
   }
   const defaultOne = active.find((c) => c.is_default);
   return defaultOne != null ? defaultOne : active[0];
@@ -3273,6 +3295,10 @@ async function callXaiVideoApi(config, log, opts) {
     video_gen_id,
   } = opts;
 
+  if (String(model || '').toLowerCase() === 'lingjing-video-v1') {
+    return callAihubccVideoApi(config, log, opts);
+  }
+
   const base = (config.base_url || 'https://api.x.ai').replace(/\/$/, '');
   let ep = config.endpoint || '/v1/videos/generations';
   if (!ep.startsWith('/')) ep = '/' + ep;
@@ -3339,10 +3365,10 @@ async function callXaiVideoApi(config, log, opts) {
       body.image = { url: imageUrlForApi };
       const extraRefs = mergedImages.filter((u) => u !== imageUrlForApi);
       if (extraRefs.length > 0) {
-        body.reference_images = extraRefs.map((u) => ({ url: u }));
+        body.reference_images = extraRefs;
       }
     } else if (mergedImages.length > 0) {
-      body.reference_images = mergedImages.map((u) => ({ url: u }));
+      body.reference_images = mergedImages;
     }
     logExtra = {
       body_shape: 'grok-imagine',
@@ -3368,7 +3394,7 @@ async function callXaiVideoApi(config, log, opts) {
     images: body.images,
     image_url_head: body.image?.url ? String(body.image.url).slice(0, 100) : null,
     reference_images_heads: Array.isArray(body.reference_images)
-      ? body.reference_images.map((r) => String(r?.url || '').slice(0, 100))
+      ? body.reference_images.map((r) => String(r || '').slice(0, 100))
       : undefined,
   });
 
@@ -3387,7 +3413,7 @@ async function callXaiVideoApi(config, log, opts) {
     let errMsg = 'xAI 视频请求失败: ' + res.status;
     try {
       const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
+      const msg = errJson.detail || errJson.error?.message || errJson.message || errJson.error;
       if (msg) errMsg += ' - ' + String(msg).slice(0, 220);
     } catch (_) {
       if (raw) errMsg += ' - ' + raw.slice(0, 200);
@@ -4253,6 +4279,45 @@ async function callAihubccVideoApi(config, log, opts = {}) {
     const value = await resolve(opts.reference_urls[i], `ref${i}`);
     if (value && !refs.includes(value)) refs.push(value);
   }
+  let submittedRefs = refs;
+  if (model.toLowerCase() === 'lingjing-video-v1') {
+    const ordered = [first, last, ...refs].filter((value, index, values) => value && values.indexOf(value) === index);
+    submittedRefs = [];
+    for (let index = 0; index < ordered.length; index += 1) {
+      const source = ordered[index];
+      let bytes;
+      let mimeType = 'image/png';
+      if (/^data:image\//i.test(source)) {
+        const match = source.match(/^data:([^;,]+);base64,(.+)$/i);
+        if (!match) return { error: `灵境参考图 ${index + 1} 的 data URL 无效` };
+        mimeType = match[1];
+        bytes = Buffer.from(match[2], 'base64');
+      } else {
+        try {
+          ({ bytes, mimeType } = await downloadPublicImage(source));
+        } catch (error) {
+          return { error: `灵境参考图 ${index + 1} 下载失败: ${error.message}` };
+        }
+      }
+      const form = new FormData();
+      form.append('file', new Blob([bytes], { type: mimeType }), `canvas-reference-${index + 1}.png`);
+      const uploadResult = await aihubccClient.requestJson(
+        aihubccClient.joinAihubccUrl(config, '/uploads'),
+        {
+          method: 'POST',
+          headers: aihubccClient.authHeaders(config),
+          body: form,
+          timeoutMs: 120000,
+        }
+      );
+      if (!uploadResult.response.ok) {
+        return { error: `灵境参考图 ${index + 1} 上传失败: ${uploadResult.response.status}` };
+      }
+      const uploadPath = aihubccClient.extractUploadPath(uploadResult.data);
+      if (!uploadPath) return { error: `灵境参考图 ${index + 1} 上传后未返回 path` };
+      submittedRefs.push(uploadPath);
+    }
+  }
   const body = aihubccClient.buildVideoBody({
     model,
     prompt: opts.prompt,
@@ -4261,7 +4326,7 @@ async function callAihubccVideoApi(config, log, opts = {}) {
     image_url: first,
     first_image_url: first,
     last_image_url: last,
-    reference_urls: refs,
+    reference_urls: submittedRefs,
     video_url: opts.video_url,
   });
   const url = aihubccClient.getSubmitUrl(config, config.endpoint || '/videos');
@@ -4294,6 +4359,120 @@ async function callAihubccVideoApi(config, log, opts = {}) {
   const taskId = aihubccClient.extractTaskId(result.data);
   if (!taskId) return { error: 'AIHubCC 视频接口未返回视频地址或任务编号' };
   return { task_id: taskId, status: aihubccClient.extractStatus(result.data) || 'processing' };
+}
+
+function isPrivateAddress(address) {
+  address = String(address || '').replace(/^\[|\]$/g, '');
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number);
+    return parts[0] === 10
+      || parts[0] === 127
+      || parts[0] === 0
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 168);
+  }
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith('::ffff:')) return true;
+    const mappedIpv4 = normalized.replace(/^::ffff:/, '');
+    if (net.isIPv4(mappedIpv4)) return isPrivateAddress(mappedIpv4);
+    return normalized === '::1'
+      || normalized === '::'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || normalized.startsWith('fe8')
+      || normalized.startsWith('fe9')
+      || normalized.startsWith('fea')
+      || normalized.startsWith('feb');
+  }
+  return true;
+}
+
+async function assertPublicImageUrl(value) {
+  const url = new URL(value);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('只允许 HTTP(S) 图片');
+  if (url.username || url.password) throw new Error('图片地址不得包含认证信息');
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('拒绝本机图片地址');
+  const addresses = net.isIP(hostname)
+    ? [hostname]
+    : (await dns.lookup(hostname, { all: true })).map((item) => item.address);
+  if (!addresses.length || addresses.some(isPrivateAddress)) throw new Error('拒绝私网图片地址');
+  return url;
+}
+
+async function downloadPublicImage(value, maxBytes = 20 * 1024 * 1024) {
+  let current = String(value || '').trim();
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    const url = await assertPublicImageUrl(current);
+    const response = await requestPublicImage(url, maxBytes);
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.location;
+      if (!location || redirect === 3) throw new Error('图片重定向无效或过多');
+      current = new URL(location, current).toString();
+      continue;
+    }
+    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+    return { bytes: response.bytes, mimeType: response.mimeType };
+  }
+  throw new Error('图片下载失败');
+}
+
+function requestPublicImage(url, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === 'https:' ? https : http;
+    const request = transport.get(url, {
+      timeout: 30_000,
+      lookup(hostname, options, callback) {
+        dnsCore.lookup(hostname, { ...options, all: true }, (error, addresses) => {
+          if (error) return callback(error);
+          if (!addresses.length || addresses.some((item) => isPrivateAddress(item.address))) {
+            return callback(new Error('拒绝私网图片地址'));
+          }
+          if (options?.all) return callback(null, addresses);
+          const selected = addresses[0];
+          callback(null, selected.address, selected.family);
+        });
+      },
+    }, (response) => {
+      const status = response.statusCode || 0;
+      const headers = response.headers;
+      if (status >= 300 && status < 400) {
+        response.resume();
+        return resolve({ status, headers });
+      }
+      const mimeType = String(headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!mimeType.startsWith('image/')) {
+        response.destroy();
+        return reject(new Error('响应不是图片'));
+      }
+      const declaredLength = Number(headers['content-length'] || 0);
+      if (declaredLength > maxBytes) {
+        response.destroy();
+        return reject(new Error('图片超过 20MB 限制'));
+      }
+      const chunks = [];
+      let total = 0;
+      response.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          response.destroy(new Error('图片超过 20MB 限制'));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.on('end', () => resolve({
+        status,
+        headers,
+        bytes: Buffer.concat(chunks),
+        mimeType,
+      }));
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('图片下载超时')));
+    request.on('error', reject);
+  });
 }
 
 /**
@@ -5203,10 +5382,14 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   };
 }
 
+const { runWithGenerationLimit } = require('./generationConcurrency');
+
 module.exports = {
   getDefaultVideoConfig,
+  getVideoArtifactFetchOptions,
   callAihubccVideoApi,
-  callVideoApi,
+  callXaiVideoApi,
+  callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
@@ -5233,4 +5416,7 @@ module.exports = {
   collectActiveCharacterVoiceRefs,
   selectStableCharacterVoiceRef,
   selectStoryboardCharacterVoiceRef,
+  assertPublicImageUrl,
+  downloadPublicImage,
+  requestPublicImage,
 };

@@ -60,6 +60,25 @@ export function resolveFreeCanvasNodes(savedLayout) {
   return result
 }
 
+export function resolveCanvasGroups(savedLayout) {
+  const result = []
+  for (const group of savedLayout?.groups || []) {
+    const childNodeIds = [...new Set((group?.child_node_ids || []).map(String).filter(Boolean))]
+    const values = [group?.x, group?.y, group?.width, group?.height].map(Number)
+    if (!group?.id || childNodeIds.length < 2 || !values.every(Number.isFinite)) continue
+    result.push({
+      id: String(group.id),
+      title: String(group.title || '节点组'),
+      child_node_ids: childNodeIds,
+      x: values[0],
+      y: values[1],
+      width: Math.max(260, values[2]),
+      height: Math.max(180, values[3]),
+    })
+  }
+  return result
+}
+
 export function normalizeManualCanvasEdges(edges) {
   const result = []
   const seen = new Set()
@@ -75,14 +94,19 @@ export function normalizeManualCanvasEdges(edges) {
     if (seen.has(key)) continue
     seen.add(key)
 
+    const { lineType, ...persistedData } = edge.data || {}
     result.push({
       id: edge.id || `manual:${key}`,
       source,
       target,
       sourceHandle,
       targetHandle,
-      type: edge.type || 'smoothstep',
-      data: { manual: true },
+      type: lineType || edge.type || 'smoothstep',
+      data: {
+        ...persistedData,
+        manual: true,
+        ...(persistedData.contract ? { contract: { ...persistedData.contract } } : {}),
+      },
     })
   }
   return result
@@ -111,11 +135,27 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
     },
     nodes,
     manual_edges: manualEdges,
+    suppressed_edge_ids: options.suppressedEdgeIds == null
+      ? [...new Set((existingLayout?.suppressed_edge_ids || []).map(String))].sort()
+      : [...new Set((options.suppressedEdgeIds || []).map(String))].sort(),
     updated_at: new Date().toISOString(),
   }
   if (options.persistFreeNodes) {
     payload.free_nodes = resolveFreeCanvasNodes({
       free_nodes: (flowNodes || []).filter((node) => node?.type === 'homeCanvasNode'),
+    })
+    payload.groups = resolveCanvasGroups({
+      groups: (flowNodes || [])
+        .filter((node) => node?.type === 'canvasGroup')
+        .map((node) => ({
+          id: node.id,
+          title: node.data?.title,
+          child_node_ids: node.data?.childNodeIds,
+          x: node.position?.x,
+          y: node.position?.y,
+          width: node.data?.width,
+          height: node.data?.height,
+        })),
     })
   }
   return payload

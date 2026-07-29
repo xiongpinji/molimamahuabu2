@@ -50,7 +50,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Connection, Document, Download, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
+import { Connection, Delete, Document, Download, EditPen, FolderOpened, FullScreen, List, Microphone, Operation, Picture, Upload, VideoPlay, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -124,6 +124,10 @@ const nodeGroups = [
     title: '编辑',
     items: [
       { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
+      { type: 'duplicate-free-node', label: '创建副本', hint: '克隆到右下方', icon: Document },
+      { type: 'view-generation-history', label: '生成历史', hint: '查看最近运行记录', icon: List },
+      { type: 'mount-free-node-asset', label: '挂载素材', hint: '替换当前节点素材', icon: FolderOpened },
+      { type: 'delete-free-node', label: '删除节点', hint: '可通过撤销恢复', icon: Delete },
       { type: 'open-node-production', label: '进入制作页', hint: '等同双击节点', icon: FullScreen },
       { type: 'preview-node-video', label: '预览视频', hint: '打开成片', icon: View },
       { type: 'duplicate-storyboard-node', label: '复制分镜', hint: '克隆到旁边', icon: Document },
@@ -225,11 +229,11 @@ function close() {
 .canvas-context-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2999;
+  z-index: 5999;
 }
 .canvas-context-menu {
   position: fixed;
-  z-index: 3000;
+  z-index: 6000;
   width: 236px;
   max-height: calc(100vh - 16px);
   overflow-y: auto;

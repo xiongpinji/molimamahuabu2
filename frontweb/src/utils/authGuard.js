@@ -1,5 +1,6 @@
 export function authRedirect(publicMode, to, session) {
-  if (!publicMode || to.name === 'login') return null
+  if (to.name === 'login' || to.meta?.public) return null
+  if (!publicMode && !to.meta?.requiresAuth) return null
   if (!session?.token) {
     return { name: 'login', query: { redirect: to.fullPath || to.path || '/' } }
   }

@@ -27,6 +27,10 @@ const server = app.listen(port, host, () => {
   logger.info('Health:    http://localhost:' + port + '/health');
   logger.info('Server is ready!');
 });
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
+server.requestTimeout = 600_000;
+server.maxConnections = Number(process.env.SERVER_MAX_CONNECTIONS) || 1_024;
 
 function shutdown() {
   logger.info('Shutting down server...');

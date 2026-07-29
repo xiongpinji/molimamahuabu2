@@ -182,12 +182,30 @@ function adjustTenantBalance(db, input) {
 function listTenantAdjustments(db, tenantId, limitValue = 100) {
   ensureSchema(db);
   const limit = Math.min(Math.max(Number.parseInt(limitValue, 10) || 100, 1), 500);
-  return db.prepare(`SELECT id, tenant_id, actor_user_id, event_type, amount,
-      reason, reference_type, reference_id, created_at
-    FROM tenant_credit_adjustments
-    WHERE tenant_id = ?
-    ORDER BY rowid DESC
-    LIMIT ?`).all(String(tenantId), limit);
+  return db.prepare(`SELECT *
+    FROM (
+      SELECT id, tenant_id, actor_user_id, event_type, amount,
+        reason, reference_type, reference_id, created_at,
+        NULL AS model, NULL AS resource_type, NULL AS resource_id
+      FROM tenant_credit_adjustments
+      WHERE tenant_id = ?
+      UNION ALL
+      SELECT ledger.id, ledger.tenant_id, ledger.actor_user_id, ledger.event_type,
+        -ledger.spent_delta AS amount,
+        COALESCE(ledger.reason, reservation.reason, 'generation_completed') AS reason,
+        'usage_reservation' AS reference_type,
+        ledger.reservation_id AS reference_id,
+        ledger.created_at,
+        reservation.model,
+        reservation.resource_type,
+        reservation.resource_id
+      FROM tenant_credit_ledger AS ledger
+      JOIN tenant_usage_reservations AS reservation
+        ON reservation.id = ledger.reservation_id
+      WHERE ledger.tenant_id = ? AND ledger.event_type = 'confirm'
+    )
+    ORDER BY created_at DESC
+    LIMIT ?`).all(String(tenantId), String(tenantId), limit);
 }
 
 function getReservation(db, id) {

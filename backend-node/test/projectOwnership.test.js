@@ -69,3 +69,60 @@ test('静态工程文件要求登录并校验工程归属', () => {
   middleware({ path: '/library/characters/a.jpg', get() { return `Bearer ${token}`; } }, libraryRes, () => {});
   assert.equal(libraryRes.statusCode, 404);
 });
+
+test('静态媒体支持 HttpOnly 会话 Cookie，并只允许当前用户生成的独立素材', () => {
+  const { db } = setup();
+  const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO tenants (id, name, slug, status, created_by, created_at, updated_at)
+    VALUES ('team-1', 'Team', 'team-1', 'active', 'user-1', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at, updated_at)
+    VALUES ('team-1', 'user-1', 'member', 'active', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO image_generations
+    (provider, prompt, status, local_path, user_id, tenant_id, created_at, updated_at)
+    VALUES ('test', 'owned', 'completed', 'library/images/owned.jpg', 'user-1', NULL, ?, ?)`)
+    .run(now, now);
+  db.prepare(`INSERT INTO video_generations
+    (provider, prompt, status, local_path, user_id, tenant_id, created_at, updated_at)
+    VALUES ('test', 'team', 'completed', 'library/videos/team.mp4', NULL, 'team-1', ?, ?)`)
+    .run(now, now);
+  db.prepare(`INSERT INTO image_generations
+    (provider, prompt, status, local_path, user_id, tenant_id, created_at, updated_at)
+    VALUES ('test', 'other', 'completed', 'library/images/other.jpg', 'user-2', NULL, ?, ?)`)
+    .run(now, now);
+
+  const middleware = createStaticOwnershipMiddleware({ db, enabled: true, secret: SECRET });
+  const ownedRes = response();
+  let called = false;
+  middleware({
+    path: '/library/images/owned.jpg',
+    query: {},
+    get(name) {
+      if (name === 'authorization') return '';
+      if (name === 'cookie') return `other=value; moli_media_session=${encodeURIComponent(token)}`;
+      return '';
+    },
+  }, ownedRes, () => { called = true; });
+  assert.equal(called, true);
+
+  const teamRes = response();
+  let teamCalled = false;
+  middleware({
+    path: '/library/videos/team.mp4',
+    query: {},
+    get(name) {
+      return name === 'cookie' ? `moli_media_session=${encodeURIComponent(token)}` : '';
+    },
+  }, teamRes, () => { teamCalled = true; });
+  assert.equal(teamCalled, true);
+
+  const otherRes = response();
+  middleware({
+    path: '/library/images/other.jpg',
+    query: {},
+    get(name) {
+      return name === 'cookie' ? `moli_media_session=${encodeURIComponent(token)}` : '';
+    },
+  }, otherRes, () => {});
+  assert.equal(otherRes.statusCode, 404);
+});

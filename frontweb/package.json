@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/build-public.mjs",
+    "build:public": "node scripts/build-public.mjs",
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test:e2e:image-node-real": "node scripts/run-real-aihubcc-image-node-chain.mjs",

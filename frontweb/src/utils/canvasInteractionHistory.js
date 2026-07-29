@@ -10,7 +10,7 @@ function normalizeViewport(viewport) {
   }
 }
 
-export function createCanvasInteractionState(nodes = [], viewport = {}) {
+export function createCanvasInteractionState(nodes = [], viewport = {}, edges = [], suppressedEdgeIds = []) {
   const positions = {}
   for (const node of nodes || []) {
     if (!node?.id || !node.position) continue
@@ -19,13 +19,20 @@ export function createCanvasInteractionState(nodes = [], viewport = {}) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue
     positions[String(node.id)] = { x, y }
   }
-  return { nodes: positions, viewport: normalizeViewport(viewport) }
+  return {
+    nodes: positions,
+    viewport: normalizeViewport(viewport),
+    edges: clone(edges || []),
+    suppressedEdgeIds: [...new Set((suppressedEdgeIds || []).map(String))].sort(),
+  }
 }
 
 export function serializeCanvasInteractionState(state) {
   return JSON.stringify({
     nodes: Object.fromEntries(Object.entries(state?.nodes || {}).sort(([a], [b]) => a.localeCompare(b))),
     viewport: normalizeViewport(state?.viewport),
+    edges: state?.edges || [],
+    suppressedEdgeIds: [...new Set((state?.suppressedEdgeIds || []).map(String))].sort(),
   })
 }
 

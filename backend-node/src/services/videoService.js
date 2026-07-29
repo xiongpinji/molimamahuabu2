@@ -71,6 +71,8 @@ function rowToItem(r) {
     image_url: r.image_url,
     first_frame_url: r.first_frame_url,
     last_frame_url: r.last_frame_url,
+    output_first_frame_url: r.output_first_frame_url,
+    output_last_frame_url: r.output_last_frame_url,
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -124,6 +126,7 @@ const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
+const generationCost = require('./generationCostLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
@@ -265,6 +268,13 @@ function create(db, log, req, options = {}) {
         resourceType: 'video',
         resourceId: id,
       });
+      const duration = Number(body.duration);
+      generationCost.record(db, {
+        reservationId: reservation.id,
+        model: billingModel,
+        quantity: Number.isFinite(duration) && duration > 0 ? duration : 1,
+        usageSource: 'configured',
+      });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
       auditEvent.record(db, {
         userId: options.userId,
@@ -339,7 +349,7 @@ function validateDownloadedVideoBuffer(buffer, ext) {
  * 将远程 video_url 下载到本地
  * @returns {Promise<{localPath: string|null, error?: string}>} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
-async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
+async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, fetchOptions = {}) {
   if (!videoUrl || typeof videoUrl !== 'string') return { localPath: null };
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
   try {
@@ -347,7 +357,7 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
     const filePath = path.join(dir, name);
-    const res = await fetch(videoUrl, { method: 'GET' });
+    const res = await fetch(videoUrl, { method: 'GET', ...fetchOptions });
     if (!res.ok) {
       log.warn('Download video failed', { status: res.status, videoGenId });
       return { localPath: null };
@@ -449,6 +459,54 @@ function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenI
   normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
 }
 
+function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, options = {}) {
+  const emptyResult = {
+    output_first_frame_url: null,
+    output_last_frame_url: null,
+  };
+  if (!localPath || options.hasFfmpeg === false) return emptyResult;
+  if (options.hasFfmpeg !== true && !hasLocalFfmpeg()) return emptyResult;
+
+  const videoPath = path.join(storagePath, localPath);
+  if (!fs.existsSync(videoPath)) return emptyResult;
+
+  const frameDir = path.dirname(videoPath);
+  const firstPath = path.join(frameDir, `vg_${videoGenId}_first.jpg`);
+  const lastPath = path.join(frameDir, `vg_${videoGenId}_last.jpg`);
+  const ffmpegPath = options.ffmpegPath || getFfmpegPath();
+  const run = options.run || spawnSync;
+  const commonOptions = { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 };
+  const outputs = [
+    {
+      key: 'output_first_frame_url',
+      path: firstPath,
+      args: ['-y', '-i', videoPath, '-frames:v', '1', '-q:v', '2', firstPath],
+    },
+    {
+      key: 'output_last_frame_url',
+      path: lastPath,
+      args: ['-y', '-sseof', '-0.1', '-i', videoPath, '-frames:v', '1', '-q:v', '2', lastPath],
+    },
+  ];
+  const result = { ...emptyResult };
+
+  for (const output of outputs) {
+    const commandResult = run(ffmpegPath, output.args, commonOptions);
+    if (commandResult?.status !== 0 || !fs.existsSync(output.path)) {
+      log?.warn?.('[视频] 成片边界帧提取失败', {
+        videoGenId,
+        frame: output.key,
+        stderr: String(commandResult?.stderr || '').slice(-500),
+      });
+      continue;
+    }
+    const relativePath = path.relative(storagePath, output.path).split(path.sep).join('/');
+    result[output.key] = `/static/${relativePath}`;
+  }
+  log?.info?.('[视频] 成片首尾帧提取完成', { videoGenId, ...result });
+  return result;
+}
+
 /** 防止同一 videoGenId 重复发起 poll（含重启恢复） */
 const activeVideoPolls = new Set();
 
@@ -458,18 +516,31 @@ function resolveStoragePath(cfg) {
     : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
 }
 
-async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel) {
+async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, providerConfig) {
   const now = new Date().toISOString();
   let localPath = null;
   let downloadError = null;
+  let boundaryFrames = {
+    output_first_frame_url: null,
+    output_last_frame_url: null,
+  };
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-    const downloaded = await downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir);
+    const fetchOptions = videoClient.getVideoArtifactFetchOptions(providerConfig, videoUrl);
+    const downloaded = await downloadVideoToLocal(
+      storagePath,
+      videoUrl,
+      videoGenId,
+      log,
+      projectSubdir,
+      fetchOptions
+    );
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+    boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
   } catch (_) {}
   if (downloadError) {
     setVideoGenFailed(db, videoGenId, downloadError, now);
@@ -480,8 +551,18 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   const deliveryWarning = localVideoDeliveryWarning(localPath);
   try {
     db.prepare(
-      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-    ).run('completed', videoUrl, localPath, deliveryWarning || null, now, now, videoGenId);
+      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, output_first_frame_url = ?, output_last_frame_url = ?, error_msg = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    ).run(
+      'completed',
+      videoUrl,
+      localPath,
+      boundaryFrames.output_first_frame_url,
+      boundaryFrames.output_last_frame_url,
+      deliveryWarning || null,
+      now,
+      now,
+      videoGenId
+    );
   } catch (e) {
     if ((e.message || '').includes('completed_at')) {
       db.prepare(
@@ -508,6 +589,8 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     taskService.updateTaskResult(db, row.task_id, {
       video_generation_id: videoGenId,
       video_url: videoUrl,
+      local_path: localPath,
+      ...boundaryFrames,
       status: 'completed',
     });
   }
@@ -541,7 +624,16 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
   const now = new Date().toISOString();
   const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
   if (polledVideo.ok) {
-    await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, polledVideo.video_url, 'after poll');
+    await finalizeSuccessfulVideo(
+      db,
+      log,
+      videoGenId,
+      row,
+      rowForAspect,
+      polledVideo.video_url,
+      'after poll',
+      config
+    );
   } else if (pollResult.indeterminate) {
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
     db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
@@ -731,9 +823,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       provider: row.provider,
       drama_id: row.drama_id,
       storyboard_id: row.storyboard_id || undefined,
-      image_url: hasOmniRefs ? undefined : row.image_url,
-      first_frame_url: hasOmniRefs ? undefined : row.first_frame_url,
-      last_frame_url: hasOmniRefs ? undefined : row.last_frame_url,
+      image_url: row.image_url,
+      first_frame_url: row.first_frame_url,
+      last_frame_url: row.last_frame_url,
       reference_urls,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
@@ -748,7 +840,16 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
     if (directVideo.ok) {
-      await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, directVideo.video_url, '');
+      await finalizeSuccessfulVideo(
+        db,
+        log,
+        videoGenId,
+        row,
+        rowForAspect,
+        directVideo.video_url,
+        '',
+        config
+      );
       return;
     }
     if (result.video_url) {
@@ -837,4 +938,5 @@ module.exports = {
   resumeProcessingVideoGenerations,
   localVideoDeliveryWarning,
   settleVideoCredit,
+  extractVideoBoundaryFrames,
 };

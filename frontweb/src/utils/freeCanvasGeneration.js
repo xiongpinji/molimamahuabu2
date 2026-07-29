@@ -34,6 +34,11 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : undefined
 }
 
+function finiteNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
 function positiveInteger(value) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : undefined
@@ -43,6 +48,31 @@ function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map((value) => cleanString(value))
     .filter(Boolean))]
+}
+
+function booleanValue(value) {
+  return value === true
+}
+
+function imageSizeFromResolution(aspectRatio, resolution) {
+  const longEdge = { '1K': 1024, '2K': 2048, '4K': 4096 }[cleanString(resolution)]
+  if (!longEdge) return ''
+  const [rawWidth, rawHeight] = cleanString(aspectRatio).split(':').map(Number)
+  if (!rawWidth || !rawHeight) return ''
+  const landscape = rawWidth >= rawHeight
+  const width = landscape ? longEdge : Math.round(longEdge * rawWidth / rawHeight)
+  const height = landscape ? Math.round(longEdge * rawHeight / rawWidth) : longEdge
+  const even = (value) => Math.max(2, Math.round(value / 2) * 2)
+  return `${even(width)}x${even(height)}`
+}
+
+function decoratedVideoPrompt(nodeData) {
+  return [
+    nodeData.content,
+    nodeData.cameraMovement ? `镜头运动：${nodeData.cameraMovement}` : '',
+    nodeData.effect ? `视觉特效：${nodeData.effect}` : '',
+    nodeData.includeAudio ? '音频要求：生成与画面同步的对白、环境音或音效。' : '',
+  ].filter(Boolean).join('\n')
 }
 
 function withoutEmptyFields(payload) {
@@ -145,7 +175,29 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   if (Object.hasOwn(data, 'model')) normalized.model = cleanString(data.model)
   if (Object.hasOwn(data, 'aspectRatio')) normalized.aspectRatio = cleanString(data.aspectRatio)
   if (Object.hasOwn(data, 'duration')) normalized.duration = positiveNumber(data.duration)
+  if (Object.hasOwn(data, 'style')) normalized.style = cleanString(data.style)
+  if (Object.hasOwn(data, 'resolution')) normalized.resolution = cleanString(data.resolution)
+  if (Object.hasOwn(data, 'quantity')) normalized.quantity = positiveInteger(data.quantity)
+  if (Object.hasOwn(data, 'negativePrompt')) normalized.negativePrompt = cleanString(data.negativePrompt)
+  if (Object.hasOwn(data, 'voiceId')) normalized.voiceId = cleanString(data.voiceId)
+  if (Object.hasOwn(data, 'speechRate')) normalized.speechRate = positiveNumber(data.speechRate)
+  if (Object.hasOwn(data, 'speechVolume')) normalized.speechVolume = positiveNumber(data.speechVolume)
+  if (Object.hasOwn(data, 'speechPitch')) normalized.speechPitch = finiteNumber(data.speechPitch)
+  if (Object.hasOwn(data, 'speechEmotion')) normalized.speechEmotion = cleanString(data.speechEmotion)
+  if (Object.hasOwn(data, 'pronunciationTones')) {
+    normalized.pronunciationTones = uniqueStrings(data.pronunciationTones)
+  }
+  if (Object.hasOwn(data, 'cameraMovement')) normalized.cameraMovement = cleanString(data.cameraMovement)
+  if (Object.hasOwn(data, 'effect')) normalized.effect = cleanString(data.effect)
+  if (Object.hasOwn(data, 'includeAudio')) normalized.includeAudio = booleanValue(data.includeAudio)
+  if (Object.hasOwn(data, 'characterReferenceUrls')) {
+    normalized.characterReferenceUrls = uniqueStrings(data.characterReferenceUrls)
+  }
+  if (Object.hasOwn(data, 'resultUrls')) normalized.resultUrls = uniqueStrings(data.resultUrls)
   if (Object.hasOwn(data, 'taskId')) normalized.taskId = cleanString(data.taskId)
+  if (Object.hasOwn(data, 'progress')) {
+    normalized.progress = Math.min(100, Math.max(0, finiteNumber(data.progress)))
+  }
   if (Object.hasOwn(data, 'status')) {
     const status = cleanString(data.status)
     if (FREE_NODE_STATUSES.has(status)) normalized.status = status
@@ -204,31 +256,63 @@ export function normalizeFreeCanvasNode(node = {}) {
 export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const nodeData = normalizeFreeCanvasNodeData(data)
   if (!nodeData) return null
-  const upstreamUrls = uniqueStrings(options.upstreamUrls)
+  const content = uniqueStrings([
+    ...(options.upstreamTexts || []),
+    nodeData.content,
+  ]).join('\n\n')
+  const maxReferences = positiveInteger(options.maxReferences) || 10
+  const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
+    .filter((reference) => reference?.enabled !== false && reference?.url)
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
+    .slice(0, maxReferences)
+  const upstreamUrls = uniqueStrings([
+    ...(references.length ? [] : (options.upstreamUrls || [])),
+    ...references.map((reference) => reference.url),
+  ])
+  const referenceUrls = uniqueStrings([
+    ...upstreamUrls,
+    ...(nodeData.characterReferenceUrls || []),
+  ])
+
+  if (nodeData.kind === 'text') {
+    const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
+    return withoutEmptyFields({
+      drama_id: dramaId,
+      prompt: content,
+      model: nodeData.model,
+    })
+  }
 
   if (nodeData.kind === 'image') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: nodeData.content,
+      prompt: content,
       model: nodeData.model,
       aspect_ratio: nodeData.aspectRatio,
-      reference_images: upstreamUrls,
+      style: nodeData.style,
+      size: imageSizeFromResolution(nodeData.aspectRatio, nodeData.resolution),
+      negative_prompt: nodeData.negativePrompt,
+      reference_images: referenceUrls,
     })
   }
 
   if (nodeData.kind === 'video') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const firstFrameUrl = upstreamUrls[0] || ''
+    const firstFrameUrl = references.find((reference) => reference.slot === 'first-frame')?.url || referenceUrls[0] || ''
+    const lastFrameUrl = references.find((reference) => reference.slot === 'last-frame')?.url || ''
     return withoutEmptyFields({
       drama_id: dramaId,
-      prompt: nodeData.content,
+      prompt: decoratedVideoPrompt({ ...nodeData, content }),
       model: nodeData.model,
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
-      reference_image_urls: upstreamUrls,
+      last_frame_url: lastFrameUrl,
+      reference_image_urls: referenceUrls,
       aspect_ratio: nodeData.aspectRatio,
       duration: nodeData.duration,
+      style: nodeData.style,
+      resolution: nodeData.resolution,
     })
   }
 
@@ -236,8 +320,14 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
     return withoutEmptyFields({
       drama_id: dramaId,
-      text: nodeData.content,
+      text: content,
       tts_model: nodeData.model,
+      voice_id: nodeData.voiceId,
+      speed: nodeData.speechRate,
+      volume: nodeData.speechVolume,
+      pitch: nodeData.speechPitch,
+      emotion: nodeData.speechEmotion,
+      pronunciation_tones: nodeData.pronunciationTones,
     })
   }
 
@@ -245,20 +335,62 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 }
 
 export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNodeId = '') {
+  return uniqueStrings(collectDirectUpstreamImageReferences(nodes, edges, targetNodeId)
+    .map((reference) => reference.url)
+    .filter(Boolean))
+}
+
+export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
   const target = String(targetNodeId || '')
   if (!target) return []
   const byId = new Map((Array.isArray(nodes) ? nodes : [])
     .filter((node) => node?.id)
     .map((node) => [String(node.id), node]))
-  const urls = []
+  const references = []
+  const seen = new Set()
   for (const edge of edges || []) {
     if (String(edge?.target || '') !== target) continue
-    if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
-    const source = byId.get(String(edge.source || ''))
-    const url = resultUrlFromNode(source)
-    if (url) urls.push(url)
+    const sourceId = String(edge?.source || '')
+    const source = byId.get(sourceId)
+    const sourceKind = cleanString(source?.data?.kind || source?.data?.asset?.type)
+    if (sourceKind !== 'image' || !sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    const contract = edge?.data?.contract || {}
+    const url = getFreeCanvasNodeResultUrl(source)
+    references.push({
+      nodeId: String(source.id),
+      edgeId: String(edge?.id || ''),
+      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || '图片节点',
+      url,
+      ready: Boolean(url),
+      slot: cleanString(contract.input) || 'reference-image',
+      enabled: contract.enabled !== false,
+      order: Number.isFinite(Number(contract.order)) ? Number(contract.order) : references.length,
+      weight: Number.isFinite(Number(contract.weight)) ? Number(contract.weight) : 1,
+    })
   }
-  return uniqueStrings(urls)
+  return references.sort((a, b) => a.order - b.order)
+}
+
+export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNodeId = '') {
+  const target = String(targetNodeId || '')
+  if (!target) return []
+  const byId = new Map((Array.isArray(nodes) ? nodes : [])
+    .filter((node) => node?.id)
+    .map((node) => [String(node.id), node]))
+  const texts = []
+  const seen = new Set()
+  for (const edge of edges || []) {
+    if (String(edge?.target || '') !== target) continue
+    const source = byId.get(String(edge.source || ''))
+    const sourceKind = cleanString(source?.data?.kind)
+    const sourceId = String(source?.id || '')
+    if (!['text', 'universal'].includes(sourceKind) || !sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    const content = cleanString(source?.data?.content)
+    if (content) texts.push(content)
+  }
+  return uniqueStrings(texts)
 }
 
 export function buildFreeCanvasProjectAssetPayload({
@@ -314,13 +446,13 @@ export function resolveFreeCanvasResultUrl(kind, response = {}) {
   if (resultKind === 'video') {
     const record = normalizedResponse?.video || normalizedResponse?.videoRecord || normalizedResponse?.record || {}
     return firstString(
+      staticLocalPathUrl(result.local_path || normalizedResponse.local_path || record.local_path),
       result.video_url,
       result.url,
       normalizedResponse.video_url,
       normalizedResponse.url,
       record.video_url,
-      record.url,
-      staticLocalPathUrl(result.local_path || normalizedResponse.local_path || record.local_path)
+      record.url
     )
   }
   if (resultKind === 'audio') {
@@ -337,11 +469,12 @@ export function resolveFreeCanvasResultUrl(kind, response = {}) {
   return ''
 }
 
-function resultUrlFromNode(node) {
+export function getFreeCanvasNodeResultUrl(node) {
   const data = node?.data || {}
   return firstString(
     data.url,
     data.resultUrl,
+    data.resultUrls?.[0],
     data.savedAssetUrl,
     data.status?.resultUrl,
     data.status?.savedAssetUrl

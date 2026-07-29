@@ -64,3 +64,36 @@ test('确认和退款只改变预占所属租户', () => {
     tenant_id: 'tenant-b', available: 60, held: 0, spent: 0,
   });
 });
+
+test('用户积分记录同时返回兑换记录和已确认的模型消耗', () => {
+  const db = setup();
+  credits.adjustTenantBalance(db, {
+    tenantId: 'tenant-a',
+    actorUserId: 'user-1',
+    eventType: 'redeem',
+    amount: 20,
+    reason: '兑换码 MOLI-TEST',
+    referenceType: 'redeem_code',
+    referenceId: 'code-1',
+  });
+  const reservation = credits.reserve(db, {
+    tenantId: 'tenant-a',
+    actorUserId: 'user-1',
+    operationKey: 'video:history',
+    model: 'lingjing-video-v1',
+    resourceType: 'video',
+    resourceId: 'shot-9',
+    amount: 35,
+  });
+  credits.confirm(db, reservation.id);
+
+  const rows = credits.listTenantAdjustments(db, 'tenant-a');
+  const redemption = rows.find((row) => row.event_type === 'redeem');
+  const consumption = rows.find((row) => row.event_type === 'confirm');
+
+  assert.equal(redemption.amount, 20);
+  assert.equal(consumption.amount, -35);
+  assert.equal(consumption.model, 'lingjing-video-v1');
+  assert.equal(consumption.resource_type, 'video');
+  assert.equal(consumption.resource_id, 'shot-9');
+});

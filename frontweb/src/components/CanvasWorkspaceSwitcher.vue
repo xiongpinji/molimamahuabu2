@@ -41,11 +41,6 @@
           媒体素材库
           <span v-if="isActive('media-library')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
-        <el-dropdown-item command="/ai-config">
-          <el-icon><Setting /></el-icon>
-          AI 配置
-          <span v-if="isActive('ai-config')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
-        </el-dropdown-item>
         <el-dropdown-item command="/film/new" divided>
           <el-icon><Plus /></el-icon>
           开始创作
@@ -59,7 +54,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Files, Grid, List, MagicStick, Plus, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Files, Grid, List, MagicStick, Plus } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -91,10 +86,10 @@ function navigate(path) {
 .canvas-workspace-switcher {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  min-width: 156px;
-  min-height: 44px;
-  padding: 2px 8px 2px 2px;
+  gap: 10px;
+  min-width: 146px;
+  min-height: 42px;
+  padding: 3px 8px 3px 3px;
   border: 0;
   border-radius: 12px;
   color: inherit;
@@ -107,11 +102,11 @@ function navigate(path) {
 .canvas-workspace-switcher:hover,
 .canvas-workspace-switcher:focus-visible {
   outline: none;
-  background: rgba(63, 63, 70, .62);
+  background: rgba(255, 255, 255, .055);
 }
 
 .canvas-workspace-switcher:focus-visible {
-  box-shadow: 0 0 0 2px rgba(167, 139, 250, .72);
+  box-shadow: 0 0 0 2px rgba(255, 113, 57, .72);
 }
 
 .canvas-workspace-switcher:active {
@@ -120,15 +115,15 @@ function navigate(path) {
 
 :global(.canvas-workspace-menu__current) {
   margin-left: auto;
-  color: #a78bfa;
+  color: #ff8757;
   font-size: 11px;
 }
 
 .canvas-workspace-switcher__logo {
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   flex: 0 0 auto;
-  border-radius: 11px;
+  border-radius: 10px;
   object-fit: cover;
 }
 
@@ -141,15 +136,15 @@ function navigate(path) {
 
 .canvas-workspace-switcher__name {
   color: #f4f4f5;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
 }
 
 .canvas-workspace-switcher__subtitle {
-  color: #a1a1aa;
-  font-size: 10px;
+  color: #737373;
+  font-size: 9px;
   line-height: 1.1;
   white-space: nowrap;
 }
@@ -162,16 +157,16 @@ function navigate(path) {
 
 :global(html.light) .canvas-workspace-switcher:hover,
 :global(html.light) .canvas-workspace-switcher:focus-visible {
-  background: #f4f4f5;
+  background: #1a1a1a;
 }
 
 :global(html.light) .canvas-workspace-switcher__name {
-  color: #18181b;
+  color: #f5f5f5;
 }
 
 :global(html.light) .canvas-workspace-switcher__subtitle,
 :global(html.light) .canvas-workspace-switcher__chevron {
-  color: #71717a;
+  color: #8c8c8c;
 }
 
 @media (max-width: 680px) {

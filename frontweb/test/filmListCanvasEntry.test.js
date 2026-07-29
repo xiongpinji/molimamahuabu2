@@ -8,6 +8,7 @@ function readView(name) {
 }
 
 const filmListSource = readView('FilmList.vue')
+const freeCreateSource = readView('FreeCreate.vue')
 const routerSource = readFileSync(fileURLToPath(new URL('../src/router/index.js', import.meta.url)), 'utf8')
 const dramaCanvasSource = readView('DramaCanvas.vue')
 const platformHeaderSource = readFileSync(fileURLToPath(new URL('../src/components/PlatformHeader.vue', import.meta.url)), 'utf8')
@@ -30,13 +31,59 @@ test('独立画布入口直接复用完整 DramaCanvas 并保留旧本地画布�
   assert.match(routerSource, /path: '\/canvas'[\s\S]*name: 'canvas-projects'[\s\S]*FilmList\.vue/)
 })
 
-test('统一导航在项目页和完整画布页都暴露画布与短剧工厂入口', () => {
+test('统一导航暴露首页、画布、短剧工厂与右上角登录入口', () => {
   assert.match(platformHeaderSource, /<PlatformPrimaryNav \/>/)
+  assert.match(platformHeaderSource, /class="platform-header__account"/)
+  assert.match(platformHeaderSource, /name: 'login'/)
   assert.match(platformHeaderSource, /router\.push\(\{ name: 'home-canvas-local' \}\)/)
   assert.match(dramaCanvasSource, /<PlatformPrimaryNav \/>/)
+  assert.match(primaryNavSource, /to="\/"/)
+  assert.match(primaryNavSource, />\s*首页\s*</)
   assert.match(primaryNavSource, /to="\/canvas"/)
   assert.match(primaryNavSource, /to="\/factory"/)
   assert.match(dramaCanvasSource, /v-if="!isStandaloneCanvas" mode="canvas"/)
+  assert.match(dramaCanvasSource, /\.header\.canvas-topbar[\s\S]*background:\s*#080808/)
+  assert.match(dramaCanvasSource, /\.canvas-topbar[\s\S]*--el-button-text-color:\s*#f5f5f5/)
+  assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.header\.canvas-topbar[\s\S]*background:\s*#080808 !important/)
+  assert.match(dramaCanvasSource, /html\.light \.drama-canvas-page \.canvas-topbar \.header-actions \.el-button[\s\S]*background:\s*#151515 !important/)
+})
+
+test('首页提供紫黑工作台、快速生成器和真实最近项目入口', () => {
+  assert.match(filmListSource, /class="home-workbench"/)
+  assert.match(filmListSource, /你好，今天想生成点什么？/)
+  assert.match(filmListSource, /class="home-composer"/)
+  assert.match(filmListSource, /v-model="homePrompt"/)
+  assert.match(filmListSource, /@click="startFromComposer"/)
+  assert.match(filmListSource, /dramas\.slice\(0, 4\)/)
+  assert.match(filmListSource, /@click="openProject\(d\.id\)"/)
+  assert.match(filmListSource, /\.home-workbench[\s\S]*linear-gradient\(112deg/)
+})
+
+test('首页单次生成由后端模型目录驱动且不创建项目', () => {
+  assert.match(filmListSource, /listGenerationCatalog/)
+  assert.match(filmListSource, /getCreditAccount/)
+  assert.match(filmListSource, /v-model="homeModel"/)
+  assert.match(filmListSource, /v-for="item in homeModelOptions"/)
+  assert.match(filmListSource, /homeSelectedPrice/)
+  assert.match(filmListSource, /<option value="script">剧本<\/option>/)
+  assert.match(filmListSource, /sessionStorage\.setItem\('moli_quick_create_draft'/)
+  assert.match(filmListSource, /name:\s*'free-create'/)
+  const startFromComposer = filmListSource.match(/function startFromComposer\(\) \{[\s\S]*?\n\}/)?.[0] || ''
+  assert.doesNotMatch(startFromComposer, /dramaAPI\.create/)
+})
+
+test('独立创作页承接图片、视频和剧本真实生成且不依赖项目', () => {
+  assert.match(freeCreateSource, /name="image"/)
+  assert.match(freeCreateSource, /name="video"/)
+  assert.match(freeCreateSource, /name="script"/)
+  assert.match(freeCreateSource, /imagesAPI\.create/)
+  assert.match(freeCreateSource, /videosAPI\.create/)
+  assert.match(freeCreateSource, /taskAPI\.get\(taskId\)/)
+  assert.doesNotMatch(freeCreateSource, /imagesAPI\.getTask/)
+  assert.match(freeCreateSource, /generationAPI\.generateStory/)
+  assert.match(freeCreateSource, /episode_count:\s*episodeCount\.value/)
+  assert.match(freeCreateSource, /model:\s*model\.value/)
+  assert.doesNotMatch(freeCreateSource, /dramaAPI\.create/)
 })
 
 test('普通页面的全局头部不再把独立自由画布作为主要入口', () => {

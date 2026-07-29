@@ -35,8 +35,16 @@ export function clearSession(store = defaultStorage()) {
   store?.removeItem(TENANT_KEY)
 }
 
-export function clearSessionOnUnauthorized(status, publicMode, store = defaultStorage()) {
+export function clearSessionOnUnauthorized(
+  status,
+  publicMode,
+  store = defaultStorage(),
+  requestToken = '',
+  errorCode = 'UNAUTHORIZED',
+) {
   if (!publicMode || Number(status) !== 401) return false
+  if (errorCode !== 'UNAUTHORIZED') return false
+  if (requestToken && readSession(store)?.token !== requestToken) return false
   clearSession(store)
   return true
 }

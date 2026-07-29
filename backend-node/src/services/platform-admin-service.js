@@ -4,7 +4,7 @@ const tenants = require('./tenantService');
 const users = require('./userAuthService');
 const audit = require('./auditEventService');
 
-const PLATFORM_ROLES = Object.freeze(['user', 'admin', 'ops', 'support', 'read_only']);
+const PLATFORM_ROLES = Object.freeze(['user', 'admin', 'redeem_admin', 'ops', 'support', 'read_only']);
 const USER_STATUSES = Object.freeze(['active', 'disabled']);
 
 function adminError(code, message) {

@@ -1,4 +1,13 @@
 import { test, expect } from '@playwright/test'
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'canvas-e2e-session',
+      user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+    }))
+  })
+})
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
@@ -16,6 +25,7 @@ const simpleSkinGltfPath = fileURLToPath(new URL('../public/director-fixtures/kh
 const Database = require(path.join(backendRoot, 'node_modules', 'better-sqlite3'))
 const { getFfmpegPath } = require(path.join(backendRoot, 'src', 'utils', 'ffmpegPath'))
 const minimalMp3 = require(path.join(backendRoot, 'test', 'fixtures', 'minimalMp3'))
+const { MINIMAL_MP4 } = require(path.join(backendRoot, 'test', 'fixtures', 'media'))
 
 let backendProcess
 let backendOrigin
@@ -29,9 +39,12 @@ let standaloneDramaId
 let tempRoot
 let ttsProvider
 let imageProvider
+let videoProvider
 let validationWebm
 const ttsProviderRequests = []
 const imageProviderRequests = []
+const videoProviderRequests = []
+const videoProviderTasks = new Map()
 const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 test.setTimeout(60_000)
@@ -169,6 +182,53 @@ test.beforeAll(async () => {
     })
   })
   await new Promise((resolve) => imageProvider.listen(0, '127.0.0.1', resolve))
+  videoProvider = http.createServer((request, response) => {
+    if (request.method === 'POST' && request.url === '/videos') {
+      const chunks = []
+      request.on('data', (chunk) => chunks.push(chunk))
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        const taskId = `canvas-video-${videoProviderRequests.length + 1}`
+        const shouldFail = String(body.prompt || '').includes('模拟失败')
+        videoProviderRequests.push({ taskId, body })
+        videoProviderTasks.set(taskId, { shouldFail, polls: 0 })
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ task_id: taskId, status: 'queued' }))
+      })
+      return
+    }
+    const taskMatch = request.method === 'GET' && request.url?.match(/^\/videos\/(canvas-video-\d+)$/)
+    if (taskMatch) {
+      const task = videoProviderTasks.get(taskMatch[1])
+      if (!task) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      task.polls += 1
+      response.writeHead(200, { 'content-type': 'application/json' })
+      if (task.shouldFail) {
+        response.end(JSON.stringify({ id: taskMatch[1], status: 'failed', error: '本地供应商模拟失败' }))
+      } else if (task.polls === 1) {
+        response.end(JSON.stringify({ id: taskMatch[1], status: 'processing' }))
+      } else {
+        response.end(JSON.stringify({
+          id: taskMatch[1],
+          status: 'completed',
+          video_url: `http://127.0.0.1:${videoProvider.address().port}/output.mp4`,
+        }))
+      }
+      return
+    }
+    if (request.method === 'GET' && request.url === '/output.mp4') {
+      response.writeHead(200, { 'content-type': 'video/mp4' })
+      response.end(MINIMAL_MP4)
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve) => videoProvider.listen(0, '127.0.0.1', resolve))
   const port = await reservePort()
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-canvas-browser-backend-'))
   const validationWebmPath = path.join(tempRoot, 'director-validation.webm')
@@ -255,6 +315,24 @@ test.beforeAll(async () => {
             model: '',
             aspectRatio: '16:9',
           },
+        }, {
+          id: 'free:video:same-chain',
+          type: 'homeCanvasNode',
+          position: { x: 600, y: 220 },
+          data: {
+            kind: 'video',
+            title: '真实视频节点',
+            content: '待配置视频提示词',
+            model: '',
+            aspectRatio: '16:9',
+            duration: 5,
+          },
+        }],
+        manual_edges: [{
+          id: 'manual:free-image-to-video',
+          source: 'free:image:same-chain',
+          target: 'free:video:same-chain',
+          data: { manual: true },
         }],
       },
     }), now, now).lastInsertRowid)
@@ -330,11 +408,14 @@ test.beforeAll(async () => {
     {
       service_type: 'video',
       name: '画布视频模型',
-      provider: 'openai',
-      base_url: 'http://127.0.0.1:9',
-      api_key: 'test-no-request-key',
-      model: ['canvas-video-alpha', 'canvas-video-beta'],
-      default_model: 'canvas-video-alpha',
+      provider: 'aihubcc',
+      api_protocol: 'aihubcc',
+      base_url: `http://127.0.0.1:${videoProvider.address().port}`,
+      api_key: 'integration-secret',
+      model: ['seedance-2.0-720p', 'canvas-video-alpha', 'canvas-video-beta'],
+      default_model: 'seedance-2.0-720p',
+      endpoint: '/videos',
+      query_endpoint: '/videos/{taskId}',
       is_default: true,
     },
     {
@@ -363,6 +444,7 @@ test.afterAll(async () => {
   await stopBackend()
   if (ttsProvider) await new Promise((resolve) => ttsProvider.close(resolve))
   if (imageProvider) await new Promise((resolve) => imageProvider.close(resolve))
+  if (videoProvider) await new Promise((resolve) => videoProvider.close(resolve))
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
 })
 
@@ -402,14 +484,19 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
   const nodeId = 'free:image:same-chain'
   const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
   await expect(node).toContainText('真实图片节点')
-  await node.getByRole('button', { name: '配置', exact: true }).click()
+  await node.locator('.media-stage').click({ position: { x: 24, y: 24 } })
+  const imageEditor = page.getByRole('region', { name: '图片节点编辑器' })
+  await expect(imageEditor).toBeVisible()
+  await imageEditor.getByRole('button', { name: '配置', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '编辑图片节点' })
   await expect(dialog).toBeVisible()
   await dialog.getByPlaceholder('描述希望生成的图片内容').fill('雨夜花园里一朵白色茉莉花，电影光影')
-  await dialog.getByPlaceholder('留空使用系统默认模型').fill('canvas-image-alpha')
+  const modelSelect = dialog.locator('.el-form-item').filter({ hasText: '模型' }).getByRole('combobox')
+  await modelSelect.fill('canvas-image-alpha')
+  await modelSelect.press('Enter')
   await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
   await expect(dialog).toBeHidden()
-  await node.getByRole('button', { name: '生成', exact: true }).click()
+  await imageEditor.getByRole('button', { name: '生成', exact: true }).click()
 
   await expect.poll(() => imageProviderRequests.length - providerRequestOffset).toBe(1)
   expect(imageProviderRequests[providerRequestOffset]).toMatchObject({
@@ -493,6 +580,201 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
   expect(forwardedRequests).toEqual(expect.arrayContaining([
     `GET /api/v1/dramas/${standaloneDramaId}`,
     'POST /api/v1/images',
+    'POST /api/v1/assets',
+    `PUT /api/v1/dramas/${standaloneDramaId}/canvas-layout`,
+  ]))
+  expect(forwardedRequests.some((request) => /^GET \/api\/v1\/tasks\/[^/]+$/.test(request))).toBe(true)
+})
+
+test('独立项目画布视频节点使用上游首帧，异步失败可重试并完成入库恢复', async ({ page }) => {
+  const forwardedRequests = []
+  const failedResponses = []
+  const providerRequestOffset = videoProviderRequests.length
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const source = new URL(request.url())
+    forwardedRequests.push(`${request.method()} ${source.pathname}`)
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    if (!response.ok()) {
+      failedResponses.push({
+        method: request.method(),
+        path: source.pathname,
+        status: response.status(),
+        body: await response.text(),
+      })
+    }
+    await route.fulfill({ response })
+  })
+  await page.route('**/static/**', async (route) => {
+    const source = new URL(route.request().url())
+    const response = await route.fetch({
+      url: `${backendOrigin}${source.pathname}${source.search}`,
+    })
+    await route.fulfill({ response })
+  })
+
+  await page.goto(`/canvas/${standaloneDramaId}`)
+  const imageNode = page.locator('.vue-flow__node[data-id="free:image:same-chain"]')
+  const videoNodeId = 'free:video:same-chain'
+  const videoNode = page.locator(`.vue-flow__node[data-id="${videoNodeId}"]`)
+  const upstreamImageUrl = await imageNode.locator('img[alt="真实图片节点"]').getAttribute('src')
+  expect(upstreamImageUrl).toMatch(/^\/static\//)
+
+  await videoNode.click()
+  const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
+  await expect(videoEditor).toBeVisible()
+  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考图' })
+  await expect(automaticReferences).toContainText('1/1 已就绪')
+  await expect(automaticReferences.locator('img[alt="真实图片节点"]')).toBeVisible()
+  await videoEditor.getByRole('button', { name: '配置', exact: true }).click()
+  let dialog = page.getByRole('dialog', { name: '编辑视频节点' })
+  await dialog.getByPlaceholder('描述希望生成的视频内容').fill('模拟失败：镜头缓慢推近白色茉莉花')
+  const modelSelect = dialog.locator('.el-form-item').filter({ hasText: '模型' }).getByRole('combobox')
+  await modelSelect.fill('seedance-2.0-720p')
+  await modelSelect.press('Enter')
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await videoEditor.getByRole('button', { name: '生成', exact: true }).click()
+
+  await expect(videoNode.locator('.node-status')).toHaveText('失败', { timeout: 30_000 })
+  await expect(videoNode).toContainText('本地供应商模拟失败')
+  const failedRequest = videoProviderRequests[providerRequestOffset]
+  expect(failedRequest.body).toMatchObject({
+    model: 'seedance-2.0-720p',
+    prompt: expect.stringContaining('模拟失败'),
+  })
+  expect(failedRequest.body.first_image_url).toBe(failedRequest.body.reference_image_urls[0])
+  expect(failedRequest.body.first_image_url).toMatch(/^https?:\/\//)
+
+  await videoEditor.getByRole('button', { name: '配置', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '编辑视频节点' })
+  await dialog.getByPlaceholder('描述希望生成的视频内容').fill('镜头缓慢推近白色茉莉花，单镜头连续运动')
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await videoEditor.getByRole('button', { name: '重试', exact: true }).click()
+
+  await expect.poll(() => videoProviderRequests.length - providerRequestOffset).toBe(2)
+  const successfulRequest = videoProviderRequests[providerRequestOffset + 1]
+  await expect.poll(
+    () => videoProviderTasks.get(successfulRequest.taskId)?.polls,
+    { timeout: 20_000 },
+  ).toBe(1)
+  await expect.poll(() => readDatabase((db) => (
+    db.prepare(
+      `SELECT status FROM video_generations
+       WHERE provider_task_id = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(successfulRequest.taskId)?.status
+  ))).toBe('processing')
+
+  await page.reload()
+  const resumedVideoNode = page.locator(`.vue-flow__node[data-id="${videoNodeId}"]`)
+  await expect(resumedVideoNode.locator('.node-status')).toHaveText('运行中')
+  await expect(resumedVideoNode.locator('.node-status')).toHaveText('已生成', { timeout: 30_000 })
+  await expect(resumedVideoNode.locator('video')).toBeVisible()
+
+  expect(successfulRequest.body).toMatchObject({
+    model: 'seedance-2.0-720p',
+    prompt: expect.stringContaining('单镜头连续运动'),
+  })
+  expect(successfulRequest.body.first_image_url).toBe(successfulRequest.body.reference_image_urls[0])
+  expect(successfulRequest.body.first_image_url).toMatch(/^https?:\/\//)
+  expect(videoProviderTasks.get(successfulRequest.taskId)?.polls).toBeGreaterThanOrEqual(2)
+
+  await expect.poll(() => readDatabase((db) => {
+    const generations = db.prepare(
+      `SELECT id, drama_id, storyboard_id, model, prompt, first_frame_url, reference_image_urls,
+              status, task_id, provider_task_id, video_url, local_path, error_msg
+       FROM video_generations
+       WHERE drama_id = ? ORDER BY id`,
+    ).all(standaloneDramaId)
+    const completed = generations.find((item) => item.status === 'completed')
+    const task = completed?.task_id
+      ? db.prepare('SELECT id, type, resource_id, status, error, result FROM async_tasks WHERE id = ?').get(completed.task_id)
+      : null
+    const asset = db.prepare(
+      `SELECT id, drama_id, storyboard_id, category, type, url, metadata
+       FROM assets
+       WHERE drama_id = ? AND category = 'canvas-result' AND type = 'video'
+       ORDER BY id DESC LIMIT 1`,
+    ).get(standaloneDramaId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(standaloneDramaId).metadata)
+    const freeNode = metadata.canvas_layout?.free_nodes?.find((item) => item.id === videoNodeId)
+    return {
+      generations,
+      completed,
+      task,
+      asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
+      freeNode,
+    }
+  }), { timeout: 10_000 }).toMatchObject({
+    generations: [
+      expect.objectContaining({
+        drama_id: standaloneDramaId,
+        storyboard_id: null,
+        status: 'failed',
+        provider_task_id: expect.any(String),
+        error_msg: expect.stringContaining('本地供应商模拟失败'),
+      }),
+      expect.objectContaining({
+        drama_id: standaloneDramaId,
+        storyboard_id: null,
+        status: 'completed',
+        provider_task_id: successfulRequest.taskId,
+      }),
+    ],
+    completed: {
+      drama_id: standaloneDramaId,
+      storyboard_id: null,
+      model: 'seedance-2.0-720p',
+      prompt: '镜头缓慢推近白色茉莉花，单镜头连续运动',
+      first_frame_url: upstreamImageUrl,
+      reference_image_urls: JSON.stringify([upstreamImageUrl]),
+      status: 'completed',
+      task_id: expect.any(String),
+      provider_task_id: successfulRequest.taskId,
+      video_url: expect.stringMatching(/\/output\.mp4$/),
+      local_path: expect.stringMatching(/^projects\/.+\/videos\//),
+      error_msg: null,
+    },
+    task: {
+      type: 'video_generation',
+      resource_id: String(standaloneDramaId),
+      status: 'completed',
+      error: null,
+      result: expect.stringContaining('"video_generation_id"'),
+    },
+    asset: {
+      drama_id: standaloneDramaId,
+      storyboard_id: null,
+      category: 'canvas-result',
+      type: 'video',
+      url: expect.stringMatching(/^\/static\/projects\/.+\/videos\/.+\.mp4$/),
+      metadata: {
+        canvas_node_id: videoNodeId,
+        task_id: expect.any(String),
+        model: 'seedance-2.0-720p',
+      },
+    },
+    freeNode: {
+      id: videoNodeId,
+      data: expect.objectContaining({
+        kind: 'video',
+        status: 'success',
+        url: expect.stringMatching(/^\/static\/projects\/.+\/videos\/.+\.mp4$/),
+        taskId: expect.any(String),
+        savedAssetId: expect.any(String),
+        assetSaveStatus: 'success',
+      }),
+    },
+  })
+
+  await page.reload()
+  const restored = page.locator(`.vue-flow__node[data-id="${videoNodeId}"]`)
+  await expect(restored).toContainText('已生成')
+  await expect(restored.locator('video')).toBeVisible()
+  expect(failedResponses).toEqual([])
+  expect(forwardedRequests).toEqual(expect.arrayContaining([
+    'POST /api/v1/videos',
     'POST /api/v1/assets',
     `PUT /api/v1/dramas/${standaloneDramaId}/canvas-layout`,
   ]))

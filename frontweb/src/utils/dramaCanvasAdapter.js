@@ -34,9 +34,9 @@ const MANUAL_EDGE_STYLE = { stroke: '#22d3ee', strokeWidth: 1.8, strokeDasharray
 /** Vue Flow 贝塞尔曲线（curvature 越大弧线越明显） */
 function makeEdge(props) {
   return {
-    type: 'default',
-    pathOptions: { curvature: 0.62 },
     ...props,
+    type: 'libtv',
+    pathOptions: { curvature: 0.42 },
   }
 }
 

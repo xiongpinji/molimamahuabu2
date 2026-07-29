@@ -27,7 +27,7 @@
             <button type="button" class="small-button" @click="addCamera">+ 相机</button>
             <button type="button" class="small-button" @click="addSceneObject('light')">+ 灯光</button>
           </div>
-          <details v-if="workspaceMode === 'animation'" class="role-create-library">
+          <details v-if="workspaceMode === 'animation'" class="role-create-library" open>
             <summary>添加角色与群众</summary>
             <div class="object-create-row object-create-row--roles">
               <button v-for="role in ROLE_ARCHETYPES" :key="role.kind" type="button" class="small-button" @click="addRoleArchetype(role)">{{ role.label }}</button>
@@ -348,7 +348,9 @@
         </section>
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
           <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
-          <button ref="addRoleButtonRef" type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
+          <button type="button" :class="{ active: transformMode === 'rotate' }" aria-label="旋转工具" title="旋转 (E)" @click="setTransformMode('rotate')">⟳</button>
+          <button ref="addRoleButtonRef" type="button" aria-label="添加男性角色" title="添加男性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♂</button>
+          <button type="button" aria-label="添加女性角色" title="添加女性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[1])">♀</button>
           <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
           <button ref="addCameraButtonRef" type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
           <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
@@ -718,10 +720,20 @@ const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitl
 const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
 const angleEntry = computed(() => props.entryContext?.mode === 'angle')
 const poseEntry = computed(() => props.entryContext?.mode === 'pose')
-const characterEntries = computed(() => characters.value.map((character, index) => ({
-  id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
-  name: character?.name || `角色 ${index + 1}`,
-})))
+const characterEntries = computed(() => {
+  const entries = characters.value.map((character, index) => ({
+    id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
+    name: character?.name || `角色 ${index + 1}`,
+  }))
+  const knownIds = new Set(entries.map((entry) => entry.id))
+  for (const entry of timeline.value.objects.filter((entry) => entry.type === 'humanoid')) {
+    const id = String(entry.assetRef?.characterId || entry.id)
+    if (knownIds.has(id)) continue
+    entries.push({ id, name: entry.name || `角色 ${entries.length + 1}` })
+    knownIds.add(id)
+  }
+  return entries
+})
 const shots = computed(() => timeline.value.shots)
 const duration = computed(() => timeline.value.sequence.duration || 0.25)
 const currentTime = computed(() => timeline.value.sequence.currentTime)
@@ -1307,7 +1319,10 @@ function selectShot(shot) {
 
 function selectCharacter(characterId) {
   selectedCharacterId.value = String(characterId)
-  const object = timeline.value.objects.find((entry) => entry.type === 'character' && entry.assetRef?.characterId === selectedCharacterId.value)
+  const object = timeline.value.objects.find((entry) => (
+    (entry.type === 'character' || entry.type === 'humanoid')
+    && String(entry.assetRef?.characterId || entry.id) === selectedCharacterId.value
+  ))
   if (object) selectSceneObject(object.id)
 }
 
@@ -1371,7 +1386,9 @@ function duplicateSelectedObject() {
 function selectSceneObject(objectId) {
   selectedObjectId.value = String(objectId)
   const object = timeline.value.objects.find((entry) => entry.id === selectedObjectId.value)
-  if (object?.assetRef?.characterId) selectedCharacterId.value = object.assetRef.characterId
+  if (object?.type === 'character' || object?.type === 'humanoid') {
+    selectedCharacterId.value = String(object.assetRef?.characterId || object.id)
+  }
   inspectorTab.value = 'properties'
   for (const [key, stageObject] of stageObjects.entries()) {
     for (const marker of stageObject.userData?.rigControls || []) marker.visible = key === `custom:${objectId}`
@@ -2190,6 +2207,7 @@ function buildStage() {
     if (entry.type === 'humanoid' || entry.type === 'character') {
       const humanoid = makeHumanoidObject(entry.assetRef?.kind)
       if (!humanoid) return
+      const characterId = String(entry.assetRef?.characterId || entry.id)
       humanoid.name = entry.name
       humanoid.visible = entry.visible
       humanoid.position.set(...entry.transform.position)
@@ -2200,9 +2218,11 @@ function buildStage() {
       for (const [semantic, rotation] of Object.entries(entry.poseRotations || {})) humanoid.userData.poseBones?.[semantic]?.rotation?.set?.(...rotation)
       if (entry.type === 'character' && entry.assetRef?.characterId) {
         characterObjects.set(entry.assetRef.characterId, humanoid)
-        characterPlaceholders.set(entry.assetRef.characterId, [humanoid])
-        proceduralCharacterIds.value = new Set([...proceduralCharacterIds.value, String(entry.assetRef.characterId)])
+      } else {
+        characterObjects.set(characterId, humanoid)
       }
+      characterPlaceholders.set(characterId, [humanoid])
+      proceduralCharacterIds.value = new Set([...proceduralCharacterIds.value, characterId])
       return
     }
     const type = entry.type === 'sphere' ? 'sphere' : 'box'
@@ -2228,8 +2248,9 @@ function buildStage() {
   })
 
   for (const entry of timeline.value.objects) {
-    if (entry.type !== 'character' || !entry.assetRef?.characterId) continue
-    if (timeline.value.characterAssets?.[entry.assetRef.characterId]?.modelUrl) void loadCharacterModel(entry.assetRef.characterId, buildToken)
+    if (entry.type !== 'character' && entry.type !== 'humanoid') continue
+    const characterId = String(entry.assetRef?.characterId || entry.id)
+    if (timeline.value.characterAssets?.[characterId]?.modelUrl) void loadCharacterModel(characterId, buildToken)
   }
 
   viewer.value.setDirty?.()
@@ -2309,7 +2330,10 @@ async function loadCharacterModel(characterId, expectedBuildToken = stageBuildTo
     const model = gltf.scene
     const animations = Array.isArray(gltf.animations) ? gltf.animations : []
     let visibleMeshCount = 0
-    const directorObject = timeline.value.objects.find((entry) => entry.type === 'character' && entry.assetRef?.characterId === normalizedId)
+    const directorObject = timeline.value.objects.find((entry) => (
+      (entry.type === 'character' || entry.type === 'humanoid')
+      && String(entry.assetRef?.characterId || entry.id) === normalizedId
+    ))
     model.position.set(...(directorObject?.transform.position || [0, 0, 0]))
     model.rotation.set(...(directorObject?.transform.rotation || [0, 0, 0]))
     const objectScale = directorObject?.transform.scale || [1, 1, 1]

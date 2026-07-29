@@ -1,4 +1,5 @@
 const userAuth = require('../services/userAuthService');
+const sessionCookie = require('../services/sessionCookieService');
 
 function numericId(value) {
   const id = Number(value);
@@ -193,10 +194,11 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
     const match = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''));
-    if (!match) return res.status(401).end();
+    const token = match?.[1] || sessionCookie.readSessionCookie(req);
+    if (!token) return res.status(401).end();
     let user;
     try {
-      const claims = userAuth.verifyToken(match[1], secret);
+      const claims = userAuth.verifyToken(token, secret);
       const current = db.prepare(`SELECT email, role, platform_role, status, token_version
         FROM platform_users WHERE id = ?`).get(claims.id);
       if (!current
@@ -215,18 +217,28 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
       return res.status(404).end();
     }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
-    if (!project) return res.status(404).end();
-    const dramaId = Number(project[1]);
-    const tenantService = require('../services/tenantService');
-    const tenant = tenantService.resolveForUser(
-      db,
-      user.id,
-      req.get('x-tenant-id') || req.query?.tenant_id || null,
-    );
-    if (!tenant) return res.status(404).end();
-    const owned = db.prepare(`SELECT id FROM dramas
-      WHERE id = ? AND deleted_at IS NULL
-        AND (tenant_id = ? OR (tenant_id IS NULL AND user_id = ?))`).get(dramaId, tenant.id, user.id);
+    const relativePath = pathValue.replace(/^\/+/, '');
+    const owned = project
+      ? db.prepare(`SELECT d.id FROM dramas d
+          WHERE d.id = ? AND d.deleted_at IS NULL
+            AND (d.user_id = ? OR EXISTS (
+              SELECT 1 FROM tenant_members m
+              WHERE m.tenant_id = d.tenant_id AND m.user_id = ? AND m.status = 'active'
+            ))`)
+        .get(Number(project[1]), user.id, user.id)
+      : db.prepare(`SELECT g.id FROM (
+            SELECT id, tenant_id, user_id FROM image_generations
+              WHERE local_path = ? AND deleted_at IS NULL
+            UNION ALL
+            SELECT id, tenant_id, user_id FROM video_generations
+              WHERE local_path = ? AND deleted_at IS NULL
+          ) g
+          WHERE g.user_id = ? OR EXISTS (
+            SELECT 1 FROM tenant_members m
+            WHERE m.tenant_id = g.tenant_id AND m.user_id = ? AND m.status = 'active'
+          )
+          LIMIT 1`)
+        .get(relativePath, relativePath, user.id, user.id);
     if (!owned) return res.status(404).end();
     req.user = user;
     return next();

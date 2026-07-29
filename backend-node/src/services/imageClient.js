@@ -13,6 +13,7 @@ const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
 const aihubccClient = require('./aihubccClient');
+const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -187,7 +188,11 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
     configs = aiConfigService.listConfigs(db, 'image');
   }
   let active = configs.filter((c) => c.is_active);
-  if (active.length === 0) return null;
+  if (active.length === 0) {
+    return preferredModel
+      ? canvasProviderConfigService.getConfig('image', preferredModel)
+      : null;
+  }
   if (preferredProvider && String(preferredProvider).trim()) {
     const want = String(preferredProvider).trim().toLowerCase();
     const byProvider = active.filter((c) => (c.provider || '').toLowerCase() === want);
@@ -198,6 +203,7 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
       if (models.includes(preferredModel)) return c;
     }
+    return canvasProviderConfigService.getConfig('image', preferredModel);
   }
   // 显式使用前端设置的「默认」：优先 is_default，再按 priority 降序（listConfigs 已按 is_default DESC, priority DESC 排序，取第一个即可）
   const defaultOne = active.find((c) => c.is_default);
@@ -1079,14 +1085,21 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
   } else if (storageLocalPath) {
-    relPath = s.replace(/^\//, '');
+    relPath = s.split(/[?#]/, 1)[0].replace(/^\/?static\//, '').replace(/^\/+/, '');
   }
   if (path.isAbsolute(s) && !storageLocalPath) return null;
   if (!relPath) return toPublicUrl(s);
+  let decodedRelPath;
+  try {
+    decodedRelPath = decodeURIComponent(relPath);
+  } catch (_) {
+    return toPublicUrl(s);
+  }
   const storageRoot = path.resolve(storageLocalPath);
-  const filePath = path.isAbsolute(s)
-    ? path.resolve(s)
-    : path.resolve(storageRoot, relPath);
+  const filePath = path.resolve(storageRoot, decodedRelPath);
+  if (filePath !== storageRoot && !filePath.startsWith(storageRoot + path.sep)) {
+    return toPublicUrl(s);
+  }
   try {
     const realStorageRoot = fs.realpathSync.native(storageRoot);
     const realFilePath = fs.realpathSync.native(filePath);
@@ -2043,17 +2056,22 @@ function createAndGenerateImage(db, log, opts) {
   scheduleTask(async () => {
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
-      const result = await taskService.withTaskHeartbeat(db, taskId, '正在等待图片生成服务...', () => callImageApi(db, log, {
-        prompt,
-        model,
-        size,
-        quality,
-        drama_id: drama_id,
-        character_id: character_id,
-        image_type,
-        image_gen_id: imageGenId,
-        user_negative_prompt: user_negative_prompt || undefined,
-      }));
+      const result = await taskService.withTaskHeartbeat(
+        db,
+        taskId,
+        '正在等待图片生成服务...',
+        () => runWithGenerationLimit('image', () => callImageApi(db, log, {
+          prompt,
+          model,
+          size,
+          quality,
+          drama_id: drama_id,
+          character_id: character_id,
+          image_type,
+          image_gen_id: imageGenId,
+          user_negative_prompt: user_negative_prompt || undefined,
+        }))
+      );
       const now2 = new Date().toISOString();
       if (result.error) {
         db.prepare(
@@ -2282,6 +2300,8 @@ function refListHasCanonical(list, ref) {
   return (list || []).some((item) => canonicalRefKey(item) === key);
 }
 
+const { runWithGenerationLimit } = require('./generationConcurrency');
+
 module.exports = {
   getDefaultImageConfig,
   getReferenceImageCapability,
@@ -2292,7 +2312,7 @@ module.exports = {
   formatGptImageUnknownResultError,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
-  callImageApi,
+  callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),
   createAndGenerateImage,
   settleImageCredit,
   resolveAssetUserNegativeForApi,
