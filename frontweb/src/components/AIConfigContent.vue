@@ -366,7 +366,7 @@
           type="success"
           :closable="false"
           show-icon
-          title="该配置已匹配通过审计的 Seedream 4.5 参考图适配器；保存后将启用图片节点的扩图、修图、光影、全景与参考图推演能力。"
+          title="该配置已匹配通过审计的 AIHubCC gpt-image-2-3.5k 参考图适配器；保存后将启用图片节点的扩图、修图、光影、全景与参考图推演能力。"
           style="margin-bottom: 18px"
         />
 
@@ -1148,7 +1148,7 @@ import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRoun
 import { aiAPI } from '@/api/ai'
 import {
   applyImageToolReferenceCapabilities,
-  isAuditedSeedream45ReferenceConfig,
+  isAuditedImageToolReferenceConfig,
 } from '@/utils/imageToolProviderCapabilities'
 import { videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import {
@@ -1256,7 +1256,7 @@ const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
 const auditedImageToolReferenceConfig = computed(() => (
-  isAuditedSeedream45ReferenceConfig({
+  isAuditedImageToolReferenceConfig({
     serviceType: form.value.service_type,
     provider: form.value.provider,
     protocol: form.value.api_protocol,

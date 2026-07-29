@@ -25,10 +25,10 @@ let storagePath
 let dramaId
 let sourceAssetId
 const nodeId = 'free:image:toolbar-same-chain'
-const realSeedreamEnabled = process.env.RUN_REAL_SEEDREAM_IMAGE_NODE_CHAIN === '1'
-const realSeedreamBaseUrl = String(process.env.SEEDREAM_BASE_URL || '').trim()
-const realSeedreamApiKey = String(process.env.SEEDREAM_API_KEY || '').trim()
-const realSeedreamModel = String(process.env.SEEDREAM_MODEL || '').trim()
+const realAihubccEnabled = process.env.RUN_REAL_AIHUBCC_IMAGE_NODE_CHAIN === '1'
+const realAihubccBaseUrl = String(process.env.AIHUBCC_BASE_URL || '').trim()
+const realAihubccApiKey = String(process.env.AIHUBCC_API_KEY || '').trim()
+const realAihubccModel = String(process.env.AIHUBCC_IMAGE_MODEL || '').trim()
 
 test.setTimeout(90_000)
 test.describe.configure({ mode: 'serial' })
@@ -111,7 +111,9 @@ async function proxyBackend(page) {
 
 test.beforeAll(async () => {
   const port = await reservePort()
-  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-image-toolbar-browser-'))
+  const tempBase = process.env.IMAGE_NODE_E2E_TEMP_ROOT || os.tmpdir()
+  fs.mkdirSync(tempBase, { recursive: true })
+  tempRoot = fs.mkdtempSync(path.join(tempBase, 'moli-image-toolbar-browser-'))
   databasePath = path.join(tempRoot, 'toolbar.sqlite')
   storagePath = path.join(tempRoot, 'storage')
   const configRoot = path.join(tempRoot, 'configs')
@@ -220,21 +222,21 @@ test.beforeAll(async () => {
     }
     db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(metadata), now, dramaId)
-    if (realSeedreamEnabled) {
+    if (realAihubccEnabled) {
       db.prepare(
         `INSERT INTO ai_service_configs
           (service_type, provider, api_protocol, name, base_url, api_key, model,
            default_model, endpoint, priority, is_default, is_active, settings,
            created_at, updated_at)
          VALUES
-          ('storyboard_image', 'volcengine', 'volcengine', ?, ?, ?, ?, ?,
-           '/images/generations', 100, 1, 1, ?, ?, ?)`,
+          ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
+           '/videos', 100, 1, 1, ?, ?, ?)`,
       ).run(
-        'Seedream 4.5 图片节点真实同链',
-        realSeedreamBaseUrl,
-        realSeedreamApiKey,
-        JSON.stringify([realSeedreamModel]),
-        realSeedreamModel,
+        'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
+        realAihubccBaseUrl,
+        realAihubccApiKey,
+        JSON.stringify([realAihubccModel]),
+        realAihubccModel,
         JSON.stringify({
           supports_upscale: true,
           supports_detail_enhance: true,
@@ -427,9 +429,22 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
 })
 
-test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
-  test.skip(!realSeedreamEnabled, '需要显式启用真实 Seedream 付费同链')
-  testInfo.setTimeout(360_000)
+test('图片工具栏真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
+  test.skip(!realAihubccEnabled, '需要显式启用真实 AIHubCC 付费同链')
+  testInfo.setTimeout(960_000)
+  const capabilitiesResponse = await fetch(`${backendOrigin}/api/v1/image-tools/capabilities`)
+  expect(capabilitiesResponse.ok).toBe(true)
+  const capabilitiesPayload = await capabilitiesResponse.json()
+  const upscaleCapability = capabilitiesPayload?.data?.operations?.upscale
+  if (!upscaleCapability?.available) {
+    throw new Error(`AIHUBCC_CAPABILITY_UNAVAILABLE ${JSON.stringify(upscaleCapability)}`)
+  }
+  expect(upscaleCapability).toMatchObject({
+    available: true,
+    engine: 'provider-image-edit',
+    protocol: 'aihubcc',
+    model: realAihubccModel,
+  })
   await proxyBackend(page)
   await page.goto(`/canvas/${dramaId}`)
 
@@ -444,7 +459,19 @@ test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同�
   const dialog = page.getByRole('dialog', { name: '高清增强' })
   await expect(dialog).toBeVisible()
   await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
-  await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible({ timeout: 300_000 })
+  const successMessage = page.getByText('图片处理完成，已生成新素材')
+  const failureAlert = toolbar.getByRole('alert')
+  const outcome = await Promise.race([
+    successMessage.waitFor({ state: 'visible', timeout: 900_000 }).then(() => 'success'),
+    failureAlert.waitFor({ state: 'visible', timeout: 900_000 }).then(() => 'failed'),
+  ])
+  if (outcome === 'failed') {
+    const safeLogs = backendLogs
+      .replaceAll(realAihubccApiKey, '[REDACTED]')
+      .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+      .slice(-12_000)
+    throw new Error(`${await failureAlert.textContent()}\n${safeLogs}`)
+  }
 
   await expect.poll(() => readDatabase((db) => {
     const task = db.prepare(
@@ -453,7 +480,7 @@ test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同�
        ORDER BY created_at DESC LIMIT 1`,
     ).get()
     const asset = db.prepare(
-      `SELECT id, url, local_path, width, height, file_size, metadata
+      `SELECT id, url, local_path, mime_type, width, height, file_size, metadata
        FROM assets WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
     ).get(dramaId)
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
@@ -476,7 +503,7 @@ test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同�
       metadata: {
         operation: 'upscale',
         engine: 'provider-image-edit',
-        engineVersion: expect.stringContaining(realSeedreamModel),
+        engineVersion: expect.stringContaining(realAihubccModel),
         taskId: expect.any(String),
       },
     },
@@ -493,13 +520,22 @@ test('图片工具栏真实触发 Seedream 并完成供应商产物持久化同�
   })
 
   const resultAsset = readDatabase((db) => db.prepare(
-    `SELECT local_path, width, height, file_size FROM assets
+    `SELECT local_path, mime_type, width, height, file_size FROM assets
      WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
   ).get(dramaId))
-  expect(resultAsset.width).toBeGreaterThan(320)
-  expect(resultAsset.height).toBeGreaterThan(180)
+  expect(resultAsset.mime_type).toBe('image/png')
+  expect(resultAsset.width).toBe(640)
+  expect(resultAsset.height).toBe(360)
   expect(resultAsset.file_size).toBeGreaterThan(0)
   expect(fs.existsSync(resultAsset.local_path)).toBe(true)
+  const resultArtifact = await sharp(resultAsset.local_path, {
+    failOn: 'warning',
+  }).metadata()
+  expect(resultArtifact).toMatchObject({
+    format: 'png',
+    width: 640,
+    height: 360,
+  })
 
   await page.reload({ waitUntil: 'networkidle' })
   const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)

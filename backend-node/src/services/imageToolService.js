@@ -1043,6 +1043,16 @@ async function resolveOutpaintHttpsTarget(rawUrl) {
   return { parsed, ...addresses[0] };
 }
 
+function createPinnedLookup(address, family) {
+  return (_hostname, options, callback) => {
+    if (options?.all) {
+      callback(null, [{ address, family }]);
+      return;
+    }
+    callback(null, address, family);
+  };
+}
+
 async function streamOutpaintHttpsToFile(rawUrl, outputPath, maxBytes, redirectCount = 0) {
   if (redirectCount > OUTPAINT_MAX_REDIRECTS) {
     fail('IMAGE_TOOL_PROCESSING_FAILED', '扩图结果重定向次数过多');
@@ -1060,9 +1070,7 @@ async function streamOutpaintHttpsToFile(rawUrl, outputPath, maxBytes, redirectC
         'User-Agent': 'MoliMama-ImageTool/1.0',
       },
       timeout: OUTPAINT_DOWNLOAD_TIMEOUT_MS,
-      lookup: (_hostname, _options, callback) => {
-        callback(null, target.address, target.family);
-      },
+      lookup: createPinnedLookup(target.address, target.family),
       ...(net.isIP(target.parsed.hostname)
         ? {}
         : { servername: target.parsed.hostname }),
@@ -3231,4 +3239,5 @@ module.exports = {
   resolveModelTools,
   resolveReferenceImageTool,
   saveOutpaintResult,
+  createPinnedLookup,
 };

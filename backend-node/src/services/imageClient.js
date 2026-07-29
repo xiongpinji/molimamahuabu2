@@ -205,11 +205,13 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
   return active[0];
 }
 
-function isAuditedSeedream45ReferenceAdapter(config, model, provider, protocol) {
-  return config.service_type === 'storyboard_image'
-    && provider === 'volcengine'
-    && protocol === 'volcengine'
-    && /^doubao-seedream-4-5(?:-\d+)?$/.test(model);
+function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
+  return (
+    config.service_type === 'storyboard_image'
+    && provider === 'aihubcc'
+    && protocol === 'aihubcc'
+    && model === 'gpt-image-2-3.5k'
+  );
 }
 
 function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') {
@@ -238,7 +240,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
       ? JSON.parse(config.settings || '{}')
       : (config.settings || {});
   } catch (_) {}
-  const strictReferenceAdapterAudited = isAuditedSeedream45ReferenceAdapter(
+  const strictReferenceAdapterAudited = isAuditedReferenceImageAdapter(
     config,
     model,
     provider,

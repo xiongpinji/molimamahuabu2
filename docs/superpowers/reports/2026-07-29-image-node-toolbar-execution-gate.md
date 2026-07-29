@@ -15,9 +15,9 @@
 | --- | --- | --- |
 | 确定性编辑 | 裁剪、压缩、镜像、旋转、宫格裁剪、图片调整、LUT | Sharp 派生资产 |
 | CPU 抠图 | 智能抠图、框选抠图 | rembg 2.0.77 + u2netp，CPU 单并发 |
-| 远程增强 | 高清增强、细节纹理增强 | 已审计 Seedream 4.5 参考图链 |
-| 远程编辑 | 扩图、标记修图、电影级光影校正 | 已审计 Seedream 4.5 参考图链 |
-| 生成与推演 | 720 全景、全景场景、画面/角度联想、角色三视图、叙事九宫格、前后画面推演 | 已审计 Seedream 4.5 参考图链 |
+| 远程增强 | 高清增强、细节纹理增强 | AIHubCC `gpt-image-2-3.5k` 参考图链 |
+| 远程编辑 | 扩图、标记修图、电影级光影校正 | AIHubCC `gpt-image-2-3.5k` 参考图链 |
+| 生成与推演 | 720 全景、全景场景、画面/角度联想、角色三视图、叙事九宫格、前后画面推演 | AIHubCC `gpt-image-2-3.5k` 参考图链 |
 | 导演预演 | 生成导演台、灯光、姿势、角度 | 真实 3D 导演台状态与资产链 |
 | 通用动作 | 替换、下载、全屏、历史、标记色、失败重试 | 画布状态与资产持久化链 |
 
@@ -29,18 +29,19 @@
 | 门禁 | 结果 |
 | --- | --- |
 | 前端完整测试 | 346 / 346 通过 |
-| 后端完整测试 | 472 / 472 通过 |
+| 后端完整测试 | 475 / 475 通过 |
 | 前端生产构建 | 通过 |
 | 后端生产依赖审计 | 0 个漏洞 |
 | 前端生产依赖审计 | 0 个漏洞 |
 | CPU 抠图 Python 依赖审计 | 0 个已知漏洞 |
 | 生产依赖许可证门禁 | 303 个包通过，缺失元数据必须有固定版本与来源覆盖 |
 | 图片节点发布边界门禁 | 260 个生产文件通过密钥、禁区与对口型隔离扫描 |
-| 图片工具网络与日志目标测试 | 44 / 44 通过 |
+| 图片工具、AIHubCC 与下载安全目标测试 | 47 / 47 通过 |
 | rembg CPU 本地产物 | PNG、4 通道、透明通道有效 |
 | 生产镜像本地门禁 | 构建、健康、网页、版本、模型哈希、断网 CPU 抠图、透明通道均通过 |
 | 真实浏览器 + 临时后端回归 | 6 / 6 通过 |
-| 图片工具栏专用同链回归 | 1 / 1 通过 |
+| 图片工具栏本地专用同链回归 | 1 / 1 通过 |
+| AIHubCC 真实付费同链门禁 | 2 / 2 通过（含本地链与真实供应商链） |
 | CI 画布浏览器门禁 | 20 / 20 通过，已包含图片工具栏专用同链 |
 | 禁区扫描 | 生产源码无核验、侵权或版权检测入口 |
 | 密钥扫描 | 未发现疑似硬编码密钥或私钥 |
@@ -73,42 +74,60 @@
 - `OMP_NUM_THREADS=1`，全局和单租户并发均为 1。
 - 不要求 GPU，且不包含 CUDA、ROCm 或 `onnxruntime-gpu`。FFmpeg 的 Debian
   传递依赖含通用 Mesa/Vulkan 装载库，不代表启用或依赖专用 GPU 运行时。
-- Seedream 能力走远程服务，不占用服务器 GPU。
+- AIHubCC `gpt-image-2-3.5k` 能力走远程服务，不占用服务器 GPU。
 - 对口型没有进入镜像、运行路由或发布门禁。
 
-本地生产镜像 `molimama-web:image-node-local` 已构建为不可变摘要
-`sha256:39796ee6100827d682235ce98383a710cbdb8fb7561bcd4ac9d2f5c0d9d0441a`，
-大小 `598,413,011` 字节。隔离容器健康、网页入口、rembg 版本和模型哈希均
-通过；断开容器网络后生成 32×32 四通道透明 PNG（1,018 字节）。容器日志未
+本地生产镜像 `molimama-web:image-node-aihubcc-local` 已构建为不可变摘要
+`sha256:69f00a20a6089379e9b4a29942e6659a634fa0952d556c1d2d3050adf329472b`，
+大小 `598,420,071` 字节。隔离容器健康、网页入口、rembg 版本和模型哈希均
+通过；断开容器网络后生成 32×32 四通道透明 PNG。容器日志未
 发现测试密钥值、Python 堆栈或模型下载错误，测试容器已删除。
 
-## 尚未解除的发布门槛
+## AIHubCC 真实同链证据
 
 真实供应商门禁已固化为：
 
 ```powershell
-$env:RUN_REAL_SEEDREAM_IMAGE_NODE_CHAIN='1'
-$env:SEEDREAM_BASE_URL='https://<seedream-api-host>/api/v3'
-$env:SEEDREAM_MODEL='doubao-seedream-4-5-251128'
-$env:SEEDREAM_API_KEY='<仅注入当前进程，不写入仓库>'
+$env:RUN_REAL_AIHUBCC_IMAGE_NODE_CHAIN='1'
+$env:AIHUBCC_BASE_URL='https://aihubcc.cc/v1'
+$env:AIHUBCC_IMAGE_MODEL='gpt-image-2-3.5k'
+$env:AIHUBCC_API_KEY='<仅注入当前进程，不写入仓库>'
 npm --prefix frontweb run test:e2e:image-node-real
 ```
 
 门禁会自动申请隔离浏览器端口并禁止复用已有本地服务；只有显式付费确认、
-无查询参数的 HTTPS 地址、已审计的 Seedream 4.5 模型和非空密钥同时存在才
-运行。缺少确认时退出码为 2，验证输出不包含测试密钥。同一次门禁先验证本地
-处理成功、损坏输入失败回写、保留旧图和恢复后重试，再从图片节点点击“高清”，
-核对供应商引擎、任务回读、派生资产、文件产物、画布写入、刷新持久化和历史
-记录。
+严格固定的 `https://aihubcc.cc/v1`、已审计的 `gpt-image-2-3.5k` 和非空密钥
+同时存在才运行。缺少确认时退出码为 2，验证输出不包含密钥；失败诊断会再次
+替换当前密钥和 Bearer 值。真实门禁临时数据库与产物可通过
+`IMAGE_NODE_E2E_TEMP_ROOT` 放在隔离磁盘，且关闭 Playwright trace，避免高分辨率
+产物挤占系统盘。
 
-1. 当前隔离数据库和进程环境没有真实 Seedream 4.5 凭据，也没有本轮可消耗
-   的真实模型额度，因此不能把受限协议适配器或历史调用冒充当前真实供应商
-   同链证据。
+2026-07-29 当前真实门禁结果为 2 / 2 通过：
 
-在取得真实供应商调用证据并由 PR CI 重放生产镜像门禁前：
+1. 本地裁剪成功、损坏输入失败回写、旧图保留、修复输入后重试成功及刷新恢复。
+2. 从图片节点点击“高清”，后端使用 `gpt-image-2-3.5k` 提交 AIHubCC 异步任务并
+   轮询完成，下载供应商图片并生成经 MIME、格式、尺寸、文件存在性校验的 PNG
+   派生资产，写回任务与画布节点，刷新后历史和结果仍存在。
 
-- `real_provider_verified=false`
+本轮同时修复两项真实运行缺陷：
+
+- 图片工具路由不再缓存服务启动时的供应商配置；运行时保存 AIHubCC 配置后，
+  能力查询和新任务会立即读取当前配置。
+- 供应商产物下载器兼容 Node 新版 DNS `lookup({ all: true })` 契约，同时保留
+  HTTPS、DNS 私网拒绝、重定向复查、内容类型和 64 MiB 流式上限。
+
+## 尚未解除的发布门槛
+
+本地工程门禁已通过，但 PR、CI 和线上部署尚未执行：
+
+- `real_provider_verified=true`
 - `production_image_built=true`
 - `production_image_local_smoke_verified=true`
-- `productComplete=false`
-- 不创建 PR、不推送、不部署线上
+- `local_product_complete=false`（目前仅“高清”具备真实供应商同链证据，其余远程功能
+  尚需逐项补齐 `real_browser_verified`、`backend_readback`、`artifact_verified`
+  与 `failure_writeback`）
+- `pr_created=false`
+- `ci_verified=false`
+- `production_deployed=false`
+
+下一步只允许在代码审查和提交确认无误后创建 PR；CI 通过前不得部署线上。

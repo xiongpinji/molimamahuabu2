@@ -14,18 +14,17 @@ export const IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS = Object.freeze([
   'supports_frame_backward',
 ])
 
-export function isAuditedSeedream45ReferenceConfig(config = {}) {
-  const model = String(config.model || '').trim()
+export function isAuditedImageToolReferenceConfig(config = {}) {
   return config.serviceType === 'storyboard_image'
-    && String(config.provider || '').trim().toLowerCase() === 'volcengine'
-    && String(config.protocol || '').trim().toLowerCase() === 'volcengine'
-    && /^doubao-seedream-4-5(?:-\d+)?$/.test(model)
+    && String(config.provider || '').trim().toLowerCase() === 'aihubcc'
+    && String(config.protocol || '').trim().toLowerCase() === 'aihubcc'
+    && String(config.model || '').trim() === 'gpt-image-2-3.5k'
 }
 
 export function applyImageToolReferenceCapabilities(settings, config) {
   const next = { ...(settings || {}) }
   for (const key of IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS) delete next[key]
-  if (isAuditedSeedream45ReferenceConfig(config)) {
+  if (isAuditedImageToolReferenceConfig(config)) {
     for (const key of IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS) next[key] = true
   }
   return next

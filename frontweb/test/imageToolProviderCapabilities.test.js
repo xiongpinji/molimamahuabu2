@@ -4,28 +4,28 @@ import assert from 'node:assert/strict'
 import {
   IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS,
   applyImageToolReferenceCapabilities,
-  isAuditedSeedream45ReferenceConfig,
+  isAuditedImageToolReferenceConfig,
 } from '../src/utils/imageToolProviderCapabilities.js'
 
 const auditedConfig = {
   serviceType: 'storyboard_image',
-  provider: 'volcengine',
-  protocol: 'volcengine',
-  model: 'doubao-seedream-4-5-251128',
+  provider: 'aihubcc',
+  protocol: 'aihubcc',
+  model: 'gpt-image-2-3.5k',
 }
 
-test('火山 Seedream 4.5 版本化模型匹配已审计图片节点适配器', () => {
-  assert.equal(isAuditedSeedream45ReferenceConfig(auditedConfig), true)
+test('仅 AIHubCC gpt-image-2-3.5k 匹配已审计图片节点适配器', () => {
+  assert.equal(isAuditedImageToolReferenceConfig(auditedConfig), true)
   assert.equal(
-    isAuditedSeedream45ReferenceConfig({ ...auditedConfig, model: 'doubao-seedream-4-0' }),
+    isAuditedImageToolReferenceConfig({ ...auditedConfig, model: 'gpt-image-2-2k' }),
     false,
   )
   assert.equal(
-    isAuditedSeedream45ReferenceConfig({ ...auditedConfig, provider: 'proxy' }),
+    isAuditedImageToolReferenceConfig({ ...auditedConfig, provider: 'volcengine' }),
     false,
   )
   assert.equal(
-    isAuditedSeedream45ReferenceConfig({ ...auditedConfig, serviceType: 'image' }),
+    isAuditedImageToolReferenceConfig({ ...auditedConfig, serviceType: 'image' }),
     false,
   )
 })
@@ -45,7 +45,7 @@ test('配置离开已审计适配器时清理过期图片节点能力声明', ()
   )
   const settings = applyImageToolReferenceCapabilities(
     { ...previous, retained: true },
-    { ...auditedConfig, model: 'doubao-seedream-4-0' },
+    { ...auditedConfig, protocol: 'openai' },
   )
   assert.equal(settings.retained, true)
   for (const key of IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS) {

@@ -83,31 +83,35 @@ function routes(db, log, options = {}) {
     options.auditedModelHashes,
     options.auditedUpscaleFiles,
   );
-  const resolvedReferenceImageTool = imageToolService.resolveReferenceImageTool(
-    db,
-    log,
-    options.referenceImageTool,
-  );
-  const publicReferenceAvailability = options.publicPlatformEnabled
-    ? imageToolBilling.availability(db, resolvedReferenceImageTool)
-    : { tool: resolvedReferenceImageTool, reason: undefined };
-  const referenceImageTool = publicReferenceAvailability.tool;
-  const referenceImageUnavailableReason = publicReferenceAvailability.reason;
+  const resolveReferenceAvailability = () => {
+    const resolvedReferenceImageTool = imageToolService.resolveReferenceImageTool(
+      db,
+      log,
+      options.referenceImageTool,
+    );
+    return options.publicPlatformEnabled
+      ? imageToolBilling.availability(db, resolvedReferenceImageTool)
+      : { tool: resolvedReferenceImageTool, reason: undefined };
+  };
   return {
-    capabilities: (_req, res) => response.success(res, {
-      operations: {
-        ...BASE_OPERATIONS,
-        ...imageToolService.modelCapabilities(modelTools),
-        ...imageToolService.referenceImageCapabilities(
-          referenceImageTool,
-          referenceImageUnavailableReason,
-        ),
-      },
-    }),
+    capabilities: (_req, res) => {
+      const referenceAvailability = resolveReferenceAvailability();
+      return response.success(res, {
+        operations: {
+          ...BASE_OPERATIONS,
+          ...imageToolService.modelCapabilities(modelTools),
+          ...imageToolService.referenceImageCapabilities(
+            referenceAvailability.tool,
+            referenceAvailability.reason,
+          ),
+        },
+      });
+    },
     createOperation: async (req, res) => {
       let billing = null;
       try {
         const operation = String(req.body?.operation || '').trim();
+        const referenceImageTool = resolveReferenceAvailability().tool;
         const isRemoteReferenceOperation = Boolean(
           referenceImageTool?.operations?.includes(operation),
         );

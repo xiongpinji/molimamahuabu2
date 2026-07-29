@@ -327,14 +327,14 @@ test('公开平台配置模型价格后公布已审计的参考图能力', (t) =
   const db = new Database(':memory:');
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
-  modelPriceService.set(db, 'doubao-seedream-4-5-251128', 7, { category: 'image' });
+  modelPriceService.set(db, 'gpt-image-2-3.5k', 7, { category: 'image' });
   const handlers = createImageToolRoutes(db, { error() {} }, {
     publicPlatformEnabled: true,
     referenceImageTool: {
       engine: 'provider-image-edit',
-      provider: 'volcengine',
-      protocol: 'volcengine',
-      model: 'doubao-seedream-4-5-251128',
+      provider: 'aihubcc',
+      protocol: 'aihubcc',
+      model: 'gpt-image-2-3.5k',
       operations: ['outpaint', 'upscale'],
       generate: async () => ({ image_url: '' }),
     },
@@ -355,13 +355,13 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   runMigrationsAndEnsure(supportedDb);
   aiConfigService.createConfig(supportedDb, log, {
     service_type: 'storyboard_image',
-    provider: 'volcengine',
-    api_protocol: 'volcengine',
-    name: 'Seedream 参考图',
-    base_url: 'https://example.invalid/api/v3',
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    name: 'AIHubCC GPT Image 2 3.5K',
+    base_url: 'https://aihubcc.cc/v1',
     api_key: 'test-key',
-    model: ['doubao-seedream-4-5-251128'],
-    default_model: 'doubao-seedream-4-5-251128',
+    model: ['gpt-image-2-3.5k'],
+    default_model: 'gpt-image-2-3.5k',
     is_default: true,
     settings: JSON.stringify({
       supports_outpaint: true,
@@ -383,20 +383,20 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   const supportedRes = responseRecorder();
   supportedHandlers.capabilities({}, supportedRes);
   assert.equal(supportedRes.payload.data.operations.outpaint.available, true);
-  assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.outpaint.protocol, 'aihubcc');
   assert.equal(supportedRes.payload.data.operations.markup_retouch.available, true);
-  assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.markup_retouch.protocol, 'aihubcc');
   assert.equal(supportedRes.payload.data.operations.upscale.available, true);
   assert.equal(supportedRes.payload.data.operations.upscale.engine, 'provider-image-edit');
   assert.deepEqual(supportedRes.payload.data.operations.upscale.scales, [2, 3, 4]);
   assert.equal(supportedRes.payload.data.operations.detail_enhance.available, true);
   assert.equal(supportedRes.payload.data.operations.detail_enhance.preservesDimensions, true);
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.available, true);
-  assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'aihubcc');
   assert.equal(supportedRes.payload.data.operations.panorama.available, true);
   assert.equal(supportedRes.payload.data.operations.panorama_scene.available, true);
   assert.equal(supportedRes.payload.data.operations.image_ideation.available, true);
-  assert.equal(supportedRes.payload.data.operations.image_ideation.protocol, 'volcengine');
+  assert.equal(supportedRes.payload.data.operations.image_ideation.protocol, 'aihubcc');
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -405,7 +405,7 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     'frame_backward',
   ]) {
     assert.equal(supportedRes.payload.data.operations[operation].available, true, operation);
-    assert.equal(supportedRes.payload.data.operations[operation].protocol, 'volcengine', operation);
+    assert.equal(supportedRes.payload.data.operations[operation].protocol, 'aihubcc', operation);
   }
 
   const undeclaredDb = new Database(':memory:');
@@ -413,13 +413,13 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   runMigrationsAndEnsure(undeclaredDb);
   aiConfigService.createConfig(undeclaredDb, log, {
     service_type: 'storyboard_image',
-    provider: 'volcengine',
-    api_protocol: 'volcengine',
-    name: '未声明扩图的 Seedream',
-    base_url: 'https://example.invalid/api/v3',
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    name: '未声明图片工具能力的 AIHubCC',
+    base_url: 'https://aihubcc.cc/v1',
     api_key: 'test-key',
-    model: ['doubao-seedream-4-5'],
-    default_model: 'doubao-seedream-4-5',
+    model: ['gpt-image-2-3.5k'],
+    default_model: 'gpt-image-2-3.5k',
     is_default: true,
   });
   const undeclaredHandlers = createImageToolRoutes(undeclaredDb, log);
@@ -560,6 +560,52 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       assert.equal(strictRes.payload.data.operations[operation].available, false, config.name);
     }
   }
+});
+
+test('图片节点能力会读取路由创建后保存的 AIHubCC 参考图配置', (t) => {
+  const log = { info() {}, error() {} };
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const handlers = createImageToolRoutes(db, log);
+
+  const beforeRes = responseRecorder();
+  handlers.capabilities({}, beforeRes);
+  assert.equal(beforeRes.payload.data.operations.upscale.available, false);
+
+  aiConfigService.createConfig(db, log, {
+    service_type: 'storyboard_image',
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    name: 'AIHubCC GPT Image 2 3.5K',
+    base_url: 'https://aihubcc.cc/v1',
+    api_key: 'test-key',
+    model: ['gpt-image-2-3.5k'],
+    default_model: 'gpt-image-2-3.5k',
+    is_default: true,
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      supports_markup_retouch: true,
+      supports_upscale: true,
+      supports_detail_enhance: true,
+      supports_cinematic_relight: true,
+      supports_panorama: true,
+      supports_panorama_scene: true,
+      supports_image_ideation: true,
+      supports_angle_ideation: true,
+      supports_character_views: true,
+      supports_narrative_grid: true,
+      supports_frame_forward: true,
+      supports_frame_backward: true,
+    }),
+  });
+
+  const afterRes = responseRecorder();
+  handlers.capabilities({}, afterRes);
+  assert.equal(afterRes.payload.data.operations.upscale.available, true);
+  assert.equal(afterRes.payload.data.operations.upscale.provider, 'aihubcc');
+  assert.equal(afterRes.payload.data.operations.upscale.protocol, 'aihubcc');
+  assert.equal(afterRes.payload.data.operations.upscale.model, 'gpt-image-2-3.5k');
 });
 
 test('真实图片供应商请求把存储根内绝对参考图编码为 data URL', async (t) => {
@@ -778,6 +824,25 @@ test('扩图下载在解码前执行大小限制', async (t) => {
     (error) => error.code === 'IMAGE_TOOL_PROCESSING_FAILED',
   );
   assert.equal(fs.readdirSync(outputDir).length, 0);
+});
+
+test('供应商产物下载的固定 DNS lookup 兼容 Node 单地址与 all 地址契约', async () => {
+  const lookup = imageToolService.createPinnedLookup('203.0.113.10', 4);
+  const single = await new Promise((resolve, reject) => {
+    lookup('example.invalid', {}, (error, address, family) => {
+      if (error) reject(error);
+      else resolve({ address, family });
+    });
+  });
+  assert.deepEqual(single, { address: '203.0.113.10', family: 4 });
+
+  const all = await new Promise((resolve, reject) => {
+    lookup('example.invalid', { all: true }, (error, addresses) => {
+      if (error) reject(error);
+      else resolve(addresses);
+    });
+  });
+  assert.deepEqual(all, [{ address: '203.0.113.10', family: 4 }]);
 });
 
 test('配置真实 rembg 命令后才公布智能抠图能力', (t) => {
@@ -2957,6 +3022,61 @@ test('电影级光影校正通过参考图供应商生成同尺寸派生素材�
     ? fs.readdirSync(derivedDir).filter((name) => /relight-provider-download/i.test(name))
     : [];
   assert.deepEqual(temporaryFiles, []);
+});
+
+test('AIHubCC gpt-image-2-3.5k 配置开放全部已审计图片节点能力', (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+  const log = { info() {}, error() {} };
+  aiConfigService.createConfig(db, log, {
+    service_type: 'storyboard_image',
+    provider: 'aihubcc',
+    api_protocol: 'aihubcc',
+    name: 'AIHubCC 图片节点',
+    base_url: 'https://aihubcc.cc/v1',
+    api_key: 'test-key',
+    model: ['gpt-image-2-3.5k'],
+    default_model: 'gpt-image-2-3.5k',
+    is_default: true,
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      supports_markup_retouch: true,
+      supports_upscale: true,
+      supports_detail_enhance: true,
+      supports_cinematic_relight: true,
+      supports_panorama: true,
+      supports_panorama_scene: true,
+      supports_image_ideation: true,
+      supports_angle_ideation: true,
+      supports_character_views: true,
+      supports_narrative_grid: true,
+      supports_frame_forward: true,
+      supports_frame_backward: true,
+    }),
+  });
+  const handlers = createImageToolRoutes(db, log);
+  const res = responseRecorder();
+  handlers.capabilities({}, res);
+  for (const operation of [
+    'outpaint',
+    'markup_retouch',
+    'upscale',
+    'detail_enhance',
+    'cinematic_relight',
+    'panorama',
+    'panorama_scene',
+    'image_ideation',
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    assert.equal(res.payload.data.operations[operation].available, true, operation);
+    assert.equal(res.payload.data.operations[operation].protocol, 'aihubcc', operation);
+    assert.equal(res.payload.data.operations[operation].model, 'gpt-image-2-3.5k', operation);
+  }
 });
 
 test('无 GPU 环境通过 Seedream 参考图供应商完成高清与细节增强', async (t) => {
