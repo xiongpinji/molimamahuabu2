@@ -264,7 +264,8 @@
           <strong>当前图片参考</strong>
           <img :src="entryReferenceUrl" :alt="entryReferenceTitle" />
           <small>{{ entryReferenceTitle }}</small>
-          <span>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
+          <span v-if="lightingEntry">3D 灯光预演，不直接修改原图；截图会生成新素材。</span>
+          <span v-else>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
         </section>
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
         <div v-else-if="errorMessage" class="director-stage__error">{{ errorMessage }}</div>
@@ -435,8 +436,8 @@
           </section>
         </template>
         <div v-else class="stage-empty">在场景树中选择对象以编辑属性</div>
-        <section class="inspector-group environment-editor">
-          <strong>3D 场景</strong>
+        <section ref="environmentEditorRef" class="inspector-group environment-editor">
+          <strong>{{ lightingEntry ? '3D 灯光' : '3D 场景' }}</strong>
           <label>场景缩放<input type="range" min="0.1" max="5" step="0.1" :value="timeline.environment.sceneScale" @input="updateEnvironment('sceneScale', $event.target.value)" /></label>
           <div class="inspector-group"><strong>场景平移</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="timeline.environment.scenePosition[index]" @change="updateEnvironmentVector('scenePosition', index, $event.target.value)" /></label></div></div>
           <div class="inspector-group"><strong>场景旋转（度）</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(timeline.environment.sceneRotation[index])" @change="updateEnvironmentRotation(index, $event.target.value)" /></label></div></div>
@@ -635,6 +636,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'state-change', 'asset-created'])
 const dialogRef = ref(null)
 const aiImportModalRef = ref(null)
+const environmentEditorRef = ref(null)
 const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
@@ -697,6 +699,7 @@ const characters = computed(() => props.drama?.characters || [])
 const propsList = computed(() => props.drama?.props || [])
 const entryReferenceUrl = computed(() => String(props.entryContext?.imageUrl || '').trim())
 const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitle || '图片节点参考图').trim())
+const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
 const characterEntries = computed(() => characters.value.map((character, index) => ({
   id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
   name: character?.name || `角色 ${index + 1}`,
@@ -1360,9 +1363,13 @@ function selectEnvironmentInspector() {
 }
 
 function applyEntryContext() {
-  if (props.entryContext?.mode !== 'director_stage') return
+  if (!['director_stage', 'lighting'].includes(props.entryContext?.mode)) return
   workspaceMode.value = 'scene'
   viewMode.value = 'director'
+  if (lightingEntry.value) selectEnvironmentInspector()
+  if (lightingEntry.value) {
+    nextTick(() => environmentEditorRef.value?.scrollIntoView({ block: 'start' }))
+  }
 }
 
 function updateSelectedObject(patch) {

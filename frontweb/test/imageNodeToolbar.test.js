@@ -33,7 +33,8 @@ test('图片节点挂载独立工具栏且不影响其他节点', () => {
   )
   assert.match(nodeSource, /:node-id="id"/)
   assert.match(nodeSource, /:data="data"/)
-  assert.match(toolbarSource, /\.vue-flow__node\.selected \.image-node-toolbar/)
+  assert.match(toolbarSource, /:global\(\.home-canvas-node:hover \.image-node-toolbar\)/)
+  assert.match(toolbarSource, /:global\(\.vue-flow__node\.selected \.image-node-toolbar\)/)
 })
 
 test('工具栏按后端能力启用并保留不可用原因', () => {
@@ -154,17 +155,17 @@ test('P1 图片调整包含色温，旋转走 Sharp 派生链', () => {
   assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
 })
 
-test('生成导演台桥接当前图片且不冒充灯光、姿势或角度图片处理', () => {
+test('生成导演台和灯光入口桥接当前图片且不冒充模型图片处理', () => {
   assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage' \}/)
-  assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage'\]\)/)
+  assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage', 'lighting'\]\)/)
   assert.match(toolbarSource, /ctx\?\.openDirectorStage\?\.\(\{[\s\S]*mode: item\.operation/)
   assert.match(toolbarSource, /imageUrl: props\.data\.url/)
   assert.match(toolbarSource, /sourceNodeId: props\.nodeId/)
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
   assert.match(canvasSource, /function openDirectorStage\(entryContext = null\)/)
-  assert.match(canvasSource, /directorStageEntry\.value = entryContext/)
-  assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:lighting|pose|angle)/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:pose|angle|cinematic_relight)/)
 })
 
 test('工具栏提供替换、下载、全屏、历史与标记色入口', () => {

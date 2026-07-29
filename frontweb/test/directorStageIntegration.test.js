@@ -223,8 +223,22 @@ test('图片节点导演台入口显示当前参考图并保持其他入口兼�
   assert.match(stageSource, /function applyEntryContext\(\)/)
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
-  assert.match(canvasSource, /directorStageEntry\.value = entryContext/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
   assert.match(canvasSource, /directorStageEntry\.value = null/)
+})
+
+test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', () => {
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting'\]\)/)
+  assert.match(canvasSource, /DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(stageSource, /const lightingEntry = computed\(\(\) => props\.entryContext\?\.mode === 'lighting'\)/)
+  assert.match(stageSource, /3D 灯光预演，不直接修改原图/)
+  assert.match(stageSource, /ref="environmentEditorRef"/)
+  assert.match(stageSource, /if \(lightingEntry\.value\) selectEnvironmentInspector\(\)/)
+  assert.match(stageSource, /environmentEditorRef\.value\?\.scrollIntoView/)
+  assert.match(stageSource, /环境光/)
+  assert.match(stageSource, /方向光/)
+  assert.match(stageSource, /if \(ambientLight\) ambientLight\.intensity/)
+  assert.match(stageSource, /if \(keyLight\) keyLight\.intensity/)
 })
 
 test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和查看器', () => {

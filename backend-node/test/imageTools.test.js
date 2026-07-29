@@ -151,7 +151,11 @@ test('图片工具能力只公布真实可用处理器并明确未配置原因',
   assert.equal(operations.director_stage.available, true);
   assert.equal(operations.director_stage.engine, 'director-stage');
   assert.equal(operations.director_stage.action, 'open');
-  assert.equal(operations.lighting.available, false);
+  assert.equal(operations.lighting.available, true);
+  assert.equal(operations.lighting.engine, 'director-stage');
+  assert.equal(operations.lighting.action, 'open');
+  assert.equal(operations.lighting.mode, 'lighting');
+  assert.equal(operations.cinematic_relight.available, false);
   assert.equal(operations.pose.available, false);
   assert.equal(operations.angle.available, false);
   assert.equal(operations.panorama.available, false);

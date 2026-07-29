@@ -648,6 +648,7 @@ const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
 const directorStageEntry = ref(null)
+const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting'])
 let directorReturnFocus = null
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
@@ -704,9 +705,9 @@ const freeNodeContentPlaceholder = computed(() => (
 
 function openDirectorStage(entryContext = null) {
   directorReturnFocus = document.activeElement
-  directorStageEntry.value = entryContext?.mode === 'director_stage'
+  directorStageEntry.value = DIRECTOR_STAGE_ENTRY_MODES.has(entryContext?.mode)
     ? {
-        mode: 'director_stage',
+        mode: entryContext.mode,
         imageUrl: String(entryContext.imageUrl || ''),
         sourceNodeId: String(entryContext.sourceNodeId || ''),
         sourceTitle: String(entryContext.sourceTitle || '图片节点'),

@@ -16,7 +16,12 @@ const BASE_OPERATIONS = Object.freeze({
   selection_cutout: unavailable('框选抠图处理链尚未完成'),
   upscale: unavailable('高清增强模型尚未通过许可证审计'),
   detail_enhance: unavailable('细节增强模型尚未通过许可证审计'),
-  lighting: unavailable('灯光模型能力尚未配置'),
+  lighting: {
+    available: true,
+    engine: 'director-stage',
+    action: 'open',
+    mode: 'lighting',
+  },
   cinematic_relight: unavailable('电影光影模型能力尚未配置'),
   panorama: unavailable('全景模型能力尚未配置'),
   panorama_scene: unavailable('全景场景模型能力尚未配置'),

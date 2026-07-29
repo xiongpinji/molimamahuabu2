@@ -386,7 +386,7 @@ let cropper = null
 let CropperClass = null
 let activeMarkupStroke = null
 
-const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage'])
+const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage', 'lighting'])
 
 const quickActions = [
   { label: '720全景', operation: 'panorama' },
@@ -790,8 +790,8 @@ function requestFullscreen() {
   transform: translateX(-50%);
 }
 
-.home-canvas-node:hover .image-node-toolbar,
-.vue-flow__node.selected .image-node-toolbar,
+:global(.home-canvas-node:hover .image-node-toolbar),
+:global(.vue-flow__node.selected .image-node-toolbar),
 .image-node-toolbar:focus-within {
   display: flex;
 }
