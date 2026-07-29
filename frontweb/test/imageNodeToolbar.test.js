@@ -210,6 +210,7 @@ test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父�
 
 test('执行图片工具成功才替换节点结果，失败保留旧图并写回错误', () => {
   assert.match(canvasSource, /async function runImageNodeTool\(nodeOrId, operation, parameters = \{\}\)/)
+  assert.doesNotMatch(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode' \|\| node\.data\?\.kind !== 'image'\)/)
   assert.match(canvasSource, /const previousUrl = String\(node\.data\?\.url \|\| ''\)/)
   assert.match(canvasSource, /assetId: node\.data\?\.savedAssetId/)
   assert.match(canvasSource, /sourceNodeId: String\(node\.id\)/)
@@ -274,6 +275,8 @@ test('生成导演台、灯光、角度和姿势入口桥接当前图片且不�
 test('工具栏提供替换、下载、全屏、历史与标记色入口', () => {
   assert.match(toolbarSource, /replaceInput/)
   assert.match(toolbarSource, /ctx\?\.replaceFreeCanvasNodeImage/)
+  assert.match(canvasSource, /async function replaceFreeCanvasNodeImage\(nodeOrId, file\)/)
+  assert.doesNotMatch(canvasSource, /该节点不是可替换的独立画布图片节点/)
   assert.match(toolbarSource, /downloadImage/)
   assert.match(toolbarSource, /downloadExtension\(/)
   assert.match(toolbarSource, /requestFullscreen/)

@@ -2984,8 +2984,8 @@ async function completeImageToolOperation(nodeId, operation, result, previousHis
 
 async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
   let node = freeCanvasNodeById(nodeOrId)
-  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
-    throw new Error('该节点不是可处理的独立画布图片节点')
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可处理的图片节点')
   }
   const previousUrl = String(node.data?.url || '')
   if (!previousUrl) throw new Error('图片节点暂无可处理结果')
@@ -3087,8 +3087,8 @@ function resumePendingImageToolOperations() {
 
 async function replaceFreeCanvasNodeImage(nodeOrId, file) {
   const node = freeCanvasNodeById(nodeOrId)
-  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
-    throw new Error('该节点不是可替换的独立画布图片节点')
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可替换的图片节点')
   }
   if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件')
   if (!drama.value?.id) throw new Error('项目信息不完整，无法上传图片')
@@ -4459,6 +4459,10 @@ async function onCanvasAssetLibraryPick(asset) {
         assetSaveStatus: 'success',
         assetSaveError: '',
         taskId: '',
+        imageToolStatus: '',
+        imageToolError: '',
+        imageToolRetryOperation: '',
+        imageToolRetryParameters: null,
       })
       ElMessage.success('素材已挂载到当前节点')
       return
