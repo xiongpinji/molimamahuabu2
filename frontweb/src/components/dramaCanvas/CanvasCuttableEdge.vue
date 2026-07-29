@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject } from 'vue'
+import { computed, inject, ref } from 'vue'
 import { BaseEdge, getBezierPath, getSmoothStepPath, getStraightPath } from '@vue-flow/core'
 
 const props = defineProps({
@@ -17,6 +17,7 @@ const props = defineProps({
 })
 
 const cutCanvasEdges = inject('cut-canvas-edges', null)
+const hovering = ref(false)
 const pathResult = computed(() => {
   const options = {
     sourceX: props.sourceX,
@@ -41,13 +42,19 @@ function cutEdge(event) {
 </script>
 
 <template>
-  <g class="canvas-cuttable-edge" :class="{ 'is-selected': selected }">
+  <g class="canvas-cuttable-edge" :class="{ 'is-selected': selected, 'is-hovering': hovering }">
     <BaseEdge
       :id="id"
       :path="edgePath"
       :marker-end="markerEnd"
       :style="style"
-      :interaction-width="28"
+      :interaction-width="40"
+    />
+    <path
+      :d="edgePath"
+      class="canvas-edge-hover-path"
+      @mouseenter="hovering = true"
+      @mouseleave="hovering = false"
     />
     <g
       class="canvas-edge-cut nodrag nopan"
@@ -66,6 +73,14 @@ function cutEdge(event) {
 </template>
 
 <style scoped>
+.canvas-edge-hover-path {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 40;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
 .canvas-edge-cut {
   cursor: pointer;
   visibility: hidden;
@@ -92,6 +107,7 @@ function cutEdge(event) {
 }
 
 .canvas-cuttable-edge:hover .canvas-edge-cut,
+.canvas-cuttable-edge.is-hovering .canvas-edge-cut,
 .canvas-cuttable-edge.is-selected .canvas-edge-cut,
 .canvas-edge-cut:focus-visible {
   visibility: visible;

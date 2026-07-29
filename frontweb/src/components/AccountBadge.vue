@@ -1,5 +1,5 @@
 <template>
-  <aside v-if="visible" class="account-badge">
+  <aside v-if="visible" class="account-badge" :class="{ 'account-badge--canvas': isCanvasRoute }">
     <el-select
       v-model="tenantId"
       class="tenant-select"
@@ -74,6 +74,11 @@ const passwordDialog = ref(false)
 const passwordLoading = ref(false)
 const passwordForm = ref({ current: '', next: '', confirm: '' })
 const visible = computed(() => publicMode && route.name !== 'login' && !!readSession()?.token)
+const isCanvasRoute = computed(() => [
+  'film-canvas',
+  'home-canvas-local',
+  'standalone-canvas',
+].includes(String(route.name || '')))
 const canManageAccounts = computed(() => {
   const role = readSession()?.user?.role
   return canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ)
@@ -153,6 +158,7 @@ async function logout() {
 
 <style scoped>
 .account-badge { position: fixed; z-index: 3000; right: 18px; bottom: 18px; display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 36px); padding: 10px 12px 10px 15px; border: 1px solid rgba(255,255,255,.1); border-radius: 15px; color: #fff; background: rgba(27, 27, 30, .92); box-shadow: 0 10px 30px rgba(0,0,0,.24); backdrop-filter: blur(12px); }
+.account-badge--canvas { top: 12px; right: 230px; bottom: auto; padding: 6px 10px; border-radius: 12px; }
 .account-badge div { display: flex; align-items: baseline; gap: 7px; }
 .label, .held { color: #b9b9bd; font-size: 12px; }
 .load-error { color: #fca5a5; font-size: 12px; }
@@ -163,6 +169,7 @@ async function logout() {
 .manage-link:hover { color: #ffc0a6; }
 @media (max-width: 680px) {
   .account-badge { left: 10px; right: 10px; bottom: 10px; overflow-x: auto; }
+  .account-badge--canvas { top: 68px; bottom: auto; }
   .tenant-select { min-width: 132px; }
 }
 </style>

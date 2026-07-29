@@ -5,8 +5,8 @@ import { canvasConnectionInteractionOptions } from '../src/utils/canvasConnectio
 
 test('canvas connection options enlarge VueFlow connection hit areas', () => {
   assert.deepEqual(canvasConnectionInteractionOptions, {
-    connectionRadius: 40,
-    edgeUpdaterRadius: 20,
+    connectionRadius: 60,
+    edgeUpdaterRadius: 30,
     connectOnClick: true,
   })
   assert.ok(canvasConnectionInteractionOptions.connectionRadius > 20)
