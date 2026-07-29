@@ -92,6 +92,7 @@ test('剪线抑制列表可持久化且自定义边不会污染手动连线类�
   )
 
   assert.equal(payload.manual_edges[0].type, 'smoothstep')
+  assert.deepEqual(payload.manual_edges[0].data, { manual: true })
   assert.deepEqual(payload.suppressed_edge_ids, ['auto:b:c'])
 })
 

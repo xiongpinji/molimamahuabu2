@@ -94,17 +94,18 @@ export function normalizeManualCanvasEdges(edges) {
     if (seen.has(key)) continue
     seen.add(key)
 
+    const { lineType, ...persistedData } = edge.data || {}
     result.push({
       id: edge.id || `manual:${key}`,
       source,
       target,
       sourceHandle,
       targetHandle,
-      type: edge.data?.lineType || edge.type || 'smoothstep',
+      type: lineType || edge.type || 'smoothstep',
       data: {
-        ...(edge.data || {}),
+        ...persistedData,
         manual: true,
-        ...(edge.data?.contract ? { contract: { ...edge.data.contract } } : {}),
+        ...(persistedData.contract ? { contract: { ...persistedData.contract } } : {}),
       },
     })
   }
