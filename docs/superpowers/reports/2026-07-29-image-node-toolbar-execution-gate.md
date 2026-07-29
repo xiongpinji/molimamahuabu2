@@ -60,6 +60,9 @@
 - `npm --prefix backend-node run audit:image-node-release` 扫描生产源码和部署文件
   中的高置信硬编码密钥、图片节点核验禁区，并确认对口型只保留显式不可用声明。
 - 两项命令均已进入 `.github/workflows/dependency-security.yml`。
+- `docs/WEB_PRODUCTION_DEPLOYMENT.md` 已补齐单机隔离预热：灰度实例使用独立
+  Compose 项目、网络和数据卷，不接公网且不得共享生产 SQLite；提升后再用
+  隔离账号完成小额同链冒烟，应用回滚默认不覆盖数据库。
 
 ## 无 GPU 部署约束
 

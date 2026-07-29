@@ -94,6 +94,9 @@ test('生产手册拉取已验证镜像且安全政策覆盖网页端责任边�
 
   assert.match(deployment, /docker compose .* pull app/);
   assert.match(deployment, /sha-<commit-sha>/);
+  assert.match(deployment, /-p molimama-canary/);
+  assert.match(deployment, /预热项目不得挂载生产/);
+  assert.match(deployment, /不应为了应用回滚而覆盖当前数据库/);
   assert.match(security, /网页端生产部署/);
   assert.match(security, /服务器端/);
   assert.match(security, /密钥/);
