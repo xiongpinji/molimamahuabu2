@@ -451,6 +451,19 @@
         <div v-else class="stage-empty">在场景树中选择对象以编辑属性</div>
         <section ref="environmentEditorRef" class="inspector-group environment-editor">
           <strong>{{ lightingEntry ? '3D 灯光' : '3D 场景' }}</strong>
+          <template v-if="lightingEntry">
+            <div class="lighting-presets" aria-label="灯光预设">
+              <button
+                v-for="preset in LIGHTING_PRESETS"
+                :key="preset.name"
+                type="button"
+                class="small-button"
+                @click="applyLightingPreset(preset)"
+              >
+                {{ preset.name }}
+              </button>
+            </div>
+          </template>
           <label>场景缩放<input type="range" min="0.1" max="5" step="0.1" :value="timeline.environment.sceneScale" @input="updateEnvironment('sceneScale', $event.target.value)" /></label>
           <div class="inspector-group"><strong>场景平移</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="timeline.environment.scenePosition[index]" @change="updateEnvironmentVector('scenePosition', index, $event.target.value)" /></label></div></div>
           <div class="inspector-group"><strong>场景旋转（度）</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(timeline.environment.sceneRotation[index])" @change="updateEnvironmentRotation(index, $event.target.value)" /></label></div></div>
@@ -577,6 +590,27 @@ const CAMERA_PRESETS = [
   { name: '过肩镜头（右）', position: [1.25, 1.65, 2.4], target: [0, 1.4, 0], fov: 42 },
   { name: '鸟瞰', position: [0, 10, 0.01], target: [0, 0, 0], fov: 55 },
   { name: '荷兰角', position: [3.8, 2, 4.4], target: [0, 1.1, 0], fov: 50, roll: -0.28 },
+]
+
+const LIGHTING_PRESETS = [
+  { name: '三点布光', backgroundColor: '#111827', ambientIntensity: 1.6, directionalIntensity: 4.8 },
+  { name: '伦勃朗布光', backgroundColor: '#17120f', ambientIntensity: 0.8, directionalIntensity: 5.8 },
+  { name: '分割光', backgroundColor: '#09090b', ambientIntensity: 0.35, directionalIntensity: 6.4 },
+  { name: '顶光戏剧', backgroundColor: '#101014', ambientIntensity: 0.45, directionalIntensity: 7.2 },
+  { name: '动漫柔光', backgroundColor: '#dbeafe', ambientIntensity: 3.2, directionalIntensity: 2.4 },
+  { name: '赛博朋克', backgroundColor: '#160c2d', ambientIntensity: 1.4, directionalIntensity: 5.6 },
+  { name: '自然光', backgroundColor: '#bfdbfe', ambientIntensity: 3.4, directionalIntensity: 3.2 },
+  { name: '黄金时刻', backgroundColor: '#7c2d12', ambientIntensity: 2.2, directionalIntensity: 5.2 },
+  { name: '蓝调时刻', backgroundColor: '#172554', ambientIntensity: 1.8, directionalIntensity: 3.8 },
+  { name: '高调光', backgroundColor: '#e4e4e7', ambientIntensity: 4.8, directionalIntensity: 3.5 },
+  { name: '低调光', backgroundColor: '#09090b', ambientIntensity: 0.25, directionalIntensity: 3.1 },
+  { name: '轮廓光', backgroundColor: '#050505', ambientIntensity: 0.2, directionalIntensity: 7.8 },
+  { name: '剪影', backgroundColor: '#020617', ambientIntensity: 0.05, directionalIntensity: 8.8 },
+  { name: '霓虹灯', backgroundColor: '#1e1033', ambientIntensity: 1.1, directionalIntensity: 6.5 },
+  { name: '实景光', backgroundColor: '#334155', ambientIntensity: 2.6, directionalIntensity: 3.7 },
+  { name: '明暗对比', backgroundColor: '#18181b', ambientIntensity: 0.7, directionalIntensity: 7 },
+  { name: '篝火光', backgroundColor: '#431407', ambientIntensity: 1.4, directionalIntensity: 5.9 },
+  { name: '月夜神秘', backgroundColor: '#0f172a', ambientIntensity: 0.65, directionalIntensity: 4.2 },
 ]
 const SEMANTIC_BONES = {
   root: ['root', 'hips', 'pelvis', 'mixamorighips'], spine: ['spine', 'chest', 'upperchest', 'mixamorigspine'], head: ['head', 'neck', 'mixamorighead'],
@@ -1615,6 +1649,22 @@ function updateEnvironment(field, value) {
   })
   applySceneEnvironment()
   void applyEnvironment()
+}
+
+function applyLightingPreset(preset) {
+  mutateTimeline({
+    ...timeline.value,
+    environment: {
+      ...timeline.value.environment,
+      backgroundColor: preset.backgroundColor,
+      ambientIntensity: preset.ambientIntensity,
+      directionalIntensity: preset.directionalIntensity,
+    },
+    revision: timeline.value.revision + 1,
+  })
+  applySceneEnvironment()
+  void applyEnvironment()
+  assetStatus.value = `已应用灯光预设：${preset.name}`
 }
 
 function updateEnvironmentVector(field, index, value) {
@@ -2695,6 +2745,8 @@ onBeforeUnmount(() => {
 .director-stage__inspector-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; background: transparent; color: #8b8b92; cursor: pointer; }
 .director-stage__inspector-tabs button.active { background: #39393c; color: #fff; }
 .director-pose-panel > strong { display: block; margin: 14px 0 8px; color: #d4d4d8; font-size: 13px; }
+.lighting-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 12px 0 18px; }
+.lighting-presets .small-button { min-width: 0; padding: 7px 5px; font-size: 10px; }
 .director-stage__inspector > label, .director-stage__inspector .inspector-group > label { display: grid; gap: 5px; margin: 12px 0; color: #a1a1aa; font-size: 11px; }
 .director-stage__inspector input { width: 100%; box-sizing: border-box; border: 1px solid #3f3f46; border-radius: 7px; padding: 7px 8px; background: #111114; color: #e4e4e7; }
 .director-stage__inspector .visibility-row { display: flex; align-items: center; }

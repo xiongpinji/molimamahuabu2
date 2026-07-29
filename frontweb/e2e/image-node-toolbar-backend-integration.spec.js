@@ -309,6 +309,7 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   const toolbar = node.locator('.image-node-toolbar')
   await expect(toolbar).toBeVisible()
   await toolbar.getByRole('button', { name: /工具/ }).click()
+  await expect(toolbar).not.toContainText('对口型')
   await toolbar.getByRole('button', { name: '裁剪/压缩/镜像', exact: true }).click()
 
   const cropDialog = page.getByRole('dialog', { name: '裁剪' })
@@ -316,7 +317,7 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   const cropStage = cropDialog.locator('.crop-stage')
   const cropperContainer = cropDialog.locator('.cropper-container')
   await expect(cropperContainer).toBeVisible()
-  await expect(cropDialog.locator('.el-dialog')).toHaveCSS('width', '680px')
+  await expect(cropDialog.locator('.el-dialog')).toHaveCSS('width', '1180px')
   await expect(cropStage).toHaveCSS('height', '430px')
   await expect(cropperContainer).toHaveCSS('height', '430px')
   await cropDialog.getByRole('button', { name: '应用并生成新素材' }).click()
@@ -396,6 +397,8 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   const editor = page.getByRole('dialog', { name: '裁剪' })
   await editor.getByRole('button', { name: '镜像', exact: true }).click()
   const mirrorDialog = page.getByRole('dialog', { name: '镜像' })
+  await expect(mirrorDialog.getByLabel('图片效果预览')).toBeVisible()
+  await expect(mirrorDialog.locator('.preview-canvas img')).toHaveCSS('transform', 'matrix(-1, 0, 0, 1, 0, 0)')
   await mirrorDialog.getByRole('button', { name: '应用并生成新素材' }).click()
   await expect(restoredToolbar.getByRole('alert')).toContainText('图片处理失败')
   await expect(restored.locator('img[alt="图片工具同链节点"]')).toHaveAttribute('src', previousImageUrl)
@@ -467,6 +470,26 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
   await expect(finalNode.locator('.image-node-toolbar')).toBeVisible()
   await finalNode.locator('.image-node-toolbar button[title="处理历史"]').click()
   await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
+})
+
+test('图片节点灯光入口提供参考站同级预设并即时写入 3D 环境', async ({ page }) => {
+  await proxyBackend(page)
+  await page.goto(`/canvas/${dramaId}`)
+
+  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await node.click()
+  const toolbar = node.locator('.image-node-toolbar')
+  await expect(toolbar).toBeVisible()
+  await toolbar.getByRole('button', { name: '灯光', exact: true }).click()
+
+  const director = page.getByRole('dialog', { name: '3D 导演台' })
+  await expect(director).toBeVisible()
+  const presets = director.getByLabel('灯光预设')
+  await expect(presets.getByRole('button')).toHaveCount(18)
+  await presets.getByRole('button', { name: '黄金时刻', exact: true }).click()
+  await expect(director.locator('input[type="color"]')).toHaveValue('#7c2d12')
+  await expect(director.getByLabel('环境光')).toHaveValue('2.2')
+  await expect(director.getByLabel('方向光')).toHaveValue('5.2')
 })
 
 test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
@@ -551,6 +574,9 @@ test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应
         dispatch('pointerup', 0.6, 0.6)
       })
       await expect(surface.locator('polyline')).toHaveCount(1)
+    } else {
+      await expect(dialog.getByLabel('图片效果预览')).toBeVisible()
+      await expect(dialog.locator('.preview-caption')).toContainText('原图保持不变')
     }
     await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
     const successMessage = page.locator('.el-message--success').filter({

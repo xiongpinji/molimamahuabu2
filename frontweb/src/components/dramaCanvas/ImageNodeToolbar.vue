@@ -118,7 +118,8 @@
       v-model="editorVisible"
       class="image-tool-dialog"
       :title="operationLabel(editorOperation)"
-      width="680px"
+      width="min(1180px, calc(100vw - 48px))"
+      top="4vh"
       append-to-body
       destroy-on-close
       :close-on-click-modal="false"
@@ -136,6 +137,36 @@
           {{ item.label }}
         </button>
       </div>
+
+      <div
+        class="image-editor-workspace"
+        :class="{ 'single-stage': ['crop', 'selection_cutout', 'markup_retouch'].includes(editorOperation) }"
+      >
+      <section
+        v-if="!['crop', 'selection_cutout', 'markup_retouch'].includes(editorOperation)"
+        class="editor-preview"
+        aria-label="图片效果预览"
+      >
+        <div class="preview-badge">实时预览</div>
+        <div class="preview-canvas">
+          <img
+            :src="data.url"
+            :alt="`${operationLabel(editorOperation)}预览`"
+            :style="editorPreviewStyle"
+            draggable="false"
+          />
+          <div
+            v-if="editorOperation === 'grid_crop'"
+            class="grid-preview"
+            :style="gridPreviewStyle"
+            aria-hidden="true"
+          />
+        </div>
+        <div class="preview-caption">
+          <strong>{{ operationLabel(editorOperation) }}</strong>
+          <span>{{ editorPreviewHint }}</span>
+        </div>
+      </section>
 
       <div v-if="['crop', 'selection_cutout'].includes(editorOperation)" class="crop-stage">
         <p v-if="editorOperation === 'selection_cutout'" class="crop-hint">
@@ -390,6 +421,7 @@
           </el-select>
         </el-form-item>
       </el-form>
+      </div>
 
       <template #footer>
         <el-button @click="editorVisible = false">取消</el-button>
@@ -492,7 +524,6 @@ const toolActions = [
   { label: '扩图', operation: 'outpaint' },
   { label: '画面联想', operation: 'image_ideation' },
   { label: '角度联想', operation: 'angle_ideation' },
-  { label: '对口型', operation: 'lip_sync' },
 ]
 
 const settingActions = [
@@ -513,6 +544,45 @@ const busyReason = '图片节点正在生成或处理，请稍后'
 const nodeBusy = computed(() => submitting.value
   || props.data.status === 'running'
   || props.data.imageToolStatus === 'running')
+
+const editorPreviewStyle = computed(() => {
+  const style = {
+    filter: 'none',
+    transform: 'none',
+  }
+  if (editorOperation.value === 'adjust') {
+    const { brightness, saturation, contrast, temperature } = adjustForm.value
+    const warmth = temperature >= 0
+      ? `sepia(${Math.abs(temperature) * 0.28}) saturate(${1 + temperature * 0.18})`
+      : `hue-rotate(${temperature * 18}deg)`
+    style.filter = `brightness(${brightness}) saturate(${saturation}) contrast(${contrast}) ${warmth}`
+  } else if (editorOperation.value === 'lut') {
+    const filters = {
+      cinematic: 'contrast(1.12) saturate(0.9) sepia(0.08)',
+      warm: 'sepia(0.22) saturate(1.14)',
+      cool: 'hue-rotate(178deg) saturate(0.82) hue-rotate(-164deg)',
+      mono: 'grayscale(1) contrast(1.08)',
+    }
+    style.filter = filters[lutPreset.value] || 'none'
+  } else if (editorOperation.value === 'mirror') {
+    style.transform = mirrorDirection.value === 'vertical' ? 'scaleY(-1)' : 'scaleX(-1)'
+  } else if (editorOperation.value === 'rotate') {
+    style.transform = `rotate(${rotateAngle.value}deg)`
+  }
+  return style
+})
+
+const gridPreviewStyle = computed(() => ({
+  '--grid-rows': gridForm.value.rows,
+  '--grid-columns': gridForm.value.columns,
+}))
+
+const editorPreviewHint = computed(() => {
+  if (['adjust', 'lut', 'mirror', 'rotate', 'grid_crop'].includes(editorOperation.value)) {
+    return '参数变化会即时显示；应用后生成新素材，原图保持不变'
+  }
+  return '左侧保留原图作为生成参考；右侧设置参数后再提交处理'
+})
 
 onMounted(async () => {
   try {
@@ -1051,6 +1121,103 @@ function requestFullscreen() {
   color: white;
 }
 
+.image-editor-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.75fr);
+  gap: 22px;
+  min-height: 520px;
+}
+
+.image-editor-workspace.single-stage {
+  display: block;
+  min-height: 0;
+}
+
+.image-editor-workspace > .el-form {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #3f3f46;
+  border-radius: 14px;
+  background: #18181b;
+}
+
+.editor-preview {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #3f3f46;
+  border-radius: 14px;
+  background: #09090b;
+}
+
+.preview-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(9, 9, 11, 0.76);
+  color: #e4e4e7;
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.preview-canvas {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 430px;
+  overflow: hidden;
+  background:
+    linear-gradient(45deg, #18181b 25%, transparent 25%),
+    linear-gradient(-45deg, #18181b 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #18181b 75%),
+    linear-gradient(-45deg, transparent 75%, #18181b 75%);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+}
+
+.preview-canvas img {
+  display: block;
+  max-width: 100%;
+  max-height: 430px;
+  object-fit: contain;
+  transition: filter 160ms ease, transform 160ms ease;
+}
+
+.grid-preview {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  pointer-events: none;
+}
+
+.grid-preview::before {
+  grid-area: 1 / 1 / -1 / -1;
+  content: "";
+  background:
+    repeating-linear-gradient(to right, transparent 0, transparent calc(100% - 1px), rgba(255, 255, 255, 0.76) calc(100% - 1px), rgba(255, 255, 255, 0.76) 100%),
+    repeating-linear-gradient(to bottom, transparent 0, transparent calc(100% - 1px), rgba(255, 255, 255, 0.76) calc(100% - 1px), rgba(255, 255, 255, 0.76) 100%);
+  background-size: calc(100% / var(--grid-columns)) 100%, 100% calc(100% / var(--grid-rows));
+}
+
+.preview-caption {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border-top: 1px solid #27272a;
+  color: #f4f4f5;
+}
+
+.preview-caption span {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
 .crop-stage {
   height: 430px;
   overflow: hidden;
@@ -1131,5 +1298,39 @@ function requestFullscreen() {
 .markup-controls .markup-color.active {
   border-color: #fff;
   box-shadow: 0 0 0 2px #52525b;
+}
+
+:global(.image-tool-dialog) {
+  max-width: calc(100vw - 48px);
+  border: 1px solid #3f3f46;
+  border-radius: 18px;
+  background: #111113;
+}
+
+:global(.image-tool-dialog .el-dialog__header) {
+  margin: 0;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #27272a;
+}
+
+:global(.image-tool-dialog .el-dialog__body) {
+  max-height: calc(92vh - 142px);
+  padding: 20px 24px;
+  overflow: auto;
+}
+
+:global(.image-tool-dialog .el-dialog__footer) {
+  padding: 14px 24px 18px;
+  border-top: 1px solid #27272a;
+}
+
+@media (max-width: 820px) {
+  .image-editor-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-canvas {
+    min-height: 300px;
+  }
 }
 </style>
