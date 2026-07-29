@@ -289,7 +289,7 @@
           :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
-          :connection-radius="40"
+          v-bind="canvasConnectionInteractionOptions"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -626,6 +626,7 @@ import {
   redoCanvasInteractionHistory,
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
+import { canvasConnectionInteractionOptions } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
   canAlignCanvasNodes,

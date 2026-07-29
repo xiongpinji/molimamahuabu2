@@ -39,6 +39,7 @@ test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
 
 test('每条画布连线提供居中剪线入口并统一进入可撤销持久化链路', () => {
   assert.match(canvasSource, /:edge-types="edgeTypes"/)
+  assert.match(canvasSource, /v-bind="canvasConnectionInteractionOptions"/)
   assert.match(canvasSource, /provide\('cut-canvas-edges', cutCanvasEdges\)/)
   assert.match(canvasSource, /function cutCanvasEdges\(edgeIds = \[\], source = 'remove'\)/)
   assert.match(canvasSource, /suppressedEdgeIds\.value\.add\(String\(edge\.id\)\)/)
