@@ -2165,7 +2165,7 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
   assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-upstream-secret/);
   assert.doesNotMatch(JSON.stringify(failedLogs), /private-upstream-secret/);
   const failedTask = db.prepare(
-    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY created_at DESC LIMIT 1",
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY rowid DESC LIMIT 1",
   ).get();
   assert.equal(failedTask.status, 'failed');
   assert.equal(failedTask.error, '标记修图处理失败');
@@ -2205,7 +2205,7 @@ test('标记修图提交原图与临时标记图并生成同尺寸派生素材',
   assert.equal(corruptRes.payload.error.code, 'BAD_REQUEST');
   assert.equal(corruptRes.payload.error.message, '仅支持 PNG、JPEG 和 WebP 图片');
   const corruptTask = db.prepare(
-    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY created_at DESC LIMIT 1",
+    "SELECT status, error FROM async_tasks WHERE type = 'image_tool_markup_retouch' ORDER BY rowid DESC LIMIT 1",
   ).get();
   assert.equal(corruptTask.status, 'failed');
   assert.equal(corruptTask.error, '仅支持 PNG、JPEG 和 WebP 图片');
