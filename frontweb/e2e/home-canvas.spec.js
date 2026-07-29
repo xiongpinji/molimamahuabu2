@@ -128,7 +128,7 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
-test('视频提示词输入 @ 可选择图片节点并生成真实参考连线', async ({ page }) => {
+test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
   await loadHomeCanvasState(page, mentionHomeCanvasState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
@@ -138,21 +138,9 @@ test('视频提示词输入 @ 可选择图片节点并生成真实参考连线',
 
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu).toBeVisible()
-  await expect(mentionMenu.locator('img')).toHaveCount(1)
-  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
-
-  await expect(promptInput).toHaveValue('女主角走入画面 @女主角定妆照 ')
-  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
-  await expect.poll(async () => page.evaluate((storageKey) => {
-    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
-    return {
-      content: state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.content || '',
-      edge: state.edges?.map(({ source, target }) => ({ source, target })) || [],
-    }
-  }, homeCanvasStorageKey)).toEqual({
-    content: '女主角走入画面 @女主角定妆照 ',
-    edge: [{ source: 'e2e:image-reference', target: 'e2e:video-target' }],
-  })
+  await expect(mentionMenu.getByText('没有可引用的图片节点')).toBeVisible()
+  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toHaveCount(0)
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
 })
 
 test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
@@ -182,7 +170,16 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 })
 
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
-  await loadHomeCanvasState(page, generatedMentionHomeCanvasState)
+  const connectedGeneratedState = {
+    ...generatedMentionHomeCanvasState,
+    edges: [{
+      id: 'e2e:generated-image-reference-to-video',
+      source: 'e2e:image-reference',
+      target: 'e2e:video-target',
+      type: 'smoothstep',
+    }],
+  }
+  await loadHomeCanvasState(page, connectedGeneratedState)
 
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')

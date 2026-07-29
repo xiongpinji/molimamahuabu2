@@ -230,3 +230,9 @@ test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和�
   assert.match(stageSource, /viewer\.value\?\.dispose\?\.\(true\)/)
   assert.match(stageSource, /URL\.revokeObjectURL\(aiImportPreview\.value\)/)
 })
+
+test('导演台默认展示角色库，并提供女性角色与自由旋转快捷入口', () => {
+  assert.match(stageSource, /<details[^>]*class="role-create-library"[^>]*open/)
+  assert.match(stageSource, /aria-label="添加女性角色"[\s\S]*ROLE_ARCHETYPES\[1\]/)
+  assert.match(stageSource, /aria-label="旋转工具"[\s\S]*setTransformMode\('rotate'\)/)
+})

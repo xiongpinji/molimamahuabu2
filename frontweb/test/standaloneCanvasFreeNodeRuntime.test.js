@@ -9,22 +9,27 @@ const canvasSource = readFileSync(resolve(__dirname, '../src/views/DramaCanvas.v
 const homeCanvasSource = readFileSync(resolve(__dirname, '../src/views/HomeCanvas.vue'), 'utf8')
 const nodeSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/HomeCanvasNode.vue'), 'utf8')
 const contextMenuSource = readFileSync(resolve(__dirname, '../src/components/dramaCanvas/CanvasContextMenu.vue'), 'utf8')
+const accountBadgeSource = readFileSync(resolve(__dirname, '../src/components/AccountBadge.vue'), 'utf8')
 const imagesSource = readFileSync(resolve(__dirname, '../src/api/images.js'), 'utf8')
 const videosSource = readFileSync(resolve(__dirname, '../src/api/videos.js'), 'utf8')
 
-test('自由节点配置面板保存并回填模型、比例和时长字段', () => {
+test('自由节点配置面板保存并回填模型、比例和时长字段，并记住视频参数', () => {
   assert.match(canvasSource, /freeNodeForm = ref\(\{ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 \}\)/)
   assert.match(canvasSource, /<el-form-item label="模型">/)
   assert.match(canvasSource, /v-model="freeNodeForm\.model"/)
   assert.match(canvasSource, /v-if="\['image', 'video'\]\.includes\(freeNodeKind\)" label="画面比例"/)
   assert.match(canvasSource, /v-if="freeNodeKind === 'video'" label="视频时长/)
-  assert.match(canvasSource, /model: node\?\.data\?\.model \|\| ''/)
-  assert.match(canvasSource, /aspectRatio: node\?\.data\?\.aspectRatio \|\| '16:9'/)
-  assert.match(canvasSource, /duration: node\?\.data\?\.duration \|\| 5/)
+  assert.match(canvasSource, /model: node\?\.data\?\.model \|\| kindDefaults\.model \|\| ''/)
+  assert.match(canvasSource, /aspectRatio: node\?\.data\?\.aspectRatio \|\| kindDefaults\.aspectRatio \|\| '16:9'/)
+  assert.match(canvasSource, /duration: node\?\.data\?\.duration \|\| kindDefaults\.duration \|\| 5/)
   assert.match(canvasSource, /request\.get\('\/canvas\/model-catalog'\)/)
   assert.doesNotMatch(canvasSource, /aiAPI\.list\(/)
   assert.match(canvasSource, /getSelectableModelsAcrossConfigs\(freeCanvasModelConfigs\.value, serviceType\)/)
   assert.match(canvasSource, /allow-create/)
+  assert.match(canvasSource, /FREE_CANVAS_DEFAULTS_STORAGE_KEY/)
+  assert.match(canvasSource, /function loadFreeCanvasNodeDefaults\(\)/)
+  assert.match(canvasSource, /function persistFreeCanvasNodeDefaults\(kind, data\)/)
+  assert.match(canvasSource, /const defaults = loadFreeCanvasNodeDefaults\(\)/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeModelOptions\?\.\(props\.data\.kind\)/)
   assert.match(nodeSource, /<datalist v-if="modelOptions\.length"/)
 })
@@ -34,7 +39,7 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /ctx\?\.openFreeNodeConfig\?\.\(props\.id\)/)
   assert.match(nodeSource, /ctx\?\.runFreeCanvasNode\?\.\(props\.id\)/)
   assert.match(nodeSource, /ctx\?\.retryFreeCanvasAssetSave\?\.\(props\.id\)/)
-  assert.match(nodeSource, /assetSaveFailed = computed\(\(\) => props\.data\.status === 'success'[\s\S]*props\.data\.assetSaveStatus === 'failed'[\s\S]*Boolean\(props\.data\.url\)/)
+  assert.match(nodeSource, /assetSaveFailed = computed\(\(\) => props\.data\.status === 'success'[\s\S]*props\.data\.assetSaveStatus === 'failed'[\s\S]*Boolean\(primaryResultUrl\.value\)/)
   assert.match(nodeSource, /v-if="assetSaveFailed"[\s\S]*重试入库/)
   assert.match(nodeSource, /node-status/)
   assert.match(nodeSource, /data\.status === 'running'/)
@@ -54,11 +59,12 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
   assert.match(canvasSource, /视频节点已自动采用该图片作为参考图/)
 })
 
-test('图片和视频编辑器可上传参考图，视频可用 @ 主动选择画布图片并形成真实连线', () => {
+test('图片和视频编辑器可上传参考图，视频 @ 只列出已经直连的上游图片', () => {
   assert.match(nodeSource, /v-if="canUpload" type="button" aria-label="上传参考图"/)
   assert.match(nodeSource, /v-if="canUpload"\s+ref="referenceFileInput"/)
   assert.match(nodeSource, /ctx\?\.uploadFreeCanvasReferenceImage\?\.\(props\.id, file\)/)
-  assert.match(nodeSource, /@input="handlePromptInput"/)
+  assert.match(nodeSource, /@input="handleEditorInput"/)
+  assert.match(nodeSource, /function handleEditorInput\(event\) \{[\s\S]*handlePromptInput\(event\)[\s\S]*scheduleDraftSave\(\)/)
   assert.match(nodeSource, /v-if="showReferenceMention"[\s\S]*aria-label="@选择参考图"/)
   assert.match(nodeSource, /@mousedown\.prevent="selectReferenceMention\(candidate\)"/)
   assert.match(nodeSource, /draft\.content = `\$\{draft\.content\.slice\(0, mentionStart\.value\)\}@\$\{candidate\.title\} \$\{draft\.content\.slice\(mentionEnd\.value\)\}`/)
@@ -69,7 +75,11 @@ test('图片和视频编辑器可上传参考图，视频可用 @ 主动选择�
   assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
   assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceImage,\s*\n\s*attachFreeCanvasReference,/)
-  assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
+  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}collectDirectUpstreamImageReferences/)
+  assert.match(canvasSource, /reference\.ready && reference\.enabled !== false/)
+  assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,500}allGraphNodes\.value\s*\.filter/)
+  assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}collectDirectUpstreamImageReferences/)
+  assert.match(homeCanvasSource, /reference\.ready && reference\.enabled !== false/)
   assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
 })
 
@@ -86,7 +96,7 @@ test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改�
 })
 
 test('自由节点右键支持复制和删除，复制节点清除运行任务并偏移落点', () => {
-  assert.match(contextMenuSource, /type: 'duplicate-free-node'[\s\S]*label: '复制节点'/)
+  assert.match(contextMenuSource, /type: 'duplicate-free-node'[\s\S]*label: '创建副本'/)
   assert.match(contextMenuSource, /type: 'delete-free-node'[\s\S]*label: '删除节点'/)
   assert.match(canvasSource, /async function duplicateFreeCanvasNode\(nodeOrId\)/)
   assert.match(canvasSource, /x: Number\(source\.position\?\.x \|\| 0\) \+ 40/)
@@ -94,6 +104,26 @@ test('自由节点右键支持复制和删除，复制节点清除运行任务�
   assert.match(canvasSource, /taskId: ''/)
   assert.match(canvasSource, /type === 'duplicate-free-node'[\s\S]*await duplicateFreeCanvasNode\(node\)/)
   assert.match(canvasSource, /type === 'delete-free-node'[\s\S]*await deleteFreeCanvasNode\(node\.id\)/)
+})
+
+test('独立画布支持 WASD 平移和宽容连线', () => {
+  assert.match(canvasSource, /:connection-radius="40"/)
+  assert.match(canvasSource, /const CANVAS_KEYBOARD_PAN_STEP = 56/)
+  assert.match(canvasSource, /function panCanvasByKeyboard\(key\)/)
+  assert.match(canvasSource, /\['w', 'a', 's', 'd'\]\.includes\(key\)/)
+  assert.match(canvasSource, /canvasFlowApi\.value\?\.setViewport\?\.\(nextViewport, \{ duration: 0 \}\)/)
+})
+
+test('自由节点保留最近生成历史并可从右键查看', () => {
+  assert.match(canvasSource, /const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20/)
+  assert.match(canvasSource, /async function appendFreeCanvasGenerationHistory\(nodeId, entry\)/)
+  assert.match(canvasSource, /async function updateFreeCanvasGenerationHistory\(nodeId, historyId, patch\)/)
+  assert.match(canvasSource, /historyId = `run:/)
+  assert.match(canvasSource, /status: 'running'/)
+  assert.match(canvasSource, /status: 'success'/)
+  assert.match(canvasSource, /status: 'failed'/)
+  assert.match(canvasSource, /view-generation-history/)
+  assert.match(contextMenuSource, /type: 'view-generation-history'[\s\S]*label: '生成历史'/)
 })
 
 test('独立画布自由节点走真实生成分支，禁止污染剧集 runCanvasNodeStep', () => {
@@ -153,4 +183,18 @@ test('自由节点素材入库使用 single-flight 并在 create 前检查已入
 test('图片和视频 API 提供 get 回读包装', () => {
   assert.match(imagesSource, /get\(id\) \{[\s\S]*return request\.get\(`\/images\/\$\{id\}`\)/)
   assert.match(videosSource, /get\(id\) \{[\s\S]*return request\.get\(`\/videos\/\$\{id\}`\)/)
+})
+
+test('视频完成后回写成片首尾帧，并在结算后刷新积分余额', () => {
+  assert.match(canvasSource, /async function resolveFreeCanvasVideoBoundaryFrames\(/)
+  assert.match(canvasSource, /outputFirstFrameUrl/)
+  assert.match(canvasSource, /outputLastFrameUrl/)
+  assert.match(canvasSource, /moli:credit-account-refresh/)
+  assert.match(accountBadgeSource, /moli:credit-account-refresh/)
+})
+
+test('画布分享打开真实工作区协作成员入口', () => {
+  assert.match(canvasSource, /listTenantMembers/)
+  assert.match(canvasSource, /addTenantMember/)
+  assert.match(canvasSource, /画布协作/)
 })

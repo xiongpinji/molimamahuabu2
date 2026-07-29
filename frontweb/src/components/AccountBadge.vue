@@ -48,7 +48,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { changePassword, getCreditAccount, logout as logoutApi } from '@/api/auth'
@@ -92,7 +92,12 @@ async function loadAccount() {
   }
 }
 
+function handleCreditAccountRefresh() {
+  if (visible.value) void loadAccount()
+}
+
 onMounted(async () => {
+  window.addEventListener('moli:credit-account-refresh', handleCreditAccountRefresh)
   if (!visible.value) return
   loadingTenants.value = true
   try {
@@ -106,6 +111,10 @@ onMounted(async () => {
   } finally {
     loadingTenants.value = false
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('moli:credit-account-refresh', handleCreditAccountRefresh)
 })
 
 function switchTenant(value) {

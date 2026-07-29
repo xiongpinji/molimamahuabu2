@@ -406,17 +406,12 @@ function onConnect(connection) {
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetId = String(nodeOrId || '')
-  return nodes.value
-    .filter((node) => (
-      node.type === 'homeCanvasNode'
-      && String(node.id) !== targetId
-      && node.data?.kind === 'image'
-      && getFreeCanvasNodeResultUrl(node)
-    ))
-    .map((node) => ({
-      nodeId: String(node.id),
-      title: node.data?.title || '未命名图片',
-      url: getFreeCanvasNodeResultUrl(node),
+  return collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId)
+    .filter((reference) => reference.ready && reference.enabled !== false)
+    .map((reference) => ({
+      nodeId: String(reference.nodeId),
+      title: reference.title || '未命名图片',
+      url: reference.url,
     }))
 }
 

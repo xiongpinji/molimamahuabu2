@@ -27,7 +27,7 @@
             <button type="button" class="small-button" @click="addCamera">+ 相机</button>
             <button type="button" class="small-button" @click="addSceneObject('light')">+ 灯光</button>
           </div>
-          <details v-if="workspaceMode === 'animation'" class="role-create-library">
+          <details v-if="workspaceMode === 'animation'" class="role-create-library" open>
             <summary>添加角色与群众</summary>
             <div class="object-create-row object-create-row--roles">
               <button v-for="role in ROLE_ARCHETYPES" :key="role.kind" type="button" class="small-button" @click="addRoleArchetype(role)">{{ role.label }}</button>
@@ -330,7 +330,9 @@
         </section>
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
           <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
-          <button type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
+          <button type="button" :class="{ active: transformMode === 'rotate' }" aria-label="旋转工具" title="旋转 (E)" @click="setTransformMode('rotate')">⟳</button>
+          <button type="button" aria-label="添加男性角色" title="添加男性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♂</button>
+          <button type="button" aria-label="添加女性角色" title="添加女性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[1])">♀</button>
           <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
           <button type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
           <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>

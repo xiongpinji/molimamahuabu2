@@ -289,6 +289,7 @@
           :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
+          :connection-radius="40"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -442,6 +443,52 @@
       @close="closeContextMenu"
     />
     <el-dialog
+      v-model="collaborationDialogVisible"
+      title="画布协作"
+      width="560px"
+      append-to-body
+      destroy-on-close
+    >
+      <el-alert
+        title="邀请成员加入当前工作区后，可共同打开并编辑这张画布。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <div class="canvas-collaboration-link">
+        <el-input :model-value="canvasShareLink" readonly />
+        <el-button @click="copyCanvasShareLink">复制链接</el-button>
+      </div>
+      <template v-if="currentTenantId">
+        <div class="canvas-collaboration-invite">
+          <el-input v-model="collaborationForm.email" placeholder="成员邮箱" @keyup.enter="inviteCanvasCollaborator" />
+          <el-select v-model="collaborationForm.role" style="width: 128px">
+            <el-option label="成员" value="member" />
+            <el-option label="管理员" value="admin" />
+          </el-select>
+          <el-button type="primary" :loading="collaborationInviteLoading" @click="inviteCanvasCollaborator">
+            邀请
+          </el-button>
+        </div>
+        <div v-loading="collaborationLoading" class="canvas-collaboration-members">
+          <div v-if="!collaborationMembers.length && !collaborationLoading" class="canvas-collaboration-empty">
+            当前工作区暂无其他成员
+          </div>
+          <div v-for="member in collaborationMembers" :key="member.user_id || member.id || member.email" class="canvas-collaboration-member">
+            <span>{{ member.email || member.user?.email || member.name || member.user_id }}</span>
+            <el-tag size="small" effect="plain">{{ member.role || 'member' }}</el-tag>
+          </div>
+        </div>
+      </template>
+      <el-alert
+        v-else
+        title="当前未选择工作区，暂时只能复制画布链接。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+    </el-dialog>
+    <el-dialog
       v-model="freeNodeDialogVisible"
       class="canvas-free-node-dialog"
       :title="freeNodeEditingId ? `编辑${freeNodeKindLabel}节点` : `添加${freeNodeKindLabel}节点`"
@@ -528,7 +575,9 @@ import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
 import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
+import { addTenantMember, listTenantMembers } from '@/api/tenants'
 import request from '@/utils/request'
+import { readCurrentTenantId } from '@/utils/authSession'
 import { runAudioStep, runImageStep, runVideoStep, runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { generateAssetReferenceImage } from '@/composables/useCanvasAssetGenerate'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
@@ -702,10 +751,20 @@ const CANVAS_VIDEO_ACCEPT = '.mp4,.mov,.webm'
 const CANVAS_AUDIO_ACCEPT = '.m4a,.m4b,.webm,.wav,.mp3,.ogg,.oga,.flac,.aac'
 const canvasUploadAccept = ref(CANVAS_MEDIA_ACCEPT)
 const freeNodeDialogVisible = ref(false)
+const collaborationDialogVisible = ref(false)
+const collaborationMembers = ref([])
+const collaborationLoading = ref(false)
+const collaborationInviteLoading = ref(false)
+const collaborationForm = ref({ email: '', role: 'member' })
+const currentTenantId = computed(() => readCurrentTenantId() || '')
+const canvasShareLink = computed(() => (typeof window === 'undefined' ? '' : window.location.href))
 const freeNodeKind = ref('text')
 const freeNodeEditingId = ref('')
 const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
+const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
+const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
+const CANVAS_KEYBOARD_PAN_STEP = 56
 const freeCanvasModelConfigs = ref([])
 const freeCanvasModelCatalog = ref([])
 const freeCanvasVoiceOptions = ref([])
@@ -722,6 +781,42 @@ const NODE_STATUS_STORAGE_PREFIX = 'moli_canvas_node_status'
 const interactionHistory = ref(createCanvasInteractionHistory(createCanvasInteractionState()))
 const dragHistorySnapshot = ref(null)
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
+
+function loadFreeCanvasNodeDefaults() {
+  const fallback = {
+    text: { model: '' },
+    image: { model: '', aspectRatio: '16:9', resolution: '2K' },
+    video: { model: '', aspectRatio: '16:9', duration: 5, resolution: '720p' },
+    audio: { model: '' },
+  }
+  try {
+    const stored = JSON.parse(localStorage.getItem(FREE_CANVAS_DEFAULTS_STORAGE_KEY) || '{}')
+    return Object.fromEntries(
+      Object.entries(fallback).map(([kind, defaults]) => [kind, { ...defaults, ...(stored?.[kind] || {}) }])
+    )
+  } catch {
+    return fallback
+  }
+}
+
+function persistFreeCanvasNodeDefaults(kind, data) {
+  if (!FREE_NODE_KINDS.has(kind)) return
+  const defaults = loadFreeCanvasNodeDefaults()
+  const allowedKeys = kind === 'video'
+    ? ['model', 'aspectRatio', 'duration', 'resolution']
+    : kind === 'image'
+      ? ['model', 'aspectRatio', 'resolution']
+      : ['model']
+  const next = { ...defaults[kind] }
+  allowedKeys.forEach((key) => {
+    if (data?.[key] !== undefined && data?.[key] !== '') next[key] = data[key]
+  })
+  try {
+    localStorage.setItem(FREE_CANVAS_DEFAULTS_STORAGE_KEY, JSON.stringify({ ...defaults, [kind]: next }))
+  } catch {
+    // 浏览器禁用本地存储时仍允许正常编辑和运行节点。
+  }
+}
 
 function getFreeNodeModelOptions(kind) {
   const catalogModels = freeCanvasModelCatalog.value.filter((item) => item.kind === kind).map((item) => item.model)
@@ -1886,6 +1981,8 @@ function resetFreeNodeDialog() {
 
 function openFreeNodeDialog(kind, flowPosition = null, node = null) {
   if (!FREE_NODE_KINDS.has(kind)) return
+  const defaults = loadFreeCanvasNodeDefaults()
+  const kindDefaults = defaults[kind] || {}
   closeContextMenu()
   freeNodeKind.value = kind
   freeNodeEditingId.value = node?.id || ''
@@ -1894,15 +1991,17 @@ function openFreeNodeDialog(kind, flowPosition = null, node = null) {
     title: node?.data?.title || '',
     content: node?.data?.content || '',
     url: node?.data?.url || '',
-    model: node?.data?.model || '',
-    aspectRatio: node?.data?.aspectRatio || '16:9',
-    duration: node?.data?.duration || 5,
+    model: node?.data?.model || kindDefaults.model || '',
+    aspectRatio: node?.data?.aspectRatio || kindDefaults.aspectRatio || '16:9',
+    duration: node?.data?.duration || kindDefaults.duration || 5,
   }
   freeNodeDialogVisible.value = true
 }
 
 async function createFreeCanvasNode(kind, flowPosition = null) {
   if (!FREE_NODE_KINDS.has(kind)) return null
+  const defaults = loadFreeCanvasNodeDefaults()
+  const kindDefaults = defaults[kind] || {}
   closeContextMenu()
   const previousState = currentInteractionState()
   const id = `free:${kind}:${Date.now()}`
@@ -1918,9 +2017,12 @@ async function createFreeCanvasNode(kind, flowPosition = null) {
     content: '',
     url: '',
   }
-  data.model = ''
-  if (['image', 'video'].includes(kind)) data.aspectRatio = '16:9'
-  if (kind === 'video') data.duration = 5
+  data.model = kindDefaults.model || ''
+  if (['image', 'video'].includes(kind)) {
+    data.aspectRatio = kindDefaults.aspectRatio || '16:9'
+    data.resolution = kindDefaults.resolution || (kind === 'video' ? '720p' : '2K')
+  }
+  if (kind === 'video') data.duration = Number(kindDefaults.duration) || 5
 
   allGraphNodes.value = [
     ...allGraphNodes.value.map((node) => ({ ...node, selected: false })),
@@ -1954,6 +2056,7 @@ async function submitFreeNode() {
   nodeData.model = freeNodeForm.value.model.trim()
   if (['image', 'video'].includes(freeNodeKind.value)) nodeData.aspectRatio = freeNodeForm.value.aspectRatio
   if (freeNodeKind.value === 'video') nodeData.duration = Number(freeNodeForm.value.duration) || 5
+  persistFreeCanvasNodeDefaults(freeNodeKind.value, nodeData)
   if (freeNodeEditingId.value) {
     allGraphNodes.value = allGraphNodes.value.map((node) => (
       String(node.id) === String(freeNodeEditingId.value)
@@ -1986,6 +2089,7 @@ async function patchFreeCanvasNodeData(nodeId, patch) {
     return updated
   })
   if (!updated) return null
+  if (updated.type === 'homeCanvasNode') persistFreeCanvasNodeDefaults(updated.data?.kind, updated.data)
   applyVirtualizedGraph()
   await persistCanvasState({ layoutOnly: true })
   return updated
@@ -2130,6 +2234,51 @@ async function resolveFreeCanvasFinalUrl(kind, submitResult, taskResult) {
   return resolveFreeCanvasResultUrl(kind, record)
 }
 
+function firstVideoBoundaryFrame(sources, keys) {
+  for (const source of sources) {
+    for (const key of keys) {
+      const value = String(source?.[key] || '').trim()
+      if (value) return value
+    }
+  }
+  return ''
+}
+
+async function resolveFreeCanvasVideoBoundaryFrames(kind, submitResult, taskResult) {
+  if (kind !== 'video') return {}
+  let sources = [
+    taskResultObject(taskResult),
+    taskResult?.result,
+    taskResult,
+    submitResult?.video_generation,
+    submitResult,
+  ]
+  const firstKeys = ['output_first_frame_url', 'outputFirstFrameUrl']
+  const lastKeys = ['output_last_frame_url', 'outputLastFrameUrl']
+  let outputFirstFrameUrl = firstVideoBoundaryFrame(sources, firstKeys)
+  let outputLastFrameUrl = firstVideoBoundaryFrame(sources, lastKeys)
+
+  if (!outputFirstFrameUrl || !outputLastFrameUrl) {
+    const generationId = freeCanvasGenerationId(kind, submitResult, taskResult)
+    if (generationId) {
+      const record = await videosAPI.get(generationId).catch(() => null)
+      sources = [record?.video_generation, record, ...sources]
+      outputFirstFrameUrl ||= firstVideoBoundaryFrame(sources, firstKeys)
+      outputLastFrameUrl ||= firstVideoBoundaryFrame(sources, lastKeys)
+    }
+  }
+
+  return {
+    ...(outputFirstFrameUrl ? { outputFirstFrameUrl } : {}),
+    ...(outputLastFrameUrl ? { outputLastFrameUrl } : {}),
+  }
+}
+
+function notifyCreditAccountRefresh() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('moli:credit-account-refresh'))
+}
+
 async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, taskId) {
   const nodeId = String(node?.id || '')
   const url = String(resultUrl || '')
@@ -2204,9 +2353,11 @@ async function completeFreeCanvasNodeGeneration({
 }) {
   const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
   if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
+  const boundaryFrames = await resolveFreeCanvasVideoBoundaryFrames(kind, submitResult, taskResult)
   await patchFreeCanvasNodeData(node.id, {
     status: 'success',
     url: resultUrl,
+    ...boundaryFrames,
     taskId,
     error: '',
     savedAssetId: '',
@@ -2232,17 +2383,12 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  return allGraphNodes.value
-    .filter((node) => (
-      node.type === 'homeCanvasNode'
-      && String(node.id) !== String(targetNode.id)
-      && node.data?.kind === 'image'
-      && getFreeCanvasNodeResultUrl(node)
-    ))
-    .map((node) => ({
-      nodeId: String(node.id),
-      title: node.data?.title || '画布图片',
-      url: getFreeCanvasNodeResultUrl(node),
+  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
+    .filter((reference) => reference.ready && reference.enabled !== false)
+    .map((reference) => ({
+      nodeId: String(reference.nodeId),
+      title: reference.title || '画布图片',
+      url: reference.url,
     }))
 }
 
@@ -2336,6 +2482,50 @@ function detachFreeCanvasReference(edgeId) {
   return true
 }
 
+async function appendFreeCanvasGenerationHistory(nodeId, entry) {
+  const node = freeCanvasNodeById(nodeId)
+  if (!node) return
+  const history = Array.isArray(node.data?.generationHistory) ? node.data.generationHistory : []
+  await patchFreeCanvasNodeData(node.id, {
+    generationHistory: [...history, entry].slice(-FREE_CANVAS_GENERATION_HISTORY_LIMIT),
+  })
+}
+
+async function updateFreeCanvasGenerationHistory(nodeId, historyId, patch) {
+  const node = freeCanvasNodeById(nodeId)
+  if (!node) return
+  const history = Array.isArray(node.data?.generationHistory) ? node.data.generationHistory : []
+  await patchFreeCanvasNodeData(node.id, {
+    generationHistory: history
+      .map((item) => item.id === historyId ? { ...item, ...patch } : item)
+      .slice(-FREE_CANVAS_GENERATION_HISTORY_LIMIT),
+  })
+}
+
+function showFreeCanvasGenerationHistory(nodeOrId) {
+  const node = freeCanvasNodeById(nodeOrId)
+  const history = Array.isArray(node?.data?.generationHistory) ? node.data.generationHistory : []
+  if (!history.length) {
+    ElMessage.info('当前节点还没有生成历史')
+    return
+  }
+  const statusLabels = { running: '生成中', success: '成功', failed: '失败' }
+  const text = history
+    .slice()
+    .reverse()
+    .map((item, index) => {
+      const time = item.completedAt || item.requestedAt
+      const details = [item.model, item.aspectRatio, item.duration ? `${item.duration}秒` : ''].filter(Boolean).join(' · ')
+      const error = item.error ? `\n失败原因：${item.error}` : ''
+      return `${index + 1}. ${time ? new Date(time).toLocaleString() : '未知时间'} · ${statusLabels[item.status] || item.status}\n${details}${error}`
+    })
+    .join('\n\n')
+  ElMessageBox.alert(text, `${node.data?.title || '节点'} · 生成历史`, {
+    confirmButtonText: '关闭',
+    customClass: 'canvas-history-dialog',
+  })
+}
+
 async function runFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode') {
@@ -2357,6 +2547,7 @@ async function runFreeCanvasNode(nodeOrId) {
     allGraphEdges.value,
     node.id
   )
+  const historyId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
   let requestPayload
   try {
     const capability = getFreeNodeModelCapability(kind, node.data?.model)
@@ -2369,6 +2560,15 @@ async function runFreeCanvasNode(nodeOrId) {
     })
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成参数不完整'
+    await appendFreeCanvasGenerationHistory(node.id, {
+      id: historyId,
+      kind,
+      model: node.data?.model || '',
+      status: 'failed',
+      requestedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: errorMessage,
+    })
     await patchFreeCanvasNodeData(node.id, { status: 'failed', error: errorMessage })
     ElMessage.error(errorMessage)
     return { ok: false, nodeId: String(node.id), error: errorMessage }
@@ -2376,6 +2576,16 @@ async function runFreeCanvasNode(nodeOrId) {
 
   const previousUrl = node.data?.url || ''
   const completedResultUrls = []
+  await appendFreeCanvasGenerationHistory(node.id, {
+    id: historyId,
+    kind,
+    model: requestPayload.model || node.data?.model || '',
+    aspectRatio: requestPayload.aspect_ratio || node.data?.aspectRatio || '',
+    duration: requestPayload.duration || node.data?.duration || '',
+    status: 'running',
+    requestedAt: new Date().toISOString(),
+    error: '',
+  })
   await patchFreeCanvasNodeData(node.id, { status: 'running', progress: 0, taskId: '', error: '' })
   let taskId = ''
   try {
@@ -2388,6 +2598,10 @@ async function runFreeCanvasNode(nodeOrId) {
         status: 'success',
         progress: 100,
         error: '',
+      })
+      await updateFreeCanvasGenerationHistory(node.id, historyId, {
+        status: 'success',
+        completedAt: new Date().toISOString(),
       })
       ElMessage.success('文本节点生成完成')
       return { ok: true, nodeId: String(node.id) }
@@ -2424,9 +2638,22 @@ async function runFreeCanvasNode(nodeOrId) {
         progress: Math.round((completedResultUrls.length / quantity) * 100),
       })
     }
+    await updateFreeCanvasGenerationHistory(node.id, historyId, {
+      status: 'success',
+      completedAt: new Date().toISOString(),
+      taskId,
+      resultUrls: [...completedResultUrls],
+    })
     return { ok: true, nodeId: String(node.id) }
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成失败'
+    await updateFreeCanvasGenerationHistory(node.id, historyId, {
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      taskId,
+      resultUrls: [...completedResultUrls],
+      error: errorMessage,
+    })
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
       url: completedResultUrls.at(-1) || previousUrl,
@@ -2436,6 +2663,8 @@ async function runFreeCanvasNode(nodeOrId) {
     })
     ElMessage.error(errorMessage)
     return { ok: false, nodeId: String(node.id), error: errorMessage }
+  } finally {
+    notifyCreditAccountRefresh()
   }
 }
 
@@ -2527,6 +2756,8 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
         error: errorMessage,
       })
       ElMessage.error(errorMessage)
+    } finally {
+      notifyCreditAccountRefresh()
     }
   })()
 
@@ -2579,7 +2810,7 @@ function canvasNodeLabel(node) {
 function canvasNodeActions(node) {
   if (!node) return []
   if (node.type === 'homeCanvasNode') {
-    const actions = ['open-node-config', 'duplicate-free-node', 'delete-free-node', 'copy-node-ref']
+    const actions = ['open-node-config', 'duplicate-free-node', 'view-generation-history', 'delete-free-node', 'copy-node-ref']
     if (['image', 'video', 'audio'].includes(node.data?.kind)) {
       actions.push('mount-free-node-asset', `run-node-${node.data.kind}`)
     }
@@ -4484,6 +4715,8 @@ async function runNodeMenuAction(type, node) {
     openNodeConfig(node)
   } else if (type === 'duplicate-free-node') {
     await duplicateFreeCanvasNode(node)
+  } else if (type === 'view-generation-history') {
+    showFreeCanvasGenerationHistory(node)
   } else if (type === 'mount-free-node-asset') {
     openFreeNodeAssetLibrary(node)
   } else if (type === 'delete-free-node') {
@@ -5155,21 +5388,29 @@ function toggleWorkflowPanel() {
   showWorkflowPanel.value = !showWorkflowPanel.value
 }
 
-async function shareCanvas() {
-  const url = window.location.href
-  if (typeof navigator.share === 'function') {
-    try {
-      await navigator.share({
-        title: `${drama.value?.title || '短剧'} · 画布`,
-        url,
-      })
-      ElMessage.success('分享面板已打开')
-      return
-    } catch (error) {
-      // 用户主动关闭系统分享面板时不再弹出复制失败提示。
-      if (error?.name === 'AbortError') return
-    }
+async function loadCanvasCollaborators() {
+  if (!currentTenantId.value) {
+    collaborationMembers.value = []
+    return
   }
+  collaborationLoading.value = true
+  try {
+    const result = await listTenantMembers(currentTenantId.value)
+    collaborationMembers.value = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.members)
+        ? result.members
+        : []
+  } catch (error) {
+    collaborationMembers.value = []
+    ElMessage.error(error?.message || '协作成员加载失败')
+  } finally {
+    collaborationLoading.value = false
+  }
+}
+
+async function copyCanvasShareLink() {
+  const url = canvasShareLink.value
   try {
     if (!navigator.clipboard?.writeText) throw new Error('clipboard-unavailable')
     await navigator.clipboard.writeText(url)
@@ -5180,6 +5421,38 @@ async function shareCanvas() {
       type: 'info',
     })
   }
+}
+
+async function inviteCanvasCollaborator() {
+  const tenantId = currentTenantId.value
+  const email = collaborationForm.value.email.trim()
+  if (!tenantId) {
+    ElMessage.warning('请先选择工作区')
+    return
+  }
+  if (!email) {
+    ElMessage.warning('请输入成员邮箱')
+    return
+  }
+  collaborationInviteLoading.value = true
+  try {
+    await addTenantMember(tenantId, {
+      email,
+      role: collaborationForm.value.role,
+    })
+    collaborationForm.value.email = ''
+    await loadCanvasCollaborators()
+    ElMessage.success('协作成员已加入工作区')
+  } catch (error) {
+    ElMessage.error(error?.message || '邀请协作成员失败')
+  } finally {
+    collaborationInviteLoading.value = false
+  }
+}
+
+async function shareCanvas() {
+  collaborationDialogVisible.value = true
+  await loadCanvasCollaborators()
 }
 
 async function fitCanvasView() {
@@ -5311,6 +5584,28 @@ function selectVisibleStoryboards() {
   ElMessage.success(`已选中 ${ids.length} 个可见分镜`)
 }
 
+function panCanvasByKeyboard(key) {
+  const deltas = {
+    w: { x: 0, y: CANVAS_KEYBOARD_PAN_STEP },
+    a: { x: CANVAS_KEYBOARD_PAN_STEP, y: 0 },
+    s: { x: 0, y: -CANVAS_KEYBOARD_PAN_STEP },
+    d: { x: -CANVAS_KEYBOARD_PAN_STEP, y: 0 },
+  }
+  const delta = deltas[key]
+  if (!delta) return false
+  const viewport = canvasFlowApi.value?.getViewport?.() || currentViewport.value
+  const nextViewport = {
+    x: Number(viewport?.x || 0) + delta.x,
+    y: Number(viewport?.y || 0) + delta.y,
+    zoom: Number(viewport?.zoom || 1),
+  }
+  currentViewport.value = nextViewport
+  const movement = canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
+  if (movement?.finally) movement.finally(scheduleLayoutSave)
+  else scheduleLayoutSave()
+  return true
+}
+
 function onCanvasKeydown(event) {
   if (isEditableTarget(event.target)) return
   const key = String(event.key || '').toLowerCase()
@@ -5358,6 +5653,11 @@ function onCanvasKeydown(event) {
   if (key === ' ' || key === 'spacebar') {
     event.preventDefault()
     setSpacePanning(true)
+    return
+  }
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && ['w', 'a', 's', 'd'].includes(key)) {
+    event.preventDefault()
+    panCanvasByKeyboard(key)
     return
   }
   const modifier = event.ctrlKey || event.metaKey
@@ -6672,6 +6972,35 @@ onBeforeUnmount(() => {
 .run-failed-actions button:hover {
   border-color: rgba(248, 113, 113, 0.9);
   background: rgba(185, 28, 28, 0.45);
+}
+.canvas-collaboration-link,
+.canvas-collaboration-invite {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.canvas-collaboration-members {
+  min-height: 72px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+}
+.canvas-collaboration-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.canvas-collaboration-member + .canvas-collaboration-member {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.canvas-collaboration-empty {
+  padding: 16px 0;
+  color: var(--el-text-color-secondary);
+  text-align: center;
 }
 @keyframes queue-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.92); }

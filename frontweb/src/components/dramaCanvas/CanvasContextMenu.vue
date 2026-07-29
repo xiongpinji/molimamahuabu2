@@ -124,7 +124,8 @@ const nodeGroups = [
     title: '编辑',
     items: [
       { type: 'open-node-config', label: '打开节点配置', hint: '编辑当前节点', icon: EditPen },
-      { type: 'duplicate-free-node', label: '复制节点', hint: '克隆到右下方', icon: Document },
+      { type: 'duplicate-free-node', label: '创建副本', hint: '克隆到右下方', icon: Document },
+      { type: 'view-generation-history', label: '生成历史', hint: '查看最近运行记录', icon: List },
       { type: 'mount-free-node-asset', label: '挂载素材', hint: '替换当前节点素材', icon: FolderOpened },
       { type: 'delete-free-node', label: '删除节点', hint: '可通过撤销恢复', icon: Delete },
       { type: 'open-node-production', label: '进入制作页', hint: '等同双击节点', icon: FullScreen },
