@@ -27,6 +27,7 @@ test('生产镜像内置固定哈希的 CPU 抠图链且不要求专用 GPU 运�
   const dockerfile = read('Dockerfile');
   const requirements = read('deploy/rembg/requirements.lock');
   const wrapper = read('deploy/rembg/rembg-cpu');
+  assert.match(wrapper, /print\(f["']rembg \{VERSION\}["']\)/);
   const notices = read('deploy/rembg/THIRD_PARTY_NOTICES.md');
 
   assert.match(dockerfile, /pip install .*--require-hashes/);
@@ -94,7 +95,7 @@ test('镜像 CI 会实际启动容器、检查网页并发布不可变镜像', (
   assert.match(workflow, /\/health/);
   assert.match(workflow, /docker run/);
   assert.match(workflow, /index\.html|茉莉妈妈/);
-  assert.match(workflow, /rembg-cpu --version/);
+  assert.match(workflow, /\^rembg 2\.0\.77\$/);
   assert.match(workflow, /sha256sum --check/);
   assert.match(workflow, /docker network disconnect bridge/);
   assert.match(workflow, /rembg-cpu[\s\S]*i -m u2netp/);

@@ -9,7 +9,7 @@ VERSION = "2.0.77"
 
 def main() -> int:
     if sys.argv[1:] == ["--version"]:
-        print(VERSION)
+        print(f"rembg {VERSION}")
         return 0
     if len(sys.argv) != 6 or sys.argv[1] != "i" or sys.argv[2] != "-m":
         print("usage: rembg-cpu i -m <model> <input> <output>", file=sys.stderr)
