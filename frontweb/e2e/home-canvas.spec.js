@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 const homeCanvasStorageKey = 'moli-mama.home-canvas.v1'
+const pendingHomeCanvasStateKey = 'moli-mama.e2e.pending-home-canvas-state'
 const seededHomeCanvasState = {
   version: 1,
   nodes: [{
@@ -61,19 +62,50 @@ const mentionHomeCanvasState = {
   edges: [],
   viewport: { x: 0, y: 0, zoom: 0.75 },
 }
+const generatedMentionHomeCanvasState = {
+  ...mentionHomeCanvasState,
+  nodes: mentionHomeCanvasState.nodes.map((node) => (
+    node.id === 'e2e:image-reference'
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            url: '',
+            resultUrls: [node.data.url],
+          },
+        }
+      : node
+  )),
+}
+
+async function loadHomeCanvasState(page, state) {
+  await page.evaluate(({ pendingKey, nextState }) => {
+    window.localStorage.setItem(pendingKey, JSON.stringify(nextState))
+  }, {
+    pendingKey: pendingHomeCanvasStateKey,
+    nextState: state,
+  })
+  await page.reload()
+  await expect(page.locator('.home-starter-panel')).toHaveCount(0)
+}
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(({ storageKey, state }) => {
-    window.localStorage.setItem(storageKey, JSON.stringify(state))
-  }, { storageKey: homeCanvasStorageKey, state: seededHomeCanvasState })
-  await page.addInitScript(() => {
+  await page.addInitScript(({ storageKey, pendingKey }) => {
     window.localStorage.setItem('moli_mama_session', JSON.stringify({
       token: 'canvas-e2e-session',
       user: { id: 'canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
     }))
+    const pendingState = window.localStorage.getItem(pendingKey)
+    if (pendingState) {
+      window.localStorage.setItem(storageKey, pendingState)
+      window.localStorage.removeItem(pendingKey)
+    }
+  }, {
+    storageKey: homeCanvasStorageKey,
+    pendingKey: pendingHomeCanvasStateKey,
   })
   await page.goto('/canvas/local')
-  await expect(page.locator('.home-starter-panel')).toHaveCount(0)
+  await loadHomeCanvasState(page, seededHomeCanvasState)
 })
 
 test('文本节点单击后在专属编辑器直接编辑，不再依赖配置弹窗', async ({ page }) => {
@@ -96,11 +128,8 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
-test('视频提示词输入 @ 可选择图片节点并生成真实参考连线', async ({ page }) => {
-  await page.addInitScript(({ storageKey, state }) => {
-    window.localStorage.setItem(storageKey, JSON.stringify(state))
-  }, { storageKey: homeCanvasStorageKey, state: mentionHomeCanvasState })
-  await page.reload()
+test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
+  await loadHomeCanvasState(page, mentionHomeCanvasState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
@@ -109,21 +138,9 @@ test('视频提示词输入 @ 可选择图片节点并生成真实参考连线',
 
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu).toBeVisible()
-  await expect(mentionMenu.locator('img')).toHaveCount(1)
-  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
-
-  await expect(promptInput).toHaveValue('女主角走入画面 @女主角定妆照 ')
-  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
-  await expect.poll(async () => page.evaluate((storageKey) => {
-    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
-    return {
-      content: state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.content || '',
-      edge: state.edges?.map(({ source, target }) => ({ source, target })) || [],
-    }
-  }, homeCanvasStorageKey)).toEqual({
-    content: '女主角走入画面 @女主角定妆照 ',
-    edge: [{ source: 'e2e:image-reference', target: 'e2e:video-target' }],
-  })
+  await expect(mentionMenu.getByText('没有可引用的图片节点')).toBeVisible()
+  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toHaveCount(0)
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
 })
 
 test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
@@ -136,10 +153,7 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
       type: 'smoothstep',
     }],
   }
-  await page.addInitScript(({ storageKey, state }) => {
-    window.localStorage.setItem(storageKey, JSON.stringify(state))
-  }, { storageKey: homeCanvasStorageKey, state: connectedState })
-  await page.reload()
+  await loadHomeCanvasState(page, connectedState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
@@ -153,6 +167,59 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 
   await expect(promptInput).toHaveValue('沿用参考角色 @女主角定妆照 ')
   await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+})
+
+test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
+  const connectedGeneratedState = {
+    ...generatedMentionHomeCanvasState,
+    edges: [{
+      id: 'e2e:generated-image-reference-to-video',
+      source: 'e2e:image-reference',
+      target: 'e2e:video-target',
+      type: 'smoothstep',
+    }],
+  }
+  await loadHomeCanvasState(page, connectedGeneratedState)
+
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:image-reference')?.data?.resultUrls?.[0] || ''
+  }, homeCanvasStorageKey)).toMatch(/^data:image\//)
+
+  const imageNode = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
+  await imageNode.locator('.node-media').dblclick()
+  await expect(page.getByRole('dialog', { name: '图片全屏预览' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭图片预览' }).click()
+
+  const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
+  await videoNode.click()
+  await page.getByRole('textbox', { name: '生成提示词' }).fill('@')
+  const mentionMenu = page.getByLabel('@选择参考图')
+  await expect(mentionMenu.locator('img')).toHaveAttribute('src', /data:image/)
+})
+
+test('已连接参考图可以从节点编辑器取消', async ({ page }) => {
+  const connectedState = {
+    ...mentionHomeCanvasState,
+    edges: [{
+      id: 'e2e:image-reference-to-video',
+      source: 'e2e:image-reference',
+      target: 'e2e:video-target',
+      type: 'smoothstep',
+      data: {
+        contract: { slot: 'reference-image', enabled: true, order: 0, weight: 1 },
+      },
+    }],
+  }
+  await loadHomeCanvasState(page, connectedState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  await page.getByRole('button', { name: '取消参考图' }).click()
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.length || 0
+  }, homeCanvasStorageKey)).toBe(0)
 })
 
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
@@ -169,6 +236,25 @@ test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ 
   await seedNode.locator('.node-icon').click()
   await page.keyboard.press('Delete')
   await expect(seedNode).toHaveCount(0)
+})
+
+test('普通单击只保留一个选中节点，选中连线后可按 Delete 删除', async ({ page }) => {
+  await loadHomeCanvasState(page, edgeHomeCanvasState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:source"]').click()
+  await page.locator('.vue-flow__node[data-id="e2e:target-a"]').click()
+  await expect(page.locator('.vue-flow__node.selected')).toHaveCount(1)
+  await expect(page.locator('.vue-flow__node[data-id="e2e:target-a"]')).toHaveClass(/selected/)
+
+  const edge = page.locator('.vue-flow__edge[data-id="e2e:edge"]')
+  await edge.locator('.vue-flow__edge-path').click({ force: true })
+  await expect(edge).toHaveClass(/selected/)
+  await page.keyboard.press('Delete')
+  await expect(edge).toHaveCount(0)
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.length || 0
+  }, homeCanvasStorageKey)).toBe(0)
 })
 
 test('右键添加文本节点并支持删除、撤销和重做', async ({ page }) => {
@@ -245,10 +331,7 @@ test('本地画布右键节点可复制删除，媒体节点不展示无效运�
 })
 
 test('拖动边目标端点会更新连接目标并持久化', async ({ page }) => {
-  await page.addInitScript(({ storageKey, state }) => {
-    window.localStorage.setItem(storageKey, JSON.stringify(state))
-  }, { storageKey: homeCanvasStorageKey, state: edgeHomeCanvasState })
-  await page.reload()
+  await loadHomeCanvasState(page, edgeHomeCanvasState)
 
   const edge = page.locator('.vue-flow__edge[data-id="e2e:edge"]')
   await expect(edge).toHaveCount(1)

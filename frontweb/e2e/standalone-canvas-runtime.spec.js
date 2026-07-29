@@ -84,6 +84,11 @@ function installStaticAndApiMocks(page, state) {
       return
     }
 
+    if (method === 'GET' && pathname === '/api/v1/canvas/model-catalog') {
+      await route.fulfill(apiData(state.modelCatalog || []))
+      return
+    }
+
     if (method === 'POST' && pathname === '/api/v1/assets') {
       const payload = request.postDataJSON() || {}
       state.assetRequests.push(payload)
@@ -184,6 +189,15 @@ function freeNode(layout, id) {
 }
 
 test.describe('独立自由画布节点真实运行闭环', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('moli_mama_session', JSON.stringify({
+        token: 'standalone-canvas-e2e-session',
+        user: { id: 'standalone-canvas-e2e-user', email: 'canvas-e2e@example.com', role: 'user' },
+      }))
+    })
+  })
+
   test('右键新增图片节点直接进入节点内编辑、可拖动且不弹创建表单', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout(),
@@ -265,13 +279,10 @@ test.describe('独立自由画布节点真实运行闭环', () => {
         type: 'image',
         url: '/static/library-rain.png',
       }],
-      aiConfigs: [{
-        id: 11,
-        service_type: 'image',
-        is_active: true,
-        is_default: true,
-        model: ['canvas-image-alpha', 'canvas-image-beta'],
-      }],
+      modelCatalog: [
+        { kind: 'image', model: 'canvas-image-alpha' },
+        { kind: 'image', model: 'canvas-image-beta' },
+      ],
       imageRequests: [],
       videoRequests: [],
       audioRequests: [],
@@ -290,6 +301,7 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await editor.getByRole('combobox', { name: '生成模型' }).blur()
     await expect.poll(() => freeNode(state.canvasLayout, 'free:image:mount')?.data?.model).toBe('canvas-image-beta')
 
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
     await node.getByRole('button', { name: '素材库' }).click()
     const picker = page.getByRole('dialog', { name: '挂载素材到当前节点' })
     await expect(picker).toBeVisible()
@@ -625,6 +637,8 @@ test.describe('独立自由画布节点真实运行闭环', () => {
       text: '茉莉妈妈短剧制作平台欢迎你',
       tts_model: 'voice-e2e',
       speed: 1,
+      volume: 1,
+      pitch: 0,
     }])
     expect(state.audioRequests[0]).not.toHaveProperty('storyboard_id')
     expect(state.audioRequests[0]).not.toHaveProperty('storyboardId')

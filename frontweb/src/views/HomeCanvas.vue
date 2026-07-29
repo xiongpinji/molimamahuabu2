@@ -49,7 +49,7 @@
           :default-edge-options="{ type: 'libtv' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
-          :max-zoom="2"
+          :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
           :edges-updatable="true"
@@ -225,6 +225,10 @@ import {
 } from '@/utils/homeCanvasState'
 import { parseCanvasLayout } from '@/utils/canvasLayout'
 import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
+import {
+  collectDirectUpstreamImageReferences,
+  getFreeCanvasNodeResultUrl,
+} from '@/utils/freeCanvasGeneration'
 
 const router = useRouter()
 
@@ -356,8 +360,19 @@ function onCanvasWheel(event) {
   if (!event.ctrlKey && !event.metaKey) return
   event.preventDefault()
   event.stopPropagation()
-  if (event.deltaY < 0) canvasFlowApi.value?.zoomIn?.({ duration: 0 })
-  if (event.deltaY > 0) canvasFlowApi.value?.zoomOut?.({ duration: 0 })
+  const action = event.deltaY < 0
+    ? canvasFlowApi.value?.zoomIn?.({ duration: 0 })
+    : event.deltaY > 0
+      ? canvasFlowApi.value?.zoomOut?.({ duration: 0 })
+      : null
+  const syncViewport = () => {
+    const viewport = canvasFlowApi.value?.getViewport?.()
+    if (!viewport) return
+    currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+    scheduleSave()
+  }
+  if (action && typeof action.finally === 'function') action.finally(syncViewport)
+  else syncViewport()
 }
 
 function onConnect(connection) {
@@ -391,17 +406,12 @@ function onConnect(connection) {
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetId = String(nodeOrId || '')
-  return nodes.value
-    .filter((node) => (
-      node.type === 'homeCanvasNode'
-      && String(node.id) !== targetId
-      && node.data?.kind === 'image'
-      && node.data?.url
-    ))
-    .map((node) => ({
-      nodeId: String(node.id),
-      title: node.data?.title || '未命名图片',
-      url: node.data.url,
+  return collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId)
+    .filter((reference) => reference.ready && reference.enabled !== false)
+    .map((reference) => ({
+      nodeId: String(reference.nodeId),
+      title: reference.title || '未命名图片',
+      url: reference.url,
     }))
 }
 
@@ -410,6 +420,38 @@ function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
     source: String(sourceNodeId || ''),
     target: String(targetNodeId || ''),
   })
+}
+
+function freeCanvasNodeInputReferences(nodeId) {
+  return collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
+}
+
+function updateFreeCanvasReference(edgeId, patch = {}) {
+  const previousState = currentCanvasState()
+  let changed = false
+  edges.value = edges.value.map((edge) => {
+    if (String(edge.id) !== String(edgeId)) return edge
+    changed = true
+    return decorateEdge({
+      ...edge,
+      data: {
+        ...(edge.data || {}),
+        contract: { ...(edge.data?.contract || {}), ...patch },
+      },
+    })
+  })
+  if (!changed) return
+  commitHistory(previousState)
+  scheduleSave()
+}
+
+function detachFreeCanvasReference(edgeId) {
+  const previousState = currentCanvasState()
+  const nextEdges = edges.value.filter((edge) => String(edge.id) !== String(edgeId))
+  if (nextEdges.length === edges.value.length) return
+  edges.value = nextEdges
+  commitHistory(previousState)
+  scheduleSave()
 }
 
 function onNodesChange(changes = []) {
@@ -654,6 +696,9 @@ async function deleteContextNode() {
 
 function onPaneClick() {
   closeContextMenu()
+  activeNodeId.value = null
+  nodes.value = nodes.value.map((node) => ({ ...node, selected: false }))
+  edges.value = edges.value.map((edge) => ({ ...edge, selected: false }))
 }
 
 async function clearCanvas() {
@@ -839,8 +884,11 @@ provide(CANVAS_CONTEXT_KEY, {
   isFreeCanvasNodeSelected: (nodeId) => activeNodeId.value === String(nodeId),
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
+  getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
   attachFreeCanvasReference,
+  updateFreeCanvasReference,
+  detachFreeCanvasReference,
 })
 
 onMounted(() => {

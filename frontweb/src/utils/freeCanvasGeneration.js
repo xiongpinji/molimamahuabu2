@@ -110,6 +110,9 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   }
   if (Object.hasOwn(data, 'resultUrls')) normalized.resultUrls = uniqueStrings(data.resultUrls)
   if (Object.hasOwn(data, 'taskId')) normalized.taskId = cleanString(data.taskId)
+  if (Object.hasOwn(data, 'progress')) {
+    normalized.progress = Math.min(100, Math.max(0, finiteNumber(data.progress)))
+  }
   if (Object.hasOwn(data, 'status')) {
     const status = cleanString(data.status)
     if (FREE_NODE_STATUSES.has(status)) normalized.status = status
@@ -235,13 +238,13 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
   const seen = new Set()
   for (const edge of edges || []) {
     if (String(edge?.target || '') !== target) continue
-    if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
-    const source = byId.get(String(edge.source || ''))
+    const sourceId = String(edge?.source || '')
+    const source = byId.get(sourceId)
     const sourceKind = cleanString(source?.data?.kind || source?.data?.asset?.type)
-    if (sourceKind !== 'image' || seen.has(String(edge?.id || source?.id || ''))) continue
-    seen.add(String(edge?.id || source.id))
+    if (sourceKind !== 'image' || !sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
     const contract = edge?.data?.contract || {}
-    const url = resultUrlFromNode(source)
+    const url = getFreeCanvasNodeResultUrl(source)
     references.push({
       nodeId: String(source.id),
       edgeId: String(edge?.id || ''),
@@ -267,7 +270,6 @@ export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNo
   const seen = new Set()
   for (const edge of edges || []) {
     if (String(edge?.target || '') !== target) continue
-    if (edge.data?.manual !== true && !String(edge.id || '').startsWith('manual:')) continue
     const source = byId.get(String(edge.source || ''))
     const sourceKind = cleanString(source?.data?.kind)
     const sourceId = String(source?.id || '')
@@ -355,11 +357,12 @@ export function resolveFreeCanvasResultUrl(kind, response = {}) {
   return ''
 }
 
-function resultUrlFromNode(node) {
+export function getFreeCanvasNodeResultUrl(node) {
   const data = node?.data || {}
   return firstString(
     data.url,
     data.resultUrl,
+    data.resultUrls?.[0],
     data.savedAssetUrl,
     data.status?.resultUrl,
     data.status?.savedAssetUrl

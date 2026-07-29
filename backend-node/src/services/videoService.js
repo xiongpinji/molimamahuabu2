@@ -71,6 +71,8 @@ function rowToItem(r) {
     image_url: r.image_url,
     first_frame_url: r.first_frame_url,
     last_frame_url: r.last_frame_url,
+    output_first_frame_url: r.output_first_frame_url,
+    output_last_frame_url: r.output_last_frame_url,
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -457,6 +459,54 @@ function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenI
   normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
 }
 
+function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, options = {}) {
+  const emptyResult = {
+    output_first_frame_url: null,
+    output_last_frame_url: null,
+  };
+  if (!localPath || options.hasFfmpeg === false) return emptyResult;
+  if (options.hasFfmpeg !== true && !hasLocalFfmpeg()) return emptyResult;
+
+  const videoPath = path.join(storagePath, localPath);
+  if (!fs.existsSync(videoPath)) return emptyResult;
+
+  const frameDir = path.dirname(videoPath);
+  const firstPath = path.join(frameDir, `vg_${videoGenId}_first.jpg`);
+  const lastPath = path.join(frameDir, `vg_${videoGenId}_last.jpg`);
+  const ffmpegPath = options.ffmpegPath || getFfmpegPath();
+  const run = options.run || spawnSync;
+  const commonOptions = { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 };
+  const outputs = [
+    {
+      key: 'output_first_frame_url',
+      path: firstPath,
+      args: ['-y', '-i', videoPath, '-frames:v', '1', '-q:v', '2', firstPath],
+    },
+    {
+      key: 'output_last_frame_url',
+      path: lastPath,
+      args: ['-y', '-sseof', '-0.1', '-i', videoPath, '-frames:v', '1', '-q:v', '2', lastPath],
+    },
+  ];
+  const result = { ...emptyResult };
+
+  for (const output of outputs) {
+    const commandResult = run(ffmpegPath, output.args, commonOptions);
+    if (commandResult?.status !== 0 || !fs.existsSync(output.path)) {
+      log?.warn?.('[视频] 成片边界帧提取失败', {
+        videoGenId,
+        frame: output.key,
+        stderr: String(commandResult?.stderr || '').slice(-500),
+      });
+      continue;
+    }
+    const relativePath = path.relative(storagePath, output.path).split(path.sep).join('/');
+    result[output.key] = `/static/${relativePath}`;
+  }
+  log?.info?.('[视频] 成片首尾帧提取完成', { videoGenId, ...result });
+  return result;
+}
+
 /** 防止同一 videoGenId 重复发起 poll（含重启恢复） */
 const activeVideoPolls = new Set();
 
@@ -470,6 +520,10 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   const now = new Date().toISOString();
   let localPath = null;
   let downloadError = null;
+  let boundaryFrames = {
+    output_first_frame_url: null,
+    output_last_frame_url: null,
+  };
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
@@ -486,6 +540,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+    boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
   } catch (_) {}
   if (downloadError) {
     setVideoGenFailed(db, videoGenId, downloadError, now);
@@ -496,8 +551,18 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   const deliveryWarning = localVideoDeliveryWarning(localPath);
   try {
     db.prepare(
-      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, error_msg = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-    ).run('completed', videoUrl, localPath, deliveryWarning || null, now, now, videoGenId);
+      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, output_first_frame_url = ?, output_last_frame_url = ?, error_msg = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    ).run(
+      'completed',
+      videoUrl,
+      localPath,
+      boundaryFrames.output_first_frame_url,
+      boundaryFrames.output_last_frame_url,
+      deliveryWarning || null,
+      now,
+      now,
+      videoGenId
+    );
   } catch (e) {
     if ((e.message || '').includes('completed_at')) {
       db.prepare(
@@ -525,6 +590,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       video_generation_id: videoGenId,
       video_url: videoUrl,
       local_path: localPath,
+      ...boundaryFrames,
       status: 'completed',
     });
   }
@@ -872,4 +938,5 @@ module.exports = {
   resumeProcessingVideoGenerations,
   localVideoDeliveryWarning,
   settleVideoCredit,
+  extractVideoBoundaryFrames,
 };

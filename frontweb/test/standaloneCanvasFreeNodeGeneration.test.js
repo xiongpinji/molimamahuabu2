@@ -7,6 +7,7 @@ import {
   collectDirectUpstreamImageReferences,
   collectDirectUpstreamResultUrls,
   collectDirectUpstreamTextInputs,
+  getFreeCanvasNodeResultUrl,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
   resolveFreeCanvasResultUrl,
@@ -39,6 +40,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     effect: 'film-grain',
     characterReferenceUrls: [' https://cdn.example/character.png ', ''],
     taskId: 42,
+    progress: 145,
     status: 'success',
     error: ' ',
     savedAssetId: 99,
@@ -65,6 +67,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     effect: 'film-grain',
     characterReferenceUrls: ['https://cdn.example/character.png'],
     taskId: '42',
+    progress: 100,
     status: 'success',
     error: '',
     savedAssetId: '99',
@@ -222,32 +225,38 @@ test('自由节点图片、视频和音频请求强制要求正整数 dramaId', 
   }
 })
 
-test('collectDirectUpstreamResultUrls 只收集直接手动上游真实结果 URL 并去重', () => {
+test('collectDirectUpstreamResultUrls 收集所有直接上游真实结果 URL 并去重', () => {
   const nodes = [
     { id: 'a', data: { kind: 'image', url: 'https://cdn.example/a.png' } },
     { id: 'b', data: { kind: 'image', url: 'https://cdn.example/a.png' } },
     { id: 'c', data: { kind: 'image', url: '' } },
     { id: 'd', data: { kind: 'video', url: 'https://cdn.example/d.mp4' } },
+    { id: 'e', data: { kind: 'image', url: 'https://cdn.example/e.png' } },
   ]
   const edges = [
     { id: 'auto:a:d', source: 'a', target: 'd' },
+    { id: 'auto:e:d', source: 'e', target: 'd' },
     { id: 'manual:a:d', source: 'a', target: 'd', data: { manual: true } },
     { id: 'manual:b:d', source: 'b', target: 'd', data: { manual: true } },
     { id: 'manual:c:d', source: 'c', target: 'd', data: { manual: true } },
   ]
 
-  assert.deepEqual(collectDirectUpstreamResultUrls(nodes, edges, 'd'), ['https://cdn.example/a.png'])
+  assert.deepEqual(collectDirectUpstreamResultUrls(nodes, edges, 'd'), [
+    'https://cdn.example/a.png',
+    'https://cdn.example/e.png',
+  ])
 })
 
 test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成的图片连线', () => {
   const nodes = [
-    { id: 'image-ready', data: { kind: 'image', title: '首帧', url: '/static/first.png' } },
+    { id: 'image-ready', data: { kind: 'image', title: '首帧', url: '', resultUrls: ['/static/first.png'] } },
     { id: 'image-pending', data: { kind: 'image', title: '尾帧', url: '' } },
     { id: 'audio', data: { kind: 'audio', title: '旁白', url: '/static/voice.mp3' } },
     { id: 'video', data: { kind: 'video', title: '视频' } },
   ]
   const edges = [
     { id: 'manual:ready', source: 'image-ready', target: 'video', data: { manual: true } },
+    { id: 'legacy:ready', source: 'image-ready', target: 'video' },
     { id: 'manual:pending', source: 'image-pending', target: 'video', data: { manual: true } },
     { id: 'manual:audio', source: 'audio', target: 'video', data: { manual: true } },
   ]
@@ -258,19 +267,30 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
   ])
 })
 
-test('collectDirectUpstreamTextInputs 只按手动直连契约收集文本输入并去重', () => {
+test('getFreeCanvasNodeResultUrl 兼容当前 URL 与多结果数组', () => {
+  assert.equal(getFreeCanvasNodeResultUrl({
+    data: { url: '/static/current.png', resultUrls: ['/static/generated.png'] },
+  }), '/static/current.png')
+  assert.equal(getFreeCanvasNodeResultUrl({
+    data: { url: '', resultUrls: ['/static/generated.png'] },
+  }), '/static/generated.png')
+})
+
+test('collectDirectUpstreamTextInputs 收集所有直接上游文本输入并去重', () => {
   const nodes = [
     { id: 'text-a', data: { kind: 'text', content: '上游对白' } },
+    { id: 'text-b', data: { kind: 'text', content: '补充动作' } },
     { id: 'image-a', data: { kind: 'image', content: '不是文本输入' } },
   ]
   const edges = [
     { id: 'manual:text-a:video', source: 'text-a', target: 'video', data: { manual: true } },
     { id: 'manual:text-a:video-copy', source: 'text-a', target: 'video', data: { manual: true } },
+    { id: 'auto:text-b:video', source: 'text-b', target: 'video' },
     { id: 'manual:image-a:video', source: 'image-a', target: 'video', data: { manual: true } },
     { id: 'auto:text-a:other', source: 'text-a', target: 'other' },
   ]
 
-  assert.deepEqual(collectDirectUpstreamTextInputs(nodes, edges, 'video'), ['上游对白'])
+  assert.deepEqual(collectDirectUpstreamTextInputs(nodes, edges, 'video'), ['上游对白', '补充动作'])
 })
 
 test('buildFreeCanvasProjectAssetPayload 生成 canvas-result 素材入库 payload', () => {
