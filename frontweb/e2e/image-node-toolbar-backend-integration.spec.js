@@ -313,7 +313,12 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
 
   const cropDialog = page.getByRole('dialog', { name: '裁剪' })
   await expect(cropDialog).toBeVisible()
-  await expect(cropDialog.locator('.cropper-container')).toBeVisible()
+  const cropStage = cropDialog.locator('.crop-stage')
+  const cropperContainer = cropDialog.locator('.cropper-container')
+  await expect(cropperContainer).toBeVisible()
+  await expect(cropDialog.locator('.el-dialog')).toHaveCSS('width', '680px')
+  await expect(cropStage).toHaveCSS('height', '430px')
+  await expect(cropperContainer).toHaveCSS('height', '430px')
   await cropDialog.getByRole('button', { name: '应用并生成新素材' }).click()
   await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible()
   await expect(cropDialog).toBeHidden()
@@ -417,6 +422,8 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
     },
   })
 
+  await mirrorDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(mirrorDialog).toBeHidden()
   fs.writeFileSync(cropAsset.local_path, cropBytes)
   await restoredToolbar.getByRole('button', { name: '重试', exact: true }).click()
   await expect(page.getByText('图片处理重试成功，已生成新素材')).toBeVisible()
