@@ -27,6 +27,7 @@ test('生产镜像内置固定哈希的 CPU 抠图链且不要求专用 GPU 运�
   const dockerfile = read('Dockerfile');
   const requirements = read('deploy/rembg/requirements.lock');
   const wrapper = read('deploy/rembg/rembg-cpu');
+  assert.match(wrapper, /print\(f["']rembg \{VERSION\}["']\)/);
   const notices = read('deploy/rembg/THIRD_PARTY_NOTICES.md');
 
   assert.match(dockerfile, /pip install .*--require-hashes/);
