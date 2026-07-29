@@ -265,6 +265,7 @@
           <img :src="entryReferenceUrl" :alt="entryReferenceTitle" />
           <small>{{ entryReferenceTitle }}</small>
           <span v-if="lightingEntry">3D 灯光预演，不直接修改原图；截图会生成新素材。</span>
+          <span v-else-if="angleEntry">3D 机位角度预演，不直接修改原图；添加或选择机位后可截图生成新素材。</span>
           <span v-else>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
         </section>
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
@@ -339,7 +340,7 @@
           <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
           <button type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
           <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
-          <button type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
+          <button ref="addCameraButtonRef" type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
           <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
           <button type="button" :disabled="capturing || initializing" aria-label="截图" title="截图" @click="captureToCanvasAsset">◎</button>
           <button ref="aiImportButtonRef" type="button" aria-label="AI 识图导入" title="AI 识图导入" @click="aiImportOpen = true">◫</button>
@@ -383,7 +384,7 @@
             <div class="vector-row"><label v-for="(axis, index) in axes" :key="`s-${axis}`">{{ axis }}<input type="number" min="0.0001" step="0.1" :value="selectedInspectorTransform.scale[index]" @change="updateObjectScale(index, $event.target.value, $event.shiftKey)" /></label></div>
           </div>
           <template v-if="selectedCamera">
-            <div class="inspector-group"><strong>相机</strong>
+            <div ref="cameraEditorRef" class="inspector-group"><strong>相机</strong>
               <label>构图预设
                 <select aria-label="构图预设" @change="applyCameraPreset($event.target.value)">
                   <option value="">选择机位视角</option>
@@ -531,6 +532,7 @@ import {
   appendShot,
   createDirectorTimeline,
   findActiveActionClips,
+  findActiveCameraObject,
   findActiveShot,
   normalizeDirectorTimeline,
   proportionalScaleFromAxis,
@@ -637,6 +639,8 @@ const emit = defineEmits(['close', 'state-change', 'asset-created'])
 const dialogRef = ref(null)
 const aiImportModalRef = ref(null)
 const environmentEditorRef = ref(null)
+const cameraEditorRef = ref(null)
+const addCameraButtonRef = ref(null)
 const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
@@ -700,6 +704,7 @@ const propsList = computed(() => props.drama?.props || [])
 const entryReferenceUrl = computed(() => String(props.entryContext?.imageUrl || '').trim())
 const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitle || '图片节点参考图').trim())
 const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
+const angleEntry = computed(() => props.entryContext?.mode === 'angle')
 const characterEntries = computed(() => characters.value.map((character, index) => ({
   id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
   name: character?.name || `角色 ${index + 1}`,
@@ -1363,9 +1368,21 @@ function selectEnvironmentInspector() {
 }
 
 function applyEntryContext() {
-  if (!['director_stage', 'lighting'].includes(props.entryContext?.mode)) return
-  workspaceMode.value = 'scene'
+  if (!['director_stage', 'lighting', 'angle'].includes(props.entryContext?.mode)) return
+  workspaceMode.value = angleEntry.value ? 'animation' : 'scene'
   viewMode.value = 'director'
+  if (angleEntry.value) {
+    inspectorTab.value = 'properties'
+    const activeCameraObject = findActiveCameraObject(timeline.value)
+    if (activeCameraObject) selectSceneObject(activeCameraObject.id)
+    else selectedObjectId.value = ''
+    nextTick(() => {
+      if (!angleEntry.value) return
+      if (activeCameraObject) cameraEditorRef.value?.scrollIntoView({ block: 'start' })
+      else addCameraButtonRef.value?.focus()
+    })
+    return
+  }
   if (lightingEntry.value) selectEnvironmentInspector()
   if (lightingEntry.value) {
     nextTick(() => environmentEditorRef.value?.scrollIntoView({ block: 'start' }))

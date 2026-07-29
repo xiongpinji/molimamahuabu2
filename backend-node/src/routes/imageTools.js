@@ -27,7 +27,12 @@ const BASE_OPERATIONS = Object.freeze({
   panorama_scene: unavailable('全景场景模型能力尚未配置'),
   outpaint: unavailable('扩图模型能力尚未配置'),
   pose: unavailable('姿势控制模型能力尚未配置'),
-  angle: unavailable('角度控制模型能力尚未配置'),
+  angle: {
+    available: true,
+    engine: 'director-stage',
+    action: 'open',
+    mode: 'angle',
+  },
   image_ideation: unavailable('画面联想模型能力尚未配置'),
   angle_ideation: unavailable('角度联想模型能力尚未配置'),
   character_views: unavailable('角色三视图模型能力尚未配置'),

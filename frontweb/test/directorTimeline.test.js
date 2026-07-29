@@ -9,6 +9,7 @@ import {
   appendShot,
   createDirectorTimeline,
   findActiveActionClips,
+  findActiveCameraObject,
   findActiveShot,
   interpolateMotionTransform,
   MIN_ACTION_CLIP_DURATION,
@@ -24,6 +25,22 @@ import {
 import { buildCanvasLayoutPayload } from '../src/utils/canvasLayout.js'
 
 const characters = [{ id: 1, name: '小满' }, { id: 2, name: '阿姨' }]
+
+test('角度入口遇到悬空的活动机位对象 ID 时降级为空', () => {
+  assert.equal(findActiveCameraObject({
+    sequence: { activeCameraId: 'camera-1' },
+    cameras: [{ id: 'camera-1', objectId: 'missing-object' }],
+    objects: [],
+  }), null)
+})
+
+test('角度入口拒绝把错类型对象当作活动机位', () => {
+  assert.equal(findActiveCameraObject({
+    sequence: { activeCameraId: 'camera-1' },
+    cameras: [{ id: 'camera-1', objectId: 'object-1' }],
+    objects: [{ id: 'object-1', type: 'box' }],
+  }), null)
+})
 
 test('动作片段编辑与数据模型共享 0.25 秒最小时长', () => {
   assert.equal(MIN_ACTION_CLIP_DURATION, 0.25)

@@ -228,7 +228,7 @@ test('图片节点导演台入口显示当前参考图并保持其他入口兼�
 })
 
 test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', () => {
-  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting'\]\)/)
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle'\]\)/)
   assert.match(canvasSource, /DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
   assert.match(stageSource, /const lightingEntry = computed\(\(\) => props\.entryContext\?\.mode === 'lighting'\)/)
   assert.match(stageSource, /3D 灯光预演，不直接修改原图/)
@@ -239,6 +239,23 @@ test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', (
   assert.match(stageSource, /方向光/)
   assert.match(stageSource, /if \(ambientLight\) ambientLight\.intensity/)
   assert.match(stageSource, /if \(keyLight\) keyLight\.intensity/)
+})
+
+test('图片节点角度入口定位真实机位控制且不静默创建机位', () => {
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle'\]\)/)
+  assert.match(stageSource, /const angleEntry = computed\(\(\) => props\.entryContext\?\.mode === 'angle'\)/)
+  assert.match(stageSource, /3D 机位角度预演，不直接修改原图/)
+  assert.match(stageSource, /ref="addCameraButtonRef"/)
+  assert.match(stageSource, /ref="cameraEditorRef"/)
+  assert.match(stageSource, /findActiveCameraObject\(timeline\.value\)/)
+  assert.match(stageSource, /if \(activeCameraObject\) selectSceneObject\(activeCameraObject\.id\)/)
+  assert.match(stageSource, /if \(!angleEntry\.value\) return/)
+  assert.match(stageSource, /if \(activeCameraObject\) cameraEditorRef\.value\?\.scrollIntoView/)
+  assert.match(stageSource, /addCameraButtonRef\.value\?\.focus/)
+  assert.doesNotMatch(stageSource, /if \(angleEntry\.value\)[\s\S]{0,220}addCamera\(\)/)
+  assert.match(stageSource, /构图预设/)
+  assert.match(stageSource, /视野 FOV/)
+  assert.match(stageSource, /画幅比例/)
 })
 
 test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和查看器', () => {
