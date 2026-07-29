@@ -23,16 +23,18 @@ test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查'
   assert.doesNotMatch(dockerfile, /PLATFORM_ADMIN_TOKEN\s*=/);
 });
 
-test('生产镜像内置固定哈希的 CPU 抠图链且不包含 GPU 运行时', () => {
+test('生产镜像内置固定哈希的 CPU 抠图链且不要求专用 GPU 运行时', () => {
   const dockerfile = read('Dockerfile');
   const requirements = read('deploy/rembg/requirements.lock');
   const wrapper = read('deploy/rembg/rembg-cpu');
   const notices = read('deploy/rembg/THIRD_PARTY_NOTICES.md');
 
   assert.match(dockerfile, /pip install .*--require-hashes/);
+  assert.match(dockerfile, /rembg-cpu --version/);
   assert.match(dockerfile, /rembg-models\/u2netp\.onnx/);
   assert.match(dockerfile, /309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8/);
   assert.match(dockerfile, /IMAGE_TOOL_REMBG_VERSION=2\.0\.77/);
+  assert.match(dockerfile, /U2NET_HOME=\/opt\/rembg-models/);
   assert.match(dockerfile, /IMAGE_TOOL_REMBG_MAX_CONCURRENCY=1/);
   assert.match(dockerfile, /IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY=1/);
   assert.match(dockerfile, /OMP_NUM_THREADS=1/);
@@ -41,6 +43,7 @@ test('生产镜像内置固定哈希的 CPU 抠图链且不包含 GPU 运行时'
   assert.match(requirements, /onnxruntime==/);
   assert.match(requirements, /--hash=sha256:/);
   assert.match(wrapper, /new_session\(model\)/);
+  assert.match(wrapper, /^#!\/opt\/rembg\/bin\/python3/);
   assert.match(notices, /MIT/);
   assert.match(notices, /Apache-2\.0/);
 });

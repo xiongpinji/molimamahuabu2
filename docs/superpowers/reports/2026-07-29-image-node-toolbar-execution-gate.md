@@ -38,6 +38,7 @@
 | 图片节点发布边界门禁 | 260 个生产文件通过密钥、禁区与对口型隔离扫描 |
 | 图片工具网络与日志目标测试 | 43 / 43 通过 |
 | rembg CPU 本地产物 | PNG、4 通道、透明通道有效 |
+| 生产镜像本地门禁 | 构建、健康、网页、版本、模型哈希、断网 CPU 抠图、透明通道均通过 |
 | 真实浏览器 + 临时后端回归 | 6 / 6 通过 |
 | 图片工具栏专用同链回归 | 1 / 1 通过 |
 | CI 画布浏览器门禁 | 20 / 20 通过，已包含图片工具栏专用同链 |
@@ -67,22 +68,30 @@
 ## 无 GPU 部署约束
 
 - 生产镜像内置 rembg 2.0.77 CPU 运行时和固定哈希 u2netp。
+- rembg 使用镜像内固定 Python 虚拟环境，`U2NET_HOME` 指向内置模型目录，
+  断网执行不会下载依赖或模型。
 - `OMP_NUM_THREADS=1`，全局和单租户并发均为 1。
-- 不包含 CUDA、ROCm 或 `onnxruntime-gpu`。
+- 不要求 GPU，且不包含 CUDA、ROCm 或 `onnxruntime-gpu`。FFmpeg 的 Debian
+  传递依赖含通用 Mesa/Vulkan 装载库，不代表启用或依赖专用 GPU 运行时。
 - Seedream 能力走远程服务，不占用服务器 GPU。
 - 对口型没有进入镜像、运行路由或发布门禁。
+
+本地生产镜像 `molimama-web:image-node-local` 已构建为不可变摘要
+`sha256:39796ee6100827d682235ce98383a710cbdb8fb7561bcd4ac9d2f5c0d9d0441a`，
+大小 `598,413,011` 字节。隔离容器健康、网页入口、rembg 版本和模型哈希均
+通过；断开容器网络后生成 32×32 四通道透明 PNG（1,018 字节）。容器日志未
+发现测试密钥值、Python 堆栈或模型下载错误，测试容器已删除。
 
 ## 尚未解除的发布门槛
 
 1. 当前隔离数据库和进程环境没有真实 Seedream 4.5 凭据，也没有本轮可消耗
    的真实模型额度，因此不能把受限协议适配器或历史调用冒充当前真实供应商
    同链证据。
-2. 本机 Docker daemon 未运行，生产镜像尚未在本机完成构建；CI 已配置镜像内
-   版本、模型哈希、断网 CPU 抠图和透明通道门禁。
 
-在取得真实供应商调用证据并由 Docker/CI 完成生产镜像门禁前：
+在取得真实供应商调用证据并由 PR CI 重放生产镜像门禁前：
 
 - `real_provider_verified=false`
-- `production_image_built=false`
+- `production_image_built=true`
+- `production_image_local_smoke_verified=true`
 - `productComplete=false`
 - 不创建 PR、不推送、不部署线上

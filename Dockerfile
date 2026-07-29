@@ -26,6 +26,7 @@ RUN python3 -m venv /opt/rembg \
     && /opt/rembg/bin/pip install --no-cache-dir --require-hashes -r /tmp/rembg-requirements.lock
 COPY deploy/rembg/rembg-cpu /opt/rembg/bin/rembg-cpu
 RUN chmod 0555 /opt/rembg/bin/rembg-cpu \
+    && /opt/rembg/bin/rembg-cpu --version \
     && mkdir -p /opt/rembg-models \
     && curl --fail --location --retry 3 \
       --output /opt/rembg-models/u2netp.onnx \
@@ -46,6 +47,7 @@ ENV NODE_ENV=production \
     IMAGE_TOOL_REMBG_VERSION=2.0.77 \
     IMAGE_TOOL_REMBG_MODEL=u2netp \
     IMAGE_TOOL_REMBG_MODEL_HOME=/opt/rembg-models \
+    U2NET_HOME=/opt/rembg-models \
     IMAGE_TOOL_REMBG_MAX_CONCURRENCY=1 \
     IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY=1 \
     OMP_NUM_THREADS=1

@@ -96,6 +96,9 @@ docker compose -p molimama-canary --env-file .env.production -f compose.producti
 ```
 
 版本必须为 `2.0.77`。预热失败时只停止隔离实例，不改生产实例：
+该运行链只使用 CPU，不要求服务器 GPU，也不安装 CUDA、ROCm 或
+`onnxruntime-gpu`。镜像中的通用 Mesa/Vulkan 库来自 FFmpeg 的 Debian
+传递依赖，不应据此配置 GPU 驱动或放宽设备权限。
 
 ```bash
 docker compose -p molimama-canary --env-file .env.production -f compose.production.yml down
