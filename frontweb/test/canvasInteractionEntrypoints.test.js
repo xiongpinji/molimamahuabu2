@@ -177,6 +177,8 @@ test('右键素材库在画布内弹窗选用并定位项目素材节点', () =>
   assert.match(canvasSource, /function openCanvasAssetLibrary\(flowPosition = null\)/)
   assert.match(canvasSource, /canvasAssetPickerFlowPos\.value = flowPosition/)
   assert.match(canvasSource, /openCanvasAssetLibrary\(flowPosition\)/)
+  assert.match(canvasSource, /function openFreeNodeAssetLibrary\(nodeOrId\) \{\s*\n\s*const node = freeCanvasNodeById\(nodeOrId\)\s*\n\s*if \(node\?\.type !== 'homeCanvasNode' \|\| node\.data\?\.kind === 'text'\) return/)
+  assert.doesNotMatch(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode' \|\| node\.data\?\.kind === 'text'\) return/)
   assert.doesNotMatch(canvasSource, /router\.push\(\{ name: 'media-library' \}\)/)
   assert.match(canvasSource, /function normalizePickedAssetType\(asset\)/)
   assert.match(canvasSource, /async function ensureProjectMediaAsset\(asset\)/)
