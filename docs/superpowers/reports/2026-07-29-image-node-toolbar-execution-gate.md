@@ -7,7 +7,7 @@
 - 完成本轮所有非核验、非对口型图片节点工具。
 - 核验、侵权检测、版权判断和对口型继续搁置。
 - 目标环境为无 GPU 的线上轻量服务器。
-- 本报告不代表已创建 PR、推送分支或部署线上。
+- PR 已创建并完成四项 CI 审核；本报告不代表已部署线上。
 
 ## 已实现能力
 
@@ -31,7 +31,7 @@
 | 前端完整测试 | 426 / 426 通过 |
 | 后端完整测试 | 536 / 536 通过 |
 | 前端生产构建 | 通过 |
-| 合并后生产依赖审计 | 本地缓存库前后端均为 0 个漏洞；npm 在线接口连续返回 503，等待 PR CI 重放 |
+| 合并后生产依赖审计 | 本地缓存库前后端均为 0 个漏洞；PR `Production dependency gate` 通过 |
 | CPU 抠图 Python 依赖审计 | 0 个已知漏洞 |
 | 生产依赖许可证门禁 | 304 个包通过，缺失元数据必须有固定版本与来源覆盖 |
 | 图片节点发布边界门禁 | 283 个生产文件通过密钥、禁区与对口型隔离扫描 |
@@ -45,6 +45,8 @@
 | 禁区扫描 | 生产源码无核验、侵权或版权检测入口 |
 | 密钥扫描 | 未发现疑似硬编码密钥或私钥 |
 | `git diff --check` | 通过 |
+| PR 审核 | [#57](https://github.com/xiongpinji/molimamahuabu2/pull/57) 可合并 |
+| PR CI | 后端回归、画布浏览器回归、生产镜像、生产依赖四项均通过 |
 
 浏览器回归覆盖图片节点真实生成、入库、刷新恢复、节点配置和连线持久化，
 以及导演台状态、CC0 资产、MP4 工件下载。新增的图片工具栏专用同链回归
@@ -118,10 +120,13 @@ npm --prefix frontweb run test:e2e:image-node-real
   能力查询和新任务会立即读取当前配置。
 - 供应商产物下载器兼容 Node 新版 DNS `lookup({ all: true })` 契约，同时保留
   HTTPS、DNS 私网拒绝、重定向复查、内容类型和 64 MiB 流式上限。
+- 合并主线后补齐 Linux 与 Windows 的绝对路径语义差异：存储根内绝对参考图
+  可安全编码为 data URL，应用 `/static/` 路径保持正确解析，存储根外绝对路径
+  和软链接越界仍被拒绝。
 
-## 尚未解除的发布门槛
+## 发布状态
 
-本地工程门禁已通过，但 PR、CI 和线上部署尚未执行：
+本地工程门禁和 PR 四项 CI 已通过，线上部署尚未执行：
 
 - `real_provider_verified=true`
 - `production_image_built=true`
@@ -131,8 +136,9 @@ npm --prefix frontweb run test:e2e:image-node-real
 - `backend_readback=true`
 - `artifact_verified=true`
 - `failure_writeback=true`
-- `pr_created=false`
-- `ci_verified=false`
+- `pr_created=true`
+- `ci_verified=true`
 - `production_deployed=false`
 
-下一步只允许在代码审查和提交确认无误后创建 PR；CI 通过前不得部署线上。
+下一步按生产手册执行不可变镜像发布、数据库备份、独立数据卷预热、生产提升、
+线上同链冒烟与回滚验证；任一备份或预热门禁失败即停止发布。
