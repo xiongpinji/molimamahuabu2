@@ -2,6 +2,7 @@
   <article
     class="home-canvas-node"
     :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected }]"
+    :style="data.imageMarkerColor ? { '--image-node-marker': data.imageMarkerColor } : undefined"
   >
     <header class="node-heading">
       <span class="node-icon" aria-hidden="true">{{ kindIcon }}</span>
@@ -87,6 +88,12 @@
       </div>
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
     </section>
+
+    <ImageNodeToolbar
+      v-if="data.kind === 'image' && data.url"
+      :node-id="id"
+      :data="data"
+    />
 
     <Teleport to="body" :disabled="!editorFullscreen">
       <section
@@ -395,6 +402,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import ImageNodeToolbar from './ImageNodeToolbar.vue'
 
 const props = defineProps({
   id: { type: String, default: '' },
@@ -1229,6 +1237,7 @@ watch(isSelected, (selected) => {
 .node-error, .node-asset-error { margin: 10px 14px; color: #f87171; font-size: 11px; }
 .node-asset-error { color: #fbbf24; }
 .node-asset-error button { margin-left: 8px; }
+.kind-image::before { border-color: var(--image-node-marker, #3f3f46); }
 .state-running::before { border-color: #60a5fa; }
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }

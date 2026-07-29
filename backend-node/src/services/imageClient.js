@@ -167,7 +167,7 @@ async function callAihubccImageApi(config, log, opts = {}) {
   if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
   return aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
-    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 180),
+    maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });
@@ -209,6 +209,127 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
   const defaultOne = active.find((c) => c.is_default);
   if (defaultOne) return defaultOne;
   return active[0];
+}
+
+function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
+  return (
+    config.service_type === 'storyboard_image'
+    && provider === 'aihubcc'
+    && protocol === 'aihubcc'
+    && model === 'gpt-image-2-3.5k'
+  );
+}
+
+function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') {
+  let config = null;
+  try {
+    config = getDefaultImageConfig(db, null, null, imageServiceType);
+  } catch (_) {
+    return {
+      available: false,
+      reason: '图片模型配置尚未就绪',
+    };
+  }
+  if (!config) {
+    return {
+      available: false,
+      reason: '未配置已启用的参考图图片模型',
+    };
+  }
+  const model = getModelFromConfig(config);
+  const provider = String(config.provider || '').trim().toLowerCase();
+  const protocol = String(config.api_protocol || '').trim().toLowerCase()
+    || inferProtocol(provider, model);
+  let settings = {};
+  try {
+    settings = typeof config.settings === 'string'
+      ? JSON.parse(config.settings || '{}')
+      : (config.settings || {});
+  } catch (_) {}
+  const strictReferenceAdapterAudited = isAuditedReferenceImageAdapter(
+    config,
+    model,
+    provider,
+    protocol,
+  );
+  const operations = [];
+  if (settings.supports_outpaint === true && strictReferenceAdapterAudited) {
+    operations.push('outpaint');
+  }
+  if (settings.supports_markup_retouch === true && strictReferenceAdapterAudited) {
+    operations.push('markup_retouch');
+  }
+  if (settings.supports_upscale === true && strictReferenceAdapterAudited) {
+    operations.push('upscale');
+  }
+  if (settings.supports_detail_enhance === true && strictReferenceAdapterAudited) {
+    operations.push('detail_enhance');
+  }
+  const panoramaDeclared = settings.supports_panorama === true;
+  const panoramaSceneDeclared = settings.supports_panorama_scene === true;
+  const imageIdeationDeclared = settings.supports_image_ideation === true;
+  const referenceVariationDeclarations = [
+    ['angle_ideation', settings.supports_angle_ideation === true],
+    ['character_views', settings.supports_character_views === true],
+    ['narrative_grid', settings.supports_narrative_grid === true],
+    ['frame_forward', settings.supports_frame_forward === true],
+    ['frame_backward', settings.supports_frame_backward === true],
+  ];
+  const cinematicRelightDeclared = settings.supports_cinematic_relight === true;
+  if (panoramaDeclared && strictReferenceAdapterAudited) operations.push('panorama');
+  if (panoramaSceneDeclared && strictReferenceAdapterAudited) operations.push('panorama_scene');
+  if (imageIdeationDeclared && strictReferenceAdapterAudited) operations.push('image_ideation');
+  for (const [operation, declared] of referenceVariationDeclarations) {
+    if (declared && strictReferenceAdapterAudited) operations.push(operation);
+  }
+  if (cinematicRelightDeclared && strictReferenceAdapterAudited) {
+    operations.push('cinematic_relight');
+  }
+  if (operations.length === 0) {
+    if (
+      (
+        settings.supports_outpaint === true
+        || settings.supports_markup_retouch === true
+        || settings.supports_upscale === true
+        || settings.supports_detail_enhance === true
+        || panoramaDeclared
+        || panoramaSceneDeclared
+        || imageIdeationDeclared
+        || referenceVariationDeclarations.some(([, declared]) => declared)
+        || cinematicRelightDeclared
+      )
+      && !strictReferenceAdapterAudited
+    ) {
+      return {
+        available: false,
+        reason: `当前默认图片模型 ${model} 的参考图生成适配器尚未通过审计`,
+      };
+    }
+    return {
+      available: false,
+      reason: `当前默认图片模型 ${model} 未显式声明图片编辑或参考图生成能力`,
+    };
+  }
+  if (!strictReferenceAdapterAudited) {
+    return {
+      available: false,
+      reason: `当前默认图片模型 ${model} 的图片编辑或参考图生成适配器尚未通过审计`,
+    };
+  }
+  if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {
+    return {
+      available: false,
+      reason: '参考图编辑供应商配置不完整',
+    };
+  }
+  return {
+    available: true,
+    engine: 'provider-image-edit',
+    provider: provider || protocol,
+    protocol,
+    model,
+    operations,
+  };
 }
 
 // 与 Go image_generation_service 一致：openai/chatfire 使用 "/images/generations"，base_url 通常已含 /v1
@@ -955,6 +1076,8 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   }
 
   let relPath = null;
+  const isStaticPath = /^\/?static\//.test(s);
+  const absoluteInput = path.isAbsolute(s) && !isStaticPath;
   if (s.startsWith('http://') || s.startsWith('https://')) {
     if (!isLocalhost || !storageLocalPath) return s;
     // 从 URL 中提取 /static/ 之后的相对路径；或去掉 baseUrl 前缀
@@ -963,29 +1086,40 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
       || s.replace(/^https?:\/\/[^/]+\//, '');
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
-  } else if (storageLocalPath) {
+  } else if (storageLocalPath && !absoluteInput) {
     relPath = s.split(/[?#]/, 1)[0].replace(/^\/?static\//, '').replace(/^\/+/, '');
   }
-  if (!relPath) return toPublicUrl(s);
+  if (absoluteInput && !storageLocalPath) return null;
+  if (!relPath && !absoluteInput) return toPublicUrl(s);
   let decodedRelPath;
   try {
-    decodedRelPath = decodeURIComponent(relPath);
+    decodedRelPath = decodeURIComponent(absoluteInput ? s.split(/[?#]/, 1)[0] : relPath);
   } catch (_) {
     return toPublicUrl(s);
   }
   const storageRoot = path.resolve(storageLocalPath);
-  const filePath = path.resolve(storageRoot, decodedRelPath);
+  const filePath = absoluteInput ? path.resolve(decodedRelPath) : path.resolve(storageRoot, decodedRelPath);
   if (filePath !== storageRoot && !filePath.startsWith(storageRoot + path.sep)) {
-    return toPublicUrl(s);
+    return absoluteInput ? null : toPublicUrl(s);
   }
   try {
-    if (!fs.existsSync(filePath)) return toPublicUrl(s);
-    const buf = fs.readFileSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
+    const realStorageRoot = fs.realpathSync.native(storageRoot);
+    const realFilePath = fs.realpathSync.native(filePath);
+    const relative = path.relative(realStorageRoot, realFilePath);
+    if (
+      !relative
+      || relative.startsWith('..')
+      || path.isAbsolute(relative)
+      || !fs.statSync(realFilePath).isFile()
+    ) {
+      return null;
+    }
+    const buf = fs.readFileSync(realFilePath);
+    const ext = path.extname(realFilePath).toLowerCase();
     const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
     return 'data:' + mime + ';base64,' + buf.toString('base64');
-  } catch (e) {
-    return toPublicUrl(s);
+  } catch (_) {
+    return path.isAbsolute(s) ? null : toPublicUrl(s);
   }
 }
 
@@ -1729,7 +1863,10 @@ async function callImageApi(db, log, opts) {
       : ('图片生成网络请求失败: ' + e.message) };
   }
   if (httpStatus < 200 || httpStatus >= 300) {
-    log.error('Image API failed', { status: httpStatus, body: raw.slice(0, 300) });
+    log.error('Image API failed', {
+      status: httpStatus,
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
+    });
     let errMsg = '图片生成请求失败: ' + httpStatus;
     try {
       const errJson = JSON.parse(raw);
@@ -1744,7 +1881,10 @@ async function callImageApi(db, log, opts) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    log.warn('Image API response parse error', { image_gen_id, raw_preview: raw.slice(0, 200) });
+    log.warn('Image API response parse error', {
+      image_gen_id,
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
+    });
     return { error: '图片生成返回格式异常' };
   }
   // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
@@ -1766,7 +1906,7 @@ async function callImageApi(db, log, opts) {
       image_gen_id,
       model,
       response_keys: data ? Object.keys(data) : [],
-      data_preview: data ? JSON.stringify(data).slice(0, 500) : '',
+      response_bytes: Buffer.byteLength(raw || '', 'utf8'),
       has_data_array: !!(data.data && Array.isArray(data.data)),
       first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
     });
@@ -2166,6 +2306,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getDefaultImageConfig,
+  getReferenceImageCapability,
   callAihubccImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,

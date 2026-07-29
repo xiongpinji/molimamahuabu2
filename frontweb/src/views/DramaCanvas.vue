@@ -407,6 +407,7 @@
       :visible="directorStageVisible"
       :drama="drama"
       :initial-state="directorTimeline"
+      :entry-context="directorStageEntry"
       @close="closeDirectorStage"
       @state-change="onDirectorStateChange"
       @asset-created="onDirectorAssetCreated"
@@ -572,6 +573,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
+import { imageToolsAPI } from '@/api/imageTools'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
@@ -735,6 +737,8 @@ const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
+const directorStageEntry = ref(null)
+const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose'])
 let directorReturnFocus = null
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
@@ -881,13 +885,22 @@ const freeNodeContentPlaceholder = computed(() => (
     : `描述希望生成的${freeNodeKindLabel.value}内容`
 ))
 
-function openDirectorStage() {
+function openDirectorStage(entryContext = null) {
   directorReturnFocus = document.activeElement
+  directorStageEntry.value = DIRECTOR_STAGE_ENTRY_MODES.has(entryContext?.mode)
+    ? {
+        mode: entryContext.mode,
+        imageUrl: String(entryContext.imageUrl || ''),
+        sourceNodeId: String(entryContext.sourceNodeId || ''),
+        sourceTitle: String(entryContext.sourceTitle || '图片节点'),
+      }
+    : null
   directorStageVisible.value = true
 }
 
 async function closeDirectorStage() {
   directorStageVisible.value = false
+  directorStageEntry.value = null
   await nextTick()
   directorReturnFocus?.focus?.()
   directorReturnFocus = null
@@ -2867,6 +2880,190 @@ async function retryFreeCanvasAssetSave(nodeOrId) {
   } catch (error) {
     ElMessage.error(error?.message || '存入素材库失败')
   }
+}
+
+const IMAGE_TOOL_POLL_INTERVAL_MS = 2000
+const IMAGE_TOOL_POLL_MAX_ATTEMPTS = 2400
+
+function parseImageToolTaskResult(task) {
+  if (task?.result && typeof task.result === 'object') return task.result
+  if (typeof task?.result === 'string' && task.result.trim()) {
+    try {
+      return JSON.parse(task.result)
+    } catch {
+      throw new Error('图片处理任务返回了无效结果')
+    }
+  }
+  throw new Error('图片处理任务未返回结果')
+}
+
+async function waitForImageToolOperation(taskId) {
+  for (let attempt = 0; attempt < IMAGE_TOOL_POLL_MAX_ATTEMPTS; attempt += 1) {
+    const task = await imageToolsAPI.getOperation(taskId)
+    if (task?.status === 'completed') return parseImageToolTaskResult(task)
+    if (task?.status === 'failed') throw new Error(task.error || task.message || '图片处理失败')
+    await new Promise((resolve) => setTimeout(resolve, IMAGE_TOOL_POLL_INTERVAL_MS))
+  }
+  const error = new Error('图片仍在后台处理中，请稍后刷新查看')
+  error.code = 'IMAGE_TOOL_POLL_TIMEOUT'
+  throw error
+}
+
+async function completeImageToolOperation(nodeId, operation, result, previousHistory = []) {
+  const historyItem = {
+    taskId: result.taskId,
+    operation,
+    status: result.status,
+    resultAssetId: result.resultAssetId,
+    resultUrl: result.resultUrl,
+    createdAt: new Date().toISOString(),
+  }
+  await patchFreeCanvasNodeData(nodeId, {
+    url: result.resultUrl,
+    savedAssetId: String(result.resultAssetId || ''),
+    imageToolTaskId: result.taskId,
+    imageToolStatus: 'success',
+    imageToolError: '',
+    imageToolRetryOperation: '',
+    imageToolRetryParameters: null,
+    imageToolResultAssets: result.resultAssets || [],
+    imageToolHistory: [historyItem, ...previousHistory].slice(0, 20),
+    assetSaveStatus: 'success',
+    assetSaveError: '',
+  })
+}
+
+async function runImageNodeTool(nodeOrId, operation, parameters = {}) {
+  let node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可处理的独立画布图片节点')
+  }
+  const previousUrl = String(node.data?.url || '')
+  if (!previousUrl) throw new Error('图片节点暂无可处理结果')
+
+  let sourceAssetId = node.data?.savedAssetId
+  if (!sourceAssetId) {
+    const savedAsset = await saveFreeCanvasResultAsset(
+      node,
+      'image',
+      previousUrl,
+      null,
+      node.data?.taskId || '',
+    )
+    sourceAssetId = savedAsset?.id
+    node = freeCanvasNodeById(node.id) || node
+  }
+  if (!sourceAssetId) throw new Error('图片尚未存入素材库，无法执行处理')
+
+  const previousHistory = Array.isArray(node.data?.imageToolHistory)
+    ? node.data.imageToolHistory
+    : []
+  await patchFreeCanvasNodeData(node.id, {
+    imageToolStatus: 'running',
+    imageToolError: '',
+    imageToolRetryOperation: operation,
+    imageToolRetryParameters: parameters,
+  })
+  let activeTaskId = ''
+  try {
+    const accepted = await imageToolsAPI.createOperation({
+      assetId: node.data?.savedAssetId || sourceAssetId,
+      sourceNodeId: String(node.id),
+      operation,
+      parameters,
+    })
+    if (accepted?.status === 'processing' && accepted?.taskId) {
+      activeTaskId = String(accepted.taskId)
+      resumedImageToolTasks.add(activeTaskId)
+      await patchFreeCanvasNodeData(node.id, {
+        imageToolTaskId: accepted.taskId,
+        imageToolStatus: 'running',
+      })
+    }
+    const result = accepted?.status === 'processing'
+      ? await waitForImageToolOperation(accepted.taskId)
+      : accepted
+    await completeImageToolOperation(node.id, operation, result, previousHistory)
+    if (activeTaskId) resumedImageToolTasks.delete(activeTaskId)
+    return result
+  } catch (error) {
+    if (activeTaskId) resumedImageToolTasks.delete(activeTaskId)
+    if (error?.code === 'IMAGE_TOOL_POLL_TIMEOUT') {
+      await patchFreeCanvasNodeData(node.id, {
+        imageToolStatus: 'running',
+        imageToolError: error.message,
+      })
+      throw error
+    }
+    await patchFreeCanvasNodeData(node.id, {
+      url: previousUrl,
+      imageToolStatus: 'failed',
+      imageToolError: error?.message || '图片处理失败',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: parameters,
+    })
+    throw error
+  }
+}
+
+const resumedImageToolTasks = new Set()
+
+function resumePendingImageToolOperations() {
+  for (const node of allGraphNodes.value) {
+    const taskId = String(node.data?.imageToolTaskId || '')
+    if (node.type !== 'homeCanvasNode'
+      || node.data?.kind !== 'image'
+      || node.data?.imageToolStatus !== 'running'
+      || !taskId
+      || resumedImageToolTasks.has(taskId)) continue
+    resumedImageToolTasks.add(taskId)
+    const operation = String(node.data?.imageToolRetryOperation || '')
+    const previousHistory = Array.isArray(node.data?.imageToolHistory)
+      ? node.data.imageToolHistory
+      : []
+    waitForImageToolOperation(taskId)
+      .then((result) => completeImageToolOperation(node.id, operation, result, previousHistory))
+      .catch(async (error) => {
+        if (error?.code === 'IMAGE_TOOL_POLL_TIMEOUT') {
+          resumedImageToolTasks.delete(taskId)
+          return
+        }
+        await patchFreeCanvasNodeData(node.id, {
+          imageToolStatus: 'failed',
+          imageToolError: error?.message || '图片处理失败',
+        })
+      })
+  }
+}
+
+async function replaceFreeCanvasNodeImage(nodeOrId, file) {
+  const node = freeCanvasNodeById(nodeOrId)
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || node.data?.kind !== 'image') {
+    throw new Error('该节点不是可替换的独立画布图片节点')
+  }
+  if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件')
+  if (!drama.value?.id) throw new Error('项目信息不完整，无法上传图片')
+  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!asset?.id || !asset?.url) throw new Error('图片上传成功但未返回素材记录')
+  await patchFreeCanvasNodeData(node.id, {
+    url: asset.url,
+    savedAssetId: String(asset.id),
+    status: 'success',
+    error: '',
+    assetSaveStatus: 'success',
+    assetSaveError: '',
+    imageToolStatus: '',
+    imageToolError: '',
+    imageToolRetryOperation: '',
+    imageToolRetryParameters: null,
+  })
+  return asset
+}
+
+function setFreeCanvasNodeMarker(nodeOrId, color) {
+  return patchFreeCanvasNodeData(nodeOrId, {
+    imageMarkerColor: String(color || ''),
+  })
 }
 
 function canvasNodeLabel(node) {
@@ -5181,6 +5378,9 @@ provide(CANVAS_CONTEXT_KEY, {
   runSelectedStandaloneGroup,
   translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
+  runImageNodeTool,
+  replaceFreeCanvasNodeImage,
+  setFreeCanvasNodeMarker,
 })
 
 function clearAssetHighlight() {
@@ -6440,6 +6640,10 @@ watch(filterEpisodeId, async (val) => {
 })
 
 watch(focusedNodeId, () => scheduleVirtualization())
+
+watch(allGraphNodes, () => {
+  resumePendingImageToolOperations()
+})
 
 watch(() => dramaId.value, () => {
   restoreNodeStatusSnapshot()

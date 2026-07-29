@@ -1,6 +1,28 @@
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
+const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
+  crop: ['left', 'top', 'width', 'height'],
+  compress: ['format', 'quality'],
+  mirror: ['direction'],
+  rotate: ['angle'],
+  grid_crop: ['rows', 'columns'],
+  smart_cutout: [],
+  selection_cutout: ['left', 'top', 'width', 'height'],
+  upscale: ['scale'],
+  adjust: ['brightness', 'saturation', 'contrast', 'temperature'],
+  lut: ['preset'],
+  cinematic_relight: ['preset', 'intensity', 'description'],
+  panorama: ['description'],
+  panorama_scene: ['description'],
+  image_ideation: ['description'],
+  angle_ideation: ['description'],
+  character_views: ['description'],
+  narrative_grid: ['description'],
+  frame_forward: ['description'],
+  frame_backward: ['description'],
+})
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
@@ -77,6 +99,69 @@ function firstString(...values) {
   return ''
 }
 
+function normalizeImageToolHistory(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 20).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const taskId = cleanString(item.taskId)
+    const operation = cleanString(item.operation)
+    if (!taskId || !operation) return null
+    return withoutEmptyFields({
+      taskId,
+      operation,
+      status: cleanString(item.status),
+      resultAssetId: positiveInteger(item.resultAssetId),
+      resultUrl: cleanString(item.resultUrl),
+      createdAt: cleanString(item.createdAt),
+    })
+  }).filter(Boolean)
+}
+
+function normalizeImageToolResultAssets(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 25).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const id = positiveInteger(item.id)
+    const url = cleanString(item.url)
+    return id && url ? { id, url } : null
+  }).filter(Boolean)
+}
+
+function normalizeImageToolRetryParameters(operation, value) {
+  const keys = IMAGE_TOOL_RETRY_PARAMETERS[operation]
+  if (!keys) return undefined
+  if (keys.length === 0) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const stringLimits = operation === 'cinematic_relight'
+    ? { preset: 32, description: 300 }
+    : (
+      [
+        'panorama',
+        'panorama_scene',
+        'image_ideation',
+        'angle_ideation',
+        'character_views',
+        'narrative_grid',
+        'frame_forward',
+        'frame_backward',
+      ].includes(operation)
+        ? { description: 300 }
+        : {}
+    )
+  const parameters = {}
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'string') {
+      const limit = stringLimits[key] || 32
+      if (candidate.length > limit) return undefined
+      parameters[key] = candidate
+    }
+  }
+  return Object.keys(parameters).length ? parameters : undefined
+}
+
 export function normalizeFreeCanvasNodeData(data = {}) {
   const kind = cleanString(data.kind)
   if (!FREE_NODE_KINDS.has(kind)) return null
@@ -124,6 +209,33 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     if (FREE_NODE_ASSET_SAVE_STATUSES.has(assetSaveStatus)) normalized.assetSaveStatus = assetSaveStatus
   }
   if (Object.hasOwn(data, 'assetSaveError')) normalized.assetSaveError = cleanString(data.assetSaveError)
+  if (kind === 'image') {
+    const markerColor = cleanString(data.imageMarkerColor)
+    if (/^#[0-9a-f]{6}$/i.test(markerColor)) normalized.imageMarkerColor = markerColor
+    if (Object.hasOwn(data, 'imageToolTaskId')) {
+      normalized.imageToolTaskId = cleanString(data.imageToolTaskId)
+    }
+    const imageToolStatus = cleanString(data.imageToolStatus)
+    if (IMAGE_TOOL_STATUSES.has(imageToolStatus)) normalized.imageToolStatus = imageToolStatus
+    if (Object.hasOwn(data, 'imageToolError')) {
+      normalized.imageToolError = cleanString(data.imageToolError)
+    }
+    const retryOperation = cleanString(data.imageToolRetryOperation)
+    const retryParameters = normalizeImageToolRetryParameters(
+      retryOperation,
+      data.imageToolRetryParameters,
+    )
+    if (retryParameters) {
+      normalized.imageToolRetryOperation = retryOperation
+      normalized.imageToolRetryParameters = retryParameters
+    }
+    if (Object.hasOwn(data, 'imageToolHistory')) {
+      normalized.imageToolHistory = normalizeImageToolHistory(data.imageToolHistory)
+    }
+    if (Object.hasOwn(data, 'imageToolResultAssets')) {
+      normalized.imageToolResultAssets = normalizeImageToolResultAssets(data.imageToolResultAssets)
+    }
+  }
   return Object.fromEntries(
     Object.entries(normalized).filter(([, value]) => value !== undefined)
   )

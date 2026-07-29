@@ -51,6 +51,164 @@ test('自由节点写入 canvas_layout 并可恢复', () => {
   assert.deepEqual(resolveFreeCanvasNodes(layout), [node])
 })
 
+test('图片工具状态、历史、标记色和多结果随自由节点持久化', () => {
+  const node = {
+    id: 'free:image:tool-state',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '图片工具状态',
+      content: '',
+      url: '/static/derived/result.webp',
+      imageMarkerColor: '#34d399',
+      imageToolTaskId: 'task-1',
+      imageToolStatus: 'success',
+      imageToolError: '',
+      imageToolRetryOperation: 'adjust',
+      imageToolRetryParameters: {
+        brightness: 1.2,
+        saturation: 0.8,
+        contrast: 1.1,
+        temperature: 0.4,
+      },
+      imageToolHistory: [{
+        taskId: 'task-1',
+        operation: 'grid_crop',
+        status: 'success',
+        resultAssetId: 42,
+        resultUrl: '/static/derived/result.webp',
+        createdAt: '2026-07-28T12:00:00.000Z',
+      }],
+      imageToolResultAssets: [
+        { id: 42, url: '/static/derived/result.webp' },
+        { id: 43, url: '/static/derived/result-2.webp' },
+      ],
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageMarkerColor, '#34d399')
+  assert.equal(restored.data.imageToolTaskId, 'task-1')
+  assert.equal(restored.data.imageToolStatus, 'success')
+  assert.equal(restored.data.imageToolRetryOperation, 'adjust')
+  assert.deepEqual(restored.data.imageToolRetryParameters, node.data.imageToolRetryParameters)
+  assert.deepEqual(restored.data.imageToolHistory, node.data.imageToolHistory)
+  assert.deepEqual(restored.data.imageToolResultAssets, node.data.imageToolResultAssets)
+})
+
+test('智能抠图失败重试操作随自由节点持久化且不接受额外参数', () => {
+  const node = {
+    id: 'free:image:smart-cutout-retry',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '智能抠图失败',
+      content: '',
+      url: '/static/source.png',
+      imageToolStatus: 'failed',
+      imageToolError: '智能抠图处理失败，请检查本地引擎配置',
+      imageToolRetryOperation: 'smart_cutout',
+      imageToolRetryParameters: { command: 'never-persist-this' },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageToolStatus, 'failed')
+  assert.equal(restored.data.imageToolRetryOperation, 'smart_cutout')
+  assert.deepEqual(restored.data.imageToolRetryParameters, {})
+})
+
+test('框选抠图重试只持久化矩形像素参数', () => {
+  const node = {
+    id: 'free:image:selection-cutout-retry',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '框选抠图失败',
+      content: '',
+      url: '/static/source.png',
+      imageToolStatus: 'failed',
+      imageToolRetryOperation: 'selection_cutout',
+      imageToolRetryParameters: {
+        left: 2,
+        top: 3,
+        width: 120,
+        height: 80,
+        command: 'never-persist-this',
+      },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageToolRetryOperation, 'selection_cutout')
+  assert.deepEqual(restored.data.imageToolRetryParameters, {
+    left: 2,
+    top: 3,
+    width: 120,
+    height: 80,
+  })
+})
+
+test('高清增强重试只持久化倍率参数', () => {
+  const node = {
+    id: 'free:image:upscale-retry',
+    type: 'homeCanvasNode',
+    position: { x: 12, y: 34 },
+    data: {
+      kind: 'image',
+      title: '高清增强失败',
+      content: '',
+      url: '/static/source.png',
+      imageToolStatus: 'failed',
+      imageToolRetryOperation: 'upscale',
+      imageToolRetryParameters: {
+        scale: 3,
+        command: 'never-persist-this',
+        modelDir: 'never-persist-this',
+      },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [node],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const restored = resolveFreeCanvasNodes(layout)[0]
+
+  assert.equal(restored.data.imageToolRetryOperation, 'upscale')
+  assert.deepEqual(restored.data.imageToolRetryParameters, { scale: 3 })
+})
+
 test('独立画布图谱不生成剧集骨架且保留自由节点和连线', () => {
   assert.match(adapterSource, /function buildStandaloneCanvasGraph\(savedLayout, projectAssets = \[\]\)/)
   assert.match(adapterSource, /resolveFreeCanvasNodes\(savedLayout\)/)

@@ -9,8 +9,9 @@
     "build:public": "node scripts/build-public.mjs",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:image-node-real": "node scripts/run-real-aihubcc-image-node-chain.mjs",
     "test:e2e:home": "playwright test e2e/home-canvas.spec.js",
-    "test:e2e:canvas": "playwright test e2e/home-canvas.spec.js e2e/project-canvas-ci.spec.js e2e/project-canvas-backend-integration.spec.js",
+    "test:e2e:canvas": "playwright test e2e/home-canvas.spec.js e2e/project-canvas-ci.spec.js e2e/project-canvas-backend-integration.spec.js e2e/image-node-toolbar-backend-integration.spec.js",
     "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@vue-flow/core": "^1.48.2",
     "@vue-flow/minimap": "^1.5.4",
     "axios": "^1.18.1",
+    "cropperjs": "1.6.2",
     "element-plus": "^2.5.0",
     "pinia": "^2.1.0",
     "threepipe": "^0.5.1",

@@ -18,6 +18,7 @@ const imageRoutes = require('./images');
 const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
+const imageToolRoutes = require('./imageTools');
 const audioRoutes = require('./audio');
 const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
@@ -182,6 +183,11 @@ function setupRouter(cfg, db, log) {
   const videos = videoRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const videoMerges = videoMergeRoutes(db, log);
   const assets = assetRoutes(db, log, { publicPlatformEnabled });
+  const imageTools = imageToolRoutes(db, log, {
+    publicPlatformEnabled,
+    cfg,
+    backgroundOperations: true,
+  });
   const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
@@ -466,6 +472,9 @@ function setupRouter(cfg, db, log) {
   r.get('/assets/:id', assets.get);
   r.put('/assets/:id', assets.update);
   r.delete('/assets/:id', assets.delete);
+  r.get('/image-tools/capabilities', imageTools.capabilities);
+  r.post('/image-tools/operations', imageTools.createOperation);
+  r.get('/image-tools/operations/:taskId', imageTools.getOperation);
 
   // ---------- storyboards ----------
   r.get('/storyboards/episode/:episode_id/generate', storyboards.episodeStoryboardsGenerate);

@@ -210,17 +210,27 @@
             <span>动作：{{ directorResourceStatusLabel(selectedActionResourceState) }}<template v-if="selectedActionResourceState.message"> · {{ selectedActionResourceState.message }}</template></span>
             <button v-if="selectedActionResourceState.status === 'error'" type="button" class="small-button" @click="retrySelectedActionResource">重试</button>
           </div>
-          <section v-if="selectedModelResourceState.status === 'ready'" class="bone-editor" aria-label="骨骼姿态">
-            <div class="stage-section__title">骨骼姿态</div>
-            <template v-if="selectedCharacterBones.length">
-              <div class="pose-presets" aria-label="姿势预设">
-                <button v-for="preset in POSE_PRESETS" :key="preset.name" type="button" class="small-button" @click="applyPosePreset(preset)">{{ preset.name }}</button>
-              </div>
-              <div class="semantic-pose-controls" aria-label="姿势调节">
-                <label v-for="control in availableSemanticControls" :key="`${control.semantic}-${control.axis}`">{{ control.label }}
-                  <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
-                </label>
-              </div>
+          <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
+        </section>
+        <section
+          v-if="isSelectedProceduralCharacter || selectedModelResourceState.status === 'ready'"
+          ref="poseEditorRef"
+          class="stage-section bone-editor"
+          aria-label="骨骼姿态"
+          tabindex="-1"
+        >
+          <div class="stage-section__title">骨骼姿态</div>
+          <div v-if="isSelectedProceduralCharacter" class="resource-tip">程序化 3D 角色关节，可直接预演并保存姿势。</div>
+          <template v-if="isSelectedProceduralCharacter || selectedCharacterBones.length">
+            <div class="pose-presets" aria-label="姿势预设">
+              <button v-for="preset in POSE_PRESETS" :key="preset.name" type="button" class="small-button" @click="applyPosePreset(preset)">{{ preset.name }}</button>
+            </div>
+            <div class="semantic-pose-controls" aria-label="姿势调节">
+              <label v-for="control in availableSemanticControls" :key="`${control.semantic}-${control.axis}`">{{ control.label }}
+                <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
+              </label>
+            </div>
+            <template v-if="!isSelectedProceduralCharacter">
               <label>关节
                 <select v-model="selectedBoneName" aria-label="选择骨骼">
                   <option v-for="bone in selectedCharacterBones" :key="bone.name" :value="bone.name">{{ bone.name }}</option>
@@ -236,9 +246,8 @@
               </div>
               <button type="button" class="small-button" @click="resetSelectedBone">重置当前关节</button>
             </template>
-            <div v-else class="stage-empty">模型不含骨骼</div>
-          </section>
-          <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
+          </template>
+          <div v-else class="stage-empty">模型不含骨骼</div>
         </section>
         </template>
       </aside>
@@ -260,6 +269,15 @@
           <span><i class="stage-dot stage-dot--prop" />道具</span>
           <span v-if="activeShot">当前：{{ activeShot.name }}</span>
         </div>
+        <section v-if="entryReferenceUrl" class="director-entry-reference" aria-label="图片节点参考图">
+          <strong>当前图片参考</strong>
+          <img :src="entryReferenceUrl" :alt="entryReferenceTitle" />
+          <small>{{ entryReferenceTitle }}</small>
+          <span v-if="lightingEntry">3D 灯光预演，不直接修改原图；截图会生成新素材。</span>
+          <span v-else-if="angleEntry">3D 机位角度预演，不直接修改原图；添加或选择机位后可截图生成新素材。</span>
+          <span v-else-if="poseEntry">3D 角色姿势预演，不直接修改原图；添加或选择 3D 角色后可调整骨骼姿势。</span>
+          <span v-else>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
+        </section>
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
         <div v-else-if="errorMessage" class="director-stage__error">{{ errorMessage }}</div>
 
@@ -331,10 +349,10 @@
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
           <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
           <button type="button" :class="{ active: transformMode === 'rotate' }" aria-label="旋转工具" title="旋转 (E)" @click="setTransformMode('rotate')">⟳</button>
-          <button type="button" aria-label="添加男性角色" title="添加男性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♂</button>
+          <button ref="addRoleButtonRef" type="button" aria-label="添加男性角色" title="添加男性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♂</button>
           <button type="button" aria-label="添加女性角色" title="添加女性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[1])">♀</button>
           <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
-          <button type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
+          <button ref="addCameraButtonRef" type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
           <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
           <button type="button" :disabled="capturing || initializing" aria-label="截图" title="截图" @click="captureToCanvasAsset">◎</button>
           <button ref="aiImportButtonRef" type="button" aria-label="AI 识图导入" title="AI 识图导入" @click="aiImportOpen = true">◫</button>
@@ -378,7 +396,7 @@
             <div class="vector-row"><label v-for="(axis, index) in axes" :key="`s-${axis}`">{{ axis }}<input type="number" min="0.0001" step="0.1" :value="selectedInspectorTransform.scale[index]" @change="updateObjectScale(index, $event.target.value, $event.shiftKey)" /></label></div>
           </div>
           <template v-if="selectedCamera">
-            <div class="inspector-group"><strong>相机</strong>
+            <div ref="cameraEditorRef" class="inspector-group"><strong>相机</strong>
               <label>构图预设
                 <select aria-label="构图预设" @change="applyCameraPreset($event.target.value)">
                   <option value="">选择机位视角</option>
@@ -431,8 +449,8 @@
           </section>
         </template>
         <div v-else class="stage-empty">在场景树中选择对象以编辑属性</div>
-        <section class="inspector-group environment-editor">
-          <strong>3D 场景</strong>
+        <section ref="environmentEditorRef" class="inspector-group environment-editor">
+          <strong>{{ lightingEntry ? '3D 灯光' : '3D 场景' }}</strong>
           <label>场景缩放<input type="range" min="0.1" max="5" step="0.1" :value="timeline.environment.sceneScale" @input="updateEnvironment('sceneScale', $event.target.value)" /></label>
           <div class="inspector-group"><strong>场景平移</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="timeline.environment.scenePosition[index]" @change="updateEnvironmentVector('scenePosition', index, $event.target.value)" /></label></div></div>
           <div class="inspector-group"><strong>场景旋转（度）</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(timeline.environment.sceneRotation[index])" @change="updateEnvironmentRotation(index, $event.target.value)" /></label></div></div>
@@ -526,6 +544,7 @@ import {
   appendShot,
   createDirectorTimeline,
   findActiveActionClips,
+  findActiveCameraObject,
   findActiveShot,
   normalizeDirectorTimeline,
   proportionalScaleFromAxis,
@@ -625,11 +644,17 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   drama: { type: Object, default: null },
   initialState: { type: Object, default: null },
+  entryContext: { type: Object, default: null },
 })
 
 const emit = defineEmits(['close', 'state-change', 'asset-created'])
 const dialogRef = ref(null)
 const aiImportModalRef = ref(null)
+const environmentEditorRef = ref(null)
+const cameraEditorRef = ref(null)
+const addCameraButtonRef = ref(null)
+const poseEditorRef = ref(null)
+const addRoleButtonRef = ref(null)
 const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
@@ -690,6 +715,11 @@ let pickingPlugin = null
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
 const propsList = computed(() => props.drama?.props || [])
+const entryReferenceUrl = computed(() => String(props.entryContext?.imageUrl || '').trim())
+const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitle || '图片节点参考图').trim())
+const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
+const angleEntry = computed(() => props.entryContext?.mode === 'angle')
+const poseEntry = computed(() => props.entryContext?.mode === 'pose')
 const characterEntries = computed(() => {
   const entries = characters.value.map((character, index) => ({
     id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
@@ -1314,6 +1344,11 @@ function addRoleArchetype(role) {
   selectedObjectId.value = next.objects.at(-1)?.id || ''
   mutateTimeline(next)
   buildStage()
+  if (poseEntry.value) {
+    nextTick(() => {
+      if (poseEntry.value) poseEditorRef.value?.focus()
+    })
+  }
 }
 
 function addCrowd() {
@@ -1365,6 +1400,40 @@ function selectSceneObject(objectId) {
 function selectEnvironmentInspector() {
   selectedObjectId.value = ''
   inspectorTab.value = 'properties'
+}
+
+function applyEntryContext() {
+  if (!['director_stage', 'lighting', 'angle', 'pose'].includes(props.entryContext?.mode)) return
+  workspaceMode.value = (angleEntry.value || poseEntry.value) ? 'animation' : 'scene'
+  viewMode.value = 'director'
+  if (poseEntry.value) {
+    inspectorTab.value = 'properties'
+    const poseableObject = timeline.value.objects.find((object) => ['character', 'humanoid'].includes(object.type))
+    if (poseableObject) selectSceneObject(poseableObject.id)
+    else selectedObjectId.value = ''
+    nextTick(() => {
+      if (!poseEntry.value) return
+      if (poseableObject) poseEditorRef.value?.focus()
+      else addRoleButtonRef.value?.focus()
+    })
+    return
+  }
+  if (angleEntry.value) {
+    inspectorTab.value = 'properties'
+    const activeCameraObject = findActiveCameraObject(timeline.value)
+    if (activeCameraObject) selectSceneObject(activeCameraObject.id)
+    else selectedObjectId.value = ''
+    nextTick(() => {
+      if (!angleEntry.value) return
+      if (activeCameraObject) cameraEditorRef.value?.scrollIntoView({ block: 'start' })
+      else addCameraButtonRef.value?.focus()
+    })
+    return
+  }
+  if (lightingEntry.value) selectEnvironmentInspector()
+  if (lightingEntry.value) {
+    nextTick(() => environmentEditorRef.value?.scrollIntoView({ block: 'start' }))
+  }
 }
 
 function updateSelectedObject(patch) {
@@ -2556,11 +2625,14 @@ onMounted(async () => {
   await nextTick()
   applyTimelineState(props.initialState || createDirectorTimeline(characters.value), { emitChange: false })
   await initialize()
+  applyEntryContext()
 })
 
 watch(() => props.drama?.id, () => {
   void loadProjectAssets()
 })
+
+watch(() => props.entryContext, applyEntryContext, { deep: true })
 
 watch(selectedCharacterId, (characterId) => {
   const bones = characterBones.value[String(characterId)] || []
@@ -2712,6 +2784,10 @@ onBeforeUnmount(() => {
 .director-stage__canvas { width: 100%; height: 100%; display: block; outline: none; }
 .director-stage__legend { position: absolute; right: 16px; top: 16px; display: flex; gap: 12px; padding: 8px 10px; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 9px; background: rgba(24, 24, 27, 0.82); color: #a1a1aa; font-size: 11px; }
 .director-stage__legend span { display: inline-flex; align-items: center; gap: 5px; }
+.director-entry-reference { position: absolute; top: 54px; left: 16px; z-index: 4; display: grid; gap: 6px; width: 168px; padding: 10px; border: 1px solid rgba(129, 140, 248, 0.5); border-radius: 10px; background: rgba(9, 9, 11, 0.88); color: #d4d4d8; font-size: 10px; }
+.director-entry-reference img { width: 100%; max-height: 120px; border-radius: 6px; object-fit: contain; background: #09090b; }
+.director-entry-reference small { overflow: hidden; color: #a5b4fc; text-overflow: ellipsis; white-space: nowrap; }
+.director-entry-reference span { color: #a1a1aa; line-height: 1.4; }
 .director-stage__loading, .director-stage__error { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); color: #a1a1aa; font-size: 13px; }
 .director-stage__error { color: #fca5a5; }
 .timeline-panel { position: absolute; right: 12px; bottom: 74px; left: 12px; z-index: 3; padding: 10px 12px 12px; border: 1px solid #3f3f46; border-radius: 12px; background: rgba(24, 24, 27, 0.94); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32); backdrop-filter: blur(14px); }

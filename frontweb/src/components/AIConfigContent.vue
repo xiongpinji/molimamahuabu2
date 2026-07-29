@@ -365,6 +365,15 @@
           style="margin-bottom: 18px"
         />
 
+        <el-alert
+          v-if="auditedImageToolReferenceConfig"
+          type="success"
+          :closable="false"
+          show-icon
+          title="该配置已匹配通过审计的 AIHubCC gpt-image-2-3.5k 参考图适配器；保存后将启用图片节点的扩图、修图、光影、全景与参考图推演能力。"
+          style="margin-bottom: 18px"
+        />
+
         <!-- 接口规范帮助 Dialog -->
         <el-dialog v-model="showProtocolHelp" class="moli-dark-dialog" title="接口规范说明" width="700px" top="5vh">
           <div class="protocol-help">
@@ -1152,6 +1161,10 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
+import {
+  applyImageToolReferenceCapabilities,
+  isAuditedImageToolReferenceConfig,
+} from '@/utils/imageToolProviderCapabilities'
 import { videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import {
   AIHUBCC_IMAGE_MODELS,
@@ -1263,6 +1276,14 @@ const form = ref({
 const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
+const auditedImageToolReferenceConfig = computed(() => (
+  isAuditedImageToolReferenceConfig({
+    serviceType: form.value.service_type,
+    provider: form.value.provider,
+    protocol: form.value.api_protocol,
+    model: form.value.default_model || formModelList.value[0],
+  })
+))
 
 // 保证「生成时默认使用」下拉有可选且选中值在列表内，否则会不显示或修改无效
 watch(
@@ -2010,6 +2031,15 @@ async function submit() {
       else delete baseS.kling_secret_key
       if (form.value.kling_secret_key_base64) baseS.kling_secret_key_base64 = true
       else delete baseS.kling_secret_key_base64
+      settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
+    } else if (form.value.service_type === 'storyboard_image') {
+      const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
+      const baseS = applyImageToolReferenceCapabilities(parseSettings(prev?.settings), {
+        serviceType: form.value.service_type,
+        provider: form.value.provider,
+        protocol: form.value.api_protocol,
+        model: defaultModel,
+      })
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
     } else if (isDeepSeekOfficialForm.value) {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null

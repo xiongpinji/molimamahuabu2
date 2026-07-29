@@ -162,7 +162,7 @@ test('自由节点运行结果可轮询、失败写回、成功自动入库并�
   assert.match(canvasSource, /assetSaveStatus: 'success'[\s\S]*assetSaveError: ''[\s\S]*savedAssetId: String\(savedAsset\?\.id \|\| ''\)/)
   assert.match(canvasSource, /assetSaveStatus: 'failed'[\s\S]*assetSaveError: error\?\.message \|\| '自动存入素材库失败'/)
   assert.match(canvasSource, /async function retryFreeCanvasAssetSave\(nodeOrId\)/)
-  assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\n\}\)/)
+  assert.match(canvasSource, /retryFreeCanvasAssetSave,\s*\r?\n/)
   assert.match(canvasSource, /save-node-result-asset[\s\S]*saveFreeCanvasResultAsset\(node, node\.data\?\.kind, nodeResultUrl\(node\), null, node\.data\?\.taskId \|\| ''\)[\s\S]*ElMessage\.error\(error\?\.message \|\| '存入素材库失败'\)/)
 })
 

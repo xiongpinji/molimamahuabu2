@@ -586,6 +586,11 @@ export function proportionalScaleFromAxis(startScale, currentScale) {
   return start.map((value) => Math.max(0.0001, value * ratio))
 }
 
+export function findActiveCameraObject(state) {
+  const activeCamera = state?.cameras?.find((camera) => camera.id === state?.sequence?.activeCameraId)
+  return state?.objects?.find((object) => object.id === activeCamera?.objectId && object.type === 'camera') || null
+}
+
 export function findActiveShot(state, time) {
   const current = normalizeDirectorTimeline(state)
   const target = Math.max(0, Math.min(current.sequence.duration, asNumber(time, 0)))

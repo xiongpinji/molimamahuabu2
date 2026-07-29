@@ -73,6 +73,20 @@ jobs:
           grep --quiet '"status":"ok"' health.json
           curl --fail --silent http://127.0.0.1:5679/ | grep --quiet 'id="app"'
 
+      - name: Verify embedded CPU cutout runtime
+        run: |
+          docker exec molimama-web-ci /opt/rembg/bin/rembg-cpu --version | grep --quiet '^2.0.77$'
+          docker exec molimama-web-ci sh -c \
+            'echo "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8  /opt/rembg-models/u2netp.onnx" | sha256sum --check'
+          docker exec molimama-web-ci node -e \
+            "require('sharp')({create:{width:32,height:32,channels:3,background:'#ffffff'}}).composite([{input:Buffer.from('<svg width=\"32\" height=\"32\"><circle cx=\"16\" cy=\"16\" r=\"10\" fill=\"black\"/></svg>')}]).png().toFile('/tmp/rembg-input.png')"
+          docker network disconnect bridge molimama-web-ci
+          docker exec molimama-web-ci /opt/rembg/bin/rembg-cpu \
+            i -m u2netp /tmp/rembg-input.png /tmp/rembg-output.png
+          docker exec molimama-web-ci node -e \
+            "require('sharp')('/tmp/rembg-output.png').metadata().then(m=>{if(m.format!=='png'||m.channels!==4||!m.hasAlpha)process.exit(1)})"
+          docker network connect bridge molimama-web-ci
+
       - name: Print container logs
         if: failure()
         run: docker logs molimama-web-ci

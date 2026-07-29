@@ -87,6 +87,98 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
   })
 })
 
+test('电影级光影校正失败重试参数可安全持久化并在刷新后恢复', () => {
+  const normalized = normalizeFreeCanvasNodeData({
+    kind: 'image',
+    url: '/static/source.png',
+    imageToolStatus: 'failed',
+    imageToolError: '电影级光影校正处理失败',
+    imageToolRetryOperation: 'cinematic_relight',
+    imageToolRetryParameters: {
+      preset: 'moonlight',
+      intensity: 5,
+      description: '失败后必须保留这一组重试参数',
+      ignored: '不应持久化',
+    },
+  })
+  assert.equal(normalized.imageToolRetryOperation, 'cinematic_relight')
+  assert.deepEqual(normalized.imageToolRetryParameters, {
+    preset: 'moonlight',
+    intensity: 5,
+    description: '失败后必须保留这一组重试参数',
+  })
+
+  const tooLong = normalizeFreeCanvasNodeData({
+    kind: 'image',
+    imageToolRetryOperation: 'cinematic_relight',
+    imageToolRetryParameters: {
+      preset: 'cinematic',
+      intensity: 3,
+      description: 'x'.repeat(301),
+    },
+  })
+  assert.equal(tooLong.imageToolRetryOperation, undefined)
+  assert.equal(tooLong.imageToolRetryParameters, undefined)
+})
+
+test('全景失败重试只保留 300 字以内的补充要求', () => {
+  for (const operation of ['panorama', 'panorama_scene']) {
+    const normalized = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: '保持中央主体并补全四周环境',
+        ignored: '不应持久化',
+      },
+    })
+    assert.equal(normalized.imageToolRetryOperation, operation)
+    assert.deepEqual(normalized.imageToolRetryParameters, {
+      description: '保持中央主体并补全四周环境',
+    })
+
+    const tooLong = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: 'x'.repeat(301),
+      },
+    })
+    assert.equal(tooLong.imageToolRetryOperation, undefined)
+    assert.equal(tooLong.imageToolRetryParameters, undefined)
+  }
+})
+
+test('画面联想失败重试只保留 300 字以内的补充要求', () => {
+  for (const operation of [
+    'image_ideation',
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    const normalized = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: '  保留中央人物并联想雨后黄昏  ',
+        ignored: '不应持久化',
+      },
+    })
+    assert.equal(normalized.imageToolRetryOperation, operation)
+    assert.deepEqual(normalized.imageToolRetryParameters, {
+      description: '  保留中央人物并联想雨后黄昏  ',
+    })
+
+    const overLimit = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: { description: 'x'.repeat(301) },
+    })
+    assert.equal(overLimit.imageToolRetryParameters, undefined)
+  }
+})
+
 test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => {
   const imagePayload = buildFreeCanvasGenerationRequest({
     kind: 'image',
