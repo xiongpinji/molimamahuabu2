@@ -2095,13 +2095,32 @@ async function createFreeCanvasNode(kind, flowPosition = null, initialData = {})
 async function createImageNodeFromVideoLastFrame(nodeOrId) {
   const videoNode = freeCanvasNodeById(nodeOrId)
   if (videoNode?.type !== 'homeCanvasNode' || videoNode.data?.kind !== 'video') return null
-  const lastFrameUrl = String(
+  let lastFrameUrl = String(
     videoNode.data?.outputLastFrameUrl
     || videoNode.data?.output_last_frame_url
     || '',
   ).trim()
+  if (!lastFrameUrl && videoNode.data?.url) {
+    try {
+      const record = await videosAPI.extractBoundaryFrames({
+        video_generation_id: videoNode.data?.videoGenerationId || undefined,
+        video_url: videoNode.data?.url,
+      })
+      lastFrameUrl = String(record?.output_last_frame_url || record?.outputLastFrameUrl || '').trim()
+      if (lastFrameUrl) {
+        await patchFreeCanvasNodeData(videoNode.id, {
+          outputLastFrameUrl: lastFrameUrl,
+          ...(record?.output_first_frame_url ? { outputFirstFrameUrl: record.output_first_frame_url } : {}),
+          ...(record?.id ? { videoGenerationId: record.id } : {}),
+        })
+      }
+    } catch (error) {
+      ElMessage.error(error?.message || '尾帧提取失败')
+      return null
+    }
+  }
   if (!lastFrameUrl) {
-    ElMessage.warning('当前视频没有可用尾帧，请重新生成视频后再试')
+    ElMessage.warning('当前视频没有可用尾帧')
     return null
   }
   const nodeId = await createFreeCanvasNode('image', {
@@ -2441,7 +2460,8 @@ async function resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult 
   const resultUrl = await resolveFreeCanvasFinalUrl(kind, submitResult, taskResult)
   if (!resultUrl) throw new Error('生成完成但未返回可用结果地址')
   const boundaryFrames = await resolveFreeCanvasVideoBoundaryFrames(kind, submitResult, taskResult)
-  return { resultUrl, boundaryFrames }
+  const generationId = freeCanvasGenerationId(kind, submitResult, taskResult)
+  return { resultUrl, boundaryFrames, generationId }
 }
 
 async function commitFreeCanvasNodeGeneration({
@@ -2449,6 +2469,7 @@ async function commitFreeCanvasNodeGeneration({
   kind,
   resultUrl,
   boundaryFrames = {},
+  generationId,
   requestPayload,
   taskId,
   resultUrls = [],
@@ -2459,6 +2480,7 @@ async function commitFreeCanvasNodeGeneration({
     url: resultUrl,
     resultUrls: resultUrls.length ? resultUrls : [resultUrl],
     ...boundaryFrames,
+    ...(kind === 'video' && generationId ? { videoGenerationId: generationId } : {}),
     taskId,
     progress: 100,
     error: '',

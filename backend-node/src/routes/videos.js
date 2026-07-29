@@ -56,6 +56,23 @@ function routes(db, log, options = {}) {
         response.internalError(res, err.message);
       }
     },
+    extractBoundaryFrames: (req, res) => {
+      try {
+        const item = videoService.ensureBoundaryFrames(db, log, req.body || {}, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
+        response.success(res, item);
+      } catch (err) {
+        log.error('videos extract boundary frames', { error: err.message });
+        if (err.code === 'VIDEO_NOT_FOUND') return response.notFound(res, err.message);
+        if (['INVALID_VIDEO_SELECTOR', 'VIDEO_NOT_READY', 'VIDEO_FRAME_EXTRACTION_FAILED'].includes(err.code)) {
+          return response.badRequest(res, err.message);
+        }
+        response.internalError(res, err.message);
+      }
+    },
     delete: (req, res) => {
       try {
         const ok = videoService.deleteById(db, log, req.params.id, {

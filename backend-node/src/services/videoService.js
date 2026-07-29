@@ -507,6 +507,75 @@ function extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log, opt
   return result;
 }
 
+function ensureBoundaryFrames(db, log, selector = {}, options = {}) {
+  const generationId = Number(selector.video_generation_id || 0);
+  const videoUrl = String(selector.video_url || '').trim();
+  if (!generationId && !videoUrl) {
+    const error = new Error('视频生成记录或视频地址至少提供一项');
+    error.code = 'INVALID_VIDEO_SELECTOR';
+    throw error;
+  }
+
+  const ownerClause = options.billingEnabled
+    ? options.tenantId ? ' AND tenant_id = ?' : ' AND user_id = ?'
+    : '';
+  const ownerParams = options.billingEnabled
+    ? [options.tenantId || options.userId || '']
+    : [];
+  let row = null;
+  if (generationId) {
+    row = db.prepare(
+      `SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL${ownerClause}`
+    ).get(generationId, ...ownerParams);
+  } else {
+    const rows = db.prepare(
+      `SELECT * FROM video_generations WHERE deleted_at IS NULL${ownerClause} ORDER BY id DESC`
+    ).all(...ownerParams);
+    row = rows.find((item) => {
+      const localUrl = item.local_path
+        ? `/static/${String(item.local_path).replace(/\\/g, '/').replace(/^\/+/, '')}`
+        : '';
+      return item.video_url === videoUrl || localUrl === videoUrl;
+    }) || null;
+  }
+
+  if (!row) {
+    const error = new Error('视频生成记录不存在或无权访问');
+    error.code = 'VIDEO_NOT_FOUND';
+    throw error;
+  }
+  if (row.output_last_frame_url) return rowToItem(row);
+  if (row.status !== 'completed' || !row.local_path) {
+    const error = new Error('视频尚未完成本地保存，暂时无法提取尾帧');
+    error.code = 'VIDEO_NOT_READY';
+    throw error;
+  }
+
+  const storagePath = options.storagePath || resolveStoragePath(require('../config').loadConfig());
+  const frames = extractVideoBoundaryFrames(
+    storagePath,
+    row.local_path,
+    row.id,
+    log,
+    options.extractionOptions || {}
+  );
+  if (!frames.output_last_frame_url) {
+    const error = new Error('尾帧提取失败，请确认服务器视频文件和 FFmpeg 可用');
+    error.code = 'VIDEO_FRAME_EXTRACTION_FAILED';
+    throw error;
+  }
+
+  db.prepare(
+    'UPDATE video_generations SET output_first_frame_url = ?, output_last_frame_url = ?, updated_at = ? WHERE id = ?'
+  ).run(
+    frames.output_first_frame_url || row.output_first_frame_url || null,
+    frames.output_last_frame_url,
+    new Date().toISOString(),
+    row.id
+  );
+  return getById(db, row.id, options);
+}
+
 /** 防止同一 videoGenId 重复发起 poll（含重启恢复） */
 const activeVideoPolls = new Set();
 
@@ -939,4 +1008,5 @@ module.exports = {
   localVideoDeliveryWarning,
   settleVideoCredit,
   extractVideoBoundaryFrames,
+  ensureBoundaryFrames,
 };
