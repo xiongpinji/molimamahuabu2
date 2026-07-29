@@ -369,10 +369,15 @@
         class="image-lightbox nodrag nopan"
         role="dialog"
         aria-modal="true"
-        aria-label="媒体全屏预览"
+        :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
         @click.self="closeMediaPreview"
       >
-        <button type="button" aria-label="关闭媒体预览" title="关闭" @click="closeMediaPreview">×</button>
+        <button
+          type="button"
+          :aria-label="mediaPreviewKind === 'image' ? '关闭图片预览' : '关闭视频预览'"
+          title="关闭"
+          @click="closeMediaPreview"
+        >×</button>
         <img v-if="mediaPreviewKind === 'image'" :src="mediaPreviewUrl" :alt="data.title || '图片预览'" />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
