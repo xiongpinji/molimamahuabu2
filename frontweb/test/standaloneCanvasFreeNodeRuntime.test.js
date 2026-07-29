@@ -91,7 +91,7 @@ test('自由节点可从节点内和右键挂载兼容素材，并拒绝修改�
   assert.match(canvasSource, /function openFreeNodeAssetLibrary\(nodeOrId\)/)
   assert.match(canvasSource, /canvasAssetPickerTargetFreeNodeId\.value = String\(node\.id\)/)
   assert.match(canvasSource, /if \(assetType !== targetNode\.data\?\.kind\)/)
-  assert.match(canvasSource, /await patchFreeCanvasNodeData\(targetFreeNodeId, \{[\s\S]*url,[\s\S]*savedAssetId: String\(projectAssetId\(projectAsset\) \|\| ''\),[\s\S]*assetSaveStatus: 'success'/)
+  assert.match(canvasSource, /await patchFreeCanvasNodeData\(targetFreeNodeId, \{[\s\S]*url,[\s\S]*savedAssetId: String\(projectAssetId\(projectAsset\) \|\| ''\),[\s\S]*assetSaveStatus: 'success'[\s\S]*imageToolStatus: ''[\s\S]*imageToolError: ''/)
   assert.match(canvasSource, /if \(targetFreeNodeId\) \{[\s\S]*ElMessage\.error\(e\?\.message \|\| '素材挂载失败'\)[\s\S]*return/)
 })
 
