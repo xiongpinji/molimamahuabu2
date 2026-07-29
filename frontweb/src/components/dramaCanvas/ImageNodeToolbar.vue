@@ -119,6 +119,7 @@
       class="image-tool-dialog"
       :title="operationLabel(editorOperation)"
       width="680px"
+      append-to-body
       destroy-on-close
       :close-on-click-modal="false"
       @closed="destroyEditor"
