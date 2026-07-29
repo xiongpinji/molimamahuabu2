@@ -1076,6 +1076,8 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   }
 
   let relPath = null;
+  const isStaticPath = /^\/?static\//.test(s);
+  const absoluteInput = path.isAbsolute(s) && !isStaticPath;
   if (s.startsWith('http://') || s.startsWith('https://')) {
     if (!isLocalhost || !storageLocalPath) return s;
     // 从 URL 中提取 /static/ 之后的相对路径；或去掉 baseUrl 前缀
@@ -1084,21 +1086,21 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
       || s.replace(/^https?:\/\/[^/]+\//, '');
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
-  } else if (storageLocalPath) {
+  } else if (storageLocalPath && !absoluteInput) {
     relPath = s.split(/[?#]/, 1)[0].replace(/^\/?static\//, '').replace(/^\/+/, '');
   }
-  if (path.isAbsolute(s) && !storageLocalPath) return null;
-  if (!relPath) return toPublicUrl(s);
+  if (absoluteInput && !storageLocalPath) return null;
+  if (!relPath && !absoluteInput) return toPublicUrl(s);
   let decodedRelPath;
   try {
-    decodedRelPath = decodeURIComponent(relPath);
+    decodedRelPath = decodeURIComponent(absoluteInput ? s.split(/[?#]/, 1)[0] : relPath);
   } catch (_) {
     return toPublicUrl(s);
   }
   const storageRoot = path.resolve(storageLocalPath);
-  const filePath = path.resolve(storageRoot, decodedRelPath);
+  const filePath = absoluteInput ? path.resolve(decodedRelPath) : path.resolve(storageRoot, decodedRelPath);
   if (filePath !== storageRoot && !filePath.startsWith(storageRoot + path.sep)) {
-    return toPublicUrl(s);
+    return absoluteInput ? null : toPublicUrl(s);
   }
   try {
     const realStorageRoot = fs.realpathSync.native(storageRoot);
