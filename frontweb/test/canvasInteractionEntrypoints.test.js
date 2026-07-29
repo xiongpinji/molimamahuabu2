@@ -10,6 +10,7 @@ const addButtonSource = readFileSync(fileURLToPath(new URL('../src/components/dr
 const alignerSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasFlowAligner.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 const workflowOrderPanelSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasWorkflowOrderPanel.vue', import.meta.url)), 'utf8')
+const cuttableEdgeSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasCuttableEdge.vue', import.meta.url)), 'utf8')
 
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
@@ -34,6 +35,18 @@ test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /'Ctrl\/⌘ \+ A：选中当前可见分镜'/)
   assert.match(canvasSource, /'Ctrl\/⌘ \+ G：将已选分镜创建为工作流'/)
   assert.match(canvasSource, /'Esc：清空选择、焦点和右键菜单'/)
+})
+
+test('每条画布连线提供居中剪线入口并统一进入可撤销持久化链路', () => {
+  assert.match(canvasSource, /:edge-types="edgeTypes"/)
+  assert.match(canvasSource, /v-bind="canvasConnectionInteractionOptions"/)
+  assert.match(canvasSource, /provide\('cut-canvas-edges', cutCanvasEdges\)/)
+  assert.match(canvasSource, /function cutCanvasEdges\(edgeIds = \[\], source = 'remove'\)/)
+  assert.match(canvasSource, /suppressedEdgeIds\.value\.add\(String\(edge\.id\)\)/)
+  assert.match(canvasSource, /commitInteractionHistory\(previousState\)/)
+  assert.match(cuttableEdgeSource, /aria-label="剪断连线"/)
+  assert.match(cuttableEdgeSource, /cutCanvasEdges\?\.\(\[props\.id\], 'scissor'\)/)
+  assert.match(cuttableEdgeSource, /:transform="`translate\(\$\{labelX\}, \$\{labelY\}\)`"/)
 })
 
 test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', () => {
@@ -290,12 +303,13 @@ test('画布支持手动节点连线并持久化到布局', () => {
   assert.match(canvasSource, /function onConnect\(connection\)/)
   assert.match(canvasSource, /function onEdgesChange\(changes = \[\]\)/)
   assert.match(canvasSource, /data: \{ manual: true \}/)
-  assert.match(canvasSource, /String\(change\.id \|\| ''\)\.startsWith\('manual:'\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = allGraphEdges\.value\.filter\(\(edge\) => !removed\.has\(String\(edge\.id\)\)\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
+  assert.match(canvasSource, /function cutCanvasEdges\(edgeIds = \[\], source = 'remove'\)/)
+  assert.match(canvasSource, /if \(cutCanvasEdges\(removedEdgeIds\)\) ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /ElMessage\.success\('已删除画布连线'\)/)
   assert.match(canvasSource, /scheduleLayoutSave\(\)/)
-  assert.match(canvasSource, /buildCanvasLayoutPayload\(\s*allGraphNodes\.value,\s*currentViewport\.value,\s*layoutCache\.value,\s*allGraphEdges\.value,\s*\{ persistFreeNodes: isStandaloneCanvas\.value \},?\s*\)/)
+  assert.match(canvasSource, /persistFreeNodes:\s*isStandaloneCanvas\.value/)
+  assert.match(canvasSource, /suppressedEdgeIds:\s*\[\.\.\.suppressedEdgeIds\.value\]/)
 })
 
 test('右键节点支持追加下游分镜并自动创建手动连线', () => {
@@ -310,7 +324,7 @@ test('右键节点支持追加下游分镜并自动创建手动连线', () => {
   assert.match(canvasSource, /node\?\.type === 'canvasAsset'[\s\S]*围绕\$\{canvasNodeLabel\(node\)\}设计新分镜/)
   assert.match(canvasSource, /\[targetNodeId\]: targetPosition/)
   assert.match(canvasSource, /id: manualEdgeId\(\{ source: node\.id, target: targetNodeId \}\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
 })
@@ -341,7 +355,7 @@ test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(canvasSource, /const secondEdge = toLibTvCanvasEdge\(\{[\s\S]*source: targetNodeId,[\s\S]*target: downstreamEdge\.target/)
   assert.match(canvasSource, /const remainingEdges = allGraphEdges\.value\.filter\(\(edge\) => String\(edge\.id\) !== String\(downstreamEdge\.id\)\)/)
   assert.match(canvasSource, /const insertedEdges = \[firstEdge, secondEdge\]\.filter\(\(edge\) => !hasSameEdgeConnection\(edge, remainingEdges\)\)/)
-  assert.match(canvasSource, /allGraphEdges\.value = stampEdgeBaseStyles\(\[\.\.\.remainingEdges, \.\.\.insertedEdges\]\)/)
+  assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.remainingEdges, \.\.\.insertedEdges\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
   assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
   assert.match(canvasSource, /已插入下游分镜并重连/)

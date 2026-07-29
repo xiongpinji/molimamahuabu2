@@ -107,7 +107,7 @@ test('自由节点右键支持复制和删除，复制节点清除运行任务�
 })
 
 test('独立画布支持 WASD 平移和宽容连线', () => {
-  assert.match(canvasSource, /:connection-radius="40"/)
+  assert.match(canvasSource, /v-bind="canvasConnectionInteractionOptions"/)
   assert.match(canvasSource, /const CANVAS_KEYBOARD_PAN_STEP = 56/)
   assert.match(canvasSource, /function panCanvasByKeyboard\(key\)/)
   assert.match(canvasSource, /\['w', 'a', 's', 'd'\]\.includes\(key\)/)

@@ -283,13 +283,13 @@
           v-model:edges="edges"
           :node-types="nodeTypes"
           :edge-types="edgeTypes"
-          :default-edge-options="{ type: 'libtv' }"
+          :default-edge-options="{ type: 'cuttable' }"
           :default-viewport="initialViewport"
           :min-zoom="0.08"
           :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
-          :connection-radius="40"
+          v-bind="canvasConnectionInteractionOptions"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
           selection-mode="partial"
@@ -626,6 +626,7 @@ import {
   redoCanvasInteractionHistory,
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
+import { canvasConnectionInteractionOptions } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
   canAlignCanvasNodes,
@@ -686,6 +687,7 @@ import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
 import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
 import CanvasWorkflowOrderPanel from '@/components/dramaCanvas/CanvasWorkflowOrderPanel.vue'
+import CanvasCuttableEdge from '@/components/dramaCanvas/CanvasCuttableEdge.vue'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
 import CanvasModeSwitch from '@/components/CanvasModeSwitch.vue'
@@ -702,6 +704,7 @@ const nodes = ref([])
 const edges = ref([])
 const allGraphNodes = ref([])
 const allGraphEdges = ref([])
+const suppressedEdgeIds = ref(new Set())
 const projectImageAssets = ref([])
 const storyboardAssignedAssets = ref({})
 const canvasVirtualized = ref(false)
@@ -919,7 +922,6 @@ const nodeTypes = {
   homeCanvasNode: markRaw(HomeCanvasNode),
   canvasGroup: markRaw(CanvasGroupNode),
 }
-
 const dramaId = computed(() => Number(route.params.id))
 const savedLayout = computed(() => layoutCache.value || parseCanvasLayout(drama.value?.metadata))
 const directorTimeline = computed(() => savedLayout.value?.director_timeline || null)
@@ -1764,7 +1766,8 @@ function rebuildGraph() {
     nextNodes = [...groupNodes, ...nextNodes]
   }
   const nodesById = new Map(nextNodes.map((node) => [String(node.id), node]))
-  let nextEdges = stampEdgeBaseStyles(graph.edges
+  let nextEdges = decorateCanvasEdges(graph.edges
+    .filter((edge) => !suppressedEdgeIds.value.has(String(edge.id)))
     .filter((edge) => {
       const sourceNode = nodesById.get(String(edge.source))
       const targetNode = nodesById.get(String(edge.target))
@@ -1798,7 +1801,12 @@ function rebuildGraph() {
 }
 
 function currentInteractionState() {
-  return createCanvasInteractionState(allGraphNodes.value, currentViewport.value)
+  return createCanvasInteractionState(
+    allGraphNodes.value,
+    currentViewport.value,
+    allGraphEdges.value,
+    [...suppressedEdgeIds.value],
+  )
 }
 
 function commitInteractionHistory(previousState) {
@@ -1816,6 +1824,8 @@ function applyInteractionState(state) {
     return position ? { ...node, position: { ...position } } : node
   })
   currentViewport.value = { ...(state?.viewport || currentViewport.value) }
+  allGraphEdges.value = decorateCanvasEdges(state?.edges || allGraphEdges.value)
+  suppressedEdgeIds.value = new Set((state?.suppressedEdgeIds || []).map(String))
   applyVirtualizedGraph()
   scheduleLayoutSave()
 }
@@ -1849,7 +1859,10 @@ function refreshLayoutCacheFromGraph() {
     currentViewport.value,
     layoutCache.value,
     allGraphEdges.value,
-    { persistFreeNodes: isStandaloneCanvas.value },
+    {
+      persistFreeNodes: isStandaloneCanvas.value,
+      suppressedEdgeIds: [...suppressedEdgeIds.value],
+    },
   )
 }
 
@@ -2691,7 +2704,10 @@ async function runFreeCanvasSubgraph(nodeIds, includeDownstream = false) {
   ElMessage.success(`子图运行完成，共 ${plan.orderedNodeIds.length} 个节点`)
   return { ok: true, orderedNodeIds: plan.orderedNodeIds }
 }
-const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
+const edgeTypes = {
+  libtv: markRaw(LibTvCanvasEdge),
+  cuttable: markRaw(CanvasCuttableEdge),
+}
 
 async function translateFreeCanvasNode(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
@@ -3035,7 +3051,7 @@ async function appendDownstreamStoryboard(node, options = {}) {
     },
   }
   if (!hasSameEdgeConnection(edge)) {
-    allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
+    allGraphEdges.value = decorateCanvasEdges([...allGraphEdges.value, edge])
   }
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
@@ -3149,7 +3165,7 @@ async function insertDownstreamStoryboard(node) {
   }
   const remainingEdges = allGraphEdges.value.filter((edge) => String(edge.id) !== String(downstreamEdge.id))
   const insertedEdges = [firstEdge, secondEdge].filter((edge) => !hasSameEdgeConnection(edge, remainingEdges))
-  allGraphEdges.value = stampEdgeBaseStyles([...remainingEdges, ...insertedEdges])
+  allGraphEdges.value = decorateCanvasEdges([...remainingEdges, ...insertedEdges])
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
@@ -5248,6 +5264,39 @@ function isStandaloneFreeNodeEdge(edge) {
     && findGraphNode(edge.target)?.type === 'homeCanvasNode'
 }
 
+function decorateCanvasEdges(edgeList) {
+  return stampEdgeBaseStyles(edgeList).map((edge) => ({
+    ...edge,
+    type: 'cuttable',
+    data: {
+      ...(edge.data || {}),
+      lineType: edge.data?.lineType || edge.type || 'smoothstep',
+    },
+  }))
+}
+
+function cutCanvasEdges(edgeIds = [], source = 'remove') {
+  const removed = new Set((edgeIds || []).map(String))
+  if (!removed.size) return 0
+
+  const previousState = currentInteractionState()
+  const matched = allGraphEdges.value.filter((edge) => removed.has(String(edge.id)))
+  if (!matched.length) return 0
+
+  for (const edge of matched) {
+    const isManual = edge.data?.manual === true || String(edge.id).startsWith('manual:')
+    if (!isManual) suppressedEdgeIds.value.add(String(edge.id))
+  }
+  allGraphEdges.value = allGraphEdges.value.filter((edge) => !removed.has(String(edge.id)))
+  applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
+  scheduleLayoutSave()
+  if (source === 'scissor') ElMessage.success('已剪断连线')
+  return matched.length
+}
+
+provide('cut-canvas-edges', cutCanvasEdges)
+
 function onConnect(connection) {
   if (!connection?.source || !connection?.target) return
   if (String(connection.source) === String(connection.target)) {
@@ -5286,7 +5335,7 @@ function onConnect(connection) {
       },
     },
   }, sourceKind, targetKind)
-  allGraphEdges.value = stampEdgeBaseStyles([...allGraphEdges.value, edge])
+  allGraphEdges.value = decorateCanvasEdges([...allGraphEdges.value, edge])
   applyVirtualizedGraph()
   scheduleLayoutSave()
   if (
@@ -5310,12 +5359,7 @@ function onEdgesChange(changes = []) {
     })
     .map((change) => String(change.id))
   if (!removedEdgeIds.length) return
-
-  const removed = new Set(removedEdgeIds)
-  allGraphEdges.value = allGraphEdges.value.filter((edge) => !removed.has(String(edge.id)))
-  applyVirtualizedGraph()
-  scheduleLayoutSave()
-  ElMessage.success('已删除画布连线')
+  if (cutCanvasEdges(removedEdgeIds)) ElMessage.success('已删除画布连线')
 }
 
 function selectStoryboard(storyboardId, event) {
@@ -5714,7 +5758,10 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
       currentViewport.value,
       layoutCache.value,
       allGraphEdges.value,
-      { persistFreeNodes: isStandaloneCanvas.value }
+      {
+        persistFreeNodes: isStandaloneCanvas.value,
+        suppressedEdgeIds: [...suppressedEdgeIds.value],
+      }
     )
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
@@ -5964,6 +6011,7 @@ async function loadDrama(silent = false) {
     drama.value = await dramaAPI.get(dramaId.value)
     await loadProjectImageAssets()
     layoutCache.value = parseCanvasLayout(drama.value.metadata)
+    suppressedEdgeIds.value = new Set((layoutCache.value?.suppressed_edge_ids || []).map(String))
     syncWorkflowFromDrama()
     const vp = resolveViewport(layoutCache.value)
     currentViewport.value = vp

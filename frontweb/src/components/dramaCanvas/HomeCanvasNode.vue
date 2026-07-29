@@ -16,6 +16,10 @@
         @keydown.enter.prevent="$event.target.blur()"
       />
       <span class="sr-only">{{ draft.title }}</span>
+      <div v-if="data.kind !== 'text' && (canUpload || canMountAsset)" class="node-media-actions nodrag nopan" @mousedown.stop>
+        <button v-if="canMountAsset" type="button" class="upload-button" @click.stop="openAssetLibrary">素材库</button>
+        <button v-if="canUpload" type="button" class="upload-button" @click.stop="chooseFile">上传</button>
+      </div>
       <span class="node-status">{{ statusLabel }}</span>
       <button class="node-delete nodrag nopan" type="button" aria-label="删除节点" title="删除节点" @mousedown.stop @click.stop="deleteNode">×</button>
     </header>
@@ -32,9 +36,10 @@
         v-if="data.kind === 'image' && primaryResultUrl"
         :src="primaryResultUrl"
         :alt="data.title || '图片节点预览'"
-        class="node-media nodrag nopan"
+        class="node-media"
+        draggable="false"
         title="双击全屏查看"
-        @mousedown.stop
+        @dragstart.prevent
         @click="openEditor"
         @dblclick.stop="openImagePreview(primaryResultUrl)"
       />
@@ -69,10 +74,6 @@
       <div v-if="primaryResultUrl" class="result-actions">
         <button type="button" aria-label="下载结果" title="下载结果" @click="downloadResult">↓</button>
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
-      </div>
-      <div v-if="canUpload || canMountAsset" class="media-actions">
-        <button v-if="canMountAsset" type="button" class="upload-button" @click="openAssetLibrary">素材库</button>
-        <button v-if="canUpload" type="button" class="upload-button" @click="chooseFile">上传</button>
       </div>
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
     </section>
@@ -801,6 +802,8 @@ watch(isSelected, (selected) => {
 }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .node-status { color: #71717a; font-size: 10px; }
+.node-media-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.node-media-actions .upload-button { padding: 4px 10px; border-radius: 8px; font-size: 11px; }
 .node-delete {
   width: 28px;
   height: 28px;
@@ -1029,7 +1032,6 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
   cursor: pointer;
 }
-.media-actions { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 8px; }
 .result-strip {
   position: absolute;
   bottom: 12px;
