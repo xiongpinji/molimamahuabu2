@@ -70,7 +70,7 @@ export function normalizeManualCanvasEdges(edges) {
       target,
       sourceHandle,
       targetHandle,
-      type: edge.type || 'smoothstep',
+      type: edge.data?.lineType || edge.type || 'smoothstep',
       data: { manual: true },
     })
   }
@@ -78,7 +78,7 @@ export function normalizeManualCanvasEdges(edges) {
 }
 
 /** 从当前 Vue Flow 节点与视口构建可持久化的 canvas_layout */
-export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null, flowEdges = []) {
+export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null, flowEdges = [], suppressedEdgeIds = null) {
   const nodes = { ...(existingLayout?.nodes || {}) }
   const base = existingLayout && typeof existingLayout === 'object' ? { ...existingLayout } : {}
   const manualEdges = normalizeManualCanvasEdges(flowEdges.length ? flowEdges : existingLayout?.manual_edges)
@@ -100,6 +100,9 @@ export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = n
     },
     nodes,
     manual_edges: manualEdges,
+    suppressed_edge_ids: suppressedEdgeIds == null
+      ? [...new Set((existingLayout?.suppressed_edge_ids || []).map(String))].sort()
+      : [...new Set((suppressedEdgeIds || []).map(String))].sort(),
     updated_at: new Date().toISOString(),
   }
 }
