@@ -265,6 +265,43 @@ test('已连接参考图可以从节点编辑器取消', async ({ page }) => {
   }, homeCanvasStorageKey)).toBe(0)
 })
 
+test('视频节点展示参考模式与图片序列，并将模式切换写回画布', async ({ page }) => {
+  const connectedState = {
+    ...mentionHomeCanvasState,
+    edges: [{
+      id: 'e2e:image-reference-to-video',
+      source: 'e2e:image-reference',
+      target: 'e2e:video-target',
+      type: 'smoothstep',
+      data: {
+        contract: { input: 'reference-image', enabled: true, order: 0, weight: 1 },
+      },
+    }],
+  }
+  await loadHomeCanvasState(page, connectedState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  const editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await expect(editor.getByRole('tab', { name: '多图参考' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.reference-card figcaption')).toHaveText('图片1')
+  await expect(editor.getByRole('tab', { name: '动作模仿' })).toBeDisabled()
+  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeDisabled()
+  await expect(editor.getByRole('tab', { name: '视频编辑' })).toBeDisabled()
+
+  await editor.getByRole('tab', { name: '首尾帧' }).click()
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.[0]?.data?.contract?.input || ''
+  }, homeCanvasStorageKey)).toBe('first-frame')
+
+  await editor.getByRole('tab', { name: '多图参考' }).click()
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.[0]?.data?.contract?.input || ''
+  }, homeCanvasStorageKey)).toBe('reference-image')
+})
+
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
   await seedNode.locator('.node-icon').click()
