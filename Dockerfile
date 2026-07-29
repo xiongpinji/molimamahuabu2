@@ -17,17 +17,42 @@ RUN apt-get update \
 COPY backend-node/package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS rembg-dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/rembg/requirements.lock /tmp/rembg-requirements.lock
+RUN python3 -m venv /opt/rembg \
+    && /opt/rembg/bin/pip install --no-cache-dir --require-hashes -r /tmp/rembg-requirements.lock
+COPY deploy/rembg/rembg-cpu /opt/rembg/bin/rembg-cpu
+RUN chmod 0555 /opt/rembg/bin/rembg-cpu \
+    && mkdir -p /opt/rembg-models \
+    && curl --fail --location --retry 3 \
+      --output /opt/rembg-models/u2netp.onnx \
+      https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx \
+    && echo "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8  /opt/rembg-models/u2netp.onnx" \
+      | sha256sum --check -
+
 FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend-node
 ENV NODE_ENV=production \
     PORT=5679 \
-    WEB_DIST_PATH=/app/frontweb/dist
+    WEB_DIST_PATH=/app/frontweb/dist \
+    IMAGE_TOOL_REMBG_PATH=/opt/rembg/bin/rembg-cpu \
+    IMAGE_TOOL_REMBG_VERSION=2.0.77 \
+    IMAGE_TOOL_REMBG_MODEL=u2netp \
+    IMAGE_TOOL_REMBG_MODEL_HOME=/opt/rembg-models \
+    IMAGE_TOOL_REMBG_MAX_CONCURRENCY=1 \
+    IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY=1 \
+    OMP_NUM_THREADS=1
 
 COPY --from=backend-dependencies /build/backend-node/node_modules ./node_modules
+COPY --from=rembg-dependencies /opt/rembg /opt/rembg
+COPY --from=rembg-dependencies /opt/rembg-models /opt/rembg-models
 COPY backend-node/ ./
 COPY --from=frontend-build /build/frontweb/dist /app/frontweb/dist
 

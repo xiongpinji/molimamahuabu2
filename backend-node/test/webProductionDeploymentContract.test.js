@@ -23,6 +23,28 @@ test('生产镜像包含前端构建、后端运行时、FFmpeg 和健康检查'
   assert.doesNotMatch(dockerfile, /PLATFORM_ADMIN_TOKEN\s*=/);
 });
 
+test('生产镜像内置固定哈希的 CPU 抠图链且不包含 GPU 运行时', () => {
+  const dockerfile = read('Dockerfile');
+  const requirements = read('deploy/rembg/requirements.lock');
+  const wrapper = read('deploy/rembg/rembg-cpu');
+  const notices = read('deploy/rembg/THIRD_PARTY_NOTICES.md');
+
+  assert.match(dockerfile, /pip install .*--require-hashes/);
+  assert.match(dockerfile, /rembg-models\/u2netp\.onnx/);
+  assert.match(dockerfile, /309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8/);
+  assert.match(dockerfile, /IMAGE_TOOL_REMBG_VERSION=2\.0\.77/);
+  assert.match(dockerfile, /IMAGE_TOOL_REMBG_MAX_CONCURRENCY=1/);
+  assert.match(dockerfile, /IMAGE_TOOL_REMBG_MAX_TENANT_CONCURRENCY=1/);
+  assert.match(dockerfile, /OMP_NUM_THREADS=1/);
+  assert.doesNotMatch(dockerfile, /onnxruntime-gpu|cuda|rocm/i);
+  assert.match(requirements, /rembg==2\.0\.77/);
+  assert.match(requirements, /onnxruntime==/);
+  assert.match(requirements, /--hash=sha256:/);
+  assert.match(wrapper, /new_session\(model\)/);
+  assert.match(notices, /MIT/);
+  assert.match(notices, /Apache-2\.0/);
+});
+
 test('生产 Compose 使用 HTTPS 入口、持久卷、健康检查和自动重启', () => {
   const compose = yaml.load(read('compose.production.yml'));
   const app = compose.services.app;
@@ -55,6 +77,11 @@ test('镜像 CI 会实际启动容器、检查网页并发布不可变镜像', (
   assert.match(workflow, /\/health/);
   assert.match(workflow, /docker run/);
   assert.match(workflow, /index\.html|茉莉妈妈/);
+  assert.match(workflow, /rembg-cpu --version/);
+  assert.match(workflow, /sha256sum --check/);
+  assert.match(workflow, /docker network disconnect bridge/);
+  assert.match(workflow, /rembg-cpu[\s\S]*i -m u2netp/);
+  assert.match(workflow, /hasAlpha/);
   assert.match(workflow, /packages:\s*write/);
   assert.match(workflow, /docker push/);
   assert.match(workflow, /sha-\$\{GITHUB_SHA\}/);
@@ -78,6 +105,8 @@ test('网页生产门禁不审计或构建已退出交付路径的桌面安装�
   const desktopWorkflow = read('.github/workflows/windows-desktop-build.yml');
 
   assert.doesNotMatch(dependencyWorkflow, /npm --prefix desktop/);
+  assert.match(dependencyWorkflow, /pip-audit==2\.10\.0/);
+  assert.match(dependencyWorkflow, /deploy\/rembg\/requirements\.lock/);
   assert.doesNotMatch(desktopWorkflow, /-\s+'frontweb\/\*\*'/);
   assert.doesNotMatch(desktopWorkflow, /-\s+'backend-node\/\*\*'/);
 });

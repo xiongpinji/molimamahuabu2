@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+import sys
+
+from PIL import Image
+from rembg import new_session, remove
+
+VERSION = "2.0.77"
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--version"]:
+        print(VERSION)
+        return 0
+    if len(sys.argv) != 6 or sys.argv[1] != "i" or sys.argv[2] != "-m":
+        print("usage: rembg-cpu i -m <model> <input> <output>", file=sys.stderr)
+        return 2
+    model, source, output = sys.argv[3:]
+    with Image.open(source) as image:
+        result = remove(image, session=new_session(model))
+        result.save(output, format="PNG")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
