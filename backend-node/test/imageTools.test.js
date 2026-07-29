@@ -334,8 +334,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     name: 'Seedream 参考图',
     base_url: 'https://example.invalid/api/v3',
     api_key: 'test-key',
-    model: ['doubao-seedream-4-5'],
-    default_model: 'doubao-seedream-4-5',
+    model: ['doubao-seedream-4-5-251128'],
+    default_model: 'doubao-seedream-4-5-251128',
     is_default: true,
     settings: JSON.stringify({
       supports_outpaint: true,
@@ -465,6 +465,13 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       model: 'doubao-seedream-4-5',
       name: '未审计供应商不可开放电影光影',
     },
+    {
+      service_type: 'storyboard_image',
+      provider: 'volcengine',
+      api_protocol: 'volcengine',
+      model: 'doubao-seedream-4-0',
+      name: '未审计旧版模型不可开放图片节点能力',
+    },
   ]) {
     const strictDb = new Database(':memory:');
     t.after(() => strictDb.close());
@@ -480,6 +487,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       default_model: config.model,
       is_default: true,
       settings: JSON.stringify({
+        supports_outpaint: true,
+        supports_markup_retouch: true,
         supports_cinematic_relight: true,
         supports_panorama: true,
         supports_panorama_scene: true,
@@ -494,6 +503,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     const strictHandlers = createImageToolRoutes(strictDb, log);
     const strictRes = responseRecorder();
     strictHandlers.capabilities({}, strictRes);
+    assert.equal(strictRes.payload.data.operations.outpaint.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.markup_retouch.available, false, config.name);
     assert.equal(
       strictRes.payload.data.operations.cinematic_relight.available,
       false,

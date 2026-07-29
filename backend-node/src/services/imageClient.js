@@ -205,6 +205,13 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
   return active[0];
 }
 
+function isAuditedSeedream45ReferenceAdapter(config, model, provider, protocol) {
+  return config.service_type === 'storyboard_image'
+    && provider === 'volcengine'
+    && protocol === 'volcengine'
+    && /^doubao-seedream-4-5(?:-\d+)?$/.test(model);
+}
+
 function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') {
   let config = null;
   try {
@@ -231,9 +238,19 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
       ? JSON.parse(config.settings || '{}')
       : (config.settings || {});
   } catch (_) {}
+  const strictReferenceAdapterAudited = isAuditedSeedream45ReferenceAdapter(
+    config,
+    model,
+    provider,
+    protocol,
+  );
   const operations = [];
-  if (settings.supports_outpaint === true) operations.push('outpaint');
-  if (settings.supports_markup_retouch === true) operations.push('markup_retouch');
+  if (settings.supports_outpaint === true && strictReferenceAdapterAudited) {
+    operations.push('outpaint');
+  }
+  if (settings.supports_markup_retouch === true && strictReferenceAdapterAudited) {
+    operations.push('markup_retouch');
+  }
   const panoramaDeclared = settings.supports_panorama === true;
   const panoramaSceneDeclared = settings.supports_panorama_scene === true;
   const imageIdeationDeclared = settings.supports_image_ideation === true;
@@ -245,10 +262,6 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
     ['frame_backward', settings.supports_frame_backward === true],
   ];
   const cinematicRelightDeclared = settings.supports_cinematic_relight === true;
-  const strictReferenceAdapterAudited = config.service_type === 'storyboard_image'
-    && provider === 'volcengine'
-    && protocol === 'volcengine'
-    && model === 'doubao-seedream-4-5';
   if (panoramaDeclared && strictReferenceAdapterAudited) operations.push('panorama');
   if (panoramaSceneDeclared && strictReferenceAdapterAudited) operations.push('panorama_scene');
   if (imageIdeationDeclared && strictReferenceAdapterAudited) operations.push('image_ideation');
@@ -261,7 +274,9 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (operations.length === 0) {
     if (
       (
-        panoramaDeclared
+        settings.supports_outpaint === true
+        || settings.supports_markup_retouch === true
+        || panoramaDeclared
         || panoramaSceneDeclared
         || imageIdeationDeclared
         || referenceVariationDeclarations.some(([, declared]) => declared)
@@ -279,9 +294,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
       reason: `当前默认图片模型 ${model} 未显式声明图片编辑或参考图生成能力`,
     };
   }
-  const auditedAdapter = protocol === 'volcengine'
-    && /seedream|doubao/i.test(model);
-  if (!auditedAdapter) {
+  if (!strictReferenceAdapterAudited) {
     return {
       available: false,
       reason: `当前默认图片模型 ${model} 的图片编辑或参考图生成适配器尚未通过审计`,
