@@ -26,7 +26,12 @@ const BASE_OPERATIONS = Object.freeze({
   panorama: unavailable('全景模型能力尚未配置'),
   panorama_scene: unavailable('全景场景模型能力尚未配置'),
   outpaint: unavailable('扩图模型能力尚未配置'),
-  pose: unavailable('姿势控制模型能力尚未配置'),
+  pose: {
+    available: true,
+    engine: 'director-stage',
+    action: 'open',
+    mode: 'pose',
+  },
   angle: {
     available: true,
     engine: 'director-stage',

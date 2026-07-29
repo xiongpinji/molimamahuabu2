@@ -386,7 +386,7 @@ let cropper = null
 let CropperClass = null
 let activeMarkupStroke = null
 
-const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage', 'lighting', 'angle'])
+const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage', 'lighting', 'angle', 'pose'])
 
 const quickActions = [
   { label: '720全景', operation: 'panorama' },

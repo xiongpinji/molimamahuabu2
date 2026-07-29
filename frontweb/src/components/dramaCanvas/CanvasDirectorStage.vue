@@ -210,17 +210,27 @@
             <span>动作：{{ directorResourceStatusLabel(selectedActionResourceState) }}<template v-if="selectedActionResourceState.message"> · {{ selectedActionResourceState.message }}</template></span>
             <button v-if="selectedActionResourceState.status === 'error'" type="button" class="small-button" @click="retrySelectedActionResource">重试</button>
           </div>
-          <section v-if="selectedModelResourceState.status === 'ready'" class="bone-editor" aria-label="骨骼姿态">
-            <div class="stage-section__title">骨骼姿态</div>
-            <template v-if="selectedCharacterBones.length">
-              <div class="pose-presets" aria-label="姿势预设">
-                <button v-for="preset in POSE_PRESETS" :key="preset.name" type="button" class="small-button" @click="applyPosePreset(preset)">{{ preset.name }}</button>
-              </div>
-              <div class="semantic-pose-controls" aria-label="姿势调节">
-                <label v-for="control in availableSemanticControls" :key="`${control.semantic}-${control.axis}`">{{ control.label }}
-                  <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
-                </label>
-              </div>
+          <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
+        </section>
+        <section
+          v-if="isSelectedProceduralCharacter || selectedModelResourceState.status === 'ready'"
+          ref="poseEditorRef"
+          class="stage-section bone-editor"
+          aria-label="骨骼姿态"
+          tabindex="-1"
+        >
+          <div class="stage-section__title">骨骼姿态</div>
+          <div v-if="isSelectedProceduralCharacter" class="resource-tip">程序化 3D 角色关节，可直接预演并保存姿势。</div>
+          <template v-if="isSelectedProceduralCharacter || selectedCharacterBones.length">
+            <div class="pose-presets" aria-label="姿势预设">
+              <button v-for="preset in POSE_PRESETS" :key="preset.name" type="button" class="small-button" @click="applyPosePreset(preset)">{{ preset.name }}</button>
+            </div>
+            <div class="semantic-pose-controls" aria-label="姿势调节">
+              <label v-for="control in availableSemanticControls" :key="`${control.semantic}-${control.axis}`">{{ control.label }}
+                <input type="range" :min="control.min" :max="control.max" step="1" :value="semanticRotationDegrees(control)" :aria-label="control.label" @input="updateSemanticRotation(control, $event.target.value)" />
+              </label>
+            </div>
+            <template v-if="!isSelectedProceduralCharacter">
               <label>关节
                 <select v-model="selectedBoneName" aria-label="选择骨骼">
                   <option v-for="bone in selectedCharacterBones" :key="bone.name" :value="bone.name">{{ bone.name }}</option>
@@ -236,9 +246,8 @@
               </div>
               <button type="button" class="small-button" @click="resetSelectedBone">重置当前关节</button>
             </template>
-            <div v-else class="stage-empty">模型不含骨骼</div>
-          </section>
-          <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
+          </template>
+          <div v-else class="stage-empty">模型不含骨骼</div>
         </section>
         </template>
       </aside>
@@ -266,6 +275,7 @@
           <small>{{ entryReferenceTitle }}</small>
           <span v-if="lightingEntry">3D 灯光预演，不直接修改原图；截图会生成新素材。</span>
           <span v-else-if="angleEntry">3D 机位角度预演，不直接修改原图；添加或选择机位后可截图生成新素材。</span>
+          <span v-else-if="poseEntry">3D 角色姿势预演，不直接修改原图；添加或选择 3D 角色后可调整骨骼姿势。</span>
           <span v-else>可据此布置场景、角色和机位；截图会生成新素材，原图保持不变。</span>
         </section>
         <div v-if="initializing" class="director-stage__loading">正在初始化导演台…</div>
@@ -338,7 +348,7 @@
         </section>
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
           <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
-          <button type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
+          <button ref="addRoleButtonRef" type="button" aria-label="添加角色" title="添加角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♙</button>
           <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
           <button ref="addCameraButtonRef" type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
           <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
@@ -641,6 +651,8 @@ const aiImportModalRef = ref(null)
 const environmentEditorRef = ref(null)
 const cameraEditorRef = ref(null)
 const addCameraButtonRef = ref(null)
+const poseEditorRef = ref(null)
+const addRoleButtonRef = ref(null)
 const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
@@ -705,6 +717,7 @@ const entryReferenceUrl = computed(() => String(props.entryContext?.imageUrl || 
 const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitle || '图片节点参考图').trim())
 const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
 const angleEntry = computed(() => props.entryContext?.mode === 'angle')
+const poseEntry = computed(() => props.entryContext?.mode === 'pose')
 const characterEntries = computed(() => characters.value.map((character, index) => ({
   id: String(character?.id ?? character?.name ?? `character-${index + 1}`),
   name: character?.name || `角色 ${index + 1}`,
@@ -1316,6 +1329,11 @@ function addRoleArchetype(role) {
   selectedObjectId.value = next.objects.at(-1)?.id || ''
   mutateTimeline(next)
   buildStage()
+  if (poseEntry.value) {
+    nextTick(() => {
+      if (poseEntry.value) poseEditorRef.value?.focus()
+    })
+  }
 }
 
 function addCrowd() {
@@ -1368,9 +1386,21 @@ function selectEnvironmentInspector() {
 }
 
 function applyEntryContext() {
-  if (!['director_stage', 'lighting', 'angle'].includes(props.entryContext?.mode)) return
-  workspaceMode.value = angleEntry.value ? 'animation' : 'scene'
+  if (!['director_stage', 'lighting', 'angle', 'pose'].includes(props.entryContext?.mode)) return
+  workspaceMode.value = (angleEntry.value || poseEntry.value) ? 'animation' : 'scene'
   viewMode.value = 'director'
+  if (poseEntry.value) {
+    inspectorTab.value = 'properties'
+    const poseableObject = timeline.value.objects.find((object) => ['character', 'humanoid'].includes(object.type))
+    if (poseableObject) selectSceneObject(poseableObject.id)
+    else selectedObjectId.value = ''
+    nextTick(() => {
+      if (!poseEntry.value) return
+      if (poseableObject) poseEditorRef.value?.focus()
+      else addRoleButtonRef.value?.focus()
+    })
+    return
+  }
   if (angleEntry.value) {
     inspectorTab.value = 'properties'
     const activeCameraObject = findActiveCameraObject(timeline.value)

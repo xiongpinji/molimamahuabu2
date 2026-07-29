@@ -155,9 +155,9 @@ test('P1 图片调整包含色温，旋转走 Sharp 派生链', () => {
   assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
 })
 
-test('生成导演台、灯光和角度入口桥接当前图片且不冒充模型图片处理', () => {
+test('生成导演台、灯光、角度和姿势入口桥接当前图片且不冒充模型图片处理', () => {
   assert.match(toolbarSource, /\{ label: '生成导演台', operation: 'director_stage' \}/)
-  assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage', 'lighting', 'angle'\]\)/)
+  assert.match(toolbarSource, /const DIRECTOR_STAGE_OPERATIONS = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
   assert.match(toolbarSource, /ctx\?\.openDirectorStage\?\.\(\{[\s\S]*mode: item\.operation/)
   assert.match(toolbarSource, /imageUrl: props\.data\.url/)
   assert.match(toolbarSource, /sourceNodeId: props\.nodeId/)
@@ -165,7 +165,7 @@ test('生成导演台、灯光和角度入口桥接当前图片且不冒充模�
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
   assert.match(canvasSource, /function openDirectorStage\(entryContext = null\)/)
   assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
-  assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:pose|cinematic_relight|angle_ideation)/)
+  assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:cinematic_relight|angle_ideation)/)
 })
 
 test('工具栏提供替换、下载、全屏、历史与标记色入口', () => {
