@@ -298,6 +298,17 @@ test('扩图只在本地参考图供应商能力可用时开放', async () => {
   assert.match(publicRes.payload.data.operations.panorama.reason, /计费与审计链/);
   assert.equal(publicRes.payload.data.operations.panorama_scene.available, false);
   assert.match(publicRes.payload.data.operations.panorama_scene.reason, /计费与审计链/);
+  for (const operation of [
+    'image_ideation',
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    assert.equal(publicRes.payload.data.operations[operation].available, false, operation);
+    assert.match(publicRes.payload.data.operations[operation].reason, /计费与审计链/, operation);
+  }
 
   const publicCreateRes = responseRecorder();
   await publicHandlers.createOperation({
@@ -332,6 +343,12 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       supports_cinematic_relight: true,
       supports_panorama: true,
       supports_panorama_scene: true,
+      supports_image_ideation: true,
+      supports_angle_ideation: true,
+      supports_character_views: true,
+      supports_narrative_grid: true,
+      supports_frame_forward: true,
+      supports_frame_backward: true,
     }),
   });
   const supportedHandlers = createImageToolRoutes(supportedDb, log);
@@ -345,6 +362,18 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.cinematic_relight.protocol, 'volcengine');
   assert.equal(supportedRes.payload.data.operations.panorama.available, true);
   assert.equal(supportedRes.payload.data.operations.panorama_scene.available, true);
+  assert.equal(supportedRes.payload.data.operations.image_ideation.available, true);
+  assert.equal(supportedRes.payload.data.operations.image_ideation.protocol, 'volcengine');
+  for (const operation of [
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    assert.equal(supportedRes.payload.data.operations[operation].available, true, operation);
+    assert.equal(supportedRes.payload.data.operations[operation].protocol, 'volcengine', operation);
+  }
 
   const undeclaredDb = new Database(':memory:');
   t.after(() => undeclaredDb.close());
@@ -369,6 +398,16 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.match(undeclaredRes.payload.data.operations.cinematic_relight.reason, /显式声明/);
   assert.equal(undeclaredRes.payload.data.operations.panorama.available, false);
   assert.equal(undeclaredRes.payload.data.operations.panorama_scene.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.image_ideation.available, false);
+  for (const operation of [
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    assert.equal(undeclaredRes.payload.data.operations[operation].available, false, operation);
+  }
 
   const unsupportedDb = new Database(':memory:');
   t.after(() => unsupportedDb.close());
@@ -393,6 +432,16 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.match(unsupportedRes.payload.data.operations.cinematic_relight.reason, /电影光影|显式声明/);
   assert.equal(unsupportedRes.payload.data.operations.panorama.available, false);
   assert.equal(unsupportedRes.payload.data.operations.panorama_scene.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.image_ideation.available, false);
+  for (const operation of [
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    assert.equal(unsupportedRes.payload.data.operations[operation].available, false, operation);
+  }
 
   for (const config of [
     {
@@ -434,6 +483,12 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
         supports_cinematic_relight: true,
         supports_panorama: true,
         supports_panorama_scene: true,
+        supports_image_ideation: true,
+        supports_angle_ideation: true,
+        supports_character_views: true,
+        supports_narrative_grid: true,
+        supports_frame_forward: true,
+        supports_frame_backward: true,
       }),
     });
     const strictHandlers = createImageToolRoutes(strictDb, log);
@@ -446,6 +501,16 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     );
     assert.equal(strictRes.payload.data.operations.panorama.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.panorama_scene.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.image_ideation.available, false, config.name);
+    for (const operation of [
+      'angle_ideation',
+      'character_views',
+      'narrative_grid',
+      'frame_forward',
+      'frame_backward',
+    ]) {
+      assert.equal(strictRes.payload.data.operations[operation].available, false, config.name);
+    }
   }
 });
 
@@ -3051,6 +3116,260 @@ test('720全景通过参考图供应商生成固定 2:1 等距柱状新素材', 
   const derivedDir = path.join(storageRoot, 'derived');
   const temporaryFiles = fs.existsSync(derivedDir)
     ? fs.readdirSync(derivedDir).filter((name) => /panorama-provider-download/i.test(name))
+    : [];
+  assert.deepEqual(temporaryFiles, []);
+});
+
+test('画面联想通过参考图供应商生成同尺寸派生素材并保留原图', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-ideation-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (title, status, created_at, updated_at)
+     VALUES ('画面联想测试', 'draft', ?, ?)`,
+  ).run(now, now).lastInsertRowid;
+  const sourcePath = path.join(storageRoot, 'source.png');
+  await sharp({
+    create: {
+      width: 96,
+      height: 64,
+      channels: 3,
+      background: '#294f72',
+    },
+  }).png().toFile(sourcePath);
+  const sourceHash = fileSha256(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'source.png',
+    type: 'image',
+    category: 'canvas',
+    url: '/static/source.png',
+    local_path: sourcePath,
+  });
+  const generatedBuffer = await sharp({
+    create: {
+      width: 192,
+      height: 128,
+      channels: 3,
+      background: '#c07a45',
+    },
+  }).png().toBuffer();
+  let generationRequest = null;
+  const referenceImageTool = {
+    engine: 'provider-image-edit',
+    provider: 'volcengine',
+    protocol: 'volcengine',
+    model: 'doubao-seedream-4-5',
+    operations: ['image_ideation'],
+    async generate(request) {
+      generationRequest = request;
+      return { image_url: `data:image/png;base64,${generatedBuffer.toString('base64')}` };
+    },
+  };
+  const handlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-image-ideation',
+      operation: 'image_ideation',
+      parameters: { description: '联想为雨后黄昏，但保留中央人物' },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.operation, 'image_ideation');
+  assert.equal(generationRequest.referenceImage, sourcePath);
+  assert.equal(generationRequest.size, '96x64');
+  assert.match(generationRequest.prompt, /画面联想/);
+  assert.match(generationRequest.prompt, /雨后黄昏/);
+  assert.equal(fileSha256(sourcePath), sourceHash);
+
+  const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
+  assert.ok(resultAsset);
+  assert.notEqual(resultAsset.id, sourceAsset.id);
+  assert.equal(resultAsset.metadata.operation, 'image_ideation');
+  assert.equal(resultAsset.metadata.engine, 'provider-image-edit');
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    description: '联想为雨后黄昏，但保留中央人物',
+    outputSize: '96x64',
+  });
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.format, 'png');
+  assert.equal(outputMetadata.width, 96);
+  assert.equal(outputMetadata.height, 64);
+  assert.notEqual(fileSha256(resultAsset.local_path), sourceHash);
+  assert.equal(taskService.getTask(db, res.payload.data.taskId).status, 'completed');
+
+  for (const variation of [
+    {
+      operation: 'angle_ideation',
+      requestSize: '96x64',
+      width: 96,
+      height: 64,
+      prompt: /新机位/,
+    },
+    {
+      operation: 'character_views',
+      requestSize: '2048x1536',
+      width: 2048,
+      height: 1536,
+      prompt: /正面、侧面、背面和 3\/4 视角/,
+    },
+    {
+      operation: 'narrative_grid',
+      requestSize: '3072x3072',
+      width: 3072,
+      height: 3072,
+      prompt: /3×3 多机位叙事九宫格/,
+    },
+    {
+      operation: 'frame_forward',
+      requestSize: '96x64',
+      width: 96,
+      height: 64,
+      prompt: /3 秒后/,
+    },
+    {
+      operation: 'frame_backward',
+      requestSize: '96x64',
+      width: 96,
+      height: 64,
+      prompt: /5 秒前/,
+    },
+  ]) {
+    const variationBuffer = await sharp({
+      create: {
+        width: variation.width,
+        height: variation.height,
+        channels: 3,
+        background: '#8d5cb6',
+      },
+    }).png().toBuffer();
+    let variationRequest = null;
+    const variationHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+      cfg: { storage: { local_path: storageRoot } },
+      referenceImageTool: {
+        ...referenceImageTool,
+        operations: [variation.operation],
+        async generate(request) {
+          variationRequest = request;
+          return { image_url: `data:image/png;base64,${variationBuffer.toString('base64')}` };
+        },
+      },
+    });
+    const variationRes = responseRecorder();
+    await variationHandlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: `image-node-${variation.operation}`,
+        operation: variation.operation,
+        parameters: { description: '保持角色服装和场景连续性' },
+      },
+    }, variationRes);
+    assert.equal(variationRes.statusCode, 201, JSON.stringify(variationRes.payload));
+    assert.equal(variationRequest.size, variation.requestSize);
+    assert.match(variationRequest.prompt, variation.prompt);
+    const variationAsset = assetService.getById(db, variationRes.payload.data.resultAssetId);
+    const variationMetadata = await sharp(variationAsset.local_path).metadata();
+    assert.equal(variationMetadata.width, variation.width);
+    assert.equal(variationMetadata.height, variation.height);
+    assert.equal(variationAsset.metadata.operation, variation.operation);
+    assert.equal(variationAsset.metadata.parameters.outputSize, variation.requestSize);
+    assert.equal(fileSha256(sourcePath), sourceHash);
+  }
+
+  for (const description of [123, ['画面'], 'x'.repeat(301)]) {
+    const invalidRes = responseRecorder();
+    await handlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: 'image-node-image-ideation-invalid',
+        operation: 'image_ideation',
+        parameters: { description },
+      },
+    }, invalidRes);
+    assert.equal(invalidRes.statusCode, 400);
+    assert.equal(invalidRes.payload.error.code, 'BAD_REQUEST');
+  }
+
+  const failureLogs = [];
+  const failedHandlers = createImageToolRoutes(db, {
+    info() {},
+    warn(message, details) {
+      failureLogs.push({ message, details });
+    },
+    error(message, details) {
+      failureLogs.push({ message, details });
+    },
+  }, {
+    cfg: { storage: { local_path: storageRoot } },
+    referenceImageTool: {
+      ...referenceImageTool,
+      async generate() {
+        return { error: 'private-reference-variation-secret' };
+      },
+    },
+  });
+  const failedRes = responseRecorder();
+  await failedHandlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-image-ideation-failed',
+      operation: 'image_ideation',
+      parameters: { description: '' },
+    },
+  }, failedRes);
+  assert.equal(failedRes.statusCode, 503);
+  assert.equal(failedRes.payload.error.message, '画面联想失败');
+  assert.doesNotMatch(JSON.stringify(failedRes.payload), /private-reference-variation-secret/);
+  assert.doesNotMatch(JSON.stringify(failureLogs), /private-reference-variation-secret/);
+
+  const wrongRatioBuffer = await sharp({
+    create: {
+      width: 100,
+      height: 100,
+      channels: 3,
+      background: '#407c56',
+    },
+  }).png().toBuffer();
+  for (const imageUrl of [
+    `data:image/png;base64,${wrongRatioBuffer.toString('base64')}`,
+    `data:image/png;base64,${fs.readFileSync(sourcePath).toString('base64')}`,
+  ]) {
+    const rejectedHandlers = createImageToolRoutes(db, { info() {}, warn() {}, error() {} }, {
+      cfg: { storage: { local_path: storageRoot } },
+      referenceImageTool: {
+        ...referenceImageTool,
+        async generate() {
+          return { image_url: imageUrl };
+        },
+      },
+    });
+    const rejectedRes = responseRecorder();
+    await rejectedHandlers.createOperation({
+      body: {
+        assetId: sourceAsset.id,
+        sourceNodeId: 'image-node-image-ideation-rejected',
+        operation: 'image_ideation',
+        parameters: { description: '' },
+      },
+    }, rejectedRes);
+    assert.equal(rejectedRes.statusCode, 503);
+    assert.equal(rejectedRes.payload.error.message, '画面联想失败');
+  }
+
+  const derivedDir = path.join(storageRoot, 'derived');
+  const temporaryFiles = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => /ideation-provider-download/i.test(name))
     : [];
   assert.deepEqual(temporaryFiles, []);
 });

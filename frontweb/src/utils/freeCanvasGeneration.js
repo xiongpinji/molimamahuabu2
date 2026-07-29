@@ -16,6 +16,12 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   cinematic_relight: ['preset', 'intensity', 'description'],
   panorama: ['description'],
   panorama_scene: ['description'],
+  image_ideation: ['description'],
+  angle_ideation: ['description'],
+  character_views: ['description'],
+  narrative_grid: ['description'],
+  frame_forward: ['description'],
+  frame_backward: ['description'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
@@ -98,7 +104,20 @@ function normalizeImageToolRetryParameters(operation, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const stringLimits = operation === 'cinematic_relight'
     ? { preset: 32, description: 300 }
-    : (['panorama', 'panorama_scene'].includes(operation) ? { description: 300 } : {})
+    : (
+      [
+        'panorama',
+        'panorama_scene',
+        'image_ideation',
+        'angle_ideation',
+        'character_views',
+        'narrative_grid',
+        'frame_forward',
+        'frame_backward',
+      ].includes(operation)
+        ? { description: 300 }
+        : {}
+    )
   const parameters = {}
   for (const key of keys) {
     const candidate = value[key]

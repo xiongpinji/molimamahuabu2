@@ -119,6 +119,37 @@ test('全景失败重试只保留 300 字以内的补充要求', () => {
   }
 })
 
+test('画面联想失败重试只保留 300 字以内的补充要求', () => {
+  for (const operation of [
+    'image_ideation',
+    'angle_ideation',
+    'character_views',
+    'narrative_grid',
+    'frame_forward',
+    'frame_backward',
+  ]) {
+    const normalized = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: {
+        description: '  保留中央人物并联想雨后黄昏  ',
+        ignored: '不应持久化',
+      },
+    })
+    assert.equal(normalized.imageToolRetryOperation, operation)
+    assert.deepEqual(normalized.imageToolRetryParameters, {
+      description: '  保留中央人物并联想雨后黄昏  ',
+    })
+
+    const overLimit = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: operation,
+      imageToolRetryParameters: { description: 'x'.repeat(301) },
+    })
+    assert.equal(overLimit.imageToolRetryParameters, undefined)
+  }
+})
+
 test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => {
   const imagePayload = buildFreeCanvasGenerationRequest({
     kind: 'image',

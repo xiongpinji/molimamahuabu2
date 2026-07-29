@@ -283,6 +283,23 @@
           </p>
         </template>
 
+        <template v-else-if="REFERENCE_VARIATION_OPERATIONS.includes(editorOperation)">
+          <el-form-item label="补充要求（可选）">
+            <el-input
+              v-model="referenceVariationDescription"
+              type="textarea"
+              :rows="3"
+              maxlength="300"
+              show-word-limit
+              placeholder="例如：联想为雨后黄昏，但保留中央人物"
+            />
+          </el-form-item>
+          <p class="crop-hint">
+            使用已配置的参考图供应商生成新素材；三视图固定 2048×1536，九宫格固定 3072×3072，
+            其余操作保持原尺寸；原图保持不变。
+          </p>
+        </template>
+
         <template v-else-if="editorOperation === 'cinematic_relight'">
           <el-form-item label="光影预设">
             <el-select v-model="relightForm.preset">
@@ -420,6 +437,15 @@ const outpaintForm = ref({
   prompt: '',
 })
 const panoramaDescription = ref('')
+const REFERENCE_VARIATION_OPERATIONS = Object.freeze([
+  'image_ideation',
+  'angle_ideation',
+  'character_views',
+  'narrative_grid',
+  'frame_forward',
+  'frame_backward',
+])
+const referenceVariationDescription = ref('')
 const relightForm = ref({
   preset: 'cinematic',
   intensity: 3,
@@ -697,6 +723,9 @@ function operationParameters() {
   if (['panorama', 'panorama_scene'].includes(editorOperation.value)) return {
     description: panoramaDescription.value.trim(),
   }
+  if (REFERENCE_VARIATION_OPERATIONS.includes(editorOperation.value)) return {
+    description: referenceVariationDescription.value.trim(),
+  }
   if (editorOperation.value === 'cinematic_relight') return {
     preset: relightForm.value.preset,
     intensity: relightForm.value.intensity,
@@ -766,6 +795,12 @@ function operationLabel(operation) {
     markup_retouch: '标记修图',
     panorama: '720全景',
     panorama_scene: '生成全景场景',
+    image_ideation: '画面联想',
+    angle_ideation: '角度联想',
+    character_views: '角色三视图',
+    narrative_grid: '多机位叙事九宫格',
+    frame_forward: '画面推演-3秒后',
+    frame_backward: '画面推演-5秒前',
     cinematic_relight: '电影级光影校正',
     adjust: '图片调整',
     lut: 'LUT 调色',

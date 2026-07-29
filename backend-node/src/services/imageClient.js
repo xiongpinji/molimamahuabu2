@@ -236,6 +236,14 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (settings.supports_markup_retouch === true) operations.push('markup_retouch');
   const panoramaDeclared = settings.supports_panorama === true;
   const panoramaSceneDeclared = settings.supports_panorama_scene === true;
+  const imageIdeationDeclared = settings.supports_image_ideation === true;
+  const referenceVariationDeclarations = [
+    ['angle_ideation', settings.supports_angle_ideation === true],
+    ['character_views', settings.supports_character_views === true],
+    ['narrative_grid', settings.supports_narrative_grid === true],
+    ['frame_forward', settings.supports_frame_forward === true],
+    ['frame_backward', settings.supports_frame_backward === true],
+  ];
   const cinematicRelightDeclared = settings.supports_cinematic_relight === true;
   const strictReferenceAdapterAudited = config.service_type === 'storyboard_image'
     && provider === 'volcengine'
@@ -243,22 +251,32 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
     && model === 'doubao-seedream-4-5';
   if (panoramaDeclared && strictReferenceAdapterAudited) operations.push('panorama');
   if (panoramaSceneDeclared && strictReferenceAdapterAudited) operations.push('panorama_scene');
+  if (imageIdeationDeclared && strictReferenceAdapterAudited) operations.push('image_ideation');
+  for (const [operation, declared] of referenceVariationDeclarations) {
+    if (declared && strictReferenceAdapterAudited) operations.push(operation);
+  }
   if (cinematicRelightDeclared && strictReferenceAdapterAudited) {
     operations.push('cinematic_relight');
   }
   if (operations.length === 0) {
     if (
-      (panoramaDeclared || panoramaSceneDeclared || cinematicRelightDeclared)
+      (
+        panoramaDeclared
+        || panoramaSceneDeclared
+        || imageIdeationDeclared
+        || referenceVariationDeclarations.some(([, declared]) => declared)
+        || cinematicRelightDeclared
+      )
       && !strictReferenceAdapterAudited
     ) {
       return {
         available: false,
-        reason: `当前默认图片模型 ${model} 的全景或电影光影适配器尚未通过审计`,
+        reason: `当前默认图片模型 ${model} 的参考图生成适配器尚未通过审计`,
       };
     }
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 未显式声明扩图、标记修图、全景或电影光影校正能力`,
+      reason: `当前默认图片模型 ${model} 未显式声明图片编辑或参考图生成能力`,
     };
   }
   const auditedAdapter = protocol === 'volcengine'
@@ -266,7 +284,7 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (!auditedAdapter) {
     return {
       available: false,
-      reason: `当前默认图片模型 ${model} 的扩图、标记修图、全景或电影光影校正适配器尚未通过审计`,
+      reason: `当前默认图片模型 ${model} 的图片编辑或参考图生成适配器尚未通过审计`,
     };
   }
   if (!String(config.base_url || '').trim() || !String(config.api_key || '').trim()) {

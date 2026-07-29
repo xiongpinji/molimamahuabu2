@@ -158,6 +158,29 @@ test('全景入口提交受限描述并明确生成固定 2:1 等距柱状新素
   assert.match(toolbarSource, /panorama_scene: '生成全景场景'/)
 })
 
+test('参考图生成与推演入口提交 300 字以内的补充要求并显示真实输出约束', () => {
+  assert.match(toolbarSource, /\{ label: '画面联想', operation: 'image_ideation' \}/)
+  assert.match(toolbarSource, /REFERENCE_VARIATION_OPERATIONS\.includes\(editorOperation\)/)
+  assert.match(toolbarSource, /referenceVariationDescription = ref\(''\)/)
+  assert.match(toolbarSource, /v-model="referenceVariationDescription"/)
+  assert.match(toolbarSource, /maxlength="300"/)
+  assert.match(
+    toolbarSource,
+    /REFERENCE_VARIATION_OPERATIONS\.includes\(editorOperation\.value\)[\s\S]*description: referenceVariationDescription\.value\.trim\(\)/,
+  )
+  assert.match(toolbarSource, /三视图固定 2048×1536，九宫格固定 3072×3072/)
+  for (const [operation, label] of [
+    ['image_ideation', '画面联想'],
+    ['angle_ideation', '角度联想'],
+    ['character_views', '角色三视图'],
+    ['narrative_grid', '多机位叙事九宫格'],
+    ['frame_forward', '画面推演-3秒后'],
+    ['frame_backward', '画面推演-5秒前'],
+  ]) {
+    assert.match(toolbarSource, new RegExp(`${operation}: '${label}'`))
+  }
+})
+
 test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父画布', () => {
   assert.match(toolbarSource, /import\('cropperjs'\)/)
   assert.match(toolbarSource, /import\('cropperjs\/dist\/cropper\.css'\)/)
