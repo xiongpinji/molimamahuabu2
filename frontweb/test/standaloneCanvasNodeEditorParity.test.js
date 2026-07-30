@@ -11,6 +11,10 @@ const localCanvasSource = readFileSync(
   fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)),
   'utf8'
 )
+const imageToolbarSource = readFileSync(
+  fileURLToPath(new URL('../src/components/dramaCanvas/ImageNodeToolbar.vue', import.meta.url)),
+  'utf8'
+)
 const edgeSource = readFileSync(
   fileURLToPath(new URL('../src/components/dramaCanvas/LibTvCanvasEdge.vue', import.meta.url)),
   'utf8'
@@ -110,6 +114,10 @@ test('图片工具条和下拉菜单计入编辑器锚点边界且关闭操作�
   assert.match(nodeSource, /anchorTop = Math\.min\(anchorTop, bounds\.top\)/)
   assert.match(nodeSource, /anchorBottom = Math\.max\(anchorBottom, bounds\.bottom\)/)
   assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
+  assert.match(nodeSource, /@suspend-editor="closeEditor"/)
+  assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)
+  assert.match(imageToolbarSource, /function selectOperation\(item\) \{[\s\S]*emit\('suspend-editor'\)/)
+  assert.match(nodeSource, /function onEditorKeydown\(event\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)[\s\S]*if \(!isSelected\.value \|\| editorHidden\.value\) return/)
 })
 
 test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () => {

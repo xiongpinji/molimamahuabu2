@@ -28,7 +28,8 @@
 - `npx --no-install playwright test e2e/home-canvas.spec.js`：15/15 通过。
 - `npx --no-install playwright test e2e/image-node-toolbar-backend-integration.spec.js:309 --workers=1`：1/1 通过。
 - `npx --no-install playwright test e2e/project-canvas-backend-integration.spec.js --grep="图片节点通过真实后端同链路生成|视频节点使用上游首帧" --workers=1`：2/2 通过。
+- `npm run test:e2e:canvas`：36 项通过，1 项付费供应商同链按环境条件跳过，0 项失败。
 - `node --test --test-reporter=spec test/*.test.js`：452/457 通过；5 项失败均为最新主线已有的无关静态断言漂移，本次新增和受影响用例全部通过。
-- `npm run build`：通过，主资源为 `assets/index-DcXMoJtj.js`。
+- `npm run build`：通过，主资源为 `assets/index-CEjR6wQf.js`。
 - `git diff --check`：通过。
 - 待执行：线上资源哈希、编辑器锚定和 AI 音乐健康状态复核。

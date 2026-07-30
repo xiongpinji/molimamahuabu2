@@ -82,6 +82,7 @@
       v-if="data.kind === 'image' && data.url"
       :node-id="id"
       :data="data"
+      @suspend-editor="closeEditor"
     />
 
     <Teleport to="body">
@@ -899,6 +900,11 @@ async function copyResultReference() {
 
 function onEditorKeydown(event) {
   if (event.key !== 'Escape') return
+  if (mediaOpenTimer) {
+    window.clearTimeout(mediaOpenTimer)
+    mediaOpenTimer = null
+    event.preventDefault()
+  }
   if (mediaPreviewUrl.value) {
     event.preventDefault()
     closeMediaPreview()
