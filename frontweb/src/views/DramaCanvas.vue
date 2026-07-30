@@ -635,6 +635,12 @@ import {
 import { canvasConnectionInteractionOptions } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
+  DEFAULT_CANVAS_PREFERENCES,
+  mergeGenerationHistory,
+  normalizeCanvasPreferences,
+  normalizeGenerationHistory,
+} from '@/utils/canvasPersistedState'
+import {
   canAlignCanvasNodes,
   computeStandaloneAutoLayoutPositions,
   computeStandaloneNodePosition,
@@ -742,6 +748,7 @@ const directorStageVisible = ref(false)
 const canvasGridVisible = ref(true)
 const canvasMiniMapVisible = ref(true)
 const canvasSnapEnabled = ref(false)
+const persistedGenerationHistory = ref([])
 const directorStageEntry = ref(null)
 const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose'])
 let directorReturnFocus = null
@@ -1207,7 +1214,7 @@ const sidebarCharacters = computed(() => filterCanvasAssets(drama.value?.charact
 const sidebarScenes = computed(() => filterCanvasAssets(drama.value?.scenes, 'scene', episodeContext.value))
 const sidebarProps = computed(() => filterCanvasAssets(drama.value?.props, 'prop', episodeContext.value))
 const queueNow = ref(Date.now())
-const runQueueItems = computed(() => {
+const liveRunQueueItems = computed(() => {
   const grouped = new Map()
   const seen = new Set()
   for (const [nodeId, status] of Object.entries(nodeStatus.map)) {
@@ -1253,6 +1260,7 @@ const runQueueItems = computed(() => {
       retryAction: status.retryAction || '',
       retryActionLabel: status.retryActionLabel || '',
       attachedSlot: status.attachedSlot || '',
+      at: status.at,
     })
   }
   for (const node of allGraphNodes.value) {
@@ -1270,7 +1278,18 @@ const runQueueItems = computed(() => {
       errorDetail: failure,
     })
   }
-  return Array.from(grouped.values()).slice(0, 8)
+  return Array.from(grouped.values())
+})
+const runQueueItems = computed(() => {
+  const grouped = new Map()
+  liveRunQueueItems.value.forEach((item) => mergeRunQueueItem(grouped, item))
+  persistedGenerationHistory.value.forEach((item) => mergeRunQueueItem(grouped, {
+    ...item,
+    elapsedText: formatQueueElapsed(item.at),
+  }))
+  return Array.from(grouped.values())
+    .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+    .slice(0, 8)
 })
 const canvasNodeLocatorItems = computed(() => allGraphNodes.value
   .filter((node) => node?.type !== 'canvasAddButton')
@@ -1881,7 +1900,7 @@ function syncRenderedNodesToGraph() {
 }
 
 function refreshLayoutCacheFromGraph() {
-  layoutCache.value = buildCanvasLayoutPayload(
+  layoutCache.value = withCanvasPersistedState(buildCanvasLayoutPayload(
     allGraphNodes.value,
     currentViewport.value,
     layoutCache.value,
@@ -1890,7 +1909,23 @@ function refreshLayoutCacheFromGraph() {
       persistFreeNodes: isStandaloneCanvas.value,
       suppressedEdgeIds: [...suppressedEdgeIds.value],
     },
-  )
+  ))
+}
+
+function currentCanvasPreferences() {
+  return {
+    grid_visible: canvasGridVisible.value,
+    minimap_visible: canvasMiniMapVisible.value,
+    snap_enabled: canvasSnapEnabled.value,
+  }
+}
+
+function withCanvasPersistedState(layout) {
+  return {
+    ...(layout || {}),
+    preferences: currentCanvasPreferences(),
+    generation_history: persistedGenerationHistory.value,
+  }
 }
 
 function applyVirtualizedGraph() {
@@ -5411,12 +5446,15 @@ provide(CANVAS_CONTEXT_KEY, {
   focusQueueItem,
   toggleCanvasGrid: () => {
     canvasGridVisible.value = !canvasGridVisible.value
+    scheduleLayoutSave()
   },
   toggleCanvasMiniMap: () => {
     canvasMiniMapVisible.value = !canvasMiniMapVisible.value
+    scheduleLayoutSave()
   },
   toggleCanvasSnap: () => {
     canvasSnapEnabled.value = !canvasSnapEnabled.value
+    scheduleLayoutSave()
   },
   findCanvasNode: findGraphNode,
   useNodeResultAsDownstreamReference,
@@ -6130,7 +6168,7 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
   let layoutPayload = null
   if (!groupsOnly) {
     syncRenderedNodesToGraph()
-    layoutPayload = buildCanvasLayoutPayload(
+    layoutPayload = withCanvasPersistedState(buildCanvasLayoutPayload(
       allGraphNodes.value,
       currentViewport.value,
       layoutCache.value,
@@ -6139,7 +6177,7 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
         persistFreeNodes: isStandaloneCanvas.value,
         suppressedEdgeIds: [...suppressedEdgeIds.value],
       }
-    )
+    ))
     if (layoutOnly && layoutPayload) layoutCache.value = layoutPayload
   }
   const groupsPayload = groupsOnly || !layoutOnly ? workflowGroups.value : undefined
@@ -6388,6 +6426,11 @@ async function loadDrama(silent = false) {
     drama.value = await dramaAPI.get(dramaId.value)
     await loadProjectImageAssets()
     layoutCache.value = parseCanvasLayout(drama.value.metadata)
+    const preferences = normalizeCanvasPreferences(layoutCache.value?.preferences)
+    canvasGridVisible.value = preferences.grid_visible
+    canvasMiniMapVisible.value = preferences.minimap_visible
+    canvasSnapEnabled.value = preferences.snap_enabled
+    persistedGenerationHistory.value = normalizeGenerationHistory(layoutCache.value?.generation_history)
     suppressedEdgeIds.value = new Set((layoutCache.value?.suppressed_edge_ids || []).map(String))
     syncWorkflowFromDrama()
     const vp = resolveViewport(layoutCache.value)
@@ -6750,6 +6793,16 @@ watch(nodeStatus.map, () => {
   persistNodeStatusSnapshot()
 }, { deep: true })
 
+watch(liveRunQueueItems, (items) => {
+  const nextHistory = mergeGenerationHistory(
+    persistedGenerationHistory.value,
+    items.filter((item) => item.tone === 'success' || item.tone === 'failed'),
+  )
+  if (JSON.stringify(nextHistory) === JSON.stringify(persistedGenerationHistory.value)) return
+  persistedGenerationHistory.value = nextHistory
+  scheduleLayoutSave()
+}, { deep: true })
+
 watch(() => route.params.id, () => {
   highlightAssetId.value = null
   layoutCache.value = null
@@ -6758,6 +6811,10 @@ watch(() => route.params.id, () => {
   focusedNodeId.value = null
   generationOverrides.value = {}
   freeCanvasVoiceOptions.value = []
+  canvasGridVisible.value = DEFAULT_CANVAS_PREFERENCES.grid_visible
+  canvasMiniMapVisible.value = DEFAULT_CANVAS_PREFERENCES.minimap_visible
+  canvasSnapEnabled.value = DEFAULT_CANVAS_PREFERENCES.snap_enabled
+  persistedGenerationHistory.value = []
   freeCanvasVoiceOptionsLoaded = false
   loadDrama()
 }, { immediate: true })
