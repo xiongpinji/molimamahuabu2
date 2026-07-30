@@ -335,6 +335,8 @@
           @node-drag-start="onNodeDragStart"
           @node-drag="onNodeDrag"
           @node-drag-stop="onNodeDragStop"
+          @selection-start="onCanvasSelectionStart"
+          @selection-end="onCanvasSelectionEnd"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
           @nodes-change="onNodesChange"
@@ -433,6 +435,7 @@
           v-if="drama && (isStandaloneCanvas || allGraphNodes.length)"
           :standalone="isStandaloneCanvas"
         />
+        <CanvasSelectionToolbar v-if="isStandaloneCanvas" />
       </div>
     </div>
 
@@ -641,6 +644,7 @@ import {
   parseCanvasLayout,
   parseDramaMetadata,
   resolveViewport,
+  translateCanvasGroupChildren,
 } from '@/utils/canvasLayout'
 import {
   buildFreeCanvasGenerationRequest,
@@ -736,6 +740,7 @@ import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
+import CanvasSelectionToolbar from '@/components/dramaCanvas/CanvasSelectionToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 import CanvasDirectorStage from '@/components/dramaCanvas/CanvasDirectorStage.vue'
 import CanvasGenerationOptions from '@/components/dramaCanvas/CanvasGenerationOptions.vue'
@@ -769,6 +774,7 @@ const activeGroupId = ref(null)
 const selectedStoryboardIds = ref([])
 const selectedFreeNodeIds = ref([])
 const selectionModifierActive = ref(false)
+const marqueeSelectionActive = ref(false)
 const pipelineSteps = ref(['image', 'video', 'audio'])
 const workflowRunning = ref(false)
 const workflowProgress = ref('')
@@ -1962,10 +1968,28 @@ function commitInteractionHistory(previousState) {
 
 function applyInteractionState(state) {
   const positions = state?.nodes || {}
-  allGraphNodes.value = allGraphNodes.value.map((node) => {
+  const restoredGroups = (state?.groups || []).map((group) => ({
+    id: group.id,
+    type: 'canvasGroup',
+    position: { ...group.position },
+    data: {
+      title: group.title,
+      childNodeIds: [...group.childNodeIds],
+      width: group.width,
+      height: group.height,
+    },
+    zIndex: -1,
+    selectable: true,
+    selected: false,
+  }))
+  allGraphNodes.value = [
+    ...restoredGroups,
+    ...allGraphNodes.value.filter((node) => node.type !== 'canvasGroup'),
+  ].map((node) => {
     const position = positions[String(node.id)]
     return position ? { ...node, position: { ...position } } : node
   })
+  selectedFreeNodeIds.value = []
   currentViewport.value = { ...(state?.viewport || currentViewport.value) }
   allGraphEdges.value = decorateCanvasEdges(state?.edges || allGraphEdges.value)
   suppressedEdgeIds.value = new Set((state?.suppressedEdgeIds || []).map(String))
@@ -5415,6 +5439,7 @@ function createStandaloneGroup() {
     ElMessage.warning('请先框选至少 2 个节点')
     return
   }
+  const previousState = currentInteractionState()
   const padding = canvasPreferences.value.group_padding
   const minX = Math.min(...members.map((node) => node.position.x)) - padding
   const minY = Math.min(...members.map((node) => node.position.y)) - padding
@@ -5432,9 +5457,11 @@ function createStandaloneGroup() {
     },
     zIndex: -1,
     selectable: true,
-  }, ...allGraphNodes.value]
+    selected: true,
+  }, ...allGraphNodes.value.map((node) => ({ ...node, selected: false }))]
   selectedFreeNodeIds.value = []
   applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
   scheduleLayoutSave()
   ElMessage.success(`已将 ${members.length} 个节点打组`)
 }
@@ -5446,9 +5473,11 @@ function ungroupStandaloneSelection() {
     ElMessage.warning('请先选中组框')
     return
   }
+  const previousState = currentInteractionState()
   const groupIds = new Set(selectedGroups.map((group) => String(group.id)))
   allGraphNodes.value = allGraphNodes.value.filter((node) => !groupIds.has(String(node.id)))
   applyVirtualizedGraph()
+  commitInteractionHistory(previousState)
   scheduleLayoutSave()
   ElMessage.success('已解组，组内节点已保留')
 }
@@ -5460,7 +5489,7 @@ async function runSelectedStandaloneGroup() {
     ElMessage.warning('请先选中组框')
     return
   }
-  await runFreeCanvasSubgraph(group.data?.childNodeIds || [], true)
+  await runFreeCanvasSubgraph(group.data?.childNodeIds || [], false)
 }
 
 async function onContextMenuSelect(type) {
@@ -5758,6 +5787,21 @@ function onCanvasPointerDown(event) {
   })
 }
 
+function onCanvasSelectionStart() {
+  marqueeSelectionActive.value = true
+}
+
+function onCanvasSelectionEnd() {
+  requestAnimationFrame(() => {
+    if (isStandaloneCanvas.value) {
+      applySelectedFreeNodeIds(nodes.value
+        .filter((node) => node.type === 'homeCanvasNode' && node.selected)
+        .map((node) => node.id))
+    }
+    marqueeSelectionActive.value = false
+  })
+}
+
 function onNodesChange(changes = []) {
   const removedFreeNodeIds = new Set(
     changes
@@ -5786,7 +5830,7 @@ function onNodesChange(changes = []) {
       findGraphNode(change.id)?.type === 'homeCanvasNode'
     ))
     const selectedHomeChange = [...homeSelectionChanges].reverse().find((change) => change.selected)
-    if (homeSelectionChanges.length && !selectionModifierActive.value) {
+    if (homeSelectionChanges.length && !selectionModifierActive.value && !marqueeSelectionActive.value) {
       applySelectedFreeNodeIds(selectedHomeChange ? [selectedHomeChange.id] : [])
       return
     }
@@ -6228,11 +6272,19 @@ function onNodeDragStart(payload) {
 }
 
 function onNodeDrag(payload) {
+  const node = payload?.node
+  if (node?.type === 'canvasGroup' && draggedGroupSnapshot?.id === String(node.id)) {
+    allGraphNodes.value = translateCanvasGroupChildren(
+      allGraphNodes.value,
+      draggedGroupSnapshot,
+      node.position,
+    )
+    nodes.value = translateCanvasGroupChildren(nodes.value, draggedGroupSnapshot, node.position)
+  }
   if (!canvasPreferences.value.alignment_guides_enabled) {
     alignmentGuide.value = { x: null, y: null }
     return
   }
-  const node = payload?.node
   if (!node) return
   const zoom = Number(currentViewport.value.zoom || 1)
   const threshold = 6 / zoom
@@ -6275,12 +6327,11 @@ function onNodeDragStop() {
   const node = arguments[0]?.node
   if (node?.type === 'canvasGroup' && draggedGroupSnapshot?.id === String(node.id)) {
     const currentGroup = findGraphNode(node.id)
-    const dx = currentGroup.position.x - draggedGroupSnapshot.position.x
-    const dy = currentGroup.position.y - draggedGroupSnapshot.position.y
-    allGraphNodes.value = allGraphNodes.value.map((item) => {
-      const start = draggedGroupSnapshot.children[String(item.id)]
-      return start ? { ...item, position: { x: start.x + dx, y: start.y + dy } } : item
-    })
+    allGraphNodes.value = translateCanvasGroupChildren(
+      allGraphNodes.value,
+      draggedGroupSnapshot,
+      currentGroup.position,
+    )
     applyVirtualizedGraph()
   }
   draggedGroupSnapshot = null

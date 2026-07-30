@@ -359,6 +359,110 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await expect(page.locator('.vue-flow__minimap')).toHaveCount(0)
   })
 
+  test('多个节点可打组、整组实时拖动、组内执行、解组并撤销重做', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [
+          {
+            id: 'free:text:group-a',
+            type: 'homeCanvasNode',
+            position: { x: 180, y: 260 },
+            data: { kind: 'text', title: '组内文本 A', content: '生成组内文案 A', model: 'text-e2e' },
+          },
+          {
+            id: 'free:text:group-b',
+            type: 'homeCanvasNode',
+            position: { x: 620, y: 260 },
+            data: { kind: 'text', title: '组内文本 B', content: '生成组内文案 B', model: 'text-e2e' },
+          },
+          {
+            id: 'free:text:outside',
+            type: 'homeCanvasNode',
+            position: { x: 1500, y: 260 },
+            data: { kind: 'text', title: '组外文本', content: '不应执行组外文案', model: 'text-e2e' },
+          },
+        ],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      textRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const nodeA = page.locator('.vue-flow__node[data-id="free:text:group-a"]')
+    const nodeB = page.locator('.vue-flow__node[data-id="free:text:group-b"]')
+    await expect(nodeA).toBeVisible()
+    const selectionBoxA = await nodeA.boundingBox()
+    const selectionBoxB = await nodeB.boundingBox()
+    expect(selectionBoxA).not.toBeNull()
+    expect(selectionBoxB).not.toBeNull()
+    await page.mouse.move(
+      selectionBoxB.x + selectionBoxB.width + 24,
+      Math.max(selectionBoxA.y + selectionBoxA.height, selectionBoxB.y + selectionBoxB.height) + 24,
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      selectionBoxA.x - 24,
+      Math.min(selectionBoxA.y, selectionBoxB.y) - 24,
+      { steps: 12 },
+    )
+    await page.mouse.up()
+
+    const multiToolbar = page.getByRole('toolbar', { name: '多选节点操作' })
+    await expect(multiToolbar).toContainText('2 个节点')
+    await multiToolbar.getByRole('button', { name: '打组' }).click()
+
+    const group = page.locator('.vue-flow__node[data-id^="canvas-group:"]')
+    await expect(group).toHaveCount(1)
+    await expect(group).toHaveClass(/selected/)
+    const groupToolbar = page.getByRole('toolbar', { name: '节点组操作' })
+    await expect(groupToolbar.getByRole('button', { name: '整组执行' })).toBeVisible()
+    await expect.poll(() => state.canvasLayout.groups?.length || 0).toBe(1)
+
+    await page.reload()
+    const restoredGroup = page.locator('.vue-flow__node[data-id^="canvas-group:"]')
+    await expect(restoredGroup).toHaveCount(1)
+    await restoredGroup.locator('.canvas-group-title').click()
+    const restoredToolbar = page.getByRole('toolbar', { name: '节点组操作' })
+    await restoredToolbar.getByRole('button', { name: '整组执行' }).click()
+    await expect.poll(() => state.textRequests.length).toBe(2)
+    expect(state.textRequests.map((request) => request.prompt).sort()).toEqual([
+      '生成组内文案 A',
+      '生成组内文案 B',
+    ])
+
+    const beforeDragA = await nodeA.boundingBox()
+    const beforeDragB = await nodeB.boundingBox()
+    const titleBox = await restoredGroup.locator('.canvas-group-title').boundingBox()
+    expect(beforeDragA).not.toBeNull()
+    expect(beforeDragB).not.toBeNull()
+    expect(titleBox).not.toBeNull()
+    await page.mouse.move(titleBox.x + 20, titleBox.y + 12)
+    await page.mouse.down()
+    await page.mouse.move(titleBox.x + 140, titleBox.y + 92, { steps: 8 })
+    const liveDragA = await nodeA.boundingBox()
+    const liveDragB = await nodeB.boundingBox()
+    expect(liveDragA.x).toBeGreaterThan(beforeDragA.x + 80)
+    expect(liveDragB.y).toBeGreaterThan(beforeDragB.y + 45)
+    await page.mouse.up()
+
+    await restoredToolbar.getByRole('button', { name: '解组' }).click()
+    await expect(restoredGroup).toHaveCount(0)
+    await expect(nodeA).toBeVisible()
+    await expect(nodeB).toBeVisible()
+    await expect.poll(() => state.canvasLayout.groups?.length || 0).toBe(0)
+
+    const historyToolbar = page.getByLabel('画布历史操作')
+    await historyToolbar.getByRole('button', { name: '撤销' }).click()
+    await expect(page.locator('.vue-flow__node[data-id^="canvas-group:"]')).toHaveCount(1)
+    await historyToolbar.getByRole('button', { name: '重做' }).click()
+    await expect(page.locator('.vue-flow__node[data-id^="canvas-group:"]')).toHaveCount(0)
+  })
+
   test('右键新增图片节点直接进入节点内编辑、可拖动且不弹创建表单', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout(),

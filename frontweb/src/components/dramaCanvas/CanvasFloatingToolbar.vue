@@ -64,15 +64,6 @@
       <button type="button" class="toolbar-button" aria-label="整理画布节点" title="整理节点" @click="alignNodes">
         <el-icon><Grid /></el-icon><span>整理</span>
       </button>
-      <button v-if="props.standalone && selectedFreeCount >= 2" type="button" class="toolbar-button group-action" title="将所选节点打组（Ctrl/Cmd+G）" @click="createGroup">
-        <el-icon><Connection /></el-icon><span>打组 {{ selectedFreeCount }}</span>
-      </button>
-      <button v-if="props.standalone && selectedGroupCount" type="button" class="toolbar-button" title="执行组内节点" @click="runGroup">
-        <el-icon><VideoPlay /></el-icon><span>整组执行</span>
-      </button>
-      <button v-if="props.standalone && selectedGroupCount" type="button" class="toolbar-button" title="解散所选组" @click="ungroup">
-        <span>解组</span>
-      </button>
       <button type="button" class="toolbar-button" :class="{ active: directorOpen }" aria-label="打开 3D 导演台" title="3D 导演台" @click="openDirectorStage">
         <el-icon><VideoCamera /></el-icon><span>导演台</span>
       </button>
@@ -196,9 +187,6 @@ function goList() { ctx?.goListMode?.() }
 function zoomIn() { ctx?.zoomIn?.() }
 function zoomOut() { ctx?.zoomOut?.() }
 function fitView() { ctx?.fitCanvasView?.() }
-function createGroup() { ctx?.createStandaloneGroup?.() }
-function runGroup() { ctx?.runSelectedStandaloneGroup?.() }
-function ungroup() { ctx?.ungroupStandaloneSelection?.() }
 
 onMounted(() => {
   document.addEventListener('pointerdown', closeAddMenuOnOutside)
