@@ -201,18 +201,43 @@ test.describe('独立自由画布节点真实运行闭环', () => {
   test('自定义画布设置逐项生效、持久化并可恢复默认', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout({
-        free_nodes: [{
-          id: 'free:image:settings',
-          type: 'homeCanvasNode',
-          position: { x: 240, y: 220 },
-          data: {
-            kind: 'image',
-            title: '背景候选图',
-            content: '雨夜站台',
-            url: '/static/settings-background.png',
-            status: 'success',
+        manual_edges: [{
+          id: 'manual:settings-edge',
+          source: 'free:image:settings',
+          target: 'free:image:settings-target',
+          type: 'smoothstep',
+          style: {
+            stroke: '#22d3ee',
+            strokeWidth: 1.8,
+            strokeDasharray: '5, 5',
           },
+          data: { manual: true },
         }],
+        free_nodes: [
+          {
+            id: 'free:image:settings',
+            type: 'homeCanvasNode',
+            position: { x: 240, y: 220 },
+            data: {
+              kind: 'image',
+              title: '背景候选图',
+              content: '雨夜站台',
+              url: '/static/settings-background.png',
+              status: 'success',
+            },
+          },
+          {
+            id: 'free:image:settings-target',
+            type: 'homeCanvasNode',
+            position: { x: 820, y: 220 },
+            data: {
+              kind: 'image',
+              title: '连线设置目标',
+              content: '验证现有连线',
+              status: 'idle',
+            },
+          },
+        ],
       }),
       assets: [],
       imageRequests: [],
@@ -225,6 +250,9 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await page.goto('/canvas/3')
     await expect(page.locator('.vue-flow__node[data-id="free:image:settings"]')).toBeVisible()
     await expect(page.getByText('暂无画布数据', { exact: true })).toHaveCount(0)
+    const edgePath = page.locator('.vue-flow__edge-path')
+    const edgeInteraction = page.locator('.vue-flow__edge-interaction')
+    await expect(edgePath).toHaveCount(1)
     await page.getByRole('button', { name: '画布设置' }).click()
     const dialog = page.getByRole('dialog', { name: '自定义画布' })
     await expect(dialog).toBeVisible()
@@ -246,6 +274,12 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     }
 
     await dialog.getByRole('button', { name: '缩放', exact: true }).click()
+    await dialog.locator('label.setting-row').filter({ hasText: '连线显示粗细' }).locator('input').fill('6')
+    await dialog.locator('label.setting-row').filter({ hasText: '连线焦点范围' }).locator('input').fill('30')
+    const animationSwitch = dialog.locator('.setting-row').filter({ hasText: '开启连线动画' }).getByRole('switch')
+    const focusOnlySwitch = dialog.locator('.setting-row').filter({ hasText: '仅显示焦点连线' }).getByRole('switch')
+    await animationSwitch.click()
+    await dialog.getByRole('button', { name: '火山', exact: true }).click()
     await dialog.locator('label.setting-row').filter({ hasText: '网格线间距' }).locator('input').fill('30')
     await dialog.locator('.setting-row').filter({ hasText: '显示导航小地图' }).getByRole('switch').click()
     await dialog.getByRole('button', { name: '暮光蓝', exact: true }).click()
@@ -253,8 +287,37 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await dialog.locator('.background-picker button').first().click()
 
     await expect(page.locator('.vue-flow__minimap')).toBeVisible()
+    await expect(edgePath).toHaveCSS('stroke-width', '6px')
+    await expect(edgeInteraction).toHaveCSS('stroke-width', '30px')
+    await expect(edgePath).toHaveCSS('stroke-dasharray', '8px, 8px')
+    await expect.poll(async () => page.locator('.canvas-main').evaluate((canvas) => {
+      const path = canvas.querySelector('.vue-flow__edge-path')
+      const style = getComputedStyle(canvas)
+      return getComputedStyle(path).stroke === style.getPropertyValue('--canvas-edge-color').trim()
+    })).toBe(true)
+    await focusOnlySwitch.click()
+    await expect(edgePath).toHaveCSS('opacity', '0')
+    await focusOnlySwitch.click()
+    await expect(edgePath).toHaveCSS('opacity', '1')
+    await edgeInteraction.dispatchEvent('click')
+    await expect(page.locator('.vue-flow__edge')).toHaveClass(/selected/)
+    await expect.poll(async () => page.locator('.canvas-main').evaluate((canvas) => {
+      const path = canvas.querySelector('.vue-flow__edge-path')
+      const style = getComputedStyle(canvas)
+      return getComputedStyle(path).stroke === style.getPropertyValue('--canvas-edge-focus-color').trim()
+    })).toBe(true)
+    await dialog.hover({ position: { x: 20, y: 20 } })
+    await animationSwitch.click()
+    await expect(edgePath).toHaveCSS('stroke-dasharray', '5px, 5px')
+    await animationSwitch.click()
+    await expect(edgePath).toHaveCSS('stroke-dasharray', '8px, 8px')
     await expect.poll(() => state.canvasLayout.preferences).toMatchObject({
       wheel_action: 'zoom',
+      edge_width: 6,
+      edge_focus_radius: 30,
+      edge_animation_enabled: true,
+      edge_focus_only: false,
+      edge_palette_key: 'volcano',
       grid_gap: 30,
       minimap_visible: true,
       theme_key: 'twilight-blue',
@@ -267,16 +330,32 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     const restoredDialog = page.getByRole('dialog', { name: '自定义画布' })
     await expect(restoredDialog.getByRole('button', { name: '缩放', exact: true })).toHaveClass(/active/)
     await expect(restoredDialog.getByRole('button', { name: '暮光蓝', exact: true })).toHaveClass(/active/)
+    await expect(restoredDialog.getByRole('button', { name: '火山', exact: true })).toHaveClass(/active/)
     await expect(page.locator('.vue-flow__minimap')).toBeVisible()
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCSS('stroke-width', '6px')
+    await expect(page.locator('.vue-flow__edge-interaction')).toHaveCSS('stroke-width', '30px')
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCSS('stroke-dasharray', '8px, 8px')
+    await expect.poll(async () => page.locator('.canvas-main').evaluate((canvas) => {
+      const path = canvas.querySelector('.vue-flow__edge-path')
+      const style = getComputedStyle(canvas)
+      return getComputedStyle(path).stroke === style.getPropertyValue('--canvas-edge-color').trim()
+    })).toBe(true)
 
     await restoredDialog.getByRole('button', { name: '恢复默认' }).click()
     await expect.poll(() => state.canvasLayout.preferences).toMatchObject({
       wheel_action: 'pan',
+      edge_width: 2,
+      edge_focus_radius: 12,
+      edge_animation_enabled: false,
+      edge_focus_only: false,
       grid_gap: 20,
       minimap_visible: false,
       theme_key: 'xuanhei',
       background_enabled: false,
     })
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCSS('stroke-width', '2px')
+    await expect(page.locator('.vue-flow__edge-interaction')).toHaveCSS('stroke-width', '12px')
+    await expect(page.locator('.vue-flow__edge-path')).toHaveCSS('stroke-dasharray', '5px, 5px')
     await expect(page.locator('.vue-flow__minimap')).toHaveCount(0)
   })
 

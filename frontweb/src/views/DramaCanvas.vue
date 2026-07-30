@@ -7433,13 +7433,13 @@ onBeforeUnmount(() => {
   opacity: 0.72;
 }
 
-.canvas-main :deep(.vue-flow__edge-path) {
-  stroke: var(--canvas-edge-color, rgba(255, 255, 255, 0.11));
-  stroke-width: var(--canvas-edge-width, 2px);
+.canvas-main :deep(.canvas-cuttable-edge .vue-flow__edge-path) {
+  stroke: var(--canvas-edge-color, rgba(255, 255, 255, 0.11)) !important;
+  stroke-width: var(--canvas-edge-width, 2px) !important;
 }
-.canvas-main :deep(.vue-flow__edge.selected .vue-flow__edge-path),
-.canvas-main :deep(.vue-flow__edge:hover .vue-flow__edge-path) {
-  stroke: var(--canvas-edge-focus-color, rgba(255, 255, 255, 0.45));
+.canvas-main :deep(.vue-flow__edge.selected .canvas-cuttable-edge .vue-flow__edge-path),
+.canvas-main :deep(.vue-flow__edge:hover .canvas-cuttable-edge .vue-flow__edge-path) {
+  stroke: var(--canvas-edge-focus-color, rgba(255, 255, 255, 0.45)) !important;
 }
 .canvas-main :deep(.vue-flow__edge-interaction) {
   stroke-width: var(--canvas-edge-focus-radius, 12px);
@@ -7447,8 +7447,8 @@ onBeforeUnmount(() => {
 .canvas-main.edge-focus-only :deep(.vue-flow__edge:not(.selected):not(:hover) .vue-flow__edge-path) {
   opacity: 0;
 }
-.canvas-main.edge-animated :deep(.vue-flow__edge-path) {
-  stroke-dasharray: 8 8;
+.canvas-main.edge-animated :deep(.canvas-cuttable-edge .vue-flow__edge-path) {
+  stroke-dasharray: 8 8 !important;
   animation: canvas-edge-dash 1.2s linear infinite;
 }
 
