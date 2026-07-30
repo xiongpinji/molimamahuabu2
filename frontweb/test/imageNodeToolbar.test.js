@@ -37,6 +37,16 @@ test('图片节点挂载独立工具栏且不影响其他节点', () => {
   assert.match(toolbarSource, /:global\(\.vue-flow__node\.selected \.image-node-toolbar\)/)
 })
 
+test('工具栏自动避开顶部导航且编辑器使用沉浸式工作区', () => {
+  assert.match(toolbarSource, /toolbarPlacement = ref\('above'\)/)
+  assert.match(toolbarSource, /updateToolbarPlacement/)
+  assert.match(toolbarSource, /getBoundingClientRect\(\)/)
+  assert.match(toolbarSource, /:class="\{ 'place-below': toolbarPlacement === 'below' \}"/)
+  assert.match(toolbarSource, /class="image-tool-dialog immersive"/)
+  assert.match(toolbarSource, /width="calc\(100vw - 32px\)"/)
+  assert.match(toolbarSource, /height: calc\(100vh - 32px\)/)
+})
+
 test('工具栏按后端能力启用并保留不可用原因', () => {
   assert.match(toolbarSource, /imageToolsAPI\.getCapabilities\(\)/)
   assert.match(toolbarSource, /operationCapability\(item\.operation\)/)
@@ -240,6 +250,10 @@ test('P1 图片调整覆盖完整参数，LUT 支持强度，旋转走 Sharp 派
     'exposure',
     'brightness',
     'contrast',
+    'highlights',
+    'shadows',
+    'whites',
+    'blacks',
     'vibrance',
     'saturation',
     'temperature',
@@ -247,11 +261,22 @@ test('P1 图片调整覆盖完整参数，LUT 支持强度，旋转走 Sharp 派
     'hue',
     'sharpness',
     'clarity',
+    'grain',
     'blur',
+    'vignette',
+    'softLight',
+    'glow',
   ]) {
     assert.match(toolbarSource, new RegExp(`${parameter}:`))
   }
   assert.match(toolbarSource, /色温/)
+  assert.match(toolbarSource, /RGB 曲线/)
+  assert.match(toolbarSource, /curveChannel = ref\('rgb'\)/)
+  assert.match(toolbarSource, /function addCurvePoint\(channel\)/)
+  assert.match(toolbarSource, /function removeCurvePoint\(channel, index\)/)
+  assert.match(toolbarSource, /curves: adjustCurves\.value/)
+  assert.match(toolbarSource, /\{ name: '青橙'/)
+  assert.match(toolbarSource, /\{ name: '黑色电影'/)
   assert.match(toolbarSource, /lutIntensity = ref\(1\)/)
   assert.match(toolbarSource, /intensity: lutIntensity\.value/)
   assert.match(toolbarSource, /上传 3D LUT/)
@@ -259,6 +284,14 @@ test('P1 图片调整覆盖完整参数，LUT 支持强度，旋转走 Sharp 派
   assert.match(toolbarSource, /LUT_3D_SIZE/)
   assert.match(toolbarSource, /preset: lutPreset\.value/)
   assert.match(toolbarSource, /customLut: customLut\.value/)
+  assert.match(toolbarSource, /lutCategory = ref\('recommended'\)/)
+  assert.match(toolbarSource, /value: 'teal_orange'/)
+  assert.match(toolbarSource, /value: 'film_fade'/)
+  assert.match(toolbarSource, /LUT 手动微调/)
+  assert.match(toolbarSource, /manual: \{ \.\.\.lutManualForm\.value \}/)
+  assert.match(toolbarSource, /全景镜头扩张/)
+  assert.match(toolbarSource, /背景重构/)
+  assert.match(toolbarSource, /氛围重塑/)
   assert.match(toolbarSource, /\{ label: '旋转', operation: 'rotate' \}/)
 })
 
@@ -296,4 +329,16 @@ test('宫格裁剪只提交用户选中的格子且保留全选与取消入口',
   assert.match(toolbarSource, /selectAllGridCells/)
   assert.match(toolbarSource, /gridSelectedCells = \[\]/)
   assert.match(toolbarSource, /selectedCells: \[\.\.\.gridSelectedCells\.value\]/)
+})
+
+test('宫格裁剪提供 2x2 至 7x7、间距、反选、复制、识别和吸附控制', () => {
+  assert.match(toolbarSource, /v-for="size in gridQuickSizes"/)
+  assert.match(toolbarSource, /const gridQuickSizes = Object\.freeze\(\[2, 3, 4, 5, 6, 7\]\)/)
+  assert.match(toolbarSource, /gridForm = ref\(\{ rows: 3, columns: 3, spacing: 0 \}\)/)
+  assert.match(toolbarSource, /v-model="gridForm\.spacing"/)
+  assert.match(toolbarSource, /invertGridSelection/)
+  assert.match(toolbarSource, /duplicateGridSelection/)
+  assert.match(toolbarSource, /redetectGrid/)
+  assert.match(toolbarSource, /gridSnapEnabled/)
+  assert.match(toolbarSource, /spacing: gridForm\.value\.spacing/)
 })

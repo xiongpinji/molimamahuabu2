@@ -2840,8 +2840,8 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
   const sourcePath = path.join(storageRoot, 'source.png');
   await sharp({
     create: {
-      width: 4,
-      height: 4,
+      width: 8,
+      height: 8,
       channels: 4,
       background: '#ffffff',
     },
@@ -2864,23 +2864,30 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
       assetId: sourceAsset.id,
       sourceNodeId: 'image-node-grid',
       operation: 'grid_crop',
-      parameters: { rows: 2, columns: 2, selectedCells: ['0:1', '1:0'] },
+      parameters: {
+        rows: 2,
+        columns: 2,
+        spacing: 2,
+        selectedCells: ['0:1', '1:0'],
+        duplicateCells: ['0:1'],
+      },
     },
   }, res);
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
-  assert.equal(res.payload.data.resultAssets.length, 2);
+  assert.equal(res.payload.data.resultAssets.length, 3);
   assert.equal(res.payload.data.resultAssetId, res.payload.data.resultAssets[0].id);
   assert.equal(res.payload.data.resultUrl, res.payload.data.resultAssets[0].url);
   for (const item of res.payload.data.resultAssets) {
     assert.equal(['0:1', '1:0'].includes(`${item.row}:${item.column}`), true);
     const resultAsset = assetService.getById(db, item.id);
     assert.equal(resultAsset.metadata.operation, 'grid_crop');
+    assert.equal(resultAsset.metadata.parameters.spacing, 2);
     const metadata = await sharp(resultAsset.local_path).metadata();
     assert.equal(metadata.width, 2);
     assert.equal(metadata.height, 2);
   }
-  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 3);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 4);
   assert.equal(fs.existsSync(sourcePath), true);
 });
 
@@ -2929,12 +2936,26 @@ test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t)
         vibrance: 1.1,
         saturation: 0.8,
         contrast: 1.1,
+        highlights: 0.2,
+        shadows: -0.1,
+        whites: 0.15,
+        blacks: -0.2,
         temperature: 0.4,
         tint: -0.2,
         hue: 12,
         sharpness: 0.3,
         clarity: 0.2,
+        grain: 0.1,
         blur: 0,
+        vignette: 0.25,
+        softLight: 0.1,
+        glow: 0.2,
+        curves: {
+          rgb: [[0, 0], [0.5, 0.6], [1, 1]],
+          red: [[0, 0], [1, 1]],
+          green: [[0, 0], [1, 1]],
+          blue: [[0, 0], [1, 1]],
+        },
       },
     },
   }, res);
@@ -2947,16 +2968,65 @@ test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t)
     vibrance: 1.1,
     saturation: 0.8,
     contrast: 1.1,
+    highlights: 0.2,
+    shadows: -0.1,
+    whites: 0.15,
+    blacks: -0.2,
     temperature: 0.4,
     tint: -0.2,
     hue: 12,
     sharpness: 0.3,
     clarity: 0.2,
+    grain: 0.1,
     blur: 0,
+    vignette: 0.25,
+    softLight: 0.1,
+    glow: 0.2,
+    curves: {
+      rgb: [[0, 0], [0.5, 0.6], [1, 1]],
+      red: [[0, 0], [1, 1]],
+      green: [[0, 0], [1, 1]],
+      blue: [[0, 0], [1, 1]],
+    },
   });
   assert.notEqual(
     fs.readFileSync(resultAsset.local_path).toString('base64'),
     fs.readFileSync(sourcePath).toString('base64'),
+  );
+
+  const invalidCurveRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-invalid-curve',
+      operation: 'adjust',
+      parameters: {
+        curves: {
+          rgb: [[0.1, 0], [0.9, 1]],
+        },
+      },
+    },
+  }, invalidCurveRes);
+  assert.equal(invalidCurveRes.statusCode, 400);
+  assert.match(invalidCurveRes.payload.error.message, /curves\.rgb/);
+
+  const presetLutRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-preset-lut',
+      operation: 'lut',
+      parameters: {
+        preset: 'teal_orange',
+        intensity: 0.7,
+        manual: { exposure: 0.1, contrast: 1.1, saturation: 1.05, temperature: -0.1 },
+      },
+    },
+  }, presetLutRes);
+  assert.equal(presetLutRes.statusCode, 201, JSON.stringify(presetLutRes.payload));
+  assert.deepEqual(
+    assetService.getById(db, presetLutRes.payload.data.resultAssetId).metadata.parameters.manual,
+    { exposure: 0.1, contrast: 1.1, saturation: 1.05, temperature: -0.1 },
   );
 
   const customRes = responseRecorder();
@@ -2986,6 +3056,7 @@ test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t)
   assert.deepEqual(customAsset.metadata.parameters, {
     preset: 'custom',
     intensity: 1,
+    manual: { exposure: 0, contrast: 1, saturation: 1, temperature: 0 },
     customLut: { name: 'invert-2.cube', size: 2 },
   });
   const customPixel = await sharp(customAsset.local_path).raw().toBuffer();
@@ -3039,7 +3110,11 @@ test('LUT 调色使用可审计的内置矩阵并记录预设名', async (t) => 
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
   const resultAsset = assetService.getById(db, res.payload.data.resultAssetId);
-  assert.deepEqual(resultAsset.metadata.parameters, { preset: 'cinematic', intensity: 0.65 });
+  assert.deepEqual(resultAsset.metadata.parameters, {
+    preset: 'cinematic',
+    intensity: 0.65,
+    manual: { exposure: 0, contrast: 1, saturation: 1, temperature: 0 },
+  });
   assert.notEqual(
     fs.readFileSync(resultAsset.local_path).toString('base64'),
     fs.readFileSync(sourcePath).toString('base64'),
