@@ -76,6 +76,37 @@ const generatedMentionHomeCanvasState = {
       : node
   )),
 }
+const editorFitHomeCanvasState = {
+  version: 1,
+  nodes: [
+    {
+      id: 'e2e:fit:image',
+      type: 'homeCanvasNode',
+      position: { x: 300, y: 600 },
+      data: { kind: 'image', title: '完整适配图片节点', content: '' },
+    },
+    {
+      id: 'e2e:fit:video',
+      type: 'homeCanvasNode',
+      position: { x: 1100, y: 600 },
+      data: { kind: 'video', title: '完整适配视频节点', content: '' },
+    },
+    {
+      id: 'e2e:fit:audio',
+      type: 'homeCanvasNode',
+      position: { x: 1900, y: 600 },
+      data: { kind: 'audio', title: '完整适配音频节点', content: '' },
+    },
+    {
+      id: 'e2e:fit:text',
+      type: 'homeCanvasNode',
+      position: { x: 2700, y: 600 },
+      data: { kind: 'text', title: '完整适配文本节点', content: '完整显示文本编辑内容。' },
+    },
+  ],
+  edges: [],
+  viewport: { x: 160, y: 180, zoom: 0.2 },
+}
 
 async function loadHomeCanvasState(page, state) {
   await page.evaluate(({ pendingKey, nextState }) => {
@@ -203,7 +234,9 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(restoredEditor.y + restoredEditor.height).toBeLessThanOrEqual(viewport.height)
 })
 
-test('节点编辑器尺寸随画布缩放自适应且保持可操作', async ({ page }) => {
+test('节点编辑器在不同画布缩放下完整显示且根容器不产生滚动条', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+
   const editorSizeAtZoom = async (zoom) => {
     await loadHomeCanvasState(page, {
       ...seededHomeCanvasState,
@@ -219,7 +252,18 @@ test('节点编辑器尺寸随画布缩放自适应且保持可操作', async ({
     await expect(page.locator('.zoom-label')).toHaveText(`${Math.round(zoom * 100)}%`)
     return {
       box: await editor.boundingBox(),
-      maxHeight: await editor.evaluate((element) => Number.parseFloat(element.style.maxHeight)),
+      layout: await editor.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          clientHeight: element.clientHeight,
+          clientWidth: element.clientWidth,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          scrollHeight: element.scrollHeight,
+          scrollWidth: element.scrollWidth,
+        }
+      }),
+      footerBox: await editor.locator('.editor-footer').boundingBox(),
     }
   }
 
@@ -230,12 +274,74 @@ test('节点编辑器尺寸随画布缩放自适应且保持可操作', async ({
   expect(compactEditor.box).not.toBeNull()
   expect(normalEditor.box).not.toBeNull()
   expect(compactEditor.box.width).toBeGreaterThanOrEqual(480)
-  expect(compactEditor.box.width).toBeLessThan(normalEditor.box.width * 0.75)
-  expect(compactEditor.maxHeight).toBeLessThanOrEqual(385)
   expect(compactEditor.box.x).toBeGreaterThanOrEqual(0)
+  expect(compactEditor.box.y).toBeGreaterThanOrEqual(0)
   expect(compactEditor.box.x + compactEditor.box.width).toBeLessThanOrEqual(viewport.width)
+  expect(compactEditor.box.y + compactEditor.box.height).toBeLessThanOrEqual(viewport.height)
+  expect(compactEditor.layout.scrollHeight).toBeLessThanOrEqual(compactEditor.layout.clientHeight + 1)
+  expect(compactEditor.layout.scrollWidth).toBeLessThanOrEqual(compactEditor.layout.clientWidth + 1)
+  expect(compactEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
+  expect(compactEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
+  expect(compactEditor.footerBox).not.toBeNull()
+  expect(compactEditor.footerBox.y).toBeGreaterThanOrEqual(compactEditor.box.y)
+  expect(compactEditor.footerBox.y + compactEditor.footerBox.height)
+    .toBeLessThanOrEqual(compactEditor.box.y + compactEditor.box.height + 1)
   expect(normalEditor.box.x).toBeGreaterThanOrEqual(0)
+  expect(normalEditor.box.y).toBeGreaterThanOrEqual(0)
   expect(normalEditor.box.x + normalEditor.box.width).toBeLessThanOrEqual(viewport.width)
+  expect(normalEditor.box.y + normalEditor.box.height).toBeLessThanOrEqual(viewport.height)
+  expect(normalEditor.layout.scrollHeight).toBeLessThanOrEqual(normalEditor.layout.clientHeight + 1)
+  expect(normalEditor.layout.scrollWidth).toBeLessThanOrEqual(normalEditor.layout.clientWidth + 1)
+  expect(normalEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
+  expect(normalEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
+})
+
+test('所有节点类型和节点宽度都使用完整无滚动的编辑框', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, editorFitHomeCanvasState)
+
+  const viewport = page.viewportSize()
+  for (const id of ['e2e:fit:image', 'e2e:fit:video', 'e2e:fit:audio', 'e2e:fit:text']) {
+    const node = page.locator(`.vue-flow__node[data-id="${id}"]`)
+    await node.click()
+
+    const editor = page.locator('.node-expanded-editor')
+    await expect(editor).toBeVisible()
+    const [nodeBox, editorBox, footerBox, dock, layout] = await Promise.all([
+      node.locator('.home-canvas-node').boundingBox(),
+      editor.boundingBox(),
+      editor.locator('.editor-footer').boundingBox(),
+      editor.getAttribute('data-editor-dock'),
+      editor.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          clientHeight: element.clientHeight,
+          clientWidth: element.clientWidth,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          scrollHeight: element.scrollHeight,
+          scrollWidth: element.scrollWidth,
+        }
+      }),
+    ])
+
+    expect(nodeBox).not.toBeNull()
+    expect(editorBox).not.toBeNull()
+    expect(footerBox).not.toBeNull()
+    expect(editorBox.x).toBeGreaterThanOrEqual(0)
+    expect(editorBox.y).toBeGreaterThanOrEqual(0)
+    expect(editorBox.x + editorBox.width).toBeLessThanOrEqual(viewport.width)
+    expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
+    expect(layout.scrollHeight).toBeLessThanOrEqual(layout.clientHeight + 1)
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1)
+    expect(layout.overflowX).not.toMatch(/^(auto|scroll)$/)
+    expect(layout.overflowY).not.toMatch(/^(auto|scroll)$/)
+    expect(footerBox.y).toBeGreaterThanOrEqual(editorBox.y)
+    expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(editorBox.y + editorBox.height + 1)
+    expect(Math.abs((dock === 'top'
+      ? nodeBox.y - editorBox.y - editorBox.height
+      : editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+  }
 })
 
 test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
