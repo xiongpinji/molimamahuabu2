@@ -477,7 +477,12 @@ const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'funct
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
-const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(props.data.kind, draft.model, draft.quantity) || null)
+const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
+  props.data.kind,
+  draft.model,
+  draft.quantity,
+  draft.duration,
+) || null)
 const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (

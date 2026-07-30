@@ -1,6 +1,6 @@
 const DEFAULTS = {
   image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 4, declared: false },
-  video: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['720p'], durations: [5, 10, 15], quantities: [1], maxReferences: 3, supportsAudio: false, declared: false },
+  video: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['720p'], durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], quantities: [1], maxReferences: 3, supportsAudio: false, declared: false },
   text: { quantities: [1] },
   audio: { quantities: [1] },
 }
@@ -11,6 +11,7 @@ export function normalizeCanvasModelCatalog(items = []) {
     label: String(item.label || item.model),
     kind: String(item.kind),
     credits: Number.isFinite(Number(item.credits)) && Number(item.credits) > 0 ? Number(item.credits) : null,
+    billingUnit: String(item.billing_unit || item.billingUnit || '').trim(),
     capabilities: {
       ...(DEFAULTS[item.kind] || {}),
       ...(item.capabilities || {}),
@@ -24,7 +25,11 @@ export function canvasModelCapability(catalog, kind, model) {
     || { ...(DEFAULTS[kind] || {}) }
 }
 
-export function estimateCanvasCredits(catalog, kind, model, quantity = 1) {
+export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {
   const entry = normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
-  return entry?.credits ? entry.credits * Math.max(1, Number(quantity) || 1) : null
+  if (!entry?.credits) return null
+  const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
+    ? Math.max(1, Number(duration) || 1)
+    : 1
+  return entry.credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
 }
