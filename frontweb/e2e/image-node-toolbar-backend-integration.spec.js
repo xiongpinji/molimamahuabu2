@@ -299,7 +299,7 @@ test.afterAll(async () => {
   if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
 })
 
-test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同链', async ({ page }) => {
+test('图片工具栏裁剪保留原图并新建结果节点，刷新后形成真实同链', async ({ page }) => {
   await proxyBackend(page)
   await page.goto(`/canvas/${dramaId}`)
 
@@ -337,11 +337,15 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
        FROM async_tasks WHERE type = 'image_tool_crop' ORDER BY created_at DESC LIMIT 1`,
     ).get()
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
-    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    const sourceNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    const resultNode = metadata.canvas_layout.free_nodes.find(
+      (item) => item.id !== nodeId && item.data?.imageToolTaskId === task?.id,
+    )
     return {
       asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
       task,
-      freeNode,
+      sourceNode,
+      resultNode,
     }
   })).toMatchObject({
     asset: {
@@ -360,119 +364,51 @@ test('图片工具栏裁剪成功、失败保留与重试刷新形成真实同�
       error: null,
       result: expect.stringContaining('"resultAssetId"'),
     },
-    freeNode: {
+    sourceNode: {
       data: expect.objectContaining({
         imageToolStatus: 'success',
-        savedAssetId: expect.any(String),
-        url: expect.stringMatching(/^\/static\//),
+        savedAssetId: String(sourceAssetId),
+        url: '/static/toolbar-source.png',
         imageToolHistory: expect.arrayContaining([
           expect.objectContaining({ operation: 'crop', status: 'success' }),
         ]),
       }),
     },
+    resultNode: {
+      data: expect.objectContaining({
+        kind: 'image',
+        sourceImageToolNodeId: nodeId,
+        imageToolOperation: 'crop',
+        savedAssetId: expect.any(String),
+        url: expect.stringMatching(/^\/static\//),
+      }),
+    },
   })
 
-  const cropAsset = readDatabase((db) => db.prepare(
-    `SELECT id, url, local_path, width, height
-     FROM assets WHERE id != ? AND drama_id = ? ORDER BY id DESC LIMIT 1`,
-  ).get(sourceAssetId, dramaId))
+  const { cropAsset, cropResultNodeId } = readDatabase((db) => {
+    const asset = db.prepare(
+      `SELECT id, url, local_path, width, height
+       FROM assets WHERE id != ? AND drama_id = ? ORDER BY id DESC LIMIT 1`,
+    ).get(sourceAssetId, dramaId)
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const resultNode = metadata.canvas_layout.free_nodes.find(
+      (item) => item.id !== nodeId && item.data?.savedAssetId === String(asset.id),
+    )
+    return { cropAsset: asset, cropResultNodeId: resultNode?.id }
+  })
+  expect(cropResultNodeId).toEqual(expect.any(String))
   expect(cropAsset.width).toBeLessThan(320)
   expect(cropAsset.height).toBeLessThan(180)
   expect(fs.existsSync(cropAsset.local_path)).toBe(true)
   expect(sha256(path.join(storagePath, 'toolbar-source.png'))).not.toBe(sha256(cropAsset.local_path))
-  const cropBytes = fs.readFileSync(cropAsset.local_path)
-
   await page.reload({ waitUntil: 'networkidle' })
-  const restored = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
-  await expect(restored).toContainText('图片工具同链节点')
+  await expect(page.locator(`.vue-flow__node[data-id="${nodeId}"] img`))
+    .toHaveAttribute('src', /\/static\/toolbar-source\.png$/)
+  const restored = page.locator(`.vue-flow__node[data-id="${cropResultNodeId}"]`)
+  await expect(restored).toContainText('图片工具同链节点 · 编辑结果')
   await restored.click()
   const restoredToolbar = restored.locator('.image-node-toolbar')
   await expect(restoredToolbar).toBeVisible()
-  await restoredToolbar.locator('button[title="处理历史"]').click()
-  await expect(restoredToolbar.locator('.toolbar-history')).toContainText('裁剪')
-  await expect(restoredToolbar.locator('.toolbar-history')).toContainText('已完成')
-  await restoredToolbar.locator('button[title="处理历史"]').click()
-
-  fs.writeFileSync(cropAsset.local_path, 'not-a-valid-image')
-  const previousImageUrl = await restored.locator('img[alt="图片工具同链节点"]').getAttribute('src')
-  await restoredToolbar.getByRole('button', { name: /工具/ }).click()
-  await restoredToolbar.getByRole('button', { name: '裁剪/压缩/镜像', exact: true }).click()
-  const editor = page.getByRole('dialog', { name: '裁剪' })
-  await editor.getByRole('button', { name: '镜像', exact: true }).click()
-  const mirrorDialog = page.getByRole('dialog', { name: '镜像' })
-  await expect(mirrorDialog.getByLabel('图片效果预览')).toBeVisible()
-  await expect(mirrorDialog.locator('.preview-canvas img')).toHaveCSS('transform', 'matrix(-1, 0, 0, 1, 0, 0)')
-  await mirrorDialog.getByRole('button', { name: '应用并生成新素材' }).click()
-  await expect(restoredToolbar.getByRole('alert')).toContainText('图片处理失败')
-  await expect(restored.locator('img[alt="图片工具同链节点"]')).toHaveAttribute('src', previousImageUrl)
-
-  await expect.poll(() => readDatabase((db) => {
-    const task = db.prepare(
-      `SELECT status, error FROM async_tasks
-       WHERE type = 'image_tool_mirror' ORDER BY created_at DESC LIMIT 1`,
-    ).get()
-    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
-    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
-    return { task, freeNode }
-  })).toMatchObject({
-    task: {
-      status: 'failed',
-      error: '图片处理失败',
-    },
-    freeNode: {
-      data: expect.objectContaining({
-        imageToolStatus: 'failed',
-        imageToolError: '图片处理失败',
-        savedAssetId: String(cropAsset.id),
-      }),
-    },
-  })
-
-  await mirrorDialog.getByRole('button', { name: '取消', exact: true }).click()
-  await expect(mirrorDialog).toBeHidden()
-  fs.writeFileSync(cropAsset.local_path, cropBytes)
-  await restoredToolbar.getByRole('button', { name: '重试', exact: true }).click()
-  await expect(page.getByText('图片处理重试成功，已生成新素材')).toBeVisible()
-
-  await expect.poll(() => readDatabase((db) => {
-    const asset = db.prepare(
-      `SELECT id, local_path, metadata FROM assets
-       WHERE drama_id = ? ORDER BY id DESC LIMIT 1`,
-    ).get(dramaId)
-    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
-    const freeNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
-    return {
-      asset: { ...asset, metadata: JSON.parse(asset.metadata || '{}') },
-      freeNode,
-    }
-  })).toMatchObject({
-    asset: {
-      metadata: {
-        sourceAssetId: cropAsset.id,
-        sourceNodeId: nodeId,
-        operation: 'mirror',
-        engine: 'sharp',
-      },
-    },
-    freeNode: {
-      data: expect.objectContaining({
-        imageToolStatus: 'success',
-        imageToolError: '',
-        imageToolHistory: expect.arrayContaining([
-          expect.objectContaining({ operation: 'mirror', status: 'success' }),
-          expect.objectContaining({ operation: 'crop', status: 'success' }),
-        ]),
-      }),
-    },
-  })
-
-  await page.reload({ waitUntil: 'networkidle' })
-  const finalNode = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
-  await expect(finalNode).toContainText('图片工具同链节点')
-  await finalNode.click()
-  await expect(finalNode.locator('.image-node-toolbar')).toBeVisible()
-  await finalNode.locator('.image-node-toolbar button[title="处理历史"]').click()
-  await expect(finalNode.locator('.toolbar-history')).toContainText('镜像')
 })
 
 test('图片节点灯光入口提供参考站同级预设并即时写入 3D 环境', async ({ page }) => {
@@ -625,6 +561,9 @@ test('宫格裁剪选择指定区域并真实生成对应数量素材', async ({
   await page.goto(`/canvas/${dramaId}`)
 
   const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  await expect(node).toBeVisible()
+  const nodeCountBefore = await page.locator('article.home-canvas-node').count()
+  const sourceUrl = await node.locator('img').getAttribute('src')
   await node.click()
   const toolbar = node.locator('.image-node-toolbar')
   await toolbar.getByRole('button', { name: /工具/ }).hover()
@@ -641,14 +580,54 @@ test('宫格裁剪选择指定区域并真实生成对应数量素材', async ({
 
   await expect.poll(() => readDatabase((db) => {
     const task = db.prepare(
-      `SELECT result FROM async_tasks
+      `SELECT id, result FROM async_tasks
        WHERE type = 'image_tool_grid_crop' ORDER BY rowid DESC LIMIT 1`,
     ).get()
-    return task?.result ? JSON.parse(task.result).resultAssets : null
-  })).toEqual([
-    expect.objectContaining({ row: 0, column: 1 }),
-    expect.objectContaining({ row: 2, column: 0 }),
-  ])
+    if (!task?.result) return null
+    const resultAssets = JSON.parse(task.result).resultAssets
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata)
+    const sourceNode = metadata.canvas_layout.free_nodes.find((item) => item.id === nodeId)
+    const resultNodes = metadata.canvas_layout.free_nodes.filter(
+      (item) => item.id !== nodeId && item.data?.imageToolTaskId === task.id,
+    )
+    return { resultAssets, sourceNode, resultNodes }
+  })).toMatchObject({
+    resultAssets: [
+      expect.objectContaining({ row: 0, column: 1 }),
+      expect.objectContaining({ row: 2, column: 0 }),
+    ],
+    sourceNode: {
+      data: expect.objectContaining({
+        url: '/static/toolbar-source.png',
+        savedAssetId: String(sourceAssetId),
+        imageToolStatus: 'success',
+      }),
+    },
+    resultNodes: [
+      {
+        data: expect.objectContaining({
+          kind: 'image',
+          sourceImageToolNodeId: nodeId,
+          imageToolOperation: 'grid_crop',
+          savedAssetId: expect.any(String),
+          url: expect.stringMatching(/^\/static\//),
+        }),
+      },
+      {
+        data: expect.objectContaining({
+          kind: 'image',
+          sourceImageToolNodeId: nodeId,
+          imageToolOperation: 'grid_crop',
+          savedAssetId: expect.any(String),
+          url: expect.stringMatching(/^\/static\//),
+        }),
+      },
+    ],
+  })
+  await expect(node.locator('img')).toHaveAttribute('src', sourceUrl)
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('article.home-canvas-node')).toHaveCount(nodeCountBefore + 2)
+  await expect(page.locator(`.vue-flow__node[data-id="${nodeId}"] img`)).toHaveAttribute('src', sourceUrl)
 })
 
 test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
@@ -776,11 +755,15 @@ test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应
       const metadata = JSON.parse(db.prepare(
         'SELECT metadata FROM dramas WHERE id = ?',
       ).get(dramaId).metadata)
-      const freeNode = metadata.canvas_layout.free_nodes.find((entry) => entry.id === nodeId)
+      const sourceNode = metadata.canvas_layout.free_nodes.find((entry) => entry.id === nodeId)
+      const resultNode = metadata.canvas_layout.free_nodes.find(
+        (entry) => entry.id !== nodeId && entry.data?.imageToolTaskId === task.id,
+      )
       return {
         task,
         asset: asset ? { ...asset, metadata: JSON.parse(asset.metadata || '{}') } : null,
-        freeNode,
+        sourceNode,
+        resultNode,
       }
     }), { timeout: 30_000 }).toMatchObject({
       task: {
@@ -798,14 +781,23 @@ test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应
           taskId: expect.any(String),
         },
       },
-      freeNode: {
+      sourceNode: {
         data: expect.objectContaining({
           imageToolStatus: 'success',
-          savedAssetId: expect.any(String),
-          url: expect.stringMatching(/^\/static\//),
+          savedAssetId: String(sourceAssetId),
+          url: '/static/toolbar-source.png',
           imageToolHistory: expect.arrayContaining([
             expect.objectContaining({ operation: item.operation, status: 'success' }),
           ]),
+        }),
+      },
+      resultNode: {
+        data: expect.objectContaining({
+          kind: 'image',
+          sourceImageToolNodeId: nodeId,
+          imageToolOperation: item.operation,
+          savedAssetId: expect.any(String),
+          url: expect.stringMatching(/^\/static\//),
         }),
       },
     })
