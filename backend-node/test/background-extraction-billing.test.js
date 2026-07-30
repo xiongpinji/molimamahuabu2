@@ -8,6 +8,7 @@ const backgroundExtraction = require('../src/services/backgroundExtractionServic
 const credits = require('../src/services/creditLedgerService');
 const imageRoutes = require('../src/routes/images');
 const prices = require('../src/services/modelPriceService');
+const sceneService = require('../src/services/sceneService');
 const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
@@ -38,7 +39,7 @@ function setup({ withPrice = true } = {}) {
   });
   credits.setTenantAccountBalance(db, 'tenant-a', 20);
   if (withPrice) prices.set(db, 'GPT-5.5', 5);
-  return { db, episodeId };
+  return { db, dramaId, episodeId };
 }
 
 async function waitForTask(db, taskId) {
@@ -65,7 +66,11 @@ test('场景提取按实际文本模型预扣并在成功后结算租户积分',
   const { db, episodeId } = setup();
   const original = aiClient.generateText;
   t.after(() => { aiClient.generateText = original; db.close(); });
-  aiClient.generateText = async () => '[]';
+  aiClient.generateText = async () => JSON.stringify([{
+    location: '雨后庭院',
+    time: '清晨',
+    prompt: '雨后庭院，电影感光线',
+  }]);
 
   const taskId = backgroundExtraction.extractBackgroundsForEpisode(
     db,
@@ -87,6 +92,42 @@ test('场景提取按实际文本模型预扣并在成功后结算租户积分',
   assert.equal((await waitForTask(db, taskId)).status, 'completed');
   assert.equal(credits.getReservation(db, created.credit_reservation_id).status, 'confirmed');
   assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
+test('场景提取返回空数组时失败退款且保留当前有效场景', async (t) => {
+  const { db, dramaId, episodeId } = setup();
+  const scene = sceneService.createSceneForEpisode(db, log, dramaId, episodeId, {
+    location: '原有庭院',
+    time: '清晨',
+    prompt: '原有场景提示词',
+  });
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => '[]';
+
+  const taskId = backgroundExtraction.extractBackgroundsForEpisode(
+    db,
+    {},
+    log,
+    episodeId,
+    'GPT-5.5',
+    '',
+    'zh',
+    { billingEnabled: true, tenantId: 'tenant-a', userId: 'user-1' },
+  );
+  const task = await waitForTask(db, taskId);
+
+  assert.equal(task.status, 'failed');
+  assert.match(task.error, /未提取到场景/);
+  assert.equal(
+    db.prepare('SELECT deleted_at FROM scenes WHERE id = ?').get(scene.id).deleted_at,
+    null,
+  );
+  assert.equal(
+    credits.getReservation(db, task.credit_reservation_id).status,
+    'refunded',
+  );
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 0);
 });
 
 test('场景提取在模型未定价时拒绝生成并写回失败任务', (t) => {
@@ -151,7 +192,9 @@ test('场景提取供应商明确失败时退回预扣积分', async (t) => {
   );
   const reservationId = taskService.getTask(db, taskId).credit_reservation_id;
 
-  assert.equal((await waitForTask(db, taskId)).status, 'failed');
+  const failedTask = await waitForTask(db, taskId);
+  assert.equal(failedTask.status, 'failed');
+  assert.match(failedTask.error, /供应商明确失败/);
   assert.equal(credits.getReservation(db, reservationId).status, 'refunded');
   assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
     tenant_id: 'tenant-a', available: 20, held: 0, spent: 0,

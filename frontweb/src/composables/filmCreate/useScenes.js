@@ -326,10 +326,12 @@ export function useScenes(deps) {
       const taskId = res?.image_generation?.task_id ?? res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          scene.errorMsg = pollRes.error || '生成失败'
-        } else {
+        if (pollRes?.status === 'completed') {
+          genStore.markDone(meta)
           ElMessage.success('场景图片已生成')
+        } else {
+          scene.errorMsg = pollRes?.error || '生成失败'
+          genStore.markFailed(meta, scene.errorMsg)
         }
       } else {
         await loadDrama()
@@ -338,15 +340,16 @@ export function useScenes(deps) {
           const s = list.find((x) => Number(x.id) === Number(scene.id))
           return !!(s && (s.image_url || s.local_path))
         })
+        genStore.markDone(meta)
         ElMessage.success('场景图片已生成')
       }
     } catch (e) {
       console.error(e)
       scene.errorMsg = e.message || '生成失败'
+      genStore.markFailed(meta, scene.errorMsg)
       ElMessage.error(e.message || '提交失败')
     } finally {
       generatingSceneIds.delete(scene.id)
-      genStore.markDone(meta)
     }
   }
 

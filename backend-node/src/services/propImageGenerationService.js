@@ -6,6 +6,15 @@ const propService = require('./propService');
 const uploadService = require('./uploadService');
 const storageLayout = require('./storageLayout');
 const { aspectRatioToSize } = require('./imageService');
+const creditLedger = require('./creditLedgerService');
+const modelPrice = require('./modelPriceService');
+const generationCost = require('./generationCostLedgerService');
+const auditEvent = require('./auditEventService');
+
+const PROP_FOUR_VIEW_PROMPT = [
+  '在同一张画布中展示该道具的四个视角：正面、背面、左侧面、右侧面。',
+  '四个视角必须是同一个道具，外形、材质、颜色、磨损和细节完全一致；使用整齐四宫格布局，不要文字和水印。',
+].join(' ');
 
 function appendPrompt(base, extra) {
   const add = (extra || '').toString().trim();
@@ -18,16 +27,56 @@ function appendPrompt(base, extra) {
   return current + ', ' + add;
 }
 
+function settlePropImageCredit(db, log, taskId, outcome, message = '') {
+  const task = taskService.getTask(db, taskId);
+  if (!task?.credit_reservation_id) return null;
+  try {
+    const settled = creditLedger.settleGeneration(
+      db,
+      task.credit_reservation_id,
+      outcome,
+      message,
+    );
+    auditEvent.record(db, {
+      userId: settled?.actor_user_id || settled?.user_id,
+      tenantId: settled?.tenant_id,
+      eventType: `generation.prop_image.${outcome}`,
+      resourceType: 'prop_image',
+      resourceId: task.resource_id,
+      outcome: outcome === 'completed' ? 'success' : 'failed',
+      code: outcome === 'failed' ? 'GENERATION_FAILED' : null,
+    });
+    return settled;
+  } catch (error) {
+    log?.error?.('道具生图积分结算失败，保留原预扣状态', {
+      task_id: taskId,
+      reservation_id: task.credit_reservation_id,
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+function failPropImageGeneration(db, log, taskId, propId, message) {
+  const errorMessage = message || '道具图片生成失败';
+  taskService.updateTaskError(db, taskId, errorMessage);
+  try {
+    db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?')
+      .run(errorMessage, new Date().toISOString(), propId);
+  } catch (_) {}
+  settlePropImageCredit(db, log, taskId, 'failed', errorMessage);
+}
+
 async function processPropImageGeneration(db, log, taskId, propId, opts) {
   taskService.updateTaskStatus(db, taskId, 'processing', 0, '正在生成图片...');
 
   const prop = propService.getById(db, propId);
   if (!prop) {
-    taskService.updateTaskError(db, taskId, '道具不存在');
+    failPropImageGeneration(db, log, taskId, propId, '道具不存在');
     return;
   }
   if (!prop.prompt || !String(prop.prompt).trim()) {
-    taskService.updateTaskError(db, taskId, '道具没有图片提示词');
+    failPropImageGeneration(db, log, taskId, propId, '道具没有图片提示词');
     return;
   }
 
@@ -62,9 +111,13 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     } catch (_) {}
   }
   if (!imageSize) imageSize = cfg?.style?.default_image_size || '1920x1920';
-  const fullPrompt = appendPrompt(String(prop.prompt).trim(), style);
+  let fullPrompt = appendPrompt(String(prop.prompt).trim(), style);
+  if (opts?.useQuadGrid) fullPrompt = appendPrompt(fullPrompt, PROP_FOUR_VIEW_PROMPT);
   // 与角色/场景一致：使用前端「图片生成模型」选择的 model；未传时用 YAML default_image_provider 兜底
-  const model = (opts && opts.model) ? String(opts.model).trim() || null : null;
+  const task = taskService.getTask(db, taskId);
+  const model = (opts && opts.model)
+    ? String(opts.model).trim() || null
+    : task?.model || null;
   const preferredProvider = !model && cfg?.ai?.default_image_provider ? cfg.ai.default_image_provider : null;
   const userNeg = imageClient.resolveAssetUserNegativeForApi(model, prop.negative_prompt);
 
@@ -81,26 +134,17 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   } catch (err) {
     const errMsg = '图片生成请求失败: ' + (err.message || '未知错误');
     log.error('Prop image API failed', { prop_id: propId, error: err.message });
-    taskService.updateTaskError(db, taskId, errMsg);
-    try {
-      db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?').run(errMsg, new Date().toISOString(), propId);
-    } catch (_) {}
+    failPropImageGeneration(db, log, taskId, propId, errMsg);
     return;
   }
 
   if (result.error) {
-    taskService.updateTaskError(db, taskId, result.error);
-    try {
-      db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, new Date().toISOString(), propId);
-    } catch (_) {}
+    failPropImageGeneration(db, log, taskId, propId, result.error);
     return;
   }
   if (!result.image_url) {
     const errMsg = '未返回图片地址';
-    taskService.updateTaskError(db, taskId, errMsg);
-    try {
-      db.prepare('UPDATE props SET error_msg = ?, updated_at = ? WHERE id = ?').run(errMsg, new Date().toISOString(), propId);
-    } catch (_) {}
+    failPropImageGeneration(db, log, taskId, propId, errMsg);
     return;
   }
 
@@ -148,6 +192,7 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     local_path: localPath,
     prop_id: propId,
   });
+  settlePropImageCredit(db, log, taskId, 'completed');
   log.info('Prop image generation completed', { prop_id: propId, image_url: result.image_url, local_path: localPath });
 }
 
@@ -158,10 +203,73 @@ function generatePropImage(db, log, propId, opts) {
     throw new Error('道具没有图片提示词');
   }
 
-  const task = taskService.createTask(db, log, 'prop_image_generation', String(propId));
-  setImmediate(() => {
-    processPropImageGeneration(db, log, task.id, propId, opts || {}).catch((err) => {
+  const options = opts || {};
+  let billedModel = null;
+  let billedCredits = null;
+  if (options.billingEnabled) {
+    if (!options.userId) {
+      const error = new Error('公开计费模式缺少用户身份');
+      error.code = 'UNAUTHORIZED';
+      throw error;
+    }
+    const cfg = require('../config').loadConfig();
+    const preferredProvider = cfg?.ai?.default_image_provider || null;
+    billedModel = modelPrice.canonicalModel(
+      options.model || imageClient.resolveImageModel(db, null, preferredProvider, 'image'),
+    );
+    billedCredits = modelPrice.requirePrice(db, billedModel);
+  }
+
+  const task = db.transaction(() => {
+    const created = taskService.createTask(db, log, 'prop_image_generation', `prop_${propId}`);
+    if (!options.billingEnabled) return created;
+    const reservation = creditLedger.reserve(db, {
+      tenantId: options.tenantId,
+      actorUserId: options.userId,
+      userId: options.userId,
+      operationKey: `prop_image:${created.id}`,
+      model: billedModel,
+      resourceType: 'prop_image',
+      resourceId: `prop_${propId}`,
+      amount: billedCredits,
+    });
+    generationCost.record(db, {
+      reservationId: reservation.id,
+      model: billedModel,
+      quantity: 1,
+      usageSource: 'unavailable',
+    });
+    db.prepare(
+      `UPDATE async_tasks
+       SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?
+       WHERE id = ?`,
+    ).run(
+      options.tenantId ? String(options.tenantId) : null,
+      String(options.userId),
+      billedModel,
+      reservation.id,
+      created.id,
+    );
+    auditEvent.record(db, {
+      userId: options.userId,
+      tenantId: options.tenantId,
+      eventType: 'generation.prop_image.created',
+      resourceType: 'prop_image',
+      resourceId: `prop_${propId}`,
+      outcome: 'success',
+      code: 'CREATED',
+    });
+    return taskService.getTask(db, created.id);
+  })();
+
+  const schedule = typeof options.schedule === 'function'
+    ? options.schedule
+    : (callback) => setImmediate(callback);
+  const processingOptions = billedModel ? { ...options, model: billedModel } : options;
+  schedule(() => {
+    processPropImageGeneration(db, log, task.id, propId, processingOptions).catch((err) => {
       log.error('processPropImageGeneration fatal', { error: err.message, task_id: task.id });
+      failPropImageGeneration(db, log, task.id, propId, err.message);
     });
   });
   return task.id;
@@ -170,4 +278,5 @@ function generatePropImage(db, log, propId, opts) {
 module.exports = {
   generatePropImage,
   processPropImageGeneration,
+  settlePropImageCredit,
 };

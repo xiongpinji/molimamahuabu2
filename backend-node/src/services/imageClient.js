@@ -347,6 +347,16 @@ function getModelFromConfig(config, preferredModel) {
   return models[0] || 'dall-e-3';
 }
 
+function resolveImageModel(db, preferredModel, preferredProvider, imageServiceType = 'image') {
+  const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
+  if (!config) {
+    const error = new Error('未配置可用的图片模型');
+    error.code = 'IMAGE_MODEL_NOT_CONFIGURED';
+    throw error;
+  }
+  return getModelFromConfig(config, preferredModel);
+}
+
 /** GPT Image 同步返回 base64；压缩 JPEG 与低质量档可缩短供应端同步处理时间。 */
 function getOpenAIImageOutputOptions(model, requestedQuality) {
   if (!/^gpt-image-/i.test(String(model || ''))) return {};
@@ -2306,6 +2316,7 @@ const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
   getDefaultImageConfig,
+  resolveImageModel,
   getReferenceImageCapability,
   callAihubccImageApi,
   getOpenAIImageOutputOptions,

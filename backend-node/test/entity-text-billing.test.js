@@ -493,3 +493,38 @@ test('剧集道具异步提取失败后退款', async (t) => {
   assert.equal(reservation.status, 'refunded');
   assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 30);
 });
+
+test('道具提取返回空数组时失败退款且保留当前有效道具', async (t) => {
+  const { db, episodeId, propId } = setup();
+  db.prepare('UPDATE props SET episode_id = ? WHERE id = ?').run(episodeId, propId);
+  const original = aiClient.generateText;
+  t.after(() => { aiClient.generateText = original; db.close(); });
+  aiClient.generateText = async () => '[]';
+
+  const taskId = propExtractionService.extractPropsForEpisode(
+    db,
+    log,
+    episodeId,
+    {},
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      model: 'GPT-5.5',
+    },
+  );
+
+  const task = await waitForTask(db, taskId);
+  assert.equal(task.status, 'failed');
+  assert.match(task.error, /未提取到道具/);
+  assert.equal(
+    db.prepare('SELECT deleted_at FROM props WHERE id = ?').get(propId).deleted_at,
+    null,
+  );
+  assert.equal(
+    db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?')
+      .get(task.credit_reservation_id).status,
+    'refunded',
+  );
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 0);
+});

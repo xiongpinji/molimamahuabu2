@@ -134,6 +134,39 @@ function postJSONWithTimeout(url, headers, body, timeoutMs = 600000) {
  * 彻底解决分镜等长耗时任务的 "fetch failed / timeout" 问题。
  * silenceTimeoutMs：连续多少毫秒无任何数据才判定超时（默认 60 秒）。
  */
+function textFromStreamContent(value) {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+  return value.map((item) => {
+    if (typeof item === 'string') return item;
+    return typeof item?.text === 'string'
+      ? item.text
+      : typeof item?.content === 'string' ? item.content : '';
+  }).join('');
+}
+
+function extractStreamEventText(evt) {
+  const choice = evt?.choices?.[0];
+  const delta = textFromStreamContent(choice?.delta?.content);
+  if (delta) return { text: delta, mode: 'delta', shape: 'choices.delta.content' };
+  if (evt?.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
+    return { text: evt.delta, mode: 'delta', shape: 'response.output_text.delta' };
+  }
+  if (typeof choice?.text === 'string' && choice.text) {
+    return { text: choice.text, mode: 'delta', shape: 'choices.text' };
+  }
+  const message = textFromStreamContent(choice?.message?.content);
+  if (message) return { text: message, mode: 'snapshot', shape: 'choices.message.content' };
+  if (typeof evt?.output_text === 'string' && evt.output_text) {
+    return { text: evt.output_text, mode: 'snapshot', shape: 'output_text' };
+  }
+  const reasoning = choice?.delta?.reasoning_content || choice?.message?.reasoning_content || '';
+  if (typeof reasoning === 'string' && reasoning) {
+    return { text: reasoning, mode: 'fallback', shape: 'reasoning_content' };
+  }
+  return { text: '', mode: 'none', shape: '' };
+}
+
 function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress = null) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -180,7 +213,56 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       let sseBuffer = '';
       let firstToken = true;
       let usage = null;
+      let reasoningFallback = '';
+      let responseId = res.headers['x-request-id']
+        || res.headers['request-id']
+        || res.headers['x-trace-id']
+        || null;
+      let eventCount = 0;
+      let parseErrorCount = 0;
+      const eventTypes = new Set();
+      const contentShapes = new Set();
       resetSilenceTimer();
+
+      const appendText = (text, mode) => {
+        if (!text) return;
+        if (mode === 'fallback') {
+          reasoningFallback += text;
+          return;
+        }
+        if (mode === 'snapshot') {
+          accumulated = text.startsWith(accumulated)
+            ? text
+            : accumulated || text;
+        } else {
+          accumulated += text;
+        }
+        if (firstToken) {
+          firstToken = false;
+          if (onProgress) onProgress(0, 'first_token', '');
+        }
+        if (onProgress) onProgress(accumulated.length, null, accumulated);
+      };
+
+      const processLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':') || trimmed.startsWith('event:')) return;
+        const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+        if (!data || data === '[DONE]') return;
+        try {
+          const evt = JSON.parse(data);
+          eventCount++;
+          if (evt.usage) usage = evt.usage;
+          if (evt.response?.usage) usage = evt.response.usage;
+          responseId = responseId || evt.id || evt.response?.id || null;
+          if (evt.type) eventTypes.add(String(evt.type));
+          const extracted = extractStreamEventText(evt);
+          if (extracted.shape) contentShapes.add(extracted.shape);
+          appendText(extracted.text, extracted.mode);
+        } catch (_) {
+          parseErrorCount++;
+        }
+      };
 
       res.on('data', (chunk) => {
         resetSilenceTimer();
@@ -188,30 +270,25 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         // 按行解析 SSE
         const lines = sseBuffer.split('\n');
         sseBuffer = lines.pop(); // 保留不完整的最后一行
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-          try {
-            const evt = JSON.parse(data);
-            if (evt.usage) usage = evt.usage;
-            const delta = evt.choices?.[0]?.delta?.content;
-            if (delta) {
-              if (firstToken) {
-                firstToken = false;
-                if (onProgress) onProgress(0, 'first_token', '');
-              }
-              accumulated += delta;
-              if (onProgress) onProgress(accumulated.length, null, accumulated);
-            }
-          } catch (_) { /* 忽略无法解析的行 */ }
-        }
+        for (const line of lines) processLine(line);
       });
 
       res.on('end', () => {
         clearTimeout(silenceTimer);
-        resolve({ status: statusCode, body: accumulated, usage });
+        if (sseBuffer.trim()) processLine(sseBuffer);
+        if (!accumulated && reasoningFallback) appendText(reasoningFallback, 'snapshot');
+        resolve({
+          status: statusCode,
+          body: accumulated,
+          usage,
+          diagnostics: {
+            response_id: responseId,
+            event_count: eventCount,
+            parse_error_count: parseErrorCount,
+            event_types: [...eventTypes].slice(0, 10),
+            content_shapes: [...contentShapes].slice(0, 10),
+          },
+        });
       });
       res.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
     });
@@ -221,6 +298,22 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
     req.write(bodyStr);
     req.end();
   });
+}
+
+async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs, onProgress, log, model) {
+  let response = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    if (response.body) return response;
+    log.warn('AI stream completed without text', {
+      model,
+      attempt,
+      will_retry: attempt === 1,
+      ...(response.diagnostics || {}),
+    });
+    if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return response;
 }
 
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
@@ -410,7 +503,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
-  const res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000, (receivedLen, event, accumulated) => {
+  const res = await postJSONStreamWithEmptyRetry(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000, (receivedLen, event, accumulated) => {
     if (event === 'first_token') {
       log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
     } else if (receivedLen > 0 && receivedLen % 500 < 20) {
@@ -419,7 +512,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     }
     // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
     if (streamCallback && accumulated) streamCallback(accumulated);
-  });
+  }, log, model);
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
   generationUsageContext.capture(res.usage);
@@ -427,7 +520,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   if (!content) {
     throw new Error('AI 返回内容为空');
   }
-  log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs, text_preview: content.slice(0, 200) });
+  log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
   return content;
 }
 
@@ -515,7 +608,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     stream: true,
   });
   let lastLen = 0;
-  const res = await postJSONStream(
+  const res = await postJSONStreamWithEmptyRetry(
     url,
     { Authorization: 'Bearer ' + (config.api_key || '') },
     body,
@@ -528,7 +621,9 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
       const delta = accumulated.slice(lastLen);
       lastLen = accumulated.length;
       if (onDelta && delta) onDelta(delta);
-    }
+    },
+    log,
+    model,
   );
   const content = res.body;
   generationUsageContext.capture(res.usage);

@@ -8020,7 +8020,12 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+            const res = await propAPI.generateImage(
+              prop.id,
+              undefined,
+              style,
+              propUseQuadGrid.value
+            )
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8349,7 +8354,12 @@ async function runRepairPipeline() {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(prop.id, undefined, style)
+            const res = await propAPI.generateImage(
+              prop.id,
+              undefined,
+              style,
+              propUseQuadGrid.value
+            )
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())

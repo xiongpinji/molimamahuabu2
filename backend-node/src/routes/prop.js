@@ -44,19 +44,36 @@ function deleteProp(db, log) {
   };
 }
 
-function generateImage(db, log) {
+function generateImage(db, log, generationOptions = {}) {
   const propImageGenerationService = require('../services/propImageGenerationService');
   return (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的ID');
     const model = req.body?.model != null ? String(req.body.model).trim() || null : null;
     const style = req.body?.style != null ? String(req.body.style).trim() || null : null;
+    const useQuadGrid = req.body?.use_quad_grid === true;
     try {
-      const taskId = propImageGenerationService.generatePropImage(db, log, id, { model, style });
+      const taskId = propImageGenerationService.generatePropImage(db, log, id, {
+        model,
+        style,
+        useQuadGrid,
+        billingEnabled: Boolean(generationOptions.billingEnabled),
+        tenantId: req.tenant?.id,
+        userId: req.user?.id,
+        schedule: generationOptions.schedule,
+      });
       response.success(res, { task_id: taskId });
     } catch (err) {
       if (err.message === '道具不存在') return response.notFound(res, err.message);
       if (err.message === '道具没有图片提示词') return response.badRequest(res, err.message);
+      if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'IMAGE_MODEL_NOT_CONFIGURED'].includes(err.code)) {
+        return response.error(res, 503, err.code, err.message);
+      }
+      if (err.code === 'INSUFFICIENT_CREDITS') {
+        return response.error(res, 402, err.code, '积分不足，请兑换积分后重试');
+      }
+      if (err.code === 'UNAUTHORIZED') return response.error(res, 401, err.code, err.message);
+      if (err.code === 'UNSUPPORTED_BILLING_MODEL') return response.badRequest(res, err.message);
       log.error('generatePropImage failed', { error: err.message });
       response.internalError(res, err.message || '生成失败');
     }
@@ -216,7 +233,7 @@ module.exports = function propRoutes(db, log, cfg, generationOptions = {}) {
     updateProp: updateProp(db, log),
     deleteProp: deleteProp(db, log),
     getPropById: getPropById(db, log),
-    generateImage: generateImage(db, log),
+    generateImage: generateImage(db, log, generationOptions),
     generatePropPrompt: generatePropPrompt(db, log, cfg, generationOptions),
     extractProps: extractProps(db, log, cfg, generationOptions),
     associateProps: associateProps(db, log),

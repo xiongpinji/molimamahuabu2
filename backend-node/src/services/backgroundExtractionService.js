@@ -80,8 +80,6 @@ async function extractBackgroundsFromScript(db, cfg, log, scriptContent, dramaId
   if (!scriptContent || !scriptContent.trim()) return [];
   const systemPrompt = promptI18n.getSceneExtractionPrompt(cfg, style);
   const prompt = (promptI18n.getLanguage(cfg) === 'en' ? '[Script Content]\n' : '【剧本内容】\n') + scriptContent;
-  console.log('systemPrompt', systemPrompt);
-  console.log('prompt', prompt);
   const text = await aiClient.generateText(db, log, 'text', prompt, systemPrompt, { scene_key: 'scene_extraction', model: model || undefined, temperature: 0.7 });
   let list = [];
   try {
@@ -113,12 +111,14 @@ async function processBackgroundExtraction(
   taskService.updateTaskStatus(db, taskID, 'processing', 0, '正在提取场景信息...');
   const episode = db.prepare('SELECT id, drama_id, script_content FROM episodes WHERE id = ? AND deleted_at IS NULL').get(Number(episodeId));
   if (!episode) {
-    taskService.updateTaskStatus(db, taskID, 'failed', 0, '剧集信息不存在');
+    taskService.updateTaskError(db, taskID, '剧集信息不存在');
+    settleBackgroundCredit(db, log, billingReservationId, 'failed', '剧集信息不存在');
     return;
   }
   const scriptContent = episode.script_content;
   if (!scriptContent || !String(scriptContent).trim()) {
-    taskService.updateTaskStatus(db, taskID, 'failed', 0, '剧本内容为空');
+    taskService.updateTaskError(db, taskID, '剧本内容为空');
+    settleBackgroundCredit(db, log, billingReservationId, 'failed', '剧本内容为空');
     return;
   }
 
@@ -167,8 +167,15 @@ async function processBackgroundExtraction(
     );
   } catch (err) {
     log.error('Background extraction AI failed', { error: err.message, task_id: taskID });
-    taskService.updateTaskStatus(db, taskID, 'failed', 0, 'AI提取场景失败: ' + err.message);
-    settleBackgroundCredit(db, log, billingReservationId, 'failed', err.message);
+    const message = 'AI提取场景失败: ' + err.message;
+    taskService.updateTaskError(db, taskID, message);
+    settleBackgroundCredit(db, log, billingReservationId, 'failed', message);
+    return;
+  }
+  if (!Array.isArray(backgroundsInfo) || backgroundsInfo.length === 0) {
+    const message = 'AI 未提取到场景，请检查剧本内容后重试';
+    taskService.updateTaskError(db, taskID, message);
+    settleBackgroundCredit(db, log, billingReservationId, 'failed', message);
     return;
   }
   if (effectiveLanguage === 'zh') {
