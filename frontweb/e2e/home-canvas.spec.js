@@ -203,6 +203,41 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(restoredEditor.y + restoredEditor.height).toBeLessThanOrEqual(viewport.height)
 })
 
+test('节点编辑器尺寸随画布缩放自适应且保持可操作', async ({ page }) => {
+  const editorSizeAtZoom = async (zoom) => {
+    await loadHomeCanvasState(page, {
+      ...seededHomeCanvasState,
+      viewport: {
+        x: 600 - seededHomeCanvasState.nodes[0].position.x * zoom,
+        y: 260 - seededHomeCanvasState.nodes[0].position.y * zoom,
+        zoom,
+      },
+    })
+    await page.locator('.vue-flow__node[data-id="e2e:seed"]').click()
+    const editor = page.locator('.node-expanded-editor')
+    await expect(editor).toBeVisible()
+    await expect(page.locator('.zoom-label')).toHaveText(`${Math.round(zoom * 100)}%`)
+    return {
+      box: await editor.boundingBox(),
+      maxHeight: await editor.evaluate((element) => Number.parseFloat(element.style.maxHeight)),
+    }
+  }
+
+  const compactEditor = await editorSizeAtZoom(0.2)
+  const normalEditor = await editorSizeAtZoom(1)
+  const viewport = page.viewportSize()
+
+  expect(compactEditor.box).not.toBeNull()
+  expect(normalEditor.box).not.toBeNull()
+  expect(compactEditor.box.width).toBeGreaterThanOrEqual(480)
+  expect(compactEditor.box.width).toBeLessThan(normalEditor.box.width * 0.75)
+  expect(compactEditor.maxHeight).toBeLessThanOrEqual(385)
+  expect(compactEditor.box.x).toBeGreaterThanOrEqual(0)
+  expect(compactEditor.box.x + compactEditor.box.width).toBeLessThanOrEqual(viewport.width)
+  expect(normalEditor.box.x).toBeGreaterThanOrEqual(0)
+  expect(normalEditor.box.x + normalEditor.box.width).toBeLessThanOrEqual(viewport.width)
+})
+
 test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
   await loadHomeCanvasState(page, mentionHomeCanvasState)
 
