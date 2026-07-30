@@ -13,17 +13,23 @@ function routes(db, cfg, log) {
         const storyboardId = parseInt(req.params.id, 10);
         const body = req.body || {};
         const dramaId = body.drama_id;
+        const requestedVideoId = parseInt(body.video_id, 10);
 
         if (!storyboardId || !dramaId) {
           return res.status(400).json({ error: '缺少必要参数' });
         }
 
-        // 1. 获取当前分镜的最新已完成视频
-        const video = db.prepare(`
-          SELECT id, local_path, video_url FROM video_generations
-          WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL
-          ORDER BY created_at DESC LIMIT 1
-        `).get(storyboardId);
+        // 1. 优先获取页面当前选中的视频，旧调用方未传 video_id 时回退到最新已完成视频
+        const video = requestedVideoId
+          ? db.prepare(`
+              SELECT id, local_path, video_url FROM video_generations
+              WHERE id = ? AND storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL
+            `).get(requestedVideoId, storyboardId)
+          : db.prepare(`
+              SELECT id, local_path, video_url FROM video_generations
+              WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL
+              ORDER BY created_at DESC LIMIT 1
+            `).get(storyboardId);
 
         if (!video || !video.local_path) {
           return res.status(400).json({ error: '当前分镜没有可用的本地视频文件' });
