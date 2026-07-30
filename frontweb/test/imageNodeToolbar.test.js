@@ -208,7 +208,7 @@ test('裁剪按需加载固定版本 Cropper.js 并把像素范围提交给父�
   assert.match(toolbarSource, /brushStrokes: selectionBrushStrokes\.value/)
 })
 
-test('执行图片工具成功才替换节点结果，失败保留旧图并写回错误', () => {
+test('执行图片工具成功后保留原图并新建结果节点，失败保留旧图并写回错误', () => {
   assert.match(canvasSource, /async function runImageNodeTool\(nodeOrId, operation, parameters = \{\}\)/)
   assert.doesNotMatch(canvasSource, /if \(!isStandaloneCanvas\.value \|\| node\?\.type !== 'homeCanvasNode' \|\| node\.data\?\.kind !== 'image'\)/)
   assert.match(canvasSource, /const previousUrl = String\(node\.data\?\.url \|\| ''\)/)
@@ -219,8 +219,11 @@ test('执行图片工具成功才替换节点结果，失败保留旧图并写�
   assert.match(canvasSource, /accepted\?\.status === 'processing'/)
   assert.match(canvasSource, /parseImageToolTaskResult\(task\)/)
   assert.match(canvasSource, /resumePendingImageToolOperations/)
-  assert.match(canvasSource, /url: result\.resultUrl/)
-  assert.match(canvasSource, /savedAssetId: String\(result\.resultAssetId/)
+  assert.match(canvasSource, /await createFreeCanvasNode\('image'/)
+  assert.match(canvasSource, /sourceImageToolNodeId: String\(sourceNode\.id\)/)
+  assert.match(canvasSource, /url: asset\.url/)
+  assert.match(canvasSource, /savedAssetId: String\(asset\.id\)/)
+  assert.doesNotMatch(canvasSource, /patchFreeCanvasNodeData\(nodeId,\s*\{\s*url: result\.resultUrl/)
   assert.match(canvasSource, /imageToolHistory:/)
   assert.match(canvasSource, /url: previousUrl,[\s\S]*imageToolStatus: 'failed'/)
   assert.match(canvasSource, /imageToolRetryOperation: operation/)

@@ -3006,6 +3006,48 @@ async function waitForImageToolOperation(taskId) {
 }
 
 async function completeImageToolOperation(nodeId, operation, result, previousHistory = []) {
+  const sourceNode = freeCanvasNodeById(nodeId)
+  if (sourceNode?.type !== 'homeCanvasNode' || sourceNode.data?.kind !== 'image') {
+    throw new Error('图片处理完成，但源图片节点已不存在')
+  }
+  const resultAssets = Array.isArray(result.resultAssets) && result.resultAssets.length
+    ? result.resultAssets
+    : [{
+        id: result.resultAssetId,
+        url: result.resultUrl,
+      }]
+  const validResultAssets = resultAssets.filter((asset) => asset?.id && asset?.url)
+  if (!validResultAssets.length) throw new Error('图片处理完成，但未返回可展示的新素材')
+
+  for (const [index, asset] of validResultAssets.entries()) {
+    const existingResultNode = allGraphNodes.value.find((node) => (
+      node.type === 'homeCanvasNode'
+      && node.data?.kind === 'image'
+      && String(node.data?.sourceImageToolNodeId || '') === String(sourceNode.id)
+      && String(node.data?.imageToolTaskId || '') === String(result.taskId || '')
+      && String(node.data?.savedAssetId || '') === String(asset.id)
+    ))
+    if (existingResultNode) continue
+    await createFreeCanvasNode('image', {
+      x: Number(sourceNode.position?.x || 0) + 700,
+      y: Number(sourceNode.position?.y || 0) + (index * 420),
+    }, {
+      title: `${sourceNode.data?.title || '图片'} · 编辑结果${validResultAssets.length > 1 ? ` ${index + 1}` : ''}`,
+      content: sourceNode.data?.content || '',
+      url: asset.url,
+      resultUrls: [asset.url],
+      status: 'success',
+      savedAssetId: String(asset.id),
+      assetSaveStatus: 'success',
+      assetSaveError: '',
+      sourceImageToolNodeId: String(sourceNode.id),
+      imageToolOperation: operation,
+      imageToolTaskId: result.taskId,
+      imageToolStatus: 'success',
+      imageToolError: '',
+    })
+  }
+
   const historyItem = {
     taskId: result.taskId,
     operation,
@@ -3015,8 +3057,6 @@ async function completeImageToolOperation(nodeId, operation, result, previousHis
     createdAt: new Date().toISOString(),
   }
   await patchFreeCanvasNodeData(nodeId, {
-    url: result.resultUrl,
-    savedAssetId: String(result.resultAssetId || ''),
     imageToolTaskId: result.taskId,
     imageToolStatus: 'success',
     imageToolError: '',

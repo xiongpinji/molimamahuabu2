@@ -121,6 +121,21 @@ test('电影级光影校正失败重试参数可安全持久化并在刷新后�
   assert.equal(tooLong.imageToolRetryParameters, undefined)
 })
 
+test('图片编辑派生节点关联字段可安全持久化', () => {
+  const normalized = normalizeFreeCanvasNodeData({
+    kind: 'image',
+    url: '/static/result.png',
+    savedAssetId: '7',
+    sourceImageToolNodeId: 'free:image:source',
+    imageToolOperation: 'selection_cutout',
+    imageToolTaskId: 'task-1',
+  })
+
+  assert.equal(normalized.sourceImageToolNodeId, 'free:image:source')
+  assert.equal(normalized.imageToolOperation, 'selection_cutout')
+  assert.equal(normalized.imageToolTaskId, 'task-1')
+})
+
 test('全景失败重试只保留 300 字以内的补充要求', () => {
   for (const operation of ['panorama', 'panorama_scene']) {
     const normalized = normalizeFreeCanvasNodeData({

@@ -235,6 +235,12 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     if (Object.hasOwn(data, 'imageToolResultAssets')) {
       normalized.imageToolResultAssets = normalizeImageToolResultAssets(data.imageToolResultAssets)
     }
+    if (Object.hasOwn(data, 'sourceImageToolNodeId')) {
+      normalized.sourceImageToolNodeId = cleanString(data.sourceImageToolNodeId)
+    }
+    if (Object.hasOwn(data, 'imageToolOperation')) {
+      normalized.imageToolOperation = cleanString(data.imageToolOperation)
+    }
   }
   return Object.fromEntries(
     Object.entries(normalized).filter(([, value]) => value !== undefined)
