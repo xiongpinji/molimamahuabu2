@@ -1,6 +1,10 @@
 <template>
   <div class="drama-canvas-page">
-    <header class="header canvas-topbar" :class="{ 'workflow-open': showWorkflowPanel }">
+    <header
+      class="header canvas-topbar"
+      :class="{ 'workflow-open': showWorkflowPanel }"
+      :style="{ '--canvas-top-toolbar-scale': canvasPreferences.top_toolbar_scale }"
+    >
       <div class="header-inner">
         <CanvasWorkspaceSwitcher />
         <PlatformPrimaryNav />
@@ -273,12 +277,26 @@
       <div
         ref="canvasMainRef"
         class="canvas-main"
-        :class="{ 'space-panning': spacePanning }"
+        :class="{
+          'space-panning': spacePanning,
+          'canvas-glow': canvasPreferences.canvas_glow_enabled,
+          'edge-animated': canvasPreferences.edge_animation_enabled,
+          'edge-focus-only': canvasPreferences.edge_focus_only,
+          'linked-preview-hidden': !canvasPreferences.linked_preview_enabled,
+          'minimal-zoom': canvasPreferences.minimal_zoom_enabled && currentViewport.zoom < 0.45,
+        }"
+        :style="canvasVisualStyle"
         @pointerdown.capture="onCanvasPointerDown"
         @wheel.capture="onCanvasWheel"
         @dragover="onCanvasImageDragOver"
         @drop="onCanvasImageDrop"
       >
+        <div
+          v-if="canvasPreferences.background_enabled && canvasPreferences.background_url"
+          class="canvas-custom-background"
+          :style="canvasBackgroundStyle"
+          aria-hidden="true"
+        />
         <VueFlow
           v-if="isStandaloneCanvas || allGraphNodes.length"
           v-model:nodes="nodes"
@@ -291,8 +309,9 @@
           :max-zoom="8"
           :nodes-connectable="true"
           :nodes-draggable="true"
-          :snap-to-grid="canvasSnapEnabled"
-          :snap-grid="[20, 20]"
+          :snap-to-grid="canvasPreferences.snap_enabled"
+          :snap-grid="[canvasPreferences.grid_gap, canvasPreferences.grid_gap]"
+          :connection-radius="canvasPreferences.touch_connection_radius"
           v-bind="canvasConnectionInteractionOptions"
           :elements-selectable="true"
           :select-nodes-on-drag="true"
@@ -302,8 +321,9 @@
           :pan-on-drag="spacePanning"
           pan-activation-key-code="Space"
           zoom-activation-key-code="Control"
-          :pan-on-scroll="true"
-          :zoom-on-scroll="false"
+          :pan-on-scroll="canvasPreferences.wheel_action === 'pan'"
+          :pan-on-scroll-speed="canvasPreferences.pan_sensitivity"
+          :zoom-on-scroll="canvasPreferences.wheel_action === 'zoom'"
           :fit-view-on-init="!hasSavedViewport"
           class="vue-flow-canvas"
           @node-double-click="onNodeDoubleClick"
@@ -311,7 +331,9 @@
           @node-context-menu="onNodeContextMenu"
           @pane-click="onPaneClick"
           @pane-context-menu="onPaneContextMenu"
+          @pane-double-click="onPaneDoubleClick"
           @node-drag-start="onNodeDragStart"
+          @node-drag="onNodeDrag"
           @node-drag-stop="onNodeDragStop"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
@@ -322,10 +344,18 @@
           @connect="onConnect"
         >
           <CanvasFlowAligner />
-          <Background v-if="canvasGridVisible" pattern-color="#3f3f46" :gap="20" />
+          <Background
+            v-if="canvasPreferences.grid_visible"
+            variant="dots"
+            pattern-color="rgba(113, 113, 122, 0.62)"
+            :gap="canvasPreferences.grid_gap"
+            :size="canvasPreferences.grid_dot_size"
+          />
           <Controls />
-          <MiniMap v-if="canvasMiniMapVisible" pannable zoomable />
+          <MiniMap v-if="canvasPreferences.minimap_visible" pannable zoomable />
         </VueFlow>
+        <div v-if="alignmentGuide.x !== null" class="canvas-alignment-guide vertical" :style="{ left: `${alignmentGuide.x}px` }" aria-hidden="true" />
+        <div v-if="alignmentGuide.y !== null" class="canvas-alignment-guide horizontal" :style="{ top: `${alignmentGuide.y}px` }" aria-hidden="true" />
         <el-empty v-else-if="!loading" description="暂无画布数据" />
         <div v-if="runQueueItems.length || dismissedRunQueueCount" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
           <div class="run-queue-head">
@@ -640,11 +670,16 @@ import {
 } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
-  DEFAULT_CANVAS_PREFERENCES,
   mergeGenerationHistory,
-  normalizeCanvasPreferences,
   normalizeGenerationHistory,
 } from '@/utils/canvasPersistedState'
+import {
+  DEFAULT_CANVAS_PREFERENCES,
+  normalizeCanvasPreferences,
+  resolveCanvasEdgePalette,
+  resolveCanvasSimplePalette,
+  resolveCanvasTheme,
+} from '@/utils/canvasSettings'
 import {
   canAlignCanvasNodes,
   computeStandaloneAutoLayoutPositions,
@@ -750,9 +785,63 @@ const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
 const showWorkflowPanel = ref(false)
 const directorStageVisible = ref(false)
-const canvasGridVisible = ref(true)
-const canvasMiniMapVisible = ref(true)
-const canvasSnapEnabled = ref(false)
+const canvasPreferences = ref(normalizeCanvasPreferences())
+const canvasGridVisible = computed({
+  get: () => canvasPreferences.value.grid_visible,
+  set: (value) => { canvasPreferences.value.grid_visible = Boolean(value) },
+})
+const canvasMiniMapVisible = computed({
+  get: () => canvasPreferences.value.minimap_visible,
+  set: (value) => { canvasPreferences.value.minimap_visible = Boolean(value) },
+})
+const canvasSnapEnabled = computed({
+  get: () => canvasPreferences.value.snap_enabled,
+  set: (value) => { canvasPreferences.value.snap_enabled = Boolean(value) },
+})
+const alignmentGuide = ref({ x: null, y: null })
+const activeCanvasTheme = computed(() => resolveCanvasTheme(canvasPreferences.value))
+const activeCanvasEdgePalette = computed(() => resolveCanvasEdgePalette(canvasPreferences.value))
+const activeCanvasSimplePalette = computed(() => resolveCanvasSimplePalette(canvasPreferences.value))
+const canvasVisualStyle = computed(() => {
+  const simpleColors = activeCanvasSimplePalette.value.colors || []
+  return {
+    '--canvas-theme-background': activeCanvasTheme.value.bg,
+    '--canvas-panel-background': activeCanvasTheme.value.panel,
+    '--canvas-edge-color': activeCanvasEdgePalette.value.base,
+    '--canvas-edge-focus-color': activeCanvasEdgePalette.value.focus,
+    '--canvas-edge-width': `${canvasPreferences.value.edge_width}px`,
+    '--canvas-edge-focus-radius': `${canvasPreferences.value.edge_focus_radius}px`,
+    ...Object.fromEntries(simpleColors.map((color, index) => [`--canvas-simple-${index + 1}`, color])),
+  }
+})
+const canvasBackgroundStyle = computed(() => {
+  const mode = canvasPreferences.value.background_mode
+  return {
+    backgroundImage: `url(${JSON.stringify(canvasPreferences.value.background_url)})`,
+    backgroundPosition: 'center',
+    backgroundRepeat: mode === 'repeat' ? 'repeat' : 'no-repeat',
+    backgroundSize: mode === 'repeat'
+      ? `${canvasPreferences.value.background_tile_size}% auto`
+      : mode,
+    filter: `blur(${canvasPreferences.value.background_blur}px)`,
+    opacity: canvasPreferences.value.background_opacity,
+  }
+})
+const canvasBackgroundCandidates = computed(() => {
+  const candidates = new Map()
+  const add = (url, label) => {
+    const normalizedUrl = String(url || '').trim()
+    if (normalizedUrl && !candidates.has(normalizedUrl)) candidates.set(normalizedUrl, { url: normalizedUrl, label })
+  }
+  for (const node of allGraphNodes.value) {
+    add(getFreeCanvasNodeResultUrl(node), node.data?.title || node.data?.label || '画布图片')
+    add(node.data?.imageUrl || node.data?.image_url || node.data?.thumbnailUrl, node.data?.title || '画布图片')
+  }
+  for (const asset of projectImageAssets.value) {
+    add(assetImageUrl(asset), asset.name || asset.title || '项目图片')
+  }
+  return [...candidates.values()].slice(0, 40)
+})
 const persistedGenerationHistory = ref([])
 const directorStageEntry = ref(null)
 const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose'])
@@ -1920,11 +2009,22 @@ function refreshLayoutCacheFromGraph() {
 }
 
 function currentCanvasPreferences() {
-  return {
-    grid_visible: canvasGridVisible.value,
-    minimap_visible: canvasMiniMapVisible.value,
-    snap_enabled: canvasSnapEnabled.value,
-  }
+  return normalizeCanvasPreferences(canvasPreferences.value)
+}
+
+function updateCanvasPreference(key, value) {
+  canvasPreferences.value = normalizeCanvasPreferences({
+    ...canvasPreferences.value,
+    [key]: value,
+  })
+  scheduleLayoutSave()
+}
+
+function resetCanvasPreferences() {
+  canvasPreferences.value = normalizeCanvasPreferences(DEFAULT_CANVAS_PREFERENCES)
+  alignmentGuide.value = { x: null, y: null }
+  scheduleLayoutSave()
+  ElMessage.success('画布设置已恢复默认')
 }
 
 function withCanvasPersistedState(layout) {
@@ -2715,6 +2815,7 @@ async function runFreeCanvasNode(nodeOrId) {
     ElMessage.warning('暂不支持该自由节点类型')
     return
   }
+  await waitForCanvasSubmissionDelay(node, kind)
   const upstreamReferences = freeCanvasNodeInputReferences(node)
   const upstreamUrls = upstreamReferences
     .filter((reference) => reference.enabled !== false)
@@ -2851,6 +2952,7 @@ async function runFreeCanvasNode(nodeOrId) {
     return { ok: false, nodeId: String(node.id), error: errorMessage }
   } finally {
     notifyCreditAccountRefresh()
+    if (canvasPreferences.value.blur_after_submit) focusedNodeId.value = null
   }
 }
 
@@ -5252,6 +5354,19 @@ function openCanvasCreateMenuAt(clientX, clientY, connectionSource = null, flowP
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   if (event?.preventDefault) event.preventDefault()
+  if (canvasPreferences.value.blank_action !== 'contextmenu') return
+  openCanvasCreateMenuAt(
+    event.clientX,
+    event.clientY,
+    null,
+    payload?.flowPosition || null,
+  )
+}
+
+function onPaneDoubleClick(payload) {
+  if (canvasPreferences.value.blank_action !== 'doubleclick') return
+  const event = payload?.event || payload
+  event?.preventDefault?.()
   openCanvasCreateMenuAt(
     event.clientX,
     event.clientY,
@@ -5299,7 +5414,7 @@ function createStandaloneGroup() {
     ElMessage.warning('请先框选至少 2 个节点')
     return
   }
-  const padding = 34
+  const padding = canvasPreferences.value.group_padding
   const minX = Math.min(...members.map((node) => node.position.x)) - padding
   const minY = Math.min(...members.map((node) => node.position.y)) - padding
   const maxX = Math.max(...members.map((node) => node.position.x + Number(node.dimensions?.width || 460))) + padding
@@ -5452,6 +5567,29 @@ function updateGenerationOptions(patch = {}) {
 
 const scriptActionsHolder = {}
 
+function isMediaSubmission(node, step) {
+  const kind = String(node?.data?.kind || step || '').toLowerCase()
+  return ['image', 'video'].includes(kind)
+}
+
+async function waitForCanvasSubmissionDelay(node, step) {
+  if (!isMediaSubmission(node, step)) return
+  const delaySeconds = Number(canvasPreferences.value.media_submit_delay_seconds || 0)
+  if (delaySeconds <= 0) return
+  await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000))
+}
+
+async function runCanvasNodeStepWithPreferences(node, step) {
+  if (!(isStandaloneCanvas.value && node?.type === 'homeCanvasNode')) {
+    await waitForCanvasSubmissionDelay(node, step)
+  }
+  try {
+    return await runCanvasNodeStep(node, step)
+  } finally {
+    if (canvasPreferences.value.blur_after_submit) focusedNodeId.value = null
+  }
+}
+
 provide(CANVAS_CONTEXT_KEY, {
   focusedNodeId,
   allGraphNodes,
@@ -5491,6 +5629,9 @@ provide(CANVAS_CONTEXT_KEY, {
   canvasGridVisible,
   canvasMiniMapVisible,
   canvasSnapEnabled,
+  canvasPreferences,
+  canvasBackgroundCandidates,
+  canvasEdgePalette: activeCanvasEdgePalette,
   runQueueItems,
   canvasNodeLocatorItems,
   canUndo,
@@ -5504,17 +5645,16 @@ provide(CANVAS_CONTEXT_KEY, {
   fitCanvasView,
   focusCanvasNode,
   focusQueueItem,
+  updateCanvasPreference,
+  resetCanvasPreferences,
   toggleCanvasGrid: () => {
-    canvasGridVisible.value = !canvasGridVisible.value
-    scheduleLayoutSave()
+    updateCanvasPreference('grid_visible', !canvasPreferences.value.grid_visible)
   },
   toggleCanvasMiniMap: () => {
-    canvasMiniMapVisible.value = !canvasMiniMapVisible.value
-    scheduleLayoutSave()
+    updateCanvasPreference('minimap_visible', !canvasPreferences.value.minimap_visible)
   },
   toggleCanvasSnap: () => {
-    canvasSnapEnabled.value = !canvasSnapEnabled.value
-    scheduleLayoutSave()
+    updateCanvasPreference('snap_enabled', !canvasPreferences.value.snap_enabled)
   },
   findCanvasNode: findGraphNode,
   useNodeResultAsDownstreamReference,
@@ -5525,7 +5665,7 @@ provide(CANVAS_CONTEXT_KEY, {
   showCanvasHelp,
   selectStoryboard: (storyboardId, event) => selectStoryboard(storyboardId, event),
   assignProjectAssetToSelectedStoryboard,
-  runNodeStep: runCanvasNodeStep,
+  runNodeStep: runCanvasNodeStepWithPreferences,
   openFreeNodeConfig: (nodeId) => {
     const node = freeCanvasNodeById(nodeId)
     if (node) openFreeNodeDialog(node.data?.kind || 'text', node.position, node)
@@ -6072,6 +6212,7 @@ let draggedGroupSnapshot = null
 function onNodeDragStart(payload) {
   syncRenderedNodesToGraph()
   dragHistorySnapshot.value = currentInteractionState()
+  alignmentGuide.value = { x: null, y: null }
   const node = payload?.node
   if (node?.type === 'canvasGroup') {
     const childIds = new Set(node.data?.childNodeIds || [])
@@ -6082,6 +6223,47 @@ function onNodeDragStart(payload) {
         .filter((item) => childIds.has(String(item.id)))
         .map((item) => [String(item.id), { ...item.position }])),
     }
+  }
+}
+
+function onNodeDrag(payload) {
+  if (!canvasPreferences.value.alignment_guides_enabled) {
+    alignmentGuide.value = { x: null, y: null }
+    return
+  }
+  const node = payload?.node
+  if (!node) return
+  const zoom = Number(currentViewport.value.zoom || 1)
+  const threshold = 6 / zoom
+  const width = Number(node.dimensions?.width || 460)
+  const height = Number(node.dimensions?.height || 300)
+  const xAnchors = [node.position.x, node.position.x + width / 2, node.position.x + width]
+  const yAnchors = [node.position.y, node.position.y + height / 2, node.position.y + height]
+  let alignedX = null
+  let alignedY = null
+
+  for (const candidate of allGraphNodes.value) {
+    if (String(candidate.id) === String(node.id) || candidate.hidden) continue
+    const candidateWidth = Number(candidate.dimensions?.width || candidate.data?.width || 460)
+    const candidateHeight = Number(candidate.dimensions?.height || candidate.data?.height || 300)
+    const candidateX = [
+      candidate.position.x,
+      candidate.position.x + candidateWidth / 2,
+      candidate.position.x + candidateWidth,
+    ]
+    const candidateY = [
+      candidate.position.y,
+      candidate.position.y + candidateHeight / 2,
+      candidate.position.y + candidateHeight,
+    ]
+    if (alignedX === null) alignedX = candidateX.find((anchor) => xAnchors.some((value) => Math.abs(value - anchor) <= threshold)) ?? null
+    if (alignedY === null) alignedY = candidateY.find((anchor) => yAnchors.some((value) => Math.abs(value - anchor) <= threshold)) ?? null
+    if (alignedX !== null && alignedY !== null) break
+  }
+
+  alignmentGuide.value = {
+    x: alignedX === null ? null : alignedX * zoom + currentViewport.value.x,
+    y: alignedY === null ? null : alignedY * zoom + currentViewport.value.y,
   }
 }
 
@@ -6101,6 +6283,7 @@ function onNodeDragStop() {
     applyVirtualizedGraph()
   }
   draggedGroupSnapshot = null
+  alignmentGuide.value = { x: null, y: null }
   if (dragHistorySnapshot.value) commitInteractionHistory(dragHistorySnapshot.value)
   dragHistorySnapshot.value = null
   scheduleLayoutSave()
@@ -6494,7 +6677,10 @@ async function onAlignNodes() {
   focusedNodeId.value = null
   try {
     const positions = isStandaloneCanvas.value
-      ? computeStandaloneAutoLayoutPositions(allGraphNodes.value)
+      ? computeStandaloneAutoLayoutPositions(allGraphNodes.value, {
+          columnGap: 560 + canvasPreferences.value.layout_horizontal_gap,
+          rowGap: 350 + canvasPreferences.value.layout_vertical_gap,
+        })
       : computeAutoLayoutPositions(drama.value, {
         episodeId: filterEpisodeId.value,
         workflowGroups: workflowGroups.value,
@@ -6552,9 +6738,7 @@ async function loadDrama(silent = false) {
     await loadProjectImageAssets()
     layoutCache.value = parseCanvasLayout(drama.value.metadata)
     const preferences = normalizeCanvasPreferences(layoutCache.value?.preferences)
-    canvasGridVisible.value = preferences.grid_visible
-    canvasMiniMapVisible.value = preferences.minimap_visible
-    canvasSnapEnabled.value = preferences.snap_enabled
+    canvasPreferences.value = preferences
     persistedGenerationHistory.value = normalizeGenerationHistory(layoutCache.value?.generation_history)
     suppressedEdgeIds.value = new Set((layoutCache.value?.suppressed_edge_ids || []).map(String))
     syncWorkflowFromDrama()
@@ -6936,9 +7120,7 @@ watch(() => route.params.id, () => {
   focusedNodeId.value = null
   generationOverrides.value = {}
   freeCanvasVoiceOptions.value = []
-  canvasGridVisible.value = DEFAULT_CANVAS_PREFERENCES.grid_visible
-  canvasMiniMapVisible.value = DEFAULT_CANVAS_PREFERENCES.minimap_visible
-  canvasSnapEnabled.value = DEFAULT_CANVAS_PREFERENCES.snap_enabled
+  canvasPreferences.value = normalizeCanvasPreferences(DEFAULT_CANVAS_PREFERENCES)
   persistedGenerationHistory.value = []
   freeCanvasVoiceOptionsLoaded = false
   loadDrama()
@@ -7204,6 +7386,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   position: relative;
+  overflow: hidden;
+  background: var(--canvas-theme-background, #0f0f0f);
 }
 
 .canvas-main.space-panning :deep(.vue-flow__pane) {
@@ -7215,9 +7399,72 @@ onBeforeUnmount(() => {
 }
 
 .vue-flow-canvas {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
-  background: #0c0c0f;
+  background: transparent;
+}
+
+.canvas-custom-background {
+  position: absolute;
+  inset: -24px;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.canvas-alignment-guide {
+  position: absolute;
+  z-index: 18;
+  pointer-events: none;
+  background: rgba(124, 92, 255, 0.9);
+  box-shadow: 0 0 8px rgba(124, 92, 255, 0.55);
+}
+.canvas-alignment-guide.vertical { top: 0; bottom: 0; width: 1px; }
+.canvas-alignment-guide.horizontal { left: 0; right: 0; height: 1px; }
+
+.canvas-main.canvas-glow::after {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--canvas-panel-background, #18181b) 85%, #7c5cff 15%) 0%, transparent 58%);
+  opacity: 0.72;
+}
+
+.canvas-main :deep(.vue-flow__edge-path) {
+  stroke: var(--canvas-edge-color, rgba(255, 255, 255, 0.11));
+  stroke-width: var(--canvas-edge-width, 2px);
+}
+.canvas-main :deep(.vue-flow__edge.selected .vue-flow__edge-path),
+.canvas-main :deep(.vue-flow__edge:hover .vue-flow__edge-path) {
+  stroke: var(--canvas-edge-focus-color, rgba(255, 255, 255, 0.45));
+}
+.canvas-main :deep(.vue-flow__edge-interaction) {
+  stroke-width: var(--canvas-edge-focus-radius, 12px);
+}
+.canvas-main.edge-focus-only :deep(.vue-flow__edge:not(.selected):not(:hover) .vue-flow__edge-path) {
+  opacity: 0;
+}
+.canvas-main.edge-animated :deep(.vue-flow__edge-path) {
+  stroke-dasharray: 8 8;
+  animation: canvas-edge-dash 1.2s linear infinite;
+}
+
+.canvas-main.minimal-zoom :deep(.vue-flow__node) {
+  border-radius: 8px;
+}
+.canvas-main.linked-preview-hidden :deep(.reference-panel) { display: none; }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 1)) { box-shadow: 0 0 0 2px var(--canvas-simple-1, rgba(255, 255, 255, 0.06)); }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 2)) { box-shadow: 0 0 0 2px var(--canvas-simple-2, rgba(255, 255, 255, 0.06)); }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 3)) { box-shadow: 0 0 0 2px var(--canvas-simple-3, rgba(255, 255, 255, 0.06)); }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 4)) { box-shadow: 0 0 0 2px var(--canvas-simple-4, rgba(255, 255, 255, 0.06)); }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 5)) { box-shadow: 0 0 0 2px var(--canvas-simple-5, rgba(255, 255, 255, 0.06)); }
+.canvas-main.minimal-zoom :deep(.vue-flow__nodes .vue-flow__node:nth-child(6n + 6)) { box-shadow: 0 0 0 2px var(--canvas-simple-6, rgba(255, 255, 255, 0.06)); }
+
+@keyframes canvas-edge-dash {
+  to { stroke-dashoffset: -16; }
 }
 
 .canvas-upload-input {
@@ -7255,6 +7502,8 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .canvas-topbar .header-inner {
+  scale: var(--canvas-top-toolbar-scale, 1);
+  transform-origin: top center;
   min-height: 64px;
   margin: 0;
   padding: 8px 18px;
@@ -7388,7 +7637,7 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(18px);
 }
 .canvas-main { width: 100%; height: 100%; }
-.vue-flow-canvas { background: #0b0b0b; }
+.vue-flow-canvas { background: transparent; }
 .canvas-topbar .layout-status { font-size: 11px; white-space: nowrap; }
 .canvas-run-queue {
   position: absolute;

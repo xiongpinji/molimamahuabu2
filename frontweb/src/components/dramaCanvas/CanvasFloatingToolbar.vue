@@ -3,6 +3,7 @@
     ref="toolbarRef"
     class="canvas-floating-toolbar nodrag nopan"
     :class="{ 'panel-open': panelOpen && selectedFreeCount < 2 && selectedGroupCount === 0 }"
+    :style="{ '--canvas-bottom-toolbar-scale': bottomToolbarScale }"
     @mousedown.stop
   >
     <div v-if="addMenuVisible" class="canvas-tool-panel canvas-add-menu" role="menu" aria-label="添加节点菜单">
@@ -32,18 +33,7 @@
       </button>
     </div>
 
-    <div v-if="props.standalone && activePanel === 'settings'" class="canvas-tool-panel canvas-settings-panel">
-      <div class="tool-panel-title">画布设置</div>
-      <button type="button" class="setting-row" @click="toggleGrid">
-        <span>网格显示</span><b :class="{ enabled: gridVisible }">{{ gridVisible ? '开' : '关' }}</b>
-      </button>
-      <button type="button" class="setting-row" @click="toggleMiniMap">
-        <span>小地图</span><b :class="{ enabled: miniMapVisible }">{{ miniMapVisible ? '开' : '关' }}</b>
-      </button>
-      <button type="button" class="setting-row" @click="toggleSnap">
-        <span>自动吸附</span><b :class="{ enabled: snapEnabled }">{{ snapEnabled ? '开' : '关' }}</b>
-      </button>
-    </div>
+    <CanvasSettingsPanel v-if="props.standalone && activePanel === 'settings'" @close="activePanel = ''" />
 
     <div class="toolbar-main">
       <button type="button" class="toolbar-primary" :aria-expanded="addMenuVisible" aria-label="添加元素" title="添加元素" @click="toggleAddMenu">
@@ -63,7 +53,7 @@
         <el-icon><Operation /></el-icon><span>节点定位</span>
       </button>
       <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'settings' }" title="画布设置" @click="togglePanel('settings')">
-        <el-icon><Grid /></el-icon><span>画布设置</span>
+        <el-icon><Setting /></el-icon><span>画布设置</span>
       </button>
       <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: snapEnabled }" title="自动吸附" @click="toggleSnap">
         <el-icon><Connection /></el-icon><span>自动吸附</span>
@@ -116,8 +106,9 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Connection, Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Connection, Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, Setting, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import CanvasSettingsPanel from '@/components/dramaCanvas/CanvasSettingsPanel.vue'
 
 const props = defineProps({
   standalone: { type: Boolean, default: false },
@@ -152,9 +143,8 @@ const selectedFreeCount = computed(() => ctx?.selectedFreeNodeIds?.value?.length
 const selectedGroupCount = computed(() => ctx?.allGraphNodes?.value?.filter?.((node) => node.type === 'canvasGroup' && node.selected).length || 0)
 const historyItems = computed(() => ctx?.runQueueItems?.value || [])
 const locatorItems = computed(() => ctx?.canvasNodeLocatorItems?.value || [])
-const gridVisible = computed(() => Boolean(ctx?.canvasGridVisible?.value))
-const miniMapVisible = computed(() => Boolean(ctx?.canvasMiniMapVisible?.value))
 const snapEnabled = computed(() => Boolean(ctx?.canvasSnapEnabled?.value))
+const bottomToolbarScale = computed(() => Number(ctx?.canvasPreferences?.value?.bottom_toolbar_scale || 1))
 const zoomLabel = computed(() => {
   const zoom = Number(ctx?.currentViewport?.value?.zoom || 0.75)
   return String(Math.round(zoom * 100)) + '%'
@@ -193,8 +183,6 @@ function focusLocatorItem(item) {
   ctx?.focusCanvasNode?.(item.id)
 }
 
-function toggleGrid() { ctx?.toggleCanvasGrid?.() }
-function toggleMiniMap() { ctx?.toggleCanvasMiniMap?.() }
 function toggleSnap() { ctx?.toggleCanvasSnap?.() }
 function toggleWorkflow() { ctx?.toggleWorkflowPanel?.() }
 function toggleSidebar() { ctx?.toggleSidebar?.() }
@@ -246,9 +234,11 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   border: 1px solid #2d2d2d;
   border-radius: 17px;
-  background: rgba(15, 15, 15, 0.94);
+  background: color-mix(in srgb, var(--canvas-panel-background, #0f0f0f) 94%, transparent);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.24);
   backdrop-filter: blur(18px);
+  transform: scale(var(--canvas-bottom-toolbar-scale, 1));
+  transform-origin: bottom center;
 }
 button {
   font: inherit;
@@ -276,6 +266,7 @@ button {
   font-size: 22px;
 }
 .toolbar-button { padding: 0 11px; font-size: 12px; }
+.toolbar-button > span { white-space: nowrap; }
 .toolbar-icon { width: 44px; font-size: 18px; }
 .toolbar-button:hover,
 .toolbar-icon:hover { background: rgba(255, 113, 57, 0.14); color: #ff9a72; }
@@ -300,8 +291,7 @@ button {
 .tool-panel-title,
 .add-menu-title { padding: 4px 8px 7px; color: #a1a1aa; font-size: 12px; font-weight: 600; }
 .tool-panel-empty { padding: 18px 8px; color: #71717a; font-size: 12px; text-align: center; }
-.tool-panel-item,
-.setting-row {
+.tool-panel-item {
   width: 100%;
   min-height: 42px;
   display: flex;
@@ -315,13 +305,9 @@ button {
   text-align: left;
   cursor: pointer;
 }
-.tool-panel-item:hover,
-.setting-row:hover { background: rgba(255, 113, 57, 0.13); }
-.tool-panel-item span,
-.setting-row span { color: #e4e4e7; font-size: 12px; }
+.tool-panel-item:hover { background: rgba(255, 113, 57, 0.13); }
+.tool-panel-item span { color: #e4e4e7; font-size: 12px; }
 .tool-panel-item small { max-width: 118px; overflow: hidden; color: #71717a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.setting-row b { min-width: 30px; color: #71717a; font-size: 11px; font-weight: 500; text-align: right; }
-.setting-row b.enabled { color: #ff956d; }
 .add-menu-item {
   width: 100%;
   min-height: 44px;
@@ -344,6 +330,20 @@ button {
   .toolbar-button { width: 44px; padding: 0; }
   .toolbar-divider-spacer, .zoom-label { display: none; }
   .toolbar-main { gap: 2px; }
+}
+@media (min-width: 761px) and (max-width: 1500px) {
+  .toolbar-button { width: 44px; padding: 0; }
+  .toolbar-button > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .toolbar-primary, .toolbar-button, .toolbar-icon { transition: none; }

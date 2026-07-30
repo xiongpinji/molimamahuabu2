@@ -18,9 +18,9 @@ test('standalone canvas toolbar exposes the reference workflow controls', () => 
 })
 
 test('canvas settings bind to real VueFlow behavior', () => {
-  assert.match(canvasSource, /:snap-to-grid="canvasSnapEnabled"/)
-  assert.match(canvasSource, /<Background v-if="canvasGridVisible"/)
-  assert.match(canvasSource, /<MiniMap v-if="canvasMiniMapVisible"/)
+  assert.match(canvasSource, /:snap-to-grid="canvasPreferences\.snap_enabled"/)
+  assert.match(canvasSource, /v-if="canvasPreferences\.grid_visible"/)
+  assert.match(canvasSource, /<MiniMap v-if="canvasPreferences\.minimap_visible"/)
   assert.match(canvasSource, /canvasNodeLocatorItems/)
   assert.match(canvasSource, /runQueueItems/)
 })

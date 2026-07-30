@@ -33,11 +33,18 @@ const pathResult = computed(() => getBezierPath({
 const edgePath = computed(() => pathResult.value[0])
 const labelX = computed(() => pathResult.value[1])
 const labelY = computed(() => pathResult.value[2])
+const preferences = computed(() => ctx?.canvasPreferences?.value || {})
+const palette = computed(() => ctx?.canvasEdgePalette?.value || {
+  base: 'rgba(255, 255, 255, 0.11)',
+  focus: 'rgba(255, 255, 255, 0.45)',
+})
+const edgeAnimationEnabled = computed(() => Boolean(preferences.value.edge_animation_enabled))
+const edgeFocusOnly = computed(() => Boolean(preferences.value.edge_focus_only))
 
 const baseStyle = computed(() => ({
-  stroke: props.selected ? '#e9f3ff' : '#aeb8c5',
-  strokeWidth: props.selected ? 1.8 : 1.25,
-  opacity: props.style?.opacity ?? 0.82,
+  stroke: props.selected || hovering.value ? palette.value.focus : palette.value.base,
+  strokeWidth: Number(preferences.value.edge_width || 2) + (props.selected ? 0.4 : 0),
+  opacity: edgeFocusOnly.value && !props.selected && !hovering.value ? 0 : (props.style?.opacity ?? 0.82),
 }))
 
 function cutEdge(event) {
@@ -55,11 +62,12 @@ function cutEdge(event) {
       :path="edgePath"
       :marker-start="markerStart"
       :marker-end="markerEnd"
-      :interaction-width="interactionWidth"
+      :interaction-width="Number(preferences.edge_focus_radius || interactionWidth)"
       :style="baseStyle"
       class="libtv-edge-base"
     />
     <path
+      v-if="edgeAnimationEnabled"
       :d="edgePath"
       class="libtv-edge-hover-path"
       @mouseenter="hovering = true"

@@ -198,6 +198,86 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     })
   })
 
+  test('自定义画布设置逐项生效、持久化并可恢复默认', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout({
+        free_nodes: [{
+          id: 'free:image:settings',
+          type: 'homeCanvasNode',
+          position: { x: 240, y: 220 },
+          data: {
+            kind: 'image',
+            title: '背景候选图',
+            content: '雨夜站台',
+            url: '/static/settings-background.png',
+            status: 'success',
+          },
+        }],
+      }),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    await page.getByRole('button', { name: '画布设置' }).click()
+    const dialog = page.getByRole('dialog', { name: '自定义画布' })
+    await expect(dialog).toBeVisible()
+    const box = await dialog.boundingBox()
+    expect(Math.round(box.width)).toBe(420)
+    expect(Math.round(box.height)).toBe(400)
+
+    for (const section of [
+      '交互操作',
+      '连线设置',
+      '网格与显示',
+      '节点与布局',
+      '自定义背景',
+      '画布主题',
+      '连线色彩',
+      '简化配色',
+    ]) {
+      await expect(dialog.getByText(section, { exact: true }).first()).toBeAttached()
+    }
+
+    await dialog.getByRole('button', { name: '缩放', exact: true }).click()
+    await dialog.locator('label.setting-row').filter({ hasText: '网格线间距' }).locator('input').fill('30')
+    await dialog.locator('.setting-row').filter({ hasText: '显示导航小地图' }).getByRole('switch').click()
+    await dialog.getByRole('button', { name: '暮光蓝', exact: true }).click()
+    await dialog.getByRole('button', { name: '从画布选择' }).click()
+    await dialog.locator('.background-picker button').first().click()
+
+    await expect(page.locator('.vue-flow__minimap')).toBeVisible()
+    await expect.poll(() => state.canvasLayout.preferences).toMatchObject({
+      wheel_action: 'zoom',
+      grid_gap: 30,
+      minimap_visible: true,
+      theme_key: 'twilight-blue',
+      background_enabled: true,
+      background_url: '/static/settings-background.png',
+    })
+
+    await page.reload()
+    await page.getByRole('button', { name: '画布设置' }).click()
+    const restoredDialog = page.getByRole('dialog', { name: '自定义画布' })
+    await expect(restoredDialog.getByRole('button', { name: '缩放', exact: true })).toHaveClass(/active/)
+    await expect(restoredDialog.getByRole('button', { name: '暮光蓝', exact: true })).toHaveClass(/active/)
+    await expect(page.locator('.vue-flow__minimap')).toBeVisible()
+
+    await restoredDialog.getByRole('button', { name: '恢复默认' }).click()
+    await expect.poll(() => state.canvasLayout.preferences).toMatchObject({
+      wheel_action: 'pan',
+      grid_gap: 20,
+      minimap_visible: false,
+      theme_key: 'xuanhei',
+      background_enabled: false,
+    })
+    await expect(page.locator('.vue-flow__minimap')).toHaveCount(0)
+  })
+
   test('右键新增图片节点直接进入节点内编辑、可拖动且不弹创建表单', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout(),
