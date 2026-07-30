@@ -223,6 +223,8 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await installStaticAndApiMocks(page, state)
 
     await page.goto('/canvas/3')
+    await expect(page.locator('.vue-flow__node[data-id="free:image:settings"]')).toBeVisible()
+    await expect(page.getByText('暂无画布数据', { exact: true })).toHaveCount(0)
     await page.getByRole('button', { name: '画布设置' }).click()
     const dialog = page.getByRole('dialog', { name: '自定义画布' })
     await expect(dialog).toBeVisible()

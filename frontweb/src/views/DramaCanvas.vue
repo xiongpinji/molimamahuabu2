@@ -356,7 +356,7 @@
         </VueFlow>
         <div v-if="alignmentGuide.x !== null" class="canvas-alignment-guide vertical" :style="{ left: `${alignmentGuide.x}px` }" aria-hidden="true" />
         <div v-if="alignmentGuide.y !== null" class="canvas-alignment-guide horizontal" :style="{ top: `${alignmentGuide.y}px` }" aria-hidden="true" />
-        <el-empty v-else-if="!loading" description="暂无画布数据" />
+        <el-empty v-if="!isStandaloneCanvas && !allGraphNodes.length && !loading" description="暂无画布数据" />
         <div v-if="runQueueItems.length || dismissedRunQueueCount" class="canvas-run-queue nodrag nopan" aria-label="画布节点运行队列" @mousedown.stop>
           <div class="run-queue-head">
             <span>运行队列</span>
