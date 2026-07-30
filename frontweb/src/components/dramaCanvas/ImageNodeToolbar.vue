@@ -8,6 +8,34 @@
     @click.stop
     @mousedown.stop
   >
+    <div class="toolbar-menu-wrap portrait-menu-wrap" @mouseenter="openToolbarMenu('portrait')" @mouseleave="scheduleMenuClose">
+      <button
+        type="button"
+        :disabled="nodeBusy"
+        :title="busyTitle('人像质感调节')"
+        @click="toggleMenu('portrait')"
+      >
+        <User class="toolbar-icon" />
+        人像质感调节
+        <span class="new-badge">NEW</span>
+        <ArrowDown class="toolbar-chevron" :class="{ open: openMenu === 'portrait' }" />
+      </button>
+      <div v-if="openMenu === 'portrait'" class="toolbar-menu portrait-menu">
+        <button
+          v-for="item in portraitActions"
+          :key="item.operation"
+          type="button"
+          :class="{ unavailable: !operationCapability(item.operation).available }"
+          :disabled="nodeBusy || !operationCapability(item.operation).available"
+          :title="operationTitle(item)"
+          @click="selectOperation(item)"
+        >
+          <component :is="item.icon" class="menu-icon" />
+          <span>{{ item.label }}</span>
+        </button>
+      </div>
+    </div>
+
     <button
       v-for="item in quickActions"
       :key="item.operation"
@@ -377,7 +405,89 @@
       </div>
 
       <el-form v-else label-position="top">
-        <template v-if="editorOperation === 'upscale'">
+        <template v-if="editorOperation === 'portrait_texture'">
+          <el-form-item label="人像质感">
+            <el-select v-model="portraitTextureForm.preset">
+              <el-option label="自然真实" value="natural" />
+              <el-option label="清爽通透" value="clean" />
+              <el-option label="电影质感" value="cinematic" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="`调节强度 ${portraitTextureForm.intensity}/5`">
+            <el-slider v-model="portraitTextureForm.intensity" :min="1" :max="5" :step="1" />
+          </el-form-item>
+          <el-form-item label="补充要求（可选）">
+            <el-input
+              v-model="portraitTextureForm.description"
+              type="textarea"
+              :rows="3"
+              maxlength="300"
+              show-word-limit
+              placeholder="例如：保留自然雀斑和眼下细纹"
+            />
+          </el-form-item>
+          <p class="crop-hint">
+            通过真实参考图模型生成同尺寸新素材，保留人物身份、构图和原图；不会覆盖源图片。
+          </p>
+        </template>
+
+        <template v-else-if="editorOperation === 'portrait_emotion'">
+          <section class="portrait-face-stage" aria-label="选择需要调节的人脸">
+            <div class="portrait-face-toolbar">
+              <strong>选择人物</strong>
+              <el-button size="small" @click="detectPortraitFaces">自动识别</el-button>
+              <el-button size="small" @click="useManualPortraitFaceSelection">手动框选</el-button>
+            </div>
+            <p class="crop-hint">{{ portraitFaceMessage }}</p>
+            <div v-if="portraitFaces.length > 1" class="portrait-face-options">
+              <button
+                v-for="(face, index) in portraitFaces"
+                :key="index"
+                type="button"
+                :class="{ active: sameFaceRegion(face, portraitFaceRegion) }"
+                @click="selectPortraitFace(face)"
+              >
+                人物 {{ index + 1 }}
+              </button>
+            </div>
+            <div class="portrait-face-cropper">
+              <img
+                ref="portraitFaceImage"
+                :src="data.url"
+                alt="人脸自动识别与手动框选"
+                @load="preparePortraitFaceSelection"
+              />
+            </div>
+          </section>
+
+          <el-form-item label="情绪定位">
+            <div class="emotion-picker">
+              <span class="emotion-axis emotion-axis-top">激动</span>
+              <span class="emotion-axis emotion-axis-bottom">平静</span>
+              <span class="emotion-axis emotion-axis-left">亲近</span>
+              <span class="emotion-axis emotion-axis-right">疏离</span>
+              <div class="emotion-grid">
+                <button
+                  v-for="emotion in portraitEmotions"
+                  :key="emotion"
+                  type="button"
+                  :class="{ active: portraitEmotionForm.emotion === emotion }"
+                  @click="portraitEmotionForm.emotion = emotion"
+                >
+                  {{ emotion }}
+                </button>
+              </div>
+            </div>
+          </el-form-item>
+          <el-form-item :label="`情绪强度 ${portraitEmotionForm.intensity}/5`">
+            <el-slider v-model="portraitEmotionForm.intensity" :min="1" :max="5" :step="1" />
+          </el-form-item>
+          <p class="crop-hint">
+            完整原图与选中人脸裁片共同提交，只改变目标人物表情并生成同尺寸新素材。
+          </p>
+        </template>
+
+        <template v-else-if="editorOperation === 'upscale'">
           <el-form-item label="增强倍率">
             <el-select v-model="upscaleScale">
               <el-option label="2x" :value="2" />
@@ -971,6 +1081,26 @@ const relightForm = ref({
   intensity: 3,
   description: '',
 })
+const portraitFaceImage = ref(null)
+const portraitTextureForm = ref({
+  preset: 'natural',
+  intensity: 3,
+  description: '',
+})
+const portraitEmotionForm = ref({
+  emotion: '浅然莞尔',
+  intensity: 3,
+})
+const portraitFaceRegion = ref(null)
+const portraitFaces = ref([])
+const portraitFaceMessage = ref('正在检测人脸；自动识别不可用时请手动框选')
+const portraitEmotions = Object.freeze([
+  '强忍悲戚', '默然垂泪', '触景伤情', '哀悼压抑', '隐忍心伤',
+  '浅然莞尔', '含情凝望', '满眼宠溺', '万般无奈', '欣然愉悦',
+  '眉宇凝霜', '隐忍愠怒', '冷眼漠然', '积郁憋闷', '暴怒沉怒',
+  '骤然错愕', '难以置信', '惊魂未定', '受惊后退', '心跳骤停',
+  '淡然自若', '疏离冷淡', '欲言又止', '警觉审视', '疲惫失神',
+])
 const MARKUP_MAX_STROKES = 16
 const MARKUP_MAX_POINTS = 128
 const MARKUP_COLORS = ['#ef4444', '#f97316', '#facc15', '#22c55e', '#3b82f6']
@@ -995,6 +1125,7 @@ const markupTools = Object.freeze([
   { label: '文本', value: 'text' },
 ])
 let cropper = null
+let portraitCropper = null
 let CropperClass = null
 let activeMarkupStroke = null
 let activeMarkupStart = null
@@ -1002,6 +1133,11 @@ let activeSelectionBrushStroke = null
 let menuCloseTimer = null
 
 const DIRECTOR_STAGE_OPERATIONS = new Set(['director_stage', 'lighting', 'angle', 'pose'])
+
+const portraitActions = [
+  { label: '人像调节', operation: 'portrait_texture', icon: User },
+  { label: '情绪调节', operation: 'portrait_emotion', icon: Aim },
+]
 
 const quickActions = [
   { label: '720全景', operation: 'panorama', icon: PictureRounded },
@@ -1237,6 +1373,14 @@ function selectOperation(item) {
     referenceVariationDescription.value = ''
   } else if (!item.variant && item.operation === 'cinematic_relight') {
     relightForm.value = { preset: 'cinematic', intensity: 3, description: '' }
+  } else if (!item.variant && item.operation === 'portrait_texture') {
+    portraitTextureForm.value = { preset: 'natural', intensity: 3, description: '' }
+  } else if (!item.variant && item.operation === 'portrait_emotion') {
+    destroyPortraitCropper()
+    portraitEmotionForm.value = { emotion: '浅然莞尔', intensity: 3 }
+    portraitFaceRegion.value = null
+    portraitFaces.value = []
+    portraitFaceMessage.value = '正在检测人脸；自动识别不可用时请手动框选'
   } else if (item.variant === 'panorama_lens') {
     outpaintForm.value = {
       ...outpaintForm.value,
@@ -1308,6 +1452,131 @@ async function initCropper() {
 function destroyCropper() {
   cropper?.destroy()
   cropper = null
+}
+
+function destroyPortraitCropper() {
+  portraitCropper?.destroy()
+  portraitCropper = null
+}
+
+function clampFaceRegion(region) {
+  const x = Math.max(0, Math.min(1, Number(region?.x || 0)))
+  const y = Math.max(0, Math.min(1, Number(region?.y || 0)))
+  const width = Math.max(0.01, Math.min(1 - x, Number(region?.width || 0)))
+  const height = Math.max(0.01, Math.min(1 - y, Number(region?.height || 0)))
+  return { x, y, width, height }
+}
+
+function sameFaceRegion(left, right) {
+  if (!left || !right) return false
+  return ['x', 'y', 'width', 'height'].every((key) => (
+    Math.abs(Number(left[key]) - Number(right[key])) < 0.0001
+  ))
+}
+
+function setPortraitCropperRegion(region) {
+  const image = portraitFaceImage.value
+  if (!image?.naturalWidth || !image?.naturalHeight || !portraitCropper) return
+  const normalized = clampFaceRegion(region)
+  portraitCropper.setData({
+    x: normalized.x * image.naturalWidth,
+    y: normalized.y * image.naturalHeight,
+    width: normalized.width * image.naturalWidth,
+    height: normalized.height * image.naturalHeight,
+  })
+}
+
+function selectPortraitFace(region) {
+  portraitFaceRegion.value = clampFaceRegion(region)
+  setPortraitCropperRegion(portraitFaceRegion.value)
+}
+
+async function initPortraitCropper() {
+  if (
+    !editorVisible.value
+    || editorOperation.value !== 'portrait_emotion'
+    || !portraitFaceImage.value
+  ) return
+  if (!CropperClass) {
+    const [cropperModule] = await Promise.all([
+      import('cropperjs'),
+      import('cropperjs/dist/cropper.css'),
+    ])
+    CropperClass = cropperModule.default
+  }
+  if (!portraitFaceImage.value || editorOperation.value !== 'portrait_emotion') return
+  destroyPortraitCropper()
+  portraitCropper = new CropperClass(portraitFaceImage.value, {
+    viewMode: 1,
+    autoCropArea: 0.4,
+    background: false,
+    responsive: true,
+    aspectRatio: Number.NaN,
+    ready() {
+      if (portraitFaceRegion.value) setPortraitCropperRegion(portraitFaceRegion.value)
+    },
+    crop(event) {
+      const image = portraitFaceImage.value
+      if (!image?.naturalWidth || !image?.naturalHeight) return
+      portraitFaceRegion.value = clampFaceRegion({
+        x: event.detail.x / image.naturalWidth,
+        y: event.detail.y / image.naturalHeight,
+        width: event.detail.width / image.naturalWidth,
+        height: event.detail.height / image.naturalHeight,
+      })
+    },
+  })
+}
+
+async function useManualPortraitFaceSelection() {
+  portraitFaces.value = []
+  portraitFaceRegion.value = { x: 0.25, y: 0.15, width: 0.5, height: 0.7 }
+  portraitFaceMessage.value = '请拖动裁剪框手动框选需要调节的人脸'
+  await nextTick()
+  await initPortraitCropper()
+}
+
+async function detectPortraitFaces() {
+  if (editorOperation.value !== 'portrait_emotion' || !portraitFaceImage.value) return
+  destroyPortraitCropper()
+  if (typeof window.FaceDetector !== 'function') {
+    portraitFaceMessage.value = '自动识别不可用，请手动框选需要调节的人脸'
+    await useManualPortraitFaceSelection()
+    return
+  }
+  try {
+    const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 10 })
+    const detections = await detector.detect(portraitFaceImage.value)
+    const image = portraitFaceImage.value
+    portraitFaces.value = detections.map(({ boundingBox }) => clampFaceRegion({
+      x: boundingBox.x / image.naturalWidth,
+      y: boundingBox.y / image.naturalHeight,
+      width: boundingBox.width / image.naturalWidth,
+      height: boundingBox.height / image.naturalHeight,
+    }))
+    if (!portraitFaces.value.length) {
+      portraitFaceMessage.value = '未自动识别到人脸，请手动框选'
+      await useManualPortraitFaceSelection()
+      return
+    }
+    portraitFaceRegion.value = { ...portraitFaces.value[0] }
+    portraitFaceMessage.value = portraitFaces.value.length > 1
+      ? `识别到 ${portraitFaces.value.length} 张人脸，请选择目标人物`
+      : '已识别人脸，可拖动框线微调'
+    await nextTick()
+    await initPortraitCropper()
+  } catch {
+    portraitFaceMessage.value = '自动识别不可用，请手动框选需要调节的人脸'
+    await useManualPortraitFaceSelection()
+  }
+}
+
+async function preparePortraitFaceSelection() {
+  if (portraitFaceRegion.value) {
+    await initPortraitCropper()
+    return
+  }
+  await detectPortraitFaces()
 }
 
 function setCropAspectRatio(value) {
@@ -1390,6 +1659,7 @@ function finishSelectionBrush(event) {
 function destroyEditor() {
   clearTimeout(menuCloseTimer)
   destroyCropper()
+  destroyPortraitCropper()
   activeMarkupStroke = null
   activeSelectionBrushStroke = null
 }
@@ -1710,6 +1980,19 @@ function operationParameters() {
   if (REFERENCE_VARIATION_OPERATIONS.includes(editorOperation.value)) return {
     description: referenceVariationDescription.value.trim(),
   }
+  if (editorOperation.value === 'portrait_texture') return {
+    preset: portraitTextureForm.value.preset,
+    intensity: portraitTextureForm.value.intensity,
+    description: portraitTextureForm.value.description.trim(),
+  }
+  if (editorOperation.value === 'portrait_emotion') {
+    if (!portraitFaceRegion.value) throw new Error('请先自动识别或手动框选需要调节的人脸')
+    return {
+      emotion: portraitEmotionForm.value.emotion,
+      intensity: portraitEmotionForm.value.intensity,
+      faceRegion: { ...portraitFaceRegion.value },
+    }
+  }
   if (editorOperation.value === 'cinematic_relight') return {
     preset: relightForm.value.preset,
     intensity: relightForm.value.intensity,
@@ -1842,6 +2125,9 @@ async function submitOperation(markupMode = 'retouch') {
   if (nodeBusy.value) return
   submitting.value = true
   try {
+    if (typeof ctx?.runImageNodeTool !== 'function') {
+      throw new Error('请先将本地节点接入项目画布后再使用图片模型工具')
+    }
     const parameters = operationParameters()
     if (editorOperation.value === 'markup_retouch') {
       parameters.mode = markupMode
@@ -1869,6 +2155,9 @@ async function retryLastOperation() {
   if (!operation || !parameters || nodeBusy.value) return
   submitting.value = true
   try {
+    if (typeof ctx?.runImageNodeTool !== 'function') {
+      throw new Error('请先将本地节点接入项目画布后再使用图片模型工具')
+    }
     await ctx?.runImageNodeTool?.(props.nodeId, operation, parameters)
     ElMessage.success('图片处理重试成功，已生成新素材')
   } catch (error) {
@@ -1899,6 +2188,8 @@ function operationLabel(operation) {
     narrative_grid: '多机位叙事九宫格',
     frame_forward: '画面推演-3秒后',
     frame_backward: '画面推演-5秒前',
+    portrait_texture: '人像调节',
+    portrait_emotion: '情绪调节',
     cinematic_relight: '电影级光影校正',
     adjust: '图片调整',
     lut: 'LUT 调色',
@@ -1977,7 +2268,7 @@ function requestFullscreen() {
   align-items: center;
   gap: 3px;
   width: max-content;
-  max-width: 760px;
+  max-width: 960px;
   padding: 8px 10px;
   border: 1px solid #34343a;
   border-radius: 999px;
@@ -2035,6 +2326,20 @@ function requestFullscreen() {
 
 .toolbar-menu-wrap {
   position: relative;
+}
+
+.new-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #dff8ff;
+  background: #27758a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.portrait-menu {
+  width: 190px;
 }
 
 .toolbar-menu {
@@ -2303,6 +2608,97 @@ function requestFullscreen() {
   border-radius: 14px;
   background: #18181b;
 }
+
+.portrait-face-stage {
+  margin-bottom: 18px;
+}
+
+.portrait-face-toolbar,
+.portrait-face-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.portrait-face-toolbar strong {
+  margin-right: auto;
+}
+
+.portrait-face-options button,
+.emotion-grid button {
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  color: #d4d4d8;
+  background: #27272a;
+  cursor: pointer;
+}
+
+.portrait-face-options button {
+  padding: 6px 10px;
+}
+
+.portrait-face-options button.active,
+.emotion-grid button.active {
+  border-color: #818cf8;
+  color: #fff;
+  background: #4f46e5;
+}
+
+.portrait-face-cropper {
+  height: 250px;
+  overflow: hidden;
+  border: 1px solid #3f3f46;
+  border-radius: 10px;
+  background: #09090b;
+}
+
+.portrait-face-cropper img {
+  display: block;
+  max-width: 100%;
+}
+
+.emotion-picker {
+  position: relative;
+  width: 100%;
+  padding: 24px 32px;
+}
+
+.emotion-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.emotion-grid button {
+  min-height: 48px;
+  padding: 5px;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.emotion-axis {
+  position: absolute;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+.emotion-axis-top,
+.emotion-axis-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.emotion-axis-top { top: 0; }
+.emotion-axis-bottom { bottom: 0; }
+.emotion-axis-left,
+.emotion-axis-right {
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+}
+.emotion-axis-left { left: 4px; }
+.emotion-axis-right { right: 4px; }
 
 .editor-preview {
   position: relative;

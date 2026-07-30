@@ -138,6 +138,73 @@ test.beforeEach(async ({ page }) => {
   await loadHomeCanvasState(page, seededHomeCanvasState)
 })
 
+test('拖入多张本地图片会立即创建预览节点并保存稳定上传地址', async ({ page }) => {
+  let uploadRequests = 0
+  let markUploadStarted
+  let releaseUploads
+  const uploadStarted = new Promise((resolve) => { markUploadStarted = resolve })
+  const uploadsReleased = new Promise((resolve) => { releaseUploads = resolve })
+  await page.route('**/api/v1/upload/image', async (route) => {
+    uploadRequests += 1
+    const requestNumber = uploadRequests
+    markUploadStarted()
+    await uploadsReleased
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          url: `/static/e2e-upload-${requestNumber}.svg`,
+          local_path: `uploads/e2e-upload-${requestNumber}.svg`,
+        },
+      }),
+    })
+  })
+  await page.route('**/static/e2e-upload-*.svg', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#7c3aed"/></svg>',
+  }))
+
+  const dataTransfer = await page.evaluateHandle(() => {
+    const png = Uint8Array.from(
+      atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n0YAAAAASUVORK5CYII='),
+      (character) => character.charCodeAt(0),
+    )
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([png], 'portrait-one.png', { type: 'image/png' }))
+    transfer.items.add(new File([png], 'portrait-two.png', { type: 'image/png' }))
+    return transfer
+  })
+  const canvas = page.locator('.canvas-main')
+  await canvas.dispatchEvent('dragover', { dataTransfer })
+  await canvas.dispatchEvent('drop', { dataTransfer })
+  await dataTransfer.dispose()
+
+  const imageNodes = page.locator('.home-canvas-node.kind-image')
+  await expect(imageNodes).toHaveCount(2)
+  await expect.poll(() => imageNodes.locator('img.node-media').evaluateAll((images) => (
+    images.map((image) => image.getAttribute('src'))
+  ))).toEqual([
+    expect.stringMatching(/^blob:/),
+    expect.stringMatching(/^blob:/),
+  ])
+  await uploadStarted
+
+  releaseUploads()
+  await expect.poll(() => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return (state.nodes || [])
+      .filter((node) => node.data?.kind === 'image')
+      .map((node) => ({ status: node.data.status, url: node.data.url }))
+  }, homeCanvasStorageKey)).toEqual([
+    { status: 'success', url: '/static/e2e-upload-1.svg' },
+    { status: 'success', url: '/static/e2e-upload-2.svg' },
+  ])
+  expect(uploadRequests).toBe(2)
+})
+
 test('文本节点单击后在专属编辑器直接编辑，不再依赖配置弹窗', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
 

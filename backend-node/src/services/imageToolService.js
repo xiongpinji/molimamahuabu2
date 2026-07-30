@@ -127,6 +127,18 @@ const CINEMATIC_RELIGHT_PRESETS = Object.freeze({
   studio_soft: '影棚柔光，均匀柔和的人物或主体塑形',
   high_contrast: '高反差戏剧光，明确主次但保留关键细节',
 });
+const PORTRAIT_TEXTURE_PRESETS = Object.freeze({
+  natural: '恢复真实皮肤纹理，保留毛孔、细纹、雀斑与自然光泽，克制磨皮',
+  clean: '清爽通透的人像质感，轻度净肤但保留真实皮肤结构',
+  cinematic: '电影级人像质感，强化细腻层次、自然肤色与克制的胶片颗粒',
+});
+const PORTRAIT_EMOTIONS = Object.freeze([
+  '强忍悲戚', '默然垂泪', '触景伤情', '哀悼压抑', '隐忍心伤',
+  '浅然莞尔', '含情凝望', '满眼宠溺', '万般无奈', '欣然愉悦',
+  '眉宇凝霜', '隐忍愠怒', '冷眼漠然', '积郁憋闷', '暴怒沉怒',
+  '骤然错愕', '难以置信', '惊魂未定', '受惊后退', '心跳骤停',
+  '淡然自若', '疏离冷淡', '欲言又止', '警觉审视', '疲惫失神',
+]);
 const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
   'outpaint',
   'markup_retouch',
@@ -141,6 +153,8 @@ const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
   'narrative_grid',
   'frame_forward',
   'frame_backward',
+  'portrait_texture',
+  'portrait_emotion',
 ]);
 const PANORAMA_OUTPUT_SIZE = '3840x1920';
 const REFERENCE_VARIATION_CONFIGS = Object.freeze({
@@ -791,6 +805,17 @@ function referenceImageCapabilities(referenceImageTool, unavailableReason) {
     frame_backward: variationCapability('frame_backward', '画面推演-5秒前', {
       preservesDimensions: true,
     }),
+    portrait_texture: variationCapability('portrait_texture', '人像质感调节', {
+      presets: Object.keys(PORTRAIT_TEXTURE_PRESETS),
+      intensityRange: [1, 5],
+      preservesDimensions: true,
+    }),
+    portrait_emotion: variationCapability('portrait_emotion', '人像情绪调节', {
+      emotions: [...PORTRAIT_EMOTIONS],
+      intensityRange: [1, 5],
+      supportsFaceRegion: true,
+      preservesDimensions: true,
+    }),
   };
 }
 
@@ -923,6 +948,78 @@ function buildReferenceVariationPrompt(operation, parameters) {
       : '只输出一张完整画面，不要输出拼图、分栏、边框、文字或水印。',
     parameters.description ? `补充要求：${parameters.description}。` : '',
   ].filter(Boolean).join('\n');
+}
+
+function normalizePortraitParameters(operation, parameters) {
+  const intensity = Number(parameters.intensity ?? 3);
+  if (!Number.isInteger(intensity) || intensity < 1 || intensity > 5) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'intensity 必须是 1 到 5 的整数');
+  }
+  if (operation === 'portrait_texture') {
+    const preset = String(parameters.preset || 'natural').trim();
+    const rawDescription = parameters.description === undefined ? '' : parameters.description;
+    if (!Object.hasOwn(PORTRAIT_TEXTURE_PRESETS, preset)) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数无效');
+    }
+    if (typeof rawDescription !== 'string') {
+      fail('IMAGE_TOOL_INVALID_INPUT', '人像补充要求必须是字符串');
+    }
+    const description = rawDescription.trim();
+    if (description.length > 300) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '人像补充要求不能超过 300 字');
+    }
+    return { preset, intensity, description };
+  }
+
+  const emotion = String(parameters.emotion || '').trim();
+  if (!PORTRAIT_EMOTIONS.includes(emotion)) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'emotion 参数无效');
+  }
+  if (parameters.faceRegion === undefined || parameters.faceRegion === null) {
+    return { emotion, intensity };
+  }
+  const region = parameters.faceRegion;
+  if (!region || typeof region !== 'object' || Array.isArray(region)) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'faceRegion 参数无效');
+  }
+  const faceRegion = {
+    x: Number(region.x),
+    y: Number(region.y),
+    width: Number(region.width),
+    height: Number(region.height),
+  };
+  if (
+    Object.values(faceRegion).some((value) => !Number.isFinite(value))
+    || faceRegion.x < 0
+    || faceRegion.y < 0
+    || faceRegion.width <= 0
+    || faceRegion.height <= 0
+    || faceRegion.x + faceRegion.width > 1
+    || faceRegion.y + faceRegion.height > 1
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'faceRegion 必须位于原图归一化坐标范围内');
+  }
+  return { emotion, intensity, faceRegion };
+}
+
+function buildPortraitPrompt(operation, parameters) {
+  if (operation === 'portrait_texture') {
+    return [
+      '基于输入原图执行人像质感调节，只优化皮肤、面部细节和人像质感。',
+      `目标质感：${PORTRAIT_TEXTURE_PRESETS[parameters.preset]}；强度 ${parameters.intensity}/5。`,
+      '必须保持人物身份、五官比例、表情、发型、服装、姿势、构图、背景、光线方向、画风和画面尺寸不变。',
+      '不得塑料磨皮、改变年龄或妆容，不得增加、删除或移动主体，不要拼图、边框、文字、水印或前后对比图。',
+      parameters.description ? `补充要求：${parameters.description}。` : '',
+    ].filter(Boolean).join('\n');
+  }
+  return [
+    `基于输入原图把选中人物的表情自然调整为“${parameters.emotion}”，强度 ${parameters.intensity}/5。`,
+    '只改变面部表情及与表情直接相关的细微肌肉状态，保持人物身份、脸型、五官比例、年龄、妆容、发型、身体姿势、服装、构图、背景、光线、画风和画面尺寸不变。',
+    parameters.faceRegion
+      ? 'Image 2 是从 Image 1 中选定人物的真实脸部裁片，只用于准确锁定需要调节的脸。'
+      : '画面只有一个主要人物时，调节该人物的表情。',
+    '不要拼图、边框、文字、水印或前后对比图。',
+  ].join('\n');
 }
 
 function normalizeMarkupRetouchParameters(parameters) {
@@ -1326,6 +1423,8 @@ async function saveOutpaintResult(imageUrl, outputDir, allowedRoot, options = {}
     narrative_grid: 'narrative-grid-provider-download',
     frame_forward: 'frame-forward-provider-download',
     frame_backward: 'frame-backward-provider-download',
+    portrait_texture: 'portrait-texture-provider-download',
+    portrait_emotion: 'portrait-emotion-provider-download',
   }[options.operation] || 'outpaint';
   let realAllowedRoot;
   let realOutputDir;
@@ -2239,6 +2338,165 @@ async function runReferenceVariation({
   }
 }
 
+async function runPortraitAdjustment({
+  db,
+  log,
+  asset,
+  request,
+  task,
+  sourcePath,
+  storageRoot,
+  allowedRoot,
+  referenceImageTool,
+  tenantId,
+  operation,
+}) {
+  const label = operation === 'portrait_texture' ? '人像调节' : '情绪调节';
+  const failureMessage = `${label}失败`;
+  let sourceMetadata;
+  try {
+    sourceMetadata = await sharp(sourcePath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+  } catch {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  if (!FORMAT_INFO[sourceMetadata.format] || !sourceMetadata.width || !sourceMetadata.height) {
+    fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
+  }
+  const parameters = normalizePortraitParameters(operation, request.parameters || {});
+  const outputSize = `${sourceMetadata.width}x${sourceMetadata.height}`;
+  const outputDir = ensureDerivedDir(sourcePath, allowedRoot);
+  let release;
+  let faceReferencePath = null;
+  let providerDownloadPath = null;
+  let outputPath = null;
+  try {
+    if (operation === 'portrait_emotion' && parameters.faceRegion) {
+      const region = parameters.faceRegion;
+      const left = Math.floor(sourceMetadata.width * region.x);
+      const top = Math.floor(sourceMetadata.height * region.y);
+      const width = Math.max(
+        1,
+        Math.min(sourceMetadata.width - left, Math.round(sourceMetadata.width * region.width)),
+      );
+      const height = Math.max(
+        1,
+        Math.min(sourceMetadata.height - top, Math.round(sourceMetadata.height * region.height)),
+      );
+      faceReferencePath = path.join(
+        outputDir,
+        `${Date.now()}-${randomUUID()}-portrait-face-reference.png`,
+      );
+      await sharp(sourcePath, {
+        failOn: 'warning',
+        limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+      }).extract({ left, top, width, height }).png().toFile(faceReferencePath);
+    }
+    release = referenceImageTool.limiter.acquire(tenantId);
+    const result = await taskService.withTaskHeartbeat(
+      db,
+      task.id,
+      `正在执行${label}...`,
+      () => referenceImageTool.generate({
+        prompt: buildPortraitPrompt(operation, parameters),
+        size: outputSize,
+        ...(faceReferencePath
+          ? { referenceImages: [sourcePath, faceReferencePath] }
+          : { referenceImage: sourcePath }),
+        dramaId: asset.drama_id,
+        taskId: task.id,
+        storageRoot,
+        systemPrompt: faceReferencePath
+          ? 'Image 1 is the complete source image. Image 2 is an exact face crop from Image 1 and identifies the only face to edit. Preserve all identity and scene details outside the requested expression.'
+          : 'Image 1 is the complete source portrait. Preserve identity, composition, background, and all details outside the requested portrait adjustment.',
+      }),
+    );
+    if (!result?.image_url || result.error) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    providerDownloadPath = await saveOutpaintResult(
+      result.image_url,
+      outputDir,
+      allowedRoot,
+      { operation },
+    );
+    if (fileSha256(providerDownloadPath) === fileSha256(sourcePath)) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    const providerMetadata = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    }).metadata();
+    if (
+      !FORMAT_INFO[providerMetadata.format]
+      || !providerMetadata.width
+      || !providerMetadata.height
+      || providerMetadata.width * providerMetadata.height > SMART_CUTOUT_MAX_PIXELS
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    const sourceRatio = sourceMetadata.width / sourceMetadata.height;
+    const providerRatio = providerMetadata.width / providerMetadata.height;
+    if (Math.abs(providerRatio - sourceRatio) / sourceRatio > 0.03) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    outputPath = path.join(outputDir, `${Date.now()}-${randomUUID()}.png`);
+    const outputInfo = await sharp(providerDownloadPath, {
+      failOn: 'warning',
+      limitInputPixels: SMART_CUTOUT_MAX_PIXELS,
+    })
+      .resize(sourceMetadata.width, sourceMetadata.height, {
+        fit: 'fill',
+        kernel: sharp.kernel.lanczos3,
+      })
+      .png()
+      .toFile(outputPath);
+    if (
+      outputInfo.size <= 0
+      || outputInfo.size > SMART_CUTOUT_MAX_OUTPUT_BYTES
+      || outputInfo.width !== sourceMetadata.width
+      || outputInfo.height !== sourceMetadata.height
+      || fileSha256(outputPath) === fileSha256(sourcePath)
+    ) {
+      fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+    }
+    return {
+      outputPath,
+      format: FORMAT_INFO.png,
+      outputInfo,
+      parameters: { ...parameters, outputSize },
+    };
+  } catch (error) {
+    if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true });
+    if ([
+      'IMAGE_TOOL_INVALID_INPUT',
+      'IMAGE_TOOL_SOURCE_UNAVAILABLE',
+      'IMAGE_TOOL_UNSUPPORTED_IMAGE',
+      'IMAGE_TOOL_BUSY',
+    ].includes(error?.code)) {
+      throw error;
+    }
+    log.warn('image portrait adjustment failed', {
+      operation,
+      provider: referenceImageTool.provider,
+      protocol: referenceImageTool.protocol,
+      model: referenceImageTool.model,
+      reason: 'provider request or output validation failed',
+    });
+    fail('IMAGE_TOOL_PROCESSING_FAILED', failureMessage);
+  } finally {
+    release?.();
+    if (providerDownloadPath && fs.existsSync(providerDownloadPath)) {
+      fs.rmSync(providerDownloadPath, { force: true });
+    }
+    if (faceReferencePath && fs.existsSync(faceReferencePath)) {
+      fs.rmSync(faceReferencePath, { force: true });
+    }
+  }
+}
+
 async function runSmartCutoutUnlocked(sourcePath, outputPath, tool, log) {
   const childEnv = { ...process.env };
   if (tool.modelHome) childEnv.U2NET_HOME = tool.modelHome;
@@ -3009,6 +3267,10 @@ async function createOperation(db, log, request, context = {}) {
     && !(
       Object.hasOwn(REFERENCE_VARIATION_CONFIGS, operation)
       && referenceImageTool?.operations.includes(operation)
+    )
+    && !(
+      ['portrait_texture', 'portrait_emotion'].includes(operation)
+      && referenceImageTool?.operations.includes(operation)
     )) {
     fail('IMAGE_TOOL_OPERATION_UNAVAILABLE', '该图片工具尚未接通真实处理器');
   }
@@ -3526,6 +3788,50 @@ async function createOperation(db, log, request, context = {}) {
 
     if (Object.hasOwn(REFERENCE_VARIATION_CONFIGS, operation)) {
       const prepared = await runReferenceVariation({
+        db,
+        log,
+        asset,
+        request,
+        task,
+        sourcePath,
+        storageRoot,
+        allowedRoot,
+        referenceImageTool,
+        tenantId: context.tenantId,
+        operation,
+      });
+      outputPaths.push(prepared.outputPath);
+      let result;
+      db.transaction(() => {
+        const resultAsset = createDerivedAsset(db, log, {
+          asset,
+          request,
+          operation,
+          task,
+          format: prepared.format,
+          outputPath: prepared.outputPath,
+          outputInfo: prepared.outputInfo,
+          parameters: prepared.parameters,
+          suffix: operation.replaceAll('_', '-'),
+          storageRoot,
+          engine: referenceImageTool.engine,
+          engineVersion: `${referenceImageTool.protocol}:${referenceImageTool.model}`,
+        });
+        result = {
+          taskId: task.id,
+          status: 'success',
+          sourceAssetId: asset.id,
+          resultAssetId: resultAsset.id,
+          resultUrl: resultAsset.url,
+          operation,
+        };
+        taskService.updateTaskResult(db, task.id, result);
+      })();
+      return result;
+    }
+
+    if (['portrait_texture', 'portrait_emotion'].includes(operation)) {
+      const prepared = await runPortraitAdjustment({
         db,
         log,
         asset,

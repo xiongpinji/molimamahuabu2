@@ -268,6 +268,10 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   const panoramaDeclared = settings.supports_panorama === true;
   const panoramaSceneDeclared = settings.supports_panorama_scene === true;
   const imageIdeationDeclared = settings.supports_image_ideation === true;
+  const portraitTextureDeclared = settings.supports_portrait_texture === true
+    || imageIdeationDeclared;
+  const portraitEmotionDeclared = settings.supports_portrait_emotion === true
+    || imageIdeationDeclared;
   const referenceVariationDeclarations = [
     ['angle_ideation', settings.supports_angle_ideation === true],
     ['character_views', settings.supports_character_views === true],
@@ -279,6 +283,8 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   if (panoramaDeclared && strictReferenceAdapterAudited) operations.push('panorama');
   if (panoramaSceneDeclared && strictReferenceAdapterAudited) operations.push('panorama_scene');
   if (imageIdeationDeclared && strictReferenceAdapterAudited) operations.push('image_ideation');
+  if (portraitTextureDeclared && strictReferenceAdapterAudited) operations.push('portrait_texture');
+  if (portraitEmotionDeclared && strictReferenceAdapterAudited) operations.push('portrait_emotion');
   for (const [operation, declared] of referenceVariationDeclarations) {
     if (declared && strictReferenceAdapterAudited) operations.push(operation);
   }
@@ -295,6 +301,8 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
         || panoramaDeclared
         || panoramaSceneDeclared
         || imageIdeationDeclared
+        || portraitTextureDeclared
+        || portraitEmotionDeclared
         || referenceVariationDeclarations.some(([, declared]) => declared)
         || cinematicRelightDeclared
       )

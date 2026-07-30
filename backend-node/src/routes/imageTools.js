@@ -45,6 +45,8 @@ const BASE_OPERATIONS = Object.freeze({
   narrative_grid: unavailable('多机位九宫格模型能力尚未配置'),
   frame_forward: unavailable('画面后推模型能力尚未配置'),
   frame_backward: unavailable('画面前推模型能力尚未配置'),
+  portrait_texture: unavailable('人像质感模型能力尚未配置'),
+  portrait_emotion: unavailable('人像情绪模型能力尚未配置'),
   director_stage: {
     available: true,
     engine: 'director-stage',
