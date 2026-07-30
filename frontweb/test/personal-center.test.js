@@ -43,6 +43,26 @@ test('个人中心接通真实账户、积分、用量、作品和登录审计',
   assert.match(view, /登录与安全/)
 })
 
+test('普通用户个人中心明确提供兑换码兑换入口', () => {
+  assert.match(view, /label:\s*['"]兑换码兑换['"]/)
+  assert.match(view, /redeemCredits\(redeemCode\.value\)/)
+  assert.match(view, /立即兑换/)
+})
+
+test('个人中心按现有角色权限恢复管理后台入口', () => {
+  assert.match(view, /管理后台/)
+  assert.match(view, /工作区与积分/)
+  assert.match(view, /账号与权限/)
+  assert.match(view, /运营与计费/)
+  assert.match(view, /模型配置/)
+  assert.match(view, /ACCOUNT_PERMISSIONS\.READ/)
+  assert.match(view, /BILLING_PERMISSIONS\.REDEEM_CODES_MANAGE/)
+  assert.match(view, /canPlatformAccount/)
+  assert.match(view, /openManagement/)
+  assert.match(view, /redeem_admin:\s*['"]兑换码管理员['"]/)
+  assert.match(view, /管理后台[\s\S]+v-for="item in navigation"/)
+})
+
 test('个人中心没有数据链的参考模块明确标记尚未开放', () => {
   for (const label of ['社群课程', '礼品卡', '优惠券', '宝箱', '我的点赞', '站内消息', '发票管理']) {
     assert.match(view, new RegExp(label))

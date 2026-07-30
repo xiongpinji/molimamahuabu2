@@ -11,6 +11,22 @@
           <div><strong>{{ user.email || '当前用户' }}</strong><small>{{ roleLabel(user.role) }}</small></div>
         </div>
         <nav aria-label="个人中心导航">
+          <template v-if="managementNavigation.length">
+            <p class="nav-section-label nav-section-label--first">管理后台</p>
+            <button
+              v-for="item in managementNavigation"
+              :key="item.name"
+              type="button"
+              class="management-link"
+              :title="item.description"
+              @click="openManagement(item)"
+            >
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
+              <i>进入</i>
+            </button>
+            <p class="nav-section-label">个人功能</p>
+          </template>
           <button
             v-for="item in navigation"
             :key="item.key"
@@ -194,6 +210,7 @@ import { dramaAPI } from '@/api/drama'
 import { listTenants } from '@/api/tenants'
 import { clearSession, readCurrentTenantId, readSession, saveCurrentTenantId } from '@/utils/authSession'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
+import { ACCOUNT_PERMISSIONS, BILLING_PERMISSIONS, canPlatformAccount } from '@/utils/platformRbac'
 import { useTheme } from '@/composables/useTheme'
 
 const props = defineProps({
@@ -223,7 +240,7 @@ const navigation = [
   { key: 'profile', label: '个人信息', description: '管理账户资料、工作区和安全信息', icon: Avatar },
   { key: 'credits', label: '积分账单', description: '查看余额与每一笔真实积分变动', icon: Coin },
   { key: 'usage', label: '用量统计', description: '按真实模型调用汇总资源消耗', icon: DataAnalysis },
-  { key: 'earn', label: '赚取积分', description: '使用平台兑换码补充当前工作区积分', icon: Present },
+  { key: 'earn', label: '兑换码兑换', description: '使用平台兑换码补充当前工作区积分', icon: Present },
   { key: 'courses', label: '社群课程', description: '课程与社群权益', icon: Collection, pending: true },
   { key: 'gifts', label: '礼品卡', description: '礼品卡管理', icon: Present, pending: true },
   { key: 'coupons', label: '优惠券', description: '优惠券与活动权益', icon: Tickets, pending: true },
@@ -235,6 +252,39 @@ const navigation = [
   { key: 'security', label: '登录与安全', description: '查看登录活动并更新密码', icon: Monitor },
   { key: 'settings', label: '体验设置', description: '调整主题和界面动效偏好', icon: Setting },
 ]
+const managementNavigation = computed(() => {
+  const role = user.value.role
+  return [
+    {
+      name: 'tenant-console',
+      label: '工作区与积分',
+      description: '管理成员、兑换与积分流水',
+      icon: Collection,
+      visible: ['admin', 'ops', 'support', 'read_only'].includes(role),
+    },
+    {
+      name: 'account-admin',
+      label: '账号与权限',
+      description: '管理账号角色、状态与会话',
+      icon: Avatar,
+      visible: canPlatformAccount(role, ACCOUNT_PERMISSIONS.READ),
+    },
+    {
+      name: 'billing-admin',
+      label: '运营与计费',
+      description: '管理模型定价、兑换码与对账',
+      icon: Coin,
+      visible: canPlatformAccount(role, BILLING_PERMISSIONS.REDEEM_CODES_MANAGE),
+    },
+    {
+      name: 'ai-config',
+      label: '模型配置',
+      description: '管理供应商、密钥与模型',
+      icon: Setting,
+      visible: role === 'admin',
+    },
+  ].filter((item) => item.visible)
+})
 const activeItem = computed(() => navigation.find((item) => item.key === activeSection.value) || navigation[0])
 const userInitial = computed(() => String(user.value.email || '茉').slice(0, 1).toUpperCase())
 const currentTenant = computed(() => tenants.value.find((item) => item.id === tenantId.value))
@@ -256,7 +306,14 @@ const usageSummary = computed(() => {
 })
 
 function roleLabel(role) {
-  return ({ admin: '平台管理员', ops: '运营人员', support: '客服人员', read_only: '只读人员', user: '普通用户' })[role] || '普通用户'
+  return ({
+    admin: '平台管理员',
+    ops: '运营人员',
+    support: '客服人员',
+    read_only: '只读人员',
+    redeem_admin: '兑换码管理员',
+    user: '普通用户',
+  })[role] || '普通用户'
 }
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
@@ -287,6 +344,10 @@ function closePanel() {
 }
 function closeForNavigation() {
   if (props.embedded) emit('close')
+}
+function openManagement(item) {
+  closeForNavigation()
+  void router.push({ name: item.name })
 }
 function saveMotionPreference(value) {
   localStorage.setItem('moli-personal-reduce-motion', value ? '1' : '0')
@@ -399,6 +460,16 @@ onMounted(async () => {
 .center-sidebar nav::-webkit-scrollbar { width: 4px; }
 .center-sidebar nav::-webkit-scrollbar-track { background: transparent; }
 .center-sidebar nav::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(255,255,255,.16); }
+.nav-section-label {
+  margin: 14px 12px 5px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,.07);
+  color: #66666e;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
+.nav-section-label--first { margin-top: 0; padding-top: 0; border-top: 0; }
 .center-sidebar nav button,.sidebar-logout {
   position: relative;
   display: flex;
@@ -417,6 +488,8 @@ onMounted(async () => {
 }
 .center-sidebar nav button:hover,.sidebar-logout:hover { color: #fff; background: rgba(255,255,255,.045); }
 .center-sidebar nav button.active { color: #fff; background: rgba(255,143,112,.12); }
+.center-sidebar nav button.management-link { color: #b9b9c0; }
+.center-sidebar nav button.management-link:hover { color: #ffd7c7; background: rgba(255,143,112,.08); }
 .center-sidebar nav button.active::before { position: absolute; inset: 9px auto 9px 0; width: 2px; border-radius: 2px; background: #ff8f70; content: ''; }
 .center-sidebar nav button i { margin-left: auto; color: #707077; font-size: 9px; font-style: normal; }
 .center-sidebar nav button:focus-visible,.sidebar-logout:focus-visible,.panel-close:focus-visible { outline: 2px solid #ff9a73; outline-offset: 2px; }
@@ -469,6 +542,7 @@ onMounted(async () => {
 @media (max-width: 760px) {
   .center-shell { grid-template-columns: 82px minmax(0,1fr); min-height: 100vh; }
   .center-sidebar { padding: 14px 8px; }.sidebar-brand { justify-content: center; padding: 0 0 14px; }.sidebar-brand div,.sidebar-user,.sidebar-logout span { display: none; }
+  .nav-section-label { margin: 10px 4px 4px; padding-top: 10px; text-align: center; letter-spacing: .08em; }
   .center-sidebar nav button,.sidebar-logout { min-height: 52px; flex-direction: column; justify-content: center; gap: 4px; padding: 4px; text-align: center; }.center-sidebar nav button span { max-width: 64px; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.center-sidebar nav button i { display: none; }
   .center-header { min-height: 108px; padding: 20px; }.center-header h1 { font-size: 23px; }.center-header > div > span,.balance-inline { display: none; }.header-actions { gap: 0; }
   .center-content { padding: 24px 18px 40px; }.profile-summary { align-items: flex-start; flex-wrap: wrap; }.profile-summary > div:nth-child(2) { min-width: calc(100% - 82px); }.profile-summary .el-button { margin-left: 82px; }
