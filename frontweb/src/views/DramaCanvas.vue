@@ -530,6 +530,7 @@
       class="canvas-free-node-dialog"
       :title="freeNodeEditingId ? `编辑${freeNodeKindLabel}节点` : `添加${freeNodeKindLabel}节点`"
       width="480px"
+      :z-index="3400"
       destroy-on-close
       :close-on-click-modal="false"
       @closed="resetFreeNodeDialog"

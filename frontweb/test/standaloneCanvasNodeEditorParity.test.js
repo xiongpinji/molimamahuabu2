@@ -11,6 +11,10 @@ const localCanvasSource = readFileSync(
   fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)),
   'utf8'
 )
+const imageToolbarSource = readFileSync(
+  fileURLToPath(new URL('../src/components/dramaCanvas/ImageNodeToolbar.vue', import.meta.url)),
+  'utf8'
+)
 const edgeSource = readFileSync(
   fileURLToPath(new URL('../src/components/dramaCanvas/LibTvCanvasEdge.vue', import.meta.url)),
   'utf8'
@@ -20,12 +24,15 @@ const dramaCanvasSource = readFileSync(
   'utf8'
 )
 
-test('独立画布节点编辑器始终挂载到视口，避免被画布缩放和裁切', () => {
+test('独立画布节点编辑器挂载到视口并持续锚定节点', () => {
   assert.match(nodeSource, /<Teleport to="body">/)
   assert.doesNotMatch(nodeSource, /:disabled="!editorFullscreen"/)
   assert.match(nodeSource, /class="node-expanded-editor/)
   assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*position:\s*fixed/)
-  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*bottom:\s*24px/)
+  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*z-index:\s*3100/)
+  assert.match(nodeSource, /:style="editorFullscreen \? undefined : editorPanelStyle"/)
+  assert.match(nodeSource, /:data-editor-dock="editorDock"/)
+  assert.match(nodeSource, /requestAnimationFrame\(track\)/)
   assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen\s*\{[\s\S]*position:\s*fixed/)
   assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen \.prompt-input,[\s\S]*min-height:\s*min\(54vh,\s*640px\)/)
   assert.match(nodeSource, /aria-label="全屏编辑"/)
@@ -35,8 +42,10 @@ test('独立画布节点编辑器始终挂载到视口，避免被画布缩放�
 })
 
 test('已生成图片单击后重新聚焦节点并展开编辑器', () => {
-  assert.match(nodeSource, /v-if="data\.kind === 'image' && primaryResultUrl"[\s\S]*@click="openEditor"/)
+  assert.match(nodeSource, /v-if="data\.kind === 'image' && primaryResultUrl"[\s\S]*@click\.stop="scheduleMediaOpen"/)
+  assert.match(nodeSource, /function scheduleMediaOpen\(\)[\s\S]*openEditor\(\)/)
   assert.match(nodeSource, /function openEditor\(\) \{[\s\S]*editorHidden\.value = false[\s\S]*ctx\?\.setFocusedNode\?\.\(props\.id\)/)
+  assert.match(localCanvasSource, /setFocusedNode:\s*selectNodeById/)
 })
 
 test('/canvas/local 单击节点即可展开同一套节点编辑器', () => {
@@ -89,11 +98,34 @@ test('参考图卡片不再显示用途、排序、权重和启用选项', () =>
   assert.doesNotMatch(nodeSource, /class="reference-controls"/)
 })
 
+test('视频参考图支持右键在描述光标处插入对应图片引用', () => {
+  assert.match(nodeSource, /@contextmenu\.prevent\.stop="insertReferenceToken\(index\)"/)
+  assert.match(nodeSource, /function insertReferenceToken\(index\)/)
+  assert.match(nodeSource, /const token = `@图片\$\{index \+ 1\}`/)
+  assert.match(nodeSource, /@select="rememberContentSelection"/)
+})
+
+test('节点配置弹窗显示在节点编辑器之上', () => {
+  assert.match(dramaCanvasSource, /class="canvas-free-node-dialog"[\s\S]*:z-index="3400"/)
+})
+
+test('图片工具条和下拉菜单计入编辑器锚点边界且关闭操作取消延迟重开', () => {
+  assert.match(nodeSource, /querySelectorAll\('\.image-node-toolbar, \.toolbar-menu, \.toolbar-history'\)/)
+  assert.match(nodeSource, /anchorTop = Math\.min\(anchorTop, bounds\.top\)/)
+  assert.match(nodeSource, /anchorBottom = Math\.max\(anchorBottom, bounds\.bottom\)/)
+  assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
+  assert.match(nodeSource, /@suspend-editor="closeEditor"/)
+  assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)
+  assert.match(imageToolbarSource, /function selectOperation\(item\) \{[\s\S]*emit\('suspend-editor'\)/)
+  assert.match(nodeSource, /function onEditorKeydown\(event\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)[\s\S]*if \(!isSelected\.value \|\| editorHidden\.value\) return/)
+})
+
 test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () => {
   assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
   assert.match(nodeSource, /width:\s*min\(860px/)
-  assert.match(nodeSource, /max-height:\s*min\(58vh,\s*var\(--editor-max-height,\s*560px\)\)/)
+  assert.match(nodeSource, /max-height:\s*calc\(100vh - 32px\)/)
+  assert.match(nodeSource, /overflow-y:\s*auto/)
 })
 
 test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {

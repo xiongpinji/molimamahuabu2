@@ -776,6 +776,7 @@ const props = defineProps({
   nodeId: { type: String, required: true },
   data: { type: Object, required: true },
 })
+const emit = defineEmits(['suspend-editor'])
 
 const ctx = useCanvasContext()
 const toolbarRef = ref(null)
@@ -1181,6 +1182,7 @@ function busyTitle(label) {
 
 function toggleMenu(menu) {
   if (nodeBusy.value) return
+  emit('suspend-editor')
   clearTimeout(menuCloseTimer)
   openMenu.value = menu
   historyVisible.value = false
@@ -1188,6 +1190,7 @@ function toggleMenu(menu) {
 
 function openToolbarMenu(menu) {
   if (nodeBusy.value) return
+  emit('suspend-editor')
   clearTimeout(menuCloseTimer)
   openMenu.value = menu
   historyVisible.value = false
@@ -1203,6 +1206,7 @@ function scheduleMenuClose() {
 function selectOperation(item) {
   openMenu.value = ''
   if (nodeBusy.value) return
+  emit('suspend-editor')
   const capability = operationCapability(item.operation)
   if (!capability.available) {
     ElMessage.warning(capability.reason || '该能力尚未接通')
@@ -1903,6 +1907,7 @@ function operationLabel(operation) {
 }
 
 async function toggleHistory() {
+  emit('suspend-editor')
   historyVisible.value = !historyVisible.value
   openMenu.value = ''
   if (!historyVisible.value) return

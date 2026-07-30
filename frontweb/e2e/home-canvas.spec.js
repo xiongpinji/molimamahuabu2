@@ -127,7 +127,7 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
-test('节点编辑器固定在视口内、不随画布缩放并支持提示词全屏编辑', async ({ page }) => {
+test('节点编辑器锚定节点、完整保持在视口内并支持提示词全屏编辑', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
   await seedNode.locator('.node-icon').click()
 
@@ -144,6 +144,7 @@ test('节点编辑器固定在视口内、不随画布缩放并支持提示词�
   expect(editorBefore.y).toBeGreaterThanOrEqual(0)
   expect(editorBefore.x + editorBefore.width).toBeLessThanOrEqual(viewport.width)
   expect(editorBefore.y + editorBefore.height).toBeLessThanOrEqual(viewport.height)
+  await expect(editor).toHaveAttribute('data-editor-dock', /^(top|bottom)$/)
 
   const dragHandle = seedNode.locator('.node-icon')
   const dragBox = await dragHandle.boundingBox()
@@ -157,8 +158,36 @@ test('节点编辑器固定在视口内、不随画布缩放并支持提示词�
   const editorAfter = await editor.boundingBox()
   expect(nodeAfter).not.toBeNull()
   expect(editorAfter).not.toBeNull()
-  expect(Math.abs(editorAfter.x - editorBefore.x)).toBeLessThan(3)
-  expect(Math.abs(editorAfter.y - editorBefore.y)).toBeLessThan(3)
+  expect(Math.abs((editorAfter.x - editorBefore.x) - (nodeAfter.x - nodeBefore.x))).toBeLessThan(5)
+  expect(Math.abs((editorAfter.y - editorBefore.y) - (nodeAfter.y - nodeBefore.y))).toBeLessThan(5)
+  expect(editorAfter.x).toBeGreaterThanOrEqual(0)
+  expect(editorAfter.y).toBeGreaterThanOrEqual(0)
+  expect(editorAfter.x + editorAfter.width).toBeLessThanOrEqual(viewport.width)
+  expect(editorAfter.y + editorAfter.height).toBeLessThanOrEqual(viewport.height)
+
+  const anchoredGap = async () => {
+    const [nodeBox, editorBox, dock] = await Promise.all([
+      visualNode.boundingBox(),
+      editor.boundingBox(),
+      editor.getAttribute('data-editor-dock'),
+    ])
+    return Math.abs((dock === 'top'
+      ? nodeBox.y - editorBox.y - editorBox.height
+      : editorBox.y - nodeBox.y - nodeBox.height) - 12)
+  }
+  const canvasBox = await page.locator('.canvas-main').boundingBox()
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  const transformBeforeZoom = await transformationPane.evaluate((element) => element.style.transform)
+  await page.mouse.move(canvasBox.x + canvasBox.width - 30, canvasBox.y + 100)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -120)
+  await page.keyboard.up('Control')
+  await expect.poll(() => transformationPane.evaluate((element) => element.style.transform)).not.toBe(transformBeforeZoom)
+  await expect.poll(anchoredGap).toBeLessThan(5)
+  const transformBeforePan = await transformationPane.evaluate((element) => element.style.transform)
+  await page.mouse.wheel(0, 120)
+  await expect.poll(() => transformationPane.evaluate((element) => element.style.transform)).not.toBe(transformBeforePan)
+  await expect.poll(anchoredGap).toBeLessThan(5)
 
   await editor.getByRole('button', { name: '全屏编辑' }).click()
   await expect(editor).toHaveClass(/is-fullscreen/)
@@ -295,6 +324,19 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
   await expect(editor.getByRole('tab', { name: '动作模仿' })).toBeDisabled()
   await expect(editor.getByRole('tab', { name: '全能参考' })).toBeDisabled()
   await expect(editor.getByRole('tab', { name: '视频编辑' })).toBeDisabled()
+
+  const promptInput = editor.getByRole('textbox', { name: '生成提示词' })
+  await promptInput.focus()
+  await page.keyboard.press('Home')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await editor.locator('.reference-card').click({ button: 'right' })
+  await expect(promptInput).toHaveValue('女主角 @图片1 走入画面 ')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.content || ''
+  }, homeCanvasStorageKey)).toContain('@图片1')
 
   await editor.getByRole('tab', { name: '首尾帧' }).click()
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
