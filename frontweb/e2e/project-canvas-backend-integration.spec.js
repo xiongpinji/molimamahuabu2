@@ -956,7 +956,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
 
   const generation = panel.locator('.generation-section')
   const generationSelects = generation.locator('.el-select')
-  await expect(generationSelects).toHaveCount(5)
+  await expect(generationSelects).toHaveCount(6)
   await generationSelects.nth(0).click()
   await page.getByRole('option', { name: 'canvas-image-beta' }).click()
   await generationSelects.nth(1).click()
@@ -967,9 +967,8 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await page.getByRole('option', { name: '9:16 竖屏' }).click()
   await generationSelects.nth(4).click()
   await page.getByRole('option', { name: '720p 高清' }).click()
-  const durationInput = generation.locator('.duration-input input')
-  await durationInput.fill('9')
-  await durationInput.press('Enter')
+  await generationSelects.nth(5).click()
+  await page.getByRole('option', { name: '9 秒', exact: true }).click()
 
   await panel.getByRole('button', { name: '保存', exact: true }).click()
 
@@ -1040,7 +1039,7 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   await expect(generation).toContainText('canvas-tts-beta')
   await expect(generation).toContainText('9:16 竖屏')
   await expect(generation).toContainText('720p 高清')
-  await expect(durationInput).toHaveValue('9')
+  await expect(generationSelects.nth(5)).toContainText('9 秒')
   const audioButton = panel.getByRole('button', { name: '配音', exact: true })
   await expect(audioButton).toBeEnabled()
   await audioButton.click()
