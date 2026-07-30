@@ -1,5 +1,8 @@
 <template>
-  <header class="platform-header">
+  <header
+    class="platform-header"
+    :class="{ 'platform-header--account-badge': publicMode && loggedIn }"
+  >
     <div class="platform-header__inner">
       <CanvasWorkspaceSwitcher :home-to="homeTo" />
 
@@ -51,7 +54,7 @@
           <span class="platform-header__button-label">{{ backLabel }}</span>
         </el-button>
         <el-dropdown
-          v-if="loggedIn"
+          v-if="loggedIn && !publicMode"
           class="platform-header__account"
           trigger="click"
           placement="bottom-end"
@@ -71,7 +74,7 @@
           </template>
         </el-dropdown>
         <el-button
-          v-else
+          v-else-if="!loggedIn"
           class="platform-header__button platform-header__account"
           @click="goLogin"
         >
@@ -106,6 +109,7 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 const { isDark, toggle: toggleTheme } = useTheme()
+const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const session = computed(() => {
   void route.fullPath
   return readSession()
@@ -203,6 +207,10 @@ async function handleAccountCommand(command) {
   flex-wrap: wrap;
 }
 
+.platform-header--account-badge .platform-header__actions {
+  margin-right: 340px;
+}
+
 .platform-header__button {
   min-height: 38px;
   border-color: rgba(255, 255, 255, .09) !important;
@@ -265,6 +273,8 @@ async function handleAccountCommand(command) {
 }
 
 @media (max-width: 860px) {
+  .platform-header--account-badge { min-height: 124px; }
+  .platform-header--account-badge .platform-header__actions { margin-right: 0; }
   .platform-header__inner { gap: 8px; padding: 0 12px; }
   .platform-header__separator,
   .platform-header__button-label { display: none; }

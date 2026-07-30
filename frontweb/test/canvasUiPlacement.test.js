@@ -6,6 +6,10 @@ const accountBadgeSource = readFileSync(
   new URL('../src/components/AccountBadge.vue', import.meta.url),
   'utf8',
 )
+const platformHeaderSource = readFileSync(
+  new URL('../src/components/PlatformHeader.vue', import.meta.url),
+  'utf8',
+)
 const canvasNodeSource = readFileSync(
   new URL('../src/components/dramaCanvas/HomeCanvasNode.vue', import.meta.url),
   'utf8',
@@ -15,11 +19,14 @@ const cuttableEdgeSource = readFileSync(
   'utf8',
 )
 
-test('canvas account controls move to the header without changing other routes', () => {
+test('account controls stay in the top header across platform and canvas routes', () => {
   assert.match(accountBadgeSource, /account-badge--canvas/)
   assert.match(accountBadgeSource, /'standalone-canvas'/)
-  assert.match(accountBadgeSource, /top:\s*12px/)
-  assert.match(accountBadgeSource, /bottom:\s*auto/)
+  assert.match(accountBadgeSource, /\.account-badge\s*\{[^}]*top:\s*12px/)
+  assert.match(accountBadgeSource, /\.account-badge\s*\{[^}]*bottom:\s*auto/)
+  assert.match(accountBadgeSource, /\.account-badge--canvas\s*\{\s*right:\s*230px/)
+  assert.match(platformHeaderSource, /platform-header--account-badge/)
+  assert.match(platformHeaderSource, /loggedIn\s*&&\s*!publicMode/)
 })
 
 test('media asset actions live in the node title bar and image preview remains draggable', () => {

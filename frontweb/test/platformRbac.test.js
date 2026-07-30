@@ -69,7 +69,7 @@ test('兑换码管理员的管理导航只保留兑换码后台入口', () => {
 
 test('首页头部在未登录时始终提供登录入口', () => {
   const header = fs.readFileSync(path.join(root, 'src/components/PlatformHeader.vue'), 'utf8')
-  assert.match(header, /v-else\s+class="platform-header__button platform-header__account"/)
+  assert.match(header, /v-else-if="!loggedIn"\s+class="platform-header__button platform-header__account"/)
   assert.doesNotMatch(header, /v-else-if="publicMode"/)
 })
 

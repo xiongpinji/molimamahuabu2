@@ -9,6 +9,13 @@ const payloads = {
     { id: 'tx-2', event_type: 'redeem', amount: 1000, reason: '兑换码', created_at: '2026-07-29T01:00:00Z' },
   ],
   '/api/v1/dramas': [{ id: 4, title: '服装角色多视图', metadata: { project_type: 'canvas' }, updated_at: '2026-07-30T02:00:00Z' }],
+  '/api/v1/dramas/4': {
+    id: 4,
+    title: '服装角色多视图',
+    metadata: { project_type: 'canvas', canvas_layout: { nodes: [], edges: [] } },
+    episodes: [],
+    characters: [],
+  },
   '/api/v1/billing/audit-events?limit=30': [{ id: 'audit-1', event_type: 'auth.login.success', outcome: 'success', created_at: '2026-07-30T00:00:00Z' }],
 }
 
@@ -49,6 +56,48 @@ test('从账户入口弹出个人中心并关闭后保留原页面', async ({ pa
   await page.locator('.personal-center-backdrop').click({ position: { x: 5, y: 5 } })
   await expect(page.getByRole('dialog', { name: '个人中心' })).toBeHidden()
   await expect(page).toHaveURL('/')
+})
+
+test('账户积分入口在首页、短剧工厂和画布保持同一顶部位置', async ({ page }) => {
+  const topPositions = []
+
+  for (const path of ['/', '/factory', '/canvas/4']) {
+    await page.goto(path)
+    await expect(page).toHaveURL(new RegExp(`${path.replace('/', '\\/')}$`))
+    const badge = page.locator('.account-badge')
+    if (path === '/canvas/4') {
+      await expect(badge).toHaveClass(/account-badge--canvas/)
+    } else {
+      await expect(page.locator('.platform-header')).toBeVisible()
+    }
+    await expect(badge).toBeVisible()
+    await expect(badge).toContainText('可用积分')
+    await expect(badge).toContainText('860')
+    await expect(badge).toContainText('冻结 40')
+    await expect(badge.getByRole('button', { name: '个人中心' })).toBeVisible()
+
+    const box = await badge.boundingBox()
+    expect(box).not.toBeNull()
+    topPositions.push(box.y)
+
+    if (path !== '/canvas/4') {
+      const actionBoxes = await page.locator('.platform-header__actions > :visible').evaluateAll((elements) => (
+        elements.map((element) => {
+          const rect = element.getBoundingClientRect()
+          return { right: rect.right, top: rect.top, bottom: rect.bottom }
+        })
+      ))
+      for (const actionBox of actionBoxes) {
+        const overlapsBadge = actionBox.right > box.x
+          && actionBox.bottom > box.y
+          && actionBox.top < box.y + box.height
+        expect(overlapsBadge).toBe(false)
+      }
+    }
+  }
+
+  expect(Math.max(...topPositions) - Math.min(...topPositions)).toBeLessThanOrEqual(1)
+  expect(topPositions[0]).toBeLessThanOrEqual(16)
 })
 
 test('从弹层打开作品时关闭个人中心并进入目标页面', async ({ page }) => {
