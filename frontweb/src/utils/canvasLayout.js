@@ -97,6 +97,44 @@ export function translateCanvasGroupChildren(nodes = [], snapshot = null, groupP
   })
 }
 
+export function resizeCanvasGroupsAroundMember(nodes = [], memberId = null, padding = 0) {
+  const movedId = String(memberId || '')
+  const groupPadding = Math.max(0, Number(padding) || 0)
+  const affectedGroups = (nodes || []).filter((node) => (
+    node?.type === 'canvasGroup'
+    && (node.data?.childNodeIds || []).map(String).includes(movedId)
+  ))
+  if (!movedId || !affectedGroups.length) return nodes
+
+  const nodesById = new Map((nodes || []).map((node) => [String(node.id), node]))
+  const replacements = new Map()
+  for (const group of affectedGroups) {
+    const members = (group.data?.childNodeIds || [])
+      .map((id) => nodesById.get(String(id)))
+      .filter((node) => node?.type === 'homeCanvasNode' && node.position)
+    if (members.length < 2) continue
+    const minX = Math.min(...members.map((node) => Number(node.position.x))) - groupPadding
+    const minY = Math.min(...members.map((node) => Number(node.position.y))) - groupPadding
+    const maxX = Math.max(...members.map((node) => (
+      Number(node.position.x) + Number(node.dimensions?.width || node.data?.width || 460)
+    ))) + groupPadding
+    const maxY = Math.max(...members.map((node) => (
+      Number(node.position.y) + Number(node.dimensions?.height || node.data?.height || 300)
+    ))) + groupPadding
+    replacements.set(String(group.id), {
+      ...group,
+      position: { x: minX, y: minY },
+      data: {
+        ...group.data,
+        width: Math.max(260, maxX - minX),
+        height: Math.max(180, maxY - minY),
+      },
+    })
+  }
+  if (!replacements.size) return nodes
+  return nodes.map((node) => replacements.get(String(node.id)) || node)
+}
+
 export function normalizeManualCanvasEdges(edges) {
   const result = []
   const seen = new Set()

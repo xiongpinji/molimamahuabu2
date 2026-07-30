@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {
   buildCanvasLayoutPayload,
+  resizeCanvasGroupsAroundMember,
   resolveCanvasGroups,
   translateCanvasGroupChildren,
 } from '../src/utils/canvasLayout.js'
@@ -126,4 +127,40 @@ test('dragging a group translates only its member nodes by the live group delta'
     ],
   )
   assert.match(canvasSource, /function onNodeDrag\(payload\)[\s\S]*translateCanvasGroupChildren\([\s\S]*node\.position/)
+})
+
+test('moving one group member refits the group around every member without moving nodes', () => {
+  const nodes = [
+    {
+      id: 'group',
+      type: 'canvasGroup',
+      position: { x: 60, y: 70 },
+      data: { childNodeIds: ['a', 'b'], width: 900, height: 480 },
+    },
+    { id: 'a', type: 'homeCanvasNode', position: { x: 100, y: 120 }, dimensions: { width: 460, height: 300 } },
+    { id: 'b', type: 'homeCanvasNode', position: { x: 900, y: 520 }, dimensions: { width: 480, height: 320 } },
+    {
+      id: 'other-group',
+      type: 'canvasGroup',
+      position: { x: 1500, y: 100 },
+      data: { childNodeIds: ['outside', 'elsewhere'], width: 800, height: 500 },
+    },
+    { id: 'outside', type: 'homeCanvasNode', position: { x: 1600, y: 200 } },
+  ]
+
+  assert.deepEqual(
+    resizeCanvasGroupsAroundMember(nodes, 'b', 40),
+    [
+      {
+        id: 'group',
+        type: 'canvasGroup',
+        position: { x: 60, y: 80 },
+        data: { childNodeIds: ['a', 'b'], width: 1360, height: 800 },
+      },
+      nodes[1],
+      nodes[2],
+      nodes[3],
+      nodes[4],
+    ],
+  )
 })
