@@ -21,6 +21,10 @@ export function listCreditTransactions() {
   return request.get('/billing/credit-transactions')
 }
 
+export function listAuditEvents(limit = 30) {
+  return request.get('/billing/audit-events', { params: { limit } })
+}
+
 export function listPlatformUsers() {
   return request.get('/billing/admin/users')
 }

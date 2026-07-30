@@ -28,6 +28,10 @@ export function changePassword(data) {
   return request.post('/auth/password/change', data)
 }
 
+export function getCurrentUser() {
+  return request.get('/auth/me')
+}
+
 export function getCreditAccount() {
   return request.get('/billing/account')
 }
