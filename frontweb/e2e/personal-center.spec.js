@@ -32,10 +32,38 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
+test('从账户入口弹出个人中心并关闭后保留原页面', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '个人中心' }).click()
+  await expect(page.getByRole('dialog', { name: '个人中心' })).toBeVisible()
+  await expect(page).toHaveURL('/')
+  await expect(page.locator('.center-sidebar')).toBeVisible()
+  await page.getByRole('button', { name: '关闭个人中心' }).click()
+  await expect(page.getByRole('dialog', { name: '个人中心' })).toBeHidden()
+
+  await page.getByRole('button', { name: '个人中心' }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: '个人中心' })).toBeHidden()
+
+  await page.getByRole('button', { name: '个人中心' }).click()
+  await page.locator('.personal-center-backdrop').click({ position: { x: 5, y: 5 } })
+  await expect(page.getByRole('dialog', { name: '个人中心' })).toBeHidden()
+  await expect(page).toHaveURL('/')
+})
+
+test('从弹层打开作品时关闭个人中心并进入目标页面', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '个人中心' }).click()
+  await page.getByRole('button', { name: /我的作品/ }).click()
+  await page.getByRole('link', { name: /服装角色多视图/ }).click()
+  await expect(page).toHaveURL('/canvas/4')
+  await expect(page.getByRole('dialog', { name: '个人中心' })).toBeHidden()
+})
+
 test('个人中心展示真实账户数据并可切换核心模块', async ({ page }) => {
   await page.goto('/personal-center')
   await expect(page.getByRole('heading', { name: '个人信息' })).toBeVisible()
-  await expect(page.getByText('creator@example.com')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'creator@example.com' })).toBeVisible()
   await expect(page.getByText('860', { exact: true }).first()).toBeVisible()
 
   await page.getByRole('button', { name: /积分账单/ }).click()
@@ -54,7 +82,7 @@ test('未接通模块不展示模拟数据且移动端导航可用', async ({ pa
   await page.getByRole('button', { name: /站内消息/ }).click()
   await expect(page.getByRole('heading', { name: '站内消息', level: 1 })).toBeVisible()
   await expect(page.getByText(/尚未开放/)).toBeVisible()
-  await expect(page.locator('.center-rail')).toBeVisible()
+  await expect(page.locator('.center-sidebar')).toBeVisible()
 })
 
 test('单个数据接口失败不影响账户工作区和作品加载', async ({ page }) => {
@@ -85,7 +113,7 @@ test('积分接口失败时不把默认零值呈现为真实余额', async ({ pa
   })
 
   await page.goto('/personal-center')
-  await expect(page.locator('.balance-pill strong')).toHaveText('加载失败')
-  await expect(page.locator('.metric-grid article').filter({ hasText: '可用积分' }).locator('strong')).toHaveText('—')
+  await expect(page.locator('.balance-inline strong')).toHaveText('加载失败')
+  await expect(page.locator('.metric-strip > div').filter({ hasText: '可用积分' }).locator('dd')).toHaveText('—')
   await expect(page.getByText('个人创作空间', { exact: true }).first()).toBeVisible()
 })

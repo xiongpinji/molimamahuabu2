@@ -3,17 +3,31 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
 const view = fs.readFileSync(new URL('../src/views/personal-center.vue', import.meta.url), 'utf8')
+const app = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const router = fs.readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
 const badge = fs.readFileSync(new URL('../src/components/AccountBadge.vue', import.meta.url), 'utf8')
 const authApi = fs.readFileSync(new URL('../src/api/auth.js', import.meta.url), 'utf8')
 const billingApi = fs.readFileSync(new URL('../src/api/billing.js', import.meta.url), 'utf8')
 
-test('个人中心是登录后独立路由并由账户头像进入', () => {
+test('个人中心保留兼容路由并由账户入口打开全局弹层', () => {
   assert.match(router, /path:\s*['"]\/personal-center['"]/)
   assert.match(router, /name:\s*['"]personal-center['"]/)
   assert.match(router, /requiresAuth:\s*true/)
-  assert.match(badge, /name:\s*['"]personal-center['"]/)
+  assert.match(app, /<el-dialog/)
+  assert.match(app, /<PersonalCenter/)
+  assert.match(app, /personalCenterOpen/)
+  assert.match(badge, /defineEmits/)
+  assert.match(badge, /emit\(['"]open['"]\)/)
   assert.match(badge, /个人中心/)
+})
+
+test('个人中心使用左侧导航和去卡片化内容层级', () => {
+  assert.match(view, /center-shell/)
+  assert.match(view, /center-sidebar/)
+  assert.match(view, /panel-close/)
+  assert.match(view, /works-list/)
+  assert.doesNotMatch(view, /metric-grid/)
+  assert.doesNotMatch(view, /works-grid/)
 })
 
 test('个人中心接通真实账户、积分、用量、作品和登录审计', () => {
