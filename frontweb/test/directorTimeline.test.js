@@ -7,6 +7,8 @@ import {
   duplicateDirectorObject,
   appendActionClip,
   appendShot,
+  cameraAnglesFromPosition,
+  cameraPositionFromAngles,
   createDirectorTimeline,
   findActiveActionClips,
   findActiveCameraObject,
@@ -412,6 +414,38 @@ test('G005 相机跟随、注视与构图线状态可标准化保存', () => {
   assert.equal(state.cameras[0].lookAtMode, 'object')
   assert.equal(state.cameras[0].lookAtTargetId, 'role-2')
   assert.equal(state.cameras[0].showGuides, true)
+})
+
+test('导演机位方位角、仰角、距离和横滚角可标准化并相互换算', () => {
+  const position = cameraPositionFromAngles([0, 1, 0], 90, 30, 4)
+  assert.deepEqual(position.map((value) => Number(value.toFixed(4))), [3.4641, 3, 0])
+  const angles = cameraAnglesFromPosition(position, [0, 1, 0])
+  assert.equal(Number(angles.azimuth.toFixed(4)), 90)
+  assert.equal(Number(angles.elevation.toFixed(4)), 30)
+  assert.equal(Number(angles.distance.toFixed(4)), 4)
+
+  const state = normalizeDirectorTimeline({
+    cameras: [{ id: 'camera-angle', azimuth: 220, elevation: 120, distance: 0, roll: -18 }],
+  })
+  assert.deepEqual(
+    [state.cameras[0].azimuth, state.cameras[0].elevation, state.cameras[0].distance, state.cameras[0].roll],
+    [180, 89.9, 0.1, -18],
+  )
+})
+
+test('独立灯光的类型、颜色、强度和角度随导演状态保存', () => {
+  let state = appendDirectorObject(createDirectorTimeline(), 'light', {
+    id: 'key-light',
+    name: '主光',
+    light: { type: 'soft', color: '#ffb36b', intensity: 7.5, azimuth: -45, elevation: 35, distance: 8 },
+  })
+  state = updateDirectorObject(state, 'key-light', {
+    light: { ...state.objects[0].light, type: 'hard', intensity: 9, azimuth: 30 },
+  })
+  const restored = normalizeDirectorTimeline(JSON.parse(JSON.stringify(state)))
+  assert.deepEqual(restored.objects[0].light, {
+    type: 'hard', color: '#ffb36b', intensity: 9, azimuth: 30, elevation: 35, distance: 8,
+  })
 })
 
 test('G005 时间线缩放和最小化状态可标准化保存', () => {

@@ -413,6 +413,10 @@
                 </select>
               </label>
               <label>视野 FOV<input type="number" min="1" max="179" :value="selectedCamera.fov" @change="updateSelectedCamera('fov', $event.target.value)" /></label>
+              <label>方位角（°）<input type="range" min="-180" max="180" step="1" :value="selectedCamera.azimuth" @input="updateCameraAngle('azimuth', $event.target.value)" /></label>
+              <label>仰角（°）<input type="range" min="-89" max="89" step="1" :value="selectedCamera.elevation" @input="updateCameraAngle('elevation', $event.target.value)" /></label>
+              <label>机位距离（米）<input type="number" min="0.1" max="1000" step="0.1" :value="selectedCamera.distance" @change="updateCameraAngle('distance', $event.target.value)" /></label>
+              <label>横滚角（°）<input type="range" min="-180" max="180" step="1" :value="selectedCamera.roll" @input="updateCameraAngle('roll', $event.target.value)" /></label>
               <label>画幅比例
                 <select aria-label="画幅比例" :value="cameraAspectLabel(selectedCamera.aspect)" @change="applyCameraAspect($event.target.value)">
                   <option v-for="ratio in CAMERA_ASPECTS" :key="ratio.label" :value="ratio.label">{{ ratio.label }}</option>
@@ -459,8 +463,8 @@
         </template>
         <div v-else class="stage-empty">在场景树中选择对象以编辑属性</div>
         <section ref="environmentEditorRef" class="inspector-group environment-editor">
-          <strong>{{ lightingEntry ? '3D 灯光' : '3D 场景' }}</strong>
-          <template v-if="lightingEntry">
+          <strong>{{ lightingEntry ? '3D 灯光' : '3D 场景与灯光' }}</strong>
+          <div class="lighting-controls">
             <div class="lighting-presets" aria-label="灯光预设">
               <button
                 v-for="preset in LIGHTING_PRESETS"
@@ -472,7 +476,47 @@
                 {{ preset.name }}
               </button>
             </div>
-          </template>
+            <div class="light-list-header"><strong>灯光列表</strong><button type="button" class="small-button" @click="addDirectorLight">+ 添加灯光</button></div>
+            <div class="light-list" aria-label="灯光列表">
+              <button
+                v-for="light in lightObjects"
+                :key="light.id"
+                type="button"
+                :class="{ active: selectedLightObject?.id === light.id }"
+                @click="selectSceneObject(light.id)"
+              >
+                <span class="light-color-dot" :style="{ background: light.light.color }" />
+                {{ light.name }}
+              </button>
+              <span v-if="!lightObjects.length" class="stage-empty">选择预设或添加灯光</span>
+            </div>
+            <div v-if="selectedLightObject" class="inspector-group light-editor">
+              <label>光线类型
+                <select :value="selectedLightObject.light.type" @change="updateSelectedLight('type', $event.target.value)">
+                  <option value="hard">硬光</option>
+                  <option value="soft">柔光</option>
+                </select>
+              </label>
+              <label>灯光强度<input type="range" min="0" max="10" step="0.1" :value="selectedLightObject.light.intensity" @input="updateSelectedLight('intensity', $event.target.value)" /></label>
+              <label>方位角（°）<input type="range" min="-180" max="180" step="1" :value="selectedLightObject.light.azimuth" @input="updateSelectedLight('azimuth', $event.target.value)" /></label>
+              <label>仰角（°）<input type="range" min="-90" max="90" step="1" :value="selectedLightObject.light.elevation" @input="updateSelectedLight('elevation', $event.target.value)" /></label>
+              <label>灯光距离（米）<input type="number" min="0.1" max="100" step="0.1" :value="selectedLightObject.light.distance" @change="updateSelectedLight('distance', $event.target.value)" /></label>
+              <div><strong>灯光颜色</strong>
+                <div class="light-color-presets">
+                  <button
+                    v-for="color in LIGHT_COLOR_PRESETS"
+                    :key="color.name"
+                    type="button"
+                    :title="color.name"
+                    :aria-label="color.name"
+                    :style="{ background: color.color }"
+                    @click="updateSelectedLight('color', color.color)"
+                  />
+                </div>
+              </div>
+              <label>自定义颜色<input type="color" :value="selectedLightObject.light.color" @input="updateSelectedLight('color', $event.target.value)" /></label>
+            </div>
+          </div>
           <label>场景缩放<input type="range" min="0.1" max="5" step="0.1" :value="timeline.environment.sceneScale" @input="updateEnvironment('sceneScale', $event.target.value)" /></label>
           <div class="inspector-group"><strong>场景平移</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-p-${axis}`">{{ axis }}<input type="number" step="0.1" :value="timeline.environment.scenePosition[index]" @change="updateEnvironmentVector('scenePosition', index, $event.target.value)" /></label></div></div>
           <div class="inspector-group"><strong>场景旋转（度）</strong><div class="vector-row"><label v-for="(axis, index) in axes" :key="`env-r-${axis}`">{{ axis }}<input type="number" step="1" :value="radiansToDegrees(timeline.environment.sceneRotation[index])" @change="updateEnvironmentRotation(index, $event.target.value)" /></label></div></div>
@@ -564,6 +608,8 @@ import {
   appendDirectorObject,
   duplicateDirectorObject,
   appendShot,
+  cameraAnglesFromPosition,
+  cameraPositionFromAngles,
   createDirectorTimeline,
   findActiveActionClips,
   findActiveCameraObject,
@@ -601,25 +647,43 @@ const CAMERA_PRESETS = [
   { name: '荷兰角', position: [3.8, 2, 4.4], target: [0, 1.1, 0], fov: 50, roll: -0.28 },
 ]
 
+const directorLight = (name, azimuth, elevation, intensity, color = '#ffffff', type = 'soft', distance = 7) => ({
+  name, type, color, intensity, azimuth, elevation, distance,
+})
+const LIGHT_COLOR_PRESETS = [
+  { name: '烛光暖黄', color: '#ffd29b' }, { name: '钨丝灯', color: '#ffc46b' }, { name: '夕阳橙', color: '#ff8a4c' },
+  { name: '金色', color: '#ffd45c' }, { name: '火焰橙红', color: '#ff5a36' }, { name: '琥珀色', color: '#ffb347' },
+  { name: '柔和白光', color: '#fff7e8' }, { name: '月光蓝', color: '#b8d4ff' }, { name: '阴天冷光', color: '#d6e4f0' },
+  { name: '冷蓝光', color: '#7eb6ff' }, { name: '冰蓝', color: '#8fe9ff' }, { name: '午夜蓝', color: '#3155a6' },
+  { name: '霓虹粉', color: '#ff4fd8' }, { name: '霓虹紫', color: '#9b5cff' }, { name: '赛博蓝', color: '#35d7ff' },
+  { name: '霓虹绿', color: '#45ff9a' }, { name: '霓虹橙', color: '#ff7438' },
+]
 const LIGHTING_PRESETS = [
-  { name: '三点布光', backgroundColor: '#111827', ambientIntensity: 1.6, directionalIntensity: 4.8 },
-  { name: '伦勃朗布光', backgroundColor: '#17120f', ambientIntensity: 0.8, directionalIntensity: 5.8 },
-  { name: '分割光', backgroundColor: '#09090b', ambientIntensity: 0.35, directionalIntensity: 6.4 },
-  { name: '顶光戏剧', backgroundColor: '#101014', ambientIntensity: 0.45, directionalIntensity: 7.2 },
-  { name: '动漫柔光', backgroundColor: '#dbeafe', ambientIntensity: 3.2, directionalIntensity: 2.4 },
-  { name: '赛博朋克', backgroundColor: '#160c2d', ambientIntensity: 1.4, directionalIntensity: 5.6 },
-  { name: '自然光', backgroundColor: '#bfdbfe', ambientIntensity: 3.4, directionalIntensity: 3.2 },
-  { name: '黄金时刻', backgroundColor: '#7c2d12', ambientIntensity: 2.2, directionalIntensity: 5.2 },
-  { name: '蓝调时刻', backgroundColor: '#172554', ambientIntensity: 1.8, directionalIntensity: 3.8 },
-  { name: '高调光', backgroundColor: '#e4e4e7', ambientIntensity: 4.8, directionalIntensity: 3.5 },
-  { name: '低调光', backgroundColor: '#09090b', ambientIntensity: 0.25, directionalIntensity: 3.1 },
-  { name: '轮廓光', backgroundColor: '#050505', ambientIntensity: 0.2, directionalIntensity: 7.8 },
-  { name: '剪影', backgroundColor: '#020617', ambientIntensity: 0.05, directionalIntensity: 8.8 },
-  { name: '霓虹灯', backgroundColor: '#1e1033', ambientIntensity: 1.1, directionalIntensity: 6.5 },
-  { name: '实景光', backgroundColor: '#334155', ambientIntensity: 2.6, directionalIntensity: 3.7 },
-  { name: '明暗对比', backgroundColor: '#18181b', ambientIntensity: 0.7, directionalIntensity: 7 },
-  { name: '篝火光', backgroundColor: '#431407', ambientIntensity: 1.4, directionalIntensity: 5.9 },
-  { name: '月夜神秘', backgroundColor: '#0f172a', ambientIntensity: 0.65, directionalIntensity: 4.2 },
+  {
+    name: '三点布光', backgroundColor: '#111827', ambientIntensity: 0.8, directionalIntensity: 0,
+    lights: [
+      directorLight('主光', -45, 25, 8, '#fff7e8', 'soft', 8),
+      directorLight('辅光', 45, 20, 4, '#d6e4f0', 'soft', 8),
+      directorLight('轮廓光', 180, 15, 5, '#b8d4ff', 'hard', 7),
+    ],
+  },
+  { name: '伦勃朗布光', backgroundColor: '#17120f', ambientIntensity: 0.45, directionalIntensity: 0, lights: [directorLight('伦勃朗主光', -48, 38, 7.5, '#ffc46b', 'hard'), directorLight('暗部补光', 38, 12, 1.8, '#d6e4f0')] },
+  { name: '分割光', backgroundColor: '#09090b', ambientIntensity: 0.2, directionalIntensity: 0, lights: [directorLight('侧切主光', 90, 5, 8.5, '#fff7e8', 'hard')] },
+  { name: '顶光戏剧', backgroundColor: '#101014', ambientIntensity: 0.2, directionalIntensity: 0, lights: [directorLight('顶部主光', 0, 86, 9, '#fff7e8', 'hard', 6)] },
+  { name: '动漫柔光', backgroundColor: '#dbeafe', ambientIntensity: 2.2, directionalIntensity: 0, lights: [directorLight('动漫主光', -25, 42, 4.2, '#ffffff'), directorLight('动漫补光', 55, 18, 2.8, '#b8d4ff')] },
+  { name: '赛博朋克', backgroundColor: '#160c2d', ambientIntensity: 0.65, directionalIntensity: 0, lights: [directorLight('赛博蓝', -65, 18, 7, '#35d7ff', 'hard'), directorLight('霓虹粉', 58, 10, 7, '#ff4fd8', 'hard'), directorLight('紫色轮廓', 175, 28, 4.5, '#9b5cff')] },
+  { name: '自然光', backgroundColor: '#bfdbfe', ambientIntensity: 2.2, directionalIntensity: 0, lights: [directorLight('自然主光', -30, 48, 4.8, '#fff7e8'), directorLight('天空补光', 120, 42, 2.2, '#d6e4f0')] },
+  { name: '黄金时刻', backgroundColor: '#7c2d12', ambientIntensity: 0.9, directionalIntensity: 0, lights: [directorLight('夕阳主光', -72, 9, 7, '#ff8a4c', 'hard'), directorLight('金色轮廓', 150, 16, 3.5, '#ffd45c')] },
+  { name: '蓝调时刻', backgroundColor: '#172554', ambientIntensity: 0.8, directionalIntensity: 0, lights: [directorLight('蓝调主光', -40, 18, 4.8, '#7eb6ff'), directorLight('冷色补光', 75, 25, 2.6, '#b8d4ff')] },
+  { name: '高调光', backgroundColor: '#e4e4e7', ambientIntensity: 3.2, directionalIntensity: 0, lights: [directorLight('高调主光', -35, 35, 4.2), directorLight('高调辅光', 35, 32, 4), directorLight('高调背景光', 180, 24, 3.2)] },
+  { name: '低调光', backgroundColor: '#09090b', ambientIntensity: 0.12, directionalIntensity: 0, lights: [directorLight('低调主光', -58, 18, 6.2, '#fff7e8', 'hard'), directorLight('低调轮廓', 165, 12, 2.8, '#7eb6ff', 'hard')] },
+  { name: '轮廓光', backgroundColor: '#050505', ambientIntensity: 0.08, directionalIntensity: 0, lights: [directorLight('左轮廓光', -150, 14, 6.5, '#b8d4ff', 'hard'), directorLight('右轮廓光', 150, 14, 6.5, '#fff7e8', 'hard')] },
+  { name: '剪影', backgroundColor: '#020617', ambientIntensity: 0.02, directionalIntensity: 0, lights: [directorLight('逆光', 180, 8, 9.2, '#d6e4f0', 'hard')] },
+  { name: '霓虹灯', backgroundColor: '#1e1033', ambientIntensity: 0.45, directionalIntensity: 0, lights: [directorLight('霓虹粉', -72, 8, 7.5, '#ff4fd8', 'hard'), directorLight('霓虹蓝', 68, 12, 7.2, '#35d7ff', 'hard'), directorLight('霓虹绿', 178, 26, 3.8, '#45ff9a')] },
+  { name: '实景光', backgroundColor: '#334155', ambientIntensity: 1.6, directionalIntensity: 0, lights: [directorLight('窗外主光', -38, 28, 4.8, '#d6e4f0'), directorLight('室内暖光', 62, 16, 2.8, '#ffc46b')] },
+  { name: '明暗对比', backgroundColor: '#18181b', ambientIntensity: 0.3, directionalIntensity: 0, lights: [directorLight('高反差主光', -62, 24, 8, '#fff7e8', 'hard'), directorLight('冷色轮廓', 160, 18, 3, '#7eb6ff', 'hard')] },
+  { name: '篝火光', backgroundColor: '#431407', ambientIntensity: 0.55, directionalIntensity: 0, lights: [directorLight('篝火主光', -8, -18, 7.8, '#ff5a36', 'soft', 4), directorLight('火焰辅光', 42, -10, 3.6, '#ffb347', 'soft', 5)] },
+  { name: '月夜神秘', backgroundColor: '#0f172a', ambientIntensity: 0.28, directionalIntensity: 0, lights: [directorLight('月光', -42, 52, 5.5, '#b8d4ff', 'hard', 10), directorLight('午夜补光', 86, 8, 1.8, '#3155a6')] },
 ]
 const SEMANTIC_BONES = {
   root: ['root', 'hips', 'pelvis', 'mixamorighips'], spine: ['spine', 'chest', 'upperchest', 'mixamorigspine'], head: ['head', 'neck', 'mixamorighead'],
@@ -822,6 +886,8 @@ const selectedInspectorTransform = computed(() => selectedDirectorObject.value
   ? (interpolateMotionTransform(timeline.value, selectedDirectorObject.value.id, currentTime.value) || selectedDirectorObject.value.transform)
   : { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] })
 const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
+const lightObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'light'))
+const selectedLightObject = computed(() => selectedDirectorObject.value?.type === 'light' ? selectedDirectorObject.value : null)
 const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
 const activeCompositionGuides = computed(() => {
   if (viewMode.value !== 'camera') return false
@@ -1377,7 +1443,26 @@ function selectCharacter(characterId) {
 }
 
 function addSceneObject(type) {
+  if (type === 'light') {
+    addDirectorLight()
+    return
+  }
   const next = appendDirectorObject(timeline.value, type)
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  if (selectedObjectId.value) nextTick(() => focusItem(`custom:${selectedObjectId.value}`))
+}
+
+function addDirectorLight() {
+  const count = lightObjects.value.length
+  const light = directorLight(`灯光 ${count + 1}`, 30 + count * 35, 30, 5)
+  const position = cameraPositionFromAngles([0, 1, 0], light.azimuth, light.elevation, light.distance)
+  const next = appendDirectorObject(timeline.value, 'light', {
+    name: light.name,
+    light,
+    transform: { position, rotation: [0, 0, 0], scale: [1, 1, 1] },
+  })
   selectedObjectId.value = next.objects.at(-1)?.id || ''
   mutateTimeline(next)
   buildStage()
@@ -1480,8 +1565,10 @@ function applyEntryContext() {
     })
     return
   }
-  if (lightingEntry.value) selectEnvironmentInspector()
   if (lightingEntry.value) {
+    const firstLight = lightObjects.value[0]
+    if (firstLight) selectSceneObject(firstLight.id)
+    else selectEnvironmentInspector()
     nextTick(() => environmentEditorRef.value?.scrollIntoView({ block: 'start' }))
   }
 }
@@ -1521,6 +1608,12 @@ function applyDirectorObjectToStage(entry) {
   object.position.set(...entry.transform.position)
   object.rotation.set(...entry.transform.rotation)
   object.scale.set(...entry.transform.scale)
+  if (entry.type === 'light' && entry.light) {
+    object.color?.set?.(entry.light.color)
+    object.intensity = entry.light.intensity
+    object.castShadow = true
+    if (object.shadow) object.shadow.radius = entry.light.type === 'soft' ? 4 : 0
+  }
   rememberBaseTransform(object)
   viewer.value?.setDirty?.()
 }
@@ -1571,6 +1664,62 @@ function updateSelectedCamera(field, value) {
   if (selectedShot.value?.cameraId === selectedCamera.value.id) setCameraForShot(selectedShot.value)
 }
 
+function persistSelectedCameraView(position, target, patch = {}) {
+  if (!selectedCamera.value || !selectedDirectorObject.value || selectedDirectorObject.value.locked) return
+  const cameraState = selectedCamera.value
+  const objectId = selectedDirectorObject.value.id
+  const { angles: patchAngles, ...cameraPatch } = patch
+  const roll = Number(cameraPatch.roll ?? cameraState.roll) || 0
+  const angles = {
+    ...cameraAnglesFromPosition(position, target),
+    ...(patchAngles || {}),
+  }
+  setCamera(position, target)
+  const camera = viewer.value?.scene?.mainCamera
+  if (camera) {
+    camera.fov = Number(cameraPatch.fov ?? cameraState.fov) || 50
+    camera.rotation.z = roll * Math.PI / 180
+    camera.updateProjectionMatrix?.()
+    camera.updateMatrixWorld?.()
+  }
+  const quaternion = camera ? [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w] : null
+  let next = updateDirectorObject(timeline.value, objectId, {
+    transform: {
+      position,
+      rotation: [selectedDirectorObject.value.transform.rotation[0], selectedDirectorObject.value.transform.rotation[1], roll * Math.PI / 180],
+    },
+  })
+  next = {
+    ...next,
+    cameras: next.cameras.map((entry) => entry.id === cameraState.id ? {
+      ...entry,
+      ...cameraPatch,
+      target: [...target],
+      azimuth: angles.azimuth,
+      elevation: angles.elevation,
+      distance: angles.distance,
+      roll,
+      quaternion,
+    } : entry),
+  }
+  const updated = next.objects.find((object) => object.id === objectId)
+  if (timeline.value.sequence.autoKey && updated) next = upsertMotionKeyframe(next, objectId, currentTime.value, updated.transform)
+  mutateTimeline(next)
+  applyDirectorObjectToStage(updated)
+  viewer.value?.setDirty?.()
+}
+
+function updateCameraAngle(field, value) {
+  if (!selectedCamera.value) return
+  const numeric = Number(value)
+  const nextCamera = { ...selectedCamera.value, [field]: Number.isFinite(numeric) ? numeric : selectedCamera.value[field] }
+  const position = cameraPositionFromAngles(selectedCamera.value.target, nextCamera.azimuth, nextCamera.elevation, nextCamera.distance)
+  persistSelectedCameraView(position, selectedCamera.value.target, {
+    angles: { azimuth: nextCamera.azimuth, elevation: nextCamera.elevation, distance: nextCamera.distance },
+    roll: nextCamera.roll,
+  })
+}
+
 function cameraAspectLabel(value) {
   const numeric = Number(value)
   return CAMERA_ASPECTS.find((ratio) => ratio.value && Math.abs(ratio.value - numeric) < 0.01)?.label || 'Auto'
@@ -1617,21 +1766,13 @@ function applyCameraPreset(name) {
     captureCurrentViewToCamera()
     return
   }
-  updateSelectedObject({
-    transform: {
-      position: preset.position,
-      rotation: [0, 0, preset.roll || 0],
-    },
+  const angles = cameraAnglesFromPosition(preset.position, preset.target)
+  persistSelectedCameraView(preset.position, preset.target, {
+    angles,
+    fov: preset.fov,
+    roll: radiansToDegrees(preset.roll || 0),
+    quaternion: null,
   })
-  updateSelectedCamera('fov', preset.fov)
-  setCamera(preset.position, preset.target)
-  const camera = viewer.value?.scene?.mainCamera
-  if (camera) {
-    camera.fov = preset.fov
-    camera.rotation.z = preset.roll || 0
-    camera.updateProjectionMatrix?.()
-    viewer.value?.setDirty?.()
-  }
 }
 
 async function applyEnvironment(environment = timeline.value.environment) {
@@ -1668,8 +1809,9 @@ function updateEnvironment(field, value) {
 }
 
 function applyLightingPreset(preset) {
-  mutateTimeline({
+  let next = normalizeDirectorTimeline({
     ...timeline.value,
+    objects: timeline.value.objects.filter((object) => object.type !== 'light'),
     environment: {
       ...timeline.value.environment,
       backgroundColor: preset.backgroundColor,
@@ -1677,10 +1819,34 @@ function applyLightingPreset(preset) {
       directionalIntensity: preset.directionalIntensity,
     },
     revision: timeline.value.revision + 1,
-  })
-  applySceneEnvironment()
-  void applyEnvironment()
+  }, characters.value)
+  const presetLights = preset.lights.map((light) => ({
+    ...light,
+    position: cameraPositionFromAngles([0, 1, 0], light.azimuth, light.elevation, light.distance),
+  }))
+  for (const light of presetLights) {
+    next = appendDirectorObject(next, 'light', {
+      name: light.name,
+      light,
+      transform: { position: light.position, rotation: [0, 0, 0], scale: [1, 1, 1] },
+    })
+  }
+  selectedObjectId.value = next.objects.find((object) => object.type === 'light')?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  void applyEnvironment(next.environment)
   assetStatus.value = `已应用灯光预设：${preset.name}`
+}
+
+function updateSelectedLight(field, value) {
+  if (!selectedLightObject.value) return
+  const numericFields = new Set(['intensity', 'azimuth', 'elevation', 'distance'])
+  const light = {
+    ...selectedLightObject.value.light,
+    [field]: numericFields.has(field) ? Number(value) : String(value || ''),
+  }
+  const position = cameraPositionFromAngles([0, 1, 0], light.azimuth, light.elevation, light.distance)
+  updateSelectedObject({ light, transform: { position } })
 }
 
 function updateEnvironmentVector(field, index, value) {
@@ -1719,17 +1885,11 @@ function captureCurrentViewToCamera() {
   const camera = viewer.value?.scene?.mainCamera
   if (!camera || !selectedDirectorObject.value || !selectedCamera.value || selectedDirectorObject.value.locked) return
   const position = [camera.position.x, camera.position.y, camera.position.z]
-  const quaternion = [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w]
   const target = camera.target ? [camera.target.x, camera.target.y, camera.target.z] : [0, 0.8, 0]
-  let next = updateDirectorObject(timeline.value, selectedObjectId.value, { transform: { position } })
-  next = {
-    ...next,
-    cameras: next.cameras.map((entry) => entry.id === selectedCamera.value.id ? { ...entry, quaternion, target } : entry),
-  }
-  const updated = next.objects.find((object) => object.id === selectedObjectId.value)
-  if (timeline.value.sequence.autoKey && updated) next = upsertMotionKeyframe(next, selectedObjectId.value, currentTime.value, updated.transform)
-  mutateTimeline(next)
-  applyDirectorObjectToStage(updated)
+  persistSelectedCameraView(position, target, {
+    fov: camera.fov,
+    roll: radiansToDegrees(camera.rotation.z),
+  })
   assetStatus.value = '已从当前导演视角更新机位位置与方向'
 }
 
@@ -1866,24 +2026,45 @@ function directorObjectIdForStageObject(object) {
   return ''
 }
 
+function directorStageObjectForSelection(object) {
+  const objectId = directorObjectIdForStageObject(object)
+  if (!objectId || timeline.value.objects.find((entry) => entry.id === objectId)?.locked) return null
+  return stageObjects.get(`custom:${objectId}`) || null
+}
+
+function restoreTransformSelection() {
+  const object = stageObjects.get(`custom:${selectedObjectId.value}`)
+  if (!object || selectedDirectorObject.value?.locked) return
+  pickingPlugin?.setSelectedObject?.(object, false)
+}
+
 function syncTransformSelection(event) {
-  const objectId = directorObjectIdForStageObject(event?.object || event?.value)
-  if (objectId) selectedObjectId.value = objectId
+  const pickedObject = event?.object || event?.value
+  const objectId = directorObjectIdForStageObject(pickedObject)
+  if (!objectId) return
+  selectedObjectId.value = objectId
+  const rootObject = directorStageObjectForSelection(pickedObject)
+  if (rootObject && rootObject !== pickedObject) nextTick(restoreTransformSelection)
 }
 
 function rememberTransformControlStart() {
-  transformStartScale = transformControls?.object?.scale?.toArray?.() || null
+  transformStartScale = directorStageObjectForSelection(transformControls?.object)?.scale?.toArray?.() || null
 }
 
 function persistTransformControlChange() {
-  const object = transformControls?.object
+  const object = directorStageObjectForSelection(transformControls?.object)
   const objectId = directorObjectIdForStageObject(object)
   if (!objectId) return
   if (transformMode.value === 'scale' && shiftPressed && transformStartScale) {
     object.scale.set(...proportionalScaleFromAxis(transformStartScale, object.scale.toArray()))
   }
   selectedObjectId.value = objectId
-  updateSelectedObject({ transform: { position: object.position.toArray(), rotation: [object.rotation.x, object.rotation.y, object.rotation.z], scale: object.scale.toArray() } })
+  const transform = { position: object.position.toArray(), rotation: [object.rotation.x, object.rotation.y, object.rotation.z], scale: object.scale.toArray() }
+  const entry = timeline.value.objects.find((item) => item.id === objectId)
+  const light = entry?.type === 'light'
+    ? { ...entry.light, ...cameraAnglesFromPosition(transform.position, [0, 1, 0]) }
+    : null
+  updateSelectedObject({ transform, ...(light ? { light } : {}) })
   transformStartScale = null
 }
 
@@ -2195,6 +2376,7 @@ function addObject(key, object) {
 
 function clearStageObjects() {
   stageBuildToken += 1
+  transformControls?.detach?.()
   for (const object of stageObjects.values()) {
     object.parent?.remove?.(object)
     object.dispose?.()
@@ -2260,9 +2442,11 @@ function buildStage() {
       return
     }
     if (entry.type === 'light') {
-      const light = new DirectionalLight(0xffffff, 2)
+      const light = new DirectionalLight(entry.light.color, entry.light.intensity)
       light.name = entry.name
       light.visible = entry.visible
+      light.castShadow = true
+      light.shadow.radius = entry.light.type === 'soft' ? 4 : 0
       light.position.set(...entry.transform.position)
       light.rotation.set(...entry.transform.rotation)
       light.scale.set(...entry.transform.scale)
@@ -2322,6 +2506,7 @@ function buildStage() {
   viewer.value.setDirty?.()
   applySceneEnvironment()
   applyTimelineFrame()
+  restoreTransformSelection()
 }
 
 function setCamera(position, target = [0, 0.8, 0], quaternion = null) {
@@ -2330,6 +2515,7 @@ function setCamera(position, target = [0, 0.8, 0], quaternion = null) {
   camera.position.set(...position)
   camera.target?.set?.(...target)
   if (Array.isArray(quaternion) && quaternion.length === 4) camera.quaternion.set(...quaternion)
+  else camera.lookAt?.(...target)
   camera.setDirty?.()
 }
 
@@ -2350,6 +2536,7 @@ function setCameraForShot(shot) {
     const position = cameraObject.transform.position.map((value, index) => value + follow[index])
     const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
     setCamera(position, target, lookAtObject ? null : boundCamera.quaternion)
+    if (camera && (lookAtObject || !boundCamera.quaternion)) camera.rotation.z = Number(boundCamera.roll || 0) * Math.PI / 180
     return
   }
   const firstCharacter = characterObjects.values().next().value
@@ -2643,10 +2830,7 @@ async function initialize() {
     nextViewer.scene.addObject(keyLight, { addToRoot: true })
     viewer.value = nextViewer
     const transformPlugin = nextViewer.getPlugin(TransformControlsPlugin)
-    transformPlugin.selectionFilterTest = (object) => {
-      const objectId = directorObjectIdForStageObject(object)
-      return timeline.value.objects.find((entry) => entry.id === objectId)?.locked ? null : object
-    }
+    transformPlugin.selectionFilterTest = (object) => directorStageObjectForSelection(object)
     transformControls = transformPlugin?.transformControls || null
     if (transformControls) {
       transformControls.mode = transformMode.value
@@ -2763,6 +2947,14 @@ onBeforeUnmount(() => {
 .director-pose-panel > strong { display: block; margin: 14px 0 8px; color: #d4d4d8; font-size: 13px; }
 .lighting-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 12px 0 18px; }
 .lighting-presets .small-button { min-width: 0; padding: 7px 5px; font-size: 10px; }
+.light-list-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.light-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }
+.light-list > button { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 8px; border: 1px solid #3f3f46; border-radius: 7px; background: #18181b; color: #d4d4d8; text-align: left; }
+.light-list > button.active { border-color: #72e7f2; color: #fff; box-shadow: 0 0 0 1px rgba(114, 231, 242, 0.25); }
+.light-color-dot { flex: 0 0 10px; width: 10px; height: 10px; border: 1px solid rgba(255,255,255,.55); border-radius: 50%; }
+.light-editor { padding: 10px; border: 1px solid #343438; border-radius: 8px; background: #151517; }
+.light-color-presets { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 7px; }
+.light-color-presets button { width: 100%; aspect-ratio: 1; min-height: 20px; padding: 0; border: 1px solid rgba(255,255,255,.45); border-radius: 5px; }
 .director-stage__inspector > label, .director-stage__inspector .inspector-group > label { display: grid; gap: 5px; margin: 12px 0; color: #a1a1aa; font-size: 11px; }
 .director-stage__inspector input { width: 100%; box-sizing: border-box; border: 1px solid #3f3f46; border-radius: 7px; padding: 7px 8px; background: #111114; color: #e4e4e7; }
 .director-stage__inspector .visibility-row { display: flex; align-items: center; }
