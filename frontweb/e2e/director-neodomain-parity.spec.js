@@ -33,6 +33,29 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/assets?**', (route) => fulfillEmptyProjectAssets(route))
 })
 
+test('窄屏仍可完整操作人物属性检查器', async ({ page }) => {
+  await page.setViewportSize({ width: 677, height: 552 })
+  const timeline = baseTimeline([{
+    id: 'narrow-role', type: 'humanoid', name: '窄屏人物', visible: true, locked: false,
+    assetRef: { kind: 'male' },
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  }])
+  await page.route('**/api/v1/dramas/3', (route) => fulfillMockDrama(route, timeline, { characters: [] }))
+  await page.route('**/api/v1/dramas/3/canvas-layout', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, data: {} }),
+  }))
+
+  await openDirector(page)
+  await page.getByRole('button', { name: /窄屏人物 humanoid/ }).click()
+  const inspector = page.getByLabel('属性检查器')
+  await expect(inspector).toBeVisible()
+  await expect(inspector.getByRole('button', { name: '属性', exact: true })).toBeVisible()
+  await expect(inspector.getByRole('button', { name: '姿势', exact: true })).toBeVisible()
+  await expect(inspector.getByText('位置（米）', { exact: true })).toBeVisible()
+})
+
 test('人物根对象位置编辑会整体保存且不破坏姿势数据', async ({ page }) => {
   const savedTimelines = []
   const timeline = baseTimeline([{

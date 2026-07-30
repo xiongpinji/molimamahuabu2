@@ -79,6 +79,12 @@ test('触控板双指滑动与鼠标滚轮使用不同相机交互', () => {
   assert.equal(isDirectorTouchpadGesture({ deltaX: 0, deltaY: 3, deltaMode: 1 }), false)
 })
 
+test('窄屏仍展示属性检查器并覆盖在视口右侧', () => {
+  const narrowStyles = stageSource.slice(stageSource.indexOf('@media (max-width: 680px)'))
+  assert.doesNotMatch(narrowStyles, /\.director-stage__inspector\s*\{\s*display:\s*none/)
+  assert.match(narrowStyles, /\.director-stage__inspector\s*\{[^}]*position:\s*absolute[^}]*display:\s*block/)
+})
+
 test('导演状态保存标签、播放和关键帧参数', () => {
   let state = appendDirectorObject(createDirectorTimeline(), 'box', { id: 'prop-1', name: '方桌' })
   state = normalizeDirectorTimeline({
