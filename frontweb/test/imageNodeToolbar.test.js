@@ -272,6 +272,8 @@ test('P1 图片调整覆盖完整参数，LUT 支持强度，旋转走 Sharp 派
   assert.match(toolbarSource, /色温/)
   assert.match(toolbarSource, /RGB 曲线/)
   assert.match(toolbarSource, /curveChannel = ref\('rgb'\)/)
+  assert.match(toolbarSource, /function addCurvePoint\(channel\)/)
+  assert.match(toolbarSource, /function removeCurvePoint\(channel, index\)/)
   assert.match(toolbarSource, /curves: adjustCurves\.value/)
   assert.match(toolbarSource, /\{ name: '青橙'/)
   assert.match(toolbarSource, /\{ name: '黑色电影'/)

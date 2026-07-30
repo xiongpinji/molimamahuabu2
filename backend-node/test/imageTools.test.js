@@ -2869,12 +2869,13 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
         columns: 2,
         spacing: 2,
         selectedCells: ['0:1', '1:0'],
+        duplicateCells: ['0:1'],
       },
     },
   }, res);
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
-  assert.equal(res.payload.data.resultAssets.length, 2);
+  assert.equal(res.payload.data.resultAssets.length, 3);
   assert.equal(res.payload.data.resultAssetId, res.payload.data.resultAssets[0].id);
   assert.equal(res.payload.data.resultUrl, res.payload.data.resultAssets[0].url);
   for (const item of res.payload.data.resultAssets) {
@@ -2886,7 +2887,7 @@ test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async
     assert.equal(metadata.width, 2);
     assert.equal(metadata.height, 2);
   }
-  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 3);
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM assets').get().total, 4);
   assert.equal(fs.existsSync(sourcePath), true);
 });
 

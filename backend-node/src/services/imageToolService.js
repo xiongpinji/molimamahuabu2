@@ -2681,6 +2681,15 @@ async function runGridCrop(sourcePath, parameters) {
     fail('IMAGE_TOOL_INVALID_INPUT', 'selectedCells 必须包含至少一个有效且不重复的宫格坐标');
   }
   const selectedCellKeys = new Set(selectedCells);
+  const duplicateCells = parameters.duplicateCells ?? [];
+  if (
+    !Array.isArray(duplicateCells)
+    || duplicateCells.some((key) => typeof key !== 'string' || !selectedCellKeys.has(key))
+    || new Set(duplicateCells).size !== duplicateCells.length
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'duplicateCells 只能包含已选中的有效宫格坐标');
+  }
+  const duplicateCellKeys = new Set(duplicateCells);
   const cells = [];
   const spacingBefore = Math.floor(spacing / 2);
   const spacingAfter = spacing - spacingBefore;
@@ -2692,20 +2701,22 @@ async function runGridCrop(sourcePath, parameters) {
       const cellRight = Math.floor(((column + 1) * metadata.width) / columns);
       const key = `${row}:${column}`;
       if (!selectedCellKeys.has(key)) continue;
-      cells.push({
+      const cell = {
         row,
         column,
         left: cellLeft + spacingBefore,
         top: cellTop + spacingBefore,
         width: cellRight - cellLeft - spacingBefore - spacingAfter,
         height: cellBottom - cellTop - spacingBefore - spacingAfter,
-      });
+      };
+      cells.push(cell);
+      if (duplicateCellKeys.has(key)) cells.push({ ...cell, copyIndex: 1 });
     }
   }
   return {
     metadata,
     format,
-    normalized: { rows, columns, spacing, selectedCells },
+    normalized: { rows, columns, spacing, selectedCells, duplicateCells },
     cells,
   };
 }
@@ -2729,6 +2740,7 @@ async function runAdjust(sourcePath, parameters) {
         || point.length !== 2
         || point.some((value) => !Number.isFinite(value) || value < 0 || value > 1)
       ))
+      || points.some((point, index) => index > 0 && point[0] <= points[index - 1][0])
     ) {
       fail('IMAGE_TOOL_INVALID_INPUT', `curves.${channel} 必须是 0–1 范围的曲线坐标`);
     }
@@ -2761,6 +2773,31 @@ async function runAdjust(sourcePath, parameters) {
       curves: normalizedCurves,
     },
   };
+}
+
+function buildCurveLookup(points) {
+  return Uint8Array.from({ length: 256 }, (_, index) => {
+    const input = index / 255;
+    const rightIndex = points.findIndex((point) => point[0] >= input);
+    if (rightIndex <= 0) return Math.round(points[0][1] * 255);
+    const left = points[rightIndex - 1];
+    const right = points[rightIndex];
+    const progress = (input - left[0]) / (right[0] - left[0]);
+    return Math.round((left[1] + ((right[1] - left[1]) * progress)) * 255);
+  });
+}
+
+async function applyRgbCurves(pipeline, curves) {
+  const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const lookups = Object.fromEntries(
+    Object.entries(curves).map(([channel, points]) => [channel, buildCurveLookup(points)]),
+  );
+  for (let index = 0; index < data.length; index += info.channels) {
+    data[index] = lookups.red[lookups.rgb[data[index]]];
+    data[index + 1] = lookups.green[lookups.rgb[data[index + 1]]];
+    data[index + 2] = lookups.blue[lookups.rgb[data[index + 2]]];
+  }
+  return sharp(data, { raw: info });
 }
 
 async function runLut(sourcePath, parameters) {
@@ -2815,10 +2852,15 @@ async function runLut(sourcePath, parameters) {
   if (!LUT_PRESETS[preset]) {
     fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数不受支持');
   }
+  const temperatureGains = [
+    1 + (manual.temperature * 0.08),
+    1,
+    1 - (manual.temperature * 0.08),
+  ];
   const matrix = LUT_PRESETS[preset].map((row, rowIndex) => (
     row.map((value, columnIndex) => {
       const identity = rowIndex === columnIndex ? 1 : 0;
-      return identity + ((value - identity) * intensity);
+      return (identity + ((value - identity) * intensity)) * temperatureGains[rowIndex];
     })
   ));
   return {
@@ -3543,16 +3585,8 @@ async function createOperation(db, log, request, context = {}) {
         * (2 ** prepared.normalized.exposure)
         * toneBrightness;
       const saturation = prepared.normalized.saturation * prepared.normalized.vibrance;
-      const curveMidpoint = (channel) => (
-        prepared.normalized.curves[channel].find((point) => point[0] === 0.5)?.[1] ?? 0.5
-      );
-      const rgbMidpoint = curveMidpoint('rgb');
-      const curveGamma = Math.min(3, Math.max(1, Math.log(0.5) / Math.log(rgbMidpoint)));
-      const curveGains = ['red', 'green', 'blue'].map(
-        (channel) => Math.min(1.5, Math.max(0.5, curveMidpoint(channel) / 0.5)),
-      );
-      const toneContrast = prepared.normalized.contrast
-        + ((prepared.normalized.whites - prepared.normalized.blacks) * 0.08);
+      const toneContrast = Math.max(0.1, prepared.normalized.contrast
+        + ((prepared.normalized.whites - prepared.normalized.blacks) * 0.08));
       pipeline = prepared.source
         .modulate({
           brightness,
@@ -3564,11 +3598,11 @@ async function createOperation(db, log, request, context = {}) {
           128 * (1 - toneContrast),
         )
         .recomb([
-          [redGain * curveGains[0], 0, 0],
-          [0, greenGain * curveGains[1], 0],
-          [0, 0, blueGain * curveGains[2]],
-        ])
-        .gamma(curveGamma);
+          [redGain, 0, 0],
+          [0, greenGain, 0],
+          [0, 0, blueGain],
+        ]);
+      pipeline = await applyRgbCurves(pipeline, prepared.normalized.curves);
       const detailAmount = Math.max(
         prepared.normalized.sharpness,
         prepared.normalized.clarity,
@@ -3576,18 +3610,38 @@ async function createOperation(db, log, request, context = {}) {
       if (detailAmount > 0) {
         pipeline = pipeline.sharpen(0.5 + (detailAmount * 1.5));
       }
-      const effectBlur = prepared.normalized.blur
-        + (prepared.normalized.softLight * 0.7)
-        + (prepared.normalized.glow * 0.45);
-      if (effectBlur >= 0.3) {
-        pipeline = pipeline.blur(Math.min(2, effectBlur));
+      if (prepared.normalized.blur >= 0.3) {
+        pipeline = pipeline.blur(prepared.normalized.blur);
       }
       if (prepared.normalized.grain > 0) {
-        const grainAmount = prepared.normalized.grain * 7;
-        pipeline = pipeline.linear(
-          1 + (grainAmount / 100),
-          -(grainAmount / 2),
-        );
+        const pixelCount = prepared.metadata.width * prepared.metadata.height;
+        let seed = 2166136261;
+        const noise = Buffer.alloc(pixelCount * 4);
+        for (let index = 0; index < pixelCount; index += 1) {
+          seed = Math.imul(seed ^ index, 16777619) >>> 0;
+          const gray = seed & 255;
+          const offset = index * 4;
+          noise[offset] = gray;
+          noise[offset + 1] = gray;
+          noise[offset + 2] = gray;
+          noise[offset + 3] = Math.round(prepared.normalized.grain * 52);
+        }
+        pipeline = pipeline.composite([{
+          input: noise,
+          raw: { width: prepared.metadata.width, height: prepared.metadata.height, channels: 4 },
+          blend: 'overlay',
+        }]);
+      }
+      if (prepared.normalized.softLight > 0 || prepared.normalized.glow > 0) {
+        const softened = await prepared.source.clone()
+          .blur(1 + (prepared.normalized.glow * 5))
+          .modulate({ brightness: 1 + (prepared.normalized.glow * 0.25) })
+          .toBuffer();
+        pipeline = pipeline.composite([{
+          input: softened,
+          blend: prepared.normalized.glow >= prepared.normalized.softLight ? 'screen' : 'soft-light',
+          opacity: Math.max(prepared.normalized.softLight, prepared.normalized.glow),
+        }]);
       }
       if (prepared.normalized.vignette > 0) {
         const opacity = Math.round(prepared.normalized.vignette * 180);
@@ -3606,19 +3660,17 @@ async function createOperation(db, log, request, context = {}) {
         )).toFormat(prepared.metadata.format)
         : prepared.source.recomb(prepared.matrix);
       const lutManual = prepared.normalized.manual;
-      const manualRed = 1 + (lutManual.temperature * 0.08);
-      const manualBlue = 1 - (lutManual.temperature * 0.08);
       pipeline = pipeline
         .modulate({
           brightness: 2 ** lutManual.exposure,
           saturation: lutManual.saturation,
         })
         .linear(lutManual.contrast, 128 * (1 - lutManual.contrast));
-      if (lutManual.temperature !== 0) {
+      if (prepared.customLut && lutManual.temperature !== 0) {
         pipeline = pipeline.recomb([
-          [manualRed, 0, 0],
+          [1 + (lutManual.temperature * 0.08), 0, 0],
           [0, 1, 0],
-          [0, 0, manualBlue],
+          [0, 0, 1 - (lutManual.temperature * 0.08)],
         ]);
       }
       pipeline = pipeline.toFormat(prepared.metadata.format);

@@ -127,7 +127,7 @@
     <el-dialog
       v-model="editorVisible"
       class="image-tool-dialog immersive"
-      :title="operationLabel(editorOperation)"
+      :title="editorTitle"
       width="calc(100vw - 32px)"
       top="16px"
       append-to-body
@@ -583,7 +583,7 @@
             <el-button size="small" @click="gridSelectedCells = []">取消全选</el-button>
             <el-button size="small" @click="invertGridSelection">反选</el-button>
             <el-button size="small" :disabled="!gridSelectedCells.length" @click="duplicateGridSelection">
-              复制选区
+              复制选区（{{ gridDuplicateCells.length }}）
             </el-button>
             <el-button size="small" @click="redetectGrid">重新识别</el-button>
             <el-checkbox v-model="gridSnapEnabled">吸附对齐</el-checkbox>
@@ -668,9 +668,13 @@
                 {{ channel.label }}
               </button>
             </div>
-            <el-form-item :label="`中间调 ${Math.round(adjustCurveMidpoints[curveChannel] * 100)}`">
-              <el-slider v-model="adjustCurveMidpoints[curveChannel]" :min="0.1" :max="0.9" :step="0.01" />
-            </el-form-item>
+            <div v-for="(point, index) in adjustCurves[curveChannel].slice(1, -1)" :key="`${curveChannel}-${index}`" class="curve-point-row">
+              <span>控制点 {{ index + 1 }}</span>
+              <el-slider v-model="point[0]" :min="0.05" :max="0.95" :step="0.01" />
+              <el-slider v-model="point[1]" :min="0" :max="1" :step="0.01" />
+              <el-button size="small" @click="removeCurvePoint(curveChannel, index + 1)">删除</el-button>
+            </div>
+            <el-button size="small" :disabled="adjustCurves[curveChannel].length >= 7" @click="addCurvePoint(curveChannel)">添加控制点</el-button>
           </section>
           <el-button class="adjust-reset" @click="resetAdjustForm">全部重置</el-button>
         </template>
@@ -797,6 +801,7 @@ const toolbarPlacement = ref('above')
 const editorVisible = ref(false)
 const previewOriginal = ref(false)
 const editorOperation = ref('crop')
+const editorVariantLabel = ref('')
 const submitting = ref(false)
 const historyVisible = ref(false)
 const resolvedHistory = ref([])
@@ -807,6 +812,7 @@ const rotateAngle = ref(90)
 const gridQuickSizes = Object.freeze([2, 3, 4, 5, 6, 7])
 const gridForm = ref({ rows: 3, columns: 3, spacing: 0 })
 const gridSelectedCells = ref([])
+const gridDuplicateCells = ref([])
 const gridSnapEnabled = ref(true)
 const DEFAULT_ADJUST_FORM = Object.freeze({
   exposure: 0,
@@ -830,14 +836,10 @@ const DEFAULT_ADJUST_FORM = Object.freeze({
   glow: 0,
 })
 const adjustForm = ref({ ...DEFAULT_ADJUST_FORM })
-const DEFAULT_CURVE_MIDPOINTS = Object.freeze({ rgb: 0.5, red: 0.5, green: 0.5, blue: 0.5 })
-const adjustCurveMidpoints = ref({ ...DEFAULT_CURVE_MIDPOINTS })
-const adjustCurves = computed(() => Object.fromEntries(
-  Object.entries(adjustCurveMidpoints.value).map(([channel, midpoint]) => [
-    channel,
-    [[0, 0], [0.5, midpoint], [1, 1]],
-  ]),
-))
+const createDefaultCurves = () => Object.fromEntries(
+  ['rgb', 'red', 'green', 'blue'].map((channel) => [channel, [[0, 0], [0.5, 0.5], [1, 1]]]),
+)
+const adjustCurves = ref(createDefaultCurves())
 const curveChannel = ref('rgb')
 const curveChannels = Object.freeze([
   { key: 'rgb', label: 'RGB' },
@@ -876,6 +878,23 @@ const adjustPresets = Object.freeze([
   { name: '金色时光', values: { exposure: 0.15, temperature: 0.5, highlights: 0.2, glow: 0.18 } },
   { name: '梦幻', values: { brightness: 1.08, saturation: 0.88, softLight: 0.35, glow: 0.3 } },
   { name: 'HDR', values: { contrast: 1.18, highlights: -0.2, shadows: 0.28, clarity: 0.55 } },
+  { name: '黑白', values: { saturation: 0, contrast: 1.12 } },
+  { name: '褐色', values: { saturation: 0.55, temperature: 0.42, contrast: 0.92 } },
+  { name: '沉郁', values: { exposure: -0.3, saturation: 0.72, shadows: -0.2 } },
+  { name: '高调', values: { exposure: 0.4, highlights: 0.25, contrast: 0.86 } },
+  { name: '低调', values: { exposure: -0.45, blacks: -0.25, contrast: 1.2 } },
+  { name: '森林', values: { tint: -0.2, saturation: 1.08, shadows: 0.12 } },
+  { name: '人像', values: { temperature: 0.12, softLight: 0.12, clarity: 0.12 } },
+  { name: '日落', values: { temperature: 0.58, tint: 0.12, highlights: 0.2 } },
+  { name: '漂白', values: { saturation: 0.45, contrast: 1.28, whites: 0.18 } },
+  { name: 'LOMO', values: { saturation: 1.22, contrast: 1.24, vignette: 0.48 } },
+  { name: '复古暖调', values: { temperature: 0.38, saturation: 0.75, grain: 0.18 } },
+  { name: '交叉冲洗', values: { tint: -0.3, hue: 12, contrast: 1.18 } },
+  { name: '双色蓝', values: { temperature: -0.5, saturation: 0.75, contrast: 1.15 } },
+  { name: '红外', values: { hue: 145, saturation: 1.35, contrast: 1.2 } },
+  { name: '铬色', values: { saturation: 0.82, clarity: 0.45, contrast: 1.24 } },
+  { name: '粉彩', values: { brightness: 1.08, saturation: 0.68, softLight: 0.2 } },
+  { name: '霓虹', values: { saturation: 1.45, contrast: 1.3, glow: 0.28 } },
 ])
 const lutPreset = ref('cinematic')
 const lutIntensity = ref(1)
@@ -906,7 +925,11 @@ const lutPresets = Object.freeze([
 const visibleLutPresets = computed(() => {
   if (lutCategory.value === 'recent') {
     return recentLutPresets.value
-      .map((value) => lutPresets.find((preset) => preset.value === value))
+      .map((value) => (
+        value === 'custom' && customLut.value
+          ? { label: customLut.value.name, value: 'custom', categories: ['recent'] }
+          : lutPresets.find((preset) => preset.value === value)
+      ))
       .filter(Boolean)
   }
   return lutPresets.filter((preset) => preset.categories.includes(lutCategory.value))
@@ -1017,9 +1040,9 @@ const settingActions = [
   { label: '720全景', operation: 'panorama', icon: PictureRounded },
   { label: '电影级光影校正', operation: 'cinematic_relight', icon: Sunny },
   { label: '细节纹理增强', operation: 'detail_enhance', icon: MagicStick },
-  { label: '全景镜头扩张', operation: 'outpaint', icon: FullScreen },
-  { label: '背景重构', operation: 'image_ideation', icon: PictureRounded },
-  { label: '氛围重塑', operation: 'cinematic_relight', icon: Sunny },
+  { label: '全景镜头扩张', operation: 'outpaint', variant: 'panorama_lens', icon: FullScreen },
+  { label: '背景重构', operation: 'image_ideation', variant: 'background_reconstruct', icon: PictureRounded },
+  { label: '氛围重塑', operation: 'cinematic_relight', variant: 'atmosphere_reshape', icon: Sunny },
 ]
 
 const history = computed(() => Array.isArray(props.data.imageToolHistory)
@@ -1102,6 +1125,7 @@ const editorPreviewHint = computed(() => {
   }
   return '左侧保留原图作为生成参考；右侧设置参数后再提交处理'
 })
+const editorTitle = computed(() => editorVariantLabel.value || operationLabel(editorOperation.value))
 const referenceVariationTags = computed(() => (
   referenceVariationTagMap[editorOperation.value] || []
 ))
@@ -1194,6 +1218,23 @@ function selectOperation(item) {
     return
   }
   editorOperation.value = item.operation
+  editorVariantLabel.value = item.variant ? item.label : ''
+  if (item.variant === 'panorama_lens') {
+    outpaintForm.value = {
+      ...outpaintForm.value,
+      aspectRatio: '2:1',
+      direction: 'all',
+      prompt: '保持主体与透视一致，扩展为自然的超广角全景镜头画面',
+    }
+  } else if (item.variant === 'background_reconstruct') {
+    referenceVariationDescription.value = '保留前景主体身份、姿态和轮廓，重新构建完整且透视一致的背景环境'
+  } else if (item.variant === 'atmosphere_reshape') {
+    relightForm.value = {
+      ...relightForm.value,
+      preset: 'cinematic',
+      description: '保持主体与构图不变，重塑环境光、空气透视与整体氛围',
+    }
+  }
   if (item.operation === 'grid_crop') resetGridSelection()
   if (item.operation === 'selection_cutout') resetSelectionEditor()
   if (item.operation === 'markup_retouch') resetMarkupEditor()
@@ -1210,6 +1251,7 @@ function switchEditorOperation(operation) {
   }
   destroyCropper()
   editorOperation.value = operation
+  editorVariantLabel.value = ''
   if (operation === 'grid_crop') resetGridSelection()
   if (operation === 'selection_cutout') resetSelectionEditor()
   if (['crop', 'selection_cutout'].includes(operation)) nextTick(initCropper)
@@ -1509,6 +1551,7 @@ function applyGridSize(size) {
 }
 
 function resetGridSelection() {
+  gridDuplicateCells.value = []
   nextTick(selectAllGridCells)
 }
 
@@ -1520,16 +1563,16 @@ function invertGridSelection() {
 }
 
 function duplicateGridSelection() {
-  const selected = new Set(gridSelectedCells.value)
-  const shifted = gridSelectedCells.value
-    .map((key) => key.split(':').map(Number))
-    .map(([row, column]) => `${Math.min(gridForm.value.rows - 1, row + 1)}:${Math.min(gridForm.value.columns - 1, column + 1)}`)
-    .filter((key) => !selected.has(key))
-  gridSelectedCells.value = [...selected, ...shifted]
+  gridDuplicateCells.value = [...gridSelectedCells.value]
 }
 
 function redetectGrid() {
-  gridForm.value = { ...gridForm.value, rows: 3, columns: 3 }
+  const width = Number(props.data.width) || 1
+  const height = Number(props.data.height) || 1
+  const ratio = width / height
+  const columns = Math.min(7, Math.max(2, Math.round(3 * Math.sqrt(ratio))))
+  const rows = Math.min(7, Math.max(2, Math.round(3 / Math.sqrt(ratio))))
+  gridForm.value = { ...gridForm.value, rows, columns }
   resetGridSelection()
 }
 
@@ -1579,6 +1622,7 @@ function operationParameters() {
     return {
       ...gridForm.value,
       selectedCells: [...gridSelectedCells.value],
+      duplicateCells: [...gridDuplicateCells.value],
       spacing: gridForm.value.spacing,
       snap: gridSnapEnabled.value,
     }
@@ -1626,8 +1670,27 @@ function operationParameters() {
 
 function resetAdjustForm() {
   adjustForm.value = { ...DEFAULT_ADJUST_FORM }
-  adjustCurveMidpoints.value = { ...DEFAULT_CURVE_MIDPOINTS }
+  adjustCurves.value = createDefaultCurves()
   curveChannel.value = 'rgb'
+}
+
+function addCurvePoint(channel) {
+  const points = adjustCurves.value[channel]
+  const largestGap = points.slice(0, -1)
+    .map((point, index) => ({ index, gap: points[index + 1][0] - point[0] }))
+    .sort((a, b) => b.gap - a.gap)[0]
+  const left = points[largestGap.index]
+  const right = points[largestGap.index + 1]
+  points.splice(largestGap.index + 1, 0, [
+    (left[0] + right[0]) / 2,
+    (left[1] + right[1]) / 2,
+  ])
+}
+
+function removeCurvePoint(channel, index) {
+  if (index > 0 && index < adjustCurves.value[channel].length - 1) {
+    adjustCurves.value[channel].splice(index, 1)
+  }
 }
 
 function resetLutForm() {
@@ -1670,8 +1733,8 @@ async function loadCubeLut(event) {
     customLut.value = { name: file.name.slice(0, 80), size, values }
     lutPreset.value = 'custom'
     recentLutPresets.value = [
-      file.name,
-      ...recentLutPresets.value.filter((name) => name !== file.name),
+      'custom',
+      ...recentLutPresets.value.filter((value) => value !== 'custom'),
     ].slice(0, 5)
     ElMessage.success('3D LUT 已载入，可调整强度后应用')
   } catch (error) {
