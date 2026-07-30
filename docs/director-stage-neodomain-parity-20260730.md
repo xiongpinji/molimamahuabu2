@@ -75,3 +75,17 @@
 - 原导演台可访问性、生命周期、相机、动作、镜头、缩放、导出、模型错误、CC0 模型和 100/20/200 压力测试中，登录态漂移修正后 9 条直接通过；2 条旧入口选择器对齐新资产库后分别复测通过。新旧两组组合回归最终为 15/15 通过。
 - 100 对象、20 相机、200 动作片段压力场景 5 秒平均约 60 FPS。
 - 前端生产构建通过，`git diff --check` 通过。
+
+## 线上增量部署记录
+
+- 部署源提交：`605bf3b`；部署前线上版本：`84d359128a04-20260731T013538`；新版本：`605bf3b-director-stage-20260731T020913`。
+- 上传暂存区经文件数和 SHA-256 双重核对，仅包含以下 3 个运行时源文件：
+  - `frontweb/src/components/dramaCanvas/CanvasDirectorStage.vue`
+  - `frontweb/src/utils/directorTimeline.js`
+  - `frontweb/src/utils/director-parity.js`
+- 新版本由服务器当前发布目录原样复制后定点安装上述 3 个文件；构建前 `diff -qr --exclude=dist` 仅报告这 3 项差异，没有上传或覆盖项目其他目录。
+- 服务器发布目录不携带前端 `node_modules`，首次隔离构建稳定复现 `ERR_MODULE_NOT_FOUND: vite`；确认 `package-lock.json` 存在且 Vite 版本为 `^6.4.3` 后，只在新版本目录执行 `npm ci --no-audit --no-fund`，随后生产构建通过。
+- 生产预检 12/12 通过；原子切换后 `moli-drama.service` 为 `active`，本机 `http://127.0.0.1:5679/health` 与公网 `https://molimama.vip/drama-health` 均返回 200。
+- 公网首页、入口脚本、导演台 JS 分包和 CSS 分包均返回 200；线上 3 个源文件 SHA-256 与本地完全一致。
+- AI 音乐未执行任何上传、安装、重启或目录操作；部署前后 `moli-mama`/`moli-mama-worker` PID 均为 `206874`/`206895`，8787 端口保持监听。
+- 内置浏览器可正常打开线上站点，但当前会话停留在公开平台登录页；未绕过登录态。已完成无需登录的健康、入口和导演台静态资源验证，登录后的线上关键交互回归待用户在保留的线上标签页完成登录后继续。
