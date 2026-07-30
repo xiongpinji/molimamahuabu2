@@ -181,11 +181,19 @@ function samePath(left, right) {
 }
 
 function resolveSourcePath(asset, storageRoot, allowedRoot) {
-  if (!asset.local_path) fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片没有可处理的本地文件');
+  let localPath = asset.local_path;
+  if (!localPath && String(asset.url || '').startsWith('/static/')) {
+    try {
+      localPath = decodeURIComponent(String(asset.url).slice('/static/'.length));
+    } catch (_) {
+      fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片地址无效');
+    }
+  }
+  if (!localPath) fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片没有可处理的本地文件');
   const sourcePath = path.resolve(
-    path.isAbsolute(asset.local_path)
-      ? asset.local_path
-      : path.join(storageRoot, asset.local_path),
+    path.isAbsolute(localPath)
+      ? localPath
+      : path.join(storageRoot, localPath),
   );
   if (!isInside(storageRoot, sourcePath)) {
     fail('IMAGE_TOOL_SOURCE_UNAVAILABLE', '源图片不在允许的素材目录中');
