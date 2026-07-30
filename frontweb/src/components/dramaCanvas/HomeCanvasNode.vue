@@ -52,7 +52,7 @@
         draggable="false"
         title="双击全屏查看"
         @dragstart.prevent
-        @click="openEditor"
+        @click.stop="scheduleMediaOpen"
         @dblclick.stop="openMediaPreview(primaryResultUrl, 'image')"
       />
       <video
@@ -63,7 +63,7 @@
         muted
         playsinline
         title="双击全屏查看"
-        @click="openEditor"
+        @click.stop="scheduleMediaOpen"
         @dblclick.stop="openMediaPreview(primaryResultUrl, 'video')"
       />
       <audio v-else-if="data.kind === 'audio' && primaryResultUrl" :src="primaryResultUrl" class="node-audio" controls />
@@ -88,8 +88,9 @@
       <section
         v-if="isSelected && !hasMultiSelection && !editorHidden"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
-        :class="[`editor-${data.kind}`, { 'is-docked-top': editorDock === 'top', 'is-fullscreen': editorFullscreen }]"
-        :style="{ '--editor-max-height': `${editorMaxHeight}px` }"
+        :class="[`editor-${data.kind}`, { 'is-fullscreen': editorFullscreen }]"
+        :style="editorFullscreen ? undefined : editorPanelStyle"
+        :data-editor-dock="editorDock"
         role="region"
         :aria-label="editorLabel"
         @mousedown.stop
@@ -165,6 +166,9 @@
               :key="reference.nodeId"
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
+              :title="`右键引用为 @图片${index + 1}`"
+              @mousedown.right.prevent
+              @contextmenu.prevent.stop="insertReferenceToken(index)"
             >
               <span class="reference-index">{{ index + 1 }}</span>
               <button
@@ -199,7 +203,8 @@
             :aria-label="data.kind === 'text' ? '文本内容' : '生成提示词'"
             :placeholder="data.kind === 'text' ? '写下内容，或输入要求后让 AI 继续创作…' : promptPlaceholder"
             @input="handleEditorInput"
-            @blur="saveDraft"
+            @select="rememberContentSelection"
+            @blur="handleContentBlur"
           />
           <div
             v-if="showReferenceMention"
@@ -417,11 +422,14 @@ const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
 const editorDock = ref('bottom')
-const editorMaxHeight = ref(560)
+const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 let draftSaveTimer = null
 let draftDirty = false
+let editorPositionFrame = null
+let contentSelection = null
+let mediaOpenTimer = null
 const mentionStart = ref(-1)
 const mentionEnd = ref(-1)
 const mentionQuery = ref('')
@@ -632,8 +640,23 @@ function handlePromptInput(event) {
 }
 
 function handleEditorInput(event) {
+  rememberContentSelection(event)
   handlePromptInput(event)
   scheduleDraftSave()
+}
+
+function rememberContentSelection(event) {
+  const input = event?.target
+  if (!input) return
+  contentSelection = {
+    start: Number(input.selectionStart ?? String(draft.content || '').length),
+    end: Number(input.selectionEnd ?? input.selectionStart ?? String(draft.content || '').length),
+  }
+}
+
+function handleContentBlur(event) {
+  rememberContentSelection(event)
+  void saveDraft()
 }
 
 async function selectReferenceMention(candidate) {
@@ -651,6 +674,33 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
+async function insertReferenceToken(index) {
+  if (props.data.kind !== 'video') return
+  const input = contentInput.value
+  const value = String(draft.content || '')
+  const liveSelection = input && document.activeElement === input
+    ? {
+        start: Number(input.selectionStart ?? value.length),
+        end: Number(input.selectionEnd ?? input.selectionStart ?? value.length),
+      }
+    : contentSelection
+  const start = liveSelection ? liveSelection.start : value.length
+  const end = liveSelection ? liveSelection.end : start
+  const before = value.slice(0, start)
+  const after = value.slice(end)
+  const token = `@图片${index + 1}`
+  const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
+  const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
+  const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
+  draft.content = `${before}${insertion}${after}`
+  const cursor = before.length + insertion.length
+  await saveDraft()
+  await nextTick()
+  input?.focus()
+  input?.setSelectionRange(cursor, cursor)
+  contentSelection = { start: cursor, end: cursor }
+}
+
 function chooseReferenceFile() {
   referenceFileInput.value?.click()
 }
@@ -663,27 +713,81 @@ function openConfig() {
 function openEditor() {
   editorHidden.value = false
   ctx?.setFocusedNode?.(props.id)
-  nextTick(updateEditorDock)
+  nextTick(startEditorPositionTracking)
 }
 
 function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
+  stopEditorPositionTracking()
 }
 
-function updateEditorDock() {
-  if (!isSelected.value || !nodeRoot.value) return
+function updateEditorPosition() {
+  if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value) return
   const bounds = nodeRoot.value.getBoundingClientRect()
-  const spaceAbove = Math.max(0, bounds.top - 48)
-  const spaceBelow = Math.max(0, window.innerHeight - bounds.bottom - 48)
-  editorDock.value = spaceAbove > spaceBelow ? 'top' : 'bottom'
-  editorMaxHeight.value = Math.min(560, Math.max(180, editorDock.value === 'top' ? spaceAbove : spaceBelow))
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const viewportPadding = 16
+  const nodeGap = 12
+  const panelWidth = Math.max(1, Math.min(860, viewportWidth - viewportPadding * 2))
+  const desiredLeft = bounds.left + bounds.width / 2 - panelWidth / 2
+  const panelLeft = Math.min(
+    Math.max(viewportPadding, desiredLeft),
+    Math.max(viewportPadding, viewportWidth - panelWidth - viewportPadding),
+  )
+  const spaceAbove = Math.max(0, bounds.top - nodeGap - viewportPadding)
+  const spaceBelow = Math.max(0, viewportHeight - bounds.bottom - nodeGap - viewportPadding)
+  const dock = spaceBelow >= spaceAbove ? 'bottom' : 'top'
+  const availableHeight = dock === 'bottom' ? spaceBelow : spaceAbove
+
+  editorDock.value = dock
+  const nextStyle = {
+    top: dock === 'bottom' ? `${Math.round(bounds.bottom + nodeGap)}px` : 'auto',
+    right: 'auto',
+    bottom: dock === 'top' ? `${Math.round(viewportHeight - bounds.top + nodeGap)}px` : 'auto',
+    left: `${Math.round(panelLeft)}px`,
+    width: `${Math.round(panelWidth)}px`,
+    maxHeight: `${Math.max(1, Math.floor(availableHeight))}px`,
+  }
+  if (Object.entries(nextStyle).some(([key, value]) => editorPanelStyle.value[key] !== value)) {
+    editorPanelStyle.value = nextStyle
+  }
+}
+
+function startEditorPositionTracking() {
+  if (editorPositionFrame != null || !isSelected.value || editorHidden.value) return
+  const track = () => {
+    editorPositionFrame = null
+    if (!isSelected.value || editorHidden.value) return
+    updateEditorPosition()
+    editorPositionFrame = window.requestAnimationFrame(track)
+  }
+  editorPositionFrame = window.requestAnimationFrame(track)
+}
+
+function stopEditorPositionTracking() {
+  if (editorPositionFrame == null) return
+  window.cancelAnimationFrame(editorPositionFrame)
+  editorPositionFrame = null
 }
 
 function openMediaPreview(url, kind = 'image') {
+  if (mediaOpenTimer) {
+    window.clearTimeout(mediaOpenTimer)
+    mediaOpenTimer = null
+  }
   if (!url) return
+  openEditor()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
+}
+
+function scheduleMediaOpen() {
+  if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
+  mediaOpenTimer = window.setTimeout(() => {
+    mediaOpenTimer = null
+    openEditor()
+  }, 250)
 }
 
 function closeMediaPreview() {
@@ -794,14 +898,15 @@ function onEditorKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
-  window.addEventListener('resize', updateEditorDock)
-  window.addEventListener('pointerup', updateEditorDock)
+  window.addEventListener('resize', updateEditorPosition)
+  if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
-  window.removeEventListener('resize', updateEditorDock)
-  window.removeEventListener('pointerup', updateEditorDock)
+  window.removeEventListener('resize', updateEditorPosition)
+  stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
+  if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
 })
 
 watch(() => props.data, () => {
@@ -810,9 +915,10 @@ watch(() => props.data, () => {
 watch(isSelected, (selected) => {
   if (selected) {
     editorHidden.value = false
-    nextTick(updateEditorDock)
+    nextTick(startEditorPositionTracking)
   }
   else {
+    stopEditorPositionTracking()
     editorFullscreen.value = false
     closeMediaPreview()
   }
@@ -932,14 +1038,13 @@ watch(isSelected, (selected) => {
 }
 .node-expanded-editor {
   position: fixed;
-  top: auto;
-  right: 24px;
-  bottom: 24px;
-  left: 24px;
-  z-index: 1999;
+  top: 16px;
+  right: auto;
+  bottom: auto;
+  left: 16px;
+  z-index: 3100;
   width: min(860px, calc(100vw - 48px));
-  max-height: min(58vh, var(--editor-max-height, 560px));
-  margin: 0 auto;
+  max-height: calc(100vh - 32px);
   overflow-y: auto;
   padding: 18px;
   border: 1px solid #3f3f46;
@@ -947,10 +1052,6 @@ watch(isSelected, (selected) => {
   background: #1c1c1f;
   box-shadow: 0 22px 56px rgba(0, 0, 0, 0.5);
   box-sizing: border-box;
-}
-.node-expanded-editor.is-docked-top {
-  top: 24px;
-  bottom: auto;
 }
 .node-expanded-editor.is-fullscreen {
   position: fixed;

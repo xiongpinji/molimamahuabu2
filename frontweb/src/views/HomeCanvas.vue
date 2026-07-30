@@ -882,6 +882,7 @@ loadState()
 
 provide(CANVAS_CONTEXT_KEY, {
   isFreeCanvasNodeSelected: (nodeId) => activeNodeId.value === String(nodeId),
+  setFocusedNode: selectNodeById,
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
