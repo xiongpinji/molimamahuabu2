@@ -114,6 +114,12 @@ const router = createRouter({
       meta: { title: '工作区与积分', requiresAuth: true }
     },
     {
+      path: '/personal-center',
+      name: 'personal-center',
+      component: () => import('@/views/personal-center.vue'),
+      meta: { title: '个人中心', requiresAuth: true }
+    },
+    {
       path: '/free-create',
       name: 'free-create',
       component: () => import('@/views/FreeCreate.vue'),

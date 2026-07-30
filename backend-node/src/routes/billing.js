@@ -46,9 +46,7 @@ function routes(db, log) {
     },
     listAuditEvents: (req, res) => {
       try {
-        const events = req.tenant?.id
-          ? auditEvents.listForTenant(db, req.tenant.id, req.query?.limit)
-          : auditEvents.listForUser(db, req.user.id, req.query?.limit);
+        const events = auditEvents.listForUser(db, req.user.id, req.query?.limit);
         response.success(res, events);
       } catch (error) {
         log.error('billing list audit events', { error: error.message });
