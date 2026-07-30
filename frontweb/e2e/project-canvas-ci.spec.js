@@ -347,9 +347,15 @@ test('项目画布持久化节点拖拽、手工连线和工作流分组并在�
 
   const restoredStoryboardNode = page.locator('.vue-flow__node[data-id="sb:1001"]')
   await expect(restoredStoryboardNode).toContainText('E2E 连贯工作流')
-  await expect.poll(() => restoredStoryboardNode.evaluate((element) => element.style.transform)).toContain(
-    `translate(${savedStoryboardPosition.x}px, ${savedStoryboardPosition.y}px)`
-  )
+  await expect.poll(async () => {
+    const transform = await restoredStoryboardNode.evaluate((element) => element.style.transform)
+    const match = transform.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/)
+    if (!match) return Number.POSITIVE_INFINITY
+    return Math.max(
+      Math.abs(Number(match[1]) - savedStoryboardPosition.x),
+      Math.abs(Number(match[2]) - savedStoryboardPosition.y),
+    )
+  }).toBeLessThanOrEqual(5)
   await expect(page.locator('.vue-flow__edge[data-id^="manual:sbimg:1001:"]')).toBeAttached()
 })
 

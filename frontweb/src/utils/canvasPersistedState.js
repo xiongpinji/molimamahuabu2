@@ -1,8 +1,7 @@
-export const DEFAULT_CANVAS_PREFERENCES = Object.freeze({
-  grid_visible: true,
-  minimap_visible: true,
-  snap_enabled: false,
-})
+export {
+  DEFAULT_CANVAS_PREFERENCES,
+  normalizeCanvasPreferences,
+} from './canvasSettings.js'
 
 const HISTORY_LIMIT = 100
 const HISTORY_FIELDS = [
@@ -27,20 +26,6 @@ const HISTORY_FIELDS = [
   'actionError',
   'attachedSlot',
 ]
-
-export function normalizeCanvasPreferences(value) {
-  return {
-    grid_visible: typeof value?.grid_visible === 'boolean'
-      ? value.grid_visible
-      : DEFAULT_CANVAS_PREFERENCES.grid_visible,
-    minimap_visible: typeof value?.minimap_visible === 'boolean'
-      ? value.minimap_visible
-      : DEFAULT_CANVAS_PREFERENCES.minimap_visible,
-    snap_enabled: typeof value?.snap_enabled === 'boolean'
-      ? value.snap_enabled
-      : DEFAULT_CANVAS_PREFERENCES.snap_enabled,
-  }
-}
 
 function normalizeHistoryItem(item) {
   if (!item || !['success', 'failed'].includes(item.tone)) return null

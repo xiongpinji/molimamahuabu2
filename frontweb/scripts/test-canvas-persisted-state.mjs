@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import {
-  DEFAULT_CANVAS_PREFERENCES,
   mergeGenerationHistory,
-  normalizeCanvasPreferences,
   normalizeGenerationHistory,
 } from '../src/utils/canvasPersistedState.js'
+import {
+  DEFAULT_CANVAS_PREFERENCES,
+  normalizeCanvasPreferences,
+} from '../src/utils/canvasSettings.js'
 
 assert.deepEqual(normalizeCanvasPreferences(), DEFAULT_CANVAS_PREFERENCES)
 assert.deepEqual(normalizeCanvasPreferences({
@@ -12,6 +14,7 @@ assert.deepEqual(normalizeCanvasPreferences({
   minimap_visible: false,
   snap_enabled: true,
 }), {
+  ...DEFAULT_CANVAS_PREFERENCES,
   grid_visible: false,
   minimap_visible: false,
   snap_enabled: true,
