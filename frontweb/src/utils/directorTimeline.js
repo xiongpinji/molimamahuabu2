@@ -155,9 +155,12 @@ function normalizeObjects(input) {
         assetId: value.assetRef.assetId ?? null,
         url: String(value.assetRef.url || ''),
         kind: String(value.assetRef.kind || ''),
+        ...(/^#[0-9a-f]{6}$/i.test(String(value.assetRef.color || '')) ? { color: String(value.assetRef.color).toLowerCase() } : {}),
         ...(value.assetRef.characterId ? { characterId: String(value.assetRef.characterId) } : {}),
         description: String(value.assetRef.description || ''),
       } : null,
+      ikLocks: Object.fromEntries(['leftHand', 'rightHand', 'leftFoot', 'rightFoot'].map((endpoint) => [endpoint, value.ikLocks?.[endpoint] === true])),
+      ikTargets: Object.fromEntries(['leftHand', 'rightHand', 'leftFoot', 'rightFoot'].map((endpoint) => [endpoint, vector3(value.ikTargets?.[endpoint], [0, 0, 0])])),
       poseRotations: Object.fromEntries(Object.entries(value.poseRotations && typeof value.poseRotations === 'object' ? value.poseRotations : {})
         .filter(([semantic, rotation]) => semantic && Array.isArray(rotation))
         .map(([semantic, rotation]) => [String(semantic), vector3(rotation, [0, 0, 0])])),
@@ -287,6 +290,10 @@ function normalizeMotionTracks(input, objects, duration) {
       position: vector3(keyframe?.position, [0, 0, 0]),
       rotation: vector3(keyframe?.rotation, [0, 0, 0]),
       scale: vector3(keyframe?.scale, [1, 1, 1]).map((value) => Math.max(0.0001, value)),
+      easing: ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'step', 'custom'].includes(keyframe?.easing) ? keyframe.easing : 'linear',
+      speedPreset: String(keyframe?.speedPreset || '无'),
+      pathMode: ['curve', 'line', 'hold'].includes(keyframe?.pathMode) ? keyframe.pathMode : 'curve',
+      roll: Math.max(-180, Math.min(180, asNumber(keyframe?.roll, 0))),
     })).sort((a, b) => a.time - b.time)
     return [{ id: String(track?.id || `motion-${objectId}`), objectId, keyframes }]
   })
@@ -296,7 +303,11 @@ export function createDirectorTimeline(characters = []) {
   const firstCharacter = characters?.[0]
   const state = {
     version: DIRECTOR_TIMELINE_VERSION,
-    sequence: { name: '主序列', fps: 24, currentTime: 0, duration: 4, loop: false, autoKey: false, showMotionPaths: false, timelineZoom: 1, timelineCollapsed: false },
+    sequence: {
+      name: '主序列', fps: 24, currentTime: 0, duration: 4, loop: false, shotLoop: false,
+      autoKey: false, showMotionPaths: false, timelineZoom: 1, timelineCollapsed: false,
+      playbackRate: 1, animationViewMode: 'observer', orientationMode: 'shot',
+    },
     shots: [{
       id: id('shot'),
       name: '镜头 1',
@@ -320,6 +331,7 @@ export function createDirectorTimeline(characters = []) {
       backgroundColor: '#101014', panoramaUrl: '', ambientIntensity: 1, directionalIntensity: 2,
       sceneScale: 1, scenePosition: [0, 0, 0], sceneRotation: [0, 0, 0], panoramaRotation: 0, panoramaRadius: 60,
       showCharacterLabels: true, gridSnap: false, groundSnap: true, showGround: true, groundOpacity: 0.4, groundHeight: 0,
+      showObjectLabels: true, labelFontSize: 18, showBottomIds: true, showCameraGuides: false,
     },
     revision: 0,
     extensions: {},
@@ -370,10 +382,14 @@ export function normalizeDirectorTimeline(input, characters = []) {
       duration,
       activeCameraId,
       loop: sourceSequence.loop === true,
+      shotLoop: sourceSequence.shotLoop === true,
       autoKey: sourceSequence.autoKey === true,
       showMotionPaths: sourceSequence.showMotionPaths === true,
       timelineZoom: Math.max(0.5, Math.min(4, asNumber(sourceSequence.timelineZoom, 1))),
       timelineCollapsed: sourceSequence.timelineCollapsed === true,
+      playbackRate: [0.25, 0.5, 1, 1.5, 2].includes(asNumber(sourceSequence.playbackRate, 1)) ? asNumber(sourceSequence.playbackRate, 1) : 1,
+      animationViewMode: ['observer', 'follow'].includes(sourceSequence.animationViewMode) ? sourceSequence.animationViewMode : 'observer',
+      orientationMode: ['shot', 'locked', 'path'].includes(sourceSequence.orientationMode) ? sourceSequence.orientationMode : 'shot',
     },
     shots,
     tracks,
@@ -397,6 +413,10 @@ export function normalizeDirectorTimeline(input, characters = []) {
       showGround: environment.showGround !== false,
       groundOpacity: Math.max(0, Math.min(1, asNumber(environment.groundOpacity, 0.4))),
       groundHeight: asNumber(environment.groundHeight, 0),
+      showObjectLabels: environment.showObjectLabels !== false,
+      labelFontSize: Math.max(12, Math.min(64, asNumber(environment.labelFontSize, 18))),
+      showBottomIds: environment.showBottomIds !== false,
+      showCameraGuides: environment.showCameraGuides === true,
     },
     revision: Math.max(0, Math.floor(asNumber(source.revision, 0))),
     extensions: source.extensions && typeof source.extensions === 'object' && !Array.isArray(source.extensions) ? { ...source.extensions } : {},
@@ -502,6 +522,8 @@ export function appendDirectorObject(state, type = 'box', patch = {}) {
     locked: patch.locked === true,
     assetRef: patch.assetRef || null,
     poseRotations: patch.poseRotations || {},
+    ikLocks: patch.ikLocks || {},
+    ikTargets: patch.ikTargets || {},
     ...(type === 'light' ? { light: patch.light || {} } : {}),
     transform: patch.transform || { position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
   }
@@ -530,13 +552,14 @@ export function upsertMotionKeyframe(state, objectId, time, transform) {
     position: vector3(transform?.position, [0, 0, 0]),
     rotation: vector3(transform?.rotation, [0, 0, 0]),
     scale: vector3(transform?.scale, [1, 1, 1]),
+    easing: 'linear', speedPreset: '无', pathMode: 'curve', roll: 0,
   }
   let found = false
   const motionTracks = current.motionTracks.map((track) => {
     if (track.objectId !== targetId) return track
     found = true
     const existing = track.keyframes.findIndex((keyframe) => Math.abs(keyframe.time - targetTime) < 0.001)
-    const keyframes = existing >= 0 ? track.keyframes.map((keyframe, index) => index === existing ? { ...frame, id: keyframe.id } : keyframe) : [...track.keyframes, frame]
+    const keyframes = existing >= 0 ? track.keyframes.map((keyframe, index) => index === existing ? { ...keyframe, ...frame, id: keyframe.id } : keyframe) : [...track.keyframes, frame]
     return { ...track, keyframes: keyframes.sort((a, b) => a.time - b.time) }
   })
   if (!found) motionTracks.push({ id: id('motion'), objectId: targetId, keyframes: [frame] })
@@ -551,7 +574,13 @@ export function interpolateMotionTransform(state, objectId, time) {
   const before = [...track.keyframes].reverse().find((keyframe) => keyframe.time <= target) || track.keyframes[0]
   const after = track.keyframes.find((keyframe) => keyframe.time >= target) || track.keyframes.at(-1)
   if (before === after || after.time === before.time) return { position: [...before.position], rotation: [...before.rotation], scale: [...before.scale] }
-  const progress = (target - before.time) / (after.time - before.time)
+  const rawProgress = (target - before.time) / (after.time - before.time)
+  const progress = ({
+    'ease-in': (value) => value * value,
+    'ease-out': (value) => 1 - ((1 - value) ** 2),
+    'ease-in-out': (value) => value < 0.5 ? 2 * value * value : 1 - ((-2 * value + 2) ** 2) / 2,
+    step: (value) => value < 1 ? 0 : 1,
+  }[after.easing] || ((value) => value))(rawProgress)
   const lerp = (start, end) => start.map((value, index) => value + (end[index] - value) * progress)
   return { position: lerp(before.position, after.position), rotation: lerp(before.rotation, after.rotation), scale: lerp(before.scale, after.scale) }
 }
@@ -579,7 +608,8 @@ export function removeDirectorObject(state, objectId) {
   const cameras = current.cameras.filter((camera) => !removedCameraIds.has(camera.id))
   const fallbackCameraId = cameras[0]?.id || ''
   const shots = current.shots.map((shot) => removedCameraIds.has(shot.cameraId) ? { ...shot, cameraId: fallbackCameraId } : shot)
-  return normalizeDirectorTimeline({ ...current, objects, tracks, cameras, shots, revision: current.revision + 1 })
+  const motionTracks = current.motionTracks.filter((track) => !removedIds.has(track.objectId))
+  return normalizeDirectorTimeline({ ...current, objects, tracks, motionTracks, cameras, shots, revision: current.revision + 1 })
 }
 
 export function appendDirectorCamera(state, patch = {}) {
@@ -627,7 +657,8 @@ export function duplicateDirectorObject(state, objectId) {
   if (sourceCamera) return appendDirectorCamera(current, { ...sourceCamera, id: undefined, objectId: undefined, name: `${source.name} 副本`, transform })
   return appendDirectorObject(current, source.type, {
     name: `${source.name} 副本`, parentId: source.parentId, visible: source.visible, assetRef: source.assetRef ? { ...source.assetRef } : null,
-    light: source.light ? { ...source.light } : null, transform,
+    light: source.light ? { ...source.light } : null, poseRotations: { ...source.poseRotations },
+    ikLocks: { ...source.ikLocks }, ikTargets: { ...source.ikTargets }, transform,
   })
 }
 

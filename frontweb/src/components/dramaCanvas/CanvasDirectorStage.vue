@@ -26,23 +26,26 @@
 
     <div class="director-stage__body">
       <aside class="director-stage__sidebar">
+        <nav class="director-stage__left-tabs" aria-label="导演台左侧功能">
+          <button type="button" :class="{ active: leftPanelTab === 'outline' }" @click="leftPanelTab = 'outline'">大纲</button>
+          <button type="button" :class="{ active: leftPanelTab === 'assets' }" @click="leftPanelTab = 'assets'">资产</button>
+          <button type="button" :class="{ active: leftPanelTab === 'ai' }" @click="openAIRecognition">AI识图</button>
+        </nav>
+        <template v-if="leftPanelTab === 'outline'">
         <section class="stage-section">
-          <div class="stage-section__title">场景树</div>
+          <div class="stage-section__title">场景大纲</div>
           <input v-model="sceneSearch" class="scene-search" type="search" placeholder="搜索场景对象" aria-label="搜索场景对象" />
-          <div v-if="workspaceMode === 'animation'" class="object-create-row">
-            <button type="button" class="small-button" @click="addSceneObject('box')">+ 立方体</button>
-            <button type="button" class="small-button" @click="addSceneObject('sphere')">+ 球体</button>
-            <button type="button" class="small-button" @click="addSceneObject('group')">+ 空对象</button>
-            <button type="button" class="small-button" @click="addCamera">+ 相机</button>
-            <button type="button" class="small-button" @click="addSceneObject('light')">+ 灯光</button>
+          <div class="director-outline-counts">
+            <span>人物 ({{ directorObjectCounts.people }})</span>
+            <span>道具 ({{ directorObjectCounts.props }})</span>
+            <span>机位 ({{ directorObjectCounts.cameras }})</span>
           </div>
-          <details v-if="workspaceMode === 'animation'" class="role-create-library" open>
-            <summary>添加角色与群众</summary>
-            <div class="object-create-row object-create-row--roles">
-              <button v-for="role in ROLE_ARCHETYPES" :key="role.kind" type="button" class="small-button" @click="addRoleArchetype(role)">{{ role.label }}</button>
-              <button type="button" class="small-button" @click="addCrowd">群众 3×3</button>
-            </div>
-          </details>
+          <div class="object-create-row director-outline-actions">
+            <button ref="addRoleButtonRef" type="button" class="small-button" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">+ 人物</button>
+            <button ref="addCameraButtonRef" type="button" class="small-button" @click="addCamera">+ 机位</button>
+            <button type="button" class="small-button" @click="addSceneGroup">+ 新建组</button>
+            <button type="button" class="small-button" @click="crowdModalOpen = true">+ 群众阵列</button>
+          </div>
           <div
             v-for="object in filteredDirectorObjects"
             :key="object.id"
@@ -56,6 +59,8 @@
             </button>
             <button type="button" class="tree-icon-button" :aria-label="`${object.visible ? '隐藏' : '显示'} ${object.name}`" :title="object.visible ? '隐藏' : '显示'" @click="toggleObjectVisibility(object)">{{ object.visible ? '◉' : '○' }}</button>
             <button type="button" class="tree-icon-button" :aria-label="`${object.locked ? '解锁' : '锁定'} ${object.name}`" :title="object.locked ? '解锁' : '锁定'" @click="toggleObjectLock(object)">{{ object.locked ? '🔒' : '🔓' }}</button>
+            <button v-if="object.type === 'group'" type="button" class="tree-icon-button" :aria-label="`解散分组 ${object.name}`" title="解散分组" @click="releaseGroup(object.id)">解散分组</button>
+            <button type="button" class="tree-icon-button" :aria-label="`删除 ${object.name}`" title="删除" @click="deleteSceneObject(object.id)">×</button>
           </div>
           <div v-if="!filteredDirectorObjects.length" class="stage-empty">{{ timeline.objects.length ? '没有匹配对象' : '使用上方按钮添加可编辑对象' }}</div>
         </section>
@@ -259,10 +264,44 @@
           <div v-else class="stage-empty">模型不含骨骼</div>
         </section>
         </template>
+        </template>
+        <section v-else-if="leftPanelTab === 'assets'" class="stage-section director-asset-library" aria-label="导演台资产库">
+          <div class="stage-section__title">资产库</div>
+          <nav class="director-asset-tabs" aria-label="资产类型">
+            <button
+              v-for="tab in DIRECTOR_ASSET_TABS"
+              :key="tab.value"
+              type="button"
+              :class="{ active: assetLibraryTab === tab.value }"
+              @click="assetLibraryTab = tab.value"
+            >{{ tab.label }}</button>
+          </nav>
+          <input v-model="assetLibrarySearch" type="search" aria-label="搜索导演台资产" placeholder="搜索资产" />
+          <div class="director-asset-grid">
+            <button
+              v-for="asset in filteredAssetItems"
+              :key="`${assetLibraryTab}-${asset.name}`"
+              type="button"
+              class="director-asset-card"
+              @click="activateAssetItem(asset)"
+            >
+              <span class="director-asset-card__preview">{{ assetLibraryTab === 'cameras' ? '▣' : assetLibraryTab === 'people' ? '人' : assetLibraryTab === 'templates' ? '景' : '◇' }}</span>
+              <span>{{ asset.name }}</span>
+            </button>
+          </div>
+          <button v-if="assetLibraryTab === 'templates'" type="button" class="small-button" @click="templateImportRef?.click()">导入模板 JSON</button>
+          <input ref="templateImportRef" class="visually-hidden" type="file" accept="application/json,.json" aria-label="导入模板 JSON" @change="onTemplateImport" />
+        </section>
+        <section v-else class="stage-section director-ai-panel" aria-label="AI识图">
+          <div class="stage-section__title">AI识图</div>
+          <p>上传参考图后识别场景、角色或道具，并把结果保存为可移动的 3D 场景对象。</p>
+          <button type="button" class="small-button" @click="aiImportOpen = true">打开 AI 识图</button>
+          <button type="button" class="small-button" @click="leftPanelTab = 'assets'; assetLibraryTab = 'templates'">从模板开始</button>
+        </section>
       </aside>
 
       <main class="director-stage__viewport" :class="{ 'director-stage__viewport--timeline': workspaceMode === 'animation' }">
-        <canvas ref="canvasRef" class="director-stage__canvas" aria-label="3D 导演台预览" />
+        <canvas ref="canvasRef" class="director-stage__canvas" aria-label="3D 导演台预览" @wheel="onViewportWheel" />
         <div class="viewport-tools" aria-label="视口变换工具">
           <button v-for="tool in TRANSFORM_TOOLS" :key="tool.mode" type="button" :class="{ active: transformMode === tool.mode }" :aria-label="tool.label" @click="setTransformMode(tool.mode)">{{ tool.icon }}</button>
           <button type="button" :class="{ active: transformSpace === 'local' }" aria-label="切换局部与世界坐标" @click="toggleTransformSpace">{{ transformSpace === 'local' ? '局部' : '世界' }}</button>
@@ -271,6 +310,23 @@
           <span class="composition-guides__v composition-guides__v--1" /><span class="composition-guides__v composition-guides__v--2" />
           <span class="composition-guides__h composition-guides__h--1" /><span class="composition-guides__h composition-guides__h--2" />
           <span class="composition-guides__safe" />
+        </div>
+        <div
+          v-if="timeline.environment.showObjectLabels"
+          class="director-object-labels"
+          :style="{ '--director-label-size': `${timeline.environment.labelFontSize}px` }"
+          aria-label="场景对象标签"
+        >
+          <button
+            v-for="object in visibleDirectorObjects"
+            :key="`label-${object.id}`"
+            type="button"
+            :class="{ selected: selectedObjectId === object.id }"
+            @click="selectSceneObject(object.id)"
+          >
+            {{ object.name }}
+            <small v-if="timeline.environment.showBottomIds">{{ object.id }}</small>
+          </button>
         </div>
         <div class="director-stage__legend">
           <span><i class="stage-dot stage-dot--scene" />场景</span>
@@ -291,6 +347,29 @@
         <div v-else-if="errorMessage" class="director-stage__error">{{ errorMessage }}</div>
 
         <section v-if="workspaceMode === 'animation'" class="timeline-panel" :class="{ collapsed: timeline.sequence.timelineCollapsed }" :style="{ '--timeline-zoom': timeline.sequence.timelineZoom }" aria-label="导演时间线">
+          <div class="animation-studio-toolbar" aria-label="动画导演工具">
+            <button type="button" @click="newMotionTrack">新建轨道</button>
+            <button type="button" :disabled="!selectedDirectorObject" @click="addCurrentMotionKeyframe">保存当前</button>
+            <button type="button" :disabled="!selectedMotionTrack" @click="deleteSelectedMotionTrack">删除当前</button>
+            <select aria-label="动画机位" :value="selectedCamera?.id || timeline.sequence.activeCameraId" @change="selectAnimationCamera($event.target.value)">
+              <option v-for="camera in timeline.cameras" :key="`animation-${camera.id}`" :value="camera.id">{{ camera.name }}</option>
+            </select>
+            <button type="button" :class="{ active: timeline.sequence.loop }" @click="toggleLoopPlayback">整段循环</button>
+            <button type="button" :class="{ active: timeline.sequence.shotLoop }" @click="toggleSequenceOption('shotLoop')">镜头循环</button>
+            <button type="button" @click="toggleAnimationViewMode">{{ timeline.sequence.animationViewMode === 'observer' ? '观察机位' : '跟随镜头' }}</button>
+            <select aria-label="播放速度" :value="timeline.sequence.playbackRate" @change="updateSequenceValue('playbackRate', Number($event.target.value))">
+              <option v-for="rate in PLAYBACK_RATES" :key="rate" :value="rate">{{ rate }}x</option>
+            </select>
+            <select aria-label="镜头方向" :value="timeline.sequence.orientationMode" @change="updateSequenceValue('orientationMode', $event.target.value)">
+              <option v-for="mode in ORIENTATION_MODES" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+            </select>
+            <button type="button" :disabled="!selectedDirectorObject" @click="addCurrentMotionKeyframe">添加关键帧</button>
+            <button type="button" :disabled="!isSelectedCharacterObject" @click="addPersonFrame">人物帧</button>
+            <label>时长
+              <input type="number" min="0.25" step="0.25" :value="duration" aria-label="动画时长" @change="updateTimelineDuration($event.target.value)" />
+            </label>
+            <button type="button" :disabled="exporting || initializing" @click="exportTimelineVideo">导出视频</button>
+          </div>
           <div class="timeline-toolbar">
             <div class="timeline-controls">
               <button type="button" :aria-label="playing ? '暂停' : '播放'" @click="togglePlayback">{{ playing ? 'Ⅱ' : '▶' }}</button>
@@ -349,26 +428,58 @@
           <div v-for="track in timeline.motionTracks" :key="track.id" class="timeline-track motion-track">
             <div class="track-label">{{ objectName(track.objectId) }}</div>
             <div class="track-lane">
-              <button v-for="keyframe in track.keyframes" :key="keyframe.id" type="button" class="motion-keyframe" :style="keyframeStyle(keyframe)" :aria-label="`${objectName(track.objectId)} ${formatSeconds(keyframe.time)} 关键帧`" @click="setCurrentTime(keyframe.time)">◆</button>
+              <button v-for="keyframe in track.keyframes" :key="keyframe.id" type="button" class="motion-keyframe" :class="{ selected: selectedMotionKeyframeId === keyframe.id }" :style="keyframeStyle(keyframe)" :aria-label="`${objectName(track.objectId)} ${formatSeconds(keyframe.time)} 关键帧`" @click="selectMotionKeyframe(track, keyframe)">◆</button>
             </div>
           </div>
           <div v-if="!timeline.tracks.length" class="timeline-empty">暂无角色轨道</div>
           </div>
+          <section v-if="keyframePanelOpen && selectedMotionKeyframe" class="keyframe-detail-panel" aria-label="缓动曲线 / 参数">
+            <div class="keyframe-detail-panel__header"><strong>缓动曲线 / 参数</strong><button type="button" aria-label="关闭关键帧参数" @click="keyframePanelOpen = false">×</button></div>
+            <label>时间<input type="number" min="0" :max="duration" step="0.1" :value="selectedMotionKeyframe.time" @change="updateSelectedMotionKeyframe('time', Number($event.target.value))" /></label>
+            <label>路径
+              <select :value="selectedMotionKeyframe.pathMode" @change="updateSelectedMotionKeyframe('pathMode', $event.target.value)">
+                <option value="curve">曲线</option><option value="line">直线</option><option value="hold">保持</option>
+              </select>
+            </label>
+            <label>横滚角<input type="number" min="-180" max="180" step="1" :value="selectedMotionKeyframe.roll" @change="updateSelectedMotionKeyframe('roll', Number($event.target.value))" /></label>
+            <div class="keyframe-speed-presets">
+              <button v-for="preset in DIRECTOR_SPEED_PRESETS" :key="preset.name" type="button" :class="{ active: selectedMotionKeyframe.speedPreset === preset.name }" @click="applyKeyframeSpeedPreset(preset)">{{ preset.name }}</button>
+            </div>
+            <div class="keyframe-detail-actions">
+              <button type="button" @click="resetSelectedMotionKeyframe">重置</button>
+              <button type="button" @click="applyCurrentViewToKeyframe">应用当前视图</button>
+              <button type="button" @click="deleteSelectedMotionKeyframe">删除</button>
+            </div>
+          </section>
         </section>
         <nav class="director-stage__quick-toolbar" aria-label="导演台工具栏">
-          <button type="button" :class="{ active: transformMode === 'translate' }" aria-label="移动工具" title="移动 (V)" @click="setTransformMode('translate')">⌁</button>
-          <button type="button" :class="{ active: transformMode === 'rotate' }" aria-label="旋转工具" title="旋转 (E)" @click="setTransformMode('rotate')">⟳</button>
-          <button ref="addRoleButtonRef" type="button" aria-label="添加男性角色" title="添加男性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[0])">♂</button>
-          <button type="button" aria-label="添加女性角色" title="添加女性角色" @click="addRoleArchetype(ROLE_ARCHETYPES[1])">♀</button>
-          <button type="button" aria-label="全景图" title="全景图" @click="selectEnvironmentInspector">720°</button>
-          <button ref="addCameraButtonRef" type="button" aria-label="添加机位" title="添加机位" @click="addCamera">▣</button>
-          <button type="button" aria-label="选择画幅比例" title="选择画幅比例" @click="cycleCameraAspect">▢</button>
-          <button type="button" :disabled="capturing || initializing" aria-label="截图" title="截图" @click="captureToCanvasAsset">◎</button>
-          <button ref="aiImportButtonRef" type="button" aria-label="AI 识图导入" title="AI 识图导入" @click="aiImportOpen = true">◫</button>
-          <button type="button" aria-label="全屏" title="全屏" @click="toggleFullscreen">⤢</button>
+          <button type="button" :class="{ active: transformMode === 'translate' }" @click="setTransformMode('translate')">移动</button>
+          <button type="button" :class="{ active: transformMode === 'rotate' }" @click="setTransformMode('rotate')">旋转</button>
+          <button type="button" :class="{ active: transformMode === 'scale' }" @click="setTransformMode('scale')">缩放</button>
+          <button type="button" :class="{ active: timeline.environment.gridSnap }" @click="updateEnvironment('gridSnap', !timeline.environment.gridSnap)">吸附</button>
+          <button type="button" @click="setViewportPreset('top')">俯视</button>
+          <button type="button" @click="setViewportPreset('front')">正面</button>
+          <button type="button" @click="resetCamera">重置</button>
+          <button type="button" :disabled="!selectedDirectorObject" @click="focusSelectedObject">聚焦</button>
+          <button type="button" :disabled="!canUndo" @click="undoDirector">撤销</button>
+          <button type="button" :disabled="!canRedo" @click="redoDirector">重做</button>
           <span class="director-stage__quick-divider" />
-          <button type="button" :class="{ active: workspaceMode === 'scene' }" aria-label="场景编辑" title="场景编辑" @click="workspaceMode = 'scene'">▱</button>
-          <button type="button" :class="{ active: workspaceMode === 'animation' }" aria-label="动画时间轴" title="动画时间轴" @click="workspaceMode = workspaceMode === 'animation' ? 'scene' : 'animation'">◴</button>
+          <button type="button" @click="panoramaModalOpen = true">全景</button>
+          <button type="button" :class="{ active: labelsMenuOpen }" @click="labelsMenuOpen = !labelsMenuOpen; aspectMenuOpen = false">标签</button>
+          <button type="button" :class="{ active: aspectMenuOpen }" @click="openAspectMenu">{{ cameraAspectLabel(selectedCamera?.aspect || timeline.cameras[0]?.aspect) }}</button>
+          <button type="button" aria-label="动画时间轴" :class="{ active: workspaceMode === 'animation' }" @click="workspaceMode = workspaceMode === 'animation' ? 'scene' : 'animation'">动画(BATE)</button>
+          <button type="button" class="confirm-composition-button" :disabled="capturing || initializing" @click="confirmComposition">确认构图</button>
+          <button type="button" aria-label="全屏" title="全屏" @click="toggleFullscreen">⤢</button>
+          <section v-if="labelsMenuOpen" class="quick-toolbar-popover labels-popover" aria-label="标签设置">
+            <label><input type="checkbox" :checked="timeline.environment.showObjectLabels" @change="updateEnvironment('showObjectLabels', $event.target.checked)" /> 显示标签</label>
+            <label>字体大小<input type="range" min="12" max="64" step="1" :value="timeline.environment.labelFontSize" @input="updateEnvironment('labelFontSize', $event.target.value)" /></label>
+            <label><input type="checkbox" :checked="timeline.environment.showBottomIds" @change="updateEnvironment('showBottomIds', $event.target.checked)" /> 底部标识</label>
+            <label><input type="checkbox" :checked="timeline.environment.showCameraGuides" @change="updateEnvironment('showCameraGuides', $event.target.checked)" /> 机位辅助线</label>
+          </section>
+          <section v-if="aspectMenuOpen" class="quick-toolbar-popover aspect-popover" aria-label="画幅比例">
+            <button v-for="ratio in CAMERA_ASPECTS.filter((item) => item.value)" :key="`quick-${ratio.label}`" type="button" @click="selectAspectRatio(ratio.label)">{{ ratio.label }}</button>
+          </section>
+          <span v-if="compositionConfirmMessage" class="composition-confirm-message">{{ compositionConfirmMessage }}</span>
         </nav>
       </main>
 
@@ -381,7 +492,19 @@
           </div>
           <template v-if="inspectorTab === 'properties' || !isSelectedCharacterObject">
           <label>名称<input :value="selectedDirectorObject.name" @input="updateSelectedObject({ name: $event.target.value })" /></label>
+          <button type="button" class="small-button" @click="toggleObjectLock(selectedDirectorObject)">{{ selectedDirectorObject.locked ? '解锁' : '锁定' }}</button>
           <label class="visibility-row"><input type="checkbox" :checked="selectedDirectorObject.visible" @change="updateSelectedObject({ visible: $event.target.checked })" /> 显示对象</label>
+          <div v-if="isSelectedCharacterObject" class="character-body-types">
+            <strong>体型</strong>
+            <button
+              v-for="role in [ROLE_ARCHETYPES[0], ROLE_ARCHETYPES[1], ROLE_ARCHETYPES[6], ROLE_ARCHETYPES[3], ROLE_ARCHETYPES[4]]"
+              :key="`body-${role.kind}`"
+              type="button"
+              :class="{ active: selectedDirectorObject.assetRef?.kind === role.kind }"
+              @click="setCharacterArchetype(role)"
+            >{{ role.label }}</button>
+            <label>颜色<input type="color" :value="selectedDirectorObject.assetRef?.color || '#4f8ef7'" @input="setCharacterColor($event.target.value)" /></label>
+          </div>
           <div v-if="selectedDirectorObject.assetRef?.description" class="ai-reference-description">
             <strong>AI 识图描述</strong>
             <p>{{ selectedDirectorObject.assetRef.description }}</p>
@@ -402,6 +525,7 @@
           </div>
           <div class="inspector-group">
             <strong>缩放</strong>
+            <label v-if="isSelectedCharacterObject">统一缩放<input type="range" min="0.1" max="3" step="0.1" :value="selectedInspectorTransform.scale[0]" @input="updateUniformScale($event.target.value)" /></label>
             <div class="vector-row"><label v-for="(axis, index) in axes" :key="`s-${axis}`">{{ axis }}<input type="number" min="0.0001" step="0.1" :value="selectedInspectorTransform.scale[index]" @change="updateObjectScale(index, $event.target.value, $event.shiftKey)" /></label></div>
           </div>
           <template v-if="selectedCamera">
@@ -444,13 +568,34 @@
               <button type="button" class="small-button" @click="captureToCanvasAsset">机位截图回写画布</button>
             </div>
           </template>
-          <button type="button" class="small-button" @click="duplicateSelectedObject">复制对象</button>
+          <button type="button" class="small-button" aria-label="复制对象" @click="duplicateSelectedObject">复制</button>
           <button type="button" class="danger-button" @click="deleteSelectedObject">删除对象</button>
           </template>
           <section v-else class="director-pose-panel" aria-label="角色姿势">
             <strong>姿势预设</strong>
             <div class="pose-presets">
               <button v-for="preset in POSE_PRESETS" :key="`inspector-${preset.name}`" type="button" class="small-button" :disabled="!availableSemanticControls.length" @click="applyPosePreset(preset)">{{ preset.name }}</button>
+            </div>
+            <div class="pose-mirror-actions" aria-label="姿势镜像">
+              <button v-for="section in DIRECTOR_POSE_MIRROR_SECTIONS" :key="section.label" type="button" class="small-button" @click="mirrorPoseLeftToRight(section)">{{ section.label }} 镜像左→右</button>
+            </div>
+            <strong>IK 端点</strong>
+            <div class="ik-endpoint-controls">
+              <button
+                v-for="endpoint in IK_ENDPOINTS"
+                :key="endpoint.value"
+                type="button"
+                :class="{ active: selectedIkEndpoint === endpoint.value, locked: selectedDirectorObject.ikLocks?.[endpoint.value] }"
+                @click="toggleIkEndpoint(endpoint.value)"
+              >{{ endpoint.label }}{{ selectedDirectorObject.ikLocks?.[endpoint.value] ? ' · 已锁定' : '' }}</button>
+            </div>
+            <div v-if="selectedIkEndpoint" class="inspector-group">
+              <strong>{{ IK_ENDPOINTS.find((endpoint) => endpoint.value === selectedIkEndpoint)?.label }} IK 目标</strong>
+              <div class="vector-row">
+                <label v-for="(axis, index) in axes" :key="`ik-${selectedIkEndpoint}-${axis}`">{{ axis }}
+                  <input type="number" step="0.1" :value="selectedDirectorObject.ikTargets?.[selectedIkEndpoint]?.[index] || 0" @input="updateIkTarget(index, $event.target.value)" />
+                </label>
+              </div>
             </div>
             <strong>姿势调节</strong>
             <div v-if="availableSemanticControls.length" class="semantic-pose-controls">
@@ -552,7 +697,51 @@
     <section v-if="helpOpen" ref="helpModalRef" class="director-modal" role="dialog" aria-modal="true" aria-label="导演台帮助">
       <div class="director-modal__panel">
         <div class="director-modal__header"><strong>3D 导演台帮助</strong><button type="button" aria-label="关闭导演台帮助" @click="helpOpen = false">×</button></div>
-        <ol><li>从场景树添加角色、几何体、空对象或机位。</li><li>在属性检查器精确调整位置、旋转、缩放、画幅和环境。</li><li>启用自动关键帧后，在不同时间修改对象即可形成运动。</li><li>通过姿势预设或语义滑杆调整支持骨骼的角色。</li><li>截图可回写项目画布，视频可导出 WebM 或 MP4。</li></ol>
+        <div class="director-help-grid">
+          <section><strong>水平移动</strong><span>W A S D</span></section>
+          <section><strong>上下移动</strong><span>E Q</span></section>
+          <section><strong>加速</strong><span>Shift</span></section>
+          <section><strong>移动视角</strong><span>右键拖拽 / 中键拖拽 / 方向键 / 触控板双指滑动</span></section>
+          <section><strong>相机</strong><span>[ ] 调整焦距 · F 聚焦 · C 应用视图到机位 · 0 回到原点</span></section>
+        </div>
+        <label>移动灵敏度<input v-model.number="movementSensitivity" type="range" min="0.2" max="3" step="0.1" /> {{ movementSensitivity.toFixed(1) }}×</label>
+        <label class="visibility-row"><input v-model="invertTouchpad" type="checkbox" /> 反转触控板双指滑动方向</label>
+        <label class="visibility-row"><input v-model="wheelFovEnabled" type="checkbox" /> 滚轮调整 FOV</label>
+      </div>
+    </section>
+
+    <section v-if="crowdModalOpen" class="director-modal" role="dialog" aria-modal="true" aria-label="群众阵列">
+      <div class="director-modal__panel director-modal__panel--compact">
+        <div class="director-modal__header"><strong>群众阵列</strong><button type="button" aria-label="关闭群众阵列" @click="crowdModalOpen = false">×</button></div>
+        <label>行数<input v-model.number="crowdRows" type="number" min="1" max="12" /></label>
+        <label>列数<input v-model.number="crowdColumns" type="number" min="1" max="12" /></label>
+        <label>间距<input v-model.number="crowdSpacing" type="number" min="0.5" max="6" step="0.1" /></label>
+        <p>共 {{ Math.max(1, crowdRows) * Math.max(1, crowdColumns) }} 人</p>
+        <div class="director-modal__actions"><button type="button" @click="crowdModalOpen = false">取消</button><button type="button" @click="confirmCrowdArray">添加群众</button></div>
+      </div>
+    </section>
+
+    <section v-if="pendingTemplate" class="director-modal" role="dialog" aria-modal="true" aria-label="应用场景模板">
+      <div class="director-modal__panel director-modal__panel--compact">
+        <div class="director-modal__header"><strong>应用「{{ pendingTemplate.name }}」</strong><button type="button" aria-label="关闭模板确认" @click="pendingTemplate = null">×</button></div>
+        <p>将覆盖所有人物、机位和道具，此操作不可撤销。</p>
+        <div class="director-modal__actions"><button type="button" @click="pendingTemplate = null">取消</button><button type="button" class="danger-button" @click="confirmSceneTemplate">确认应用</button></div>
+      </div>
+    </section>
+
+    <section v-if="panoramaModalOpen" class="director-modal" role="dialog" aria-modal="true" aria-label="生成站位参考">
+      <div class="director-modal__panel">
+        <div class="director-modal__header"><strong>生成站位参考</strong><button type="button" aria-label="关闭生成站位参考" @click="closePanoramaModal">×</button></div>
+        <div class="panorama-source-actions">
+          <button type="button" @click="panoramaFileRef?.click()">本地上传</button>
+          <button type="button" @click="assetStatus = '暂无历史记录'">历史记录</button>
+        </div>
+        <input ref="panoramaFileRef" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" @change="onPanoramaFile" />
+        <img v-if="panoramaReferencePreview" class="ai-import-preview" :src="panoramaReferencePreview" alt="站位参考图预览" />
+        <label><input v-model="panoramaReferenceMode" type="radio" value="insert" /> 插入当前导演台（不覆盖）</label>
+        <label><input v-model="panoramaReferenceMode" type="radio" value="override" /> 覆盖当前导演台</label>
+        <div v-if="assetStatus" class="resource-status">{{ assetStatus }}</div>
+        <button type="button" :disabled="!panoramaReferenceFile" @click="applyPanoramaReference">应用参考图</button>
       </div>
     </section>
 
@@ -624,28 +813,22 @@ import {
   updateActionClip,
   updateDirectorObject,
 } from '@/utils/directorTimeline'
+import {
+  DIRECTOR_CAMERA_ASSETS,
+  DIRECTOR_POSE_MIRROR_SECTIONS,
+  DIRECTOR_PROP_ASSETS,
+  DIRECTOR_SCENE_TEMPLATES,
+  DIRECTOR_SPEED_PRESETS,
+  appendConfiguredCrowd,
+  isDirectorTouchpadGesture,
+  releaseDirectorGroup,
+} from '@/utils/director-parity'
 
 const CAMERA_ASPECTS = [
   { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
   { label: '4:3', value: 4 / 3 }, { label: '1:1', value: 1 }, { label: '3:4', value: 3 / 4 }, { label: '9:16', value: 9 / 16 },
 ]
-const CAMERA_PRESETS = [
-  { name: '当前视角', current: true },
-  { name: '正面中景', position: [0, 1.6, 4.8], target: [0, 1.1, 0], fov: 50 },
-  { name: '正面特写', position: [0, 1.65, 2.4], target: [0, 1.45, 0], fov: 42 },
-  { name: '正面全景', position: [0, 2.2, 8.2], target: [0, 1, 0], fov: 58 },
-  { name: '侧面跟拍', position: [5.2, 1.7, 0.8], target: [0, 1.1, 0], fov: 50 },
-  { name: '侧面近景', position: [3.1, 1.65, 0.4], target: [0, 1.35, 0], fov: 42 },
-  { name: '背面中景', position: [0, 1.7, -4.8], target: [0, 1.1, 0], fov: 50 },
-  { name: '俯拍全景', position: [0, 8, 5], target: [0, 0, 0], fov: 58 },
-  { name: '45° 俯拍', position: [5, 5, 5], target: [0, 1, 0], fov: 50 },
-  { name: '低角度仰拍', position: [0, 0.35, 3.8], target: [0, 1.55, 0], fov: 48 },
-  { name: '低角度广角', position: [0, 0.25, 5], target: [0, 1.4, 0], fov: 72 },
-  { name: '过肩镜头', position: [-1.25, 1.65, 2.4], target: [0, 1.4, 0], fov: 42 },
-  { name: '过肩镜头（右）', position: [1.25, 1.65, 2.4], target: [0, 1.4, 0], fov: 42 },
-  { name: '鸟瞰', position: [0, 10, 0.01], target: [0, 0, 0], fov: 55 },
-  { name: '荷兰角', position: [3.8, 2, 4.4], target: [0, 1.1, 0], fov: 50, roll: -0.28 },
-]
+const CAMERA_PRESETS = [{ name: '当前视角', current: true }, ...DIRECTOR_CAMERA_ASSETS]
 
 const directorLight = (name, azimuth, elevation, intensity, color = '#ffffff', type = 'soft', distance = 7) => ({
   name, type, color, intensity, azimuth, elevation, distance,
@@ -689,41 +872,82 @@ const SEMANTIC_BONES = {
   root: ['root', 'hips', 'pelvis', 'mixamorighips'], spine: ['spine', 'chest', 'upperchest', 'mixamorigspine'], head: ['head', 'neck', 'mixamorighead'],
   leftShoulder: ['leftshoulder', 'leftarm', 'upperarm_l', 'mixamorigleftarm'], rightShoulder: ['rightshoulder', 'rightarm', 'upperarm_r', 'mixamorigrightarm'],
   leftElbow: ['leftforearm', 'lowerarm_l', 'mixamorigleftforearm'], rightElbow: ['rightforearm', 'lowerarm_r', 'mixamorigrightforearm'],
+  leftWrist: ['lefthand', 'hand_l', 'mixamoriglefthand'], rightWrist: ['righthand', 'hand_r', 'mixamorigrighthand'],
   leftHip: ['leftupleg', 'thigh_l', 'mixamorigleftupleg'], rightHip: ['rightupleg', 'thigh_r', 'mixamorigrightupleg'],
   leftKnee: ['leftleg', 'calf_l', 'mixamorigleftleg'], rightKnee: ['rightleg', 'calf_r', 'mixamorigrightleg'],
+  leftAnkle: ['leftfoot', 'foot_l', 'mixamorigleftfoot'], rightAnkle: ['rightfoot', 'foot_r', 'mixamorigrightfoot'],
 }
 const SEMANTIC_POSE_CONTROLS = [
   { label: '身体前倾', semantic: 'root', axis: 0, min: -45, max: 45 }, { label: '身体转身', semantic: 'root', axis: 1, min: -90, max: 90 }, { label: '身体侧倾', semantic: 'root', axis: 2, min: -45, max: 45 },
   { label: '躯干前倾', semantic: 'spine', axis: 0, min: -45, max: 45 }, { label: '躯干扭转', semantic: 'spine', axis: 1, min: -60, max: 60 }, { label: '躯干侧倾', semantic: 'spine', axis: 2, min: -45, max: 45 },
   { label: '头部点头', semantic: 'head', axis: 0, min: -60, max: 60 }, { label: '头部转头', semantic: 'head', axis: 1, min: -90, max: 90 }, { label: '头部歪头', semantic: 'head', axis: 2, min: -45, max: 45 },
-  { label: '左肩前举', semantic: 'leftShoulder', axis: 0, min: -120, max: 120 }, { label: '右肩前举', semantic: 'rightShoulder', axis: 0, min: -120, max: 120 },
-  { label: '左肘弯曲', semantic: 'leftElbow', axis: 0, min: 0, max: 150 }, { label: '右肘弯曲', semantic: 'rightElbow', axis: 0, min: 0, max: 150 },
-  { label: '左髋前抬', semantic: 'leftHip', axis: 0, min: -90, max: 120 }, { label: '右髋前抬', semantic: 'rightHip', axis: 0, min: -90, max: 120 },
+  { label: '左肩前举', semantic: 'leftShoulder', axis: 0, min: -120, max: 120 }, { label: '左肩旋转', semantic: 'leftShoulder', axis: 1, min: -120, max: 120 }, { label: '左肩侧举', semantic: 'leftShoulder', axis: 2, min: -150, max: 150 },
+  { label: '右肩前举', semantic: 'rightShoulder', axis: 0, min: -120, max: 120 }, { label: '右肩旋转', semantic: 'rightShoulder', axis: 1, min: -120, max: 120 }, { label: '右肩侧举', semantic: 'rightShoulder', axis: 2, min: -150, max: 150 },
+  { label: '左肘弯曲', semantic: 'leftElbow', axis: 0, min: 0, max: 150 }, { label: '左肘旋转', semantic: 'leftElbow', axis: 1, min: -120, max: 120 },
+  { label: '右肘弯曲', semantic: 'rightElbow', axis: 0, min: 0, max: 150 }, { label: '右肘旋转', semantic: 'rightElbow', axis: 1, min: -120, max: 120 },
+  { label: '左腕俯仰', semantic: 'leftWrist', axis: 0, min: -90, max: 90 }, { label: '左腕旋转', semantic: 'leftWrist', axis: 1, min: -120, max: 120 }, { label: '左腕侧弯', semantic: 'leftWrist', axis: 2, min: -90, max: 90 },
+  { label: '右腕俯仰', semantic: 'rightWrist', axis: 0, min: -90, max: 90 }, { label: '右腕旋转', semantic: 'rightWrist', axis: 1, min: -120, max: 120 }, { label: '右腕侧弯', semantic: 'rightWrist', axis: 2, min: -90, max: 90 },
+  { label: '左髋前抬', semantic: 'leftHip', axis: 0, min: -90, max: 120 }, { label: '左髋侧抬', semantic: 'leftHip', axis: 2, min: -90, max: 90 },
+  { label: '右髋前抬', semantic: 'rightHip', axis: 0, min: -90, max: 120 }, { label: '右髋侧抬', semantic: 'rightHip', axis: 2, min: -90, max: 90 },
   { label: '左膝弯曲', semantic: 'leftKnee', axis: 0, min: 0, max: 150 }, { label: '右膝弯曲', semantic: 'rightKnee', axis: 0, min: 0, max: 150 },
+  { label: '左踝俯仰', semantic: 'leftAnkle', axis: 0, min: -75, max: 75 }, { label: '右踝俯仰', semantic: 'rightAnkle', axis: 0, min: -75, max: 75 },
 ]
 const pose = (name, rotations = {}) => ({ name, rotations })
 const POSE_PRESETS = [
-  pose('站立', { spine: [2, 0, 0], head: [-10, 0, 0], leftElbow: [15, 0, 0], rightElbow: [15, 0, 0] }), pose('T型', { leftShoulder: [0, 0, -90], rightShoulder: [0, 0, 90] }),
+  pose('重置'), pose('站立', { spine: [2, 0, 0], head: [-10, 0, 0], leftElbow: [15, 0, 0], rightElbow: [15, 0, 0] }), pose('T型', { leftShoulder: [0, 0, -90], rightShoulder: [0, 0, 90] }),
   pose('行走', { spine: [5, 0, 0], leftShoulder: [-25, 0, 0], rightShoulder: [25, 0, 0], leftHip: [25, 0, 0], rightHip: [-20, 0, 0], rightKnee: [25, 0, 0] }),
   pose('跑步', { root: [15, 0, 0], spine: [12, 0, 0], leftShoulder: [-55, 0, 0], rightShoulder: [55, 0, 0], leftHip: [55, 0, 0], rightHip: [-35, 0, 0], rightKnee: [75, 0, 0] }),
+  pose('跳跃', { root: [-8, 0, 0], leftShoulder: [-120, 0, -15], rightShoulder: [-120, 0, 15], leftHip: [35, 0, -15], rightHip: [35, 0, 15], leftKnee: [55, 0, 0], rightKnee: [55, 0, 0] }),
+  pose('踢球', { root: [8, 0, 0], rightHip: [-60, 0, 0], rightKnee: [25, 0, 0] }), pose('投掷', { spine: [-8, -20, 0], rightShoulder: [-105, 0, 25], rightElbow: [55, 0, 0] }),
+  pose('推', { root: [12, 0, 0], leftShoulder: [-65, 0, -12], rightShoulder: [-65, 0, 12], leftElbow: [25, 0, 0], rightElbow: [25, 0, 0] }),
   pose('坐姿', { root: [5, 0, 0], leftHip: [85, 0, 0], rightHip: [85, 0, 0], leftKnee: [90, 0, 0], rightKnee: [90, 0, 0] }), pose('蹲下', { root: [18, 0, 0], leftHip: [65, 0, 0], rightHip: [65, 0, 0], leftKnee: [115, 0, 0], rightKnee: [115, 0, 0] }),
   pose('单膝跪', { leftHip: [45, 0, 0], rightHip: [75, 0, 0], leftKnee: [90, 0, 0], rightKnee: [130, 0, 0] }), pose('双膝跪', { leftHip: [25, 0, 0], rightHip: [25, 0, 0], leftKnee: [135, 0, 0], rightKnee: [135, 0, 0] }),
-  pose('叉腰', { leftShoulder: [10, 0, -35], rightShoulder: [10, 0, 35], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }), pose('倚靠', { root: [0, 0, 12], spine: [0, 0, -8] }),
-  pose('鞠躬', { root: [35, 0, 0], spine: [25, 0, 0], head: [-15, 0, 0] }), pose('思考', { head: [8, -12, 8], rightShoulder: [-35, 0, 15], rightElbow: [110, 0, 0] }),
-  pose('格斗', { spine: [8, -15, 0], leftShoulder: [-55, 0, -20], rightShoulder: [-65, 0, 20], leftElbow: [95, 0, 0], rightElbow: [105, 0, 0] }), pose('踢球', { root: [8, 0, 0], rightHip: [-60, 0, 0], rightKnee: [25, 0, 0] }),
-  pose('投掷', { spine: [-8, -20, 0], rightShoulder: [-105, 0, 25], rightElbow: [55, 0, 0] }), pose('推进', { root: [12, 0, 0], leftShoulder: [-65, 0, -12], rightShoulder: [-65, 0, 12], leftElbow: [25, 0, 0], rightElbow: [25, 0, 0] }),
-  pose('招手', { rightShoulder: [-70, 0, 35], rightElbow: [85, 0, 0] }), pose('伸手', { rightShoulder: [-75, 0, 0], rightElbow: [8, 0, 0] }),
-  pose('抱臂', { leftShoulder: [-35, 0, -25], rightShoulder: [-35, 0, 25], leftElbow: [105, 0, 0], rightElbow: [105, 0, 0] }), pose('看手机', { head: [18, 0, 0], leftShoulder: [-25, 0, -10], rightShoulder: [-25, 0, 10], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }),
+  pose('躺', { root: [0, 0, 90], leftShoulder: [20, 0, -15], rightShoulder: [20, 0, 15] }),
+  pose('招手', { rightShoulder: [-70, 0, 35], rightElbow: [85, 0, 0] }), pose('指向', { rightShoulder: [-80, 0, 0], rightElbow: [8, 0, 0] }),
+  pose('举手', { leftShoulder: [-145, 0, -8], rightShoulder: [-145, 0, 8] }), pose('庆祝', { leftShoulder: [-125, 0, -35], rightShoulder: [-125, 0, 35], leftElbow: [35, 0, 0], rightElbow: [35, 0, 0] }),
+  pose('鞠躬', { root: [35, 0, 0], spine: [25, 0, 0], head: [-15, 0, 0] }), pose('演讲', { rightShoulder: [-48, 0, 25], rightElbow: [70, 0, 0], leftShoulder: [-25, 0, -20] }),
+  pose('叉腰', { leftShoulder: [10, 0, -35], rightShoulder: [10, 0, 35], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }),
+  pose('抱臂', { leftShoulder: [-35, 0, -25], rightShoulder: [-35, 0, 25], leftElbow: [105, 0, 0], rightElbow: [105, 0, 0] }), pose('思考', { head: [8, -12, 8], rightShoulder: [-35, 0, 15], rightElbow: [110, 0, 0] }),
+  pose('倚靠', { root: [0, 0, 12], spine: [0, 0, -8] }), pose('伸懒腰', { root: [-8, 0, 0], leftShoulder: [-140, 0, -20], rightShoulder: [-140, 0, 20] }),
+  pose('看手机', { head: [18, 0, 0], leftShoulder: [-25, 0, -10], rightShoulder: [-25, 0, 10], leftElbow: [95, 0, 0], rightElbow: [95, 0, 0] }),
+  pose('拍照', { head: [2, 0, 0], leftShoulder: [-55, 0, -15], rightShoulder: [-55, 0, 15], leftElbow: [85, 0, 0], rightElbow: [85, 0, 0] }),
+  pose('格斗', { spine: [8, -15, 0], leftShoulder: [-55, 0, -20], rightShoulder: [-65, 0, 20], leftElbow: [95, 0, 0], rightElbow: [105, 0, 0] }),
+  pose('舞蹈', { root: [0, 18, -8], leftShoulder: [-105, 0, -45], rightShoulder: [-45, 0, 65], leftHip: [35, 0, -18], rightKnee: [50, 0, 0] }),
 ]
 const ROLE_ARCHETYPES = [
-  { kind: 'male', label: '男性素体', height: 1.82, width: 0.5, color: 0x4f8ef7 },
+  { kind: 'male', label: '标准素体', height: 1.82, width: 0.5, color: 0x4f8ef7 },
   { kind: 'female', label: '女性素体', height: 1.7, width: 0.42, color: 0xf472b6 },
   { kind: 'broad', label: '宽厚素体', height: 1.78, width: 0.66, color: 0xf59e0b },
-  { kind: 'muscular', label: '健壮素体', height: 1.84, width: 0.6, color: 0xef4444 },
+  { kind: 'muscular', label: '壮实素体', height: 1.84, width: 0.6, color: 0xef4444 },
   { kind: 'slim', label: '纤细素体', height: 1.78, width: 0.35, color: 0x8b5cf6 },
   { kind: 'youth', label: '少年素体', height: 1.52, width: 0.38, color: 0x22c55e },
   { kind: 'child', label: '儿童素体', height: 1.22, width: 0.34, color: 0x06b6d4 },
   { kind: 'chibi', label: '二头身', height: 0.95, width: 0.46, color: 0xf97316 },
+]
+const DIRECTOR_PERSON_ASSETS = [
+  { name: '标准关节人偶素体', kind: 'male' },
+  { name: '女性比例关节人偶', kind: 'female' },
+  { name: '儿童比例关节人偶', kind: 'child' },
+  { name: '壮实体型关节人偶', kind: 'muscular' },
+  { name: '高挑纤细关节人偶', kind: 'slim' },
+  { name: '一排3个素体人偶', crowd: 3 },
+  { name: '一排5个素体人偶', crowd: 5 },
+]
+const DIRECTOR_ASSET_TABS = [
+  { value: 'props', label: '道具' },
+  { value: 'people', label: '人物' },
+  { value: 'cameras', label: '机位' },
+  { value: 'templates', label: '模板' },
+]
+const PLAYBACK_RATES = [0.25, 0.5, 1, 1.5, 2]
+const ORIENTATION_MODES = [
+  { value: 'shot', label: '镜头方向' },
+  { value: 'locked', label: '锁定方向' },
+  { value: 'path', label: '沿路径' },
+]
+const IK_ENDPOINTS = [
+  { value: 'leftHand', label: '左手' }, { value: 'rightHand', label: '右手' },
+  { value: 'leftFoot', label: '左脚' }, { value: 'rightFoot', label: '右脚' },
 ]
 const TRANSFORM_TOOLS = [
   { mode: 'translate', label: '移动工具', icon: '↔' },
@@ -766,6 +990,8 @@ const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
 const canvasRef = ref(null)
+const templateImportRef = ref(null)
+const panoramaFileRef = ref(null)
 // Threepipe owns a mutable object graph; keep it out of Vue's deep proxying.
 const viewer = shallowRef(null)
 const initializing = ref(false)
@@ -797,6 +1023,29 @@ const transformSpace = ref('world')
 const workspaceMode = ref('scene')
 const inspectorTab = ref('properties')
 const sceneSearch = ref('')
+const leftPanelTab = ref('outline')
+const assetLibraryTab = ref('props')
+const assetLibrarySearch = ref('')
+const labelsMenuOpen = ref(false)
+const aspectMenuOpen = ref(false)
+const panoramaModalOpen = ref(false)
+const panoramaReferenceMode = ref('insert')
+const panoramaReferenceFile = ref(null)
+const panoramaReferencePreview = ref('')
+const crowdModalOpen = ref(false)
+const crowdRows = ref(3)
+const crowdColumns = ref(3)
+const crowdSpacing = ref(1.2)
+const pendingTemplate = ref(null)
+const selectedMotionTrackId = ref('')
+const selectedMotionKeyframeId = ref('')
+const keyframePanelOpen = ref(false)
+const confirmCompositionArmed = ref(false)
+const compositionConfirmMessage = ref('')
+const movementSensitivity = ref(1)
+const invertTouchpad = ref(false)
+const wheelFovEnabled = ref(true)
+const selectedIkEndpoint = ref('')
 const aiImportOpen = ref(false)
 const helpOpen = ref(false)
 const aiImportType = ref('scene')
@@ -888,8 +1137,29 @@ const selectedInspectorTransform = computed(() => selectedDirectorObject.value
 const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
 const lightObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'light'))
 const selectedLightObject = computed(() => selectedDirectorObject.value?.type === 'light' ? selectedDirectorObject.value : null)
+const selectedMotionTrack = computed(() => timeline.value.motionTracks.find((track) => track.id === selectedMotionTrackId.value)
+  || timeline.value.motionTracks.find((track) => track.objectId === selectedObjectId.value)
+  || null)
+const selectedMotionKeyframe = computed(() => selectedMotionTrack.value?.keyframes.find((keyframe) => keyframe.id === selectedMotionKeyframeId.value) || null)
+const directorObjectCounts = computed(() => ({
+  people: timeline.value.objects.filter((object) => ['character', 'humanoid'].includes(object.type)).length,
+  props: timeline.value.objects.filter((object) => !['character', 'humanoid', 'camera', 'group', 'light'].includes(object.type)).length,
+  cameras: timeline.value.objects.filter((object) => object.type === 'camera').length,
+}))
+const filteredAssetItems = computed(() => {
+  const query = assetLibrarySearch.value.trim().toLowerCase()
+  const source = {
+    props: DIRECTOR_PROP_ASSETS,
+    people: DIRECTOR_PERSON_ASSETS,
+    cameras: DIRECTOR_CAMERA_ASSETS,
+    templates: DIRECTOR_SCENE_TEMPLATES,
+  }[assetLibraryTab.value] || []
+  return query ? source.filter((item) => item.name.toLowerCase().includes(query)) : source
+})
+const visibleDirectorObjects = computed(() => timeline.value.objects.filter((object) => object.visible && object.type !== 'group'))
 const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
 const activeCompositionGuides = computed(() => {
+  if (timeline.value.environment.showCameraGuides) return true
   if (viewMode.value !== 'camera') return false
   const camera = timeline.value.cameras.find((entry) => entry.id === selectedShot.value?.cameraId)
   return camera?.showGuides === true
@@ -1058,6 +1328,46 @@ function applyPosePreset(preset) {
   assetStatus.value = `已应用姿势：${preset.name}`
 }
 
+function mirrorPoseLeftToRight(section) {
+  if (!selectedDirectorObject.value) return
+  const leftName = resolveSemanticBone(section.left)
+  const rightName = resolveSemanticBone(section.right)
+  if (!leftName || !rightName) return
+  const rotations = cloneTimeline(selectedPoseRotations.value)
+  const source = rotations[leftName] || [0, 0, 0]
+  rotations[rightName] = [source[0], -source[1], -source[2]]
+  persistPoseRotations(rotations)
+  assetStatus.value = `已镜像左侧${section.label}到右侧`
+}
+
+function toggleIkEndpoint(endpoint) {
+  if (!selectedDirectorObject.value || !IK_ENDPOINTS.some((item) => item.value === endpoint)) return
+  selectedIkEndpoint.value = endpoint
+  updateSelectedObject({
+    ikLocks: {
+      ...(selectedDirectorObject.value.ikLocks || {}),
+      [endpoint]: !selectedDirectorObject.value.ikLocks?.[endpoint],
+    },
+  })
+}
+
+function updateIkTarget(index, value) {
+  if (!selectedDirectorObject.value || !selectedIkEndpoint.value) return
+  const endpoint = selectedIkEndpoint.value
+  const target = [...(selectedDirectorObject.value.ikTargets?.[endpoint] || [0, 0, 0])]
+  target[index] = Number(value) || 0
+  const ikTargets = { ...(selectedDirectorObject.value.ikTargets || {}), [endpoint]: target }
+  const rotations = cloneTimeline(selectedPoseRotations.value)
+  const hand = endpoint.endsWith('Hand')
+  const side = endpoint.startsWith('left') ? 'left' : 'right'
+  const primary = resolveSemanticBone(`${side}${hand ? 'Shoulder' : 'Hip'}`)
+  const secondary = resolveSemanticBone(`${side}${hand ? 'Elbow' : 'Knee'}`)
+  if (primary) rotations[primary] = [target[2] * -0.45, target[1] * 0.3, target[0] * (side === 'left' ? -0.45 : 0.45)]
+  if (secondary) rotations[secondary] = [Math.max(0, Math.min(2.6, Math.hypot(...target) * 0.5)), 0, 0]
+  mutateTimeline(updateDirectorObject(timeline.value, selectedDirectorObject.value.id, { ikTargets, poseRotations: rotations }))
+  applyProceduralPose(selectedDirectorObject.value.id)
+}
+
 function updateBoneRotation(index, value) {
   if (!selectedCharacter.value || !selectedBoneName.value) return
   const current = selectedCharacterAsset.value
@@ -1191,6 +1501,64 @@ async function analyzeAIImport() {
     aiImportStatus.value = `${error?.message || '识图失败'}；可手动填写描述后继续导入`
   } finally {
     aiImportBusy.value = false
+  }
+}
+
+function closePanoramaModal() {
+  if (panoramaReferencePreview.value) URL.revokeObjectURL(panoramaReferencePreview.value)
+  panoramaReferenceFile.value = null
+  panoramaReferencePreview.value = ''
+  panoramaModalOpen.value = false
+  if (panoramaFileRef.value) panoramaFileRef.value.value = ''
+}
+
+function onPanoramaFile(event) {
+  const file = event.target.files?.[0] || null
+  if (panoramaReferencePreview.value) URL.revokeObjectURL(panoramaReferencePreview.value)
+  panoramaReferenceFile.value = file
+  panoramaReferencePreview.value = file ? URL.createObjectURL(file) : ''
+  assetStatus.value = file ? `已选择：${file.name}` : ''
+}
+
+async function applyPanoramaReference() {
+  const file = panoramaReferenceFile.value
+  if (!file) return
+  assetStatus.value = '正在上传站位参考图…'
+  try {
+    const uploaded = await uploadAPI.uploadImage(file, { dramaId: props.drama?.id })
+    const url = String(uploaded?.url || '')
+    if (!url) throw new Error('参考图上传后未返回可用地址')
+    const dramaId = Number(props.drama?.id)
+    if (dramaId) {
+      const asset = await assetsAPI.create({
+        drama_id: dramaId,
+        name: file.name,
+        type: 'image',
+        category: 'director-panorama-reference',
+        url,
+        local_path: uploaded?.local_path || uploaded?.path || null,
+        file_size: file.size,
+        mime_type: file.type || 'image/png',
+      })
+      emit('asset-created', asset)
+    }
+    if (panoramaReferenceMode.value === 'override') {
+      updateEnvironment('panoramaUrl', url)
+      assetStatus.value = '参考图已作为全景环境应用'
+    } else {
+      const next = appendDirectorObject(timeline.value, 'box', {
+        name: `站位参考 · ${file.name}`,
+        assetRef: { assetId: null, url, kind: 'director-panorama-reference' },
+        transform: { position: [0, 1.3, -3], rotation: [0, 0, 0], scale: [4, 2.25, 0.08] },
+      })
+      selectedObjectId.value = next.objects.at(-1)?.id || ''
+      mutateTimeline(next)
+      buildStage()
+      assetStatus.value = '参考图已插入当前导演台'
+    }
+    closePanoramaModal()
+  } catch (error) {
+    assetStatus.value = error?.message || '站位参考图应用失败'
   }
 }
 
@@ -1392,6 +1760,84 @@ function redoDirector() {
   persistHistoryState(next)
 }
 
+function cameraVector(vector, fallback) {
+  return vector ? [Number(vector.x) || 0, Number(vector.y) || 0, Number(vector.z) || 0] : [...fallback]
+}
+
+function moveDirectorView(key, accelerated = false) {
+  const camera = viewer.value?.scene?.mainCamera
+  if (!camera) return
+  const position = cameraVector(camera.position, [6.8, 4.8, 8.6])
+  const target = cameraVector(camera.target, [0, 0.8, 0])
+  const distance = Math.max(0.05, movementSensitivity.value * (accelerated ? 0.6 : 0.16))
+  const deltas = {
+    w: [0, 0, -distance], s: [0, 0, distance], a: [-distance, 0, 0], d: [distance, 0, 0],
+    e: [0, distance, 0], q: [0, -distance, 0],
+  }
+  const delta = deltas[key]
+  if (!delta) return
+  setCamera(position.map((value, index) => value + delta[index]), target.map((value, index) => value + delta[index]))
+}
+
+function orbitDirectorView(key) {
+  const camera = viewer.value?.scene?.mainCamera
+  if (!camera) return
+  const position = cameraVector(camera.position, [6.8, 4.8, 8.6])
+  const target = cameraVector(camera.target, [0, 0.8, 0])
+  const offset = position.map((value, index) => value - target[index])
+  if (key === 'arrowup' || key === 'arrowdown') {
+    const delta = (key === 'arrowup' ? 1 : -1) * movementSensitivity.value * 0.12
+    position[1] += delta
+    target[1] += delta
+  } else {
+    const angle = (key === 'arrowleft' ? 1 : -1) * movementSensitivity.value * Math.PI / 36
+    const x = offset[0] * Math.cos(angle) - offset[2] * Math.sin(angle)
+    const z = offset[0] * Math.sin(angle) + offset[2] * Math.cos(angle)
+    position[0] = target[0] + x
+    position[2] = target[2] + z
+  }
+  setCamera(position, target)
+}
+
+function orbitDirectorViewByDelta(deltaX, deltaY) {
+  const camera = viewer.value?.scene?.mainCamera
+  if (!camera) return
+  const position = cameraVector(camera.position, [6.8, 4.8, 8.6])
+  const target = cameraVector(camera.target, [0, 0.8, 0])
+  const offset = position.map((value, index) => value - target[index])
+  const radius = Math.max(0.1, Math.hypot(...offset))
+  const horizontal = Number(deltaX) || 0
+  const vertical = Number(deltaY) || 0
+  const theta = Math.atan2(offset[0], offset[2]) + horizontal * movementSensitivity.value * 0.003
+  const phi = Math.max(0.08, Math.min(Math.PI - 0.08, Math.acos(Math.max(-1, Math.min(1, offset[1] / radius))) + vertical * movementSensitivity.value * 0.003))
+  setCamera([
+    target[0] + radius * Math.sin(phi) * Math.sin(theta),
+    target[1] + radius * Math.cos(phi),
+    target[2] + radius * Math.sin(phi) * Math.cos(theta),
+  ], target)
+}
+
+function adjustDirectorFov(delta) {
+  const camera = viewer.value?.scene?.mainCamera
+  if (!camera) return
+  camera.fov = Math.max(1, Math.min(179, Number(camera.fov || 50) + delta))
+  camera.updateProjectionMatrix?.()
+  viewer.value?.setDirty?.()
+  if (selectedCamera.value) updateSelectedCamera('fov', camera.fov)
+}
+
+function onViewportWheel(event) {
+  if (isDirectorTouchpadGesture(event)) {
+    event.preventDefault()
+    const direction = invertTouchpad.value ? -1 : 1
+    orbitDirectorViewByDelta(event.deltaX * direction, event.deltaY * direction)
+    return
+  }
+  if (!wheelFovEnabled.value) return
+  event.preventDefault()
+  adjustDirectorFov(Math.sign(event.deltaY) * 2)
+}
+
 function onDirectorKeydown(event) {
   if (event.key === 'Shift') shiftPressed = true
   if (event.key === 'Escape') {
@@ -1417,10 +1863,34 @@ function onDirectorKeydown(event) {
     }
     return
   }
-  if (!(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'z') return
-  event.preventDefault()
-  if (event.shiftKey) redoDirector()
-  else undoDirector()
+  const key = String(event.key || '').toLowerCase()
+  if ((event.ctrlKey || event.metaKey) && key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) redoDirector()
+    else undoDirector()
+    return
+  }
+  const target = event.target
+  if (target?.matches?.('input, textarea, select, [contenteditable="true"]')) return
+  if (['w', 'a', 's', 'd', 'e', 'q'].includes(key)) {
+    event.preventDefault()
+    moveDirectorView(key, event.shiftKey)
+  } else if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
+    event.preventDefault()
+    orbitDirectorView(key)
+  } else if (key === 'f') {
+    event.preventDefault()
+    focusSelectedObject()
+  } else if (key === 'c') {
+    event.preventDefault()
+    captureCurrentViewToCamera()
+  } else if (key === '0') {
+    event.preventDefault()
+    resetCamera()
+  } else if (key === '[' || key === ']') {
+    event.preventDefault()
+    adjustDirectorFov(key === '[' ? -2 : 2)
+  }
 }
 
 function onDirectorKeyup(event) {
@@ -1454,6 +1924,135 @@ function addSceneObject(type) {
   if (selectedObjectId.value) nextTick(() => focusItem(`custom:${selectedObjectId.value}`))
 }
 
+function openAIRecognition() {
+  leftPanelTab.value = 'ai'
+  aiImportOpen.value = true
+}
+
+function addSceneGroup() {
+  const count = timeline.value.objects.filter((object) => object.type === 'group').length
+  const next = appendDirectorObject(timeline.value, 'group', {
+    name: `组${count + 1}`,
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  })
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+}
+
+function deleteSceneObject(objectId) {
+  selectedObjectId.value = String(objectId || '')
+  deleteSelectedObject()
+}
+
+function releaseGroup(groupId) {
+  const next = releaseDirectorGroup(timeline.value, groupId)
+  selectedObjectId.value = ''
+  mutateTimeline(next)
+  buildStage()
+}
+
+function confirmCrowdArray() {
+  const next = appendConfiguredCrowd(timeline.value, {
+    rows: crowdRows.value,
+    columns: crowdColumns.value,
+    spacing: crowdSpacing.value,
+  })
+  selectedObjectId.value = [...next.objects].reverse().find((object) => object.type === 'group')?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  crowdModalOpen.value = false
+}
+
+function addPropAsset(asset, state = timeline.value) {
+  const count = state.objects.filter((object) => !['character', 'humanoid', 'camera', 'group', 'light'].includes(object.type)).length
+  return appendDirectorObject(state, asset.type || 'box', {
+    name: asset.name,
+    assetRef: { assetId: null, url: '', kind: `director-prop:${asset.name}` },
+    transform: {
+      position: [(count % 4) * 1.4 - 2.1, Math.max(0.02, Number(asset.scale?.[1] || 1) / 2), -Math.floor(count / 4) * 1.5],
+      rotation: [0, 0, 0],
+      scale: [...(asset.scale || [1, 1, 1])],
+    },
+  })
+}
+
+function addPersonAsset(asset) {
+  if (asset.crowd) {
+    const next = appendConfiguredCrowd(timeline.value, { rows: 1, columns: asset.crowd, spacing: 1.2 })
+    selectedObjectId.value = [...next.objects].reverse().find((object) => object.type === 'group')?.id || ''
+    mutateTimeline(next)
+    buildStage()
+    return
+  }
+  addRoleArchetype(ROLE_ARCHETYPES.find((role) => role.kind === asset.kind) || ROLE_ARCHETYPES[0])
+}
+
+function addCameraAsset(asset, state = timeline.value) {
+  return appendDirectorCamera(state, {
+    name: asset.name,
+    transform: { position: [...asset.position], rotation: [0, 0, 0], scale: [1, 1, 1] },
+    target: [...asset.target],
+    fov: asset.fov,
+    roll: asset.roll || 0,
+  })
+}
+
+function activateAssetItem(asset) {
+  if (assetLibraryTab.value === 'templates') {
+    pendingTemplate.value = asset
+    return
+  }
+  if (assetLibraryTab.value === 'people') {
+    addPersonAsset(asset)
+    return
+  }
+  let next = assetLibraryTab.value === 'cameras' ? addCameraAsset(asset) : addPropAsset(asset)
+  selectedObjectId.value = next.objects.at(-1)?.id || ''
+  mutateTimeline(next)
+  buildStage()
+  if (assetLibraryTab.value === 'cameras') setView('camera')
+}
+
+function confirmSceneTemplate() {
+  const template = pendingTemplate.value
+  if (!template) return
+  let next = createDirectorTimeline([])
+  for (let index = 0; index < template.people; index += 1) {
+    const role = ROLE_ARCHETYPES[index % 5]
+    next = appendDirectorObject(next, 'humanoid', {
+      name: `${role.label} ${index + 1}`,
+      assetRef: { assetId: null, url: '', kind: role.kind },
+      transform: { position: [(index - (template.people - 1) / 2) * 1.4, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+    })
+  }
+  for (const propName of template.props || []) {
+    const asset = DIRECTOR_PROP_ASSETS.find((item) => item.name === propName)
+    if (asset) next = addPropAsset(asset, next)
+  }
+  const cameraAsset = DIRECTOR_CAMERA_ASSETS.find((item) => item.name === template.camera)
+  if (cameraAsset) next = addCameraAsset(cameraAsset, next)
+  selectedObjectId.value = ''
+  mutateTimeline(next)
+  buildStage()
+  pendingTemplate.value = null
+  assetStatus.value = `已应用模板：${template.name}`
+}
+
+async function onTemplateImport(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  try {
+    const parsed = JSON.parse(await file.text())
+    mutateTimeline(normalizeDirectorTimeline(parsed.timeline || parsed, characters.value))
+    buildStage()
+    assetStatus.value = `已导入模板：${file.name}`
+  } catch (error) {
+    assetStatus.value = error?.message || '模板 JSON 无效'
+  }
+}
+
 function addDirectorLight() {
   const count = lightObjects.value.length
   const light = directorLight(`灯光 ${count + 1}`, 30 + count * 35, 30, 5)
@@ -1484,6 +2083,34 @@ function addRoleArchetype(role) {
       if (poseEntry.value) poseEditorRef.value?.focus()
     })
   }
+}
+
+function setCharacterArchetype(role) {
+  if (!isSelectedCharacterObject.value || !role) return
+  updateSelectedObject({
+    assetRef: {
+      ...(selectedDirectorObject.value.assetRef || {}),
+      kind: role.kind,
+    },
+  })
+  buildStage()
+}
+
+function setCharacterColor(color) {
+  if (!isSelectedCharacterObject.value || !/^#[0-9a-f]{6}$/i.test(String(color || ''))) return
+  updateSelectedObject({
+    assetRef: {
+      ...(selectedDirectorObject.value.assetRef || {}),
+      color: String(color),
+    },
+  })
+  buildStage()
+}
+
+function updateUniformScale(value) {
+  if (!selectedDirectorObject.value) return
+  const scale = Math.max(0.1, Math.min(3, Number(value) || 1))
+  updateSelectedObject({ transform: { scale: [scale, scale, scale] } })
 }
 
 function addCrowd() {
@@ -1751,12 +2378,43 @@ function cycleCameraAspect() {
   applyCameraAspect(CAMERA_ASPECTS[(index + 1) % CAMERA_ASPECTS.length].label)
 }
 
+function openAspectMenu() {
+  labelsMenuOpen.value = false
+  if (!selectedCamera.value) {
+    const activeCamera = timeline.value.cameras.find((camera) => camera.id === timeline.value.sequence.activeCameraId)
+      || timeline.value.cameras.find((camera) => camera.objectId)
+    if (activeCamera?.objectId) selectSceneObject(activeCamera.objectId)
+  }
+  aspectMenuOpen.value = !aspectMenuOpen.value
+}
+
+function selectAspectRatio(label) {
+  applyCameraAspect(label)
+  aspectMenuOpen.value = false
+}
+
 async function toggleFullscreen() {
   if (document.fullscreenElement) {
     await document.exitFullscreen?.()
     return
   }
   await dialogRef.value?.requestFullscreen?.()
+}
+
+async function confirmComposition() {
+  if (!confirmCompositionArmed.value) {
+    if (!selectedCamera.value) {
+      const activeCamera = timeline.value.cameras.find((camera) => camera.id === timeline.value.sequence.activeCameraId)
+        || timeline.value.cameras.find((camera) => camera.objectId)
+      if (activeCamera?.objectId) selectSceneObject(activeCamera.objectId)
+    }
+    confirmCompositionArmed.value = true
+    compositionConfirmMessage.value = '已锁定当前构图，再次点击将截图回写画布'
+    return
+  }
+  confirmCompositionArmed.value = false
+  compositionConfirmMessage.value = ''
+  await captureToCanvasAsset()
 }
 
 function applyCameraPreset(name) {
@@ -1770,7 +2428,7 @@ function applyCameraPreset(name) {
   persistSelectedCameraView(preset.position, preset.target, {
     angles,
     fov: preset.fov,
-    roll: radiansToDegrees(preset.roll || 0),
+    roll: Math.abs(Number(preset.roll) || 0) > Math.PI * 2 ? Number(preset.roll) : radiansToDegrees(preset.roll || 0),
     quaternion: null,
   })
 }
@@ -1797,8 +2455,8 @@ async function applyEnvironment(environment = timeline.value.environment) {
 }
 
 function updateEnvironment(field, value) {
-  const numeric = ['ambientIntensity', 'directionalIntensity', 'sceneScale', 'panoramaRotation', 'panoramaRadius', 'groundOpacity', 'groundHeight'].includes(field)
-  const boolean = ['showCharacterLabels', 'gridSnap', 'groundSnap', 'showGround'].includes(field)
+  const numeric = ['ambientIntensity', 'directionalIntensity', 'sceneScale', 'panoramaRotation', 'panoramaRadius', 'groundOpacity', 'groundHeight', 'labelFontSize'].includes(field)
+  const boolean = ['showCharacterLabels', 'gridSnap', 'groundSnap', 'showGround', 'showObjectLabels', 'showBottomIds', 'showCameraGuides'].includes(field)
   mutateTimeline({
     ...timeline.value,
     environment: { ...timeline.value.environment, [field]: boolean ? Boolean(value) : numeric ? Number(value) || 0 : String(value || '') },
@@ -1978,9 +2636,17 @@ function togglePlayback() {
 
 function playFrame(now) {
   if (!playing.value) return
-  const elapsed = Math.max(0, (now - lastFrameTime) / 1000)
+  const elapsed = Math.max(0, (now - lastFrameTime) / 1000) * timeline.value.sequence.playbackRate
   lastFrameTime = now
   const next = currentTime.value + elapsed
+  if (timeline.value.sequence.shotLoop && activeShot.value) {
+    const shotEnd = activeShot.value.start + activeShot.value.duration
+    if (next >= shotEnd) {
+      setCurrentTime(activeShot.value.start + ((next - activeShot.value.start) % activeShot.value.duration))
+      animationFrame = requestAnimationFrame(playFrame)
+      return
+    }
+  }
   if (next >= duration.value && !timeline.value.sequence.loop) {
     setCurrentTime(duration.value)
     stopPlayback()
@@ -2070,7 +2736,168 @@ function persistTransformControlChange() {
 
 function addCurrentMotionKeyframe() {
   if (!selectedDirectorObject.value) return
-  mutateTimeline(upsertMotionKeyframe(timeline.value, selectedDirectorObject.value.id, currentTime.value, selectedDirectorObject.value.transform))
+  const objectId = selectedDirectorObject.value.id
+  const next = upsertMotionKeyframe(timeline.value, objectId, currentTime.value, selectedDirectorObject.value.transform)
+  const track = next.motionTracks.find((entry) => entry.objectId === objectId)
+  const keyframe = track?.keyframes.find((entry) => Math.abs(entry.time - currentTime.value) < 0.001)
+  selectedMotionTrackId.value = track?.id || ''
+  selectedMotionKeyframeId.value = keyframe?.id || ''
+  mutateTimeline(next)
+}
+
+function newMotionTrack() {
+  if (!selectedDirectorObject.value) {
+    assetStatus.value = '请先选择要创建轨道的对象'
+    return
+  }
+  const existing = timeline.value.motionTracks.find((track) => track.objectId === selectedDirectorObject.value.id)
+  if (existing) {
+    selectedMotionTrackId.value = existing.id
+    assetStatus.value = '该对象已有运动轨道'
+    return
+  }
+  const track = {
+    id: `motion-${selectedDirectorObject.value.id}-${Date.now()}`,
+    objectId: selectedDirectorObject.value.id,
+    keyframes: [],
+  }
+  selectedMotionTrackId.value = track.id
+  mutateTimeline({ ...timeline.value, motionTracks: [...timeline.value.motionTracks, track] })
+  assetStatus.value = `已新建轨道：${selectedDirectorObject.value.name}`
+}
+
+function deleteSelectedMotionTrack() {
+  if (!selectedMotionTrack.value) return
+  const targetId = selectedMotionTrack.value.id
+  mutateTimeline({ ...timeline.value, motionTracks: timeline.value.motionTracks.filter((track) => track.id !== targetId) })
+  selectedMotionTrackId.value = ''
+  selectedMotionKeyframeId.value = ''
+  keyframePanelOpen.value = false
+}
+
+function selectAnimationCamera(cameraId) {
+  const camera = timeline.value.cameras.find((entry) => entry.id === String(cameraId || ''))
+  if (!camera) return
+  updateSequenceValue('activeCameraId', camera.id)
+  if (camera.objectId) selectSceneObject(camera.objectId)
+  viewMode.value = 'camera'
+  setCameraForShot({ ...selectedShot.value, cameraId: camera.id })
+}
+
+function toggleAnimationViewMode() {
+  const next = timeline.value.sequence.animationViewMode === 'observer' ? 'follow' : 'observer'
+  updateSequenceValue('animationViewMode', next)
+  if (next === 'follow') setView('camera')
+  else setView('director')
+}
+
+function updateSequenceValue(field, value) {
+  mutateTimeline({ ...timeline.value, sequence: { ...timeline.value.sequence, [field]: value } })
+}
+
+function addPersonFrame() {
+  if (!isSelectedCharacterObject.value) return
+  addCurrentMotionKeyframe()
+  assetStatus.value = `已添加人物帧：${selectedDirectorObject.value.name}`
+}
+
+function updateTimelineDuration(value) {
+  const targetDuration = Math.max(MIN_SHOT_DURATION, Number(value) || duration.value)
+  if (!timeline.value.shots.length) return
+  const previousDuration = timeline.value.shots.slice(0, -1).reduce((total, shot) => total + shot.duration, 0)
+  const lastDuration = Math.max(MIN_SHOT_DURATION, targetDuration - previousDuration)
+  const shots = timeline.value.shots.map((shot, index) => index === timeline.value.shots.length - 1 ? { ...shot, duration: lastDuration } : shot)
+  mutateTimeline({ ...timeline.value, shots })
+}
+
+function selectMotionKeyframe(track, keyframe) {
+  selectedObjectId.value = track.objectId
+  selectedMotionTrackId.value = track.id
+  selectedMotionKeyframeId.value = keyframe.id
+  keyframePanelOpen.value = true
+  setCurrentTime(keyframe.time)
+}
+
+function updateSelectedMotionKeyframe(field, value) {
+  if (!selectedMotionTrack.value || !selectedMotionKeyframe.value) return
+  const keyframeId = selectedMotionKeyframe.value.id
+  const motionTracks = timeline.value.motionTracks.map((track) => track.id === selectedMotionTrack.value.id ? {
+    ...track,
+    keyframes: track.keyframes
+      .map((keyframe) => keyframe.id === keyframeId ? { ...keyframe, [field]: value } : keyframe)
+      .sort((left, right) => left.time - right.time),
+  } : track)
+  mutateTimeline({ ...timeline.value, motionTracks })
+}
+
+function applyKeyframeSpeedPreset(preset) {
+  if (!preset) return
+  const current = selectedMotionKeyframe.value
+  if (!current) return
+  const keyframeId = current.id
+  const motionTracks = timeline.value.motionTracks.map((track) => track.id === selectedMotionTrack.value?.id ? {
+    ...track,
+    keyframes: track.keyframes.map((keyframe) => keyframe.id === keyframeId ? {
+      ...keyframe,
+      easing: preset.easing,
+      speedPreset: preset.name,
+    } : keyframe),
+  } : track)
+  mutateTimeline({ ...timeline.value, motionTracks })
+}
+
+function resetSelectedMotionKeyframe() {
+  if (!selectedMotionKeyframe.value) return
+  const keyframeId = selectedMotionKeyframe.value.id
+  const motionTracks = timeline.value.motionTracks.map((track) => track.id === selectedMotionTrack.value?.id ? {
+    ...track,
+    keyframes: track.keyframes.map((keyframe) => keyframe.id === keyframeId ? {
+      ...keyframe,
+      easing: 'linear',
+      speedPreset: '无',
+      pathMode: 'curve',
+      roll: 0,
+    } : keyframe),
+  } : track)
+  mutateTimeline({ ...timeline.value, motionTracks })
+}
+
+function applyCurrentViewToKeyframe() {
+  if (!selectedMotionKeyframe.value || !selectedMotionTrack.value) return
+  const object = timeline.value.objects.find((entry) => entry.id === selectedMotionTrack.value.objectId)
+  if (!object) return
+  let transform = object.transform
+  if (object.type === 'camera') {
+    const camera = viewer.value?.scene?.mainCamera
+    if (camera) transform = {
+      ...transform,
+      position: cameraVector(camera.position, transform.position),
+      rotation: [...transform.rotation],
+    }
+  }
+  const keyframeId = selectedMotionKeyframe.value.id
+  const motionTracks = timeline.value.motionTracks.map((track) => track.id === selectedMotionTrack.value.id ? {
+    ...track,
+    keyframes: track.keyframes.map((keyframe) => keyframe.id === keyframeId ? {
+      ...keyframe,
+      position: [...transform.position],
+      rotation: [...transform.rotation],
+      scale: [...transform.scale],
+    } : keyframe),
+  } : track)
+  mutateTimeline({ ...timeline.value, motionTracks })
+}
+
+function deleteSelectedMotionKeyframe() {
+  if (!selectedMotionKeyframe.value || !selectedMotionTrack.value) return
+  const keyframeId = selectedMotionKeyframe.value.id
+  const motionTracks = timeline.value.motionTracks.map((track) => track.id === selectedMotionTrack.value.id ? {
+    ...track,
+    keyframes: track.keyframes.filter((keyframe) => keyframe.id !== keyframeId),
+  } : track)
+  mutateTimeline({ ...timeline.value, motionTracks })
+  selectedMotionKeyframeId.value = ''
+  keyframePanelOpen.value = false
 }
 
 function objectName(objectId) {
@@ -2263,7 +3090,7 @@ function makeObject(type, params, color) {
   return object ? colorize(object, color) : null
 }
 
-function makeHumanoidObject(kind) {
+function makeHumanoidObject(kind, customColor = '') {
   const role = ROLE_ARCHETYPES.find((item) => item.kind === kind) || ROLE_ARCHETYPES[0]
   const group = new Group()
   const isChibi = role.kind === 'chibi'
@@ -2274,7 +3101,7 @@ function makeHumanoidObject(kind) {
   const limbRadius = Math.max(0.045, role.width * 0.105)
   const halfArm = armHeight / 2
   const halfLeg = legHeight / 2
-  const surface = role.color
+  const surface = /^#[0-9a-f]{6}$/i.test(customColor) ? Number.parseInt(customColor.slice(1), 16) : role.color
   const makeEllipsoid = (radius, scale, color = surface) => {
     const mesh = makeObject('sphere', { radius, widthSegments: 24, heightSegments: 16 }, color)
     mesh?.scale.set(...scale)
@@ -2318,7 +3145,11 @@ function makeHumanoidObject(kind) {
   const root = new Group(); const spine = new Group(); const headPivot = new Group()
   const leftShoulder = new Group(); const rightShoulder = new Group(); const leftElbow = new Group(); const rightElbow = new Group()
   const leftHip = new Group(); const rightHip = new Group(); const leftKnee = new Group(); const rightKnee = new Group()
-  const poseBones = { root, spine, head: headPivot, leftShoulder, rightShoulder, leftElbow, rightElbow, leftHip, rightHip, leftKnee, rightKnee }
+  const poseBones = {
+    root, spine, head: headPivot,
+    leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist: hands[0], rightWrist: hands[1],
+    leftHip, rightHip, leftKnee, rightKnee, leftAnkle: feet[0], rightAnkle: feet[1],
+  }
 
   spine.position.set(0, legHeight, 0)
   pelvis.position.set(0, torsoHeight * 0.08, 0)
@@ -2455,7 +3286,7 @@ function buildStage() {
       return
     }
     if (entry.type === 'humanoid' || entry.type === 'character') {
-      const humanoid = makeHumanoidObject(entry.assetRef?.kind)
+      const humanoid = makeHumanoidObject(entry.assetRef?.kind, entry.assetRef?.color)
       if (!humanoid) return
       const characterId = String(entry.assetRef?.characterId || entry.id)
       humanoid.name = entry.name
@@ -2732,7 +3563,9 @@ function applyModelAnimation(modelState, clip, localTime) {
 
 function applyTimelineFrame() {
   if (!viewer.value) return
-  setCameraForShot(activeShot.value)
+  if (workspaceMode.value !== 'animation' || timeline.value.sequence.animationViewMode === 'follow') {
+    setCameraForShot(activeShot.value)
+  }
   for (const track of timeline.value.motionTracks || []) {
     const transform = interpolateMotionTransform(timeline.value, track.objectId, currentTime.value)
     const object = stageObjects.get(`custom:${track.objectId}`)
@@ -2740,8 +3573,15 @@ function applyTimelineFrame() {
     object.position.set(...transform.position)
     object.rotation.set(...transform.rotation)
     object.scale.set(...transform.scale)
-    const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeShot.value?.cameraId && camera.objectId === track.objectId)
-    if (activeCamera) setCamera(transform.position, [0, 0.8, 0])
+    const activeCameraId = timeline.value.sequence.activeCameraId || activeShot.value?.cameraId
+    const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeCameraId && camera.objectId === track.objectId)
+    if (activeCamera && timeline.value.sequence.animationViewMode === 'follow') {
+      const nextKeyframe = track.keyframes.find((keyframe) => keyframe.time > currentTime.value)
+      const target = timeline.value.sequence.orientationMode === 'path' && nextKeyframe
+        ? nextKeyframe.position
+        : activeCamera.target || [0, 0.8, 0]
+      setCamera(transform.position, target)
+    }
   }
   for (const object of characterObjects.values()) {
     const base = object.userData?.directorBasePosition
@@ -2786,6 +3626,16 @@ function applyTimelineFrame() {
 function resetCamera() {
   viewMode.value = 'director'
   setCamera([6.8, 4.8, 8.6])
+}
+
+function setViewportPreset(preset) {
+  viewMode.value = 'director'
+  if (preset === 'top') setCamera([0, 12, 0.01], [0, 0, 0])
+  else if (preset === 'front') setCamera([0, 1.6, 9], [0, 1.2, 0])
+}
+
+function focusSelectedObject() {
+  if (selectedObjectId.value) focusItem(`custom:${selectedObjectId.value}`)
 }
 
 function setView(mode) {
@@ -2917,6 +3767,7 @@ onBeforeUnmount(() => {
   transformControls = null
   pickingPlugin = null
   if (aiImportPreview.value) URL.revokeObjectURL(aiImportPreview.value)
+  if (panoramaReferencePreview.value) URL.revokeObjectURL(panoramaReferencePreview.value)
 })
 </script>
 
@@ -2939,11 +3790,30 @@ onBeforeUnmount(() => {
 .director-stage__save-state.dirty { color: #fbbf24; }
 .director-stage__body { flex: 1; display: flex; min-height: 0; }
 .director-stage__sidebar { width: 300px; flex: 0 0 300px; padding: 22px 16px; overflow-y: auto; border-right: 1px solid #343438; background: #202020; }
+.director-stage__left-tabs, .director-asset-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: -8px 0 18px; padding: 4px; border: 1px solid #343438; border-radius: 10px; background: #18181b; }
+.director-stage__left-tabs button, .director-asset-tabs button { min-width: 0; border: 0; border-radius: 7px; padding: 8px 5px; background: transparent; color: #8b8b92; cursor: pointer; font-size: 11px; }
+.director-stage__left-tabs button.active, .director-asset-tabs button.active { background: #38383b; color: #fff; }
+.director-outline-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: -10px 0 12px; color: #8b8b92; font-size: 10px; }
+.director-outline-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.director-asset-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 10px; }
+.director-asset-library > input, .director-ai-panel input { box-sizing: border-box; width: 100%; margin-bottom: 10px; border: 1px solid #3f3f46; border-radius: 8px; padding: 8px; background: #111114; color: #e4e4e7; }
+.director-asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+.director-asset-card { display: grid; gap: 5px; min-height: 74px; border: 1px solid #3f3f46; border-radius: 9px; padding: 8px; background: #18181b; color: #d4d4d8; cursor: pointer; font-size: 10px; }
+.director-asset-card:hover { border-color: #6366f1; background: #27272a; }
+.director-asset-card__preview { display: grid; place-items: center; color: #a5b4fc; font-size: 25px; }
+.director-ai-panel { display: grid; gap: 8px; }
+.director-ai-panel p { margin: 0 0 6px; color: #8b8b92; font-size: 11px; line-height: 1.55; }
 .director-stage__inspector { width: 360px; flex: 0 0 360px; padding: 20px 18px; overflow-y: auto; border-left: 1px solid #343438; background: #202020; }
 .director-stage__inspector-title { margin: -2px 0 18px; color: #f4f4f5; font-size: 20px; font-weight: 700; }
 .director-stage__inspector-tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #343438; padding-bottom: 10px; }
 .director-stage__inspector-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; background: transparent; color: #8b8b92; cursor: pointer; }
 .director-stage__inspector-tabs button.active { background: #39393c; color: #fff; }
+.character-body-types { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 12px 0; }
+.character-body-types strong, .character-body-types label { grid-column: 1 / -1; }
+.character-body-types button, .pose-mirror-actions button, .ik-endpoint-controls button { border: 1px solid #3f3f46; border-radius: 7px; padding: 7px; background: #18181b; color: #a1a1aa; cursor: pointer; font-size: 10px; }
+.character-body-types button.active, .ik-endpoint-controls button.active { border-color: #72e7f2; color: #fff; }
+.pose-mirror-actions, .ik-endpoint-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.ik-endpoint-controls button.locked { background: rgba(114, 231, 242, .12); }
 .director-pose-panel > strong { display: block; margin: 14px 0 8px; color: #d4d4d8; font-size: 13px; }
 .lighting-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 12px 0 18px; }
 .lighting-presets .small-button { min-width: 0; padding: 7px 5px; font-size: 10px; }
@@ -2964,11 +3834,16 @@ onBeforeUnmount(() => {
 .ai-reference-description p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.5; }
 .director-modal { position: absolute; inset: 0; z-index: 95; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .72); }
 .director-modal__panel { display: grid; gap: 12px; width: min(520px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; box-sizing: border-box; padding: 18px; border: 1px solid #3f3f46; border-radius: 12px; background: #18181b; box-shadow: 0 20px 70px rgba(0, 0, 0, .45); }
+.director-modal__panel--compact { width: min(420px, 100%); }
 .director-modal__header { display: flex; align-items: center; justify-content: space-between; }
 .director-modal__panel label { display: grid; gap: 6px; color: #a1a1aa; font-size: 12px; }
 .director-modal__panel input, .director-modal__panel select, .director-modal__panel textarea { box-sizing: border-box; width: 100%; border: 1px solid #3f3f46; border-radius: 8px; padding: 8px; background: #111114; color: #e4e4e7; }
 .director-modal__panel button { border: 1px solid #4f46e5; border-radius: 8px; padding: 8px 12px; background: #312e81; color: #e0e7ff; cursor: pointer; }
 .director-modal__panel button:disabled { opacity: .5; cursor: default; }
+.director-modal__actions, .panorama-source-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.director-help-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.director-help-grid section { display: grid; gap: 4px; padding: 9px; border: 1px solid #343438; border-radius: 8px; background: #111114; font-size: 11px; }
+.director-help-grid span { color: #8b8b92; }
 .ai-import-preview { max-width: 100%; max-height: 240px; justify-self: center; border-radius: 8px; object-fit: contain; }
 .inspector-group { margin: 16px 0; padding-top: 12px; border-top: 1px solid #303036; }
 .inspector-group > strong { color: #d4d4d8; font-size: 12px; }
@@ -3042,6 +3917,10 @@ onBeforeUnmount(() => {
 .composition-guides__h--1 { top: 33.333%; }.composition-guides__h--2 { top: 66.666%; }
 .composition-guides__safe { inset: 8%; border: 1px solid rgba(255, 255, 255, .3); }
 .director-stage__canvas { width: 100%; height: 100%; display: block; outline: none; }
+.director-object-labels { position: absolute; top: 58px; left: 50%; z-index: 5; display: flex; max-width: min(70%, 760px); flex-wrap: wrap; justify-content: center; gap: 5px; transform: translateX(-50%); pointer-events: none; }
+.director-object-labels button { display: grid; gap: 1px; max-width: 150px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; padding: 4px 8px; overflow: hidden; background: rgba(0,0,0,.68); color: #f4f4f5; cursor: pointer; font-size: var(--director-label-size); line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
+.director-object-labels button.selected { border-color: #72e7f2; color: #72e7f2; }
+.director-object-labels small { overflow: hidden; color: #8b8b92; font-size: 8px; text-overflow: ellipsis; }
 .director-stage__legend { position: absolute; right: 16px; top: 16px; display: flex; gap: 12px; padding: 8px 10px; border: 1px solid rgba(82, 82, 91, 0.7); border-radius: 9px; background: rgba(24, 24, 27, 0.82); color: #a1a1aa; font-size: 11px; }
 .director-stage__legend span { display: inline-flex; align-items: center; gap: 5px; }
 .director-entry-reference { position: absolute; top: 54px; left: 16px; z-index: 4; display: grid; gap: 6px; width: 168px; padding: 10px; border: 1px solid rgba(129, 140, 248, 0.5); border-radius: 10px; background: rgba(9, 9, 11, 0.88); color: #d4d4d8; font-size: 10px; }
@@ -3051,12 +3930,32 @@ onBeforeUnmount(() => {
 .director-stage__loading, .director-stage__error { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); color: #a1a1aa; font-size: 13px; }
 .director-stage__error { color: #fca5a5; }
 .timeline-panel { position: absolute; right: 12px; bottom: 74px; left: 12px; z-index: 3; padding: 10px 12px 12px; border: 1px solid #3f3f46; border-radius: 12px; background: rgba(24, 24, 27, 0.94); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32); backdrop-filter: blur(14px); }
-.director-stage__quick-toolbar { position: absolute; bottom: 22px; left: 50%; z-index: 9; display: flex; align-items: center; gap: 5px; transform: translateX(-50%); padding: 7px; border: 1px solid #38383c; border-radius: 17px; background: rgba(31, 31, 32, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .4); }
-.director-stage__quick-toolbar button { min-width: 42px; height: 42px; border: 0; border-radius: 11px; padding: 0 8px; background: transparent; color: #ededee; cursor: pointer; font-size: 18px; }
+.animation-studio-toolbar { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 5px; }
+.animation-studio-toolbar button, .animation-studio-toolbar select, .animation-studio-toolbar input { min-height: 30px; border: 1px solid #3f3f46; border-radius: 6px; padding: 4px 7px; background: #27272a; color: #e4e4e7; white-space: nowrap; font-size: 10px; }
+.animation-studio-toolbar label { display: flex; align-items: center; gap: 5px; color: #a1a1aa; white-space: nowrap; font-size: 10px; }
+.animation-studio-toolbar input { width: 64px; }
+.keyframe-detail-panel { position: absolute; right: 18px; bottom: calc(100% + 8px); z-index: 12; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: min(560px, calc(100% - 36px)); box-sizing: border-box; padding: 12px; border: 1px solid #3f3f46; border-radius: 10px; background: #18181b; box-shadow: 0 18px 45px rgba(0,0,0,.5); }
+.keyframe-detail-panel__header, .keyframe-speed-presets, .keyframe-detail-actions { grid-column: 1 / -1; }
+.keyframe-detail-panel__header { display: flex; align-items: center; justify-content: space-between; }
+.keyframe-detail-panel label { display: grid; gap: 4px; color: #a1a1aa; font-size: 10px; }
+.keyframe-detail-panel input, .keyframe-detail-panel select { border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #111114; color: #e4e4e7; }
+.keyframe-speed-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.keyframe-speed-presets button, .keyframe-detail-actions button { border: 1px solid #3f3f46; border-radius: 6px; padding: 6px; background: #27272a; color: #d4d4d8; cursor: pointer; }
+.keyframe-speed-presets button.active { border-color: #72e7f2; color: #72e7f2; }
+.keyframe-detail-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.director-stage__quick-toolbar { position: absolute; bottom: 22px; left: 50%; z-index: 9; display: flex; align-items: center; gap: 3px; max-width: calc(100% - 20px); transform: translateX(-50%); overflow: visible; padding: 6px; border: 1px solid #38383c; border-radius: 14px; background: rgba(31, 31, 32, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .4); }
+.director-stage__quick-toolbar button { min-width: 34px; height: 34px; border: 0; border-radius: 8px; padding: 0 7px; background: transparent; color: #ededee; cursor: pointer; white-space: nowrap; font-size: 11px; }
 .director-stage__quick-toolbar button[aria-label='选择画幅比例'], .director-stage__quick-toolbar button[aria-label='全景图'] { font-size: 11px; font-weight: 700; }
 .director-stage__quick-toolbar button:hover, .director-stage__quick-toolbar button.active { background: #343437; color: #fff; }
 .director-stage__quick-toolbar button:disabled { opacity: .45; cursor: default; }
 .director-stage__quick-divider { width: 1px; height: 28px; margin: 0 3px; background: #3c3c40; }
+.quick-toolbar-popover { position: fixed; bottom: 72px; z-index: 14; display: grid; gap: 8px; min-width: 190px; box-sizing: border-box; padding: 10px; border: 1px solid #3f3f46; border-radius: 10px; background: #18181b; box-shadow: 0 16px 40px rgba(0,0,0,.5); color: #d4d4d8; font-size: 10px; }
+.quick-toolbar-popover label { display: flex; align-items: center; gap: 7px; }
+.quick-toolbar-popover input[type='range'] { min-width: 100px; }
+.aspect-popover { grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 230px; }
+.aspect-popover button { min-width: 0; height: 30px; border: 1px solid #3f3f46; }
+.composition-confirm-message { position: fixed; bottom: 72px; left: 50%; width: max-content; max-width: calc(100vw - 24px); transform: translateX(-50%); border: 1px solid #f97316; border-radius: 8px; padding: 8px 12px; background: #2b170d; color: #fdba74; font-size: 11px; }
+.confirm-composition-button { background: #e5e7eb !important; color: #111827 !important; font-weight: 700; }
 .timeline-panel.collapsed { overflow: hidden; }
 .timeline-scroll-content { min-width: calc(100% * var(--timeline-zoom)); }
 .timeline-zoom { min-width: 38px; color: #a1a1aa; text-align: center; font-size: 10px; }

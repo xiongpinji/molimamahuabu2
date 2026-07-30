@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const stageSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasDirectorStage.vue', import.meta.url)), 'utf8')
+const paritySource = readFileSync(fileURLToPath(new URL('../src/utils/director-parity.js', import.meta.url)), 'utf8')
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
 
@@ -72,9 +73,9 @@ test('DR-011 截图按哈希幂等上传并登记为项目领域资产', () => {
 })
 
 test('G005 导演台提供完整机位预设与常用画幅比例', () => {
-  assert.match(stageSource, /const CAMERA_PRESETS = \[/)
-  for (const name of ['正面中景', '正面特写', '正面全景', '侧面跟拍', '侧面近景', '背面中景', '俯拍全景', '45° 俯拍', '低角度仰拍', '低角度广角', '过肩镜头', '过肩镜头（右）', '鸟瞰', '荷兰角']) {
-    assert.ok(stageSource.includes(name), `缺少机位预设：${name}`)
+  assert.match(stageSource, /const CAMERA_PRESETS = \[\{ name: '当前视角'/)
+  for (const name of ['正面中景', '正面特写', '正面全景', '侧面跟拍', '侧面近景', '背面中景', '俯拍全景', '45° 俯拍', '低角度仰拍', '低角度广角', '过肩镜头', '过肩镜头 (右)', '鸟瞰', '荷兰角']) {
+    assert.ok(paritySource.includes(name), `缺少机位预设：${name}`)
   }
   for (const ratio of ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']) assert.ok(stageSource.includes(ratio), `缺少画幅：${ratio}`)
   assert.match(stageSource, /applyCameraPreset/)
@@ -101,7 +102,7 @@ test('G005 时间轴支持持久化循环播放并在非循环结尾停止', () 
 })
 
 test('G005 姿势预设和语义控制写入真实骨骼持久化状态', () => {
-  for (const name of ['站立', 'T型', '行走', '跑步', '坐姿', '蹲下', '单膝跪', '双膝跪', '叉腰', '倚靠', '鞠躬', '思考', '格斗', '踢球', '投掷', '推进', '招手', '伸手', '抱臂', '看手机']) {
+  for (const name of ['站立', 'T型', '行走', '跑步', '坐姿', '蹲下', '单膝跪', '双膝跪', '叉腰', '倚靠', '鞠躬', '思考', '格斗', '踢球', '投掷', '推', '招手', '指向', '抱臂', '看手机']) {
     assert.ok(stageSource.includes(`pose('${name}'`), `缺少姿势预设：${name}`)
   }
   for (const label of ['身体前倾', '身体转身', '身体侧倾', '躯干前倾', '躯干扭转', '躯干侧倾', '头部点头', '头部转头', '头部歪头']) {
@@ -119,12 +120,12 @@ test('G005 自动关键帧驱动对象与绑定相机的插值运动', () => {
   assert.match(stageSource, /upsertMotionKeyframe/)
   assert.match(stageSource, /interpolateMotionTransform/)
   assert.match(stageSource, /object\.position\.set\(\.\.\.transform\.position\)/)
-  assert.match(stageSource, /activeCamera.*setCamera\(transform\.position/)
+  assert.match(stageSource, /activeCamera[\s\S]*?setCamera\(transform\.position/)
   assert.match(stageSource, /class="motion-keyframe"/)
 })
 
 test('G005 程序化角色库、空对象和群众阵列进入统一场景系统', () => {
-  for (const label of ['男性素体', '女性素体', '宽厚素体', '健壮素体', '纤细素体', '少年素体', '儿童素体', '二头身', '群众 3×3', '+ 空对象']) {
+  for (const label of ['标准素体', '女性素体', '宽厚素体', '壮实素体', '纤细素体', '少年素体', '儿童素体', '二头身', '群众阵列', '+ 新建组']) {
     assert.ok(stageSource.includes(label), `缺少创建入口：${label}`)
   }
   assert.match(stageSource, /function makeHumanoidObject/)
@@ -223,7 +224,7 @@ test('灯光面板编辑真实独立光源并让三点布光创建三盏灯', ()
 })
 
 test('G005 灯光、对象复制和镜头排序进入统一命令链', () => {
-  for (const label of ['+ 灯光', '复制对象', '镜头前移', '镜头后移']) assert.ok(stageSource.includes(label), `缺少：${label}`)
+  for (const label of ['+ 添加灯光', '>复制</button>', '镜头前移', '镜头后移']) assert.ok(stageSource.includes(label), `缺少：${label}`)
   assert.match(stageSource, /entry\.type === 'light'/)
   assert.match(stageSource, /new DirectionalLight/)
   assert.match(stageSource, /duplicateDirectorObject/)
@@ -321,7 +322,8 @@ test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和�
 })
 
 test('导演台默认展示角色库，并提供女性角色与自由旋转快捷入口', () => {
-  assert.match(stageSource, /<details[^>]*class="role-create-library"[^>]*open/)
-  assert.match(stageSource, /aria-label="添加女性角色"[\s\S]*ROLE_ARCHETYPES\[1\]/)
-  assert.match(stageSource, /aria-label="旋转工具"[\s\S]*setTransformMode\('rotate'\)/)
+  assert.match(stageSource, /leftPanelTab === 'assets'/)
+  assert.match(stageSource, /ROLE_ARCHETYPES\[1\][\s\S]*setCharacterArchetype\(role\)/)
+  assert.match(stageSource, /\{ mode: 'rotate', label: '旋转工具'/)
+  assert.match(stageSource, /setTransformMode\(tool\.mode\)/)
 })

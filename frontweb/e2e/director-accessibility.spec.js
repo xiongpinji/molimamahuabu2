@@ -8,6 +8,12 @@ const simpleSkinValidationUrl = '/director-fixtures/khronos-simple-skin.gltf'
 
 test.use({ viewport: { width: 1280, height: 720 } })
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('moli_mama_session', JSON.stringify({
+      token: 'director-accessibility-session',
+      user: { id: 'director-accessibility-user', email: 'director@example.com', role: 'user' },
+    }))
+  })
   await page.route('**/api/v1/dramas/3', (route) => fulfillMockDrama(route))
   await page.route('**/api/v1/assets?**', (route) => fulfillEmptyProjectAssets(route))
 })
@@ -422,6 +428,7 @@ test('DR-002 GLB/VRM 加载区分权限、缺失、MIME 和损坏且场景仍可
   const modelUrl = page.getByLabel('角色模型 URL')
   const loadModel = page.getByRole('button', { name: '加载模型' })
   const initialObjectCount = await page.locator('.stage-tree-row').count()
+  const addTestProp = page.locator('.director-asset-card').filter({ hasText: '椅子' })
   const cases = [
     ['missing.glb', '模型加载失败：三维资源不存在（404）'],
     ['private.glb', '模型加载失败：无权限访问三维资源（403）'],
@@ -433,7 +440,9 @@ test('DR-002 GLB/VRM 加载区分权限、缺失、MIME 和损坏且场景仍可
     await modelUrl.dispatchEvent('change')
     await loadModel.click()
     await expect(page.getByText(message, { exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '+ 立方体' }).click()
+    await page.getByRole('button', { name: '资产', exact: true }).click()
+    await addTestProp.click()
+    await page.getByRole('button', { name: '大纲', exact: true }).click()
   }
   await modelUrl.fill(simpleSkinValidationUrl)
   await modelUrl.dispatchEvent('change')
@@ -550,7 +559,7 @@ test('导演台 100 对象、20 相机、200 片段真实渲染平均 FPS 不低
   await expect(dialog).toBeVisible()
   await expect(page.locator('.stage-tree-row')).toHaveCount(102)
   await page.getByRole('button', { name: '动画时间轴' }).click()
-  await expect(page.getByRole('option', { name: /压力机位/ })).toHaveCount(20)
+  await expect(page.getByLabel('动画机位').locator('option')).toHaveCount(20)
   await expect(page.locator('.timeline-action')).toHaveCount(200)
 
   const sampledFps = await page.evaluate(() => new Promise((resolve) => {

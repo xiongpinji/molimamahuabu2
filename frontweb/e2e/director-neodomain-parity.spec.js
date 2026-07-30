@@ -124,3 +124,62 @@ test('三点布光创建三盏真实灯光并支持强度和颜色实时保存',
   await expect.poll(() => savedTimelines.at(-1)?.objects.find((object) => object.name === '主光')?.light.color).toBe('#ff4fd8')
   expect(savedTimelines.at(-1).objects.find((object) => object.name === '主光').light.intensity).toBe(6.5)
 })
+
+test('参考站资产、群众、体型姿势、关键帧和标签设置进入真实保存链', async ({ page }) => {
+  const savedTimelines = []
+  const timeline = baseTimeline([{
+    id: 'parity-role', type: 'humanoid', name: '对齐人物', visible: true, locked: false,
+    assetRef: { kind: 'male' },
+    transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  }])
+  await page.route('**/api/v1/dramas/3', (route) => fulfillMockDrama(route, timeline, { characters: [] }))
+  await page.route('**/api/v1/dramas/3/canvas-layout', async (route) => {
+    savedTimelines.push(route.request().postDataJSON().canvas_layout.director_timeline)
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {} }) })
+  })
+
+  await openDirector(page)
+  await page.getByRole('button', { name: '资产', exact: true }).click()
+  await expect(page.locator('.director-asset-card')).toHaveCount(20)
+  await page.locator('.director-asset-card').filter({ hasText: '椅子' }).click()
+  await expect.poll(() => savedTimelines.at(-1)?.objects.some((object) => object.name === '椅子')).toBe(true)
+
+  await page.getByRole('button', { name: '机位', exact: true }).click()
+  await expect(page.locator('.director-asset-card')).toHaveCount(16)
+  await page.locator('.director-asset-card').filter({ hasText: '荷兰角' }).click()
+  await expect.poll(() => savedTimelines.at(-1)?.cameras.some((camera) => camera.name === '荷兰角' && camera.roll === -16)).toBe(true)
+
+  await page.getByRole('button', { name: '模板', exact: true }).click()
+  await expect(page.locator('.director-asset-card')).toHaveCount(20)
+  await page.getByRole('button', { name: '大纲', exact: true }).click()
+  await page.getByRole('button', { name: '+ 群众阵列', exact: true }).click()
+  const crowdDialog = page.getByRole('dialog', { name: '群众阵列' })
+  await crowdDialog.getByLabel('行数').fill('2')
+  await crowdDialog.getByLabel('列数').fill('3')
+  await crowdDialog.getByLabel('间距').fill('1.5')
+  await crowdDialog.getByRole('button', { name: '添加群众' }).click()
+  await expect.poll(() => savedTimelines.at(-1)?.objects.filter((object) => object.parentId && object.name.startsWith('群众')).length).toBe(6)
+  await page.getByRole('button', { name: /解散分组 群众组/ }).click()
+  await expect.poll(() => savedTimelines.at(-1)?.objects.some((object) => object.type === 'group' && object.name.startsWith('群众组'))).toBe(false)
+
+  await page.getByRole('button', { name: /对齐人物 humanoid/ }).click()
+  await page.getByRole('button', { name: '儿童素体', exact: true }).click()
+  await page.getByLabel('颜色', { exact: true }).fill('#35d7ff')
+  await expect.poll(() => savedTimelines.at(-1)?.objects.find((object) => object.id === 'parity-role')?.assetRef).toMatchObject({
+    kind: 'child',
+    color: '#35d7ff',
+  })
+  await page.getByRole('button', { name: '姿势', exact: true }).click()
+  await page.getByRole('button', { name: '招手', exact: true }).click()
+  await expect.poll(() => Object.keys(savedTimelines.at(-1)?.objects.find((object) => object.id === 'parity-role')?.poseRotations || {}).length).toBeGreaterThan(0)
+
+  await page.getByRole('button', { name: '动画时间轴' }).click()
+  await page.getByRole('button', { name: '添加关键帧', exact: true }).click()
+  await page.locator('.motion-keyframe').click()
+  await page.getByRole('button', { name: '子弹时间', exact: true }).click()
+  await expect.poll(() => savedTimelines.at(-1)?.motionTracks[0]?.keyframes[0]?.speedPreset).toBe('子弹时间')
+
+  await page.getByRole('button', { name: '标签', exact: true }).click()
+  await page.getByLabel('机位辅助线').check()
+  await expect.poll(() => savedTimelines.at(-1)?.environment.showCameraGuides).toBe(true)
+})
