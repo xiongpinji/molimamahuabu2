@@ -744,7 +744,11 @@ function updateEditorPosition() {
   const viewportHeight = window.innerHeight
   const viewportPadding = 16
   const nodeGap = 12
-  const panelWidth = Math.max(1, Math.min(860, viewportWidth - viewportPadding * 2))
+  const canvasScale = nodeRoot.value.offsetWidth > 0
+    ? nodeBounds.width / nodeRoot.value.offsetWidth
+    : 1
+  const editorScale = Math.min(1, Math.max(0.6, canvasScale))
+  const panelWidth = Math.max(1, Math.min(860 * editorScale, viewportWidth - viewportPadding * 2))
   const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - panelWidth / 2
   const panelLeft = Math.min(
     Math.max(viewportPadding, desiredLeft),
@@ -754,6 +758,10 @@ function updateEditorPosition() {
   const spaceBelow = Math.max(0, viewportHeight - anchorBottom - nodeGap - viewportPadding)
   const dock = spaceBelow >= spaceAbove ? 'bottom' : 'top'
   const availableHeight = dock === 'bottom' ? spaceBelow : spaceAbove
+  const panelHeightCap = Math.max(1, Math.min(
+    viewportHeight - viewportPadding * 2,
+    640 * editorScale,
+  ))
 
   editorDock.value = dock
   const nextStyle = {
@@ -762,7 +770,7 @@ function updateEditorPosition() {
     bottom: dock === 'top' ? `${Math.round(viewportHeight - anchorTop + nodeGap)}px` : 'auto',
     left: `${Math.round(panelLeft)}px`,
     width: `${Math.round(panelWidth)}px`,
-    maxHeight: `${Math.max(1, Math.floor(availableHeight))}px`,
+    maxHeight: `${Math.max(1, Math.floor(Math.min(availableHeight, panelHeightCap)))}px`,
   }
   if (Object.entries(nextStyle).some(([key, value]) => editorPanelStyle.value[key] !== value)) {
     editorPanelStyle.value = nextStyle
