@@ -44,17 +44,19 @@
 
 ## 生产实测（2026-07-31）
 
-- 当前生产 release：`/opt/moli-drama/releases/9c4e168-director-responsive-20260731T032020`。该 release 继承本热修 `aiClient.js`，SHA-256 为 `1fbfd6006cd89798c4c02765529030cfed3e292819cd86829fe2490e1dfc7d71`。
-- 数据库备份：`/opt/moli-drama/shared/backups/database-20260730T194327131Z.sqlite`，SHA-256 为 `237d34ee4e510f569056e5cac5b6081440956ffff10db3457e71c70a217611d0`；备份校验与恢复演练均通过。
+- 当前生产 release：`/opt/moli-drama/releases/f582421-scene-routing-20260730T202614Z`。该 release 继承本热修 `aiClient.js`，SHA-256 为 `1fbfd6006cd89798c4c02765529030cfed3e292819cd86829fe2490e1dfc7d71`。
+- 数据库备份：`/opt/moli-drama/shared/backups/database-20260730T202449879Z.sqlite`，SHA-256 为 `737f1532cc901eacbbe6d03c24d181fbcd775e765d85d43bebd7d454d8b1e428`；备份校验与恢复演练均通过。
+- 本次增量部署只上传并覆盖 `backend-node/src/services/sceneService.js`；部署前后 release 的 `diff -qr` 只有该 1 个文件不同，新文件 SHA-256 为 `c41c38b5f8fd1fe8a4b3107b4e37f563b21e0fae8796e5dd6595f1562e47ff78`。
 - `gpt-5.6-sol` 在真实角色提取中先返回 SSE `upstream_error`，同模型非流式兜底随后收到 HTTP 524。代码兜底按设计生效，但该线路本身仍不可用于生产长文本任务。
 - 保留全站默认文本模型 `gpt-5.6-sol`，仅通过 `ai_model_map` 将短剧工厂 10 个业务场景（含 `scene_image_prompt`、`scene_single_image_prompt`）路由至已实测可用的 `gpt-5.6-terra`；`terra` 复用 `sol` 的 10 积分/次文本定价。
 - 角色提取任务 `d29ae74d-c88a-42e6-a001-6b2d67fd56ae` 完成，落库 1 个本集角色。
 - 场景提取任务 `52a2095e-2ec3-49f6-ba0f-245dc1080898` 完成，落库 6 个场景。
 - 道具提取任务 `e1f9bec7-a39e-46af-87de-0ae87eb6b18e` 完成，落库 5 个道具。
 - 角色、场景、道具各实测生成 1 张图片，任务全部完成；三个本地文件均存在于项目存储目录。
+- 增量部署后用场景 19 实测单图生图：文本日志明确按 `scene_single_image_prompt` 路由到 `gpt-5.6-terra`，10 积分预留已确认；图片任务 `7687439b-b4f8-44d5-99d7-20b05acb7d4b`（图片记录 205）完成，40 积分预留已确认，本地文件 `projects/0006_20260727_33434/scenes/ig_81031783.jpg` 存在。
 - 全能分镜任务 `6173feb6-9a63-482c-8b31-ec495ac18052` 完成，生成 6 镜、总时长 60 秒；每镜 `creation_mode=universal`，且 `universal_segment_text`、`image_prompt`、`video_prompt` 均非空。
-- 本轮 7 个成功生成任务的积分预留均为 `confirmed`；首次 HTTP 524 失败任务的 10 积分预留已 `refunded`；本轮新增 `held` 数为 0。
-- 服务保持 `active`，`NRestarts=0`，健康检查和生产预检全部通过，实测窗口内无新增错误日志。
+- 此前完整流程实测的 7 个成功生成任务积分预留均为 `confirmed`；首次 HTTP 524 失败任务的 10 积分预留已 `refunded`；本次增量部署后的实测也未新增 `held`。
+- 服务保持 `active`，`NRestarts=0`，健康检查和生产预检全部通过；增量部署及实测窗口内新增错误日志数为 0，数据库 `quick_check=ok`。
 
 ## 扫描发现的独立遗留问题
 
