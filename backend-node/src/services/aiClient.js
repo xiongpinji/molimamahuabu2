@@ -259,6 +259,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
           responseId = responseId || evt.id || evt.response?.id || null;
           if (evt.type) eventTypes.add(String(evt.type));
           if (evt.error && typeof evt.error === 'object') {
+            const retryableTransient = String(evt.error.type || '').trim() === 'upstream_error';
             const errorType = String(evt.error.type || evt.error.code || 'upstream_error')
               .replace(/[\u0000-\u001f\u007f]/g, ' ')
               .trim()
@@ -269,6 +270,10 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
               .slice(0, 500);
             upstreamError = new Error(`AI 上游服务错误（${errorType}）：${errorMessage}`);
             upstreamError.code = 'AI_UPSTREAM_ERROR';
+            upstreamError.upstreamType = errorType;
+            upstreamError.retryableTransient = retryableTransient;
+            upstreamError.usage = usage;
+            upstreamError.receivedTextLength = accumulated.length;
             clearTimeout(silenceTimer);
             reject(upstreamError);
             res.destroy();
@@ -326,7 +331,14 @@ async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs
   let response = null;
   let combinedUsage = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    try {
+      response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        error.usage = mergeProviderUsage(combinedUsage, error.usage);
+      }
+      throw error;
+    }
     combinedUsage = mergeProviderUsage(combinedUsage, response.usage);
     response.usage = combinedUsage;
     if (response.body) return response;
@@ -550,24 +562,12 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
-  const res = await postJSONStreamWithEmptyRetry(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000, (receivedLen, event, accumulated) => {
-    if (event === 'first_token') {
-      log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
-    } else if (receivedLen > 0 && receivedLen % 500 < 20) {
-      // 每积累约 500 字符记录一次进度
-      log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
-    }
-    // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
-    if (streamCallback && accumulated) streamCallback(accumulated);
-  }, log, model);
-  // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
-  const content = res.body;
-  const elapsedMs = Date.now() - startMs;
-  if (!content) {
-    log.warn('AI stream retries exhausted; falling back to non-stream request', {
+  const runNonStreamFallback = async (reason, priorUsage, diagnostics = {}) => {
+    log.warn('AI streaming request failed; falling back to non-stream request', {
       model,
-      elapsed_ms: elapsedMs,
-      ...(res.diagnostics || {}),
+      reason,
+      elapsed_ms: Date.now() - startMs,
+      ...diagnostics,
     });
     const fallback = await postJSONNonStream(
       url,
@@ -579,17 +579,44 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     try {
       fallbackUsage = JSON.parse(fallback.raw || '{}').usage;
     } catch (_) {}
-    if (fallback.body) {
-      generationUsageContext.capture(mergeProviderUsage(res.usage, fallbackUsage));
-      if (streamCallback) streamCallback(fallback.body);
-      log.info('AI non-stream fallback received', {
-        model,
-        text_length: fallback.body.length,
-        elapsed_ms: Date.now() - startMs,
+    if (!fallback.body) throw new Error('AI 返回内容为空');
+    generationUsageContext.capture(mergeProviderUsage(priorUsage, fallbackUsage));
+    if (streamCallback) streamCallback(fallback.body);
+    log.info('AI non-stream fallback received', {
+      model,
+      reason,
+      text_length: fallback.body.length,
+      elapsed_ms: Date.now() - startMs,
+    });
+    return fallback.body;
+  };
+  let res;
+  try {
+    res = await postJSONStreamWithEmptyRetry(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000, (receivedLen, event, accumulated) => {
+      if (event === 'first_token') {
+        log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+      } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+        // 每积累约 500 字符记录一次进度
+        log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+      }
+      // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
+      if (streamCallback && accumulated) streamCallback(accumulated);
+    }, log, model);
+  } catch (error) {
+    if (error?.code === 'AI_UPSTREAM_ERROR'
+      && error.retryableTransient === true
+      && Number(error.receivedTextLength || 0) === 0) {
+      return runNonStreamFallback('transient_upstream_error', error.usage, {
+        upstream_type: error.upstreamType,
       });
-      return fallback.body;
     }
-    throw new Error('AI 返回内容为空');
+    throw error;
+  }
+  // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
+  const content = res.body;
+  const elapsedMs = Date.now() - startMs;
+  if (!content) {
+    return runNonStreamFallback('empty_stream', res.usage, res.diagnostics || {});
   }
   generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });

@@ -168,6 +168,184 @@ test('generateText surfaces a failed non-stream fallback after two empty streams
   assert.equal(requests, 3);
 });
 
+test('generateText falls back to non-stream once for a transient upstream SSE error', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      if (body.stream) {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(`data: ${JSON.stringify({
+          error: {
+            type: 'upstream_error',
+            message: 'Upstream service temporarily unavailable',
+          },
+        })}\n\n`);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [{ message: { content: 'transient fallback succeeded' } }],
+      }));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  const text = await aiClient.generateText(db, log, 'text', 'hello', '');
+
+  assert.equal(text, 'transient fallback succeeded');
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true, false]);
+});
+
+test('generateText does not fallback after a transient upstream SSE error follows partial text', async (t) => {
+  const requestBodies = [];
+  const streamed = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial text' } }] })}`,
+        `data: ${JSON.stringify({
+          error: {
+            type: 'upstream_error',
+            message: 'Upstream service temporarily unavailable',
+          },
+        })}`,
+        '',
+      ].join('\n\n'));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', '', {
+      streamCallback: (text) => streamed.push(text),
+    }),
+    /AI 上游服务错误（upstream_error）/,
+  );
+
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true]);
+  assert.deepEqual(streamed, ['partial text']);
+});
+
+test('generateText includes prior empty stream usage in a transient fallback', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      if (!body.stream) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: 'fallback with complete usage' } }],
+          usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 },
+        }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (requestBodies.length === 1) {
+        res.end(`data: ${JSON.stringify({
+          choices: [{ delta: { role: 'assistant' } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+        })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      res.end(`data: ${JSON.stringify({
+        usage: { prompt_tokens: 7, completion_tokens: 0, total_tokens: 7 },
+        error: {
+          type: 'upstream_error',
+          message: 'Upstream service temporarily unavailable',
+        },
+      })}\n\n`);
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  const billing = {};
+  generationUsageContext.activate(billing);
+  const text = await aiClient.generateText(db, log, 'text', 'hello', '')
+    .finally(() => generationUsageContext.clear(billing));
+
+  assert.equal(text, 'fallback with complete usage');
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true, true, false]);
+  assert.deepEqual(billing.usage, {
+    inputTokens: 23,
+    outputTokens: 4,
+    reasoningTokens: 0,
+    source: 'provider',
+  });
+});
+
+test('generateText does not fallback for a non-transient structured SSE error', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({
+        error: {
+          type: 'authentication_error',
+          message: 'Invalid API key',
+        },
+      })}\n\n`);
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', ''),
+    /AI 上游服务错误（authentication_error）/,
+  );
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true]);
+});
+
+test('generateText does not fallback when a structured SSE error omits its type', async (t) => {
+  let requests = 0;
+  const provider = http.createServer((_req, res) => {
+    requests += 1;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end(`data: ${JSON.stringify({
+      error: {
+        message: 'Invalid request',
+      },
+    })}\n\n`);
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', ''),
+    /AI 上游服务错误/,
+  );
+  assert.equal(requests, 1);
+});
+
 test('chat stream accepts response output-text deltas without logging generated content', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
