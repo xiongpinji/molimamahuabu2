@@ -1,19 +1,28 @@
 <template>
   <div class="project-asset-node" :class="{ focused: data.focused }">
+    <Handle
+      v-if="assetType === 'image'"
+      class="node-handle node-handle-output"
+      type="source"
+      :position="Position.Right"
+    />
     <CanvasNodeStatusOverlay :node-id="id" />
-    <div class="tag">{{ typeLabel }}</div>
+    <div class="node-drag-hint">
+      <span class="tag">{{ typeLabel }}</span>
+      <span>{{ assetType === 'image' ? '拖动 · 连线作为参考' : '拖动 · 预览/指派' }}</span>
+    </div>
     <div v-if="assetBadges.length" class="asset-badges">
       <span v-for="badge in assetBadges" :key="badge" class="asset-badge">{{ badge }}</span>
     </div>
     <div class="asset-purpose">{{ purposeLabel }}</div>
-    <video v-if="assetType === 'video' && url" :src="url" class="asset-media" muted controls preload="metadata" />
-    <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio" controls />
-    <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" />
+    <video v-if="assetType === 'video' && url" :src="url" class="asset-media nodrag nopan" draggable="false" muted controls preload="metadata" />
+    <audio v-else-if="assetType === 'audio' && url" :src="url" class="asset-audio nodrag nopan" draggable="false" controls />
+    <img v-else-if="url" :src="url" :alt="data.asset?.name || '项目素材'" draggable="false" />
     <div v-else class="empty">素材不可用</div>
     <strong>{{ data.asset?.name || '未命名截图' }}</strong>
     <span>{{ assignmentLabel }}</span>
     <p v-if="isFailureAsset" class="asset-failure">{{ failureLabel }}</p>
-    <div class="asset-actions">
+    <div class="asset-actions" @pointerdown.stop @mousedown.stop>
       <button type="button" :disabled="!url" @click.stop="openAsset">预览</button>
       <button type="button" :disabled="!referenceText" @click.stop="copyReference">复制引用</button>
       <button type="button" :disabled="!assetId || assigning" @click.stop="assignToSelectedStoryboard">{{ assignButtonLabel }}</button>
@@ -54,6 +63,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { assetMediaUrl } from '@/utils/mediaUrl'
 import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
@@ -185,12 +195,18 @@ function closePanel() {
 </script>
 
 <style scoped>
-.project-asset-node { position: relative; width: 190px; overflow: hidden; border: 1px solid #3f3f46; border-radius: 12px; padding: 9px; background: #18181b; color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,.3); }
+.project-asset-node { position: relative; width: 190px; overflow: visible; border: 1px solid #3f3f46; border-radius: 12px; padding: 9px; background: #18181b; color: #e4e4e7; box-shadow: 0 4px 16px rgba(0,0,0,.3); cursor: grab; }
+.project-asset-node:active { cursor: grabbing; }
 .project-asset-node.focused { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.25); }
+.node-handle { width: 10px; height: 10px; border: 2px solid #18181b; background: #38bdf8; }
+.node-handle-output { right: -6px; }
+.node-drag-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #71717a; font-size: 9px; user-select: none; }
 .project-asset-node img,
 .asset-media,
 .asset-audio,
 .empty { width: 100%; height: 108px; margin: 6px 0; border-radius: 8px; object-fit: cover; background: #09090b; }
+.asset-media,
+.asset-audio { cursor: default; }
 .asset-audio { height: 42px; }
 .empty { display: grid; place-items: center; color: #71717a; font-size: 11px; }
 .tag { color: #38bdf8; font-size: 10px; font-weight: 700; }
