@@ -6,10 +6,10 @@
       <strong>{{ account.available }}</strong>
     </div>
     <div v-if="account.held" class="held">冻结 {{ account.held }}</div>
-    <router-link class="profile-link" :to="{ name: 'personal-center' }" aria-label="个人中心">
+    <button class="profile-link" type="button" aria-label="个人中心" @click="emit('open')">
       <span class="profile-avatar">{{ accountInitial }}</span>
       <span>个人中心</span>
-    </router-link>
+    </button>
   </aside>
 </template>
 
@@ -20,6 +20,7 @@ import { getCreditAccount } from '@/api/auth'
 import { readSession } from '@/utils/authSession'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
 
+const emit = defineEmits(['open'])
 const route = useRoute()
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const account = ref(normalizeCreditAccount())
@@ -64,7 +65,8 @@ onBeforeUnmount(() => {
 .label, .held { color: #b9b9bd; font-size: 12px; }
 .load-error { color: #fca5a5; font-size: 12px; }
 .account-badge strong { color: #ffd36a; font-size: 18px; }
-.profile-link { display: inline-flex; align-items: center; gap: 7px; color: #fff; font-size: 13px; text-decoration: none; }
+.profile-link { display: inline-flex; align-items: center; gap: 7px; padding: 0; border: 0; color: #fff; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.profile-link:focus-visible { outline: 2px solid #ff9a73; outline-offset: 3px; border-radius: 8px; }
 .profile-avatar { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid rgba(255,255,255,.16); border-radius: 50%; color: #161616; background: linear-gradient(135deg, #ffd36a, #ff8f70); font-weight: 800; }
 @media (max-width: 680px) {
   .account-badge { left: 10px; right: 10px; bottom: 10px; overflow-x: auto; }
