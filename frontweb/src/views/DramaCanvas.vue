@@ -2015,6 +2015,7 @@ function syncRenderedNodesToGraph() {
     return {
       ...node,
       position: rendered.position || node.position,
+      dimensions: rendered.dimensions || node.dimensions,
       selected: rendered.selected,
       class: rendered.class,
       data: rendered.data || node.data,
@@ -5436,6 +5437,7 @@ function selectedStandaloneNodes() {
 
 function createStandaloneGroup() {
   if (!isStandaloneCanvas.value) return
+  syncRenderedNodesToGraph()
   const members = selectedStandaloneNodes()
   if (members.length < 2) {
     ElMessage.warning('请先框选至少 2 个节点')
