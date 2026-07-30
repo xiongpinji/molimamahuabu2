@@ -317,6 +317,8 @@
           @move-end="scheduleLayoutSave"
           @nodes-change="onNodesChange"
           @edges-change="onEdgesChange"
+          @connect-start="onConnectStart"
+          @connect-end="onConnectEnd"
           @connect="onConnect"
         >
           <CanvasFlowAligner />
@@ -632,7 +634,10 @@ import {
   redoCanvasInteractionHistory,
   undoCanvasInteractionHistory,
 } from '@/utils/canvasInteractionHistory'
-import { canvasConnectionInteractionOptions } from '@/utils/canvasConnectionInteraction'
+import {
+  canvasConnectionInteractionOptions,
+  resolveCanvasConnectionDrop,
+} from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
 import {
   DEFAULT_CANVAS_PREFERENCES,
@@ -758,6 +763,8 @@ const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuFlowPos = ref(null)
 const contextMenuNode = ref(null)
+const contextMenuConnectionSource = ref(null)
+const connectionDragState = ref(null)
 const canvasAssetPickerVisible = ref(false)
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
@@ -5232,15 +5239,25 @@ function focusNodeForConfig(node, options = {}) {
   scheduleVirtualization()
 }
 
+function openCanvasCreateMenuAt(clientX, clientY, connectionSource = null, flowPosition = null) {
+  const flowPos = flowPosition || screenToFlowPosition(clientX, clientY)
+  contextMenuFlowPos.value = flowPos
+  contextMenuNode.value = null
+  contextMenuConnectionSource.value = connectionSource
+  contextMenuX.value = clientX
+  contextMenuY.value = clientY
+  contextMenuVisible.value = true
+}
+
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   if (event?.preventDefault) event.preventDefault()
-  const flowPos = payload?.flowPosition || screenToFlowPosition(event.clientX, event.clientY)
-  contextMenuFlowPos.value = flowPos
-  contextMenuNode.value = null
-  contextMenuX.value = event.clientX
-  contextMenuY.value = event.clientY
-  contextMenuVisible.value = true
+  openCanvasCreateMenuAt(
+    event.clientX,
+    event.clientY,
+    null,
+    payload?.flowPosition || null,
+  )
 }
 
 function onNodeContextMenu(payload) {
@@ -5249,6 +5266,7 @@ function onNodeContextMenu(payload) {
   event?.stopPropagation?.()
   contextMenuNode.value = payload?.node || null
   contextMenuFlowPos.value = contextMenuNode.value?.position || screenToFlowPosition(event.clientX, event.clientY)
+  contextMenuConnectionSource.value = null
   contextMenuX.value = event.clientX
   contextMenuY.value = event.clientY
   contextMenuVisible.value = true
@@ -5258,6 +5276,7 @@ function closeContextMenu() {
   contextMenuVisible.value = false
   contextMenuFlowPos.value = null
   contextMenuNode.value = null
+  contextMenuConnectionSource.value = null
 }
 
 function clearCanvasInteractionState() {
@@ -5330,6 +5349,7 @@ async function runSelectedStandaloneGroup() {
 
 async function onContextMenuSelect(type) {
   const node = contextMenuNode.value
+  const connectionSource = contextMenuConnectionSource.value
   if (node) {
     closeContextMenu()
     await runNodeMenuAction(type, node)
@@ -5377,7 +5397,7 @@ async function onContextMenuSelect(type) {
     return
   }
   pendingFlowPosition.value = flowPosition
-  openCreateDialog(type, flowPosition)
+  void openCreateDialog(type, flowPosition, connectionSource)
   closeContextMenu()
 }
 
@@ -5736,8 +5756,64 @@ async function runCanvasEdgeTarget(edgeId) {
 provide('can-run-canvas-edge-target', canRunCanvasEdgeTarget)
 provide('run-canvas-edge-target', runCanvasEdgeTarget)
 
+function onConnectStart(eventOrParams, maybeParams) {
+  const params = maybeParams?.nodeId ? maybeParams : eventOrParams
+  if (!params?.nodeId) return
+  connectionDragState.value = {
+    sourceNodeId: String(params.nodeId),
+    sourceHandle: params.handleId || null,
+    connected: false,
+  }
+}
+
+function connectionDropPoint(event) {
+  const pointer = event?.changedTouches?.[0] || event?.touches?.[0] || event
+  if (!Number.isFinite(pointer?.clientX) || !Number.isFinite(pointer?.clientY)) return null
+  return { clientX: pointer.clientX, clientY: pointer.clientY }
+}
+
+function onConnectEnd(event) {
+  const dragState = connectionDragState.value
+  connectionDragState.value = null
+  if (!dragState?.sourceNodeId || dragState.connected) return
+
+  const point = connectionDropPoint(event)
+  if (!point) return
+  const targets = [
+    event?.target,
+    ...(document.elementsFromPoint?.(point.clientX, point.clientY) || []),
+  ].filter(Boolean)
+  const drop = resolveCanvasConnectionDrop({
+    sourceNodeId: dragState.sourceNodeId,
+    targets,
+    ...point,
+  })
+  if (drop?.kind === 'connect') {
+    onConnect({
+      source: dragState.sourceNodeId,
+      target: drop.targetNodeId,
+      sourceHandle: dragState.sourceHandle,
+      targetHandle: null,
+    })
+    return
+  }
+  if (drop?.kind === 'create') {
+    suppressPaneClick()
+    openCanvasCreateMenuAt(drop.clientX, drop.clientY, {
+      sourceNodeId: dragState.sourceNodeId,
+      sourceHandle: dragState.sourceHandle,
+    })
+  }
+}
+
 function onConnect(connection) {
   if (!connection?.source || !connection?.target) return
+  if (
+    connectionDragState.value
+    && String(connectionDragState.value.sourceNodeId) === String(connection.source)
+  ) {
+    connectionDragState.value.connected = true
+  }
   if (String(connection.source) === String(connection.target)) {
     ElMessage.warning('不能连接到同一个节点')
     return
@@ -6324,12 +6400,21 @@ const {
   persistCanvasState,
 })
 
-function openCreateDialog(type, flowPosition = null) {
+async function openCreateDialog(type, flowPosition = null, connectionSource = null) {
   if (isStandaloneCanvas.value && FREE_NODE_KINDS.has(type)) {
-    void createFreeCanvasNode(type, flowPosition)
-    return
+    const nodeId = await createFreeCanvasNode(type, flowPosition)
+    if (connectionSource?.sourceNodeId && nodeId) {
+      onConnect({
+        source: connectionSource.sourceNodeId,
+        target: nodeId,
+        sourceHandle: connectionSource.sourceHandle || null,
+        targetHandle: null,
+      })
+    }
+    return nodeId
   }
   openProductionCreateDialog(type, flowPosition)
+  return null
 }
 
 const {
