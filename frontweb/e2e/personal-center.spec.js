@@ -56,3 +56,36 @@ test('未接通模块不展示模拟数据且移动端导航可用', async ({ pa
   await expect(page.getByText(/尚未开放/)).toBeVisible()
   await expect(page.locator('.center-rail')).toBeVisible()
 })
+
+test('单个数据接口失败不影响账户工作区和作品加载', async ({ page }) => {
+  await page.route('**/api/v1/billing/audit-events?limit=30', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: false, error: { message: '审计记录暂时不可用' } }),
+    })
+  })
+
+  await page.goto('/personal-center')
+  await expect(page.getByText('860', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('个人创作空间', { exact: true }).first()).toBeVisible()
+  await page.getByRole('button', { name: /我的作品/ }).click()
+  await expect(page.getByRole('link', { name: /服装角色多视图/ })).toBeVisible()
+  await page.getByRole('button', { name: /登录与安全/ }).click()
+  await expect(page.getByText('近期账户活动暂时无法加载')).toBeVisible()
+})
+
+test('积分接口失败时不把默认零值呈现为真实余额', async ({ page }) => {
+  await page.route('**/api/v1/billing/account', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: false, error: { message: '积分账户暂时不可用' } }),
+    })
+  })
+
+  await page.goto('/personal-center')
+  await expect(page.locator('.balance-pill strong')).toHaveText('加载失败')
+  await expect(page.locator('.metric-grid article').filter({ hasText: '可用积分' }).locator('strong')).toHaveText('—')
+  await expect(page.getByText('个人创作空间', { exact: true }).first()).toBeVisible()
+})
