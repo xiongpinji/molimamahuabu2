@@ -20,11 +20,12 @@ const dramaCanvasSource = readFileSync(
   'utf8'
 )
 
-test('独立画布节点编辑器默认跟随节点并仅在全屏时挂载到视口', () => {
-  assert.match(nodeSource, /<Teleport to="body" :disabled="!editorFullscreen">/)
+test('独立画布节点编辑器始终挂载到视口，避免被画布缩放和裁切', () => {
+  assert.match(nodeSource, /<Teleport to="body">/)
+  assert.doesNotMatch(nodeSource, /:disabled="!editorFullscreen"/)
   assert.match(nodeSource, /class="node-expanded-editor/)
-  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*position:\s*absolute/)
-  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*top:\s*calc\(100%\s*\+\s*18px\)/)
+  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*position:\s*fixed/)
+  assert.match(nodeSource, /\.node-expanded-editor\s*\{[\s\S]*bottom:\s*24px/)
   assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen\s*\{[\s\S]*position:\s*fixed/)
   assert.match(nodeSource, /\.node-expanded-editor\.is-fullscreen \.prompt-input,[\s\S]*min-height:\s*min\(54vh,\s*640px\)/)
   assert.match(nodeSource, /aria-label="全屏编辑"/)
@@ -76,15 +77,23 @@ test('节点不展示小结果缩略条并保留下载、复制引用和重试�
 test('LibTV 连线使用细贝塞尔底线和循环蓝色流光', () => {
   assert.match(edgeSource, /getBezierPath/)
   assert.match(edgeSource, /class="libtv-edge-glow"/)
+  assert.match(edgeSource, /class="libtv-edge-hover-path"/)
+  assert.match(edgeSource, /aria-label="剪断连线"/)
+  assert.match(edgeSource, /detachFreeCanvasReference/)
   assert.match(edgeSource, /stroke-dasharray/)
   assert.match(edgeSource, /@keyframes libtv-edge-flow/)
+})
+
+test('参考图卡片不再显示用途、排序、权重和启用选项', () => {
+  assert.doesNotMatch(nodeSource, /aria-label="参考图用途"/)
+  assert.doesNotMatch(nodeSource, /class="reference-controls"/)
 })
 
 test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () => {
   assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
   assert.match(nodeSource, /width:\s*min\(860px/)
-  assert.match(nodeSource, /max-height:\s*min\(58vh,\s*560px\)/)
+  assert.match(nodeSource, /max-height:\s*min\(58vh,\s*var\(--editor-max-height,\s*560px\)\)/)
 })
 
 test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {

@@ -1,5 +1,6 @@
 <template>
   <article
+    ref="nodeRoot"
     class="home-canvas-node"
     :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected }]"
     :style="data.imageMarkerColor ? { '--image-node-marker': data.imageMarkerColor } : undefined"
@@ -83,11 +84,12 @@
       :data="data"
     />
 
-    <Teleport to="body" :disabled="!editorFullscreen">
+    <Teleport to="body">
       <section
         v-if="isSelected && !hasMultiSelection && !editorHidden"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
-        :class="[`editor-${data.kind}`, { 'is-fullscreen': editorFullscreen }]"
+        :class="[`editor-${data.kind}`, { 'is-docked-top': editorDock === 'top', 'is-fullscreen': editorFullscreen }]"
+        :style="{ '--editor-max-height': `${editorMaxHeight}px` }"
         role="region"
         :aria-label="editorLabel"
         @mousedown.stop
@@ -175,23 +177,6 @@
               <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
               <span v-else class="reference-placeholder">等待图片</span>
               <figcaption :title="reference.title">图片{{ index + 1 }}</figcaption>
-              <select
-                :value="reference.slot"
-                aria-label="参考图用途"
-                @change="updateReference(reference, { input: $event.target.value })"
-              >
-                <option value="reference-image">普通参考</option>
-                <option v-if="data.kind === 'video'" value="first-frame">首帧</option>
-                <option v-if="data.kind === 'video'" value="last-frame">尾帧</option>
-                <option value="character-reference">角色</option>
-                <option value="style-reference">风格</option>
-              </select>
-              <div class="reference-controls">
-                <button type="button" title="前移" @click="moveReference(reference, -1)">←</button>
-                <button type="button" title="后移" @click="moveReference(reference, 1)">→</button>
-                <label>权重 <input type="number" min="0.1" max="2" step="0.1" :value="reference.weight" @change="updateReference(reference, { weight: Number($event.target.value) })" /></label>
-                <label><input type="checkbox" :checked="reference.enabled" @change="updateReference(reference, { enabled: $event.target.checked })" />启用</label>
-              </div>
             </figure>
           </div>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
@@ -425,11 +410,14 @@ const props = defineProps({
 })
 
 const ctx = useCanvasContext()
+const nodeRoot = ref(null)
 const contentInput = ref(null)
 const fileInput = ref(null)
 const referenceFileInput = ref(null)
 const editorHidden = ref(false)
 const editorFullscreen = ref(false)
+const editorDock = ref('bottom')
+const editorMaxHeight = ref(560)
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 let draftSaveTimer = null
@@ -675,11 +663,21 @@ function openConfig() {
 function openEditor() {
   editorHidden.value = false
   ctx?.setFocusedNode?.(props.id)
+  nextTick(updateEditorDock)
 }
 
 function closeEditor() {
   editorHidden.value = true
   editorFullscreen.value = false
+}
+
+function updateEditorDock() {
+  if (!isSelected.value || !nodeRoot.value) return
+  const bounds = nodeRoot.value.getBoundingClientRect()
+  const spaceAbove = Math.max(0, bounds.top - 48)
+  const spaceBelow = Math.max(0, window.innerHeight - bounds.bottom - 48)
+  editorDock.value = spaceAbove > spaceBelow ? 'top' : 'bottom'
+  editorMaxHeight.value = Math.min(560, Math.max(180, editorDock.value === 'top' ? spaceAbove : spaceBelow))
 }
 
 function openMediaPreview(url, kind = 'image') {
@@ -746,16 +744,6 @@ function removeReference(reference) {
   ctx?.detachFreeCanvasReference?.(reference.edgeId)
 }
 
-function moveReference(reference, delta) {
-  const index = inputReferences.value.findIndex((item) => item.edgeId === reference.edgeId)
-  const targetIndex = index + delta
-  if (index < 0 || targetIndex < 0 || targetIndex >= inputReferences.value.length) return
-  const reordered = [...inputReferences.value]
-  const [moved] = reordered.splice(index, 1)
-  reordered.splice(targetIndex, 0, moved)
-  reordered.forEach((item, order) => updateReference(item, { order }))
-}
-
 async function translateNode() {
   await saveDraft()
   await ctx?.translateFreeCanvasNode?.(props.id)
@@ -804,9 +792,15 @@ function onEditorKeydown(event) {
   else closeEditor()
 }
 
-onMounted(() => window.addEventListener('keydown', onEditorKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onEditorKeydown)
+  window.addEventListener('resize', updateEditorDock)
+  window.addEventListener('pointerup', updateEditorDock)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
+  window.removeEventListener('resize', updateEditorDock)
+  window.removeEventListener('pointerup', updateEditorDock)
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
 })
 
@@ -814,7 +808,10 @@ watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
 watch(isSelected, (selected) => {
-  if (selected) editorHidden.value = false
+  if (selected) {
+    editorHidden.value = false
+    nextTick(updateEditorDock)
+  }
   else {
     editorFullscreen.value = false
     closeMediaPreview()
@@ -934,14 +931,15 @@ watch(isSelected, (selected) => {
   -webkit-line-clamp: 4;
 }
 .node-expanded-editor {
-  position: absolute;
-  top: calc(100% + 18px);
-  right: auto;
-  bottom: auto;
-  left: 50%;
+  position: fixed;
+  top: auto;
+  right: 24px;
+  bottom: 24px;
+  left: 24px;
   z-index: 1999;
   width: min(860px, calc(100vw - 48px));
-  max-height: min(58vh, 560px);
+  max-height: min(58vh, var(--editor-max-height, 560px));
+  margin: 0 auto;
   overflow-y: auto;
   padding: 18px;
   border: 1px solid #3f3f46;
@@ -949,7 +947,10 @@ watch(isSelected, (selected) => {
   background: #1c1c1f;
   box-shadow: 0 22px 56px rgba(0, 0, 0, 0.5);
   box-sizing: border-box;
-  transform: translateX(-50%);
+}
+.node-expanded-editor.is-docked-top {
+  top: 24px;
+  bottom: auto;
 }
 .node-expanded-editor.is-fullscreen {
   position: fixed;
@@ -1341,7 +1342,7 @@ watch(isSelected, (selected) => {
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
 @media (max-width: 760px) {
-  .node-expanded-editor { width: calc(100vw - 24px); padding: 16px; }
+  .node-expanded-editor { right: 12px; bottom: 12px; left: 12px; width: auto; padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .editor-heading .editor-hint { display: none; }
   .video-mode-toolbar { align-items: flex-start; flex-direction: column; }
