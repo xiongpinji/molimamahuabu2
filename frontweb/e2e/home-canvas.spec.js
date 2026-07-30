@@ -127,7 +127,7 @@ test('文本节点单击后在专属编辑器直接编辑，不再依赖配置�
   }, homeCanvasStorageKey)).toBe('节点内直接编辑后的内容')
 })
 
-test('节点编辑器显示在节点下方、随节点拖动并支持提示词全屏编辑', async ({ page }) => {
+test('节点编辑器固定在视口内、不随画布缩放并支持提示词全屏编辑', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
   await seedNode.locator('.node-icon').click()
 
@@ -135,9 +135,15 @@ test('节点编辑器显示在节点下方、随节点拖动并支持提示词�
   const visualNode = seedNode.locator('.home-canvas-node')
   const nodeBefore = await visualNode.boundingBox()
   const editorBefore = await editor.boundingBox()
+  const viewport = page.viewportSize()
   expect(nodeBefore).not.toBeNull()
   expect(editorBefore).not.toBeNull()
-  expect(editorBefore.y).toBeGreaterThanOrEqual(nodeBefore.y + nodeBefore.height - 2)
+  expect(await editor.evaluate((element) => element.parentElement === document.body)).toBe(true)
+  await expect.poll(() => editor.evaluate((element) => getComputedStyle(element).position)).toBe('fixed')
+  expect(editorBefore.x).toBeGreaterThanOrEqual(0)
+  expect(editorBefore.y).toBeGreaterThanOrEqual(0)
+  expect(editorBefore.x + editorBefore.width).toBeLessThanOrEqual(viewport.width)
+  expect(editorBefore.y + editorBefore.height).toBeLessThanOrEqual(viewport.height)
 
   const dragHandle = seedNode.locator('.node-icon')
   const dragBox = await dragHandle.boundingBox()
@@ -151,8 +157,8 @@ test('节点编辑器显示在节点下方、随节点拖动并支持提示词�
   const editorAfter = await editor.boundingBox()
   expect(nodeAfter).not.toBeNull()
   expect(editorAfter).not.toBeNull()
-  expect(Math.abs((editorAfter.x - editorBefore.x) - (nodeAfter.x - nodeBefore.x))).toBeLessThan(3)
-  expect(Math.abs((editorAfter.y - editorBefore.y) - (nodeAfter.y - nodeBefore.y))).toBeLessThan(3)
+  expect(Math.abs(editorAfter.x - editorBefore.x)).toBeLessThan(3)
+  expect(Math.abs(editorAfter.y - editorBefore.y)).toBeLessThan(3)
 
   await editor.getByRole('button', { name: '全屏编辑' }).click()
   await expect(editor).toHaveClass(/is-fullscreen/)
@@ -161,9 +167,11 @@ test('节点编辑器显示在节点下方、随节点拖动并支持提示词�
 
   await editor.getByRole('button', { name: '全屏编辑' }).click()
   await expect(editor).not.toHaveClass(/is-fullscreen/)
-  const restoredNode = await visualNode.boundingBox()
   const restoredEditor = await editor.boundingBox()
-  expect(restoredEditor.y).toBeGreaterThanOrEqual(restoredNode.y + restoredNode.height - 2)
+  expect(restoredEditor.x).toBeGreaterThanOrEqual(0)
+  expect(restoredEditor.y).toBeGreaterThanOrEqual(0)
+  expect(restoredEditor.x + restoredEditor.width).toBeLessThanOrEqual(viewport.width)
+  expect(restoredEditor.y + restoredEditor.height).toBeLessThanOrEqual(viewport.height)
 })
 
 test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ page }) => {
@@ -327,7 +335,12 @@ test('普通单击只保留一个选中节点，选中连线后可按 Delete 删
   await expect(page.locator('.vue-flow__node[data-id="e2e:target-a"]')).toHaveClass(/selected/)
 
   const edge = page.locator('.vue-flow__edge[data-id="e2e:edge"]')
-  await edge.locator('.vue-flow__edge-path').click({ force: true })
+  const edgePoint = await edge.locator('.vue-flow__edge-path').evaluate((path) => {
+    const point = path.getPointAtLength(path.getTotalLength() * 0.2)
+    const screenPoint = new DOMPoint(point.x, point.y).matrixTransform(path.getScreenCTM())
+    return { x: screenPoint.x, y: screenPoint.y }
+  })
+  await page.mouse.click(edgePoint.x, edgePoint.y)
   await expect(edge).toHaveClass(/selected/)
   await page.keyboard.press('Delete')
   await expect(edge).toHaveCount(0)
