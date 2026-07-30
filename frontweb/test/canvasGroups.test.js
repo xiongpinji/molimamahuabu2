@@ -164,3 +164,14 @@ test('moving one group member refits the group around every member without movin
     ],
   )
 })
+
+test('group refit keeps Vue Flow measured member dimensions', () => {
+  assert.match(
+    canvasSource,
+    /function syncRenderedNodesToGraph\(\)[\s\S]*dimensions: rendered\.dimensions \|\| node\.dimensions/,
+  )
+  assert.match(
+    canvasSource,
+    /function createStandaloneGroup\(\)[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*const members/,
+  )
+})
