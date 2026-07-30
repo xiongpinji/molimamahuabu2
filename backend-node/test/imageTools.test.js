@@ -2757,6 +2757,74 @@ test('镜像操作按指定方向翻转像素且保留原图', async (t) => {
   assert.deepEqual(rotatedAsset.metadata.parameters, { angle: 90 });
 });
 
+test('宫格裁剪兼容只有项目静态 URL 的历史图片素材', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  runMigrationsAndEnsure(db);
+
+  const owner = userAuthService.register(db, {
+    email: 'legacy-static-asset@example.com',
+    password: 'correct horse battery staple',
+  });
+  const tenant = tenantService.createTenant(db, owner.id, {
+    name: '历史素材团队',
+    slug: 'legacy-static-asset',
+  });
+  const now = new Date().toISOString();
+  const dramaId = db.prepare(
+    `INSERT INTO dramas (tenant_id, user_id, title, status, created_at, updated_at)
+     VALUES (?, ?, '历史静态素材', 'draft', ?, ?)`,
+  ).run(tenant.id, owner.id, now, now).lastInsertRowid;
+  const relativeSourcePath = path.join(
+    storageLayout.getProjectStorageSubdir(db, dramaId),
+    'images',
+    'legacy-grid.png',
+  );
+  const sourcePath = path.join(storageRoot, relativeSourcePath);
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  await sharp({
+    create: {
+      width: 4,
+      height: 4,
+      channels: 4,
+      background: '#ffffff',
+    },
+  }).png().toFile(sourcePath);
+  const sourceAsset = assetService.create(db, { info() {} }, {
+    drama_id: dramaId,
+    name: 'legacy-grid.png',
+    type: 'image',
+    category: 'canvas',
+    url: `/static/${relativeSourcePath.replace(/\\/g, '/')}`,
+    local_path: null,
+  });
+  const handlers = createImageToolRoutes(db, { info() {}, error() {} }, {
+    cfg: { storage: { local_path: storageRoot } },
+    publicPlatformEnabled: true,
+  });
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    user: { id: owner.id },
+    tenant: { id: tenant.id },
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'legacy-grid-node',
+      operation: 'grid_crop',
+      parameters: { rows: 2, columns: 2, selectedCells: ['0:0'] },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
+  assert.equal(res.payload.data.resultAssets.length, 1);
+  assert.equal(fs.existsSync(assetService.getById(
+    db,
+    res.payload.data.resultAssetId,
+  ).local_path), true);
+});
+
 test('宫格裁剪仅返回选中派生素材并保留首图兼容字段', async (t) => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-image-tools-'));
   t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
