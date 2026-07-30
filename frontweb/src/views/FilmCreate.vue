@@ -1516,6 +1516,21 @@
                   </el-button>
                 </template>
               </div>
+              <div v-if="getSbVideo(sb.id)" class="sb-tail-frame-action">
+                <el-button
+                  type="primary"
+                  size="small"
+                  class="sb-tail-frame-button"
+                  :loading="linkingTailFrameIds.has(sb.id)"
+                  :disabled="isSbVideoGenerating(sb.id) || linkingTailFrameIds.has(sb.id)"
+                  @click="onLinkTailFrameToNext(sb)"
+                >
+                  一键提取尾帧
+                </el-button>
+                <span class="sb-tail-frame-hint">
+                  {{ getNextStoryboard(sb.id) ? '提取后自动设为下一分镜首帧' : '最后一个分镜，无下一分镜可衔接' }}
+                </span>
+              </div>
               <!-- 视频历史条：有多条历史时显示，点击可切换 -->
               <div v-if="getVideoStripItems(sb.id).length" class="sb-videos-strip">
                 <el-tooltip content="历史视频：点击可切换为当前视频" placement="top" :show-arrow="false">
@@ -1534,9 +1549,6 @@
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
                 <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
-                <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
-                  <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
-                </el-tooltip>
                 <el-button
                   size="small"
                   :loading="extractingVoiceSbIds.has(sb.id)"
@@ -7094,27 +7106,18 @@ async function onLinkTailFrameToNext(sb) {
     ElMessage.warning('当前分镜没有视频')
     return
   }
-  try {
-    await ElMessageBox.confirm(
-      `确定将 #${sb.storyboard_number ?? sb.id} 视频的尾帧设为 #${nextSb.storyboard_number ?? nextSb.id} 的首帧？\n原首帧将自动进入历史。`,
-      '尾帧衔接',
-      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
-    )
-  } catch {
-    return
-  }
   linkingTailFrameIds.add(sb.id)
   try {
-    const data = await storyboardsAPI.linkTailFrame(sb.id, { drama_id: dramaId.value })
+    const data = await storyboardsAPI.linkTailFrame(sb.id, { drama_id: dramaId.value, video_id: video.id })
     if (data?.error) {
       throw new Error(data.error)
     }
+    nextSb.first_frame_image_id = data.new_first_frame_image_id
+    nextSb.image_url = data.image_url || null
+    nextSb.local_path = data.local_path || null
+    sbSelectedImgId.value = { ...sbSelectedImgId.value, [nextSb.id]: data.new_first_frame_image_id }
+    await loadSingleStoryboardMedia(nextSb.id)
     ElMessage.success(`已将尾帧设为 #${nextSb.storyboard_number ?? nextSb.id} 的首帧`)
-    // 刷新两个分镜的媒体
-    await Promise.all([
-      loadSingleStoryboardMedia(sb.id),
-      loadSingleStoryboardMedia(nextSb.id)
-    ])
   } catch (e) {
     ElMessage.error(e.message || '尾帧衔接失败')
   } finally {
@@ -10697,6 +10700,23 @@ html.light .sb-video-placeholder {
   margin-top: 8px;
   flex-shrink: 0;
   padding-top: 6px;
+}
+.sb-tail-frame-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(238, 109, 58, 0.28);
+  border-radius: 8px;
+  background: rgba(238, 109, 58, 0.08);
+}
+.sb-tail-frame-button {
+  flex-shrink: 0;
+}
+.sb-tail-frame-hint {
+  color: #a1a1aa;
+  font-size: 0.78rem;
 }
 .voice-extract-dialog-hint {
   margin: 0 0 14px;
