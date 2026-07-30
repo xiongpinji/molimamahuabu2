@@ -19,12 +19,16 @@
 2. 编辑器自动选择节点上方或下方空间更充足的一侧，完整保持在视口内；内容超出时仅编辑器内部滚动。
 3. 右键视频节点第 N 张参考图后，描述光标处（未记录光标时为末尾）写入 `@图片N` 并保存。
 4. 全屏编辑、原有 `@` 菜单、参考图移除和生成参数不回归。
+5. 从节点编辑器打开配置弹窗后，弹窗高于编辑器且“保存修改”可正常点击。
+6. 图片工具条及其下拉菜单不被编辑器遮挡；按 Esc 关闭后不会被延迟单击再次打开。
 
 ## 验证记录
 
-- `node --test --test-name-pattern="节点编辑器挂载|视频参考图支持右键|选中节点可从主体" test/standaloneCanvasNodeEditorParity.test.js`：3/3 通过。
+- `node --test --test-name-pattern="节点编辑器挂载|视频参考图支持右键|配置弹窗|图片工具条|选中节点可从主体" test/standaloneCanvasNodeEditorParity.test.js`：5/5 通过。
 - `npx --no-install playwright test e2e/home-canvas.spec.js`：15/15 通过。
+- `npx --no-install playwright test e2e/image-node-toolbar-backend-integration.spec.js:309 --workers=1`：1/1 通过。
+- `npx --no-install playwright test e2e/project-canvas-backend-integration.spec.js --grep="图片节点通过真实后端同链路生成|视频节点使用上游首帧" --workers=1`：2/2 通过。
 - `node --test --test-reporter=spec test/*.test.js`：452/457 通过；5 项失败均为最新主线已有的无关静态断言漂移，本次新增和受影响用例全部通过。
-- `npm run build`：通过，主资源为 `assets/index-CyA2XfNi.js`。
+- `npm run build`：通过，主资源为 `assets/index-DcXMoJtj.js`。
 - `git diff --check`：通过。
 - 待执行：线上资源哈希、编辑器锚定和 AI 音乐健康状态复核。

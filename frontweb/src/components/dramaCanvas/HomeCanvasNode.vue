@@ -717,6 +717,10 @@ function openEditor() {
 }
 
 function closeEditor() {
+  if (mediaOpenTimer) {
+    window.clearTimeout(mediaOpenTimer)
+    mediaOpenTimer = null
+  }
   editorHidden.value = true
   editorFullscreen.value = false
   stopEditorPositionTracking()
@@ -724,27 +728,37 @@ function closeEditor() {
 
 function updateEditorPosition() {
   if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value) return
-  const bounds = nodeRoot.value.getBoundingClientRect()
+  const nodeBounds = nodeRoot.value.getBoundingClientRect()
+  let anchorTop = nodeBounds.top
+  let anchorBottom = nodeBounds.bottom
+  nodeRoot.value
+    .querySelectorAll('.image-node-toolbar, .toolbar-menu, .toolbar-history')
+    .forEach((element) => {
+      const bounds = element.getBoundingClientRect()
+      if (!bounds.width || !bounds.height) return
+      anchorTop = Math.min(anchorTop, bounds.top)
+      anchorBottom = Math.max(anchorBottom, bounds.bottom)
+    })
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
   const viewportPadding = 16
   const nodeGap = 12
   const panelWidth = Math.max(1, Math.min(860, viewportWidth - viewportPadding * 2))
-  const desiredLeft = bounds.left + bounds.width / 2 - panelWidth / 2
+  const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - panelWidth / 2
   const panelLeft = Math.min(
     Math.max(viewportPadding, desiredLeft),
     Math.max(viewportPadding, viewportWidth - panelWidth - viewportPadding),
   )
-  const spaceAbove = Math.max(0, bounds.top - nodeGap - viewportPadding)
-  const spaceBelow = Math.max(0, viewportHeight - bounds.bottom - nodeGap - viewportPadding)
+  const spaceAbove = Math.max(0, anchorTop - nodeGap - viewportPadding)
+  const spaceBelow = Math.max(0, viewportHeight - anchorBottom - nodeGap - viewportPadding)
   const dock = spaceBelow >= spaceAbove ? 'bottom' : 'top'
   const availableHeight = dock === 'bottom' ? spaceBelow : spaceAbove
 
   editorDock.value = dock
   const nextStyle = {
-    top: dock === 'bottom' ? `${Math.round(bounds.bottom + nodeGap)}px` : 'auto',
+    top: dock === 'bottom' ? `${Math.round(anchorBottom + nodeGap)}px` : 'auto',
     right: 'auto',
-    bottom: dock === 'top' ? `${Math.round(viewportHeight - bounds.top + nodeGap)}px` : 'auto',
+    bottom: dock === 'top' ? `${Math.round(viewportHeight - anchorTop + nodeGap)}px` : 'auto',
     left: `${Math.round(panelLeft)}px`,
     width: `${Math.round(panelWidth)}px`,
     maxHeight: `${Math.max(1, Math.floor(availableHeight))}px`,
