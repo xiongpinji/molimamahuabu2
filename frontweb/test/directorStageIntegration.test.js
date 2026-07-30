@@ -192,6 +192,36 @@ test('G005 视口变换工具写回对象状态且时间线支持缩放最小化
   assert.match(stageSource, /updateSelectedObject\(\{ transform:/)
 })
 
+test('人物任意子网格都归一到导演对象根节点后再移动和保存', () => {
+  assert.match(stageSource, /function directorStageObjectForSelection\(object\)/)
+  assert.match(stageSource, /return stageObjects\.get\(`custom:\$\{objectId\}`\) \|\| null/)
+  assert.match(stageSource, /selectionFilterTest = \(object\) => directorStageObjectForSelection\(object\)/)
+  assert.match(stageSource, /const object = directorStageObjectForSelection\(transformControls\?\.object\)/)
+  assert.match(stageSource, /function restoreTransformSelection\(\)/)
+  assert.match(stageSource, /pickingPlugin\?\.setSelectedObject\?\.\(object, false\)/)
+})
+
+test('摄影机角度控件驱动真实机位并完整持久化', () => {
+  for (const label of ['方位角', '仰角', '机位距离', '横滚角']) {
+    assert.ok(stageSource.includes(label), `缺少摄影机角度控件：${label}`)
+  }
+  assert.match(stageSource, /function updateCameraAngle\(field, value\)/)
+  assert.match(stageSource, /cameraPositionFromAngles\(selectedCamera\.value\.target/)
+  assert.match(stageSource, /cameraAnglesFromPosition\(preset\.position, preset\.target\)/)
+  assert.match(stageSource, /quaternion:/)
+})
+
+test('灯光面板编辑真实独立光源并让三点布光创建三盏灯', () => {
+  for (const label of ['灯光列表', '添加灯光', '硬光', '柔光', '方位角', '仰角', '灯光强度', '灯光颜色']) {
+    assert.ok(stageSource.includes(label), `缺少灯光交互：${label}`)
+  }
+  assert.match(stageSource, /const selectedLightObject = computed/)
+  assert.match(stageSource, /function updateSelectedLight\(field, value\)/)
+  assert.match(stageSource, /preset\.lights\.map/)
+  assert.match(stageSource, /new DirectionalLight\(entry\.light\.color, entry\.light\.intensity\)/)
+  assert.match(stageSource, /\{[\s\S]*?name: '三点布光'[\s\S]*?lights:[\s\S]*?主光[\s\S]*?辅光[\s\S]*?轮廓光/)
+})
+
 test('G005 灯光、对象复制和镜头排序进入统一命令链', () => {
   for (const label of ['+ 灯光', '复制对象', '镜头前移', '镜头后移']) assert.ok(stageSource.includes(label), `缺少：${label}`)
   assert.match(stageSource, /entry\.type === 'light'/)
@@ -239,7 +269,7 @@ test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', (
   assert.match(stageSource, /const lightingEntry = computed\(\(\) => props\.entryContext\?\.mode === 'lighting'\)/)
   assert.match(stageSource, /3D 灯光预演，不直接修改原图/)
   assert.match(stageSource, /ref="environmentEditorRef"/)
-  assert.match(stageSource, /if \(lightingEntry\.value\) selectEnvironmentInspector\(\)/)
+  assert.match(stageSource, /if \(lightingEntry\.value\) \{[\s\S]*?const firstLight = lightObjects\.value\[0\][\s\S]*?else selectEnvironmentInspector\(\)/)
   assert.match(stageSource, /environmentEditorRef\.value\?\.scrollIntoView/)
   assert.match(stageSource, /环境光/)
   assert.match(stageSource, /方向光/)

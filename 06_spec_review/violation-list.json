@@ -1,0 +1,22 @@
+{
+  "summary": {
+    "blocking": 0,
+    "warnings": 1,
+    "result": "pass"
+  },
+  "violations": [
+    {
+      "id": "SPEC-GAP-001",
+      "category": "source-of-truth",
+      "severity": "warning",
+      "blocking": false,
+      "source": "repository-audit",
+      "strictness": "recommended",
+      "description": "本任务没有对应的正式视觉规格、设计系统评审或 OpenSpec 文件。",
+      "currentSourceOfTruth": "docs/director-stage-neodomain-parity-20260730.md",
+      "fixType": "needs_human_review",
+      "recommendation": "后续若继续做像素级视觉对齐，应先补充独立视觉规格；本轮不据此推测或扩大实现范围。",
+      "confidence": 1.0
+    }
+  ]
+}

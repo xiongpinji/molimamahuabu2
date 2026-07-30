@@ -435,9 +435,11 @@ test('图片节点灯光入口提供参考站同级预设并即时写入 3D 环�
   const presets = director.getByLabel('灯光预设')
   await expect(presets.getByRole('button')).toHaveCount(18)
   await presets.getByRole('button', { name: '黄金时刻', exact: true }).click()
-  await expect(director.locator('input[type="color"]')).toHaveValue('#7c2d12')
-  await expect(director.getByLabel('环境光')).toHaveValue('2.2')
-  await expect(director.getByLabel('方向光')).toHaveValue('5.2')
+  await expect(director.getByLabel('天空颜色')).toHaveValue('#7c2d12')
+  await expect(director.getByLabel('环境光')).toHaveValue('0.9')
+  await expect(director.getByLabel('方向光')).toHaveValue('0')
+  await expect(director.getByLabel('灯光列表').getByRole('button', { name: '夕阳主光', exact: true })).toBeVisible()
+  await expect(director.getByLabel('灯光列表').getByRole('button', { name: '金色轮廓', exact: true })).toBeVisible()
 })
 
 test('标记修图完整工具集可仅确认标记并生成本地新素材', async ({ page }) => {

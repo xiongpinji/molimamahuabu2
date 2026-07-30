@@ -92,9 +92,47 @@ function vector3(value, fallback) {
   return fallback.map((item, index) => asNumber(source[index], item))
 }
 
+export function cameraPositionFromAngles(target, azimuth, elevation, distance) {
+  const center = vector3(target, [0, 0.8, 0])
+  const azimuthRadians = Math.max(-180, Math.min(180, asNumber(azimuth, 0))) * Math.PI / 180
+  const elevationRadians = Math.max(-89.9, Math.min(89.9, asNumber(elevation, 0))) * Math.PI / 180
+  const radius = Math.max(0.1, asNumber(distance, 1))
+  const horizontal = Math.cos(elevationRadians) * radius
+  return [
+    center[0] + Math.sin(azimuthRadians) * horizontal,
+    center[1] + Math.sin(elevationRadians) * radius,
+    center[2] + Math.cos(azimuthRadians) * horizontal,
+  ]
+}
+
+export function cameraAnglesFromPosition(position, target) {
+  const point = vector3(position, [0, 1.6, 4.8])
+  const center = vector3(target, [0, 0.8, 0])
+  const offset = point.map((value, index) => value - center[index])
+  const distance = Math.max(0.1, Math.hypot(...offset))
+  return {
+    azimuth: Math.atan2(offset[0], offset[2]) * 180 / Math.PI,
+    elevation: Math.asin(Math.max(-1, Math.min(1, offset[1] / distance))) * 180 / Math.PI,
+    distance,
+  }
+}
+
 function optionalVector4(value) {
   if (!Array.isArray(value) || value.length !== 4) return null
   return value.map((item, index) => asNumber(item, index === 3 ? 1 : 0))
+}
+
+function normalizeLight(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const color = String(source.color || '#ffffff')
+  return {
+    type: ['hard', 'soft'].includes(source.type) ? source.type : 'soft',
+    color: /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : '#ffffff',
+    intensity: Math.max(0, Math.min(10, asNumber(source.intensity, 5))),
+    azimuth: Math.max(-180, Math.min(180, asNumber(source.azimuth, 30))),
+    elevation: Math.max(-90, Math.min(90, asNumber(source.elevation, 30))),
+    distance: Math.max(0.1, Math.min(100, asNumber(source.distance, 6))),
+  }
 }
 
 function normalizeObjects(input) {
@@ -105,9 +143,10 @@ function normalizeObjects(input) {
     const objectId = String(value.id || `object-${index + 1}`)
     if (ids.has(objectId)) continue
     ids.add(objectId)
+    const objectType = String(value.type || 'group')
     objects.push({
       id: objectId,
-      type: String(value.type || 'group'),
+      type: objectType,
       name: String(value.name || `对象 ${index + 1}`),
       parentId: value.parentId == null ? '' : String(value.parentId),
       visible: value.visible !== false,
@@ -122,6 +161,7 @@ function normalizeObjects(input) {
       poseRotations: Object.fromEntries(Object.entries(value.poseRotations && typeof value.poseRotations === 'object' ? value.poseRotations : {})
         .filter(([semantic, rotation]) => semantic && Array.isArray(rotation))
         .map(([semantic, rotation]) => [String(semantic), vector3(rotation, [0, 0, 0])])),
+      ...(objectType === 'light' ? { light: normalizeLight(value.light) } : {}),
       transform: {
         position: vector3(value.transform?.position, [0, 0, 0]),
         rotation: vector3(value.transform?.rotation, [0, 0, 0]),
@@ -172,7 +212,7 @@ function legacyCameraId(camera) {
   return `legacy-camera-${SHOT_CAMERA_TYPES.some((item) => item.value === camera) ? camera : 'director'}`
 }
 
-function normalizeCameras(input, shots = []) {
+function normalizeCameras(input, shots = [], objects = []) {
   const source = Array.isArray(input) ? input : []
   const requiredLegacy = new Set(shots.map((shot) => shot.camera || 'director'))
   const candidates = source.length ? source : [...requiredLegacy].map((camera) => ({ id: legacyCameraId(camera), name: camera, legacyType: camera }))
@@ -182,6 +222,9 @@ function normalizeCameras(input, shots = []) {
     const cameraId = String(value.id || `camera-${index + 1}`)
     if (ids.has(cameraId)) return []
     ids.add(cameraId)
+    const target = vector3(value.target, [0, 0.8, 0])
+    const cameraObject = objects.find((object) => object.id === String(value.objectId || ''))
+    const derivedAngles = cameraAnglesFromPosition(cameraObject?.transform?.position || [6.8, 4.8, 8.6], target)
     return [{
       id: cameraId,
       name: String(value.name || `机位 ${index + 1}`),
@@ -192,7 +235,11 @@ function normalizeCameras(input, shots = []) {
       near: Math.max(0.001, asNumber(value.near, 0.1)),
       far: Math.max(1, asNumber(value.far, 1000)),
       quaternion: optionalVector4(value.quaternion),
-      target: vector3(value.target, [0, 0.8, 0]),
+      target,
+      azimuth: Math.max(-180, Math.min(180, asNumber(value.azimuth, derivedAngles.azimuth))),
+      elevation: Math.max(-89.9, Math.min(89.9, asNumber(value.elevation, derivedAngles.elevation))),
+      distance: Math.max(0.1, Math.min(1000, asNumber(value.distance, derivedAngles.distance))),
+      roll: Math.max(-180, Math.min(180, asNumber(value.roll, 0))),
       followTargetId: String(value.followTargetId || ''),
       lookAtMode: ['origin', 'object'].includes(value.lookAtMode) ? value.lookAtMode : 'origin',
       lookAtTargetId: String(value.lookAtTargetId || ''),
@@ -305,7 +352,7 @@ export function normalizeDirectorTimeline(input, characters = []) {
   const duration = cursor
   const currentTime = Math.max(0, Math.min(duration, asNumber(sourceSequence.currentTime, 0)))
   const motionTracks = normalizeMotionTracks(source.motionTracks, objects, duration)
-  const cameras = normalizeCameras(source.cameras, shots)
+  const cameras = normalizeCameras(source.cameras, shots, objects)
   const cameraIds = new Set(cameras.map((camera) => camera.id))
   for (const shot of shots) {
     if (!cameraIds.has(shot.cameraId)) shot.cameraId = cameras[0]?.id || ''
@@ -455,6 +502,7 @@ export function appendDirectorObject(state, type = 'box', patch = {}) {
     locked: patch.locked === true,
     assetRef: patch.assetRef || null,
     poseRotations: patch.poseRotations || {},
+    ...(type === 'light' ? { light: patch.light || {} } : {}),
     transform: patch.transform || { position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
   }
   return normalizeDirectorTimeline({ ...current, objects: [...current.objects, object], revision: current.revision + 1 })
@@ -466,6 +514,7 @@ export function updateDirectorObject(state, objectId, patch = {}) {
   const objects = current.objects.map((object) => object.id === targetId ? {
     ...object,
     ...patch,
+    light: patch.light ? { ...object.light, ...patch.light } : object.light,
     transform: patch.transform ? { ...object.transform, ...patch.transform } : object.transform,
   } : object)
   return normalizeDirectorTimeline({ ...current, objects, revision: current.revision + 1 })
@@ -549,6 +598,10 @@ export function appendDirectorCamera(state, patch = {}) {
     far: patch.far || 1000,
     quaternion: patch.quaternion || null,
     target: patch.target || [0, 0.8, 0],
+    azimuth: patch.azimuth,
+    elevation: patch.elevation,
+    distance: patch.distance,
+    roll: patch.roll,
     followTargetId: patch.followTargetId || '',
     lookAtMode: patch.lookAtMode || 'origin',
     lookAtTargetId: patch.lookAtTargetId || '',
@@ -573,7 +626,8 @@ export function duplicateDirectorObject(state, objectId) {
   const sourceCamera = current.cameras.find((camera) => camera.objectId === source.id)
   if (sourceCamera) return appendDirectorCamera(current, { ...sourceCamera, id: undefined, objectId: undefined, name: `${source.name} 副本`, transform })
   return appendDirectorObject(current, source.type, {
-    name: `${source.name} 副本`, parentId: source.parentId, visible: source.visible, assetRef: source.assetRef ? { ...source.assetRef } : null, transform,
+    name: `${source.name} 副本`, parentId: source.parentId, visible: source.visible, assetRef: source.assetRef ? { ...source.assetRef } : null,
+    light: source.light ? { ...source.light } : null, transform,
   })
 }
 
