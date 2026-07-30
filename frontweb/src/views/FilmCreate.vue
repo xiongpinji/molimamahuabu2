@@ -11278,6 +11278,21 @@ html.light .frame-layout-anchor {
 /* OpenVideo 对齐层：保持业务结构，只统一流水线工作区与交互外壳 */
 .film-create,
 html.light .film-create {
+  --bg-page: #080808;
+  --bg-card: #111111;
+  --bg-inner: #161616;
+  --bg-hover: #202020;
+  --border-color: #272727;
+  --border-muted: #353535;
+  --text-primary: #e8e8e8;
+  --text-bright: #f8f8f8;
+  --text-muted: #a3a3a3;
+  --text-subtle: #737373;
+  --text-faint: #555;
+  --accent: #ff7139;
+  --accent-hover: #ff8757;
+  --accent-soft: rgba(255, 113, 57, .14);
+  --shadow: 0 16px 44px rgba(0, 0, 0, .42);
   --el-color-primary: #ff7139;
   --el-color-primary-light-3: #ff966f;
   --el-color-primary-light-5: #ffb499;
@@ -11463,6 +11478,50 @@ html.light .resource-block-title {
 .section-desc,
 html.light .section-desc {
   color: #808080;
+}
+
+.asset-item,
+html.light .asset-item {
+  color: #e8e8e8;
+  border: 1px solid #2c2c2c;
+  background: #181818 !important;
+  box-shadow: none;
+}
+
+.asset-item:hover,
+html.light .asset-item:hover {
+  border-color: rgba(255, 113, 57, .42);
+  background: #1d1d1d !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .24);
+}
+
+.asset-cover,
+html.light .asset-cover,
+.cover-placeholder,
+html.light .cover-placeholder {
+  color: #777;
+  border-color: #303030 !important;
+  background: #202020 !important;
+}
+
+.cover-placeholder.error,
+html.light .cover-placeholder.error {
+  color: #f87171;
+  background: #450a0a !important;
+}
+
+.asset-name,
+html.light .asset-name {
+  color: #f5f5f5;
+}
+
+.asset-desc,
+.asset-desc-full,
+.asset-item-left-right .asset-desc-full,
+html.light .asset-desc,
+html.light .asset-desc-full,
+html.light .asset-item-left-right .asset-desc-full {
+  color: #a1a1aa;
 }
 
 .script-workbench-tabs :deep(.el-tabs__nav-wrap::after) {
