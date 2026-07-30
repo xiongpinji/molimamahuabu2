@@ -1,3 +1,5 @@
+import { assetMediaUrl } from './mediaUrl.js'
+
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
@@ -358,7 +360,7 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
     if (String(edge?.target || '') !== target) continue
     const sourceId = String(edge?.source || '')
     const source = byId.get(sourceId)
-    const sourceKind = cleanString(source?.data?.kind || source?.data?.asset?.type)
+    const sourceKind = getFreeCanvasNodeResultKind(source)
     if (sourceKind !== 'image' || !sourceId || seen.has(sourceId)) continue
     seen.add(sourceId)
     const contract = edge?.data?.contract || {}
@@ -483,6 +485,20 @@ export function getFreeCanvasNodeResultUrl(node) {
     data.resultUrls?.[0],
     data.savedAssetUrl,
     data.status?.resultUrl,
-    data.status?.savedAssetUrl
+    data.status?.savedAssetUrl,
+    assetMediaUrl(data.asset),
   )
+}
+
+function getFreeCanvasNodeResultKind(node) {
+  const data = node?.data || {}
+  const declaredKind = cleanString(data.kind || data.asset?.type).toLowerCase()
+  if (FREE_NODE_KINDS.has(declaredKind)) return declaredKind
+  if (!data.asset) return ''
+  if (data.asset.video_url || data.asset.video_local_path) return 'video'
+  if (data.asset.audio_url || data.asset.audio_local_path || data.asset.voice_url || data.asset.voice_local_path) return 'audio'
+  const url = assetMediaUrl(data.asset).toLowerCase().split(/[?#]/)[0]
+  if (/\.(mp4|webm|mov|m4v)$/.test(url)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)$/.test(url)) return 'audio'
+  return url ? 'image' : ''
 }

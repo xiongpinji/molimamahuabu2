@@ -88,6 +88,8 @@ function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
     nodes.push(makeNode({
       id,
       type: 'canvasProjectAsset',
+      draggable: true,
+      connectable: true,
       position: resolveNodePosition(savedLayout, id, {
         x: 48 + column * 288,
         y: 64 + row * 210,
@@ -481,6 +483,8 @@ export function buildDramaCanvasGraph(drama, options = {}) {
       nodes.push(makeNode({
         id,
         type: 'canvasProjectAsset',
+        draggable: true,
+        connectable: true,
         position: resolveNodePosition(savedLayout, id, { x: ASSET_X, y: assetBlock.nextY + 36 + index * ASSET_ROW_H }),
         data: { asset },
       }))
