@@ -12,15 +12,30 @@ function normalizeViewport(viewport) {
 
 export function createCanvasInteractionState(nodes = [], viewport = {}, edges = [], suppressedEdgeIds = []) {
   const positions = {}
+  const groups = []
   for (const node of nodes || []) {
     if (!node?.id || !node.position) continue
     const x = Number(node.position.x)
     const y = Number(node.position.y)
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue
     positions[String(node.id)] = { x, y }
+    if (node.type !== 'canvasGroup') continue
+    const childNodeIds = [...new Set((node.data?.childNodeIds || []).map(String).filter(Boolean))]
+    const width = Number(node.data?.width)
+    const height = Number(node.data?.height)
+    if (childNodeIds.length < 2 || !Number.isFinite(width) || !Number.isFinite(height)) continue
+    groups.push({
+      id: String(node.id),
+      title: String(node.data?.title || '节点组'),
+      childNodeIds,
+      position: { x, y },
+      width,
+      height,
+    })
   }
   return {
     nodes: positions,
+    groups,
     viewport: normalizeViewport(viewport),
     edges: clone(edges || []),
     suppressedEdgeIds: [...new Set((suppressedEdgeIds || []).map(String))].sort(),
@@ -30,6 +45,7 @@ export function createCanvasInteractionState(nodes = [], viewport = {}, edges = 
 export function serializeCanvasInteractionState(state) {
   return JSON.stringify({
     nodes: Object.fromEntries(Object.entries(state?.nodes || {}).sort(([a], [b]) => a.localeCompare(b))),
+    groups: [...(state?.groups || [])].sort((a, b) => String(a.id).localeCompare(String(b.id))),
     viewport: normalizeViewport(state?.viewport),
     edges: state?.edges || [],
     suppressedEdgeIds: [...new Set((state?.suppressedEdgeIds || []).map(String))].sort(),

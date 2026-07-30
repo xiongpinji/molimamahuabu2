@@ -54,3 +54,40 @@ test('画布历史快照保留剪线前后的连线和抑制列表', () => {
   assert.deepEqual(history.present.edges, [])
   assert.deepEqual(history.present.suppressedEdgeIds, ['auto:a:b'])
 })
+
+test('打组和解组进入同一套画布撤销重做历史', () => {
+  const nodes = [
+    { id: 'a', type: 'homeCanvasNode', position: { x: 10, y: 20 } },
+    { id: 'b', type: 'homeCanvasNode', position: { x: 310, y: 20 } },
+  ]
+  const ungrouped = createCanvasInteractionState(nodes)
+  const grouped = createCanvasInteractionState([
+    ...nodes,
+    {
+      id: 'canvas-group:1',
+      type: 'canvasGroup',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '节点组 1',
+        childNodeIds: ['a', 'b'],
+        width: 640,
+        height: 360,
+      },
+    },
+  ])
+  let history = createCanvasInteractionHistory(ungrouped)
+
+  history = commitCanvasInteractionHistory(history, ungrouped, grouped)
+  assert.deepEqual(history.present.groups, [{
+    id: 'canvas-group:1',
+    title: '节点组 1',
+    childNodeIds: ['a', 'b'],
+    position: { x: 0, y: 0 },
+    width: 640,
+    height: 360,
+  }])
+  history = undoCanvasInteractionHistory(history)
+  assert.deepEqual(history.present.groups, [])
+  history = redoCanvasInteractionHistory(history)
+  assert.deepEqual(history.present.groups, grouped.groups)
+})

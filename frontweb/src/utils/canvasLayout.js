@@ -79,6 +79,24 @@ export function resolveCanvasGroups(savedLayout) {
   return result
 }
 
+export function translateCanvasGroupChildren(nodes = [], snapshot = null, groupPosition = null) {
+  if (!snapshot?.position || !snapshot?.children || !groupPosition) return nodes
+  const dx = Number(groupPosition.x) - Number(snapshot.position.x)
+  const dy = Number(groupPosition.y) - Number(snapshot.position.y)
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return nodes
+  return nodes.map((node) => {
+    const start = snapshot.children[String(node.id)]
+    if (!start) return node
+    return {
+      ...node,
+      position: {
+        x: Number(start.x) + dx,
+        y: Number(start.y) + dy,
+      },
+    }
+  })
+}
+
 export function normalizeManualCanvasEdges(edges) {
   const result = []
   const seen = new Set()
