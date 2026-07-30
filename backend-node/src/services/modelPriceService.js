@@ -31,6 +31,12 @@ function ensureColumn(db, name, sql) {
   if (!columns.some((column) => column.name === name)) db.exec(sql);
 }
 
+function billingUnit(value, category = '') {
+  return String(category || '').toLowerCase() === 'video' || canonicalModel(value) === 'seedance 2.0'
+    ? 'second'
+    : 'request';
+}
+
 function ensureSchema(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS model_credit_prices (
     model TEXT PRIMARY KEY,
@@ -141,7 +147,8 @@ function list(db) {
     output_cost_micros_per_1k: 0,
     updated_at: null,
   });
-  return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))];
+  return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))]
+    .map((row) => ({ ...row, billing_unit: billingUnit(row.model, row.category) }));
 }
 
 function listPublic(db) {
@@ -207,7 +214,8 @@ function set(db, value, creditsValue, options = {}) {
       updated_at = excluded.updated_at`)
     .run(model, displayName, category, credits, status, costUnit, costMicrosPerUnit,
       inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
-  return readRow(db, model);
+  const saved = readRow(db, model);
+  return { ...saved, billing_unit: billingUnit(saved.model, saved.category) };
 }
 
 function parseCost(value) {
@@ -255,6 +263,20 @@ function requirePrice(db, value) {
   return row.credits;
 }
 
+function calculateCharge(db, value, usage = {}) {
+  const model = canonicalModel(value);
+  const price = requirePrice(db, model);
+  const row = readRow(db, model);
+  if (billingUnit(model, row?.category) !== 'second') return price;
+  const duration = Number(usage.duration);
+  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+    error.code = 'INVALID_VIDEO_DURATION';
+    throw error;
+  }
+  return price * duration;
+}
+
 module.exports = {
   SUPPORTED_MODELS,
   MODEL_CATEGORIES,
@@ -265,6 +287,8 @@ module.exports = {
   listPublic,
   set,
   requirePrice,
+  calculateCharge,
   quoteCost,
   canonicalModel,
+  billingUnit,
 };

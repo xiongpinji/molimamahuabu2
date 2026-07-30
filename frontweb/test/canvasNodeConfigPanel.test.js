@@ -176,6 +176,13 @@ test('节点配置面板支持完整生成参数而非只改模型', () => {
   assert.match(mediaPanelSource, /kind === 'audio'[\s\S]*<CanvasGenerationOptions[\s\S]*mode="audio"[\s\S]*@change="saveStoryboardGenerationOptions"/)
 })
 
+test('分镜节点时长只允许选择 5 到 15 秒整数', () => {
+  assert.match(storyboardPanelSource, /import \{ VIDEO_DURATION_OPTIONS \} from '@\/utils\/videoDuration'/)
+  assert.match(storyboardPanelSource, /<el-select v-model="form\.duration" @change="saveMeta">/)
+  assert.match(storyboardPanelSource, /v-for="duration in VIDEO_DURATION_OPTIONS"[\s\S]*:value="duration"/)
+  assert.doesNotMatch(storyboardPanelSource, /<el-input-number v-model="form\.duration"/)
+})
+
 test('分镜配置面板保留素材库指派、摄影控制、声音策略和连续性入口', () => {
   assert.match(storyboardPanelSource, /从素材库指派参考图/)
   assert.match(storyboardPanelSource, /command="first_frame"/)

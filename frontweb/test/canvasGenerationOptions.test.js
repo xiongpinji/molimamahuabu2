@@ -187,12 +187,13 @@ test('画布音频模型合并所有启用 TTS 配置并去重', () => {
   )
 })
 
-test('视频生成参数组件提供单镜时长配置', () => {
-  assert.match(generationOptionsSource, /class="duration-input"/)
+test('视频生成参数组件提供 5 到 15 秒的单镜时长选择', () => {
+  assert.match(generationOptionsSource, /class="duration-select"/)
   assert.match(generationOptionsSource, /Number\(options\.videoDuration \|\| 5\)/)
   assert.match(generationOptionsSource, /@change="update\('videoDuration', \$event\)"/)
-  assert.match(generationOptionsSource, /:min="1"/)
-  assert.match(generationOptionsSource, /:max="120"/)
+  assert.match(generationOptionsSource, /v-for="duration in VIDEO_DURATION_OPTIONS"/)
+  assert.match(generationOptionsSource, /:value="duration"/)
+  assert.match(generationOptionsSource, /import \{ VIDEO_DURATION_OPTIONS \} from '@\/utils\/videoDuration'/)
 })
 
 test('生成参数组件显式区分音频模式，避免暴露不适用的视频配置', () => {
@@ -200,5 +201,5 @@ test('生成参数组件显式区分音频模式，避免暴露不适用的视�
   assert.match(generationOptionsSource, /v-if="mode === 'video' \|\| mode === 'both'"/)
   assert.match(generationOptionsSource, /v-if="!modelsOnly && mode !== 'audio'"/)
   assert.match(generationOptionsSource, /v-if="!modelsOnly && \(mode === 'video' \|\| mode === 'both'\)"/)
-  assert.match(generationOptionsSource, /v-if="!modelsOnly && \(mode === 'video' \|\| mode === 'both' \|\| mode === 'audio'\)"/)
+  assert.match(generationOptionsSource, /v-else-if="!modelsOnly && mode === 'audio'"/)
 })

@@ -111,7 +111,7 @@
                 </label>
                 <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
                 <small>
-                  {{ item.model }}
+                  {{ item.model }} · {{ formatModelPrice(item) }}
                   <el-tag v-if="!item.configured" type="warning" size="small">未定价</el-tag>
                 </small>
                 <div class="cost-editor">
@@ -320,6 +320,7 @@ import {
   updatePlatformUser,
 } from '@/api/billing'
 import { readSession, saveAdminToken } from '@/utils/authSession'
+import { formatModelPrice } from '@/utils/billingDisplay'
 
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const route = useRoute()

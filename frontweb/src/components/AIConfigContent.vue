@@ -842,6 +842,18 @@ input_reference = (图片文件，可选)</pre>
           </el-select>
           <p class="field-tip">该配置被选为「默认」时，生成故事/图片/视频将使用此处指定的模型。</p>
         </el-form-item>
+        <el-form-item v-if="form.service_type === 'video'">
+          <template #label><span class="form-label-tip">默认时长</span></template>
+          <el-select v-model="form.video_duration" style="width: 100%">
+            <el-option
+              v-for="duration in VIDEO_DURATION_OPTIONS"
+              :key="duration"
+              :label="`${duration} 秒`"
+              :value="duration"
+            />
+          </el-select>
+          <p class="field-tip">视频节点未单独选择时长时使用；可选 5–15 秒。</p>
+        </el-form-item>
         <el-form-item v-if="isDeepSeekOfficialForm">
           <template #label>
             <span class="form-label-tip">思考模式
@@ -1175,6 +1187,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting } from '@/utils/videoDuration'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1261,6 +1274,7 @@ const form = ref({
   query_endpoint: '',
   modelText: '',
   default_model: '',
+  video_duration: 5,
   deepseek_thinking: 'disabled',
   deepseek_reasoning_effort: 'high',
   priority: 0,
@@ -1927,6 +1941,7 @@ function resetForm() {
     query_endpoint: '',
     modelText: '',
     default_model: '',
+    video_duration: 5,
     deepseek_thinking: 'disabled',
     deepseek_reasoning_effort: 'high',
     priority: 0,
@@ -1983,6 +1998,7 @@ function openEdit(row) {
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
     default_model: defaultInList ? row.default_model : (modelList[0] || ''),
+    video_duration: readVideoDurationSetting(row.settings),
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
@@ -2007,15 +2023,26 @@ async function submit() {
     const defaultModel = form.value.default_model && modelList.includes(form.value.default_model)
       ? form.value.default_model
       : modelList[0] || null
-    // TTS / 可灵 Omni 官方 AKSK / DeepSeek V4 参数打包进 settings
+    // 视频默认时长 / TTS / 可灵 Omni 官方 AKSK / DeepSeek V4 参数打包进 settings
     let settings = undefined
-    if (form.value.service_type === 'tts') {
+    if (form.value.service_type === 'video') {
+      const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
+      const baseS = mergeVideoDurationSetting(prev?.settings, form.value.video_duration)
+      if (form.value.api_protocol === 'kling_omni') {
+        if ((form.value.kling_access_key || '').trim()) baseS.kling_access_key = form.value.kling_access_key.trim()
+        else delete baseS.kling_access_key
+        if ((form.value.kling_secret_key || '').trim()) baseS.kling_secret_key = form.value.kling_secret_key.trim()
+        else delete baseS.kling_secret_key
+        if (form.value.kling_secret_key_base64) baseS.kling_secret_key_base64 = true
+        else delete baseS.kling_secret_key_base64
+      }
+      settings = JSON.stringify(baseS)
+    } else if (form.value.service_type === 'tts') {
       const s = {}
       if (form.value.voice_id) s.voice_id = form.value.voice_id
       if (form.value.group_id) s.group_id = form.value.group_id
       settings = Object.keys(s).length ? JSON.stringify(s) : null
-    } else if ((form.value.service_type === 'video' && form.value.api_protocol === 'kling_omni')
-      || ((form.value.service_type === 'image' || form.value.service_type === 'storyboard_image') && form.value.api_protocol === 'kling')) {
+    } else if ((form.value.service_type === 'image' || form.value.service_type === 'storyboard_image') && form.value.api_protocol === 'kling') {
       let baseS = {}
       if (editingId.value) {
         const prev = list.value.find((r) => r.id === editingId.value)

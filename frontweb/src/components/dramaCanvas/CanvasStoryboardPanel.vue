@@ -31,7 +31,14 @@
             <el-input v-model="form.shot_type" placeholder="特写" @blur="saveMeta" />
           </el-form-item>
           <el-form-item label="时长" class="meta-item narrow">
-            <el-input-number v-model="form.duration" :min="1" :max="120" controls-position="right" @change="saveMeta" />
+            <el-select v-model="form.duration" @change="saveMeta">
+              <el-option
+                v-for="duration in VIDEO_DURATION_OPTIONS"
+                :key="duration"
+                :label="`${duration} 秒`"
+                :value="duration"
+              />
+            </el-select>
           </el-form-item>
         </div>
       </section>
@@ -409,6 +416,7 @@ import { appendVoicePromptToVideoPrompt, buildVoicePromptPreview, videoVoicePoli
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
+import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
