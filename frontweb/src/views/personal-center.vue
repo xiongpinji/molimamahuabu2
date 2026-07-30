@@ -29,7 +29,7 @@
           <h1>{{ activeItem.label }}</h1>
           <span>{{ activeItem.description }}</span>
         </div>
-        <div class="balance-pill"><small>可用积分</small><strong>{{ account.available }}</strong></div>
+        <div class="balance-pill"><small>可用积分</small><strong>{{ dataErrors.account ? '加载失败' : account.available }}</strong></div>
       </header>
 
       <div v-loading="loading" class="center-content">
@@ -39,18 +39,20 @@
             <div>
               <h2>{{ user.email || '当前用户' }}</h2>
               <p>{{ roleLabel(user.role) }} · {{ currentTenant?.name || '个人工作区' }}</p>
+              <p v-if="dataErrors.user" class="data-error">账户资料暂时无法刷新</p>
             </div>
             <el-button @click="passwordDialog = true">修改密码</el-button>
           </section>
           <div class="metric-grid">
-            <article><span>可用积分</span><strong>{{ account.available }}</strong></article>
-            <article><span>冻结积分</span><strong>{{ account.held }}</strong></article>
-            <article><span>累计使用</span><strong>{{ account.spent }}</strong></article>
-            <article><span>作品数量</span><strong>{{ works.length }}</strong></article>
+            <article><span>可用积分</span><strong>{{ dataErrors.account ? '—' : account.available }}</strong></article>
+            <article><span>冻结积分</span><strong>{{ dataErrors.account ? '—' : account.held }}</strong></article>
+            <article><span>累计使用</span><strong>{{ dataErrors.account ? '—' : account.spent }}</strong></article>
+            <article><span>作品数量</span><strong>{{ dataErrors.works ? '—' : works.length }}</strong></article>
           </div>
           <section class="content-card">
             <h3>当前工作区</h3>
-            <el-select v-model="tenantId" aria-label="当前工作区" @change="switchTenant">
+            <p v-if="dataErrors.tenants" class="data-error">工作区暂时无法加载</p>
+            <el-select v-else v-model="tenantId" aria-label="当前工作区" @change="switchTenant">
               <el-option v-for="tenant in tenants" :key="tenant.id" :label="tenant.name" :value="tenant.id" />
             </el-select>
           </section>
@@ -58,13 +60,14 @@
 
         <template v-else-if="activeSection === 'credits'">
           <div class="metric-grid">
-            <article><span>可用</span><strong>{{ account.available }}</strong></article>
-            <article><span>冻结</span><strong>{{ account.held }}</strong></article>
-            <article><span>累计消耗</span><strong>{{ account.spent }}</strong></article>
+            <article><span>可用</span><strong>{{ dataErrors.account ? '—' : account.available }}</strong></article>
+            <article><span>冻结</span><strong>{{ dataErrors.account ? '—' : account.held }}</strong></article>
+            <article><span>累计消耗</span><strong>{{ dataErrors.account ? '—' : account.spent }}</strong></article>
           </div>
           <section class="content-card">
             <h3>积分流水</h3>
-            <el-table :data="transactions" empty-text="暂无积分流水">
+            <el-empty v-if="dataErrors.transactions" description="积分流水暂时无法加载" />
+            <el-table v-else :data="transactions" empty-text="暂无积分流水">
               <el-table-column prop="event_type" label="类型" width="120" />
               <el-table-column prop="amount" label="积分变动" width="120" />
               <el-table-column prop="model" label="模型" min-width="170" />
@@ -77,6 +80,8 @@
         </template>
 
         <template v-else-if="activeSection === 'usage'">
+          <el-empty v-if="dataErrors.transactions" description="用量数据暂时无法加载" />
+          <template v-else>
           <div class="metric-grid">
             <article><span>完成调用</span><strong>{{ usageSummary.calls }}</strong></article>
             <article><span>消耗积分</span><strong>{{ usageSummary.credits }}</strong></article>
@@ -91,6 +96,7 @@
             </div>
             <el-empty v-else description="暂无已完成的模型调用" />
           </section>
+          </template>
         </template>
 
         <template v-else-if="activeSection === 'earn'">
@@ -105,7 +111,8 @@
         <template v-else-if="activeSection === 'works'">
           <section class="content-card">
             <h3>我的作品</h3>
-            <div v-if="works.length" class="works-grid">
+            <el-empty v-if="dataErrors.works" description="作品暂时无法加载" />
+            <div v-else-if="works.length" class="works-grid">
               <router-link v-for="work in works" :key="work.id" :to="workLink(work)">
                 <span>{{ projectType(work) === 'canvas' ? '画布' : '短剧' }}</span>
                 <strong>{{ work.title || `未命名作品 ${work.id}` }}</strong>
@@ -121,7 +128,8 @@
             <div class="card-heading"><h3>登录与安全</h3><el-button @click="passwordDialog = true">修改密码</el-button></div>
             <div class="current-device"><span class="status-dot"></span><div><strong>本次浏览器登录</strong><small>由当前登录令牌确认</small></div></div>
             <h3>近期账户活动</h3>
-            <el-timeline>
+            <el-empty v-if="dataErrors.audit" description="近期账户活动暂时无法加载" />
+            <el-timeline v-else>
               <el-timeline-item v-for="event in auditEvents" :key="event.id" :timestamp="formatDate(event.created_at)">
                 {{ auditLabel(event.event_type) }} · {{ event.outcome === 'failed' ? '失败' : '成功' }}
               </el-timeline-item>
@@ -183,6 +191,7 @@ const tenantId = ref('')
 const transactions = ref([])
 const works = ref([])
 const auditEvents = ref([])
+const dataErrors = ref({})
 const redeemCode = ref('')
 const redeeming = ref(false)
 const passwordDialog = ref(false)
@@ -282,19 +291,31 @@ async function logout() {
 }
 onMounted(async () => {
   try {
-    const [currentUser, credit, tenantList, ledger, projects, events] = await Promise.all([
+    const [currentUser, credit, tenantList, ledger, projects, events] = await Promise.allSettled([
       getCurrentUser(), getCreditAccount(), listTenants(), listCreditTransactions(),
       dramaAPI.list(), listAuditEvents(30),
     ])
-    user.value = currentUser || user.value
-    account.value = normalizeCreditAccount(credit)
-    tenants.value = Array.isArray(tenantList) ? tenantList : []
-    const saved = readCurrentTenantId()
-    tenantId.value = tenants.value.some((item) => item.id === saved) ? saved : tenants.value[0]?.id || ''
-    if (tenantId.value) saveCurrentTenantId(tenantId.value)
-    transactions.value = Array.isArray(ledger) ? ledger : []
-    works.value = Array.isArray(projects) ? projects : projects?.items || []
-    auditEvents.value = Array.isArray(events) ? events : []
+    dataErrors.value = {
+      user: currentUser.status === 'rejected',
+      account: credit.status === 'rejected',
+      tenants: tenantList.status === 'rejected',
+      transactions: ledger.status === 'rejected',
+      works: projects.status === 'rejected',
+      audit: events.status === 'rejected',
+    }
+    if (currentUser.status === 'fulfilled') user.value = currentUser.value || user.value
+    if (credit.status === 'fulfilled') account.value = normalizeCreditAccount(credit.value)
+    if (tenantList.status === 'fulfilled') {
+      tenants.value = Array.isArray(tenantList.value) ? tenantList.value : []
+      const saved = readCurrentTenantId()
+      tenantId.value = tenants.value.some((item) => item.id === saved) ? saved : tenants.value[0]?.id || ''
+      if (tenantId.value) saveCurrentTenantId(tenantId.value)
+    }
+    if (ledger.status === 'fulfilled') transactions.value = Array.isArray(ledger.value) ? ledger.value : []
+    if (projects.status === 'fulfilled') {
+      works.value = Array.isArray(projects.value) ? projects.value : projects.value?.items || []
+    }
+    if (events.status === 'fulfilled') auditEvents.value = Array.isArray(events.value) ? events.value : []
   } finally {
     loading.value = false
   }
@@ -328,6 +349,7 @@ onMounted(async () => {
 .redeem-card,.pending-card { padding: 48px; text-align: center; }.redeem-card > span,.pending-card > span { color: #ff9a73; font-size: 12px; letter-spacing: .18em; }.redeem-card p,.pending-card p { color: #929298; }.redeem-card > div { display: flex; max-width: 560px; gap: 12px; margin: 28px auto 0; }
 .works-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }.works-grid a { display:flex; min-height:130px; flex-direction:column; justify-content:flex-end; gap:7px; padding:18px; border:1px solid #303034; border-radius:16px; color:#fff; background:linear-gradient(145deg,#222227,#141416); text-decoration:none; }.works-grid a span,.works-grid a small { color:#929298; }
 .current-device { display:flex; align-items:center; gap:12px; margin-bottom:30px; padding:16px; border:1px solid #303034; border-radius:14px; }.current-device div { display:flex; flex-direction:column; gap:4px; }.current-device small { color:#8d8d94; }.status-dot { width:10px; height:10px; border-radius:50%; background:#54d68b; box-shadow:0 0 12px rgba(84,214,139,.55); }
+.data-error { color: #ff9a73 !important; }
 .reduce-motion * { scroll-behavior:auto!important; transition:none!important; animation:none!important; }
 @media (max-width: 760px) {
   .center-rail { inset: auto 0 0; width: 100%; height: 74px; flex-direction: row; padding: 8px 10px; border-top: 1px solid #29292d; border-right: 0; }.center-rail nav { flex-direction:row; overflow-x:auto; }.center-rail nav button { min-width:58px; }.back-link,.rail-avatar,.rail-logout { display:none!important; }

@@ -43,3 +43,9 @@ test('体验设置真实持久化且安全操作沿用现有会话语义', () =>
   assert.match(view, /logoutApi/)
   assert.match(view, /saveCurrentTenantId/)
 })
+
+test('单个个人中心接口失败时不阻断其他真实数据加载', () => {
+  assert.match(view, /Promise\.allSettled/)
+  assert.match(view, /dataErrors/)
+  assert.match(view, /暂时无法加载/)
+})
