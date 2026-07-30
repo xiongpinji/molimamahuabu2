@@ -88,6 +88,7 @@
     <Teleport to="body">
       <section
         v-if="isSelected && !hasMultiSelection && !editorHidden"
+        ref="editorPanel"
         class="node-expanded-editor canvas-node-panel nodrag nopan"
         :class="[`editor-${data.kind}`, { 'is-fullscreen': editorFullscreen }]"
         :style="editorFullscreen ? undefined : editorPanelStyle"
@@ -417,6 +418,7 @@ const props = defineProps({
 
 const ctx = useCanvasContext()
 const nodeRoot = ref(null)
+const editorPanel = ref(null)
 const contentInput = ref(null)
 const fileInput = ref(null)
 const referenceFileInput = ref(null)
@@ -728,7 +730,7 @@ function closeEditor() {
 }
 
 function updateEditorPosition() {
-  if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value) return
+  if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value || !editorPanel.value) return
   const nodeBounds = nodeRoot.value.getBoundingClientRect()
   let anchorTop = nodeBounds.top
   let anchorBottom = nodeBounds.bottom
@@ -744,33 +746,49 @@ function updateEditorPosition() {
   const viewportHeight = window.innerHeight
   const viewportPadding = 16
   const nodeGap = 12
+  const panelWidth = 860
+  const panelHeight = Math.max(
+    1,
+    editorPanel.value.scrollHeight,
+    editorPanel.value.offsetHeight,
+  )
   const canvasScale = nodeRoot.value.offsetWidth > 0
     ? nodeBounds.width / nodeRoot.value.offsetWidth
     : 1
-  const editorScale = Math.min(1, Math.max(0.6, canvasScale))
-  const panelWidth = Math.max(1, Math.min(860 * editorScale, viewportWidth - viewportPadding * 2))
-  const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - panelWidth / 2
+  const desiredScale = Math.min(1, Math.max(0.6, canvasScale))
+  const editorScale = Math.max(0.01, Math.min(
+    desiredScale,
+    (viewportWidth - viewportPadding * 2) / panelWidth,
+    (viewportHeight - viewportPadding * 2) / panelHeight,
+  ))
+  const scaledWidth = panelWidth * editorScale
+  const scaledHeight = panelHeight * editorScale
+  const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - scaledWidth / 2
   const panelLeft = Math.min(
     Math.max(viewportPadding, desiredLeft),
-    Math.max(viewportPadding, viewportWidth - panelWidth - viewportPadding),
+    Math.max(viewportPadding, viewportWidth - scaledWidth - viewportPadding),
   )
   const spaceAbove = Math.max(0, anchorTop - nodeGap - viewportPadding)
   const spaceBelow = Math.max(0, viewportHeight - anchorBottom - nodeGap - viewportPadding)
   const dock = spaceBelow >= spaceAbove ? 'bottom' : 'top'
-  const availableHeight = dock === 'bottom' ? spaceBelow : spaceAbove
-  const panelHeightCap = Math.max(1, Math.min(
-    viewportHeight - viewportPadding * 2,
-    640 * editorScale,
-  ))
+  const desiredTop = dock === 'bottom'
+    ? anchorBottom + nodeGap
+    : anchorTop - nodeGap - scaledHeight
+  const panelTop = Math.min(
+    Math.max(viewportPadding, desiredTop),
+    Math.max(viewportPadding, viewportHeight - scaledHeight - viewportPadding),
+  )
 
   editorDock.value = dock
   const nextStyle = {
-    top: dock === 'bottom' ? `${Math.round(anchorBottom + nodeGap)}px` : 'auto',
+    top: `${Math.round(panelTop)}px`,
     right: 'auto',
-    bottom: dock === 'top' ? `${Math.round(viewportHeight - anchorTop + nodeGap)}px` : 'auto',
+    bottom: 'auto',
     left: `${Math.round(panelLeft)}px`,
-    width: `${Math.round(panelWidth)}px`,
-    maxHeight: `${Math.max(1, Math.floor(Math.min(availableHeight, panelHeightCap)))}px`,
+    width: `${panelWidth}px`,
+    maxHeight: 'none',
+    transform: `scale(${editorScale})`,
+    transformOrigin: 'top left',
   }
   if (Object.entries(nextStyle).some(([key, value]) => editorPanelStyle.value[key] !== value)) {
     editorPanelStyle.value = nextStyle
@@ -1071,9 +1089,9 @@ watch(isSelected, (selected) => {
   bottom: auto;
   left: 16px;
   z-index: 3100;
-  width: min(860px, calc(100vw - 48px));
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
+  width: 860px;
+  max-height: none;
+  overflow: visible;
   padding: 18px;
   border: 1px solid #3f3f46;
   border-radius: 24px;
@@ -1087,6 +1105,7 @@ watch(isSelected, (selected) => {
   z-index: 3200;
   width: auto;
   max-height: none;
+  overflow: auto;
   transform: none;
 }
 .node-expanded-editor.is-fullscreen .prompt-input,
