@@ -78,6 +78,41 @@ const LUT_PRESETS = Object.freeze({
     [0.299, 0.587, 0.114],
     [0.299, 0.587, 0.114],
   ],
+  teal_orange: [
+    [1.08, 0.02, -0.08],
+    [-0.03, 1.04, 0],
+    [-0.08, 0.04, 1.12],
+  ],
+  film_fade: [
+    [0.94, 0.05, 0.02],
+    [0.03, 0.94, 0.03],
+    [0.05, 0.04, 0.9],
+  ],
+  silver_screen: [
+    [0.72, 0.24, 0.08],
+    [0.2, 0.72, 0.1],
+    [0.14, 0.22, 0.7],
+  ],
+  vintage_brown: [
+    [1.08, 0.08, -0.04],
+    [0.04, 0.96, -0.02],
+    [0.02, 0.04, 0.82],
+  ],
+  forest: [
+    [0.94, 0.03, 0],
+    [0.02, 1.08, 0.02],
+    [0, 0.02, 0.92],
+  ],
+  pastel: [
+    [1.03, 0.03, 0.01],
+    [0.02, 1.02, 0.02],
+    [0.02, 0.03, 1.04],
+  ],
+  skin_natural: [
+    [1.05, 0.02, 0],
+    [0.01, 1.01, 0],
+    [0, 0.01, 0.98],
+  ],
 });
 
 const DETAIL_ENHANCE_PRESETS = Object.freeze({
@@ -2619,9 +2654,16 @@ async function runGridCrop(sourcePath, parameters) {
   }
   const rows = requireInteger(parameters.rows, 'rows', 1);
   const columns = requireInteger(parameters.columns, 'columns', 1);
-  if (rows * columns > 25) fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过 25');
+  const spacing = requireInteger(parameters.spacing ?? 0, 'spacing', 0);
+  if (rows * columns > 49) fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过 49');
   if (rows > metadata.height || columns > metadata.width) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过图片像素尺寸');
+  }
+  if (
+    spacing >= Math.floor(metadata.width / columns)
+    || spacing >= Math.floor(metadata.height / rows)
+  ) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '宫格间距必须小于单格尺寸');
   }
   const allCellKeys = new Set(Array.from(
     { length: rows * columns },
@@ -2640,28 +2682,30 @@ async function runGridCrop(sourcePath, parameters) {
   }
   const selectedCellKeys = new Set(selectedCells);
   const cells = [];
+  const spacingBefore = Math.floor(spacing / 2);
+  const spacingAfter = spacing - spacingBefore;
   for (let row = 0; row < rows; row += 1) {
-    const top = Math.floor((row * metadata.height) / rows);
-    const bottom = Math.floor(((row + 1) * metadata.height) / rows);
+    const cellTop = Math.floor((row * metadata.height) / rows);
+    const cellBottom = Math.floor(((row + 1) * metadata.height) / rows);
     for (let column = 0; column < columns; column += 1) {
-      const left = Math.floor((column * metadata.width) / columns);
-      const right = Math.floor(((column + 1) * metadata.width) / columns);
+      const cellLeft = Math.floor((column * metadata.width) / columns);
+      const cellRight = Math.floor(((column + 1) * metadata.width) / columns);
       const key = `${row}:${column}`;
       if (!selectedCellKeys.has(key)) continue;
       cells.push({
         row,
         column,
-        left,
-        top,
-        width: right - left,
-        height: bottom - top,
+        left: cellLeft + spacingBefore,
+        top: cellTop + spacingBefore,
+        width: cellRight - cellLeft - spacingBefore - spacingAfter,
+        height: cellBottom - cellTop - spacingBefore - spacingAfter,
       });
     }
   }
   return {
     metadata,
     format,
-    normalized: { rows, columns, selectedCells },
+    normalized: { rows, columns, spacing, selectedCells },
     cells,
   };
 }
@@ -2673,6 +2717,23 @@ async function runAdjust(sourcePath, parameters) {
   if (!format || !metadata.width || !metadata.height) {
     fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
   }
+  const curves = parameters.curves ?? {};
+  const normalizedCurves = {};
+  for (const channel of ['rgb', 'red', 'green', 'blue']) {
+    const points = curves[channel] ?? [[0, 0], [0.5, 0.5], [1, 1]];
+    if (
+      !Array.isArray(points)
+      || points.length < 2
+      || points.some((point) => (
+        !Array.isArray(point)
+        || point.length !== 2
+        || point.some((value) => !Number.isFinite(value) || value < 0 || value > 1)
+      ))
+    ) {
+      fail('IMAGE_TOOL_INVALID_INPUT', `curves.${channel} 必须是 0–1 范围的曲线坐标`);
+    }
+    normalizedCurves[channel] = points;
+  }
   return {
     source,
     metadata,
@@ -2683,12 +2744,21 @@ async function runAdjust(sourcePath, parameters) {
       vibrance: requireNumber(parameters.vibrance ?? 1, 'vibrance', 0, 2),
       saturation: requireNumber(parameters.saturation ?? 1, 'saturation', 0, 3),
       contrast: requireNumber(parameters.contrast ?? 1, 'contrast', 0.1, 3),
+      highlights: requireNumber(parameters.highlights ?? 0, 'highlights', -1, 1),
+      shadows: requireNumber(parameters.shadows ?? 0, 'shadows', -1, 1),
+      whites: requireNumber(parameters.whites ?? 0, 'whites', -1, 1),
+      blacks: requireNumber(parameters.blacks ?? 0, 'blacks', -1, 1),
       temperature: requireNumber(parameters.temperature ?? 0, 'temperature', -1, 1),
       tint: requireNumber(parameters.tint ?? 0, 'tint', -1, 1),
       hue: requireNumber(parameters.hue ?? 0, 'hue', -180, 180),
       sharpness: requireNumber(parameters.sharpness ?? 0, 'sharpness', 0, 1),
       clarity: requireNumber(parameters.clarity ?? 0, 'clarity', 0, 1),
+      grain: requireNumber(parameters.grain ?? 0, 'grain', 0, 1),
       blur: requireNumber(parameters.blur ?? 0, 'blur', 0, 2),
+      vignette: requireNumber(parameters.vignette ?? 0, 'vignette', 0, 1),
+      softLight: requireNumber(parameters.softLight ?? 0, 'softLight', 0, 1),
+      glow: requireNumber(parameters.glow ?? 0, 'glow', 0, 1),
+      curves: normalizedCurves,
     },
   };
 }
@@ -2702,6 +2772,12 @@ async function runLut(sourcePath, parameters) {
   }
   const preset = String(parameters.preset || '').toLowerCase();
   const intensity = requireNumber(parameters.intensity ?? 1, 'intensity', 0, 1);
+  const manual = {
+    exposure: requireNumber(parameters.manual?.exposure ?? 0, 'manual.exposure', -1, 1),
+    contrast: requireNumber(parameters.manual?.contrast ?? 1, 'manual.contrast', 0.5, 1.5),
+    saturation: requireNumber(parameters.manual?.saturation ?? 1, 'manual.saturation', 0, 2),
+    temperature: requireNumber(parameters.manual?.temperature ?? 0, 'manual.temperature', -1, 1),
+  };
   if (preset === 'custom') {
     const size = requireInteger(parameters.customLut?.size, 'customLut.size', 2);
     if (size > 17) fail('IMAGE_TOOL_INVALID_INPUT', '3D LUT 尺寸不能超过 17');
@@ -2724,6 +2800,7 @@ async function runLut(sourcePath, parameters) {
       normalized: {
         preset,
         intensity,
+        manual,
         customLut: {
           name: String(parameters.customLut?.name || '自定义 LUT').slice(0, 80),
           size,
@@ -2736,7 +2813,7 @@ async function runLut(sourcePath, parameters) {
     };
   }
   if (!LUT_PRESETS[preset]) {
-    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数仅支持 cinematic、warm、cool、mono 或 custom');
+    fail('IMAGE_TOOL_INVALID_INPUT', 'preset 参数不受支持');
   }
   const matrix = LUT_PRESETS[preset].map((row, rowIndex) => (
     row.map((value, columnIndex) => {
@@ -2748,7 +2825,7 @@ async function runLut(sourcePath, parameters) {
     source,
     metadata,
     format,
-    normalized: { preset, intensity },
+    normalized: { preset, intensity, manual },
     matrix,
   };
 }
@@ -3457,8 +3534,25 @@ async function createOperation(db, log, request, context = {}) {
       const redGain = 1 + (prepared.normalized.temperature * 0.15);
       const blueGain = 1 - (prepared.normalized.temperature * 0.15);
       const greenGain = 1 + (prepared.normalized.tint * 0.12);
-      const brightness = prepared.normalized.brightness * (2 ** prepared.normalized.exposure);
+      const toneBrightness = 1
+        + (prepared.normalized.highlights * 0.08)
+        + (prepared.normalized.shadows * 0.12)
+        + (prepared.normalized.whites * 0.08)
+        + (prepared.normalized.blacks * 0.08);
+      const brightness = prepared.normalized.brightness
+        * (2 ** prepared.normalized.exposure)
+        * toneBrightness;
       const saturation = prepared.normalized.saturation * prepared.normalized.vibrance;
+      const curveMidpoint = (channel) => (
+        prepared.normalized.curves[channel].find((point) => point[0] === 0.5)?.[1] ?? 0.5
+      );
+      const rgbMidpoint = curveMidpoint('rgb');
+      const curveGamma = Math.min(3, Math.max(1, Math.log(0.5) / Math.log(rgbMidpoint)));
+      const curveGains = ['red', 'green', 'blue'].map(
+        (channel) => Math.min(1.5, Math.max(0.5, curveMidpoint(channel) / 0.5)),
+      );
+      const toneContrast = prepared.normalized.contrast
+        + ((prepared.normalized.whites - prepared.normalized.blacks) * 0.08);
       pipeline = prepared.source
         .modulate({
           brightness,
@@ -3466,14 +3560,15 @@ async function createOperation(db, log, request, context = {}) {
           hue: prepared.normalized.hue,
         })
         .linear(
-          prepared.normalized.contrast,
-          128 * (1 - prepared.normalized.contrast),
+          toneContrast,
+          128 * (1 - toneContrast),
         )
         .recomb([
-          [redGain, 0, 0],
-          [0, greenGain, 0],
-          [0, 0, blueGain],
-        ]);
+          [redGain * curveGains[0], 0, 0],
+          [0, greenGain * curveGains[1], 0],
+          [0, 0, blueGain * curveGains[2]],
+        ])
+        .gamma(curveGamma);
       const detailAmount = Math.max(
         prepared.normalized.sharpness,
         prepared.normalized.clarity,
@@ -3481,8 +3576,25 @@ async function createOperation(db, log, request, context = {}) {
       if (detailAmount > 0) {
         pipeline = pipeline.sharpen(0.5 + (detailAmount * 1.5));
       }
-      if (prepared.normalized.blur >= 0.3) {
-        pipeline = pipeline.blur(prepared.normalized.blur);
+      const effectBlur = prepared.normalized.blur
+        + (prepared.normalized.softLight * 0.7)
+        + (prepared.normalized.glow * 0.45);
+      if (effectBlur >= 0.3) {
+        pipeline = pipeline.blur(Math.min(2, effectBlur));
+      }
+      if (prepared.normalized.grain > 0) {
+        const grainAmount = prepared.normalized.grain * 7;
+        pipeline = pipeline.linear(
+          1 + (grainAmount / 100),
+          -(grainAmount / 2),
+        );
+      }
+      if (prepared.normalized.vignette > 0) {
+        const opacity = Math.round(prepared.normalized.vignette * 180);
+        const vignette = Buffer.from(
+          `<svg width="${prepared.metadata.width}" height="${prepared.metadata.height}"><defs><radialGradient id="v"><stop offset="55%" stop-color="black" stop-opacity="0"/><stop offset="100%" stop-color="black" stop-opacity="${opacity / 255}"/></radialGradient></defs><rect width="100%" height="100%" fill="url(#v)"/></svg>`,
+        );
+        pipeline = pipeline.composite([{ input: vignette, blend: 'over' }]);
       }
       pipeline = pipeline.toFormat(prepared.metadata.format);
     } else {
@@ -3492,9 +3604,24 @@ async function createOperation(db, log, request, context = {}) {
           prepared.customLut,
           prepared.normalized.intensity,
         )).toFormat(prepared.metadata.format)
-        : prepared.source
-          .recomb(prepared.matrix)
-          .toFormat(prepared.metadata.format);
+        : prepared.source.recomb(prepared.matrix);
+      const lutManual = prepared.normalized.manual;
+      const manualRed = 1 + (lutManual.temperature * 0.08);
+      const manualBlue = 1 - (lutManual.temperature * 0.08);
+      pipeline = pipeline
+        .modulate({
+          brightness: 2 ** lutManual.exposure,
+          saturation: lutManual.saturation,
+        })
+        .linear(lutManual.contrast, 128 * (1 - lutManual.contrast));
+      if (lutManual.temperature !== 0) {
+        pipeline = pipeline.recomb([
+          [manualRed, 0, 0],
+          [0, 1, 0],
+          [0, 0, manualBlue],
+        ]);
+      }
+      pipeline = pipeline.toFormat(prepared.metadata.format);
     }
     const outputInfo = await pipeline.toFile(outputPath);
     let result;

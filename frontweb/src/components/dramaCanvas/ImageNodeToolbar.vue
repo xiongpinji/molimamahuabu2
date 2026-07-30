@@ -2,6 +2,9 @@
   <div
     ref="toolbarRef"
     class="image-node-toolbar nodrag nopan"
+    :class="{ 'place-below': toolbarPlacement === 'below' }"
+    @mouseenter="updateToolbarPlacement"
+    @focusin="updateToolbarPlacement"
     @click.stop
     @mousedown.stop
   >
@@ -60,7 +63,7 @@
       <div v-if="openMenu === 'settings'" class="toolbar-menu settings-menu">
         <button
           v-for="item in settingActions"
-          :key="item.operation"
+          :key="item.label"
           type="button"
           :class="{ unavailable: !operationCapability(item.operation).available }"
           :disabled="nodeBusy || !operationCapability(item.operation).available"
@@ -123,10 +126,10 @@
 
     <el-dialog
       v-model="editorVisible"
-      class="image-tool-dialog"
+      class="image-tool-dialog immersive"
       :title="operationLabel(editorOperation)"
-      width="min(1180px, calc(100vw - 48px))"
-      top="4vh"
+      width="calc(100vw - 32px)"
+      top="16px"
       append-to-body
       destroy-on-close
       :close-on-click-modal="false"
@@ -555,15 +558,35 @@
         </el-form-item>
 
         <template v-else-if="editorOperation === 'grid_crop'">
+          <div class="grid-quick-sizes" aria-label="手动网格">
+            <button
+              v-for="size in gridQuickSizes"
+              :key="size"
+              type="button"
+              :class="{ active: gridForm.rows === size && gridForm.columns === size }"
+              @click="applyGridSize(size)"
+            >
+              {{ size }}x{{ size }}
+            </button>
+          </div>
           <el-form-item label="行数">
-            <el-input-number v-model="gridForm.rows" :min="1" :max="5" @change="resetGridSelection" />
+            <el-input-number v-model="gridForm.rows" :min="1" :max="7" @change="resetGridSelection" />
           </el-form-item>
           <el-form-item label="列数">
-            <el-input-number v-model="gridForm.columns" :min="1" :max="5" @change="resetGridSelection" />
+            <el-input-number v-model="gridForm.columns" :min="1" :max="7" @change="resetGridSelection" />
+          </el-form-item>
+          <el-form-item :label="`宫格间距 ${gridForm.spacing}px`">
+            <el-slider v-model="gridForm.spacing" :min="0" :max="48" :step="1" />
           </el-form-item>
           <div class="grid-selection-actions">
             <el-button size="small" @click="selectAllGridCells">全选</el-button>
             <el-button size="small" @click="gridSelectedCells = []">取消全选</el-button>
+            <el-button size="small" @click="invertGridSelection">反选</el-button>
+            <el-button size="small" :disabled="!gridSelectedCells.length" @click="duplicateGridSelection">
+              复制选区
+            </el-button>
+            <el-button size="small" @click="redetectGrid">重新识别</el-button>
+            <el-checkbox v-model="gridSnapEnabled">吸附对齐</el-checkbox>
             <span>已选择 {{ gridSelectedCells.length }} / {{ gridCells.length }} 格</span>
           </div>
           <p class="crop-hint">点击左侧宫格选择需要分别导出的区域，每个选中区域会生成一份新素材。</p>
@@ -598,6 +621,9 @@
             <el-form-item :label="`对比度 ${Math.round(adjustForm.contrast * 100)}`">
               <el-slider v-model="adjustForm.contrast" :min="0.1" :max="2" :step="0.05" />
             </el-form-item>
+            <el-form-item v-for="control in lightToneControls" :key="control.key" :label="`${control.label} ${Math.round(adjustForm[control.key] * 100)}`">
+              <el-slider v-model="adjustForm[control.key]" :min="-1" :max="1" :step="0.05" />
+            </el-form-item>
           </template>
           <template v-else-if="adjustSection === 'color'">
             <el-form-item :label="`自然饱和度 ${Math.round(adjustForm.vibrance * 100)}`">
@@ -623,29 +649,45 @@
             <el-form-item :label="`清晰度 ${Math.round(adjustForm.clarity * 100)}`">
               <el-slider v-model="adjustForm.clarity" :min="0" :max="1" :step="0.05" />
             </el-form-item>
+            <el-form-item :label="`颗粒 ${Math.round(adjustForm.grain * 100)}`">
+              <el-slider v-model="adjustForm.grain" :min="0" :max="1" :step="0.05" />
+            </el-form-item>
           </template>
           <template v-else>
             <el-form-item :label="`柔光 ${Math.round(adjustForm.blur * 10)}`">
               <el-slider v-model="adjustForm.blur" :min="0" :max="2" :step="0.1" />
             </el-form-item>
+            <el-form-item v-for="control in effectControls" :key="control.key" :label="`${control.label} ${Math.round(adjustForm[control.key] * 100)}`">
+              <el-slider v-model="adjustForm[control.key]" :min="0" :max="1" :step="0.05" />
+            </el-form-item>
           </template>
+          <section class="curve-panel" aria-label="RGB 曲线">
+            <strong>RGB 曲线</strong>
+            <div class="adjust-tabs">
+              <button v-for="channel in curveChannels" :key="channel.key" type="button" :class="{ active: curveChannel === channel.key }" @click="curveChannel = channel.key">
+                {{ channel.label }}
+              </button>
+            </div>
+            <el-form-item :label="`中间调 ${Math.round(adjustCurveMidpoints[curveChannel] * 100)}`">
+              <el-slider v-model="adjustCurveMidpoints[curveChannel]" :min="0.1" :max="0.9" :step="0.01" />
+            </el-form-item>
+          </section>
           <el-button class="adjust-reset" @click="resetAdjustForm">全部重置</el-button>
         </template>
 
         <template v-else-if="editorOperation === 'lut'">
           <div class="adjust-tabs" role="tablist" aria-label="LUT 分类">
-            <button type="button" class="active">推荐</button>
-            <button type="button" :disabled="!recentLutPresets.length">最近使用</button>
-            <button type="button">电影</button>
-            <button type="button">风格化</button>
+            <button v-for="category in lutCategories" :key="category.key" type="button" :class="{ active: lutCategory === category.key }" :disabled="category.key === 'recent' && !recentLutPresets.length" @click="lutCategory = category.key">
+              {{ category.label }}
+            </button>
           </div>
           <div class="lut-presets" aria-label="LUT 调色预设">
             <button
-              v-for="preset in lutPresets"
+              v-for="preset in visibleLutPresets"
               :key="preset.value"
               type="button"
               :class="{ active: lutPreset === preset.value }"
-              @click="lutPreset = preset.value"
+              @click="selectLutPreset(preset)"
             >
               <span :class="`lut-swatch lut-${preset.value}`" />
               {{ preset.label }}
@@ -664,6 +706,12 @@
               @change="loadCubeLut"
             />
           </div>
+          <section class="curve-panel" aria-label="LUT 手动微调">
+            <strong>LUT 手动微调</strong>
+            <el-form-item v-for="control in lutManualControls" :key="control.key" :label="`${control.label} ${formatSigned(lutManualForm[control.key])}`">
+              <el-slider v-model="lutManualForm[control.key]" :min="control.min" :max="control.max" :step="0.05" />
+            </el-form-item>
+          </section>
           <el-button class="adjust-reset" @click="resetLutForm">重置调色</el-button>
         </template>
       </el-form>
@@ -745,6 +793,7 @@ const cropAspectPresets = Object.freeze([
 ])
 const capabilities = ref({})
 const openMenu = ref('')
+const toolbarPlacement = ref('above')
 const editorVisible = ref(false)
 const previewOriginal = ref(false)
 const editorOperation = ref('crop')
@@ -755,12 +804,18 @@ const markerColors = ['#a1a1aa', '#60a5fa', '#34d399', '#fbbf24', '#f87171']
 const compressForm = ref({ format: 'webp', quality: 80 })
 const mirrorDirection = ref('horizontal')
 const rotateAngle = ref(90)
-const gridForm = ref({ rows: 3, columns: 3 })
+const gridQuickSizes = Object.freeze([2, 3, 4, 5, 6, 7])
+const gridForm = ref({ rows: 3, columns: 3, spacing: 0 })
 const gridSelectedCells = ref([])
+const gridSnapEnabled = ref(true)
 const DEFAULT_ADJUST_FORM = Object.freeze({
   exposure: 0,
   brightness: 1,
   contrast: 1,
+  highlights: 0,
+  shadows: 0,
+  whites: 0,
+  blacks: 0,
   vibrance: 1,
   saturation: 1,
   temperature: 0,
@@ -768,9 +823,39 @@ const DEFAULT_ADJUST_FORM = Object.freeze({
   hue: 0,
   sharpness: 0,
   clarity: 0,
+  grain: 0,
   blur: 0,
+  vignette: 0,
+  softLight: 0,
+  glow: 0,
 })
 const adjustForm = ref({ ...DEFAULT_ADJUST_FORM })
+const DEFAULT_CURVE_MIDPOINTS = Object.freeze({ rgb: 0.5, red: 0.5, green: 0.5, blue: 0.5 })
+const adjustCurveMidpoints = ref({ ...DEFAULT_CURVE_MIDPOINTS })
+const adjustCurves = computed(() => Object.fromEntries(
+  Object.entries(adjustCurveMidpoints.value).map(([channel, midpoint]) => [
+    channel,
+    [[0, 0], [0.5, midpoint], [1, 1]],
+  ]),
+))
+const curveChannel = ref('rgb')
+const curveChannels = Object.freeze([
+  { key: 'rgb', label: 'RGB' },
+  { key: 'red', label: 'R' },
+  { key: 'green', label: 'G' },
+  { key: 'blue', label: 'B' },
+])
+const lightToneControls = Object.freeze([
+  { key: 'highlights', label: '高光' },
+  { key: 'shadows', label: '阴影' },
+  { key: 'whites', label: '白色色阶' },
+  { key: 'blacks', label: '黑色色阶' },
+])
+const effectControls = Object.freeze([
+  { key: 'vignette', label: '暗角' },
+  { key: 'softLight', label: '柔光' },
+  { key: 'glow', label: '辉光' },
+])
 const adjustSection = ref('light')
 const adjustSections = Object.freeze([
   { key: 'light', label: '光线' },
@@ -786,16 +871,51 @@ const adjustPresets = Object.freeze([
   { name: '冷色', values: { temperature: -0.35, contrast: 1.05 } },
   { name: '电影', values: { exposure: -0.15, contrast: 1.18, saturation: 0.88, clarity: 0.35 } },
   { name: '复古', values: { temperature: 0.25, saturation: 0.78, contrast: 0.92, blur: 0.15 } },
+  { name: '青橙', values: { temperature: 0.12, tint: -0.18, contrast: 1.16, saturation: 1.08 } },
+  { name: '黑色电影', values: { exposure: -0.25, contrast: 1.32, saturation: 0.2, vignette: 0.55, grain: 0.2 } },
+  { name: '金色时光', values: { exposure: 0.15, temperature: 0.5, highlights: 0.2, glow: 0.18 } },
+  { name: '梦幻', values: { brightness: 1.08, saturation: 0.88, softLight: 0.35, glow: 0.3 } },
+  { name: 'HDR', values: { contrast: 1.18, highlights: -0.2, shadows: 0.28, clarity: 0.55 } },
 ])
 const lutPreset = ref('cinematic')
 const lutIntensity = ref(1)
+const lutCategory = ref('recommended')
+const lutManualForm = ref({ exposure: 0, contrast: 1, saturation: 1, temperature: 0 })
 const customLut = ref(null)
 const recentLutPresets = ref([])
+const lutCategories = Object.freeze([
+  { key: 'recommended', label: '推荐' },
+  { key: 'recent', label: '最近使用' },
+  { key: 'film', label: '电影' },
+  { key: 'stylized', label: '风格化' },
+  { key: 'portrait', label: '人像' },
+])
 const lutPresets = Object.freeze([
-  { label: '电影感', value: 'cinematic' },
-  { label: '暖色', value: 'warm' },
-  { label: '冷色', value: 'cool' },
-  { label: '黑白', value: 'mono' },
+  { label: '电影感', value: 'cinematic', categories: ['recommended', 'film'] },
+  { label: '青橙', value: 'teal_orange', categories: ['recommended', 'film'] },
+  { label: '胶片褪色', value: 'film_fade', categories: ['film'] },
+  { label: '银幕冷调', value: 'silver_screen', categories: ['film'] },
+  { label: '暖色', value: 'warm', categories: ['recommended', 'portrait'] },
+  { label: '冷色', value: 'cool', categories: ['recommended', 'stylized'] },
+  { label: '黑白', value: 'mono', categories: ['film', 'stylized'] },
+  { label: '复古棕', value: 'vintage_brown', categories: ['stylized'] },
+  { label: '森林', value: 'forest', categories: ['stylized'] },
+  { label: '粉彩', value: 'pastel', categories: ['portrait', 'stylized'] },
+  { label: '自然肤色', value: 'skin_natural', categories: ['portrait'] },
+])
+const visibleLutPresets = computed(() => {
+  if (lutCategory.value === 'recent') {
+    return recentLutPresets.value
+      .map((value) => lutPresets.find((preset) => preset.value === value))
+      .filter(Boolean)
+  }
+  return lutPresets.filter((preset) => preset.categories.includes(lutCategory.value))
+})
+const lutManualControls = Object.freeze([
+  { key: 'exposure', label: '曝光', min: -1, max: 1 },
+  { key: 'contrast', label: '对比度', min: 0.5, max: 1.5 },
+  { key: 'saturation', label: '饱和度', min: 0, max: 2 },
+  { key: 'temperature', label: '色温', min: -1, max: 1 },
 ])
 const upscaleScale = ref(2)
 const detailEnhancePreset = ref('balanced')
@@ -897,6 +1017,9 @@ const settingActions = [
   { label: '720全景', operation: 'panorama', icon: PictureRounded },
   { label: '电影级光影校正', operation: 'cinematic_relight', icon: Sunny },
   { label: '细节纹理增强', operation: 'detail_enhance', icon: MagicStick },
+  { label: '全景镜头扩张', operation: 'outpaint', icon: FullScreen },
+  { label: '背景重构', operation: 'image_ideation', icon: PictureRounded },
+  { label: '氛围重塑', operation: 'cinematic_relight', icon: Sunny },
 ]
 
 const history = computed(() => Array.isArray(props.data.imageToolHistory)
@@ -984,6 +1107,9 @@ const referenceVariationTags = computed(() => (
 ))
 
 onMounted(async () => {
+  window.addEventListener('resize', updateToolbarPlacement)
+  window.addEventListener('scroll', updateToolbarPlacement, true)
+  nextTick(updateToolbarPlacement)
   try {
     const result = await imageToolsAPI.getCapabilities()
     capabilities.value = result?.operations || {}
@@ -992,7 +1118,17 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(destroyEditor)
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateToolbarPlacement)
+  window.removeEventListener('scroll', updateToolbarPlacement, true)
+  destroyEditor()
+})
+
+function updateToolbarPlacement() {
+  const node = toolbarRef.value?.closest('.vue-flow__node')
+  const bounds = node?.getBoundingClientRect?.()
+  toolbarPlacement.value = bounds && bounds.top < 88 ? 'below' : 'above'
+}
 
 function operationCapability(operation) {
   return capabilities.value?.[operation] || {
@@ -1367,8 +1503,34 @@ function selectAllGridCells() {
   gridSelectedCells.value = gridCells.value.map((cell) => cell.key)
 }
 
+function applyGridSize(size) {
+  gridForm.value = { ...gridForm.value, rows: size, columns: size }
+  resetGridSelection()
+}
+
 function resetGridSelection() {
   nextTick(selectAllGridCells)
+}
+
+function invertGridSelection() {
+  const selected = new Set(gridSelectedCells.value)
+  gridSelectedCells.value = gridCells.value
+    .map((cell) => cell.key)
+    .filter((key) => !selected.has(key))
+}
+
+function duplicateGridSelection() {
+  const selected = new Set(gridSelectedCells.value)
+  const shifted = gridSelectedCells.value
+    .map((key) => key.split(':').map(Number))
+    .map(([row, column]) => `${Math.min(gridForm.value.rows - 1, row + 1)}:${Math.min(gridForm.value.columns - 1, column + 1)}`)
+    .filter((key) => !selected.has(key))
+  gridSelectedCells.value = [...selected, ...shifted]
+}
+
+function redetectGrid() {
+  gridForm.value = { ...gridForm.value, rows: 3, columns: 3 }
+  resetGridSelection()
 }
 
 function toggleGridCell(key) {
@@ -1417,12 +1579,15 @@ function operationParameters() {
     return {
       ...gridForm.value,
       selectedCells: [...gridSelectedCells.value],
+      spacing: gridForm.value.spacing,
+      snap: gridSnapEnabled.value,
     }
   }
-  if (editorOperation.value === 'adjust') return { ...adjustForm.value }
+  if (editorOperation.value === 'adjust') return { ...adjustForm.value, curves: adjustCurves.value }
   if (editorOperation.value === 'lut') return {
     preset: lutPreset.value,
     intensity: lutIntensity.value,
+    manual: { ...lutManualForm.value },
     ...(lutPreset.value === 'custom' && customLut.value
       ? { customLut: customLut.value }
       : {}),
@@ -1461,13 +1626,25 @@ function operationParameters() {
 
 function resetAdjustForm() {
   adjustForm.value = { ...DEFAULT_ADJUST_FORM }
+  adjustCurveMidpoints.value = { ...DEFAULT_CURVE_MIDPOINTS }
+  curveChannel.value = 'rgb'
 }
 
 function resetLutForm() {
   lutPreset.value = 'cinematic'
   lutIntensity.value = 1
+  lutCategory.value = 'recommended'
+  lutManualForm.value = { exposure: 0, contrast: 1, saturation: 1, temperature: 0 }
   customLut.value = null
   if (lutFileInput.value) lutFileInput.value.value = ''
+}
+
+function selectLutPreset(preset) {
+  lutPreset.value = preset.value
+  recentLutPresets.value = [
+    preset.value,
+    ...recentLutPresets.value.filter((value) => value !== preset.value),
+  ].slice(0, 6)
 }
 
 async function loadCubeLut(event) {
@@ -1670,6 +1847,11 @@ function requestFullscreen() {
   background: rgba(21, 21, 23, 0.98);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.45);
   transform: translateX(-50%);
+}
+
+.image-node-toolbar.place-below {
+  top: calc(100% + 10px);
+  bottom: auto;
 }
 
 :global(.home-canvas-node:hover .image-node-toolbar),
@@ -2078,10 +2260,33 @@ function requestFullscreen() {
 
 .grid-selection-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
   color: #a1a1aa;
+}
+
+.grid-quick-sizes {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.grid-quick-sizes button {
+  padding: 8px;
+  color: #d4d4d8;
+  background: #232429;
+  border: 1px solid #3f4148;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.grid-quick-sizes button.active {
+  color: #fff;
+  background: #4338ca;
+  border-color: #6366f1;
 }
 
 .grid-preview::before {
@@ -2353,6 +2558,11 @@ function requestFullscreen() {
   background: #111113;
 }
 
+:global(.image-tool-dialog.immersive) {
+  height: calc(100vh - 32px);
+  margin: 0 auto;
+}
+
 :global(.image-tool-dialog .el-dialog__header) {
   margin: 0;
   padding: 20px 24px 16px;
@@ -2360,7 +2570,8 @@ function requestFullscreen() {
 }
 
 :global(.image-tool-dialog .el-dialog__body) {
-  max-height: calc(92vh - 142px);
+  height: calc(100% - 142px);
+  max-height: none;
   padding: 20px 24px;
   overflow: auto;
 }
