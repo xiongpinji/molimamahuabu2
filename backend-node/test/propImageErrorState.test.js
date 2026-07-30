@@ -32,6 +32,7 @@ test('道具重新生成开始时清除旧错误，成功后保持错误为空',
     updateTaskStatus: taskService.updateTaskStatus,
     updateTaskError: taskService.updateTaskError,
     updateTaskResult: taskService.updateTaskResult,
+    getTask: taskService.getTask,
     getById: propService.getById,
     resolveAssetUserNegativeForApi: imageClient.resolveAssetUserNegativeForApi,
     callImageApi: imageClient.callImageApi,
@@ -53,6 +54,7 @@ test('道具重新生成开始时清除旧错误，成功后保持错误为空',
     taskService.updateTaskResult = (_db, _taskId, result) => {
       taskResult = result;
     };
+    taskService.getTask = () => null;
     propService.getById = () => ({
       id: 1,
       drama_id: null,
@@ -90,6 +92,7 @@ test('道具重新生成开始时清除旧错误，成功后保持错误为空',
       updateTaskStatus: originals.updateTaskStatus,
       updateTaskError: originals.updateTaskError,
       updateTaskResult: originals.updateTaskResult,
+      getTask: originals.getTask,
     });
     propService.getById = originals.getById;
     imageClient.resolveAssetUserNegativeForApi = originals.resolveAssetUserNegativeForApi;

@@ -68,6 +68,16 @@ function taskFailMessage(t) {
   return (t.error || t.message || '任务失败').trim()
 }
 
+function terminalPollErrorMessage(error) {
+  const status = Number(error?.response?.status || 0)
+  if (status === 404) return '生成任务不存在或无权访问，请重新提交'
+  if (status === 401 || status === 403) return '登录状态或任务权限已失效，请重新登录后提交'
+  if (status >= 400 && status < 500 && ![408, 429].includes(status)) {
+    return error?.message || `任务查询失败（HTTP ${status}）`
+  }
+  return ''
+}
+
 export const useGenerationTaskStore = defineStore('generationTask', () => {
   /** @type {Map<string, object>} */
   const tasks = ref(new Map())
@@ -312,6 +322,14 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             return resolve({ status: 'failed', error: errMsg })
           }
         } catch (pollErr) {
+          const terminalError = terminalPollErrorMessage(pollErr)
+          if (terminalError) {
+            markFailed(key, terminalError)
+            if (showErrorToast && options.ElMessage) {
+              options.ElMessage.error(terminalError)
+            }
+            return resolve({ status: 'failed', error: terminalError })
+          }
           console.warn('[generationTaskStore] poll attempt failed:', pollErr?.message)
         }
         if (attempts < maxAttempts) {

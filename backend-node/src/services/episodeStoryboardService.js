@@ -926,11 +926,40 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
   };
   let streamThrottle = 0;
+  const originalStoryboardIds = db.prepare(
+    'SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL',
+  ).all(episodeIdNum).map((row) => Number(row.id));
+  let replacementStarted = false;
+  const restoreOriginalStoryboards = () => {
+    if (!replacementStarted) return;
+    try {
+      db.transaction(() => {
+        const now = new Date().toISOString();
+        db.prepare(
+          'UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL',
+        ).run(now, episodeIdNum);
+        const restore = db.prepare('UPDATE storyboards SET deleted_at = NULL WHERE id = ?');
+        for (const id of originalStoryboardIds) restore.run(id);
+      })();
+      log.warn('Storyboard generation failed; restored previous active storyboards', {
+        task_id: taskId,
+        episode_id: episodeIdNum,
+        restored_count: originalStoryboardIds.length,
+      });
+    } catch (error) {
+      log.error('Storyboard restore after generation failure failed', {
+        task_id: taskId,
+        episode_id: episodeIdNum,
+        error: error.message,
+      });
+    }
+  };
   const completeTask = (result) => {
     textGenerationBilling.settle(db, log, billing, 'completed');
     taskService.updateTaskResult(db, taskId, result);
   };
   const failTask = (message) => {
+    restoreOriginalStoryboards();
     textGenerationBilling.settle(db, log, billing, 'failed', message);
     taskService.updateTaskError(db, taskId, message);
   };
@@ -938,16 +967,16 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   try {
     taskService.updateTaskStatus(db, taskId, 'processing', 10, '开始生成分镜头...');
     log.info('Processing storyboard generation', { task_id: taskId, episode_id: episodeId });
-    log.info('Storyboard prompt preview', {
+    log.info('Storyboard prompt prepared', {
       user_prompt_len: userPrompt ? userPrompt.length : 0,
       system_prompt_len: systemPrompt ? systemPrompt.length : 0,
-      user_prompt_head: userPrompt ? userPrompt.slice(0, 200) : '',
     });
     logDebugStoryboardPrompts(log, `task-${taskId}-initial`, userPrompt, systemPrompt);
 
     // 提前删除旧分镜，为增量流式保存腾出位置
     const deleteNow = new Date().toISOString();
     db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL').run(deleteNow, episodeIdNum);
+    replacementStarted = true;
 
     // 不使用 json_mode：response_format:json_object 要求返回 JSON 对象而非数组，会导致模型包装成
     // {"storyboards":[...]} 或产生乱码 key，改由 extractFirstArray 统一处理任意包装格式。
@@ -973,7 +1002,6 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       task_id: taskId,
       text_type: typeof text,
       text_length: text ? String(text).length : 0,
-      text_preview: text ? String(text).slice(0, 2000) : '(empty)',
     });
 
     let storyboards = [];
@@ -987,52 +1015,13 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         task_id: taskId,
         text_type: typeof text,
         text_length: text ? String(text).length : 0,
-        raw_text: text ? String(text).slice(0, 2000) : '(empty)',
       });
-
-      // 解析失败时，若流式增量保存已有部分分镜，视为截断的部分成功
-      if (streamSavedNums.size > 0) {
-        const partialBoards = getStoryboardsForEpisode(db, episodeIdNum);
-        if (partialBoards.length > 0) {
-          const totalDuration = partialBoards.reduce((s, sb) => s + (Number(sb.duration) || 0), 0);
-          log.warn('Parse failed but partial storyboards already saved incrementally, treating as truncated success', {
-            task_id: taskId, recovered_count: partialBoards.length, parse_error: e.message,
-          });
-          completeTask({
-            storyboards: partialBoards,
-            total: partialBoards.length,
-            total_duration: totalDuration,
-            duration_minutes: Math.ceil((totalDuration + 59) / 60),
-            truncated: true,
-            error_message: `AI输出含JSON格式缺陷（${e.message}），已恢复 ${partialBoards.length} 个分镜`,
-          });
-          return;
-        }
-      }
 
       failTask('解析分镜头结果失败: ' + (e.message || ''));
       return;
     }
 
     if (storyboards.length === 0) {
-      // 最终解析为空，但流式已保存了内容，同样回退使用增量结果
-      if (streamSavedNums.size > 0) {
-        const partialBoards = getStoryboardsForEpisode(db, episodeIdNum);
-        if (partialBoards.length > 0) {
-          const totalDuration = partialBoards.reduce((s, sb) => s + (Number(sb.duration) || 0), 0);
-          log.warn('Final parse returned 0 items but incremental saves exist, using those', {
-            task_id: taskId, recovered_count: partialBoards.length,
-          });
-          completeTask({
-            storyboards: partialBoards,
-            total: partialBoards.length,
-            total_duration: totalDuration,
-            duration_minutes: Math.ceil((totalDuration + 59) / 60),
-            truncated: true,
-          });
-          return;
-        }
-      }
       log.error('AI returned 0 storyboards', { task_id: taskId });
       failTask('AI生成分镜失败：返回的分镜数量为0');
       return;
@@ -1196,29 +1185,6 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     log.info('Storyboard generation completed', { task_id: taskId, episode_id: episodeId });
   } catch (err) {
     log.error('Storyboard generation failed', { error: err.message, task_id: taskId });
-
-    // 若连接中断（ECONNRESET 等）但已通过增量流式保存了部分分镜，视为部分成功而非彻底失败
-    if (streamSavedNums.size > 0) {
-      try {
-        const partialBoards = getStoryboardsForEpisode(db, episodeIdNum);
-        if (partialBoards.length > 0) {
-          const totalDuration = partialBoards.reduce((s, sb) => s + (Number(sb.duration) || 0), 0);
-          log.warn('Partial storyboards recovered after error, treating as truncated success', {
-            task_id: taskId, recovered_count: partialBoards.length, error: err.message,
-          });
-          completeTask({
-            storyboards: partialBoards,
-            total: partialBoards.length,
-            total_duration: totalDuration,
-            duration_minutes: Math.ceil((totalDuration + 59) / 60),
-            truncated: true,
-            error_message: `连接中断（${err.message}），已恢复 ${partialBoards.length} 个分镜`,
-          });
-          return;
-        }
-      } catch (_) {}
-    }
-
     failTask(err.message || '生成分镜头失败');
   }
 }

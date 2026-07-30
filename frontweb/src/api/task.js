@@ -2,7 +2,7 @@ import request from '@/utils/request'
 
 export const taskAPI = {
   get(taskId) {
-    return request.get(`/tasks/${taskId}`)
+    return request.get(`/tasks/${taskId}`, { silentError: true })
   },
   cancel(taskId, body) {
     return request.post(`/tasks/${taskId}/cancel`, body || {})

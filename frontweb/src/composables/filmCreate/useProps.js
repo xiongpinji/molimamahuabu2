@@ -306,10 +306,12 @@ export function useProps(deps) {
       const taskId = res?.task_id
       if (taskId) {
         const pollRes = await pollTask(taskId, () => loadDrama(), meta)
-        if (pollRes?.status === 'failed') {
-          prop.errorMsg = pollRes.error || '生成失败'
-        } else {
+        if (pollRes?.status === 'completed') {
+          genStore.markDone(meta)
           ElMessage.success('道具图片已生成')
+        } else {
+          prop.errorMsg = pollRes?.error || '生成失败'
+          genStore.markFailed(meta, prop.errorMsg)
         }
       } else {
         await loadDrama()
@@ -318,15 +320,16 @@ export function useProps(deps) {
           const p = list.find((x) => Number(x.id) === Number(prop.id))
           return !!(p && (p.image_url || p.local_path))
         })
+        genStore.markDone(meta)
         ElMessage.success('道具图片已生成')
       }
     } catch (e) {
       console.error(e)
       prop.errorMsg = e.message || '生成失败'
+      genStore.markFailed(meta, prop.errorMsg)
       ElMessage.error(e.message || '提交失败')
     } finally {
       generatingPropIds.delete(prop.id)
-      genStore.markDone(meta)
     }
   }
 

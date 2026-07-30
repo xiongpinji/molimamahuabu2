@@ -71,6 +71,13 @@ async function processPropExtraction(db, log, taskId, episodeId, model, billing,
     failTask('解析 AI 返回的 JSON 失败');
     return;
   }
+  extractedProps = extractedProps.filter(
+    (prop) => prop && prop.name && String(prop.name).trim(),
+  );
+  if (extractedProps.length === 0) {
+    failTask('AI 未提取到道具，请检查剧本内容后重试');
+    return;
+  }
 
   taskService.updateTaskStatus(db, taskId, 'processing', 50, '正在保存道具...');
 
