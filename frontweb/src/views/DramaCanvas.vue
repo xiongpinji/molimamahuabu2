@@ -947,8 +947,8 @@ function getFreeNodeModelCapability(kind, model) {
   return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
 }
 
-function getFreeNodeEstimatedCredits(kind, model, quantity) {
-  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity)
+function getFreeNodeEstimatedCredits(kind, model, quantity, duration) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration)
 }
 
 async function loadFreeCanvasModelConfigs() {

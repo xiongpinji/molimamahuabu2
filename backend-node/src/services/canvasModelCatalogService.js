@@ -49,6 +49,7 @@ function list(db) {
         model,
         label: price?.display_name || model,
         credits: price?.credits || null,
+        billing_unit: price?.billing_unit || null,
         capabilities: safeCapabilities(config.settings),
       };
     }))

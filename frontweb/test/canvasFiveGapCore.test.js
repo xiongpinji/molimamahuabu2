@@ -25,14 +25,14 @@ test('subgraph reports cycles before execution', () => {
   assert.deepEqual(new Set(plan.cycleNodeIds), new Set(['a', 'b']))
 })
 
-test('model capabilities restrict parameters and estimate quantity cost', () => {
-  const catalog = [{ kind: 'video', model: 'v1', credits: 12, capabilities: { durations: [5, 8] } }]
+test('model capabilities restrict parameters and estimate per-second video cost', () => {
+  const catalog = [{ kind: 'video', model: 'v1', credits: 12, billing_unit: 'second', capabilities: { durations: [5, 8] } }]
   assert.deepEqual(canvasModelCapability(catalog, 'video', 'v1').durations, [5, 8])
-  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 3), 36)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12), 144)
 })
 
-test('video capability fallback includes the supported 15 second duration', () => {
-  assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 10, 15])
+test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {
+  assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 })
 
 test('local canvas binding preserves existing project nodes and remaps collisions', () => {
