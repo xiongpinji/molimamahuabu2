@@ -70,7 +70,7 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
       res.on('error', reject);
     });
 
-    const timer = setTimeout(() => { req.destroy(); reject(new Error(`Vision request timeout after ${timeoutMs}ms`)); }, timeoutMs);
+    const timer = setTimeout(() => { req.destroy(); reject(new Error(`AI non-stream request timeout after ${timeoutMs}ms`)); }, timeoutMs);
     req.on('error', (e) => { clearTimeout(timer); reject(e); });
     req.on('close', () => clearTimeout(timer));
     req.write(bodyStr);
@@ -324,8 +324,11 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
 async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs, onProgress, log, model) {
   let response = null;
+  let combinedUsage = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    combinedUsage = mergeProviderUsage(combinedUsage, response.usage);
+    response.usage = combinedUsage;
     if (response.body) return response;
     log.warn('AI stream completed without text', {
       model,
@@ -336,6 +339,28 @@ async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs
     if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return response;
+}
+
+function mergeProviderUsage(total, next) {
+  if (!next) return total;
+  const read = (usage, primary, fallback) => Math.max(
+    0,
+    Math.trunc(Number(usage?.[primary] ?? usage?.[fallback]) || 0),
+  );
+  const reasoning = (usage) => read(
+    usage?.output_tokens_details || usage?.completion_tokens_details,
+    'reasoning_tokens',
+    'reasoning_tokens',
+  );
+  return {
+    input_tokens: read(total, 'input_tokens', 'prompt_tokens')
+      + read(next, 'input_tokens', 'prompt_tokens'),
+    output_tokens: read(total, 'output_tokens', 'completion_tokens')
+      + read(next, 'output_tokens', 'completion_tokens'),
+    output_tokens_details: {
+      reasoning_tokens: reasoning(total) + reasoning(next),
+    },
+  };
 }
 
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
@@ -537,11 +562,36 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   }, log, model);
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
-  generationUsageContext.capture(res.usage);
   const elapsedMs = Date.now() - startMs;
   if (!content) {
+    log.warn('AI stream retries exhausted; falling back to non-stream request', {
+      model,
+      elapsed_ms: elapsedMs,
+      ...(res.diagnostics || {}),
+    });
+    const fallback = await postJSONNonStream(
+      url,
+      { Authorization: 'Bearer ' + (config.api_key || '') },
+      { ...body, stream: false },
+      240000,
+    );
+    let fallbackUsage = null;
+    try {
+      fallbackUsage = JSON.parse(fallback.raw || '{}').usage;
+    } catch (_) {}
+    if (fallback.body) {
+      generationUsageContext.capture(mergeProviderUsage(res.usage, fallbackUsage));
+      if (streamCallback) streamCallback(fallback.body);
+      log.info('AI non-stream fallback received', {
+        model,
+        text_length: fallback.body.length,
+        elapsed_ms: Date.now() - startMs,
+      });
+      return fallback.body;
+    }
     throw new Error('AI 返回内容为空');
   }
+  generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
   return content;
 }
