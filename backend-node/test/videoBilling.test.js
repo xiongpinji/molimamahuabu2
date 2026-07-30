@@ -18,8 +18,8 @@ function setup() {
   db.prepare(`INSERT INTO dramas (title, style, status, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?)`).run('视频测试', 'realistic', now, now);
   db.prepare(`INSERT INTO episodes (drama_id, episode_number, title, created_at, updated_at) VALUES (1, 1, ?, ?, ?)`).run('第一集', now, now);
   db.prepare(`INSERT INTO storyboards (episode_id, storyboard_number, title, created_at, updated_at) VALUES (1, 1, ?, ?, ?)`).run('首尾帧视频段', now, now);
-  credits.setAccountBalance(db, 'user-1', 40);
-  credits.setAccountBalance(db, 'user-2', 40);
+  credits.setAccountBalance(db, 'user-1', 100);
+  credits.setAccountBalance(db, 'user-2', 100);
   prices.set(db, 'seedance 2.0', 12);
   return db;
 }
@@ -32,8 +32,113 @@ function create(db, userId) {
     prompt: '固定首帧与尾帧之间的连续动作',
     first_frame_url: 'https://example.com/first.jpg',
     last_frame_url: 'https://example.com/last.jpg',
+    duration: 5,
   }, { billingEnabled: true, userId, schedule() {} });
 }
+
+test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3);
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '8 秒视频计费测试',
+    duration: 8,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.duration, 8);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 24);
+  assert.equal(credits.getAccount(db, 'user-1').held, 24);
+  db.close();
+});
+
+test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 2);
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '默认时长计费测试',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.duration, 5);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 10);
+  db.close();
+});
+
+test('视频节点未覆盖时使用模型配置的默认时长计费', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3);
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active, settings)
+    VALUES ('video', 'djpsd', 'Seedance 计费测试', 'https://example.com', 'test-key', ?, 'seedance 2.0', 1, 1, ?)
+  `).run(JSON.stringify(['seedance 2.0']), JSON.stringify({ video_duration: 11 }));
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '模型默认时长测试',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.duration, 11);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 33);
+  db.close();
+});
+
+test('视频任务拒绝 5 到 15 秒之外或非整数的时长', () => {
+  for (const duration of [4, 16, 7.5]) {
+    const db = setup();
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: '非法时长测试',
+      duration,
+    }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'INVALID_VIDEO_DURATION');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+    db.close();
+  }
+});
+
+test('已有处理中任务时仍校验时长且不静默复用不同秒数', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 2);
+  videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '处理中 5 秒任务',
+    duration: 5,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '非法 16 秒任务',
+    duration: 16,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'INVALID_VIDEO_DURATION');
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance 2.0',
+    prompt: '改为 8 秒任务',
+    duration: 8,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'VIDEO_GENERATION_ACTIVE');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 1);
+  db.close();
+});
 
 test('seedance 2.0 首尾帧视频任务按用户隔离幂等预扣', () => {
   const db = setup();
@@ -51,15 +156,15 @@ test('seedance 2.0 首尾帧视频任务按用户隔离幂等预扣', () => {
   assert.equal(rows[0].first_frame_url, 'https://example.com/first.jpg');
   assert.equal(rows[0].last_frame_url, 'https://example.com/last.jpg');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 2);
-  assert.equal(credits.getAccount(db, 'user-1').held, 12);
-  assert.equal(credits.getAccount(db, 'user-2').held, 12);
+  assert.equal(credits.getAccount(db, 'user-1').held, 60);
+  assert.equal(credits.getAccount(db, 'user-2').held, 60);
 
   videoService.settleVideoCredit(db, log, rows[0], 'completed');
   videoService.settleVideoCredit(db, log, rows[1], 'failed', '供应商明确失败');
   assert.equal(credits.getReservation(db, rows[0].credit_reservation_id).status, 'confirmed');
   assert.equal(credits.getReservation(db, rows[1].credit_reservation_id).status, 'refunded');
-  assert.equal(credits.getAccount(db, 'user-1').spent, 12);
-  assert.equal(credits.getAccount(db, 'user-2').available, 40);
+  assert.equal(credits.getAccount(db, 'user-1').spent, 60);
+  assert.equal(credits.getAccount(db, 'user-2').available, 100);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE event_type IN ('generation.video.completed', 'generation.video.failed')").get().count, 2);
   db.close();
 });
@@ -194,6 +299,44 @@ test('已失败的视频任务不会被生成处理重新拉回 processing', asy
     assert.equal(providerCalls, 1);
   } finally {
     taskService.updateTaskStatus = originalUpdateTaskStatus;
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('供应商请求使用已计费时长，不被旧分镜时长覆盖', async () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3);
+  db.prepare('UPDATE storyboards SET duration = 30 WHERE id = 1').run();
+
+  const callbacks = [];
+  let capturedDuration = null;
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  videoClient.callVideoApi = async (_db, _log, payload) => {
+    capturedDuration = payload.duration;
+    return { error: 'capture-only: do not send provider request' };
+  };
+  videoClient.getDefaultVideoConfig = () => ({ model: 'seedance 2.0', api_url: 'https://example.com' });
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: '按 8 秒计费并生成',
+      duration: 8,
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule(callback) { callbacks.push(callback); },
+    });
+    const row = db.prepare('SELECT credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 24);
+
+    await callbacks[0]();
+    assert.equal(capturedDuration, 8);
+  } finally {
     videoClient.callVideoApi = originalCallVideoApi;
     videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
     db.close();

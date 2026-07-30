@@ -137,7 +137,7 @@ function loadStoryboardVideoDefaults(db, storyboardId) {
   if (!db || !Number.isInteger(sid) || sid <= 0) return null;
   try {
     return db.prepare(
-      `SELECT s.video_prompt, s.video_model, e.drama_id
+      `SELECT s.video_prompt, s.video_model, s.duration, e.drama_id
        FROM storyboards s
        LEFT JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
        WHERE s.id = ? AND s.deleted_at IS NULL`
@@ -167,6 +167,27 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
   }
 }
 
+function normalizeVideoDuration(value, fallback = 5) {
+  const duration = value == null || value === '' ? Number(fallback) : Number(value);
+  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+    error.code = 'INVALID_VIDEO_DURATION';
+    throw error;
+  }
+  return duration;
+}
+
+function configuredVideoDuration(config) {
+  if (!config?.settings) return null;
+  try {
+    const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
+    const duration = Number(settings?.video_duration);
+    return Number.isSafeInteger(duration) && duration >= 5 && duration <= 15 ? duration : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function create(db, log, req, options = {}) {
   const body = req || {};
   const billingEnabled = Boolean(options.billingEnabled);
@@ -175,12 +196,25 @@ function create(db, log, req, options = {}) {
   const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
   const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
+  const selectedModel = body.model || storyboardDefaults?.video_model || null;
+  const videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
+  const storyboardDuration = Number(storyboardDefaults?.duration);
+  const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= 5 && storyboardDuration <= 15
+    ? storyboardDuration
+    : configuredVideoDuration(videoConfig) || 5;
+  const duration = normalizeVideoDuration(body.duration, fallbackDuration);
+
   const active = findActiveForStoryboard(db, storyboardId, {
     billingEnabled,
     userId: options.userId,
     tenantId: options.tenantId,
   });
   if (active) {
+    if (Number(active.duration) !== duration) {
+      const error = new Error(`该分镜已有 ${active.duration} 秒视频正在生成，请完成后再更改时长`);
+      error.code = 'VIDEO_GENERATION_ACTIVE';
+      throw error;
+    }
     if (billingEnabled) {
       auditEvent.record(db, {
         userId: options.userId,
@@ -195,16 +229,15 @@ function create(db, log, req, options = {}) {
     return { ...getById(db, active.id), reused: true };
   }
 
-  let billingModel = body.model || storyboardDefaults?.video_model || null;
+  let billingModel = selectedModel;
   let price = null;
   if (billingEnabled) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
     if (!billingModel) {
-      const config = videoClient.getDefaultVideoConfig(db, null);
-      billingModel = config?.default_model || config?.model || null;
+      billingModel = videoConfig?.default_model || videoConfig?.model || null;
     }
     billingModel = modelPrice.canonicalModel(billingModel);
-    price = modelPrice.requirePrice(db, billingModel);
+    price = modelPrice.calculateCharge(db, billingModel, { duration });
   }
 
   const persistedPrompt = storyboardId
@@ -225,7 +258,7 @@ function create(db, log, req, options = {}) {
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
     }
-    const model = body.model || storyboardDefaults?.video_model || null;
+    const model = selectedModel || videoConfig?.default_model || null;
     prompt = voicePrompt.appendVoiceAnchors({
       db,
       dramaId,
@@ -248,7 +281,7 @@ function create(db, log, req, options = {}) {
        image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, tenant_id, user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, body.duration ?? null,
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
@@ -268,11 +301,10 @@ function create(db, log, req, options = {}) {
         resourceType: 'video',
         resourceId: id,
       });
-      const duration = Number(body.duration);
       generationCost.record(db, {
         reservationId: reservation.id,
         model: billingModel,
-        quantity: Number.isFinite(duration) && duration > 0 ? duration : 1,
+        quantity: duration,
         usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
@@ -840,15 +872,7 @@ async function processVideoGeneration(db, log, videoGenId) {
         if (!Array.isArray(reference_urls)) reference_urls = null;
       } catch (_) {}
     }
-    // 优先使用分镜自身的镜头时长（storyboard.duration），其次用 video_generations.duration
-    let effectiveDuration = row.duration || null;
-    if (row.storyboard_id) {
-      const sb = db.prepare('SELECT duration FROM storyboards WHERE id = ?').get(row.storyboard_id);
-      if (sb && sb.duration > 0) {
-        effectiveDuration = sb.duration;
-        log.info('使用分镜镜头时长', { storyboard_id: row.storyboard_id, duration: effectiveDuration, video_gen_id: videoGenId });
-      }
-    }
+    const effectiveDuration = normalizeVideoDuration(row.duration, 5);
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);

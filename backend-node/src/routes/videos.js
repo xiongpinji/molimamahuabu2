@@ -39,6 +39,9 @@ function routes(db, log, options = {}) {
         if (err.code === 'UNSUPPORTED_BILLING_MODEL') {
           return response.badRequest(res, err.message);
         }
+        if (err.code === 'INVALID_VIDEO_DURATION' || err.code === 'VIDEO_GENERATION_ACTIVE') {
+          return response.badRequest(res, err.message);
+        }
         response.internalError(res, err.message);
       }
     },

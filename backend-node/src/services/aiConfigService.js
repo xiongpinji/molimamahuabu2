@@ -80,9 +80,56 @@ function getConfig(db, id) {
   return row ? rowToConfig(row) : null;
 }
 
+function parseVideoSettings(settings) {
+  let parsed;
+  try {
+    parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+  } catch (_) {
+    const error = new Error('视频模型设置格式无效');
+    error.code = 'INVALID_VIDEO_SETTINGS';
+    throw error;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const error = new Error('视频模型设置格式无效');
+    error.code = 'INVALID_VIDEO_SETTINGS';
+    throw error;
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'video_duration')) {
+    const duration = Number(parsed.video_duration);
+    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+      const error = new Error('视频默认时长必须是 5 到 15 秒之间的整数');
+      error.code = 'INVALID_VIDEO_DURATION';
+      throw error;
+    }
+    parsed.video_duration = duration;
+  }
+  return parsed;
+}
+
+function normalizeCreateSettings(serviceType, settings) {
+  if (serviceType !== 'video' || settings == null) return settings || null;
+  return JSON.stringify(parseVideoSettings(settings));
+}
+
+function mergeVideoSettings(existingSettings, incomingSettings) {
+  let existing = {};
+  try {
+    const parsed = typeof existingSettings === 'string' ? JSON.parse(existingSettings) : existingSettings;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
+  } catch (_) {}
+  const incoming = parseVideoSettings(incomingSettings);
+  for (const [key, value] of Object.entries(incoming)) {
+    if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase()) && (value == null || value === '')) continue;
+    existing[key] = value;
+  }
+  return JSON.stringify(parseVideoSettings(existing));
+}
+
 function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
+  const serviceType = req.service_type || 'text';
+  const settings = normalizeCreateSettings(serviceType, req.settings);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
   if (!endpoint && req.provider) {
@@ -145,7 +192,7 @@ function createConfig(db, log, req) {
     `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
   ).run(
-    req.service_type || 'text',
+    serviceType,
     req.provider || '',
     req.api_protocol || '',
     req.name || '',
@@ -157,7 +204,7 @@ function createConfig(db, log, req) {
     queryEndpoint,
     req.priority ?? 0,
     req.is_default ? 1 : 0,
-    req.settings || null,
+    settings,
     now,
     now
   );
@@ -215,7 +262,9 @@ function updateConfig(db, log, id, req) {
   }
   if (req.settings != null) {
     updates.push('settings = ?');
-    params.push(req.settings);
+    params.push(existing.service_type === 'video'
+      ? mergeVideoSettings(existing.settings, req.settings)
+      : req.settings);
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');

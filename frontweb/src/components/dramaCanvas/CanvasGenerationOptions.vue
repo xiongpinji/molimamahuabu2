@@ -64,8 +64,23 @@
       <el-option label="720p 高清" value="720p" />
       <el-option label="1080p 超清" value="1080p" />
     </el-select>
+    <el-select
+      v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
+      :model-value="Number(options.videoDuration || 5)"
+      size="small"
+      class="duration-select"
+      placeholder="时长"
+      @change="update('videoDuration', $event)"
+    >
+      <el-option
+        v-for="duration in VIDEO_DURATION_OPTIONS"
+        :key="duration"
+        :label="`${duration} 秒`"
+        :value="duration"
+      />
+    </el-select>
     <el-input-number
-      v-if="!modelsOnly && (mode === 'video' || mode === 'both' || mode === 'audio')"
+      v-else-if="!modelsOnly && mode === 'audio'"
       :model-value="Number(options.videoDuration || 5)"
       size="small"
       class="duration-input"
@@ -82,6 +97,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { aiAPI } from '@/api/ai'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
 
 const props = defineProps({
   mode: { type: String, default: 'both' },
@@ -163,6 +179,7 @@ onMounted(async () => {
 .generation-options :deep(.ratio-select) { width: 116px; }
 .generation-options :deep(.resolution-select) { width: 124px; }
 .generation-options :deep(.model-select) { width: 140px; }
+.generation-options :deep(.duration-select) { width: 104px; }
 .generation-options :deep(.duration-input) { width: 104px; }
 .options-hint {
   color: #52525b;
@@ -173,5 +190,6 @@ onMounted(async () => {
 .compact .options-label { color: #71717a; }
 .compact :deep(.el-select) { width: 112px; }
 .compact :deep(.model-select) { width: 128px; }
+.compact :deep(.duration-select) { width: 96px; }
 .compact :deep(.duration-input) { width: 96px; }
 </style>

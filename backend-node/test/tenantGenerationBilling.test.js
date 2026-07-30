@@ -69,12 +69,14 @@ test('图片、资产图和视频任务按租户隔离去重并只预扣租户�
     storyboard_id: 20,
     model: 'seedance 2.0',
     prompt: 'tenant video',
+    duration: 5,
   }, options('tenant-a'));
   const videoB = videoService.create(db, log, {
     drama_id: 1,
     storyboard_id: 20,
     model: 'seedance 2.0',
     prompt: 'tenant video',
+    duration: 5,
   }, options('tenant-b'));
 
   assert.notEqual(imageA.id, imageB.id);
@@ -89,10 +91,10 @@ test('图片、资产图和视频任务按租户隔离去重并只预扣租户�
     ['tenant-a', 'tenant-b'],
   );
   assert.deepEqual(credits.getTenantAccount(db, 'tenant-a'), {
-    tenant_id: 'tenant-a', available: 52, held: 48, spent: 0,
+    tenant_id: 'tenant-a', available: 4, held: 96, spent: 0,
   });
   assert.deepEqual(credits.getTenantAccount(db, 'tenant-b'), {
-    tenant_id: 'tenant-b', available: 52, held: 48, spent: 0,
+    tenant_id: 'tenant-b', available: 4, held: 96, spent: 0,
   });
   assert.deepEqual(credits.getAccount(db, 'user-1'), {
     user_id: 'user-1', available: 7, held: 0, spent: 0,

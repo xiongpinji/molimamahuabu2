@@ -61,6 +61,10 @@ function vendorLock(cfg) {
   };
 }
 
+function isVideoSettingsError(error) {
+  return error?.code === 'INVALID_VIDEO_DURATION' || error?.code === 'INVALID_VIDEO_SETTINGS';
+}
+
 function create(db, log, cfg) {
   return (req, res) => {
     if (aiConfigService.getVendorLockStatus(cfg).enabled) {
@@ -81,6 +85,7 @@ function create(db, log, cfg) {
       response.created(res, aiConfigService.toPublicConfig(config));
     } catch (err) {
       log.errorw('Create AI config failed', { error: err.message });
+      if (isVideoSettingsError(err)) return response.badRequest(res, err.message);
       response.internalError(res, '创建失败');
     }
   };
@@ -101,9 +106,14 @@ function update(db, log, cfg) {
       body = allowed;
     }
 
-    const config = aiConfigService.updateConfig(db, log, id, body);
-    if (!config) return response.notFound(res, '配置不存在');
-    response.success(res, aiConfigService.toPublicConfig(config));
+    try {
+      const config = aiConfigService.updateConfig(db, log, id, body);
+      if (!config) return response.notFound(res, '配置不存在');
+      response.success(res, aiConfigService.toPublicConfig(config));
+    } catch (err) {
+      if (isVideoSettingsError(err)) return response.badRequest(res, err.message);
+      throw err;
+    }
   };
 }
 

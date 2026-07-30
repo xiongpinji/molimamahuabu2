@@ -16,6 +16,18 @@ test('初始列出兼容模型且价格均未配置', () => {
   assert.equal(rows.every((row) => row.credits === null), true);
 });
 
+test('价格列表明确视频按秒计费且其他模型按次计费', () => {
+  const rows = prices.list(makeDb());
+  assert.deepEqual(
+    rows.map(({ model, billing_unit }) => ({ model, billing_unit })),
+    [
+      { model: 'GPT-5.5', billing_unit: 'request' },
+      { model: 'gpt-image-2', billing_unit: 'request' },
+      { model: 'seedance 2.0', billing_unit: 'second' },
+    ],
+  );
+});
+
 test('保存并读取整数积分价格', () => {
   const db = makeDb();
   prices.set(db, 'gpt-image-2', 18);
@@ -169,4 +181,19 @@ test('拒绝负数 API 成本', () => {
     () => prices.set(db, 'bad-model', 1, { cost_micros_per_unit: -1 }),
     (error) => error.code === 'INVALID_MODEL_PRICE',
   );
+});
+
+test('视频金额只接受 5 到 15 秒整数并按秒相乘', () => {
+  const db = makeDb();
+  prices.set(db, 'seedance 2.0', 3);
+  prices.set(db, 'grok-imagine-video', 2, { category: 'video' });
+  assert.equal(prices.calculateCharge(db, 'seedance 2.0', { duration: 8 }), 24);
+  assert.equal(prices.calculateCharge(db, 'grok-imagine-video', { duration: 8 }), 16);
+  assert.equal(prices.list(db).find((row) => row.model === 'grok-imagine-video')?.billing_unit, 'second');
+  for (const duration of [null, 4, 16, 7.5]) {
+    assert.throws(
+      () => prices.calculateCharge(db, 'seedance 2.0', { duration }),
+      (error) => error.code === 'INVALID_VIDEO_DURATION',
+    );
+  }
 });
