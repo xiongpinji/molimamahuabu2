@@ -103,6 +103,20 @@ function runProductionPreflight({ config, env = process.env, db }) {
   }
 
   try {
+    const sceneColumns = new Set(
+      db.prepare('PRAGMA table_info(scenes)').all().map((row) => String(row.name)),
+    );
+    addCheck(
+      checks,
+      'short_drama_schema',
+      sceneColumns.has('polished_prompt_single'),
+      '短剧工厂场景表必须包含单图润色提示词字段',
+    );
+  } catch {
+    addCheck(checks, 'short_drama_schema', false, '短剧工厂场景表结构无法读取');
+  }
+
+  try {
     const row = db.prepare(`SELECT COUNT(*) AS count
       FROM platform_users
       WHERE role = 'admin' AND status = 'active'`).get();

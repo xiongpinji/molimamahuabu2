@@ -122,3 +122,42 @@ test('chat stream accepts response output-text deltas without logging generated 
   assert.ok(entries.every((entry) => !Object.hasOwn(entry.fields || {}, 'text_preview')));
   assert.doesNotMatch(JSON.stringify(entries), /private generated content/);
 });
+
+test('chat stream surfaces a 200 SSE upstream error without retrying it as empty content', async (t) => {
+  let requests = 0;
+  const provider = http.createServer((_req, res) => {
+    requests += 1;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write([
+      `data: ${JSON.stringify({
+        choices: [{ delta: { role: 'assistant' }, finish_reason: null, index: 0 }],
+      })}`,
+      `data: ${JSON.stringify({
+        error: { type: 'upstream_error', message: 'Upstream request failed' },
+      })}`,
+      '',
+    ].join('\n\n'));
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.streamGenerateText(
+      db,
+      log,
+      'text',
+      'hello',
+      '',
+      { silence_timeout_ms: 200 },
+      () => {},
+    ),
+    (error) => {
+      assert.equal(error.code, 'AI_UPSTREAM_ERROR');
+      assert.match(error.message, /AI 上游服务错误.*Upstream request failed/);
+      return true;
+    },
+  );
+  assert.equal(requests, 1);
+});

@@ -1987,6 +1987,14 @@ function createAndGenerateImage(db, log, opts) {
   const dramaIdNum = Number(drama_id) || 0;
   const charIdNum = character_id != null ? Number(character_id) : null;
   const sceneIdNum = scene_id != null ? Number(scene_id) : null;
+  const selectedConfig = getDefaultImageConfig(db, model || null, null, 'image');
+  if (!model && !selectedConfig) {
+    const error = new Error('未配置可用的图片模型');
+    error.code = 'IMAGE_MODEL_NOT_CONFIGURED';
+    throw error;
+  }
+  const effectiveModel = selectedConfig ? getModelFromConfig(selectedConfig, model) : model;
+  const effectiveProvider = selectedConfig?.provider || provider || 'openai';
 
   let billedModel = null;
   let billedCredits = null;
@@ -1997,7 +2005,7 @@ function createAndGenerateImage(db, log, opts) {
       throw error;
     }
     const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(model || '');
+    billedModel = modelPriceService.canonicalModel(effectiveModel);
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
   const active = findActiveAssetImage(db, charIdNum, sceneIdNum, {
@@ -2027,14 +2035,16 @@ function createAndGenerateImage(db, log, opts) {
   const created = db.transaction(() => {
     const task = taskService.createTask(db, log, 'image_generation', resourceId);
     const taskId = task.id;
-    if (billingEnabled && tenantId) {
-      db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
-        .run(String(tenantId), String(userId), taskId);
+    if (billingEnabled) {
+      db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ?, model = ? WHERE id = ?')
+        .run(tenantId ? String(tenantId) : null, String(userId), effectiveModel, taskId);
+    } else {
+      db.prepare('UPDATE async_tasks SET model = ? WHERE id = ?').run(effectiveModel, taskId);
     }
     const billingColumns = billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, ?, NULL' : '';
     const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, effectiveProvider || 'openai', prompt || '', negRow, effectiveModel, size || null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(tenantId ? String(tenantId) : null, String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -2050,6 +2060,7 @@ function createAndGenerateImage(db, log, opts) {
         resourceId: String(imageGenId),
       });
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, imageGenId);
+      db.prepare('UPDATE async_tasks SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, taskId);
       auditEvent.record(db, {
         userId,
         tenantId,
@@ -2074,7 +2085,8 @@ function createAndGenerateImage(db, log, opts) {
         '正在等待图片生成服务...',
         () => runWithGenerationLimit('image', () => callImageApi(db, log, {
           prompt,
-          model,
+          model: effectiveModel,
+          preferred_provider: effectiveProvider || undefined,
           size,
           quality,
           drama_id: drama_id,

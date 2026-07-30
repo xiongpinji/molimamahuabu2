@@ -220,6 +220,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         || null;
       let eventCount = 0;
       let parseErrorCount = 0;
+      let upstreamError = null;
       const eventTypes = new Set();
       const contentShapes = new Set();
       resetSilenceTimer();
@@ -245,6 +246,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       };
 
       const processLine = (line) => {
+        if (upstreamError) return;
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith(':') || trimmed.startsWith('event:')) return;
         const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
@@ -256,6 +258,22 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
           if (evt.response?.usage) usage = evt.response.usage;
           responseId = responseId || evt.id || evt.response?.id || null;
           if (evt.type) eventTypes.add(String(evt.type));
+          if (evt.error && typeof evt.error === 'object') {
+            const errorType = String(evt.error.type || evt.error.code || 'upstream_error')
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .trim()
+              .slice(0, 120);
+            const errorMessage = String(evt.error.message || '上游服务返回错误')
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .trim()
+              .slice(0, 500);
+            upstreamError = new Error(`AI 上游服务错误（${errorType}）：${errorMessage}`);
+            upstreamError.code = 'AI_UPSTREAM_ERROR';
+            clearTimeout(silenceTimer);
+            reject(upstreamError);
+            res.destroy();
+            return;
+          }
           const extracted = extractStreamEventText(evt);
           if (extracted.shape) contentShapes.add(extracted.shape);
           appendText(extracted.text, extracted.mode);
@@ -276,6 +294,10 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       res.on('end', () => {
         clearTimeout(silenceTimer);
         if (sseBuffer.trim()) processLine(sseBuffer);
+        if (upstreamError) {
+          reject(upstreamError);
+          return;
+        }
         if (!accumulated && reasoningFallback) appendText(reasoningFallback, 'snapshot');
         resolve({
           status: statusCode,
