@@ -97,6 +97,47 @@ function readDatabase(callback) {
   }
 }
 
+function configureReferenceImageCapability() {
+  const db = new Database(databasePath)
+  try {
+    const now = new Date().toISOString()
+    db.prepare(
+      `INSERT INTO ai_service_configs
+        (service_type, provider, api_protocol, name, base_url, api_key, model,
+         default_model, endpoint, priority, is_default, is_active, settings,
+         created_at, updated_at)
+       VALUES
+        ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
+         '/videos', 100, 1, 1, ?, ?, ?)`,
+    ).run(
+      'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
+      realAihubccBaseUrl || 'https://example.invalid/v1',
+      realAihubccApiKey || 'e2e-capability-only-key',
+      JSON.stringify([realAihubccModel || 'gpt-image-2-3.5k']),
+      realAihubccModel || 'gpt-image-2-3.5k',
+      JSON.stringify({
+        supports_upscale: true,
+        supports_detail_enhance: true,
+        supports_outpaint: true,
+        supports_markup_retouch: true,
+        supports_panorama: true,
+        supports_panorama_scene: true,
+        supports_image_ideation: true,
+        supports_angle_ideation: true,
+        supports_character_views: true,
+        supports_narrative_grid: true,
+        supports_frame_forward: true,
+        supports_frame_backward: true,
+        supports_cinematic_relight: true,
+      }),
+      now,
+      now,
+    )
+  } finally {
+    db.close()
+  }
+}
+
 function resetImageNodeToSource() {
   const db = new Database(databasePath)
   try {
@@ -255,40 +296,6 @@ test.beforeAll(async () => {
     }
     db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(metadata), now, dramaId)
-    if (realAihubccEnabled) {
-      db.prepare(
-        `INSERT INTO ai_service_configs
-          (service_type, provider, api_protocol, name, base_url, api_key, model,
-           default_model, endpoint, priority, is_default, is_active, settings,
-           created_at, updated_at)
-         VALUES
-          ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
-           '/videos', 100, 1, 1, ?, ?, ?)`,
-      ).run(
-        'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
-        realAihubccBaseUrl,
-        realAihubccApiKey,
-        JSON.stringify([realAihubccModel]),
-        realAihubccModel,
-        JSON.stringify({
-          supports_upscale: true,
-          supports_detail_enhance: true,
-          supports_outpaint: true,
-          supports_markup_retouch: true,
-          supports_panorama: true,
-          supports_panorama_scene: true,
-          supports_image_ideation: true,
-          supports_angle_ideation: true,
-          supports_character_views: true,
-          supports_narrative_grid: true,
-          supports_frame_forward: true,
-          supports_frame_backward: true,
-          supports_cinematic_relight: true,
-        }),
-        now,
-        now,
-      )
-    }
   } finally {
     db.close()
   }
@@ -627,6 +634,80 @@ test('宫格裁剪选择指定区域并真实生成对应数量素材', async ({
     ],
   })
   await expect(node.locator('img')).toHaveAttribute('src', sourceUrl)
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('article.home-canvas-node')).toHaveCount(nodeCountBefore + 2)
+  await expect(page.locator(`.vue-flow__node[data-id="${nodeId}"] img`)).toHaveAttribute('src', sourceUrl)
+})
+
+test('专业调色、LUT 最近项与专业设定具有可操作交互', async ({ page }) => {
+  configureReferenceImageCapability()
+  await proxyBackend(page)
+  await page.goto(`/canvas/${dramaId}`)
+  const node = page.locator(`.vue-flow__node[data-id="${nodeId}"]`)
+  const sourceUrl = await node.locator('img').getAttribute('src')
+  const nodeCountBefore = await page.locator('article.home-canvas-node').count()
+  await node.click()
+  let toolbar = node.locator('.image-node-toolbar')
+
+  await toolbar.getByRole('button', { name: /工具/ }).hover()
+  await toolbar.getByRole('button', { name: '图片调整', exact: true }).click()
+  let dialog = page.getByRole('dialog', { name: '图片调整' })
+  await expect(dialog.getByText('RGB 曲线')).toBeVisible()
+  await dialog.getByRole('button', { name: '添加控制点' }).click()
+  await expect(dialog.getByText('控制点 2')).toBeVisible()
+  await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
+  await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible()
+  await expect(page.locator('article.home-canvas-node')).toHaveCount(nodeCountBefore + 1)
+  await expect(node.locator('img')).toHaveAttribute('src', sourceUrl)
+
+  await node.click()
+  toolbar = node.locator('.image-node-toolbar')
+  await toolbar.getByRole('button', { name: /工具/ }).hover()
+  await toolbar.getByRole('button', { name: 'LUT 调色', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: 'LUT 调色' })
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: 'identity-2.cube',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n'),
+  })
+  await dialog.getByRole('button', { name: '最近使用' }).click()
+  await expect(dialog.getByRole('button', { name: /identity-2\.cube/ })).toBeVisible()
+  await dialog.getByRole('button', { name: '应用并生成新素材' }).click()
+  await expect(page.getByText('图片处理完成，已生成新素材')).toBeVisible()
+  await expect(page.locator('article.home-canvas-node')).toHaveCount(nodeCountBefore + 2)
+  await expect(node.locator('img')).toHaveAttribute('src', sourceUrl)
+
+  await node.click()
+  toolbar = node.locator('.image-node-toolbar')
+  await toolbar.getByRole('button', { name: /设定/ }).hover()
+  await toolbar.getByRole('button', { name: '背景重构', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '背景重构' })
+  await expect(dialog.getByRole('textbox')).toHaveValue(/重新构建完整且透视一致的背景环境/)
+  await dialog.getByRole('button', { name: '取消' }).click()
+
+  await node.click()
+  toolbar = node.locator('.image-node-toolbar')
+  await toolbar.getByRole('button', { name: /设定/ }).hover()
+  await toolbar.getByRole('button', { name: '全景镜头扩张', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '全景镜头扩张' })
+  await expect(dialog.getByRole('textbox')).toHaveValue(/扩展为自然的超广角全景镜头画面/)
+  await dialog.getByRole('button', { name: '取消' }).click()
+
+  await node.click()
+  toolbar = node.locator('.image-node-toolbar')
+  await toolbar.getByRole('button', { name: /设定/ }).hover()
+  await toolbar.getByRole('button', { name: '氛围重塑', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '氛围重塑' })
+  await expect(dialog.getByRole('textbox')).toHaveValue(/重塑环境光、空气透视与整体氛围/)
+  await dialog.getByRole('button', { name: '取消' }).click()
+
+  await node.click()
+  toolbar = node.locator('.image-node-toolbar')
+  await toolbar.getByRole('button', { name: /工具/ }).hover()
+  await toolbar.getByRole('button', { name: '画面联想', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '画面联想' })
+  await expect(dialog.getByRole('textbox')).toHaveValue('')
+  await dialog.getByRole('button', { name: '取消' }).click()
   await page.reload({ waitUntil: 'networkidle' })
   await expect(page.locator('article.home-canvas-node')).toHaveCount(nodeCountBefore + 2)
   await expect(page.locator(`.vue-flow__node[data-id="${nodeId}"] img`)).toHaveAttribute('src', sourceUrl)

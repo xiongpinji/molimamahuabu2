@@ -2994,6 +2994,22 @@ test('图片调整保存完整参数并通过 CPU 生成差异素材', async (t)
     fs.readFileSync(sourcePath).toString('base64'),
   );
 
+  const invalidCurveRes = responseRecorder();
+  await handlers.createOperation({
+    body: {
+      assetId: sourceAsset.id,
+      sourceNodeId: 'image-node-invalid-curve',
+      operation: 'adjust',
+      parameters: {
+        curves: {
+          rgb: [[0.1, 0], [0.9, 1]],
+        },
+      },
+    },
+  }, invalidCurveRes);
+  assert.equal(invalidCurveRes.statusCode, 400);
+  assert.match(invalidCurveRes.payload.error.message, /curves\.rgb/);
+
   const presetLutRes = responseRecorder();
   await handlers.createOperation({
     body: {

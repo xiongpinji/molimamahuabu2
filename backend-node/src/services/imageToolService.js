@@ -2655,6 +2655,10 @@ async function runGridCrop(sourcePath, parameters) {
   const rows = requireInteger(parameters.rows, 'rows', 1);
   const columns = requireInteger(parameters.columns, 'columns', 1);
   const spacing = requireInteger(parameters.spacing ?? 0, 'spacing', 0);
+  if (parameters.snap !== undefined && typeof parameters.snap !== 'boolean') {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'snap 参数必须是布尔值');
+  }
+  const snap = parameters.snap !== false;
   if (rows * columns > 49) fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过 49');
   if (rows > metadata.height || columns > metadata.width) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过图片像素尺寸');
@@ -2694,11 +2698,12 @@ async function runGridCrop(sourcePath, parameters) {
   const spacingBefore = Math.floor(spacing / 2);
   const spacingAfter = spacing - spacingBefore;
   for (let row = 0; row < rows; row += 1) {
-    const cellTop = Math.floor((row * metadata.height) / rows);
-    const cellBottom = Math.floor(((row + 1) * metadata.height) / rows);
+    const align = snap ? Math.floor : Math.round;
+    const cellTop = align((row * metadata.height) / rows);
+    const cellBottom = align(((row + 1) * metadata.height) / rows);
     for (let column = 0; column < columns; column += 1) {
-      const cellLeft = Math.floor((column * metadata.width) / columns);
-      const cellRight = Math.floor(((column + 1) * metadata.width) / columns);
+      const cellLeft = align((column * metadata.width) / columns);
+      const cellRight = align(((column + 1) * metadata.width) / columns);
       const key = `${row}:${column}`;
       if (!selectedCellKeys.has(key)) continue;
       const cell = {
@@ -2716,7 +2721,7 @@ async function runGridCrop(sourcePath, parameters) {
   return {
     metadata,
     format,
-    normalized: { rows, columns, spacing, selectedCells, duplicateCells },
+    normalized: { rows, columns, spacing, snap, selectedCells, duplicateCells },
     cells,
   };
 }
@@ -2728,6 +2733,9 @@ async function runAdjust(sourcePath, parameters) {
   if (!format || !metadata.width || !metadata.height) {
     fail('IMAGE_TOOL_UNSUPPORTED_IMAGE', '仅支持 PNG、JPEG 和 WebP 图片');
   }
+  if (metadata.width * metadata.height > 16_000_000) {
+    fail('IMAGE_TOOL_INVALID_INPUT', '图片调整最大支持 1600 万像素');
+  }
   const curves = parameters.curves ?? {};
   const normalizedCurves = {};
   for (const channel of ['rgb', 'red', 'green', 'blue']) {
@@ -2735,6 +2743,9 @@ async function runAdjust(sourcePath, parameters) {
     if (
       !Array.isArray(points)
       || points.length < 2
+      || points.length > 16
+      || points[0]?.[0] !== 0
+      || points.at(-1)?.[0] !== 1
       || points.some((point) => (
         !Array.isArray(point)
         || point.length !== 2
@@ -2779,7 +2790,8 @@ function buildCurveLookup(points) {
   return Uint8Array.from({ length: 256 }, (_, index) => {
     const input = index / 255;
     const rightIndex = points.findIndex((point) => point[0] >= input);
-    if (rightIndex <= 0) return Math.round(points[0][1] * 255);
+    if (rightIndex < 0) return Math.round(points.at(-1)[1] * 255);
+    if (rightIndex === 0) return Math.round(points[0][1] * 255);
     const left = points[rightIndex - 1];
     const right = points[rightIndex];
     const progress = (input - left[0]) / (right[0] - left[0]);
@@ -2787,15 +2799,26 @@ function buildCurveLookup(points) {
   });
 }
 
-async function applyRgbCurves(pipeline, curves) {
+async function applyRgbCurves(pipeline, curves, tones) {
   const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const lookups = Object.fromEntries(
     Object.entries(curves).map(([channel, points]) => [channel, buildCurveLookup(points)]),
   );
   for (let index = 0; index < data.length; index += info.channels) {
-    data[index] = lookups.red[lookups.rgb[data[index]]];
-    data[index + 1] = lookups.green[lookups.rgb[data[index + 1]]];
-    data[index + 2] = lookups.blue[lookups.rgb[data[index + 2]]];
+    const luminance = (
+      (data[index] * 0.2126)
+      + (data[index + 1] * 0.7152)
+      + (data[index + 2] * 0.0722)
+    ) / 255;
+    const tonalDelta = 64 * (
+      (tones.highlights * luminance ** 2)
+      + (tones.shadows * (1 - luminance) ** 2)
+      + (tones.whites * luminance ** 4)
+      + (tones.blacks * (1 - luminance) ** 4)
+    );
+    data[index] = lookups.red[lookups.rgb[Math.max(0, Math.min(255, Math.round(data[index] + tonalDelta)))]];
+    data[index + 1] = lookups.green[lookups.rgb[Math.max(0, Math.min(255, Math.round(data[index + 1] + tonalDelta)))]];
+    data[index + 2] = lookups.blue[lookups.rgb[Math.max(0, Math.min(255, Math.round(data[index + 2] + tonalDelta)))]];
   }
   return sharp(data, { raw: info });
 }
@@ -3576,14 +3599,7 @@ async function createOperation(db, log, request, context = {}) {
       const redGain = 1 + (prepared.normalized.temperature * 0.15);
       const blueGain = 1 - (prepared.normalized.temperature * 0.15);
       const greenGain = 1 + (prepared.normalized.tint * 0.12);
-      const toneBrightness = 1
-        + (prepared.normalized.highlights * 0.08)
-        + (prepared.normalized.shadows * 0.12)
-        + (prepared.normalized.whites * 0.08)
-        + (prepared.normalized.blacks * 0.08);
-      const brightness = prepared.normalized.brightness
-        * (2 ** prepared.normalized.exposure)
-        * toneBrightness;
+      const brightness = prepared.normalized.brightness * (2 ** prepared.normalized.exposure);
       const saturation = prepared.normalized.saturation * prepared.normalized.vibrance;
       const toneContrast = Math.max(0.1, prepared.normalized.contrast
         + ((prepared.normalized.whites - prepared.normalized.blacks) * 0.08));
@@ -3602,7 +3618,7 @@ async function createOperation(db, log, request, context = {}) {
           [0, greenGain, 0],
           [0, 0, blueGain],
         ]);
-      pipeline = await applyRgbCurves(pipeline, prepared.normalized.curves);
+      pipeline = await applyRgbCurves(pipeline, prepared.normalized.curves, prepared.normalized);
       const detailAmount = Math.max(
         prepared.normalized.sharpness,
         prepared.normalized.clarity,
@@ -3636,11 +3652,12 @@ async function createOperation(db, log, request, context = {}) {
         const softened = await prepared.source.clone()
           .blur(1 + (prepared.normalized.glow * 5))
           .modulate({ brightness: 1 + (prepared.normalized.glow * 0.25) })
+          .removeAlpha()
+          .ensureAlpha(Math.max(prepared.normalized.softLight, prepared.normalized.glow))
           .toBuffer();
         pipeline = pipeline.composite([{
           input: softened,
           blend: prepared.normalized.glow >= prepared.normalized.softLight ? 'screen' : 'soft-light',
-          opacity: Math.max(prepared.normalized.softLight, prepared.normalized.glow),
         }]);
       }
       if (prepared.normalized.vignette > 0) {

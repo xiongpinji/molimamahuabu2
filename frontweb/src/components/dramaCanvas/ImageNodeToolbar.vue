@@ -670,7 +670,7 @@
             </div>
             <div v-for="(point, index) in adjustCurves[curveChannel].slice(1, -1)" :key="`${curveChannel}-${index}`" class="curve-point-row">
               <span>控制点 {{ index + 1 }}</span>
-              <el-slider v-model="point[0]" :min="0.05" :max="0.95" :step="0.01" />
+              <el-slider v-model="point[0]" :min="curvePointMin(curveChannel, index + 1)" :max="curvePointMax(curveChannel, index + 1)" :step="0.01" />
               <el-slider v-model="point[1]" :min="0" :max="1" :step="0.01" />
               <el-button size="small" @click="removeCurvePoint(curveChannel, index + 1)">删除</el-button>
             </div>
@@ -1219,7 +1219,21 @@ function selectOperation(item) {
   }
   editorOperation.value = item.operation
   editorVariantLabel.value = item.variant ? item.label : ''
-  if (item.variant === 'panorama_lens') {
+  if (!item.variant && item.operation === 'outpaint') {
+    outpaintForm.value = {
+      aspectRatio: '16:9',
+      direction: 'auto',
+      top: 25,
+      bottom: 25,
+      left: 25,
+      right: 25,
+      prompt: '',
+    }
+  } else if (!item.variant && REFERENCE_VARIATION_OPERATIONS.includes(item.operation)) {
+    referenceVariationDescription.value = ''
+  } else if (!item.variant && item.operation === 'cinematic_relight') {
+    relightForm.value = { preset: 'cinematic', intensity: 3, description: '' }
+  } else if (item.variant === 'panorama_lens') {
     outpaintForm.value = {
       ...outpaintForm.value,
       aspectRatio: '2:1',
@@ -1566,14 +1580,61 @@ function duplicateGridSelection() {
   gridDuplicateCells.value = [...gridSelectedCells.value]
 }
 
-function redetectGrid() {
-  const width = Number(props.data.width) || 1
-  const height = Number(props.data.height) || 1
-  const ratio = width / height
-  const columns = Math.min(7, Math.max(2, Math.round(3 * Math.sqrt(ratio))))
-  const rows = Math.min(7, Math.max(2, Math.round(3 / Math.sqrt(ratio))))
-  gridForm.value = { ...gridForm.value, rows, columns }
-  resetGridSelection()
+async function redetectGrid() {
+  try {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    await new Promise((resolve, reject) => {
+      image.onload = resolve
+      image.onerror = reject
+      image.src = props.data.url
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = 128
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const gray = (x, y) => {
+      const offset = ((y * canvas.width) + x) * 4
+      return (pixels[offset] * 0.2126) + (pixels[offset + 1] * 0.7152) + (pixels[offset + 2] * 0.0722)
+    }
+    const edgeProjection = (vertical) => Array.from(
+      { length: (vertical ? canvas.width : canvas.height) - 1 },
+      (_, position) => {
+        let total = 0
+        const crossSize = vertical ? canvas.height : canvas.width
+        for (let cross = 0; cross < crossSize; cross += 1) {
+          total += Math.abs(vertical
+            ? gray(position + 1, cross) - gray(position, cross)
+            : gray(cross, position + 1) - gray(cross, position))
+        }
+        return total / crossSize
+      },
+    )
+    const boundaryCount = (projection) => {
+      const mean = projection.reduce((sum, value) => sum + value, 0) / projection.length
+      const deviation = Math.sqrt(projection.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / projection.length)
+      const peaks = projection
+        .map((value, index) => ({ value, index }))
+        .filter(({ value, index }) => value > mean + deviation && index > 8 && index < 118)
+        .sort((a, b) => b.value - a.value)
+        .reduce((accepted, peak) => (
+          accepted.some((item) => Math.abs(item.index - peak.index) < 8)
+            ? accepted
+            : [...accepted, peak]
+        ), [])
+      return Math.min(7, Math.max(2, peaks.slice(0, 6).length + 1))
+    }
+    gridForm.value = {
+      ...gridForm.value,
+      columns: boundaryCount(edgeProjection(true)),
+      rows: boundaryCount(edgeProjection(false)),
+    }
+    resetGridSelection()
+  } catch {
+    ElMessage.warning('未能读取图像内容，请使用自定义行列')
+  }
 }
 
 function toggleGridCell(key) {
@@ -1691,6 +1752,14 @@ function removeCurvePoint(channel, index) {
   if (index > 0 && index < adjustCurves.value[channel].length - 1) {
     adjustCurves.value[channel].splice(index, 1)
   }
+}
+
+function curvePointMin(channel, index) {
+  return Math.min(0.95, adjustCurves.value[channel][index - 1][0] + 0.01)
+}
+
+function curvePointMax(channel, index) {
+  return Math.max(0.05, adjustCurves.value[channel][index + 1][0] - 0.01)
 }
 
 function resetLutForm() {
