@@ -284,6 +284,7 @@
           'edge-focus-only': canvasPreferences.edge_focus_only,
           'linked-preview-hidden': !canvasPreferences.linked_preview_enabled,
           'minimal-zoom': canvasPreferences.minimal_zoom_enabled && currentViewport.zoom < 0.45,
+          'standalone-group-selected': isStandaloneCanvas && allGraphNodes.some((node) => node.type === 'canvasGroup' && node.selected),
         }"
         :style="canvasVisualStyle"
         @pointerdown.capture="onCanvasPointerDown"
@@ -643,6 +644,7 @@ import {
   buildCanvasLayoutPayload,
   parseCanvasLayout,
   parseDramaMetadata,
+  resizeCanvasGroupsAroundMember,
   resolveViewport,
   translateCanvasGroupChildren,
 } from '@/utils/canvasLayout'
@@ -6333,6 +6335,16 @@ function onNodeDragStop() {
       currentGroup.position,
     )
     applyVirtualizedGraph()
+  } else if (node?.type === 'homeCanvasNode') {
+    const resizedNodes = resizeCanvasGroupsAroundMember(
+      allGraphNodes.value,
+      node.id,
+      canvasPreferences.value.group_padding,
+    )
+    if (resizedNodes !== allGraphNodes.value) {
+      allGraphNodes.value = resizedNodes
+      applyVirtualizedGraph()
+    }
   }
   draggedGroupSnapshot = null
   alignmentGuide.value = { x: null, y: null }
@@ -7448,6 +7460,12 @@ onBeforeUnmount(() => {
 
 .canvas-main.space-panning :deep(.vue-flow__pane:active) {
   cursor: grabbing;
+}
+.canvas-main.standalone-group-selected :deep(.vue-flow__nodesselection-rect) {
+  pointer-events: none;
+}
+.canvas-main.standalone-group-selected :deep(.vue-flow__node[data-id^="canvas-group:"]) {
+  z-index: -1 !important;
 }
 
 .vue-flow-canvas {
