@@ -38,6 +38,9 @@ export const dramaAPI = {
   getStoryboards(episodeId) {
     return request.get(`/episodes/${episodeId}/storyboards`)
   },
+  rematchStoryboardAssets(episodeId) {
+    return request.post(`/episodes/${episodeId}/storyboards/rematch-assets`)
+  },
   generateStoryboard(episodeId, options) {
     // 兼容旧调用方式: generateStoryboard(episodeId, model, style)
     let body = {};

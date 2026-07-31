@@ -2,7 +2,7 @@
 const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
-const { syncStoryboardCharacters } = require('./imageService');
+const storyboardAssetMatcher = require('./storyboard-asset-matcher');
 const safeJson = require('../utils/safeJson');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = safeJson;
 const loadConfig = require('../config').loadConfig;
@@ -201,6 +201,23 @@ function getStoryboardsForEpisode(db, episodeId) {
       'SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC, id ASC'
     ).all(episodeId)
   );
+  const propIdsByStoryboard = new Map();
+  if (rows.length > 0) {
+    try {
+      const placeholders = rows.map(() => '?').join(',');
+      const propRows = db.prepare(
+        `SELECT storyboard_id, prop_id FROM storyboard_props
+         WHERE storyboard_id IN (${placeholders})
+         ORDER BY prop_id ASC`
+      ).all(...rows.map((row) => row.id));
+      for (const propRow of propRows) {
+        if (!propIdsByStoryboard.has(propRow.storyboard_id)) {
+          propIdsByStoryboard.set(propRow.storyboard_id, []);
+        }
+        propIdsByStoryboard.get(propRow.storyboard_id).push(propRow.prop_id);
+      }
+    } catch (_) {}
+  }
   return rows.map((r) => {
     let background = null;
     if (r.scene_id != null) {
@@ -242,6 +259,7 @@ function getStoryboardsForEpisode(db, episodeId) {
         if (typeof r.characters !== 'string') return Array.isArray(r.characters) ? r.characters : [];
         try { return JSON.parse(r.characters); } catch (_) { return []; }
       })(),
+      prop_ids: propIdsByStoryboard.get(r.id) || [],
       composed_image: r.composed_image,
       video_url: r.video_url,
       audio_local_path: r.audio_local_path ?? null,
@@ -1076,16 +1094,17 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     // 传入 streamSavedNums：已增量保存的项目直接从 DB 读取，跳过重复 INSERT
     const saved = saveStoryboards(db, log, episodeId, storyboards, cfg, style, streamSavedNums, deriveOpts);
 
-    // ── 分镜角色补全（字符串匹配，无 AI，极快）──────────────────────────────────
-    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
-    let totalCharAdded = 0;
-    for (const sb of saved) {
-      if (!sb?.id) continue;
-      const { added } = syncStoryboardCharacters(db, log, sb.id);
-      totalCharAdded += added.length;
-    }
-    if (totalCharAdded > 0) {
-      log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
+    // ── 统一校验并补全角色、场景和物品关联（确定性文本匹配，不调用 AI）──────────────
+    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜资产关联...');
+    let finalSaved = saved;
+    try {
+      storyboardAssetMatcher.rematchEpisodeAssets(db, log, episodeId);
+      finalSaved = getStoryboardsForEpisode(db, episodeId);
+    } catch (assetMatchError) {
+      log.warn('[分镜资产匹配] 生成后匹配失败，保留 AI 原始关联', {
+        episode_id: episodeId,
+        error: assetMatchError.message,
+      });
     }
 
     taskService.updateTaskStatus(db, taskId, 'processing', 90, '正在更新剧集时长...');
@@ -1095,8 +1114,8 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     log.info('Episode duration updated', { episode_id: episodeId, duration_seconds: totalDuration, duration_minutes: durationMinutes });
 
     const resultData = {
-      storyboards: saved,
-      total: saved.length,
+      storyboards: finalSaved,
+      total: finalSaved.length,
       total_duration: totalDuration,
       duration_minutes: durationMinutes,
       truncated: parseMeta.truncated || false,

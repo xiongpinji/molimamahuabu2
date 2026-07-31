@@ -887,6 +887,16 @@
             <ElButton type="info" plain size="large" @click="onAddSingleStoryboard">
             添加一个分镜
             </ElButton>
+            <el-button
+              type="warning"
+              plain
+              size="large"
+              :loading="storyboardAssetRematching"
+              :disabled="!currentEpisodeId || !storyboards.length || storyboardGenerating || storyboardAssetRematching"
+              @click="onForceMatchStoryboardAssets"
+            >
+              强制匹配场景/角色/物品
+            </el-button>
           </div>
           <template v-if="storyboards.length > 0">
             <div class="sb-batch-right">
@@ -2973,6 +2983,7 @@ const currentEpisodeVideoUrl = computed(() => {
 const storyboardGenerating = computed(() =>
   isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
 )
+const storyboardAssetRematching = ref(false)
 /** 分镜批量生成结束后，按镜序逐个润色全能片段（仅勾选全能模式且各镜为 universal 且有正文时） */
 const universalOmniPolishRunning = ref(false)
 const universalOmniPolishAbort = ref(false)
@@ -7191,6 +7202,33 @@ async function refreshStoryboardsForEpisode(episodeId) {
 /** @deprecated 使用 refreshStoryboardsForEpisode */
 async function refreshStoryboardsOnly() {
   return refreshStoryboardsForEpisode(currentEpisodeId.value)
+}
+
+async function onForceMatchStoryboardAssets() {
+  const epId = currentEpisodeId.value
+  if (!epId || !storyboards.value.length) return
+  try {
+    await ElMessageBox.confirm(
+      '将根据当前集分镜的地点、动作、对白、描述和提示词，重新校验场景、角色和物品关联。仍有效的人工选择会保留，失效关联会迁移或移除。',
+      '强制匹配分镜资产',
+      { confirmButtonText: '开始匹配', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (_) {
+    return
+  }
+  storyboardAssetRematching.value = true
+  try {
+    const result = await dramaAPI.rematchStoryboardAssets(epId)
+    await loadDrama()
+    ElMessage.success(
+      `匹配完成：检查 ${result?.total || 0} 镜，更新 ${result?.updated || 0} 镜；`
+      + `角色 ${result?.character_links || 0}、场景 ${result?.scene_links || 0}、物品 ${result?.prop_links || 0} 个关联`
+    )
+  } catch (e) {
+    ElMessage.error(e.message || '强制匹配失败')
+  } finally {
+    storyboardAssetRematching.value = false
+  }
 }
 
 async function onGenerateStoryboard() {
