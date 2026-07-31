@@ -22,6 +22,7 @@ const imageToolRoutes = require('./imageTools');
 const audioRoutes = require('./audio');
 const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
+const scriptAnalysisRoutes = require('./scriptAnalysis');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
 const sceneModelMapRoutes = require('./sceneModelMap');
@@ -192,7 +193,18 @@ function setupRouter(cfg, db, log) {
   const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
+  const scriptAnalysis = scriptAnalysisRoutes(db, log);
   r.get('/voice-catalog', voiceCatalog.list);
+
+  // ---------- script analysis ----------
+  r.get('/script-analysis/projects', scriptAnalysis.list);
+  r.post('/script-analysis/projects', scriptAnalysis.create);
+  r.get('/script-analysis/projects/:id', scriptAnalysis.get);
+  r.get('/script-analysis/projects/:id/versions', scriptAnalysis.versions);
+  r.put('/script-analysis/projects/:id', scriptAnalysis.update);
+  r.post('/script-analysis/projects/:id/revisions', scriptAnalysis.revise);
+  r.post('/script-analysis/projects/:id/review', scriptAnalysis.review);
+  r.post('/script-analysis/projects/:id/run', scriptAnalysis.run);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);

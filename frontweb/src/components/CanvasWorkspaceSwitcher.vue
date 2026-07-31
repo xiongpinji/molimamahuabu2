@@ -36,6 +36,11 @@
           自由创作
           <span v-if="isActive('free-create')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
         </el-dropdown-item>
+        <el-dropdown-item command="/script-analysis">
+          <el-icon><Document /></el-icon>
+          剧本分析
+          <span v-if="isActive('script-analysis')" class="canvas-workspace-menu__current" aria-label="当前页面">当前</span>
+        </el-dropdown-item>
         <el-dropdown-item command="/media-library">
           <el-icon><Files /></el-icon>
           媒体素材库
@@ -54,7 +59,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Files, Grid, List, MagicStick, Plus } from '@element-plus/icons-vue'
+import { ArrowDown, Document, Files, Grid, List, MagicStick, Plus } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
