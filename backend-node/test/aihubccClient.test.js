@@ -102,6 +102,19 @@ test('lingjing video body uses ratio and ordered reference_images', () => {
   });
 });
 
+test('lingjing video body advances unsupported durations to the next supported value', () => {
+  assert.equal(client.buildVideoBody({
+    model: 'lingjing-video-v1',
+    prompt: 'nine seconds',
+    duration: 9,
+  }).duration, 10);
+  assert.equal(client.buildVideoBody({
+    model: 'lingjing-video-v1',
+    prompt: 'twelve seconds',
+    duration: 12,
+  }).duration, 15);
+});
+
 
 test('AIHubCC Flow video relies on model name for duration and aspect ratio', () => {
   const flow = client.buildVideoBody({

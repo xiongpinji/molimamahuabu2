@@ -363,12 +363,12 @@
             <el-option label="21:9 宽银幕" value="21:9" />
           </el-select>
           <el-select v-model="videoClipDuration" style="width: 105px" @change="() => saveProjectSettings(false)">
-            <el-option label="4秒/段" :value="4" />
-            <el-option label="5秒/段" :value="5" />
-            <el-option label="8秒/段" :value="8" />
-            <el-option label="10秒/段" :value="10" />
-            <el-option label="12秒/段" :value="12" />
-            <el-option label="15秒/段" :value="15" />
+            <el-option
+              v-for="duration in getProjectVideoDurationOptions()"
+              :key="duration"
+              :label="`${duration}秒/段`"
+              :value="duration"
+            />
           </el-select>
           <el-select v-model="scriptLanguage" placeholder="分镜语言" clearable style="width: 105px">
             <el-option label="中文" value="zh" />
@@ -2518,7 +2518,14 @@
         <el-row :gutter="12">
           <el-col :span="6">
             <el-form-item label="时长(秒)">
-              <el-input-number v-model="sbDuration[videoParamsTarget.id]" :min="1" :max="60" style="width:100%" />
+              <el-select v-model="sbDuration[videoParamsTarget.id]" style="width:100%">
+                <el-option
+                  v-for="duration in getStoryboardVideoDurationOptions(videoParamsTarget)"
+                  :key="duration"
+                  :label="`${duration} 秒`"
+                  :value="duration"
+                />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="6">
@@ -2829,6 +2836,7 @@ import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { supportsMultiImageVideoReferences } from '@/utils/videoModelReferenceCapabilities'
+import { getSupportedVideoDurationsForModel, normalizeVideoDurationForModel } from '@/utils/videoModelDurationCapabilities'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 import {
@@ -4847,6 +4855,7 @@ async function loadDrama() {
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
+    normalizeProjectVideoDuration()
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
@@ -6105,24 +6114,19 @@ async function onSaveUniversalSegmentField(sb) {
 }
 
 function universalSegmentDurationSecForSb(sb) {
-  const dUi = Number(sbDuration.value[sb?.id])
-  const dRow = Number(sb?.duration)
-  const dProj = Number(videoClipDuration.value)
-  return Number.isFinite(dUi) && dUi > 0
-    ? dUi
-    : Number.isFinite(dRow) && dRow > 0
-      ? dRow
-      : Number.isFinite(dProj) && dProj > 0
-        ? dProj
-        : 5
+  return getSbVideoDurationForApi(sb) || 5
 }
 
 /** 提交视频 API 时使用的时长：优先本分镜配置，其次项目「每段秒数」 */
 function getSbVideoDurationForApi(sb) {
   const perSb = Number(sbDuration.value[sb?.id] ?? sb?.duration)
-  if (Number.isFinite(perSb) && perSb > 0) return perSb
+  if (Number.isFinite(perSb) && perSb > 0) {
+    return normalizeVideoDurationForModel(getStoryboardVideoModel(sb), perSb)
+  }
   const clip = Number(videoClipDuration.value)
-  if (Number.isFinite(clip) && clip > 0) return clip
+  if (Number.isFinite(clip) && clip > 0) {
+    return normalizeVideoDurationForModel(getStoryboardVideoModel(sb), clip)
+  }
   return undefined
 }
 
@@ -6496,6 +6500,7 @@ async function loadVideoModelOptions() {
       const preferredConfig = active.find((config) => config.is_default) || active[0]
       selectedVideoModel.value = videoModelNameFromAiConfig(preferredConfig) || models[0] || ''
     }
+    normalizeProjectVideoDuration()
     activeVideoAiConfigsCache = active
     activeVideoAiConfigCache = active.find((config) => config.is_default) || active[0] || null
     activeVideoAiConfigCacheAt = Date.now()
@@ -6506,12 +6511,25 @@ async function loadVideoModelOptions() {
 }
 
 function onVideoModelChange() {
+  normalizeProjectVideoDuration()
   saveProjectSettings(false)
+}
+
+function getProjectVideoDurationOptions() {
+  return getSupportedVideoDurationsForModel(selectedVideoModel.value)
+}
+
+function normalizeProjectVideoDuration() {
+  videoClipDuration.value = normalizeVideoDurationForModel(selectedVideoModel.value, videoClipDuration.value)
 }
 
 function getStoryboardVideoModel(sb) {
   const override = sb?.id != null ? String(sbVideoModel.value[sb.id] || '').trim() : ''
   return override || String(selectedVideoModel.value || '').trim()
+}
+
+function getStoryboardVideoDurationOptions(sb) {
+  return getSupportedVideoDurationsForModel(getStoryboardVideoModel(sb))
 }
 
 function getStoryboardVoicePolicy(sb) {
@@ -6836,7 +6854,7 @@ async function onSaveSbVideoFields(sb) {
       title: (sbTitle.value[sb.id] || '').toString().trim() || null,
       location: (sbLocation.value[sb.id] || '').toString().trim() || null,
       time: (sbTime.value[sb.id] || '').toString().trim() || null,
-      duration: Number(sbDuration.value[sb.id]) || 5,
+      duration: getSbVideoDurationForApi(sb) || 5,
       action: (sbAction.value[sb.id] || '').toString().trim() || null,
       dialogue: (sbDialogue.value[sb.id] || '').toString().trim() || null,
       narration: (sbNarration.value[sb.id] || '').toString().trim() || null,
@@ -6879,6 +6897,10 @@ async function onSaveSbVideoPrompt(sb) {
 }
 
 function onOpenVideoParamsDialog(sb) {
+  sbDuration.value = {
+    ...sbDuration.value,
+    [sb.id]: getSbVideoDurationForApi(sb) || 5,
+  }
   videoParamsTarget.value = sb
   showVideoParamsDialog.value = true
 }
