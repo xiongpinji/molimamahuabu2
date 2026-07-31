@@ -12,6 +12,7 @@ import {
 } from './storyboardMedia'
 import { latestVideoGenerationError, latestVideoGenerationWarning } from './videoGenerationStatus'
 import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
+import { isCanvasGeneratedResultAsset } from './freeCanvasGeneration'
 
 const ASSET_X = 48
 const SCRIPT_OFFSET_X = 248
@@ -73,6 +74,7 @@ function makeNode(base) {
 }
 
 function isProjectMediaAsset(asset) {
+  if (isCanvasGeneratedResultAsset(asset)) return false
   return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
 }
 

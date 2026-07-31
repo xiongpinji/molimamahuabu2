@@ -458,6 +458,16 @@ export function buildFreeCanvasProjectAssetPayload({
   }
 }
 
+export function isCanvasGeneratedResultAsset(asset) {
+  if (!['image', 'video'].includes(asset?.type) || asset?.category !== 'canvas-result') return false
+  const metadata = asset?.metadata && typeof asset.metadata === 'object' ? asset.metadata : {}
+  return Boolean(
+    metadata.canvas_node_id
+    || metadata.source === 'canvas_node_result'
+    || metadata.auto_saved === true
+  )
+}
+
 function requirePositiveDramaId(value, message) {
   const dramaId = positiveInteger(value)
   if (!dramaId) throw new Error(message)

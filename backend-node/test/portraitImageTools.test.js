@@ -188,6 +188,11 @@ test('情绪调节把完整原图和真实脸部裁片同时提交并清理临�
   assert.equal(faceMetadata.height, 40);
   assert.equal(generationRequest.referenceImages[0], fixture.sourcePath);
   assert.match(generationRequest.prompt, /浅然莞尔/);
+  assert.match(generationRequest.prompt, /嘴角/);
+  assert.match(generationRequest.prompt, /眼角|眼神/);
+  assert.match(generationRequest.prompt, /强度 4\/5：明显/);
+  assert.match(generationRequest.prompt, /必须产生相对原图可辨识的表情变化/);
+  assert.match(generationRequest.systemPrompt, /visibly change the selected facial expression/);
   assert.match(generationRequest.systemPrompt, /Image 2/);
   assert.equal(fs.existsSync(generationRequest.referenceImages[1]), false);
   const resultAsset = assetService.getById(fixture.db, res.payload.data.resultAssetId);

@@ -132,13 +132,41 @@ const PORTRAIT_TEXTURE_PRESETS = Object.freeze({
   clean: '清爽通透的人像质感，轻度净肤但保留真实皮肤结构',
   cinematic: '电影级人像质感，强化细腻层次、自然肤色与克制的胶片颗粒',
 });
-const PORTRAIT_EMOTIONS = Object.freeze([
-  '强忍悲戚', '默然垂泪', '触景伤情', '哀悼压抑', '隐忍心伤',
-  '浅然莞尔', '含情凝望', '满眼宠溺', '万般无奈', '欣然愉悦',
-  '眉宇凝霜', '隐忍愠怒', '冷眼漠然', '积郁憋闷', '暴怒沉怒',
-  '骤然错愕', '难以置信', '惊魂未定', '受惊后退', '心跳骤停',
-  '淡然自若', '疏离冷淡', '欲言又止', '警觉审视', '疲惫失神',
-]);
+const PORTRAIT_EMOTION_PROMPTS = Object.freeze({
+  强忍悲戚: '眉心收紧、眼眶微红湿润、嘴角下压并轻抿，呈现忍住泪意的克制悲伤',
+  默然垂泪: '眉眼低垂、眼眶含泪并有自然泪痕，嘴唇放松微颤，呈现安静落泪',
+  触景伤情: '眉头轻蹙、目光失焦并略向远处，眼角湿润、嘴角轻垂',
+  哀悼压抑: '眉心明显收拢、上眼睑低垂、嘴唇紧闭并下压，呈现沉重压抑',
+  隐忍心伤: '眼神受伤但克制、眉尾微垂、下唇轻收，面颊肌肉保持紧张',
+  浅然莞尔: '嘴角自然轻扬、面颊轻微上提、眼神柔和并带少量眼角笑纹',
+  含情凝望: '眼神专注柔和、上眼睑略放松、嘴角轻扬，呈现含蓄爱意',
+  满眼宠溺: '眼神温柔明亮、眼角微弯、面颊轻提、嘴角形成自然宠溺笑意',
+  万般无奈: '眉头轻抬并略向内收、嘴角一侧轻扯、眼神疲惫又克制',
+  欣然愉悦: '双侧嘴角明显上扬、面颊抬起、眼角自然弯曲，眼神明亮愉快',
+  眉宇凝霜: '眉心压低收紧、目光锐利、上眼睑略压，嘴唇平直紧闭',
+  隐忍愠怒: '眉头内收、眼神紧绷、鼻翼轻张、嘴唇紧抿，压住明显怒意',
+  冷眼漠然: '眼睑略压、目光冷淡疏离、眉形平直、嘴角放平且无笑意',
+  积郁憋闷: '眉心紧蹙、眼神压抑、双唇用力闭合、下颌肌肉轻微绷紧',
+  暴怒沉怒: '眉头强烈下压内收、目光怒视、鼻翼张开、嘴唇紧绷或露出咬牙状态',
+  骤然错愕: '眉毛突然抬高、双眼睁大、嘴唇微张，呈现瞬间意外',
+  难以置信: '眉毛高抬并内收、眼睛明显睁大、嘴巴轻张，目光停留在震惊对象上',
+  惊魂未定: '双眼睁大且眼神游移、眉毛上抬、嘴唇微张、面部肌肉紧张',
+  受惊后退: '眉毛上扬收紧、眼睛睁大、嘴角向后拉、下巴轻收，呈现防御性惊吓',
+  心跳骤停: '眼睛骤然睁大、瞳孔方向锁定、眉毛高抬、嘴唇僵住微张',
+  淡然自若: '眉眼舒展、眼神稳定、嘴角保持极轻微中性上扬，面部肌肉放松',
+  疏离冷淡: '目光避开或平直冷视、眼睑略垂、嘴角平直，面部减少亲近感',
+  欲言又止: '眉头轻蹙、眼神犹疑、嘴唇微张后轻抿，呈现将开口又停住',
+  警觉审视: '眉毛略压、眼睛专注微眯、视线锁定目标、嘴唇紧闭',
+  疲惫失神: '上眼睑明显下垂、目光失焦、眉眼松弛、嘴角轻垂',
+});
+const PORTRAIT_EMOTIONS = Object.freeze(Object.keys(PORTRAIT_EMOTION_PROMPTS));
+const PORTRAIT_EMOTION_INTENSITY = Object.freeze({
+  1: '极轻微，只在关键面部肌肉上呈现细小变化',
+  2: '轻微但可察觉，保持高度克制',
+  3: '清晰可辨，保持自然可信',
+  4: '明显但仍自然，完整呈现目标情绪',
+  5: '强烈清晰但不夸张，不得造成五官变形',
+});
 const REFERENCE_IMAGE_OPERATIONS = Object.freeze([
   'outpaint',
   'markup_retouch',
@@ -1013,7 +1041,10 @@ function buildPortraitPrompt(operation, parameters) {
     ].filter(Boolean).join('\n');
   }
   return [
-    `基于输入原图把选中人物的表情自然调整为“${parameters.emotion}”，强度 ${parameters.intensity}/5。`,
+    `基于输入原图把选中人物的表情自然调整为“${parameters.emotion}”。`,
+    `面部动作：${PORTRAIT_EMOTION_PROMPTS[parameters.emotion]}。`,
+    `强度 ${parameters.intensity}/5：${PORTRAIT_EMOTION_INTENSITY[parameters.intensity]}。`,
+    '必须产生相对原图可辨识的表情变化；保留原表情、输出中性脸或只改变色调都视为失败。',
     '只改变面部表情及与表情直接相关的细微肌肉状态，保持人物身份、脸型、五官比例、年龄、妆容、发型、身体姿势、服装、构图、背景、光线、画风和画面尺寸不变。',
     parameters.faceRegion
       ? 'Image 2 是从 Image 1 中选定人物的真实脸部裁片，只用于准确锁定需要调节的脸。'
@@ -2409,8 +2440,10 @@ async function runPortraitAdjustment({
         taskId: task.id,
         storageRoot,
         systemPrompt: faceReferencePath
-          ? 'Image 1 is the complete source image. Image 2 is an exact face crop from Image 1 and identifies the only face to edit. Preserve all identity and scene details outside the requested expression.'
-          : 'Image 1 is the complete source portrait. Preserve identity, composition, background, and all details outside the requested portrait adjustment.',
+          ? 'Image 1 is the complete source image. Image 2 is an exact face crop from Image 1 and identifies the only face to edit. Preserve all identity and scene details outside the requested expression, but visibly change the selected facial expression according to the prompt.'
+          : operation === 'portrait_emotion'
+            ? 'Image 1 is the complete source portrait. Preserve identity, composition, background, and all details outside the face, but visibly change the selected facial expression according to the prompt.'
+            : 'Image 1 is the complete source portrait. Preserve identity, composition, background, and all details outside the requested portrait adjustment.',
       }),
     );
     if (!result?.image_url || result.error) {

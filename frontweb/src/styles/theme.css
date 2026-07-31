@@ -25,6 +25,21 @@ html.dark {
   --el-color-primary-light-8: #ffe1d7;
   --el-color-primary-light-9: #fff0eb;
   --el-color-primary-dark-2: #cc5a2e;
+  --el-bg-color: var(--bg-card);
+  --el-bg-color-page: var(--bg-page);
+  --el-bg-color-overlay: var(--bg-card);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-primary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-faint);
+  --el-border-color: var(--border-color);
+  --el-border-color-light: var(--border-muted);
+  --el-border-color-lighter: var(--border-muted);
+  --el-fill-color: var(--bg-inner);
+  --el-fill-color-blank: var(--bg-card);
+  --el-fill-color-light: var(--bg-hover);
+  --el-fill-color-lighter: var(--bg-hover);
+  --el-mask-color: rgba(0, 0, 0, .72);
 }
 
 /* =====================================================
@@ -63,6 +78,41 @@ textarea,
 select {
   font-family: "Geist Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
     "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* ── 默认深色模式的 Teleport 弹层 ── */
+html:not(.light) .el-message,
+html:not(.light) .el-notification,
+html:not(.light) .el-message-box,
+html:not(.light) .el-select__popper,
+html:not(.light) .el-dropdown__popper,
+html:not(.light) .el-popover.el-popper,
+html:not(.light) .el-dialog {
+  background: var(--bg-card) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+html:not(.light) .el-message__content,
+html:not(.light) .el-notification__title,
+html:not(.light) .el-notification__content,
+html:not(.light) .el-message-box__title,
+html:not(.light) .el-message-box__content,
+html:not(.light) .el-dialog__title,
+html:not(.light) .el-select-dropdown__item,
+html:not(.light) .el-dropdown-menu__item {
+  color: var(--text-primary) !important;
+}
+
+html:not(.light) .el-select-dropdown__item.is-hovering,
+html:not(.light) .el-select-dropdown__item:hover,
+html:not(.light) .el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--bg-hover) !important;
+}
+
+html:not(.light) .el-popper.is-light .el-popper__arrow::before {
+  background: var(--bg-card) !important;
+  border-color: var(--border-color) !important;
 }
 
 /* ── 各页面结构 ── */
