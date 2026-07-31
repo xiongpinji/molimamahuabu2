@@ -5,6 +5,8 @@ const {
   buildDjpsdOpenApiSubmitBody,
   callDjpsdOpenApiVideoApi,
   callVideoApi,
+  getSupportedVideoDurationsForModel,
+  normalizeVideoDurationForModel,
   pollVideoTask,
 } = require('../src/services/videoClient');
 
@@ -18,6 +20,16 @@ const originalFetch = global.fetch;
 
 test.afterEach(() => {
   global.fetch = originalFetch;
+});
+
+test('视频客户端保留分镜服务依赖的模型时长能力接口', () => {
+  assert.equal(getSupportedVideoDurationsForModel('seedance 2.0'), null);
+  assert.deepEqual(
+    getSupportedVideoDurationsForModel('lingjing-video-v1'),
+    [4, 5, 6, 8, 10, 11, 15],
+  );
+  assert.equal(normalizeVideoDurationForModel('seedance 2.0', 9), 9);
+  assert.equal(normalizeVideoDurationForModel('lingjing-video-v1', 9), 10);
 });
 
 test('DJPSD 开放 API 保留平台选择的 5 到 15 秒整数时长', () => {
