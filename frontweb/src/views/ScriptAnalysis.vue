@@ -340,6 +340,13 @@
                   历史版本仅供查看，请切回当前版本后审核。
                 </span>
                 <el-button
+                  type="success"
+                  :disabled="!canImportToCanvas"
+                  @click="importApprovedPackageToCanvas"
+                >
+                  导入独立画布
+                </el-button>
+                <el-button
                   :disabled="Boolean(selectedVersion)"
                   :loading="reviewing"
                   @click="submitReview('rejected')"
@@ -371,11 +378,19 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { scriptAnalysisAPI } from '@/api/scriptAnalysis'
 import { taskAPI } from '@/api/task'
+import {
+  HOME_CANVAS_STORAGE_KEY,
+  normalizeHomeCanvasState,
+  serializeHomeCanvasState,
+} from '@/utils/homeCanvasState'
+import { buildScriptAnalysisCanvasState } from '@/utils/scriptAnalysisCanvasImport'
 
+const router = useRouter()
 const projects = ref([])
 const loadingProjects = ref(false)
 const saving = ref(false)
@@ -420,8 +435,20 @@ function parseJSON(value) {
   try {
     return JSON.parse(value)
   } catch {
-    return value
+    return null
   }
+}
+
+function asArray(value) {
+  const parsed = parseJSON(value)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+function asObject(value) {
+  const parsed = parseJSON(value)
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed
+    : null
 }
 
 function normalizeProject(value) {
@@ -430,10 +457,8 @@ function normalizeProject(value) {
     ...emptyProject(),
     ...next,
     active_version: Number(next.current_version || next.active_version || 0),
-    locked_facts: Array.isArray(next.locked_facts)
-      ? next.locked_facts
-      : parseJSON(next.locked_facts) || [],
-    analysis_package: parseJSON(next.analysis_package),
+    locked_facts: asArray(next.locked_facts),
+    analysis_package: asObject(next.analysis_package),
   }
 }
 
@@ -442,10 +467,8 @@ function normalizeVersion(value) {
   return {
     ...next,
     version: Number(next.version || 0),
-    package: parseJSON(next.package),
-    ai_changes: Array.isArray(next.ai_changes)
-      ? next.ai_changes
-      : parseJSON(next.ai_changes) || [],
+    package: asObject(next.package),
+    ai_changes: asArray(next.ai_changes),
   }
 }
 
@@ -459,8 +482,11 @@ const historyVersions = computed(() => (
 ))
 
 const analysisPackage = computed(() => {
-  const value = parseJSON(selectedVersionData.value?.package ?? project.value.analysis_package)
-  return value?.package || value?.result?.package || value || null
+  const value = asObject(
+    selectedVersionData.value?.package ?? project.value.analysis_package,
+  )
+  if (!value) return null
+  return asObject(value.package) || asObject(asObject(value.result)?.package) || value
 })
 
 const storyOverview = computed(() => {
@@ -550,6 +576,10 @@ const activeVersion = computed(() => (
   || project.value.active_version
   || analysisPackage.value?.version
   || 1
+))
+
+const canImportToCanvas = computed(() => (
+  !selectedVersion.value && selectedStatus.value === 'approved'
 ))
 
 const reviewScore = computed(() => {
@@ -834,6 +864,44 @@ async function submitReview(status) {
     ElMessage.error(error?.message || '提交审核结果失败')
   } finally {
     reviewing.value = false
+  }
+}
+
+async function importApprovedPackageToCanvas() {
+  if (!canImportToCanvas.value) {
+    ElMessage.warning('仅当前审核通过的版本可以导入独立画布')
+    return
+  }
+
+  try {
+    const existingState = normalizeHomeCanvasState(
+      localStorage.getItem(HOME_CANVAS_STORAGE_KEY),
+    )
+    const nextState = buildScriptAnalysisCanvasState({
+      existingState,
+      project: {
+        ...project.value,
+        active_version: activeVersion.value,
+      },
+      productionPackage: analysisPackage.value,
+      approvalStatus: selectedStatus.value,
+      importId: `project-${project.value.id}-version-${activeVersion.value}`,
+    })
+
+    localStorage.setItem(
+      HOME_CANVAS_STORAGE_KEY,
+      serializeHomeCanvasState(nextState),
+    )
+  } catch (error) {
+    ElMessage.error(error?.message || '导入独立画布失败')
+    return
+  }
+
+  try {
+    await router.push('/canvas')
+    ElMessage.success('已导入独立画布，原画布内容已保留')
+  } catch {
+    ElMessage.warning('已导入独立画布，但自动跳转失败，请手动打开画布')
   }
 }
 
