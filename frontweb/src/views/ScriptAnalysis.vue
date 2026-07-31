@@ -1004,7 +1004,7 @@ async function importApprovedPackageToCanvas() {
   }
 
   try {
-    await router.push('/canvas')
+    await router.push('/canvas/local')
     ElMessage.success('已导入独立画布，原画布内容已保留')
   } catch {
     ElMessage.warning('已导入独立画布，但自动跳转失败，请手动打开画布')
