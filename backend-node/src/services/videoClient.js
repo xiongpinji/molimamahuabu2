@@ -5391,6 +5391,8 @@ module.exports = {
   callXaiVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
+  getSupportedVideoDurationsForModel: aihubccClient.getSupportedVideoDurationsForModel,
+  normalizeVideoDurationForModel: aihubccClient.normalizeVideoDurationForModel,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,

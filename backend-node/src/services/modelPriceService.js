@@ -269,8 +269,9 @@ function calculateCharge(db, value, usage = {}) {
   const row = readRow(db, model);
   if (billingUnit(model, row?.category) !== 'second') return price;
   const duration = Number(usage.duration);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+  const minimum = model.toLowerCase() === 'lingjing-video-v1' ? 4 : 5;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }

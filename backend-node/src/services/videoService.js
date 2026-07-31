@@ -167,22 +167,30 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
   }
 }
 
-function normalizeVideoDuration(value, fallback = 5) {
+function normalizeVideoDuration(value, fallback = 5, model = '') {
   const duration = value == null || value === '' ? Number(fallback) : Number(value);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+  const supported = videoClient.getSupportedVideoDurationsForModel(model);
+  const minimum = supported?.[0] ?? 5;
+  const maximum = supported?.[supported.length - 1] ?? 15;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > maximum) {
+    const range = supported ? supported.join('、') : '5 到 15';
+    const error = new Error(supported
+      ? `当前视频模型支持的时长为：${range} 秒`
+      : '视频时长必须是 5 到 15 秒之间的整数');
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }
-  return duration;
+  return supported
+    ? videoClient.normalizeVideoDurationForModel(model, duration)
+    : duration;
 }
 
-function configuredVideoDuration(config) {
+function configuredVideoDuration(config, model) {
   if (!config?.settings) return null;
   try {
     const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
     const duration = Number(settings?.video_duration);
-    return Number.isSafeInteger(duration) && duration >= 5 && duration <= 15 ? duration : null;
+    return normalizeVideoDuration(duration, 5, model);
   } catch (_) {
     return null;
   }
@@ -198,11 +206,13 @@ function create(db, log, req, options = {}) {
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const selectedModel = body.model || storyboardDefaults?.video_model || null;
   const videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
+  const effectiveModel = selectedModel || videoConfig?.default_model || videoConfig?.model || null;
   const storyboardDuration = Number(storyboardDefaults?.duration);
-  const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= 5 && storyboardDuration <= 15
-    ? storyboardDuration
-    : configuredVideoDuration(videoConfig) || 5;
-  const duration = normalizeVideoDuration(body.duration, fallbackDuration);
+  let fallbackDuration = configuredVideoDuration(videoConfig, effectiveModel) || 5;
+  try {
+    fallbackDuration = normalizeVideoDuration(storyboardDuration, fallbackDuration, effectiveModel);
+  } catch (_) {}
+  const duration = normalizeVideoDuration(body.duration, fallbackDuration, effectiveModel);
 
   const active = findActiveForStoryboard(db, storyboardId, {
     billingEnabled,
@@ -229,7 +239,7 @@ function create(db, log, req, options = {}) {
     return { ...getById(db, active.id), reused: true };
   }
 
-  let billingModel = selectedModel;
+  let billingModel = effectiveModel;
   let price = null;
   if (billingEnabled) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
@@ -258,7 +268,7 @@ function create(db, log, req, options = {}) {
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
     }
-    const model = selectedModel || videoConfig?.default_model || null;
+    const model = effectiveModel;
     prompt = voicePrompt.appendVoiceAnchors({
       db,
       dramaId,
@@ -872,7 +882,7 @@ async function processVideoGeneration(db, log, videoGenId) {
         if (!Array.isArray(reference_urls)) reference_urls = null;
       } catch (_) {}
     }
-    const effectiveDuration = normalizeVideoDuration(row.duration, 5);
+    const effectiveDuration = normalizeVideoDuration(row.duration, 5, row.model);
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);

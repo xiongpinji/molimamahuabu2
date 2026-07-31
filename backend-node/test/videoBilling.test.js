@@ -55,6 +55,42 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('灵境视频按供应商支持值归一化后再入库和计费', () => {
+  const db = setup();
+  prices.set(db, 'lingjing-video-v1', 2, { category: 'video' });
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'lingjing-video-v1',
+    prompt: '原计划 9 秒的视频',
+    duration: 9,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.duration, 10);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 20);
+  db.close();
+});
+
+test('灵境视频允许供应商声明的 4 秒时长', () => {
+  const db = setup();
+  prices.set(db, 'lingjing-video-v1', 2, { category: 'video' });
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'lingjing-video-v1',
+    prompt: '4 秒视频',
+    duration: 4,
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.equal(row.duration, 4);
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 8);
+  db.close();
+});
+
 test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);
