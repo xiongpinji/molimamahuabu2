@@ -126,6 +126,12 @@ const router = createRouter({
       meta: { title: '自由创作', requiresAuth: true }
     },
     {
+      path: '/script-analysis',
+      name: 'script-analysis',
+      component: () => import('@/views/ScriptAnalysis.vue'),
+      meta: { title: '剧本分析', requiresAuth: true }
+    },
+    {
       path: '/media-library',
       name: 'media-library',
       component: () => import('@/views/MediaLibrary.vue'),
