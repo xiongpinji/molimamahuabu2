@@ -33,6 +33,7 @@ const {
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
   if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
+  if (p === 'djpsd_openapi') return 'djpsd_openapi';
   if (p === 'djpsd') return 'djpsd';
   if (p === 'dashscope') return 'dashscope';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -135,6 +136,190 @@ async function callDjpsdVideoApi(config, log, opts) {
   const taskId = parseDjpsdSubmitResponse(data);
   if (!taskId) return { error: 'DJPSD 创建成功但未返回任务编号' };
   return { task_id: taskId, status: 'processing' };
+}
+
+function normalizeDjpsdOpenApiDuration(duration) {
+  const value = Math.round(Number(duration) || 10);
+  return Math.max(5, Math.min(15, value));
+}
+
+function buildDjpsdOpenApiSubmitBody(opts = {}) {
+  return {
+    model: opts.model || 'video-v1',
+    prompt: opts.prompt || '',
+    params: {
+      duration: normalizeDjpsdOpenApiDuration(opts.duration),
+      aspect_ratio: opts.aspect_ratio || '16:9',
+      auto_face_mask: Boolean(opts.auto_face_mask),
+      images: Array.isArray(opts.images) ? opts.images.filter(Boolean) : [],
+    },
+  };
+}
+
+function parseDjpsdOpenApiSubmitResponse(payload) {
+  const data = payload?.data || payload || {};
+  const taskId = data.task_id ?? data.id;
+  if (taskId == null) return null;
+  return {
+    task_id: String(taskId),
+    status: String(data.task_status || data.status || data.state || 'PENDING'),
+  };
+}
+
+function resolveDjpsdOpenApiResultUrl(baseUrl, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return new URL(raw, `${normalizeDjpsdBaseUrl(baseUrl)}/`).toString();
+}
+
+function buildDjpsdOpenApiUrl(baseUrl, endpoint, defaultPath) {
+  const root = normalizeDjpsdBaseUrl(baseUrl);
+  const raw = String(endpoint || defaultPath).trim();
+  if (!/^https?:\/\//i.test(raw)) return root + (raw.startsWith('/') ? raw : `/${raw}`);
+  const url = new URL(raw);
+  if (url.origin !== new URL(root).origin) {
+    throw new Error('DJPSD 开放 API 端点必须与 Base URL 同源');
+  }
+  return url.toString();
+}
+
+function parseDjpsdOpenApiPollResponse(payload, baseUrl) {
+  const data = payload?.data || payload || {};
+  const state = String(data.state || data.status || '').toLowerCase();
+  const videoUrl = resolveDjpsdOpenApiResultUrl(baseUrl, data.video_url || data.result_url);
+  if (videoUrl) return { state: 'completed', videoUrl };
+  if (state === 'failed' || state === 'error') {
+    return { state: 'failed', error: data.error || data.message || 'DJPSD 开放 API 视频生成失败' };
+  }
+  if (data.is_final || state === 'success' || state === 'succeeded' || state === 'completed') {
+    return { state: 'failed', error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
+  }
+  return { state: 'processing' };
+}
+
+function parseDjpsdOpenApiDataImage(value) {
+  const match = String(value || '').match(/^data:([\w/+.-]+);base64,(.+)$/is);
+  if (!match) throw new Error('参考图 data URL 格式无效');
+  const mimeType = match[1].toLowerCase();
+  if (!mimeType.startsWith('image/')) throw new Error('只允许图片 data URL');
+  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  if (!bytes.length) throw new Error('参考图 data URL 内容为空');
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
+  return { bytes, mimeType };
+}
+
+function imageExtensionForMime(mimeType) {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  if (mimeType === 'image/gif') return 'gif';
+  return 'jpg';
+}
+
+async function uploadDjpsdOpenApiImage(config, rawValue, opts, index) {
+  const value = String(rawValue || '').trim();
+  if (!value) return '';
+  const root = normalizeDjpsdBaseUrl(config.base_url);
+  try {
+    const url = new URL(value, `${root}/`);
+    if (url.origin === new URL(root).origin && url.pathname.startsWith('/uploads/')) {
+      return `${url.pathname}${url.search}`;
+    }
+  } catch (_) {
+    // 非 URL，继续按 data URL 或平台相对路径处理。
+  }
+
+  let image = value.startsWith('data:') ? parseDjpsdOpenApiDataImage(value) : null;
+  if (!image) {
+    let publicUrl = value;
+    if (!/^https?:\/\//i.test(publicUrl) && opts.files_base_url) {
+      publicUrl = new URL(publicUrl, `${String(opts.files_base_url).replace(/\/+$/, '')}/`).toString();
+    }
+    if (!/^https?:\/\//i.test(publicUrl)) {
+      throw new Error('参考图不是可上传的 data URL 或公网 HTTP(S) 地址');
+    }
+    image = await downloadPublicImage(publicUrl);
+  }
+
+  const form = new FormData();
+  const extension = imageExtensionForMime(image.mimeType);
+  form.append('file', new Blob([image.bytes], { type: image.mimeType }), `reference-${index + 1}.${extension}`);
+  const res = await fetch(`${root}/v1/media/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.api_key || ''}` },
+    body: form,
+  });
+  const raw = await res.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
+    throw new Error(`参考图上传失败: ${String(message).slice(0, 300)}`);
+  }
+  const uploadedUrl = String(data.url || data.data?.url || '').trim();
+  if (!uploadedUrl) throw new Error('参考图上传成功但未返回 URL');
+  return uploadedUrl;
+}
+
+function formatDjpsdOpenApiUnknownSubmitError(error) {
+  const detail = error?.message || String(error || '连接中断');
+  return `DJPSD 开放 API 创建请求连接中断，供应商可能已受理或扣费，但本平台未收到任务编号（结果未知）。为避免重复扣费，请先核对供应商任务记录，不要连续重试。原始错误: ${detail}`;
+}
+
+async function callDjpsdOpenApiVideoApi(config, log, opts = {}) {
+  let url;
+  try {
+    url = buildDjpsdOpenApiUrl(config.base_url, config.endpoint, '/v1/media/generate');
+  } catch (error) {
+    return { error: `DJPSD 开放 API 配置错误: ${error.message}` };
+  }
+  const refs = [
+    opts.first_frame_url || opts.image_url,
+    opts.last_frame_url,
+    ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+  ].filter(Boolean);
+  const uniqueRefs = [...new Set(refs.map((value) => String(value).trim()).filter(Boolean))];
+  const images = [];
+  try {
+    for (let index = 0; index < uniqueRefs.length; index += 1) {
+      images.push(await uploadDjpsdOpenApiImage(config, uniqueRefs[index], opts, index));
+    }
+  } catch (error) {
+    return { error: `DJPSD 开放 API ${error.message}` };
+  }
+
+  const body = buildDjpsdOpenApiSubmitBody({ ...opts, images });
+  log.info('[DJPSD OpenAPI video] 创建任务', {
+    video_gen_id: opts.video_gen_id,
+    url,
+    model: body.model,
+    duration: body.params.duration,
+    aspect_ratio: body.params.aspect_ratio,
+    image_count: images.length,
+  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.api_key || ''}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { error: formatDjpsdOpenApiUnknownSubmitError(error) };
+  }
+  const raw = await res.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
+    return { error: `DJPSD 开放 API 创建视频任务失败: ${String(message).slice(0, 300)}` };
+  }
+  const result = parseDjpsdOpenApiSubmitResponse(data);
+  if (!result) return { error: 'DJPSD 开放 API 创建成功但未返回任务编号' };
+  return result;
 }
 
 /**
@@ -4761,6 +4946,21 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'djpsd_openapi') {
+    return callDjpsdOpenApiVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
   if (protocol === 'djpsd') {
     return callDjpsdVideoApi(config, log, {
       prompt,
@@ -4928,6 +5128,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isVidu = protocol === 'vidu';
   const isSora = protocol === 'sora';
   const isAgnes = protocol === 'agnes';
+  const isDjpsdOpenApi = protocol === 'djpsd_openapi';
   const isDjpsd = protocol === 'djpsd';
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
@@ -5001,6 +5202,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (!qep.startsWith('/')) qep = '/' + qep;
         url = viduBase + qep;
         headers = { Authorization: (isOfficialVidu ? 'Token ' : 'Bearer ') + (config.api_key || '') };
+      } else if (isDjpsdOpenApi) {
+        const queryEndpoint = String(config.query_endpoint || '/v1/media/status?task_id={taskId}')
+          .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, encodeURIComponent(taskId));
+        url = buildDjpsdOpenApiUrl(config.base_url, queryEndpoint, '/v1/media/status?task_id={taskId}');
+        headers = { Authorization: `Bearer ${config.api_key || ''}` };
       } else if (isDjpsd) {
         url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs/${encodeURIComponent(taskId)}`;
         headers = { 'api-key': config.api_key || '' };
@@ -5057,6 +5263,18 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           error: parseErr.message,
           body_head: raw.slice(0, 800),
         });
+        continue;
+      }
+
+      if (isDjpsdOpenApi) {
+        const result = parseDjpsdOpenApiPollResponse(data, config.base_url);
+        log.info('[DJPSD OpenAPI poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
         continue;
       }
 
@@ -5402,6 +5620,11 @@ module.exports = {
   parseDjpsdSubmitResponse,
   parseDjpsdPollResponse,
   formatDjpsdUnknownSubmitError,
+  normalizeDjpsdOpenApiDuration,
+  buildDjpsdOpenApiSubmitBody,
+  parseDjpsdOpenApiSubmitResponse,
+  parseDjpsdOpenApiPollResponse,
+  callDjpsdOpenApiVideoApi,
   callDeepwlGrokVideoApi,
   buildDeepwlGrokVideoBody,
   resolveDeepwlGrokMode,
