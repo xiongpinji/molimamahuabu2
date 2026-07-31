@@ -132,11 +132,12 @@
               </div>
               <div class="version-tools">
                 <span class="version-chip">分析版本 {{ activeVersion }}</span>
-                <select
-                  v-if="historyVersions.length"
-                  v-model="selectedVersion"
-                  class="version-select"
-                >
+              <select
+                v-if="historyVersions.length"
+                v-model="selectedVersion"
+                class="version-select"
+                @change="resetRevisionEditor"
+              >
                   <option value="">当前版本</option>
                   <option
                     v-for="item in historyVersions"
@@ -348,6 +349,12 @@
                 </el-button>
                 <el-button
                   :disabled="Boolean(selectedVersion)"
+                  @click="startRevision"
+                >
+                  人工校订
+                </el-button>
+                <el-button
+                  :disabled="Boolean(selectedVersion)"
                   :loading="reviewing"
                   @click="submitReview('rejected')"
                 >
@@ -360,6 +367,41 @@
                   @click="submitReview('approved')"
                 >
                   确认通过
+                </el-button>
+              </div>
+            </div>
+            <div v-if="revising" class="revision-editor">
+              <div class="revision-editor__heading">
+                <div>
+                  <strong>人工校订生产包</strong>
+                  <p>保存后生成不可变新版本，原版本继续保留。</p>
+                </div>
+              </div>
+              <label class="field">
+                <span>校订后的生产包 JSON</span>
+                <textarea
+                  v-model="revisionPackageText"
+                  rows="18"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="field">
+                <span>校订说明</span>
+                <textarea
+                  v-model="revisionNote"
+                  rows="3"
+                  maxlength="2000"
+                  placeholder="说明本次人工修改内容"
+                />
+              </label>
+              <div class="review-action-buttons">
+                <el-button @click="cancelRevision">取消</el-button>
+                <el-button
+                  type="primary"
+                  :loading="revisionSaving"
+                  @click="submitRevision"
+                >
+                  保存为新版本
                 </el-button>
               </div>
             </div>
@@ -402,6 +444,10 @@ const versions = ref([])
 const selectedVersion = ref('')
 const reviewNote = ref('')
 const lockedFactsText = ref('')
+const revising = ref(false)
+const revisionSaving = ref(false)
+const revisionPackageText = ref('')
+const revisionNote = ref('')
 const activeLibraryTab = ref('characters')
 const pollingTimer = ref(null)
 
@@ -666,6 +712,7 @@ function newDraft() {
   versions.value = []
   selectedVersion.value = ''
   reviewNote.value = ''
+  resetRevisionEditor()
 }
 
 async function loadVersions(id) {
@@ -684,6 +731,7 @@ async function loadProject(id) {
     const body = unwrap(await scriptAnalysisAPI.get(id))
     project.value = normalizeProject(body)
     selectedVersion.value = ''
+    resetRevisionEditor()
     lockedFactsText.value = project.value.locked_facts.join('\n')
     task.value = emptyTask()
     await loadVersions(id)
@@ -719,6 +767,7 @@ async function saveProject(options = {}) {
       : unwrap(await scriptAnalysisAPI.create(projectPayload()))
     project.value = normalizeProject(body)
     selectedVersion.value = ''
+    resetRevisionEditor()
     lockedFactsText.value = project.value.locked_facts.join('\n')
     await loadVersions(project.value.id)
     await listProjects()
@@ -746,6 +795,7 @@ async function runAnalysis() {
 
   try {
     selectedVersion.value = ''
+    resetRevisionEditor()
     const body = unwrap(await scriptAnalysisAPI.run(saved.id))
     task.value.id = body?.task_id || body?.task?.id
     if (!task.value.id) throw new Error('服务端未返回任务编号')
@@ -838,6 +888,61 @@ async function importScriptFile(event) {
   }
 }
 
+function resetRevisionEditor() {
+  revising.value = false
+  revisionPackageText.value = ''
+  revisionNote.value = ''
+}
+
+function startRevision() {
+  if (!project.value?.analysis_package || selectedVersion.value) {
+    ElMessage.warning('请切回当前版本后校订')
+    return
+  }
+  revisionPackageText.value = JSON.stringify(project.value.analysis_package, null, 2)
+  revisionNote.value = ''
+  revising.value = true
+}
+
+function cancelRevision() {
+  resetRevisionEditor()
+}
+
+async function submitRevision() {
+  if (!project.value?.id) return
+  const note = revisionNote.value.trim()
+  if (!note) {
+    ElMessage.warning('请填写人工校订说明')
+    return
+  }
+
+  let parsedPackage
+  try {
+    parsedPackage = JSON.parse(revisionPackageText.value)
+  } catch {
+    ElMessage.warning('生产包 JSON 格式无效')
+    return
+  }
+
+  revisionSaving.value = true
+  try {
+    const body = unwrap(await scriptAnalysisAPI.revise(project.value.id, {
+      version: project.value.active_version,
+      package: parsedPackage,
+      note,
+    }))
+    project.value = normalizeProject(body)
+    selectedVersion.value = ''
+    resetRevisionEditor()
+    await Promise.all([loadVersions(project.value.id), listProjects()])
+    ElMessage.success('人工校订已保存为新版本')
+  } catch (error) {
+    ElMessage.error(error?.message || '人工校订失败')
+  } finally {
+    revisionSaving.value = false
+  }
+}
+
 async function submitReview(status) {
   if (!project.value.id || !project.value.active_version) {
     ElMessage.warning('请先完成一次导演分析')
@@ -857,6 +962,7 @@ async function submitReview(status) {
     }))
     project.value = normalizeProject(body)
     selectedVersion.value = ''
+    resetRevisionEditor()
     await loadVersions(project.value.id)
     await listProjects()
     ElMessage.success(status === 'approved' ? '当前版本已通过审核' : '当前版本已退回修改')
@@ -1479,6 +1585,27 @@ onBeforeUnmount(stopPolling)
   gap: 20px;
   align-items: end;
   margin-top: 20px;
+}
+
+.revision-editor {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: #0c0c0d;
+}
+
+.revision-editor__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.revision-editor__heading p {
+  margin: 6px 0 0;
+  color: #85858d;
+  font-size: 13px;
 }
 
 .review-action-buttons {

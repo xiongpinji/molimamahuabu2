@@ -9,7 +9,9 @@ const {
 } = require('../services/taskService');
 const {
   getProjectInputError,
+  normalizeProductionPackage,
   runAnalysis,
+  validateProductionPackage,
 } = require('../services/scriptAnalysisService');
 
 function parseJSON(value, fallback) {
@@ -170,6 +172,95 @@ module.exports = function scriptAnalysisRoutes(db, log) {
       `).run(title, now, current.id, ownerId);
     }
     return response.success(res, mapProject(findOwnedProject(current.id, ownerId)));
+  }
+
+  function revise(req, res) {
+    const ownerId = userId(req);
+    const project = findOwnedProject(req.params.id, ownerId);
+    if (!project) return response.notFound(res, '剧本分析项目不存在');
+
+    const requestedVersion = Number(req.body?.version);
+    if (!Number.isInteger(requestedVersion) || requestedVersion !== Number(project.current_version || 0)) {
+      return response.badRequest(res, '只能校订当前版本');
+    }
+
+    const note = String(req.body?.note || '').trim();
+    if (!note) return response.badRequest(res, '请填写人工校订说明');
+    if (note.length > 2000) return response.badRequest(res, '人工校订说明不能超过 2000 字');
+
+    const packageInput = req.body?.package;
+    if (!packageInput || typeof packageInput !== 'object' || Array.isArray(packageInput)) {
+      return response.badRequest(res, '请提交校订后的生产包');
+    }
+    if (!parseJSON(project.analysis_json, null) || !project.current_version) {
+      return response.badRequest(res, '请先完成剧本分析再校订');
+    }
+
+    let normalizedPackage;
+    try {
+      normalizedPackage = validateProductionPackage(
+        normalizeProductionPackage(packageInput, project),
+      );
+    } catch (error) {
+      return response.badRequest(res, `校订后的生产包无效：${error.message}`);
+    }
+
+    const now = new Date().toISOString();
+    const nextVersion = Number(project.current_version) + 1;
+    const aiChanges = [
+      ...(Array.isArray(normalizedPackage.ai_changes) ? normalizedPackage.ai_changes : []),
+      {
+        source: 'human',
+        type: 'human_revision',
+        description: note,
+        created_at: now,
+      },
+    ];
+    const reviewResult = {
+      ...(normalizedPackage.review || {}),
+      status: 'needs_review',
+      revision_note: note,
+      revised_at: now,
+    };
+    const revisedPackage = {
+      ...normalizedPackage,
+      version: nextVersion,
+      approval_status: 'needs_review',
+      ai_changes: aiChanges,
+      review: reviewResult,
+    };
+
+    const transaction = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO script_analysis_versions (
+          project_id, version, source_script, package_json,
+          ai_changes_json, approval_status, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'needs_review', ?)
+      `).run(
+        project.id,
+        nextVersion,
+        project.source_script,
+        JSON.stringify(revisedPackage),
+        JSON.stringify(aiChanges),
+        now,
+      );
+      db.prepare(`
+        UPDATE script_analysis_projects
+        SET analysis_json = ?, review_json = ?, status = 'needs_review',
+            current_version = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
+      `).run(
+        JSON.stringify(revisedPackage),
+        JSON.stringify(reviewResult),
+        nextVersion,
+        now,
+        project.id,
+        ownerId,
+      );
+    });
+    transaction();
+
+    return response.success(res, mapProject(findOwnedProject(project.id, ownerId)));
   }
 
   function review(req, res) {
@@ -340,6 +431,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     versions,
     create,
     update,
+    revise,
     review,
     run,
   };

@@ -15,12 +15,13 @@
 - 异步调用平台现有文本模型完成导演分析。
 - 输出角色、场景、道具、分集、分场、分镜和图片/视频提示词。
 - 保存版本，页面可以查看结构化结果和审查问题。
+- 人工校订基于当前版本生成新的不可变版本，旧版本保留。
+- 只有审核通过的当前版本可以追加导入独立画布。
 
 第一阶段不包含：
 
 - 积分预估、扣费和失败返还。
-- 一键生成画布节点。
-- 自动生成图片或视频。
+- 自动运行画布节点或生成图片/视频。
 - 多个模型并行重复分析。
 
 这些能力在后续阶段接入，避免第一阶段同时改变计费和画布两条生产链。
@@ -119,6 +120,7 @@
 - `GET /script-analysis/projects/:id`
 - `GET /script-analysis/projects/:id/versions`
 - `PUT /script-analysis/projects/:id`
+- `POST /script-analysis/projects/:id/revisions`
 - `POST /script-analysis/projects/:id/review`
 - `POST /script-analysis/projects/:id/run`
 
@@ -130,14 +132,14 @@
 
 - `draft`：已保存，尚未分析。
 - `analyzing`：导演工作流执行中。
-- `needs_review`：分析成功，等待人工校订。
+- `needs_review`：分析或人工校订成功，等待人工审核。
 - `failed`：分析失败，保留原剧本和上一个成功版本。
 
 任务失败必须写回可读原因。模型返回非 JSON、生产包缺少核心数组或接口错误均视为失败，不生成空版本。
 
 ## 后续阶段
 
-1. 增加角色、场景、道具、分镜逐项校订和版本差异对比。
+1. 增加角色、场景、道具、分镜更细粒度的字段编辑和版本差异对比。
 2. 增加更细粒度的自动一致性检查。
 3. 支持在画布内回读生产包来源并继续修订。
 4. 保留从生产包条目到原剧本文本及画布节点的来源追踪。
@@ -150,7 +152,7 @@
 - 每个项目版本使用固定导入标识；同一版本重复导入会被拒绝，不同审核版本可以继续追加。
 - 角色、场景和道具转换为图片节点；每个分镜转换为“文本 → 图片 → 视频”链路。
 - 新节点记录项目、版本、来源类型和来源编号，便于后续追踪。
-- 导入前按后端生产包契约校验 `schema_version`、核心对象、七个必需数组及分集/分场/分镜层级；任一分镜缺少来源依据、图片提示词、视频提示词、连续性对象或对白数组时，整次导入失败。
+- 导入前按后端生产包契约校验 `schema_version`、核心对象、八个必需数组及分集/分场/分镜层级；任一分镜缺少来源依据、图片提示词、视频提示词、连续性对象或对白数组时，整次导入失败。
 - 独立画布缓存损坏时按默认画布恢复后追加生产包，不继续使用不可解析的缓存内容。
 - 写入浏览器本地状态失败时不得提示导入成功；状态已写入但页面跳转失败时保留数据并提示用户手动打开画布。
 - 本阶段只写入独立画布既有的浏览器本地状态，不修改画布核心实现或其他会话文件。
@@ -178,16 +180,18 @@
 
 本阶段共享文件只允许交付以下接入片段：
 
-- `backend-node/src/routes/index.js`：注册剧本分析路由对象及七个 `/script-analysis` 接口。
+- `backend-node/src/routes/index.js`：注册剧本分析路由对象及八个 `/script-analysis` 接口。
 - `frontweb/src/router/index.js`：注册 `/script-analysis` 页面路由。
 - `frontweb/src/components/CanvasWorkspaceSwitcher.vue`：增加“剧本分析”导航入口及图标导入。
 
 上述共享文件不得整文件覆盖；提交和部署均需使用精确补丁，并在应用前核对目标上下文。
 
-当前导入加固补丁的白名单仅包含以下四个文件：
+当前人工校订补丁的白名单仅包含以下六个文件：
 
-- `frontweb/src/utils/scriptAnalysisCanvasImport.js`
-- `frontweb/src/utils/scriptAnalysisCanvasImport.test.js`
+- `backend-node/src/routes/index.js`
+- `backend-node/src/routes/scriptAnalysis.js`
+- `backend-node/test/scriptAnalysisRoutes.test.js`
+- `frontweb/src/api/scriptAnalysis.js`
 - `frontweb/src/views/ScriptAnalysis.vue`
 - `docs/SCRIPT_ANALYSIS_DIRECTOR_WORKFLOW.md`
 
@@ -200,6 +204,8 @@
 - 有剧本的项目可以创建异步分析任务。
 - 成功任务写入一个新版本并返回结构化生产包。
 - 页面可查看故事摘要、角色、场景、道具、分镜和审查问题。
+- 当前版本的人工校订会创建 `v+1` 新版本，旧版本内容保持不变。
+- 过期版本或无效生产包的校订请求会被拒绝，当前版本保持不变。
 - 审核通过的当前版本可以追加导入独立画布，且不会覆盖已有画布内容。
 - 同一审核版本不能重复导入；缺少图片或视频提示词时不得写入画布。
 - 失败任务有明确原因，原项目仍可修改并重试。

@@ -202,6 +202,7 @@ function setupRouter(cfg, db, log) {
   r.get('/script-analysis/projects/:id', scriptAnalysis.get);
   r.get('/script-analysis/projects/:id/versions', scriptAnalysis.versions);
   r.put('/script-analysis/projects/:id', scriptAnalysis.update);
+  r.post('/script-analysis/projects/:id/revisions', scriptAnalysis.revise);
   r.post('/script-analysis/projects/:id/review', scriptAnalysis.review);
   r.post('/script-analysis/projects/:id/run', scriptAnalysis.run);
 

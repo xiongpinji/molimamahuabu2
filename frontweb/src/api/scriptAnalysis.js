@@ -16,6 +16,9 @@ export const scriptAnalysisAPI = {
   update(id, body) {
     return request.put(`/script-analysis/projects/${id}`, body)
   },
+  revise(id, body) {
+    return request.post(`/script-analysis/projects/${id}/revisions`, body)
+  },
   review(id, body) {
     return request.post(`/script-analysis/projects/${id}/review`, body)
   },
