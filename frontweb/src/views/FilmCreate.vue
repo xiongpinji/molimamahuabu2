@@ -3817,6 +3817,15 @@ function getSbFirstImage(storyboardId) {
 
   const typed = images.find((i) => i.frame_type === 'storyboard_first')
   if (typed) return typed
+
+  if (sb?.image_url || sb?.local_path) {
+    return {
+      id: sb.first_frame_image_id,
+      image_url: sb.image_url,
+      local_path: sb.local_path,
+      frame_type: 'storyboard_first',
+    }
+  }
   // 不再回退到 images[0]，避免把尾帧图片误显示为首帧
   return null
 }
