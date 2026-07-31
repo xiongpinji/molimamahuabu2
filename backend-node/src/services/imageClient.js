@@ -17,6 +17,49 @@ const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
+const IMAGE_PROVIDER_RETRY_DELAYS_MS = [2000, 5000];
+
+function isProviderTemporarilyUnavailable(response) {
+  return response?.statusCode === 503
+    && /provider\s+temporary\s+unavailable/i.test(String(response.raw || ''));
+}
+
+function waitForImageProvider(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function postOpenAIImageJSONWithRetry(url, headers, body, timeoutMs = IMAGE_HTTP_TIMEOUT_MS, options = {}) {
+  const request = options.request || postJSONWithTimeout;
+  const sleep = options.sleep || waitForImageProvider;
+  const retryDelays = options.retryDelays || IMAGE_PROVIDER_RETRY_DELAYS_MS;
+  const onRetry = options.onRetry || (() => {});
+
+  let response;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    response = await request(url, headers, body, timeoutMs);
+    if (!isProviderTemporarilyUnavailable(response) || attempt === retryDelays.length) return response;
+    const delay = retryDelays[attempt];
+    onRetry({ attempt: attempt + 1, delay, status: response.statusCode });
+    await sleep(delay);
+  }
+  return response;
+}
+
+function formatImageHttpError(status, raw) {
+  if (isProviderTemporarilyUnavailable({ statusCode: status, raw })) {
+    return '图片生成服务暂时繁忙，自动重试后仍不可用，请稍后再试';
+  }
+
+  let errMsg = '图片生成请求失败: ' + status;
+  try {
+    const errJson = JSON.parse(raw);
+    const msg = errJson.error?.message || errJson.message || errJson.error;
+    if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+  } catch (_) {
+    if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+  }
+  return errMsg;
+}
 
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
 const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
@@ -1862,7 +1905,21 @@ async function callImageApi(db, log, opts) {
   let raw;
   let httpStatus;
   try {
-    const out = await postJSONWithTimeout(url, openaiCompatHeaders, body, IMAGE_HTTP_TIMEOUT_MS);
+    const out = await postOpenAIImageJSONWithRetry(
+      url,
+      openaiCompatHeaders,
+      body,
+      IMAGE_HTTP_TIMEOUT_MS,
+      {
+        onRetry: ({ attempt, delay, status }) => log.warn('Image API provider unavailable, retrying', {
+          image_gen_id,
+          model,
+          status,
+          attempt,
+          delay_ms: delay,
+        }),
+      },
+    );
     httpStatus = out.statusCode;
     raw = out.raw;
   } catch (e) {
@@ -1877,15 +1934,7 @@ async function callImageApi(db, log, opts) {
       status: httpStatus,
       response_bytes: Buffer.byteLength(raw || '', 'utf8'),
     });
-    let errMsg = '图片生成请求失败: ' + httpStatus;
-    try {
-      const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.error;
-      if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
-    } catch (_) {
-      if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
-    }
-    return { error: errMsg };
+    return { error: formatImageHttpError(httpStatus, raw) };
   }
   let data;
   try {
@@ -2323,6 +2372,8 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  formatImageHttpError,
+  postOpenAIImageJSONWithRetry,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),
