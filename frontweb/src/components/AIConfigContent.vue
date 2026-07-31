@@ -351,6 +351,7 @@
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
+            <el-option label="DJPSD 开放 API（video-v1）" value="djpsd_openapi" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -362,6 +363,15 @@
           :closable="false"
           show-icon
           title="Seedance 2.0 支持 5 / 10 / 15 秒；其他时长会向上适配。连接测试只读取任务列表，不会扣费。"
+          style="margin-bottom: 18px"
+        />
+
+        <el-alert
+          v-if="form.service_type === 'video' && form.api_protocol === 'djpsd_openapi'"
+          type="info"
+          :closable="false"
+          show-icon
+          title="video-v1 支持平台选择的 5–15 秒整数时长；连接测试只查询不存在的任务，不会创建或扣费。"
           style="margin-bottom: 18px"
         />
 
@@ -1433,6 +1443,7 @@ const providerConfigs = {
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
+    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1491,6 +1502,7 @@ const providerProtocolMap = {
   deepwl_grok: 'deepwl_grok',
   icreat: 'icreat_task',
   icreat_task: 'icreat_task',
+  djpsd_openapi: 'djpsd_openapi',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1526,7 +1538,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
-  if (p === 'djpsd') return 'https://shiping.djpsd.com'
+  if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1696,6 +1708,8 @@ const endpointPreviewInfo = computed(() => {
         ? /\/v1\/video\/create/i.test(endpoint)
         : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
       submitPath = isUnified ? '/v1/video/create' : '/v1/videos'
+    } else if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      submitPath = '/v1/media/generate'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       submitPath = '/api/v1/video-jobs'
     } else if (proto === 'veo3') {
@@ -1745,6 +1759,8 @@ const endpointPreviewInfo = computed(() => {
         ? /\/v1\/video\/create/i.test(endpoint)
         : !(/grok[-_ ]*imagine|grok.*video/i.test(model))
       queryPath = isUnified ? '/v1/video/query?id={taskId}' : '/v1/videos/{taskId}'
+    } else if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      queryPath = '/v1/media/status?task_id={taskId}'
     } else if (proto === 'djpsd' || p === 'djpsd') {
       queryPath = '/api/v1/video-jobs/{taskId}'
     } else if (proto === 'veo3') {
@@ -1833,6 +1849,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'djpsd'
     form.value.endpoint = '/api/v1/video-jobs'
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
+  }
+  if (st === 'video' && providerId === 'djpsd_openapi') {
+    form.value.api_protocol = 'djpsd_openapi'
+    form.value.endpoint = '/v1/media/generate'
+    form.value.query_endpoint = '/v1/media/status?task_id={taskId}'
   }
   if (st === 'video' && (providerId === 'deepwl' || providerId === 'deepwl_grok')) {
     form.value.api_protocol = 'deepwl_grok'

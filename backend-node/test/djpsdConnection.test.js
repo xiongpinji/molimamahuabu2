@@ -26,3 +26,32 @@ test('DJPSD 连接测试使用只读任务列表而不创建付费视频', async
   assert.equal(request.options.method, 'GET');
   assert.equal(request.options.headers['api-key'], 'secret');
 });
+
+test('DJPSD 开放 API 连接测试查询不存在任务验证密钥且不创建付费视频', async () => {
+  const originalFetch = global.fetch;
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ detail: '任务不存在' }),
+    };
+  };
+  try {
+    await testConnection({
+      service_type: 'video',
+      provider: 'djpsd_openapi',
+      api_protocol: 'djpsd_openapi',
+      base_url: 'https://shiping.djpsd.com/v1',
+      api_key: 'secret',
+      model: ['video-v1'],
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(request.url, 'https://shiping.djpsd.com/v1/media/status?task_id=0');
+  assert.equal(request.options.method, 'GET');
+  assert.equal(request.options.headers.Authorization, 'Bearer secret');
+});

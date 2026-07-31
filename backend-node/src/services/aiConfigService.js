@@ -485,6 +485,23 @@ async function testConnection(opts) {
     return;
   }
 
+  // DJPSD 开放 API：只读查询一个不存在的任务验证 Bearer，不创建付费视频。
+  if (provider === 'djpsd_openapi' || String(opts.api_protocol || '').toLowerCase() === 'djpsd_openapi') {
+    const root = base.replace(/\/v1$/i, '');
+    const res = await fetch(root + '/v1/media/status?task_id=0', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + opts.api_key },
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(data.detail || data.message || `DJPSD 开放 API Key 无效 (${res.status})`);
+    }
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(data.detail || data.message || `DJPSD 开放 API 连接失败 (${res.status})`);
+  }
+
   // DJPSD 视频：只读列表可同时验证网络和密钥，避免连接测试创建付费任务。
   if (provider === 'djpsd') {
     const root = base.replace(/\/v1$/i, '');
