@@ -61,30 +61,37 @@ test('首页提供紫黑工作台、快速生成器和真实最近项目入口',
   assert.match(filmListSource, /\.home-workbench[\s\S]*linear-gradient\(112deg/)
 })
 
-test('首页单次生成由后端模型目录驱动且不创建项目', () => {
+test('首页单次生成由后端模型目录驱动且一键进入真实生成', () => {
   assert.match(filmListSource, /listGenerationCatalog/)
   assert.match(filmListSource, /getCreditAccount/)
   assert.match(filmListSource, /v-model="homeModel"/)
   assert.match(filmListSource, /v-for="item in homeModelOptions"/)
   assert.match(filmListSource, /homeSelectedPrice/)
-  assert.match(filmListSource, /<option value="script">剧本<\/option>/)
+  assert.match(filmListSource, /<option value="text">文字<\/option>/)
+  assert.match(filmListSource, /ref="homeReferenceInput"/)
+  assert.match(filmListSource, /@change="onHomeReferenceChange"/)
+  assert.match(filmListSource, /estimateGenerationCredits/)
+  assert.match(filmListSource, /autoStart:\s*true/)
+  assert.match(filmListSource, /referenceImageUrl:\s*homeMediaType\.value[\s\S]*homeReferenceImageUrl\.value/)
   assert.match(filmListSource, /sessionStorage\.setItem\('moli_quick_create_draft'/)
   assert.match(filmListSource, /name:\s*'free-create'/)
   const startFromComposer = filmListSource.match(/function startFromComposer\(\) \{[\s\S]*?\n\}/)?.[0] || ''
   assert.doesNotMatch(startFromComposer, /dramaAPI\.create/)
 })
 
-test('独立创作页承接图片、视频和剧本真实生成且不依赖项目', () => {
+test('独立创作页承接文字、图片和视频真实生成且统一刷新积分', () => {
+  assert.match(freeCreateSource, /name="text"/)
   assert.match(freeCreateSource, /name="image"/)
   assert.match(freeCreateSource, /name="video"/)
-  assert.match(freeCreateSource, /name="script"/)
+  assert.match(freeCreateSource, /buildQuickGenerationRequest/)
+  assert.match(freeCreateSource, /request\.post\(requestSpec\.endpoint, requestSpec\.body\)/)
   assert.match(freeCreateSource, /imagesAPI\.create/)
   assert.match(freeCreateSource, /videosAPI\.create/)
   assert.match(freeCreateSource, /taskAPI\.get\(taskId\)/)
   assert.doesNotMatch(freeCreateSource, /imagesAPI\.getTask/)
-  assert.match(freeCreateSource, /generationAPI\.generateStory/)
-  assert.match(freeCreateSource, /episode_count:\s*episodeCount\.value/)
-  assert.match(freeCreateSource, /model:\s*model\.value/)
+  assert.match(freeCreateSource, /refreshCreditAccount/)
+  assert.match(freeCreateSource, /estimateGenerationCredits/)
+  assert.match(freeCreateSource, /draft\?\.autoStart/)
   assert.doesNotMatch(freeCreateSource, /dramaAPI\.create/)
 })
 

@@ -2,7 +2,7 @@
   <div class="free-create-page">
     <PlatformHeader title="自由创作" back-to="/" back-label="返回">
       <template #leading>
-        <p class="page-desc">不绑定项目，直接生成图片、视频或剧本</p>
+        <p class="page-desc">不绑定项目，直接生成文字、图片或视频</p>
       </template>
     </PlatformHeader>
 
@@ -10,6 +10,9 @@
       <!-- 左侧：输入面板 -->
       <div class="input-panel">
         <el-tabs v-model="mode" class="mode-tabs">
+          <el-tab-pane name="text">
+            <template #label><span class="mode-tab-label"><el-icon><Document /></el-icon>生成文字</span></template>
+          </el-tab-pane>
           <el-tab-pane name="image">
             <template #label><span class="mode-tab-label"><el-icon><Picture /></el-icon>生成图片</span></template>
           </el-tab-pane>
@@ -27,12 +30,16 @@
             v-model="prompt"
             type="textarea"
             :rows="5"
-            :placeholder="mode === 'script' ? '输入故事梗概、人物关系和期望风格...' : '描述你想要生成的画面内容...'"
+            :placeholder="mode === 'text'
+              ? '输入要生成、扩写或改写的文字要求...'
+              : mode === 'script'
+                ? '输入故事梗概、人物关系和期望风格...'
+                : '描述你想要生成的画面内容...'"
             class="prompt-input"
           />
         </div>
 
-        <div v-if="mode === 'video'" class="form-section">
+        <div v-if="mode === 'image' || mode === 'video'" class="form-section">
           <div class="form-label">参考图（可选）</div>
           <div class="ref-image-zone" @click="triggerRefImageUpload" @dragover.prevent @drop.prevent="onRefImageDrop">
             <template v-if="refImageDataUrl">
@@ -40,6 +47,8 @@
               <div class="ref-actions">
                 <el-button size="small" type="danger" plain @click.stop="clearRefImage">移除</el-button>
               </div>
+              <small v-if="refImageUploading">正在上传…</small>
+              <small v-else-if="refImageUploadError" class="upload-error">{{ refImageUploadError }}</small>
             </template>
             <template v-else>
               <el-icon class="upload-icon"><Picture /></el-icon>
@@ -50,11 +59,11 @@
         </div>
 
         <div class="form-section form-row">
-          <div v-if="mode !== 'script'" class="form-item">
+          <div v-if="mode === 'image' || mode === 'video'" class="form-item">
             <div class="form-label">风格</div>
             <el-input v-model="style" placeholder="例如: cinematic, anime..." />
           </div>
-          <div v-if="mode === 'image'" class="form-item">
+          <div v-if="mode === 'image' || mode === 'video'" class="form-item">
             <div class="form-label">比例</div>
             <el-select v-model="aspectRatio">
               <el-option label="16:9" value="16:9" />
@@ -66,10 +75,17 @@
           <div v-if="mode === 'video'" class="form-item">
             <div class="form-label">时长</div>
             <el-select v-model="duration">
-              <el-option label="3秒" :value="3" />
               <el-option label="5秒" :value="5" />
-              <el-option label="8秒" :value="8" />
               <el-option label="10秒" :value="10" />
+              <el-option label="15秒" :value="15" />
+            </el-select>
+          </div>
+          <div v-if="mode === 'video'" class="form-item">
+            <div class="form-label">清晰度</div>
+            <el-select v-model="resolution">
+              <el-option label="480P" value="480p" />
+              <el-option label="720P" value="720p" />
+              <el-option label="1080P" value="1080p" />
             </el-select>
           </div>
           <div v-if="mode === 'script'" class="form-item">
@@ -94,15 +110,20 @@
           </div>
         </div>
 
+        <div class="billing-summary" :class="{ 'is-insufficient': insufficientCredits }">
+          <span>预计消耗 <strong>{{ selectedCredits ?? '—' }}</strong> 积分</span>
+          <span>可用 <strong>{{ creditAccount.available }}</strong></span>
+        </div>
+
         <el-button
           type="primary"
           size="large"
           :loading="generating"
-          :disabled="!prompt.trim() || !model"
+          :disabled="!prompt.trim() || !model || selectedCredits == null || insufficientCredits || refImageUploading"
           class="generate-btn"
           @click="generate"
         >
-          {{ generating ? '生成中...' : ({ image: '生成图片', video: '生成视频', script: '生成剧本' }[mode]) }}
+          {{ generating ? '生成中...' : ({ text: '生成文字', image: '生成图片', video: '生成视频', script: '生成剧本' }[mode]) }}
         </el-button>
       </div>
 
@@ -127,7 +148,7 @@
           <div
             v-for="(item, idx) in results"
             :key="idx"
-            :class="['result-item', { 'result-item--script': item.type === 'script' }]"
+            :class="['result-item', { 'result-item--script': item.type === 'script' || item.type === 'text' }]"
           >
             <div class="result-media">
               <video
@@ -149,6 +170,9 @@
                   <pre>{{ episode.content }}</pre>
                 </section>
               </article>
+              <article v-else-if="item.type === 'text' && item.status === 'completed'" class="script-result">
+                <pre>{{ item.text }}</pre>
+              </article>
               <div v-else-if="item.status === 'pending' || item.status === 'processing'" class="media-loading">
                 <el-icon class="is-loading"><Loading /></el-icon>
                 <span>{{ item.status === 'processing' ? '生成中...' : '排队中...' }}</span>
@@ -161,7 +185,7 @@
             <div class="result-meta">
               <span class="result-prompt">{{ item.prompt }}</span>
               <div class="result-actions">
-                <el-button v-if="item.url" size="small" plain @click="downloadItem(item)">下载</el-button>
+                <el-button v-if="item.url || item.text" size="small" plain @click="downloadItem(item)">下载</el-button>
               </div>
             </div>
           </div>
@@ -188,6 +212,14 @@ import { uploadAPI } from '@/api/upload'
 import { generationSettingsAPI } from '@/api/prompts'
 import { generationAPI } from '@/api/generation'
 import { listGenerationCatalog } from '@/api/billing'
+import { getCreditAccount } from '@/api/auth'
+import request from '@/utils/request'
+import { normalizeCreditAccount } from '@/utils/billingDisplay'
+import {
+  buildQuickGenerationRequest,
+  estimateGenerationCredits,
+  normalizeQuickGenerationDraft,
+} from '@/utils/homeQuickGeneration'
 import { parseTaskResult, resolveTaskMediaUrl } from '@/utils/taskResult'
 
 const route = useRoute()
@@ -206,31 +238,61 @@ const previewUrl = ref(null)
 const refImageDataUrl = ref(null)
 const refImageLocalPath = ref(null)
 const refImageInput = ref(null)
+const refImageUploading = ref(false)
+const refImageUploadError = ref('')
+const creditAccount = ref(normalizeCreditAccount())
 /** 与后端视频异步超时一致（分钟 → 毫秒） */
 const videoPollMaxMs = ref(30 * 60 * 1000)
 const modelOptions = computed(() => {
   const category = mode.value === 'script' ? 'text' : mode.value
   return generationCatalog.value.filter((item) => item.category === category)
 })
+const selectedModel = computed(() => (
+  modelOptions.value.find((item) => item.model === model.value) || null
+))
+const selectedCredits = computed(() => estimateGenerationCredits(
+  selectedModel.value,
+  { duration: duration.value },
+))
+const insufficientCredits = computed(() => (
+  selectedCredits.value != null && creditAccount.value.available < selectedCredits.value
+))
+
+async function refreshCreditAccount() {
+  try {
+    creditAccount.value = normalizeCreditAccount(await getCreditAccount())
+  } catch (_) {
+    creditAccount.value = normalizeCreditAccount()
+  }
+}
 
 onMounted(async () => {
-  try {
-    generationCatalog.value = await listGenerationCatalog()
-  } catch (_) {
-    generationCatalog.value = []
-  }
-  const routeMode = ['image', 'video', 'script'].includes(String(route.query.mode))
+  const [catalog] = await Promise.allSettled([
+    listGenerationCatalog(),
+    refreshCreditAccount(),
+  ])
+  generationCatalog.value = catalog.status === 'fulfilled' && Array.isArray(catalog.value)
+    ? catalog.value
+    : []
+  const routeMode = ['text', 'image', 'video', 'script'].includes(String(route.query.mode))
     ? String(route.query.mode)
     : null
-  let draft = null
+  let rawDraft = null
   try {
-    draft = JSON.parse(sessionStorage.getItem('moli_quick_create_draft') || 'null')
+    rawDraft = JSON.parse(sessionStorage.getItem('moli_quick_create_draft') || 'null')
   } catch (_) {}
-  mode.value = routeMode || (['image', 'video', 'script'].includes(draft?.mode) ? draft.mode : 'image')
+  const draft = normalizeQuickGenerationDraft(rawDraft || {})
+  mode.value = routeMode || draft.mode
   prompt.value = typeof draft?.prompt === 'string' ? draft.prompt : ''
   aspectRatio.value = draft?.aspectRatio || '16:9'
   duration.value = Number(draft?.duration) || 5
   resolution.value = draft?.resolution || '720p'
+  if (draft?.referenceImageUrl) {
+    refImageDataUrl.value = draft.referenceImageUrl
+    refImageLocalPath.value = draft.referenceImageUrl.startsWith('/static/')
+      ? draft.referenceImageUrl.slice('/static/'.length)
+      : draft.referenceImageUrl
+  }
   model.value = modelOptions.value.some((item) => item.model === draft?.model)
     ? draft.model
     : (modelOptions.value[0]?.model || '')
@@ -240,6 +302,9 @@ onMounted(async () => {
     const m = Math.max(1, Number(res?.video_generation_timeout_minutes) || 30)
     videoPollMaxMs.value = m * 60 * 1000
   } catch (_) {}
+  if (draft?.autoStart && ['text', 'image', 'video'].includes(mode.value) && prompt.value && model.value) {
+    await generate()
+  }
 })
 
 watch(mode, () => {
@@ -255,6 +320,7 @@ function triggerRefImageUpload() {
 function clearRefImage() {
   refImageDataUrl.value = null
   refImageLocalPath.value = null
+  refImageUploadError.value = ''
 }
 
 async function onRefImageChange(e) {
@@ -270,15 +336,25 @@ function onRefImageDrop(e) {
 }
 
 async function processRefImageFile(file) {
+  refImageUploadError.value = ''
   const reader = new FileReader()
-  reader.onload = async (ev) => {
+  reader.onload = (ev) => {
     refImageDataUrl.value = ev.target.result
-    try {
-      const res = await uploadAPI.uploadImage(file)
-      refImageLocalPath.value = res?.local_path || null
-    } catch (_) {}
   }
   reader.readAsDataURL(file)
+  refImageUploading.value = true
+  try {
+    const res = await uploadAPI.uploadImage(file)
+    const localPath = String(res?.local_path || '').replace(/^\/+/, '')
+    if (!localPath) throw new Error('上传结果缺少文件路径')
+    refImageLocalPath.value = localPath
+  } catch (error) {
+    refImageLocalPath.value = null
+    refImageUploadError.value = error?.message || '参考图上传失败'
+    ElMessage.error(refImageUploadError.value)
+  } finally {
+    refImageUploading.value = false
+  }
 }
 
 function clearResults() {
@@ -286,6 +362,15 @@ function clearResults() {
 }
 
 function downloadItem(item) {
+  if (item.text) {
+    const objectUrl = URL.createObjectURL(new Blob([item.text], { type: 'text/plain;charset=utf-8' }))
+    const textLink = document.createElement('a')
+    textLink.href = objectUrl
+    textLink.download = `free_create_${Date.now()}.txt`
+    textLink.click()
+    URL.revokeObjectURL(objectUrl)
+    return
+  }
   if (!item.url) return
   const a = document.createElement('a')
   a.href = item.url
@@ -295,6 +380,22 @@ function downloadItem(item) {
 
 async function generate() {
   if (!prompt.value.trim()) return
+  if (selectedCredits.value == null) {
+    ElMessage.warning('当前模型尚未完成计费配置')
+    return
+  }
+  if (insufficientCredits.value) {
+    ElMessage.warning(`积分不足：需要 ${selectedCredits.value}，当前可用 ${creditAccount.value.available}`)
+    return
+  }
+  if (refImageUploading.value) {
+    ElMessage.warning('参考图仍在上传，请稍候')
+    return
+  }
+  if (refImageUploadError.value) {
+    ElMessage.warning('参考图上传失败，请移除或重新上传')
+    return
+  }
   generating.value = true
   const newItem = {
     type: mode.value,
@@ -304,10 +405,28 @@ async function generate() {
     url: null,
     error: null,
     episodes: [],
+    text: '',
   }
   results.value.unshift(newItem)
   try {
-    if (mode.value === 'script') {
+    const referenceImageUrl = refImageLocalPath.value ? `/static/${refImageLocalPath.value}` : ''
+    const requestSpec = buildQuickGenerationRequest({
+      mode: mode.value,
+      prompt: prompt.value,
+      model: model.value,
+      style: style.value,
+      aspectRatio: aspectRatio.value,
+      duration: duration.value,
+      resolution: resolution.value,
+      referenceImageUrl,
+      requestId: globalThis.crypto?.randomUUID?.() || `home-${Date.now()}`,
+    })
+    if (mode.value === 'text') {
+      const res = await request.post(requestSpec.endpoint, requestSpec.body)
+      newItem.text = String(res?.content || '').trim()
+      newItem.status = newItem.text ? 'completed' : 'failed'
+      if (!newItem.text) newItem.error = '模型未返回有效文字'
+    } else if (mode.value === 'script') {
       const res = await generationAPI.generateStory({
         premise: prompt.value,
         episode_count: episodeCount.value,
@@ -317,12 +436,7 @@ async function generate() {
       newItem.status = newItem.episodes.length ? 'completed' : 'failed'
       if (!newItem.episodes.length) newItem.error = '模型未返回有效剧本'
     } else if (mode.value === 'image') {
-      const res = await imagesAPI.create({
-        prompt: prompt.value,
-        style: style.value || undefined,
-        aspect_ratio: aspectRatio.value,
-        model: model.value,
-      })
+      const res = await imagesAPI.create(requestSpec.body)
       if (res?.task_id) {
         await pollImageTask(res.task_id, newItem)
       } else if (res?.image_url || res?.local_path) {
@@ -330,19 +444,7 @@ async function generate() {
         newItem.status = 'completed'
       }
     } else {
-      const body = {
-        prompt: prompt.value,
-        style: style.value || undefined,
-        aspect_ratio: aspectRatio.value,
-        duration: duration.value,
-        resolution: resolution.value,
-        model: model.value,
-      }
-      if (refImageLocalPath.value) {
-        body.first_frame_url = refImageLocalPath.value
-        body.image_url = '/static/' + refImageLocalPath.value
-      }
-      const res = await videosAPI.create(body)
+      const res = await videosAPI.create(requestSpec.body)
       if (res?.task_id) {
         await pollVideoTask(res.task_id, newItem)
       } else {
@@ -356,6 +458,8 @@ async function generate() {
     ElMessage.error(newItem.error)
   } finally {
     generating.value = false
+    await refreshCreditAccount()
+    window.dispatchEvent(new CustomEvent('moli:credit-account-refresh'))
   }
 }
 
@@ -580,6 +684,35 @@ async function pollVideoTask(taskId, item) {
 .upload-tip {
   font-size: 12px;
   color: #9ca3af;
+}
+.upload-error {
+  color: #fca5a5;
+}
+
+.billing-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 165, 43, .34);
+  border-radius: 9px;
+  color: #d4d4d8;
+  background: rgba(140, 75, 12, .1);
+  font-size: 13px;
+}
+
+.billing-summary strong {
+  color: #ffb34b;
+}
+
+.billing-summary.is-insufficient {
+  border-color: rgba(239, 68, 68, .48);
+  background: rgba(127, 29, 29, .14);
+}
+
+.billing-summary.is-insufficient strong {
+  color: #fca5a5;
 }
 
 .generate-btn {
