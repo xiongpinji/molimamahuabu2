@@ -109,10 +109,12 @@ test('节点配置弹窗显示在节点编辑器之上', () => {
   assert.match(dramaCanvasSource, /class="canvas-free-node-dialog"[\s\S]*:z-index="3400"/)
 })
 
-test('图片工具条和下拉菜单计入编辑器锚点边界且关闭操作取消延迟重开', () => {
+test('图片工具条和下拉菜单计入编辑器下边界且关闭操作取消延迟重开', () => {
   assert.match(nodeSource, /querySelectorAll\('\.image-node-toolbar, \.toolbar-menu, \.toolbar-history'\)/)
-  assert.match(nodeSource, /anchorTop = Math\.min\(anchorTop, bounds\.top\)/)
   assert.match(nodeSource, /anchorBottom = Math\.max\(anchorBottom, bounds\.bottom\)/)
+  assert.match(nodeSource, /const desiredTop = anchorBottom \+ nodeGap/)
+  assert.match(nodeSource, /ctx\?\.panCanvasForNodeEditor\?\.\(Math\.ceil\(overflowY\)\)/)
+  assert.match(nodeSource, /editorDock\.value = 'bottom'/)
   assert.match(nodeSource, /function closeEditor\(\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)/)
   assert.match(nodeSource, /@suspend-editor="closeEditor"/)
   assert.match(imageToolbarSource, /function openToolbarMenu\(menu\) \{[\s\S]*emit\('suspend-editor'\)/)

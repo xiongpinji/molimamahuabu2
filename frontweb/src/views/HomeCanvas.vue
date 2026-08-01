@@ -518,6 +518,22 @@ function registerCanvasFlowApi(api) {
   canvasFlowApi.value = api
 }
 
+function panCanvasForNodeEditor(overflowY) {
+  const distance = Math.max(0, Number(overflowY) || 0)
+  const api = canvasFlowApi.value
+  const viewport = api?.getViewport?.() || currentViewport.value
+  if (!distance || !api?.setViewport || !viewport) return false
+  const nextViewport = {
+    x: Number(viewport.x || 0),
+    y: Number(viewport.y || 0) - distance,
+    zoom: Number(viewport.zoom || 1),
+  }
+  currentViewport.value = nextViewport
+  api.setViewport(nextViewport, { duration: 0 })
+  scheduleSave()
+  return true
+}
+
 function screenToFlowPosition(clientX, clientY) {
   const el = canvasMainRef.value
   if (!el) return null
@@ -890,6 +906,7 @@ provide(CANVAS_CONTEXT_KEY, {
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
+  panCanvasForNodeEditor,
 })
 
 onMounted(() => {

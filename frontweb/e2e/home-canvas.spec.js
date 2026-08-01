@@ -175,7 +175,7 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(editorBefore.y).toBeGreaterThanOrEqual(0)
   expect(editorBefore.x + editorBefore.width).toBeLessThanOrEqual(viewport.width)
   expect(editorBefore.y + editorBefore.height).toBeLessThanOrEqual(viewport.height)
-  await expect(editor).toHaveAttribute('data-editor-dock', /^(top|bottom)$/)
+  await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
 
   const dragHandle = seedNode.locator('.node-icon')
   const dragBox = await dragHandle.boundingBox()
@@ -197,14 +197,11 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(editorAfter.y + editorAfter.height).toBeLessThanOrEqual(viewport.height)
 
   const anchoredGap = async () => {
-    const [nodeBox, editorBox, dock] = await Promise.all([
+    const [nodeBox, editorBox] = await Promise.all([
       visualNode.boundingBox(),
       editor.boundingBox(),
-      editor.getAttribute('data-editor-dock'),
     ])
-    return Math.abs((dock === 'top'
-      ? nodeBox.y - editorBox.y - editorBox.height
-      : editorBox.y - nodeBox.y - nodeBox.height) - 12)
+    return Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)
   }
   const canvasBox = await page.locator('.canvas-main').boundingBox()
   const transformationPane = page.locator('.vue-flow__transformationpane')
@@ -232,6 +229,32 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   expect(restoredEditor.y).toBeGreaterThanOrEqual(0)
   expect(restoredEditor.x + restoredEditor.width).toBeLessThanOrEqual(viewport.width)
   expect(restoredEditor.y + restoredEditor.height).toBeLessThanOrEqual(viewport.height)
+})
+
+test('节点靠近视口底部时编辑器仍固定在节点下方', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, {
+    ...seededHomeCanvasState,
+    viewport: { x: 0, y: 350, zoom: 0.75 },
+  })
+
+  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  await node.click()
+
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
+
+  const [nodeBox, editorBox] = await Promise.all([
+    node.locator('.home-canvas-node').boundingBox(),
+    editor.boundingBox(),
+  ])
+  const viewport = page.viewportSize()
+
+  expect(nodeBox).not.toBeNull()
+  expect(editorBox).not.toBeNull()
+  expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
 })
 
 test('节点编辑器在不同画布缩放下完整显示且根容器不产生滚动条', async ({ page }) => {
@@ -307,11 +330,10 @@ test('所有节点类型和节点宽度都使用完整无滚动的编辑框', as
 
     const editor = page.locator('.node-expanded-editor')
     await expect(editor).toBeVisible()
-    const [nodeBox, editorBox, footerBox, dock, layout] = await Promise.all([
+    const [nodeBox, editorBox, footerBox, layout] = await Promise.all([
       node.locator('.home-canvas-node').boundingBox(),
       editor.boundingBox(),
       editor.locator('.editor-footer').boundingBox(),
-      editor.getAttribute('data-editor-dock'),
       editor.evaluate((element) => {
         const style = getComputedStyle(element)
         return {
@@ -338,9 +360,8 @@ test('所有节点类型和节点宽度都使用完整无滚动的编辑框', as
     expect(layout.overflowY).not.toMatch(/^(auto|scroll)$/)
     expect(footerBox.y).toBeGreaterThanOrEqual(editorBox.y)
     expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(editorBox.y + editorBox.height + 1)
-    expect(Math.abs((dock === 'top'
-      ? nodeBox.y - editorBox.y - editorBox.height
-      : editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+    await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
+    expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
   }
 })
 
