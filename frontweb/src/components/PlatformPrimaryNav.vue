@@ -17,6 +17,14 @@
       画布
     </RouterLink>
     <RouterLink
+      to="/script-analysis"
+      class="platform-primary-nav__link"
+      :class="{ 'is-active': scriptAnalysisActive }"
+      :aria-current="scriptAnalysisActive ? 'page' : undefined"
+    >
+      剧本分析
+    </RouterLink>
+    <RouterLink
       to="/factory"
       class="platform-primary-nav__link"
       :class="{ 'is-active': factoryActive }"
@@ -35,6 +43,7 @@ const route = useRoute()
 
 const homeActive = computed(() => route.name === 'list')
 const canvasActive = computed(() => ['canvas-projects', 'standalone-canvas', 'home-canvas-local'].includes(route.name))
+const scriptAnalysisActive = computed(() => route.name === 'script-analysis')
 const factoryActive = computed(() => [
   'factory',
   'drama-detail',
