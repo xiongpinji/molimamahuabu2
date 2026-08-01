@@ -8,6 +8,7 @@ function routes(db, log, options = {}) {
       try {
         const result = await canvasTextGeneration.generate(db, log, {
           dramaId: req.body?.drama_id,
+          requestId: req.body?.request_id,
           prompt: req.body?.prompt,
           model: req.body?.model,
           billingEnabled: options.billingEnabled,
@@ -17,7 +18,11 @@ function routes(db, log, options = {}) {
         response.success(res, result);
       } catch (error) {
         if (textGenerationBilling.respondError(response, res, error)) return;
-        if (error.message?.includes('请输入') || error.message?.includes('必须是正整数')) {
+        if (
+          error.message?.includes('请输入')
+          || error.message?.includes('必须是正整数')
+          || error.message?.includes('不能超过')
+        ) {
           return response.badRequest(res, error.message);
         }
         log.error('canvas text generation', { error: error.message });

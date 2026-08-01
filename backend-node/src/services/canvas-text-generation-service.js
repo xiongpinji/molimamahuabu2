@@ -1,11 +1,19 @@
+const { randomUUID } = require('crypto');
 const aiClient = require('./aiClient');
 const textGenerationBilling = require('./text-generation-billing-service');
 
 async function generate(db, log, input = {}) {
   const prompt = String(input.prompt || '').trim();
   if (!prompt) throw new Error('请输入文本生成要求');
-  const dramaId = Number(input.dramaId);
-  if (!Number.isInteger(dramaId) || dramaId <= 0) throw new Error('drama_id 必须是正整数');
+  const hasDramaId = input.dramaId != null && String(input.dramaId).trim() !== '';
+  const dramaId = hasDramaId ? Number(input.dramaId) : null;
+  if (hasDramaId && (!Number.isInteger(dramaId) || dramaId <= 0)) {
+    throw new Error('drama_id 必须是正整数');
+  }
+  const standaloneRequestId = String(input.requestId || '').trim();
+  const resourceId = hasDramaId ? String(dramaId) : (standaloneRequestId || randomUUID());
+  if (resourceId.length > 120) throw new Error('request_id 不能超过 120 个字符');
+  const operation = hasDramaId ? 'canvas_text' : 'standalone_text';
 
   let billing = null;
   try {
@@ -15,9 +23,9 @@ async function generate(db, log, input = {}) {
       userId: input.userId,
       requestedModel: input.model,
       sceneKey: 'canvas_text',
-      resourceType: 'canvas_text',
-      resourceId: String(dramaId),
-      operation: 'canvas_text',
+      resourceType: operation,
+      resourceId,
+      operation,
     });
     const content = await aiClient.generateText(
       db,

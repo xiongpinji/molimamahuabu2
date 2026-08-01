@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 const aiClient = require('../src/services/aiClient');
 const aiConfig = require('../src/services/aiConfigService');
 const canvasText = require('../src/services/canvas-text-generation-service');
+const credits = require('../src/services/creditLedgerService');
+const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -58,4 +60,42 @@ test('独立画布文本节点拒绝空提示词', async () => {
   } finally {
     db.close();
   }
+});
+
+test('首页文字生成无需项目并按统一模型价格结算', async (t) => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  aiConfig.createConfig(db, log, {
+    service_type: 'text',
+    provider: 'openai',
+    name: '首页文字模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['home-text-model'],
+    default_model: 'home-text-model',
+    is_default: true,
+  });
+  credits.setAccountBalance(db, 'user-home', 20);
+  prices.set(db, 'home-text-model', 5, { category: 'text' });
+  const original = aiClient.generateText;
+  t.after(() => {
+    aiClient.generateText = original;
+    db.close();
+  });
+  aiClient.generateText = async () => '雨幕落下，城市亮起第一盏灯。';
+
+  const result = await canvasText.generate(db, log, {
+    prompt: '写一段雨夜开场',
+    model: 'home-text-model',
+    requestId: 'home-request-1',
+    billingEnabled: true,
+    userId: 'user-home',
+  });
+
+  assert.equal(result.content, '雨幕落下，城市亮起第一盏灯。');
+  assert.equal(credits.getAccount(db, 'user-home').spent, 5);
+  const reservation = db.prepare('SELECT * FROM usage_reservations').get();
+  assert.equal(reservation.resource_type, 'standalone_text');
+  assert.equal(reservation.resource_id, 'home-request-1');
+  assert.equal(reservation.status, 'confirmed');
 });

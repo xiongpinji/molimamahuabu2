@@ -34,16 +34,34 @@
           <h1 id="home-workbench-title">你好，今天想生成点什么？</h1>
 
           <section class="home-composer" aria-label="快速生成">
-            <button class="home-composer__reference" type="button" @click="openMediaLibrary">
-              <span class="home-composer__plus">＋</span>
-              <span>参考内容</span>
+            <button
+              class="home-composer__reference"
+              type="button"
+              :disabled="homeMediaType === 'text' || homeReferenceUploading"
+              @click="triggerHomeReferenceUpload"
+            >
+              <img v-if="homeReferencePreview" :src="homeReferencePreview" alt="已上传的参考图" />
+              <span v-else class="home-composer__plus">＋</span>
+              <span v-if="homeReferenceUploading">上传中…</span>
+              <span v-else-if="homeReferencePreview">点击更换参考图</span>
+              <span v-else-if="homeMediaType === 'text'">文字无需参考图</span>
+              <span v-else>上传参考图</span>
             </button>
+            <input
+              ref="homeReferenceInput"
+              type="file"
+              accept="image/*"
+              hidden
+              @change="onHomeReferenceChange"
+            />
             <div class="home-composer__body">
               <textarea
                 v-model="homePrompt"
                 rows="3"
                 aria-label="描述想生成的内容"
-                placeholder="上传参考素材、输入文字，自由组合图片、文字、音频与视频。"
+                :placeholder="homeMediaType === 'text'
+                  ? '描述需要生成或改写的文字内容。'
+                  : '输入生成要求，可上传一张参考图保持画面一致性。'"
               />
               <div class="home-composer__toolbar">
                 <div class="home-composer__controls">
@@ -52,7 +70,7 @@
                     <select v-model="homeMediaType" aria-label="生成类型">
                       <option value="video">视频</option>
                       <option value="image">图片</option>
-                      <option value="script">剧本</option>
+                      <option value="text">文字</option>
                     </select>
                   </label>
                   <label class="home-control">
@@ -67,7 +85,7 @@
                       </option>
                     </select>
                   </label>
-                  <label class="home-control">
+                  <label v-if="homeMediaType !== 'text'" class="home-control">
                     <select v-model="homeAspectRatio" aria-label="画面比例">
                       <option value="16:9">16:9</option>
                       <option value="9:16">9:16</option>
@@ -96,12 +114,13 @@
                   <span
                     class="home-composer__credits"
                     aria-label="预计消耗积分"
-                    :title="`可用积分 ${homeBalance}`"
-                  >✦ {{ homeSelectedPrice }}</span>
+                    :class="{ 'is-insufficient': homeInsufficientCredits }"
+                    :title="`预计消耗 ${homeSelectedPrice ?? '—'} 积分，可用积分 ${homeBalance}`"
+                  >✦ {{ homeSelectedPrice ?? '—' }}</span>
                   <button
                     type="button"
                     class="home-generate"
-                    :disabled="!homeModel"
+                    :disabled="!homePrompt.trim() || !homeModel || homeSelectedPrice == null || homeInsufficientCredits || homeReferenceUploading"
                     @click="startFromComposer"
                   >
                     <span>✦</span>生成
@@ -423,6 +442,11 @@ import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
 import { listGenerationCatalog } from '@/api/billing'
 import { getCreditAccount } from '@/api/auth'
+import { uploadAPI } from '@/api/upload'
+import {
+  estimateGenerationCredits,
+  normalizeQuickGenerationDraft,
+} from '@/utils/homeQuickGeneration'
 import {
   normalizeProjectMode,
   projectCanvasPath,
@@ -448,6 +472,10 @@ const homeDuration = ref(5)
 const homeResolution = ref('720p')
 const homeGenerationCatalog = ref([])
 const homeBalance = ref(0)
+const homeReferenceInput = ref(null)
+const homeReferencePreview = ref('')
+const homeReferenceImageUrl = ref('')
+const homeReferenceUploading = ref(false)
 const homeProjectsRef = ref(null)
 const searchKeyword = ref('')
 const projectFolders = ref([])
@@ -462,18 +490,49 @@ function goMaterialLibrary(type) {
   router.push({ name: `material-${type}` })
 }
 
-function openMediaLibrary() {
-  router.push({ name: 'media-library' })
+const homeModelOptions = computed(() => {
+  return homeGenerationCatalog.value.filter((item) => item.category === homeMediaType.value)
+})
+
+const homeSelectedModel = computed(() => (
+  homeModelOptions.value.find((item) => item.model === homeModel.value) || null
+))
+const homeSelectedPrice = computed(() => estimateGenerationCredits(
+  homeSelectedModel.value,
+  { duration: homeDuration.value },
+))
+const homeInsufficientCredits = computed(() => (
+  homeSelectedPrice.value != null && homeBalance.value < homeSelectedPrice.value
+))
+
+function triggerHomeReferenceUpload() {
+  if (homeMediaType.value === 'text' || homeReferenceUploading.value) return
+  homeReferenceInput.value?.click()
 }
 
-const homeModelOptions = computed(() => {
-  const category = homeMediaType.value === 'script' ? 'text' : homeMediaType.value
-  return homeGenerationCatalog.value.filter((item) => item.category === category)
-})
-
-const homeSelectedPrice = computed(() => {
-  return homeModelOptions.value.find((item) => item.model === homeModel.value)?.credits ?? 0
-})
+async function onHomeReferenceChange(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('参考内容目前只支持图片文件')
+    return
+  }
+  homeReferenceUploading.value = true
+  try {
+    const uploaded = await uploadAPI.uploadImage(file)
+    const localPath = String(uploaded?.local_path || '').replace(/^\/+/, '')
+    if (!localPath) throw new Error('上传结果缺少文件路径')
+    homeReferenceImageUrl.value = `/static/${localPath}`
+    homeReferencePreview.value = uploaded?.url || homeReferenceImageUrl.value
+  } catch (error) {
+    homeReferenceImageUrl.value = ''
+    homeReferencePreview.value = ''
+    ElMessage.error(error?.message || '参考图上传失败')
+  } finally {
+    homeReferenceUploading.value = false
+  }
+}
 
 async function loadHomeGenerationConfig() {
   const [catalog, account] = await Promise.allSettled([
@@ -488,18 +547,33 @@ async function loadHomeGenerationConfig() {
 }
 
 function startFromComposer() {
+  if (!homePrompt.value.trim()) {
+    ElMessage.warning('请先输入生成要求')
+    return
+  }
   if (!homeModel.value) {
     ElMessage.warning('当前没有管理员已启用并配置计费的模型')
     return
   }
-  sessionStorage.setItem('moli_quick_create_draft', JSON.stringify({
+  if (homeSelectedPrice.value == null) {
+    ElMessage.warning('当前模型尚未完成计费配置')
+    return
+  }
+  if (homeInsufficientCredits.value) {
+    ElMessage.warning(`积分不足：需要 ${homeSelectedPrice.value}，当前可用 ${homeBalance.value}`)
+    return
+  }
+  const draft = normalizeQuickGenerationDraft({
     mode: homeMediaType.value,
     prompt: homePrompt.value.trim(),
     model: homeModel.value,
     aspectRatio: homeAspectRatio.value,
     duration: homeDuration.value,
     resolution: homeResolution.value,
-  }))
+    referenceImageUrl: homeMediaType.value === 'text' ? '' : homeReferenceImageUrl.value,
+    autoStart: true,
+  })
+  sessionStorage.setItem('moli_quick_create_draft', JSON.stringify(draft))
   router.push({ name: 'free-create', query: { mode: homeMediaType.value, source: 'home' } })
 }
 
@@ -1136,6 +1210,18 @@ html.light .btn-import {
   color: #ff9a72;
   background: rgba(255, 113, 57, .07);
 }
+.home-composer__reference:disabled {
+  cursor: default;
+  border-color: #303034;
+  color: #66666d;
+  background: #101012;
+}
+.home-composer__reference img {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  object-fit: cover;
+}
 .home-composer__plus {
   color: #b4b4ba;
   font-size: 32px;
@@ -1214,6 +1300,11 @@ html.light .btn-import {
   border-color: rgba(255, 165, 43, .48);
   color: #ffb34b;
   background: rgba(140, 75, 12, .13);
+}
+.home-composer__credits.is-insufficient {
+  border-color: rgba(239, 68, 68, .55);
+  color: #fca5a5;
+  background: rgba(127, 29, 29, .18);
 }
 .home-generate {
   display: inline-flex;
