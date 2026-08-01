@@ -6,6 +6,7 @@ import {
   buildCanvasLayoutPayload,
   resolveFreeCanvasNodes,
 } from '../src/utils/canvasLayout.js'
+import { isCanvasGeneratedResultAsset } from '../src/utils/freeCanvasGeneration.js'
 
 const dramaCanvasSource = readFileSync(
   fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)),
@@ -214,6 +215,33 @@ test('独立画布图谱不生成剧集骨架且保留自由节点和连线', ()
   assert.match(adapterSource, /resolveFreeCanvasNodes\(savedLayout\)/)
   assert.match(adapterSource, /appendManualEdges\(edges, savedLayout, nodes\)/)
   assert.match(adapterSource, /if \(options\.standalone\) \{[\s\S]*return buildStandaloneCanvasGraph\(savedLayout, options\.projectAssets\)/)
+})
+
+test('节点自动入库的图片视频结果不重复显示为画布项目素材', () => {
+  assert.equal(isCanvasGeneratedResultAsset({
+    type: 'image',
+    category: 'canvas-result',
+    metadata: { canvas_node_id: 'free:image:1' },
+  }), true)
+  assert.equal(isCanvasGeneratedResultAsset({
+    type: 'video',
+    category: 'canvas-result',
+    metadata: { source: 'canvas_node_result', auto_saved: true },
+  }), true)
+  assert.equal(isCanvasGeneratedResultAsset({
+    type: 'image',
+    category: 'reference',
+    metadata: {},
+  }), false)
+  assert.equal(isCanvasGeneratedResultAsset({
+    type: 'audio',
+    category: 'canvas-result',
+    metadata: { canvas_node_id: 'free:audio:1' },
+  }), false)
+  assert.match(
+    adapterSource,
+    /function isProjectMediaAsset\(asset\) \{[\s\S]*if \(isCanvasGeneratedResultAsset\(asset\)\) return false/,
+  )
 })
 
 test('独立画布菜单用配置节点替代图片视频直接上传', () => {

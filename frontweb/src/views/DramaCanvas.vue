@@ -657,6 +657,10 @@ import {
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
+  collectDroppedImageFiles,
+  createDroppedImageNodeSpecs,
+} from '@/utils/canvasImageDrop'
+import {
   canvasModelServiceType,
   canvasNodeKind,
   resolveCanvasNodeConnection,
@@ -789,6 +793,7 @@ const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflo
 let canvasPersistQueue = Promise.resolve()
 const freeCanvasAssetSaveFlights = new Map()
 const freeCanvasTaskResumeFlights = new Map()
+const localPreviewUrls = new Set()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
@@ -1039,6 +1044,7 @@ let savedHintTimer = null
 let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
+let freeNodeSequence = 0
 let runQueueTimer = null
 
 const nodeTypes = {
@@ -2182,24 +2188,58 @@ function canvasCenterFlowPosition() {
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
 }
 
-function droppedCanvasImageFile(event) {
-  return [...(event.dataTransfer?.files || [])].find((file) => file.type?.startsWith('image/')) || null
-}
-
 function onCanvasImageDragOver(event) {
-  if (!isStandaloneCanvas.value || !droppedCanvasImageFile(event)) return
+  if (!isStandaloneCanvas.value || !collectDroppedImageFiles(event.dataTransfer).length) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 async function onCanvasImageDrop(event) {
-  const file = droppedCanvasImageFile(event)
-  if (!isStandaloneCanvas.value || !file) return
+  const files = collectDroppedImageFiles(event.dataTransfer)
+  if (!isStandaloneCanvas.value || !files.length) return
   event.preventDefault()
   event.stopPropagation()
-  const position = screenToFlowPosition(event.clientX, event.clientY)
-  const nodeId = await createFreeCanvasNode('image', position)
-  if (nodeId) await uploadFreeCanvasNodeFile(nodeId, file)
+  const origin = screenToFlowPosition(event.clientX, event.clientY)
+  const specs = createDroppedImageNodeSpecs(files, origin, (file) => {
+    const previewUrl = URL.createObjectURL(file)
+    localPreviewUrls.add(previewUrl)
+    return previewUrl
+  })
+  const droppedNodes = []
+  for (const spec of specs) {
+    const nodeId = await createFreeCanvasNode('image', spec.position, spec.data)
+    if (!nodeId) {
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+      continue
+    }
+    droppedNodes.push({ spec, nodeId })
+  }
+  for (const { spec, nodeId } of droppedNodes) {
+    try {
+      const asset = await uploadAPI.uploadMedia(spec.file, { dramaId: drama.value.id })
+      const url = assetDisplayUrl(asset)
+      if (!url) throw new Error('素材上传成功但未返回可用地址')
+      await patchFreeCanvasNodeData(nodeId, {
+        url,
+        status: 'success',
+        error: '',
+        savedAssetId: String(asset?.id || ''),
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        localPreview: false,
+      })
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+    } catch (error) {
+      await patchFreeCanvasNodeData(nodeId, {
+        url: spec.previewUrl,
+        status: 'failed',
+        error: error?.message || '节点素材上传失败',
+        localPreview: true,
+      })
+    }
+  }
 }
 
 function resetFreeNodeDialog() {
@@ -2234,7 +2274,7 @@ async function createFreeCanvasNode(kind, flowPosition = null, initialData = {})
   const kindDefaults = defaults[kind] || {}
   closeContextMenu()
   const previousState = currentInteractionState()
-  const id = `free:${kind}:${Date.now()}`
+  const id = `free:${kind}:${Date.now()}:${freeNodeSequence++}`
   const title = {
     text: '文本',
     image: '图片',
@@ -7231,6 +7271,8 @@ onBeforeUnmount(() => {
     window.removeEventListener('keyup', onCanvasKeyup)
     window.removeEventListener('blur', onCanvasBlur)
   }
+  for (const previewUrl of localPreviewUrls) URL.revokeObjectURL(previewUrl)
+  localPreviewUrls.clear()
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })

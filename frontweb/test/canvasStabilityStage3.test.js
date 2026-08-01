@@ -24,10 +24,11 @@ test('图片和视频预览都可通过关闭操作及 Escape 退出', () => {
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
   assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
   assert.match(canvasSource, /@drop="onCanvasImageDrop"/)
-  assert.match(canvasSource, /file\.type\?\.startsWith\('image\/'\)/)
+  assert.match(canvasSource, /collectDroppedImageFiles/)
+  assert.match(canvasSource, /createDroppedImageNodeSpecs/)
   assert.match(canvasSource, /screenToFlowPosition\(event\.clientX, event\.clientY\)/)
-  assert.match(canvasSource, /createFreeCanvasNode\('image', position\)/)
-  assert.match(canvasSource, /uploadFreeCanvasNodeFile\(nodeId, file\)/)
+  assert.match(canvasSource, /createFreeCanvasNode\('image', spec\.position, spec\.data\)/)
+  assert.match(canvasSource, /uploadAPI\.uploadMedia\(spec\.file, \{ dramaId: drama\.value\.id \}\)/)
 })
 
 test('连线悬停时可直接运行下游图片节点', () => {

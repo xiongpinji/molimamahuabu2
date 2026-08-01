@@ -1,0 +1,42 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const homeCanvasSource = readFileSync(
+  fileURLToPath(new URL('../src/views/HomeCanvas.vue', import.meta.url)),
+  'utf8',
+)
+const dramaCanvasSource = readFileSync(
+  fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)),
+  'utf8',
+)
+
+for (const [label, source] of [
+  ['首页自由画布', homeCanvasSource],
+  ['项目独立画布', dramaCanvasSource],
+]) {
+  test(`${label}支持多图片拖入、即时预览和逐张上传`, () => {
+    assert.match(source, /@dragover="onCanvasImageDragOver"/)
+    assert.match(source, /@drop="onCanvasImageDrop"/)
+    assert.match(source, /collectDroppedImageFiles/)
+    assert.match(source, /createDroppedImageNodeSpecs/)
+    assert.match(source, /URL\.createObjectURL/)
+    assert.match(source, /URL\.revokeObjectURL/)
+    assert.match(source, /const droppedNodes =/)
+    assert.match(source, /for \(const \{ spec, nodeId \} of droppedNodes\)/)
+    assert.ok(source.indexOf('const droppedNodes =') < source.indexOf('for (const { spec, nodeId } of droppedNodes)'))
+  })
+}
+
+test('首页自由画布上传成功后保存稳定图片地址，失败时保留本地预览', () => {
+  assert.match(homeCanvasSource, /uploadAPI\.uploadImage\(spec\.file\)/)
+  assert.match(homeCanvasSource, /url: String\(uploaded\?\.url \|\| ''\)/)
+  assert.match(homeCanvasSource, /url: spec\.previewUrl/)
+  assert.match(homeCanvasSource, /localPreview: true/)
+})
+
+test('项目独立画布上传时携带项目 id 并保留现有素材闭环', () => {
+  assert.match(dramaCanvasSource, /uploadAPI\.uploadMedia\(spec\.file, \{ dramaId: drama\.value\.id \}\)/)
+  assert.match(dramaCanvasSource, /savedAssetId: String\(asset\?\.id \|\| ''\)/)
+})

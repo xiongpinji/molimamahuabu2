@@ -404,6 +404,10 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(supportedRes.payload.data.operations.panorama_scene.available, true);
   assert.equal(supportedRes.payload.data.operations.image_ideation.available, true);
   assert.equal(supportedRes.payload.data.operations.image_ideation.protocol, 'aihubcc');
+  assert.equal(supportedRes.payload.data.operations.portrait_texture.available, true);
+  assert.equal(supportedRes.payload.data.operations.portrait_texture.protocol, 'aihubcc');
+  assert.equal(supportedRes.payload.data.operations.portrait_emotion.available, true);
+  assert.equal(supportedRes.payload.data.operations.portrait_emotion.protocol, 'aihubcc');
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -439,6 +443,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(undeclaredRes.payload.data.operations.panorama.available, false);
   assert.equal(undeclaredRes.payload.data.operations.panorama_scene.available, false);
   assert.equal(undeclaredRes.payload.data.operations.image_ideation.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.portrait_texture.available, false);
+  assert.equal(undeclaredRes.payload.data.operations.portrait_emotion.available, false);
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -473,6 +479,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
   assert.equal(unsupportedRes.payload.data.operations.panorama.available, false);
   assert.equal(unsupportedRes.payload.data.operations.panorama_scene.available, false);
   assert.equal(unsupportedRes.payload.data.operations.image_ideation.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.portrait_texture.available, false);
+  assert.equal(unsupportedRes.payload.data.operations.portrait_emotion.available, false);
   for (const operation of [
     'angle_ideation',
     'character_views',
@@ -567,6 +575,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
     assert.equal(strictRes.payload.data.operations.panorama.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.panorama_scene.available, false, config.name);
     assert.equal(strictRes.payload.data.operations.image_ideation.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.portrait_texture.available, false, config.name);
+    assert.equal(strictRes.payload.data.operations.portrait_emotion.available, false, config.name);
     for (const operation of [
       'angle_ideation',
       'character_views',
