@@ -483,7 +483,7 @@
             <el-slider v-model="portraitEmotionForm.intensity" :min="1" :max="5" :step="1" />
           </el-form-item>
           <p class="crop-hint">
-            完整原图与选中人脸裁片共同提交，只改变目标人物表情并生成同尺寸新素材。
+            选中脸部将作为主编辑区域，生成后局部合成回原图，不影响其他人物。
           </p>
         </template>
 
@@ -881,6 +881,7 @@ import {
 } from '@element-plus/icons-vue'
 import { imageToolsAPI } from '@/api/imageTools'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { detectPortraitFacesInImage } from '@/utils/portraitFaceDetection'
 
 const props = defineProps({
   nodeId: { type: String, required: true },
@@ -1539,21 +1540,9 @@ async function useManualPortraitFaceSelection() {
 async function detectPortraitFaces() {
   if (editorOperation.value !== 'portrait_emotion' || !portraitFaceImage.value) return
   destroyPortraitCropper()
-  if (typeof window.FaceDetector !== 'function') {
-    portraitFaceMessage.value = '自动识别不可用，请手动框选需要调节的人脸'
-    await useManualPortraitFaceSelection()
-    return
-  }
+  portraitFaceMessage.value = '正在使用 MediaPipe 识别人脸…'
   try {
-    const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 10 })
-    const detections = await detector.detect(portraitFaceImage.value)
-    const image = portraitFaceImage.value
-    portraitFaces.value = detections.map(({ boundingBox }) => clampFaceRegion({
-      x: boundingBox.x / image.naturalWidth,
-      y: boundingBox.y / image.naturalHeight,
-      width: boundingBox.width / image.naturalWidth,
-      height: boundingBox.height / image.naturalHeight,
-    }))
+    portraitFaces.value = await detectPortraitFacesInImage(portraitFaceImage.value)
     if (!portraitFaces.value.length) {
       portraitFaceMessage.value = '未自动识别到人脸，请手动框选'
       await useManualPortraitFaceSelection()
@@ -1566,7 +1555,7 @@ async function detectPortraitFaces() {
     await nextTick()
     await initPortraitCropper()
   } catch {
-    portraitFaceMessage.value = '自动识别不可用，请手动框选需要调节的人脸'
+    portraitFaceMessage.value = '人脸识别失败，请手动框选需要调节的人脸'
     await useManualPortraitFaceSelection()
   }
 }

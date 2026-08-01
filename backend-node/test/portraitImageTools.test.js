@@ -143,10 +143,11 @@ test('人像调节通过真实参考图模型生成同尺寸派生素材且不�
   assert.equal(fs.existsSync(fixture.sourcePath), true);
 })
 
-test('情绪调节把完整原图和真实脸部裁片同时提交并清理临时文件', async (t) => {
+test('情绪调节只提交扩展脸部裁片并局部合成回原尺寸', async (t) => {
   const fixture = await createFixture(t);
   let generationRequest = null;
   let faceMetadata = null;
+  let faceReferencePath = null;
   const handlers = createImageToolRoutes(
     fixture.db,
     { info() {}, warn() {}, error() {} },
@@ -160,9 +161,18 @@ test('情绪调节把完整原图和真实脸部裁片同时提交并清理临�
         operations: ['portrait_emotion'],
         async generate(request) {
           generationRequest = request;
-          faceMetadata = await sharp(request.referenceImages[1]).metadata();
+          faceReferencePath = request.referenceImage;
+          faceMetadata = await sharp(request.referenceImage).metadata();
+          const resultBuffer = await sharp({
+            create: {
+              width: faceMetadata.width,
+              height: faceMetadata.height,
+              channels: 3,
+              background: '#f02532',
+            },
+          }).png().toBuffer();
           return {
-            image_url: `data:image/png;base64,${fixture.resultBuffer.toString('base64')}`,
+            image_url: `data:image/png;base64,${resultBuffer.toString('base64')}`,
           };
         },
       },
@@ -178,31 +188,103 @@ test('情绪调节把完整原图和真实脸部裁片同时提交并清理临�
       parameters: {
         emotion: '浅然莞尔',
         intensity: 4,
-        faceRegion: { x: 0.25, y: 0.2, width: 0.5, height: 0.5 },
+        faceRegion: { x: 0.4, y: 0.25, width: 0.2, height: 0.25 },
       },
     },
   }, res);
 
   assert.equal(res.statusCode, 201, JSON.stringify(res.payload));
-  assert.equal(faceMetadata.width, 60);
-  assert.equal(faceMetadata.height, 40);
-  assert.equal(generationRequest.referenceImages[0], fixture.sourcePath);
+  assert.ok(faceMetadata.width > 24 && faceMetadata.width < 120);
+  assert.ok(faceMetadata.height > 20 && faceMetadata.height < 80);
+  assert.equal(generationRequest.size, `${faceMetadata.width}x${faceMetadata.height}`);
+  assert.notEqual(generationRequest.referenceImage, fixture.sourcePath);
+  assert.equal(generationRequest.referenceImages, undefined);
   assert.match(generationRequest.prompt, /浅然莞尔/);
   assert.match(generationRequest.prompt, /嘴角/);
   assert.match(generationRequest.prompt, /眼角|眼神/);
   assert.match(generationRequest.prompt, /强度 4\/5：明显/);
   assert.match(generationRequest.prompt, /必须产生相对原图可辨识的表情变化/);
-  assert.match(generationRequest.systemPrompt, /visibly change the selected facial expression/);
-  assert.match(generationRequest.systemPrompt, /Image 2/);
-  assert.equal(fs.existsSync(generationRequest.referenceImages[1]), false);
+  assert.match(generationRequest.systemPrompt, /cropped target face/);
+  assert.doesNotMatch(generationRequest.systemPrompt, /Image 2/);
+  assert.equal(fs.existsSync(faceReferencePath), false);
   const resultAsset = assetService.getById(fixture.db, res.payload.data.resultAssetId);
+  const outputMetadata = await sharp(resultAsset.local_path).metadata();
+  assert.equal(outputMetadata.width, 120);
+  assert.equal(outputMetadata.height, 80);
+  const outsidePixel = await sharp(resultAsset.local_path)
+    .extract({ left: 2, top: 2, width: 1, height: 1 })
+    .raw()
+    .toBuffer();
+  assert.deepEqual([...outsidePixel], [107, 124, 165, 255]);
+  const changedPixel = await sharp(resultAsset.local_path)
+    .extract({ left: 60, top: 30, width: 1, height: 1 })
+    .raw()
+    .toBuffer();
+  assert.notDeepEqual([...changedPixel], [107, 124, 165, 255]);
+  const sourcePixels = await sharp(fixture.sourcePath).removeAlpha().raw().toBuffer();
+  const outputPixels = await sharp(resultAsset.local_path).removeAlpha().raw().toBuffer();
+  const editRegion = resultAsset.metadata.parameters.editRegion;
+  for (let y = 0; y < 80; y += 1) {
+    for (let x = 0; x < 120; x += 1) {
+      const insideEdit = x >= editRegion.left
+        && x < editRegion.left + editRegion.width
+        && y >= editRegion.top
+        && y < editRegion.top + editRegion.height;
+      if (insideEdit) continue;
+      const offset = ((y * 120) + x) * 3;
+      assert.deepEqual(
+        [...outputPixels.subarray(offset, offset + 3)],
+        [...sourcePixels.subarray(offset, offset + 3)],
+      );
+    }
+  }
   assert.equal(resultAsset.metadata.parameters.emotion, '浅然莞尔');
   assert.deepEqual(resultAsset.metadata.parameters.faceRegion, {
-    x: 0.25,
-    y: 0.2,
-    width: 0.5,
-    height: 0.5,
+    x: 0.4,
+    y: 0.25,
+    width: 0.2,
+    height: 0.25,
   });
+  assert.ok(resultAsset.metadata.parameters.faceChangeRatio >= 0.045);
+  assert.ok(resultAsset.metadata.parameters.editRegion.width < 120);
+})
+
+test('情绪调节拒绝目标脸部变化不足的供应商结果', async (t) => {
+  const fixture = await createFixture(t);
+  const handlers = createImageToolRoutes(
+    fixture.db,
+    { info() {}, warn() {}, error() {} },
+    {
+      cfg: { storage: { local_path: fixture.storageRoot } },
+      referenceImageTool: {
+        engine: 'provider-image-edit',
+        provider: 'aihubcc',
+        protocol: 'aihubcc',
+        model: 'gpt-image-2-3.5k',
+        operations: ['portrait_emotion'],
+        async generate(request) {
+          const unchanged = await fs.promises.readFile(request.referenceImage);
+          return { image_url: `data:image/png;base64,${unchanged.toString('base64')}` };
+        },
+      },
+    },
+  );
+  const res = responseRecorder();
+
+  await handlers.createOperation({
+    body: {
+      assetId: fixture.sourceAsset.id,
+      operation: 'portrait_emotion',
+      parameters: {
+        emotion: '暴怒沉怒',
+        intensity: 5,
+        faceRegion: { x: 0.4, y: 0.25, width: 0.2, height: 0.25 },
+      },
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 503, JSON.stringify(res.payload));
+  assert.equal(res.payload.error.code, 'IMAGE_TOOL_PROCESSING_FAILED');
 })
 
 test('情绪调节拒绝未定义情绪和越界人脸框', async (t) => {

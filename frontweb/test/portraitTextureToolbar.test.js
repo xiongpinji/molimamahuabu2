@@ -16,6 +16,10 @@ const persistenceSource = readFileSync(
   fileURLToPath(new URL('../src/utils/freeCanvasGeneration.js', import.meta.url)),
   'utf8',
 )
+const faceDetectionSource = readFileSync(
+  fileURLToPath(new URL('../src/utils/portraitFaceDetection.js', import.meta.url)),
+  'utf8',
+)
 
 test('图片工具栏复刻人像质感一级入口和两个子入口', () => {
   assert.match(toolbarSource, /人像质感调节/)
@@ -25,7 +29,7 @@ test('图片工具栏复刻人像质感一级入口和两个子入口', () => {
   assert.match(toolbarSource, /openToolbarMenu\('portrait'\)/)
 })
 
-test('情绪调节提供 5x5 情绪定位、自动识别和手动框选回退', () => {
+test('情绪调节使用随应用部署的 MediaPipe 自动识别并保留手动框选回退', () => {
   assert.match(toolbarSource, /class="emotion-grid"/)
   assert.match(toolbarSource, /grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/)
   assert.match(toolbarSource, /强忍悲戚/)
@@ -34,10 +38,17 @@ test('情绪调节提供 5x5 情绪定位、自动识别和手动框选回退', 
   assert.match(toolbarSource, /平静/)
   assert.match(toolbarSource, /亲近/)
   assert.match(toolbarSource, /疏离/)
-  assert.match(toolbarSource, /window\.FaceDetector/)
-  assert.match(toolbarSource, /自动识别不可用/)
+  assert.match(toolbarSource, /detectPortraitFacesInImage/)
+  assert.doesNotMatch(toolbarSource, /window\.FaceDetector/)
+  assert.match(toolbarSource, /MediaPipe/)
   assert.match(toolbarSource, /手动框选/)
   assert.match(toolbarSource, /faceRegion/)
+  assert.match(faceDetectionSource, /@mediapipe\/face_detection/)
+  assert.match(faceDetectionSource, /face_detection_full_range_sparse\.tflite/)
+  assert.match(faceDetectionSource, /face_detection_solution_simd_wasm_bin\.wasm/)
+  assert.match(faceDetectionSource, /xCenter/)
+  assert.match(faceDetectionSource, /detectTiledFaces/)
+  assert.match(faceDetectionSource, /intersectionOverUnion/)
 })
 
 test('人像操作只提交受控参数并可安全持久化重试', () => {
