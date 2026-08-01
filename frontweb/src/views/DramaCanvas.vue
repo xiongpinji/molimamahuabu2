@@ -726,6 +726,7 @@ import {
   getCanvasEpisodeContext,
   isCanvasAssetVisible,
 } from '@/utils/canvasEpisodeContext'
+import { shouldProjectCanvasAsset } from '@/utils/canvasAssetProjection'
 
 import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
 import CanvasDramaHeaderNode from '@/components/dramaCanvas/CanvasDramaHeaderNode.vue'
@@ -2174,6 +2175,22 @@ function screenToFlowPosition(clientX, clientY) {
     x: (clientX - rect.left - vp.x) / vp.zoom,
     y: (clientY - rect.top - vp.y) / vp.zoom,
   }
+}
+
+function panCanvasForNodeEditor(overflowY) {
+  const distance = Math.max(0, Number(overflowY) || 0)
+  const api = canvasFlowApi.value
+  const viewport = api?.getViewport?.() || currentViewport.value
+  if (!distance || !api?.setViewport || !viewport) return false
+  const nextViewport = {
+    x: Number(viewport.x || 0),
+    y: Number(viewport.y || 0) - distance,
+    zoom: Number(viewport.zoom || 1),
+  }
+  currentViewport.value = nextViewport
+  api.setViewport(nextViewport, { duration: 0 })
+  scheduleLayoutSave()
+  return true
 }
 
 function canvasCenterFlowPosition() {
@@ -5657,6 +5674,7 @@ provide(CANVAS_CONTEXT_KEY, {
   registerCanvasFlowApi: (api) => {
     canvasFlowApi.value = api
   },
+  panCanvasForNodeEditor,
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
@@ -6627,6 +6645,10 @@ async function loadProjectImageAssets() {
 async function onDirectorAssetCreated(asset) {
   await loadProjectImageAssets()
   rebuildGraph()
+  if (!shouldProjectCanvasAsset(asset)) {
+    ElMessage.success('参考素材已保存到项目资产，不再生成重复画布节点')
+    return
+  }
   const nodeId = `project-asset:${asset.id}`
   focusedNodeId.value = nodeId
   await nextTick()

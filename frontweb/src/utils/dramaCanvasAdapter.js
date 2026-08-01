@@ -12,6 +12,7 @@ import {
 } from './storyboardMedia'
 import { latestVideoGenerationError, latestVideoGenerationWarning } from './videoGenerationStatus'
 import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
+import { shouldProjectCanvasAsset } from './canvasAssetProjection'
 
 const ASSET_X = 48
 const SCRIPT_OFFSET_X = 248
@@ -79,7 +80,7 @@ function isProjectMediaAsset(asset) {
 function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
   const nodes = resolveFreeCanvasNodes(savedLayout)
   const edges = []
-  const mediaAssets = projectAssets.filter(isProjectMediaAsset)
+  const mediaAssets = projectAssets.filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
 
   mediaAssets.forEach((asset, index) => {
     const id = `project-asset:${asset.id}`
@@ -475,7 +476,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
-  const projectAssets = (options.projectAssets || []).filter(isProjectMediaAsset)
+  const projectAssets = (options.projectAssets || []).filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
   if (projectAssets.length) {
     nodes.push(sectionLabel('label:project-assets', `🗂 项目素材 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
     projectAssets.forEach((asset, index) => {

@@ -737,14 +737,12 @@ function closeEditor() {
 function updateEditorPosition() {
   if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value || !editorPanel.value) return
   const nodeBounds = nodeRoot.value.getBoundingClientRect()
-  let anchorTop = nodeBounds.top
   let anchorBottom = nodeBounds.bottom
   nodeRoot.value
     .querySelectorAll('.image-node-toolbar, .toolbar-menu, .toolbar-history')
     .forEach((element) => {
       const bounds = element.getBoundingClientRect()
       if (!bounds.width || !bounds.height) return
-      anchorTop = Math.min(anchorTop, bounds.top)
       anchorBottom = Math.max(anchorBottom, bounds.bottom)
     })
   const viewportWidth = window.innerWidth
@@ -773,18 +771,12 @@ function updateEditorPosition() {
     Math.max(viewportPadding, desiredLeft),
     Math.max(viewportPadding, viewportWidth - scaledWidth - viewportPadding),
   )
-  const spaceAbove = Math.max(0, anchorTop - nodeGap - viewportPadding)
-  const spaceBelow = Math.max(0, viewportHeight - anchorBottom - nodeGap - viewportPadding)
-  const dock = spaceBelow >= spaceAbove ? 'bottom' : 'top'
-  const desiredTop = dock === 'bottom'
-    ? anchorBottom + nodeGap
-    : anchorTop - nodeGap - scaledHeight
-  const panelTop = Math.min(
-    Math.max(viewportPadding, desiredTop),
-    Math.max(viewportPadding, viewportHeight - scaledHeight - viewportPadding),
-  )
+  const desiredTop = anchorBottom + nodeGap
+  const overflowY = desiredTop + scaledHeight + viewportPadding - viewportHeight
+  if (overflowY > 1 && ctx?.panCanvasForNodeEditor?.(Math.ceil(overflowY))) return
+  const panelTop = Math.max(viewportPadding, desiredTop)
 
-  editorDock.value = dock
+  editorDock.value = 'bottom'
   const nextStyle = {
     top: `${Math.round(panelTop)}px`,
     right: 'auto',
