@@ -727,6 +727,7 @@ import {
   isCanvasAssetVisible,
 } from '@/utils/canvasEpisodeContext'
 import { shouldProjectCanvasAsset } from '@/utils/canvasAssetProjection'
+import { findVisualDirectionDirectorEntry } from '@/utils/visualDirectionDirectorBridge'
 
 import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
 import CanvasDramaHeaderNode from '@/components/dramaCanvas/CanvasDramaHeaderNode.vue'
@@ -854,7 +855,8 @@ const canvasBackgroundCandidates = computed(() => {
 })
 const persistedGenerationHistory = ref([])
 const directorStageEntry = ref(null)
-const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose'])
+const DIRECTOR_STAGE_ENTRY_MODES = new Set(['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'])
+const canvasVisualDirectionEntry = computed(() => findVisualDirectionDirectorEntry(allGraphNodes.value))
 let directorReturnFocus = null
 const canvasMainRef = ref(null)
 const contextMenuVisible = ref(false)
@@ -1005,13 +1007,25 @@ const freeNodeContentPlaceholder = computed(() => (
 
 function openDirectorStage(entryContext = null) {
   directorReturnFocus = document.activeElement
-  directorStageEntry.value = DIRECTOR_STAGE_ENTRY_MODES.has(entryContext?.mode)
-    ? {
-        mode: entryContext.mode,
-        imageUrl: String(entryContext.imageUrl || ''),
-        sourceNodeId: String(entryContext.sourceNodeId || ''),
-        sourceTitle: String(entryContext.sourceTitle || '图片节点'),
-      }
+  const resolvedEntry = DIRECTOR_STAGE_ENTRY_MODES.has(entryContext?.mode)
+    ? entryContext
+    : canvasVisualDirectionEntry.value
+  directorStageEntry.value = DIRECTOR_STAGE_ENTRY_MODES.has(resolvedEntry?.mode)
+    ? resolvedEntry.mode === 'visual_direction'
+      ? {
+          mode: resolvedEntry.mode,
+          sourceNodeId: String(resolvedEntry.sourceNodeId || ''),
+          sourceTitle: String(resolvedEntry.sourceTitle || '视觉导演方案'),
+          provenance: resolvedEntry.provenance || null,
+          visualDirection: resolvedEntry.visualDirection || null,
+          skillSnapshot: resolvedEntry.skillSnapshot || null,
+        }
+      : {
+          mode: resolvedEntry.mode,
+          imageUrl: String(resolvedEntry.imageUrl || ''),
+          sourceNodeId: String(resolvedEntry.sourceNodeId || ''),
+          sourceTitle: String(resolvedEntry.sourceTitle || '图片节点'),
+        }
     : null
   directorStageVisible.value = true
 }

@@ -304,7 +304,7 @@ test('生成导演台、灯光、角度和姿势入口桥接当前图片且不�
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
   assert.match(canvasSource, /function openDirectorStage\(entryContext = null\)/)
-  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(resolvedEntry\?\.mode\)/)
   assert.doesNotMatch(toolbarSource, /DIRECTOR_STAGE_OPERATIONS = new Set\(\[[^\]]*(?:cinematic_relight|angle_ideation)/)
 })
 

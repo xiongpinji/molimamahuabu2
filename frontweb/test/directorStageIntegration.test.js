@@ -259,12 +259,12 @@ test('图片节点导演台入口显示当前参考图并保持其他入口兼�
   assert.match(stageSource, /function applyEntryContext\(\)/)
   assert.match(canvasSource, /const directorStageEntry = ref\(null\)/)
   assert.match(canvasSource, /:entry-context="directorStageEntry"/)
-  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
+  assert.match(canvasSource, /directorStageEntry\.value = DIRECTOR_STAGE_ENTRY_MODES\.has\(resolvedEntry\?\.mode\)/)
   assert.match(canvasSource, /directorStageEntry\.value = null/)
 })
 
 test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', () => {
-  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'\]\)/)
   assert.match(canvasSource, /DIRECTOR_STAGE_ENTRY_MODES\.has\(entryContext\?\.mode\)/)
   assert.match(stageSource, /const lightingEntry = computed\(\(\) => props\.entryContext\?\.mode === 'lighting'\)/)
   assert.match(stageSource, /3D 灯光预演，不直接修改原图/)
@@ -278,7 +278,7 @@ test('图片节点灯光入口定位真实 3D 灯光控制且不修改原图', (
 })
 
 test('图片节点角度入口定位真实机位控制且不静默创建机位', () => {
-  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose'\]\)/)
+  assert.match(canvasSource, /const DIRECTOR_STAGE_ENTRY_MODES = new Set\(\['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'\]\)/)
   assert.match(stageSource, /const angleEntry = computed\(\(\) => props\.entryContext\?\.mode === 'angle'\)/)
   assert.match(stageSource, /3D 机位角度预演，不直接修改原图/)
   assert.match(stageSource, /ref="addCameraButtonRef"/)
@@ -308,6 +308,18 @@ test('图片节点姿势入口定位真实 3D 角色骨骼且不静默创建角�
   assert.match(stageSource, /isSelectedProceduralCharacter \|\| selectedModelResourceState\.status === 'ready'/)
   assert.match(stageSource, /persistPoseRotations/)
   assert.match(stageSource, /poseRotations/)
+})
+
+test('视觉导演方案从项目画布进入导演台并通过统一撤销保存链应用', () => {
+  assert.match(canvasSource, /findVisualDirectionDirectorEntry\(allGraphNodes\.value\)/)
+  assert.match(canvasSource, /resolvedEntry\.mode === 'visual_direction'/)
+  assert.match(canvasSource, /visualDirection: resolvedEntry\.visualDirection \|\| null/)
+  assert.match(stageSource, /aria-label="视觉导演方案"/)
+  assert.match(stageSource, /savedVisualDirectionGuidance/)
+  assert.match(stageSource, /timeline\.value\.extensions\?\.visualDirectionGuidance/)
+  assert.match(stageSource, /确认应用到导演台/)
+  assert.match(stageSource, /mutateTimeline\(applyVisualDirectionGuidance\(timeline\.value, pendingVisualDirectionGuidance\.value\)\)/)
+  assert.match(stageSource, /不会自动改写人物、机位或灯光数值/)
 })
 
 test('DR-014 导演台卸载显式释放监听器、播放帧、场景对象和查看器', () => {
