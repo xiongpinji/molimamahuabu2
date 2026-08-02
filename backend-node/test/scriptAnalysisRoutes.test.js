@@ -69,6 +69,30 @@ function validProductionPackage(overrides = {}) {
   };
 }
 
+function validVisualDirection() {
+  return {
+    emotional_tone: {
+      primary: '克制悬疑',
+      secondary: '亲情压抑',
+      evidence: ['雨夜街道'],
+    },
+    scene_profile: [{ type: '夜景外景', ratio_percent: 100, evidence: ['雨夜街道'] }],
+    rhythm: { labels: ['缓慢铺垫'], evidence: ['小满走进雨夜街道'] },
+    visual_motifs: [{ motif: '雨水反光', evidence: ['雨夜'], application: '贯穿场景' }],
+    recommendations: [{
+      rank: 1,
+      name: '冷峻自然主义',
+      objective_style: '低照度自然光与克制机位',
+      match_reasons: ['符合雨夜氛围'],
+      composition: '纵深构图',
+      camera_movement: '缓慢推进',
+      lighting: '冷暖对比',
+      color: '低饱和蓝灰色',
+      risks: [],
+    }],
+  };
+}
+
 test('剧本分析项目按用户隔离并可读取版本列表', () => {
   const db = new Database(':memory:');
   try {
@@ -137,7 +161,7 @@ test('剧本分析在创建任务前拒绝未安装的 Skill', () => {
   }
 });
 
-test('成功分析保存所选 Skill 快照并保留原始剧本', async () => {
+test('成功分析可选电影化视觉导演并保留原始剧本', async () => {
   const db = new Database(':memory:');
   const originalGenerateText = aiClient.generateText;
   const originalSetImmediate = global.setImmediate;
@@ -155,13 +179,18 @@ test('成功分析保存所选 Skill 快照并保留原始剧本', async () => {
     }), created);
 
     let backgroundTask = null;
-    aiClient.generateText = async () => JSON.stringify(validProductionPackage({
-      source: {
-        title: '模型伪造标题',
-        source_script: '模型改写原文',
-        locked_facts: [],
-      },
-    }));
+    let capturedUserPrompt = '';
+    aiClient.generateText = async (_db, _log, _type, userPrompt) => {
+      capturedUserPrompt = userPrompt;
+      return JSON.stringify(validProductionPackage({
+        source: {
+          title: '模型伪造标题',
+          source_script: '模型改写原文',
+          locked_facts: [],
+        },
+        visual_direction: validVisualDirection(),
+      }));
+    };
     global.setImmediate = (callback) => {
       backgroundTask = callback;
       return { unref() {} };
@@ -170,7 +199,7 @@ test('成功分析保存所选 Skill 快照并保留原始剧本', async () => {
     const response = captureResponse();
     handlers.run(request({
       id: created.body.data.id,
-      body: { skill_id: 'short-drama-director' },
+      body: { skill_id: 'cinematic-visual-director' },
     }), response);
 
     assert.equal(response.statusCode, 201);
@@ -193,9 +222,11 @@ test('成功分析保存所选 Skill 快照并保留原始剧本', async () => {
     assert.equal(project.source_script, sourceScript);
     assert.equal(productionPackage.source.source_script, sourceScript);
     assert.deepEqual(productionPackage.source.locked_facts, ['主角叫小满']);
+    assert.match(capturedUserPrompt, /"visual_direction"/);
+    assert.deepEqual(productionPackage.visual_direction, validVisualDirection());
     assert.deepEqual(productionPackage.skill_snapshot, {
-      id: 'short-drama-director',
-      name: '专业短剧导演',
+      id: 'cinematic-visual-director',
+      name: '电影化视觉导演',
       version: '1.0.0',
       module: 'script_analysis',
       output_schema_version: '1.0',
@@ -217,7 +248,19 @@ test('人工校订生成不可变新版本并拒绝过期或无效提交', () =>
     runMigrationsAndEnsure(db);
     const handlers = scriptAnalysisRoutes(db, { error() {} });
     const now = new Date().toISOString();
-    const originalPackage = validProductionPackage();
+    const originalSkillSnapshot = {
+      id: 'cinematic-visual-director',
+      name: '电影化视觉导演',
+      version: '1.0.0',
+      module: 'script_analysis',
+      output_schema_version: '1.0',
+    };
+    const originalPackage = validProductionPackage({
+      skill_snapshot: originalSkillSnapshot,
+      visual_direction: validVisualDirection(),
+    });
+    const packageWithoutVisualDirection = { ...originalPackage };
+    delete packageWithoutVisualDirection.visual_direction;
     const projectId = db.prepare(`
       INSERT INTO script_analysis_projects (
         user_id, title, source_script, locked_facts_json,
@@ -253,7 +296,7 @@ test('人工校订生成不可变新版本并拒绝过期或无效提交', () =>
         version: 1,
         note: '修正故事梗概',
         package: {
-          ...originalPackage,
+          ...packageWithoutVisualDirection,
           source: {
             title: '伪造标题',
             source_script: '被改写的原文',
@@ -262,6 +305,10 @@ test('人工校订生成不可变新版本并拒绝过期或无效提交', () =>
           normalized_script: {
             ...originalPackage.normalized_script,
             logline: '小满在雨夜追查失踪真相',
+          },
+          skill_snapshot: {
+            ...originalSkillSnapshot,
+            id: 'tampered-skill',
           },
         },
       },
@@ -283,6 +330,8 @@ test('人工校订生成不可变新版本并拒绝过期或无效提交', () =>
     assert.equal(versionTwo.normalized_script.logline, '小满在雨夜追查失踪真相');
     assert.equal(versionTwo.source.source_script, '第一场：小满走进雨夜街道。');
     assert.deepEqual(versionTwo.source.locked_facts, ['主角叫小满']);
+    assert.deepEqual(versionTwo.skill_snapshot, originalSkillSnapshot);
+    assert.deepEqual(versionTwo.visual_direction, validVisualDirection());
     assert.equal(versionTwo.approval_status, 'needs_review');
     assert.equal(versionTwo.ai_changes.at(-1).source, 'human');
     assert.equal(versionTwo.ai_changes.at(-1).description, '修正故事梗概');
