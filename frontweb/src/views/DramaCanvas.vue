@@ -656,7 +656,7 @@ import {
   getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
-import { collectDroppedMediaFiles, createDroppedMediaNodeSpecs } from '@/utils/canvasMediaDrop'
+import { collectDroppedMediaFiles, createDroppedMediaNodeSpecs, hasDroppedFilePayload } from '@/utils/canvasMediaDrop'
 import {
   canvasModelServiceType,
   canvasNodeKind,
@@ -2202,16 +2202,18 @@ function canvasCenterFlowPosition() {
 }
 
 function onCanvasMediaDragOver(event) {
-  if (!collectDroppedMediaFiles(event.dataTransfer).length) return
+  if (!hasDroppedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 async function onCanvasMediaDrop(event) {
+  if (hasDroppedFilePayload(event.dataTransfer)) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
   const files = collectDroppedMediaFiles(event.dataTransfer)
   if (!files.length) return
-  event.preventDefault()
-  event.stopPropagation()
   const origin = screenToFlowPosition(event.clientX, event.clientY) || canvasCenterFlowPosition()
 
   if (!isStandaloneCanvas.value) {

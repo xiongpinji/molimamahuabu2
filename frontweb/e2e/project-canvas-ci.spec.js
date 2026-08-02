@@ -254,7 +254,18 @@ test('项目画布加载业务节点并打开统一配置面板', async ({ page 
 
 test('项目画布拖入本地图片和视频后创建对应项目素材节点', async ({ page }) => {
   await page.goto('/film/3/canvas')
-  await page.locator('.canvas-main').evaluate((canvas) => {
+  const acceptsSystemFiles = await page.locator('.canvas-main').evaluate((canvas) => {
+    const protectedDragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(protectedDragOver, 'dataTransfer', {
+      value: {
+        files: [],
+        items: [{ kind: 'file', type: 'image/png' }],
+        types: ['Files'],
+      },
+    })
+    const accepted = canvas.dispatchEvent(protectedDragOver) === false
+    if (!accepted) return false
+
     const transfer = new DataTransfer()
     transfer.items.add(new File(['image'], '项目图片.png', { type: 'image/png' }))
     transfer.items.add(new File(['video'], '项目视频.mp4', { type: 'video/mp4' }))
@@ -266,7 +277,9 @@ test('项目画布拖入本地图片和视频后创建对应项目素材节点',
       clientX: rect.left + rect.width / 2,
       clientY: rect.top + rect.height / 2,
     }))
+    return true
   })
+  expect(acceptsSystemFiles).toBe(true)
 
   await expect.poll(() => mockAssets.map((asset) => asset.type).sort()).toEqual(['image', 'video'])
   const assetNodes = page.locator('.vue-flow__node[data-id^="project-asset:"]')

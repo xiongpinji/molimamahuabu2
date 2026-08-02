@@ -152,18 +152,22 @@ test('本地图片和视频拖入后立即显示为对应预览节点', async ({
     })
   })
 
-  await page.locator('.canvas-main').evaluate((canvas) => {
+  const acceptsSystemFiles = await page.locator('.canvas-main').evaluate((canvas) => {
+    const protectedDragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(protectedDragOver, 'dataTransfer', {
+      value: {
+        files: [],
+        items: [{ kind: 'file', type: 'image/png' }],
+        types: ['Files'],
+      },
+    })
+    const accepted = canvas.dispatchEvent(protectedDragOver) === false
+    if (!accepted) return false
+
     const transfer = new DataTransfer()
     transfer.items.add(new File(['image'], '本地图片.png', { type: 'image/png' }))
     transfer.items.add(new File(['video'], '本地视频.mp4', { type: 'video/mp4' }))
     const rect = canvas.getBoundingClientRect()
-    canvas.dispatchEvent(new DragEvent('dragover', {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: transfer,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2,
-    }))
     canvas.dispatchEvent(new DragEvent('drop', {
       bubbles: true,
       cancelable: true,
@@ -171,7 +175,9 @@ test('本地图片和视频拖入后立即显示为对应预览节点', async ({
       clientX: rect.left + rect.width / 2,
       clientY: rect.top + rect.height / 2,
     }))
+    return true
   })
+  expect(acceptsSystemFiles).toBe(true)
 
   const imageNode = page.locator('.home-canvas-node.kind-image')
   const videoNode = page.locator('.home-canvas-node.kind-video')

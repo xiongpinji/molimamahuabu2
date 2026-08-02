@@ -5,6 +5,7 @@ import {
   canvasMediaKind,
   collectDroppedMediaFiles,
   createDroppedMediaNodeSpecs,
+  hasDroppedFilePayload,
 } from '../src/utils/canvasMediaDrop.js'
 
 const dramaCanvasSource = readFileSync(new URL('../src/views/DramaCanvas.vue', import.meta.url), 'utf8')
@@ -35,11 +36,20 @@ test('节点规格保留媒体类型、预览地址和拖入位置', () => {
   assert.deepEqual(specs.map((spec) => spec.data.url), ['blob:portrait.webp', 'blob:shot.webm'])
 })
 
+test('系统拖入阶段 files 受保护为空时仍根据 items 或 Files 类型接收拖放', () => {
+  assert.equal(hasDroppedFilePayload({
+    files: [],
+    items: [{ kind: 'file', type: 'image/png' }],
+    types: ['Files'],
+  }), true)
+  assert.equal(hasDroppedFilePayload({ files: [], items: [], types: ['text/plain'] }), false)
+})
+
 test('项目画布与本地画布都接收系统图片和视频拖放', () => {
   for (const source of [dramaCanvasSource, homeCanvasSource]) {
     assert.match(source, /@dragover="onCanvasMediaDragOver"/)
     assert.match(source, /@drop="onCanvasMediaDrop"/)
-    assert.match(source, /collectDroppedMediaFiles\(event\.dataTransfer\)/)
+    assert.match(source, /hasDroppedFilePayload\(event\.dataTransfer\)/)
   }
 })
 

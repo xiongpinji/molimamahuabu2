@@ -15,6 +15,12 @@ export function collectDroppedMediaFiles(dataTransfer) {
   return [...(dataTransfer?.files || [])].filter((file) => canvasMediaKind(file))
 }
 
+export function hasDroppedFilePayload(dataTransfer) {
+  if ([...(dataTransfer?.files || [])].length) return true
+  if ([...(dataTransfer?.items || [])].some((item) => item?.kind === 'file')) return true
+  return [...(dataTransfer?.types || [])].some((type) => String(type).toLowerCase() === 'files')
+}
+
 export function createDroppedMediaNodeSpecs(files, origin, createObjectUrl) {
   const base = {
     x: Number(origin?.x || 0),
