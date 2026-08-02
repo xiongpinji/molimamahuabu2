@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | [Threepipe](https://github.com/repalash/threepipe) | 3D 场景、相机、灯光、拾取、变换控件的导演台底座 | Apache-2.0，当前锁定 `0.5.1`，源码审计提交 `52c3ec1730463d935a582cf999c3eecb0ac63c14` |
 | 现有 `sharp` | 已有宫格整图裁剪与本地面板落盘链路 | 沿用现有依赖，不新增图像处理核心 |
+| `cinematic-storyboard-generator` | 剧本分析中的情绪、场景、节奏和视觉母题分析方法 | MIT，Copyright (c) 2026 XiaFeng；[保留完整许可证](third-party/cinematic-storyboard-generator.license.txt)，仅转译规则，不执行其 Shell 工具 |
 
 Threepipe 的适配范围被限制为：创建导演台容器、映射现有角色/场景/道具数据、设置相机和灯光、复用官方插件。当前导演台使用本地几何占位，不加载远程模型，也不触发任何付费模型调用。
 
@@ -32,3 +33,7 @@ Threepipe 的适配范围被限制为：创建导演台容器、映射现有角�
 3. 不使用 GPLv3 的 Threepipe 扩展；如未来需要扩展，先单独完成许可证批准。
 4. 角色/场景/道具真实模型、字体、贴图和模型服务分别完成来源与商用权确认。
 5. 继续保持“无付费模型测试”的验收边界；模型供应商只在运营配置和真实用户请求链路中按计费策略执行。
+
+## 电影化分镜 Skill 声明
+
+剧本分析的可选“电影化视觉导演”吸收了 `cinematic-storyboard-generator` 的四维分析思路，并按本项目既有生产包、事实锁和人工审核机制重新实现。上游采用 MIT License，Copyright (c) 2026 XiaFeng。本项目不打包、不调用其 `verify-dialogue.sh`，也不引入任意脚本执行能力。

@@ -204,6 +204,102 @@
             </div>
           </section>
 
+          <section v-if="visualDirection" class="visual-direction-section">
+            <div class="section-title">
+              <div>
+                <span class="section-index">02A</span>
+                <h2>电影化视觉方案</h2>
+              </div>
+              <span class="source-notice">增强建议不会替换原剧本与现有生产包</span>
+            </div>
+
+            <div class="visual-signal-grid">
+              <article class="visual-signal-card">
+                <span class="card-kicker">情绪基调</span>
+                <h3>{{ visualDirection.emotional_tone.primary || '待分析' }}</h3>
+                <p v-if="visualDirection.emotional_tone.secondary">
+                  辅基调：{{ visualDirection.emotional_tone.secondary }}
+                </p>
+                <div class="evidence-list">
+                  <span
+                    v-for="item in visualDirection.emotional_tone.evidence"
+                    :key="item"
+                  >
+                    {{ item }}
+                  </span>
+                </div>
+              </article>
+
+              <article class="visual-signal-card">
+                <span class="card-kicker">节奏特征</span>
+                <div class="visual-tag-list">
+                  <span v-for="item in visualDirection.rhythm.labels" :key="item">
+                    {{ item }}
+                  </span>
+                  <span v-if="visualDirection.rhythm.labels.length === 0">待分析</span>
+                </div>
+                <div class="evidence-list">
+                  <span v-for="item in visualDirection.rhythm.evidence" :key="item">
+                    {{ item }}
+                  </span>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="visualDirection.scene_profile.length" class="visual-profile-row">
+              <strong>场景分布</strong>
+              <span v-for="item in visualDirection.scene_profile" :key="item.type">
+                {{ item.type }}<template v-if="item.ratio_percent !== undefined"> · {{ item.ratio_percent }}%</template>
+              </span>
+            </div>
+
+            <div v-if="visualDirection.visual_motifs.length" class="visual-motif-grid">
+              <article
+                v-for="item in visualDirection.visual_motifs"
+                :key="item.motif"
+                class="visual-motif-card"
+              >
+                <span class="card-kicker">视觉母题</span>
+                <h3>{{ item.motif }}</h3>
+                <p>{{ item.application || '待确认画面应用方式' }}</p>
+              </article>
+            </div>
+
+            <div class="visual-recommendations">
+              <article
+                v-for="item in visualDirection.recommendations"
+                :key="`${item.rank}-${item.name}`"
+                class="visual-recommendation-card"
+              >
+                <div class="recommendation-heading">
+                  <span>方案 {{ item.rank || 1 }}</span>
+                  <h3>{{ item.name || '未命名视觉方案' }}</h3>
+                </div>
+                <p>{{ item.objective_style || '暂无核心视觉语言' }}</p>
+                <dl>
+                  <template v-if="item.composition">
+                    <dt>构图</dt><dd>{{ item.composition }}</dd>
+                  </template>
+                  <template v-if="item.camera_movement">
+                    <dt>运镜</dt><dd>{{ item.camera_movement }}</dd>
+                  </template>
+                  <template v-if="item.lighting">
+                    <dt>灯光</dt><dd>{{ item.lighting }}</dd>
+                  </template>
+                  <template v-if="item.color">
+                    <dt>色彩</dt><dd>{{ item.color }}</dd>
+                  </template>
+                </dl>
+                <div class="visual-tag-list">
+                  <span v-for="reason in item.match_reasons" :key="reason">{{ reason }}</span>
+                </div>
+                <p v-if="item.risks.length" class="recommendation-risk">
+                  注意：{{ item.risks.join('；') }}
+                </p>
+              </article>
+            </div>
+          </section>
+
           <section class="library-section">
             <div class="section-title">
               <div>
@@ -577,6 +673,31 @@ const storyOverview = computed(() => {
       : typeof duration === 'number'
         ? `${duration} 秒`
         : duration,
+  }
+})
+
+const visualDirection = computed(() => {
+  const value = asObject(analysisPackage.value?.visual_direction)
+  if (!value) return null
+  const emotionalTone = asObject(value.emotional_tone) || {}
+  const rhythm = asObject(value.rhythm) || {}
+  return {
+    emotional_tone: {
+      ...emotionalTone,
+      evidence: asArray(emotionalTone.evidence),
+    },
+    scene_profile: asArray(value.scene_profile),
+    rhythm: {
+      ...rhythm,
+      labels: asArray(rhythm.labels),
+      evidence: asArray(rhythm.evidence),
+    },
+    visual_motifs: asArray(value.visual_motifs),
+    recommendations: asArray(value.recommendations).map((item) => ({
+      ...item,
+      match_reasons: asArray(item?.match_reasons),
+      risks: asArray(item?.risks),
+    })),
   }
 })
 
@@ -1098,6 +1219,7 @@ onBeforeUnmount(stopPolling)
 .source-card,
 .task-card,
 .overview-card,
+.visual-direction-section,
 .library-section,
 .shots-section,
 .review-section,
@@ -1270,6 +1392,7 @@ onBeforeUnmount(stopPolling)
 
 .source-card,
 .overview-card,
+.visual-direction-section,
 .library-section,
 .shots-section,
 .review-section {
@@ -1446,6 +1569,106 @@ onBeforeUnmount(stopPolling)
   font-size: 11px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
+}
+
+.visual-signal-grid,
+.visual-motif-grid,
+.visual-recommendations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.visual-signal-card,
+.visual-motif-card,
+.visual-recommendation-card {
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: #0c0c0d;
+}
+
+.visual-signal-card h3,
+.visual-motif-card h3,
+.visual-recommendation-card h3 {
+  margin: 12px 0 8px;
+}
+
+.visual-signal-card p,
+.visual-motif-card p,
+.visual-recommendation-card p,
+.visual-recommendation-card dd {
+  color: #9e9793;
+  line-height: 1.65;
+}
+
+.evidence-list,
+.visual-tag-list,
+.visual-profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.evidence-list span,
+.visual-tag-list span,
+.visual-profile-row span {
+  padding: 5px 9px;
+  color: #cfc7c2;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}
+
+.evidence-list span::before {
+  content: '依据 · ';
+  color: #ef7444;
+}
+
+.visual-profile-row {
+  align-items: center;
+  margin: 14px 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(239, 116, 68, 0.07);
+}
+
+.visual-profile-row strong,
+.recommendation-heading span {
+  color: #ef7444;
+  font-size: 11px;
+}
+
+.visual-motif-grid {
+  margin-bottom: 12px;
+}
+
+.recommendation-heading h3 {
+  margin-top: 5px;
+}
+
+.visual-recommendation-card dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 16px 0 0;
+}
+
+.visual-recommendation-card dt {
+  color: #ef7444;
+  font-size: 12px;
+}
+
+.visual-recommendation-card dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.visual-recommendation-card .recommendation-risk {
+  margin-bottom: 0;
+  color: #efb36f;
+  font-size: 12px;
 }
 
 .analysis-tabs :deep(.el-tabs__item) {
@@ -1732,6 +1955,9 @@ onBeforeUnmount(stopPolling)
   .source-grid,
   .metrics,
   .card-grid,
+  .visual-signal-grid,
+  .visual-motif-grid,
+  .visual-recommendations,
   .prompt-grid,
   .review-grid,
   .project-list {
@@ -1757,6 +1983,7 @@ onBeforeUnmount(stopPolling)
 
   .source-card,
   .overview-card,
+  .visual-direction-section,
   .library-section,
   .shots-section,
   .review-section {

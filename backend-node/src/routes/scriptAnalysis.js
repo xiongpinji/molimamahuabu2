@@ -201,14 +201,20 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     if (!packageInput || typeof packageInput !== 'object' || Array.isArray(packageInput)) {
       return response.badRequest(res, '请提交校订后的生产包');
     }
-    if (!parseJSON(project.analysis_json, null) || !project.current_version) {
+    const currentPackage = parseJSON(project.analysis_json, null);
+    if (!currentPackage || !project.current_version) {
       return response.badRequest(res, '请先完成剧本分析再校订');
     }
 
     let normalizedPackage;
     try {
+      const revisionInput = packageInput.visual_direction === undefined
+        && currentPackage.visual_direction
+        ? { ...packageInput, visual_direction: currentPackage.visual_direction }
+        : packageInput;
+      validateProductionPackage(revisionInput);
       normalizedPackage = validateProductionPackage(
-        normalizeProductionPackage(packageInput, project),
+        normalizeProductionPackage(revisionInput, project),
       );
     } catch (error) {
       return response.badRequest(res, `校订后的生产包无效：${error.message}`);
@@ -233,6 +239,9 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     };
     const revisedPackage = {
       ...normalizedPackage,
+      ...(currentPackage.skill_snapshot
+        ? { skill_snapshot: currentPackage.skill_snapshot }
+        : {}),
       version: nextVersion,
       approval_status: 'needs_review',
       ai_changes: aiChanges,

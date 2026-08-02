@@ -47,9 +47,9 @@ function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function buildUserPrompt(project) {
+function buildUserPrompt(project, skill) {
   const lockedFacts = parseArray(project.locked_facts_json);
-  return `请分析以下短剧剧本并输出结构化生产包。
+  const basePrompt = `请分析以下短剧剧本并输出结构化生产包。
 
 标题：${project.title || '未命名剧本'}
 
@@ -106,6 +106,30 @@ ${project.source_script || ''}
   "ai_changes": [],
   "approval_status": "draft"
 }`;
+  return skill?.user_prompt_addendum
+    ? `${basePrompt}\n\n${skill.user_prompt_addendum}`
+    : basePrompt;
+}
+
+function normalizeVisualDirection(value) {
+  const visualDirection = asObject(value);
+  if (!Object.keys(visualDirection).length) return null;
+  const emotionalTone = asObject(visualDirection.emotional_tone);
+  const rhythm = asObject(visualDirection.rhythm);
+  return {
+    emotional_tone: {
+      primary: String(emotionalTone.primary || ''),
+      secondary: String(emotionalTone.secondary || ''),
+      evidence: parseArray(emotionalTone.evidence),
+    },
+    scene_profile: parseArray(visualDirection.scene_profile),
+    rhythm: {
+      labels: parseArray(rhythm.labels),
+      evidence: parseArray(rhythm.evidence),
+    },
+    visual_motifs: parseArray(visualDirection.visual_motifs),
+    recommendations: parseArray(visualDirection.recommendations),
+  };
 }
 
 function normalizeProductionPackage(rawValue, project) {
@@ -113,7 +137,7 @@ function normalizeProductionPackage(rawValue, project) {
   const normalized = asObject(raw.normalized_script);
   const review = asObject(raw.review);
 
-  return {
+  const result = {
     schema_version: '1.0',
     source: {
       title: project.title || '',
@@ -139,9 +163,77 @@ function normalizeProductionPackage(rawValue, project) {
     ai_changes: parseArray(raw.ai_changes),
     approval_status: 'draft',
   };
+  const visualDirection = normalizeVisualDirection(raw.visual_direction);
+  if (visualDirection) result.visual_direction = visualDirection;
+  return result;
 }
 
-function validateProductionPackage(value) {
+function validateVisualDirection(value) {
+  function requireEvidence(items, field) {
+    if (!Array.isArray(items) || items.length === 0 || items.some((item) => !String(item || '').trim())) {
+      throw new Error(`模型返回的 ${field} 必须是非空依据数组`);
+    }
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('模型返回的 visual_direction 必须是对象');
+  }
+  if (!value.emotional_tone || typeof value.emotional_tone !== 'object' || Array.isArray(value.emotional_tone)) {
+    throw new Error('模型返回的 visual_direction.emotional_tone 必须是对象');
+  }
+  if (!String(value.emotional_tone.primary || '').trim()) {
+    throw new Error('模型返回的 visual_direction.emotional_tone.primary 不能为空');
+  }
+  requireEvidence(
+    value.emotional_tone.evidence,
+    'visual_direction.emotional_tone.evidence',
+  );
+  if (!value.rhythm || typeof value.rhythm !== 'object' || Array.isArray(value.rhythm)) {
+    throw new Error('模型返回的 visual_direction.rhythm 必须是对象');
+  }
+  for (const key of ['scene_profile', 'visual_motifs', 'recommendations']) {
+    if (!Array.isArray(value[key])) {
+      throw new Error(`模型返回的 visual_direction.${key} 必须是数组`);
+    }
+  }
+  if (!Array.isArray(value.rhythm.labels) || !Array.isArray(value.rhythm.evidence)) {
+    throw new Error('模型返回的 visual_direction.rhythm.labels 和 evidence 必须是数组');
+  }
+  if (value.rhythm.labels.length === 0 || value.rhythm.labels.some((item) => !String(item || '').trim())) {
+    throw new Error('模型返回的 visual_direction.rhythm.labels 必须是非空标签数组');
+  }
+  requireEvidence(value.rhythm.evidence, 'visual_direction.rhythm.evidence');
+  value.scene_profile.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || !String(item.type || '').trim()) {
+      throw new Error(`模型返回的 visual_direction.scene_profile[${index}] 必须包含 type`);
+    }
+    requireEvidence(item.evidence, `visual_direction.scene_profile[${index}].evidence`);
+  });
+  value.visual_motifs.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || !String(item.motif || '').trim()) {
+      throw new Error(`模型返回的 visual_direction.visual_motifs[${index}] 必须包含 motif`);
+    }
+    requireEvidence(item.evidence, `visual_direction.visual_motifs[${index}].evidence`);
+  });
+  if (value.recommendations.length === 0) {
+    throw new Error('模型返回的 visual_direction.recommendations 不能为空');
+  }
+  value.recommendations.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || !String(item.name || '').trim() || !String(item.objective_style || '').trim()) {
+      throw new Error(`模型返回的 visual_direction.recommendations[${index}] 缺少名称或客观视觉语言`);
+    }
+    requireEvidence(
+      item.match_reasons,
+      `visual_direction.recommendations[${index}].match_reasons`,
+    );
+    if (!Array.isArray(item.risks)) {
+      throw new Error(`模型返回的 visual_direction.recommendations[${index}].risks 必须是数组`);
+    }
+  });
+}
+
+function validateProductionPackage(value, { requireVisualDirection = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('模型未返回有效的剧本分析结构，请调整模型配置后重试');
   }
@@ -161,6 +253,12 @@ function validateProductionPackage(value) {
   }
   if (!Array.isArray(value.review.issues)) {
     throw new Error('模型返回的 review.issues 必须是数组');
+  }
+  if (requireVisualDirection && !value.visual_direction) {
+    throw new Error('模型未返回电影化视觉导演所需的 visual_direction');
+  }
+  if (value.visual_direction !== undefined) {
+    validateVisualDirection(value.visual_direction);
   }
   if (value.episodes.length === 0) {
     throw new Error('模型返回的 episodes 不能为空');
@@ -202,7 +300,7 @@ async function runAnalysis({ db, log, project, skill }) {
     db,
     log,
     'text',
-    buildUserPrompt(project),
+    buildUserPrompt(project, selectedSkill),
     selectedSkill.system_prompt,
     {
       scene_key: 'story_generation',
@@ -211,7 +309,10 @@ async function runAnalysis({ db, log, project, skill }) {
       max_tokens: 12000,
     },
   );
-  const parsed = validateProductionPackage(safeParseAIJSON(raw, {}, log));
+  const parsed = validateProductionPackage(
+    safeParseAIJSON(raw, {}, log),
+    { requireVisualDirection: Boolean(selectedSkill.require_visual_direction) },
+  );
   return normalizeProductionPackage(parsed, project);
 }
 
