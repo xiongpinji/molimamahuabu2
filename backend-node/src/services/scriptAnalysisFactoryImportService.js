@@ -2,6 +2,9 @@
 
 const dramaService = require('./dramaService');
 
+const IMPORT_SCHEMA_VERSION = 'script-analysis-factory-import@1.1';
+const LEGACY_IMPORT_SCHEMA_VERSION = 'script-analysis-factory-import@1.0';
+
 function importError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -35,6 +38,39 @@ function itemName(value) {
 
 function itemNames(value) {
   return firstArray(value).map(itemName).filter(Boolean);
+}
+
+function shotCharacterReferences(shot) {
+  return itemNames(firstArray(shot?.characters, shot?.character_names, shot?.continuity?.characters));
+}
+
+function shotPropReferences(shot) {
+  return itemNames(firstArray(shot?.props, shot?.prop_names, shot?.continuity?.props));
+}
+
+function referenceKeys(item, kind) {
+  const values = kind === 'scene'
+    ? [item?.id, item?.scene_id, item?.name, item?.title, item?.location]
+    : kind === 'character'
+      ? [item?.character_id, item?.id, item?.name, item?.character_name]
+      : [item?.prop_id, item?.id, item?.name, item?.prop_name];
+  const keys = values.map((value) => stringValue(value).toLowerCase()).filter(Boolean);
+  if (kind === 'scene' && Number(item?.scene_number) > 0) {
+    keys.push(`scene-number:${Number(item.scene_number)}`);
+  }
+  return [...new Set(keys)];
+}
+
+function addReferences(map, item, kind, databaseId) {
+  for (const key of referenceKeys(item, kind)) map.set(key, Number(databaseId));
+}
+
+function findReference(map, item, kind) {
+  for (const key of referenceKeys(item, kind)) {
+    const databaseId = map.get(key);
+    if (databaseId) return databaseId;
+  }
+  return null;
 }
 
 function formatDialogue(value) {
@@ -97,13 +133,142 @@ function safeLogger(log) {
   };
 }
 
+function repairLegacyImport(db, existing, productionPackage) {
+  const metadata = parseObject(existing.metadata);
+  const importMetadata = parseObject(metadata?.script_analysis_import);
+  if (importMetadata?.schema_version !== LEGACY_IMPORT_SCHEMA_VERSION) return false;
+
+  const dramaId = Number(existing.id);
+  const now = new Date().toISOString();
+  const rawEpisodes = firstArray(productionPackage.episodes);
+  const topLevelShots = firstArray(productionPackage.shots, productionPackage.storyboards);
+  const episodes = rawEpisodes.length > 0
+    ? rawEpisodes
+    : [{ episode_number: 1, scenes: topLevelShots.length ? [{ scene_number: 1, shots: topLevelShots }] : [] }];
+  const episodeRows = db.prepare(`
+    SELECT id, episode_number FROM episodes
+    WHERE drama_id = ? AND deleted_at IS NULL
+    ORDER BY episode_number, id
+  `).all(dramaId);
+  const episodeIdByNumber = new Map(episodeRows.map((row) => [Number(row.episode_number), Number(row.id)]));
+  const firstEpisodeId = Number(episodeRows[0]?.id);
+
+  const characterRows = db.prepare(`
+    SELECT id, name FROM characters
+    WHERE drama_id = ? AND deleted_at IS NULL
+  `).all(dramaId);
+  const characterIdByName = new Map(characterRows.map((row) => [stringValue(row.name).toLowerCase(), Number(row.id)]));
+  const characterIdByReference = new Map(characterIdByName);
+  for (const character of firstArray(productionPackage.character_bible, productionPackage.characters)) {
+    const characterId = characterIdByName.get(stringValue(character?.name || character?.character_name).toLowerCase());
+    if (characterId) addReferences(characterIdByReference, character, 'character', characterId);
+  }
+
+  const sceneRows = db.prepare(`
+    SELECT id, location, time, prompt FROM scenes
+    WHERE drama_id = ? AND deleted_at IS NULL
+    ORDER BY id
+  `).all(dramaId);
+  const sceneIdByReference = new Map();
+  for (const scene of firstArray(productionPackage.scene_bible, productionPackage.scenes)) {
+    const location = stringValue(scene?.location || scene?.name || scene?.title).toLowerCase();
+    const time = stringValue(scene?.time || scene?.period).toLowerCase();
+    const sceneRow = sceneRows.find((row) => (
+      stringValue(row.location).toLowerCase() === location
+      && stringValue(row.time).toLowerCase() === time
+    ));
+    if (sceneRow) addReferences(sceneIdByReference, scene, 'scene', sceneRow.id);
+  }
+
+  const propRows = db.prepare(`
+    SELECT id, name FROM props
+    WHERE drama_id = ? AND deleted_at IS NULL
+  `).all(dramaId);
+  const propIdByName = new Map(propRows.map((row) => [stringValue(row.name).toLowerCase(), Number(row.id)]));
+  const propIdByReference = new Map(propIdByName);
+  for (const prop of firstArray(productionPackage.prop_bible, productionPackage.props)) {
+    const propId = propIdByName.get(stringValue(prop?.name || prop?.prop_name).toLowerCase());
+    if (propId) addReferences(propIdByReference, prop, 'prop', propId);
+  }
+
+  const storyboardsByEpisode = new Map();
+  for (const episodeRow of episodeRows) {
+    storyboardsByEpisode.set(Number(episodeRow.id), db.prepare(`
+      SELECT id, scene_id, storyboard_number FROM storyboards
+      WHERE episode_id = ? AND deleted_at IS NULL
+      ORDER BY storyboard_number, id
+    `).all(episodeRow.id));
+  }
+  const updateStoryboard = db.prepare(`
+    UPDATE storyboards
+    SET scene_id = ?, characters = ?, updated_at = ?
+    WHERE id = ?
+  `);
+  const linkStoryboardProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+  const softDeleteScene = db.prepare('UPDATE scenes SET deleted_at = ?, updated_at = ? WHERE id = ?');
+  const activeStoryboardsForScene = db.prepare(`
+    SELECT COUNT(*) AS count FROM storyboards
+    WHERE scene_id = ? AND deleted_at IS NULL
+  `);
+
+  for (const [episodeIndex, episode] of episodes.entries()) {
+    const episodeNumber = Number(episode?.episode_number) || episodeIndex + 1;
+    const episodeId = episodeIdByNumber.get(episodeNumber) || firstEpisodeId;
+    const storyboardRows = storyboardsByEpisode.get(episodeId) || [];
+    let numberInEpisode = 0;
+    for (const [sceneIndex, scene] of firstArray(episode?.scenes).entries()) {
+      const sceneId = findReference(sceneIdByReference, scene, 'scene');
+      const fallbackLocation = `第${Number(scene?.scene_number) || sceneIndex + 1}场`;
+      for (const shot of firstArray(scene?.shots)) {
+        numberInEpisode += 1;
+        const storyboard = storyboardRows.find((row) => Number(row.storyboard_number) === numberInEpisode);
+        if (!storyboard) continue;
+        const characterIds = shotCharacterReferences(shot)
+          .map((reference) => characterIdByReference.get(reference.toLowerCase()))
+          .filter(Boolean);
+        const previousSceneId = Number(storyboard.scene_id);
+        updateStoryboard.run(sceneId || previousSceneId || null, JSON.stringify(characterIds), now, storyboard.id);
+        for (const propReference of shotPropReferences(shot)) {
+          const propId = propIdByReference.get(propReference.toLowerCase());
+          if (propId) linkStoryboardProp.run(storyboard.id, propId);
+        }
+        if (sceneId && previousSceneId && previousSceneId !== sceneId) {
+          const legacyScene = sceneRows.find((row) => Number(row.id) === previousSceneId);
+          if (
+            legacyScene
+            && stringValue(legacyScene.location) === fallbackLocation
+            && !stringValue(legacyScene.prompt)
+            && Number(activeStoryboardsForScene.get(previousSceneId).count) === 0
+          ) {
+            softDeleteScene.run(now, now, previousSceneId);
+          }
+        }
+      }
+    }
+  }
+
+  db.prepare(`
+    UPDATE scenes
+    SET storyboard_count = (
+      SELECT COUNT(*) FROM storyboards
+      WHERE storyboards.scene_id = scenes.id AND storyboards.deleted_at IS NULL
+    )
+    WHERE drama_id = ?
+  `).run(dramaId);
+  importMetadata.schema_version = IMPORT_SCHEMA_VERSION;
+  metadata.script_analysis_import = importMetadata;
+  db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(metadata), now, dramaId);
+  return true;
+}
+
 function findExistingImport(db, userId, tenantId, importKey) {
   const tenantClause = tenantId == null ? 'tenant_id IS NULL' : 'tenant_id = ?';
   const params = tenantId == null
     ? [String(userId), importKey]
     : [String(userId), String(tenantId), importKey];
   return db.prepare(`
-    SELECT id, title
+    SELECT id, title, metadata
     FROM dramas
     WHERE user_id = ?
       AND ${tenantClause}
@@ -157,8 +322,10 @@ function importApprovedPackageToFactory(db, log, {
   const runImport = db.transaction(() => {
     const existing = findExistingImport(db, ownerId, tenantId, importKey);
     if (existing) {
+      const repaired = repairLegacyImport(db, existing, productionPackage);
       return {
         created: false,
+        repaired,
         drama_id: existing.id,
         title: existing.title,
         source_project_id: project.id,
@@ -185,7 +352,7 @@ function importApprovedPackageToFactory(db, log, {
     const importMetadata = {
       project_type: 'factory',
       script_analysis_import: {
-        schema_version: 'script-analysis-factory-import@1.0',
+        schema_version: IMPORT_SCHEMA_VERSION,
         import_key: importKey,
         source_project_id: project.id,
         source_project_title: project.title,
@@ -234,6 +401,11 @@ function importApprovedPackageToFactory(db, log, {
       WHERE drama_id = ? AND deleted_at IS NULL
     `).all(dramaId);
     const characterIdByName = new Map(characterRows.map((row) => [stringValue(row.name).toLowerCase(), Number(row.id)]));
+    const characterIdByReference = new Map(characterIdByName);
+    for (const character of characterSource) {
+      const characterId = characterIdByName.get(stringValue(character?.name || character?.character_name).toLowerCase());
+      if (characterId) addReferences(characterIdByReference, character, 'character', characterId);
+    }
     const linkEpisodeCharacter = db.prepare('INSERT OR IGNORE INTO episode_characters (episode_id, character_id) VALUES (?, ?)');
     for (const episodeRow of episodeRows) {
       for (const characterRow of characterRows) linkEpisodeCharacter.run(episodeRow.id, characterRow.id);
@@ -265,16 +437,15 @@ function importApprovedPackageToFactory(db, log, {
         ).lastInsertRowid);
         sceneIdByKey.set(key, sceneId);
       }
-      for (const reference of [scene?.id, scene?.scene_id, scene?.name, scene?.location]) {
-        if (stringValue(reference)) sceneIdByReference.set(stringValue(reference).toLowerCase(), sceneId);
-      }
+      addReferences(sceneIdByReference, scene, 'scene', sceneId);
       return sceneId;
     }
     for (const scene of firstArray(productionPackage.scene_bible, productionPackage.scenes)) {
       registerScene(scene, firstEpisodeId);
     }
 
-    const propIdByName = new Map();
+    const propIdByReference = new Map();
+    let propCount = 0;
     const insertProp = db.prepare(`
       INSERT INTO props (
         drama_id, episode_id, name, type, description, prompt,
@@ -283,7 +454,7 @@ function importApprovedPackageToFactory(db, log, {
     `);
     for (const prop of firstArray(productionPackage.prop_bible, productionPackage.props)) {
       const name = stringValue(prop?.name || prop?.prop_name);
-      if (!name || propIdByName.has(name.toLowerCase())) continue;
+      if (!name || propIdByReference.has(name.toLowerCase())) continue;
       const propId = Number(insertProp.run(
         dramaId,
         firstEpisodeId || null,
@@ -294,7 +465,8 @@ function importApprovedPackageToFactory(db, log, {
         now,
         now,
       ).lastInsertRowid);
-      propIdByName.set(name.toLowerCase(), propId);
+      addReferences(propIdByReference, prop, 'prop', propId);
+      propCount += 1;
     }
 
     const insertStoryboard = db.prepare(`
@@ -312,8 +484,7 @@ function importApprovedPackageToFactory(db, log, {
       const episodeId = episodeIdByNumber.get(episodeNumber) || firstEpisodeId;
       let numberInEpisode = 0;
       for (const [sceneIndex, scene] of firstArray(episode?.scenes).entries()) {
-        const reference = stringValue(scene?.scene_id || scene?.id || scene?.name || scene?.location).toLowerCase();
-        const sceneId = sceneIdByReference.get(reference)
+        const sceneId = findReference(sceneIdByReference, scene, 'scene')
           || registerScene({
             ...scene,
             name: scene?.name || scene?.location || `第${Number(scene?.scene_number) || sceneIndex + 1}场`,
@@ -322,8 +493,8 @@ function importApprovedPackageToFactory(db, log, {
         for (const shot of firstArray(scene?.shots)) {
           numberInEpisode += 1;
           storyboardCount += 1;
-          const characterIds = itemNames(shot?.characters || shot?.character_names)
-            .map((name) => characterIdByName.get(name.toLowerCase()))
+          const characterIds = shotCharacterReferences(shot)
+            .map((reference) => characterIdByReference.get(reference.toLowerCase()))
             .filter(Boolean);
           const sourceBasis = shotSourceBasis(shot);
           const continuity = parseObject(shot?.continuity);
@@ -349,8 +520,8 @@ function importApprovedPackageToFactory(db, log, {
             now,
             now,
           ).lastInsertRowid);
-          for (const propName of itemNames(shot?.props || shot?.prop_names)) {
-            const propId = propIdByName.get(propName.toLowerCase());
+          for (const propReference of shotPropReferences(shot)) {
+            const propId = propIdByReference.get(propReference.toLowerCase());
             if (propId) linkStoryboardProp.run(storyboardId, propId);
           }
         }
@@ -385,7 +556,7 @@ function importApprovedPackageToFactory(db, log, {
       counts: {
         characters: characterRows.length,
         scenes: sceneIdByKey.size,
-        props: propIdByName.size,
+        props: propCount,
         episodes: episodeRows.length,
         storyboards: storyboardCount,
       },

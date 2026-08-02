@@ -23,7 +23,7 @@ function productionPackage(overrides = {}) {
       story_structure: [],
     },
     character_bible: [{
-      id: 'character-1',
+      character_id: 'character-1',
       name: '林夏',
       role: '女儿',
       description: '刚回家的年轻女性',
@@ -31,13 +31,14 @@ function productionPackage(overrides = {}) {
       appearance: '白色衬衫，短发',
     }],
     scene_bible: [{
-      id: 'scene-1',
-      name: '旧客厅',
+      scene_number: 1,
+      title: '旧客厅停电',
+      location: '旧客厅',
       time: '夜',
       description: '停电后的旧客厅，煤油灯提供暖光。',
     }],
     prop_bible: [{
-      id: 'prop-1',
+      prop_id: 'prop-1',
       name: '煤油灯',
       type: '陈设',
       description: '母亲保留多年的旧煤油灯',
@@ -48,25 +49,23 @@ function productionPackage(overrides = {}) {
       title: '第一集',
       scenes: [{
         scene_number: 1,
-        scene_id: 'scene-1',
-        location: '旧客厅',
-        time: '夜',
-        description: '母亲点亮煤油灯。',
         shots: [{
           shot_number: 1,
           title: '灯亮',
           duration: 6,
           action: '母亲划燃火柴，女儿抬起头。',
           dialogue: [{ speaker: '母亲', text: '先坐下吧。' }],
-          characters: ['林夏'],
-          props: ['煤油灯'],
           source_basis: ['母亲点亮煤油灯'],
           image_prompt: '暖色煤油灯照亮母女的脸',
           video_prompt: '摄影机缓慢推进，母亲点灯，女儿抬头',
           shot_type: '中景',
           angle: '平视',
           movement: '缓慢推进',
-          continuity: { lighting: '煤油灯暖光持续' },
+          continuity: {
+            lighting: '煤油灯暖光持续',
+            characters: ['character-1'],
+            props: ['prop-1'],
+          },
         }],
       }],
     }],
@@ -176,6 +175,7 @@ test('审核通过的当前版本一次性导入完整短剧项目且重复确�
     assert.equal(metadata.project_type, 'factory');
     assert.equal(metadata.script_analysis_import.source_project_id, projectId);
     assert.equal(metadata.script_analysis_import.source_version, 3);
+    assert.equal(metadata.script_analysis_import.schema_version, 'script-analysis-factory-import@1.1');
     assert.deepEqual(metadata.script_analysis_import.locked_facts, packageValue.source.locked_facts);
     assert.deepEqual(metadata.script_analysis_import.skill_snapshot, packageValue.skill_snapshot);
     assert.deepEqual(metadata.script_analysis_import.package_snapshot, packageValue);
@@ -191,15 +191,43 @@ test('审核通过的当前版本一次性导入完整短剧项目且重复确�
     `).get(first.drama_id);
     assert.equal(storyboard.image_prompt, '暖色煤油灯照亮母女的脸');
     assert.equal(storyboard.video_prompt, '摄影机缓慢推进，母亲点灯，女儿抬头');
-    assert.deepEqual(JSON.parse(storyboard.continuity_snapshot), { lighting: '煤油灯暖光持续' });
+    assert.deepEqual(JSON.parse(storyboard.continuity_snapshot), {
+      lighting: '煤油灯暖光持续',
+      characters: ['character-1'],
+      props: ['prop-1'],
+    });
+    const character = db.prepare('SELECT id FROM characters WHERE drama_id = ?').get(first.drama_id);
+    assert.deepEqual(JSON.parse(storyboard.characters), [character.id]);
+    assert.equal(db.prepare('SELECT COUNT(*) count FROM storyboard_props WHERE storyboard_id = ?').get(storyboard.id).count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) count FROM async_tasks').get().count, 0);
     assert.equal(db.prepare('SELECT package_json FROM script_analysis_versions WHERE project_id = ?').get(projectId).package_json, originalPackageJson);
 
+    const now = new Date().toISOString();
+    const legacySceneId = db.prepare(`
+      INSERT INTO scenes (
+        drama_id, episode_id, location, time, prompt,
+        storyboard_count, status, created_at, updated_at
+      ) VALUES (?, ?, '第1场', NULL, NULL, 1, 'draft', ?, ?)
+    `).run(first.drama_id, storyboard.episode_id, now, now).lastInsertRowid;
+    db.prepare('UPDATE storyboards SET scene_id = ?, characters = ? WHERE id = ?')
+      .run(legacySceneId, '[]', storyboard.id);
+    db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(storyboard.id);
+    metadata.script_analysis_import.schema_version = 'script-analysis-factory-import@1.0';
+    db.prepare('UPDATE dramas SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), first.drama_id);
+
     const second = importApprovedPackageToFactory(db, { info() {} }, args);
     assert.equal(second.created, false);
+    assert.equal(second.repaired, true);
     assert.equal(second.drama_id, first.drama_id);
     assert.equal(db.prepare('SELECT COUNT(*) count FROM dramas').get().count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) count FROM storyboards').get().count, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) count FROM scenes WHERE drama_id = ? AND deleted_at IS NULL').get(first.drama_id).count, 1);
+    const repairedStoryboard = db.prepare('SELECT * FROM storyboards WHERE id = ?').get(storyboard.id);
+    assert.equal(repairedStoryboard.scene_id, storyboard.scene_id);
+    assert.deepEqual(JSON.parse(repairedStoryboard.characters), [character.id]);
+    assert.equal(db.prepare('SELECT COUNT(*) count FROM storyboard_props WHERE storyboard_id = ?').get(storyboard.id).count, 1);
+    const repairedMetadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(first.drama_id).metadata);
+    assert.equal(repairedMetadata.script_analysis_import.schema_version, 'script-analysis-factory-import@1.1');
   } finally {
     db.close();
   }
