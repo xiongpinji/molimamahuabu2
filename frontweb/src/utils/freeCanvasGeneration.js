@@ -56,6 +56,46 @@ function booleanValue(value) {
   return value === true
 }
 
+function jsonObject(value, maxLength = 120000) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  try {
+    const json = JSON.stringify(value)
+    if (!json || json.length > maxLength) return null
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeScriptAnalysisProvenance(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const sourceType = cleanString(value.sourceType)
+  if (!sourceType) return null
+  return withoutEmptyFields({
+    projectId: value.projectId ?? null,
+    version: value.version ?? null,
+    sourceType,
+    sourceId: cleanString(value.sourceId),
+    skillId: cleanString(value.skillId),
+    skillVersion: cleanString(value.skillVersion),
+  })
+}
+
+function normalizeSkillSnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const id = cleanString(value.id)
+  const version = cleanString(value.version)
+  if (!id || !version) return null
+  return withoutEmptyFields({
+    id,
+    version,
+    name: cleanString(value.name),
+    module: cleanString(value.module),
+    output_schema_version: cleanString(value.output_schema_version),
+  })
+}
+
 function imageSizeFromResolution(aspectRatio, resolution) {
   const longEdge = { '1K': 1024, '2K': 2048, '4K': 4096 }[cleanString(resolution)]
   if (!longEdge) return ''
@@ -173,6 +213,14 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     title: cleanString(data.title),
     content: cleanString(data.content),
     url: cleanString(data.url),
+  }
+  const scriptAnalysis = normalizeScriptAnalysisProvenance(data.scriptAnalysis)
+  if (scriptAnalysis) normalized.scriptAnalysis = scriptAnalysis
+  if (scriptAnalysis?.sourceType === 'visual_direction') {
+    const visualDirection = jsonObject(data.visualDirection)
+    const skillSnapshot = normalizeSkillSnapshot(data.skillSnapshot)
+    if (visualDirection) normalized.visualDirection = visualDirection
+    if (skillSnapshot) normalized.skillSnapshot = skillSnapshot
   }
   if (Object.hasOwn(data, 'model')) normalized.model = cleanString(data.model)
   if (Object.hasOwn(data, 'aspectRatio')) normalized.aspectRatio = cleanString(data.aspectRatio)

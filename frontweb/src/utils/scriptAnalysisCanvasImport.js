@@ -1,4 +1,5 @@
 import { createHomeCanvasState, normalizeHomeCanvasState } from './homeCanvasState.js'
+import { formatVisualDirectionSummary } from './visualDirectionDirectorBridge.js'
 
 function asArray(value) {
   return Array.isArray(value) ? value : []
@@ -18,13 +19,16 @@ function requireArray(productionPackage, key) {
   }
 }
 
-function buildProvenance(project, sourceType, sourceId) {
-  return {
+function buildProvenance(project, sourceType, sourceId, skillSnapshot = null) {
+  const provenance = {
     projectId: project?.id ?? null,
     version: project?.active_version ?? null,
     sourceType,
     sourceId: asText(sourceId),
   }
+  if (asText(skillSnapshot?.id)) provenance.skillId = asText(skillSnapshot.id)
+  if (asText(skillSnapshot?.version)) provenance.skillVersion = asText(skillSnapshot.version)
+  return provenance
 }
 
 function flattenShots(productionPackage) {
@@ -47,7 +51,7 @@ function getImportStartX(nodes) {
   return Math.max(...nodes.map((node) => Number(node.position?.x) || 0)) + 560
 }
 
-function createNode({ id, kind, title, content, x, y, provenance }) {
+function createNode({ id, kind, title, content, x, y, provenance, extraData = null }) {
   return {
     id,
     type: 'homeCanvasNode',
@@ -58,6 +62,7 @@ function createNode({ id, kind, title, content, x, y, provenance }) {
       content,
       url: '',
       scriptAnalysis: provenance,
+      ...(isPlainObject(extraData) ? extraData : {}),
     },
   }
 }
@@ -179,6 +184,7 @@ export function buildScriptAnalysisCanvasState({
   existingState,
   project,
   productionPackage,
+  skillSnapshot,
   approvalStatus,
   importId,
 }) {
@@ -197,6 +203,11 @@ export function buildScriptAnalysisCanvasState({
   const edges = []
   const overviewId = `${prefix}:overview`
   const projectTitle = asText(project?.title) || '未命名剧本'
+  const safeSkillSnapshot = isPlainObject(skillSnapshot)
+    ? skillSnapshot
+    : isPlainObject(productionPackage?.skill_snapshot)
+      ? productionPackage.skill_snapshot
+      : null
   const overviewContent = [
     asText(productionPackage?.normalized_script?.logline),
     asText(productionPackage?.normalized_script?.genre)
@@ -213,6 +224,31 @@ export function buildScriptAnalysisCanvasState({
     y: 40,
     provenance: buildProvenance(project, 'overview', project?.id),
   }))
+
+  if (isPlainObject(productionPackage.visual_direction)) {
+    const visualDirectionId = `${prefix}:visual-direction`
+    nodes.push(createNode({
+      id: visualDirectionId,
+      kind: 'text',
+      title: `${projectTitle} · 视觉导演方案`,
+      content: formatVisualDirectionSummary(productionPackage.visual_direction),
+      x: baseX + 460,
+      y: 40,
+      provenance: buildProvenance(
+        project,
+        'visual_direction',
+        'visual-direction',
+        safeSkillSnapshot,
+      ),
+      extraData: {
+        visualDirection: JSON.parse(JSON.stringify(productionPackage.visual_direction)),
+        ...(safeSkillSnapshot
+          ? { skillSnapshot: JSON.parse(JSON.stringify(safeSkillSnapshot)) }
+          : {}),
+      },
+    }))
+    edges.push(createEdge(`${prefix}:visual-direction:overview`, overviewId, visualDirectionId))
+  }
 
   const bibleCollections = [
     ['character', asArray(productionPackage?.character_bible), '角色'],

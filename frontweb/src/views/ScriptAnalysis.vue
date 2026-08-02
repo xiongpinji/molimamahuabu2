@@ -1166,6 +1166,7 @@ async function importApprovedPackageToCanvas() {
         active_version: activeVersion.value,
       },
       productionPackage: analysisPackage.value,
+      skillSnapshot: skillSnapshot.value,
       approvalStatus: selectedStatus.value,
       importId: `project-${project.value.id}-version-${activeVersion.value}`,
     })

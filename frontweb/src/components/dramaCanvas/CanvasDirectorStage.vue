@@ -26,6 +26,27 @@
 
     <div class="director-stage__body">
       <aside class="director-stage__sidebar">
+        <section
+          v-if="visibleVisualDirectionGuidance"
+          ref="visualGuidanceRef"
+          class="stage-section visual-direction-guidance"
+          aria-label="视觉导演方案"
+        >
+          <div class="stage-section__title">
+            视觉导演方案
+            <span class="visual-direction-guidance__status">{{ visualDirectionApplied ? '已应用' : '待应用' }}</span>
+          </div>
+          <div class="visual-direction-guidance__source">来源：{{ visibleVisualDirectionGuidance.sourceTitle || '视觉导演方案' }}</div>
+          <div v-if="visibleVisualDirectionSkill" class="visual-direction-guidance__source">Skill：{{ visibleVisualDirectionSkill }}</div>
+          <pre>{{ visibleVisualDirectionSummary }}</pre>
+          <button
+            v-if="pendingVisualDirectionGuidance && !visualDirectionApplied"
+            type="button"
+            class="small-button visual-direction-guidance__apply"
+            @click="applyPendingVisualDirection"
+          >确认应用到导演台</button>
+          <div class="resource-tip">应用只保存生产指导与来源，不会自动改写人物、机位或灯光数值；可使用顶部撤销回退。</div>
+        </section>
         <section class="stage-section">
           <div class="stage-section__title">场景树</div>
           <input v-model="sceneSearch" class="scene-search" type="search" placeholder="搜索场景对象" aria-label="搜索场景对象" />
@@ -624,6 +645,10 @@ import {
   updateActionClip,
   updateDirectorObject,
 } from '@/utils/directorTimeline'
+import {
+  applyVisualDirectionGuidance,
+  formatVisualDirectionSummary,
+} from '@/utils/visualDirectionDirectorBridge'
 
 const CAMERA_ASPECTS = [
   { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
@@ -762,6 +787,7 @@ const cameraEditorRef = ref(null)
 const addCameraButtonRef = ref(null)
 const poseEditorRef = ref(null)
 const addRoleButtonRef = ref(null)
+const visualGuidanceRef = ref(null)
 const helpModalRef = ref(null)
 const aiImportButtonRef = ref(null)
 const helpButtonRef = ref(null)
@@ -827,11 +853,37 @@ const entryReferenceTitle = computed(() => String(props.entryContext?.sourceTitl
 const lightingEntry = computed(() => props.entryContext?.mode === 'lighting')
 const angleEntry = computed(() => props.entryContext?.mode === 'angle')
 const poseEntry = computed(() => props.entryContext?.mode === 'pose')
+const pendingVisualDirectionGuidance = computed(() => (
+  props.entryContext?.mode === 'visual_direction' && props.entryContext?.visualDirection
+    ? props.entryContext
+    : null
+))
+const savedVisualDirectionGuidance = computed(() => (
+  timeline.value.extensions?.visualDirectionGuidance || null
+))
+const visibleVisualDirectionGuidance = computed(() => (
+  pendingVisualDirectionGuidance.value || savedVisualDirectionGuidance.value
+))
+const visibleVisualDirectionSummary = computed(() => formatVisualDirectionSummary(
+  visibleVisualDirectionGuidance.value?.visualDirection,
+))
+const visibleVisualDirectionSkill = computed(() => {
+  const skill = visibleVisualDirectionGuidance.value?.skillSnapshot
+  if (!skill?.id) return ''
+  return `${skill.name || skill.id}${skill.version ? ` @ ${skill.version}` : ''}`
+})
+const visualDirectionApplied = computed(() => {
+  const pending = pendingVisualDirectionGuidance.value
+  const saved = savedVisualDirectionGuidance.value
+  if (!pending) return Boolean(saved)
+  return Boolean(saved && String(saved.sourceNodeId || '') === String(pending.sourceNodeId || ''))
+})
 const entryMode = computed(() => props.entryContext?.mode || 'director_stage')
 const entryTitle = computed(() => ({
   lighting: '灯光调节',
   angle: '相机角度调整',
   pose: '姿势编辑器',
+  visual_direction: '3D 导演台 · 视觉方案',
   director_stage: '3D 导演台',
 }[entryMode.value] || '3D 导演台'))
 const characterEntries = computed(() => {
@@ -1538,9 +1590,13 @@ function selectEnvironmentInspector() {
 }
 
 function applyEntryContext() {
-  if (!['director_stage', 'lighting', 'angle', 'pose'].includes(props.entryContext?.mode)) return
+  if (!['director_stage', 'lighting', 'angle', 'pose', 'visual_direction'].includes(props.entryContext?.mode)) return
   workspaceMode.value = (angleEntry.value || poseEntry.value) ? 'animation' : 'scene'
   viewMode.value = 'director'
+  if (pendingVisualDirectionGuidance.value) {
+    nextTick(() => visualGuidanceRef.value?.scrollIntoView({ block: 'start' }))
+    return
+  }
   if (poseEntry.value) {
     inspectorTab.value = 'properties'
     const poseableObject = timeline.value.objects.find((object) => ['character', 'humanoid'].includes(object.type))
@@ -1570,6 +1626,16 @@ function applyEntryContext() {
     if (firstLight) selectSceneObject(firstLight.id)
     else selectEnvironmentInspector()
     nextTick(() => environmentEditorRef.value?.scrollIntoView({ block: 'start' }))
+  }
+}
+
+function applyPendingVisualDirection() {
+  if (!pendingVisualDirectionGuidance.value || visualDirectionApplied.value) return
+  try {
+    mutateTimeline(applyVisualDirectionGuidance(timeline.value, pendingVisualDirectionGuidance.value))
+    assetStatus.value = '视觉导演方案已应用；未自动改写人物、机位或灯光数值'
+  } catch (error) {
+    assetStatus.value = error?.message || '视觉导演方案应用失败'
   }
 }
 
@@ -2989,6 +3055,11 @@ onBeforeUnmount(() => {
 .stage-item small { margin-left: auto; color: #71717a; font-size: 9px; }
 .stage-section { margin-bottom: 18px; }
 .stage-section__title { margin-bottom: 8px; color: #d4d4d8; font-size: 16px; font-weight: 700; }
+.visual-direction-guidance { padding: 12px; border: 1px solid #3f3f46; border-radius: 10px; background: #18181b; }
+.visual-direction-guidance__status { float: right; color: #a78bfa; font-size: 11px; font-weight: 600; }
+.visual-direction-guidance__source { margin-bottom: 6px; color: #a1a1aa; font-size: 11px; overflow-wrap: anywhere; }
+.visual-direction-guidance pre { max-height: 260px; margin: 10px 0; overflow: auto; white-space: pre-wrap; color: #d4d4d8; font: inherit; font-size: 11px; line-height: 1.6; }
+.visual-direction-guidance__apply { width: 100%; margin-bottom: 8px; }
 .stage-item, .shot-list-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: #e4e4e7; text-align: left; cursor: pointer; }
 .stage-item:hover, .shot-list-item:hover { background: rgba(129, 140, 248, 0.14); }
 .stage-item.selected, .shot-list-item.selected { background: rgba(129, 140, 248, 0.18); color: #c4b5fd; }
