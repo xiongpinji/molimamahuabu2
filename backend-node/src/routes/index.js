@@ -197,6 +197,7 @@ function setupRouter(cfg, db, log) {
   r.get('/voice-catalog', voiceCatalog.list);
 
   // ---------- script analysis ----------
+  r.get('/script-analysis/skills', scriptAnalysis.skills);
   r.get('/script-analysis/projects', scriptAnalysis.list);
   r.post('/script-analysis/projects', scriptAnalysis.create);
   r.get('/script-analysis/projects/:id', scriptAnalysis.get);

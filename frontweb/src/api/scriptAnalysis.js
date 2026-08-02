@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const scriptAnalysisAPI = {
+  skills() {
+    return request.get('/script-analysis/skills')
+  },
   list() {
     return request.get('/script-analysis/projects')
   },
@@ -22,7 +25,7 @@ export const scriptAnalysisAPI = {
   review(id, body) {
     return request.post(`/script-analysis/projects/${id}/review`, body)
   },
-  run(id) {
-    return request.post(`/script-analysis/projects/${id}/run`)
+  run(id, body = {}) {
+    return request.post(`/script-analysis/projects/${id}/run`, body)
   },
 }

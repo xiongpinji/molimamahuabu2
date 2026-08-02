@@ -63,6 +63,14 @@ test('剧本分析项目通过 API 总路由保存并读取', async () => {
     const created = createApp();
     server = await listen(created.app);
     const baseUrl = `http://127.0.0.1:${server.address().port}/api/v1`;
+    const skills = await fetch(`${baseUrl}/script-analysis/skills`);
+    assert.equal(skills.status, 200);
+    const skillsBody = await skills.json();
+    assert.equal(skillsBody.data.skills.length, 1);
+    assert.equal(skillsBody.data.skills[0].id, 'short-drama-director');
+    assert.equal(skillsBody.data.skills[0].is_default, true);
+    assert.equal(Object.hasOwn(skillsBody.data.skills[0], 'system_prompt'), false);
+
     const project = {
       title: '验收-剧本分析-20260801',
       source_script: '深夜，母亲在厨房发现女儿留下的一封信。她追到车站，在列车开动前与女儿和解。',

@@ -13,6 +13,11 @@ const {
   runAnalysis,
   validateProductionPackage,
 } = require('../services/scriptAnalysisService');
+const {
+  listScriptAnalysisSkills,
+  resolveScriptAnalysisSkill,
+  snapshotScriptAnalysisSkill,
+} = require('../services/scriptAnalysisSkillRegistry');
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -74,6 +79,10 @@ module.exports = function scriptAnalysisRoutes(db, log) {
       ORDER BY updated_at DESC
     `).all(userId(req));
     return response.success(res, rows.map(mapProject));
+  }
+
+  function skills(req, res) {
+    return response.success(res, { skills: listScriptAnalysisSkills() });
   }
 
   function get(req, res) {
@@ -330,6 +339,10 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     const ownerId = userId(req);
     const project = findOwnedProject(req.params.id, ownerId);
     if (!project) return response.notFound(res, '剧本分析项目不存在');
+    const selectedSkill = resolveScriptAnalysisSkill(req.body?.skill_id);
+    if (!selectedSkill) {
+      return response.badRequest(res, '所选剧本分析 Skill 不存在或不可用');
+    }
     const inputError = getProjectInputError({
       sourceScript: project.source_script,
       lockedFacts: parseJSON(project.locked_facts_json, []),
@@ -353,9 +366,11 @@ module.exports = function scriptAnalysisRoutes(db, log) {
           db,
           log,
           project,
+          skill: selectedSkill,
         });
         const reviewablePackage = {
           ...productionPackage,
+          skill_snapshot: snapshotScriptAnalysisSkill(selectedSkill),
           approval_status: 'needs_review',
           review: {
             ...(productionPackage.review || {}),
@@ -426,6 +441,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
   }
 
   return {
+    skills,
     list,
     get,
     versions,

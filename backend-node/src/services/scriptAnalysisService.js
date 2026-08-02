@@ -2,17 +2,9 @@
 
 const aiClient = require('./aiClient');
 const { safeParseAIJSON } = require('../utils/safeJson');
+const { resolveScriptAnalysisSkill } = require('./scriptAnalysisSkillRegistry');
 
-const SYSTEM_PROMPT = `你是一名专业短剧导演与制片工作流总监。你的任务是把用户原始剧本整理成可直接进入图片、视频和画布制作环节的结构化生产包。
-
-必须遵守：
-1. 只输出一个合法 JSON 对象，不输出 Markdown 或解释。
-2. 不得修改 source_script 和 locked_facts 中的事实；所有新增、推断或改写必须记录在 ai_changes。
-3. 每个镜头必须包含 source_basis，说明它来自原剧本的哪些句子或事实。
-4. 不得擅自增加人物关系、关键事件或结局。
-5. 图片提示词负责静态画面，视频提示词负责动作、运镜、时长、声音与连续性。
-6. 若信息不足，在 review.issues 中提出问题，不要伪造细节。
-7. 输出必须符合用户给出的 schema_version 1.0 契约。`;
+const SYSTEM_PROMPT = resolveScriptAnalysisSkill().system_prompt;
 
 const SCRIPT_ANALYSIS_LIMITS = Object.freeze({
   sourceScriptChars: 60000,
@@ -204,13 +196,14 @@ function validateProductionPackage(value) {
   return value;
 }
 
-async function runAnalysis({ db, log, project }) {
+async function runAnalysis({ db, log, project, skill }) {
+  const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
     log,
     'text',
     buildUserPrompt(project),
-    SYSTEM_PROMPT,
+    selectedSkill.system_prompt,
     {
       scene_key: 'story_generation',
       temperature: 0.3,
