@@ -28,4 +28,7 @@ export const scriptAnalysisAPI = {
   run(id, body = {}) {
     return request.post(`/script-analysis/projects/${id}/run`, body)
   },
+  importToFactory(id, body) {
+    return request.post(`/script-analysis/projects/${id}/import-to-factory`, body)
+  },
 }
