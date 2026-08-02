@@ -364,6 +364,93 @@ test('场景四视图缺少润色提示词时按独立文本模型计费', async
   assert.equal(reservation.model, 'GPT-5.5');
 });
 
+test('场景生图提示词按四视图和单图业务场景键选择映射模型', async (t) => {
+  const { db, sceneId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiConfig.updateConfig(db, log, 1, {
+    model: ['GPT-5.5', 'gpt-5.6-terra'],
+    default_model: 'GPT-5.5',
+  });
+  prices.set(db, 'gpt-5.6-terra', 5);
+  const now = new Date().toISOString();
+  const insertMap = db.prepare(
+    `INSERT INTO ai_model_map
+      (key, service_type, config_id, model_override, description, created_at, updated_at)
+     VALUES (?, 'text', 1, 'gpt-5.6-terra', '', ?, ?)`,
+  );
+  insertMap.run('scene_image_prompt', now, now);
+  insertMap.run('scene_single_image_prompt', now, now);
+
+  const calls = [];
+  aiClient.generateText = async (_db, _log, _type, _prompt, _system, options) => {
+    calls.push({ model: options.model, sceneKey: options.scene_key });
+    return '场景提示词描述';
+  };
+  imageClient.createAndGenerateImage = () => ({ id: 202 });
+
+  const fourView = await sceneService.generateSceneFourViewImage(
+    db,
+    log,
+    {},
+    sceneId,
+    'image-model',
+    undefined,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+    },
+  );
+  const singleView = await sceneService.generateSceneSingleImage(
+    db,
+    log,
+    {},
+    sceneId,
+    'image-model',
+    undefined,
+    {
+      billingEnabled: true,
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+    },
+  );
+
+  assert.equal(fourView.ok, true);
+  assert.equal(singleView.ok, true);
+  assert.deepEqual(calls, [
+    { model: 'gpt-5.6-terra', sceneKey: 'scene_image_prompt' },
+    { model: 'gpt-5.6-terra', sceneKey: 'scene_single_image_prompt' },
+  ]);
+  const reservations = db.prepare(
+    `SELECT resource_type, model, status
+     FROM tenant_usage_reservations
+     WHERE resource_id = ?
+     ORDER BY CASE resource_type
+       WHEN 'scene_image_prompt' THEN 1
+       WHEN 'scene_single_image_prompt' THEN 2
+       ELSE 3
+     END`,
+  ).all(String(sceneId));
+  assert.deepEqual(reservations, [
+    {
+      resource_type: 'scene_image_prompt',
+      model: 'gpt-5.6-terra',
+      status: 'confirmed',
+    },
+    {
+      resource_type: 'scene_single_image_prompt',
+      model: 'gpt-5.6-terra',
+      status: 'confirmed',
+    },
+  ]);
+});
+
 test('角色四视图文本模型未定价时返回 503 且不提交图片任务', async (t) => {
   const { db, characterId } = setup({ withPrice: false });
   const originalImage = imageClient.createAndGenerateImage;

@@ -97,11 +97,23 @@ test('道具生图未显式传模型时按默认图片配置计费', (t) => {
   const { db, propId } = setup();
   t.after(() => db.close());
 
+  aiConfig.createConfig(db, log, {
+    service_type: 'image',
+    provider: 'dashscope',
+    name: '全局默认图片模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['qwen-image-plus'],
+    default_model: 'qwen-image-plus',
+    is_default: true,
+  });
+  prices.set(db, 'qwen-image-plus', 7);
+
   const taskId = propImages.generatePropImage(db, log, propId, billingOptions({ model: undefined }));
   const task = taskService.getTask(db, taskId);
 
-  assert.equal(task.model, 'gpt-image-2');
-  assert.equal(credits.getReservation(db, task.credit_reservation_id).model, 'gpt-image-2');
+  assert.equal(task.model, 'qwen-image-plus');
+  assert.equal(credits.getReservation(db, task.credit_reservation_id).model, 'qwen-image-plus');
 });
 
 test('道具生图供应商明确失败时写回任务并退还预扣积分', async (t) => {

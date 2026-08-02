@@ -5,7 +5,7 @@ const Database = require('better-sqlite3');
 const modelPrices = require('../src/services/modelPriceService');
 const { runProductionPreflight } = require('../src/services/productionPreflightService');
 
-function createDb() {
+function createDb({ withShortDramaSchema = true } = {}) {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE platform_users (
     id TEXT PRIMARY KEY,
@@ -19,6 +19,10 @@ function createDb() {
     (id, email, password_hash, password_salt, role, status)
     VALUES (?, ?, ?, ?, 'admin', 'active')`)
     .run('admin-1', 'admin@example.com', 'hash', 'salt');
+  db.exec(`CREATE TABLE scenes (
+    id INTEGER PRIMARY KEY
+    ${withShortDramaSchema ? ', polished_prompt_single TEXT' : ''}
+  )`);
   modelPrices.set(db, 'GPT-5.5', 2, { category: 'text' });
   modelPrices.set(db, 'gpt-image-2', 8, { category: 'image' });
   modelPrices.set(db, 'seedance 2.0', 25, { category: 'video' });
@@ -221,6 +225,25 @@ test('关闭新用户注册时仍要求邮箱服务可用于已有用户找回�
 
     assert.equal(
       report.checks.find((check) => check.id === 'registration_email_verification')?.status,
+      'fail',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('短剧工厂必需数据库字段缺失时预检阻止发布', () => {
+  const db = createDb({ withShortDramaSchema: false });
+  try {
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env: productionEnv(),
+      db,
+    });
+
+    assert.equal(report.ready, false);
+    assert.equal(
+      report.checks.find((check) => check.id === 'short_drama_schema')?.status,
       'fail',
     );
   } finally {

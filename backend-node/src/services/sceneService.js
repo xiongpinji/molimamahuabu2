@@ -354,12 +354,14 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
         tenantId: options.tenantId,
         userId: options.userId,
         requestedModel: options.textModel,
+        sceneKey: 'scene_image_prompt',
         resourceType: 'scene_image_prompt',
         resourceId: sceneId,
         operation: 'scene_image_prompt',
       });
       fourViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
         model: textBilling.model,
+        scene_key: 'scene_image_prompt',
         max_tokens: 4000,
       });
     } catch (err) {
@@ -455,12 +457,14 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
         tenantId: options.tenantId,
         userId: options.userId,
         requestedModel: options.textModel,
+        sceneKey: 'scene_single_image_prompt',
         resourceType: 'scene_single_image_prompt',
         resourceId: sceneId,
         operation: 'scene_single_image_prompt',
       });
       singleViewDescription = await aiClient.generateText(db, log, 'text', userMsg, systemPrompt, {
         model: textBilling.model,
+        scene_key: 'scene_single_image_prompt',
         max_tokens: 4000,
       });
     } catch (err) {

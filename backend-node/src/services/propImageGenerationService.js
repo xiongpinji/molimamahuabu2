@@ -113,12 +113,11 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   if (!imageSize) imageSize = cfg?.style?.default_image_size || '1920x1920';
   let fullPrompt = appendPrompt(String(prop.prompt).trim(), style);
   if (opts?.useQuadGrid) fullPrompt = appendPrompt(fullPrompt, PROP_FOUR_VIEW_PROMPT);
-  // 与角色/场景一致：使用前端「图片生成模型」选择的 model；未传时用 YAML default_image_provider 兜底
+  // 与角色/场景一致：使用显式模型；未传时由图片配置中的全局默认模型决定
   const task = taskService.getTask(db, taskId);
   const model = (opts && opts.model)
     ? String(opts.model).trim() || null
     : task?.model || null;
-  const preferredProvider = !model && cfg?.ai?.default_image_provider ? cfg.ai.default_image_provider : null;
   const userNeg = imageClient.resolveAssetUserNegativeForApi(model, prop.negative_prompt);
 
   let result;
@@ -128,7 +127,6 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       size: imageSize,
       drama_id: prop.drama_id,
       model: model || undefined,
-      preferred_provider: preferredProvider || undefined,
       user_negative_prompt: userNeg || undefined,
     });
   } catch (err) {
@@ -212,10 +210,8 @@ function generatePropImage(db, log, propId, opts) {
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const cfg = require('../config').loadConfig();
-    const preferredProvider = cfg?.ai?.default_image_provider || null;
     billedModel = modelPrice.canonicalModel(
-      options.model || imageClient.resolveImageModel(db, null, preferredProvider, 'image'),
+      options.model || imageClient.resolveImageModel(db, null, null, 'image'),
     );
     billedCredits = modelPrice.requirePrice(db, billedModel);
   }

@@ -5,6 +5,7 @@ const Database = require('better-sqlite3');
 
 const aiClient = require('../src/services/aiClient');
 const aiConfig = require('../src/services/aiConfigService');
+const generationUsageContext = require('../src/services/generationUsageContext');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
@@ -95,6 +96,256 @@ test('chat stream retries one successful-but-empty response and returns the retr
   assert.equal(requests, 2);
 });
 
+test('generateText falls back to one non-stream request after both stream attempts are empty', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      if (body.stream) {
+        const streamAttempt = requestBodies.length;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(`data: ${JSON.stringify({
+          choices: [{ delta: { role: 'assistant' }, finish_reason: null, index: 0 }],
+          usage: {
+            prompt_tokens: 5,
+            completion_tokens: streamAttempt,
+            total_tokens: 5 + streamAttempt,
+          },
+        })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [{ message: { content: 'non-stream fallback succeeded' } }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      }));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  const billing = {};
+  generationUsageContext.activate(billing);
+  const text = await aiClient.generateText(db, log, 'text', 'hello', '')
+    .finally(() => generationUsageContext.clear(billing));
+
+  assert.equal(text, 'non-stream fallback succeeded');
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true, true, false]);
+  assert.deepEqual(billing.usage, {
+    inputTokens: 22,
+    outputTokens: 7,
+    reasoningTokens: 0,
+    source: 'provider',
+  });
+});
+
+test('generateText surfaces a failed non-stream fallback after two empty streams', async (t) => {
+  let requests = 0;
+  const provider = http.createServer((_req, res) => {
+    requests += 1;
+    if (requests <= 2) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: [DONE]\n\n');
+      return;
+    }
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'fallback unavailable' } }));
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', ''),
+    /HTTP 503.*fallback unavailable/,
+  );
+  assert.equal(requests, 3);
+});
+
+test('generateText falls back to non-stream once for a transient upstream SSE error', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      if (body.stream) {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(`data: ${JSON.stringify({
+          error: {
+            type: 'upstream_error',
+            message: 'Upstream service temporarily unavailable',
+          },
+        })}\n\n`);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        choices: [{ message: { content: 'transient fallback succeeded' } }],
+      }));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  const text = await aiClient.generateText(db, log, 'text', 'hello', '');
+
+  assert.equal(text, 'transient fallback succeeded');
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true, false]);
+});
+
+test('generateText does not fallback after a transient upstream SSE error follows partial text', async (t) => {
+  const requestBodies = [];
+  const streamed = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial text' } }] })}`,
+        `data: ${JSON.stringify({
+          error: {
+            type: 'upstream_error',
+            message: 'Upstream service temporarily unavailable',
+          },
+        })}`,
+        '',
+      ].join('\n\n'));
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', '', {
+      streamCallback: (text) => streamed.push(text),
+    }),
+    /AI 上游服务错误（upstream_error）/,
+  );
+
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true]);
+  assert.deepEqual(streamed, ['partial text']);
+});
+
+test('generateText includes prior empty stream usage in a transient fallback', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      if (!body.stream) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: 'fallback with complete usage' } }],
+          usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 },
+        }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (requestBodies.length === 1) {
+        res.end(`data: ${JSON.stringify({
+          choices: [{ delta: { role: 'assistant' } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+        })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      res.end(`data: ${JSON.stringify({
+        usage: { prompt_tokens: 7, completion_tokens: 0, total_tokens: 7 },
+        error: {
+          type: 'upstream_error',
+          message: 'Upstream service temporarily unavailable',
+        },
+      })}\n\n`);
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  const billing = {};
+  generationUsageContext.activate(billing);
+  const text = await aiClient.generateText(db, log, 'text', 'hello', '')
+    .finally(() => generationUsageContext.clear(billing));
+
+  assert.equal(text, 'fallback with complete usage');
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true, true, false]);
+  assert.deepEqual(billing.usage, {
+    inputTokens: 23,
+    outputTokens: 4,
+    reasoningTokens: 0,
+    source: 'provider',
+  });
+});
+
+test('generateText does not fallback for a non-transient structured SSE error', async (t) => {
+  const requestBodies = [];
+  const provider = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      requestBodies.push(body);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({
+        error: {
+          type: 'authentication_error',
+          message: 'Invalid API key',
+        },
+      })}\n\n`);
+    });
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', ''),
+    /AI 上游服务错误（authentication_error）/,
+  );
+  assert.deepEqual(requestBodies.map((body) => body.stream), [true]);
+});
+
+test('generateText does not fallback when a structured SSE error omits its type', async (t) => {
+  let requests = 0;
+  const provider = http.createServer((_req, res) => {
+    requests += 1;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end(`data: ${JSON.stringify({
+      error: {
+        message: 'Invalid request',
+      },
+    })}\n\n`);
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.generateText(db, log, 'text', 'hello', ''),
+    /AI 上游服务错误/,
+  );
+  assert.equal(requests, 1);
+});
+
 test('chat stream accepts response output-text deltas without logging generated content', async (t) => {
   const provider = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -121,4 +372,43 @@ test('chat stream accepts response output-text deltas without logging generated 
   assert.ok(entries.some((entry) => entry.fields?.text_length === text.length));
   assert.ok(entries.every((entry) => !Object.hasOwn(entry.fields || {}, 'text_preview')));
   assert.doesNotMatch(JSON.stringify(entries), /private generated content/);
+});
+
+test('chat stream surfaces a 200 SSE upstream error without retrying it as empty content', async (t) => {
+  let requests = 0;
+  const provider = http.createServer((_req, res) => {
+    requests += 1;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write([
+      `data: ${JSON.stringify({
+        choices: [{ delta: { role: 'assistant' }, finish_reason: null, index: 0 }],
+      })}`,
+      `data: ${JSON.stringify({
+        error: { type: 'upstream_error', message: 'Upstream request failed' },
+      })}`,
+      '',
+    ].join('\n\n'));
+  });
+  const port = await listen(provider);
+  t.after(() => provider.close());
+  const db = setupTextConfig(`http://127.0.0.1:${port}/v1`);
+  t.after(() => db.close());
+
+  await assert.rejects(
+    aiClient.streamGenerateText(
+      db,
+      log,
+      'text',
+      'hello',
+      '',
+      { silence_timeout_ms: 200 },
+      () => {},
+    ),
+    (error) => {
+      assert.equal(error.code, 'AI_UPSTREAM_ERROR');
+      assert.match(error.message, /AI 上游服务错误.*Upstream request failed/);
+      return true;
+    },
+  );
+  assert.equal(requests, 1);
 });
