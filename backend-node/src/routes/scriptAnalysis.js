@@ -18,6 +18,9 @@ const {
   resolveScriptAnalysisSkill,
   snapshotScriptAnalysisSkill,
 } = require('../services/scriptAnalysisSkillRegistry');
+const {
+  importApprovedPackageToFactory,
+} = require('../services/scriptAnalysisFactoryImportService');
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -449,6 +452,29 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     });
   }
 
+  function importToFactory(req, res) {
+    try {
+      const result = importApprovedPackageToFactory(db, log, {
+        projectId: req.params.id,
+        version: req.body?.version,
+        userId: userId(req),
+        tenantId: req.tenant?.id,
+      });
+      return result.created
+        ? response.created(res, result)
+        : response.success(res, result);
+    } catch (error) {
+      if (error.code === 'SCRIPT_ANALYSIS_PROJECT_NOT_FOUND') {
+        return response.notFound(res, error.message);
+      }
+      if (error.code === 'FACTORY_IMPORT_STALE_VERSION' || error.code === 'FACTORY_IMPORT_NOT_APPROVED') {
+        return response.badRequest(res, error.message);
+      }
+      log?.error?.({ err: error, projectId: req.params.id }, 'script analysis factory import failed');
+      return response.internalError(res, error.message || '导入短剧工厂失败');
+    }
+  }
+
   return {
     skills,
     list,
@@ -459,5 +485,6 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     revise,
     review,
     run,
+    importToFactory,
   };
 };

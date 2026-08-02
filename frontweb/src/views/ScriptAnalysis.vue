@@ -580,14 +580,14 @@
         </div>
 
         <p class="factory-preview__boundary">
-          本阶段只预览，不创建项目、不调用模型、不扣积分。前往短剧工厂后仍由你主动选择后续操作。
+          确认后只新增一个短剧项目，不调用模型、不扣积分。相同版本重复确认不会重复创建。
         </p>
       </div>
 
       <template #footer>
-        <el-button @click="factoryPreviewVisible = false">关闭</el-button>
-        <el-button type="primary" @click="goToFactoryFromPreview">
-          前往短剧工厂（不自动写入）
+        <el-button :disabled="factoryImporting" @click="factoryPreviewVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="factoryImporting" @click="confirmFactoryImport">
+          确认导入并打开项目
         </el-button>
       </template>
     </el-dialog>
@@ -597,7 +597,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { scriptAnalysisAPI } from '@/api/scriptAnalysis'
 import { taskAPI } from '@/api/task'
@@ -632,6 +632,7 @@ const activeLibraryTab = ref('characters')
 const pollingTimer = ref(null)
 const factoryPreviewVisible = ref(false)
 const factoryPreview = ref(null)
+const factoryImporting = ref(false)
 
 const emptyProject = () => ({
   id: null,
@@ -1268,12 +1269,47 @@ function openFactoryImportPreview() {
   }
 }
 
-async function goToFactoryFromPreview() {
-  factoryPreviewVisible.value = false
+async function confirmFactoryImport() {
+  if (!factoryPreview.value || factoryImporting.value) return
+
   try {
-    await router.push('/factory')
+    await ElMessageBox.confirm(
+      '将根据当前审核通过版本新增一个短剧项目。导入只写入现有生产包，不调用模型、不扣积分；相同版本不会重复创建。是否继续？',
+      '确认导入短剧工厂',
+      {
+        type: 'warning',
+        confirmButtonText: '确认导入',
+        cancelButtonText: '取消',
+      },
+    )
   } catch {
-    ElMessage.warning('自动跳转失败，请从顶部导航打开短剧工厂')
+    return
+  }
+
+  let result
+  factoryImporting.value = true
+  try {
+    result = unwrap(await scriptAnalysisAPI.importToFactory(project.value.id, {
+      version: activeVersion.value,
+    }))
+  } catch (error) {
+    ElMessage.error(error?.message || '导入短剧工厂失败')
+    return
+  } finally {
+    factoryImporting.value = false
+  }
+
+  if (!result?.drama_id) {
+    ElMessage.error('导入结果缺少短剧项目 ID')
+    return
+  }
+
+  factoryPreviewVisible.value = false
+  ElMessage.success(result.created ? '已导入短剧工厂并打开项目' : '该版本已导入，已打开原项目')
+  try {
+    await router.push(`/film/${result.drama_id}`)
+  } catch {
+    ElMessage.warning('项目已导入，但自动跳转失败，请从短剧工厂打开')
   }
 }
 

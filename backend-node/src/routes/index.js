@@ -206,6 +206,7 @@ function setupRouter(cfg, db, log) {
   r.post('/script-analysis/projects/:id/revisions', scriptAnalysis.revise);
   r.post('/script-analysis/projects/:id/review', scriptAnalysis.review);
   r.post('/script-analysis/projects/:id/run', scriptAnalysis.run);
+  r.post('/script-analysis/projects/:id/import-to-factory', scriptAnalysis.importToFactory);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
