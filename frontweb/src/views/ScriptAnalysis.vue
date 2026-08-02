@@ -462,6 +462,12 @@
                   导入独立画布
                 </el-button>
                 <el-button
+                  :disabled="!canImportToCanvas"
+                  @click="openFactoryImportPreview"
+                >
+                  预览导入短剧工厂
+                </el-button>
+                <el-button
                   :disabled="Boolean(selectedVersion)"
                   @click="startRevision"
                 >
@@ -529,6 +535,62 @@
         </section>
       </section>
     </main>
+
+    <el-dialog
+      v-model="factoryPreviewVisible"
+      title="短剧工厂导入预览"
+      width="min(720px, calc(100vw - 32px))"
+      class="factory-preview-dialog"
+    >
+      <div v-if="factoryPreview" class="factory-preview">
+        <div class="factory-preview__source">
+          <span>剧本分析项目 {{ factoryPreview.source.project_id }}</span>
+          <span>版本 {{ factoryPreview.source.version }}</span>
+          <span v-if="factoryPreview.skill_snapshot">
+            {{ factoryPreview.skill_snapshot.name }} · v{{ factoryPreview.skill_snapshot.version }}
+          </span>
+        </div>
+
+        <h3>{{ factoryPreview.story.title || factoryPreview.source.project_title }}</h3>
+        <p>{{ factoryPreview.story.logline || '暂无故事简介' }}</p>
+        <span v-if="factoryPreview.story.genre" class="factory-preview__genre">
+          {{ factoryPreview.story.genre }}
+        </span>
+
+        <div class="factory-preview__counts">
+          <article><strong>{{ factoryPreview.counts.characters }}</strong><span>角色</span></article>
+          <article><strong>{{ factoryPreview.counts.scenes }}</strong><span>场景</span></article>
+          <article><strong>{{ factoryPreview.counts.props }}</strong><span>道具</span></article>
+          <article><strong>{{ factoryPreview.counts.episodes }}</strong><span>集数</span></article>
+          <article><strong>{{ factoryPreview.counts.shots }}</strong><span>镜头</span></article>
+        </div>
+
+        <div v-if="factoryPreview.locked_facts.length" class="factory-preview__section">
+          <strong>锁定事实</strong>
+          <ul>
+            <li v-for="item in factoryPreview.locked_facts" :key="item">{{ item }}</li>
+          </ul>
+        </div>
+
+        <div v-if="factoryPreview.visual_direction" class="factory-preview__section">
+          <strong>视觉指导</strong>
+          <p>
+            {{ factoryPreview.visual_direction.emotional_tone?.primary || '已包含电影化视觉方案' }}
+          </p>
+        </div>
+
+        <p class="factory-preview__boundary">
+          本阶段只预览，不创建项目、不调用模型、不扣积分。前往短剧工厂后仍由你主动选择后续操作。
+        </p>
+      </div>
+
+      <template #footer>
+        <el-button @click="factoryPreviewVisible = false">关闭</el-button>
+        <el-button type="primary" @click="goToFactoryFromPreview">
+          前往短剧工厂（不自动写入）
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -545,6 +607,7 @@ import {
   serializeHomeCanvasState,
 } from '@/utils/homeCanvasState'
 import { buildScriptAnalysisCanvasState } from '@/utils/scriptAnalysisCanvasImport'
+import { buildFactorySkillImportPreview } from '@/utils/skillModuleAdapters'
 
 const router = useRouter()
 const projects = ref([])
@@ -567,6 +630,8 @@ const revisionPackageText = ref('')
 const revisionNote = ref('')
 const activeLibraryTab = ref('characters')
 const pollingTimer = ref(null)
+const factoryPreviewVisible = ref(false)
+const factoryPreview = ref(null)
 
 const emptyProject = () => ({
   id: null,
@@ -1185,6 +1250,30 @@ async function importApprovedPackageToCanvas() {
     ElMessage.success('已导入独立画布，原画布内容已保留')
   } catch {
     ElMessage.warning('已导入独立画布，但自动跳转失败，请手动打开画布')
+  }
+}
+
+function openFactoryImportPreview() {
+  try {
+    factoryPreview.value = buildFactorySkillImportPreview({
+      project: project.value,
+      productionPackage: analysisPackage.value,
+      skillSnapshot: skillSnapshot.value,
+      approvalStatus: selectedStatus.value,
+      activeVersion: activeVersion.value,
+    })
+    factoryPreviewVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.message || '生成短剧工厂导入预览失败')
+  }
+}
+
+async function goToFactoryFromPreview() {
+  factoryPreviewVisible.value = false
+  try {
+    await router.push('/factory')
+  } catch {
+    ElMessage.warning('自动跳转失败，请从顶部导航打开短剧工厂')
   }
 }
 
@@ -1920,6 +2009,90 @@ onBeforeUnmount(stopPolling)
   margin: 8px 0 0;
   color: #8f8a88;
   font-size: 12px;
+}
+
+:global(.factory-preview-dialog) {
+  color: #f6f2ee;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #171718;
+}
+
+:global(.factory-preview-dialog .el-dialog__title) {
+  color: #f6f2ee;
+}
+
+.factory-preview > h3 {
+  margin: 18px 0 8px;
+  font-size: 22px;
+}
+
+.factory-preview > p,
+.factory-preview__section p {
+  color: #aaa39f;
+  line-height: 1.7;
+}
+
+.factory-preview__source,
+.factory-preview__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.factory-preview__source span,
+.factory-preview__genre {
+  padding: 5px 9px;
+  color: #cfc7c2;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}
+
+.factory-preview__counts {
+  margin: 20px 0;
+}
+
+.factory-preview__counts article {
+  display: flex;
+  min-width: 82px;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #0d0d0e;
+}
+
+.factory-preview__counts article strong {
+  font-size: 22px;
+}
+
+.factory-preview__counts article span {
+  color: #8f8985;
+  font-size: 12px;
+}
+
+.factory-preview__section {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: #0d0d0e;
+}
+
+.factory-preview__section ul {
+  margin: 9px 0 0;
+  padding-left: 18px;
+  color: #aaa39f;
+  line-height: 1.7;
+}
+
+.factory-preview .factory-preview__boundary {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  color: #efb36f;
+  border-radius: 10px;
+  background: rgba(239, 116, 68, 0.1);
 }
 
 @media (max-width: 1100px) {
