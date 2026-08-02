@@ -21,13 +21,14 @@ test('图片和视频预览都可通过关闭操作及 Escape 退出', () => {
   assert.match(nodeSource, /if \(mediaPreviewUrl\.value\) \{[\s\S]*closeMediaPreview\(\)/)
 })
 
-test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
-  assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
-  assert.match(canvasSource, /@drop="onCanvasImageDrop"/)
-  assert.match(canvasSource, /file\.type\?\.startsWith\('image\/'\)/)
+test('画布支持将本地图片和视频拖入并在落点创建对应节点', () => {
+  assert.match(canvasSource, /@dragover="onCanvasMediaDragOver"/)
+  assert.match(canvasSource, /@drop="onCanvasMediaDrop"/)
+  assert.match(canvasSource, /collectDroppedMediaFiles\(event\.dataTransfer\)/)
   assert.match(canvasSource, /screenToFlowPosition\(event\.clientX, event\.clientY\)/)
-  assert.match(canvasSource, /createFreeCanvasNode\('image', position\)/)
-  assert.match(canvasSource, /uploadFreeCanvasNodeFile\(nodeId, file\)/)
+  assert.match(canvasSource, /createFreeCanvasNode\(spec\.kind, spec\.position, spec\.data\)/)
+  assert.match(canvasSource, /uploadFreeCanvasNodeFile\(nodeId, spec\.file, spec\.previewUrl\)/)
+  assert.match(canvasSource, /createCanvasProjectAssetFromUpload\(file, origin, index\)/)
 })
 
 test('连线悬停时可直接运行下游图片节点', () => {

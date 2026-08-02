@@ -138,6 +138,55 @@ test.beforeEach(async ({ page }) => {
   await loadHomeCanvasState(page, seededHomeCanvasState)
 })
 
+test('本地图片和视频拖入后立即显示为对应预览节点', async ({ page }) => {
+  await page.route('**/api/v1/upload/image', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
+        },
+      }),
+    })
+  })
+
+  await page.locator('.canvas-main').evaluate((canvas) => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['image'], '本地图片.png', { type: 'image/png' }))
+    transfer.items.add(new File(['video'], '本地视频.mp4', { type: 'video/mp4' }))
+    const rect = canvas.getBoundingClientRect()
+    canvas.dispatchEvent(new DragEvent('dragover', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    }))
+    canvas.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    }))
+  })
+
+  const imageNode = page.locator('.home-canvas-node.kind-image')
+  const videoNode = page.locator('.home-canvas-node.kind-video')
+  await expect(imageNode).toHaveCount(1)
+  await expect(videoNode).toHaveCount(1)
+  await expect(imageNode.getByRole('textbox', { name: '节点标题' })).toHaveValue('本地图片.png')
+  await expect(videoNode.getByRole('textbox', { name: '节点标题' })).toHaveValue('本地视频.mp4')
+  await expect(imageNode.locator('img.node-media')).toBeVisible()
+  await expect(videoNode.locator('video.node-media')).toBeVisible()
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.filter((node) => ['本地图片.png', '本地视频.mp4'].includes(node.data?.title)).map((node) => node.data.kind).sort() || []
+  }, homeCanvasStorageKey)).toEqual(['image', 'video'])
+})
+
 test('文本节点单击后在专属编辑器直接编辑，不再依赖配置弹窗', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
 

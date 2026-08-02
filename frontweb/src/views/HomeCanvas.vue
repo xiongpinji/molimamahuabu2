@@ -40,6 +40,8 @@
         class="canvas-main"
         :class="{ 'quick-start-visible': showStarterPanel }"
         @wheel.capture="onCanvasWheel"
+        @dragover="onCanvasMediaDragOver"
+        @drop="onCanvasMediaDrop"
       >
         <VueFlow
           v-model:nodes="nodes"
@@ -202,6 +204,7 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { dramaAPI } from '@/api/drama'
+import { uploadAPI } from '@/api/upload'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
@@ -229,6 +232,7 @@ import {
   collectDirectUpstreamImageReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import { collectDroppedMediaFiles, createDroppedMediaNodeSpecs } from '@/utils/canvasMediaDrop'
 
 const router = useRouter()
 
@@ -250,7 +254,9 @@ const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
 const canvasClipboard = ref(null)
 let canvasPasteSequence = 0
+let localNodeSequence = 0
 let saveTimer = null
+const localPreviewUrls = new Set()
 const bindingProjects = ref([])
 const bindingProjectId = ref('')
 const bindingProject = ref(false)
@@ -552,6 +558,61 @@ function centerFlowPosition() {
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2)
 }
 
+function onCanvasMediaDragOver(event) {
+  if (!collectDroppedMediaFiles(event.dataTransfer).length) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+async function onCanvasMediaDrop(event) {
+  const files = collectDroppedMediaFiles(event.dataTransfer)
+  if (!files.length) return
+  event.preventDefault()
+  event.stopPropagation()
+  const origin = screenToFlowPosition(event.clientX, event.clientY) || centerFlowPosition()
+  const specs = createDroppedMediaNodeSpecs(files, origin, (file) => {
+    const previewUrl = URL.createObjectURL(file)
+    localPreviewUrls.add(previewUrl)
+    return previewUrl
+  })
+  const droppedNodes = specs.map((spec) => ({
+    spec,
+    nodeId: openNodeEditor(spec.kind, spec.position, spec.data),
+  }))
+
+  for (const { spec, nodeId } of droppedNodes) {
+    if (spec.kind === 'video' && !bindingProjectId.value) {
+      await updateFreeCanvasNode(nodeId, { status: 'success', error: '', localPreview: true })
+      continue
+    }
+    try {
+      const uploaded = spec.kind === 'video'
+        ? await uploadAPI.uploadMedia(spec.file, { dramaId: bindingProjectId.value })
+        : await uploadAPI.uploadImage(spec.file, { dramaId: bindingProjectId.value })
+      const stableUrl = String(uploaded?.url || '')
+      if (!stableUrl) throw new Error('素材上传成功但未返回可用地址')
+      await updateFreeCanvasNode(nodeId, {
+        url: stableUrl,
+        status: 'success',
+        error: '',
+        localPreview: false,
+      })
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+    } catch (error) {
+      await updateFreeCanvasNode(nodeId, {
+        url: spec.previewUrl,
+        status: 'failed',
+        error: error?.message || '本地素材上传失败',
+        localPreview: true,
+      })
+    }
+  }
+  if (specs.some((spec) => spec.kind === 'video') && !bindingProjectId.value) {
+    ElMessage.info('本地临时画布已创建视频预览；选择项目后拖入可持久保存')
+  }
+}
+
 function onPaneContextMenu(payload) {
   const event = payload?.event || payload
   event?.preventDefault?.()
@@ -582,7 +643,7 @@ function openNodeEditor(kind, position = null, initial = null) {
   closeContextMenu()
   const previousState = currentCanvasState()
   const titles = { text: '文本', image: '图片', video: '视频', audio: '音频' }
-  const nodeId = `home:${kind}:${Date.now()}`
+  const nodeId = `home:${kind}:${Date.now()}:${localNodeSequence++}`
   nodes.value = nodes.value
     .filter((node) => node.id !== 'home:welcome')
     .map((node) => ({ ...node, selected: false }))
@@ -602,6 +663,7 @@ function openNodeEditor(kind, position = null, initial = null) {
   pendingFlowPosition.value = null
   commitHistory(previousState)
   scheduleSave()
+  return nodeId
 }
 
 function openStarter(preset) {
@@ -915,6 +977,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  localPreviewUrls.forEach((url) => URL.revokeObjectURL(url))
+  localPreviewUrls.clear()
   window.removeEventListener('keydown', onCanvasKeydown)
   if (saveTimer) clearTimeout(saveTimer)
   persistState()
