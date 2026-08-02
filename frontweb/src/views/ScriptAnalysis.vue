@@ -45,12 +45,27 @@
             </p>
           </div>
           <div class="hero-actions">
+            <label class="skill-select">
+              <span>导演 Skill</span>
+              <select
+                v-model="selectedSkillId"
+                :disabled="running || loadingSkills || !skills.length"
+              >
+                <option
+                  v-for="skill in skills"
+                  :key="skill.id"
+                  :value="skill.id"
+                >
+                  {{ skill.name }} · v{{ skill.version }}
+                </option>
+              </select>
+            </label>
             <el-button :loading="saving" @click="saveProject">保存</el-button>
             <el-button
               type="primary"
               class="run-button"
               :loading="running"
-              :disabled="!project.source_script.trim()"
+              :disabled="!project.source_script.trim() || !selectedSkillId"
               @click="runAnalysis"
             >
               开始导演分析
@@ -132,12 +147,15 @@
               </div>
               <div class="version-tools">
                 <span class="version-chip">分析版本 {{ activeVersion }}</span>
-              <select
-                v-if="historyVersions.length"
-                v-model="selectedVersion"
-                class="version-select"
-                @change="resetRevisionEditor"
-              >
+                <span v-if="skillSnapshot" class="version-chip">
+                  {{ skillSnapshot.name }} · v{{ skillSnapshot.version }}
+                </span>
+                <select
+                  v-if="historyVersions.length"
+                  v-model="selectedVersion"
+                  class="version-select"
+                  @change="resetRevisionEditor"
+                >
                   <option value="">当前版本</option>
                   <option
                     v-for="item in historyVersions"
@@ -435,6 +453,9 @@ import { buildScriptAnalysisCanvasState } from '@/utils/scriptAnalysisCanvasImpo
 const router = useRouter()
 const projects = ref([])
 const loadingProjects = ref(false)
+const skills = ref([])
+const selectedSkillId = ref('')
+const loadingSkills = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const reviewing = ref(false)
@@ -527,13 +548,22 @@ const historyVersions = computed(() => (
   versions.value.filter((item) => Number(item.version) !== Number(project.value.active_version))
 ))
 
-const analysisPackage = computed(() => {
-  const value = asObject(
+const analysisEnvelope = computed(() => (
+  asObject(
     selectedVersionData.value?.package ?? project.value.analysis_package,
   )
+))
+
+const analysisPackage = computed(() => {
+  const value = analysisEnvelope.value
   if (!value) return null
   return asObject(value.package) || asObject(asObject(value.result)?.package) || value
 })
+
+const skillSnapshot = computed(() => (
+  asObject(analysisEnvelope.value?.skill_snapshot)
+  || asObject(analysisPackage.value?.skill_snapshot)
+))
 
 const storyOverview = computed(() => {
   const pkg = analysisPackage.value || {}
@@ -704,6 +734,25 @@ async function listProjects() {
   }
 }
 
+async function loadSkills() {
+  loadingSkills.value = true
+  try {
+    const body = unwrap(await scriptAnalysisAPI.skills())
+    skills.value = Array.isArray(body?.skills) ? body.skills : []
+    const current = skills.value.find((skill) => skill.id === selectedSkillId.value)
+    selectedSkillId.value = current?.id
+      || skills.value.find((skill) => skill.is_default)?.id
+      || skills.value[0]?.id
+      || ''
+  } catch (error) {
+    skills.value = []
+    selectedSkillId.value = ''
+    ElMessage.error(error?.message || '加载导演 Skill 失败')
+  } finally {
+    loadingSkills.value = false
+  }
+}
+
 function newDraft() {
   stopPolling()
   project.value = emptyProject()
@@ -782,6 +831,10 @@ async function saveProject(options = {}) {
 }
 
 async function runAnalysis() {
+  if (!selectedSkillId.value) {
+    ElMessage.warning('请选择导演 Skill')
+    return
+  }
   const saved = await saveProject({ silent: true })
   if (!saved?.id) return
 
@@ -796,7 +849,9 @@ async function runAnalysis() {
   try {
     selectedVersion.value = ''
     resetRevisionEditor()
-    const body = unwrap(await scriptAnalysisAPI.run(saved.id))
+    const body = unwrap(await scriptAnalysisAPI.run(saved.id, {
+      skill_id: selectedSkillId.value,
+    }))
     task.value.id = body?.task_id || body?.task?.id
     if (!task.value.id) throw new Error('服务端未返回任务编号')
     startPolling()
@@ -1012,6 +1067,7 @@ async function importApprovedPackageToCanvas() {
 }
 
 onMounted(async () => {
+  await loadSkills()
   await listProjects()
   if (projects.value[0]?.id) await loadProject(projects.value[0].id)
 })
@@ -1170,8 +1226,32 @@ onBeforeUnmount(stopPolling)
 
 .hero-actions {
   display: flex;
+  align-items: flex-end;
   flex-shrink: 0;
   gap: 10px;
+}
+
+.skill-select {
+  display: flex;
+  min-width: 220px;
+  flex-direction: column;
+  gap: 5px;
+  color: #948d89;
+  font-size: 11px;
+}
+
+.skill-select select {
+  height: 44px;
+  padding: 0 36px 0 14px;
+  color: #f6f2ee;
+  border: 1px solid rgba(239, 116, 68, 0.36);
+  border-radius: 10px;
+  outline: none;
+  background: #171718;
+}
+
+.skill-select select:disabled {
+  opacity: 0.55;
 }
 
 .hero-actions :deep(.el-button) {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const scriptAnalysisRoutes = require('../src/routes/scriptAnalysis');
+const aiClient = require('../src/services/aiClient');
 
 function captureResponse() {
   return {
@@ -101,6 +102,111 @@ test('剧本分析项目按用户隔离并可读取版本列表', () => {
     assert.equal(versions.statusCode, 200);
     assert.deepEqual(versions.body.data, []);
   } finally {
+    db.close();
+  }
+});
+
+test('剧本分析在创建任务前拒绝未安装的 Skill', () => {
+  const db = new Database(':memory:');
+  const originalSetImmediate = global.setImmediate;
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = scriptAnalysisRoutes(db, { error() {} });
+    const created = captureResponse();
+    handlers.create(request({
+      body: {
+        title: '非法 Skill 测试',
+        source_script: '第一场：小满走进雨夜街道。',
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    global.setImmediate = () => ({ unref() {} });
+    const response = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      body: { skill_id: 'not-installed' },
+    }), response);
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.body.error.message, '所选剧本分析 Skill 不存在或不可用');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  } finally {
+    global.setImmediate = originalSetImmediate;
+    db.close();
+  }
+});
+
+test('成功分析保存所选 Skill 快照并保留原始剧本', async () => {
+  const db = new Database(':memory:');
+  const originalGenerateText = aiClient.generateText;
+  const originalSetImmediate = global.setImmediate;
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = scriptAnalysisRoutes(db, { error() {}, info() {} });
+    const sourceScript = '第一场：小满走进雨夜街道。';
+    const created = captureResponse();
+    handlers.create(request({
+      body: {
+        title: '版本快照测试',
+        source_script: sourceScript,
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    let backgroundTask = null;
+    aiClient.generateText = async () => JSON.stringify(validProductionPackage({
+      source: {
+        title: '模型伪造标题',
+        source_script: '模型改写原文',
+        locked_facts: [],
+      },
+    }));
+    global.setImmediate = (callback) => {
+      backgroundTask = callback;
+      return { unref() {} };
+    };
+
+    const response = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      body: { skill_id: 'short-drama-director' },
+    }), response);
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(typeof backgroundTask, 'function');
+    await backgroundTask();
+
+    const version = db.prepare(`
+      SELECT source_script, package_json
+      FROM script_analysis_versions
+      WHERE project_id = ? AND version = 1
+    `).get(created.body.data.id);
+    const project = db.prepare(`
+      SELECT source_script, analysis_json
+      FROM script_analysis_projects
+      WHERE id = ?
+    `).get(created.body.data.id);
+    const productionPackage = JSON.parse(version.package_json);
+
+    assert.equal(version.source_script, sourceScript);
+    assert.equal(project.source_script, sourceScript);
+    assert.equal(productionPackage.source.source_script, sourceScript);
+    assert.deepEqual(productionPackage.source.locked_facts, ['主角叫小满']);
+    assert.deepEqual(productionPackage.skill_snapshot, {
+      id: 'short-drama-director',
+      name: '专业短剧导演',
+      version: '1.0.0',
+      module: 'script_analysis',
+      output_schema_version: '1.0',
+    });
+    assert.deepEqual(
+      JSON.parse(project.analysis_json).skill_snapshot,
+      productionPackage.skill_snapshot,
+    );
+  } finally {
+    aiClient.generateText = originalGenerateText;
+    global.setImmediate = originalSetImmediate;
     db.close();
   }
 });
