@@ -572,12 +572,15 @@
           <el-select
             v-model="freeNodeForm.model"
             filterable
-            allow-create
-            default-first-option
             clearable
             placeholder="留空使用系统默认模型"
           >
-            <el-option v-for="model in getFreeNodeModelOptions(freeNodeKind)" :key="model" :label="model" :value="model" />
+            <el-option
+              v-for="option in getFreeNodeModelOptions(freeNodeKind)"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item v-if="['image', 'video'].includes(freeNodeKind)" label="画面比例">
@@ -674,13 +677,18 @@ import {
   stripLocalImagePreviewsForPersistence,
 } from '@/utils/canvasImageDrop'
 import {
-  canvasModelServiceType,
   canvasNodeKind,
   resolveCanvasNodeConnection,
   toLibTvCanvasEdge,
 } from '@/utils/canvasNodeContracts'
 import { buildCanvasExecutionPlan } from '@/utils/canvasExecutionPlan'
-import { canvasModelCapability, estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
+import {
+  canvasModelCapability,
+  canvasModelEntry,
+  canvasModelOptions,
+  estimateCanvasCredits,
+  normalizeCanvasModelCatalog,
+} from '@/utils/canvasModelCapabilities'
 import {
   commitCanvasInteractionHistory,
   createCanvasInteractionHistory,
@@ -710,7 +718,6 @@ import {
   computeStandaloneNodePosition,
 } from '@/utils/canvasStandaloneLayout'
 import { assetImageUrl, assetMediaUrl, audioUrl } from '@/utils/mediaUrl'
-import { getSelectableModelsAcrossConfigs } from '@/utils/modelSelection'
 import {
   imageRecordUrl,
   resolveSbFirstImageRecord,
@@ -914,10 +921,9 @@ const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRat
 const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
 const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
 const CANVAS_KEYBOARD_PAN_STEP = 56
-const freeCanvasModelConfigs = ref([])
 const freeCanvasModelCatalog = ref([])
 const freeCanvasVoiceOptions = ref([])
-let freeCanvasModelConfigsLoaded = false
+let freeCanvasModelCatalogLoaded = false
 let freeCanvasVoiceOptionsLoaded = false
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
@@ -968,10 +974,7 @@ function persistFreeCanvasNodeDefaults(kind, data) {
 }
 
 function getFreeNodeModelOptions(kind) {
-  const catalogModels = freeCanvasModelCatalog.value.filter((item) => item.kind === kind).map((item) => item.model)
-  if (catalogModels.length) return catalogModels
-  const serviceType = canvasModelServiceType(kind)
-  return serviceType ? getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType) : []
+  return canvasModelOptions(freeCanvasModelCatalog.value, kind)
 }
 
 function getFreeNodeModelCapability(kind, model) {
@@ -983,13 +986,12 @@ function getFreeNodeEstimatedCredits(kind, model, quantity, duration) {
 }
 
 async function loadFreeCanvasModelConfigs() {
-  if (freeCanvasModelConfigsLoaded) return
+  if (freeCanvasModelCatalogLoaded) return
   const catalog = await request.get('/canvas/model-catalog').catch(() => [])
   freeCanvasModelCatalog.value = normalizeCanvasModelCatalog(
     Array.isArray(catalog) ? catalog : []
   )
-  freeCanvasModelConfigs.value = []
-  freeCanvasModelConfigsLoaded = true
+  freeCanvasModelCatalogLoaded = true
 }
 
 async function loadFreeCanvasVoiceOptions() {
@@ -3025,8 +3027,11 @@ async function runFreeCanvasNode(nodeOrId) {
   const historyId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
   let requestPayload
   try {
-    const capability = getFreeNodeModelCapability(kind, node.data?.model)
-    requestPayload = buildFreeCanvasGenerationRequest(node.data, {
+    const catalogEntry = canvasModelEntry(freeCanvasModelCatalog.value, kind, node.data?.model)
+    if (!catalogEntry) throw new Error('当前节点没有已验证且已定价的可用模型')
+    const generationData = { ...node.data, model: catalogEntry.model }
+    const capability = getFreeNodeModelCapability(kind, catalogEntry.model)
+    requestPayload = buildFreeCanvasGenerationRequest(generationData, {
       dramaId: dramaId.value,
       upstreamUrls,
       upstreamReferences,

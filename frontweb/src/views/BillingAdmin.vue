@@ -56,7 +56,7 @@
             <div class="panel-heading">
               <div>
                 <h2>模型计费</h2>
-                <p>自动汇总 AI 配置中的实际模型；每个模型单独设置积分、类型和启停状态。</p>
+                <p>自动汇总 AI 配置中的实际模型；连接验证并启用计费后自动进入画布，无需修改前端代码。</p>
               </div>
             </div>
             <div class="model-pricing-summary" aria-label="模型计费状态">
@@ -87,7 +87,7 @@
             </div>
             <div class="model-list">
               <div v-for="item in filteredPrices" :key="item.model" class="model-row">
-                <label class="model-field"><span>展示名称</span><el-input v-model="item.display_name" /></label>
+                <label class="model-field"><span>前端显示名称</span><el-input v-model="item.display_name" placeholder="画布下拉中展示的名称" /></label>
                 <label class="model-field">
                   <span>模型类型</span>
                   <el-select v-model="item.category">
@@ -138,7 +138,7 @@
             </div>
             <div class="new-model">
               <label class="model-field"><span>模型 ID</span><el-input v-model.trim="newModel.model" /></label>
-              <label class="model-field"><span>展示名称</span><el-input v-model.trim="newModel.display_name" /></label>
+              <label class="model-field"><span>前端显示名称</span><el-input v-model.trim="newModel.display_name" placeholder="画布下拉中展示的名称" /></label>
               <label class="model-field">
                 <span>模型类型</span>
                 <el-select v-model="newModel.category">

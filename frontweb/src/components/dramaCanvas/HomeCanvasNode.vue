@@ -274,7 +274,7 @@
               @change="saveDraft"
             >
               <option value="">{{ defaultModelLabel }}</option>
-              <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
+              <option v-for="option in modelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
 
@@ -388,7 +388,11 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `本次预计扣除 ${estimatedCredits} 积分` : '本次消耗以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
+          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+            <template v-if="estimatedCredits">本次生成需 <strong>{{ estimatedCredits }}</strong> 积分</template>
+            <template v-else>积分待管理员配置</template>
+            <small>· {{ draft.quantity || 1 }} 次</small>
+          </span>
           <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
@@ -1541,7 +1545,23 @@ watch(isSelected, (selected) => {
   gap: 10px;
   margin-top: 18px;
 }
-.billing-note, .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
+.billing-cost {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-right: auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 177, 92, 0.5);
+  border-radius: 10px;
+  background: rgba(124, 64, 20, 0.3);
+  color: #ffd09a;
+  font-size: 13px;
+  font-weight: 700;
+}
+.billing-cost strong { color: #ffb15c; font-size: 17px; font-weight: 800; }
+.billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
+.billing-note { color: #71717a; font-size: 11px; }
+.editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
 .generation-progress strong { color: #d4d4d8; font-weight: 600; }

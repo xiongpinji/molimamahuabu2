@@ -642,25 +642,8 @@ async function testConnection(opts) {
 
   // --- MiniMax TTS 语音合成 ---
   if (serviceType === 'tts' && provider === 'minimax') {
-    const probeUrl = base + '/t2a_v2';
-    const probeBody = JSON.stringify({
-      model: model || 'speech-2.8-hd',
-      text: '测试',
-      stream: false,
-      output_format: 'hex',
-      voice_setting: {
-        voice_id: 'male-qn-qingse',
-        speed: 1,
-        vol: 1,
-        pitch: 0,
-      },
-      audio_setting: {
-        sample_rate: 32000,
-        bitrate: 128000,
-        format: 'mp3',
-        channel: 1,
-      },
-    });
+    const probeUrl = base + '/get_voice';
+    const probeBody = JSON.stringify({ voice_type: 'all' });
     const res = await fetch(probeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },

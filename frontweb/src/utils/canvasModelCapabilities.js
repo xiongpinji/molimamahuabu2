@@ -50,12 +50,23 @@ export function normalizeCanvasModelCatalog(items = []) {
 }
 
 export function canvasModelCapability(catalog, kind, model) {
-  return normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)?.capabilities
+  return canvasModelEntry(catalog, kind, model)?.capabilities
     || normalizeCapabilities(kind, {})
 }
 
+export function canvasModelEntry(catalog, kind, model) {
+  const kindEntries = normalizeCanvasModelCatalog(catalog).filter((item) => item.kind === kind)
+  return kindEntries.find((item) => item.model === model) || (!model ? kindEntries[0] : null) || null
+}
+
+export function canvasModelOptions(catalog, kind) {
+  return normalizeCanvasModelCatalog(catalog)
+    .filter((item) => item.kind === kind)
+    .map((item) => ({ value: item.model, label: item.label }))
+}
+
 export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {
-  const entry = normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
+  const entry = canvasModelEntry(catalog, kind, model)
   if (!entry?.credits) return null
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)

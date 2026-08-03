@@ -114,6 +114,13 @@
                 <span v-else class="no-default">—</span>
               </template>
             </el-table-column>
+            <el-table-column label="画布状态" width="96">
+              <template #default="{ row }">
+                <el-tag v-if="row.verification_status === 'verified'" type="success" size="small">已验证</el-tag>
+                <el-tag v-else-if="row.verification_status === 'failed'" type="danger" size="small">验证失败</el-tag>
+                <el-tag v-else type="warning" size="small">待验证</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="240" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openTest(row)">
@@ -2235,6 +2242,8 @@ async function openTest(row) {
   } catch (e) {
     testResult.value = false
     testError.value = e?.message || '请求失败'
+  } finally {
+    await loadList()
   }
 }
 

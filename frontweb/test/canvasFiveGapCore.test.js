@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildCanvasExecutionPlan } from '../src/utils/canvasExecutionPlan.js'
-import { estimateCanvasCredits, canvasModelCapability } from '../src/utils/canvasModelCapabilities.js'
+import {
+  canvasModelCapability,
+  canvasModelEntry,
+  canvasModelOptions,
+  estimateCanvasCredits,
+} from '../src/utils/canvasModelCapabilities.js'
 import { mergeLocalCanvasIntoProjectLayout } from '../src/utils/localCanvasBinding.js'
 
 const node = (id, kind) => ({ id, type: 'homeCanvasNode', position: { x: 0, y: 0 }, data: { kind } })
@@ -29,6 +34,21 @@ test('model capabilities restrict parameters and estimate per-second video cost'
   const catalog = [{ kind: 'video', model: 'v1', credits: 12, billing_unit: 'second', capabilities: { durations: [5, 8] } }]
   assert.deepEqual(canvasModelCapability(catalog, 'video', 'v1').durations, [5, 8])
   assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12), 144)
+})
+
+test('canvas model options show admin labels but retain model IDs and price the default model', () => {
+  const catalog = [
+    { kind: 'image', model: 'image-v1', label: '写实图片 Pro', credits: 18, billing_unit: 'request' },
+    { kind: 'image', model: 'image-v2', label: '', credits: 26, billing_unit: 'request' },
+  ]
+
+  assert.deepEqual(canvasModelOptions(catalog, 'image'), [
+    { value: 'image-v1', label: '写实图片 Pro' },
+    { value: 'image-v2', label: 'image-v2' },
+  ])
+  assert.equal(canvasModelEntry(catalog, 'image', '').model, 'image-v1')
+  assert.equal(canvasModelEntry(catalog, 'image', 'missing'), null)
+  assert.equal(estimateCanvasCredits(catalog, 'image', '', 2), 36)
 })
 
 test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {

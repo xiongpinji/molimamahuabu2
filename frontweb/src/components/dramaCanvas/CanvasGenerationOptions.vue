@@ -11,7 +11,7 @@
       @change="update('imageModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in imageModelOptions" :key="`image-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in imageModelOptions" :key="`image-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="mode === 'video' || mode === 'both'"
@@ -23,7 +23,7 @@
       @change="update('videoModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in videoModelOptions" :key="`video-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in videoModelOptions" :key="`video-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="mode === 'audio' || mode === 'both'"
@@ -35,7 +35,7 @@
       @change="update('audioModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
-      <el-option v-for="model in audioModelOptions" :key="`audio-${model}`" :label="model" :value="model" />
+      <el-option v-for="option in audioModelOptions" :key="`audio-${option.value}`" :label="option.label" :value="option.value" />
     </el-select>
     <el-select
       v-if="!modelsOnly && mode !== 'audio'"
@@ -97,6 +97,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { aiAPI } from '@/api/ai'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { canvasModelOptions } from '@/utils/canvasModelCapabilities'
 import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
 
 const props = defineProps({
@@ -109,35 +110,12 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'change'])
 
 const ctx = useCanvasContext()
-const imageConfigs = ref([])
-const videoConfigs = ref([])
-const audioConfigs = ref([])
+const modelCatalog = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
 
-const imageModelOptions = computed(() => withCurrent(
-  publicModelNames(imageConfigs.value),
-  options.value.imageModel,
-))
-const videoModelOptions = computed(() => withCurrent(
-  publicModelNames(videoConfigs.value),
-  options.value.videoModel,
-))
-const audioModelOptions = computed(() => withCurrent(
-  publicModelNames(audioConfigs.value),
-  options.value.audioModel,
-))
-
-function publicModelNames(value) {
-  return [...new Set((Array.isArray(value) ? value : [])
-    .map((model) => String(model || '').trim())
-    .filter(Boolean))]
-}
-
-function withCurrent(models, current) {
-  const value = String(current || '').trim()
-  if (!value || models.includes(value)) return models
-  return [value, ...models]
-}
+const imageModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'image'))
+const videoModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'video'))
+const audioModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'audio'))
 
 function update(field, value) {
   const patch = { [field]: value }
@@ -152,14 +130,8 @@ function update(field, value) {
 }
 
 onMounted(async () => {
-  const [images, videos, audios] = await Promise.allSettled([
-    aiAPI.listImageModels(),
-    aiAPI.listVideoModels(),
-    aiAPI.listAudioModels(),
-  ])
-  if (images.status === 'fulfilled') imageConfigs.value = Array.isArray(images.value) ? images.value : []
-  if (videos.status === 'fulfilled') videoConfigs.value = Array.isArray(videos.value) ? videos.value : []
-  if (audios.status === 'fulfilled') audioConfigs.value = Array.isArray(audios.value) ? audios.value : []
+  const catalog = await aiAPI.listCanvasModels().catch(() => [])
+  modelCatalog.value = Array.isArray(catalog) ? catalog : []
 })
 </script>
 

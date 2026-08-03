@@ -1,6 +1,5 @@
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
-const canvasProviderConfigService = require('./canvasProviderConfigService');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 
 const KIND_BY_SERVICE = {
@@ -23,6 +22,18 @@ function parseModels(value, fallback) {
   return fallback ? [String(fallback).trim()].filter(Boolean) : [];
 }
 
+function orderedModels(config) {
+  const candidates = [String(config.default_model || '').trim(), ...parseModels(config.model)]
+    .filter(Boolean);
+  const seen = new Set();
+  return candidates.filter((model) => {
+    const key = model.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function safeCapabilities(settings) {
   try {
     const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
@@ -41,13 +52,13 @@ function list(db, options = {}) {
   const configured = aiConfigService.listConfigs(db)
     .filter((config) => config.is_active !== false
       && KIND_BY_SERVICE[config.service_type]
-      && (config.service_type !== 'video' || aiConfigService.isVerifiedConfig(config)))
-    .flatMap((config) => parseModels(config.model, config.default_model).map((model) => {
+      && aiConfigService.isVerifiedConfig(config))
+    .flatMap((config) => orderedModels(config).map((model) => {
       const kind = KIND_BY_SERVICE[config.service_type];
       const key = `${kind}:${model.toLowerCase()}`;
       if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
-      if (kind === 'video' && (!Number.isSafeInteger(price?.credits) || price.credits <= 0)) return null;
+      if (!Number.isSafeInteger(price?.credits) || price.credits <= 0) return null;
       seen.add(key);
       return {
         kind,
@@ -63,14 +74,6 @@ function list(db, options = {}) {
       };
     }))
     .filter(Boolean);
-  for (const item of canvasProviderConfigService.listSafe()) {
-    if (item.kind === 'video') continue;
-    const key = `${item.kind}:${item.model.toLowerCase()}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      configured.push(item);
-    }
-  }
   return options.requirePrice
     ? configured.filter((item) => Number.isSafeInteger(item.credits) && item.credits > 0)
     : configured;

@@ -26,8 +26,9 @@ test('普通创作入口不暴露模型配置，配置路由只允许管理员',
 
 test('画布模型下拉只读取脱敏公开模型目录', () => {
   const component = read('frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue');
-  assert.match(component, /listImageModels\(\)/);
-  assert.match(component, /listVideoModels\(\)/);
-  assert.match(component, /listAudioModels\(\)/);
+  assert.match(component, /listCanvasModels\(\)/);
+  assert.doesNotMatch(component, /listImageModels\(\)/);
+  assert.doesNotMatch(component, /listVideoModels\(\)/);
+  assert.doesNotMatch(component, /listAudioModels\(\)/);
   assert.doesNotMatch(component, /aiAPI\.list\(/);
 });
