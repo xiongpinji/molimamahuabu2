@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import {
   collectDroppedImageFiles,
   createDroppedImageNodeSpecs,
+  hasDraggedFilePayload,
+  stripLocalImagePreviewsForPersistence,
 } from '../src/utils/canvasImageDrop.js'
 
 test('拖放只接收图片并兼容缺少 MIME 的常见图片扩展名', () => {
@@ -19,6 +21,14 @@ test('拖放只接收图片并兼容缺少 MIME 的常见图片扩展名', () =>
     collectDroppedImageFiles({ files: [png, jpeg, webp, gif, avif, text, disguised] }),
     [png, jpeg, webp, gif, avif],
   )
+})
+
+test('protected dragover 可通过 files/items/types 判断文件拖入', () => {
+  assert.equal(hasDraggedFilePayload({ files: [{ name: 'a.png' }] }), true)
+  assert.equal(hasDraggedFilePayload({ files: [], items: [{ kind: 'file' }] }), true)
+  assert.equal(hasDraggedFilePayload({ files: [], items: [], types: ['Files'] }), true)
+  assert.equal(hasDraggedFilePayload({ files: [], items: [{ kind: 'string' }], types: ['text/plain'] }), false)
+  assert.equal(hasDraggedFilePayload(null), false)
 })
 
 test('多张拖入图片立即生成带本地预览且错位排布的节点规格', () => {
@@ -59,4 +69,39 @@ test('多张拖入图片立即生成带本地预览且错位排布的节点规�
       localPreview: true,
     },
   ])
+})
+
+test('持久化清洗会剥离本地 blob 预览且不改动运行时节点', () => {
+  const nodes = [
+    {
+      id: 'a',
+      type: 'homeCanvasNode',
+      data: {
+        kind: 'image',
+        url: 'blob:preview/a',
+        localPreview: true,
+        status: 'failed',
+        error: '上传失败',
+      },
+    },
+    {
+      id: 'b',
+      type: 'homeCanvasNode',
+      data: {
+        kind: 'image',
+        url: '/uploads/b.png',
+        localPreview: false,
+      },
+    },
+  ]
+
+  const persisted = stripLocalImagePreviewsForPersistence(nodes)
+
+  assert.equal(nodes[0].data.url, 'blob:preview/a')
+  assert.equal(nodes[0].data.localPreview, true)
+  assert.equal(persisted[0].data.url, '')
+  assert.equal(persisted[0].data.localPreview, false)
+  assert.equal(persisted[0].data.status, 'failed')
+  assert.equal(persisted[0].data.error, '上传失败')
+  assert.equal(persisted[1], nodes[1])
 })

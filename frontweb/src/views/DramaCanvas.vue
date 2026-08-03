@@ -668,6 +668,8 @@ import {
 import {
   collectDroppedImageFiles,
   createDroppedImageNodeSpecs,
+  hasDraggedFilePayload,
+  stripLocalImagePreviewsForPersistence,
 } from '@/utils/canvasImageDrop'
 import {
   canvasModelServiceType,
@@ -1071,6 +1073,7 @@ let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
 let freeNodeSequence = 0
+let canvasAlive = true
 let runQueueTimer = null
 
 const nodeTypes = {
@@ -2057,7 +2060,7 @@ function syncRenderedNodesToGraph() {
 
 function refreshLayoutCacheFromGraph() {
   layoutCache.value = withCanvasPersistedState(buildCanvasLayoutPayload(
-    allGraphNodes.value,
+    stripLocalImagePreviewsForPersistence(allGraphNodes.value),
     currentViewport.value,
     layoutCache.value,
     allGraphEdges.value,
@@ -2231,7 +2234,7 @@ function canvasCenterFlowPosition() {
 }
 
 function onCanvasImageDragOver(event) {
-  if (!isStandaloneCanvas.value || !collectDroppedImageFiles(event.dataTransfer).length) return
+  if (!isStandaloneCanvas.value || !hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
@@ -2260,6 +2263,11 @@ async function onCanvasImageDrop(event) {
   for (const { spec, nodeId } of droppedNodes) {
     try {
       const asset = await uploadAPI.uploadMedia(spec.file, { dramaId: drama.value.id })
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
       const url = assetDisplayUrl(asset)
       if (!url) throw new Error('素材上传成功但未返回可用地址')
       await patchFreeCanvasNodeData(nodeId, {
@@ -2274,6 +2282,11 @@ async function onCanvasImageDrop(event) {
       URL.revokeObjectURL(spec.previewUrl)
       localPreviewUrls.delete(spec.previewUrl)
     } catch (error) {
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
       await patchFreeCanvasNodeData(nodeId, {
         url: spec.previewUrl,
         status: 'failed',
@@ -6656,8 +6669,9 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
   let layoutPayload = null
   if (!groupsOnly) {
     syncRenderedNodesToGraph()
+    const persistedGraphNodes = stripLocalImagePreviewsForPersistence(allGraphNodes.value)
     layoutPayload = withCanvasPersistedState(buildCanvasLayoutPayload(
-      allGraphNodes.value,
+      persistedGraphNodes,
       currentViewport.value,
       layoutCache.value,
       allGraphEdges.value,
@@ -7329,6 +7343,7 @@ watch(drama, () => {
 })
 
 onMounted(() => {
+  canvasAlive = true
   scheduleVirtualization()
   runQueueTimer = setInterval(() => {
     queueNow.value = Date.now()
@@ -7342,6 +7357,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  canvasAlive = false
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)

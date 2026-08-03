@@ -231,6 +231,8 @@ import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 import {
   collectDroppedImageFiles,
   createDroppedImageNodeSpecs,
+  hasDraggedFilePayload,
+  stripLocalImagePreviewsForPersistence,
 } from '@/utils/canvasImageDrop'
 import {
   collectDirectUpstreamImageReferences,
@@ -259,6 +261,7 @@ const canvasClipboard = ref(null)
 let canvasPasteSequence = 0
 let canvasNodeSequence = 0
 let saveTimer = null
+let canvasAlive = true
 const localPreviewUrls = new Set()
 const bindingProjects = ref([])
 const bindingProjectId = ref('')
@@ -342,7 +345,7 @@ function persistState() {
   if (typeof localStorage === 'undefined') return
   try {
     localStorage.setItem(HOME_CANVAS_STORAGE_KEY, serializeHomeCanvasState({
-      nodes: nodes.value,
+      nodes: stripLocalImagePreviewsForPersistence(nodes.value),
       edges: edges.value,
       viewport: currentViewport.value,
     }))
@@ -562,7 +565,7 @@ function centerFlowPosition() {
 }
 
 function onCanvasImageDragOver(event) {
-  if (!collectDroppedImageFiles(event.dataTransfer).length) return
+  if (!hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
@@ -585,6 +588,11 @@ async function onCanvasImageDrop(event) {
   for (const { spec, nodeId } of droppedNodes) {
     try {
       const uploaded = await uploadAPI.uploadImage(spec.file)
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
       const stableUrl = String(uploaded?.url || '')
       if (!stableUrl) throw new Error('图片上传成功但未返回可用地址')
       await updateFreeCanvasNode(nodeId, {
@@ -596,6 +604,11 @@ async function onCanvasImageDrop(event) {
       URL.revokeObjectURL(spec.previewUrl)
       localPreviewUrls.delete(spec.previewUrl)
     } catch (error) {
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
       await updateFreeCanvasNode(nodeId, {
         url: spec.previewUrl,
         status: 'failed',
@@ -966,11 +979,13 @@ provide(CANVAS_CONTEXT_KEY, {
 })
 
 onMounted(() => {
+  canvasAlive = true
   window.addEventListener('keydown', onCanvasKeydown)
   void loadBindingProjects()
 })
 
 onBeforeUnmount(() => {
+  canvasAlive = false
   window.removeEventListener('keydown', onCanvasKeydown)
   if (saveTimer) clearTimeout(saveTimer)
   for (const previewUrl of localPreviewUrls) URL.revokeObjectURL(previewUrl)
