@@ -1242,6 +1242,8 @@ function onAIImportFile(event) {
   aiImportStatus.value = ''
   aiImportUploadedUrl.value = ''
   aiImportAssetId.value = null
+  directorReferenceRequestId += 1
+  directorReferenceBusy.value = false
   directorReferenceStatus.value = ''
   directorReferenceAnalysis.value = null
   directorReferenceAnalysisDramaId.value = null
@@ -1303,7 +1305,10 @@ async function analyzeDirectorReference() {
     if (isCurrentDirectorReference(requestId, capturedDramaId)) {
       directorReferenceAnalysis.value = analysis
       directorReferenceAnalysisDramaId.value = capturedDramaId
-      if (!completedPersistError) await loadDirectorReferenceHistory()
+      if (!completedPersistError) {
+        await loadDirectorReferenceHistory()
+        if (!isCurrentDirectorReference(requestId, capturedDramaId)) return
+      }
       directorReferenceStatus.value = completedPersistError
         ? `站位已生成，但历史保存失败：${completedPersistError?.message || '未知错误'}`
         : '站位参考已生成，可选择插入或覆盖'

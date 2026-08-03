@@ -99,6 +99,14 @@ test('director reference UI state is guarded by request token and drama id', () 
   assert.match(stageSource, /selectDirectorReferenceHistory\(item\)[\s\S]*directorReferenceAnalysisDramaId\.value = Number\(props\.drama\?\.id\)/);
 });
 
+test('director reference file switch invalidates request and resets busy state', () => {
+  assert.match(stageSource, /function onAIImportFile\(event\)[\s\S]*directorReferenceRequestId \+= 1[\s\S]*directorReferenceBusy\.value = false[\s\S]*directorReferenceStatus\.value = ''[\s\S]*directorReferenceAnalysis\.value = null[\s\S]*directorReferenceAnalysisDramaId\.value = null/);
+});
+
+test('director reference success status is guarded after history reload', () => {
+  assert.match(stageSource, /await loadDirectorReferenceHistory\(\)[\s\S]*if \(!isCurrentDirectorReference\(requestId,\s*capturedDramaId\)\) return[\s\S]*directorReferenceStatus\.value = completedPersistError/);
+});
+
 test('director reference persistence errors are separated from analysis errors', () => {
   assert.doesNotMatch(stageSource, /assetsAPI\.update\(referenceAsset\.id,[\s\S]{0,500}\.catch\(\(\) => \{\}\)/);
   assert.match(stageSource, /failurePersistError/);
