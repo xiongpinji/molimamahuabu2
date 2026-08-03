@@ -25,6 +25,7 @@ const voiceCatalogRoutes = require('./voiceCatalog');
 const scriptAnalysisRoutes = require('./scriptAnalysis');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
+const directorReferenceRoutes = require('./directorReference');
 const sceneModelMapRoutes = require('./sceneModelMap');
 const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
@@ -193,6 +194,7 @@ function setupRouter(cfg, db, log) {
   const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
+  const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -253,6 +255,7 @@ function setupRouter(cfg, db, log) {
     }
   });
   r.post('/dramas/:id/director/export', directorExport.upload, directorExport.create);
+  r.post('/dramas/:id/director/reference-analysis', directorReference.analyze);
   r.get('/dramas/examples', drama.listExamples);
   r.post('/dramas/import-example', drama.importExample);
   r.put('/dramas/:id/outline', drama.saveOutline);

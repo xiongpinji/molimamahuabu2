@@ -567,6 +567,18 @@
         <label>识别类型<select v-model="aiImportType"><option value="scene">场景</option><option value="character">角色</option><option value="prop">道具</option></select></label>
         <label>参考图片<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择识图图片" @change="onAIImportFile" /></label>
         <img v-if="aiImportPreview" class="ai-import-preview" :src="aiImportPreview" alt="AI 识图参考预览" />
+        <div class="director-reference-actions" aria-label="AI站位参考">
+          <button type="button" :disabled="!aiImportFile || directorReferenceBusy || !drama?.id" @click="analyzeDirectorReference">{{ directorReferenceBusy ? '分析中…' : 'AI站位参考' }}</button>
+          <select v-model="directorReferenceMode" aria-label="站位应用方式">
+            <option value="insert">插入</option>
+            <option value="override">覆盖（保留灯光）</option>
+          </select>
+          <button type="button" :disabled="!directorReferenceAnalysis || directorReferenceBusy" @click="applyDirectorReference">应用站位</button>
+        </div>
+        <div v-if="directorReferenceStatus" class="resource-status">{{ directorReferenceStatus }}</div>
+        <div v-if="directorReferenceHistory.length" class="director-reference-history" aria-label="AI站位参考历史">
+          <button v-for="item in directorReferenceHistory" :key="item.id" type="button" @click="directorReferenceAnalysis = item.analysis">{{ item.title }}</button>
+        </div>
         <button type="button" :disabled="!aiImportFile || aiImportBusy" @click="analyzeAIImport">{{ aiImportBusy ? '识别中…' : '开始识图' }}</button>
         <label>识别描述<textarea v-model="aiImportDescription" rows="5" placeholder="识别结果也可手动修订" /></label>
         <div v-if="aiImportStatus" class="resource-status">{{ aiImportStatus }}</div>
@@ -619,6 +631,7 @@ import {
 } from 'threepipe'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { assetsAPI } from '@/api/assets'
+import { directorReferenceAPI } from '@/api/directorReference'
 import { directorExportAPI } from '@/api/directorExport'
 import { taskAPI } from '@/api/task'
 import { uploadAPI } from '@/api/upload'
@@ -654,6 +667,7 @@ import {
   applyVisualDirectionGuidance,
   formatVisualDirectionSummary,
 } from '@/utils/visualDirectionDirectorBridge'
+import { applyDirectorReferenceAnalysis } from '@/utils/directorReference'
 
 const CAMERA_ASPECTS = [
   { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
@@ -838,6 +852,11 @@ const aiImportStatus = ref('')
 const aiImportBusy = ref(false)
 const aiImportUploadedUrl = ref('')
 const aiImportAssetId = ref(null)
+const directorReferenceBusy = ref(false)
+const directorReferenceMode = ref('insert')
+const directorReferenceStatus = ref('')
+const directorReferenceAnalysis = ref(null)
+const directorReferenceHistory = ref([])
 const axes = ['X', 'Y', 'Z']
 const undoStack = ref([])
 const redoStack = ref([])
@@ -1217,6 +1236,41 @@ function onAIImportFile(event) {
   aiImportStatus.value = ''
   aiImportUploadedUrl.value = ''
   aiImportAssetId.value = null
+  directorReferenceStatus.value = ''
+  directorReferenceAnalysis.value = null
+}
+
+async function analyzeDirectorReference() {
+  const file = aiImportFile.value
+  const dramaId = Number(props.drama?.id)
+  if (!file || !dramaId || directorReferenceBusy.value) return
+  directorReferenceBusy.value = true
+  directorReferenceStatus.value = '正在分析站位参考…'
+  try {
+    const imageUrl = await fileToDataUrl(file)
+    const result = await directorReferenceAPI.analyze(dramaId, { image_url: imageUrl })
+    const analysis = result?.analysis || result
+    directorReferenceAnalysis.value = analysis
+    directorReferenceHistory.value = [{
+      id: `${Date.now()}-${directorReferenceHistory.value.length}`,
+      title: `${file.name || '参考图'} · ${(analysis?.people?.length || 0)}人/${(analysis?.props?.length || 0)}物/${(analysis?.cameras?.length || 0)}机位`,
+      analysis,
+    }, ...directorReferenceHistory.value].slice(0, 5)
+    directorReferenceStatus.value = '站位参考已生成，可选择插入或覆盖'
+  } catch (error) {
+    directorReferenceStatus.value = error?.message || '站位参考分析失败'
+  } finally {
+    directorReferenceBusy.value = false
+  }
+}
+
+function applyDirectorReference() {
+  if (!directorReferenceAnalysis.value) return
+  const next = applyDirectorReferenceAnalysis(timeline.value, directorReferenceAnalysis.value, directorReferenceMode.value)
+  mutateTimeline(next)
+  buildStage()
+  aiImportOpen.value = false
+  directorReferenceStatus.value = 'AI站位参考已应用'
 }
 
 async function analyzeAIImport() {
@@ -3073,6 +3127,9 @@ onBeforeUnmount(() => {
 .director-modal__panel button { border: 1px solid #4f46e5; border-radius: 8px; padding: 8px 12px; background: #312e81; color: #e0e7ff; cursor: pointer; }
 .director-modal__panel button:disabled { opacity: .5; cursor: default; }
 .ai-import-preview { max-width: 100%; max-height: 240px; justify-self: center; border-radius: 8px; object-fit: contain; }
+.director-reference-actions { display: grid; grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1fr); gap: 8px; }
+.director-reference-history { display: grid; gap: 6px; max-height: 130px; overflow-y: auto; }
+.director-reference-history button { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-group { margin: 16px 0; padding-top: 12px; border-top: 1px solid #303036; }
 .inspector-group > strong { color: #d4d4d8; font-size: 12px; }
 .vector-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }

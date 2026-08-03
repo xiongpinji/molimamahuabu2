@@ -3,6 +3,7 @@ const MODEL_GENERATION_ROUTES = [
   ['POST', /^\/characters\/(?:batch-generate-images|\d+\/(?:generate-image|generate-four-view-image|generate-prompt|extract-from-image|extract-anchors|sd2-certify(?:\/refresh)?|sd2-voice-(?:upload|refresh)))$/],
   ['POST', /^\/props\/\d+\/(?:generate|generate-prompt|extract-from-image)$/],
   ['POST', /^\/extract-description-from-image$/],
+  ['POST', /^\/dramas\/\d+\/director\/reference-analysis$/],
   ['POST', /^\/episodes\/\d+\/(?:storyboards|props\/extract|characters\/extract)$/],
   ['POST', /^\/scenes\/(?:generate-image|\d+\/(?:generate-prompt|generate-four-view-image|generate-panorama-image|extract-from-image))$/],
   ['POST', /^\/images(?:$|\/episode\/\d+\/(?:backgrounds\/extract|batch)$|\/scene\/\d+$)/],
