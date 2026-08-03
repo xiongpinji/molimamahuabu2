@@ -554,6 +554,35 @@ test.describe('独立自由画布节点真实运行闭环', () => {
     await expect.poll(() => state.canvasLayout.free_nodes[0].position).not.toEqual(originalPosition)
   })
 
+  test('新建图片节点后点击空白处保持节点可见', async ({ page }) => {
+    const state = {
+      canvasLayout: baseCanvasLayout(),
+      assets: [],
+      imageRequests: [],
+      videoRequests: [],
+      audioRequests: [],
+      assetRequests: [],
+    }
+    await installStaticAndApiMocks(page, state)
+
+    await page.goto('/canvas/3')
+    const pane = page.locator('.vue-flow__pane')
+    await expect(pane).toBeVisible({ timeout: 15_000 })
+    await pane.click({ button: 'right', position: { x: 760, y: 420 } })
+    await page.getByRole('menu', { name: '添加画布节点' })
+      .getByRole('menuitem', { name: /^图片 图片生成节点$/ })
+      .click()
+
+    const node = page.locator('.vue-flow__node[data-id^="free:image:"]')
+    await expect(node).toHaveCount(1)
+    await expect(node).toBeVisible()
+
+    await pane.click({ position: { x: 120, y: 120 } })
+    await expect(node).toHaveCount(1)
+    await expect(node).toBeVisible()
+    await expect.poll(() => state.canvasLayout.free_nodes.length).toBe(1)
+  })
+
   test('自由节点可选择已配置模型、右键复制并直接挂载项目素材', async ({ page }) => {
     const state = {
       canvasLayout: baseCanvasLayout({
