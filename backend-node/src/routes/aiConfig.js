@@ -1,4 +1,5 @@
 const aiConfigService = require('../services/aiConfigService');
+const modelPriceService = require('../services/modelPriceService');
 const response = require('../response');
 
 function list(db) {
@@ -10,7 +11,12 @@ function list(db) {
 
 function listPublicVideoModels(db) {
   return (req, res) => {
-    const list = publicModelNames(aiConfigService.listConfigs(db, 'video'));
+    const pricedModels = new Set(modelPriceService.listPublic(db)
+      .filter((item) => item.category === 'video')
+      .map((item) => item.model.toLowerCase()));
+    const list = publicModelNames(aiConfigService.listConfigs(db, 'video')
+      .filter(aiConfigService.isVerifiedConfig))
+      .filter((model) => pricedModels.has(model.toLowerCase()));
     response.success(res, list);
   };
 }
@@ -25,9 +31,19 @@ function listPublicImageModels(db) {
   };
 }
 
-function listPublicAudioModels(db) {
+function listPublicAudioModels(db, billingEnabled) {
   return (req, res) => {
-    const list = publicModelNames(aiConfigService.listConfigs(db, 'tts'));
+    const models = publicModelNames(aiConfigService.listConfigs(db, 'tts'));
+    const list = billingEnabled
+      ? models.filter((model) => {
+        try {
+          modelPriceService.requirePrice(db, model);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      : models;
     response.success(res, list);
   };
 }
@@ -152,9 +168,11 @@ function bulkUpdateKey(db, log, cfg) {
 function testConnection(db, log) {
   return async (req, res) => {
     let body = req.body || {};
+    let savedConfigId = null;
     if (body.config_id != null) {
       const saved = aiConfigService.getConfig(db, Number(body.config_id));
       if (!saved) return response.notFound(res, '配置不存在');
+      savedConfigId = saved.id;
       body = saved;
     }
     if (!body.base_url || !aiConfigService.hasConnectionCredential(body)) {
@@ -172,10 +190,25 @@ function testConnection(db, log) {
         service_type: body.service_type,
         settings: body.settings,
       });
-      response.success(res, { message: '连接测试成功' });
+      const verified = savedConfigId == null
+        ? null
+        : aiConfigService.setVerificationResult(db, savedConfigId, 'verified');
+      response.success(res, {
+        message: '连接测试成功',
+        ...(verified ? {
+          verification_status: verified.verification_status,
+          verification_checked_at: verified.verification_checked_at,
+          verified_at: verified.verified_at,
+        } : {}),
+      });
     } catch (err) {
-      log.error('AI config test connection failed', { error: err.message });
-      response.badRequest(res, '连接测试失败: ' + (err.message || '未知错误'));
+      const failed = savedConfigId == null
+        ? null
+        : aiConfigService.setVerificationResult(db, savedConfigId, 'failed', err);
+      const safeError = failed?.verification_error
+        || aiConfigService.redactVerificationError(body, err);
+      log.error('AI config test connection failed', { error: safeError });
+      response.badRequest(res, '连接测试失败: ' + safeError);
     }
   };
 }
@@ -235,12 +268,12 @@ function listJimeng2MaterialAssets(log) {
   };
 }
 
-module.exports = function aiConfigRoutes(db, log, cfg) {
+module.exports = function aiConfigRoutes(db, log, cfg, options = {}) {
   return {
     list: list(db),
     listPublicVideoModels: listPublicVideoModels(db),
     listPublicImageModels: listPublicImageModels(db),
-    listPublicAudioModels: listPublicAudioModels(db),
+    listPublicAudioModels: listPublicAudioModels(db, options.billingEnabled),
     get: get(db),
     vendorLock: vendorLock(cfg),
     create: create(db, log, cfg),

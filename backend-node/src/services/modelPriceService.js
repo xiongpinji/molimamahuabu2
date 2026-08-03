@@ -154,9 +154,10 @@ function list(db) {
 function listPublic(db) {
   if (!hasTable(db, 'ai_service_configs')) return [];
   const activeModels = new Set(
-    db.prepare(`SELECT model, default_model
+    db.prepare(`SELECT service_type, model, default_model, verification_status
       FROM ai_service_configs
       WHERE deleted_at IS NULL AND is_active = 1`).all()
+      .filter((row) => row.service_type !== 'video' || row.verification_status === 'verified')
       .flatMap((row) => [...parseConfiguredModels(row.model), String(row.default_model || '').trim()])
       .filter(Boolean)
       .map((model) => model.toLowerCase()),
@@ -269,8 +270,9 @@ function calculateCharge(db, value, usage = {}) {
   const row = readRow(db, model);
   if (billingUnit(model, row?.category) !== 'second') return price;
   const duration = Number(usage.duration);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+  const minimum = model.toLowerCase() === 'lingjing-video-v1' ? 4 : 5;
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }

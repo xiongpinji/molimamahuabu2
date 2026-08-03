@@ -32,22 +32,28 @@ function safeCapabilities(settings) {
   }
 }
 
-function list(db) {
+function list(db, options = {}) {
   const prices = new Map(modelPriceService.list(db)
     .filter((row) => row.status === 'enabled')
     .map((row) => [String(row.model).toLowerCase(), row]));
   const seen = new Set();
   const configured = aiConfigService.listConfigs(db)
-    .filter((config) => config.is_active !== false && KIND_BY_SERVICE[config.service_type])
+    .filter((config) => config.is_active !== false
+      && KIND_BY_SERVICE[config.service_type]
+      && (config.service_type !== 'video' || aiConfigService.isVerifiedConfig(config)))
     .flatMap((config) => parseModels(config.model, config.default_model).map((model) => {
-      const key = `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`;
+      const kind = KIND_BY_SERVICE[config.service_type];
+      const key = `${kind}:${model.toLowerCase()}`;
       if (seen.has(key)) return null;
-      seen.add(key);
       const price = prices.get(model.toLowerCase());
+      if (kind === 'video' && (!Number.isSafeInteger(price?.credits) || price.credits <= 0)) return null;
+      seen.add(key);
       return {
-        kind: KIND_BY_SERVICE[config.service_type],
+        kind,
         model,
         label: price?.display_name || model,
+        provider: String(config.provider || '').toLowerCase(),
+        default_voice_id: config.service_type === 'tts' ? String(config.voice_id || '').trim() : '',
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
         capabilities: safeCapabilities(config.settings),
@@ -55,13 +61,16 @@ function list(db) {
     }))
     .filter(Boolean);
   for (const item of canvasProviderConfigService.listSafe()) {
+    if (item.kind === 'video') continue;
     const key = `${item.kind}:${item.model.toLowerCase()}`;
     if (!seen.has(key)) {
       seen.add(key);
       configured.push(item);
     }
   }
-  return configured;
+  return options.requirePrice
+    ? configured.filter((item) => Number.isSafeInteger(item.credits) && item.credits > 0)
+    : configured;
 }
 
 module.exports = { list, parseModels, safeCapabilities };

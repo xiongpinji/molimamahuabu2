@@ -125,6 +125,21 @@ function mergeVideoSettings(existingSettings, incomingSettings) {
   return JSON.stringify(parseVideoSettings(existing));
 }
 
+function verificationSettingsFingerprint(settings) {
+  try {
+    if (settings == null || settings === '') return '{}';
+    const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return String(settings || '');
+    const connectionSettings = {};
+    for (const key of Object.keys(parsed).sort()) {
+      if (CONNECTION_SETTING_KEYS.has(key.toLowerCase())) connectionSettings[key] = parsed[key];
+    }
+    return JSON.stringify(connectionSettings);
+  } catch (_) {
+    return String(settings || '');
+  }
+}
+
 function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
@@ -219,6 +234,7 @@ function updateConfig(db, log, id, req) {
   if (!existing) return null;
   const updates = [];
   const params = [];
+  let connectivityChanged = false;
   if (req.name != null) {
     updates.push('name = ?');
     params.push(req.name);
@@ -226,27 +242,36 @@ function updateConfig(db, log, id, req) {
   if (req.provider != null) {
     updates.push('provider = ?');
     params.push(req.provider);
+    connectivityChanged ||= String(req.provider) !== String(existing.provider || '');
   }
   if (req.api_protocol != null) {
     updates.push('api_protocol = ?');
     params.push(req.api_protocol);
+    connectivityChanged ||= String(req.api_protocol) !== String(existing.api_protocol || '');
   }
   if (req.base_url != null) {
     updates.push('base_url = ?');
     params.push(req.base_url);
+    connectivityChanged ||= String(req.base_url) !== String(existing.base_url || '');
   }
   if (req.api_key != null) {
     updates.push('api_key = ?');
     const st = req.service_type != null ? req.service_type : existing.service_type;
-    params.push(normalizeApiKeyForService(st, req.api_key));
+    const nextApiKey = normalizeApiKeyForService(st, req.api_key);
+    params.push(nextApiKey);
+    connectivityChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
   }
   if (req.model != null) {
     updates.push('model = ?');
-    params.push(modelToDb(req.model));
+    const nextModel = modelToDb(req.model);
+    params.push(nextModel);
+    connectivityChanged ||= nextModel !== modelToDb(existing.model);
   }
   if (req.default_model !== undefined) {
     updates.push('default_model = ?');
-    params.push(req.default_model != null ? String(req.default_model).trim() || null : null);
+    const nextDefaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
+    params.push(nextDefaultModel);
+    connectivityChanged ||= nextDefaultModel !== existing.default_model;
   }
   if (req.priority != null) {
     updates.push('priority = ?');
@@ -254,17 +279,24 @@ function updateConfig(db, log, id, req) {
   }
   if (req.endpoint !== undefined) {
     updates.push('endpoint = ?');
-    params.push(req.endpoint || '');
+    const nextEndpoint = req.endpoint || '';
+    params.push(nextEndpoint);
+    connectivityChanged ||= String(nextEndpoint) !== String(existing.endpoint || '');
   }
   if (req.query_endpoint !== undefined) {
     updates.push('query_endpoint = ?');
-    params.push(req.query_endpoint || '');
+    const nextQueryEndpoint = req.query_endpoint || '';
+    params.push(nextQueryEndpoint);
+    connectivityChanged ||= String(nextQueryEndpoint) !== String(existing.query_endpoint || '');
   }
   if (req.settings != null) {
     updates.push('settings = ?');
-    params.push(existing.service_type === 'video'
+    const nextSettings = existing.service_type === 'video'
       ? mergeVideoSettings(existing.settings, req.settings)
-      : req.settings);
+      : req.settings;
+    params.push(nextSettings);
+    connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
+      !== verificationSettingsFingerprint(existing.settings);
   }
   if (typeof req.is_default === 'boolean') {
     updates.push('is_default = ?');
@@ -273,6 +305,12 @@ function updateConfig(db, log, id, req) {
   if (typeof req.is_active === 'boolean') {
     updates.push('is_active = ?');
     params.push(req.is_active ? 1 : 0);
+  }
+  if (connectivityChanged) {
+    updates.push("verification_status = 'unverified'");
+    updates.push('verification_checked_at = NULL');
+    updates.push('verified_at = NULL');
+    updates.push('verification_error = NULL');
   }
   if (updates.length === 0) return existing;
   params.push(new Date().toISOString(), id);
@@ -306,6 +344,10 @@ function rowToConfig(r) {
     priority: r.priority ?? 0,
     is_default: !!r.is_default,
     is_active: r.is_active == null ? true : !!r.is_active,
+    verification_status: r.verification_status || 'unverified',
+    verification_checked_at: r.verification_checked_at || null,
+    verified_at: r.verified_at || null,
+    verification_error: r.verification_error || null,
     settings: r.settings,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -323,7 +365,13 @@ function rowToConfig(r) {
 
 const SENSITIVE_SETTING_KEYS = new Set([
   'api_key', 'token', 'access_token', 'refresh_token', 'session_token',
-  'kling_access_key', 'kling_secret_key', 'access_key_id', 'secret_access_key',
+  'kling_access_key', 'kling_secret_key', 'access_key', 'secret_key',
+  'access_key_id', 'secret_access_key',
+]);
+
+const CONNECTION_SETTING_KEYS = new Set([
+  ...SENSITIVE_SETTING_KEYS,
+  'kling_secret_key_base64', 'icreat_group',
 ]);
 
 function redactSettings(settings) {
@@ -349,6 +397,43 @@ function toPublicConfig(config) {
     has_api_key: !!String(api_key || '').trim(),
     settings: redactSettings(config.settings),
   };
+}
+
+function isVerifiedConfig(config) {
+  return String(config?.verification_status || '').toLowerCase() === 'verified';
+}
+
+function redactVerificationError(config, error) {
+  let message = String(error?.message || error || '未知错误').replace(/\s+/g, ' ').trim();
+  const secrets = [config?.api_key];
+  try {
+    const settings = typeof config?.settings === 'string' ? JSON.parse(config.settings) : config?.settings;
+    if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+      for (const [key, value] of Object.entries(settings)) {
+        if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase())) secrets.push(value);
+      }
+    }
+  } catch (_) {}
+  for (const secret of secrets) {
+    const value = String(secret || '').trim();
+    if (value.length < 4) continue;
+    message = message.split(value).join('[REDACTED]');
+    message = message.split(encodeURIComponent(value)).join('[REDACTED]');
+  }
+  return message.slice(0, 500);
+}
+
+function setVerificationResult(db, id, status, error) {
+  if (!['verified', 'failed'].includes(status)) throw new Error('无效的连接验证状态');
+  const checkedAt = new Date().toISOString();
+  const verificationError = status === 'failed'
+    ? redactVerificationError(getConfig(db, id), error)
+    : null;
+  const result = db.prepare(`UPDATE ai_service_configs SET
+      verification_status = ?, verification_checked_at = ?, verified_at = ?, verification_error = ?
+    WHERE id = ? AND deleted_at IS NULL`)
+    .run(status, checkedAt, status === 'verified' ? checkedAt : null, verificationError, id);
+  return result.changes ? getConfig(db, id) : null;
 }
 
 /**
@@ -853,7 +938,10 @@ function applyVendorLock(db, log, cfg) {
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
   const info = db.prepare(
-    'UPDATE ai_service_configs SET api_key = ?, updated_at = ? WHERE deleted_at IS NULL'
+    `UPDATE ai_service_configs SET api_key = ?, updated_at = ?,
+       verification_status = 'unverified', verification_checked_at = NULL,
+       verified_at = NULL, verification_error = NULL
+     WHERE deleted_at IS NULL`
   ).run(newKey, now);
   log.info('Bulk update api_key', { updated: info.changes });
   return info.changes;
@@ -871,4 +959,7 @@ module.exports = {
   bulkUpdateApiKey,
   hasConnectionCredential,
   toPublicConfig,
+  isVerifiedConfig,
+  redactVerificationError,
+  setVerificationResult,
 };

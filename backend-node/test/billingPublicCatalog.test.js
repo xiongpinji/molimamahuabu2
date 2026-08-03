@@ -26,6 +26,7 @@ test('用户模型目录只返回管理员启用且已计费的模型', () => {
     model TEXT,
     default_model TEXT,
     is_active INTEGER DEFAULT 1,
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
     deleted_at TEXT
   )`);
   db.prepare(`INSERT INTO ai_service_configs

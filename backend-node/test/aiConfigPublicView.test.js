@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const { toPublicConfig } = require('../src/services/aiConfigService');
 const aiConfigRoutes = require('../src/routes/aiConfig');
+const modelPriceService = require('../src/services/modelPriceService');
 
 test('AI 配置公开视图不返回供应商密钥', () => {
   const output = toPublicConfig({
@@ -19,7 +20,7 @@ test('AI 配置公开视图不返回供应商密钥', () => {
   assert.equal(settings.deepseek_thinking, 'enabled');
 });
 
-test('普通用户视频模型接口只返回管理员启用的模型名称', () => {
+test('普通用户视频模型接口只返回管理员启用且已验证的模型名称', () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE ai_service_configs (
@@ -37,6 +38,10 @@ test('普通用户视频模型接口只返回管理员启用的模型名称', ()
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
+      verification_checked_at TEXT,
+      verified_at TEXT,
+      verification_error TEXT,
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -45,14 +50,17 @@ test('普通用户视频模型接口只返回管理员启用的模型名称', ()
   `);
   db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active)
-    VALUES ('video', 'grok', 'openai', 'Grok 视频', 'https://private.example', 'secret', ?, 'grok-video-3', 1, 1)
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_default, is_active, verification_status)
+    VALUES ('video', 'grok', 'openai', 'Grok 视频', 'https://private.example', 'secret', ?, 'grok-video-3', 1, 1, 'verified')
   `).run(JSON.stringify(['grok-video-3', 'grok-video-3-fast']));
   db.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, name, model, is_active)
     VALUES ('video', 'disabled', '停用模型', ?, 0)
   `).run(JSON.stringify(['disabled-model']));
+  modelPriceService.set(db, 'grok-video-3', 60, { category: 'video' });
+  modelPriceService.set(db, 'grok-video-3-fast', 60, { category: 'video' });
 
   let payload;
   const res = {
