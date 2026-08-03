@@ -6228,10 +6228,7 @@ function applySelectedFreeNodeIds(ids = []) {
     ...node,
     selected: node.type === 'homeCanvasNode' && selectedIds.has(String(node.id)),
   }))
-  nodes.value = nodes.value.map((node) => ({
-    ...node,
-    selected: node.type === 'homeCanvasNode' && selectedIds.has(String(node.id)),
-  }))
+  applyVirtualizedGraph()
 }
 
 function onCanvasPointerDown(event) {
@@ -6257,6 +6254,18 @@ function onCanvasSelectionEnd() {
 }
 
 function onNodesChange(changes = []) {
+  const dimensionChanges = new Map(
+    changes
+      .filter((change) => change?.type === 'dimensions' && change.dimensions)
+      .map((change) => [String(change.id), change.dimensions])
+  )
+  if (dimensionChanges.size) {
+    allGraphNodes.value = allGraphNodes.value.map((node) => {
+      const dimensions = dimensionChanges.get(String(node.id))
+      return dimensions ? { ...node, dimensions: { ...dimensions } } : node
+    })
+  }
+
   const removedFreeNodeIds = new Set(
     changes
       .filter((change) => change?.type === 'remove' && findGraphNode(change.id)?.type === 'homeCanvasNode')
