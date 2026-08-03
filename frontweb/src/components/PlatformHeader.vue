@@ -20,6 +20,15 @@
         <el-button
           v-if="loggedIn"
           class="platform-header__button"
+          title="支付宝充值积分"
+          @click="goRecharge"
+        >
+          <el-icon><Coin /></el-icon>
+          <span class="platform-header__button-label">充值积分</span>
+        </el-button>
+        <el-button
+          v-if="loggedIn"
+          class="platform-header__button"
           title="兑换积分"
           @click="goRedeem"
         >
@@ -89,7 +98,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Grid, Moon, Sunny, Ticket, UserFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, Coin, Grid, Moon, Sunny, Ticket, UserFilled } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import PlatformPrimaryNav from '@/components/PlatformPrimaryNav.vue'
@@ -132,6 +141,10 @@ function goHomeCanvas() {
 
 function goRedeem() {
   router.push({ name: 'tenant-console', query: { section: 'redeem' } })
+}
+
+function goRecharge() {
+  router.push({ name: 'tenant-console', query: { section: 'recharge' } })
 }
 
 function goLogin() {

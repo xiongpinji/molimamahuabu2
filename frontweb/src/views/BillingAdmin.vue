@@ -4,7 +4,7 @@
     header-title="平台管理后台"
     eyebrow="平台运营控制台"
     :description="isSuperAdmin
-      ? '统一管理兑换码、积分流水、成本利润、对账和每个模型的独立计费规则。'
+      ? '统一管理充值套餐、兑换码、积分流水、成本利润、对账和每个模型的独立计费规则。'
       : '生成、查询和停用平台兑换码。'"
   >
     <section v-if="requiresAdminToken && !unlocked" class="unlock-panel" aria-labelledby="unlock-title">
@@ -51,6 +51,12 @@
       </section>
 
       <el-tabs v-model="activeTab" class="admin-tabs">
+        <el-tab-pane v-if="isSuperAdmin" label="充值套餐" name="recharge">
+          <section class="panel">
+            <RechargePackageAdminPanel />
+          </section>
+        </el-tab-pane>
+
         <el-tab-pane v-if="isSuperAdmin" label="模型计费" name="models">
           <section class="panel">
             <div class="panel-heading">
@@ -307,6 +313,7 @@ import { ElMessage } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
 import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
+import RechargePackageAdminPanel from '@/components/RechargePackageAdminPanel.vue'
 import {
   adjustTenantCredits,
   getLedgerReport,
@@ -332,7 +339,7 @@ const loading = ref(false)
 const unlocked = ref(!requiresAdminToken)
 const requestedTab = String(route.query.tab || '')
 const requestedModel = String(route.query.model || '').trim()
-const activeTab = ref(isSuperAdmin && ['models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
+const activeTab = ref(isSuperAdmin && ['recharge', 'models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
   ? requestedTab
   : (isSuperAdmin ? 'models' : 'codes'))
 const prices = ref([])

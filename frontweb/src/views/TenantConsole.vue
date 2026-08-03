@@ -2,7 +2,7 @@
   <AdminWorkspaceShell
     title="工作区与积分"
     eyebrow="团队与用量"
-    description="切换团队空间、管理成员、兑换积分，并核对当前工作区的积分流水。"
+    description="切换团队空间、管理成员、支付宝充值或兑换积分，并核对当前工作区的积分流水。"
   >
     <template v-if="publicMode" #actions>
       <el-button type="primary" @click="showCreate = true">新建工作区</el-button>
@@ -40,8 +40,8 @@
         </article>
         <article class="info-card">
           <span>积分获取</span>
-          <strong>兑换码</strong>
-          <small>平台管理员发放，兑换后立即进入当前工作区</small>
+          <strong>支付宝 / 兑换码</strong>
+          <small>充值成功或兑换后，积分立即进入当前工作区</small>
         </article>
         <article class="info-card">
           <span>当前工作区</span>
@@ -98,6 +98,86 @@
             </template>
           </el-table-column>
         </el-table>
+      </section>
+
+      <section id="alipay-recharge" ref="rechargeSection" class="panel recharge-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>支付宝充值</h2>
+            <p>自定义充值固定 1 元 = 100 积分；限时套餐按管理员设置的金额和积分到账。</p>
+          </div>
+        </div>
+        <el-alert
+          v-if="!rechargeConfig.configured"
+          title="支付宝支付通道尚未启用，请联系平台管理员完成商户配置。"
+          type="warning"
+          :closable="false"
+        />
+        <div class="custom-recharge">
+          <div>
+            <h3>自定义充值</h3>
+            <p>充值 ¥{{ Number(rechargeAmount || 0).toFixed(2) }}，到账 {{ customCredits }} 积分</p>
+          </div>
+          <el-input-number
+            v-model="rechargeAmount"
+            :min="Number(rechargeConfig.min_amount_yuan)"
+            :max="Number(rechargeConfig.max_amount_yuan)"
+            :precision="2"
+            :step="1"
+          />
+          <el-button
+            type="primary"
+            :disabled="!rechargeConfig.configured"
+            :loading="payingTarget === 'custom'"
+            @click="startCustomRecharge"
+          >
+            自定义充值
+          </el-button>
+        </div>
+
+        <div class="package-heading">
+          <h3>限时充值套餐</h3>
+          <small>套餐比例、售价和积分以下单时显示为准。</small>
+        </div>
+        <div class="recharge-packages">
+          <article v-for="rechargePackage in rechargePackages" :key="rechargePackage.id" class="recharge-package-card">
+            <img v-if="rechargePackage.image_url" :src="rechargePackage.image_url" :alt="`${rechargePackage.name} 广告图片`">
+            <div class="package-copy">
+              <strong>{{ rechargePackage.name }}</strong>
+              <span>¥{{ formatYuan(rechargePackage.amount_cents) }} · {{ rechargePackage.credits }} 积分</span>
+              <small>{{ packageRatio(rechargePackage) }} 积分 / 元 · 截止 {{ formatPackageEnd(rechargePackage.ends_at) }}</small>
+            </div>
+            <el-button
+              type="primary"
+              plain
+              :disabled="!rechargeConfig.configured"
+              :loading="payingTarget === rechargePackage.id"
+              @click="startPackageRecharge(rechargePackage)"
+            >
+              购买套餐
+            </el-button>
+          </article>
+          <el-empty v-if="rechargePackages.length === 0" description="暂无可用充值套餐" />
+        </div>
+
+        <div class="recharge-orders">
+          <h3>本人充值记录</h3>
+          <el-table :data="rechargeOrders" empty-text="暂无充值记录">
+            <el-table-column label="充值项目" min-width="160">
+              <template #default="{ row }">{{ row.package_name || '自定义充值' }}</template>
+            </el-table-column>
+            <el-table-column label="金额" width="110">
+              <template #default="{ row }">¥{{ formatYuan(row.amount_cents) }}</template>
+            </el-table-column>
+            <el-table-column prop="credits" label="积分" width="110" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">{{ rechargeStatusLabel(row.status) }}</template>
+            </el-table-column>
+            <el-table-column label="时间" min-width="180">
+              <template #default="{ row }">{{ formatDate(row.paid_at || row.created_at) }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
       </section>
 
       <section id="redeem-credits" ref="redeemSection" class="panel redeem-panel">
@@ -182,7 +262,11 @@ import {
   removeTenantMember,
 } from '@/api/tenants'
 import {
+  createAlipayRechargeOrder,
+  getAlipayRechargeConfig,
+  listAlipayRechargeOrders,
   listCreditTransactions,
+  listRechargePackages,
   redeemCredits,
 } from '@/api/billing'
 import {
@@ -193,6 +277,7 @@ import {
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
 
 const route = useRoute()
+const rechargeSection = ref(null)
 const redeemSection = ref(null)
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const loading = ref(false)
@@ -201,6 +286,16 @@ const tenantId = ref('')
 const account = ref(normalizeCreditAccount())
 const members = ref([])
 const transactions = ref([])
+const rechargeConfig = ref({
+  configured: false,
+  fixed_ratio_credits_per_yuan: 100,
+  min_amount_yuan: '1.00',
+  max_amount_yuan: '50000.00',
+})
+const rechargePackages = ref([])
+const rechargeOrders = ref([])
+const rechargeAmount = ref(10)
+const payingTarget = ref('')
 const redeemCode = ref('')
 const redeeming = ref(false)
 const showCreate = ref(false)
@@ -230,6 +325,9 @@ const consumptionTransactions = computed(() => transactionsWithBalance.value.fil
 const redemptionTransactions = computed(() => transactionsWithBalance.value.filter(
   (item) => item.event_type === 'redeem',
 ))
+const customCredits = computed(() => Math.round(
+  Number(rechargeAmount.value || 0) * Number(rechargeConfig.value.fixed_ratio_credits_per_yuan || 100),
+))
 
 function canChangeMemberRole(row) {
   return Boolean(row && row.user_id !== sessionUserId && currentTenant.value?.role === 'owner')
@@ -249,14 +347,39 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
 }
 
+function formatPackageEnd(value) {
+  return value ? formatDate(value) : '长期有效'
+}
+
+function formatYuan(amountCents) {
+  return (Number(amountCents || 0) / 100).toFixed(2)
+}
+
+function packageRatio(item) {
+  const amountYuan = Number(item.amount_cents || 0) / 100
+  return amountYuan > 0
+    ? (Number(item.credits || 0) / amountYuan).toFixed(2).replace(/\.00$/, '')
+    : '-'
+}
+
+function rechargeStatusLabel(status) {
+  return ({ pending: '待支付', paid: '已到账' })[status] || status || '-'
+}
+
 async function loadTenantData() {
   if (!tenantId.value) return
-  const [credit, creditTransactions] = await Promise.all([
+  const [credit, creditTransactions, config, packages, orders] = await Promise.all([
     getCreditAccount(),
     listCreditTransactions(),
+    getAlipayRechargeConfig(),
+    listRechargePackages(),
+    listAlipayRechargeOrders(),
   ])
   account.value = normalizeCreditAccount(credit)
   transactions.value = creditTransactions
+  rechargeConfig.value = config
+  rechargePackages.value = packages
+  rechargeOrders.value = orders
   if (isManager.value) {
     members.value = await listTenantMembers(tenantId.value)
   } else {
@@ -359,9 +482,44 @@ async function redeem() {
   }
 }
 
+function createClientOrderKey() {
+  return `recharge-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+async function beginRecharge(payload, target) {
+  if (!rechargeConfig.value.configured) return ElMessage.warning('支付宝支付通道尚未启用')
+  payingTarget.value = target
+  try {
+    const result = await createAlipayRechargeOrder({
+      ...payload,
+      client_order_key: createClientOrderKey(),
+    })
+    window.location.assign(result.payment_url)
+  } finally {
+    payingTarget.value = ''
+  }
+}
+
+async function startCustomRecharge() {
+  const amount = Number(rechargeAmount.value)
+  const min = Number(rechargeConfig.value.min_amount_yuan)
+  const max = Number(rechargeConfig.value.max_amount_yuan)
+  if (!Number.isFinite(amount) || amount < min || amount > max) {
+    return ElMessage.warning(`充值金额需在 ${min} 至 ${max} 元之间`)
+  }
+  await beginRecharge({ amount_yuan: amount.toFixed(2) }, 'custom')
+}
+
+async function startPackageRecharge(item) {
+  await beginRecharge({ package_id: item.id }, item.id)
+}
+
 onMounted(async () => {
   await load()
-  if (route.query.section === 'redeem') {
+  if (route.query.section === 'recharge') {
+    await nextTick()
+    rechargeSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } else if (route.query.section === 'redeem') {
     await nextTick()
     redeemSection.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
@@ -397,9 +555,22 @@ onMounted(async () => {
 .member-form { display: grid; grid-template-columns: minmax(190px, 1fr) 120px auto; gap: 8px; width: min(520px, 100%); }
 .panel :deep(.el-table) { margin-top: 18px; }
 .redeem-form { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 8px; width: min(480px, 100%); }
+.recharge-panel { display: grid; gap: 18px; }
+.custom-recharge { display: grid; grid-template-columns: minmax(220px, 1fr) 180px auto; gap: 12px; align-items: center; padding: 16px; border: 1px solid #332b28; border-radius: 14px; background: #151515; }
+.custom-recharge h3, .package-heading h3, .recharge-orders h3 { margin: 0 0 6px; }
+.custom-recharge p, .package-heading small { margin: 0; color: #929292; }
+.package-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.recharge-packages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.recharge-package-card { display: grid; align-content: start; gap: 12px; overflow: hidden; padding: 14px; border: 1px solid #292929; border-radius: 14px; background: #151515; }
+.recharge-package-card img { width: 100%; aspect-ratio: 16 / 8; border-radius: 10px; object-fit: cover; }
+.package-copy { display: grid; gap: 6px; }
+.package-copy strong { font-size: 17px; }
+.package-copy span { color: #ff956c; }
+.package-copy small { color: #929292; }
 @media (max-width: 820px) {
   .overview-grid { grid-template-columns: 1fr; }
   .panel-heading { flex-direction: column; }
-  .member-form, .redeem-form { grid-template-columns: 1fr; }
+  .member-form, .redeem-form, .custom-recharge { grid-template-columns: 1fr; }
+  .recharge-packages { grid-template-columns: 1fr; }
 }
 </style>
