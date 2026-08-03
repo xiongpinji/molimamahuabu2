@@ -727,7 +727,10 @@ import {
   getCanvasEpisodeContext,
   isCanvasAssetVisible,
 } from '@/utils/canvasEpisodeContext'
-import { shouldProjectCanvasAsset } from '@/utils/canvasAssetProjection'
+import {
+  canvasAssetProjectionPayload,
+  shouldProjectCanvasAsset,
+} from '@/utils/canvasAssetProjection'
 import { findVisualDirectionDirectorEntry } from '@/utils/visualDirectionDirectorBridge'
 
 import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
@@ -4153,7 +4156,9 @@ function clearCanvasAssetFailureNode(nodeId) {
 
 async function ensureProjectMediaAsset(asset) {
   const assetId = projectAssetId(asset)
-  if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
+  if (asset?.source_kind === 'project' && assetId) {
+    return markProjectAssetForCanvas(asset, 'canvas_asset_picker')
+  }
   if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
   const localPath = assetLocalPath(asset)
   const url = assetDisplayUrl(asset)
@@ -4179,6 +4184,19 @@ async function ensureProjectMediaAsset(asset) {
       voice_catalog: asset?.voice_catalog || null,
     },
   })
+}
+
+async function markProjectAssetForCanvas(asset, addSource) {
+  const assetId = projectAssetId(asset)
+  if (!assetId) throw new Error('素材信息不完整，无法加入画布')
+  const payload = canvasAssetProjectionPayload(asset, addSource)
+  const updatedAsset = await assetsAPI.update(assetId, payload)
+  return {
+    ...asset,
+    ...(updatedAsset || {}),
+    id: assetId,
+    metadata: updatedAsset?.metadata || payload.metadata,
+  }
 }
 
 async function placeProjectAssetNode(asset, flowPosition = null) {
@@ -4583,8 +4601,9 @@ function openCanvasUpload(flowPosition = null, accept = CANVAS_MEDIA_ACCEPT) {
 
 async function createCanvasProjectAssetFromUpload(file, flowPosition = null, offsetIndex = 0) {
   if (!drama.value?.id) throw new Error('项目信息不完整，无法上传素材')
-  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
-  if (!asset?.id) throw new Error('素材上传成功但未返回资产记录')
+  const uploadedAsset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!uploadedAsset?.id) throw new Error('素材上传成功但未返回资产记录')
+  const asset = await markProjectAssetForCanvas(uploadedAsset, 'canvas_context_upload')
   const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
   const nodeId = await placeProjectAssetNode(asset, targetPos)
   const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
