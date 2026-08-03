@@ -234,17 +234,15 @@
         <div class="editor-options">
           <label v-if="canGenerate" class="editor-field field-model">
             <span>模型</span>
-            <input
+            <select
               v-model="draft.model"
               aria-label="生成模型"
-              :placeholder="defaultModelLabel"
-              :list="modelOptions.length ? modelListId : undefined"
-              @blur="saveDraft"
-            />
+              @change="saveDraft"
+            >
+              <option value="">{{ defaultModelLabel }}</option>
+              <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
+            </select>
           </label>
-          <datalist v-if="modelOptions.length" :id="modelListId">
-            <option v-for="model in modelOptions" :key="model" :value="model" />
-          </datalist>
 
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
@@ -509,7 +507,6 @@ const filteredReferenceCandidates = computed(() => {
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
-const modelListId = computed(() => `free-node-models-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 const resultUrls = computed(() => [...new Set([
   ...(Array.isArray(props.data.resultUrls) ? props.data.resultUrls : []),

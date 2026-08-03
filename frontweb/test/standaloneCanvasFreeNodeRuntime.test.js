@@ -31,7 +31,9 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
   assert.match(canvasSource, /function persistFreeCanvasNodeDefaults\(kind, data\)/)
   assert.match(canvasSource, /const defaults = loadFreeCanvasNodeDefaults\(\)/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeModelOptions\?\.\(props\.data\.kind\)/)
-  assert.match(nodeSource, /<datalist v-if="modelOptions\.length"/)
+  assert.match(nodeSource, /<select[\s\S]*v-model="draft\.model"[\s\S]*aria-label="生成模型"/)
+  assert.match(nodeSource, /<option v-for="model in modelOptions" :key="model" :value="model">\{\{ model \}\}<\/option>/)
+  assert.doesNotMatch(nodeSource, /<datalist v-if="modelOptions\.length"/)
 })
 
 test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布上下文调用父级', () => {
