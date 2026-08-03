@@ -12,7 +12,8 @@ test('DR-005 镜头可绑定持久化相机并驱动主相机', () => {
   assert.match(stageSource, /timeline\.value\.cameras\.find\(\(camera\) => camera\.id === shot\.cameraId\)/)
   assert.match(stageSource, /camera\.fov = Number\(boundCamera\.fov\)/)
   assert.match(stageSource, /const position = cameraObject\.transform\.position/)
-  assert.match(stageSource, /setCamera\(position, target, lookAtObject \? null : boundCamera\.quaternion\)/)
+  assert.match(stageSource, /const keepsTargetLocked = Boolean\(lookAtObject\) \|\| boundCamera\.lookAtMode === 'manual'/)
+  assert.match(stageSource, /setCamera\(position, target, keepsTargetLocked \? null : boundCamera\.quaternion\)/)
   assert.match(stageSource, /camera\.quaternion\.set\(\.\.\.quaternion\)/)
 })
 
@@ -170,11 +171,13 @@ test('G005 场景树支持搜索、显隐和持久化锁定', () => {
 })
 
 test('G005 相机支持跟随、注视目标、构图线和机位截图', () => {
-  for (const label of ['相机跟随目标', '相机注视模式', '相机注视目标', '构图辅助线', '机位截图回写画布']) {
+  for (const label of ['相机跟随目标', '相机注视模式', '相机注视目标', '不锁定', '手动坐标', '构图辅助线', '机位截图回写画布']) {
     assert.ok(stageSource.includes(label), `缺少相机交互：${label}`)
   }
   assert.match(stageSource, /boundCamera\.followTargetId/)
   assert.match(stageSource, /boundCamera\.lookAtTargetId/)
+  assert.match(stageSource, /function updateCameraLookAtSelection\(value\)/)
+  assert.match(stageSource, /function updateCameraTarget\(index, value\)/)
   assert.match(stageSource, /class="composition-guides"/)
   assert.match(stageSource, /@click="captureToCanvasAsset"/)
 })

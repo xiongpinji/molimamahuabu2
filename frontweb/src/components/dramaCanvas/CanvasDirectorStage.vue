@@ -450,16 +450,20 @@
                 </select>
               </label>
               <label>注视模式
-                <select aria-label="相机注视模式" :value="selectedCamera.lookAtMode" @change="updateSelectedCamera('lookAtMode', $event.target.value)">
-                  <option value="origin">场景中心</option><option value="object">指定对象</option>
+                <select aria-label="相机注视模式" title="相机注视目标" :value="cameraLookAtSelection" @change="updateCameraLookAtSelection($event.target.value)">
+                  <option value="none">不锁定</option>
+                  <option value="manual">手动坐标</option>
+                  <option v-for="object in cameraLookAtObjects" :key="`look-mode-${object.id}`" :value="`object:${object.id}`">{{ object.name }}</option>
                 </select>
               </label>
-              <label v-if="selectedCamera.lookAtMode === 'object'">注视目标
-                <select aria-label="相机注视目标" :value="selectedCamera.lookAtTargetId" @change="updateSelectedCamera('lookAtTargetId', $event.target.value)">
-                  <option value="">请选择对象</option>
-                  <option v-for="object in cameraTargetObjects" :key="`look-${object.id}`" :value="object.id">{{ object.name }}</option>
-                </select>
-              </label>
+              <div v-if="selectedCamera.lookAtMode === 'manual'" class="inspector-group">
+                <strong>注视坐标</strong>
+                <div class="vector-row">
+                  <label v-for="(axis, index) in axes" :key="`camera-target-${axis}`">{{ axis }}
+                    <input type="number" step="0.1" :value="selectedCamera.target[index]" @change="updateCameraTarget(index, $event.target.value)" />
+                  </label>
+                </div>
+              </div>
               <label class="visibility-row"><input type="checkbox" :checked="selectedCamera.showGuides" @change="updateSelectedCamera('showGuides', $event.target.checked)" /> 构图辅助线</label>
               <button type="button" class="small-button" @click="captureCurrentViewToCamera">从当前视角更新机位</button>
               <button type="button" class="small-button" @click="captureToCanvasAsset">机位截图回写画布</button>
@@ -938,9 +942,13 @@ const selectedInspectorTransform = computed(() => selectedDirectorObject.value
   ? (interpolateMotionTransform(timeline.value, selectedDirectorObject.value.id, currentTime.value) || selectedDirectorObject.value.transform)
   : { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] })
 const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
+const cameraLookAtSelection = computed(() => selectedCamera.value?.lookAtMode === 'object' && selectedCamera.value.lookAtTargetId
+  ? `object:${selectedCamera.value.lookAtTargetId}`
+  : (selectedCamera.value?.lookAtMode || 'none'))
 const lightObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'light'))
 const selectedLightObject = computed(() => selectedDirectorObject.value?.type === 'light' ? selectedDirectorObject.value : null)
 const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
+const cameraLookAtObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'humanoid'))
 const activeCompositionGuides = computed(() => {
   if (viewMode.value !== 'camera') return false
   const camera = timeline.value.cameras.find((entry) => entry.id === selectedShot.value?.cameraId)
@@ -1817,6 +1825,30 @@ function cycleCameraAspect() {
   applyCameraAspect(CAMERA_ASPECTS[(index + 1) % CAMERA_ASPECTS.length].label)
 }
 
+function updateCameraLookAtSelection(value) {
+  if (!selectedCamera.value) return
+  const selection = String(value || 'none')
+  const objectId = selection.startsWith('object:') ? selection.slice(7) : ''
+  const lookAtMode = objectId ? 'object' : (selection === 'manual' ? 'manual' : 'none')
+  const cameras = timeline.value.cameras.map((camera) => camera.id === selectedCamera.value.id ? {
+    ...camera,
+    lookAtMode,
+    lookAtTargetId: objectId,
+  } : camera)
+  mutateTimeline({ ...timeline.value, cameras })
+  if (selectedShot.value?.cameraId === selectedCamera.value.id) setCameraForShot(selectedShot.value)
+}
+
+function updateCameraTarget(index, value) {
+  if (!selectedCamera.value || !selectedDirectorObject.value) return
+  const target = [...selectedCamera.value.target]
+  target[index] = Number(value) || 0
+  persistSelectedCameraView(selectedDirectorObject.value.transform.position, target, {
+    lookAtMode: 'manual',
+    lookAtTargetId: '',
+  })
+}
+
 async function toggleFullscreen() {
   if (document.fullscreenElement) {
     await document.exitFullscreen?.()
@@ -2601,8 +2633,9 @@ function setCameraForShot(shot) {
     const follow = followObject?.transform?.position || [0, 0, 0]
     const position = cameraObject.transform.position.map((value, index) => value + follow[index])
     const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
-    setCamera(position, target, lookAtObject ? null : boundCamera.quaternion)
-    if (camera && (lookAtObject || !boundCamera.quaternion)) camera.rotation.z = Number(boundCamera.roll || 0) * Math.PI / 180
+    const keepsTargetLocked = Boolean(lookAtObject) || boundCamera.lookAtMode === 'manual'
+    setCamera(position, target, keepsTargetLocked ? null : boundCamera.quaternion)
+    if (camera && (keepsTargetLocked || !boundCamera.quaternion)) camera.rotation.z = Number(boundCamera.roll || 0) * Math.PI / 180
     return
   }
   const firstCharacter = characterObjects.values().next().value
@@ -3160,7 +3193,7 @@ onBeforeUnmount(() => {
 @media (max-width: 680px) {
   .director-stage__header, .director-stage__footer { padding: 10px 12px; }
   .director-stage__sidebar { width: 210px; flex-basis: 210px; }
-  .director-stage__inspector { display: none; }
+  .director-stage__inspector { position: absolute; top: 0; right: 0; bottom: 0; z-index: 12; display: block; width: min(280px, calc(100% - 210px)); min-width: 220px; box-sizing: border-box; box-shadow: -14px 0 32px rgba(0, 0, 0, .35); }
   .director-stage__footer span { display: none; }
 }
 </style>

@@ -241,7 +241,9 @@ function normalizeCameras(input, shots = [], objects = []) {
       distance: Math.max(0.1, Math.min(1000, asNumber(value.distance, derivedAngles.distance))),
       roll: Math.max(-180, Math.min(180, asNumber(value.roll, 0))),
       followTargetId: String(value.followTargetId || ''),
-      lookAtMode: ['origin', 'object'].includes(value.lookAtMode) ? value.lookAtMode : 'origin',
+      lookAtMode: value.lookAtMode === 'origin'
+        ? 'manual'
+        : (['none', 'manual', 'object'].includes(value.lookAtMode) ? value.lookAtMode : 'none'),
       lookAtTargetId: String(value.lookAtTargetId || ''),
       showGuides: value.showGuides === true,
     }]
@@ -287,6 +289,10 @@ function normalizeMotionTracks(input, objects, duration) {
       position: vector3(keyframe?.position, [0, 0, 0]),
       rotation: vector3(keyframe?.rotation, [0, 0, 0]),
       scale: vector3(keyframe?.scale, [1, 1, 1]).map((value) => Math.max(0.0001, value)),
+      easing: ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'step', 'custom'].includes(keyframe?.easing) ? keyframe.easing : 'linear',
+      speedPreset: String(keyframe?.speedPreset || '无'),
+      pathMode: ['curve', 'line', 'hold'].includes(keyframe?.pathMode) ? keyframe.pathMode : 'curve',
+      roll: Math.max(-180, Math.min(180, asNumber(keyframe?.roll, 0))),
     })).sort((a, b) => a.time - b.time)
     return [{ id: String(track?.id || `motion-${objectId}`), objectId, keyframes }]
   })
@@ -296,7 +302,11 @@ export function createDirectorTimeline(characters = []) {
   const firstCharacter = characters?.[0]
   const state = {
     version: DIRECTOR_TIMELINE_VERSION,
-    sequence: { name: '主序列', fps: 24, currentTime: 0, duration: 4, loop: false, autoKey: false, showMotionPaths: false, timelineZoom: 1, timelineCollapsed: false },
+    sequence: {
+      name: '主序列', fps: 24, currentTime: 0, duration: 4, loop: false, shotLoop: false,
+      autoKey: false, showMotionPaths: false, timelineZoom: 1, timelineCollapsed: false,
+      playbackRate: 1, animationViewMode: 'observer', orientationMode: 'shot',
+    },
     shots: [{
       id: id('shot'),
       name: '镜头 1',
@@ -370,10 +380,14 @@ export function normalizeDirectorTimeline(input, characters = []) {
       duration,
       activeCameraId,
       loop: sourceSequence.loop === true,
+      shotLoop: sourceSequence.shotLoop === true,
       autoKey: sourceSequence.autoKey === true,
       showMotionPaths: sourceSequence.showMotionPaths === true,
       timelineZoom: Math.max(0.5, Math.min(4, asNumber(sourceSequence.timelineZoom, 1))),
       timelineCollapsed: sourceSequence.timelineCollapsed === true,
+      playbackRate: [0.25, 0.5, 1, 1.5, 2].includes(asNumber(sourceSequence.playbackRate, 1)) ? asNumber(sourceSequence.playbackRate, 1) : 1,
+      animationViewMode: ['observer', 'follow'].includes(sourceSequence.animationViewMode) ? sourceSequence.animationViewMode : 'observer',
+      orientationMode: ['shot', 'locked', 'path'].includes(sourceSequence.orientationMode) ? sourceSequence.orientationMode : 'shot',
     },
     shots,
     tracks,
@@ -603,7 +617,7 @@ export function appendDirectorCamera(state, patch = {}) {
     distance: patch.distance,
     roll: patch.roll,
     followTargetId: patch.followTargetId || '',
-    lookAtMode: patch.lookAtMode || 'origin',
+    lookAtMode: patch.lookAtMode || 'none',
     lookAtTargetId: patch.lookAtTargetId || '',
     showGuides: patch.showGuides === true,
   }
