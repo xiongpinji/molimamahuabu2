@@ -268,10 +268,8 @@ function getReferenceImageCapability(db, imageServiceType = 'storyboard_image') 
   const panoramaDeclared = settings.supports_panorama === true;
   const panoramaSceneDeclared = settings.supports_panorama_scene === true;
   const imageIdeationDeclared = settings.supports_image_ideation === true;
-  const portraitTextureDeclared = settings.supports_portrait_texture === true
-    || imageIdeationDeclared;
-  const portraitEmotionDeclared = settings.supports_portrait_emotion === true
-    || imageIdeationDeclared;
+  const portraitTextureDeclared = settings.supports_portrait_texture === true;
+  const portraitEmotionDeclared = settings.supports_portrait_emotion === true;
   const referenceVariationDeclarations = [
     ['angle_ideation', settings.supports_angle_ideation === true],
     ['character_views', settings.supports_character_views === true],

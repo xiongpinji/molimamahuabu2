@@ -379,6 +379,8 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       supports_panorama: true,
       supports_panorama_scene: true,
       supports_image_ideation: true,
+      supports_portrait_texture: true,
+      supports_portrait_emotion: true,
       supports_angle_ideation: true,
       supports_character_views: true,
       supports_narrative_grid: true,
@@ -587,6 +589,63 @@ test('扩图能力从默认参考图模型配置解析且不误开放纯文生�
       assert.equal(strictRes.payload.data.operations[operation].available, false, config.name);
     }
   }
+});
+
+test('人像能力必须在严格审计适配器上独立显式声明', (t) => {
+  const log = { info() {}, error() {} };
+  const operationsFor = (settings, name) => {
+    const db = new Database(':memory:');
+    t.after(() => db.close());
+    runMigrationsAndEnsure(db);
+    aiConfigService.createConfig(db, log, {
+      service_type: 'storyboard_image',
+      provider: 'aihubcc',
+      api_protocol: 'aihubcc',
+      name,
+      base_url: 'https://aihubcc.cc/v1',
+      api_key: 'test-key',
+      model: ['gpt-image-2-3.5k'],
+      default_model: 'gpt-image-2-3.5k',
+      is_default: true,
+      settings: JSON.stringify(settings),
+    });
+    const handlers = createImageToolRoutes(db, log);
+    const res = responseRecorder();
+    handlers.capabilities({}, res);
+    return res.payload.data.operations;
+  };
+
+  const ideationOnly = operationsFor(
+    { supports_image_ideation: true },
+    '仅声明画面联想',
+  );
+  assert.equal(ideationOnly.image_ideation.available, true);
+  assert.equal(ideationOnly.portrait_texture.available, false);
+  assert.equal(ideationOnly.portrait_emotion.available, false);
+
+  const textureOnly = operationsFor(
+    { supports_portrait_texture: true },
+    '仅声明人像质感',
+  );
+  assert.equal(textureOnly.portrait_texture.available, true);
+  assert.equal(textureOnly.portrait_emotion.available, false);
+
+  const emotionOnly = operationsFor(
+    { supports_portrait_emotion: true },
+    '仅声明人像情绪',
+  );
+  assert.equal(emotionOnly.portrait_texture.available, false);
+  assert.equal(emotionOnly.portrait_emotion.available, true);
+
+  const bothPortraitOperations = operationsFor(
+    {
+      supports_portrait_texture: true,
+      supports_portrait_emotion: true,
+    },
+    '显式声明两个人像能力',
+  );
+  assert.equal(bothPortraitOperations.portrait_texture.available, true);
+  assert.equal(bothPortraitOperations.portrait_emotion.available, true);
 });
 
 test('图片节点能力会读取路由创建后保存的 AIHubCC 参考图配置', (t) => {
