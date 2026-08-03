@@ -432,6 +432,15 @@
             <span v-else class="run-action">定位</span>
           </div>
         </div>
+        <CanvasAssetHistoryPanel
+          v-if="assetHistoryPanel && drama"
+          :mode="assetHistoryPanel"
+          :drama-id="dramaId"
+          :nodes="allGraphNodes"
+          @close="assetHistoryPanel = ''"
+          @locate="locateAssetHistoryNode"
+          @apply="applyAssetHistoryItem"
+        />
         <CanvasFloatingToolbar
           v-if="drama && (isStandaloneCanvas || allGraphNodes.length)"
           :standalone="isStandaloneCanvas"
@@ -743,6 +752,7 @@ import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
+import CanvasAssetHistoryPanel from '@/components/dramaCanvas/CanvasAssetHistoryPanel.vue'
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasSelectionToolbar from '@/components/dramaCanvas/CanvasSelectionToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
@@ -867,6 +877,7 @@ const contextMenuNode = ref(null)
 const contextMenuConnectionSource = ref(null)
 const connectionDragState = ref(null)
 const canvasAssetPickerVisible = ref(false)
+const assetHistoryPanel = ref('')
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
 const canvasAssetPickerTargetStoryboardId = ref(null)
@@ -4692,6 +4703,7 @@ async function pasteCanvasClipboard(flowPosition = null) {
 async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
+  let succeeded = false
   const retryNodeId = canvasAssetPickerRetryNodeId.value
   const targetFreeNodeId = canvasAssetPickerTargetFreeNodeId.value
   const targetStoryboardId = canvasAssetPickerTargetStoryboardId.value || selectedStoryboardIdForAssetAttach()
@@ -4720,7 +4732,8 @@ async function onCanvasAssetLibraryPick(asset) {
         imageToolRetryParameters: null,
       })
       ElMessage.success('素材已挂载到当前节点')
-      return
+      succeeded = true
+      return succeeded
     }
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
@@ -4742,10 +4755,11 @@ async function onCanvasAssetLibraryPick(asset) {
         }),
       })
     }
+    succeeded = true
   } catch (e) {
     if (targetFreeNodeId) {
       ElMessage.error(e?.message || '素材挂载失败')
-      return
+      return false
     }
     if (!nodeId) nodeId = canvasAssetFailureNode(e?.message || '素材库素材加入画布失败', canvasAssetPickerFlowPos.value, asset, targetStoryboardId)
     if (nodeId) {
@@ -4766,6 +4780,41 @@ async function onCanvasAssetLibraryPick(asset) {
     canvasAssetPickerTargetStoryboardId.value = null
     canvasAssetPickerTargetFreeNodeId.value = ''
   }
+  return succeeded
+}
+
+function toggleAssetHistoryPanel(mode) {
+  assetHistoryPanel.value = assetHistoryPanel.value === mode ? '' : mode
+  if (assetHistoryPanel.value) {
+    contextMenuVisible.value = false
+    focusedNodeId.value = null
+  }
+}
+
+async function locateAssetHistoryNode(nodeId) {
+  assetHistoryPanel.value = ''
+  await focusNodeOrWarn(nodeId, '该资产尚未关联当前画布节点')
+}
+
+async function applyAssetHistoryItem(item) {
+  if (item?.source === 'canvas' && item?.nodeId) {
+    await locateAssetHistoryNode(item.nodeId)
+    return
+  }
+  const raw = item?.raw || {}
+  const applied = await onCanvasAssetLibraryPick({
+    ...raw,
+    id: item?.source === 'library' ? raw.id : undefined,
+    raw_id: item?.rawId ?? raw.id,
+    name: item?.name || raw.name,
+    type: item?.type || raw.type,
+    category: raw.category || item?.category,
+    url: item?.url || raw.url,
+    display_url: item?.url || raw.display_url,
+    source_kind: item?.source === 'library' ? 'project' : raw.source_kind,
+    picker_source: item?.source || 'history',
+  })
+  if (applied) assetHistoryPanel.value = ''
 }
 
 async function focusNodeResult(node) {
@@ -5692,6 +5741,7 @@ provide(CANVAS_CONTEXT_KEY, {
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
+  assetHistoryPanel,
   canvasGridVisible,
   canvasMiniMapVisible,
   canvasSnapEnabled,
@@ -5705,6 +5755,7 @@ provide(CANVAS_CONTEXT_KEY, {
   openDirectorStage,
   toggleSidebar,
   toggleWorkflowPanel,
+  toggleAssetHistoryPanel,
   focusScript: focusScriptNode,
   goListMode,
   alignNodes: onAlignNodes,
