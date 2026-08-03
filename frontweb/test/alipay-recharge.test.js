@@ -41,6 +41,8 @@ test('平台后台保留可编辑充值套餐入口和广告图预览', () => {
     assert.match(panel, new RegExp(text))
   }
   assert.match(panel, /item\.image_url/)
+  assert.match(panel, /:min="0\.01"/)
+  assert.match(panel, /请填写广告图片/)
   assert.match(panel, /updateRechargePackage/)
   assert.match(panel, /createRechargePackage/)
 })

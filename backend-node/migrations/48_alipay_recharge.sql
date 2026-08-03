@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS recharge_packages (
   credits INTEGER NOT NULL CHECK (credits > 0),
   starts_at TEXT,
   ends_at TEXT,
-  image_url TEXT,
+  image_url TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

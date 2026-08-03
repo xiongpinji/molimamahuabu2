@@ -158,6 +158,22 @@ test('管理员限时套餐按售价和积分展示并在下单时保存快照',
 test('套餐拒绝无效时间、非 HTTPS 广告图且过期后不能下单', () => {
   const { db, tenant } = setup();
   assert.throws(() => recharge.createPackage(db, {
+    name: '缺少广告图',
+    amountYuan: '0.01',
+    credits: 10,
+    status: 'active',
+  }), (error) => error.code === 'INVALID_RECHARGE_PACKAGE');
+
+  const smallAmount = recharge.createPackage(db, {
+    name: '一分钱体验包',
+    amountYuan: '0.01',
+    credits: 10,
+    imageUrl: 'https://cdn.example.com/trial.jpg',
+    status: 'active',
+  });
+  assert.equal(smallAmount.amount_cents, 1);
+
+  assert.throws(() => recharge.createPackage(db, {
     name: '错误套餐',
     amountYuan: '10',
     credits: 1000,
@@ -222,6 +238,41 @@ test('合法支付宝成功通知原子入账且重复通知不重复增加积�
   assert.equal(repeated.order.status, 'paid');
   assert.equal(repeated.order.alipay_trade_no, payload.trade_no);
   assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 1234);
+  const adjustments = creditLedger.listTenantAdjustments(db, tenant.id);
+  assert.equal(adjustments.length, 1);
+  assert.equal(adjustments[0].event_type, 'recharge');
+  assert.equal(adjustments[0].amount, 1234);
+  assert.equal(adjustments[0].reference_type, 'alipay_recharge_order');
+  assert.equal(adjustments[0].reference_id, order.id);
+});
+
+test('低于一元的套餐订单仍能按支付宝通知金额正确入账', () => {
+  const { db, tenant } = setup();
+  const rechargePackage = recharge.createPackage(db, {
+    name: '一分钱体验包',
+    amountYuan: '0.01',
+    credits: 10,
+    imageUrl: 'https://cdn.example.com/trial.jpg',
+    status: 'active',
+  });
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    packageId: rechargePackage.id,
+    clientOrderKey: 'small-package-notify',
+  });
+
+  recharge.processNotification(db, {
+    sign: 'valid-signature',
+    app_id: 'app-123',
+    seller_id: '2088000000000000',
+    trade_status: 'TRADE_SUCCESS',
+    out_trade_no: order.out_trade_no,
+    trade_no: '2026080322000000000004',
+    total_amount: '0.01',
+  }, fakeGateway());
+
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 10);
 });
 
 test('伪造签名、身份或金额不匹配的通知不会入账', () => {
@@ -290,4 +341,6 @@ test('同一支付宝交易号不能为两个订单重复入账', () => {
   );
   assert.equal(db.prepare('SELECT status FROM tenant_recharge_orders WHERE id = ?').get(second.id).status, 'pending');
   assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 1000);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_adjustments
+    WHERE event_type = 'recharge'`).get().count, 1);
 });

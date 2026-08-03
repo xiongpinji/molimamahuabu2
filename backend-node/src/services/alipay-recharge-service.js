@@ -1,4 +1,5 @@
 const { randomUUID } = require('crypto');
+const creditLedger = require('./creditLedgerService');
 
 const CREDIT_RATIO = 100;
 const MIN_AMOUNT_CENTS = 100;
@@ -19,7 +20,7 @@ function ensureSchema(db) {
       credits INTEGER NOT NULL CHECK (credits > 0),
       starts_at TEXT,
       ends_at TEXT,
-      image_url TEXT,
+      image_url TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -47,17 +48,33 @@ function ensureSchema(db) {
   `);
 }
 
-function parseCustomAmount(value) {
+function parseAmountCents(value, code, message) {
   const normalized = String(value ?? '').trim();
   if (!/^\d{1,5}(?:\.\d{1,2})?$/.test(normalized)) {
-    throw rechargeError('INVALID_RECHARGE_AMOUNT', '充值金额格式不正确');
+    throw rechargeError(code, message);
   }
   const [yuan, fraction = ''] = normalized.split('.');
   const cents = Number(yuan) * 100 + Number(fraction.padEnd(2, '0'));
-  if (!Number.isSafeInteger(cents) || cents < MIN_AMOUNT_CENTS || cents > MAX_AMOUNT_CENTS) {
+  if (!Number.isSafeInteger(cents) || cents < 1 || cents > MAX_AMOUNT_CENTS) {
+    throw rechargeError(code, message);
+  }
+  return cents;
+}
+
+function parseCustomAmount(value) {
+  const cents = parseAmountCents(value, 'INVALID_RECHARGE_AMOUNT', '充值金额格式不正确');
+  if (cents < MIN_AMOUNT_CENTS) {
     throw rechargeError('INVALID_RECHARGE_AMOUNT', '充值金额需在 1.00 至 50000.00 元之间');
   }
   return cents;
+}
+
+function parsePackageAmount(value) {
+  return parseAmountCents(
+    value,
+    'INVALID_RECHARGE_PACKAGE',
+    '套餐售价需在 0.01 至 50000.00 元之间且最多保留两位小数',
+  );
 }
 
 function normalizeClientOrderKey(value) {
@@ -85,7 +102,7 @@ function normalizeOptionalDate(value) {
 
 function normalizePackage(input) {
   const name = String(input.name || '').trim();
-  const amountCents = parseCustomAmount(input.amountYuan ?? input.amount_yuan);
+  const amountCents = parsePackageAmount(input.amountYuan ?? input.amount_yuan);
   const credits = Number(input.credits);
   const startsAt = normalizeOptionalDate(input.startsAt ?? input.starts_at);
   const endsAt = normalizeOptionalDate(input.endsAt ?? input.ends_at);
@@ -97,12 +114,13 @@ function normalizePackage(input) {
     || (startsAt && endsAt && startsAt >= endsAt)) {
     throw rechargeError('INVALID_RECHARGE_PACKAGE', '套餐名称、售价、积分、时间或状态不合法');
   }
-  if (imageUrl) {
-    try {
-      if (new URL(imageUrl).protocol !== 'https:') throw new Error('HTTPS required');
-    } catch (_) {
-      throw rechargeError('INVALID_RECHARGE_PACKAGE', '套餐广告图必须使用有效的 HTTPS 地址');
-    }
+  if (!imageUrl) {
+    throw rechargeError('INVALID_RECHARGE_PACKAGE', '请填写套餐广告图片');
+  }
+  try {
+    if (new URL(imageUrl).protocol !== 'https:') throw new Error('HTTPS required');
+  } catch (_) {
+    throw rechargeError('INVALID_RECHARGE_PACKAGE', '套餐广告图必须使用有效的 HTTPS 地址');
   }
   return {
     name,
@@ -226,7 +244,7 @@ function listOrders(db, tenantIdValue, userIdValue, limitValue = 100) {
 
 function notificationAmountCents(value) {
   try {
-    return parseCustomAmount(value);
+    return parsePackageAmount(value);
   } catch (_) {
     throw rechargeError('ALIPAY_AMOUNT_MISMATCH', '支付宝通知金额不合法');
   }
@@ -234,6 +252,7 @@ function notificationAmountCents(value) {
 
 function processNotification(db, payload, gateway) {
   ensureSchema(db);
+  creditLedger.ensureSchema(db);
   if (!gateway?.configured) {
     throw rechargeError('ALIPAY_NOT_CONFIGURED', '支付宝充值尚未配置');
   }
@@ -277,12 +296,15 @@ function processNotification(db, payload, gateway) {
       if (changed.changes !== 1) {
         throw rechargeError('ALIPAY_ORDER_CONFLICT', '充值订单状态冲突');
       }
-      db.prepare(`INSERT OR IGNORE INTO tenant_credit_accounts
-        (tenant_id, available, held, spent, updated_at) VALUES (?, 0, 0, 0, ?)`)
-        .run(order.tenant_id, now);
-      db.prepare(`UPDATE tenant_credit_accounts
-        SET available = available + ?, updated_at = ? WHERE tenant_id = ?`)
-        .run(order.credits, now, order.tenant_id);
+      creditLedger.adjustTenantBalance(db, {
+        tenantId: order.tenant_id,
+        actorUserId: order.created_by,
+        eventType: 'recharge',
+        amount: order.credits,
+        reason: `支付宝充值到账：${order.package_name || '自定义充值'}`,
+        referenceType: 'alipay_recharge_order',
+        referenceId: order.id,
+      });
       return {
         credited: true,
         order: db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(order.id),

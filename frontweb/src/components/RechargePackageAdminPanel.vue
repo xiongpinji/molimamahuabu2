@@ -11,7 +11,7 @@
       <h3>新增套餐</h3>
       <div class="package-form">
         <label><span>套餐名称</span><el-input v-model.trim="draft.name" maxlength="60" /></label>
-        <label><span>售价（元）</span><el-input-number v-model="draft.amount_yuan" :min="1" :max="50000" :precision="2" /></label>
+        <label><span>售价（元）</span><el-input-number v-model="draft.amount_yuan" :min="0.01" :max="50000" :precision="2" /></label>
         <label><span>到账积分</span><el-input-number v-model="draft.credits" :min="1" :max="100000000" :step="100" step-strictly /></label>
         <label><span>开始时间</span><el-date-picker v-model="draft.starts_at" type="datetime" placeholder="立即生效" /></label>
         <label><span>结束时间</span><el-date-picker v-model="draft.ends_at" type="datetime" placeholder="长期有效" /></label>
@@ -26,7 +26,7 @@
       <article v-for="item in packages" :key="item.id" class="package-card">
         <div class="package-form">
           <label><span>套餐名称</span><el-input v-model.trim="item.name" maxlength="60" /></label>
-          <label><span>售价（元）</span><el-input-number v-model="item.amount_yuan" :min="1" :max="50000" :precision="2" /></label>
+          <label><span>售价（元）</span><el-input-number v-model="item.amount_yuan" :min="0.01" :max="50000" :precision="2" /></label>
           <label><span>到账积分</span><el-input-number v-model="item.credits" :min="1" :max="100000000" :step="100" step-strictly /></label>
           <label><span>开始时间</span><el-date-picker v-model="item.starts_at" type="datetime" placeholder="立即生效" /></label>
           <label><span>结束时间</span><el-date-picker v-model="item.ends_at" type="datetime" placeholder="长期有效" /></label>
@@ -82,17 +82,18 @@ function toPayload(item) {
     credits: Number(item.credits),
     starts_at: item.starts_at ? new Date(item.starts_at).toISOString() : null,
     ends_at: item.ends_at ? new Date(item.ends_at).toISOString() : null,
-    image_url: item.image_url || null,
+    image_url: item.image_url,
     status: item.status,
   }
 }
 
 function validate(item) {
   if (!item.name) return '请填写套餐名称'
-  if (!Number.isFinite(Number(item.amount_yuan)) || Number(item.amount_yuan) < 1) return '售价不能低于 1 元'
+  if (!Number.isFinite(Number(item.amount_yuan)) || Number(item.amount_yuan) < 0.01) return '售价不能低于 0.01 元'
   if (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) < 1) return '到账积分必须为正整数'
   if (item.starts_at && item.ends_at && new Date(item.starts_at) >= new Date(item.ends_at)) return '结束时间必须晚于开始时间'
-  if (item.image_url && !/^https:\/\//i.test(item.image_url)) return '广告图片必须使用 HTTPS 地址'
+  if (!item.image_url) return '请填写广告图片'
+  if (!/^https:\/\//i.test(item.image_url)) return '广告图片必须使用 HTTPS 地址'
   return ''
 }
 
