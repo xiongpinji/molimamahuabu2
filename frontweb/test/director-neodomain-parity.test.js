@@ -9,7 +9,14 @@ import {
 } from '../src/utils/directorTimeline.js'
 
 const stageSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasDirectorStage.vue', import.meta.url)), 'utf8')
+const accountBadgeSource = readFileSync(fileURLToPath(new URL('../src/components/AccountBadge.vue', import.meta.url)), 'utf8')
 const timelineSource = readFileSync(fileURLToPath(new URL('../src/utils/directorTimeline.js', import.meta.url)), 'utf8')
+
+function zIndexFor(source, selector) {
+  const match = source.match(new RegExp(`${selector.replaceAll('.', '\\.')}\\s*\\{[^}]*z-index:\\s*(\\d+)`))
+  assert.ok(match, `缺少 ${selector} z-index`)
+  return Number(match[1])
+}
 
 test('相机注视模式支持不锁定、手动坐标、对象目标和旧 origin 兼容', () => {
   const manual = normalizeDirectorTimeline({ cameras: [{ id: 'manual-look-at', lookAtMode: 'manual', target: [1.25, 2.5, -3.75] }] })
@@ -87,4 +94,11 @@ test('窄屏仍展示属性检查器并覆盖在视口右侧', () => {
   const narrowStyles = stageSource.slice(stageSource.indexOf('@media (max-width: 680px)'))
   assert.doesNotMatch(narrowStyles, /\.director-stage__inspector\s*\{\s*display:\s*none/)
   assert.match(narrowStyles, /\.director-stage__inspector\s*\{[^}]*position:\s*absolute[^}]*display:\s*block/)
+})
+
+test('导演台层级高于画布积分栏，避免窄屏账户栏拦截操作', () => {
+  const stageZIndex = zIndexFor(stageSource, '.director-stage')
+  const accountZIndex = zIndexFor(accountBadgeSource, '.account-badge')
+  assert.equal(accountZIndex, 3000)
+  assert.ok(stageZIndex > accountZIndex, `导演台 z-index ${stageZIndex} 必须高于积分栏 ${accountZIndex}`)
 })

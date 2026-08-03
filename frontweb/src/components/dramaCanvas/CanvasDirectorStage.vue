@@ -3202,7 +3202,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.director-stage { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #101014; color: #e4e4e7; }
+.director-stage { position: fixed; inset: 0; z-index: 3600; display: flex; flex-direction: column; background: #101014; color: #e4e4e7; }
 .director-stage__header, .director-stage__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-bottom: 1px solid #343438; background: #202020; }
 .director-stage__header { position: relative; min-height: 62px; box-sizing: border-box; }
 .director-stage__view-switch { position: absolute; left: 50%; display: flex; padding: 4px; border: 1px solid #3a3a3d; border-radius: 22px; transform: translateX(-50%); background: #171719; }
