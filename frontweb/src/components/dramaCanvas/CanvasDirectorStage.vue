@@ -577,7 +577,7 @@
         </div>
         <div v-if="directorReferenceStatus" class="resource-status">{{ directorReferenceStatus }}</div>
         <div v-if="directorReferenceHistory.length" class="director-reference-history" aria-label="AI站位参考历史">
-          <button v-for="item in directorReferenceHistory" :key="item.id" type="button" @click="directorReferenceAnalysis = item.analysis">{{ item.title }}</button>
+          <button v-for="item in directorReferenceHistory" :key="item.id" type="button" @click="selectDirectorReferenceHistory(item)">{{ item.title }}</button>
         </div>
         <button type="button" :disabled="!aiImportFile || aiImportBusy" @click="analyzeAIImport">{{ aiImportBusy ? '识别中…' : '开始识图' }}</button>
         <label>识别描述<textarea v-model="aiImportDescription" rows="5" placeholder="识别结果也可手动修订" /></label>
@@ -774,6 +774,7 @@ const TRANSFORM_TOOLS = [
   { mode: 'rotate', label: '旋转工具', icon: '⟳' },
   { mode: 'scale', label: '缩放工具', icon: '⤢' },
 ]
+const DIRECTOR_REFERENCE_SOURCE = 'director_reference_analysis'
 import {
   DIRECTOR_VALIDATION_ASSET_URL,
   createDirectorResourceState,
@@ -1244,24 +1245,88 @@ async function analyzeDirectorReference() {
   const file = aiImportFile.value
   const dramaId = Number(props.drama?.id)
   if (!file || !dramaId || directorReferenceBusy.value) return
+  const referenceMode = directorReferenceMode.value
+  let referenceAsset = null
   directorReferenceBusy.value = true
   directorReferenceStatus.value = '正在分析站位参考…'
   try {
     const imageUrl = await fileToDataUrl(file)
+    const uploaded = await uploadAPI.uploadImage(file, { dramaId })
+    referenceAsset = await assetsAPI.create({
+      drama_id: dramaId,
+      name: file.name || 'AI站位参考',
+      type: 'image',
+      category: 'director-ai-reference',
+      url: uploaded?.url || '',
+      local_path: uploaded?.local_path || uploaded?.path || null,
+      file_size: file.size,
+      mime_type: file.type || 'image/png',
+      metadata: {
+        status: 'running',
+        source: 'director_reference_analysis',
+        mode: directorReferenceMode.value,
+      },
+    })
     const result = await directorReferenceAPI.analyze(dramaId, { image_url: imageUrl })
     const analysis = result?.analysis || result
+    await assetsAPI.update(referenceAsset.id, {
+      metadata: {
+        status: 'completed',
+        source: DIRECTOR_REFERENCE_SOURCE,
+        mode: referenceMode,
+        analysis,
+        model: result?.model || null,
+      },
+    })
     directorReferenceAnalysis.value = analysis
-    directorReferenceHistory.value = [{
-      id: `${Date.now()}-${directorReferenceHistory.value.length}`,
-      title: `${file.name || '参考图'} · ${(analysis?.people?.length || 0)}人/${(analysis?.props?.length || 0)}物/${(analysis?.cameras?.length || 0)}机位`,
-      analysis,
-    }, ...directorReferenceHistory.value].slice(0, 5)
+    await loadDirectorReferenceHistory()
     directorReferenceStatus.value = '站位参考已生成，可选择插入或覆盖'
   } catch (error) {
+    if (referenceAsset?.id) {
+      await assetsAPI.update(referenceAsset.id, {
+        metadata: {
+          status: 'failed',
+          source: DIRECTOR_REFERENCE_SOURCE,
+          mode: referenceMode,
+          error: error?.message || '站位参考分析失败',
+        },
+      }).catch(() => {})
+    }
     directorReferenceStatus.value = error?.message || '站位参考分析失败'
   } finally {
     directorReferenceBusy.value = false
   }
+}
+
+function directorReferenceAssetTitle(asset) {
+  const analysis = asset?.metadata?.analysis || {}
+  return `${asset?.name || '参考图'} · ${(analysis.people?.length || 0)}人/${(analysis.props?.length || 0)}物/${(analysis.cameras?.length || 0)}机位`
+}
+
+async function loadDirectorReferenceHistory() {
+  const dramaId = Number(props.drama?.id)
+  if (!dramaId) {
+    directorReferenceHistory.value = []
+    return
+  }
+  try {
+    const result = await assetsAPI.list({ drama_id: dramaId, type: 'image', category: 'director-ai-reference', page_size: 100 })
+    const assets = Array.isArray(result) ? result : (result?.items || [])
+    directorReferenceHistory.value = assets
+      .filter((asset) => asset?.metadata?.status === 'completed'
+        && asset?.metadata?.source === DIRECTOR_REFERENCE_SOURCE
+        && asset?.metadata?.analysis)
+      .map((asset) => ({ ...asset, title: directorReferenceAssetTitle(asset) }))
+  } catch (error) {
+    directorReferenceHistory.value = []
+    directorReferenceStatus.value = error?.message || '站位参考历史读取失败'
+  }
+}
+
+function selectDirectorReferenceHistory(item) {
+  directorReferenceAnalysis.value = item.metadata.analysis
+  directorReferenceMode.value = item.metadata.mode || directorReferenceMode.value
+  directorReferenceStatus.value = '已选择历史站位参考'
 }
 
 function applyDirectorReference() {
@@ -3048,7 +3113,10 @@ watch(selectedCharacterId, (characterId) => {
 
 watch(aiImportOpen, async (open) => {
   await nextTick()
-  if (open) aiImportModalRef.value?.querySelector('button')?.focus()
+  if (open) void loadDirectorReferenceHistory()
+  if (open) {
+    aiImportModalRef.value?.querySelector('button')?.focus()
+  }
   else if (props.visible) aiImportButtonRef.value?.focus()
 })
 

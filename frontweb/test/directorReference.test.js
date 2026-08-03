@@ -44,3 +44,21 @@ test('CanvasDirectorStage exposes AI placement reference through mutateTimeline'
   assert.match(stageSource, /mutateTimeline\(next\)/);
   assert.doesNotMatch(stageSource, /timeline\.value\s*=\s*applyDirectorReferenceAnalysis/);
 });
+
+test('director reference analysis persists running, completed, and failed asset metadata', () => {
+  assert.match(stageSource, /uploadAPI\.uploadImage\(file,\s*\{\s*dramaId\s*\}\)/);
+  assert.match(stageSource, /assetsAPI\.create\(\{[\s\S]*category:\s*'director-ai-reference'[\s\S]*metadata:\s*\{[\s\S]*status:\s*'running'[\s\S]*source:\s*'director_reference_analysis'[\s\S]*mode:\s*directorReferenceMode\.value/);
+  assert.match(stageSource, /directorReferenceAPI\.analyze\(dramaId,\s*\{\s*image_url:\s*imageUrl\s*\}\)/);
+  assert.match(stageSource, /assetsAPI\.update\(referenceAsset\.id,\s*\{\s*metadata:\s*\{[\s\S]*status:\s*'completed'[\s\S]*source:\s*DIRECTOR_REFERENCE_SOURCE[\s\S]*mode:\s*referenceMode[\s\S]*analysis[\s\S]*model/);
+  assert.match(stageSource, /assetsAPI\.update\(referenceAsset\.id,\s*\{\s*metadata:\s*\{[\s\S]*status:\s*'failed'[\s\S]*source:\s*DIRECTOR_REFERENCE_SOURCE[\s\S]*mode:\s*referenceMode[\s\S]*error:/);
+});
+
+test('director reference history reloads only completed metadata analysis assets and applies through mutateTimeline', () => {
+  assert.match(stageSource, /async function loadDirectorReferenceHistory\(\)/);
+  assert.match(stageSource, /assetsAPI\.list\(\{\s*drama_id:\s*dramaId,\s*type:\s*'image',\s*category:\s*'director-ai-reference',\s*page_size:\s*100\s*\}\)/);
+  assert.match(stageSource, /asset\?\.metadata\?\.status === 'completed'[\s\S]*asset\?\.metadata\?\.source === DIRECTOR_REFERENCE_SOURCE[\s\S]*asset\?\.metadata\?\.analysis/);
+  assert.match(stageSource, /@click="selectDirectorReferenceHistory\(item\)"/);
+  assert.match(stageSource, /directorReferenceAnalysis\.value = item\.metadata\.analysis/);
+  assert.match(stageSource, /if \(open\) void loadDirectorReferenceHistory\(\)/);
+  assert.match(stageSource, /function applyDirectorReference\(\)[\s\S]*applyDirectorReferenceAnalysis\(timeline\.value,\s*directorReferenceAnalysis\.value,\s*directorReferenceMode\.value\)[\s\S]*mutateTimeline\(next\)/);
+});
