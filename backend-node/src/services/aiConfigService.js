@@ -450,10 +450,15 @@ async function testConnection(opts) {
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
+  let isAIHubHost = false;
+  try {
+    const hostname = new URL(base).hostname.toLowerCase();
+    isAIHubHost = hostname === 'aihubcc.cc' || hostname.endsWith('.aihubcc.cc');
+  } catch (_) {}
 
-  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video') {
+  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video' || isAIHubHost) {
     if (!opts.api_key) throw new Error('api_key 必填');
-    const queryPath = String(opts.query_endpoint || '/videos/{taskId}')
+    const queryPath = String(isAIHubHost ? '/videos/{taskId}' : (opts.query_endpoint || '/videos/{taskId}'))
       .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
     const url = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
     const res = await fetch(url, {
