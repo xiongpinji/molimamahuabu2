@@ -4048,7 +4048,8 @@ async function appendDownstreamStoryboard(node, options = {}) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已追加下游分镜并连线')
   return targetNodeId
 }
@@ -4161,7 +4162,8 @@ async function insertDownstreamStoryboard(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已插入下游分镜并重连')
 }
 
@@ -4212,7 +4214,8 @@ async function duplicateStoryboardNode(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已复制分镜到画布')
   return targetNodeId
 }

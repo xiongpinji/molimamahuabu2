@@ -8,6 +8,11 @@ test.beforeEach(async ({ page }) => {
     }))
   })
 })
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'wait' })
+})
+
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
