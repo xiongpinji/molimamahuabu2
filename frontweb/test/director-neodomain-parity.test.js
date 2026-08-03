@@ -24,6 +24,7 @@ test('相机注视模式支持不锁定、手动坐标、对象目标和旧 orig
   assert.ok(stageSource.includes(':value="cameraLookAtSelection"'))
   assert.ok(stageSource.includes('updateCameraTarget(index, $event.target.value)'))
   assert.match(stageSource, /function updateCameraLookAtSelection\(value\)/)
+  assert.match(stageSource, /const cameraLookAtObjects = computed\(\(\) => cameraTargetObjects\.value\)/)
   assert.match(stageSource, /const keepsTargetLocked = Boolean\(lookAtObject\) \|\| boundCamera\.lookAtMode === 'manual'/)
   assert.match(timelineSource, /value\.lookAtMode === 'origin'[\s\S]*\? 'manual'/)
 })

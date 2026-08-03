@@ -948,7 +948,7 @@ const cameraLookAtSelection = computed(() => selectedCamera.value?.lookAtMode ==
 const lightObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'light'))
 const selectedLightObject = computed(() => selectedDirectorObject.value?.type === 'light' ? selectedDirectorObject.value : null)
 const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
-const cameraLookAtObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'humanoid'))
+const cameraLookAtObjects = computed(() => cameraTargetObjects.value)
 const activeCompositionGuides = computed(() => {
   if (viewMode.value !== 'camera') return false
   const camera = timeline.value.cameras.find((entry) => entry.id === selectedShot.value?.cameraId)
