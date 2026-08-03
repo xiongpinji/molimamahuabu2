@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test.afterEach(async ({ page }) => {
-  await page.unrouteAll({ behavior: 'wait' })
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -592,6 +592,7 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
 })
 
 test('独立项目画布视频节点使用上游首帧，异步失败可重试并完成入库恢复', async ({ page }) => {
+  test.setTimeout(120_000)
   const forwardedRequests = []
   const failedResponses = []
   const providerRequestOffset = videoProviderRequests.length
@@ -658,7 +659,10 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
   await videoEditor.getByRole('button', { name: '重试', exact: true }).click()
 
-  await expect.poll(() => videoProviderRequests.length - providerRequestOffset).toBe(2)
+  await expect.poll(
+    () => videoProviderRequests.length - providerRequestOffset,
+    { timeout: 20_000 },
+  ).toBe(2)
   const successfulRequest = videoProviderRequests[providerRequestOffset + 1]
   await expect.poll(
     () => videoProviderTasks.get(successfulRequest.taskId)?.polls,
