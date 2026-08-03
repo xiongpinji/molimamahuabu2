@@ -607,6 +607,7 @@ import {
   serializeHomeCanvasState,
 } from '@/utils/homeCanvasState'
 import { buildScriptAnalysisCanvasState } from '@/utils/scriptAnalysisCanvasImport'
+import { isTransientHttpError, userHttpErrorMessage } from '@/utils/httpError'
 import { buildFactorySkillImportPreview } from '@/utils/skillModuleAdapters'
 
 const router = useRouter()
@@ -630,6 +631,8 @@ const revisionPackageText = ref('')
 const revisionNote = ref('')
 const activeLibraryTab = ref('characters')
 const pollingTimer = ref(null)
+const taskPollFailures = ref(0)
+const MAX_TRANSIENT_TASK_POLL_FAILURES = 4
 const factoryPreviewVisible = ref(false)
 const factoryPreview = ref(null)
 const factoryImporting = ref(false)
@@ -1052,6 +1055,7 @@ async function runAnalysis() {
 
 function startPolling() {
   stopPolling()
+  taskPollFailures.value = 0
   pollTask()
   pollingTimer.value = window.setInterval(pollTask, 1500)
 }
@@ -1067,6 +1071,7 @@ async function pollTask() {
   if (!task.value.id) return
   try {
     const body = unwrap(await taskAPI.get(task.value.id))
+    taskPollFailures.value = 0
     const next = body?.task || body || {}
     task.value.status = next.status || task.value.status
     task.value.progress = Number(next.progress ?? task.value.progress ?? 0)
@@ -1085,15 +1090,21 @@ async function pollTask() {
     } else if (['failed', 'error', 'cancelled'].includes(task.value.status)) {
       stopPolling()
       running.value = false
+      if (project.value.status === 'analyzing') project.value.status = 'failed'
       ElMessage.error(task.value.error || '导演分析失败')
     } else {
       task.value.progress = Math.min(92, Math.max(task.value.progress, 12))
     }
   } catch (error) {
+    if (isTransientHttpError(error) && taskPollFailures.value < MAX_TRANSIENT_TASK_POLL_FAILURES) {
+      taskPollFailures.value += 1
+      task.value.message = `服务短暂不可用，正在重新连接（${taskPollFailures.value}/${MAX_TRANSIENT_TASK_POLL_FAILURES}）`
+      return
+    }
     stopPolling()
     running.value = false
     task.value.status = 'failed'
-    task.value.error = error?.message || '查询分析任务失败'
+    task.value.error = userHttpErrorMessage(error, '查询分析任务失败')
     ElMessage.error(task.value.error)
   }
 }

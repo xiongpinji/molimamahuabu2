@@ -108,6 +108,62 @@ function rowToTask(r) {
 
 const ORPHAN_ASYNC_TASK_MSG = '服务重启后任务中断，请重新操作';
 const USER_CANCEL_TASK_MSG = '用户已取消';
+const inFlightTasks = new Map();
+
+function trackInFlightTask(taskId, work) {
+  const key = String(taskId);
+  const tracked = Promise.resolve(work);
+  inFlightTasks.set(key, tracked);
+  const remove = () => {
+    if (inFlightTasks.get(key) === tracked) inFlightTasks.delete(key);
+  };
+  tracked.then(remove, remove);
+  return tracked;
+}
+
+function getInFlightTaskCount() {
+  return inFlightTasks.size;
+}
+
+async function waitForInFlightTasks(timeoutMs = 60_000) {
+  const tasks = [...inFlightTasks.values()];
+  if (!tasks.length) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0));
+    Promise.allSettled(tasks).then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+function reconcileOrphanedScriptAnalysisProjects(db, log) {
+  const now = new Date().toISOString();
+  try {
+    const result = db.prepare(`
+      UPDATE script_analysis_projects
+      SET status = 'failed', review_json = ?, updated_at = ?
+      WHERE status = 'analyzing' AND deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM async_tasks
+          WHERE type = 'script_analysis'
+            AND resource_id = 'script-analysis:' || CAST(script_analysis_projects.id AS TEXT)
+            AND status IN ('pending', 'processing')
+            AND deleted_at IS NULL
+        )
+    `).run(
+      JSON.stringify({ status: 'failed', issues: [ORPHAN_ASYNC_TASK_MSG] }),
+      now,
+    );
+    if (result.changes) {
+      log.info('Orphaned script analysis projects marked failed', { count: result.changes });
+    }
+    return result.changes;
+  } catch (error) {
+    if (/no such (table|column)/i.test(String(error.message || ''))) return 0;
+    throw error;
+  }
+}
 
 /**
  * 用户主动取消进行中的异步任务（无法中断已在执行的 AI 调用，但会停止前端轮询并防止恢复）。
@@ -157,7 +213,10 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
-  if (!rows.length) return 0;
+  if (!rows.length) {
+    reconcileOrphanedScriptAnalysisProjects(db, log);
+    return 0;
+  }
   log.warn('Failing orphaned async tasks after startup', { count: rows.length });
   for (const row of rows) {
     if (row.credit_reservation_id) {
@@ -206,6 +265,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       previous_status: row.status,
     });
   }
+  reconcileOrphanedScriptAnalysisProjects(db, log);
   return rows.length;
 }
 
@@ -218,6 +278,9 @@ module.exports = {
   updateTaskError,
   updateTaskResult,
   failOrphanedAsyncTasksOnStartup,
+  trackInFlightTask,
+  waitForInFlightTasks,
+  getInFlightTaskCount,
   cancelTask,
   ORPHAN_ASYNC_TASK_MSG,
   USER_CANCEL_TASK_MSG,

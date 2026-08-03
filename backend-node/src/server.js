@@ -14,6 +14,7 @@ if (insecureTlsOn) {
 
 const { createApp } = require('./app.js');
 const { closeDb } = require('./db/index.js');
+const taskService = require('./services/taskService');
 const logger = require('./logger.js');
 
 const { app, config } = createApp();
@@ -32,14 +33,31 @@ server.headersTimeout = 66_000;
 server.requestTimeout = 600_000;
 server.maxConnections = Number(process.env.SERVER_MAX_CONNECTIONS) || 1_024;
 
-function shutdown() {
+let shutdownStarted = false;
+
+async function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   logger.info('Shutting down server...');
-  server.close(() => {
-    closeDb();
-    logger.info('Server exited');
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 5000);
+  const serverClosed = new Promise((resolve) => server.close(resolve));
+  const graceMs = Number(process.env.IN_FLIGHT_TASK_SHUTDOWN_GRACE_MS) || 60_000;
+  const inFlightCount = taskService.getInFlightTaskCount();
+  if (inFlightCount) {
+    logger.info('Waiting for in-flight tasks before shutdown', { count: inFlightCount, grace_ms: graceMs });
+  }
+  const forceExitTimer = setTimeout(() => process.exit(1), graceMs + 5000);
+  const drained = await taskService.waitForInFlightTasks(graceMs);
+  if (!drained) {
+    logger.warn('In-flight task shutdown grace period expired', {
+      remaining: taskService.getInFlightTaskCount(),
+      grace_ms: graceMs,
+    });
+  }
+  await serverClosed;
+  clearTimeout(forceExitTimer);
+  closeDb();
+  logger.info('Server exited');
+  process.exit(0);
 }
 
 process.on('SIGINT', shutdown);

@@ -54,6 +54,56 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(done.status, 'completed');
   });
 
+  it('reconciles a script analysis project left analyzing after its task failed', () => {
+    const db = createTestDb();
+    db.exec(`
+      CREATE TABLE script_analysis_projects (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL,
+        source_script TEXT NOT NULL,
+        current_version INTEGER NOT NULL,
+        review_json TEXT,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks (
+        id, type, status, progress, message, error, resource_id,
+        created_at, updated_at, completed_at
+      ) VALUES (?, 'script_analysis', 'failed', 0, '', ?, ?, ?, ?, ?)`
+    ).run(
+      'task-script-analysis-failed',
+      taskService.ORPHAN_ASYNC_TASK_MSG,
+      'script-analysis:42',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO script_analysis_projects (
+        id, status, source_script, current_version, review_json, updated_at
+      ) VALUES (42, 'analyzing', '原始剧本文本', 3, NULL, ?)`
+    ).run(now);
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 0);
+    const project = db.prepare(
+      `SELECT status, source_script, current_version, review_json, updated_at
+       FROM script_analysis_projects WHERE id = 42`
+    ).get();
+    assert.equal(project.status, 'failed');
+    assert.equal(project.source_script, '原始剧本文本');
+    assert.equal(project.current_version, 3);
+    assert.deepEqual(JSON.parse(project.review_json), {
+      status: 'failed',
+      issues: [taskService.ORPHAN_ASYNC_TASK_MSG],
+    });
+    assert.ok(new Date(project.updated_at).getTime() >= new Date(now).getTime());
+  });
+
   it('also marks the linked image generation as failed on startup', () => {
     const db = createTestDb();
     db.exec(`
