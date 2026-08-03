@@ -24,6 +24,8 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   narrative_grid: ['description'],
   frame_forward: ['description'],
   frame_backward: ['description'],
+  portrait_texture: ['preset', 'intensity', 'description'],
+  portrait_emotion: ['emotion', 'intensity', 'faceRegion'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
@@ -174,7 +176,7 @@ function normalizeImageToolRetryParameters(operation, value) {
   if (!keys) return undefined
   if (keys.length === 0) return {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const stringLimits = operation === 'cinematic_relight'
+  const stringLimits = ['cinematic_relight', 'portrait_texture'].includes(operation)
     ? { preset: 32, description: 300 }
     : (
       [
@@ -200,6 +202,30 @@ function normalizeImageToolRetryParameters(operation, value) {
       if (candidate.length > limit) return undefined
       parameters[key] = candidate
     }
+  }
+  if (operation === 'portrait_emotion' && value.faceRegion !== undefined) {
+    const region = value.faceRegion
+    const faceRegion = region && typeof region === 'object' && !Array.isArray(region)
+      ? {
+        x: Number(region.x),
+        y: Number(region.y),
+        width: Number(region.width),
+        height: Number(region.height),
+      }
+      : null
+    if (
+      !faceRegion
+      || Object.values(faceRegion).some((item) => !Number.isFinite(item))
+      || faceRegion.x < 0
+      || faceRegion.y < 0
+      || faceRegion.width <= 0
+      || faceRegion.height <= 0
+      || faceRegion.x + faceRegion.width > 1
+      || faceRegion.y + faceRegion.height > 1
+    ) {
+      return undefined
+    }
+    parameters.faceRegion = faceRegion
   }
   return Object.keys(parameters).length ? parameters : undefined
 }
