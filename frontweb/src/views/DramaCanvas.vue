@@ -676,6 +676,7 @@ import {
   resolveCanvasConnectionDrop,
 } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
+import { calculateCanvasKeyboardPanDelta, isCanvasKeyboardPanKey } from '@/utils/canvas-keyboard-pan'
 import {
   mergeGenerationHistory,
   normalizeGenerationHistory,
@@ -893,7 +894,6 @@ const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
 const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
 const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
-const CANVAS_KEYBOARD_PAN_STEP = 56
 const freeCanvasModelConfigs = ref([])
 const freeCanvasModelCatalog = ref([])
 const freeCanvasVoiceOptions = ref([])
@@ -1055,6 +1055,10 @@ let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
 let runQueueTimer = null
+let canvasKeyboardPanFrame = null
+let canvasKeyboardPanLastTimestamp = null
+let canvasKeyboardPanMoved = false
+const pressedCanvasPanKeys = new Set()
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
@@ -6440,15 +6444,8 @@ function selectVisibleCanvasNodes() {
   ElMessage.success(`已选中 ${ids.length} 个节点`)
 }
 
-function panCanvasByKeyboard(key) {
-  const deltas = {
-    w: { x: 0, y: CANVAS_KEYBOARD_PAN_STEP },
-    a: { x: CANVAS_KEYBOARD_PAN_STEP, y: 0 },
-    s: { x: 0, y: -CANVAS_KEYBOARD_PAN_STEP },
-    d: { x: -CANVAS_KEYBOARD_PAN_STEP, y: 0 },
-  }
-  const delta = deltas[key]
-  if (!delta) return false
+function panCanvasByKeyboard(delta) {
+  if (!delta.x && !delta.y) return false
   const viewport = canvasFlowApi.value?.getViewport?.() || currentViewport.value
   const nextViewport = {
     x: Number(viewport?.x || 0) + delta.x,
@@ -6456,10 +6453,33 @@ function panCanvasByKeyboard(key) {
     zoom: Number(viewport?.zoom || 1),
   }
   currentViewport.value = nextViewport
-  const movement = canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
-  if (movement?.finally) movement.finally(scheduleLayoutSave)
-  else scheduleLayoutSave()
+  canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
   return true
+}
+
+function runCanvasKeyboardPanFrame(timestamp) {
+  canvasKeyboardPanFrame = null
+  if (!pressedCanvasPanKeys.size) return
+  const elapsed = canvasKeyboardPanLastTimestamp == null ? 16 : timestamp - canvasKeyboardPanLastTimestamp
+  canvasKeyboardPanLastTimestamp = timestamp
+  const delta = calculateCanvasKeyboardPanDelta(pressedCanvasPanKeys, elapsed)
+  canvasKeyboardPanMoved = panCanvasByKeyboard(delta) || canvasKeyboardPanMoved
+  canvasKeyboardPanFrame = window.requestAnimationFrame(runCanvasKeyboardPanFrame)
+}
+
+function startCanvasKeyboardPan() {
+  if (canvasKeyboardPanFrame != null) return
+  canvasKeyboardPanLastTimestamp = null
+  runCanvasKeyboardPanFrame(window.performance?.now?.() || Date.now())
+}
+
+function stopCanvasKeyboardPan() {
+  pressedCanvasPanKeys.clear()
+  if (canvasKeyboardPanFrame != null) window.cancelAnimationFrame(canvasKeyboardPanFrame)
+  canvasKeyboardPanFrame = null
+  canvasKeyboardPanLastTimestamp = null
+  if (canvasKeyboardPanMoved) scheduleLayoutSave()
+  canvasKeyboardPanMoved = false
 }
 
 function onCanvasKeydown(event) {
@@ -6511,9 +6531,10 @@ function onCanvasKeydown(event) {
     setSpacePanning(true)
     return
   }
-  if (!event.ctrlKey && !event.metaKey && !event.altKey && ['w', 'a', 's', 'd'].includes(key)) {
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && isCanvasKeyboardPanKey(key)) {
     event.preventDefault()
-    panCanvasByKeyboard(key)
+    pressedCanvasPanKeys.add(key)
+    startCanvasKeyboardPan()
     return
   }
   const modifier = event.ctrlKey || event.metaKey
@@ -6543,6 +6564,11 @@ function onCanvasKeydown(event) {
 
 function onCanvasKeyup(event) {
   const key = String(event.key || '').toLowerCase()
+  if (pressedCanvasPanKeys.delete(key)) {
+    event.preventDefault()
+    if (!pressedCanvasPanKeys.size) stopCanvasKeyboardPan()
+    return
+  }
   if (key === ' ' || key === 'spacebar') {
     event.preventDefault()
     setSpacePanning(false)
@@ -6551,6 +6577,7 @@ function onCanvasKeyup(event) {
 
 function onCanvasBlur() {
   setSpacePanning(false)
+  stopCanvasKeyboardPan()
 }
 
 function persistCanvasState(options = {}) {
@@ -7251,6 +7278,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopCanvasKeyboardPan()
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
