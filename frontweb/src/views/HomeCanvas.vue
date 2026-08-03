@@ -227,6 +227,7 @@ import { parseCanvasLayout } from '@/utils/canvasLayout'
 import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 import {
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
 
@@ -423,7 +424,10 @@ function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
 }
 
 function freeCanvasNodeInputReferences(nodeId) {
-  return collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
+  const node = nodes.value.find((item) => String(item.id) === String(nodeId || ''))
+  return node?.data?.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(nodes.value, edges.value, String(nodeId || ''))
+    : collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
 }
 
 function updateFreeCanvasReference(edgeId, patch = {}) {

@@ -115,8 +115,9 @@ describe('iCreat Seedance video protocol', () => {
     const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'icreat-voice-'));
     const relative = 'projects/demo/characters/voice/fox.mp3';
     const localFile = path.join(storage, relative);
+    const voiceBytes = Buffer.concat([Buffer.from('ID3'), Buffer.from('fake-mp3')]);
     fs.mkdirSync(path.dirname(localFile), { recursive: true });
-    fs.writeFileSync(localFile, Buffer.from('fake-mp3'));
+    fs.writeFileSync(localFile, voiceBytes);
     let request;
     global.fetch = async (url, options) => {
       request = { url, body: JSON.parse(options.body) };
@@ -139,7 +140,7 @@ describe('iCreat Seedance video protocol', () => {
       const audio = request.body.content.at(-1);
       assert.equal(audio.type, 'audio_url');
       assert.match(audio.audio_url.url, /^data:audio\/mpeg;base64,/);
-      assert.equal(Buffer.from(audio.audio_url.url.split(',')[1], 'base64').toString(), 'fake-mp3');
+      assert.deepEqual(Buffer.from(audio.audio_url.url.split(',')[1], 'base64'), voiceBytes);
     } finally {
       fs.rmSync(storage, { recursive: true, force: true });
     }

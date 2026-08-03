@@ -55,6 +55,50 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('视频任务按模型能力分别持久化图片、音频和视频参考', () => {
+  const db = setup();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, base_url, api_key, model, default_model, is_default, is_active, settings, created_at, updated_at)
+    VALUES ('video', 'custom', '全媒体参考', 'https://video.example', 'test-key', ?, 'omni-model', 1, 1, ?, ?, ?)`)
+    .run(JSON.stringify(['omni-model']), JSON.stringify({
+      canvas_capabilities: {
+        referenceTypes: ['image', 'audio', 'video'],
+        maxImageReferences: 10,
+        maxAudioReferences: 1,
+        maxVideoReferences: 1,
+      },
+    }), now, now);
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    model: 'omni-model',
+    prompt: '全媒体参考入库测试',
+    reference_image_urls: ['/static/ref-1.jpg', '/static/ref-2.jpg'],
+    reference_audio_urls: ['/static/voice.wav'],
+    reference_video_urls: ['/static/motion.mp4'],
+  }, { schedule() {} });
+  const row = db.prepare(`SELECT reference_image_urls, reference_audio_urls, reference_video_urls
+    FROM video_generations WHERE id = ?`).get(created.id);
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/ref-1.jpg', '/static/ref-2.jpg']);
+  assert.deepEqual(JSON.parse(row.reference_audio_urls), ['/static/voice.wav']);
+  assert.deepEqual(JSON.parse(row.reference_video_urls), ['/static/motion.mp4']);
+  db.close();
+});
+
+test('video-v1 在创建付费任务前拒绝音频参考', () => {
+  const db = setup();
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    model: 'video-v1',
+    prompt: '不支持的音频参考',
+    reference_audio_urls: ['/static/voice.wav'],
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} }), (error) => error.code === 'UNSUPPORTED_VIDEO_REFERENCE');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count, 0);
+  db.close();
+});
+
 test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);

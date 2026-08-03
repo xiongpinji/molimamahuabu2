@@ -5,6 +5,7 @@ import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   collectDirectUpstreamResultUrls,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
@@ -282,6 +283,63 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
   assert.equal('storyboard_id' in audioPayload, false)
 })
 
+test('视频节点按模型能力传递多图片、音频和视频参考', () => {
+  const upstreamReferences = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      kind: 'image',
+      url: `/static/ref-${index + 1}.jpg`,
+      order: index,
+    })),
+    { kind: 'audio', url: '/static/voice.wav', order: 5 },
+    { kind: 'video', url: '/static/motion.mp4', order: 6 },
+  ]
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '跟随参考素材生成',
+    model: 'omni-model',
+  }, {
+    dramaId: 7,
+    upstreamReferences,
+    capability: {
+      referenceTypes: ['image', 'audio', 'video'],
+      maxImageReferences: 10,
+      maxAudioReferences: 1,
+      maxVideoReferences: 1,
+    },
+  })
+
+  assert.equal(payload.reference_image_urls.length, 5)
+  assert.deepEqual(payload.reference_audio_urls, ['/static/voice.wav'])
+  assert.deepEqual(payload.reference_video_urls, ['/static/motion.mp4'])
+})
+
+test('视频节点在付费请求前拒绝当前模型未声明的媒体参考', () => {
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '测试',
+    model: 'video-v1',
+  }, {
+    dramaId: 7,
+    upstreamReferences: [{ kind: 'audio', url: '/static/voice.wav' }],
+    capability: { referenceTypes: ['image'], maxImageReferences: 10 },
+  }), /video-v1.*不支持音频参考/)
+})
+
+test('视频节点在付费请求前明确拒绝超过模型上限的参考素材', () => {
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '测试',
+    model: 'video-v1',
+  }, {
+    dramaId: 7,
+    upstreamReferences: Array.from({ length: 11 }, (_, index) => ({
+      kind: 'image',
+      url: `/static/ref-${index + 1}.jpg`,
+    })),
+    capability: { referenceTypes: ['image'], maxImageReferences: 10 },
+  }), /video-v1.*最多支持 10 个图片参考/)
+})
+
 test('文本连线内容按契约进入下游图片、视频和音频模型输入', () => {
   assert.equal(buildFreeCanvasGenerationRequest({
     kind: 'audio',
@@ -372,6 +430,25 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
     { nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
     { nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
   ])
+})
+
+test('collectDirectUpstreamMediaReferences 分类收集图片、音频和视频连线', () => {
+  const nodes = [
+    { id: 'image', data: { kind: 'image', title: '角色', url: '/static/role.jpg' } },
+    { id: 'audio', data: { kind: 'audio', title: '音色', url: '/static/voice.wav' } },
+    { id: 'source-video', data: { kind: 'video', title: '动作', url: '/static/motion.mp4' } },
+    { id: 'target-video', data: { kind: 'video', title: '生成' } },
+  ]
+  const edges = [
+    { id: 'image-edge', source: 'image', target: 'target-video' },
+    { id: 'audio-edge', source: 'audio', target: 'target-video' },
+    { id: 'video-edge', source: 'source-video', target: 'target-video' },
+  ]
+
+  assert.deepEqual(
+    collectDirectUpstreamMediaReferences(nodes, edges, 'target-video').map((item) => item.kind),
+    ['image', 'audio', 'video'],
+  )
 })
 
 test('getFreeCanvasNodeResultUrl 兼容当前 URL 与多结果数组', () => {

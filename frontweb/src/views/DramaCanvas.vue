@@ -652,6 +652,7 @@ import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
@@ -2714,7 +2715,9 @@ async function commitFreeCanvasNodeGeneration({
 function freeCanvasNodeInputReferences(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!node || !['image', 'video'].includes(node.data?.kind)) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+  return node.data.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+    : collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
 }
 
 function freeCanvasReferenceCandidates(nodeOrId) {
@@ -2729,12 +2732,32 @@ function freeCanvasReferenceCandidates(nodeOrId) {
     }))
 }
 
+function canAcceptFreeCanvasVideoReference(targetNode, sourceKind) {
+  const capability = getFreeNodeModelCapability('video', targetNode.data?.model)
+  if (!(capability.referenceTypes || ['image']).includes(sourceKind)) {
+    ElMessage.warning(`${targetNode.data?.model || '当前视频模型'}不支持${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}参考`)
+    return false
+  }
+  const limitKey = `max${sourceKind[0].toUpperCase()}${sourceKind.slice(1)}References`
+  const limit = Number(capability[limitKey] ?? (sourceKind === 'image' ? capability.maxReferences : 0))
+  const currentCount = collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
+    .filter((reference) => reference.kind === sourceKind).length
+  if (Number.isInteger(limit) && currentCount >= limit) {
+    ElMessage.warning(`${targetNode.data?.model || '当前视频模型'}最多支持 ${limit} 个${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}参考`)
+    return false
+  }
+  return true
+}
+
 function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   const targetNode = freeCanvasNodeById(targetNodeOrId)
   const sourceNode = freeCanvasNodeById(sourceNodeOrId)
   if (!targetNode || !sourceNode) return false
   if (!['image', 'video'].includes(targetNode.data?.kind)) return false
-  if (sourceNode.data?.kind !== 'image' || !getFreeCanvasNodeResultUrl(sourceNode)) return false
+  const sourceKind = sourceNode.data?.kind
+  if (!['image', 'audio', 'video'].includes(sourceKind) || !getFreeCanvasNodeResultUrl(sourceNode)) return false
+  if (targetNode.data?.kind === 'image' && sourceKind !== 'image') return false
+  if (targetNode.data?.kind === 'video' && !canAcceptFreeCanvasVideoReference(targetNode, sourceKind)) return false
   if (String(sourceNode.id) === String(targetNode.id)) return false
   onConnect({ source: sourceNode.id, target: targetNode.id })
   allGraphNodes.value = allGraphNodes.value.map((node) => ({
@@ -2747,14 +2770,14 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   return true
 }
 
-async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAssetId = '' }) {
+async function createFreeCanvasReferenceNode({ targetNode, kind = 'image', url, title, savedAssetId = '' }) {
   const inputCount = freeCanvasNodeInputReferences(targetNode).length
-  const nodeId = await createFreeCanvasNode('image', {
+  const nodeId = await createFreeCanvasNode(kind, {
     x: Number(targetNode.position?.x || 0) - 700,
     y: Number(targetNode.position?.y || 0) + inputCount * 48,
   })
   await patchFreeCanvasNodeData(nodeId, {
-    title: title || '参考图',
+    title: title || `参考${{ image: '图', audio: '音频', video: '视频' }[kind]}`,
     url,
     status: 'success',
     savedAssetId,
@@ -2768,23 +2791,28 @@ async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAsse
 async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
-  if (!file?.type?.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
+  const kind = ['image', 'audio', 'video'].find((type) => file?.type?.startsWith(`${type}/`))
+  if (!kind || (targetNode.data?.kind === 'image' && kind !== 'image')) {
+    ElMessage.warning(targetNode.data?.kind === 'image' ? '请选择图片文件' : '请选择图片、音频或视频文件')
     return
+  }
+  if (targetNode.data?.kind === 'video') {
+    if (!canAcceptFreeCanvasVideoReference(targetNode, kind)) return
   }
   try {
     const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
     const url = assetDisplayUrl(asset)
-    if (!url) throw new Error('参考图上传成功但未返回可用地址')
+    if (!url) throw new Error('参考素材上传成功但未返回可用地址')
     await createFreeCanvasReferenceNode({
       targetNode,
+      kind,
       url,
-      title: file.name || '参考图',
+      title: file.name || `参考${{ image: '图', audio: '音频', video: '视频' }[kind]}`,
       savedAssetId: String(asset?.id || ''),
     })
-    ElMessage.success('参考图已上传并连接')
+    ElMessage.success('参考素材已上传并连接')
   } catch (error) {
-    ElMessage.error(error?.message || '参考图上传失败')
+    ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
 
@@ -2895,6 +2923,7 @@ async function runFreeCanvasNode(nodeOrId) {
       upstreamReferences,
       upstreamTexts,
       maxReferences: capability.maxReferences,
+      capability,
     })
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成参数不完整'
@@ -6065,6 +6094,9 @@ function onConnect(connection) {
   ) {
     ElMessage.warning('节点契约不匹配：当前输出不能作为目标节点输入')
     return
+  }
+  if (targetNode?.type === 'homeCanvasNode' && targetKind === 'video' && ['image', 'audio', 'video'].includes(sourceKind)) {
+    if (!canAcceptFreeCanvasVideoReference(targetNode, sourceKind)) return
   }
 
   const edge = toLibTvCanvasEdge({

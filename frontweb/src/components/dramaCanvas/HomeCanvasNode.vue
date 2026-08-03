@@ -146,19 +146,19 @@
           </label>
         </div>
 
-        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考图">
+        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考素材">
           <div class="reference-heading">
-            <strong>参考图 · 连线自动采用</strong>
+            <strong>参考素材 · 连线自动采用</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
           <div class="reference-actions">
-            <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
+            <button v-if="canUpload" type="button" aria-label="上传参考素材" @click="chooseReferenceFile">+ 上传参考素材</button>
             <input
               v-if="canUpload"
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              accept="image/*"
+              :accept="referenceAccept"
               @change="uploadReferenceFile"
             />
           </div>
@@ -168,7 +168,7 @@
               :key="reference.nodeId"
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
-              :title="`右键引用为 @图片${index + 1}`"
+              :title="`右键引用为 @${referenceTypeLabel(reference.kind)}${index + 1}`"
               @mousedown.right.prevent
               @contextmenu.prevent.stop="insertReferenceToken(index)"
             >
@@ -176,16 +176,18 @@
               <button
                 class="reference-remove"
                 type="button"
-                aria-label="取消参考图"
-                title="取消参考图"
+                aria-label="取消参考素材"
+                title="取消参考素材"
                 @click.stop="removeReference(reference)"
               >×</button>
-              <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
-              <span v-else class="reference-placeholder">等待图片</span>
-              <figcaption :title="reference.title">图片{{ index + 1 }}</figcaption>
+              <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
+              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted playsinline />
+              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls />
+              <span v-else class="reference-placeholder">等待{{ referenceTypeLabel(reference.kind) }}</span>
+              <figcaption :title="reference.title">{{ referenceTypeLabel(reference.kind) }}{{ index + 1 }}</figcaption>
             </figure>
           </div>
-          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
+          <p v-else-if="data.kind === 'video'" class="reference-empty">把模型支持的图片、音频或视频节点连接进来，生成时会按能力自动采用。</p>
           <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
 
@@ -477,6 +479,11 @@ const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'funct
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
+const referenceAccept = computed(() => {
+  if (props.data.kind === 'image') return 'image/*'
+  const types = capability.value.referenceTypes || ['image']
+  return types.map((type) => `${type}/*`).join(',') || 'image/*'
+})
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -487,7 +494,7 @@ const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(N
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
-    ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
+    ? (ctx?.getFreeNodeInputReferences?.(props.id) || []).map((reference) => ({ kind: reference.kind || 'image', ...reference }))
     : []
 ))
 const videoReferenceMode = computed(() => (
@@ -693,7 +700,8 @@ async function insertReferenceToken(index) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${index + 1}`
+  const reference = inputReferences.value[index]
+  const token = `@${referenceTypeLabel(reference?.kind)}${index + 1}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -870,12 +878,16 @@ function updateReference(reference, patch) {
 
 function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
-  inputReferences.value.forEach((reference, index) => {
+  inputReferences.value.filter((reference) => reference.kind === 'image').forEach((reference, index) => {
     const input = mode === 'first-last'
       ? (index === 0 ? 'first-frame' : index === 1 ? 'last-frame' : 'reference-image')
       : 'reference-image'
     updateReference(reference, { input })
   })
+}
+
+function referenceTypeLabel(kind) {
+  return ({ image: '图片', audio: '音频', video: '视频' }[kind] || '素材')
 }
 
 function removeReference(reference) {
@@ -1208,7 +1220,7 @@ watch(isSelected, (selected) => {
   flex: 0 0 94px;
   margin: 0;
 }
-.reference-card img, .reference-placeholder {
+.reference-card img, .reference-card video, .reference-card audio, .reference-placeholder {
   display: grid;
   width: 94px;
   height: 72px;
@@ -1220,7 +1232,10 @@ watch(isSelected, (selected) => {
   object-fit: cover;
   font-size: 11px;
 }
-.reference-card[data-reference-state='ready'] img { border-color: #60a5fa; }
+.reference-card audio { padding: 6px; object-fit: contain; }
+.reference-card[data-reference-state='ready'] img,
+.reference-card[data-reference-state='ready'] video,
+.reference-card[data-reference-state='ready'] audio { border-color: #60a5fa; }
 .reference-index {
   position: absolute;
   top: 5px;

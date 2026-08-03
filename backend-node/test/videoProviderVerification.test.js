@@ -130,6 +130,13 @@ test('三套公开目录只返回全部已验证、启用且已计费的视频�
       .sort(),
     ['lingjing-video-v1', 'video-v1'],
   );
+  const videoCapabilities = Object.fromEntries(canvasModelCatalogService.list(db)
+    .filter((item) => item.kind === 'video')
+    .map((item) => [item.model, item.capabilities]));
+  assert.equal(videoCapabilities['lingjing-video-v1'].maxReferences, 12);
+  assert.equal(videoCapabilities['video-v1'].maxReferences, 10);
+  assert.deepEqual(videoCapabilities['lingjing-video-v1'].referenceTypes, ['image']);
+  assert.deepEqual(videoCapabilities['video-v1'].referenceTypes, ['image']);
   assert.deepEqual(
     modelPriceService.listPublic(db)
       .filter((item) => item.category === 'video')

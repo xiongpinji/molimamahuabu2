@@ -14,6 +14,7 @@ const aihubccClient = require('./aihubccClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
+const { readStoredMediaReference, toMediaDataUrl } = require('./mediaReferenceResolver');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -231,6 +232,14 @@ async function uploadDjpsdOpenApiImage(config, rawValue, opts, index) {
 
   let image = value.startsWith('data:') ? parseDjpsdOpenApiDataImage(value) : null;
   if (!image) {
+    image = readStoredMediaReference(value, {
+      filesBaseUrl: opts.files_base_url,
+      storageLocalPath: opts.storage_local_path,
+      expectedType: 'image',
+      maxBytes: 20 * 1024 * 1024,
+    });
+  }
+  if (!image) {
     let publicUrl = value;
     if (!/^https?:\/\//i.test(publicUrl) && opts.files_base_url) {
       publicUrl = new URL(publicUrl, `${String(opts.files_base_url).replace(/\/+$/, '')}/`).toString();
@@ -278,7 +287,7 @@ async function callDjpsdOpenApiVideoApi(config, log, opts = {}) {
     opts.last_frame_url,
     ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
   ].filter(Boolean);
-  const uniqueRefs = [...new Set(refs.map((value) => String(value).trim()).filter(Boolean))];
+  const uniqueRefs = [...new Set(refs.map((value) => String(value).trim()).filter(Boolean))].slice(0, 10);
   const images = [];
   try {
     for (let index = 0; index < uniqueRefs.length; index += 1) {
@@ -898,24 +907,13 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
   if (isSeedance2 && opts.voice_reference_url) {
     let voiceUrl = String(opts.voice_reference_url).trim();
     if (voiceUrl) {
-      // 复用图片的本地文件转 base64 逻辑
-      if (/localhost|127\.0\.0\.1/i.test(voiceUrl) && storage_local_path && (files_base_url || '').match(/localhost|127\.0\.0\.1/i)) {
-        const baseUrl = (files_base_url || '').replace(/\/$/, '');
-        const afterStatic = voiceUrl.split('/static/')[1] || (baseUrl ? voiceUrl.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
-        const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
-        if (relPath) {
-          const filePath = path.join(storage_local_path, relPath);
-          try {
-            if (fs.existsSync(filePath)) {
-              const buf = fs.readFileSync(filePath);
-              const ext = path.extname(filePath).toLowerCase();
-              const mime =
-                { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg' }[ext] || 'audio/mpeg';
-              voiceUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
-            }
-          } catch (_) {}
-        }
-      }
+      const localAudio = readStoredMediaReference(voiceUrl, {
+        filesBaseUrl: files_base_url,
+        storageLocalPath: storage_local_path,
+        expectedType: 'audio',
+        maxBytes: 50 * 1024 * 1024,
+      });
+      if (localAudio) voiceUrl = toMediaDataUrl(localAudio);
       body.content.push({
         type: 'audio_url',
         audio_url: { url: voiceUrl },
@@ -3938,47 +3936,23 @@ async function resolveIcreatImages(opts, log) {
   return resolved;
 }
 
-function audioMimeType(filePath) {
-  const ext = path.extname(String(filePath || '')).toLowerCase();
-  return {
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.m4a': 'audio/mp4',
-    '.aac': 'audio/aac',
-    '.ogg': 'audio/ogg',
-    '.flac': 'audio/flac',
-  }[ext] || 'audio/mpeg';
-}
-
-function resolveStorageAudioFile(rawUrl, storageLocalPath) {
-  const raw = String(rawUrl || '').trim();
-  if (!raw || !storageLocalPath) return null;
-  let relative = '';
-  if (raw.includes('/static/')) {
-    relative = (raw.split('/static/')[1] || '').split(/[?#]/)[0].replace(/^\/+/, '');
-  } else if (!/^https?:\/\//i.test(raw)) {
-    relative = raw.replace(/^[\\/]+/, '').split(/[?#]/)[0];
-  }
-  if (!relative) return null;
-  const baseResolved = path.resolve(storageLocalPath);
-  const localFile = path.resolve(path.join(baseResolved, relative));
-  if (!localFile.startsWith(baseResolved + path.sep) || !fs.existsSync(localFile)) return null;
-  return localFile;
-}
-
-async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, log, videoGenId) {
+async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, filesBaseUrl, log, videoGenId) {
   const raw = String(rawAudioUrl || '').trim();
   if (!raw) return null;
   if (/^data:audio\//i.test(raw)) return { kind: 'data', value: raw };
 
-  const localFile = resolveStorageAudioFile(raw, storageLocalPath);
-  if (localFile) {
+  const localAudio = readStoredMediaReference(raw, {
+    filesBaseUrl,
+    storageLocalPath,
+    expectedType: 'audio',
+    maxBytes: 50 * 1024 * 1024,
+  });
+  if (localAudio) {
     try {
-      const buf = fs.readFileSync(localFile);
-      const value = `data:${audioMimeType(localFile)};base64,${buf.toString('base64')}`;
+      const value = toMediaDataUrl(localAudio);
       log?.info?.('[iCreat] 已将本地角色音色转换为音频引用', {
         video_gen_id: videoGenId,
-        local_path: path.relative(storageLocalPath, localFile).replace(/\\/g, '/'),
+        local_path: path.relative(storageLocalPath, localAudio.localPath).replace(/\\/g, '/'),
       });
       return { kind: 'data', value };
     } catch (error) {
@@ -3993,6 +3967,7 @@ async function resolveIcreatAudioReference(opts, log) {
   const resolved = await resolveIcreatAudio(
     opts.voice_reference_url,
     opts.storage_local_path,
+    opts.files_base_url,
     log,
     opts.video_gen_id
   );
@@ -4414,17 +4389,24 @@ async function callAihubccVideoApi(config, log, opts = {}) {
       if (!match) return { error: 'AIHubCC veo-clean 输入视频 data URL 格式无效' };
       mimeType = match[1];
       bytes = Buffer.from(match[2], 'base64');
-    } else if (/^https?:\/\//i.test(input)) {
-      const sourceResponse = await fetch(input);
-      if (!sourceResponse.ok) return { error: `AIHubCC veo-clean 下载输入视频失败: ${sourceResponse.status}` };
-      bytes = Buffer.from(await sourceResponse.arrayBuffer());
-      mimeType = sourceResponse.headers.get('content-type') || mimeType;
     } else {
-      const localPath = path.isAbsolute(input)
-        ? input
-        : path.resolve(opts.storage_local_path || process.cwd(), input);
-      if (!fs.existsSync(localPath)) return { error: 'AIHubCC veo-clean 输入视频文件不存在' };
-      bytes = fs.readFileSync(localPath);
+      const localVideo = readStoredMediaReference(input, {
+        filesBaseUrl: opts.files_base_url,
+        storageLocalPath: opts.storage_local_path,
+        expectedType: 'video',
+        maxBytes: 20 * 1024 * 1024,
+      });
+      if (localVideo) {
+        bytes = localVideo.bytes;
+        mimeType = localVideo.mimeType;
+      } else if (/^https?:\/\//i.test(input)) {
+        const sourceResponse = await fetch(input);
+        if (!sourceResponse.ok) return { error: `AIHubCC veo-clean 下载输入视频失败: ${sourceResponse.status}` };
+        bytes = Buffer.from(await sourceResponse.arrayBuffer());
+        mimeType = sourceResponse.headers.get('content-type') || mimeType;
+      } else {
+        return { error: 'AIHubCC veo-clean 输入视频文件不存在' };
+      }
     }
     if (bytes.length > 20 * 1024 * 1024) return { error: 'AIHubCC veo-clean 输入视频超过 20MB 限制' };
     const form = new FormData();
@@ -4624,6 +4606,10 @@ function requestPublicImage(url, maxBytes) {
       const status = response.statusCode || 0;
       const headers = response.headers;
       if (status >= 300 && status < 400) {
+        response.resume();
+        return resolve({ status, headers });
+      }
+      if (status < 200 || status >= 300) {
         response.resume();
         return resolve({ status, headers });
       }
@@ -4957,6 +4943,7 @@ async function callVideoApi(db, log, opts) {
       last_frame_url: opts.last_frame_url,
       reference_urls: opts.reference_urls,
       files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
   }

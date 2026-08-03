@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   buildDjpsdOpenApiSubmitBody,
@@ -102,6 +105,52 @@ test('DJPSD 开放 API 上传参考图后创建 video-v1 异步任务', async ()
     },
   });
   assert.deepEqual(result, { task_id: '321', status: 'PENDING' });
+});
+
+test('DJPSD 开放 API 优先从本地存储读取受保护的 static 参考图', async (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'djpsd-static-ref-'));
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }));
+  const relativePath = path.join('projects', 'test', 'reference.jpg');
+  const localFile = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(localFile), { recursive: true });
+  fs.writeFileSync(localFile, Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]));
+
+  const requests = [];
+  global.fetch = async (url, options) => {
+    requests.push({ url, options });
+    if (url.endsWith('/v1/media/upload')) {
+      const uploaded = Buffer.from(await options.body.get('file').arrayBuffer());
+      assert.deepEqual(uploaded, fs.readFileSync(localFile));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ url: '/uploads/local-reference.jpg' }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ task_id: 987, task_status: 'PENDING' }),
+    };
+  };
+
+  const result = await callDjpsdOpenApiVideoApi({
+    base_url: 'https://shiping.djpsd.com',
+    api_key: 'secret',
+  }, log, {
+    model: 'video-v1',
+    prompt: '测试本地参考图',
+    duration: 10,
+    first_frame_url: '/static/projects/test/reference.jpg',
+    files_base_url: 'https://molimama.vip/static',
+    storage_local_path: storageRoot,
+  });
+
+  assert.deepEqual(result, { task_id: '987', status: 'PENDING' });
+  assert.deepEqual(requests.map((item) => item.url), [
+    'https://shiping.djpsd.com/v1/media/upload',
+    'https://shiping.djpsd.com/v1/media/generate',
+  ]);
 });
 
 test('DJPSD 开放 API 拒绝把 Bearer 发送到跨域自定义端点', async () => {

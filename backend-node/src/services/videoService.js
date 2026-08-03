@@ -71,6 +71,9 @@ function rowToItem(r) {
     image_url: r.image_url,
     first_frame_url: r.first_frame_url,
     last_frame_url: r.last_frame_url,
+    reference_image_urls: parseReferenceUrls(r.reference_image_urls),
+    reference_audio_urls: parseReferenceUrls(r.reference_audio_urls),
+    reference_video_urls: parseReferenceUrls(r.reference_video_urls),
     output_first_frame_url: r.output_first_frame_url,
     output_last_frame_url: r.output_last_frame_url,
     video_url: r.video_url,
@@ -130,7 +133,19 @@ const generationCost = require('./generationCostLedgerService');
 const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
+const videoReferenceCapability = require('./videoReferenceCapabilityService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+
+function parseReferenceUrls(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 function loadStoryboardVideoDefaults(db, storyboardId) {
   const sid = Number(storyboardId);
@@ -203,6 +218,14 @@ function create(db, log, req, options = {}) {
     ? storyboardDuration
     : configuredVideoDuration(videoConfig) || 5;
   const duration = normalizeVideoDuration(body.duration, fallbackDuration);
+  const effectiveModel = selectedModel || videoConfig?.default_model || videoConfig?.model || '';
+  const normalizedReferences = videoReferenceCapability.validateAndNormalize({
+    model: effectiveModel,
+    capabilities: videoReferenceCapability.resolve(videoConfig || {}, effectiveModel),
+    referenceImageUrls: body.reference_image_urls,
+    referenceAudioUrls: body.reference_audio_urls,
+    referenceVideoUrls: body.reference_video_urls,
+  });
 
   const active = findActiveForStoryboard(db, storyboardId, {
     billingEnabled,
@@ -275,17 +298,20 @@ function create(db, log, req, options = {}) {
         if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
       } catch (_) {}
     }
-    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(body.reference_image_urls.slice(0, 10)) : null;
+    const refs = normalizedReferences.referenceImageUrls.length ? JSON.stringify(normalizedReferences.referenceImageUrls) : null;
+    const audioRefs = normalizedReferences.referenceAudioUrls.length ? JSON.stringify(normalizedReferences.referenceAudioUrls) : null;
+    const videoRefs = normalizedReferences.referenceVideoUrls.length ? JSON.stringify(normalizedReferences.referenceVideoUrls) : null;
     db.prepare(`INSERT INTO video_generations
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
-       image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, tenant_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
+       image_url, first_frame_url, last_frame_url, reference_image_urls, reference_audio_urls, reference_video_urls,
+       status, task_id, tenant_id, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
         dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
-        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, task.id,
+        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, audioRefs, videoRefs, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -865,13 +891,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
     }
-    let reference_urls = null;
-    if (row.reference_image_urls) {
-      try {
-        reference_urls = JSON.parse(row.reference_image_urls);
-        if (!Array.isArray(reference_urls)) reference_urls = null;
-      } catch (_) {}
-    }
+    const reference_urls = parseReferenceUrls(row.reference_image_urls);
+    const reference_audio_urls = parseReferenceUrls(row.reference_audio_urls);
+    const reference_video_urls = parseReferenceUrls(row.reference_video_urls);
     const effectiveDuration = normalizeVideoDuration(row.duration, 5);
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
@@ -891,7 +913,8 @@ async function processVideoGeneration(db, log, videoGenId) {
       } catch (_) {}
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
-    const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
+    const referenceCount = reference_urls.length + reference_audio_urls.length + reference_video_urls.length;
+    const hasOmniRefs = referenceCount > 0;
     if (row.task_id && hasOmniRefs) {
       const task = taskService.getTask(db, row.task_id);
       if (task && (task.status === 'pending' || task.status === 'processing')) {
@@ -900,7 +923,7 @@ async function processVideoGeneration(db, log, videoGenId) {
           row.task_id,
           'processing',
           5,
-          `正在上传 ${reference_urls.length} 张参考图到图床…`
+          `正在准备 ${referenceCount} 个参考素材…`
         );
       }
     }
@@ -920,6 +943,10 @@ async function processVideoGeneration(db, log, videoGenId) {
       first_frame_url: row.first_frame_url,
       last_frame_url: row.last_frame_url,
       reference_urls,
+      reference_audio_urls,
+      reference_video_urls,
+      voice_reference_url: reference_audio_urls[0] || undefined,
+      video_url: reference_video_urls[0] || undefined,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,

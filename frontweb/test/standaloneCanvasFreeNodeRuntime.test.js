@@ -50,19 +50,19 @@ test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布�
   assert.match(nodeSource, /@click\.stop="runNode"/)
 })
 
-test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的图片连线', () => {
+test('选中自由节点展开专属编辑器，视频节点可见展示自动采用的媒体连线', () => {
   assert.match(nodeSource, /v-if="isSelected && !hasMultiSelection && !editorHidden"[\s\S]*class="node-expanded-editor canvas-node-panel nodrag nopan"/)
   assert.match(nodeSource, /:aria-label="editorLabel"/)
-  assert.match(nodeSource, /data\.kind === 'video'[\s\S]*aria-label="自动参考图"/)
+  assert.match(nodeSource, /data\.kind === 'video'[\s\S]*aria-label="自动参考素材"/)
   assert.match(nodeSource, /ctx\?\.getFreeNodeInputReferences\?\.\(props\.id\)/)
   assert.match(nodeSource, /reference\.ready \? 'ready' : 'pending'/)
-  assert.match(nodeSource, /把图片节点连接到视频节点，生成时会自动采用为首帧和参考图/)
+  assert.match(nodeSource, /把模型支持的图片、音频或视频节点连接进来，生成时会按能力自动采用/)
   assert.match(canvasSource, /getFreeNodeInputReferences: freeCanvasNodeInputReferences/)
   assert.match(canvasSource, /视频节点已自动采用该图片作为参考图/)
 })
 
-test('图片和视频编辑器可上传参考图，视频 @ 只列出已经直连的上游图片', () => {
-  assert.match(nodeSource, /v-if="canUpload" type="button" aria-label="上传参考图"/)
+test('图片和视频编辑器可上传参考素材，视频 @ 只列出已经直连的上游图片', () => {
+  assert.match(nodeSource, /v-if="canUpload" type="button" aria-label="上传参考素材"/)
   assert.match(nodeSource, /v-if="canUpload"\s+ref="referenceFileInput"/)
   assert.match(nodeSource, /ctx\?\.uploadFreeCanvasReferenceImage\?\.\(props\.id, file\)/)
   assert.match(nodeSource, /@input="handleEditorInput"/)

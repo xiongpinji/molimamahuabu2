@@ -1,6 +1,7 @@
 const aiConfigService = require('./aiConfigService');
 const modelPriceService = require('./modelPriceService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 
 const KIND_BY_SERVICE = {
   text: 'text',
@@ -56,7 +57,9 @@ function list(db, options = {}) {
         default_voice_id: config.service_type === 'tts' ? String(config.voice_id || '').trim() : '',
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
-        capabilities: safeCapabilities(config.settings),
+        capabilities: kind === 'video'
+          ? videoReferenceCapabilityService.resolve(config, model)
+          : safeCapabilities(config.settings),
       };
     }))
     .filter(Boolean);
