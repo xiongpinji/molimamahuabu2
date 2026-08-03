@@ -454,6 +454,7 @@
               <img
                 ref="portraitFaceImage"
                 :src="data.url"
+                crossorigin="anonymous"
                 alt="人脸自动识别与手动框选"
                 @load="preparePortraitFaceSelection"
               />

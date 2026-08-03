@@ -43,6 +43,7 @@ test('情绪调节使用随应用部署的 MediaPipe 自动识别并保留手动
   assert.match(toolbarSource, /MediaPipe/)
   assert.match(toolbarSource, /手动框选/)
   assert.match(toolbarSource, /faceRegion/)
+  assert.match(toolbarSource, /crossorigin="anonymous"/)
   assert.match(faceDetectionSource, /@mediapipe\/face_detection/)
   assert.match(faceDetectionSource, /face_detection_full_range_sparse\.tflite/)
   assert.match(faceDetectionSource, /face_detection_solution_simd_wasm_bin\.wasm/)
@@ -94,4 +95,31 @@ test('情绪调节重试参数仅持久化有效的归一化人脸区域', () =>
   })
   assert.equal(invalid.imageToolRetryOperation, undefined)
   assert.equal(invalid.imageToolRetryParameters, undefined)
+
+  for (const imageToolRetryParameters of [
+    { emotion: '欣然愉悦', intensity: 4 },
+    {
+      emotion: '欣然愉悦',
+      intensity: 1.5,
+      faceRegion: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 },
+    },
+    {
+      emotion: '欣然愉悦',
+      intensity: 0,
+      faceRegion: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 },
+    },
+    {
+      emotion: '欣然愉悦',
+      intensity: 6,
+      faceRegion: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 },
+    },
+  ]) {
+    const legacyOrInvalid = normalizeFreeCanvasNodeData({
+      kind: 'image',
+      imageToolRetryOperation: 'portrait_emotion',
+      imageToolRetryParameters,
+    })
+    assert.equal(legacyOrInvalid.imageToolRetryOperation, undefined)
+    assert.equal(legacyOrInvalid.imageToolRetryParameters, undefined)
+  }
 })

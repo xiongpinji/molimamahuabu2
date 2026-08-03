@@ -18,10 +18,28 @@ const assetUrls = Object.freeze({
   'face_detection_solution_wasm_bin.js': wasmLoaderUrl,
   'face_detection_solution_wasm_bin.wasm': wasmUrl,
 })
+const PORTRAIT_DETECTION_TIMEOUT_MS = 8000
 
 let detectorPromise = null
 let detectionQueue = Promise.resolve()
 let pendingResult = null
+
+function clearPendingResult(request) {
+  if (pendingResult !== request) return false
+  pendingResult = null
+  clearTimeout(request.timer)
+  return true
+}
+
+function retireDetector(detector) {
+  detectorPromise = null
+  try {
+    const closing = detector.close?.()
+    closing?.catch?.(() => {})
+  } catch {
+    // The timed-out detector is already retired; close failures are non-actionable here.
+  }
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
@@ -39,8 +57,10 @@ async function getDetector() {
         selfieMode: false,
       })
       detector.onResults((results) => {
-        pendingResult?.resolve(results)
-        pendingResult = null
+        const request = pendingResult
+        if (!request || request.detector !== detector) return
+        clearPendingResult(request)
+        request.resolve(results)
       })
       await detector.initialize()
       return detector
@@ -165,16 +185,28 @@ async function detectTiledFaces(image, width, height) {
 
 async function detectOnce(image) {
   const detector = await getDetector()
+  let request
   const result = new Promise((resolve, reject) => {
-    pendingResult = { resolve, reject }
+    request = { detector, resolve, reject, timer: null }
+    request.timer = setTimeout(() => {
+      if (!clearPendingResult(request)) return
+      retireDetector(detector)
+      reject(new Error('人脸识别响应超时，请手动框选'))
+    }, PORTRAIT_DETECTION_TIMEOUT_MS)
+    pendingResult = request
   })
   try {
-    await detector.send({ image })
-    const { detections = [] } = await result
+    const send = Promise.resolve().then(() => detector.send({ image }))
+    const { detections = [] } = await Promise.race([
+      result,
+      send.then(() => result),
+    ])
     return normalizeDetections(detections)
   } catch (error) {
-    pendingResult?.reject(error)
-    pendingResult = null
+    if (clearPendingResult(request)) {
+      request.reject(error)
+      retireDetector(detector)
+    }
     throw error
   }
 }

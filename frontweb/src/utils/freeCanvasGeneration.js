@@ -203,7 +203,15 @@ function normalizeImageToolRetryParameters(operation, value) {
       parameters[key] = candidate
     }
   }
-  if (operation === 'portrait_emotion' && value.faceRegion !== undefined) {
+  if (operation === 'portrait_emotion') {
+    if (
+      !Number.isInteger(parameters.intensity)
+      || parameters.intensity < 1
+      || parameters.intensity > 5
+      || value.faceRegion === undefined
+    ) {
+      return undefined
+    }
     const region = value.faceRegion
     const faceRegion = region && typeof region === 'object' && !Array.isArray(region)
       ? {
