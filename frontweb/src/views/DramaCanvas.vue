@@ -289,8 +289,8 @@
         :style="canvasVisualStyle"
         @pointerdown.capture="onCanvasPointerDown"
         @wheel.capture="onCanvasWheel"
-        @dragover="onCanvasImageDragOver"
-        @drop="onCanvasImageDrop"
+        @dragover="onCanvasMediaDragOver"
+        @drop="onCanvasMediaDrop"
       >
         <div
           v-if="canvasPreferences.background_enabled && canvasPreferences.background_url"
@@ -656,6 +656,7 @@ import {
   getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import { collectDroppedMediaFiles, createDroppedMediaNodeSpecs, hasDroppedFilePayload } from '@/utils/canvasMediaDrop'
 import {
   canvasModelServiceType,
   canvasNodeKind,
@@ -901,6 +902,7 @@ let freeCanvasModelConfigsLoaded = false
 let freeCanvasVoiceOptionsLoaded = false
 const savingQueueAssetKey = ref('')
 const dismissedRunQueueItems = ref([])
+const localPreviewUrls = new Set()
 const paneClickSuppressed = ref(false)
 const spacePanning = ref(false)
 const nodeStatus = createCanvasNodeStatusStore()
@@ -2213,24 +2215,53 @@ function canvasCenterFlowPosition() {
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
 }
 
-function droppedCanvasImageFile(event) {
-  return [...(event.dataTransfer?.files || [])].find((file) => file.type?.startsWith('image/')) || null
-}
-
-function onCanvasImageDragOver(event) {
-  if (!isStandaloneCanvas.value || !droppedCanvasImageFile(event)) return
+function onCanvasMediaDragOver(event) {
+  if (!hasDroppedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
-async function onCanvasImageDrop(event) {
-  const file = droppedCanvasImageFile(event)
-  if (!isStandaloneCanvas.value || !file) return
-  event.preventDefault()
-  event.stopPropagation()
-  const position = screenToFlowPosition(event.clientX, event.clientY)
-  const nodeId = await createFreeCanvasNode('image', position)
-  if (nodeId) await uploadFreeCanvasNodeFile(nodeId, file)
+async function onCanvasMediaDrop(event) {
+  if (hasDroppedFilePayload(event.dataTransfer)) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  const files = collectDroppedMediaFiles(event.dataTransfer)
+  if (!files.length) return
+  const origin = screenToFlowPosition(event.clientX, event.clientY) || canvasCenterFlowPosition()
+
+  if (!isStandaloneCanvas.value) {
+    let uploaded = 0
+    for (const [index, file] of files.entries()) {
+      try {
+        await createCanvasProjectAssetFromUpload(file, origin, index)
+        uploaded += 1
+      } catch (error) {
+        ElMessage.warning(`${file.name || '素材'} 上传失败：${error?.message || '未知错误'}`)
+      }
+    }
+    if (uploaded) ElMessage.success(`已拖入 ${uploaded} 个素材节点`)
+    return
+  }
+
+  const specs = createDroppedMediaNodeSpecs(files, origin, (file) => {
+    const previewUrl = URL.createObjectURL(file)
+    localPreviewUrls.add(previewUrl)
+    return previewUrl
+  })
+  for (const spec of specs) {
+    const nodeId = await createFreeCanvasNode(spec.kind, spec.position, spec.data)
+    if (!nodeId) {
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+      continue
+    }
+    const uploaded = await uploadFreeCanvasNodeFile(nodeId, spec.file, spec.previewUrl)
+    if (uploaded) {
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+    }
+  }
 }
 
 function resetFreeNodeDialog() {
@@ -2453,9 +2484,9 @@ async function duplicateFreeCanvasNode(nodeOrId) {
   return id
 }
 
-async function uploadFreeCanvasNodeFile(nodeId, file) {
+async function uploadFreeCanvasNodeFile(nodeId, file, localPreviewUrl = '') {
   const node = freeCanvasNodeById(nodeId)
-  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !file) return
+  if (!isStandaloneCanvas.value || node?.type !== 'homeCanvasNode' || !file) return false
   try {
     await patchFreeCanvasNodeData(node.id, { status: 'running', error: '' })
     const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
@@ -2468,12 +2499,19 @@ async function uploadFreeCanvasNodeFile(nodeId, file) {
       savedAssetId: String(asset?.id || ''),
       assetSaveStatus: 'success',
       assetSaveError: '',
+      localPreview: false,
     })
     ElMessage.success('素材已上传并写入当前节点')
+    return true
   } catch (error) {
     const message = error?.message || '节点素材上传失败'
-    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: message })
+    await patchFreeCanvasNodeData(node.id, {
+      status: 'failed',
+      error: message,
+      ...(localPreviewUrl ? { url: localPreviewUrl, localPreview: true } : {}),
+    })
     ElMessage.error(message)
+    return false
   }
 }
 
@@ -7251,6 +7289,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  localPreviewUrls.forEach((url) => URL.revokeObjectURL(url))
+  localPreviewUrls.clear()
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)

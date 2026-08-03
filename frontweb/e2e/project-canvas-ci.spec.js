@@ -186,6 +186,22 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill(apiData(asset))
       return
     }
+    if (request.method() === 'POST' && pathname === '/api/v1/upload/media') {
+      const formBody = request.postDataBuffer()?.toString('utf8') || ''
+      const type = formBody.includes('video/mp4') ? 'video' : 'image'
+      const asset = {
+        id: 902 + mockAssets.length,
+        drama_id: 3,
+        name: type === 'video' ? '项目视频.mp4' : '项目图片.png',
+        type,
+        url: type === 'video'
+          ? 'data:video/mp4;base64,AAAA'
+          : 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E',
+      }
+      mockAssets.push(asset)
+      await route.fulfill(apiData(asset))
+      return
+    }
     if (request.method() === 'PUT' && pathname === '/api/v1/assets/901') {
       const payload = request.postDataJSON()
       updatedAssetPayloads.push(payload)
@@ -234,6 +250,43 @@ test('项目画布加载业务节点并打开统一配置面板', async ({ page 
   await expect(panel).toContainText('分镜 #1')
   await expect(panel).toContainText('引用素材')
   await expect(panel).toContainText('摄影控制')
+})
+
+test('项目画布拖入本地图片和视频后创建对应项目素材节点', async ({ page }) => {
+  await page.goto('/film/3/canvas')
+  const acceptsSystemFiles = await page.locator('.canvas-main').evaluate((canvas) => {
+    const protectedDragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(protectedDragOver, 'dataTransfer', {
+      value: {
+        files: [],
+        items: [{ kind: 'file', type: 'image/png' }],
+        types: ['Files'],
+      },
+    })
+    const accepted = canvas.dispatchEvent(protectedDragOver) === false
+    if (!accepted) return false
+
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['image'], '项目图片.png', { type: 'image/png' }))
+    transfer.items.add(new File(['video'], '项目视频.mp4', { type: 'video/mp4' }))
+    const rect = canvas.getBoundingClientRect()
+    canvas.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    }))
+    return true
+  })
+  expect(acceptsSystemFiles).toBe(true)
+
+  await expect.poll(() => mockAssets.map((asset) => asset.type).sort()).toEqual(['image', 'video'])
+  const assetNodes = page.locator('.vue-flow__node[data-id^="project-asset:"]')
+  await expect(assetNodes).toHaveCount(2)
+  await expect(assetNodes.filter({ hasText: '项目图片.png' }).getByAltText('项目图片.png')).toHaveAttribute('src', /^data:image\//)
+  await expect(assetNodes.filter({ hasText: '项目视频.mp4' }).locator('video.asset-media')).toHaveAttribute('src', /^data:video\//)
+  await expect.poll(() => Object.keys(savedCanvasLayout?.nodes || {}).filter((id) => id.startsWith('project-asset:')).length).toBe(2)
 })
 
 test('项目画布支持右键添加入口、Ctrl 缩放、Space 平移和快捷分组选择', async ({ page }) => {
