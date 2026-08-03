@@ -7,10 +7,10 @@ import {
 } from '../src/utils/canvas-keyboard-pan.js'
 
 test('WASD 按画布视角方向生成逐帧位移', () => {
-  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['w']), 20), { x: 0, y: 18 })
-  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['a']), 20), { x: 18, y: 0 })
-  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['s']), 20), { x: 0, y: -18 })
-  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['d']), 20), { x: -18, y: 0 })
+  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['w']), 20), { x: 0, y: 36 })
+  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['a']), 20), { x: 36, y: 0 })
+  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['s']), 20), { x: 0, y: -36 })
+  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['d']), 20), { x: -36, y: 0 })
 })
 
 test('对角平移保持与单方向相同的速度', () => {
@@ -20,5 +20,5 @@ test('对角平移保持与单方向相同的速度', () => {
 
 test('相反方向抵消，长帧时间被限幅', () => {
   assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['w', 's']), 20), { x: 0, y: 0 })
-  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['d']), 1000), { x: -28.8, y: 0 })
+  assert.deepEqual(calculateCanvasKeyboardPanDelta(new Set(['d']), 1000), { x: -57.6, y: 0 })
 })
