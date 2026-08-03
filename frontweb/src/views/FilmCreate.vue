@@ -182,6 +182,29 @@
         style="display: none"
         @change="onSbImageFileChange"
       />
+      <section v-if="scriptAnalysisProvenance" class="section card analysis-provenance-card">
+        <div class="analysis-provenance-header">
+          <div>
+            <h2 class="section-title">来源：剧本分析</h2>
+            <p class="analysis-provenance-source">
+              {{ scriptAnalysisProvenance.projectTitle || '未命名项目' }}
+              <span v-if="scriptAnalysisProvenance.version != null">· 版本 {{ scriptAnalysisProvenance.version }}</span>
+              <span v-if="scriptAnalysisProvenance.approvalStatus === 'approved'">· 已审核</span>
+              <span v-if="scriptAnalysisProvenance.importedAt">· 导入 {{ scriptAnalysisProvenance.importedAt }}</span>
+            </p>
+          </div>
+          <span class="analysis-provenance-badge">已导入短剧工厂</span>
+        </div>
+        <p class="analysis-provenance-copy">当前为可编辑副本，来源剧本保持只读</p>
+        <p class="analysis-provenance-diff" :class="{ changed: scriptAnalysisProvenance.changed }">
+          {{ scriptAnalysisProvenance.changed ? '当前集已在短剧工厂中调整' : '当前集与来源剧本一致' }}
+          · {{ scriptAnalysisProvenance.lockedFacts.length }} 条锁定事实
+        </p>
+        <details v-if="scriptAnalysisProvenance.sourceScript" class="analysis-provenance-details">
+          <summary>查看只读来源剧本</summary>
+          <pre>{{ scriptAnalysisProvenance.sourceScript }}</pre>
+        </details>
+      </section>
       <!-- 剧本工作台：单卡片 + 选项卡（创作 / 选择） -->
       <section class="section card script-workbench-unified">
         <el-tabs v-model="scriptWorkbenchMode" class="script-workbench-tabs">
@@ -1702,6 +1725,28 @@
           </el-form-item>
         </div>
         <p class="config-tip">文本、图片和视频模型由平台管理员统一启用；创作端仅使用可用模型。</p>
+        <div class="factory-preflight" aria-live="polite">
+          <div class="factory-preflight-header">
+            <div>
+              <h3>生成前检查（不扣积分）</h3>
+              <p>这里只检查，不会自动生成图片或视频</p>
+            </div>
+            <span :class="['factory-preflight-status', { ready: factoryGenerationPreflight.ready }]">
+              {{ factoryGenerationPreflight.ready ? '准备就绪' : '请补全配置' }}
+            </span>
+          </div>
+          <div class="factory-preflight-checks">
+            <span
+              v-for="item in factoryGenerationPreflight.checks"
+              :key="item.key"
+              :class="['factory-preflight-check', { ok: item.ok }]"
+            >{{ item.ok ? '✓' : '!' }} {{ item.label }}</span>
+          </div>
+          <p v-if="factoryGenerationPreflight.warning" class="factory-preflight-warning">
+            {{ factoryGenerationPreflight.warning }}
+            <span>{{ factoryGenerationPreflight.missingReferenceAssets.map((item) => item.name).join('、') }}</span>
+          </p>
+        </div>
       </section>
 
       <!-- 8. 合成视频 -->
@@ -2821,6 +2866,10 @@ import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/uti
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
 import {
+  buildFactoryGenerationPreflight,
+  buildScriptAnalysisProvenance,
+} from '@/utils/scriptAnalysisProductionClosure'
+import {
   latestVideoGenerationError,
   latestVideoGenerationRecord,
   latestVideoGenerationWarning,
@@ -2955,6 +3004,16 @@ const props = computed(() => store.props)
 const storyboards = computed(() => store.storyboards)
 const currentEpisode = computed(() => store.currentEpisode)
 const currentEpisodeId = computed(() => store.currentEpisode?.id ?? null)
+const scriptAnalysisProvenance = computed(() =>
+  buildScriptAnalysisProvenance(store.drama, currentEpisode.value)
+)
+const factoryGenerationPreflight = computed(() => buildFactoryGenerationPreflight({
+  drama: store.drama,
+  currentEpisode: currentEpisode.value,
+  videoModel: selectedVideoModel.value,
+  aspectRatio: projectAspectRatio.value,
+  videoClipDuration: videoClipDuration.value,
+}))
 const videoProgress = computed(() => store.videoProgress)
 const videoStatus = computed(() => store.videoStatus)
 
@@ -10939,6 +10998,50 @@ html.light .sb-video-placeholder {
 .sb-field-label { font-size: 0.8rem; color: #a1a1aa; }
 .sb-field-select { width: 100%; }
 .sb-video-fields-actions { grid-column: 1 / -1; margin-top: 8px; }
+.analysis-provenance-card {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.1), rgba(24, 24, 27, 0.96) 42%);
+}
+.analysis-provenance-header,
+.factory-preflight-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.analysis-provenance-source,
+.analysis-provenance-copy,
+.analysis-provenance-diff {
+  margin: 6px 0 0;
+  color: #a1a1aa;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.analysis-provenance-copy { color: #d4d4d8; }
+.analysis-provenance-diff { color: #86efac; }
+.analysis-provenance-diff.changed { color: #fbbf24; }
+.analysis-provenance-badge {
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 999px;
+  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.12);
+  font-size: 0.75rem;
+}
+.analysis-provenance-details { margin-top: 10px; color: #93c5fd; font-size: 0.82rem; }
+.analysis-provenance-details summary { cursor: pointer; }
+.analysis-provenance-details pre {
+  max-height: 180px;
+  margin: 10px 0 0;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  color: #d4d4d8;
+  background: rgba(9, 9, 11, 0.55);
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+}
 .config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -10969,6 +11072,35 @@ html.light .sb-video-placeholder {
   color: #a1a1aa;
 }
 .config-tip .el-link { font-size: inherit; }
+.factory-preflight {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(113, 113, 122, 0.38);
+  border-radius: 10px;
+  background: rgba(9, 9, 11, 0.2);
+}
+.factory-preflight-header h3 { margin: 0; color: #e4e4e7; font-size: 0.95rem; }
+.factory-preflight-header p { margin: 4px 0 0; color: #71717a; font-size: 0.78rem; }
+.factory-preflight-status {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #fbbf24;
+  background: rgba(234, 179, 8, 0.12);
+  font-size: 0.75rem;
+}
+.factory-preflight-status.ready { color: #86efac; background: rgba(34, 197, 94, 0.12); }
+.factory-preflight-checks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.factory-preflight-check {
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  font-size: 0.78rem;
+}
+.factory-preflight-check.ok { color: #86efac; background: rgba(34, 197, 94, 0.1); }
+.factory-preflight-warning { margin: 10px 0 0; color: #fbbf24; font-size: 0.78rem; line-height: 1.5; }
+.factory-preflight-warning span { display: block; color: #a1a1aa; }
 .sb-truncated-warning {
   display: flex;
   align-items: center;
