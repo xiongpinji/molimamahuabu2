@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getCanvasNodeSize, virtualizeCanvasGraph } from '../src/utils/canvasVirtualization.js'
+import { getCanvasNodeSize, preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '../src/utils/canvasVirtualization.js'
 
 function makeNodes(count = 80) {
   return Array.from({ length: count }, (_, index) => ({
@@ -58,4 +58,40 @@ test('优先使用 Vue Flow 已测量尺寸', () => {
     position: { x: 0, y: 0 },
     measured: { width: 300, height: 240 },
   }), { width: 300, height: 240 })
+})
+
+test('重新应用虚拟化节点集合时保留 Vue Flow 运行时测量结果', () => {
+  const nextNodes = [{
+    id: 'free:video:1',
+    type: 'homeCanvasNode',
+    position: { x: 460, y: 360 },
+    selected: false,
+    data: { title: '最新标题' },
+  }]
+  const renderedNodes = [{
+    id: 'free:video:1',
+    type: 'homeCanvasNode',
+    position: { x: 460, y: 360 },
+    selected: true,
+    data: { title: '旧标题' },
+    dimensions: { width: 480, height: 314.5 },
+    measured: { width: 480, height: 314.5 },
+  }]
+
+  const [node] = preserveCanvasNodeRuntimeMeasurements(nextNodes, renderedNodes)
+
+  assert.deepEqual(node.dimensions, { width: 480, height: 314.5 })
+  assert.deepEqual(node.measured, { width: 480, height: 314.5 })
+  assert.equal(node.selected, false)
+  assert.equal(node.data.title, '最新标题')
+})
+
+test('没有有效运行时尺寸时保持待渲染节点不变', () => {
+  const node = { id: 'free:image:2', position: { x: 0, y: 0 } }
+  const [result] = preserveCanvasNodeRuntimeMeasurements(
+    [node],
+    [{ id: 'free:image:2', dimensions: { width: 0, height: 0 } }],
+  )
+
+  assert.equal(result, node)
 })

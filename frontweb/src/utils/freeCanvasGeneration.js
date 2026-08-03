@@ -4,6 +4,16 @@ const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const VIDEO_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const VIDEO_TOOL_OPERATIONS = new Set([
+  'crop',
+  'upscale',
+  'analyze',
+  'remove_subtitles',
+  'extract_audio',
+  'mute',
+  'edit',
+])
 const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   crop: ['left', 'top', 'width', 'height'],
   compress: ['format', 'quality'],
@@ -24,6 +34,17 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   narrative_grid: ['description'],
   frame_forward: ['description'],
   frame_backward: ['description'],
+  portrait_texture: ['preset', 'intensity', 'description'],
+  portrait_emotion: ['emotion', 'intensity', 'faceRegion'],
+})
+const VIDEO_TOOL_RETRY_PARAMETERS = Object.freeze({
+  crop: ['x', 'y', 'width', 'height'],
+  upscale: ['resolution', 'interpolate', 'slowMotion'],
+  analyze: ['sceneThreshold', 'maxShots'],
+  remove_subtitles: ['x', 'y', 'width', 'height'],
+  extract_audio: [],
+  mute: [],
+  edit: ['transform', 'brightness', 'contrast', 'saturation', 'speed'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
@@ -179,7 +200,7 @@ function normalizeImageToolRetryParameters(operation, value) {
   if (!keys) return undefined
   if (keys.length === 0) return {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const stringLimits = operation === 'cinematic_relight'
+  const stringLimits = ['cinematic_relight', 'portrait_texture'].includes(operation)
     ? { preset: 32, description: 300 }
     : (
       [
@@ -206,7 +227,108 @@ function normalizeImageToolRetryParameters(operation, value) {
       parameters[key] = candidate
     }
   }
+  if (operation === 'portrait_emotion') {
+    if (
+      !Number.isInteger(parameters.intensity)
+      || parameters.intensity < 1
+      || parameters.intensity > 5
+      || value.faceRegion === undefined
+    ) {
+      return undefined
+    }
+    const region = value.faceRegion
+    const faceRegion = region && typeof region === 'object' && !Array.isArray(region)
+      ? {
+        x: Number(region.x),
+        y: Number(region.y),
+        width: Number(region.width),
+        height: Number(region.height),
+      }
+      : null
+    if (
+      !faceRegion
+      || Object.values(faceRegion).some((item) => !Number.isFinite(item))
+      || faceRegion.x < 0
+      || faceRegion.y < 0
+      || faceRegion.width <= 0
+      || faceRegion.height <= 0
+      || faceRegion.x + faceRegion.width > 1
+      || faceRegion.y + faceRegion.height > 1
+    ) {
+      return undefined
+    }
+    parameters.faceRegion = faceRegion
+  }
   return Object.keys(parameters).length ? parameters : undefined
+}
+
+function normalizeVideoToolRetryParameters(operation, value) {
+  const keys = VIDEO_TOOL_RETRY_PARAMETERS[operation]
+  if (!keys) return undefined
+  if (keys.length === 0) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const parameters = {}
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'boolean' && key === 'interpolate') {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'string' && candidate.length <= 32) {
+      parameters[key] = candidate
+    }
+  }
+  return Object.keys(parameters).length ? parameters : undefined
+}
+
+function normalizeVideoToolHistory(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 20).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const taskId = cleanString(item.taskId)
+    const operation = cleanString(item.operation)
+    if (!taskId || !VIDEO_TOOL_OPERATIONS.has(operation)) return null
+    return withoutEmptyFields({
+      taskId,
+      operation,
+      status: cleanString(item.status),
+      resultAssetId: positiveInteger(item.resultAssetId),
+      resultUrl: cleanString(item.resultUrl),
+      createdAt: cleanString(item.createdAt),
+    })
+  }).filter(Boolean)
+}
+
+function normalizeVideoStory(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const shots = (Array.isArray(value.shots) ? value.shots : []).slice(0, 120).map((shot) => {
+    if (!shot || typeof shot !== 'object') return null
+    const index = positiveInteger(shot.index)
+    const startTime = finiteNumber(shot.startTime)
+    const endTime = finiteNumber(shot.endTime)
+    const duration = positiveNumber(shot.duration)
+    if (!index || startTime == null || endTime == null || !duration) return null
+    return withoutEmptyFields({
+      index,
+      startTime,
+      endTime,
+      duration,
+      keyframeAssetId: positiveInteger(shot.keyframeAssetId),
+      keyframeUrl: cleanString(shot.keyframeUrl),
+      visualDescription: cleanString(shot.visualDescription).slice(0, 500),
+      narrative: cleanString(shot.narrative).slice(0, 500),
+      camera: cleanString(shot.camera).slice(0, 200),
+    })
+  }).filter(Boolean)
+  return {
+    width: positiveInteger(value.width),
+    height: positiveInteger(value.height),
+    duration: positiveNumber(value.duration),
+    hasAudio: booleanValue(value.hasAudio),
+    fps: positiveNumber(value.fps),
+    sceneThreshold: positiveNumber(value.sceneThreshold),
+    shots,
+  }
 }
 
 export function normalizeFreeCanvasNodeData(data = {}) {
@@ -259,11 +381,43 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   }
   if (Object.hasOwn(data, 'error')) normalized.error = cleanString(data.error)
   if (Object.hasOwn(data, 'savedAssetId')) normalized.savedAssetId = cleanString(data.savedAssetId)
+  if (Object.hasOwn(data, 'savedAssetLocalPath')) {
+    normalized.savedAssetLocalPath = cleanString(data.savedAssetLocalPath)
+  }
   if (Object.hasOwn(data, 'assetSaveStatus')) {
     const assetSaveStatus = cleanString(data.assetSaveStatus)
     if (FREE_NODE_ASSET_SAVE_STATUSES.has(assetSaveStatus)) normalized.assetSaveStatus = assetSaveStatus
   }
   if (Object.hasOwn(data, 'assetSaveError')) normalized.assetSaveError = cleanString(data.assetSaveError)
+  if (Object.hasOwn(data, 'sourceVideoToolNodeId')) {
+    normalized.sourceVideoToolNodeId = cleanString(data.sourceVideoToolNodeId)
+  }
+  const videoToolOperation = cleanString(data.videoToolOperation)
+  if (VIDEO_TOOL_OPERATIONS.has(videoToolOperation)) normalized.videoToolOperation = videoToolOperation
+  if (Object.hasOwn(data, 'videoToolTaskId')) {
+    normalized.videoToolTaskId = cleanString(data.videoToolTaskId)
+  }
+  if (kind === 'text' && Object.hasOwn(data, 'videoStory')) {
+    const videoStory = normalizeVideoStory(data.videoStory)
+    if (videoStory) normalized.videoStory = videoStory
+  }
+  if (kind === 'video') {
+    const videoToolStatus = cleanString(data.videoToolStatus)
+    if (VIDEO_TOOL_STATUSES.has(videoToolStatus)) normalized.videoToolStatus = videoToolStatus
+    if (Object.hasOwn(data, 'videoToolError')) normalized.videoToolError = cleanString(data.videoToolError)
+    const retryOperation = cleanString(data.videoToolRetryOperation)
+    const retryParameters = normalizeVideoToolRetryParameters(
+      retryOperation,
+      data.videoToolRetryParameters,
+    )
+    if (retryParameters) {
+      normalized.videoToolRetryOperation = retryOperation
+      normalized.videoToolRetryParameters = retryParameters
+    }
+    if (Object.hasOwn(data, 'videoToolHistory')) {
+      normalized.videoToolHistory = normalizeVideoToolHistory(data.videoToolHistory)
+    }
+  }
   if (kind === 'image') {
     const markerColor = cleanString(data.imageMarkerColor)
     if (/^#[0-9a-f]{6}$/i.test(markerColor)) normalized.imageMarkerColor = markerColor
