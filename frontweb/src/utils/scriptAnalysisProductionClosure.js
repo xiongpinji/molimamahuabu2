@@ -89,7 +89,10 @@ export function buildFactoryGenerationPreflight({
       key: 'duration',
       label: '镜头时长',
       ok: storyboards.length > 0 && storyboards.every((storyboard) => {
-        const duration = storyboard?.duration == null ? defaultDuration : Number(storyboard.duration)
+        const storyboardDuration = Number(storyboard?.duration)
+        const duration = Number.isFinite(storyboardDuration) && storyboardDuration > 0
+          ? storyboardDuration
+          : defaultDuration
         return Number.isFinite(duration) && duration > 0
       }),
     },

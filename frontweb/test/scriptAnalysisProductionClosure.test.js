@@ -109,6 +109,22 @@ test('生成前检查只报告缺失参考图，不阻断已经完整的文本�
   assert.deepEqual(episode, snapshot)
 })
 
+test('分镜未单独设置时长时沿用项目默认镜头时长', () => {
+  const episode = readyEpisode()
+  episode.storyboards[0].duration = 0
+
+  const result = buildFactoryGenerationPreflight({
+    drama: importedDrama(),
+    currentEpisode: episode,
+    videoModel: 'video-model-a',
+    aspectRatio: '16:9',
+    videoClipDuration: 5,
+  })
+
+  assert.equal(result.checks.find((item) => item.key === 'duration').ok, true)
+  assert.equal(result.ready, true)
+})
+
 test('模型、提示词、人物场景关系或时长缺失时生成前检查不通过', () => {
   const episode = readyEpisode()
   episode.storyboards[0] = {
