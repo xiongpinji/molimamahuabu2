@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const sharp = require('sharp');
 
 const { callAihubccImageApi } = require('../src/services/imageClient');
 
@@ -105,5 +107,92 @@ test('AIHubCC resolves generated /static image references from local storage', a
   } finally {
     global.fetch = originalFetch;
     fs.rmSync(storagePath, { recursive: true, force: true });
+  }
+});
+
+test('AIHubCC compresses oversized local references before building the request body', async () => {
+  const originalFetch = global.fetch;
+  const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-aihubcc-large-ref-'));
+  const imagePath = path.join(storagePath, 'projects', 'demo', 'large.png');
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  const width = 1536;
+  const height = 1536;
+  await sharp(crypto.randomBytes(width * height * 3), {
+    raw: { width, height, channels: 3 },
+  }).png({ compressionLevel: 0 }).toFile(imagePath);
+
+  let requestBodyText = '';
+  global.fetch = async (_url, options = {}) => {
+    requestBodyText = String(options.body || '');
+    return jsonResponse({
+      choices: [{ message: { content: '![image](https://cdn.example.com/generated.png)' } }],
+    });
+  };
+
+  try {
+    await callAihubccImageApi(
+      { base_url: 'https://aihubcc.cc/v1', api_key: 'test-key', endpoint: '/images/generations' },
+      { info() {}, warn() {}, error() {} },
+      {
+        model: 'gpt-image-2-2k',
+        prompt: 'keep the person identity',
+        reference_image_urls: ['/static/projects/demo/large.png'],
+        files_base_url: 'http://localhost:5679/static',
+        storage_local_path: storagePath,
+      }
+    );
+
+    const body = JSON.parse(requestBodyText);
+    const reference = body.messages[0].content[1].image_url.url;
+    assert.match(reference, /^data:image\/jpeg;base64,/);
+    assert.ok(Buffer.byteLength(requestBodyText, 'utf8') < 3 * 1024 * 1024);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(storagePath, { recursive: true, force: true });
+  }
+});
+
+test('AIHubCC 413 error does not expose the Cloudflare HTML response', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    status: 413,
+    text: async () => '<html><head><title>413 Payload Too Large</title></head></html>',
+  });
+
+  try {
+    const result = await callAihubccImageApi(
+      { base_url: 'https://aihubcc.cc/v1', api_key: 'test-key', endpoint: '/images/generations' },
+      { info() {}, warn() {}, error() {} },
+      { model: 'gpt-image-2-2k', prompt: 'a portrait' }
+    );
+    assert.equal(result.error, 'AIHubCC 图片请求失败: 413 参考图请求体过大，已尝试压缩，请更换较小的参考图');
+    assert.equal(result.retryOnAnotherProvider, true);
+    assert.equal(result.failureStatus, 413);
+    assert.doesNotMatch(result.error, /<html>/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('AIHubCC 400 invalid JSON error is sanitized and eligible for provider failover', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => jsonResponse({
+    code: 'fail_to_fetch_task',
+    message: '{"error":{"code":"invalid_request","message":"请求体不是合法 JSON。"},"data":null}',
+  }, 400);
+
+  try {
+    const result = await callAihubccImageApi(
+      { base_url: 'https://aihubcc.cc/v1', api_key: 'test-key', endpoint: '/images/generations' },
+      { info() {}, warn() {}, error() {} },
+      { model: 'gpt-image-2-2k', prompt: 'a storyboard' }
+    );
+    assert.equal(result.error, 'AIHubCC 图片请求失败: 400 上游未接受图片请求');
+    assert.equal(result.retryOnAnotherProvider, true);
+    assert.equal(result.failureStatus, 400);
+    assert.doesNotMatch(result.error, /invalid_request|合法 JSON|\\"error\\"/i);
+  } finally {
+    global.fetch = originalFetch;
   }
 });

@@ -17,6 +17,50 @@ const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
+const IMAGE_PROVIDER_RETRY_DELAYS_MS = [2000, 5000];
+const AIHUBCC_REFERENCE_TARGET_KB = 1536;
+
+function isProviderTemporarilyUnavailable(response) {
+  return response?.statusCode === 503
+    && /provider\s+temporary\s+unavailable/i.test(String(response.raw || ''));
+}
+
+function waitForImageProvider(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function postOpenAIImageJSONWithRetry(url, headers, body, timeoutMs = IMAGE_HTTP_TIMEOUT_MS, options = {}) {
+  const request = options.request || postJSONWithTimeout;
+  const sleep = options.sleep || waitForImageProvider;
+  const retryDelays = options.retryDelays || IMAGE_PROVIDER_RETRY_DELAYS_MS;
+  const onRetry = options.onRetry || (() => {});
+
+  let response;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    response = await request(url, headers, body, timeoutMs);
+    if (!isProviderTemporarilyUnavailable(response) || attempt === retryDelays.length) return response;
+    const delay = retryDelays[attempt];
+    onRetry({ attempt: attempt + 1, delay, status: response.statusCode });
+    await sleep(delay);
+  }
+  return response;
+}
+
+function formatImageHttpError(status, raw) {
+  if (isProviderTemporarilyUnavailable({ statusCode: status, raw })) {
+    return '图片生成服务暂时繁忙，自动重试后仍不可用，请稍后再试';
+  }
+
+  let errMsg = '图片生成请求失败: ' + status;
+  try {
+    const errJson = JSON.parse(raw);
+    const msg = errJson.error?.message || errJson.message || errJson.error;
+    if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+  } catch (_) {
+    if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+  }
+  return errMsg;
+}
 
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
 const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
@@ -75,6 +119,28 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
   return { buffer, mimeType };
 }
 
+async function prepareAihubccImageRef(value, filesBaseUrl, storageLocalPath, log) {
+  const resolved = resolveImageRef(value, filesBaseUrl, storageLocalPath);
+  const match = String(resolved || '').match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+  if (!match) return resolved;
+  const original = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  const optimized = await compressImageBuffer(original, match[1], AIHUBCC_REFERENCE_TARGET_KB, log);
+  return `data:${optimized.mimeType};base64,${optimized.buffer.toString('base64')}`;
+}
+
+function formatAihubccImageError(status, result) {
+  if (Number(status) === 413) {
+    return 'AIHubCC 图片请求失败: 413 参考图请求体过大，已尝试压缩，请更换较小的参考图';
+  }
+  const detail = String(result?.data?.error?.message || result?.data?.message || '').trim();
+  if (Number(status) === 400 && /invalid[_\s-]*request|invalid\s*json|不是合法\s*json/i.test(detail)) {
+    return 'AIHubCC 图片请求失败: 400 上游未接受图片请求';
+  }
+  const raw = String(result?.raw || '').trim();
+  const safeDetail = detail || (/^\s*</.test(raw) ? '' : raw.slice(0, 300));
+  return `AIHubCC 图片请求失败: ${status}${safeDetail ? ` ${safeDetail}` : ''}`;
+}
+
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
@@ -95,6 +161,7 @@ function getProxyExpireHours() {
  */
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'djpsd') return 'djpsd_media';
   if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
@@ -110,10 +177,16 @@ function inferProtocol(provider, model) {
 async function callAihubccImageApi(config, log, opts = {}) {
   const model = String(opts.model || 'gpt-image-2').trim();
   const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
-  const refs = rawRefs
-    .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
-    .filter(Boolean)
-    .slice(0, 6);
+  const refs = [];
+  for (const value of rawRefs.slice(0, 6)) {
+    const reference = await prepareAihubccImageRef(
+      value,
+      opts.files_base_url,
+      opts.storage_local_path,
+      log,
+    );
+    if (reference) refs.push(reference);
+  }
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
   const endpoint = flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations'));
@@ -148,29 +221,236 @@ async function callAihubccImageApi(config, log, opts = {}) {
       timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
     });
   } catch (error) {
-    return { error: `AIHubCC 图片请求失败: ${error.message}` };
+    return {
+      error: `AIHubCC 图片请求失败: ${error.message}`,
+      retryOnAnotherProvider: true,
+      failureStatus: 'network_error',
+    };
   }
   if (!result.response.ok) {
-    return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+    return {
+      error: formatAihubccImageError(result.response.status, result),
+      retryOnAnotherProvider: true,
+      failureStatus: result.response.status,
+    };
   }
   if (flowModel) {
     const flowUrl = aihubccClient.extractFlowImageUrl(result.data, config);
     return flowUrl
       ? { image_url: flowUrl }
-      : { error: 'AIHubCC Flow 图片接口未在 choices[0].message.content 返回图片地址' };
+      : {
+          error: 'AIHubCC Flow 图片接口未返回图片地址',
+          retryOnAnotherProvider: true,
+          failureStatus: 'invalid_response',
+        };
   }
   const direct = aihubccClient.extractMediaUrl(result.data, config);
   if (direct) return { image_url: direct };
   const b64 = result.data?.data?.[0]?.b64_json;
   if (b64) return { image_url: `data:image/png;base64,${String(b64).replace(/\s/g, '')}` };
   const taskId = aihubccClient.extractTaskId(result.data);
-  if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
-  return aihubccClient.pollTask(config, taskId, {
+  if (!taskId) {
+    return {
+      error: 'AIHubCC 图片接口未返回图片地址或任务编号',
+      retryOnAnotherProvider: true,
+      failureStatus: 'invalid_response',
+    };
+  }
+  const polled = await aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
     maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });
+  if (polled?.error && !polled?.indeterminate) {
+    return {
+      ...polled,
+      retryOnAnotherProvider: true,
+      failureStatus: 'task_failed',
+    };
+  }
+  return polled;
+}
+
+function normalizeDjpsdAspectRatio(size) {
+  const value = String(size || '').trim();
+  if (/^\d+:\d+$/.test(value)) return value;
+  const match = value.match(/^(\d+)[xX](\d+)$/);
+  if (!match) return '16:9';
+  let width = Number(match[1]);
+  let height = Number(match[2]);
+  let a = width;
+  let b = height;
+  while (b) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return `${width / a}:${height / a}`;
+}
+
+function getDjpsdResultUrl(data) {
+  const payload = data?.data && typeof data.data === 'object' ? data.data : data;
+  return payload?.result_url
+    || payload?.image_url
+    || payload?.url
+    || payload?.result?.url
+    || payload?.images?.[0]?.url
+    || (typeof payload?.images?.[0] === 'string' ? payload.images[0] : null)
+    || null;
+}
+
+function getDjpsdErrorMessage(status, raw) {
+  let message = '';
+  try {
+    const data = JSON.parse(raw);
+    message = data?.detail || data?.error?.message || data?.message || data?.error || '';
+  } catch (_) {
+    message = String(raw || '').slice(0, 200);
+  }
+  return `DJPSD 图片生成请求失败: ${status}${message ? ` - ${String(message).slice(0, 200)}` : ''}`;
+}
+
+async function callDjpsdMediaImageApi(config, log, opts = {}) {
+  const base = String(config.base_url || '').replace(/\/$/, '');
+  const submitEndpoint = String(config.endpoint || '/v1/media/generate');
+  const statusEndpoint = String(config.query_endpoint || '/v1/media/status');
+  const submitUrl = base + (submitEndpoint.startsWith('/') ? submitEndpoint : `/${submitEndpoint}`);
+  const statusUrl = base + (statusEndpoint.startsWith('/') ? statusEndpoint : `/${statusEndpoint}`);
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${config.api_key || ''}`,
+  };
+  const refs = Array.isArray(opts.reference_image_urls)
+    ? opts.reference_image_urls.filter(Boolean)
+    : [];
+  const params = {
+    aspect_ratio: normalizeDjpsdAspectRatio(opts.size),
+    ...(refs.length > 0 ? { images: refs } : {}),
+  };
+  let submit;
+  try {
+    submit = await postJSONWithTimeout(submitUrl, headers, {
+      model: opts.model,
+      prompt: opts.prompt,
+      params,
+    }, IMAGE_HTTP_TIMEOUT_MS);
+  } catch (error) {
+    log.error('[DJPSD图生] 提交网络错误', { image_gen_id: opts.image_gen_id, error: error.message });
+    return { error: `DJPSD 图片生成网络请求失败: ${error.message}` };
+  }
+  if (submit.statusCode < 200 || submit.statusCode >= 300) {
+    return {
+      error: getDjpsdErrorMessage(submit.statusCode, submit.raw),
+      retryOnAnotherProvider: true,
+      failureStatus: submit.statusCode,
+    };
+  }
+
+  let submitData;
+  try {
+    submitData = JSON.parse(submit.raw);
+  } catch (_) {
+    return { error: 'DJPSD 图片生成返回格式异常' };
+  }
+  const directUrl = getDjpsdResultUrl(submitData);
+  if (directUrl) return { image_url: directUrl };
+  const payload = submitData?.data && typeof submitData.data === 'object' ? submitData.data : submitData;
+  const taskId = payload?.task_id ?? payload?.taskId ?? payload?.id;
+  if (taskId == null || taskId === '') {
+    return { error: 'DJPSD 图片生成未返回任务 ID' };
+  }
+
+  log.info('[DJPSD图生] 任务已提交，开始轮询', {
+    image_gen_id: opts.image_gen_id,
+    task_id: taskId,
+    model: opts.model,
+  });
+  const terminalSuccess = new Set(['success', 'succeeded', 'completed', 'done']);
+  const terminalFailure = new Set(['failed', 'error', 'cancelled', 'canceled']);
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    if (attempt > 0) await waitForImageProvider(2000);
+    let response;
+    try {
+      response = await fetch(`${statusUrl}?task_id=${encodeURIComponent(taskId)}`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch (error) {
+      log.warn('[DJPSD图生] 轮询网络错误', {
+        image_gen_id: opts.image_gen_id,
+        task_id: taskId,
+        attempt,
+        error: error.message,
+      });
+      continue;
+    }
+    const raw = await response.text();
+    if (!response.ok) {
+      log.warn('[DJPSD图生] 轮询 HTTP 错误', {
+        image_gen_id: opts.image_gen_id,
+        task_id: taskId,
+        attempt,
+        status: response.status,
+      });
+      continue;
+    }
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {
+      continue;
+    }
+    const imageUrl = getDjpsdResultUrl(data);
+    if (imageUrl) return { image_url: imageUrl };
+    const statusPayload = data?.data && typeof data.data === 'object' ? data.data : data;
+    const status = String(statusPayload?.status || statusPayload?.state || '').toLowerCase();
+    if (terminalSuccess.has(status)) {
+      return { error: 'DJPSD 图片任务成功但未返回图片地址' };
+    }
+    if (terminalFailure.has(status)) {
+      const message = statusPayload?.error_message || statusPayload?.error || statusPayload?.message || '任务失败';
+      return {
+        error: `DJPSD 图片生成失败: ${String(message).slice(0, 200)}`,
+        retryOnAnotherProvider: true,
+      };
+    }
+  }
+  return { error: 'DJPSD 图片生成轮询超时' };
+}
+
+function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
+  const serviceType = imageServiceType || 'image';
+  let configs = aiConfigService.listConfigs(db, serviceType);
+  if (serviceType === 'storyboard_image') {
+    configs = [...configs, ...aiConfigService.listConfigs(db, 'image')];
+  }
+  let active = configs.filter((c) => c.is_active);
+  if (preferredProvider && String(preferredProvider).trim()) {
+    const want = String(preferredProvider).trim().toLowerCase();
+    const byProvider = active.filter((c) => (c.provider || '').toLowerCase() === want);
+    if (byProvider.length > 0) {
+      const otherProviders = active.filter((c) => (c.provider || '').toLowerCase() !== want);
+      active = [...byProvider, ...otherProviders];
+    }
+  }
+  if (preferredModel) {
+    active = active.filter((c) => {
+      const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
+      return models.includes(preferredModel);
+    });
+  }
+  return active;
+}
+
+function getImageConfigAttemptKey(config) {
+  if (config?.id != null) return `id:${config.id}`;
+  return [
+    config?.base_url || '',
+    config?.endpoint || '',
+    config?.provider || '',
+  ].join('|');
 }
 
 /**
@@ -178,36 +458,17 @@ async function callAihubccImageApi(config, log, opts = {}) {
  * 可选按 preferredProvider / preferredModel 进一步筛选。
  * @param {object} db
  * @param {string} [preferredModel] - 指定模型名时，在匹配到的配置中选含该模型的
- * @param {string} [preferredProvider] - 指定供应商（如 openai / dashscope），只在该 provider 的配置中选
+ * @param {string} [preferredProvider] - 指定供应商（如 openai / dashscope），优先使用该 provider
  * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图）；缺省为 'image'
  */
 function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
-  const serviceType = imageServiceType || 'image';
-  let configs = aiConfigService.listConfigs(db, serviceType);
-  if (configs.length === 0 && serviceType === 'storyboard_image') {
-    configs = aiConfigService.listConfigs(db, 'image');
-  }
-  let active = configs.filter((c) => c.is_active);
+  const active = getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType);
   if (active.length === 0) {
     return preferredModel
       ? canvasProviderConfigService.getConfig('image', preferredModel)
       : null;
   }
-  if (preferredProvider && String(preferredProvider).trim()) {
-    const want = String(preferredProvider).trim().toLowerCase();
-    const byProvider = active.filter((c) => (c.provider || '').toLowerCase() === want);
-    if (byProvider.length > 0) active = byProvider;
-  }
-  if (preferredModel) {
-    for (const c of active) {
-      const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      if (models.includes(preferredModel)) return c;
-    }
-    return canvasProviderConfigService.getConfig('image', preferredModel);
-  }
-  // 显式使用前端设置的「默认」：优先 is_default，再按 priority 降序（listConfigs 已按 is_default DESC, priority DESC 排序，取第一个即可）
-  const defaultOne = active.find((c) => c.is_default);
-  if (defaultOne) return defaultOne;
+  // listConfigs 已按默认、优先级排序；指定 provider 时，同 provider 候选已移到最前。
   return active[0];
 }
 
@@ -1700,11 +1961,52 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
+  const configCandidates = getImageConfigCandidates(
+    db,
+    preferredModel,
+    preferredProvider,
+    imageServiceType
+  );
+  const config = opts._imageConfigOverride
+    || configCandidates[0]
+    || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
   if (!config) {
     throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
   }
   const model = getModelFromConfig(config, preferredModel);
+  const attemptedConfigKeys = new Set(
+    Array.isArray(opts._attemptedImageConfigKeys)
+      ? opts._attemptedImageConfigKeys.map(String)
+      : []
+  );
+  attemptedConfigKeys.add(getImageConfigAttemptKey(config));
+  const fallbackCandidates = getImageConfigCandidates(
+    db,
+    null,
+    preferredProvider,
+    imageServiceType
+  );
+  const nextConfig = fallbackCandidates.find(
+    (candidate) => !attemptedConfigKeys.has(getImageConfigAttemptKey(candidate))
+  );
+  const switchToNextConfig = (failure = {}) => {
+    log.warn('Image API provider failed, switching config', {
+      image_gen_id,
+      model,
+      status: failure.status,
+      error: failure.error,
+      from_config_id: config.id,
+      from_config_name: config.name,
+      to_config_id: nextConfig.id,
+      to_config_name: nextConfig.name,
+    });
+    return callImageApi(db, log, {
+      ...opts,
+      model: undefined,
+      _imageConfigOverride: nextConfig,
+      _attemptedImageConfigKeys: Array.from(attemptedConfigKeys),
+    });
+  };
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
@@ -1741,8 +2043,23 @@ async function callImageApi(db, log, opts) {
     effectivePrompt
   });
 
+  if (protocol === 'djpsd_media') {
+    const result = await callDjpsdMediaImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      image_gen_id,
+      reference_image_urls,
+    });
+    if (result.retryOnAnotherProvider && nextConfig) {
+      return switchToNextConfig({ status: result.failureStatus, error: result.error });
+    }
+    const { retryOnAnotherProvider, failureStatus, ...publicResult } = result;
+    return publicResult;
+  }
+
   if (protocol === 'aihubcc') {
-    return callAihubccImageApi(config, log, {
+    const result = await callAihubccImageApi(config, log, {
       prompt: effectivePrompt,
       model,
       size,
@@ -1752,6 +2069,11 @@ async function callImageApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    if (result.retryOnAnotherProvider && nextConfig) {
+      return switchToNextConfig({ status: result.failureStatus, error: result.error });
+    }
+    const { retryOnAnotherProvider, failureStatus, ...publicResult } = result;
+    return publicResult;
   }
 
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
@@ -1862,9 +2184,30 @@ async function callImageApi(db, log, opts) {
   let raw;
   let httpStatus;
   try {
-    const out = await postJSONWithTimeout(url, openaiCompatHeaders, body, IMAGE_HTTP_TIMEOUT_MS);
+    const out = await postOpenAIImageJSONWithRetry(
+      url,
+      openaiCompatHeaders,
+      body,
+      IMAGE_HTTP_TIMEOUT_MS,
+      {
+        retryDelays: nextConfig ? [] : IMAGE_PROVIDER_RETRY_DELAYS_MS,
+        onRetry: ({ attempt, delay, status }) => log.warn('Image API provider unavailable, retrying', {
+          image_gen_id,
+          model,
+          status,
+          attempt,
+          delay_ms: delay,
+        }),
+      },
+    );
     httpStatus = out.statusCode;
     raw = out.raw;
+    if (nextConfig && (out.statusCode < 200 || out.statusCode >= 300)) {
+      return switchToNextConfig({
+        status: out.statusCode,
+        error: formatImageHttpError(out.statusCode, out.raw),
+      });
+    }
   } catch (e) {
     log.error('Image API network error', { image_gen_id, error: e.message, url: url.slice(0, 80) });
     if (isGptImage) return { error: formatGptImageUnknownResultError(e) };
@@ -2317,6 +2660,7 @@ function refListHasCanonical(list, ref) {
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
+  getImageConfigCandidates,
   getDefaultImageConfig,
   resolveImageModel,
   getReferenceImageCapability,
@@ -2325,6 +2669,8 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  formatImageHttpError,
+  postOpenAIImageJSONWithRetry,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),

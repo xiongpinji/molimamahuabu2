@@ -78,6 +78,11 @@ function terminalPollErrorMessage(error) {
   return ''
 }
 
+function notifyCreditAccountRefresh() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event('moli:credit-account-refresh'))
+}
+
 export const useGenerationTaskStore = defineStore('generationTask', () => {
   /** @type {Map<string, object>} */
   const tasks = ref(new Map())
@@ -124,6 +129,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       const delay = status === 'failed' ? 8000 : 3000
       setTimeout(() => _deleteTask(key), delay)
     }
+    notifyCreditAccountRefresh()
   }
 
   function markRunning(meta) {
