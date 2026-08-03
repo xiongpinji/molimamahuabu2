@@ -599,6 +599,9 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
       );
     } catch (_) {}
 
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+    textBilling = null;
+
     log.info('[四视图] Step1 完成，开始Step2生图', { character_id: characterId });
   }
 
@@ -618,7 +621,6 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
       userId: options.userId,
       tenantId: options.tenantId,
     });
-    textGenerationBilling.settle(db, log, textBilling, 'completed');
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
     throw err;

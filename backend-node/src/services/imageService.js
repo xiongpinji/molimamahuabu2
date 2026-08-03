@@ -795,6 +795,8 @@ function create(db, log, req, options = {}) {
       });
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?')
         .run(reservation.id, imageGenId);
+      db.prepare('UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?')
+        .run(reservation.id, billedModel, taskId);
       auditEvent.record(db, {
         userId: options.userId,
         tenantId: options.tenantId,

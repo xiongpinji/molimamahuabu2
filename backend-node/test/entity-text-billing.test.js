@@ -21,6 +21,9 @@ const log = { info() {}, warn() {}, error() {} };
 function setup({ withPrice = true } = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
+  if (!db.prepare("PRAGMA table_info(scenes)").all().some((column) => column.name === 'polished_prompt_single')) {
+    db.exec('ALTER TABLE scenes ADD COLUMN polished_prompt_single TEXT');
+  }
   const now = new Date().toISOString();
   const dramaId = db.prepare(
     `INSERT INTO dramas (title, style, status, created_at, updated_at)
@@ -322,6 +325,44 @@ test('角色四视图文本生成失败时退回提示词预扣积分', async (t
   assert.equal(credits.getTenantAccount(db, 'tenant-a').available, 30);
 });
 
+test('角色四视图文本成功后下游图片提交失败仍确认文本积分', async (t) => {
+  const { db, characterId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiClient.generateText = async () => '角色四视图描述';
+  imageClient.createAndGenerateImage = () => { throw new Error('图片任务创建失败'); };
+
+  await assert.rejects(
+    characterLibrary.generateCharacterFourViewImage(
+      db,
+      log,
+      {},
+      characterId,
+      'image-model',
+      undefined,
+      {
+        billingEnabled: true,
+        tenantId: 'tenant-a',
+        userId: 'user-1',
+        textModel: 'GPT-5.5',
+      },
+    ),
+    /图片任务创建失败/,
+  );
+
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'character_image_prompt' AND resource_id = ?`,
+  ).get(String(characterId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
+});
+
 test('场景四视图缺少润色提示词时按独立文本模型计费', async (t) => {
   const { db, sceneId } = setup();
   const originalText = aiClient.generateText;
@@ -362,6 +403,44 @@ test('场景四视图缺少润色提示词时按独立文本模型计费', async
   ).get(String(sceneId));
   assert.equal(reservation.status, 'confirmed');
   assert.equal(reservation.model, 'GPT-5.5');
+});
+
+test('场景单图文本成功后下游图片提交失败仍确认文本积分', async (t) => {
+  const { db, sceneId } = setup();
+  const originalText = aiClient.generateText;
+  const originalImage = imageClient.createAndGenerateImage;
+  t.after(() => {
+    aiClient.generateText = originalText;
+    imageClient.createAndGenerateImage = originalImage;
+    db.close();
+  });
+  aiClient.generateText = async () => '场景单图描述';
+  imageClient.createAndGenerateImage = () => { throw new Error('图片任务创建失败'); };
+
+  await assert.rejects(
+    sceneService.generateSceneSingleImage(
+      db,
+      log,
+      {},
+      sceneId,
+      'image-model',
+      undefined,
+      {
+        billingEnabled: true,
+        tenantId: 'tenant-a',
+        userId: 'user-1',
+        textModel: 'GPT-5.5',
+      },
+    ),
+    /图片任务创建失败/,
+  );
+
+  const reservation = db.prepare(
+    `SELECT * FROM tenant_usage_reservations
+     WHERE resource_type = 'scene_single_image_prompt' AND resource_id = ?`,
+  ).get(String(sceneId));
+  assert.equal(reservation.status, 'confirmed');
+  assert.equal(credits.getTenantAccount(db, 'tenant-a').spent, 5);
 });
 
 test('角色四视图文本模型未定价时返回 503 且不提交图片任务', async (t) => {

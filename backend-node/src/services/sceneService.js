@@ -380,6 +380,9 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
       );
     } catch (_) {}
 
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+    textBilling = null;
+
     log.info('[场景四视图] Step1 完成，开始Step2生图', { scene_id: sceneId });
   }
 
@@ -398,7 +401,6 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
       userId: options.userId,
       tenantId: options.tenantId,
     });
-    textGenerationBilling.settle(db, log, textBilling, 'completed');
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
     throw err;
@@ -480,6 +482,9 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
       );
     } catch (_) {}
 
+    textGenerationBilling.settle(db, log, textBilling, 'completed');
+    textBilling = null;
+
     log.info('[场景单图] Step1 完成，开始Step2生图', { scene_id: sceneId });
   }
 
@@ -498,7 +503,6 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style,
       userId: options.userId,
       tenantId: options.tenantId,
     });
-    textGenerationBilling.settle(db, log, textBilling, 'completed');
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);
     throw err;
