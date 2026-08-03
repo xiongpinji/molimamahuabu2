@@ -1,15 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
+const childProcess = require('node:child_process');
 
 const assetService = require('./assetService');
 const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { getFfmpegPath, getFfprobePath } = require('../utils/ffmpegPath');
 
-const execFileAsync = promisify(execFile);
 const MAX_CONCURRENT_OPERATIONS = 2;
 const MAX_SOURCE_DURATION_SECONDS = 30 * 60;
 const MAX_SOURCE_PIXELS = 7680 * 4320;
@@ -26,6 +24,20 @@ const OPERATIONS = new Set([
   'mute',
   'edit',
 ]);
+
+function execFileAsync(file, args, options) {
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
@@ -281,6 +293,27 @@ async function probeVideo(sourcePath) {
   }
 }
 
+async function probeAudio(outputPath) {
+  try {
+    if (!fs.existsSync(outputPath)) fail('VIDEO_TOOL_PROCESSING_FAILED', '音频输出验证失败');
+    const { stdout } = await execFileAsync(getFfprobePath(), [
+      '-v', 'error', '-show_streams', '-show_format', '-of', 'json', outputPath,
+    ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: FFPROBE_TIMEOUT_MS });
+    const payload = JSON.parse(stdout);
+    const streams = Array.isArray(payload.streams) ? payload.streams : [];
+    const audio = streams.find((stream) => stream.codec_type === 'audio');
+    const duration = Number(payload.format?.duration || audio?.duration || 0);
+    if (!audio || streams.some((stream) => stream.codec_type === 'video')
+      || !Number.isFinite(duration) || duration <= 0) {
+      fail('VIDEO_TOOL_PROCESSING_FAILED', '音频输出验证失败');
+    }
+    return { width: null, height: null, duration };
+  } catch (error) {
+    if (error.code === 'VIDEO_TOOL_PROCESSING_FAILED') throw error;
+    fail('VIDEO_TOOL_PROCESSING_FAILED', '音频输出验证失败');
+  }
+}
+
 async function runFfmpeg(sourcePath, outputPath, plan) {
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', sourcePath];
   if (plan.outputType === 'audio') {
@@ -375,11 +408,8 @@ async function analyzeVideo(db, log, options) {
       '-an', '-f', 'null', '-',
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: FFMPEG_TIMEOUT_MS });
     stderr = output.stderr || '';
-  } catch (error) {
-    stderr = error.stderr || '';
-    if (!stderr.includes('pts_time') && !stderr.includes('frame=')) {
-      throw Object.assign(new Error('视频场景解析失败'), { code: 'VIDEO_TOOL_PROCESSING_FAILED' });
-    }
+  } catch (_) {
+    throw Object.assign(new Error('视频场景解析失败'), { code: 'VIDEO_TOOL_PROCESSING_FAILED' });
   }
   const boundaries = parseSceneTimes(stderr, metadata.duration, Math.min(maxShots, 120));
   const shots = [];
@@ -492,7 +522,7 @@ async function createOperation(db, log, request, context = {}) {
     await runFfmpeg(sourcePath, outputPath, plan);
     const outputMetadata = plan.outputType === 'video'
       ? await probeVideo(outputPath)
-      : { width: null, height: null, duration: metadata.duration };
+      : await probeAudio(outputPath);
     let result;
     db.transaction(() => {
       const resultAsset = createDerivedAsset(db, log, {

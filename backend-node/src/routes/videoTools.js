@@ -9,8 +9,6 @@ const {
   hasLocalFfprobe,
 } = require('../utils/ffmpegPath');
 
-let cachedRuntimeCapabilities = null;
-
 function commandOutput(command, args) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
@@ -25,7 +23,6 @@ function listed(output, name) {
 }
 
 function inspectRuntimeCapabilities() {
-  if (cachedRuntimeCapabilities) return cachedRuntimeCapabilities;
   const ffmpegAvailable = hasLocalFfmpeg();
   const ffprobeAvailable = hasLocalFfprobe()
     && Boolean(commandOutput(getFfprobePath(), ['-version']));
@@ -35,13 +32,12 @@ function inspectRuntimeCapabilities() {
   const encoders = ffmpegAvailable
     ? commandOutput(getFfmpegPath(), ['-hide_banner', '-encoders'])
     : '';
-  cachedRuntimeCapabilities = {
+  return {
     ffmpegAvailable: Boolean(filters && encoders),
     ffprobeAvailable,
     filter: (name) => listed(filters, name),
     encoder: (name) => listed(encoders, name),
   };
-  return cachedRuntimeCapabilities;
 }
 
 function operationCapabilities() {

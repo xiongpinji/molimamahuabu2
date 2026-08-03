@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFileSync } = childProcess;
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -124,6 +125,38 @@ test('视频工具路由只公布真实 FFmpeg 与 ffprobe 能力', () => {
   assert.equal(operations.crop.encoderVerified, true);
 });
 
+test('视频工具能力会随当前 FFmpeg 与 ffprobe 状态更新', (t) => {
+  const originalFfmpegPath = process.env.FFMPEG_PATH;
+  const originalFfprobePath = process.env.FFPROBE_PATH;
+  const realFfmpegPath = getFfmpegPath();
+  const realFfprobePath = getFfprobePath();
+  const fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'molimama-video-capabilities-'));
+  const fakeFfmpegPath = path.join(fakeBinDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  const fakeFfprobePath = path.join(fakeBinDir, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  fs.writeFileSync(fakeFfmpegPath, 'not executable');
+  fs.writeFileSync(fakeFfprobePath, 'not executable');
+  t.after(() => {
+    if (originalFfmpegPath === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = originalFfmpegPath;
+    if (originalFfprobePath === undefined) delete process.env.FFPROBE_PATH;
+    else process.env.FFPROBE_PATH = originalFfprobePath;
+    fs.rmSync(fakeBinDir, { recursive: true, force: true });
+  });
+
+  process.env.FFMPEG_PATH = realFfmpegPath;
+  process.env.FFPROBE_PATH = realFfprobePath;
+  const availableResponse = responseRecorder();
+  createVideoToolRoutes(null, log).capabilities({}, availableResponse);
+  assert.equal(availableResponse.payload.data.operations.crop.available, true);
+
+  process.env.FFMPEG_PATH = fakeFfmpegPath;
+  process.env.FFPROBE_PATH = fakeFfprobePath;
+  const unavailableResponse = responseRecorder();
+  createVideoToolRoutes(null, log).capabilities({}, unavailableResponse);
+  assert.equal(unavailableResponse.payload.data.operations.crop.available, false);
+  assert.equal(unavailableResponse.payload.data.operations.analyze.available, false);
+});
+
 test('裁剪创建新视频素材并保留源文件', async (t) => {
   assert.ok(videoToolService, '应提供 videoToolService');
   const { db, storageRoot, dramaId } = setup(t);
@@ -163,7 +196,10 @@ test('音频分离产生真实音频，移除音频产生无音轨视频', async
   }, { cfg: { storage: { local_path: storageRoot } } });
   const audio = assetService.getById(db, audioResult.resultAssetId);
   assert.equal(audio.type, 'audio');
-  assert.equal(probe(audio.local_path).streams.some((stream) => stream.codec_type === 'audio'), true);
+  const audioMetadata = probe(audio.local_path);
+  assert.equal(audioMetadata.streams.some((stream) => stream.codec_type === 'audio'), true);
+  assert.equal(audioMetadata.streams.some((stream) => stream.codec_type === 'video'), false);
+  assert.ok(audioResult.duration > 0);
 
   const mutedResult = await videoToolService.createOperation(db, log, {
     assetId: source.id,
@@ -175,6 +211,39 @@ test('音频分离产生真实音频，移除音频产生无音轨视频', async
   const mutedStreams = probe(muted.local_path).streams;
   assert.equal(mutedStreams.some((stream) => stream.codec_type === 'video'), true);
   assert.equal(mutedStreams.some((stream) => stream.codec_type === 'audio'), false);
+});
+
+test('音频分离输出含视频流时任务失败且不会创建音频素材', async (t) => {
+  const { db, storageRoot, dramaId } = setup(t);
+  const sourcePath = createVideoFixture(storageRoot);
+  const source = createAsset(db, dramaId, sourcePath);
+  const originalExecFile = childProcess.execFile;
+  t.mock.method(childProcess, 'execFile', (file, args, options, callback) => {
+    if (args.includes('-vn')) {
+      fs.copyFileSync(sourcePath, args.at(-1));
+      callback(null, '', '');
+      return { kill() {} };
+    }
+    return originalExecFile(file, args, options, callback);
+  });
+
+  await assert.rejects(videoToolService.createOperation(db, log, {
+    assetId: source.id,
+    sourceNodeId: 'video-node-invalid-audio-output',
+    operation: 'extract_audio',
+    parameters: {},
+  }, { cfg: { storage: { local_path: storageRoot } } }), (error) => (
+    error.code === 'VIDEO_TOOL_PROCESSING_FAILED'
+  ));
+
+  const task = db.prepare("SELECT * FROM async_tasks WHERE type = 'video_tool_extract_audio' ORDER BY id DESC LIMIT 1").get();
+  assert.equal(task.status, 'failed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS total FROM assets WHERE category = 'video-tool' AND type = 'audio'").get().total, 0);
+  const derivedDir = path.join(storageRoot, 'derived');
+  const leftovers = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => name.endsWith('.m4a'))
+    : [];
+  assert.deepEqual(leftovers, []);
 });
 
 test('视频解析返回真实场景时间轴和可打开关键帧素材', async (t) => {
@@ -199,6 +268,40 @@ test('视频解析返回真实场景时间轴和可打开关键帧素材', async
     assert.equal(frame.type, 'image');
     assert.equal(fs.existsSync(frame.local_path), true);
   }
+});
+
+test('视频解析命令失败即使 stderr 含帧信息也会失败并回滚', async (t) => {
+  const { db, storageRoot, dramaId } = setup(t);
+  const sourcePath = createSceneFixture(storageRoot);
+  const source = createAsset(db, dramaId, sourcePath, 'failed-scenes.mp4');
+  const originalExecFile = childProcess.execFile;
+  t.mock.method(childProcess, 'execFile', (file, args, options, callback) => {
+    if (args.some((arg) => String(arg).includes('showinfo'))) {
+      const error = new Error('模拟视频解析命令失败');
+      error.code = 1;
+      callback(error, '', 'frame=   12 pts_time:0.42');
+      return { kill() {} };
+    }
+    return originalExecFile(file, args, options, callback);
+  });
+
+  await assert.rejects(videoToolService.createOperation(db, log, {
+    assetId: source.id,
+    sourceNodeId: 'video-node-analyze-command-failure',
+    operation: 'analyze',
+    parameters: { sceneThreshold: 0.1, maxShots: 8 },
+  }, { cfg: { storage: { local_path: storageRoot } } }), (error) => (
+    error.code === 'VIDEO_TOOL_PROCESSING_FAILED'
+  ));
+
+  const task = db.prepare("SELECT * FROM async_tasks WHERE type = 'video_tool_analyze' ORDER BY id DESC LIMIT 1").get();
+  assert.equal(task.status, 'failed');
+  assert.equal(db.prepare("SELECT COUNT(*) AS total FROM assets WHERE category = 'video-analysis'").get().total, 0);
+  const derivedDir = path.join(storageRoot, 'derived');
+  const leftovers = fs.existsSync(derivedDir)
+    ? fs.readdirSync(derivedDir).filter((name) => name.endsWith('.jpg'))
+    : [];
+  assert.deepEqual(leftovers, []);
 });
 
 test('视频解析中途失败会清理已创建的关键帧文件和素材记录', async (t) => {
