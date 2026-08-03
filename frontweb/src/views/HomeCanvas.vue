@@ -571,10 +571,11 @@ function onCanvasImageDragOver(event) {
 }
 
 async function onCanvasImageDrop(event) {
-  const files = collectDroppedImageFiles(event.dataTransfer)
-  if (!files.length) return
+  if (!hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   event.stopPropagation()
+  const files = collectDroppedImageFiles(event.dataTransfer)
+  if (!files.length) return
   const origin = screenToFlowPosition(event.clientX, event.clientY) || centerFlowPosition()
   const specs = createDroppedImageNodeSpecs(files, origin, (file) => {
     const previewUrl = URL.createObjectURL(file)

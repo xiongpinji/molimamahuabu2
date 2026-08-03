@@ -2240,10 +2240,11 @@ function onCanvasImageDragOver(event) {
 }
 
 async function onCanvasImageDrop(event) {
-  const files = collectDroppedImageFiles(event.dataTransfer)
-  if (!isStandaloneCanvas.value || !files.length) return
+  if (!isStandaloneCanvas.value || !hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   event.stopPropagation()
+  const files = collectDroppedImageFiles(event.dataTransfer)
+  if (!files.length) return
   const origin = screenToFlowPosition(event.clientX, event.clientY)
   const specs = createDroppedImageNodeSpecs(files, origin, (file) => {
     const previewUrl = URL.createObjectURL(file)

@@ -12,6 +12,14 @@ const dramaCanvasSource = readFileSync(
   'utf8',
 )
 
+function functionBody(source, name) {
+  const start = source.indexOf(`async function ${name}`)
+  assert.notEqual(start, -1)
+  const next = source.indexOf('\n}\n\nfunction ', start)
+  assert.notEqual(next, -1)
+  return source.slice(start, next + 3)
+}
+
 for (const [label, source] of [
   ['首页自由画布', homeCanvasSource],
   ['项目独立画布', dramaCanvasSource],
@@ -31,6 +39,23 @@ for (const [label, source] of [
     assert.match(source, /const droppedNodes =/)
     assert.match(source, /for \(const \{ spec, nodeId \} of droppedNodes\)/)
     assert.ok(source.indexOf('const droppedNodes =') < source.indexOf('for (const { spec, nodeId } of droppedNodes)'))
+  })
+
+  test(`${label}非图片文件 drop 会拦截默认行为但不创建图片节点`, () => {
+    const dropSource = functionBody(source, 'onCanvasImageDrop')
+    const guardIndex = dropSource.indexOf('hasDraggedFilePayload(event.dataTransfer)')
+    const preventIndex = dropSource.indexOf('event.preventDefault()')
+    const stopIndex = dropSource.indexOf('event.stopPropagation()')
+    const collectIndex = dropSource.indexOf('collectDroppedImageFiles(event.dataTransfer)')
+    const emptyReturnIndex = dropSource.indexOf('if (!files.length) return')
+    const nonImageBranch = dropSource.slice(0, emptyReturnIndex)
+
+    assert.ok(guardIndex >= 0)
+    assert.ok(guardIndex < preventIndex)
+    assert.ok(preventIndex < stopIndex)
+    assert.ok(stopIndex < collectIndex)
+    assert.ok(collectIndex < emptyReturnIndex)
+    assert.doesNotMatch(nonImageBranch, /createFreeCanvasNode|openNodeEditor|uploadAPI\.(?:uploadImage|uploadMedia)/)
   })
 }
 
