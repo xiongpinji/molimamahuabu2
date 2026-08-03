@@ -355,7 +355,7 @@
         添加标签
       </el-button>
       <el-button size="small" :disabled="!downloadableSelection.length" @click="downloadSelected">
-        打包下载
+        批量下载
       </el-button>
     </footer>
 
