@@ -13,11 +13,12 @@ const dramaCanvasSource = readFileSync(
 )
 
 function functionBody(source, name) {
-  const start = source.indexOf(`async function ${name}`)
+  const normalizedSource = source.replace(/\r\n?/g, '\n')
+  const start = normalizedSource.indexOf(`async function ${name}`)
   assert.notEqual(start, -1)
-  const next = source.indexOf('\n}\n\nfunction ', start)
+  const next = normalizedSource.indexOf('\n}\n\nfunction ', start)
   assert.notEqual(next, -1)
-  return source.slice(start, next + 3)
+  return normalizedSource.slice(start, next + 3)
 }
 
 for (const [label, source] of [
