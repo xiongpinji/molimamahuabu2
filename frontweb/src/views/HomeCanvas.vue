@@ -518,22 +518,6 @@ function registerCanvasFlowApi(api) {
   canvasFlowApi.value = api
 }
 
-function panCanvasForNodeEditor(overflowY) {
-  const distance = Math.max(0, Number(overflowY) || 0)
-  const api = canvasFlowApi.value
-  const viewport = api?.getViewport?.() || currentViewport.value
-  if (!distance || !api?.setViewport || !viewport) return false
-  const nextViewport = {
-    x: Number(viewport.x || 0),
-    y: Number(viewport.y || 0) - distance,
-    zoom: Number(viewport.zoom || 1),
-  }
-  currentViewport.value = nextViewport
-  api.setViewport(nextViewport, { duration: 0 })
-  scheduleSave()
-  return true
-}
-
 function screenToFlowPosition(clientX, clientY) {
   const el = canvasMainRef.value
   if (!el) return null
@@ -906,7 +890,6 @@ provide(CANVAS_CONTEXT_KEY, {
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
-  panCanvasForNodeEditor,
 })
 
 onMounted(() => {
@@ -982,6 +965,9 @@ onBeforeUnmount(() => {
 .ctx-title { padding: 4px 12px 6px; color: #71717a; font-size: 10px; }
 .ctx-item { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-size: 13px; text-align: left; cursor: pointer; }
 .ctx-item:hover { background: rgba(255, 113, 57, 0.13); color: #ff9b75; }
+@media (max-width: 920px) {
+  .page-title { display: none; }
+}
 @media (max-width: 820px) {
   .header-inner { margin: 8px 10px 0; padding: 7px 8px; }
   .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status, .btn-theme { display: none; }
