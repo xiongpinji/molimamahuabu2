@@ -35,4 +35,7 @@
 - 前端全量：当前 569 项中 559 通过、10 项失败；固定点 `675e6de` 为 566 项中 556 通过、同样 10 项失败，本任务新增 3 项通过且没有新增失败。
 - 前端生产构建：通过，1842 个模块完成转换。
 - MiniMax TTS 无生成连接探针：专项 2/2 通过。
-- 生产发布前审计：视频模型均已验证且已定价；文本、AIHubCC 3.5K 图片与 MiniMax 音频通过无生成探针。旧 `openai` 标识的 AIHubCC 2K 图片暴露了生成式旧探针并超时，已新增域名识别回归后再验证。
+- 生产发布前审计：视频模型均已验证且已定价；文本、AIHubCC 3.5K 图片与 MiniMax 音频通过无生成探针。旧 `openai` 标识的 AIHubCC 2K 图片暴露了生成式旧探针并超时；修复后用只读 GET 在 725ms 内验证成功。
+- 生产发布：`/opt/moli-drama/releases/canvas-model-catalog-4454b0d-20260804T044736CST`；发布前数据库备份为 `/opt/moli-drama/shared/backups/drama_generator-before-358febe-20260804T044241CST.sqlite`。
+- 生产读回：7 条启用 AI 配置全部为 `verified`；画布目录包含文本 2、图片 2、视频 2、音频 1 共 7 个模型，均已启用正价计费。
+- 生产健康：`moli-drama.service` 为 `active`、`NRestarts=0`、`/health` 返回 200；实际进程工作目录指向新发布，服务首页哈希与候选构建一致，近 5 分钟无错误。AI 音乐 `server.js` / `worker.js` PID 保持 206874 / 206895。
