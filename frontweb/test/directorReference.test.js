@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { applyDirectorReferenceAnalysis } from '../src/utils/directorReference.js';
+import {
+  applyDirectorReferenceAnalysis,
+  isCurrentDirectorReferenceRequest,
+} from '../src/utils/directorReference.js';
 
 const stageSource = fs.readFileSync(
   path.join(import.meta.dirname, '../src/components/dramaCanvas/CanvasDirectorStage.vue'),
@@ -37,6 +40,27 @@ test('applies director reference analysis without removing existing lights in ov
   assert.equal(next.cameras.some((camera) => camera.name === '正面' && camera.lookAtMode === 'manual'), true);
 });
 
+test('director reference request guard rejects token or drama mismatches', () => {
+  assert.equal(isCurrentDirectorReferenceRequest({
+    currentRequestId: 8,
+    requestId: 8,
+    currentDramaId: 42,
+    dramaId: 42,
+  }), true);
+  assert.equal(isCurrentDirectorReferenceRequest({
+    currentRequestId: 9,
+    requestId: 8,
+    currentDramaId: 42,
+    dramaId: 42,
+  }), false);
+  assert.equal(isCurrentDirectorReferenceRequest({
+    currentRequestId: 8,
+    requestId: 8,
+    currentDramaId: 43,
+    dramaId: 42,
+  }), false);
+});
+
 test('CanvasDirectorStage exposes AI placement reference through mutateTimeline', () => {
   assert.match(stageSource, /AI站位参考/);
   assert.match(stageSource, /directorReferenceAPI\.analyze/);
@@ -61,4 +85,25 @@ test('director reference history reloads only completed metadata analysis assets
   assert.match(stageSource, /directorReferenceAnalysis\.value = item\.metadata\.analysis/);
   assert.match(stageSource, /if \(open\) void loadDirectorReferenceHistory\(\)/);
   assert.match(stageSource, /function applyDirectorReference\(\)[\s\S]*applyDirectorReferenceAnalysis\(timeline\.value,\s*directorReferenceAnalysis\.value,\s*directorReferenceMode\.value\)[\s\S]*mutateTimeline\(next\)/);
+});
+
+test('director reference UI state is guarded by request token and drama id', () => {
+  assert.match(stageSource, /let directorReferenceRequestId = 0/);
+  assert.match(stageSource, /const requestId = \+\+directorReferenceRequestId/);
+  assert.match(stageSource, /const capturedDramaId = dramaId/);
+  assert.match(stageSource, /function isCurrentDirectorReference\(requestId,\s*dramaId\)/);
+  assert.match(stageSource, /directorReferenceAnalysisDramaId\.value = capturedDramaId/);
+  assert.match(stageSource, /if \(directorReferenceAnalysisDramaId\.value !== dramaId\) return/);
+  assert.match(stageSource, /function resetDirectorReferenceForDramaChange\(\)[\s\S]*directorReferenceRequestId \+= 1[\s\S]*directorReferenceAnalysis\.value = null[\s\S]*directorReferenceAnalysisDramaId\.value = null[\s\S]*directorReferenceHistory\.value = \[\]/);
+  assert.match(stageSource, /watch\(\(\) => props\.drama\?\.id,[\s\S]*resetDirectorReferenceForDramaChange/);
+  assert.match(stageSource, /selectDirectorReferenceHistory\(item\)[\s\S]*directorReferenceAnalysisDramaId\.value = Number\(props\.drama\?\.id\)/);
+});
+
+test('director reference persistence errors are separated from analysis errors', () => {
+  assert.doesNotMatch(stageSource, /assetsAPI\.update\(referenceAsset\.id,[\s\S]{0,500}\.catch\(\(\) => \{\}\)/);
+  assert.match(stageSource, /failurePersistError/);
+  assert.match(stageSource, /分析失败；失败状态回写失败：/);
+  assert.match(stageSource, /站位已生成，但历史保存失败/);
+  assert.match(stageSource, /completedPersistError/);
+  assert.match(stageSource, /directorReferenceAnalysis\.value = analysis[\s\S]*directorReferenceAnalysisDramaId\.value = capturedDramaId/);
 });

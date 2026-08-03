@@ -667,7 +667,10 @@ import {
   applyVisualDirectionGuidance,
   formatVisualDirectionSummary,
 } from '@/utils/visualDirectionDirectorBridge'
-import { applyDirectorReferenceAnalysis } from '@/utils/directorReference'
+import {
+  applyDirectorReferenceAnalysis,
+  isCurrentDirectorReferenceRequest,
+} from '@/utils/directorReference'
 
 const CAMERA_ASPECTS = [
   { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
@@ -857,6 +860,7 @@ const directorReferenceBusy = ref(false)
 const directorReferenceMode = ref('insert')
 const directorReferenceStatus = ref('')
 const directorReferenceAnalysis = ref(null)
+const directorReferenceAnalysisDramaId = ref(null)
 const directorReferenceHistory = ref([])
 const axes = ['X', 'Y', 'Z']
 const undoStack = ref([])
@@ -869,6 +873,7 @@ let transformControls = null
 let transformStartScale = null
 let shiftPressed = false
 let pickingPlugin = null
+let directorReferenceRequestId = 0
 
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
@@ -1239,12 +1244,24 @@ function onAIImportFile(event) {
   aiImportAssetId.value = null
   directorReferenceStatus.value = ''
   directorReferenceAnalysis.value = null
+  directorReferenceAnalysisDramaId.value = null
+}
+
+function isCurrentDirectorReference(requestId, dramaId) {
+  return isCurrentDirectorReferenceRequest({
+    currentRequestId: directorReferenceRequestId,
+    requestId,
+    currentDramaId: Number(props.drama?.id),
+    dramaId,
+  })
 }
 
 async function analyzeDirectorReference() {
   const file = aiImportFile.value
   const dramaId = Number(props.drama?.id)
   if (!file || !dramaId || directorReferenceBusy.value) return
+  const requestId = ++directorReferenceRequestId
+  const capturedDramaId = dramaId
   const referenceMode = directorReferenceMode.value
   let referenceAsset = null
   directorReferenceBusy.value = true
@@ -1269,32 +1286,51 @@ async function analyzeDirectorReference() {
     })
     const result = await directorReferenceAPI.analyze(dramaId, { image_url: imageUrl })
     const analysis = result?.analysis || result
-    await assetsAPI.update(referenceAsset.id, {
-      metadata: {
-        status: 'completed',
-        source: DIRECTOR_REFERENCE_SOURCE,
-        mode: referenceMode,
-        analysis,
-        model: result?.model || null,
-      },
-    })
-    directorReferenceAnalysis.value = analysis
-    await loadDirectorReferenceHistory()
-    directorReferenceStatus.value = '站位参考已生成，可选择插入或覆盖'
-  } catch (error) {
-    if (referenceAsset?.id) {
+    let completedPersistError = null
+    try {
       await assetsAPI.update(referenceAsset.id, {
         metadata: {
-          status: 'failed',
+          status: 'completed',
           source: DIRECTOR_REFERENCE_SOURCE,
           mode: referenceMode,
-          error: error?.message || '站位参考分析失败',
+          analysis,
+          model: result?.model || null,
         },
-      }).catch(() => {})
+      })
+    } catch (error) {
+      completedPersistError = error
     }
-    directorReferenceStatus.value = error?.message || '站位参考分析失败'
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) {
+      directorReferenceAnalysis.value = analysis
+      directorReferenceAnalysisDramaId.value = capturedDramaId
+      if (!completedPersistError) await loadDirectorReferenceHistory()
+      directorReferenceStatus.value = completedPersistError
+        ? `站位已生成，但历史保存失败：${completedPersistError?.message || '未知错误'}`
+        : '站位参考已生成，可选择插入或覆盖'
+    }
+  } catch (error) {
+    let failurePersistError = null
+    if (referenceAsset?.id) {
+      try {
+        await assetsAPI.update(referenceAsset.id, {
+          metadata: {
+            status: 'failed',
+            source: DIRECTOR_REFERENCE_SOURCE,
+            mode: referenceMode,
+            error: error?.message || '站位参考分析失败',
+          },
+        })
+      } catch (updateError) {
+        failurePersistError = updateError
+      }
+    }
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) {
+      directorReferenceStatus.value = failurePersistError
+        ? `${error?.message || '站位参考分析失败'}；分析失败；失败状态回写失败：${failurePersistError?.message || '未知错误'}`
+        : (error?.message || '站位参考分析失败')
+    }
   } finally {
-    directorReferenceBusy.value = false
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) directorReferenceBusy.value = false
   }
 }
 
@@ -1312,25 +1348,39 @@ async function loadDirectorReferenceHistory() {
   try {
     const result = await assetsAPI.list({ drama_id: dramaId, type: 'image', category: 'director-ai-reference', page_size: 100 })
     const assets = Array.isArray(result) ? result : (result?.items || [])
+    if (Number(props.drama?.id) !== dramaId) return
     directorReferenceHistory.value = assets
       .filter((asset) => asset?.metadata?.status === 'completed'
         && asset?.metadata?.source === DIRECTOR_REFERENCE_SOURCE
         && asset?.metadata?.analysis)
       .map((asset) => ({ ...asset, title: directorReferenceAssetTitle(asset) }))
   } catch (error) {
+    if (Number(props.drama?.id) !== dramaId) return
     directorReferenceHistory.value = []
     directorReferenceStatus.value = error?.message || '站位参考历史读取失败'
   }
 }
 
+function resetDirectorReferenceForDramaChange() {
+  directorReferenceRequestId += 1
+  directorReferenceBusy.value = false
+  directorReferenceStatus.value = ''
+  directorReferenceAnalysis.value = null
+  directorReferenceAnalysisDramaId.value = null
+  directorReferenceHistory.value = []
+}
+
 function selectDirectorReferenceHistory(item) {
   directorReferenceAnalysis.value = item.metadata.analysis
+  directorReferenceAnalysisDramaId.value = Number(props.drama?.id)
   directorReferenceMode.value = item.metadata.mode || directorReferenceMode.value
   directorReferenceStatus.value = '已选择历史站位参考'
 }
 
 function applyDirectorReference() {
   if (!directorReferenceAnalysis.value) return
+  const dramaId = Number(props.drama?.id)
+  if (directorReferenceAnalysisDramaId.value !== dramaId) return
   const next = applyDirectorReferenceAnalysis(timeline.value, directorReferenceAnalysis.value, directorReferenceMode.value)
   mutateTimeline(next)
   buildStage()
@@ -3101,6 +3151,7 @@ onMounted(async () => {
 })
 
 watch(() => props.drama?.id, () => {
+  resetDirectorReferenceForDramaChange()
   void loadProjectAssets()
 })
 

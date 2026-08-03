@@ -5,6 +5,10 @@ import {
   removeDirectorObject,
 } from './directorTimeline.js'
 
+export function isCurrentDirectorReferenceRequest({ currentRequestId, requestId, currentDramaId, dramaId }) {
+  return Number(currentRequestId) === Number(requestId) && Number(currentDramaId) === Number(dramaId)
+}
+
 export function applyDirectorReferenceAnalysis(state, analysis, mode = 'insert') {
   let next = normalizeDirectorTimeline(state)
   if (mode === 'override') {
