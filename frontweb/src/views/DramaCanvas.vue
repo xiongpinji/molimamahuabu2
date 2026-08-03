@@ -622,6 +622,7 @@ import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
 import { imageToolsAPI } from '@/api/imageTools'
+import { videoToolsAPI } from '@/api/videoTools'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
@@ -2689,6 +2690,7 @@ async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, 
         assetSaveStatus: 'success',
         assetSaveError: '',
         savedAssetId: String(savedAsset?.id || ''),
+        savedAssetLocalPath: String(savedAsset?.local_path || ''),
       })
       return savedAsset
     } catch (error) {
@@ -3400,6 +3402,235 @@ function resumePendingImageToolOperations() {
         await patchFreeCanvasNodeData(node.id, {
           imageToolStatus: 'failed',
           imageToolError: error?.message || '图片处理失败',
+        })
+      })
+  }
+}
+
+const VIDEO_TOOL_POLL_INTERVAL_MS = 2000
+const VIDEO_TOOL_POLL_MAX_ATTEMPTS = 2400
+const resumedVideoToolTasks = new Set()
+
+function parseVideoToolTaskResult(task) {
+  if (task?.result && typeof task.result === 'object') return task.result
+  if (typeof task?.result === 'string' && task.result.trim()) {
+    try {
+      return JSON.parse(task.result)
+    } catch {
+      throw new Error('视频处理任务返回了无效结果')
+    }
+  }
+  throw new Error('视频处理任务未返回结果')
+}
+
+async function waitForVideoToolOperation(taskId) {
+  for (let attempt = 0; attempt < VIDEO_TOOL_POLL_MAX_ATTEMPTS; attempt += 1) {
+    const task = await videoToolsAPI.getOperation(taskId)
+    if (task?.status === 'completed') return parseVideoToolTaskResult(task)
+    if (task?.status === 'failed') throw new Error(task.error || task.message || '视频处理失败')
+    await new Promise((resolve) => setTimeout(resolve, VIDEO_TOOL_POLL_INTERVAL_MS))
+  }
+  const error = new Error('视频仍在后台处理中，请稍后刷新查看')
+  error.code = 'VIDEO_TOOL_POLL_TIMEOUT'
+  throw error
+}
+
+function videoStoryContent(story) {
+  const shots = Array.isArray(story?.shots) ? story.shots : []
+  const rows = shots.map((shot) => (
+    `镜头 ${shot.index}｜${Number(shot.startTime).toFixed(2)}s–${Number(shot.endTime).toFixed(2)}s｜`
+    + `时长 ${Number(shot.duration).toFixed(2)}s｜关键帧 ${shot.keyframeUrl || ''}`
+  ))
+  return [
+    `视频时长：${Number(story?.duration || 0).toFixed(2)}s`,
+    `画面尺寸：${story?.width || 0} × ${story?.height || 0}`,
+    `音频轨道：${story?.hasAudio ? '有' : '无'}`,
+    '',
+    ...rows,
+  ].join('\n')
+}
+
+async function completeVideoToolOperation(nodeId, operation, result, previousHistory = []) {
+  const sourceNode = freeCanvasNodeById(nodeId)
+  if (sourceNode?.type !== 'homeCanvasNode' || sourceNode.data?.kind !== 'video') {
+    throw new Error('视频处理完成，但源视频节点已不存在')
+  }
+
+  if (result.resultType === 'video_story') {
+    const existingStoryNode = allGraphNodes.value.find((node) => (
+      node.type === 'homeCanvasNode'
+      && node.data?.kind === 'text'
+      && String(node.data?.sourceVideoToolNodeId || '') === String(sourceNode.id)
+      && String(node.data?.videoToolTaskId || '') === String(result.taskId || '')
+    ))
+    if (!existingStoryNode) {
+      await createFreeCanvasNode('text', {
+        x: Number(sourceNode.position?.x || 0) + 700,
+        y: Number(sourceNode.position?.y || 0),
+      }, {
+        title: `${sourceNode.data?.title || '视频'} · 视频故事`,
+        content: videoStoryContent(result.story),
+        status: 'success',
+        sourceVideoToolNodeId: String(sourceNode.id),
+        videoToolOperation: operation,
+        videoToolTaskId: result.taskId,
+        videoStory: result.story,
+      })
+    }
+  } else {
+    const resultKind = result.resultType === 'audio' ? 'audio' : 'video'
+    if (!result.resultAssetId || !result.resultUrl) {
+      throw new Error('视频处理完成，但未返回可展示的新素材')
+    }
+    const existingResultNode = allGraphNodes.value.find((node) => (
+      node.type === 'homeCanvasNode'
+      && node.data?.kind === resultKind
+      && String(node.data?.sourceVideoToolNodeId || '') === String(sourceNode.id)
+      && String(node.data?.videoToolTaskId || '') === String(result.taskId || '')
+      && String(node.data?.savedAssetId || '') === String(result.resultAssetId)
+    ))
+    if (!existingResultNode) {
+      if (resultKind === 'video') {
+        await createFreeCanvasNode('video', {
+          x: Number(sourceNode.position?.x || 0) + 700,
+          y: Number(sourceNode.position?.y || 0),
+        }, {
+          title: `${sourceNode.data?.title || '视频'} · 编辑结果`,
+          content: sourceNode.data?.content || '',
+          url: result.resultUrl,
+          resultUrls: [result.resultUrl],
+          status: 'success',
+          savedAssetId: String(result.resultAssetId),
+          assetSaveStatus: 'success',
+          assetSaveError: '',
+          sourceVideoToolNodeId: String(sourceNode.id),
+          videoToolOperation: operation,
+          videoToolTaskId: result.taskId,
+          videoToolStatus: 'success',
+          videoToolError: '',
+        })
+      } else {
+        await createFreeCanvasNode('audio', {
+          x: Number(sourceNode.position?.x || 0) + 700,
+          y: Number(sourceNode.position?.y || 0),
+        }, {
+          title: `${sourceNode.data?.title || '视频'} · 分离音频`,
+          url: result.resultUrl,
+          resultUrls: [result.resultUrl],
+          status: 'success',
+          savedAssetId: String(result.resultAssetId),
+          assetSaveStatus: 'success',
+          assetSaveError: '',
+          sourceVideoToolNodeId: String(sourceNode.id),
+          videoToolOperation: operation,
+          videoToolTaskId: result.taskId,
+        })
+      }
+    }
+  }
+
+  const historyItem = {
+    taskId: result.taskId,
+    operation,
+    status: result.status,
+    resultAssetId: result.resultAssetId || null,
+    resultUrl: result.resultUrl || '',
+    createdAt: new Date().toISOString(),
+  }
+  await patchFreeCanvasNodeData(nodeId, {
+    videoToolTaskId: result.taskId,
+    videoToolStatus: 'success',
+    videoToolError: '',
+    videoToolRetryOperation: '',
+    videoToolRetryParameters: null,
+    videoToolHistory: [historyItem, ...previousHistory].slice(0, 20),
+  })
+}
+
+async function runVideoNodeTool(nodeOrId, operation, parameters = {}) {
+  let node = freeCanvasNodeById(nodeOrId)
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'video') {
+    throw new Error('该节点不是可处理的视频节点')
+  }
+  const sourceUrl = String(nodeResultUrl(node) || '')
+  if (!sourceUrl) throw new Error('视频节点暂无可处理结果')
+
+  let sourceAssetId = node.data?.savedAssetId
+  if (!sourceAssetId) {
+    const savedAsset = await saveFreeCanvasResultAsset(node, 'video', sourceUrl, null, node.data?.taskId || '')
+    sourceAssetId = savedAsset?.id
+    node = freeCanvasNodeById(node.id) || node
+  }
+  if (!sourceAssetId) throw new Error('视频尚未存入素材库，无法执行处理')
+
+  const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
+  await patchFreeCanvasNodeData(node.id, {
+    videoToolStatus: 'running',
+    videoToolError: '',
+    videoToolRetryOperation: operation,
+    videoToolRetryParameters: parameters,
+  })
+  let activeTaskId = ''
+  try {
+    const accepted = await videoToolsAPI.createOperation({
+      dramaId: dramaId.value,
+      assetId: node.data?.savedAssetId || sourceAssetId,
+      sourceNodeId: String(node.id),
+      operation,
+      parameters,
+    })
+    if (accepted?.status === 'processing' && accepted?.taskId) {
+      activeTaskId = String(accepted.taskId)
+      resumedVideoToolTasks.add(activeTaskId)
+      await patchFreeCanvasNodeData(node.id, {
+        videoToolTaskId: accepted.taskId,
+        videoToolStatus: 'running',
+      })
+    }
+    const result = accepted?.status === 'processing'
+      ? await waitForVideoToolOperation(accepted.taskId)
+      : accepted
+    await completeVideoToolOperation(node.id, operation, result, previousHistory)
+    if (activeTaskId) resumedVideoToolTasks.delete(activeTaskId)
+    return result
+  } catch (error) {
+    if (activeTaskId) resumedVideoToolTasks.delete(activeTaskId)
+    if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') {
+      await patchFreeCanvasNodeData(node.id, {
+        videoToolStatus: 'running',
+        videoToolError: error.message,
+      })
+      throw error
+    }
+    await patchFreeCanvasNodeData(node.id, {
+      videoToolStatus: 'failed',
+      videoToolError: error?.message || '视频处理失败',
+      videoToolRetryOperation: operation,
+      videoToolRetryParameters: parameters,
+    })
+    throw error
+  }
+}
+
+function resumePendingVideoToolOperations() {
+  for (const node of allGraphNodes.value) {
+    const taskId = String(node.data?.videoToolTaskId || '')
+    if (node.type !== 'homeCanvasNode'
+      || node.data?.kind !== 'video'
+      || node.data?.videoToolStatus !== 'running'
+      || !taskId
+      || resumedVideoToolTasks.has(taskId)) continue
+    resumedVideoToolTasks.add(taskId)
+    const operation = String(node.data?.videoToolRetryOperation || '')
+    const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
+    waitForVideoToolOperation(taskId)
+      .then((result) => completeVideoToolOperation(node.id, operation, result, previousHistory))
+      .catch(async (error) => {
+        resumedVideoToolTasks.delete(taskId)
+        if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') return
+        await patchFreeCanvasNodeData(node.id, {
+          videoToolStatus: 'failed',
+          videoToolError: error?.message || '视频处理失败',
         })
       })
   }
@@ -4777,6 +5008,7 @@ async function onCanvasAssetLibraryPick(asset) {
         status: 'success',
         error: '',
         savedAssetId: String(projectAssetId(projectAsset) || ''),
+        savedAssetLocalPath: String(projectAsset.local_path || ''),
         assetSaveStatus: 'success',
         assetSaveError: '',
         taskId: '',
@@ -5869,6 +6101,7 @@ provide(CANVAS_CONTEXT_KEY, {
   translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
   runImageNodeTool,
+  runVideoNodeTool,
   replaceFreeCanvasNodeImage,
   setFreeCanvasNodeMarker,
 })
@@ -7300,6 +7533,7 @@ watch(focusedNodeId, () => scheduleVirtualization())
 
 watch(allGraphNodes, () => {
   resumePendingImageToolOperations()
+  resumePendingVideoToolOperations()
 })
 
 watch(() => dramaId.value, () => {
