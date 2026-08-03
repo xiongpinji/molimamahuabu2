@@ -737,13 +737,21 @@ function closeEditor() {
 function updateEditorPosition() {
   if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value || !editorPanel.value) return
   const nodeBounds = nodeRoot.value.getBoundingClientRect()
-  let anchorBottom = nodeBounds.bottom
+  const anchorBounds = {
+    left: nodeBounds.left,
+    right: nodeBounds.right,
+    top: nodeBounds.top,
+    bottom: nodeBounds.bottom,
+  }
   nodeRoot.value
     .querySelectorAll('.image-node-toolbar, .toolbar-menu, .toolbar-history')
     .forEach((element) => {
       const bounds = element.getBoundingClientRect()
       if (!bounds.width || !bounds.height) return
-      anchorBottom = Math.max(anchorBottom, bounds.bottom)
+      anchorBounds.left = Math.min(anchorBounds.left, bounds.left)
+      anchorBounds.right = Math.max(anchorBounds.right, bounds.right)
+      anchorBounds.top = Math.min(anchorBounds.top, bounds.top)
+      anchorBounds.bottom = Math.max(anchorBounds.bottom, bounds.bottom)
     })
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
@@ -759,24 +767,71 @@ function updateEditorPosition() {
     ? nodeBounds.width / nodeRoot.value.offsetWidth
     : 1
   const desiredScale = Math.min(1, Math.max(0.6, canvasScale))
-  const editorScale = Math.max(0.01, Math.min(
+  const desiredTop = anchorBounds.bottom + nodeGap
+  const maximumViewportScale = Math.max(0.01, Math.min(
     desiredScale,
-    (viewportWidth - viewportPadding * 2) / panelWidth,
-    (viewportHeight - viewportPadding * 2) / panelHeight,
+    Math.max(1, viewportWidth - viewportPadding * 2) / panelWidth,
+    Math.max(1, viewportHeight - viewportPadding * 2) / panelHeight,
   ))
+  const anchorIntersectsViewport = anchorBounds.right > viewportPadding
+    && anchorBounds.left < viewportWidth - viewportPadding
+    && anchorBounds.bottom > viewportPadding
+    && anchorBounds.top < viewportHeight - viewportPadding
+  const availableBelowHeight = Math.max(0, viewportHeight - viewportPadding - desiredTop)
+  const fitBelowScale = Math.min(maximumViewportScale, availableBelowHeight / panelHeight)
+  const minimumUsableScale = 0.3
+  const canDockBelow = anchorIntersectsViewport
+    && desiredTop >= viewportPadding
+    && fitBelowScale >= minimumUsableScale
+  const availableLeftWidth = Math.max(
+    0,
+    Math.min(anchorBounds.left, viewportWidth - viewportPadding) - nodeGap - viewportPadding,
+  )
+  const availableRightWidth = Math.max(
+    0,
+    viewportWidth - viewportPadding - nodeGap - Math.max(anchorBounds.right, viewportPadding),
+  )
+  const preferredSide = availableRightWidth >= availableLeftWidth ? 'right' : 'left'
+  const availableSideWidth = Math.max(availableLeftWidth, availableRightWidth)
+  const sideScale = Math.min(maximumViewportScale, availableSideWidth / panelWidth)
+  const canDockBeside = anchorIntersectsViewport
+    && !canDockBelow
+    && sideScale >= minimumUsableScale
+  const availableAboveHeight = Math.max(
+    0,
+    Math.min(anchorBounds.top, viewportHeight - viewportPadding) - nodeGap - viewportPadding,
+  )
+  const fitAboveScale = Math.min(maximumViewportScale, availableAboveHeight / panelHeight)
+  const canDockAbove = anchorIntersectsViewport
+    && !canDockBelow
+    && !canDockBeside
+    && fitAboveScale >= minimumUsableScale
+  const hasUsableDock = canDockBelow || canDockBeside || canDockAbove
+  const editorScale = canDockBelow
+    ? fitBelowScale
+    : (canDockBeside ? sideScale : (canDockAbove ? fitAboveScale : maximumViewportScale))
   const scaledWidth = panelWidth * editorScale
   const scaledHeight = panelHeight * editorScale
-  const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - scaledWidth / 2
-  const panelLeft = Math.min(
+  const desiredLeft = (anchorBounds.left + anchorBounds.right) / 2 - scaledWidth / 2
+  const maximumTop = Math.max(viewportPadding, viewportHeight - scaledHeight - viewportPadding)
+  let panelLeft = Math.min(
     Math.max(viewportPadding, desiredLeft),
     Math.max(viewportPadding, viewportWidth - scaledWidth - viewportPadding),
   )
-  const desiredTop = anchorBottom + nodeGap
-  const overflowY = desiredTop + scaledHeight + viewportPadding - viewportHeight
-  if (overflowY > 1 && ctx?.panCanvasForNodeEditor?.(Math.ceil(overflowY))) return
-  const panelTop = Math.max(viewportPadding, desiredTop)
+  let panelTop = desiredTop
+  if (canDockBeside) {
+    panelLeft = preferredSide === 'right'
+      ? anchorBounds.right + nodeGap
+      : anchorBounds.left - nodeGap - scaledWidth
+    const desiredSideTop = (anchorBounds.top + anchorBounds.bottom) / 2 - scaledHeight / 2
+    panelTop = Math.min(Math.max(viewportPadding, desiredSideTop), maximumTop)
+  } else if (canDockAbove) {
+    panelTop = anchorBounds.top - nodeGap - scaledHeight
+  } else if (!canDockBelow) {
+    panelTop = anchorBounds.top > viewportHeight / 2 ? viewportPadding : maximumTop
+  }
 
-  editorDock.value = 'bottom'
+  editorDock.value = canDockBelow ? 'bottom' : (hasUsableDock ? 'viewport' : 'hidden')
   const nextStyle = {
     top: `${Math.round(panelTop)}px`,
     right: 'auto',
@@ -786,6 +841,8 @@ function updateEditorPosition() {
     maxHeight: 'none',
     transform: `scale(${editorScale})`,
     transformOrigin: 'top left',
+    visibility: hasUsableDock ? 'visible' : 'hidden',
+    pointerEvents: hasUsableDock ? 'auto' : 'none',
   }
   if (Object.entries(nextStyle).some(([key, value]) => editorPanelStyle.value[key] !== value)) {
     editorPanelStyle.value = nextStyle
