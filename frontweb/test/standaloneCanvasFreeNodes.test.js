@@ -105,6 +105,108 @@ test('图片工具状态、历史、标记色和多结果随自由节点持久�
   assert.deepEqual(restored.data.imageToolResultAssets, node.data.imageToolResultAssets)
 })
 
+test('视频工具任务状态、失败重试和派生节点血缘随自由节点持久化', () => {
+  const sourceNode = {
+    id: 'free:video:source',
+    type: 'homeCanvasNode',
+    position: { x: 20, y: 40 },
+    data: {
+      kind: 'video',
+      title: '源视频',
+      content: '',
+      url: '/static/source.mp4',
+      videoToolTaskId: 'video-tool-task-1',
+      videoToolStatus: 'failed',
+      videoToolError: '裁剪失败',
+      videoToolRetryOperation: 'crop',
+      videoToolRetryParameters: {
+        x: 0,
+        y: 0,
+        width: 160,
+        height: 90,
+        command: 'never-persist-this',
+      },
+      videoToolHistory: [{
+        taskId: 'video-tool-task-1',
+        operation: 'crop',
+        status: 'failed',
+        resultAssetId: 9,
+        resultUrl: '/static/derived/crop.mp4',
+        createdAt: '2026-08-01T00:00:00.000Z',
+      }],
+    },
+  }
+  const derivedNode = {
+    id: 'free:video:derived',
+    type: 'homeCanvasNode',
+    position: { x: 720, y: 40 },
+    data: {
+      kind: 'video',
+      title: '裁剪结果',
+      content: '',
+      url: '/static/derived/crop.mp4',
+      sourceVideoToolNodeId: sourceNode.id,
+      videoToolOperation: 'crop',
+      videoToolTaskId: 'video-tool-task-1',
+      videoToolStatus: 'success',
+    },
+  }
+  const storyNode = {
+    id: 'free:text:video-story',
+    type: 'homeCanvasNode',
+    position: { x: 720, y: 420 },
+    data: {
+      kind: 'text',
+      title: '视频故事',
+      content: '结构化解析结果',
+      sourceVideoToolNodeId: sourceNode.id,
+      videoToolOperation: 'analyze',
+      videoToolTaskId: 'video-tool-task-2',
+      videoStory: {
+        width: 160,
+        height: 90,
+        duration: 1.4,
+        hasAudio: true,
+        fps: 24,
+        sceneThreshold: 0.35,
+        shots: [{
+          index: 1,
+          startTime: 0,
+          endTime: 0.7,
+          duration: 0.7,
+          keyframeAssetId: 10,
+          keyframeUrl: '/static/derived/frame-1.jpg',
+        }],
+      },
+    },
+  }
+
+  const layout = buildCanvasLayoutPayload(
+    [sourceNode, derivedNode, storyNode],
+    { x: 0, y: 0, zoom: 1 },
+    null,
+    [],
+    { persistFreeNodes: true },
+  )
+  const [restoredSource, restoredDerived, restoredStory] = resolveFreeCanvasNodes(layout)
+
+  assert.equal(restoredSource.data.videoToolTaskId, 'video-tool-task-1')
+  assert.equal(restoredSource.data.videoToolStatus, 'failed')
+  assert.equal(restoredSource.data.videoToolError, '裁剪失败')
+  assert.equal(restoredSource.data.videoToolRetryOperation, 'crop')
+  assert.deepEqual(restoredSource.data.videoToolRetryParameters, {
+    x: 0,
+    y: 0,
+    width: 160,
+    height: 90,
+  })
+  assert.deepEqual(restoredSource.data.videoToolHistory, sourceNode.data.videoToolHistory)
+  assert.equal(restoredDerived.data.sourceVideoToolNodeId, sourceNode.id)
+  assert.equal(restoredDerived.data.videoToolOperation, 'crop')
+  assert.equal(restoredDerived.data.videoToolTaskId, 'video-tool-task-1')
+  assert.deepEqual(restoredStory.data.videoStory, storyNode.data.videoStory)
+})
+
 test('智能抠图失败重试操作随自由节点持久化且不接受额外参数', () => {
   const node = {
     id: 'free:image:smart-cutout-retry',

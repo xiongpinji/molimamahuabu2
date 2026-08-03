@@ -15,15 +15,6 @@
       </button>
     </div>
 
-    <div v-if="props.standalone && activePanel === 'history'" class="canvas-tool-panel">
-      <div class="tool-panel-title">生成历史</div>
-      <div v-if="!historyItems.length" class="tool-panel-empty">暂无生成记录</div>
-      <button v-for="item in historyItems" v-else :key="item.key" type="button" class="tool-panel-item" @click="focusHistoryItem(item)">
-        <span>{{ item.label }}</span>
-        <small>{{ item.message || item.step || '查看节点' }}</small>
-      </button>
-    </div>
-
     <div v-if="props.standalone && activePanel === 'locator'" class="canvas-tool-panel">
       <div class="tool-panel-title">节点定位</div>
       <div v-if="!locatorItems.length" class="tool-panel-empty">画布中暂无节点</div>
@@ -43,11 +34,14 @@
       <button v-if="!props.standalone" type="button" class="toolbar-button" :class="{ active: workflowOpen }" aria-label="打开工作流面板" title="工作流" @click="toggleWorkflow">
         <el-icon><Operation /></el-icon><span>工作流</span>
       </button>
-      <button type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" :title="props.standalone ? '我的资产' : '素材库'" @click="toggleSidebar">
-        <el-icon><FolderOpened /></el-icon><span>{{ props.standalone ? '我的资产' : '素材库' }}</span>
+      <button v-if="!props.standalone" type="button" class="toolbar-button" :class="{ active: sidebarOpen }" aria-label="打开素材库" title="素材库" @click="toggleSidebar">
+        <el-icon><FolderOpened /></el-icon><span>素材库</span>
       </button>
-      <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'history' }" title="生成历史" @click="togglePanel('history')">
-        <el-icon><Document /></el-icon><span>生成历史</span>
+      <button type="button" class="toolbar-button" :class="{ active: assetPanelOpen }" aria-label="打开我的资产" title="我的资产" @click="toggleAssetPanel('assets')">
+        <el-icon><Collection /></el-icon><span>我的资产</span>
+      </button>
+      <button type="button" class="toolbar-button" :class="{ active: historyPanelOpen }" aria-label="打开生成历史" title="生成历史" @click="toggleAssetPanel('history')">
+        <el-icon><Clock /></el-icon><span>生成历史</span>
       </button>
       <button v-if="props.standalone" type="button" class="toolbar-button" :class="{ active: activePanel === 'locator' }" title="节点定位" @click="togglePanel('locator')">
         <el-icon><Operation /></el-icon><span>节点定位</span>
@@ -97,7 +91,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Connection, Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, Setting, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
+import { Clock, Collection, Connection, Document, FolderOpened, FullScreen, Grid, List, Microphone, Operation, Picture, Plus, QuestionFilled, RefreshLeft, RefreshRight, Setting, VideoCamera, VideoPlay, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import CanvasSettingsPanel from '@/components/dramaCanvas/CanvasSettingsPanel.vue'
 
@@ -127,12 +121,13 @@ const addItems = computed(() => props.standalone ? standaloneAddItems : producti
 const workflowOpen = computed(() => Boolean(ctx?.showWorkflowPanel?.value))
 const sidebarOpen = computed(() => Boolean(ctx?.sidebarVisible?.value))
 const directorOpen = computed(() => Boolean(ctx?.directorStageVisible?.value))
+const assetPanelOpen = computed(() => ctx?.assetHistoryPanel?.value === 'assets')
+const historyPanelOpen = computed(() => ctx?.assetHistoryPanel?.value === 'history')
 const canUndo = computed(() => Boolean(ctx?.canUndo?.value))
 const canRedo = computed(() => Boolean(ctx?.canRedo?.value))
 const panelOpen = computed(() => Boolean(ctx?.focusedNodeId?.value))
 const selectedFreeCount = computed(() => ctx?.selectedFreeNodeIds?.value?.length || 0)
 const selectedGroupCount = computed(() => ctx?.allGraphNodes?.value?.filter?.((node) => node.type === 'canvasGroup' && node.selected).length || 0)
-const historyItems = computed(() => ctx?.runQueueItems?.value || [])
 const locatorItems = computed(() => ctx?.canvasNodeLocatorItems?.value || [])
 const snapEnabled = computed(() => Boolean(ctx?.canvasSnapEnabled?.value))
 const bottomToolbarScale = computed(() => Number(ctx?.canvasPreferences?.value?.bottom_toolbar_scale || 1))
@@ -164,11 +159,6 @@ function create(type) {
   ctx?.openCreateDialog?.(type)
 }
 
-function focusHistoryItem(item) {
-  activePanel.value = ''
-  ctx?.focusQueueItem?.(item)
-}
-
 function focusLocatorItem(item) {
   activePanel.value = ''
   ctx?.focusCanvasNode?.(item.id)
@@ -177,6 +167,7 @@ function focusLocatorItem(item) {
 function toggleSnap() { ctx?.toggleCanvasSnap?.() }
 function toggleWorkflow() { ctx?.toggleWorkflowPanel?.() }
 function toggleSidebar() { ctx?.toggleSidebar?.() }
+function toggleAssetPanel(mode) { ctx?.toggleAssetHistoryPanel?.(mode) }
 function focusScript() { ctx?.focusScript?.() }
 function alignNodes() { ctx?.alignNodes?.() }
 function openDirectorStage() { ctx?.openDirectorStage?.() }

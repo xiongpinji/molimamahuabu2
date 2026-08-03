@@ -315,7 +315,7 @@ test('图片工具栏裁剪保留原图并新建结果节点，刷新后形成�
   await node.click()
   const toolbar = node.locator('.image-node-toolbar')
   await expect(toolbar).toBeVisible()
-  await expect(toolbar.locator('.toolbar-icon')).toHaveCount(9)
+  await expect(toolbar.locator('.toolbar-icon')).toHaveCount(10)
   await toolbar.getByRole('button', { name: /工具/ }).hover()
   await expect(toolbar.locator('.toolbar-menu')).toBeVisible()
   await expect(toolbar).not.toContainText('对口型')

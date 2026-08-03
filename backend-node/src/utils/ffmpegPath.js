@@ -79,9 +79,22 @@ function hasLocalFfmpeg() {
   return false;
 }
 
+function hasLocalFfprobe() {
+  const fromEnv = process.env.FFPROBE_PATH;
+  if (fromEnv && fs.existsSync(fromEnv)) return true;
+  if (getCandidatePaths(ffprobeName).some((p) => fs.existsSync(p))) return true;
+  try {
+    const { spawnSync } = require('child_process');
+    const res = spawnSync(ffprobeName, ['-version']);
+    if (res.status === 0) return true;
+  } catch (_) {}
+  return false;
+}
+
 module.exports = {
   getFfmpegPath,
   getFfprobePath,
   hasLocalFfmpeg,
+  hasLocalFfprobe,
   toolsFfmpegDir,
 };

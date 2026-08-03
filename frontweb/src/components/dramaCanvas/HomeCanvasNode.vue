@@ -2,7 +2,7 @@
   <article
     ref="nodeRoot"
     class="home-canvas-node"
-    :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected }]"
+    :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected, 'is-video-story': Boolean(data.videoStory) }]"
     :style="data.imageMarkerColor ? { '--image-node-marker': data.imageMarkerColor } : undefined"
   >
     <header class="node-heading">
@@ -39,8 +39,32 @@
     <Handle class="node-handle node-handle-input" type="target" :position="Position.Left" />
     <Handle class="node-handle node-handle-output" type="source" :position="Position.Right" />
     <section v-if="data.kind === 'text'" class="text-preview">
-      <span class="text-preview-icon" aria-hidden="true">☰</span>
-      <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
+      <div v-if="data.videoStory" class="video-story-table-wrap">
+        <p class="video-story-summary">
+          {{ Number(data.videoStory.duration || 0).toFixed(2) }} 秒 ·
+          {{ data.videoStory.width }} × {{ data.videoStory.height }} ·
+          {{ data.videoStory.hasAudio ? '含音频' : '无音频' }}
+        </p>
+        <table class="video-story-table">
+          <thead>
+            <tr><th>镜号</th><th>关键帧</th><th>开始</th><th>结束</th><th>时长</th><th>画面 / 叙事 / 镜头</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="shot in data.videoStory.shots" :key="shot.index">
+              <td>{{ shot.index }}</td>
+              <td><img v-if="shot.keyframeUrl" :src="shot.keyframeUrl" :alt="`镜头 ${shot.index} 关键帧`" /></td>
+              <td>{{ Number(shot.startTime).toFixed(2) }}s</td>
+              <td>{{ Number(shot.endTime).toFixed(2) }}s</td>
+              <td>{{ Number(shot.duration).toFixed(2) }}s</td>
+              <td>{{ shot.visualDescription || shot.narrative || shot.camera || '未接入视觉描述模型' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template v-else>
+        <span class="text-preview-icon" aria-hidden="true">☰</span>
+        <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
+      </template>
     </section>
 
     <section v-else class="media-stage">
@@ -82,6 +106,14 @@
       v-if="data.kind === 'image' && data.url"
       :node-id="id"
       :data="data"
+      @suspend-editor="closeEditor"
+    />
+
+    <VideoNodeToolbar
+      v-if="data.kind === 'video' && primaryResultUrl && data.savedAssetId && isLocalVideoSource"
+      :node-id="id"
+      :data="data"
+      :source-url="primaryResultUrl"
       @suspend-editor="closeEditor"
     />
 
@@ -409,6 +441,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
+import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
 const props = defineProps({
   id: { type: String, default: '' },
@@ -516,6 +549,10 @@ const resultUrls = computed(() => [...new Set([
   props.data.url,
 ].filter(Boolean))])
 const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
+const isLocalVideoSource = computed(() => Boolean(
+  props.data.savedAssetLocalPath
+  || primaryResultUrl.value.startsWith('/static/'),
+))
 const extractingLastFrame = ref(false)
 const canExtractLastFrame = computed(() => (
   props.data.kind === 'video'
@@ -1037,6 +1074,7 @@ watch(isSelected, (selected) => {
 .home-canvas-node.kind-video {
   width: 640px;
 }
+.home-canvas-node.is-video-story { width: 720px; }
 .home-canvas-node::before {
   content: '';
   position: absolute;
@@ -1136,6 +1174,19 @@ watch(isSelected, (selected) => {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
 }
+.is-video-story .text-preview {
+  display: block;
+  min-height: 0;
+  padding: 14px;
+  text-align: left;
+}
+.video-story-table-wrap { overflow-x: auto; }
+.video-story-summary { max-width: none !important; margin: 0 0 10px !important; color: #d4d4d8 !important; }
+.video-story-table { width: 100%; border-collapse: collapse; color: #d4d4d8; font-size: 11px; }
+.video-story-table th,
+.video-story-table td { padding: 7px; border: 1px solid #3f3f46; vertical-align: middle; }
+.video-story-table th { background: #27272a; color: #fafafa; white-space: nowrap; }
+.video-story-table img { display: block; width: 88px; height: 50px; border-radius: 5px; object-fit: cover; }
 .node-expanded-editor {
   position: fixed;
   top: 16px;

@@ -12,6 +12,8 @@ export const IMAGE_TOOL_REFERENCE_CAPABILITY_KEYS = Object.freeze([
   'supports_narrative_grid',
   'supports_frame_forward',
   'supports_frame_backward',
+  'supports_portrait_texture',
+  'supports_portrait_emotion',
 ])
 
 export function isAuditedImageToolReferenceConfig(config = {}) {
