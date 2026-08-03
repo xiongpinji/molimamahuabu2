@@ -992,11 +992,13 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   ).all(episodeId);
   const videoMergeService = require('./videoMergeService');
   const scenes = [];
+  const missingStoryboards = [];
   for (let i = 0; i < storyboards.length; i++) {
     const sb = storyboards[i];
     const videoUrl = getVideoUrlForStoryboard(db, sb.id, baseUrl);
     if (!videoUrl) {
       log.warn('Finalize skip storyboard (no video)', { storyboard_id: sb.id, storyboard_number: sb.storyboard_number });
+      missingStoryboards.push(sb.id);
       continue;
     }
     scenes.push({
@@ -1005,6 +1007,16 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       duration: Number(sb.duration) || 5,
       order: i,
     });
+  }
+  if (missingStoryboards.length > 0) {
+    return {
+      message: `本集有 ${missingStoryboards.length} 个分镜缺少视频，无法合成完整视频`,
+      merge_id: null,
+      episode_id: episodeId,
+      scenes_count: scenes.length,
+      missing_storyboards_count: missingStoryboards.length,
+      task_id: null,
+    };
   }
   if (scenes.length === 0) {
     log.warn('Finalize no scenes with video', { episode_id: episodeId });
@@ -1028,15 +1040,18 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   const created = videoMergeService.create(db, log, mergeReq);
   const mergeId = created.merge_id || created.id;
   db.prepare('UPDATE episodes SET status = ? WHERE id = ?').run('processing', episodeId);
-  setImmediate(() => {
-    videoMergeService.processVideoMerge(db, log, mergeId, baseUrl);
-  });
+  if (!created.reused) {
+    setImmediate(() => {
+      videoMergeService.processVideoMerge(db, log, mergeId, baseUrl);
+    });
+  }
   return {
-    message: '视频合成任务已创建，正在后台处理',
+    message: created.reused ? '已有视频合成任务正在处理' : '视频合成任务已创建，正在后台处理',
     merge_id: mergeId,
     episode_id: episodeId,
     scenes_count: scenes.length,
     task_id: created.task_id,
+    reused: !!created.reused,
   };
 }
 
