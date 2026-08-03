@@ -17,6 +17,50 @@ const canvasProviderConfigService = require('./canvasProviderConfigService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
+const IMAGE_PROVIDER_RETRY_DELAYS_MS = [2000, 5000];
+const AIHUBCC_REFERENCE_TARGET_KB = 1536;
+
+function isProviderTemporarilyUnavailable(response) {
+  return response?.statusCode === 503
+    && /provider\s+temporary\s+unavailable/i.test(String(response.raw || ''));
+}
+
+function waitForImageProvider(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function postOpenAIImageJSONWithRetry(url, headers, body, timeoutMs = IMAGE_HTTP_TIMEOUT_MS, options = {}) {
+  const request = options.request || postJSONWithTimeout;
+  const sleep = options.sleep || waitForImageProvider;
+  const retryDelays = options.retryDelays || IMAGE_PROVIDER_RETRY_DELAYS_MS;
+  const onRetry = options.onRetry || (() => {});
+
+  let response;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    response = await request(url, headers, body, timeoutMs);
+    if (!isProviderTemporarilyUnavailable(response) || attempt === retryDelays.length) return response;
+    const delay = retryDelays[attempt];
+    onRetry({ attempt: attempt + 1, delay, status: response.statusCode });
+    await sleep(delay);
+  }
+  return response;
+}
+
+function formatImageHttpError(status, raw) {
+  if (isProviderTemporarilyUnavailable({ statusCode: status, raw })) {
+    return '图片生成服务暂时繁忙，自动重试后仍不可用，请稍后再试';
+  }
+
+  let errMsg = '图片生成请求失败: ' + status;
+  try {
+    const errJson = JSON.parse(raw);
+    const msg = errJson.error?.message || errJson.message || errJson.error;
+    if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
+  } catch (_) {
+    if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
+  }
+  return errMsg;
+}
 
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
 const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
@@ -75,6 +119,28 @@ async function compressImageBuffer(buffer, mimeType, targetKB = 2048, log = null
   return { buffer, mimeType };
 }
 
+async function prepareAihubccImageRef(value, filesBaseUrl, storageLocalPath, log) {
+  const resolved = resolveImageRef(value, filesBaseUrl, storageLocalPath);
+  const match = String(resolved || '').match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+  if (!match) return resolved;
+  const original = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  const optimized = await compressImageBuffer(original, match[1], AIHUBCC_REFERENCE_TARGET_KB, log);
+  return `data:${optimized.mimeType};base64,${optimized.buffer.toString('base64')}`;
+}
+
+function formatAihubccImageError(status, result) {
+  if (Number(status) === 413) {
+    return 'AIHubCC 图片请求失败: 413 参考图请求体过大，已尝试压缩，请更换较小的参考图';
+  }
+  const detail = String(result?.data?.error?.message || result?.data?.message || '').trim();
+  if (Number(status) === 400 && /invalid[_\s-]*request|invalid\s*json|不是合法\s*json/i.test(detail)) {
+    return 'AIHubCC 图片请求失败: 400 上游未接受图片请求';
+  }
+  const raw = String(result?.raw || '').trim();
+  const safeDetail = detail || (/^\s*</.test(raw) ? '' : raw.slice(0, 300));
+  return `AIHubCC 图片请求失败: ${status}${safeDetail ? ` ${safeDetail}` : ''}`;
+}
+
 // 惰性加载配置，避免循环依赖与启动顺序问题
 let _appConfig = null;
 function getAppConfig() {
@@ -111,10 +177,16 @@ function inferProtocol(provider, model) {
 async function callAihubccImageApi(config, log, opts = {}) {
   const model = String(opts.model || 'gpt-image-2').trim();
   const rawRefs = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean) : [];
-  const refs = rawRefs
-    .map((value) => resolveImageRef(value, opts.files_base_url, opts.storage_local_path))
-    .filter(Boolean)
-    .slice(0, 6);
+  const refs = [];
+  for (const value of rawRefs.slice(0, 6)) {
+    const reference = await prepareAihubccImageRef(
+      value,
+      opts.files_base_url,
+      opts.storage_local_path,
+      log,
+    );
+    if (reference) refs.push(reference);
+  }
   const flowModel = aihubccClient.isFlowImageModel(model);
   const asyncModel = aihubccClient.isAsyncImageModel(model);
   const endpoint = flowModel ? '/chat/completions' : (asyncModel ? '/videos' : (config.endpoint || '/images/generations'));
@@ -149,29 +221,55 @@ async function callAihubccImageApi(config, log, opts = {}) {
       timeoutMs: IMAGE_HTTP_TIMEOUT_MS,
     });
   } catch (error) {
-    return { error: `AIHubCC 图片请求失败: ${error.message}` };
+    return {
+      error: `AIHubCC 图片请求失败: ${error.message}`,
+      retryOnAnotherProvider: true,
+      failureStatus: 'network_error',
+    };
   }
   if (!result.response.ok) {
-    return { error: `AIHubCC 图片请求失败: ${result.response.status} ${(result.data?.error?.message || result.data?.message || result.raw || '').slice(0, 300)}` };
+    return {
+      error: formatAihubccImageError(result.response.status, result),
+      retryOnAnotherProvider: true,
+      failureStatus: result.response.status,
+    };
   }
   if (flowModel) {
     const flowUrl = aihubccClient.extractFlowImageUrl(result.data, config);
     return flowUrl
       ? { image_url: flowUrl }
-      : { error: 'AIHubCC Flow 图片接口未在 choices[0].message.content 返回图片地址' };
+      : {
+          error: 'AIHubCC Flow 图片接口未返回图片地址',
+          retryOnAnotherProvider: true,
+          failureStatus: 'invalid_response',
+        };
   }
   const direct = aihubccClient.extractMediaUrl(result.data, config);
   if (direct) return { image_url: direct };
   const b64 = result.data?.data?.[0]?.b64_json;
   if (b64) return { image_url: `data:image/png;base64,${String(b64).replace(/\s/g, '')}` };
   const taskId = aihubccClient.extractTaskId(result.data);
-  if (!taskId) return { error: 'AIHubCC 图片接口未返回图片地址或任务编号' };
-  return aihubccClient.pollTask(config, taskId, {
+  if (!taskId) {
+    return {
+      error: 'AIHubCC 图片接口未返回图片地址或任务编号',
+      retryOnAnotherProvider: true,
+      failureStatus: 'invalid_response',
+    };
+  }
+  const polled = await aihubccClient.pollTask(config, taskId, {
     mediaType: 'image',
     maxAttempts: Number(process.env.AIHUBCC_IMAGE_MAX_ATTEMPTS || 720),
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });
+  if (polled?.error && !polled?.indeterminate) {
+    return {
+      ...polled,
+      retryOnAnotherProvider: true,
+      failureStatus: 'task_failed',
+    };
+  }
+  return polled;
 }
 
 function normalizeDjpsdAspectRatio(size) {
@@ -325,8 +423,8 @@ async function callDjpsdMediaImageApi(config, log, opts = {}) {
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (configs.length === 0 && serviceType === 'storyboard_image') {
-    configs = aiConfigService.listConfigs(db, 'image');
+  if (serviceType === 'storyboard_image') {
+    configs = [...configs, ...aiConfigService.listConfigs(db, 'image')];
   }
   let active = configs.filter((c) => c.is_active);
   if (preferredProvider && String(preferredProvider).trim()) {
@@ -1961,7 +2059,7 @@ async function callImageApi(db, log, opts) {
   }
 
   if (protocol === 'aihubcc') {
-    return callAihubccImageApi(config, log, {
+    const result = await callAihubccImageApi(config, log, {
       prompt: effectivePrompt,
       model,
       size,
@@ -1971,6 +2069,11 @@ async function callImageApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    if (result.retryOnAnotherProvider && nextConfig) {
+      return switchToNextConfig({ status: result.failureStatus, error: result.error });
+    }
+    const { retryOnAnotherProvider, failureStatus, ...publicResult } = result;
+    return publicResult;
   }
 
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
@@ -2566,6 +2669,8 @@ module.exports = {
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
   formatGptImageUnknownResultError,
+  formatImageHttpError,
+  postOpenAIImageJSONWithRetry,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
   callImageApi: (...args) => runWithGenerationLimit('image', () => callImageApi(...args)),

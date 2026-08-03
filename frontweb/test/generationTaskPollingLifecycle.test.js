@@ -95,6 +95,52 @@ test('任务查询 404 是终态失败，只请求一次且返回可重试提示
   assert.equal(calls, 1)
 })
 
+test('图片或视频任务进入终态后立即通知余额组件刷新', async (t) => {
+  const originalWindow = globalThis.window
+  const browserWindow = new EventTarget()
+  globalThis.window = browserWindow
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window
+    else globalThis.window = originalWindow
+  })
+
+  const vite = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)),
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  })
+  t.after(() => vite.close())
+
+  const { useGenerationTaskStore, GEN_RESOURCE } = await vite.ssrLoadModule(
+    '/src/stores/generationTaskStore.js'
+  )
+  const { taskAPI } = await vite.ssrLoadModule('/src/api/task.js')
+  taskAPI.get = async () => ({ status: 'failed', error: '供应商明确拒绝' })
+
+  let refreshEvents = 0
+  browserWindow.addEventListener('moli:credit-account-refresh', () => {
+    refreshEvents += 1
+  })
+
+  setActivePinia(createPinia())
+  const store = useGenerationTaskStore()
+  const result = await store.pollTask('failed-video-task', {
+    dramaId: 1,
+    episodeId: 2,
+    resourceType: GEN_RESOURCE.SB_VIDEO,
+    resourceId: 9,
+    label: '分镜视频',
+  }, null, {
+    interval: 0,
+    maxAttempts: 1,
+    showErrorToast: false,
+    showTimeoutToast: false,
+  })
+
+  assert.equal(result.status, 'failed')
+  assert.equal(refreshEvents, 1)
+})
+
 test('任务轮询请求使用 silentError，避免全局拦截器重复弹出 404', async (t) => {
   const vite = await createServer({
     root: fileURLToPath(new URL('..', import.meta.url)),

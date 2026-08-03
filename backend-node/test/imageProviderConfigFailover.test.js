@@ -224,6 +224,86 @@ test('默认图片中转明确失败时切换到启用的其他图片模型', as
   }
 });
 
+test('AIHubCC 图片请求 413 时自动切换到其他可用图片模型', async () => {
+  const db = createDb();
+  let primaryServer;
+  let fallbackServer;
+  let primaryRequests = 0;
+  let fallbackRequests = 0;
+
+  try {
+    primaryServer = await listen(http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        primaryRequests += 1;
+        res.writeHead(413, { 'content-type': 'text/html' });
+        res.end('<html><head><title>413 Payload Too Large</title></head></html>');
+      });
+    }));
+    fallbackServer = await listen(http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        fallbackRequests += 1;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ url: 'https://result.example/after-413.png' }] }));
+      });
+    }));
+
+    const now = new Date().toISOString();
+    const insert = db.prepare(`
+      INSERT INTO ai_service_configs
+        (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+         endpoint, priority, is_default, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'test-key', ?, ?, '/v1/images/generations', ?, ?, 1, ?, ?)
+    `);
+    insert.run(
+      'storyboard_image',
+      'aihubcc',
+      'aihubcc',
+      'AIHubCC',
+      `http://127.0.0.1:${primaryServer.address().port}/v1`,
+      JSON.stringify(['gpt-image-2-2k']),
+      'gpt-image-2-2k',
+      100,
+      1,
+      now,
+      now
+    );
+    insert.run(
+      'image',
+      'openai',
+      'openai',
+      '备用图片模型',
+      `http://127.0.0.1:${fallbackServer.address().port}`,
+      JSON.stringify(['image-v1-4k']),
+      'image-v1-4k',
+      90,
+      0,
+      now,
+      now
+    );
+
+    const result = await imageClient.callImageApi(db, {
+      info() {},
+      warn() {},
+      error() {},
+    }, {
+      prompt: 'AIHubCC 413 容灾测试',
+      size: '1024x1024',
+      image_gen_id: 993,
+      imageServiceType: 'storyboard_image',
+    });
+
+    assert.deepEqual(result, { image_url: 'https://result.example/after-413.png' });
+    assert.equal(primaryRequests, 1);
+    assert.equal(fallbackRequests, 1);
+  } finally {
+    db.close();
+    if (primaryServer) await close(primaryServer);
+    if (fallbackServer) await close(fallbackServer);
+  }
+});
+
 test('DJPSD 4K 图片模型按媒体任务协议提交并轮询成功结果', async () => {
   const db = createDb();
   const requests = [];
