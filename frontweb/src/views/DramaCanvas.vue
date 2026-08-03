@@ -676,6 +676,7 @@ import {
   resolveCanvasConnectionDrop,
 } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
+import { calculateCanvasKeyboardPanDelta, isCanvasKeyboardPanKey } from '@/utils/canvas-keyboard-pan'
 import {
   mergeGenerationHistory,
   normalizeGenerationHistory,
@@ -726,7 +727,10 @@ import {
   getCanvasEpisodeContext,
   isCanvasAssetVisible,
 } from '@/utils/canvasEpisodeContext'
-import { shouldProjectCanvasAsset } from '@/utils/canvasAssetProjection'
+import {
+  canvasAssetProjectionPayload,
+  shouldProjectCanvasAsset,
+} from '@/utils/canvasAssetProjection'
 import { findVisualDirectionDirectorEntry } from '@/utils/visualDirectionDirectorBridge'
 
 import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
@@ -893,7 +897,6 @@ const freeNodeFlowPosition = ref(null)
 const freeNodeForm = ref({ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 })
 const FREE_CANVAS_DEFAULTS_STORAGE_KEY = 'moli_canvas_free_node_defaults'
 const FREE_CANVAS_GENERATION_HISTORY_LIMIT = 20
-const CANVAS_KEYBOARD_PAN_STEP = 56
 const freeCanvasModelConfigs = ref([])
 const freeCanvasModelCatalog = ref([])
 const freeCanvasVoiceOptions = ref([])
@@ -1055,6 +1058,10 @@ let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
 let runQueueTimer = null
+let canvasKeyboardPanFrame = null
+let canvasKeyboardPanLastTimestamp = null
+let canvasKeyboardPanMoved = false
+const pressedCanvasPanKeys = new Set()
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
@@ -4149,7 +4156,9 @@ function clearCanvasAssetFailureNode(nodeId) {
 
 async function ensureProjectMediaAsset(asset) {
   const assetId = projectAssetId(asset)
-  if (asset?.source_kind === 'project' && assetId) return { ...asset, id: assetId }
+  if (asset?.source_kind === 'project' && assetId) {
+    return markProjectAssetForCanvas(asset, 'canvas_asset_picker')
+  }
   if (!drama.value?.id) throw new Error('项目信息不完整，无法加入素材')
   const localPath = assetLocalPath(asset)
   const url = assetDisplayUrl(asset)
@@ -4175,6 +4184,19 @@ async function ensureProjectMediaAsset(asset) {
       voice_catalog: asset?.voice_catalog || null,
     },
   })
+}
+
+async function markProjectAssetForCanvas(asset, addSource) {
+  const assetId = projectAssetId(asset)
+  if (!assetId) throw new Error('素材信息不完整，无法加入画布')
+  const payload = canvasAssetProjectionPayload(asset, addSource)
+  const updatedAsset = await assetsAPI.update(assetId, payload)
+  return {
+    ...asset,
+    ...(updatedAsset || {}),
+    id: assetId,
+    metadata: updatedAsset?.metadata || payload.metadata,
+  }
 }
 
 async function placeProjectAssetNode(asset, flowPosition = null) {
@@ -4579,8 +4601,9 @@ function openCanvasUpload(flowPosition = null, accept = CANVAS_MEDIA_ACCEPT) {
 
 async function createCanvasProjectAssetFromUpload(file, flowPosition = null, offsetIndex = 0) {
   if (!drama.value?.id) throw new Error('项目信息不完整，无法上传素材')
-  const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
-  if (!asset?.id) throw new Error('素材上传成功但未返回资产记录')
+  const uploadedAsset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
+  if (!uploadedAsset?.id) throw new Error('素材上传成功但未返回资产记录')
+  const asset = await markProjectAssetForCanvas(uploadedAsset, 'canvas_context_upload')
   const targetPos = flowPosition ? { x: flowPosition.x + offsetIndex * 36, y: flowPosition.y + offsetIndex * 36 } : null
   const nodeId = await placeProjectAssetNode(asset, targetPos)
   const assignResult = await autoAssignCanvasAssetToSelectedStoryboard(asset)
@@ -6440,15 +6463,8 @@ function selectVisibleCanvasNodes() {
   ElMessage.success(`已选中 ${ids.length} 个节点`)
 }
 
-function panCanvasByKeyboard(key) {
-  const deltas = {
-    w: { x: 0, y: CANVAS_KEYBOARD_PAN_STEP },
-    a: { x: CANVAS_KEYBOARD_PAN_STEP, y: 0 },
-    s: { x: 0, y: -CANVAS_KEYBOARD_PAN_STEP },
-    d: { x: -CANVAS_KEYBOARD_PAN_STEP, y: 0 },
-  }
-  const delta = deltas[key]
-  if (!delta) return false
+function panCanvasByKeyboard(delta) {
+  if (!delta.x && !delta.y) return false
   const viewport = canvasFlowApi.value?.getViewport?.() || currentViewport.value
   const nextViewport = {
     x: Number(viewport?.x || 0) + delta.x,
@@ -6456,10 +6472,33 @@ function panCanvasByKeyboard(key) {
     zoom: Number(viewport?.zoom || 1),
   }
   currentViewport.value = nextViewport
-  const movement = canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
-  if (movement?.finally) movement.finally(scheduleLayoutSave)
-  else scheduleLayoutSave()
+  canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
   return true
+}
+
+function runCanvasKeyboardPanFrame(timestamp) {
+  canvasKeyboardPanFrame = null
+  if (!pressedCanvasPanKeys.size) return
+  const elapsed = canvasKeyboardPanLastTimestamp == null ? 16 : timestamp - canvasKeyboardPanLastTimestamp
+  canvasKeyboardPanLastTimestamp = timestamp
+  const delta = calculateCanvasKeyboardPanDelta(pressedCanvasPanKeys, elapsed)
+  canvasKeyboardPanMoved = panCanvasByKeyboard(delta) || canvasKeyboardPanMoved
+  canvasKeyboardPanFrame = window.requestAnimationFrame(runCanvasKeyboardPanFrame)
+}
+
+function startCanvasKeyboardPan() {
+  if (canvasKeyboardPanFrame != null) return
+  canvasKeyboardPanLastTimestamp = null
+  runCanvasKeyboardPanFrame(window.performance?.now?.() || Date.now())
+}
+
+function stopCanvasKeyboardPan() {
+  pressedCanvasPanKeys.clear()
+  if (canvasKeyboardPanFrame != null) window.cancelAnimationFrame(canvasKeyboardPanFrame)
+  canvasKeyboardPanFrame = null
+  canvasKeyboardPanLastTimestamp = null
+  if (canvasKeyboardPanMoved) scheduleLayoutSave()
+  canvasKeyboardPanMoved = false
 }
 
 function onCanvasKeydown(event) {
@@ -6511,9 +6550,10 @@ function onCanvasKeydown(event) {
     setSpacePanning(true)
     return
   }
-  if (!event.ctrlKey && !event.metaKey && !event.altKey && ['w', 'a', 's', 'd'].includes(key)) {
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && isCanvasKeyboardPanKey(key)) {
     event.preventDefault()
-    panCanvasByKeyboard(key)
+    pressedCanvasPanKeys.add(key)
+    startCanvasKeyboardPan()
     return
   }
   const modifier = event.ctrlKey || event.metaKey
@@ -6543,6 +6583,11 @@ function onCanvasKeydown(event) {
 
 function onCanvasKeyup(event) {
   const key = String(event.key || '').toLowerCase()
+  if (pressedCanvasPanKeys.delete(key)) {
+    event.preventDefault()
+    if (!pressedCanvasPanKeys.size) stopCanvasKeyboardPan()
+    return
+  }
   if (key === ' ' || key === 'spacebar') {
     event.preventDefault()
     setSpacePanning(false)
@@ -6551,6 +6596,7 @@ function onCanvasKeyup(event) {
 
 function onCanvasBlur() {
   setSpacePanning(false)
+  stopCanvasKeyboardPan()
 }
 
 function persistCanvasState(options = {}) {
@@ -7251,6 +7297,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopCanvasKeyboardPan()
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
