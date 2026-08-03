@@ -12,7 +12,8 @@ export function computeStandaloneNodePosition(nodes = [], center = { x: 80, y: 8
       && Math.abs(Number(position.y || 0) - candidate.y) < DEFAULT_ROW_GAP
   })
 
-  for (let index = 0; index <= freeNodes.length; index += 1) {
+  const maxSlots = Math.max(DEFAULT_COLUMNS, (freeNodes.length + 1) * DEFAULT_COLUMNS)
+  for (let index = 0; index < maxSlots; index += 1) {
     const candidate = {
       x: origin.x + (index % DEFAULT_COLUMNS) * DEFAULT_COLUMN_GAP,
       y: origin.y + Math.floor(index / DEFAULT_COLUMNS) * DEFAULT_ROW_GAP,
