@@ -3,6 +3,11 @@
 const aiClient = require('./aiClient');
 const { safeParseAIJSON } = require('../utils/safeJson');
 const { resolveScriptAnalysisSkill } = require('./scriptAnalysisSkillRegistry');
+const {
+  compileShotPrompt,
+  listStrategyPresets,
+  validatePerformanceTrack,
+} = require('./shortDramaProductionDirector');
 
 const SYSTEM_PROMPT = resolveScriptAnalysisSkill().system_prompt;
 
@@ -73,8 +78,16 @@ function normalizeDescription(value, type) {
   return { ...item, description };
 }
 
-function buildUserPrompt(project, skill) {
+function buildUserPrompt(project, skill, { strategyPreset } = {}) {
+  const selectedSkill = skill || resolveScriptAnalysisSkill();
+  const schemaVersion = selectedSkill?.output_schema_version || '1.0';
   const lockedFacts = parseArray(project.locked_facts_json);
+  const strategyInstruction = schemaVersion === '2.0'
+    ? `\n创作策略预设：${strategyPreset || selectedSkill.default_strategy_preset || 'fusion'}\n必须原样写入 creative_strategy.preset。\n`
+    : '';
+  const shotDurationContract = schemaVersion === '2.0'
+    ? '              "duration": 4,\n'
+    : '';
   const basePrompt = `请分析以下短剧剧本并输出结构化生产包。
 
 标题：${project.title || '未命名剧本'}
@@ -84,10 +97,11 @@ ${JSON.stringify(lockedFacts, null, 2)}
 
 原始剧本：
 ${project.source_script || ''}
+${strategyInstruction}
 
 输出契约：
 {
-  "schema_version": "1.0",
+  "schema_version": "${schemaVersion}",
   "source": {
     "title": "",
     "source_script": "",
@@ -113,7 +127,7 @@ ${project.source_script || ''}
           "shots": [
             {
               "shot_number": 1,
-              "description": "",
+${shotDurationContract}              "description": "",
               "source_basis": [],
               "image_prompt": "",
               "video_prompt": "",
@@ -136,8 +150,8 @@ ${project.source_script || ''}
 
 描述要求：人物、场景、道具和每个镜头的 description 必须使用中文完整句子，
 只描述原剧本已有事实和可审核的制作信息，不得用名称或提示词字段代替。`;
-  return skill?.user_prompt_addendum
-    ? `${basePrompt}\n\n${skill.user_prompt_addendum}`
+  return selectedSkill?.user_prompt_addendum
+    ? `${basePrompt}\n\n${selectedSkill.user_prompt_addendum}`
     : basePrompt;
 }
 
@@ -176,13 +190,14 @@ function normalizeVisualDirection(value) {
   };
 }
 
-function normalizeProductionPackage(rawValue, project) {
+function normalizeProductionPackage(rawValue, project, { schemaVersion } = {}) {
   const raw = asObject(rawValue);
   const normalized = asObject(raw.normalized_script);
   const review = asObject(raw.review);
+  const resolvedSchemaVersion = schemaVersion || raw.schema_version || '1.0';
 
   const result = {
-    schema_version: '1.0',
+    schema_version: resolvedSchemaVersion,
     source: {
       title: project.title || '',
       source_script: project.source_script || '',
@@ -215,7 +230,90 @@ function normalizeProductionPackage(rawValue, project) {
   };
   const visualDirection = normalizeVisualDirection(raw.visual_direction);
   if (visualDirection) result.visual_direction = visualDirection;
+  if (resolvedSchemaVersion === '2.0') {
+    result.creative_strategy = raw.creative_strategy;
+    result.episodes = result.episodes.map((episode) => ({
+      ...episode,
+      scenes: parseArray(episode?.scenes).map((scene) => ({
+        ...scene,
+        shots: parseArray(scene?.shots).map((shot) => ({
+          ...shot,
+          prompt_compilation: {
+            generic: compileShotPrompt(shot, { adapter: 'generic-video' }),
+            seedance2: compileShotPrompt(shot, {
+              adapter: 'seedance2',
+              model: 'seedance-2.0',
+            }),
+          },
+        })),
+      })),
+    }));
+  }
   return result;
+}
+
+function requireNonBlankArray(value, field) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => !String(item || '').trim())) {
+    throw new Error(`模型返回的 ${field} 必须是非空依据数组`);
+  }
+}
+
+function validateCreativeStrategy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('模型返回的 creative_strategy 必须是对象');
+  }
+  const presetIds = new Set(listStrategyPresets().map((preset) => preset.id));
+  if (!presetIds.has(value.preset)) {
+    throw new Error('模型返回的 creative_strategy.preset 无效');
+  }
+  for (const field of ['audience', 'story_engine']) {
+    if (!String(value[field] || '').trim()) {
+      throw new Error(`模型返回的 creative_strategy.${field} 不能为空`);
+    }
+  }
+  for (const field of ['genre_tracks', 'season_arc', 'episode_beats']) {
+    if (!Array.isArray(value[field])) {
+      throw new Error(`模型返回的 creative_strategy.${field} 必须是数组`);
+    }
+  }
+  requireNonBlankArray(value.source_basis, 'creative_strategy.source_basis');
+  if (!value.commercial_beats || typeof value.commercial_beats !== 'object'
+    || Array.isArray(value.commercial_beats)
+    || typeof value.commercial_beats.enabled !== 'boolean'
+    || !Array.isArray(value.commercial_beats.items)) {
+    throw new Error('模型返回的 creative_strategy.commercial_beats 无效');
+  }
+  if (!value.audit || typeof value.audit !== 'object' || Array.isArray(value.audit)
+    || !Array.isArray(value.audit.issues)) {
+    throw new Error('模型返回的 creative_strategy.audit.issues 必须是数组');
+  }
+}
+
+function validatePromptIR(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('模型返回的 prompt_ir 必须是对象');
+  }
+  for (const field of ['subject_anchors', 'references', 'negative_constraints', 'safety_tags']) {
+    if (!Array.isArray(value[field])) {
+      throw new Error(`模型返回的 prompt_ir.${field} 必须是数组`);
+    }
+  }
+  for (const field of ['primary_action', 'scene', 'lighting', 'style']) {
+    if (!String(value[field] || '').trim()) {
+      throw new Error(`模型返回的 prompt_ir.${field} 不能为空`);
+    }
+  }
+  if (!value.camera || typeof value.camera !== 'object' || Array.isArray(value.camera)) {
+    throw new Error('模型返回的 prompt_ir.camera 必须是对象');
+  }
+  for (const field of ['shot_type', 'angle', 'movement', 'composition']) {
+    if (!String(value.camera[field] || '').trim()) {
+      throw new Error(`模型返回的 prompt_ir.camera.${field} 不能为空`);
+    }
+  }
+  if (!value.continuity || typeof value.continuity !== 'object' || Array.isArray(value.continuity)) {
+    throw new Error('模型返回的 prompt_ir.continuity 必须是对象');
+  }
 }
 
 function validateVisualDirection(value) {
@@ -283,12 +381,23 @@ function validateVisualDirection(value) {
   });
 }
 
-function validateProductionPackage(value, { requireVisualDirection = false } = {}) {
+function validateProductionPackage(value, {
+  requireVisualDirection = false,
+  requireProductionDirection = false,
+  expectedSchemaVersion,
+  expectedStrategyPreset,
+} = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('模型未返回有效的剧本分析结构，请调整模型配置后重试');
   }
-  if (value.schema_version !== '1.0') {
-    throw new Error('模型返回的 schema_version 必须是 1.0');
+  if (!['1.0', '2.0'].includes(value.schema_version)) {
+    throw new Error('模型返回的 schema_version 必须是 1.0 或 2.0');
+  }
+  if (expectedSchemaVersion && value.schema_version !== expectedSchemaVersion) {
+    throw new Error(`模型返回的 schema_version 必须是 ${expectedSchemaVersion}`);
+  }
+  if (requireProductionDirection && value.schema_version !== '2.0') {
+    throw new Error('模型返回的 schema_version 必须是 2.0');
   }
   if (!value.normalized_script || typeof value.normalized_script !== 'object' || Array.isArray(value.normalized_script)) {
     throw new Error('模型返回的 normalized_script 必须是对象');
@@ -317,6 +426,12 @@ function validateProductionPackage(value, { requireVisualDirection = false } = {
   }
   if (value.visual_direction !== undefined) {
     validateVisualDirection(value.visual_direction);
+  }
+  if (value.schema_version === '2.0') {
+    validateCreativeStrategy(value.creative_strategy);
+    if (expectedStrategyPreset && value.creative_strategy.preset !== expectedStrategyPreset) {
+      throw new Error(`模型返回的 creative_strategy.preset 必须与用户选择的 ${expectedStrategyPreset} 一致`);
+    }
   }
   if (value.episodes.length === 0) {
     throw new Error('模型返回的 episodes 不能为空');
@@ -349,19 +464,33 @@ function validateProductionPackage(value, { requireVisualDirection = false } = {
         if (!Array.isArray(shot.dialogue)) {
           throw new Error('每个镜头必须包含 dialogue 数组');
         }
+        if (value.schema_version === '2.0') {
+          const duration = Number(shot.duration);
+          if (!Number.isFinite(duration) || duration <= 0) {
+            throw new Error('V2 每个镜头的 duration 必须大于 0');
+          }
+          if (!shot.performance || typeof shot.performance !== 'object'
+            || Array.isArray(shot.performance) || !Array.isArray(shot.performance.tracks)) {
+            throw new Error('V2 每个镜头必须包含 performance.tracks 数组');
+          }
+          shot.performance.tracks.forEach((track) => {
+            validatePerformanceTrack(track, { durationMs: duration * 1000 });
+          });
+          validatePromptIR(shot.prompt_ir);
+        }
       }
     }
   }
   return value;
 }
 
-async function runAnalysis({ db, log, project, skill }) {
+async function runAnalysis({ db, log, project, skill, strategyPreset }) {
   const selectedSkill = skill || resolveScriptAnalysisSkill();
   const raw = await aiClient.generateText(
     db,
     log,
     'text',
-    buildUserPrompt(project, selectedSkill),
+    buildUserPrompt(project, selectedSkill, { strategyPreset }),
     selectedSkill.system_prompt,
     {
       scene_key: 'story_generation',
@@ -370,11 +499,22 @@ async function runAnalysis({ db, log, project, skill }) {
       max_tokens: 12000,
     },
   );
-  const normalized = normalizeProductionPackage(safeParseAIJSON(raw, {}, log), project);
-  return validateProductionPackage(
-    normalized,
-    { requireVisualDirection: Boolean(selectedSkill.require_visual_direction) },
+  const parsed = validateProductionPackage(
+    safeParseAIJSON(raw, {}, log),
+    {
+      expectedSchemaVersion: selectedSkill.output_schema_version,
+      requireVisualDirection: Boolean(
+        selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+      ),
+      requireProductionDirection: Boolean(selectedSkill.require_production_direction),
+      expectedStrategyPreset: selectedSkill.require_production_direction
+        ? (strategyPreset || selectedSkill.default_strategy_preset || 'fusion')
+        : undefined,
+    },
   );
+  return normalizeProductionPackage(parsed, project, {
+    schemaVersion: selectedSkill.output_schema_version,
+  });
 }
 
 async function runRevision({ db, log, project, currentPackage, note, skill }) {
@@ -392,11 +532,24 @@ async function runRevision({ db, log, project, currentPackage, note, skill }) {
       max_tokens: 12000,
     },
   );
-  const normalized = normalizeProductionPackage(safeParseAIJSON(raw, {}, log), project);
-  return validateProductionPackage(
-    normalized,
-    { requireVisualDirection: Boolean(selectedSkill.require_visual_direction) },
+  const parsed = validateProductionPackage(
+    safeParseAIJSON(raw, {}, log),
+    {
+      expectedSchemaVersion: selectedSkill.output_schema_version,
+      requireVisualDirection: Boolean(
+        selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+      ),
+      requireProductionDirection: Boolean(selectedSkill.require_production_direction),
+      expectedStrategyPreset: selectedSkill.require_production_direction
+        ? (currentPackage?.creative_strategy?.preset
+          || selectedSkill.default_strategy_preset
+          || 'fusion')
+        : undefined,
+    },
   );
+  return normalizeProductionPackage(parsed, project, {
+    schemaVersion: selectedSkill.output_schema_version,
+  });
 }
 
 module.exports = {

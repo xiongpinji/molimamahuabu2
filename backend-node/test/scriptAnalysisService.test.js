@@ -75,8 +75,63 @@ function validVisualDirection() {
   };
 }
 
+function validV2Package() {
+  const value = validPackage();
+  value.schema_version = '2.0';
+  value.visual_direction = validVisualDirection();
+  value.creative_strategy = {
+    preset: 'fusion',
+    audience: '喜欢悬疑和人物关系推进的短剧观众',
+    genre_tracks: ['悬疑', '亲情'],
+    story_engine: '失踪亲人回归推动旧案重启',
+    season_arc: ['重逢', '查明失踪真相'],
+    episode_beats: ['雨夜重逢钩子'],
+    commercial_beats: { enabled: false, items: [] },
+    source_basis: ['林夏在雨夜打开门，看见失踪三年的哥哥。'],
+    audit: { issues: [] },
+  };
+  const shot = value.episodes[0].scenes[0].shots[0];
+  shot.duration = 4;
+  shot.performance = {
+    tracks: [{
+      character_ref: 'character:lin-xia',
+      initial_state: '保持戒备',
+      trigger: '看见失踪三年的哥哥',
+      beats: [{
+        start_ms: 0,
+        end_ms: 4000,
+        emotion: '震惊转为悲伤',
+        intensity: 4,
+        face: { gaze: '视线锁定门外' },
+        breath: '短暂屏息后缓慢呼气',
+      }],
+      final_state: '眼眶湿润但仍站在门内',
+      constraints: ['不夸张嚎哭'],
+      source_basis: ['林夏打开门，看见失踪三年的哥哥。'],
+    }],
+  };
+  shot.prompt_ir = {
+    subject_anchors: ['林夏，短发，深色家居服'],
+    primary_action: '林夏打开门后停住',
+    scene: '雨夜公寓门厅',
+    camera: {
+      shot_type: '近景',
+      angle: '平视',
+      movement: '缓慢推进后停止',
+      composition: '门框形成画中框',
+    },
+    lighting: '室外冷光与室内暖光对照',
+    style: '写实电影质感',
+    references: [],
+    continuity: { start: '右手握门把手', end: '仍站在门内' },
+    negative_constraints: ['身份漂移'],
+    safety_tags: [],
+  };
+  return value;
+}
+
 test('buildUserPrompt includes source script and locked facts', () => {
-  const prompt = buildUserPrompt(project);
+  const prompt = buildUserPrompt(project, resolveScriptAnalysisSkill('short-drama-director'));
   assert.match(prompt, /哥哥失踪三年/);
   assert.match(prompt, /林夏在雨夜打开门/);
   assert.match(prompt, /schema_version/);
@@ -90,6 +145,17 @@ test('buildUserPrompt requires readable descriptions for production entities', (
   assert.match(prompt, /"scene_bible": \[\{[\s\S]*"description": ""/);
   assert.match(prompt, /"prop_bible": \[\{[\s\S]*"description": ""/);
   assert.match(prompt, /"shot_number": 1,[\s\S]*"description": ""/);
+});
+
+test('V2 production director prompt locks schema and selected creative strategy', () => {
+  const skill = resolveScriptAnalysisSkill('short-drama-production-director');
+  const prompt = buildUserPrompt(project, skill, { strategyPreset: 'female' });
+
+  assert.match(prompt, /"schema_version": "2\.0"/);
+  assert.match(prompt, /创作策略预设：female/);
+  assert.match(prompt, /"creative_strategy"/);
+  assert.match(prompt, /"performance"/);
+  assert.match(prompt, /"prompt_ir"/);
 });
 
 test('buildUserPrompt only adds visual direction contract for the optional enhanced Skill', () => {
@@ -185,6 +251,69 @@ test('normalizeProductionPackage preserves the optional visual direction sidecar
 test('validateProductionPackage accepts structured output with episodes', () => {
   const value = validPackage();
   assert.equal(validateProductionPackage(value), value);
+});
+
+test('validateProductionPackage accepts complete V2 director storyboard package', () => {
+  const value = validV2Package();
+  assert.equal(
+    validateProductionPackage(value, {
+      expectedSchemaVersion: '2.0',
+      requireVisualDirection: true,
+      requireProductionDirection: true,
+    }),
+    value,
+  );
+
+  const normalized = normalizeProductionPackage(value, project, { schemaVersion: '2.0' });
+  assert.equal(normalized.schema_version, '2.0');
+  assert.equal(normalized.creative_strategy.preset, 'fusion');
+  assert.deepEqual(normalized.episodes[0].scenes[0].shots[0].performance, value.episodes[0].scenes[0].shots[0].performance);
+  assert.equal(
+    normalized.episodes[0].scenes[0].shots[0].prompt_compilation.generic.adapter,
+    'generic-video@1.0',
+  );
+  assert.equal(
+    normalized.episodes[0].scenes[0].shots[0].prompt_compilation.seedance2.adapter,
+    'seedance2@2.0',
+  );
+  assert.equal(
+    normalized.episodes[0].scenes[0].shots[0].prompt_compilation.seedance2.generation_ready,
+    true,
+  );
+  assert.equal(normalized.source.source_script, project.source_script);
+});
+
+test('validateProductionPackage rejects V2 performance timing outside shot duration', () => {
+  const value = validV2Package();
+  value.episodes[0].scenes[0].shots[0].performance.tracks[0].beats[0].end_ms = 4100;
+
+  assert.throws(
+    () => validateProductionPackage(value, { requireProductionDirection: true }),
+    /超出镜头时长/,
+  );
+});
+
+test('validateProductionPackage rejects incomplete V2 prompt IR', () => {
+  const value = validV2Package();
+  value.episodes[0].scenes[0].shots[0].prompt_ir.primary_action = '';
+
+  assert.throws(
+    () => validateProductionPackage(value, { requireProductionDirection: true }),
+    /prompt_ir\.primary_action/,
+  );
+});
+
+test('validateProductionPackage rejects a V2 strategy that differs from the user selection', () => {
+  const value = validV2Package();
+  value.creative_strategy.preset = 'male';
+
+  assert.throws(
+    () => validateProductionPackage(value, {
+      requireProductionDirection: true,
+      expectedStrategyPreset: 'female',
+    }),
+    /必须与用户选择的 female 一致/,
+  );
 });
 
 test('validateProductionPackage keeps legacy output valid and enforces visual direction only when requested', () => {

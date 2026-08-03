@@ -156,6 +156,24 @@ test('审核通过的制作包可追加为画布分镜链路并保留原画布',
   )
 })
 
+test('V1 制作包即使携带编译字段也保留原视频提示词', () => {
+  const legacyPackage = JSON.parse(JSON.stringify(productionPackage))
+  legacyPackage.episodes[0].scenes[0].shots[0].prompt_compilation = {
+    generic: { prompt: '不应覆盖 V1 的编译提示词' },
+  }
+
+  const nextState = buildScriptAnalysisCanvasState({
+    existingState: { version: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } },
+    project: { id: 42, title: '雨林寻踪', active_version: 1 },
+    productionPackage: legacyPackage,
+    approvalStatus: 'approved',
+    importId: 'legacy-v1-prompt',
+  })
+
+  const videoNode = nextState.nodes.find((node) => node.data?.kind === 'video')
+  assert.equal(videoNode.data.content, productionPackage.episodes[0].scenes[0].shots[0].video_prompt)
+})
+
 test('电影化视觉方案只追加一个可追溯节点且不改写现有分镜提示词', () => {
   const enhancedPackage = JSON.parse(JSON.stringify(productionPackage))
   enhancedPackage.visual_direction = visualDirection
@@ -192,6 +210,104 @@ test('电影化视觉方案只追加一个可追溯节点且不改写现有分�
   )
   assert.equal(shotNodes[1].data.content, enhancedPackage.episodes[0].scenes[0].shots[0].image_prompt)
   assert.equal(shotNodes[2].data.content, enhancedPackage.episodes[0].scenes[0].shots[0].video_prompt)
+})
+
+test('V2 导演故事板把策略、表演轨和 Prompt IR 追加进画布节点', () => {
+  const v2Package = JSON.parse(JSON.stringify(productionPackage))
+  v2Package.schema_version = '2.0'
+  v2Package.creative_strategy = {
+    preset: 'fusion',
+    audience: '悬疑短剧观众',
+    genre_tracks: ['悬疑', '亲情'],
+    story_engine: '寻找失踪父亲推进真相',
+    season_arc: ['进入雨林', '找到父亲'],
+    episode_beats: ['旧地图线索'],
+    commercial_beats: { enabled: false, items: [] },
+    source_basis: ['林岚进入雨林寻找失踪的父亲。'],
+    audit: { issues: [] },
+  }
+  const shot = v2Package.episodes[0].scenes[0].shots[0]
+  shot.duration = 4
+  shot.performance = {
+    tracks: [{
+      character_ref: 'character:lin-lan',
+      initial_state: '谨慎观察',
+      trigger: '地图指向前方巨树',
+      beats: [{
+        start_ms: 0,
+        end_ms: 4000,
+        emotion: '警觉',
+        intensity: 3,
+        face: { gaze: '视线从地图移向巨树' },
+        breath: '放慢呼吸',
+      }],
+      final_state: '确认方向后继续前进',
+      constraints: ['不夸张惊慌'],
+      source_basis: ['林岚手持旧地图走入雨后的原始森林。'],
+    }],
+  }
+  shot.prompt_ir = {
+    subject_anchors: ['林岚，短发，雨林探险服'],
+    primary_action: '林岚核对地图后看向巨树',
+    scene: '雨后原始森林',
+    camera: {
+      shot_type: '中近景',
+      angle: '平视',
+      movement: '低速跟随后轻推',
+      composition: '枝叶作为前景遮挡',
+    },
+    lighting: '冷绿色散射光',
+    style: '写实电影质感',
+    references: [{ slot: '@图片1', role: 'character', required: true }],
+    continuity: { start: '地图在胸前', end: '地图仍在右手' },
+    negative_constraints: ['身份漂移'],
+    safety_tags: [],
+  }
+  shot.prompt_compilation = {
+    generic: { adapter: 'generic-video@1.0', prompt: '通用编译提示词', generation_ready: true },
+    seedance2: { adapter: 'seedance2@2.0', prompt: 'Seedance 编译提示词', generation_ready: true },
+  }
+
+  const nextState = buildScriptAnalysisCanvasState({
+    existingState: {
+      version: 1,
+      nodes: [{
+        id: 'existing-node',
+        type: 'homeCanvasNode',
+        position: { x: 20, y: 30 },
+        data: { kind: 'text', title: '已有节点', content: '保留内容' },
+      }],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    },
+    project: { id: 42, title: '雨林寻踪', active_version: 4 },
+    productionPackage: v2Package,
+    approvalStatus: 'approved',
+    importId: 'import-v2',
+  })
+
+  assert.equal(nextState.nodes[0].data.content, '保留内容')
+  const strategyNode = nextState.nodes.find(
+    (node) => node.data?.scriptAnalysis?.sourceType === 'creative_strategy',
+  )
+  assert.ok(strategyNode)
+  assert.match(strategyNode.data.content, /融合策略/)
+  assert.deepEqual(strategyNode.data.creativeStrategy, v2Package.creative_strategy)
+
+  const videoNode = nextState.nodes.find(
+    (node) => node.data?.kind === 'video' && node.data?.scriptAnalysis?.sourceType === 'shot',
+  )
+  assert.deepEqual(videoNode.data.promptIr, shot.prompt_ir)
+  assert.deepEqual(videoNode.data.performance, shot.performance)
+  assert.deepEqual(videoNode.data.promptCompilation, shot.prompt_compilation)
+  assert.equal(videoNode.data.duration, 4)
+  assert.equal(videoNode.data.content, '通用编译提示词')
+
+  const textNode = nextState.nodes.find(
+    (node) => node.data?.kind === 'text' && node.data?.scriptAnalysis?.sourceType === 'shot',
+  )
+  assert.match(textNode.data.content, /0-4秒/)
+  assert.match(textNode.data.content, /视线从地图移向巨树/)
 })
 
 test('视觉方案随现有接入项目流程保留结构化数据与来源', () => {

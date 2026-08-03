@@ -60,6 +60,21 @@
                 </option>
               </select>
             </label>
+            <label v-if="usesProductionStrategy" class="skill-select">
+              <span>创作策略</span>
+              <select
+                v-model="selectedStrategyPreset"
+                :disabled="running || loadingPresets || !productionPresets.length"
+              >
+                <option
+                  v-for="preset in productionPresets"
+                  :key="preset.id"
+                  :value="preset.id"
+                >
+                  {{ preset.name }}
+                </option>
+              </select>
+            </label>
             <el-button :loading="saving" @click="saveProject">保存</el-button>
             <el-button
               type="primary"
@@ -300,11 +315,42 @@
             </div>
           </section>
 
+          <section v-if="creativeStrategy" class="creative-strategy-section">
+            <div class="section-title">
+              <div>
+                <span class="section-index">02B</span>
+                <h2>创作策略与全季推进</h2>
+              </div>
+              <span class="strategy-badge">{{ strategyPresetName(creativeStrategy.preset) }}</span>
+            </div>
+            <div class="strategy-grid">
+              <article>
+                <span class="card-kicker">目标受众</span>
+                <h3>{{ creativeStrategy.audience || '待确认' }}</h3>
+                <p>{{ creativeStrategy.story_engine || '暂无故事推进机制' }}</p>
+              </article>
+              <article>
+                <span class="card-kicker">类型轨</span>
+                <div class="visual-tag-list">
+                  <span v-for="item in creativeStrategy.genre_tracks" :key="item">{{ item }}</span>
+                </div>
+              </article>
+              <article>
+                <span class="card-kicker">全季弧</span>
+                <p>{{ creativeStrategy.season_arc.join(' → ') || '待确认' }}</p>
+              </article>
+              <article>
+                <span class="card-kicker">单集节拍</span>
+                <p>{{ creativeStrategy.episode_beats.join('；') || '待确认' }}</p>
+              </article>
+            </div>
+          </section>
+
           <section class="library-section">
             <div class="section-title">
               <div>
                 <span class="section-index">03</span>
-                <h2>制作圣经</h2>
+                <h2>人物、场景与制作圣经</h2>
               </div>
             </div>
 
@@ -363,9 +409,9 @@
             <div class="section-title">
               <div>
                 <span class="section-index">04</span>
-                <h2>分镜执行表</h2>
+                <h2>导演故事板</h2>
               </div>
-              <span class="source-notice">每个镜头包含画面、运动、连续性与生成提示词</span>
+              <span class="source-notice">镜头、表演轨、连续性和模型提示词在这里统一审核</span>
             </div>
 
             <div class="shot-list">
@@ -403,6 +449,51 @@
                     <strong>连续性</strong>
                     <span>{{ continuityText(shot) }}</span>
                   </div>
+
+                  <div v-if="shot.performanceTracks.length" class="performance-panel">
+                    <strong>角色表演轨</strong>
+                    <article
+                      v-for="track in shot.performanceTracks"
+                      :key="track.character_ref"
+                      class="performance-track"
+                    >
+                      <div class="performance-track__heading">
+                        <span>{{ track.character_ref }}</span>
+                        <p>{{ track.initial_state }} → {{ track.final_state }}</p>
+                      </div>
+                      <div
+                        v-for="(beat, beatIndex) in track.beats"
+                        :key="`${track.character_ref}-${beatIndex}`"
+                        class="performance-beat"
+                      >
+                        <span>{{ performanceBeatTime(beat) }}</span>
+                        <strong>{{ beat.emotion }} · 强度 {{ beat.intensity }}/5</strong>
+                        <p>{{ performanceCueText(beat) }}</p>
+                      </div>
+                    </article>
+                  </div>
+
+                  <div v-if="shot.promptIr" class="prompt-ir-panel">
+                    <div class="prompt-ir-panel__heading">
+                      <strong>模型无关 Prompt IR</strong>
+                      <span :class="{ ready: shot.generationReady }">
+                        {{ shot.generationReady ? '生成检查通过' : '需要处理降级项' }}
+                      </span>
+                    </div>
+                    <dl>
+                      <dt>主动作</dt><dd>{{ shot.promptIr.primary_action }}</dd>
+                      <dt>场景</dt><dd>{{ shot.promptIr.scene }}</dd>
+                      <dt>镜头</dt><dd>{{ promptCameraText(shot.promptIr.camera) }}</dd>
+                      <dt>灯光</dt><dd>{{ shot.promptIr.lighting }}</dd>
+                    </dl>
+                    <div v-if="shot.compiledPrompt" class="compiled-prompt">
+                      <strong>Seedance 2 编译结果</strong>
+                      <p>{{ shot.compiledPrompt.prompt }}</p>
+                      <span v-for="warning in shot.compiledPrompt.warnings" :key="warning">
+                        {{ warning }}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </article>
 
@@ -414,7 +505,7 @@
             <div class="section-title">
               <div>
                 <span class="section-index">05</span>
-                <h2>审查与变更</h2>
+                <h2>生产检查与人工审核</h2>
               </div>
               <span class="review-score">{{ reviewScore }}</span>
             </div>
@@ -459,13 +550,7 @@
                   :disabled="!canImportToCanvas"
                   @click="importApprovedPackageToCanvas"
                 >
-                  导入独立画布
-                </el-button>
-                <el-button
-                  :disabled="!canImportToCanvas"
-                  @click="openFactoryImportPreview"
-                >
-                  预览导入短剧工厂
+                  进入画布生产
                 </el-button>
                 <el-button
                   :disabled="Boolean(selectedVersion) || running"
@@ -488,6 +573,16 @@
                 >
                   确认通过
                 </el-button>
+                <details class="compatibility-actions">
+                  <summary>兼容入口</summary>
+                  <el-button
+                    text
+                    :disabled="!canImportToCanvas"
+                    @click="openFactoryImportPreview"
+                  >
+                    导入短剧工厂（非主流程）
+                  </el-button>
+                </details>
               </div>
             </div>
             <div v-if="revising" class="revision-editor">
@@ -617,6 +712,9 @@ const loadingProjects = ref(false)
 const skills = ref([])
 const selectedSkillId = ref('')
 const loadingSkills = ref(false)
+const productionPresets = ref([])
+const selectedStrategyPreset = ref('fusion')
+const loadingPresets = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const reviewing = ref(false)
@@ -732,6 +830,14 @@ const skillSnapshot = computed(() => (
   || asObject(analysisPackage.value?.skill_snapshot)
 ))
 
+const selectedSkill = computed(() => (
+  skills.value.find((skill) => skill.id === selectedSkillId.value) || null
+))
+
+const usesProductionStrategy = computed(() => (
+  selectedSkill.value?.output_schema_version === '2.0'
+))
+
 const storyOverview = computed(() => {
   const pkg = analysisPackage.value || {}
   const overview = pkg.normalized_script || pkg.story_overview || {}
@@ -772,6 +878,18 @@ const visualDirection = computed(() => {
   }
 })
 
+const creativeStrategy = computed(() => {
+  const value = asObject(analysisPackage.value?.creative_strategy)
+  if (!value) return null
+  return {
+    ...value,
+    genre_tracks: asArray(value.genre_tracks),
+    season_arc: asArray(value.season_arc),
+    episode_beats: asArray(value.episode_beats),
+    source_basis: asArray(value.source_basis),
+  }
+})
+
 const characters = computed(() => (
   analysisPackage.value?.characters
   || analysisPackage.value?.character_bible
@@ -794,12 +912,27 @@ const shots = computed(() => {
   const pkg = analysisPackage.value
   if (!pkg) return []
   if (Array.isArray(pkg.shots)) {
-    return pkg.shots.map((shot, index) => ({
-      ...shot,
-      key: shot.id || `shot-${index}`,
-      episodeTitle: '全剧',
-      sceneTitle: shot.scene || '分镜',
-    }))
+    return pkg.shots.map((shot, index) => {
+      const performance = asObject(shot.performance)
+      const promptIr = asObject(shot.prompt_ir)
+      const promptCompilation = asObject(shot.prompt_compilation)
+      const compiledPrompt = asObject(promptCompilation?.seedance2)
+      return {
+        ...shot,
+        key: shot.id || `shot-${index}`,
+        episodeTitle: '全剧',
+        sceneTitle: shot.scene || '分镜',
+        performanceTracks: asArray(performance?.tracks).map((track) => ({
+          ...track,
+          beats: asArray(track?.beats),
+        })),
+        promptIr,
+        compiledPrompt: compiledPrompt
+          ? { ...compiledPrompt, warnings: asArray(compiledPrompt.warnings) }
+          : null,
+        generationReady: compiledPrompt?.generation_ready === true,
+      }
+    })
   }
 
   const result = []
@@ -809,11 +942,24 @@ const shots = computed(() => {
     episodeScenes.forEach((scene, sceneIndex) => {
       const sceneShots = Array.isArray(scene.shots) ? scene.shots : []
       sceneShots.forEach((shot, shotIndex) => {
+        const performance = asObject(shot.performance)
+        const promptIr = asObject(shot.prompt_ir)
+        const promptCompilation = asObject(shot.prompt_compilation)
+        const compiledPrompt = asObject(promptCompilation?.seedance2)
         result.push({
           ...shot,
           key: shot.id || `${episodeIndex}-${sceneIndex}-${shotIndex}`,
           episodeTitle: episode.title || `第 ${episodeIndex + 1} 集`,
           sceneTitle: scene.title || scene.name || `场景 ${sceneIndex + 1}`,
+          performanceTracks: asArray(performance?.tracks).map((track) => ({
+            ...track,
+            beats: asArray(track?.beats),
+          })),
+          promptIr,
+          compiledPrompt: compiledPrompt
+            ? { ...compiledPrompt, warnings: asArray(compiledPrompt.warnings) }
+            : null,
+          generationReady: compiledPrompt?.generation_ready === true,
         })
       })
     })
@@ -923,6 +1069,38 @@ function continuityText(shot) {
   return [shot.first_frame, shot.last_frame].filter(Boolean).join(' → ') || '无'
 }
 
+function strategyPresetName(presetId) {
+  return productionPresets.value.find((preset) => preset.id === presetId)?.name
+    || ({ male: '男频策略', female: '女频策略', fusion: '融合策略', custom: '自定义策略' }[presetId])
+    || presetId
+    || '未选择策略'
+}
+
+function performanceBeatTime(beat) {
+  const start = Number(beat?.start_ms) / 1000
+  const end = Number(beat?.end_ms) / 1000
+  return `${start}-${end}秒`
+}
+
+function performanceCueText(beat) {
+  return [
+    ...Object.values(asObject(beat?.face) || {}),
+    beat?.breath,
+    beat?.voice,
+    beat?.body,
+    beat?.hands,
+    beat?.prop,
+  ].map((item) => String(item || '').trim()).filter(Boolean).join('；') || '保持当前表演状态'
+}
+
+function promptCameraText(cameraValue) {
+  const camera = asObject(cameraValue) || {}
+  return [camera.shot_type, camera.angle, camera.movement, camera.composition]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(' · ') || '待确认'
+}
+
 async function listProjects() {
   loadingProjects.value = true
   try {
@@ -951,6 +1129,27 @@ async function loadSkills() {
     ElMessage.error(error?.message || '加载导演 Skill 失败')
   } finally {
     loadingSkills.value = false
+  }
+}
+
+async function loadProductionPresets() {
+  loadingPresets.value = true
+  try {
+    const body = unwrap(await scriptAnalysisAPI.productionPresets())
+    productionPresets.value = Array.isArray(body?.presets) ? body.presets : []
+    const current = productionPresets.value.find(
+      (preset) => preset.id === selectedStrategyPreset.value,
+    )
+    selectedStrategyPreset.value = current?.id
+      || productionPresets.value.find((preset) => preset.is_default)?.id
+      || productionPresets.value[0]?.id
+      || 'fusion'
+  } catch (error) {
+    productionPresets.value = []
+    selectedStrategyPreset.value = 'fusion'
+    ElMessage.error(error?.message || '加载创作策略失败')
+  } finally {
+    loadingPresets.value = false
   }
 }
 
@@ -1052,6 +1251,9 @@ async function runAnalysis() {
     resetRevisionEditor()
     const body = unwrap(await scriptAnalysisAPI.run(saved.id, {
       skill_id: selectedSkillId.value,
+      ...(usesProductionStrategy.value
+        ? { strategy_preset: selectedStrategyPreset.value }
+        : {}),
     }))
     task.value.id = body?.task_id || body?.task?.id
     if (!task.value.id) throw new Error('服务端未返回任务编号')
@@ -1368,7 +1570,7 @@ async function confirmFactoryImport() {
 }
 
 onMounted(async () => {
-  await loadSkills()
+  await Promise.all([loadSkills(), loadProductionPresets()])
   await listProjects()
   if (projects.value[0]?.id) await loadProject(projects.value[0].id)
 })
@@ -1400,6 +1602,7 @@ onBeforeUnmount(stopPolling)
 .task-card,
 .overview-card,
 .visual-direction-section,
+.creative-strategy-section,
 .library-section,
 .shots-section,
 .review-section,
@@ -1530,6 +1733,8 @@ onBeforeUnmount(stopPolling)
   display: flex;
   align-items: flex-end;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -1573,6 +1778,7 @@ onBeforeUnmount(stopPolling)
 .source-card,
 .overview-card,
 .visual-direction-section,
+.creative-strategy-section,
 .library-section,
 .shots-section,
 .review-section {
@@ -1851,6 +2057,39 @@ onBeforeUnmount(stopPolling)
   font-size: 12px;
 }
 
+.strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.strategy-grid article {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 15px;
+  background: #0c0c0d;
+}
+
+.strategy-grid h3 {
+  margin: 12px 0 8px;
+  font-size: 16px;
+}
+
+.strategy-grid p {
+  margin: 9px 0 0;
+  color: #9e9793;
+  line-height: 1.7;
+}
+
+.strategy-badge {
+  padding: 6px 11px;
+  color: #efb36f;
+  font-size: 12px;
+  border: 1px solid rgba(239, 179, 111, 0.28);
+  border-radius: 999px;
+  background: rgba(239, 116, 68, 0.08);
+}
+
 .analysis-tabs :deep(.el-tabs__item) {
   color: #8f8985;
 }
@@ -1985,6 +2224,116 @@ onBeforeUnmount(stopPolling)
   font-size: 12px;
 }
 
+.performance-panel,
+.prompt-ir-panel {
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid rgba(239, 116, 68, 0.16);
+  border-radius: 13px;
+  background: rgba(239, 116, 68, 0.045);
+}
+
+.performance-panel > strong,
+.prompt-ir-panel__heading > strong,
+.compiled-prompt > strong {
+  color: #efb36f;
+  font-size: 12px;
+}
+
+.performance-track {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.performance-track__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.performance-track__heading span {
+  color: #f1e9e4;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.performance-track__heading p,
+.performance-beat p,
+.compiled-prompt p {
+  margin: 5px 0 0;
+  color: #9e9793;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.performance-beat {
+  display: grid;
+  grid-template-columns: 76px 170px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 9px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.performance-beat > span,
+.performance-beat > strong {
+  color: #b8b0ab;
+  font-size: 11px;
+}
+
+.performance-beat p {
+  margin: 0;
+}
+
+.prompt-ir-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-ir-panel__heading span {
+  color: #efb36f;
+  font-size: 11px;
+}
+
+.prompt-ir-panel__heading span.ready {
+  color: #4cc38a;
+}
+
+.prompt-ir-panel dl {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 13px 0 0;
+  font-size: 12px;
+}
+
+.prompt-ir-panel dt {
+  color: #817b77;
+}
+
+.prompt-ir-panel dd {
+  margin: 0;
+  color: #c8bfba;
+}
+
+.compiled-prompt {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.compiled-prompt > span {
+  display: block;
+  margin-top: 7px;
+  color: #efb36f;
+  font-size: 11px;
+}
+
 .review-score {
   color: #efb36f;
   font-size: 12px;
@@ -2068,6 +2417,16 @@ onBeforeUnmount(stopPolling)
   gap: 20px;
   align-items: end;
   margin-top: 20px;
+}
+
+.compatibility-actions {
+  color: #817b77;
+  font-size: 12px;
+}
+
+.compatibility-actions summary {
+  padding: 8px 0;
+  cursor: pointer;
 }
 
 .revision-editor {
@@ -2222,6 +2581,7 @@ onBeforeUnmount(stopPolling)
   .visual-signal-grid,
   .visual-motif-grid,
   .visual-recommendations,
+  .strategy-grid,
   .prompt-grid,
   .review-grid,
   .project-list {
@@ -2245,9 +2605,14 @@ onBeforeUnmount(stopPolling)
     grid-template-columns: 1fr;
   }
 
+  .performance-beat {
+    grid-template-columns: 1fr;
+  }
+
   .source-card,
   .overview-card,
   .visual-direction-section,
+  .creative-strategy-section,
   .library-section,
   .shots-section,
   .review-section {

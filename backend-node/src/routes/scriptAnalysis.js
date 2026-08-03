@@ -23,6 +23,9 @@ const {
 const {
   importApprovedPackageToFactory,
 } = require('../services/scriptAnalysisFactoryImportService');
+const {
+  listStrategyPresets,
+} = require('../services/shortDramaProductionDirector');
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -88,6 +91,10 @@ module.exports = function scriptAnalysisRoutes(db, log) {
 
   function skills(req, res) {
     return response.success(res, { skills: listScriptAnalysisSkills() });
+  }
+
+  function presets(req, res) {
+    return response.success(res, { presets: listStrategyPresets() });
   }
 
   function get(req, res) {
@@ -217,8 +224,20 @@ module.exports = function scriptAnalysisRoutes(db, log) {
         && currentPackage.visual_direction
         ? { ...packageInput, visual_direction: currentPackage.visual_direction }
         : packageInput;
+      const expectedSchemaVersion = currentPackage.skill_snapshot?.output_schema_version
+        || currentPackage.schema_version
+        || '1.0';
+      const validationOptions = {
+        expectedSchemaVersion,
+        requireVisualDirection: Boolean(currentPackage.visual_direction),
+        requireProductionDirection: expectedSchemaVersion === '2.0',
+      };
+      validateProductionPackage(revisionInput, validationOptions);
       normalizedPackage = validateProductionPackage(
-        normalizeProductionPackage(revisionInput, project),
+        normalizeProductionPackage(revisionInput, project, {
+          schemaVersion: expectedSchemaVersion,
+        }),
+        validationOptions,
       );
     } catch (error) {
       return response.badRequest(res, `校订后的生产包无效：${error.message}`);
@@ -521,6 +540,12 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     if (!selectedSkill) {
       return response.badRequest(res, '所选剧本分析 Skill 不存在或不可用');
     }
+    const strategyPreset = selectedSkill.output_schema_version === '2.0'
+      ? String(req.body?.strategy_preset || selectedSkill.default_strategy_preset || 'fusion')
+      : undefined;
+    if (strategyPreset && !listStrategyPresets().some((preset) => preset.id === strategyPreset)) {
+      return response.badRequest(res, '所选创作策略不存在或不可用');
+    }
     const inputError = getProjectInputError({
       sourceScript: project.source_script,
       lockedFacts: parseJSON(project.locked_facts_json, []),
@@ -546,6 +571,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             log,
             project,
             skill: selectedSkill,
+            strategyPreset,
           });
           const reviewablePackage = {
             ...productionPackage,
@@ -648,6 +674,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
 
   return {
     skills,
+    presets,
     list,
     get,
     versions,

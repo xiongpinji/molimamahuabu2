@@ -206,6 +206,7 @@ function setupRouter(cfg, db, log) {
 
   // ---------- script analysis ----------
   r.get('/script-analysis/skills', scriptAnalysis.skills);
+  r.get('/script-analysis/production-presets', scriptAnalysis.presets);
   r.get('/script-analysis/projects', scriptAnalysis.list);
   r.post('/script-analysis/projects', scriptAnalysis.create);
   r.get('/script-analysis/projects/:id', scriptAnalysis.get);

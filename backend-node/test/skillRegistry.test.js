@@ -48,8 +48,8 @@ test('共享 Skill 注册项保留治理边界且不暴露系统提示词快照'
 });
 
 test('模块 Skill 清单只返回已启用且具备目标能力的注册项', () => {
-  assert.equal(listSkillsForModule('script_analysis', 'execute').length, 2);
-  assert.equal(listSkillsForModule('canvas', 'consume').length, 1);
+  assert.equal(listSkillsForModule('script_analysis', 'execute').length, 3);
+  assert.equal(listSkillsForModule('canvas', 'consume').length, 2);
   assert.equal(listSkillsForModule('factory', 'preview').length, 1);
   assert.equal(listSkillsForModule('factory', 'execute').length, 0);
 });

@@ -86,12 +86,46 @@ function formatShotContext(item) {
     .filter(Boolean)
   const startState = asText(item.shot?.continuity?.start_state)
   const endState = asText(item.shot?.continuity?.end_state)
+  const performanceTracks = asArray(item.shot?.performance?.tracks)
+  const performanceLines = performanceTracks.flatMap((track) => {
+    const character = asText(track?.character_ref) || '角色'
+    return asArray(track?.beats).map((beat) => {
+      const start = Number(beat?.start_ms) / 1000
+      const end = Number(beat?.end_ms) / 1000
+      const cues = [
+        ...Object.values(isPlainObject(beat?.face) ? beat.face : {}).map(asText),
+        ...['breath', 'voice', 'body', 'hands', 'prop'].map((field) => asText(beat?.[field])),
+      ].filter(Boolean)
+      return `${character} ${start}-${end}秒 · ${asText(beat?.emotion)}${cues.length ? `：${cues.join('；')}` : ''}`
+    })
+  })
   return [
     `第 ${episodeNumber} 集 · 场景 ${sceneNumber} · 镜头 ${shotNumber}`,
     sourceBasis.length ? `引用：${sourceBasis.join('、')}` : '',
     startState ? `起始状态：${startState}` : '',
     endState ? `结束状态：${endState}` : '',
     dialogue.length ? `对白：\n${dialogue.join('\n')}` : '',
+    performanceLines.length ? `表演轨：\n${performanceLines.join('\n')}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function formatCreativeStrategy(strategy) {
+  const labels = {
+    male: '男频策略',
+    female: '女频策略',
+    fusion: '融合策略',
+    custom: '自定义策略',
+  }
+  return [
+    labels[strategy?.preset] || asText(strategy?.preset),
+    asText(strategy?.audience) ? `受众：${asText(strategy.audience)}` : '',
+    asText(strategy?.story_engine) ? `故事引擎：${asText(strategy.story_engine)}` : '',
+    asArray(strategy?.genre_tracks).length
+      ? `类型轨：${asArray(strategy.genre_tracks).map(asText).filter(Boolean).join('、')}`
+      : '',
+    asArray(strategy?.season_arc).length
+      ? `全季弧：${asArray(strategy.season_arc).map(asText).filter(Boolean).join(' → ')}`
+      : '',
   ].filter(Boolean).join('\n')
 }
 
@@ -103,8 +137,8 @@ function validatePackage(productionPackage, approvalStatus) {
   if (!isPlainObject(productionPackage)) {
     throw new Error('制作包格式无效')
   }
-  if (productionPackage.schema_version !== '1.0') {
-    throw new Error('制作包 schema_version 必须是 1.0')
+  if (!['1.0', '2.0'].includes(productionPackage.schema_version)) {
+    throw new Error('制作包 schema_version 必须是 1.0 或 2.0')
   }
   if (!isPlainObject(productionPackage.source)) {
     throw new Error('制作包缺少 source')
@@ -173,9 +207,24 @@ function validatePackage(productionPackage, approvalStatus) {
         if (!Array.isArray(shot.dialogue)) {
           throw new Error(`镜头 ${shotLabel} 的 dialogue 必须是数组`)
         }
+        if (productionPackage.schema_version === '2.0') {
+          if (!Number.isFinite(Number(shot.duration)) || Number(shot.duration) <= 0) {
+            throw new Error(`镜头 ${shotLabel} 缺少有效 duration`)
+          }
+          if (!isPlainObject(shot.performance) || !Array.isArray(shot.performance.tracks)) {
+            throw new Error(`镜头 ${shotLabel} 缺少 performance.tracks`)
+          }
+          if (!isPlainObject(shot.prompt_ir)) {
+            throw new Error(`镜头 ${shotLabel} 缺少 prompt_ir`)
+          }
+        }
       })
     })
   })
+
+  if (productionPackage.schema_version === '2.0' && !isPlainObject(productionPackage.creative_strategy)) {
+    throw new Error('V2 制作包缺少 creative_strategy')
+  }
 
   return flattenShots(productionPackage)
 }
@@ -225,6 +274,28 @@ export function buildScriptAnalysisCanvasState({
     provenance: buildProvenance(project, 'overview', project?.id),
   }))
 
+  if (isPlainObject(productionPackage.creative_strategy)) {
+    const strategyId = `${prefix}:creative-strategy`
+    nodes.push(createNode({
+      id: strategyId,
+      kind: 'text',
+      title: `${projectTitle} · 创作策略`,
+      content: formatCreativeStrategy(productionPackage.creative_strategy),
+      x: baseX + 460,
+      y: 40,
+      provenance: buildProvenance(
+        project,
+        'creative_strategy',
+        'creative-strategy',
+        safeSkillSnapshot,
+      ),
+      extraData: {
+        creativeStrategy: JSON.parse(JSON.stringify(productionPackage.creative_strategy)),
+      },
+    }))
+    edges.push(createEdge(`${prefix}:creative-strategy:overview`, overviewId, strategyId))
+  }
+
   if (isPlainObject(productionPackage.visual_direction)) {
     const visualDirectionId = `${prefix}:visual-direction`
     nodes.push(createNode({
@@ -232,7 +303,7 @@ export function buildScriptAnalysisCanvasState({
       kind: 'text',
       title: `${projectTitle} · 视觉导演方案`,
       content: formatVisualDirectionSummary(productionPackage.visual_direction),
-      x: baseX + 460,
+      x: baseX + (isPlainObject(productionPackage.creative_strategy) ? 920 : 460),
       y: 40,
       provenance: buildProvenance(
         project,
@@ -283,6 +354,9 @@ export function buildScriptAnalysisCanvasState({
     const videoId = `${prefix}:shot:${shotKey}:video`
     const y = shotStartY + index * 340
     const shotTitle = `分镜 ${item.shot?.shot_number ?? item.shotIndex + 1}`
+    const compiledVideoPrompt = productionPackage.schema_version === '2.0'
+      ? asText(item.shot?.prompt_compilation?.generic?.prompt) || asText(item.shot.video_prompt)
+      : asText(item.shot.video_prompt)
 
     nodes.push(
       createNode({
@@ -293,6 +367,16 @@ export function buildScriptAnalysisCanvasState({
         x: baseX,
         y,
         provenance: buildProvenance(project, 'shot', sourceId),
+        extraData: productionPackage.schema_version === '2.0'
+          ? {
+              duration: Number(item.shot.duration),
+              performance: JSON.parse(JSON.stringify(item.shot.performance)),
+              promptIr: JSON.parse(JSON.stringify(item.shot.prompt_ir)),
+              ...(isPlainObject(item.shot.prompt_compilation)
+                ? { promptCompilation: JSON.parse(JSON.stringify(item.shot.prompt_compilation)) }
+                : {}),
+            }
+          : null,
       }),
       createNode({
         id: imageId,
@@ -307,10 +391,20 @@ export function buildScriptAnalysisCanvasState({
         id: videoId,
         kind: 'video',
         title: `${shotTitle} · 视频`,
-        content: asText(item.shot.video_prompt),
+        content: compiledVideoPrompt,
         x: baseX + 920,
         y,
         provenance: buildProvenance(project, 'shot', sourceId),
+        extraData: productionPackage.schema_version === '2.0'
+          ? {
+              duration: Number(item.shot.duration),
+              performance: JSON.parse(JSON.stringify(item.shot.performance)),
+              promptIr: JSON.parse(JSON.stringify(item.shot.prompt_ir)),
+              ...(isPlainObject(item.shot.prompt_compilation)
+                ? { promptCompilation: JSON.parse(JSON.stringify(item.shot.prompt_compilation)) }
+                : {}),
+            }
+          : null,
       }),
     )
     edges.push(

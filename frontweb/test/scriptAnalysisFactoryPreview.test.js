@@ -11,8 +11,10 @@ const apiSource = readFileSync(
   'utf8',
 )
 
-test('剧本分析为审核通过的生产包提供短剧工厂导入预览', () => {
-  assert.match(source, /预览导入短剧工厂/)
+test('短剧工厂仅作为剧本分析审核后的兼容导入入口', () => {
+  assert.match(source, /<summary>兼容入口<\/summary>/)
+  assert.match(source, /导入短剧工厂（非主流程）/)
+  assert.match(source, /进入画布生产/)
   assert.match(source, /buildFactorySkillImportPreview/)
   assert.match(source, /factoryPreviewVisible/)
   assert.match(source, /确认后只新增一个短剧项目，不调用模型、不扣积分/)

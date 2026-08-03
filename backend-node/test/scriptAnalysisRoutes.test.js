@@ -93,6 +93,66 @@ function validVisualDirection() {
   };
 }
 
+function validV2ProductionPackage() {
+  const value = validProductionPackage({
+    schema_version: '2.0',
+    visual_direction: validVisualDirection(),
+    creative_strategy: {
+      preset: 'fusion',
+      audience: '短剧观众',
+      genre_tracks: ['悬疑'],
+      story_engine: '追查真相',
+      season_arc: ['发现线索'],
+      episode_beats: ['雨夜钩子'],
+      commercial_beats: { enabled: false, items: [] },
+      source_basis: ['第一场：小满走进雨夜街道。'],
+      audit: { issues: [] },
+    },
+  });
+  const shot = value.episodes[0].scenes[0].shots[0];
+  shot.duration = 4;
+  shot.performance = { tracks: [] };
+  shot.prompt_ir = {
+    subject_anchors: ['小满，深色风衣'],
+    primary_action: '小满走进街道后停下',
+    scene: '雨夜街道',
+    camera: {
+      shot_type: '中景',
+      angle: '平视',
+      movement: '缓慢推进',
+      composition: '街灯位于画面三分线',
+    },
+    lighting: '冷色街灯与路面反光',
+    style: '写实电影质感',
+    references: [],
+    continuity: {},
+    negative_constraints: ['身份漂移'],
+    safety_tags: [],
+  };
+  return value;
+}
+
+test('剧本分析公开四种创作策略且不暴露内部规则', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = scriptAnalysisRoutes(db, { error() {} });
+    const result = captureResponse();
+
+    handlers.presets(request(), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(
+      result.body.data.presets.map((preset) => preset.id),
+      ['male', 'female', 'fusion', 'custom'],
+    );
+    assert.equal(result.body.data.presets.find((preset) => preset.id === 'fusion').is_default, true);
+    assert.equal(Object.hasOwn(result.body.data.presets[0], 'rules'), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('剧本分析项目按用户隔离并可读取版本列表', () => {
   const db = new Database(':memory:');
   try {
@@ -156,6 +216,88 @@ test('剧本分析在创建任务前拒绝未安装的 Skill', () => {
     assert.equal(response.body.error.message, '所选剧本分析 Skill 不存在或不可用');
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
   } finally {
+    global.setImmediate = originalSetImmediate;
+    db.close();
+  }
+});
+
+test('短剧一体化导演在创建任务前拒绝非法策略', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = scriptAnalysisRoutes(db, { error() {} });
+    const created = captureResponse();
+    handlers.create(request({
+      body: {
+        title: '非法策略测试',
+        source_script: '第一场：小满走进雨夜街道。',
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    const result = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      body: {
+        skill_id: 'short-drama-production-director',
+        strategy_preset: 'hidden-hardcoded-rules',
+      },
+    }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.match(result.body.error.message, /创作策略/);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('短剧一体化导演默认融合策略并保存 V2 生产包', async () => {
+  const db = new Database(':memory:');
+  const originalGenerateText = aiClient.generateText;
+  const originalSetImmediate = global.setImmediate;
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = scriptAnalysisRoutes(db, { error() {}, info() {} });
+    const created = captureResponse();
+    handlers.create(request({
+      body: {
+        title: '融合策略测试',
+        source_script: '第一场：小满走进雨夜街道。',
+        locked_facts: ['主角叫小满'],
+      },
+    }), created);
+
+    let backgroundTask = null;
+    let capturedUserPrompt = '';
+    aiClient.generateText = async (_db, _log, _type, userPrompt) => {
+      capturedUserPrompt = userPrompt;
+      return JSON.stringify(validV2ProductionPackage());
+    };
+    global.setImmediate = (callback) => {
+      backgroundTask = callback;
+      return { unref() {} };
+    };
+
+    const result = captureResponse();
+    handlers.run(request({
+      id: created.body.data.id,
+      body: { skill_id: 'short-drama-production-director' },
+    }), result);
+    assert.equal(result.statusCode, 201);
+    await backgroundTask();
+
+    const version = db.prepare(`
+      SELECT package_json FROM script_analysis_versions
+      WHERE project_id = ? AND version = 1
+    `).get(created.body.data.id);
+    const productionPackage = JSON.parse(version.package_json);
+    assert.match(capturedUserPrompt, /创作策略预设：fusion/);
+    assert.equal(productionPackage.schema_version, '2.0');
+    assert.equal(productionPackage.creative_strategy.preset, 'fusion');
+    assert.equal(productionPackage.skill_snapshot.id, 'short-drama-production-director');
+  } finally {
+    aiClient.generateText = originalGenerateText;
     global.setImmediate = originalSetImmediate;
     db.close();
   }

@@ -4,6 +4,9 @@ export const scriptAnalysisAPI = {
   skills() {
     return request.get('/script-analysis/skills')
   },
+  productionPresets() {
+    return request.get('/script-analysis/production-presets')
+  },
   list() {
     return request.get('/script-analysis/projects')
   },
