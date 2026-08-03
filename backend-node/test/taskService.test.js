@@ -147,6 +147,46 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(await running, 'done');
   });
 
+  it('also marks the linked video merge and episode as failed on startup', () => {
+    const db = createTestDb();
+    db.exec(`
+      CREATE TABLE video_merges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        episode_id INTEGER,
+        task_id TEXT,
+        status TEXT,
+        error_msg TEXT,
+        completed_at TEXT,
+        deleted_at TEXT
+      );
+      CREATE TABLE episodes (
+        id INTEGER PRIMARY KEY,
+        status TEXT,
+        updated_at TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks (id, type, status, progress, message, resource_id, created_at, updated_at)
+       VALUES (?, 'video_merge', 'processing', 10, '', ?, ?, ?)`
+    ).run('task-orphan-merge', '28', now, now);
+    db.prepare(
+      `INSERT INTO video_merges (episode_id, task_id, status)
+       VALUES (28, 'task-orphan-merge', 'processing')`
+    ).run();
+    db.prepare('INSERT INTO episodes (id, status, updated_at) VALUES (28, ?, ?)').run('processing', now);
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 1);
+    assert.equal(taskService.getTask(db, 'task-orphan-merge').status, 'failed');
+    const merge = db.prepare('SELECT status, error_msg FROM video_merges WHERE task_id = ?').get('task-orphan-merge');
+    const episode = db.prepare('SELECT status FROM episodes WHERE id = ?').get(28);
+    assert.equal(merge.status, 'failed');
+    assert.equal(merge.error_msg, taskService.ORPHAN_ASYNC_TASK_MSG);
+    assert.equal(episode.status, 'failed');
+  });
+
   it('does not revive a task cancelled during a long operation', async () => {
     const db = createTestDb();
     const now = new Date().toISOString();

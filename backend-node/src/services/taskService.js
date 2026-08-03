@@ -179,6 +179,26 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
         log.warn('遗留图片生成记录清理失败', { task_id: row.id, error: error.message });
       }
     }
+    if (row.type === 'video_merge') {
+      try {
+        const merge = db.prepare(
+          'SELECT episode_id FROM video_merges WHERE task_id = ? AND deleted_at IS NULL'
+        ).get(row.id);
+        db.prepare(
+          `UPDATE video_merges
+           SET status = 'failed', error_msg = ?, completed_at = ?
+           WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).run(ORPHAN_ASYNC_TASK_MSG, new Date().toISOString(), row.id);
+        if (merge?.episode_id != null) {
+          db.prepare(
+            `UPDATE episodes SET status = 'failed', updated_at = ?
+             WHERE id = ? AND status = 'processing'`
+          ).run(new Date().toISOString(), merge.episode_id);
+        }
+      } catch (error) {
+        log.warn('遗留视频合成记录清理失败', { task_id: row.id, error: error.message });
+      }
+    }
     log.info('Orphaned async task marked failed', {
       task_id: row.id,
       type: row.type,
