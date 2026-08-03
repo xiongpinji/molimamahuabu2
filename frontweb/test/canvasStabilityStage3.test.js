@@ -11,6 +11,7 @@ const canvasSource = source('../src/views/DramaCanvas.vue')
 const nodeSource = source('../src/components/dramaCanvas/HomeCanvasNode.vue')
 const edgeSource = source('../src/components/dramaCanvas/CanvasCuttableEdge.vue')
 const requestSource = source('../src/utils/request.js')
+const httpErrorSource = source('../src/utils/httpError.js')
 const tenantSource = source('../src/views/TenantConsole.vue')
 
 test('图片和视频预览都可通过关闭操作及 Escape 退出', () => {
@@ -40,8 +41,8 @@ test('连线悬停时可直接运行下游图片节点', () => {
 })
 
 test('请求失败优先展示服务端的具体失败原因', () => {
-  assert.match(requestSource, /function apiErrorMessage\(payload, fallback = ''\)/)
-  assert.match(requestSource, /payload\.provider_message/)
+  assert.match(httpErrorSource, /function apiErrorMessage\(payload, fallback = ''\)/)
+  assert.match(httpErrorSource, /payload\.provider_message/)
   assert.match(requestSource, /apiErrorMessage\(error\.response\?\.data\)/)
 })
 

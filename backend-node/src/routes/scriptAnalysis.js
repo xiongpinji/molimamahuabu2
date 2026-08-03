@@ -6,6 +6,7 @@ const {
   updateTaskStatus,
   updateTaskResult,
   updateTaskError,
+  trackInFlightTask,
 } = require('../services/taskService');
 const {
   getProjectInputError,
@@ -371,79 +372,84 @@ module.exports = function scriptAnalysisRoutes(db, log) {
       WHERE id = ? AND user_id = ?
     `).run(new Date().toISOString(), project.id, ownerId);
 
-    setImmediate(async () => {
-      try {
-        updateTaskStatus(db, task.id, 'processing', 5, '导演分析中');
-        const productionPackage = await runAnalysis({
-          db,
-          log,
-          project,
-          skill: selectedSkill,
-        });
-        const reviewablePackage = {
-          ...productionPackage,
-          skill_snapshot: snapshotScriptAnalysisSkill(selectedSkill),
-          approval_status: 'needs_review',
-          review: {
-            ...(productionPackage.review || {}),
-            status: 'needs_review',
-          },
-        };
-        updateTaskStatus(db, task.id, 'processing', 90, '保存生产包');
+    const work = new Promise((resolve) => {
+      setImmediate(async () => {
+        try {
+          updateTaskStatus(db, task.id, 'processing', 5, '导演分析中');
+          const productionPackage = await runAnalysis({
+            db,
+            log,
+            project,
+            skill: selectedSkill,
+          });
+          const reviewablePackage = {
+            ...productionPackage,
+            skill_snapshot: snapshotScriptAnalysisSkill(selectedSkill),
+            approval_status: 'needs_review',
+            review: {
+              ...(productionPackage.review || {}),
+              status: 'needs_review',
+            },
+          };
+          updateTaskStatus(db, task.id, 'processing', 90, '保存生产包');
 
-        const current = findOwnedProject(project.id, ownerId);
-        const nextVersion = (current?.current_version || 0) + 1;
-        const now = new Date().toISOString();
-        const transaction = db.transaction(() => {
-          db.prepare(`
-            INSERT INTO script_analysis_versions (
-              project_id, version, source_script, package_json,
-              ai_changes_json, approval_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            project.id,
-            nextVersion,
-            project.source_script,
-            JSON.stringify(reviewablePackage),
-            JSON.stringify(reviewablePackage.ai_changes || []),
-            'needs_review',
-            now,
-          );
+          const current = findOwnedProject(project.id, ownerId);
+          const nextVersion = (current?.current_version || 0) + 1;
+          const now = new Date().toISOString();
+          const transaction = db.transaction(() => {
+            db.prepare(`
+              INSERT INTO script_analysis_versions (
+                project_id, version, source_script, package_json,
+                ai_changes_json, approval_status, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              project.id,
+              nextVersion,
+              project.source_script,
+              JSON.stringify(reviewablePackage),
+              JSON.stringify(reviewablePackage.ai_changes || []),
+              'needs_review',
+              now,
+            );
+            db.prepare(`
+              UPDATE script_analysis_projects
+              SET analysis_json = ?, review_json = ?, status = 'needs_review',
+                  current_version = ?, updated_at = ?
+              WHERE id = ? AND user_id = ?
+            `).run(
+              JSON.stringify(reviewablePackage),
+              JSON.stringify(reviewablePackage.review || {}),
+              nextVersion,
+              now,
+              project.id,
+              ownerId,
+            );
+          });
+          transaction();
+          updateTaskResult(db, task.id, {
+            project_id: project.id,
+            version: nextVersion,
+            package: reviewablePackage,
+          });
+        } catch (error) {
+          log?.error?.({ err: error, projectId: project.id }, 'script analysis failed');
           db.prepare(`
             UPDATE script_analysis_projects
-            SET analysis_json = ?, review_json = ?, status = 'needs_review',
-                current_version = ?, updated_at = ?
+            SET status = 'failed', review_json = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
           `).run(
-            JSON.stringify(reviewablePackage),
-            JSON.stringify(reviewablePackage.review || {}),
-            nextVersion,
-            now,
+            JSON.stringify({ status: 'failed', issues: [error.message] }),
+            new Date().toISOString(),
             project.id,
             ownerId,
           );
-        });
-        transaction();
-        updateTaskResult(db, task.id, {
-          project_id: project.id,
-          version: nextVersion,
-          package: reviewablePackage,
-        });
-      } catch (error) {
-        log?.error?.({ err: error, projectId: project.id }, 'script analysis failed');
-        db.prepare(`
-          UPDATE script_analysis_projects
-          SET status = 'failed', review_json = ?, updated_at = ?
-          WHERE id = ? AND user_id = ?
-        `).run(
-          JSON.stringify({ status: 'failed', issues: [error.message] }),
-          new Date().toISOString(),
-          project.id,
-          ownerId,
-        );
-        updateTaskError(db, task.id, error.message || '剧本分析失败');
-      }
+          updateTaskError(db, task.id, error.message || '剧本分析失败');
+        } finally {
+          resolve();
+        }
+      });
     });
+    trackInFlightTask(task.id, work);
 
     return response.created(res, {
       task_id: task.id,

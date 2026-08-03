@@ -6,27 +6,13 @@ import {
   applyTenantHeader,
   clearSessionOnUnauthorized,
 } from './authSession'
+import { apiErrorMessage, userHttpErrorMessage } from './httpError'
 
 const request = axios.create({
   baseURL: '/api/v1',
   timeout: 600000,
   headers: { 'Content-Type': 'application/json' }
 })
-
-function apiErrorMessage(payload, fallback = '') {
-  if (!payload) return fallback
-  if (typeof payload === 'string') return payload
-  const direct = payload.message || payload.detail || payload.reason || payload.provider_message
-  if (typeof direct === 'string' && direct.trim()) return direct.trim()
-  if (payload.error && payload.error !== payload) {
-    const nested = apiErrorMessage(payload.error)
-    if (nested) return nested
-  }
-  if (Array.isArray(payload.errors) && payload.errors.length) {
-    return payload.errors.map((item) => apiErrorMessage(item)).filter(Boolean).join('；') || fallback
-  }
-  return fallback
-}
 
 request.interceptors.request.use((config) => applyAdminHeader(applyTenantHeader(applyAuthHeader(config))))
 
@@ -59,10 +45,10 @@ request.interceptors.response.use(
     }
     // 提取后端实际错误信息（优先 API 返回的 message，而非 axios 通用 "status code 500"）
     const backendMsg = apiErrorMessage(error.response?.data)
-    const msg = backendMsg || error.message || '网络错误'
+    const msg = userHttpErrorMessage(error)
     if (!unauthorized && !error.config?.silentError) ElMessage.error(msg)
     // 将真实错误信息写回 message，使组件 catch 块可直接用 e.message 获取可读内容
-    if (backendMsg) error.message = backendMsg
+    if (backendMsg || msg !== error.message) error.message = msg
     return Promise.reject(error)
   }
 )
