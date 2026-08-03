@@ -649,7 +649,7 @@ import {
   getStoryboardRefFromNode,
   stampEdgeBaseStyles,
 } from '@/utils/dramaCanvasAdapter'
-import { virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
+import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
   buildCanvasLayoutPayload,
   parseCanvasLayout,
@@ -1981,6 +1981,18 @@ function rebuildGraph() {
       }
     })
   }
+  const projectAssetPositionRepair = repairCollidingProjectAssetPositions(nextNodes)
+  nextNodes = projectAssetPositionRepair.nodes
+  if (Object.keys(projectAssetPositionRepair.repairedPositions).length) {
+    layoutCache.value = {
+      ...(layoutCache.value || { version: 1 }),
+      nodes: {
+        ...(layoutCache.value?.nodes || {}),
+        ...projectAssetPositionRepair.repairedPositions,
+      },
+    }
+  }
+  if (Object.keys(projectAssetPositionRepair.repairedPositions).length) scheduleLayoutSave()
   allGraphNodes.value = nextNodes
   allGraphEdges.value = nextEdges
   applyVirtualizedGraph()
@@ -1994,6 +2006,52 @@ function currentInteractionState() {
     allGraphEdges.value,
     [...suppressedEdgeIds.value],
   )
+}
+
+function repairCollidingProjectAssetPositions(graphNodes) {
+  const assetNodes = graphNodes.filter((node) => node.type === 'canvasProjectAsset')
+  if (assetNodes.length < 2) return { nodes: graphNodes, repairedPositions: {} }
+  const nodeWidth = 210
+  const nodeHeight = 300
+  const columnGap = 288
+  const rowGap = 320
+  const anchorX = Math.min(...assetNodes.map((node) => Number(node.position?.x || 0)))
+  const anchorY = Math.min(...assetNodes.map((node) => Number(node.position?.y || 0)))
+  const keptPositions = []
+  const repairedPositions = {}
+  const overlaps = (left, right) => (
+    left.x < right.x + nodeWidth
+    && left.x + nodeWidth > right.x
+    && left.y < right.y + nodeHeight
+    && left.y + nodeHeight > right.y
+  )
+
+  const nodes = graphNodes.map((node) => {
+    if (node.type !== 'canvasProjectAsset') return node
+    const original = {
+      x: Number(node.position?.x || 0),
+      y: Number(node.position?.y || 0),
+    }
+    if (!keptPositions.some((position) => overlaps(original, position))) {
+      keptPositions.push(original)
+      return node
+    }
+
+    let slot = 0
+    let position
+    do {
+      position = {
+        x: anchorX + (slot % 3) * columnGap,
+        y: anchorY + Math.floor(slot / 3) * rowGap,
+      }
+      slot += 1
+    } while (keptPositions.some((kept) => overlaps(position, kept)))
+    keptPositions.push(position)
+    repairedPositions[String(node.id)] = position
+    return { ...node, position }
+  })
+
+  return { nodes, repairedPositions }
 }
 
 function commitInteractionHistory(previousState) {
@@ -2117,7 +2175,7 @@ function applyVirtualizedGraph() {
       pinnedIds: focusedNodeId.value ? [focusedNodeId.value] : [],
     },
   )
-  nodes.value = result.nodes
+  nodes.value = preserveCanvasNodeRuntimeMeasurements(result.nodes, nodes.value)
   edges.value = result.edges
   canvasVirtualized.value = result.virtualized
 }
@@ -6675,12 +6733,32 @@ async function fitCanvasView() {
 
 async function focusCanvasNode(nodeId) {
   if (!nodeId) return
+  const node = findGraphNode(nodeId)
   focusedNodeId.value = nodeId
   scheduleVirtualization()
   await nextTick()
   const api = canvasFlowApi.value
-  if (!api?.fitView) return
-  await api.fitView({ nodes: [{ id: nodeId }], padding: 0.55, duration: 320, includeHiddenNodes: false })
+  if (!api?.fitView && !api?.setCenter) return
+  if (!node) {
+    await api.fitView?.({ nodes: [String(nodeId)], padding: 0.55, duration: 320, includeHiddenNodes: false })
+    await nextTick()
+    api.updateNodeInternals?.([String(nodeId)])
+    const missingViewport = api.getViewport?.()
+    if (missingViewport) {
+      currentViewport.value = { x: missingViewport.x, y: missingViewport.y, zoom: missingViewport.zoom }
+      scheduleVirtualization()
+    }
+    return
+  }
+  const zoom = Number(api.getViewport?.()?.zoom || currentViewport.value?.zoom || 1)
+  const width = Number(node?.dimensions?.width || node?.measured?.width || node?.width || 220)
+  const height = Number(node?.dimensions?.height || node?.measured?.height || node?.height || 180)
+  const centerX = Number(node?.position?.x || 0) + width / 2
+  const centerY = Number(node?.position?.y || 0) + height / 2
+  if (node && api.setCenter) await api.setCenter(centerX, centerY, { zoom, duration: 320 })
+  else await api.fitView({ nodes: [String(node.id)], padding: 0.55, duration: 320, includeHiddenNodes: false })
+  await nextTick()
+  api.updateNodeInternals?.([String(node.id)])
   const viewport = api.getViewport?.()
   if (viewport) {
     currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }

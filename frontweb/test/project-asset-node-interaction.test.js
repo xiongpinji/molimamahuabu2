@@ -39,6 +39,17 @@ test('素材预览不劫持节点拖动且连线素材会进入下游生成参�
   assert.match(canvasSource, /upstreamReferenceUrls: upstreamReferenceUrlsForNode/)
 })
 
+test('项目素材预览在站内产生可见且可关闭的图片视频音频结果', () => {
+  assert.match(nodeSource, /<Teleport to="body">/)
+  assert.match(nodeSource, /v-if="previewVisible"[\s\S]*role="dialog"[\s\S]*aria-label="素材预览"/)
+  assert.match(nodeSource, /<img[\s\S]*v-if="assetType === 'image'"/)
+  assert.match(nodeSource, /<video v-else-if="assetType === 'video'"[^>]*controls/)
+  assert.match(nodeSource, /<audio v-else[^>]*controls/)
+  assert.match(nodeSource, /function openAsset\(\) \{[\s\S]*previewVisible\.value = true/)
+  assert.match(nodeSource, /function closeAssetPreview\(\) \{[\s\S]*previewVisible\.value = false/)
+  assert.doesNotMatch(nodeSource, /window\.open\(url\.value/)
+})
+
 test('项目图片素材连线后会成为可用的下游参考图', () => {
   const references = collectDirectUpstreamImageReferences(
     [

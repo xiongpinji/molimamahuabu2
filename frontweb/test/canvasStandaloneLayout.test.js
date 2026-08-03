@@ -38,6 +38,17 @@ test('连续从顶栏添加独立画布节点时不会重叠在同一坐标', ()
   assert.notDeepEqual(third, second)
 })
 
+test('大量远处节点不会把新节点推离当前视口中心', () => {
+  const center = { x: 800, y: 480 }
+  const distantNodes = Array.from({ length: 67 }, (_, index) => ({
+    id: `free:image:${index}`,
+    type: 'homeCanvasNode',
+    position: { x: -20000 + index * 10, y: -20000 },
+  }))
+
+  assert.deepEqual(computeStandaloneNodePosition(distantNodes, center), center)
+})
+
 test('独立画布整理会为自由节点和打组节点生成互不重叠的网格坐标', () => {
   const nodes = [
     { id: 'free:text:1', type: 'homeCanvasNode' },

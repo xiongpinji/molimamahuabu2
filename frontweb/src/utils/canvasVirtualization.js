@@ -89,6 +89,25 @@ export function virtualizeCanvasGraph(allNodes = [], allEdges = [], viewport, vi
   }
 }
 
+function hasMeasuredSize(size) {
+  return Number(size?.width) > 0 && Number(size?.height) > 0
+}
+
+export function preserveCanvasNodeRuntimeMeasurements(nextNodes = [], renderedNodes = []) {
+  const renderedById = new Map(renderedNodes.map((node) => [String(node?.id), node]))
+  return nextNodes.map((node) => {
+    const rendered = renderedById.get(String(node?.id))
+    const dimensions = hasMeasuredSize(rendered?.dimensions) ? rendered.dimensions : null
+    const measured = hasMeasuredSize(rendered?.measured) ? rendered.measured : null
+    if (!dimensions && !measured) return node
+    return {
+      ...node,
+      ...(dimensions ? { dimensions: { ...dimensions } } : {}),
+      ...(measured ? { measured: { ...measured } } : {}),
+    }
+  })
+}
+
 export function getCanvasNodeSize(node) {
   return nodeSize(node)
 }

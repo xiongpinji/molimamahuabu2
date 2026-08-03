@@ -3,11 +3,24 @@ const DEFAULT_COLUMN_GAP = 680
 const DEFAULT_ROW_GAP = 460
 
 export function computeStandaloneNodePosition(nodes = [], center = { x: 80, y: 80 }) {
-  const index = nodes.filter((node) => node?.type === 'homeCanvasNode').length
-  return {
-    x: Number(center.x || 0) + (index % DEFAULT_COLUMNS) * 560,
-    y: Number(center.y || 0) + Math.floor(index / DEFAULT_COLUMNS) * 380,
+  const freeNodes = nodes.filter((node) => node?.type === 'homeCanvasNode')
+  const origin = { x: Number(center.x || 0), y: Number(center.y || 0) }
+  const collides = (candidate) => freeNodes.some((node) => {
+    const position = node?.position
+    if (!position) return false
+    return Math.abs(Number(position.x || 0) - candidate.x) < DEFAULT_COLUMN_GAP
+      && Math.abs(Number(position.y || 0) - candidate.y) < DEFAULT_ROW_GAP
+  })
+
+  for (let index = 0; index <= freeNodes.length; index += 1) {
+    const candidate = {
+      x: origin.x + (index % DEFAULT_COLUMNS) * DEFAULT_COLUMN_GAP,
+      y: origin.y + Math.floor(index / DEFAULT_COLUMNS) * DEFAULT_ROW_GAP,
+    }
+    if (!collides(candidate)) return candidate
   }
+
+  return origin
 }
 
 export function canAlignCanvasNodes({ standalone = false, hasDrama = false, nodeCount = 0, aligning = false } = {}) {
