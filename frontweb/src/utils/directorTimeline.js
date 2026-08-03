@@ -558,6 +558,28 @@ export function interpolateMotionTransform(state, objectId, time) {
   return { position: lerp(before.position, after.position), rotation: lerp(before.rotation, after.rotation), scale: lerp(before.scale, after.scale) }
 }
 
+export function resolveDirectorCameraFrame(state, camera, motionPosition = null) {
+  const current = normalizeDirectorTimeline(state)
+  const boundCamera = camera && typeof camera === 'object' ? camera : null
+  const cameraObject = current.objects.find((object) => object.id === String(boundCamera?.objectId || ''))
+  if (!boundCamera || !cameraObject) return null
+  const followObject = current.objects.find((object) => object.id === boundCamera.followTargetId)
+  const lookAtObject = boundCamera.lookAtMode === 'object'
+    ? current.objects.find((object) => object.id === boundCamera.lookAtTargetId)
+    : null
+  const follow = followObject?.transform?.position || [0, 0, 0]
+  const basePosition = Array.isArray(motionPosition) ? vector3(motionPosition, cameraObject.transform.position) : cameraObject.transform.position
+  const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
+  const keepsTargetLocked = Boolean(lookAtObject) || boundCamera.lookAtMode === 'manual'
+  return {
+    position: basePosition.map((value, index) => value + follow[index]),
+    target,
+    quaternion: keepsTargetLocked ? null : boundCamera.quaternion,
+    roll: Number(boundCamera.roll || 0),
+    applyRoll: keepsTargetLocked || !boundCamera.quaternion,
+  }
+}
+
 export function removeDirectorObject(state, objectId) {
   const current = normalizeDirectorTimeline(state)
   const targetId = String(objectId)

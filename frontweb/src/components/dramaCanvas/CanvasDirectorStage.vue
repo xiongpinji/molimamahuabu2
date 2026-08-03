@@ -643,6 +643,7 @@ import {
   proportionalScaleFromAxis,
   removeActionClip,
   removeDirectorObject,
+  resolveDirectorCameraFrame,
   splitShotAtTime,
   interpolateMotionTransform,
   upsertMotionKeyframe,
@@ -2628,14 +2629,10 @@ function setCameraForShot(shot) {
       camera.aspect = Number(boundCamera.aspect) || camera.aspect
       camera.updateProjectionMatrix?.()
     }
-    const followObject = timeline.value.objects.find((object) => object.id === boundCamera.followTargetId)
-    const lookAtObject = boundCamera.lookAtMode === 'object' ? timeline.value.objects.find((object) => object.id === boundCamera.lookAtTargetId) : null
-    const follow = followObject?.transform?.position || [0, 0, 0]
-    const position = cameraObject.transform.position.map((value, index) => value + follow[index])
-    const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
-    const keepsTargetLocked = Boolean(lookAtObject) || boundCamera.lookAtMode === 'manual'
-    setCamera(position, target, keepsTargetLocked ? null : boundCamera.quaternion)
-    if (camera && (keepsTargetLocked || !boundCamera.quaternion)) camera.rotation.z = Number(boundCamera.roll || 0) * Math.PI / 180
+    const frame = resolveDirectorCameraFrame(timeline.value, boundCamera)
+    if (!frame) return
+    setCamera(frame.position, frame.target, frame.quaternion)
+    if (camera && frame.applyRoll) camera.rotation.z = frame.roll * Math.PI / 180
     return
   }
   const firstCharacter = characterObjects.values().next().value
@@ -2840,7 +2837,14 @@ function applyTimelineFrame() {
     object.rotation.set(...transform.rotation)
     object.scale.set(...transform.scale)
     const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeShot.value?.cameraId && camera.objectId === track.objectId)
-    if (activeCamera) setCamera(transform.position, [0, 0.8, 0])
+    if (activeCamera) {
+      const frame = resolveDirectorCameraFrame(timeline.value, activeCamera, transform.position)
+      if (frame) {
+        const camera = viewer.value?.scene?.mainCamera
+        setCamera(frame.position, frame.target, frame.quaternion)
+        if (camera && frame.applyRoll) camera.rotation.z = frame.roll * Math.PI / 180
+      }
+    }
   }
   for (const object of characterObjects.values()) {
     const base = object.userData?.directorBasePosition
