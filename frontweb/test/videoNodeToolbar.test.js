@@ -29,7 +29,8 @@ test('工具栏完整提供实测入口、下拉工具、下载和全屏', () =>
   for (const label of ['裁剪', '高清', '解析', '框选去字幕', '音频分离', '画面编辑']) {
     assert.match(source, new RegExp(label))
   }
-  assert.match(source, /非 OCR/)
+  assert.match(source, /仅处理选区画面，不做文字识别/)
+  assert.doesNotMatch(source, /\u004f\u0043\u0052/)
   assert.doesNotMatch(source, /智能去字幕/)
   assert.match(source, /aria-label="下载视频"/)
   assert.match(source, /aria-label="全屏预览"/)
@@ -57,6 +58,28 @@ test('前端接入异步视频任务、结果节点和刷新恢复', () => {
   assert.match(canvasSource, /createFreeCanvasNode\((?:'|\")video(?:'|\")/)
   assert.match(canvasSource, /videoToolHistory/)
   assert.match(canvasSource, /videoToolStatus: 'failed'/)
+})
+
+test('视频任务在画布生命周期变化后停止轮询且禁止陈旧回写', () => {
+  const canvasSource = read('src/views/DramaCanvas.vue')
+  const completionStart = canvasSource.indexOf('async function completeVideoToolOperation')
+  const completionEnd = canvasSource.indexOf('async function runVideoNodeTool', completionStart)
+  const completionSource = canvasSource.slice(completionStart, completionEnd)
+
+  assert.match(canvasSource, /let videoToolPollSession = 0/)
+  assert.match(canvasSource, /function invalidateVideoToolPolling\(\)/)
+  assert.match(canvasSource, /watch\(\(\) => route\.params\.id, \(\) => \{\s*invalidateVideoToolPolling\(\)/)
+  assert.match(canvasSource, /onBeforeUnmount\(\(\) => \{\s*invalidateVideoToolPolling\(\)/)
+  assert.match(canvasSource, /String\(dramaId\.value \|\| ''\) !== pollToken\.dramaId/)
+  assert.match(canvasSource, /freeCanvasNodeById\(pollToken\.nodeId\)/)
+  assert.match(canvasSource, /String\(node\.data\?\.videoToolTaskId \|\| ''\) !== pollToken\.taskId/)
+  assert.match(canvasSource, /async function waitForVideoToolOperation\(taskId, pollToken\)/)
+  assert.match(canvasSource, /completeVideoToolOperation\(node\.id, operation, result, previousHistory, pollToken\)/)
+  assert.equal(
+    (completionSource.match(/requireCurrentVideoToolSourceNode\(pollToken\)/g) || []).length,
+    5,
+    '解析、视频、音频结果节点及源节点状态回写前都必须复核任务归属',
+  )
 })
 
 test('视频解析结果使用可持久化表格而非纯文本占位', () => {

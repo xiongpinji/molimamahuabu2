@@ -3410,6 +3410,49 @@ function resumePendingImageToolOperations() {
 const VIDEO_TOOL_POLL_INTERVAL_MS = 2000
 const VIDEO_TOOL_POLL_MAX_ATTEMPTS = 2400
 const resumedVideoToolTasks = new Set()
+let videoToolPollSession = 0
+
+function invalidateVideoToolPolling() {
+  videoToolPollSession += 1
+  resumedVideoToolTasks.clear()
+}
+
+function videoToolPollCancelledError() {
+  const error = new Error('视频处理轮询已取消')
+  error.code = 'VIDEO_TOOL_POLL_CANCELLED'
+  return error
+}
+
+function currentVideoToolOperationNode(session, expectedDramaId, nodeId) {
+  if (!canvasAlive
+    || session !== videoToolPollSession
+    || String(dramaId.value || '') !== expectedDramaId) return null
+  const node = freeCanvasNodeById(nodeId)
+  return node?.type === 'homeCanvasNode' && node.data?.kind === 'video' ? node : null
+}
+
+function currentVideoToolSourceNode(pollToken) {
+  if (!pollToken
+    || !canvasAlive
+    || pollToken.session !== videoToolPollSession
+    || String(dramaId.value || '') !== pollToken.dramaId) return null
+  const node = freeCanvasNodeById(pollToken.nodeId)
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'video') return null
+  if (String(node.data?.videoToolTaskId || '') !== pollToken.taskId) return null
+  return node
+}
+
+function requireCurrentVideoToolSourceNode(pollToken) {
+  const node = currentVideoToolSourceNode(pollToken)
+  if (!node) throw videoToolPollCancelledError()
+  return node
+}
+
+function releaseVideoToolPolling(pollToken) {
+  if (pollToken?.session === videoToolPollSession) {
+    resumedVideoToolTasks.delete(pollToken.taskId)
+  }
+}
 
 function parseVideoToolTaskResult(task) {
   if (task?.result && typeof task.result === 'object') return task.result
@@ -3423,9 +3466,11 @@ function parseVideoToolTaskResult(task) {
   throw new Error('视频处理任务未返回结果')
 }
 
-async function waitForVideoToolOperation(taskId) {
+async function waitForVideoToolOperation(taskId, pollToken) {
   for (let attempt = 0; attempt < VIDEO_TOOL_POLL_MAX_ATTEMPTS; attempt += 1) {
+    requireCurrentVideoToolSourceNode(pollToken)
     const task = await videoToolsAPI.getOperation(taskId)
+    requireCurrentVideoToolSourceNode(pollToken)
     if (task?.status === 'completed') return parseVideoToolTaskResult(task)
     if (task?.status === 'failed') throw new Error(task.error || task.message || '视频处理失败')
     await new Promise((resolve) => setTimeout(resolve, VIDEO_TOOL_POLL_INTERVAL_MS))
@@ -3450,11 +3495,9 @@ function videoStoryContent(story) {
   ].join('\n')
 }
 
-async function completeVideoToolOperation(nodeId, operation, result, previousHistory = []) {
-  const sourceNode = freeCanvasNodeById(nodeId)
-  if (sourceNode?.type !== 'homeCanvasNode' || sourceNode.data?.kind !== 'video') {
-    throw new Error('视频处理完成，但源视频节点已不存在')
-  }
+async function completeVideoToolOperation(nodeId, operation, result, previousHistory = [], pollToken) {
+  if (String(result?.taskId || '') !== pollToken?.taskId) throw videoToolPollCancelledError()
+  const sourceNode = requireCurrentVideoToolSourceNode(pollToken)
 
   if (result.resultType === 'video_story') {
     const existingStoryNode = allGraphNodes.value.find((node) => (
@@ -3464,6 +3507,7 @@ async function completeVideoToolOperation(nodeId, operation, result, previousHis
       && String(node.data?.videoToolTaskId || '') === String(result.taskId || '')
     ))
     if (!existingStoryNode) {
+      requireCurrentVideoToolSourceNode(pollToken)
       await createFreeCanvasNode('text', {
         x: Number(sourceNode.position?.x || 0) + 700,
         y: Number(sourceNode.position?.y || 0),
@@ -3491,6 +3535,7 @@ async function completeVideoToolOperation(nodeId, operation, result, previousHis
     ))
     if (!existingResultNode) {
       if (resultKind === 'video') {
+        requireCurrentVideoToolSourceNode(pollToken)
         await createFreeCanvasNode('video', {
           x: Number(sourceNode.position?.x || 0) + 700,
           y: Number(sourceNode.position?.y || 0),
@@ -3510,6 +3555,7 @@ async function completeVideoToolOperation(nodeId, operation, result, previousHis
           videoToolError: '',
         })
       } else {
+        requireCurrentVideoToolSourceNode(pollToken)
         await createFreeCanvasNode('audio', {
           x: Number(sourceNode.position?.x || 0) + 700,
           y: Number(sourceNode.position?.y || 0),
@@ -3537,6 +3583,7 @@ async function completeVideoToolOperation(nodeId, operation, result, previousHis
     resultUrl: result.resultUrl || '',
     createdAt: new Date().toISOString(),
   }
+  requireCurrentVideoToolSourceNode(pollToken)
   await patchFreeCanvasNodeData(nodeId, {
     videoToolTaskId: result.taskId,
     videoToolStatus: 'success',
@@ -3554,6 +3601,9 @@ async function runVideoNodeTool(nodeOrId, operation, parameters = {}) {
   }
   const sourceUrl = String(nodeResultUrl(node) || '')
   if (!sourceUrl) throw new Error('视频节点暂无可处理结果')
+  const operationSession = videoToolPollSession
+  const operationDramaId = String(dramaId.value || '')
+  const operationNodeId = String(node.id)
 
   let sourceAssetId = node.data?.savedAssetId
   if (!sourceAssetId) {
@@ -3562,6 +3612,8 @@ async function runVideoNodeTool(nodeOrId, operation, parameters = {}) {
     node = freeCanvasNodeById(node.id) || node
   }
   if (!sourceAssetId) throw new Error('视频尚未存入素材库，无法执行处理')
+  node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+  if (!node) throw videoToolPollCancelledError()
 
   const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
   await patchFreeCanvasNodeData(node.id, {
@@ -3571,38 +3623,54 @@ async function runVideoNodeTool(nodeOrId, operation, parameters = {}) {
     videoToolRetryParameters: parameters,
   })
   let activeTaskId = ''
+  let pollToken = null
   try {
+    node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!node) throw videoToolPollCancelledError()
     const accepted = await videoToolsAPI.createOperation({
-      dramaId: dramaId.value,
+      dramaId: Number(operationDramaId),
       assetId: node.data?.savedAssetId || sourceAssetId,
       sourceNodeId: String(node.id),
       operation,
       parameters,
     })
-    if (accepted?.status === 'processing' && accepted?.taskId) {
-      activeTaskId = String(accepted.taskId)
-      resumedVideoToolTasks.add(activeTaskId)
-      await patchFreeCanvasNodeData(node.id, {
-        videoToolTaskId: accepted.taskId,
-        videoToolStatus: 'running',
-      })
+    activeTaskId = String(accepted?.taskId || '')
+    if (!activeTaskId) throw new Error('视频处理服务未返回任务编号')
+    node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!node) throw videoToolPollCancelledError()
+    pollToken = {
+      session: operationSession,
+      dramaId: operationDramaId,
+      nodeId: operationNodeId,
+      taskId: activeTaskId,
     }
+    resumedVideoToolTasks.add(activeTaskId)
+    await patchFreeCanvasNodeData(node.id, {
+      videoToolTaskId: activeTaskId,
+      videoToolStatus: 'running',
+    })
+    requireCurrentVideoToolSourceNode(pollToken)
     const result = accepted?.status === 'processing'
-      ? await waitForVideoToolOperation(accepted.taskId)
+      ? await waitForVideoToolOperation(activeTaskId, pollToken)
       : accepted
-    await completeVideoToolOperation(node.id, operation, result, previousHistory)
-    if (activeTaskId) resumedVideoToolTasks.delete(activeTaskId)
+    await completeVideoToolOperation(node.id, operation, result, previousHistory, pollToken)
+    releaseVideoToolPolling(pollToken)
     return result
   } catch (error) {
-    if (activeTaskId) resumedVideoToolTasks.delete(activeTaskId)
+    releaseVideoToolPolling(pollToken)
+    if (error?.code === 'VIDEO_TOOL_POLL_CANCELLED') throw error
+    const currentNode = pollToken
+      ? currentVideoToolSourceNode(pollToken)
+      : currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!currentNode) throw videoToolPollCancelledError()
     if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') {
-      await patchFreeCanvasNodeData(node.id, {
+      await patchFreeCanvasNodeData(currentNode.id, {
         videoToolStatus: 'running',
         videoToolError: error.message,
       })
       throw error
     }
-    await patchFreeCanvasNodeData(node.id, {
+    await patchFreeCanvasNodeData(currentNode.id, {
       videoToolStatus: 'failed',
       videoToolError: error?.message || '视频处理失败',
       videoToolRetryOperation: operation,
@@ -3623,11 +3691,23 @@ function resumePendingVideoToolOperations() {
     resumedVideoToolTasks.add(taskId)
     const operation = String(node.data?.videoToolRetryOperation || '')
     const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
-    waitForVideoToolOperation(taskId)
-      .then((result) => completeVideoToolOperation(node.id, operation, result, previousHistory))
+    const pollToken = {
+      session: videoToolPollSession,
+      dramaId: String(dramaId.value || ''),
+      nodeId: String(node.id),
+      taskId,
+    }
+    waitForVideoToolOperation(taskId, pollToken)
+      .then(async (result) => {
+        await completeVideoToolOperation(node.id, operation, result, previousHistory, pollToken)
+        releaseVideoToolPolling(pollToken)
+      })
       .catch(async (error) => {
-        resumedVideoToolTasks.delete(taskId)
+        releaseVideoToolPolling(pollToken)
+        if (error?.code === 'VIDEO_TOOL_POLL_CANCELLED') return
         if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') return
+        const currentNode = currentVideoToolSourceNode(pollToken)
+        if (!currentNode) return
         await patchFreeCanvasNodeData(node.id, {
           videoToolStatus: 'failed',
           videoToolError: error?.message || '视频处理失败',
@@ -7555,6 +7635,7 @@ watch(liveRunQueueItems, (items) => {
 }, { deep: true })
 
 watch(() => route.params.id, () => {
+  invalidateVideoToolPolling()
   highlightAssetId.value = null
   layoutCache.value = null
   activeGroupId.value = null
@@ -7592,6 +7673,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  invalidateVideoToolPolling()
   canvasAlive = false
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)

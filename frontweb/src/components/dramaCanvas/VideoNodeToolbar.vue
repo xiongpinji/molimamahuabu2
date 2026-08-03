@@ -46,7 +46,7 @@
     <el-dialog
       v-model="regionVisible"
       class="video-tool-dialog"
-      :title="regionOperation === 'crop' ? '裁剪视频' : '框选去字幕（非 OCR）'"
+      :title="regionOperation === 'crop' ? '裁剪视频' : '框选去字幕'"
       width="min(920px, calc(100vw - 32px))"
       append-to-body
       destroy-on-close
@@ -77,7 +77,7 @@
       <p class="tool-note">
         {{ regionOperation === 'crop'
           ? '在视频上拖拽选择保留区域，服务端使用 FFmpeg 生成新视频，源视频不变。'
-          : '在视频上拖拽框住字幕区域；这是 FFmpeg delogo 选区修复，不做 OCR 识别，源视频不变。' }}
+          : '在视频上拖拽框住字幕区域；仅处理选区画面，不做文字识别，服务端使用 FFmpeg delogo 生成新视频，源视频不变。' }}
       </p>
       <div class="region-fields">
         <label>X <el-input-number v-model="region.x" :min="0" :max="Math.max(0, videoSize.width - 2)" /></label>
