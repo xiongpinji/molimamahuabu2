@@ -2270,22 +2270,6 @@ function screenToFlowPosition(clientX, clientY) {
   }
 }
 
-function panCanvasForNodeEditor(overflowY) {
-  const distance = Math.max(0, Number(overflowY) || 0)
-  const api = canvasFlowApi.value
-  const viewport = api?.getViewport?.() || currentViewport.value
-  if (!distance || !api?.setViewport || !viewport) return false
-  const nextViewport = {
-    x: Number(viewport.x || 0),
-    y: Number(viewport.y || 0) - distance,
-    zoom: Number(viewport.zoom || 1),
-  }
-  currentViewport.value = nextViewport
-  api.setViewport(nextViewport, { duration: 0 })
-  scheduleLayoutSave()
-  return true
-}
-
 function canvasCenterFlowPosition() {
   const rect = canvasMainRef.value?.getBoundingClientRect?.()
   if (!rect) return { x: 80, y: 80 }
@@ -6164,7 +6148,6 @@ provide(CANVAS_CONTEXT_KEY, {
   registerCanvasFlowApi: (api) => {
     canvasFlowApi.value = api
   },
-  panCanvasForNodeEditor,
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,

@@ -10,6 +10,9 @@ import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
+import { installBrowserWheelZoomGuard } from './utils/browser-zoom-guard.js'
+
+installBrowserWheelZoomGuard(window)
 
 const app = createApp({
   name: 'RootProvider',
