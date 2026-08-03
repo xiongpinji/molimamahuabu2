@@ -40,6 +40,7 @@ test('尾帧提取使用制作页当前选中的视频并写入下一分镜首�
       prompt TEXT,
       provider TEXT,
       model TEXT,
+      frame_type TEXT,
       status TEXT,
       image_url TEXT,
       local_path TEXT,
@@ -113,4 +114,6 @@ test('尾帧提取使用制作页当前选中的视频并写入下一分镜首�
   const nextStoryboard = db.prepare('SELECT first_frame_image_id, local_path FROM storyboards WHERE id = 2').get();
   assert.equal(nextStoryboard.first_frame_image_id, result.body.new_first_frame_image_id);
   assert.equal(nextStoryboard.local_path, result.body.local_path);
+  const extractedImage = db.prepare('SELECT frame_type FROM image_generations WHERE id = ?').get(result.body.new_first_frame_image_id);
+  assert.equal(extractedImage.frame_type, 'storyboard_first');
 });
