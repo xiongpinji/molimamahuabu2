@@ -52,6 +52,8 @@
 - 真实生产库备份：`/opt/moli-drama/shared/backups/database-20260804T040143692Z.sqlite`，7,892,992 字节，SHA-256 为 `8f942695273200e61188971c7880049596428e54faca16c71610a6317ea7758e`，完整性 `ok`。
 - 生产发布：`/opt/moli-drama/releases/djpsd-image-bd88565-20260804T115440CST`；`moli-drama.service` 为 `active/running`，`NRestarts=0`，健康接口和首页均返回 200，近十分钟无错误日志；AI 音乐进程 PID 206874/206895 未变化。
 - 2026-08-04 逐模型真实生成：1K 任务 `320435` 成功，结果图片可读取，成本 1；2K 任务 `320523` 成功，结果图片可读取，成本 2；4K 创建返回 HTTP 400 `任务扣费规则未配置`，成本 0。
-- 修正目标：生产配置 id=5 只保留 `image-v1`、`image-v1-2k`，默认模型改为 `image-v1-2k`；画布目录不得返回 `image-v1-4k`。
+- 生产配置 id=5 已只保留 `image-v1`、`image-v1-2k`，默认模型为 `image-v1-2k`，名称修正为“DJPSD 图片（1K/2K 已实测）”；画布目录读回仅有 2K=40、1K=30，不再返回 `image-v1-4k`。
 - 4K 目录撤下测试先失败后转绿；DJPSD 图片与画布目录专项 9/9 通过，后端全量 665/665 通过。
 - 前端全量 559/569 通过，10 个失败与本任务前记录的固定基线完全一致；DJPSD 新增断言通过。生产构建完成 1842 个模块，`canvas-credit-callout-v1` 源码与构建产物门禁均通过。
+- 修正前生产备份：`/opt/moli-drama/shared/backups/database-20260804T070131098Z.sqlite`，7,901,184 字节，SHA-256 为 `1b91b4bf9d1d3c4c1f389fc5bc567f02804a5ab8a5489cacaf9375cda3d7f116`，完整性 `ok`。
+- 修正发布：`/opt/moli-drama/releases/djpsd-verified-images-b833d32-20260804T1504CST`。候选 DJPSD 目录测试、生产预检和共享积分门禁通过；共享激活器完成 CAS 切换。发布后服务 `active`、`NRestarts=0`、`/health` 与本机首页均为 200，DJPSD 公网页为 200，近十分钟无错误日志，AI 音乐 PID 206874/206895 未变化，活动生成队列为空。
