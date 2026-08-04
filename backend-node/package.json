@@ -9,13 +9,14 @@
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "migrate": "node src/db/migrate.js",
     "migrate:07": "node scripts/run-migration-07.js",
-    "preflight:production": "node scripts/preproduction-check.js",
+    "preflight:production": "npm run audit:canvas-credit-contract -- --require-build && node scripts/preproduction-check.js",
     "backup:create": "node scripts/database-backup.js create",
     "backup:list": "node scripts/database-backup.js list",
     "backup:verify": "node scripts/database-backup.js verify",
     "backup:restore-drill": "node scripts/database-backup.js restore-drill",
     "audit:licenses": "node scripts/audit-production-licenses.js",
-    "audit:image-node-release": "node scripts/audit-image-node-release.js"
+    "audit:image-node-release": "node scripts/audit-image-node-release.js",
+    "audit:canvas-credit-contract": "node scripts/audit-canvas-credit-contract.js"
   },
   "engines": {
     "node": ">=20.9.0"

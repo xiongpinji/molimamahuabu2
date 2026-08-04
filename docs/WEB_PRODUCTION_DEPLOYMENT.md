@@ -68,6 +68,8 @@ docker compose --env-file .env.production -f compose.production.yml exec app npm
 
 只有退出码为 0 且输出 `ready: true` 才可开放业务流量。随后使用隔离测试账号完成一次真实小额生成，核对供应商账单、积分预扣、成功结算和失败退款。
 
+生产预检会先执行 `canvas-credit-callout-v1` 受保护界面合同审计。该审计要求画布文本、图片、视频、音频节点继续显示醒目加粗的“本次预计扣除 X 积分”，并同时检查已构建的前端产物。审计失败表示候选发生功能降级，禁止切换流量。
+
 ## 6. 数据备份
 
 发布前创建备份，并紧接着列出备份：
@@ -137,3 +139,21 @@ curl --fail "https://${APP_DOMAIN}/health"
 - `molimama_data`、`caddy_data` 和 `caddy_config` 卷不得随普通更新删除。
 - 禁止执行 `docker compose down -v`，它会删除持久数据。
 - 现阶段禁止把 `app` 扩展到多个副本；如需水平扩展，应先迁移到独立数据库和对象存储。
+
+对于 `/opt/moli-drama/releases` 的单机增量发布，必须从实时 `current` 克隆候选，并通过服务器共享门禁执行 CAS 切换。共享门禁首次安装须在明确审查后执行一次：
+
+```bash
+sudo env PROTECTED_RELEASE_GUARD_BOOTSTRAP=1 \
+  bash /opt/moli-drama/releases/<candidate>/deploy/install-protected-release-guard.sh \
+  /opt/moli-drama/releases/<candidate>
+```
+
+安装完成后的每次发布只执行现有共享激活脚本：
+
+```bash
+sudo /opt/moli-drama/shared/release-guard/activate-protected-release.sh \
+  /opt/moli-drama/releases/<candidate> \
+  /opt/moli-drama/releases/<expected-current>
+```
+
+禁止直接改写 `/opt/moli-drama/current`。共享门禁位于 release 目录之外，会在切换前验证生产构建中的受保护积分卡片合同，并在并发版本变化或健康检查失败时拒绝切换或回滚。候选 release 不能更新已安装的共享门禁；门禁升级必须作为独立安全变更人工审查，不能由候选自证。
