@@ -154,6 +154,53 @@ test('视频任务拒绝 5 到 15 秒之外或非整数的时长', () => {
   }
 });
 
+test('iCreat Seedance Mini 和 Fast 的 4 秒任务可创建并进入供应商调用', async () => {
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  const submitted = [];
+  videoClient.getDefaultVideoConfig = (_db, model) => ({
+    model,
+    default_model: model,
+    provider: 'icreat',
+    settings: '{}',
+  });
+  videoClient.callVideoApi = async (_db, _log, payload) => {
+    submitted.push({ model: payload.model, duration: payload.duration });
+    return { error: '结束测试任务，不访问外部供应商' };
+  };
+
+  try {
+    for (const model of [
+      'bytedance/seedance-2-0-mini',
+      'bytedance/seedance-2-0-fast',
+    ]) {
+      const db = setup();
+      credits.setAccountBalance(db, 'user-1', 1000);
+      prices.set(db, model, 60, { category: 'video', cost_unit: 'second' });
+      const created = videoService.create(db, log, {
+        drama_id: 1,
+        model,
+        prompt: 'iCreat 4 秒任务',
+        duration: 4,
+      }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+      const row = db.prepare('SELECT duration, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+      assert.equal(row.duration, 4);
+      assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 240);
+      await videoService.processVideoGeneration(db, log, created.id);
+      db.close();
+    }
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+  }
+
+  assert.deepEqual(submitted, [
+    { model: 'bytedance/seedance-2-0-mini', duration: 4 },
+    { model: 'bytedance/seedance-2-0-fast', duration: 4 },
+  ]);
+});
+
 test('已有处理中任务时仍校验时长且不静默复用不同秒数', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);

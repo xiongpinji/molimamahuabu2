@@ -182,22 +182,26 @@ function settleVideoCredit(db, log, row, outcome, message = '') {
   }
 }
 
-function normalizeVideoDuration(value, fallback = 5) {
+function minimumVideoDuration(model) {
+  return /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(String(model || '').trim().toLowerCase()) ? 4 : 5;
+}
+
+function normalizeVideoDuration(value, fallback = 5, minimum = 5) {
   const duration = value == null || value === '' ? Number(fallback) : Number(value);
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-    const error = new Error('视频时长必须是 5 到 15 秒之间的整数');
+  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }
   return duration;
 }
 
-function configuredVideoDuration(config) {
+function configuredVideoDuration(config, minimum = 5) {
   if (!config?.settings) return null;
   try {
     const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
     const duration = Number(settings?.video_duration);
-    return Number.isSafeInteger(duration) && duration >= 5 && duration <= 15 ? duration : null;
+    return Number.isSafeInteger(duration) && duration >= minimum && duration <= 15 ? duration : null;
   } catch (_) {
     return null;
   }
@@ -213,12 +217,13 @@ function create(db, log, req, options = {}) {
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const selectedModel = body.model || storyboardDefaults?.video_model || null;
   const videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
-  const storyboardDuration = Number(storyboardDefaults?.duration);
-  const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= 5 && storyboardDuration <= 15
-    ? storyboardDuration
-    : configuredVideoDuration(videoConfig) || 5;
-  const duration = normalizeVideoDuration(body.duration, fallbackDuration);
   const effectiveModel = selectedModel || videoConfig?.default_model || videoConfig?.model || '';
+  const minimumDuration = minimumVideoDuration(effectiveModel);
+  const storyboardDuration = Number(storyboardDefaults?.duration);
+  const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= minimumDuration && storyboardDuration <= 15
+    ? storyboardDuration
+    : configuredVideoDuration(videoConfig, minimumDuration) || 5;
+  const duration = normalizeVideoDuration(body.duration, fallbackDuration, minimumDuration);
   const normalizedReferences = videoReferenceCapability.validateAndNormalize({
     model: effectiveModel,
     capabilities: videoReferenceCapability.resolve(videoConfig || {}, effectiveModel),
@@ -894,7 +899,7 @@ async function processVideoGeneration(db, log, videoGenId) {
     const reference_urls = parseReferenceUrls(row.reference_image_urls);
     const reference_audio_urls = parseReferenceUrls(row.reference_audio_urls);
     const reference_video_urls = parseReferenceUrls(row.reference_video_urls);
-    const effectiveDuration = normalizeVideoDuration(row.duration, 5);
+    const effectiveDuration = normalizeVideoDuration(row.duration, 5, minimumVideoDuration(row.model));
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);

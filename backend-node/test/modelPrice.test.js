@@ -197,3 +197,14 @@ test('视频金额只接受 5 到 15 秒整数并按秒相乘', () => {
     );
   }
 });
+
+test('iCreat Seedance 2.0 Mini 和 Fast 接受官方支持的 4 秒并按秒计费', () => {
+  const db = makeDb();
+  for (const model of [
+    'bytedance/seedance-2-0-mini',
+    'bytedance/seedance-2-0-fast',
+  ]) {
+    prices.set(db, model, 60, { category: 'video', cost_unit: 'second' });
+    assert.equal(prices.calculateCharge(db, model, { duration: 4 }), 240);
+  }
+});
