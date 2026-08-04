@@ -14,6 +14,8 @@ const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
 const aihubccClient = require('./aihubccClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
+const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
+const { downloadPublicImage } = require('./publicImageDownload');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -96,6 +98,7 @@ function getProxyExpireHours() {
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
   if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
+  if (p === 'djpsd_openapi' || p === 'djpsd') return 'djpsd_openapi';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -171,6 +174,252 @@ async function callAihubccImageApi(config, log, opts = {}) {
     intervalMs: Number(process.env.AIHUBCC_POLL_INTERVAL_MS || 5000),
     log,
   });
+}
+
+function normalizeDjpsdOpenApiBaseUrl(value) {
+  return String(value || 'https://shiping.djpsd.com').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+function buildDjpsdOpenApiImageUrl(baseUrl, endpoint, defaultPath) {
+  const root = normalizeDjpsdOpenApiBaseUrl(baseUrl);
+  const raw = String(endpoint || defaultPath).trim();
+  if (!/^https?:\/\//i.test(raw)) return root + (raw.startsWith('/') ? raw : `/${raw}`);
+  const url = new URL(raw);
+  if (url.origin !== new URL(root).origin) {
+    throw new Error('DJPSD 开放 API 端点必须与 Base URL 同源');
+  }
+  return url.toString();
+}
+
+function buildDjpsdOpenApiImageQueryUrl(config, taskId) {
+  const encoded = encodeURIComponent(String(taskId));
+  let queryEndpoint = String(config.query_endpoint || '/v1/media/status?task_id={taskId}').trim();
+  if (/\{taskId\}|\{task_id\}|\{id\}/i.test(queryEndpoint)) {
+    queryEndpoint = queryEndpoint.replace(/\{taskId\}|\{task_id\}|\{id\}/gi, encoded);
+  } else {
+    const root = normalizeDjpsdOpenApiBaseUrl(config.base_url);
+    const queryUrl = new URL(queryEndpoint, `${root}/`);
+    queryUrl.searchParams.set('task_id', String(taskId));
+    queryEndpoint = queryUrl.toString();
+  }
+  return buildDjpsdOpenApiImageUrl(
+    config.base_url,
+    queryEndpoint,
+    '/v1/media/status?task_id={taskId}',
+  );
+}
+
+function buildDjpsdOpenApiImageBody(opts = {}) {
+  return {
+    model: opts.model || 'image-v1',
+    prompt: opts.prompt || '',
+    params: {
+      aspect_ratio: aspectRatioLabelFromPixelSize(opts.size),
+      images: Array.isArray(opts.images) ? opts.images.filter(Boolean) : [],
+    },
+  };
+}
+
+function resolveDjpsdOpenApiImageResultUrl(baseUrl, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return new URL(raw, `${normalizeDjpsdOpenApiBaseUrl(baseUrl)}/`).toString();
+}
+
+function parseDjpsdOpenApiImagePollResponse(payload, baseUrl) {
+  const data = payload?.data || payload || {};
+  const state = String(data.state || data.status || data.task_status || '').toLowerCase();
+  const resultType = String(data.result_type || '').toLowerCase();
+  if (resultType && resultType !== 'image') {
+    return { state: 'failed', error: 'DJPSD 开放 API 返回的不是图片结果' };
+  }
+  const imageUrl = resolveDjpsdOpenApiImageResultUrl(
+    baseUrl,
+    data.image_url || data.result_url,
+  );
+  if (imageUrl) return { state: 'completed', imageUrl };
+  if (state === 'failed' || state === 'error') {
+    return { state: 'failed', error: data.error || data.message || 'DJPSD 开放 API 图片生成失败' };
+  }
+  if (data.is_final || ['success', 'succeeded', 'completed', 'done'].includes(state)) {
+    return { state: 'failed', error: 'DJPSD 开放 API 任务已结束但未返回图片地址' };
+  }
+  return { state: 'processing' };
+}
+
+function parseDjpsdOpenApiImageDataUrl(value) {
+  const match = String(value || '').match(/^data:([\w/+.-]+);base64,(.+)$/is);
+  if (!match) throw new Error('参考图 data URL 格式无效');
+  const mimeType = match[1].toLowerCase();
+  if (!mimeType.startsWith('image/')) throw new Error('只允许图片 data URL');
+  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  if (!bytes.length) throw new Error('参考图 data URL 内容为空');
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
+  return { bytes, mimeType };
+}
+
+function djpsdImageExtension(mimeType) {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  if (mimeType === 'image/gif') return 'gif';
+  return 'jpg';
+}
+
+async function uploadDjpsdOpenApiImageReference(config, rawValue, opts, index) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+  const root = normalizeDjpsdOpenApiBaseUrl(config.base_url);
+  try {
+    const url = new URL(raw, `${root}/`);
+    if (url.origin === new URL(root).origin && url.pathname.startsWith('/uploads/')) {
+      return `${url.pathname}${url.search}`;
+    }
+  } catch (_) {}
+
+  const resolved = resolveImageRef(raw, opts.files_base_url, opts.storage_local_path);
+  let image;
+  if (String(resolved || '').startsWith('data:')) {
+    image = parseDjpsdOpenApiImageDataUrl(resolved);
+  } else if (/^https?:\/\//i.test(String(resolved || ''))) {
+    image = await downloadPublicImage(resolved);
+  } else {
+    throw new Error('参考图不是可上传的本地图片、data URL 或公网 HTTP(S) 图片');
+  }
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([image.bytes], { type: image.mimeType }),
+    `reference-${index + 1}.${djpsdImageExtension(image.mimeType)}`,
+  );
+  const uploadUrl = buildDjpsdOpenApiImageUrl(config.base_url, '/v1/media/upload', '/v1/media/upload');
+  const res = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.api_key || ''}` },
+    body: form,
+  });
+  const responseText = await res.text();
+  let data = {};
+  try { data = responseText ? JSON.parse(responseText) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || responseText || `HTTP ${res.status}`;
+    throw new Error(`参考图上传失败: ${String(message).slice(0, 300)}`);
+  }
+  const uploadedUrl = String(data.url || data.data?.url || '').trim();
+  if (!uploadedUrl) throw new Error('参考图上传成功但未返回 URL');
+  return uploadedUrl;
+}
+
+function formatDjpsdOpenApiImageUnknownSubmitError(error) {
+  const detail = error?.message || String(error || '连接中断');
+  return `DJPSD 图片创建请求连接中断，供应商可能已受理或扣费，但本平台未收到任务编号（结果未知）。为避免重复扣费，请先核对供应商任务记录，不要连续重试。原始错误: ${detail}`;
+}
+
+async function pollDjpsdOpenApiImageTask(config, log, taskId, opts = {}) {
+  const maxAttempts = Math.max(1, Number(opts.max_poll_attempts || process.env.DJPSD_IMAGE_MAX_ATTEMPTS || 720));
+  const intervalMs = Math.max(0, Number(opts.poll_interval_ms ?? process.env.DJPSD_IMAGE_POLL_INTERVAL_MS ?? 5000));
+  const queryUrl = buildDjpsdOpenApiImageQueryUrl(config, taskId);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(queryUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${config.api_key || ''}` },
+      });
+      const raw = await res.text();
+      let data = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+      if (res.status === 401 || res.status === 403) {
+        return { error: data.detail || data.message || `DJPSD 开放 API Key 无效 (${res.status})` };
+      }
+      if (res.ok) {
+        const parsed = parseDjpsdOpenApiImagePollResponse(data, config.base_url);
+        log.info('[DJPSD OpenAPI image] 轮询状态', {
+          image_gen_id: opts.image_gen_id,
+          task_id: String(taskId),
+          round: attempt + 1,
+          state: parsed.state,
+        });
+        if (parsed.state === 'completed') return { image_url: parsed.imageUrl };
+        if (parsed.state === 'failed') return { error: parsed.error };
+      }
+    } catch (error) {
+      log.warn('[DJPSD OpenAPI image] 轮询请求失败', {
+        image_gen_id: opts.image_gen_id,
+        task_id: String(taskId),
+        round: attempt + 1,
+        error: error.message,
+      });
+    }
+    if (attempt + 1 < maxAttempts && intervalMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+  return {
+    error: `DJPSD 图片任务 ${taskId} 最终状态未知，供应商任务仍可能处理中；为避免重复扣费，请勿重新提交`,
+  };
+}
+
+async function callDjpsdOpenApiImageApi(config, log, opts = {}) {
+  let submitUrl;
+  try {
+    submitUrl = buildDjpsdOpenApiImageUrl(config.base_url, config.endpoint, '/v1/media/generate');
+    buildDjpsdOpenApiImageQueryUrl(config, 'connectivity-check');
+  } catch (error) {
+    return { error: `DJPSD 开放 API 配置错误: ${error.message}` };
+  }
+
+  const refs = Array.isArray(opts.reference_image_urls)
+    ? opts.reference_image_urls.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const images = [];
+  try {
+    for (let index = 0; index < refs.length; index += 1) {
+      images.push(await uploadDjpsdOpenApiImageReference(config, refs[index], opts, index));
+    }
+  } catch (error) {
+    return { error: `DJPSD 开放 API ${error.message}` };
+  }
+
+  const body = buildDjpsdOpenApiImageBody({ ...opts, images });
+  log.info('[DJPSD OpenAPI image] 创建任务', {
+    image_gen_id: opts.image_gen_id,
+    url: submitUrl,
+    model: body.model,
+    aspect_ratio: body.params.aspect_ratio,
+    image_count: images.length,
+  });
+  let res;
+  try {
+    res = await fetch(submitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.api_key || ''}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { error: formatDjpsdOpenApiImageUnknownSubmitError(error) };
+  }
+  const raw = await res.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+  if (!res.ok) {
+    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
+    return { error: `DJPSD 开放 API 创建图片任务失败: ${String(message).slice(0, 300)}` };
+  }
+  const direct = parseDjpsdOpenApiImagePollResponse(data, config.base_url);
+  if (direct.state === 'completed') return { image_url: direct.imageUrl };
+  if (direct.state === 'failed') return { error: direct.error };
+  const responseData = data?.data || data || {};
+  const taskId = responseData.task_id ?? responseData.id;
+  if (taskId == null) {
+    return {
+      error: 'DJPSD 开放 API 创建成功但未返回任务编号（结果未知）。供应商可能已受理或扣费，请先核对供应商任务记录，不要连续重试。',
+    };
+  }
+  return pollDjpsdOpenApiImageTask(config, log, taskId, opts);
 }
 
 /**
@@ -1760,6 +2009,20 @@ async function callImageApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'djpsd_openapi' || protocol === 'djpsd_media') {
+    return callDjpsdOpenApiImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      poll_interval_ms: opts.poll_interval_ms,
+      max_poll_attempts: opts.max_poll_attempts,
+    });
+  }
+
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
@@ -2327,6 +2590,9 @@ module.exports = {
   resolveImageModel,
   getReferenceImageCapability,
   callAihubccImageApi,
+  buildDjpsdOpenApiImageBody,
+  parseDjpsdOpenApiImagePollResponse,
+  callDjpsdOpenApiImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,

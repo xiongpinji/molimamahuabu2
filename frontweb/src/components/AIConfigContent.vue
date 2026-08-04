@@ -358,7 +358,7 @@
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
-            <el-option label="DJPSD 开放 API（video-v1）" value="djpsd_openapi" />
+            <el-option label="DJPSD 开放 API（图片 / 视频异步任务）" value="djpsd_openapi" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -374,11 +374,11 @@
         />
 
         <el-alert
-          v-if="form.service_type === 'video' && form.api_protocol === 'djpsd_openapi'"
+          v-if="['image', 'storyboard_image', 'video'].includes(form.service_type) && form.api_protocol === 'djpsd_openapi'"
           type="info"
           :closable="false"
           show-icon
-          title="video-v1 支持平台选择的 5–15 秒整数时长；连接测试只查询不存在的任务，不会创建或扣费。"
+          title="图片与视频均走 DJPSD 异步媒体任务；连接测试只查询不存在的任务，不会创建或扣费。"
           style="margin-bottom: 18px"
         />
 
@@ -1426,6 +1426,7 @@ const providerConfigs = {
   ],
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
+    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['image-v1', 'image-v1-2k', 'image-v1-4k'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1438,6 +1439,7 @@ const providerConfigs = {
   ],
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
+    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['image-v1', 'image-v1-2k', 'image-v1-4k'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1622,6 +1624,9 @@ const modelIdentifierTip = computed(() => {
   if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'aihubcc') {
     return 'GPT/价格页图片模型走 /images/generations；Flow 的 Gemini/Imagen 模型由系统自动切换到 /chat/completions。'
   }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'djpsd_openapi') {
+    return '图片模型会原样提交；当前开放模型为 image-v1、image-v1-2k、image-v1-4k。'
+  }
   if (serviceType === 'video' && provider === 'aihubcc') {
     return 'Omni、Seedance、Grok 与 Flow Veo 均走 /videos 异步任务；veo-clean 是视频后处理，不属于普通生成模型。'
   }
@@ -1659,7 +1664,10 @@ const endpointPreviewInfo = computed(() => {
       submitPath = endpoint || '/tts'
     }
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
-    if ((proto === 'aihubcc' || p === 'aihubcc') && isAihubccFlowImageModel(form.value.default_model)) {
+    if (proto === 'djpsd_openapi' || p === 'djpsd_openapi') {
+      submitPath = endpoint || '/v1/media/generate'
+      queryPath = query_endpoint || '/v1/media/status?task_id={taskId}'
+    } else if ((proto === 'aihubcc' || p === 'aihubcc') && isAihubccFlowImageModel(form.value.default_model)) {
       submitPath = '/chat/completions'
     } else if (endpoint) {
       submitPath = endpoint
@@ -1858,6 +1866,11 @@ function onProviderChange(providerId) {
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
   }
   if (st === 'video' && providerId === 'djpsd_openapi') {
+    form.value.api_protocol = 'djpsd_openapi'
+    form.value.endpoint = '/v1/media/generate'
+    form.value.query_endpoint = '/v1/media/status?task_id={taskId}'
+  }
+  if ((st === 'image' || st === 'storyboard_image') && providerId === 'djpsd_openapi') {
     form.value.api_protocol = 'djpsd_openapi'
     form.value.endpoint = '/v1/media/generate'
     form.value.query_endpoint = '/v1/media/status?task_id={taskId}'

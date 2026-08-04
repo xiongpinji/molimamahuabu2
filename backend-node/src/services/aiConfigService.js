@@ -190,6 +190,11 @@ function createConfig(db, log, req) {
         endpoint = '/videos';
         queryEndpoint = '/videos/{taskId}';
       }
+    } else if (p === 'djpsd_openapi') {
+      if (st === 'image' || st === 'storyboard_image' || st === 'video') {
+        endpoint = '/v1/media/generate';
+        queryEndpoint = '/v1/media/status?task_id={taskId}';
+      }
     } else if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') {
       if (st === 'video') {
         endpoint = '/v1/video/create';
@@ -575,8 +580,11 @@ async function testConnection(opts) {
     return;
   }
 
-  // DJPSD 开放 API：只读查询一个不存在的任务验证 Bearer，不创建付费视频。
-  if (provider === 'djpsd_openapi' || String(opts.api_protocol || '').toLowerCase() === 'djpsd_openapi') {
+  // DJPSD 开放 API：只读查询一个不存在的任务验证 Bearer，不创建付费图片或视频。
+  if (
+    provider === 'djpsd_openapi'
+    || ['djpsd_openapi', 'djpsd_media'].includes(String(opts.api_protocol || '').toLowerCase())
+  ) {
     const root = base.replace(/\/v1$/i, '');
     const res = await fetch(root + '/v1/media/status?task_id=0', {
       method: 'GET',
