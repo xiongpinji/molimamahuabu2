@@ -39,12 +39,15 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
 
 test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
   assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
-  assert.match(nodeSource, /本次生成需/)
+  assert.match(nodeSource, /本次预计扣除/)
   assert.match(nodeSource, /<strong>\{\{ estimatedCredits \}\}<\/strong>/)
   assert.match(nodeSource, /积分待管理员配置/)
   assert.match(nodeSource, /getFreeNodeEstimatedCredits\?\.\([\s\S]*draft\.quantity,[\s\S]*draft\.duration/)
-  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*font-weight:\s*700/)
-  assert.match(nodeSource, /\.billing-cost strong\s*\{[\s\S]*color:\s*#ffb15c/)
+  assert.doesNotMatch(nodeSource, /class="billing-note">\{\{ estimatedCredits/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*border:\s*1px solid rgba\(255, 177, 92, 0\.65\)/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*background:\s*rgba\(124, 64, 20, 0\.42\)/)
+  assert.match(nodeSource, /\.billing-cost\s*\{[\s\S]*font-weight:\s*800/)
+  assert.match(nodeSource, /\.billing-cost strong\s*\{[\s\S]*color:\s*#ffb15c[\s\S]*font-size:\s*18px[\s\S]*font-weight:\s*900/)
 })
 
 test('HomeCanvasNode 提供状态显示和配置生成入口，并通过画布上下文调用父级', () => {

@@ -389,7 +389,7 @@
 
         <div class="editor-footer">
           <span v-if="canGenerate" class="billing-cost" aria-live="polite">
-            <template v-if="estimatedCredits">本次生成需 <strong>{{ estimatedCredits }}</strong> 积分</template>
+            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>
           </span>
@@ -1551,14 +1551,14 @@ watch(isSelected, (selected) => {
   gap: 5px;
   margin-right: auto;
   padding: 8px 12px;
-  border: 1px solid rgba(255, 177, 92, 0.5);
+  border: 1px solid rgba(255, 177, 92, 0.65);
   border-radius: 10px;
-  background: rgba(124, 64, 20, 0.3);
+  background: rgba(124, 64, 20, 0.42);
   color: #ffd09a;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
 }
-.billing-cost strong { color: #ffb15c; font-size: 17px; font-weight: 800; }
+.billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
 .billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
 .billing-note { color: #71717a; font-size: 11px; }
 .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
