@@ -147,7 +147,7 @@ function buildDjpsdOpenApiSubmitBody(opts = {}) {
     params: {
       duration: normalizeDjpsdOpenApiDuration(opts.duration),
       aspect_ratio: opts.aspect_ratio || '16:9',
-      auto_face_mask: Boolean(opts.auto_face_mask),
+      auto_face_mask: opts.auto_face_mask !== false,
       images: Array.isArray(opts.images) ? opts.images.filter(Boolean) : [],
     },
   };

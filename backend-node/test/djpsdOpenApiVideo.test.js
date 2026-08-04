@@ -35,7 +35,7 @@ test('视频客户端保留分镜服务依赖的模型时长能力接口', () =>
   assert.equal(normalizeVideoDurationForModel('lingjing-video-v1', 9), 10);
 });
 
-test('DJPSD 开放 API 保留平台选择的 5 到 15 秒整数时长', () => {
+test('DJPSD 开放 API 保留平台参数并默认启用自动人脸处理', () => {
   assert.deepEqual(buildDjpsdOpenApiSubmitBody({
     model: 'video-v1',
     prompt: '母女在花园中缓慢前行',
@@ -48,10 +48,14 @@ test('DJPSD 开放 API 保留平台选择的 5 到 15 秒整数时长', () => {
     params: {
       duration: 7,
       aspect_ratio: '9:16',
-      auto_face_mask: false,
+      auto_face_mask: true,
       images: ['/uploads/reference.png'],
     },
   });
+
+  assert.equal(buildDjpsdOpenApiSubmitBody({
+    auto_face_mask: false,
+  }).params.auto_face_mask, false);
 });
 
 test('DJPSD 开放 API 上传参考图后创建 video-v1 异步任务', async () => {
@@ -100,7 +104,7 @@ test('DJPSD 开放 API 上传参考图后创建 video-v1 异步任务', async ()
     params: {
       duration: 9,
       aspect_ratio: '16:9',
-      auto_face_mask: false,
+      auto_face_mask: true,
       images: ['/uploads/reference.png'],
     },
   });
