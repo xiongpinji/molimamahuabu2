@@ -61,3 +61,9 @@
 - 修正前生产备份：`/opt/moli-drama/shared/backups/database-20260804T070131098Z.sqlite`，7,901,184 字节，SHA-256 为 `1b91b4bf9d1d3c4c1f389fc5bc567f02804a5ab8a5489cacaf9375cda3d7f116`，完整性 `ok`。
 - 修正发布：`/opt/moli-drama/releases/djpsd-verified-images-b833d32-20260804T1504CST`。候选 DJPSD 目录测试、生产预检和共享积分门禁通过；共享激活器完成 CAS 切换。发布后服务 `active`、`NRestarts=0`、`/health` 与本机首页均为 200，DJPSD 公网页为 200，近十分钟无错误日志，AI 音乐 PID 206874/206895 未变化，活动生成队列为空。
 - 参考图能力修复本地验证：DJPSD 和 AIHubCC 参考图专项、图片请求体专项通过；后端全量 `667/667` 通过。前端全量 `561/571` 通过，10 项失败与固定点既有画布静态契约失败完全一致，本次新增 2 项能力测试均通过。前端生产构建完成 1842 个模块，`canvas-credit-callout-v1` 源码与构建产物门禁通过。
+- 生产合并保护：首次候选因直接覆盖线上较新 `freeCanvasGeneration.js` 而在构建阶段暴露缺失导出，未激活；最终候选从当时线上版本重新复制，只合并 6 个运行时文件的必要差异。两组独立审计均批准且无发现，确认保留线上新增结果识别、供应商字段、默认语音和模型配置回退逻辑。
+- 生产参考图能力声明：配置 id=2、4、6 的 `maxReferences=6`，配置 id=5（DJPSD `image-v1`、`image-v1-2k`）的 `maxReferences=0`。目录读回包含 4 个已验证且已定价图片模型：AIHub/OpenAI 2K=40、3.5K=60 可接收最多 6 张参考图，DJPSD 1K=30、2K=40 仅用于无参考图生成；显示名称继续来自管理员维护的模型价格 `display_name`。
+- 后端无扣费门禁复核：对 `image-v1-2k` 携带参考图直接调用候选 `callImageApi`，结果在供应商调用前被拒绝，`supplierCalls=0`、`billingEnabled=false`；旧 AIHub 成功任务 `task_T972x5rBb4bEkFWaiZ2z0phZuwZCHv3g` 只做状态读回，确认有图片且未提交新任务。
+- 生产候选验证：相关 AIHubCC/DJPSD 后端测试 `17/17` 通过，生产构建完成 1844 个模块，加载真实生产环境后 `preflight:production` 全项通过。线上既有 `aihubccImage` 3 项和自由节点音频参考导出 1 项测试在原发布上同样失败，已作为固定基线分类，本次未把这些既有失败误报为新增回归。
+- 本次修改前生产备份：`/opt/moli-drama/shared/backups/database-20260804T082917679Z.sqlite`，7,913,472 字节，SHA-256 为 `728f4c6f955b6e5975adaaa1d5ffa5ea2233576fe7668cdd8b1df7dca8ac60af`，独立 `backup:verify` 结果有效且数据库完整性为 `ok`。
+- 参考图能力发布：`/opt/moli-drama/releases/image-reference-capability-fd5fb8a-20260804T160828CST`。共享保护激活器完成 CAS 切换；发布后服务 `active/running`、`NRestarts=0`、健康接口和首页均为 200，近十分钟错误日志 0，AI 音乐 PID 206874/206895 未变化，图片/视频活动生成队列均为 0。

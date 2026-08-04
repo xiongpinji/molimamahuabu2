@@ -268,7 +268,7 @@ async function pollTask(config, taskId, { maxAttempts = 180, intervalMs = 5000, 
     try {
       result = await requestJson(getQueryUrl(config, taskId), { headers: authHeaders(config), timeoutMs: 60000 });
     } catch (error) {
-      log?.warn?.('[AIHubCC poll] 查询失败，继续轮询同一任务', {
+      log?.warn?.('[AIHubCC poll] 查询暂时失败，继续轮询同一任务', {
         task_id: taskId,
         attempt: attempt + 1,
         error: error.message,
