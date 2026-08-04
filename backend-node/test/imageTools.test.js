@@ -745,7 +745,10 @@ test('真实图片供应商请求把存储根内绝对参考图编码为 data UR
     model: ['doubao-seedream-4-5'],
     default_model: 'doubao-seedream-4-5',
     is_default: true,
-    settings: JSON.stringify({ supports_outpaint: true }),
+    settings: JSON.stringify({
+      supports_outpaint: true,
+      canvas_capabilities: { maxReferences: 2 },
+    }),
   });
 
   const result = await imageClient.callImageApi(db, {

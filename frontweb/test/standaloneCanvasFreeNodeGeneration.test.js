@@ -17,6 +17,11 @@ import {
   buildCanvasLayoutPayload,
   resolveFreeCanvasNodes,
 } from '../src/utils/canvasLayout.js'
+import {
+  canvasModelEntry,
+  canvasModelOptions,
+  normalizeCanvasModelCatalog,
+} from '../src/utils/canvasModelCapabilities.js'
 
 test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数值和状态', () => {
   assert.equal(normalizeFreeCanvasNodeData({ kind: 'scene' }), null)
@@ -323,6 +328,32 @@ test('视频节点在付费请求前拒绝当前模型未声明的媒体参考',
     upstreamReferences: [{ kind: 'audio', url: '/static/voice.wav' }],
     capability: { referenceTypes: ['image'], maxImageReferences: 10 },
   }), /video-v1.*不支持音频参考/)
+})
+
+test('图片节点在付费请求前拒绝当前模型未验证的参考图能力', () => {
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '保持角色一致性生成分镜图',
+    model: 'image-v1-2k',
+  }, {
+    dramaId: 7,
+    upstreamReferences: [{ kind: 'image', url: '/static/reference.jpg' }],
+    capability: { maxReferences: 0 },
+  }), /image-v1-2k.*不支持参考图/)
+})
+
+test('图片模型只有显式声明后才开放参考图并优先选择兼容模型', () => {
+  const catalog = normalizeCanvasModelCatalog([
+    { kind: 'image', model: 'text-to-image-only', capabilities: {} },
+    { kind: 'image', model: 'reference-image', capabilities: { maxReferences: 6 } },
+  ])
+
+  assert.equal(catalog[0].capabilities.maxReferences, 0)
+  assert.deepEqual(canvasModelOptions(catalog, 'image', { referenceCount: 2 }), [
+    { value: 'text-to-image-only', label: 'text-to-image-only（不支持参考图）', disabled: true },
+    { value: 'reference-image', label: 'reference-image' },
+  ])
+  assert.equal(canvasModelEntry(catalog, 'image', '', { referenceCount: 2 }).model, 'reference-image')
 })
 
 test('视频节点在付费请求前明确拒绝超过模型上限的参考素材', () => {

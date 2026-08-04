@@ -475,7 +475,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     ...(options.upstreamTexts || []),
     nodeData.content,
   ]).join('\n\n')
-  const maxReferences = positiveInteger(options.maxReferences) || 10
+  const maxReferences = nonNegativeInteger(options.maxReferences, 10)
   const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
     .filter((reference) => reference?.enabled !== false && reference?.url)
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
@@ -500,6 +500,16 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 
   if (nodeData.kind === 'image') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
+    const imageReferenceLimit = nonNegativeInteger(
+      options.capability?.maxReferences,
+      maxReferences,
+    )
+    if (referenceUrls.length > imageReferenceLimit) {
+      if (imageReferenceLimit === 0) {
+        throw new Error(`${nodeData.model || '当前图片模型'} 当前不支持参考图`)
+      }
+      throw new Error(`${nodeData.model || '当前图片模型'} 最多支持 ${imageReferenceLimit} 个图片参考`)
+    }
     return withoutEmptyFields({
       drama_id: dramaId,
       prompt: content,
@@ -508,7 +518,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       style: nodeData.style,
       size: imageSizeFromResolution(nodeData.aspectRatio, nodeData.resolution),
       negative_prompt: nodeData.negativePrompt,
-      reference_images: referenceUrls.slice(0, maxReferences),
+      reference_images: referenceUrls,
     })
   }
 

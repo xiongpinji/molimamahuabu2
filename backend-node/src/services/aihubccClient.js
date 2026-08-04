@@ -264,7 +264,17 @@ async function pollTask(config, taskId, { maxAttempts = 180, intervalMs = 5000, 
   const delay = Number.isFinite(Number(intervalMs)) ? Math.max(0, Number(intervalMs)) : 5000;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    const result = await requestJson(getQueryUrl(config, taskId), { headers: authHeaders(config), timeoutMs: 60000 });
+    let result;
+    try {
+      result = await requestJson(getQueryUrl(config, taskId), { headers: authHeaders(config), timeoutMs: 60000 });
+    } catch (error) {
+      log?.warn?.('[AIHubCC poll] 查询失败，继续轮询同一任务', {
+        task_id: taskId,
+        attempt: attempt + 1,
+        error: error.message,
+      });
+      continue;
+    }
     const payload = result.data || {};
     const status = extractStatus(payload);
     const url = extractMediaUrl(payload, config);

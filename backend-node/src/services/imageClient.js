@@ -602,6 +602,18 @@ function getModelFromConfig(config, preferredModel) {
   return models[0] || 'dall-e-3';
 }
 
+function configuredImageReferenceLimit(config) {
+  try {
+    const settings = typeof config?.settings === 'string'
+      ? JSON.parse(config.settings || '{}')
+      : (config?.settings || {});
+    const limit = Number(settings?.canvas_capabilities?.maxReferences);
+    return Number.isInteger(limit) && limit >= 0 ? limit : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 function resolveImageModel(db, preferredModel, preferredProvider, imageServiceType = 'image') {
   const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
   if (!config) {
@@ -1963,6 +1975,17 @@ async function callImageApi(db, log, opts) {
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+  const referenceCount = Array.isArray(reference_image_urls)
+    ? reference_image_urls.filter(Boolean).length
+    : 0;
+  const referenceLimit = configuredImageReferenceLimit(config);
+  if (referenceCount > referenceLimit) {
+    return {
+      error: referenceLimit === 0
+        ? `${model} 当前不支持参考图`
+        : `${model} 最多支持 ${referenceLimit} 个图片参考`,
+    };
+  }
 
   // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
   // Gemini 通过 parts 结构处理（interleaved text+image），不需要文字注入。

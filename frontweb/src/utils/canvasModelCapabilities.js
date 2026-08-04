@@ -1,5 +1,5 @@
 const DEFAULTS = {
-  image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 4, declared: false },
+  image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 0, declared: false },
   video: {
     aspectRatios: ['16:9', '9:16', '1:1'],
     resolutions: ['720p'],
@@ -54,15 +54,32 @@ export function canvasModelCapability(catalog, kind, model) {
     || normalizeCapabilities(kind, {})
 }
 
-export function canvasModelEntry(catalog, kind, model) {
-  const kindEntries = normalizeCanvasModelCatalog(catalog).filter((item) => item.kind === kind)
-  return kindEntries.find((item) => item.model === model) || (!model ? kindEntries[0] : null) || null
+function supportsRequirements(entry, kind, requirements = {}) {
+  if (kind !== 'image') return true
+  const referenceCount = Math.max(0, Number(requirements.referenceCount) || 0)
+  const limit = Math.max(0, Number(entry?.capabilities?.maxReferences) || 0)
+  return referenceCount <= limit
 }
 
-export function canvasModelOptions(catalog, kind) {
+export function canvasModelEntry(catalog, kind, model, requirements = {}) {
+  const kindEntries = normalizeCanvasModelCatalog(catalog).filter((item) => item.kind === kind)
+  return kindEntries.find((item) => item.model === model)
+    || (!model ? kindEntries.find((item) => supportsRequirements(item, kind, requirements)) : null)
+    || null
+}
+
+export function canvasModelOptions(catalog, kind, requirements = {}) {
   return normalizeCanvasModelCatalog(catalog)
     .filter((item) => item.kind === kind)
-    .map((item) => ({ value: item.model, label: item.label }))
+    .map((item) => {
+      const disabled = !supportsRequirements(item, kind, requirements)
+      const option = {
+        value: item.model,
+        label: disabled ? `${item.label}（不支持参考图）` : item.label,
+      }
+      if (disabled) option.disabled = true
+      return option
+    })
 }
 
 export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {

@@ -274,7 +274,7 @@
               @change="saveDraft"
             >
               <option value="">{{ defaultModelLabel }}</option>
-              <option v-for="option in modelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option v-for="option in modelOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
             </select>
           </label>
 
@@ -514,7 +514,7 @@ const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
-const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
+const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
 const referenceAccept = computed(() => {
   if (props.data.kind === 'image') return 'image/*'

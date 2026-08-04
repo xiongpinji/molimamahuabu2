@@ -973,8 +973,11 @@ function persistFreeCanvasNodeDefaults(kind, data) {
   }
 }
 
-function getFreeNodeModelOptions(kind) {
-  return canvasModelOptions(freeCanvasModelCatalog.value, kind)
+function getFreeNodeModelOptions(kind, nodeOrId) {
+  const referenceCount = kind === 'image'
+    ? freeCanvasNodeInputReferences(nodeOrId).filter((reference) => reference.ready && reference.enabled !== false).length
+    : 0
+  return canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
 }
 
 function getFreeNodeModelCapability(kind, model) {
@@ -3027,7 +3030,9 @@ async function runFreeCanvasNode(nodeOrId) {
   const historyId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
   let requestPayload
   try {
-    const catalogEntry = canvasModelEntry(freeCanvasModelCatalog.value, kind, node.data?.model)
+    const catalogEntry = canvasModelEntry(freeCanvasModelCatalog.value, kind, node.data?.model, {
+      referenceCount: kind === 'image' ? upstreamUrls.length : 0,
+    })
     if (!catalogEntry) throw new Error('当前节点没有已验证且已定价的可用模型')
     const generationData = { ...node.data, model: catalogEntry.model }
     const capability = getFreeNodeModelCapability(kind, catalogEntry.model)

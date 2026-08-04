@@ -259,3 +259,44 @@ test('image-v1 通过生产 callImageApi 入口路由到 DJPSD 开放 API', asyn
   ]);
   assert.deepEqual(result, { image_url: 'https://cdn.example.com/result.webp' });
 });
+
+test('生产 callImageApi 在供应商提交前拒绝未声明的参考图能力', async () => {
+  let requests = 0;
+  global.fetch = async () => {
+    requests += 1;
+    throw new Error('不应请求供应商');
+  };
+  const row = {
+    id: 5,
+    service_type: 'image',
+    provider: 'djpsd_openapi',
+    api_protocol: 'djpsd_openapi',
+    name: 'DJPSD 图片',
+    base_url: 'https://shiping.djpsd.com',
+    api_key: 'secret',
+    model: JSON.stringify(['image-v1', 'image-v1-2k']),
+    default_model: 'image-v1-2k',
+    endpoint: '/v1/media/generate',
+    query_endpoint: '/v1/media/status?task_id={taskId}',
+    priority: 0,
+    is_default: 1,
+    is_active: 1,
+    settings: JSON.stringify({ canvas_capabilities: { maxReferences: 0 } }),
+  };
+  const db = {
+    prepare(sql) {
+      return {
+        all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [],
+      };
+    },
+  };
+
+  const result = await callImageApi(db, log, {
+    model: 'image-v1-2k',
+    prompt: '保持参考角色生成分镜图',
+    reference_image_urls: ['data:image/png;base64,aGVsbG8='],
+  });
+
+  assert.equal(requests, 0);
+  assert.match(result.error, /image-v1-2k.*不支持参考图/);
+});
