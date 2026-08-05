@@ -11,22 +11,18 @@ function list(db) {
 
 function listPublicVideoModels(db) {
   return (req, res) => {
-    const pricedModels = new Set(modelPriceService.listPublic(db)
+    const list = modelPriceService.listPublic(db)
       .filter((item) => item.category === 'video')
-      .map((item) => item.model.toLowerCase()));
-    const list = publicModelNames(aiConfigService.listConfigs(db, 'video')
-      .filter(aiConfigService.isVerifiedConfig))
-      .filter((model) => pricedModels.has(model.toLowerCase()));
+      .map((item) => item.model);
     response.success(res, list);
   };
 }
 
 function listPublicImageModels(db) {
   return (req, res) => {
-    const list = publicModelNames(
-      aiConfigService.listConfigs(db)
-        .filter((config) => config.service_type === 'image' || config.service_type === 'storyboard_image'),
-    );
+    const list = modelPriceService.listPublic(db)
+      .filter((item) => item.category === 'image')
+      .map((item) => item.model);
     response.success(res, list);
   };
 }

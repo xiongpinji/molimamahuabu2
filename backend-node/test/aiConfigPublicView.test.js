@@ -74,7 +74,7 @@ test('普通用户视频模型接口只返回管理员启用且已验证的模�
   db.close();
 });
 
-test('普通用户图像模型接口只返回管理员启用的模型名称', () => {
+test('普通用户图像模型接口只返回管理员启用、已验证且已定价的模型名称', () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE ai_service_configs (
@@ -92,6 +92,7 @@ test('普通用户图像模型接口只返回管理员启用的模型名称', ()
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      verification_status TEXT NOT NULL DEFAULT 'unverified',
       settings TEXT,
       created_at TEXT,
       updated_at TEXT,
@@ -100,19 +101,22 @@ test('普通用户图像模型接口只返回管理员启用的模型名称', ()
   `);
   db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active)
-    VALUES ('image', 'lib', 'openai', '通用图片', 'https://private.example', 'secret', ?, 'lib-image', 1, 1)
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_default, is_active, verification_status)
+    VALUES ('image', 'lib', 'openai', '通用图片', 'https://private.example', 'secret', ?, 'lib-image', 1, 1, 'verified')
   `).run(JSON.stringify(['lib-image']));
   db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, name, model, default_model, is_active)
-    VALUES ('storyboard_image', 'lib', '分镜图片', ?, 'lib-storyboard', 1)
+      (service_type, provider, name, model, default_model, is_active, verification_status)
+    VALUES ('storyboard_image', 'lib', '分镜图片', ?, 'lib-storyboard', 1, 'verified')
   `).run(JSON.stringify(['lib-storyboard']));
   db.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, name, model, is_active)
     VALUES ('image', 'disabled', '停用图片', ?, 0)
   `).run(JSON.stringify(['disabled-image']));
+  modelPriceService.set(db, 'lib-image', 12, { category: 'image' });
+  modelPriceService.set(db, 'lib-storyboard', 13, { category: 'image' });
+  modelPriceService.set(db, 'disabled-image', 14, { category: 'image' });
 
   let payload;
   const res = {

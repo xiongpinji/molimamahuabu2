@@ -13,6 +13,8 @@ const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
 const aihubccClient = require('./aihubccClient');
+const token6688Client = require('./token6688Client');
+const mediaModelSelection = require('./mediaModelSelectionService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
 const { downloadPublicImage } = require('./publicImageDownload');
@@ -97,6 +99,7 @@ function getProxyExpireHours() {
  */
 function inferProtocol(provider, model) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'aihubcc' || p === 'aihubcc_image') return 'aihubcc';
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'djpsd_openapi';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
@@ -433,14 +436,22 @@ async function callDjpsdOpenApiImageApi(config, log, opts = {}) {
 function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (configs.length === 0 && serviceType === 'storyboard_image') {
-    configs = aiConfigService.listConfigs(db, 'image');
+  if (serviceType === 'storyboard_image'
+    && (configs.length === 0 || preferredModel || preferredProvider)) {
+    const knownIds = new Set(configs.map((config) => Number(config.id)));
+    configs = configs.concat(
+      aiConfigService.listConfigs(db, 'image')
+        .filter((config) => !knownIds.has(Number(config.id))),
+    );
   }
   let active = configs.filter((c) => c.is_active);
   if (active.length === 0) {
     return preferredModel
       ? canvasProviderConfigService.getConfig('image', preferredModel)
       : null;
+  }
+  if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
+    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
   }
   if (preferredProvider && String(preferredProvider).trim()) {
     const want = String(preferredProvider).trim().toLowerCase();
@@ -596,13 +607,19 @@ function buildImageUrl(config) {
 }
 
 function getModelFromConfig(config, preferredModel) {
+  if (config?.canvas_selected_model) return config.canvas_selected_model;
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
   return models[0] || 'dall-e-3';
 }
 
-function configuredImageReferenceLimit(config) {
+function configuredImageReferenceLimit(config, model) {
+  const provider = String(config?.provider || '').toLowerCase();
+  const protocol = String(config?.api_protocol || '').toLowerCase();
+  if (provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688') {
+    return token6688Client.IMAGE_REFERENCE_LIMITS[String(model || '').trim()] ?? 0;
+  }
   try {
     const settings = typeof config?.settings === 'string'
       ? JSON.parse(config.settings || '{}')
@@ -1990,7 +2007,7 @@ async function callImageApi(db, log, opts) {
   const referenceCount = Array.isArray(reference_image_urls)
     ? reference_image_urls.filter(Boolean).length
     : 0;
-  const referenceLimit = configuredImageReferenceLimit(config);
+  const referenceLimit = configuredImageReferenceLimit(config, model);
   if (referenceCount > referenceLimit) {
     return {
       error: referenceLimit === 0
@@ -2055,6 +2072,18 @@ async function callImageApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       poll_interval_ms: opts.poll_interval_ms,
       max_poll_attempts: opts.max_poll_attempts,
+    });
+  }
+
+  if (protocol === 'token6688') {
+    return token6688Client.callImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      quality,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
     });
   }
 
@@ -2629,6 +2658,8 @@ module.exports = {
   buildDjpsdOpenApiImageBody,
   parseDjpsdOpenApiImagePollResponse,
   callDjpsdOpenApiImageApi,
+  buildToken6688ImageBody: token6688Client.buildImageBody,
+  callToken6688ImageApi: token6688Client.callImageApi,
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,

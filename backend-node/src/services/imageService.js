@@ -974,7 +974,10 @@ async function processImageGeneration(db, log, imageGenId) {
       elapsed: elapsed(),
     });
 
-    const refLimits = imageClient.getStoryboardReferenceLimits(config, row.model);
+    const refLimits = imageClient.getStoryboardReferenceLimits(
+      config,
+      config.canvas_selected_model || row.model,
+    );
     log.info('[图生] Step2 参考图上限', {
       id: imageGenId,
       total: refLimits.total,

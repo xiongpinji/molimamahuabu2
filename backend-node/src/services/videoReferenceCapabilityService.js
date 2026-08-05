@@ -11,9 +11,24 @@ function parseSettings(settings) {
 }
 
 function knownCapabilities(config = {}, model = '') {
-  const normalizedModel = String(model || config.default_model || '').trim().toLowerCase();
+  const normalizedModel = String(config.canvas_selected_model || model || config.default_model || '').trim().toLowerCase();
   const protocol = String(config.api_protocol || '').trim().toLowerCase();
   const provider = String(config.provider || '').trim().toLowerCase();
+  if (protocol === 'token6688' || provider === 'token6688' || provider === 'tokengo') {
+    return {
+      referenceTypes: ['image', 'video', 'audio'],
+      maxImageReferences: 9,
+      maxVideoReferences: 3,
+      maxAudioReferences: 9,
+      aspectRatios: ['9:16', '16:9', '21:9', '1:1', '4:3', '3:4'],
+      resolutions: ['720p'],
+      durations: [15],
+      quantities: [1],
+      supportsFirstFrame: true,
+      supportsLastFrame: true,
+      supportsAudio: true,
+    };
+  }
   if (normalizedModel === 'lingjing-video-v1') {
     return { referenceTypes: ['image'], maxImageReferences: 12, maxAudioReferences: 0, maxVideoReferences: 0 };
   }

@@ -18,7 +18,7 @@ function capture() {
   };
 }
 
-test('用户模型目录只返回管理员启用且已计费的模型', () => {
+test('用户模型目录只返回管理员启用、已验证且已计费的模型', () => {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE ai_service_configs (
     id INTEGER PRIMARY KEY,
@@ -30,10 +30,10 @@ test('用户模型目录只返回管理员启用且已计费的模型', () => {
     deleted_at TEXT
   )`);
   db.prepare(`INSERT INTO ai_service_configs
-    (service_type, model, default_model, is_active)
-    VALUES (?, ?, ?, ?), (?, ?, ?, ?)`).run(
-    'image', 'gpt-image-2', '', 1,
-    'video', 'seedance 2.0', '', 0,
+    (service_type, model, default_model, is_active, verification_status)
+    VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`).run(
+    'image', 'gpt-image-2', '', 1, 'verified',
+    'video', 'seedance 2.0', '', 0, 'verified',
   );
   modelPrice.set(db, 'gpt-image-2', 12, { category: 'image', display_name: '图片模型' });
   modelPrice.set(db, 'seedance 2.0', 35, { category: 'video' });

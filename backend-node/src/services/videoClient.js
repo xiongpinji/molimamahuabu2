@@ -6,6 +6,8 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const token6688Client = require('./token6688Client');
+const mediaModelSelection = require('./mediaModelSelectionService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -29,6 +31,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
+  if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
   if (p === 'djpsd_openapi') return 'djpsd_openapi';
   if (p === 'djpsd') return 'djpsd';
@@ -1199,6 +1202,9 @@ function getDefaultVideoConfig(db, preferredModel) {
       ? canvasProviderConfigService.getConfig('video', preferredModel)
       : null;
   }
+  if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
+    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+  }
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
@@ -1298,6 +1304,7 @@ function normalizeVolcModel(name) {
 }
 
 function getModelFromConfig(config, preferredModel) {
+  if (config?.canvas_selected_model) return config.canvas_selected_model;
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
@@ -4839,6 +4846,16 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'token6688') {
+    return token6688Client.callVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      aspect_ratio,
+      files_base_url: opts.files_base_url,
+    });
+  }
+
   const url = buildVideoUrl(config);
   const dur = duration ? Number(duration) : 5;
   const ratio = aspect_ratio || '16:9';
@@ -5003,6 +5020,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDeepwlGrok = protocol === 'deepwl_grok';
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
+  const isToken6688 = protocol === 'token6688';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5142,6 +5160,20 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isToken6688) {
+        const status = extractPollTaskStatus(data);
+        const videoUrl = data?.result?.videos?.find((item) => isPlausibleHttpVideoUrl(item?.url))?.url
+          || pickProxyVideoUrl(data);
+        if (videoUrl) return { video_url: videoUrl };
+        if (isPollTaskFailed(status) || data.error) {
+          return { error: extractPollFailureMessage(data) || `Token6688 任务失败: ${status || 'unknown'}` };
+        }
+        if (data.is_final === true || ['succeeded', 'completed', 'done', 'success'].includes(status)) {
+          return { error: 'Token6688 任务完成但未返回可下载的视频地址' };
+        }
         continue;
       }
 
@@ -5504,6 +5536,8 @@ module.exports = {
   isSeedance2ModelName,
   buildIcreatVideoBody,
   callIcreatVideoApi,
+  buildToken6688VideoBody: token6688Client.buildVideoBody,
+  callToken6688VideoApi: token6688Client.callVideoApi,
   pickIcreatVideoUrl,
   collectActiveCharacterVoiceRefs,
   selectStableCharacterVoiceRef,

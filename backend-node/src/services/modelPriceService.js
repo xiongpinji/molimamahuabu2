@@ -1,3 +1,5 @@
+const mediaModelSelection = require('./mediaModelSelectionService');
+
 const SUPPORTED_MODELS = ['GPT-5.5', 'gpt-image-2', 'seedance 2.0'];
 const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
@@ -31,7 +33,15 @@ function ensureColumn(db, name, sql) {
   if (!columns.some((column) => column.name === name)) db.exec(sql);
 }
 
+function isToken6688PerRequestVideo(value) {
+  const selected = mediaModelSelection.parseQualifiedSelection(value);
+  return /^seedance-2-0-special-(?:mini|fast|full)-720p$/i.test(
+    String(selected?.upstreamModel || value || '').trim(),
+  );
+}
+
 function billingUnit(value, category = '') {
+  if (isToken6688PerRequestVideo(value)) return 'request';
   return String(category || '').toLowerCase() === 'video' || canonicalModel(value) === 'seedance 2.0'
     ? 'second'
     : 'request';
@@ -80,15 +90,54 @@ function parseConfiguredModels(value) {
   }
 }
 
+function isToken6688Config(row) {
+  const provider = String(row.provider || '').trim().toLowerCase();
+  const protocol = String(row.api_protocol || '').trim().toLowerCase();
+  return provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688';
+}
+
+function isRealGenerationVerified(row, model) {
+  if (!isToken6688Config(row)) return true;
+  try {
+    const settings = typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
+    const verified = Array.isArray(settings?.real_generation_verified_models)
+      ? settings.real_generation_verified_models
+      : [];
+    const target = String(model || '').trim().toLowerCase();
+    return verified.some((item) => String(item || '').trim().toLowerCase() === target);
+  } catch (_) {
+    return false;
+  }
+}
+
 function listConfiguredModels(db) {
   if (!hasTable(db, 'ai_service_configs')) return [];
-  const rows = db.prepare(`SELECT service_type, model, default_model
+  const rows = db.prepare(`SELECT *
     FROM ai_service_configs
     WHERE deleted_at IS NULL
     ORDER BY id`).all();
   const models = [];
   const seen = new Set();
-  for (const row of rows) {
+  for (const entry of mediaModelSelection.listEntries(rows)) {
+    const category = entry.kind;
+    let model;
+    try {
+      model = canonicalModel(entry.model);
+    } catch {
+      continue;
+    }
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push({
+      model,
+      display_name: entry.duplicated
+        ? `${entry.config.name || entry.config.provider || `配置 ${entry.config.id}`} · ${entry.upstreamModel}`
+        : model,
+      category,
+    });
+  }
+  for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     const category = SERVICE_CATEGORIES[String(row.service_type || '').toLowerCase()] || 'other';
     const configured = [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]
       .filter(Boolean);
@@ -153,15 +202,23 @@ function list(db) {
 
 function listPublic(db) {
   if (!hasTable(db, 'ai_service_configs')) return [];
-  const activeModels = new Set(
-    db.prepare(`SELECT service_type, model, default_model, verification_status
-      FROM ai_service_configs
-      WHERE deleted_at IS NULL AND is_active = 1`).all()
-      .filter((row) => row.service_type !== 'video' || row.verification_status === 'verified')
-      .flatMap((row) => [...parseConfiguredModels(row.model), String(row.default_model || '').trim()])
-      .filter(Boolean)
-      .map((model) => model.toLowerCase()),
-  );
+  const rows = db.prepare(`SELECT * FROM ai_service_configs
+    WHERE deleted_at IS NULL`).all();
+  const activeModels = new Set();
+  for (const entry of mediaModelSelection.listEntries(rows)) {
+    const row = entry.config;
+    if (!row.is_active) continue;
+    if (row.verification_status !== 'verified') continue;
+    if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
+    activeModels.add(entry.model.toLowerCase());
+  }
+  for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
+    if (!row.is_active) continue;
+    if (isToken6688Config(row) && row.verification_status !== 'verified') continue;
+    for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
+      if (model && isRealGenerationVerified(row, model)) activeModels.add(model.toLowerCase());
+    }
+  }
   return list(db).filter((row) => (
     row.status === 'enabled'
     && Number.isSafeInteger(row.credits)
@@ -270,7 +327,9 @@ function calculateCharge(db, value, usage = {}) {
   const row = readRow(db, model);
   if (billingUnit(model, row?.category) !== 'second') return price;
   const duration = Number(usage.duration);
-  const normalizedModel = model.toLowerCase();
+  const normalizedModel = String(
+    mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
+  ).toLowerCase();
   const minimum = normalizedModel === 'lingjing-video-v1'
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
@@ -297,4 +356,5 @@ module.exports = {
   quoteCost,
   canonicalModel,
   billingUnit,
+  isToken6688PerRequestVideo,
 };

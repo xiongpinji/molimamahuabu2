@@ -217,7 +217,8 @@ function create(db, log, req, options = {}) {
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const selectedModel = body.model || storyboardDefaults?.video_model || null;
   const videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
-  const effectiveModel = selectedModel || videoConfig?.default_model || videoConfig?.model || '';
+  const effectiveModel = videoConfig?.canvas_selected_model
+    || selectedModel || videoConfig?.default_model || videoConfig?.model || '';
   const minimumDuration = minimumVideoDuration(effectiveModel);
   const storyboardDuration = Number(storyboardDefaults?.duration);
   const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= minimumDuration && storyboardDuration <= 15
@@ -286,7 +287,7 @@ function create(db, log, req, options = {}) {
     if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
       prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
     }
-    const model = selectedModel || videoConfig?.default_model || null;
+    const model = videoConfig?.canvas_selected_model || selectedModel || videoConfig?.default_model || null;
     prompt = voicePrompt.appendVoiceAnchors({
       db,
       dramaId,
@@ -899,7 +900,11 @@ async function processVideoGeneration(db, log, videoGenId) {
     const reference_urls = parseReferenceUrls(row.reference_image_urls);
     const reference_audio_urls = parseReferenceUrls(row.reference_audio_urls);
     const reference_video_urls = parseReferenceUrls(row.reference_video_urls);
-    const effectiveDuration = normalizeVideoDuration(row.duration, 5, minimumVideoDuration(row.model));
+    const effectiveDuration = normalizeVideoDuration(
+      row.duration,
+      5,
+      minimumVideoDuration(config.canvas_selected_model || row.model),
+    );
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);

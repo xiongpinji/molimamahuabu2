@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
+const token6688Client = require('./token6688Client');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -204,6 +205,12 @@ function createConfig(db, log, req) {
       if (st === 'video') {
         endpoint = '/v1/task/submit/{model}';
         queryEndpoint = '/v1/task/query-status';
+      }
+    } else if (p === 'token6688' || p === 'tokengo') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
+      else if (st === 'video') {
+        endpoint = '/v1/videos/generations';
+        queryEndpoint = '/v1/tasks/{taskId}';
       }
     }
   }
@@ -501,6 +508,35 @@ async function testConnection(opts) {
   }
 
   if (!opts.api_key) throw new Error('api_key 必填');
+
+  // Token6688：只读模型目录同时验证密钥和目标模型，禁止连接测试创建计费任务。
+  if (
+    provider === 'token6688'
+    || provider === 'tokengo'
+    || String(opts.api_protocol || '').toLowerCase() === 'token6688'
+  ) {
+    const root = base.replace(/\/v1$/i, '');
+    const res = await fetch(`${root}/v1/models`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + opts.api_key },
+    });
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    if (!res.ok) {
+      const message = data?.error?.message || data?.message || `Token6688 连接失败 (${res.status})`;
+      throw new Error(String(message).slice(0, 300));
+    }
+    const available = new Set((Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [])
+      .map((item) => String(item?.id || item?.model || '').trim())
+      .filter(Boolean));
+    const expected = serviceType === 'video'
+      ? ['seedance-2-0-special']
+      : models.map(token6688Client.normalizeImageModel).filter(Boolean);
+    const missing = expected.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`Token6688 模型目录未找到已配置模型: ${missing.join(', ')}`);
+    return;
+  }
 
   // iCreat 采用三段式任务接口；连接测试只查询不存在的任务，避免提交计费任务。
   if ((provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') && serviceType === 'video') {
