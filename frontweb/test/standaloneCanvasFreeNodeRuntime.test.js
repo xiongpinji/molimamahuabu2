@@ -59,6 +59,14 @@ test('选中自由节点展开专属编辑器，视频节点可见展示自动�
   assert.match(canvasSource, /视频节点已自动采用该图片作为参考图/)
 })
 
+test('视频节点首尾帧模式写回节点并持续映射后续参考图', () => {
+  assert.match(nodeSource, /@click="setVideoReferenceMode\('first-last'\)"/)
+  assert.match(nodeSource, /draft\.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode\(mode\)/)
+  assert.match(nodeSource, /videoReferenceMode: videoReferenceMode\.value/)
+  assert.match(nodeSource, /watch\([\s\S]*inputReferences\.value\.map[\s\S]*resolveFreeCanvasVideoReferenceInput\(videoReferenceMode\.value, index\)/)
+  assert.match(nodeSource, /if \(reference\.slot !== input\) updateReference\(reference, \{ input \}\)/)
+})
+
 test('图片和视频编辑器可上传参考图，视频 @ 只列出已经直连的上游图片', () => {
   assert.match(nodeSource, /v-if="canUpload" type="button" aria-label="上传参考图"/)
   assert.match(nodeSource, /v-if="canUpload"\s+ref="referenceFileInput"/)
