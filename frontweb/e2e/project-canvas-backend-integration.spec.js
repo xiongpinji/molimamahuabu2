@@ -631,7 +631,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await videoNode.click()
   const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
   await expect(videoEditor).toBeVisible()
-  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考图' })
+  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考素材' })
   await expect(automaticReferences).toContainText('1/1 已就绪')
   await expect(automaticReferences.locator('img[alt="真实图片节点"]')).toBeVisible()
   await videoEditor.getByRole('button', { name: '配置', exact: true }).click()

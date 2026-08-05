@@ -59,6 +59,16 @@ function list(db, query, options = {}) {
   return { items: rows.map(rowToItem), total, page, pageSize };
 }
 
+function parseReferenceImageUrls(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 function rowToItem(r) {
   return {
     id: r.id,
@@ -73,6 +83,9 @@ function rowToItem(r) {
     last_frame_url: r.last_frame_url,
     output_first_frame_url: r.output_first_frame_url,
     output_last_frame_url: r.output_last_frame_url,
+    reference_image_urls: parseReferenceImageUrls(r.reference_image_urls),
+    reference_video_url: r.reference_video_url,
+    reference_audio_url: r.reference_audio_url,
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -278,17 +291,29 @@ function create(db, log, req, options = {}) {
         if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
       } catch (_) {}
     }
-    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(body.reference_image_urls.slice(0, 10)) : null;
+    const referenceImageUrls = Array.isArray(body.reference_image_urls) ? body.reference_image_urls.slice(0, 10) : [];
+    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(referenceImageUrls) : null;
+    const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
+    const firstReferenceFallback = ['usmercari', 'usmercari_media'].includes(videoProtocol)
+      ? null
+      : referenceImageUrls[0] || null;
+    const persistedFirstFrameUrl = body.first_frame_url
+      ?? body.first_frame_local_path
+      ?? body.image_url
+      ?? firstReferenceFallback;
+    const referenceVideoUrl = String(body.reference_video_url || body.reference_video_urls?.[0] || '').trim() || null;
+    const referenceAudioUrl = String(body.reference_audio_url || body.reference_audio_urls?.[0] || '').trim() || null;
     db.prepare(`INSERT INTO video_generations
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
-       image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, tenant_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
+       image_url, first_frame_url, last_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
+       status, task_id, tenant_id, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
         dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
-        body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
-        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, task.id,
+        body.image_url ?? null, persistedFirstFrameUrl,
+        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, referenceVideoUrl, referenceAudioUrl, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -895,7 +920,11 @@ async function processVideoGeneration(db, log, videoGenId) {
       } catch (_) {}
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
-    const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
+    const hasOmniRefs = !!(
+      (reference_urls && reference_urls.length > 0)
+      || row.reference_video_url
+      || row.reference_audio_url
+    );
     if (row.task_id && hasOmniRefs) {
       const task = taskService.getTask(db, row.task_id);
       if (task && (task.status === 'pending' || task.status === 'processing')) {
@@ -904,7 +933,7 @@ async function processVideoGeneration(db, log, videoGenId) {
           row.task_id,
           'processing',
           5,
-          `正在上传 ${reference_urls.length} 张参考图到图床…`
+          '正在准备参考图、参考视频与参考音频…'
         );
       }
     }
@@ -924,6 +953,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       first_frame_url: row.first_frame_url,
       last_frame_url: row.last_frame_url,
       reference_urls,
+      reference_video_urls: row.reference_video_url ? [row.reference_video_url] : [],
+      reference_audio_urls: row.reference_audio_url ? [row.reference_audio_url] : [],
+      voice_reference_url: row.reference_audio_url || undefined,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,

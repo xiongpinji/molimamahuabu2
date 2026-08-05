@@ -12,6 +12,7 @@ const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
 const feituoVideoClient = require('./feituoVideoClient');
+const usmercariVideoClient = require('./usmercariVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -45,6 +46,7 @@ function inferVideoProtocol(provider) {
   if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
   if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
+  if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -154,6 +156,7 @@ function resolveVideoProtocol(config, modelHint) {
     protocol = 'icreat_task';
   }
   if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
+  if (provider === 'usmercari' || provider === 'usmercari_media') protocol = 'usmercari_media';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -1087,6 +1090,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
+  else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -4494,14 +4498,16 @@ async function callVideoApi(db, log, opts) {
     seed,
     camera_fixed,
     watermark,
+    files_base_url,
+    storage_local_path,
+    video_gen_id
+  } = opts;
+  let {
     image_url,
     first_frame_url,
     last_frame_url,
     first_frame_local_path,
     last_frame_local_path,
-    files_base_url,
-    storage_local_path,
-    video_gen_id
   } = opts;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {
@@ -4513,6 +4519,17 @@ async function callVideoApi(db, log, opts) {
   let prompt = inputPrompt;
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
+  }
+  ({ image_url, first_frame_url, last_frame_url, first_frame_local_path, last_frame_local_path } = opts);
+  if (protocol !== 'usmercari_media' && !image_url && !first_frame_url) {
+    const firstReferenceUrl = Array.isArray(opts.reference_urls)
+      ? opts.reference_urls.find((value) => String(value || '').trim())
+      : '';
+    if (firstReferenceUrl) {
+      image_url = firstReferenceUrl;
+      first_frame_url = firstReferenceUrl;
+      opts = { ...opts, image_url, first_frame_url };
+    }
   }
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
@@ -4633,6 +4650,27 @@ async function callVideoApi(db, log, opts) {
       image_url,
       first_frame_url,
       last_frame_url,
+      video_gen_id,
+    });
+  }
+
+  if (protocol === 'usmercari_media') {
+    return usmercariVideoClient.callUsmercariVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: opts.image_url || opts.first_frame_url,
+      first_frame_url: opts.first_frame_url || opts.image_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: (opts.first_frame_url || opts.image_url || opts.last_frame_url)
+        ? []
+        : opts.reference_urls,
+      reference_video_urls: opts.reference_video_urls,
+      reference_audio_urls: opts.reference_audio_urls,
+      voice_reference_url: opts.voice_reference_url,
       video_gen_id,
     });
   }
@@ -4977,6 +5015,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
   const isFeituo = protocol === 'feituo_open';
+  const isUsmercari = protocol === 'usmercari_media';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5066,6 +5105,14 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           'Cache-Control': 'no-cache',
           Pragma: 'no-cache',
         };
+      } else if (isUsmercari) {
+        url = usmercariVideoClient.buildUsmercariFetchUrl(config.base_url);
+        method = 'POST';
+        requestBody = JSON.stringify({ ids: [String(taskId)] });
+        headers = {
+          Authorization: 'Bearer ' + usmercariVideoClient.resolveUsmercariApiKey(config),
+          'Content-Type': 'application/json',
+        };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
@@ -5127,6 +5174,19 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           video_gen_id: videoGenId,
           round: pollRound,
           state: result.state,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isUsmercari) {
+        const result = usmercariVideoClient.parseUsmercariFetchPayload(data, taskId, config.base_url);
+        log.info('[USMercari 视频] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          progress: result.progress,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };

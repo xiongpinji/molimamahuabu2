@@ -237,6 +237,7 @@ import {
 import {
   buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
 
@@ -432,7 +433,10 @@ function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
 }
 
 function freeCanvasNodeInputReferences(nodeId) {
-  return collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
+  const node = nodeById(nodeId)
+  return node?.data?.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(nodes.value, edges.value, String(nodeId || ''))
+    : collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
 }
 
 function updateFreeCanvasReference(edgeId, patch = {}) {

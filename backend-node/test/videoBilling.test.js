@@ -55,6 +55,54 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('视频任务持久化参考图、参考视频与参考音频供异步生成读取', () => {
+  const db = setup();
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    model: 'seedance 2.0',
+    prompt: '全能参考链路',
+    duration: 5,
+    reference_image_urls: ['/static/reference.png'],
+    reference_video_url: '/static/reference.mp4',
+    reference_audio_url: '/static/reference.mp3',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare(`SELECT first_frame_url, reference_image_urls, reference_video_url, reference_audio_url
+    FROM video_generations WHERE id = ?`).get(created.id);
+  assert.equal(row.first_frame_url, '/static/reference.png');
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference.png']);
+  assert.equal(row.reference_video_url, '/static/reference.mp4');
+  assert.equal(row.reference_audio_url, '/static/reference.mp3');
+  assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['/static/reference.png']);
+  db.close();
+});
+
+test('USMercari 多图参考入库时不混入首帧字段', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'usmercari',
+      api_protocol: 'usmercari_media',
+      default_model: 'MiniMax H3',
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'MiniMax H3',
+      prompt: '多图参考链路',
+      duration: 5,
+      reference_image_urls: ['/static/reference-1.png', '/static/reference-2.png'],
+    }, { billingEnabled: false, schedule() {} });
+
+    const row = db.prepare('SELECT first_frame_url, reference_image_urls FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.first_frame_url, null);
+    assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference-1.png', '/static/reference-2.png']);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
 test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应成本', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 3, {

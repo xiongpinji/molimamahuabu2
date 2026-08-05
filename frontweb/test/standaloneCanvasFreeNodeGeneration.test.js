@@ -6,6 +6,7 @@ import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   collectDirectUpstreamResultUrls,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
@@ -129,11 +130,17 @@ test('视频节点在没有参考图时仍可保存首尾帧模式', () => {
   assert.equal(normalizeFreeCanvasVideoReferenceMode('first-last', []), 'first-last')
 })
 
+test('视频节点可持久化全能参考模式', () => {
+  assert.equal(normalizeFreeCanvasVideoReferenceMode('omni', []), 'omni')
+})
+
 test('首尾帧模式将前两张参考图映射为首帧和尾帧', () => {
   assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 0), 'first-frame')
   assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 1), 'last-frame')
   assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 2), 'reference-image')
   assert.equal(resolveFreeCanvasVideoReferenceInput('multi', 0), 'reference-image')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 0), 'first-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('omni', 1), 'reference-image')
 })
 
 test('电影级光影校正失败重试参数可安全持久化并在刷新后恢复', () => {
@@ -427,6 +434,42 @@ test('collectDirectUpstreamImageReferences 同时呈现已就绪和等待生成�
     { nodeId: 'image-ready', edgeId: 'manual:ready', title: '首帧', url: '/static/first.png', ready: true, slot: 'reference-image', enabled: true, order: 0, weight: 1 },
     { nodeId: 'image-pending', edgeId: 'manual:pending', title: '尾帧', url: '', ready: false, slot: 'reference-image', enabled: true, order: 1, weight: 1 },
   ])
+})
+
+test('全能参考收集图片、视频、音频并构造真实视频请求字段', () => {
+  const nodes = [
+    { id: 'image', data: { kind: 'image', title: '首帧', url: '/static/first.png' } },
+    { id: 'video-ref', data: { kind: 'video', title: '动作参考', url: '/static/motion.mp4' } },
+    { id: 'audio-ref', data: { kind: 'audio', title: '声音参考', url: '/static/voice.mp3' } },
+    { id: 'target', data: { kind: 'video', title: '目标视频' } },
+  ]
+  const edges = [
+    { id: 'image-edge', source: 'image', target: 'target', data: { contract: { input: 'first-frame', order: 0 } } },
+    { id: 'video-edge', source: 'video-ref', target: 'target', data: { contract: { input: 'reference-video', order: 1 } } },
+    { id: 'audio-edge', source: 'audio-ref', target: 'target', data: { contract: { input: 'reference-audio', order: 2 } } },
+  ]
+  const references = collectDirectUpstreamMediaReferences(nodes, edges, 'target')
+
+  assert.deepEqual(references.map(({ kind, slot, url }) => ({ kind, slot, url })), [
+    { kind: 'image', slot: 'first-frame', url: '/static/first.png' },
+    { kind: 'video', slot: 'reference-video', url: '/static/motion.mp4' },
+    { kind: 'audio', slot: 'reference-audio', url: '/static/voice.mp3' },
+  ])
+  assert.deepEqual(buildFreeCanvasGenerationRequest({
+    kind: 'video', content: '跟随参考动作', model: 'MiniMax H3', aspectRatio: '16:9', duration: 5, resolution: '480p',
+  }, { dramaId: 7, upstreamReferences: references, maxReferences: 4 }), {
+    drama_id: 7,
+    prompt: '跟随参考动作',
+    model: 'MiniMax H3',
+    image_url: '/static/first.png',
+    first_frame_url: '/static/first.png',
+    reference_image_urls: ['/static/first.png'],
+    reference_video_url: '/static/motion.mp4',
+    reference_audio_url: '/static/voice.mp3',
+    aspect_ratio: '16:9',
+    duration: 5,
+    resolution: '480p',
+  })
 })
 
 test('getFreeCanvasNodeResultUrl 兼容当前 URL 与多结果数组', () => {

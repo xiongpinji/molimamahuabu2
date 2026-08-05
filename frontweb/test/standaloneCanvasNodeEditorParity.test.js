@@ -98,10 +98,11 @@ test('参考图卡片不再显示用途、排序、权重和启用选项', () =>
   assert.doesNotMatch(nodeSource, /class="reference-controls"/)
 })
 
-test('视频参考图支持右键在描述光标处插入对应图片引用', () => {
-  assert.match(nodeSource, /@contextmenu\.prevent\.stop="insertReferenceToken\(index\)"/)
-  assert.match(nodeSource, /function insertReferenceToken\(index\)/)
-  assert.match(nodeSource, /const token = `@图片\$\{index \+ 1\}`/)
+test('混合参考素材中的图片支持右键在描述光标处插入正确图片引用', () => {
+  assert.match(nodeSource, /@contextmenu\.prevent\.stop="reference\.kind === 'image' && insertReferenceToken\(reference\)"/)
+  assert.match(nodeSource, /function referenceOrdinal\(reference\)/)
+  assert.match(nodeSource, /function insertReferenceToken\(reference\)/)
+  assert.match(nodeSource, /const token = `@图片\$\{referenceOrdinal\(reference\)\}`/)
   assert.match(nodeSource, /@select="rememberContentSelection"/)
 })
 
