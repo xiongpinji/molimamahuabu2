@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildFreeCanvasReferenceMentionCandidates,
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
   collectDirectUpstreamImageReferences,
@@ -18,6 +19,31 @@ import {
   buildCanvasLayoutPayload,
   resolveFreeCanvasNodes,
 } from '../src/utils/canvasLayout.js'
+
+test('参考图 @ 候选按连线顺序生成图片1、图片2、图片3及同序号 token', () => {
+  const candidates = buildFreeCanvasReferenceMentionCandidates([
+    { nodeId: 'image-a', title: '角色图', url: '/a.png', ready: true, enabled: true },
+    { nodeId: 'image-b', title: '场景图', url: '/b.png', ready: true, enabled: true },
+    { nodeId: 'image-c', title: '道具图', url: '/c.png', ready: true, enabled: true },
+  ])
+
+  assert.deepEqual(candidates.map(({ label, mentionToken }) => ({ label, mentionToken })), [
+    { label: '图片1', mentionToken: '@图片1' },
+    { label: '图片2', mentionToken: '@图片2' },
+    { label: '图片3', mentionToken: '@图片3' },
+  ])
+})
+
+test('未就绪参考图不会让后续 @ 候选序号与卡片序号错位', () => {
+  const candidates = buildFreeCanvasReferenceMentionCandidates([
+    { nodeId: 'image-pending', title: '待生成', url: '', ready: false, enabled: true },
+    { nodeId: 'image-ready', title: '已生成', url: '/ready.png', ready: true, enabled: true },
+  ])
+
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].label, '图片2')
+  assert.equal(candidates[0].mentionToken, '@图片2')
+})
 
 test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数值和状态', () => {
   assert.equal(normalizeFreeCanvasNodeData({ kind: 'scene' }), null)

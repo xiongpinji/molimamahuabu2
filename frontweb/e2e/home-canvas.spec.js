@@ -76,6 +76,30 @@ const generatedMentionHomeCanvasState = {
       : node
   )),
 }
+const numberedMentionHomeCanvasState = {
+  ...mentionHomeCanvasState,
+  nodes: [
+    mentionHomeCanvasState.nodes[0],
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-2',
+      position: { x: 360, y: 680 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '雨夜街道' },
+    },
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-3',
+      position: { x: 360, y: 940 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '跑车侧面' },
+    },
+    mentionHomeCanvasState.nodes[1],
+  ],
+  edges: [
+    { id: 'e2e:reference-1', source: 'e2e:image-reference', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 0 } } },
+    { id: 'e2e:reference-2', source: 'e2e:image-reference-2', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 1 } } },
+    { id: 'e2e:reference-3', source: 'e2e:image-reference-3', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 2 } } },
+  ],
+}
 const editorFitHomeCanvasState = {
   version: 1,
   nodes: [
@@ -566,17 +590,8 @@ test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ pa
   await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
 })
 
-test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
-  const connectedState = {
-    ...mentionHomeCanvasState,
-    edges: [{
-      id: 'e2e:image-reference-to-video',
-      source: 'e2e:image-reference',
-      target: 'e2e:video-target',
-      type: 'smoothstep',
-    }],
-  }
-  await loadHomeCanvasState(page, connectedState)
+test('视频节点三张已连接参考图按序显示并插入带序号的 @ 引用', async ({ page }) => {
+  await loadHomeCanvasState(page, numberedMentionHomeCanvasState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
@@ -586,11 +601,15 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu).toBeVisible()
-  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toBeVisible()
-  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
+  const candidates = mentionMenu.getByRole('button')
+  await expect(candidates).toHaveCount(3)
+  await expect(candidates.nth(0)).toHaveAccessibleName('图片1')
+  await expect(candidates.nth(1)).toHaveAccessibleName('图片2')
+  await expect(candidates.nth(2)).toHaveAccessibleName('图片3')
+  await mentionMenu.getByRole('button', { name: '图片3' }).click()
 
-  await expect(promptInput).toHaveValue('沿用参考角色 @女主角定妆照 ')
-  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+  await expect(promptInput).toHaveValue('沿用参考角色 @图片3 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(3)
 })
 
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
