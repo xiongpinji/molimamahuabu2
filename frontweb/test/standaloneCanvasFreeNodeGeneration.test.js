@@ -10,6 +10,8 @@ import {
   getFreeCanvasNodeResultUrl,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
+  normalizeFreeCanvasVideoReferenceMode,
+  resolveFreeCanvasVideoReferenceInput,
   resolveFreeCanvasResultUrl,
 } from '../src/utils/freeCanvasGeneration.js'
 import {
@@ -38,6 +40,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     pronunciationTones: [' 重庆/(chong2)(qing4) ', ''],
     cameraMovement: 'push-in',
     effect: 'film-grain',
+    videoReferenceMode: 'first-last',
     characterReferenceUrls: [' https://cdn.example/character.png ', ''],
     taskId: 42,
     progress: 145,
@@ -69,6 +72,7 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     pronunciationTones: ['重庆/(chong2)(qing4)'],
     cameraMovement: 'push-in',
     effect: 'film-grain',
+    videoReferenceMode: 'first-last',
     characterReferenceUrls: ['https://cdn.example/character.png'],
     taskId: '42',
     progress: 100,
@@ -93,6 +97,17 @@ test('normalizeFreeCanvasNodeData 保留生成字段并过滤非法 kind、数�
     content: '',
     url: '',
   })
+})
+
+test('视频节点在没有参考图时仍可保存首尾帧模式', () => {
+  assert.equal(normalizeFreeCanvasVideoReferenceMode('first-last', []), 'first-last')
+})
+
+test('首尾帧模式将前两张参考图映射为首帧和尾帧', () => {
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 0), 'first-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 1), 'last-frame')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('first-last', 2), 'reference-image')
+  assert.equal(resolveFreeCanvasVideoReferenceInput('multi', 0), 'reference-image')
 })
 
 test('电影级光影校正失败重试参数可安全持久化并在刷新后恢复', () => {
@@ -247,7 +262,11 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     characterReferenceUrls: ['https://cdn.example/character.png'],
   }, {
     dramaId: 7,
-    upstreamUrls: ['https://cdn.example/first.png', 'https://cdn.example/ref.png'],
+    upstreamReferences: [
+      { url: 'https://cdn.example/first.png', slot: 'first-frame' },
+      { url: 'https://cdn.example/last.png', slot: 'last-frame' },
+      { url: 'https://cdn.example/ref.png', slot: 'reference-image' },
+    ],
   })
   assert.deepEqual(videoPayload, {
     drama_id: 7,
@@ -255,8 +274,10 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'kling',
     image_url: 'https://cdn.example/first.png',
     first_frame_url: 'https://cdn.example/first.png',
+    last_frame_url: 'https://cdn.example/last.png',
     reference_image_urls: [
       'https://cdn.example/first.png',
+      'https://cdn.example/last.png',
       'https://cdn.example/ref.png',
       'https://cdn.example/character.png',
     ],

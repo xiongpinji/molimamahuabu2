@@ -700,6 +700,65 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
   }, homeCanvasStorageKey)).toBe('reference-image')
 })
 
+test('视频节点无参考图时保存首尾帧模式，并在新增两张参考图后恢复首尾帧槽位', async ({ page }) => {
+  await loadHomeCanvasState(page, mentionHomeCanvasState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  let editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await editor.getByRole('tab', { name: '首尾帧' }).click()
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.videoReferenceMode || ''
+  }, homeCanvasStorageKey)).toBe('first-last')
+
+  const firstLastState = {
+    ...mentionHomeCanvasState,
+    nodes: [
+      ...mentionHomeCanvasState.nodes.map((node) => (
+        node.id === 'e2e:video-target'
+          ? { ...node, data: { ...node.data, videoReferenceMode: 'first-last' } }
+          : node
+      )),
+      {
+        id: 'e2e:image-reference-last',
+        type: 'homeCanvasNode',
+        position: { x: 360, y: 720 },
+        data: {
+          kind: 'image',
+          title: '尾帧参考图',
+          content: '',
+          url: mentionHomeCanvasState.nodes[0].data.url,
+        },
+      },
+    ],
+    edges: [
+      {
+        id: 'e2e:first-reference-to-video',
+        source: 'e2e:image-reference',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 0, weight: 1 } },
+      },
+      {
+        id: 'e2e:last-reference-to-video',
+        source: 'e2e:image-reference-last',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 1, weight: 1 } },
+      },
+    ],
+  }
+  await loadHomeCanvasState(page, firstLastState)
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.map((edge) => edge.data?.contract?.input).join(',') || ''
+  }, homeCanvasStorageKey)).toBe('first-frame,last-frame')
+})
+
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {
   const seedNode = page.locator('.vue-flow__node[data-id="e2e:seed"]')
   await seedNode.locator('.node-icon').click()

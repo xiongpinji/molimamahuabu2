@@ -5,6 +5,7 @@ const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'fai
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
 const VIDEO_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const FREE_VIDEO_REFERENCE_MODES = new Set(['first-last', 'multi'])
 const VIDEO_TOOL_OPERATIONS = new Set([
   'crop',
   'upscale',
@@ -50,6 +51,21 @@ const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
   return String(value ?? '').trim()
+}
+
+export function normalizeFreeCanvasVideoReferenceMode(value, references = []) {
+  const mode = cleanString(value)
+  if (FREE_VIDEO_REFERENCE_MODES.has(mode)) return mode
+  return (Array.isArray(references) ? references : []).some((reference) => (
+    ['first-frame', 'last-frame'].includes(cleanString(reference?.slot ?? reference?.input))
+  )) ? 'first-last' : 'multi'
+}
+
+export function resolveFreeCanvasVideoReferenceInput(mode, index) {
+  if (normalizeFreeCanvasVideoReferenceMode(mode) !== 'first-last') return 'reference-image'
+  if (index === 0) return 'first-frame'
+  if (index === 1) return 'last-frame'
+  return 'reference-image'
 }
 
 function positiveNumber(value) {
@@ -406,6 +422,10 @@ export function normalizeFreeCanvasNodeData(data = {}) {
     if (videoStory) normalized.videoStory = videoStory
   }
   if (kind === 'video') {
+    const videoReferenceMode = cleanString(data.videoReferenceMode)
+    if (FREE_VIDEO_REFERENCE_MODES.has(videoReferenceMode)) {
+      normalized.videoReferenceMode = videoReferenceMode
+    }
     const videoToolStatus = cleanString(data.videoToolStatus)
     if (VIDEO_TOOL_STATUSES.has(videoToolStatus)) normalized.videoToolStatus = videoToolStatus
     if (Object.hasOwn(data, 'videoToolError')) normalized.videoToolError = cleanString(data.videoToolError)

@@ -482,6 +482,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
+import {
+  normalizeFreeCanvasVideoReferenceMode,
+  resolveFreeCanvasVideoReferenceInput,
+} from '@/utils/freeCanvasGeneration'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -530,6 +534,7 @@ const draft = reactive({
   cameraMovement: '',
   effect: '',
   includeAudio: false,
+  videoReferenceMode: '',
 })
 const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio: '♫' }[props.data.kind] || '◈'))
 const mediaEmptyLabel = computed(() => {
@@ -576,10 +581,9 @@ const inputReferences = computed(() => (
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
-const videoReferenceMode = computed(() => (
-  inputReferences.value.some((reference) => ['first-frame', 'last-frame'].includes(reference.slot))
-    ? 'first-last'
-    : 'multi'
+const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
+  draft.videoReferenceMode,
+  inputReferences.value,
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -640,6 +644,7 @@ function syncDraft() {
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
+  draft.videoReferenceMode = props.data.videoReferenceMode || ''
 }
 
 async function saveDraft() {
@@ -669,6 +674,7 @@ async function saveDraft() {
     cameraMovement: draft.cameraMovement,
     effect: draft.effect,
     includeAudio: draft.includeAudio === true,
+    ...(props.data.kind === 'video' ? { videoReferenceMode: videoReferenceMode.value } : {}),
   })
   draftDirty = false
 }
@@ -1016,12 +1022,12 @@ function updateReference(reference, patch) {
   ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
 }
 
-function setVideoReferenceMode(mode) {
+async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
+  draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  await saveDraft()
   inputReferences.value.forEach((reference, index) => {
-    const input = mode === 'first-last'
-      ? (index === 0 ? 'first-frame' : index === 1 ? 'last-frame' : 'reference-image')
-      : 'reference-image'
+    const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
     updateReference(reference, { input })
   })
 }
@@ -1100,6 +1106,17 @@ onBeforeUnmount(() => {
 watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
+watch(
+  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.slot}`).join('|')}`,
+  () => {
+    if (props.data.kind !== 'video' || videoReferenceMode.value !== 'first-last') return
+    inputReferences.value.forEach((reference, index) => {
+      const input = resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
+      if (reference.slot !== input) updateReference(reference, { input })
+    })
+  },
+  { flush: 'post', immediate: true },
+)
 watch(isSelected, (selected) => {
   if (selected) {
     editorHidden.value = false
