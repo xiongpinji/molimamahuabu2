@@ -468,13 +468,13 @@
                   预览导入短剧工厂
                 </el-button>
                 <el-button
-                  :disabled="Boolean(selectedVersion)"
+                  :disabled="Boolean(selectedVersion) || running"
                   @click="startRevision"
                 >
                   人工校订
                 </el-button>
                 <el-button
-                  :disabled="Boolean(selectedVersion)"
+                  :disabled="Boolean(selectedVersion) || running"
                   :loading="reviewing"
                   @click="submitReview('rejected')"
                 >
@@ -482,7 +482,7 @@
                 </el-button>
                 <el-button
                   type="primary"
-                  :disabled="Boolean(selectedVersion)"
+                  :disabled="Boolean(selectedVersion) || running"
                   :loading="reviewing"
                   @click="submitReview('approved')"
                 >
@@ -650,6 +650,7 @@ const emptyProject = () => ({
 
 const emptyTask = () => ({
   id: '',
+  type: '',
   status: '',
   progress: 0,
   message: '',
@@ -862,6 +863,11 @@ const taskStatusClass = computed(() => ({
 }))
 
 const taskTitle = computed(() => {
+  if (task.value.type === 'script_analysis_revision') {
+    if (running.value) return '模型正在根据审核意见修改'
+    if (['completed', 'succeeded', 'success'].includes(task.value.status)) return '自动修订已完成'
+    if (['failed', 'error', 'cancelled'].includes(task.value.status)) return '自动修订未完成'
+  }
   if (running.value) return '导演智能体正在分析'
   if (['completed', 'succeeded', 'success'].includes(task.value.status)) return '分析已完成'
   if (['failed', 'error', 'cancelled'].includes(task.value.status)) return '分析未完成'
@@ -871,7 +877,11 @@ const taskTitle = computed(() => {
 const taskMessage = computed(() => (
   task.value.error
   || task.value.message
-  || (running.value ? '正在梳理事实、人物、场景和镜头，请稍候。' : '可继续修改原剧本后重新分析。')
+  || (task.value.type === 'script_analysis_revision'
+    ? '正在理解人工审核备注并修改完整生产包，请稍候。'
+    : running.value
+      ? '正在梳理事实、人物、场景和镜头，请稍候。'
+      : '可继续修改原剧本后重新分析。')
 ))
 
 function statusText(status) {
@@ -1074,25 +1084,36 @@ async function pollTask() {
     const body = unwrap(await taskAPI.get(task.value.id))
     taskPollFailures.value = 0
     const next = body?.task || body || {}
+    task.value.type = next.type || task.value.type
     task.value.status = next.status || task.value.status
     task.value.progress = Number(next.progress ?? task.value.progress ?? 0)
     task.value.message = next.message || next.status_message || task.value.message
     task.value.error = next.error || next.error_message || ''
 
     if (['completed', 'succeeded', 'success'].includes(task.value.status)) {
+      const isRevisionTask = task.value.type === 'script_analysis_revision'
       stopPolling()
       running.value = false
       task.value.progress = 100
       await loadProject(project.value.id)
+      task.value.type = isRevisionTask ? 'script_analysis_revision' : 'script_analysis'
       task.value.status = 'completed'
       task.value.progress = 100
-      task.value.message = '制作包已生成，请核对后再用于生产。'
-      ElMessage.success('导演分析已完成')
+      task.value.message = isRevisionTask
+        ? '已按审核意见生成新版本，请继续审核。'
+        : '制作包已生成，请核对后再用于生产。'
+      ElMessage.success(isRevisionTask ? '模型已完成自动修订' : '导演分析已完成')
     } else if (['failed', 'error', 'cancelled'].includes(task.value.status)) {
+      const isRevisionTask = task.value.type === 'script_analysis_revision'
+      const taskError = task.value.error || (isRevisionTask ? '自动修订失败' : '导演分析失败')
       stopPolling()
       running.value = false
-      if (project.value.status === 'analyzing') project.value.status = 'failed'
-      ElMessage.error(task.value.error || '导演分析失败')
+      if (isRevisionTask) await loadProject(project.value.id)
+      else if (project.value.status === 'analyzing') project.value.status = 'failed'
+      task.value.type = isRevisionTask ? 'script_analysis_revision' : task.value.type
+      task.value.status = 'failed'
+      task.value.error = taskError
+      ElMessage.error(taskError)
     } else {
       task.value.progress = Math.min(92, Math.max(task.value.progress, 12))
     }
@@ -1209,17 +1230,38 @@ async function submitReview(status) {
 
   reviewing.value = true
   try {
+    const note = reviewNote.value.trim()
     const body = unwrap(await scriptAnalysisAPI.review(project.value.id, {
       version: project.value.active_version,
       status,
-      note: reviewNote.value.trim(),
+      note,
     }))
+    if (status === 'rejected') {
+      const taskId = body?.task_id || body?.task?.id
+      if (!taskId) throw new Error('服务端未返回自动修订任务编号')
+      task.value = {
+        ...emptyTask(),
+        id: taskId,
+        type: 'script_analysis_revision',
+        status: body?.status || 'pending',
+        progress: 5,
+        message: '模型正在根据审核意见修改',
+      }
+      project.value.status = 'analyzing'
+      selectedVersion.value = ''
+      resetRevisionEditor()
+      running.value = true
+      await listProjects()
+      startPolling()
+      ElMessage.success('已退回，模型正在根据审核意见修改')
+      return
+    }
     project.value = normalizeProject(body)
     selectedVersion.value = ''
     resetRevisionEditor()
     await loadVersions(project.value.id)
     await listProjects()
-    ElMessage.success(status === 'approved' ? '当前版本已通过审核' : '当前版本已退回修改')
+    ElMessage.success('当前版本已通过审核')
   } catch (error) {
     ElMessage.error(error?.message || '提交审核结果失败')
   } finally {

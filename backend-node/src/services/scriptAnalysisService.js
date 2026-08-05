@@ -141,6 +141,20 @@ ${project.source_script || ''}
     : basePrompt;
 }
 
+function buildRevisionPrompt(project, currentPackage, note, skill) {
+  const { source: _source, ...packageWithoutDuplicatedSource } = asObject(currentPackage);
+  return `${buildUserPrompt(project, skill)}
+
+当前待修改生产包：
+${JSON.stringify(packageWithoutDuplicatedSource, null, 2)}
+
+人工审核备注：
+${String(note || '').trim()}
+
+请先逐条推理审核备注对应的修改位置，再输出修改后的完整生产包 JSON。
+未被审核备注要求修改的内容必须保持不变；不得改变原剧本和不可改动事实。`;
+}
+
 function normalizeVisualDirection(value) {
   const visualDirection = asObject(value);
   if (!Object.keys(visualDirection).length) return null;
@@ -363,12 +377,36 @@ async function runAnalysis({ db, log, project, skill }) {
   );
 }
 
+async function runRevision({ db, log, project, currentPackage, note, skill }) {
+  const selectedSkill = skill || resolveScriptAnalysisSkill();
+  const raw = await aiClient.generateText(
+    db,
+    log,
+    'text',
+    buildRevisionPrompt(project, currentPackage, note, selectedSkill),
+    selectedSkill.system_prompt,
+    {
+      scene_key: 'story_generation',
+      temperature: 0.2,
+      json_mode: true,
+      max_tokens: 12000,
+    },
+  );
+  const normalized = normalizeProductionPackage(safeParseAIJSON(raw, {}, log), project);
+  return validateProductionPackage(
+    normalized,
+    { requireVisualDirection: Boolean(selectedSkill.require_visual_direction) },
+  );
+}
+
 module.exports = {
   SYSTEM_PROMPT,
   SCRIPT_ANALYSIS_LIMITS,
   getProjectInputError,
   buildUserPrompt,
+  buildRevisionPrompt,
   normalizeProductionPackage,
   validateProductionPackage,
   runAnalysis,
+  runRevision,
 };
