@@ -55,6 +55,42 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应成本', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  });
+
+  const amounts = [];
+  for (const [userId, resolution] of [['user-1', '480P'], ['user-2', '720p']]) {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: `${resolution} 视频计费测试`,
+      duration: 5,
+      resolution,
+    }, { billingEnabled: true, userId, schedule() {} });
+    const row = db.prepare('SELECT credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    amounts.push(credits.getReservation(db, row.credit_reservation_id).amount);
+  }
+
+  assert.deepEqual(amounts, [15, 25]);
+  assert.deepEqual(
+    db.prepare('SELECT resolution, cost_micros FROM generation_cost_records ORDER BY resolution').all(),
+    [
+      { resolution: '480p', cost_micros: 250000 },
+      { resolution: '720p', cost_micros: 600000 },
+    ],
+  );
+  db.close();
+});
+
 test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);

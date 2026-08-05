@@ -42,3 +42,9 @@ cd frontweb && npm run build
 - Config file at `backend-node/configs/config.yaml` already exists in the repo — no need to copy from example.
 - AI content generation requires external API keys (configured via the app's "AI 配置" page), but the app fully functions without them for development/testing purposes.
 - The backend also serves the built frontend from `frontweb/dist/` at port 5679 when the dist folder exists; during development, use the Vite dev server at port 3013 instead.
+
+### Production Release Guard
+
+- Every `/opt/moli-drama` production candidate must be cloned from the live `current` release and carry a task-specific changed-file allowlist.
+- Run `backend-node/scripts/verify-incremental-release-scope.js` before and after building. Abort when the candidate changes files outside the allowlist, the manifest SHA-256 differs, or `current` no longer matches the expected parent.
+- Final activation must still use the shared protected release guard with its expected-current CAS check. The incremental scope gate must not replace, modify, or weaken the shared guard.

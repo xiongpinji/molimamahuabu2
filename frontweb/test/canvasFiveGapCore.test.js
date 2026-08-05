@@ -26,9 +26,20 @@ test('subgraph reports cycles before execution', () => {
 })
 
 test('model capabilities restrict parameters and estimate per-second video cost', () => {
-  const catalog = [{ kind: 'video', model: 'v1', credits: 12, billing_unit: 'second', capabilities: { durations: [5, 8] } }]
+  const catalog = [{
+    kind: 'video',
+    model: 'v1',
+    credits: 12,
+    billing_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 6, cost_micros_per_second: 50000 },
+      '720p': { credits: 12, cost_micros_per_second: 100000 },
+    },
+    capabilities: { durations: [5, 8] },
+  }]
   assert.deepEqual(canvasModelCapability(catalog, 'video', 'v1').durations, [5, 8])
-  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12), 144)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '480P'), 72)
+  assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '720p'), 144)
 })
 
 test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {
