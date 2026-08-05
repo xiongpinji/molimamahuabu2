@@ -3706,9 +3706,11 @@ function buildIcreatVideoBody({
   };
   addImage(first_frame_url || image_url, 'first_frame');
   addImage(last_frame_url, 'last_frame');
-  for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
-  const voiceUrl = String(voice_reference_url || '').trim();
   const hasFrameRole = content.some((part) => part.role === 'first_frame' || part.role === 'last_frame');
+  if (!hasFrameRole) {
+    for (const url of Array.isArray(reference_urls) ? reference_urls : []) addImage(url, 'reference_image');
+  }
+  const voiceUrl = String(voice_reference_url || '').trim();
   if (voiceUrl && !hasFrameRole) {
     content.push({
       type: 'audio_url',

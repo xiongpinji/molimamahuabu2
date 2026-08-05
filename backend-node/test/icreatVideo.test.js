@@ -47,7 +47,7 @@ describe('iCreat Seedance video protocol', () => {
     });
   });
 
-  it('only sends need_review for reference images', () => {
+  it('omits mutually exclusive reference images when first or last frame is present', () => {
     const body = buildIcreatVideoBody({
       prompt: '角色沿着雨林石径前进',
       first_frame_url: 'https://cdn.example/first.png',
@@ -57,7 +57,22 @@ describe('iCreat Seedance video protocol', () => {
 
     assert.equal(body.content.find((part) => part.role === 'first_frame').need_review, undefined);
     assert.equal(body.content.find((part) => part.role === 'last_frame').need_review, undefined);
-    assert.equal(body.content.find((part) => part.role === 'reference_image').need_review, true);
+    assert.equal(body.content.some((part) => part.role === 'reference_image'), false);
+  });
+
+  it('keeps need_review on reference images in pure reference mode', () => {
+    const body = buildIcreatVideoBody({
+      prompt: '保持角色一致地沿着雨林石径前进',
+      reference_urls: ['https://cdn.example/character.png'],
+    });
+
+    assert.equal(body.content.some((part) => part.role === 'first_frame'), false);
+    assert.deepEqual(body.content.find((part) => part.role === 'reference_image'), {
+      type: 'image_url',
+      image_url: { url: 'https://cdn.example/character.png' },
+      role: 'reference_image',
+      need_review: true,
+    });
   });
 
   it('adds a character voice as the documented reference audio content item', () => {
