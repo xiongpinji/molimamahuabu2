@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
+const { buildFeituoStatusUrl } = require('./feituoVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -406,6 +407,21 @@ async function testConnection(opts) {
   }
 
   if (!opts.api_key) throw new Error('api_key 必填');
+
+  // 飞拓连接测试只查询一个不存在的 jobId，禁止创建付费视频任务。
+  if ((provider === 'feituo' || provider === 'feituo_open') && serviceType === 'video') {
+    const res = await fetch(buildFeituoStatusUrl(base, 'codex-connectivity-check'), {
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer ' + opts.api_key,
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      },
+    });
+    if (res.status === 401 || res.status === 403) throw new Error(`飞拓 API Key 无效 (${res.status})`);
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(`飞拓连接失败 (${res.status})`);
+  }
 
   // iCreat 采用三段式任务接口；连接测试只查询不存在的任务，避免提交计费任务。
   if ((provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') && serviceType === 'video') {

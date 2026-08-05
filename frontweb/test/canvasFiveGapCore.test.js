@@ -42,6 +42,17 @@ test('model capabilities restrict parameters and estimate per-second video cost'
   assert.equal(estimateCanvasCredits(catalog, 'video', 'v1', 1, 12, '720p'), 144)
 })
 
+test('model capabilities estimate per-request video cost without duration multiplier', () => {
+  const catalog = [{
+    kind: 'video',
+    model: 'sdas-my-seedance-2.0-fast-upscaled-1080p',
+    credits: 860,
+    billing_unit: 'request',
+    capabilities: { durations: [5, 15] },
+  }]
+  assert.equal(estimateCanvasCredits(catalog, 'video', catalog[0].model, 1, 15, '1080p'), 860)
+})
+
 test('video capability fallback includes every supported duration from 5 to 15 seconds', () => {
   assert.deepEqual(canvasModelCapability([], 'video', 'lingjing-video-v1').durations, [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 })

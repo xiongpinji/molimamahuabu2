@@ -198,6 +198,29 @@ test('视频金额只接受 5 到 15 秒整数并按秒相乘', () => {
   }
 });
 
+test('按条计费的视频模型不会再乘视频时长且供应商成本只记录一次', () => {
+  const db = makeDb();
+  const saved = prices.set(db, 'sdas-my-seedance-2.0-fast-upscaled-1080p', 860, {
+    display_name: 'Seedance 2.0 Fast 480P 超分 1080P',
+    category: 'video',
+    billing_unit: 'request',
+    cost_unit: 'request',
+    cost_micros_per_unit: 2800000,
+  });
+
+  assert.equal(saved.billing_unit, 'request');
+  assert.equal(prices.calculateCharge(db, saved.model, { duration: 15 }), 860);
+  assert.deepEqual(prices.quoteCost(db, saved.model, { quantity: 15 }), {
+    model: 'sdas-my-seedance-2.0-fast-upscaled-1080p',
+    cost_unit: 'request',
+    quantity: 1,
+    cost_micros: 2800000,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+  });
+});
+
 test('视频模型按 480P 和 720P 分别计算积分与每秒成本', () => {
   const db = makeDb();
   const saved = prices.set(db, 'resolution-video', 2, {
