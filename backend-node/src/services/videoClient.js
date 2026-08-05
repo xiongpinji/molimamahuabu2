@@ -4638,15 +4638,37 @@ async function callVideoApi(db, log, opts) {
   }
 
   if (protocol === 'feituo_open') {
+    const rawReferences = [...new Set([
+      opts.image_url,
+      opts.first_frame_url,
+      opts.last_frame_url,
+      ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    const resolvedReferences = [];
+    for (let index = 0; index < rawReferences.length; index++) {
+      const raw = rawReferences[index];
+      const resolved = await resolveVeo3ImageForApi(
+        raw,
+        opts.storage_local_path,
+        log,
+        `${opts.video_gen_id || 0}_feituo_${index}`,
+      );
+      const value = String(resolved?.value || '').trim();
+      if (!value || !/^https?:\/\//i.test(value) || (raw.includes('/static/') && value === raw)) {
+        return { error: `飞拓参考图 @image${index + 1} 无法转存为公网地址，请重新上传后再生成` };
+      }
+      if (!resolvedReferences.includes(value)) resolvedReferences.push(value);
+    }
     return feituoVideoClient.callFeituoVideoApi(config, log, {
       ...opts,
       model,
       prompt,
       duration: opts.duration,
       aspect_ratio,
-      image_url,
-      first_frame_url,
-      last_frame_url,
+      image_url: undefined,
+      first_frame_url: undefined,
+      last_frame_url: undefined,
+      reference_urls: resolvedReferences,
       video_gen_id,
     });
   }

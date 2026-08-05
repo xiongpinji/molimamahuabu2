@@ -1,5 +1,8 @@
 const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
   FEITUO_MODELS,
   normalizeFeituoBaseUrl,
@@ -202,6 +205,71 @@ describe('Feituo Open video protocol', () => {
     assert.match(requests[1].url, /^https:\/\/feituokuajing\.com\/api\/open\/v1\/video\/status\?jobId=routed-job&_\=\d+$/);
     assert.equal(requests[1].options.headers['Cache-Control'], 'no-cache');
     assert.deepEqual(completed, { video_url: 'https://files.example/routed.mp4' });
+  });
+
+  it('uploads protected short-drama references once before submitting them to Feituo', async (t) => {
+    const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'feituo-shortdrama-'));
+    t.after(() => fs.rmSync(storagePath, { recursive: true, force: true }));
+    const relativePath = 'projects/0050/frames/first.jpg';
+    const localPath = path.join(storagePath, relativePath);
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    fs.writeFileSync(localPath, Buffer.from('short-drama-reference'));
+
+    const protectedUrl = `https://molimama.vip/static/${relativePath}`;
+    const proxyUrl = 'https://imageproxy.zhongzhuan.chat/api/proxy/image/short-drama-ref';
+    const requests = [];
+    global.fetch = async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).includes('/api/upload')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ url: proxyUrl }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ success: true, jobId: 'factory-job', status: 'submitted' }),
+      };
+    };
+
+    const row = {
+      id: 13,
+      service_type: 'video',
+      provider: 'feituo',
+      api_protocol: 'feituo_open',
+      base_url: 'https://feituokuajing.com',
+      api_key: 'secret',
+      model: ['sdas-lm-hailuo-h3-2k'],
+      default_model: 'sdas-lm-hailuo-h3-2k',
+      is_default: false,
+      is_active: true,
+    };
+    const db = {
+      prepare(sql) {
+        return { all: () => sql.includes('SELECT * FROM ai_service_configs') ? [row] : [] };
+      },
+    };
+
+    const submitted = await callVideoApi(db, log, {
+      model: 'sdas-lm-hailuo-h3-2k',
+      prompt: '@image1 延续上一镜动作',
+      duration: 5,
+      aspect_ratio: '16:9',
+      image_url: protectedUrl,
+      first_frame_url: protectedUrl,
+      reference_urls: [protectedUrl],
+      storage_local_path: storagePath,
+      video_gen_id: 197,
+    });
+
+    assert.deepEqual(submitted, { task_id: 'factory-job', status: 'submitted' });
+    assert.equal(requests.length, 2);
+    assert.match(requests[0].url, /\/api\/upload$/);
+    const providerBody = JSON.parse(requests[1].options.body);
+    assert.deepEqual(providerBody.imageUrls, [proxyUrl]);
+    assert.equal(providerBody.imageUrls.includes(protectedUrl), false);
   });
 });
 
