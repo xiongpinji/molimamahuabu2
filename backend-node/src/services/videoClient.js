@@ -11,6 +11,7 @@ let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
+const feituoVideoClient = require('./feituoVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -43,6 +44,7 @@ function inferVideoProtocol(provider) {
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
   if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
+  if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -151,6 +153,7 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
     protocol = 'icreat_task';
   }
+  if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -4634,6 +4637,20 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'feituo_open') {
+    return feituoVideoClient.callFeituoVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url,
+      first_frame_url,
+      last_frame_url,
+      video_gen_id,
+    });
+  }
+
   if (protocol === 'dashscope') {
     return callDashScopeVideoApi(config, log, {
       prompt,
@@ -4937,6 +4954,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDeepwlGrok = protocol === 'deepwl_grok';
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
+  const isFeituo = protocol === 'feituo_open';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5019,6 +5037,13 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
           'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
           'Content-Type': 'application/json',
         };
+      } else if (isFeituo) {
+        url = feituoVideoClient.buildFeituoStatusUrl(config.base_url, taskId);
+        headers = {
+          Authorization: 'Bearer ' + (config.api_key || ''),
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        };
       } else {
         url = queryUrl();
         headers = { Authorization: 'Bearer ' + (config.api_key || '') };
@@ -5065,6 +5090,18 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       if (isDjpsd) {
         const result = parseDjpsdPollResponse(data);
         log.info('[DJPSD poll] 状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isFeituo) {
+        const result = feituoVideoClient.parseFeituoStatusPayload(data);
+        log.info('[飞拓视频] 轮询状态', {
           video_gen_id: videoGenId,
           round: pollRound,
           state: result.state,
