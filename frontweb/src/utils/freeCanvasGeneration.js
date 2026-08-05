@@ -370,6 +370,15 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   if (Object.hasOwn(data, 'progress')) {
     normalized.progress = Math.min(100, Math.max(0, finiteNumber(data.progress)))
   }
+  if (Object.hasOwn(data, 'progressKnown')) normalized.progressKnown = booleanValue(data.progressKnown)
+  if (Object.hasOwn(data, 'generationActive')) normalized.generationActive = booleanValue(data.generationActive)
+  if (Object.hasOwn(data, 'generationBatchSize')) {
+    normalized.generationBatchSize = positiveInteger(data.generationBatchSize)
+  }
+  if (Object.hasOwn(data, 'generationTaskBaseCount')) {
+    const taskBaseCount = Number(data.generationTaskBaseCount)
+    if (Number.isInteger(taskBaseCount) && taskBaseCount >= 0) normalized.generationTaskBaseCount = taskBaseCount
+  }
   if (Object.hasOwn(data, 'status')) {
     const status = cleanString(data.status)
     if (FREE_NODE_STATUSES.has(status)) normalized.status = status

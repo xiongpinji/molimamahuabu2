@@ -667,6 +667,10 @@ import {
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
+  calculateBatchGenerationProgress,
+  normalizeGenerationProgress,
+} from '@/utils/canvasGenerationProgress'
+import {
   collectDroppedImageFiles,
   createDroppedImageNodeSpecs,
   hasDraggedFilePayload,
@@ -2624,10 +2628,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 } = {}) {
+async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000, onProgress } = {}) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) await sleep(intervalMs)
     const task = await taskAPI.get(taskId)
+    const progress = normalizeGenerationProgress(task?.progress)
+    if (progress !== null) await onProgress?.(progress)
     if (task?.status === 'completed') return task
     if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
   }
@@ -2766,6 +2772,8 @@ async function completeFreeCanvasNodeGeneration({
   requestPayload,
   taskId,
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   const resolved = await resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult })
   return commitFreeCanvasNodeGeneration({
@@ -2775,6 +2783,8 @@ async function completeFreeCanvasNodeGeneration({
     requestPayload,
     taskId,
     notify,
+    progress,
+    progressKnown,
   })
 }
 
@@ -2796,15 +2806,21 @@ async function commitFreeCanvasNodeGeneration({
   taskId,
   resultUrls = [],
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   await patchFreeCanvasNodeData(node.id, {
     status: 'success',
+    generationActive: false,
+    generationBatchSize: undefined,
+    generationTaskBaseCount: undefined,
     url: resultUrl,
     resultUrls: resultUrls.length ? resultUrls : [resultUrl],
     ...boundaryFrames,
     ...(kind === 'video' && generationId ? { videoGenerationId: generationId } : {}),
     taskId,
-    progress: 100,
+    progress,
+    progressKnown,
     error: '',
     savedAssetId: '',
     assetSaveStatus: 'running',
@@ -3016,7 +3032,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedAt: new Date().toISOString(),
       error: errorMessage,
     })
-    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: errorMessage })
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', generationActive: false, error: errorMessage })
     ElMessage.error(errorMessage)
     return { ok: false, nodeId: String(node.id), error: errorMessage }
   }
@@ -3034,7 +3050,19 @@ async function runFreeCanvasNode(nodeOrId) {
     requestedAt: new Date().toISOString(),
     error: '',
   })
-  await patchFreeCanvasNodeData(node.id, { status: 'running', progress: 0, taskId: '', error: '' })
+  const quantity = ['image', 'video'].includes(kind)
+    ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
+    : 1
+  await patchFreeCanvasNodeData(node.id, {
+    status: 'running',
+    generationActive: true,
+    generationBatchSize: quantity,
+    generationTaskBaseCount: 0,
+    progress: 0,
+    progressKnown: false,
+    taskId: '',
+    error: '',
+  })
   let taskId = ''
   try {
     if (kind === 'text') {
@@ -3044,7 +3072,11 @@ async function runFreeCanvasNode(nodeOrId) {
       await patchFreeCanvasNodeData(node.id, {
         content,
         status: 'success',
+        generationActive: false,
+        generationBatchSize: undefined,
+        generationTaskBaseCount: undefined,
         progress: 100,
+        progressKnown: true,
         error: '',
       })
       await updateFreeCanvasGenerationHistory(node.id, historyId, {
@@ -3055,9 +3087,6 @@ async function runFreeCanvasNode(nodeOrId) {
       return { ok: true, nodeId: String(node.id) }
     }
 
-    const quantity = ['image', 'video'].includes(kind)
-      ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
-      : 1
     for (let index = 0; index < quantity; index += 1) {
       let submitResult = null
       let taskResult = null
@@ -3068,8 +3097,23 @@ async function runFreeCanvasNode(nodeOrId) {
 
       taskId = freeCanvasTaskId(submitResult)
       if (taskId) {
-        await patchFreeCanvasNodeData(node.id, { taskId })
-        taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+        await patchFreeCanvasNodeData(node.id, {
+          taskId,
+          generationTaskBaseCount: completedResults.length,
+        })
+        taskResult = await pollFreeCanvasTask(taskId, {
+          ...freeCanvasTaskPollOptions(kind),
+          onProgress: async (currentProgress) => {
+            const progress = calculateBatchGenerationProgress(
+              completedResults.length,
+              quantity,
+              currentProgress
+            )
+            if (progress !== null) {
+              await patchFreeCanvasNodeData(node.id, { progress, progressKnown: true })
+            }
+          },
+        })
       }
       const resolvedResult = await resolveFreeCanvasNodeGeneration({
         kind,
@@ -3079,6 +3123,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedResults.push(resolvedResult)
       await patchFreeCanvasNodeData(node.id, {
         progress: Math.round((completedResults.length / quantity) * 100),
+        progressKnown: true,
       })
     }
     const completedResultUrls = completedResults.map((result) => result.resultUrl)
@@ -3111,6 +3156,9 @@ async function runFreeCanvasNode(nodeOrId) {
     })
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
+      generationActive: false,
+      generationBatchSize: undefined,
+      generationTaskBaseCount: undefined,
       url: previousUrl,
       resultUrls: previousResultUrls,
       taskId,
@@ -3193,7 +3241,31 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
 
   const resumePromise = (async () => {
     try {
-      const taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      const persistedBatchSize = Number(node.data?.generationBatchSize)
+      const quantity = Number.isInteger(persistedBatchSize) && persistedBatchSize > 0
+        ? Math.min(4, persistedBatchSize)
+        : (kind === 'audio' ? 1 : null)
+      const persistedBaseCount = Number(node.data?.generationTaskBaseCount)
+      const completedCount = quantity !== null && Number.isInteger(persistedBaseCount) && persistedBaseCount >= 0
+        ? Math.min(quantity - 1, persistedBaseCount)
+        : (quantity === 1 ? 0 : null)
+      await patchFreeCanvasNodeData(node.id, {
+        generationActive: true,
+        ...(completedCount === null ? { progressKnown: false } : {}),
+      })
+      const taskResult = await pollFreeCanvasTask(taskId, {
+        ...freeCanvasTaskPollOptions(kind),
+        onProgress: (currentProgress) => {
+          if (completedCount === null) return undefined
+          return patchFreeCanvasNodeData(node.id, {
+            progress: calculateBatchGenerationProgress(completedCount, quantity, currentProgress),
+            progressKnown: true,
+          })
+        },
+      })
+      const recoveredProgress = completedCount === null
+        ? 100
+        : Math.round(((completedCount + 1) / quantity) * 100)
       await completeFreeCanvasNodeGeneration({
         node,
         kind,
@@ -3202,6 +3274,8 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
         requestPayload: null,
         taskId,
         notify: false,
+        progress: recoveredProgress,
+        progressKnown: completedCount !== null,
       })
       ElMessage.success('已恢复自由节点生成结果')
     } catch (error) {
@@ -3210,6 +3284,7 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
       const errorMessage = error?.message || '自由节点生成失败'
       await patchFreeCanvasNodeData(node.id, {
         status: 'failed',
+        generationActive: false,
         url: latestNode?.data?.url || '',
         taskId,
         error: errorMessage,
