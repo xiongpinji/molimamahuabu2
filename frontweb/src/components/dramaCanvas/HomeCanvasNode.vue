@@ -277,14 +277,16 @@
             class="reference-mention-menu"
             aria-label="@选择参考图"
           >
+            <!-- canvas-reference-numbered-mentions-v1 -->
             <button
               v-for="candidate in filteredReferenceCandidates"
               :key="candidate.nodeId"
               type="button"
+              :title="candidate.title"
               @mousedown.prevent="selectReferenceMention(candidate)"
             >
               <img :src="candidate.url" alt="" />
-              <span>{{ candidate.title }}</span>
+              <span>{{ candidate.label }}</span>
             </button>
             <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
           </div>
@@ -593,7 +595,10 @@ const referenceCandidates = computed(() => (
 const filteredReferenceCandidates = computed(() => {
   const query = mentionQuery.value.trim().toLowerCase()
   if (!query) return referenceCandidates.value
-  return referenceCandidates.value.filter((candidate) => String(candidate.title || '').toLowerCase().includes(query))
+  return referenceCandidates.value.filter((candidate) => (
+    String(candidate.label || '').toLowerCase().includes(query)
+    || String(candidate.title || '').toLowerCase().includes(query)
+  ))
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
@@ -763,9 +768,10 @@ function handleContentBlur(event) {
 
 async function selectReferenceMention(candidate) {
   const sourceNodeId = String(candidate?.nodeId || '')
-  if (!sourceNodeId || mentionStart.value < 0) return
-  const cursor = mentionStart.value + String(candidate.title || '').length + 2
-  draft.content = `${draft.content.slice(0, mentionStart.value)}@${candidate.title} ${draft.content.slice(mentionEnd.value)}`
+  const mentionToken = String(candidate?.mentionToken || '')
+  if (!sourceNodeId || !mentionToken || mentionStart.value < 0) return
+  const cursor = mentionStart.value + mentionToken.length + 1
+  draft.content = `${draft.content.slice(0, mentionStart.value)}${mentionToken} ${draft.content.slice(mentionEnd.value)}`
   mentionStart.value = -1
   mentionEnd.value = -1
   mentionQuery.value = ''

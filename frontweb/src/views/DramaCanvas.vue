@@ -661,6 +661,7 @@ import {
 import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
+  buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
@@ -2845,13 +2846,9 @@ function freeCanvasNodeInputReferences(nodeOrId) {
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
-    .filter((reference) => reference.ready && reference.enabled !== false)
-    .map((reference) => ({
-      nodeId: String(reference.nodeId),
-      title: reference.title || '画布图片',
-      url: reference.url,
-    }))
+  return buildFreeCanvasReferenceMentionCandidates(
+    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+  )
 }
 
 function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {

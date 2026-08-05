@@ -235,6 +235,7 @@ import {
   stripLocalImagePreviewsForPersistence,
 } from '@/utils/canvasImageDrop'
 import {
+  buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
@@ -418,13 +419,9 @@ function onConnect(connection) {
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetId = String(nodeOrId || '')
-  return collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId)
-    .filter((reference) => reference.ready && reference.enabled !== false)
-    .map((reference) => ({
-      nodeId: String(reference.nodeId),
-      title: reference.title || '未命名图片',
-      url: reference.url,
-    }))
+  return buildFreeCanvasReferenceMentionCandidates(
+    collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId),
+  )
 }
 
 function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
