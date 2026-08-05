@@ -32,9 +32,9 @@
 - [x] 最小修复后两条失败测试转绿。
 - [x] 后端 iCreat 专项测试和前端自由画布专项测试通过。
 - [x] 前端生产构建通过，`canvas-credit-callout-v1` 受保护积分卡片仍在源码与产物中。
-- [ ] 双轴复审通过。
-- [ ] 从生产实时 `current` 克隆候选并通过共享发布门禁。
-- [ ] 发布后服务健康、公开站点、错误日志、数据库和 AI 音乐隔离检查通过。
+- [x] 双轴复审通过。
+- [x] 从生产实时 `current` 克隆候选并通过共享发布门禁。
+- [x] 发布后服务健康、公开站点、错误日志、数据库和 AI 音乐隔离检查通过。
 
 ## 红绿证据
 
@@ -42,3 +42,25 @@
 - 修复前前端多参考用例仍包含 `image_url` / `first_frame_url`，预期不存在，测试失败。
 - 修复后两条定向测试均退出码 0；iCreat 专项 13/13、前端自由画布专项 23/23、后端全量 670/670 通过，前端生产构建成功。
 - 积分卡片源码与构建产物均检出 `canvas-credit-callout-v1` 和“本次预计扣除”文案。
+
+## 实时生产基线合并
+
+- 首个候选从实时 `current` 克隆后误用本地整文件覆盖前端工具文件，构建发现会丢失线上已有的 `isCanvasGeneratedResultAsset` 导出，候选未切换并废弃。
+- 最终候选重新从当时实时 `current` `/opt/moli-drama/releases/icreat-seedance-4s-runtime-20260804T232722CST` 克隆，只在实时文件上合入本次最小语义差异，保留线上新增导出。
+- 实时基线中的旧 `standaloneCanvasFreeNodeGeneration.test.js` 已存在缺失导出引用，测试文件在加载阶段失败；该基线问题不属于本次修改，最终候选没有覆盖它，也没有把它误报为通过。
+- 最终候选新增独立前端互斥回归测试并通过 1/1，iCreat 后端专项通过 13/13，生产构建 1844 个模块成功。
+- 按实时线上基线重新执行最终双轴复审：规格轴 `APPROVE`、0 项；标准轴 `APPROVE`、0 个硬违规，1 项仅关于本地文件子集镜像不能独立复跑的验证限制；完整候选已经在生产机实跑测试、构建与预检。
+- 生产预检全部通过；`canvas-credit-callout-v1` 源码与构建合同均通过，数据库完整性和模型价格检查正常。
+- 切换前备份 `/opt/moli-drama/shared/backups/database-20260805T010115321Z.sqlite`，8,048,640 字节，SHA-256 `4c70bd2c240e18311a729edda0492c4859a0767cf3a3b0bdbbb3bf3dc4ea98f7`，独立验证 `valid=true`、完整性 `ok`。
+- 切换前 `async_tasks`、`image_generations`、`video_generations`、`video_merges` 四类活动任务均为 0。
+
+## 生产发布回读
+
+- 共享门禁将 `current` 从 `/opt/moli-drama/releases/icreat-seedance-4s-runtime-20260804T232722CST` 切换到 `/opt/moli-drama/releases/icreat-reference-roles-livebase-20260805T085755CST`，门禁退出码 0。
+- 激活脚本在服务启动窗口内出现 4 次短暂的本机连接拒绝；服务随后正常就绪。最终 `moli-drama.service` 为 `active/running`，主进程 PID `2184113`，`NRestarts=0`，进程工作目录指向新 release。
+- `/health` 返回 `status=ok`；`https://molimama.vip/` 与 `https://shiping.djpsd.com/` 均返回 HTTP 200。
+- 自 `2026-08-05 09:08:50` 起服务没有 `err..alert` 日志，也没有 `uncaught`、`unhandled`、`fatal` 或 `exception` 命中。
+- 生产数据库 `/opt/moli-drama/shared/data/drama_generator.db` 执行 `quick_check` 返回 `ok`；发布后 `async_tasks`、`image_generations`、`video_generations`、`video_merges` 四类活动任务仍均为 0。
+- AI 音乐进程 PID 仍为 `206874`（server）和 `206895`（worker），发布前后未变化。
+- 在生产 `current` 内复跑 iCreat 后端专项 13/13、前端多图参考互斥回归 1/1，全部通过。
+- 生产源码回读确认后端 `if (!hasFrameRole)` 保护存在，前端首帧只取显式 `first-frame` 槽位，不再从普通参考图回退。
