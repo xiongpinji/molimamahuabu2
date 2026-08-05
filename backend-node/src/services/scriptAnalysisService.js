@@ -499,21 +499,20 @@ async function runAnalysis({ db, log, project, skill, strategyPreset }) {
       max_tokens: 12000,
     },
   );
-  const parsed = validateProductionPackage(
+  const normalized = normalizeProductionPackage(
     safeParseAIJSON(raw, {}, log),
-    {
-      expectedSchemaVersion: selectedSkill.output_schema_version,
-      requireVisualDirection: Boolean(
-        selectedSkill.require_visual_direction || selectedSkill.require_production_direction
-      ),
-      requireProductionDirection: Boolean(selectedSkill.require_production_direction),
-      expectedStrategyPreset: selectedSkill.require_production_direction
-        ? (strategyPreset || selectedSkill.default_strategy_preset || 'fusion')
-        : undefined,
-    },
+    project,
+    { schemaVersion: selectedSkill.output_schema_version },
   );
-  return normalizeProductionPackage(parsed, project, {
-    schemaVersion: selectedSkill.output_schema_version,
+  return validateProductionPackage(normalized, {
+    expectedSchemaVersion: selectedSkill.output_schema_version,
+    requireVisualDirection: Boolean(
+      selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+    ),
+    requireProductionDirection: Boolean(selectedSkill.require_production_direction),
+    expectedStrategyPreset: selectedSkill.require_production_direction
+      ? (strategyPreset || selectedSkill.default_strategy_preset || 'fusion')
+      : undefined,
   });
 }
 
@@ -532,23 +531,22 @@ async function runRevision({ db, log, project, currentPackage, note, skill }) {
       max_tokens: 12000,
     },
   );
-  const parsed = validateProductionPackage(
+  const normalized = normalizeProductionPackage(
     safeParseAIJSON(raw, {}, log),
-    {
-      expectedSchemaVersion: selectedSkill.output_schema_version,
-      requireVisualDirection: Boolean(
-        selectedSkill.require_visual_direction || selectedSkill.require_production_direction
-      ),
-      requireProductionDirection: Boolean(selectedSkill.require_production_direction),
-      expectedStrategyPreset: selectedSkill.require_production_direction
-        ? (currentPackage?.creative_strategy?.preset
-          || selectedSkill.default_strategy_preset
-          || 'fusion')
-        : undefined,
-    },
+    project,
+    { schemaVersion: selectedSkill.output_schema_version },
   );
-  return normalizeProductionPackage(parsed, project, {
-    schemaVersion: selectedSkill.output_schema_version,
+  return validateProductionPackage(normalized, {
+    expectedSchemaVersion: selectedSkill.output_schema_version,
+    requireVisualDirection: Boolean(
+      selectedSkill.require_visual_direction || selectedSkill.require_production_direction
+    ),
+    requireProductionDirection: Boolean(selectedSkill.require_production_direction),
+    expectedStrategyPreset: selectedSkill.require_production_direction
+      ? (currentPackage?.creative_strategy?.preset
+        || selectedSkill.default_strategy_preset
+        || 'fusion')
+      : undefined,
   });
 }
 

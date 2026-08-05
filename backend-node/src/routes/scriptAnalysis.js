@@ -232,7 +232,6 @@ module.exports = function scriptAnalysisRoutes(db, log) {
         requireVisualDirection: Boolean(currentPackage.visual_direction),
         requireProductionDirection: expectedSchemaVersion === '2.0',
       };
-      validateProductionPackage(revisionInput, validationOptions);
       normalizedPackage = validateProductionPackage(
         normalizeProductionPackage(revisionInput, project, {
           schemaVersion: expectedSchemaVersion,
@@ -361,7 +360,11 @@ module.exports = function scriptAnalysisRoutes(db, log) {
         );
       }
       const selectedSkill = resolveScriptAnalysisSkill(productionPackage.skill_snapshot?.id)
-        || resolveScriptAnalysisSkill();
+        || resolveScriptAnalysisSkill(
+          productionPackage.schema_version === '2.0'
+            ? 'short-drama-production-director'
+            : 'short-drama-director',
+        );
       let task;
       const transaction = db.transaction(() => {
         task = createTask(db, log, 'script_analysis_revision', `script-analysis:${project.id}`);

@@ -7,8 +7,10 @@ const {
   buildUserPrompt,
   getProjectInputError,
   normalizeProductionPackage,
+  runRevision,
   validateProductionPackage,
 } = require('../src/services/scriptAnalysisService');
+const aiClient = require('../src/services/aiClient');
 const { resolveScriptAnalysisSkill } = require('../src/services/scriptAnalysisSkillRegistry');
 
 const project = {
@@ -156,6 +158,27 @@ test('V2 production director prompt locks schema and selected creative strategy'
   assert.match(prompt, /"creative_strategy"/);
   assert.match(prompt, /"performance"/);
   assert.match(prompt, /"prompt_ir"/);
+});
+
+test('V2 automatic revision preserves the selected creative strategy', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const currentPackage = validV2Package();
+  const generatedPackage = validV2Package();
+  generatedPackage.creative_strategy.preset = 'female';
+  aiClient.generateText = async () => JSON.stringify(generatedPackage);
+
+  await assert.rejects(
+    runRevision({
+      db: {},
+      log: { warn() {}, info() {} },
+      project,
+      currentPackage,
+      note: '补全人物描述',
+      skill: resolveScriptAnalysisSkill('short-drama-production-director'),
+    }),
+    /creative_strategy\.preset 必须与用户选择的 fusion 一致/,
+  );
 });
 
 test('buildUserPrompt only adds visual direction contract for the optional enhanced Skill', () => {
