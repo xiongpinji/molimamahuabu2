@@ -216,7 +216,6 @@ module.exports = function scriptAnalysisRoutes(db, log) {
         && currentPackage.visual_direction
         ? { ...packageInput, visual_direction: currentPackage.visual_direction }
         : packageInput;
-      validateProductionPackage(revisionInput);
       normalizedPackage = validateProductionPackage(
         normalizeProductionPackage(revisionInput, project),
       );

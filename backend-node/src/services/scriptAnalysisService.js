@@ -47,6 +47,32 @@ function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function readableText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value.map(readableText).filter(Boolean).join('；');
+  }
+  if (typeof value === 'object') {
+    return Object.values(value).map(readableText).filter(Boolean).join('；');
+  }
+  return String(value).trim();
+}
+
+const DESCRIPTION_FIELDS = Object.freeze({
+  character: ['appearance', 'visual', 'visual_design', 'profile', 'personality', 'performance_direction', 'background', 'known_facts', 'key_facts', 'relationship'],
+  scene: ['visual', 'environment', 'atmosphere', 'story_function', 'dramatic_function', 'source_basis'],
+  prop: ['required_visual_features', 'appearance', 'function', 'story_function', 'purpose', 'source_basis'],
+  shot: ['action', 'visual', 'shot_description', 'image_prompt', 'video_prompt', 'source_basis'],
+});
+
+function normalizeDescription(value, type) {
+  const item = asObject(value);
+  const description = readableText(item.description)
+    || DESCRIPTION_FIELDS[type].map((field) => readableText(item[field])).filter(Boolean).join('；');
+  return { ...item, description };
+}
+
 function buildUserPrompt(project, skill) {
   const lockedFacts = parseArray(project.locked_facts_json);
   const basePrompt = `请分析以下短剧剧本并输出结构化生产包。
@@ -74,9 +100,9 @@ ${project.source_script || ''}
     "target_duration_seconds": 0,
     "story_structure": []
   },
-  "character_bible": [],
-  "scene_bible": [],
-  "prop_bible": [],
+  "character_bible": [{ "name": "", "role": "", "description": "" }],
+  "scene_bible": [{ "name": "", "time": "", "description": "" }],
+  "prop_bible": [{ "name": "", "description": "" }],
   "episodes": [
     {
       "episode_number": 1,
@@ -87,6 +113,7 @@ ${project.source_script || ''}
           "shots": [
             {
               "shot_number": 1,
+              "description": "",
               "source_basis": [],
               "image_prompt": "",
               "video_prompt": "",
@@ -105,7 +132,10 @@ ${project.source_script || ''}
   },
   "ai_changes": [],
   "approval_status": "draft"
-}`;
+}
+
+描述要求：人物、场景、道具和每个镜头的 description 必须使用中文完整句子，
+只描述原剧本已有事实和可审核的制作信息，不得用名称或提示词字段代替。`;
   return skill?.user_prompt_addendum
     ? `${basePrompt}\n\n${skill.user_prompt_addendum}`
     : basePrompt;
@@ -151,10 +181,16 @@ function normalizeProductionPackage(rawValue, project) {
       target_duration_seconds: Number(normalized.target_duration_seconds) || 0,
       story_structure: parseArray(normalized.story_structure),
     },
-    character_bible: parseArray(raw.character_bible),
-    scene_bible: parseArray(raw.scene_bible),
-    prop_bible: parseArray(raw.prop_bible),
-    episodes: parseArray(raw.episodes),
+    character_bible: parseArray(raw.character_bible).map((item) => normalizeDescription(item, 'character')),
+    scene_bible: parseArray(raw.scene_bible).map((item) => normalizeDescription(item, 'scene')),
+    prop_bible: parseArray(raw.prop_bible).map((item) => normalizeDescription(item, 'prop')),
+    episodes: parseArray(raw.episodes).map((episode) => ({
+      ...episode,
+      scenes: parseArray(episode?.scenes).map((scene) => ({
+        ...scene,
+        shots: parseArray(scene?.shots).map((shot) => normalizeDescription(shot, 'shot')),
+      })),
+    })),
     continuity_rules: parseArray(raw.continuity_rules),
     review: {
       status: review.status || 'needs_review',
@@ -248,6 +284,14 @@ function validateProductionPackage(value, { requireVisualDirection = false } = {
       throw new Error(`模型返回的 ${key} 必须是数组`);
     }
   }
+  for (const key of ['character_bible', 'scene_bible', 'prop_bible']) {
+    value[key].forEach((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)
+        || !String(item.description || '').trim()) {
+        throw new Error(`模型返回的 ${key}[${index}].description 不能为空`);
+      }
+    });
+  }
   if (!value.review || typeof value.review !== 'object' || Array.isArray(value.review)) {
     throw new Error('模型返回的 review 必须是对象');
   }
@@ -273,6 +317,9 @@ function validateProductionPackage(value, { requireVisualDirection = false } = {
       }
       for (const shot of scene.shots) {
         if (!shot?.shot_number) throw new Error('每个镜头必须包含 shot_number');
+        if (!String(shot.description || '').trim()) {
+          throw new Error('每个镜头必须包含非空 description');
+        }
         if (!Array.isArray(shot.source_basis) || shot.source_basis.length === 0) {
           throw new Error('每个镜头必须包含非空 source_basis');
         }
@@ -309,11 +356,11 @@ async function runAnalysis({ db, log, project, skill }) {
       max_tokens: 12000,
     },
   );
-  const parsed = validateProductionPackage(
-    safeParseAIJSON(raw, {}, log),
+  const normalized = normalizeProductionPackage(safeParseAIJSON(raw, {}, log), project);
+  return validateProductionPackage(
+    normalized,
     { requireVisualDirection: Boolean(selectedSkill.require_visual_direction) },
   );
-  return normalizeProductionPackage(parsed, project);
 }
 
 module.exports = {

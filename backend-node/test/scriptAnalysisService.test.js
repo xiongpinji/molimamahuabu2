@@ -30,6 +30,7 @@ function validPackage() {
         scene_number: 1,
         shots: [{
           shot_number: 1,
+          description: '林夏在雨夜打开门，看见失踪三年的哥哥。',
           source_basis: ['原剧本第 1 段'],
           image_prompt: '雨夜门口，林夏开门',
           video_prompt: '镜头缓慢推进，林夏打开门',
@@ -82,6 +83,15 @@ test('buildUserPrompt includes source script and locked facts', () => {
   assert.doesNotMatch(prompt, /"visual_direction"/);
 });
 
+test('buildUserPrompt requires readable descriptions for production entities', () => {
+  const prompt = buildUserPrompt(project);
+
+  assert.match(prompt, /"character_bible": \[\{[\s\S]*"description": ""/);
+  assert.match(prompt, /"scene_bible": \[\{[\s\S]*"description": ""/);
+  assert.match(prompt, /"prop_bible": \[\{[\s\S]*"description": ""/);
+  assert.match(prompt, /"shot_number": 1,[\s\S]*"description": ""/);
+});
+
 test('buildUserPrompt only adds visual direction contract for the optional enhanced Skill', () => {
   const skill = resolveScriptAnalysisSkill('cinematic-visual-director');
   const prompt = buildUserPrompt(project, skill);
@@ -106,6 +116,60 @@ test('normalizeProductionPackage preserves source truth and defaults review stat
   assert.equal(result.normalized_script.target_duration_seconds, 90);
   assert.equal(result.review.status, 'needs_review');
   assert.equal(result.approval_status, 'draft');
+});
+
+test('normalizeProductionPackage derives descriptions from existing production fields', () => {
+  const result = normalizeProductionPackage({
+    normalized_script: {},
+    character_bible: [{
+      name: '林夏',
+      appearance: '短发，深色外套',
+      personality: '警惕但克制',
+    }],
+    scene_bible: [{
+      name: '雨夜站台',
+      environment: '雨水打湿站台，冷色灯光映在铁轨上',
+    }],
+    prop_bible: [{
+      name: '旧信封',
+      required_visual_features: ['边缘磨损', '火漆已开裂'],
+      story_function: '触发母女和解',
+    }],
+    episodes: [{
+      episode_number: 1,
+      scenes: [{
+        scene_number: 1,
+        shots: [{
+          shot_number: 1,
+          source_basis: ['原剧本第 1 段'],
+          image_prompt: '母女在雨夜站台隔着车窗对视',
+          video_prompt: '镜头缓慢推进，母亲抬手触碰车窗',
+          continuity: {},
+          dialogue: [],
+        }],
+      }],
+    }],
+  }, project);
+
+  assert.equal(result.character_bible[0].description, '短发，深色外套；警惕但克制');
+  assert.equal(result.scene_bible[0].description, '雨水打湿站台，冷色灯光映在铁轨上');
+  assert.equal(result.prop_bible[0].description, '边缘磨损；火漆已开裂；触发母女和解');
+  assert.equal(
+    result.episodes[0].scenes[0].shots[0].description,
+    '母女在雨夜站台隔着车窗对视；镜头缓慢推进，母亲抬手触碰车窗；原剧本第 1 段',
+  );
+});
+
+test('validateProductionPackage rejects entities without readable descriptions', () => {
+  const value = validPackage();
+  value.character_bible = [{ name: '林夏' }];
+  value.scene_bible = [{ name: '雨夜站台' }];
+  value.prop_bible = [{ name: '旧信封' }];
+
+  assert.throws(
+    () => validateProductionPackage(value),
+    /description/,
+  );
 });
 
 test('normalizeProductionPackage preserves the optional visual direction sidecar', () => {

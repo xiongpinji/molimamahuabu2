@@ -314,11 +314,11 @@
                   <article v-for="item in characters" :key="item.id || item.name" class="bible-card">
                     <span class="card-kicker">{{ item.role || '角色' }}</span>
                     <h3>{{ item.name || '未命名角色' }}</h3>
-                    <p>{{ item.description || item.profile || item.personality || '暂无角色描述' }}</p>
+                    <p>{{ descriptionTextFor('character', item) || '暂无角色描述' }}</p>
                     <dl>
                       <template v-if="item.visual">
                         <dt>视觉</dt>
-                        <dd>{{ item.visual }}</dd>
+                        <dd>{{ readableText(item.visual) }}</dd>
                       </template>
                       <template v-if="item.voice">
                         <dt>声音</dt>
@@ -334,10 +334,10 @@
                   <article v-for="item in scenes" :key="item.id || item.name" class="bible-card">
                     <span class="card-kicker">{{ item.time || item.time_of_day || '场景' }}</span>
                     <h3>{{ item.name || item.location || '未命名场景' }}</h3>
-                    <p>{{ item.description || item.atmosphere || '暂无场景描述' }}</p>
+                    <p>{{ descriptionTextFor('scene', item) || '暂无场景描述' }}</p>
                     <dl v-if="item.visual">
                       <dt>视觉基准</dt>
-                      <dd>{{ item.visual }}</dd>
+                      <dd>{{ readableText(item.visual) }}</dd>
                     </dl>
                   </article>
                 </div>
@@ -348,7 +348,7 @@
                   <article v-for="item in props" :key="item.id || item.name" class="bible-card">
                     <span class="card-kicker">{{ item.owner || '关键道具' }}</span>
                     <h3>{{ item.name || '未命名道具' }}</h3>
-                    <p>{{ item.description || item.function || '暂无道具描述' }}</p>
+                    <p>{{ descriptionTextFor('prop', item) || '暂无道具描述' }}</p>
                     <dl v-if="item.continuity">
                       <dt>连续性</dt>
                       <dd>{{ item.continuity }}</dd>
@@ -380,7 +380,7 @@
                     <span class="shot-duration">{{ shot.duration || shot.duration_seconds || '—' }}秒</span>
                   </div>
 
-                  <p class="shot-description">{{ shot.description || shot.action || shot.visual || '暂无镜头描述' }}</p>
+                  <p class="shot-description">{{ descriptionTextFor('shot', shot) || '暂无镜头描述' }}</p>
 
                   <div class="shot-meta">
                     <span v-if="shot.shot_size">{{ shot.shot_size }}</span>
@@ -607,6 +607,7 @@ import {
   serializeHomeCanvasState,
 } from '@/utils/homeCanvasState'
 import { buildScriptAnalysisCanvasState } from '@/utils/scriptAnalysisCanvasImport'
+import { descriptionTextFor, readableText } from '@/utils/scriptAnalysisDescription'
 import { isTransientHttpError, userHttpErrorMessage } from '@/utils/httpError'
 import { buildFactorySkillImportPreview } from '@/utils/skillModuleAdapters'
 
