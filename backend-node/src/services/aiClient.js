@@ -563,18 +563,34 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       model,
       max_output_tokens: finalMaxTokens ?? '(model default)',
       protocol: 'responses',
-      stream: false,
+      stream: true,
     });
-    const response = await postJSONNonStream(
+    const response = await postJSONStreamWithEmptyRetry(
       url,
       { Authorization: 'Bearer ' + (config.api_key || '') },
       responseBody,
-      240000,
+      120000,
+      (receivedLen, event) => {
+        if (event === 'first_token') {
+          log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+        } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+          log.info('AI stream progress', {
+            model,
+            received_chars: receivedLen,
+            elapsed_ms: Date.now() - startMs,
+          });
+        }
+      },
+      log,
+      model,
     );
-    try {
-      generationUsageContext.capture(JSON.parse(response.raw || '{}').usage);
-    } catch (_) {}
+    generationUsageContext.capture(response.usage);
     if (!response.body) throw new Error('AI 返回内容为空');
+    log.info('AI raw response received', {
+      model,
+      text_length: response.body.length,
+      elapsed_ms: Date.now() - startMs,
+    });
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });

@@ -107,6 +107,8 @@ const PRODUCTION_DIRECTOR_CONTRACT = `一体化短剧生产导演附加契约：
   "negative_constraints": [],
   "safety_tags": []
 }
+performance.tracks[].beats[].intensity 只能使用 0、1、2、3、4、5 六个整数值，禁止小数。
+输出控制：不得扩写原剧本中未发生的动作，不得用重复描述填充字段。接近输出上限时，必须优先压缩描述并保证 JSON 完整闭合，禁止截断或省略必需字段。
 无人表演镜头允许 performance.tracks 为空；其他字段仍必须完整。`;
 
 const INHERITED_RUNTIME_POLICY = Object.freeze({
