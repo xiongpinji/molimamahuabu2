@@ -652,6 +652,18 @@ function imageMimeFromOutputFormat(format) {
   return 'image/png';
 }
 
+function imageMimeFromBase64(base64, requestedFormat) {
+  const bytes = Buffer.from(String(base64 || '').replace(/\s/g, ''), 'base64');
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return 'image/webp';
+  }
+  return imageMimeFromOutputFormat(requestedFormat);
+}
+
 function formatGptImageUnknownResultError(error) {
   const detail = error?.message || String(error || '连接中断');
   return `图片生成连接中断，供应商可能已受理或扣费，但本平台未收到结果（结果未知）。为避免重复扣费，请先核对生成记录或供应商账单，不要连续重试。原始错误: ${detail}`;
@@ -2194,8 +2206,9 @@ async function callImageApi(db, log, opts) {
   const item = data.data && data.data[0];
   let imageUrl = item && (item.url || item.image_url);
   if (!imageUrl && item?.b64_json) {
-    const mimeType = imageMimeFromOutputFormat(outputOptions.output_format);
-    imageUrl = `data:${mimeType};base64,${String(item.b64_json).replace(/\s/g, '')}`;
+    const normalizedBase64 = String(item.b64_json).replace(/\s/g, '');
+    const mimeType = imageMimeFromBase64(normalizedBase64, outputOptions.output_format);
+    imageUrl = `data:${mimeType};base64,${normalizedBase64}`;
   }
   if (!imageUrl && Array.isArray(data.images) && data.images.length > 0) {
     const first = data.images[0];
@@ -2619,6 +2632,7 @@ module.exports = {
   getOpenAIImageOutputOptions,
   normalizeGptImageSize,
   imageMimeFromOutputFormat,
+  imageMimeFromBase64,
   formatGptImageUnknownResultError,
   buildKlingImageQueryUrl,
   parseKlingImagePollResult,
