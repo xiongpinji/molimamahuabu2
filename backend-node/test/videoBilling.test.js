@@ -55,6 +55,27 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('视频任务持久化参考图、参考视频与参考音频供异步生成读取', () => {
+  const db = setup();
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    model: 'seedance 2.0',
+    prompt: '全能参考链路',
+    duration: 5,
+    reference_image_urls: ['/static/reference.png'],
+    reference_video_url: '/static/reference.mp4',
+    reference_audio_url: '/static/reference.mp3',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare(`SELECT reference_image_urls, reference_video_url, reference_audio_url
+    FROM video_generations WHERE id = ?`).get(created.id);
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference.png']);
+  assert.equal(row.reference_video_url, '/static/reference.mp4');
+  assert.equal(row.reference_audio_url, '/static/reference.mp3');
+  assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['/static/reference.png']);
+  db.close();
+});
+
 test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应成本', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 3, {

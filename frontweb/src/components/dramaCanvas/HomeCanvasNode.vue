@@ -193,7 +193,13 @@
               多图参考
             </button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
-            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放全能参考">全能参考</button>
+            <button
+              type="button"
+              :class="{ active: videoReferenceMode === 'omni' }"
+              role="tab"
+              :aria-selected="videoReferenceMode === 'omni'"
+              @click="setVideoReferenceMode('omni')"
+            >全能参考</button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
           </div>
           <label class="camera-pill">
@@ -210,46 +216,49 @@
           </label>
         </div>
 
-        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考图">
+        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" :aria-label="data.kind === 'video' ? '自动参考素材' : '自动参考图'">
           <div class="reference-heading">
-            <strong>参考图 · 连线自动采用</strong>
+            <strong>{{ data.kind === 'video' ? '参考图 / 视频 / 音频 · 连线自动采用' : '参考图 · 连线自动采用' }}</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
           <div class="reference-actions">
-            <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
+            <button v-if="canUploadReference" type="button" :aria-label="data.kind === 'video' ? '上传参考素材' : '上传参考图'" @click="chooseReferenceFile">+ {{ data.kind === 'video' ? '上传参考素材' : '上传参考图' }}</button>
             <input
-              v-if="canUpload"
+              v-if="canUploadReference"
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              accept="image/*"
+              :accept="data.kind === 'video' ? 'image/*,video/*,audio/*' : 'image/*'"
               @change="uploadReferenceFile"
             />
           </div>
           <div v-if="inputReferences.length" class="reference-list">
             <figure
-              v-for="(reference, index) in inputReferences"
+              v-for="reference in inputReferences"
               :key="reference.nodeId"
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
-              :title="`右键引用为 @图片${index + 1}`"
+              :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
+              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="insertReferenceToken(index)"
+              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
             >
-              <span class="reference-index">{{ index + 1 }}</span>
+              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
               <button
                 class="reference-remove"
                 type="button"
-                aria-label="取消参考图"
-                title="取消参考图"
+                aria-label="取消参考素材"
+                title="取消参考素材"
                 @click.stop="removeReference(reference)"
               >×</button>
-              <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
-              <span v-else class="reference-placeholder">等待图片</span>
-              <figcaption :title="reference.title">图片{{ index + 1 }}</figcaption>
+              <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
+              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
+              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
+              <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
-          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
+          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
           <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
 
@@ -558,6 +567,7 @@ const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入�
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
+const canUploadReference = computed(() => typeof ctx?.uploadFreeCanvasReferenceMedia === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
@@ -782,7 +792,12 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-async function insertReferenceToken(index) {
+function referenceOrdinal(reference) {
+  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
+  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+}
+
+async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
   const input = contentInput.value
   const value = String(draft.content || '')
@@ -796,7 +811,7 @@ async function insertReferenceToken(index) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${index + 1}`
+  const token = `@图片${referenceOrdinal(reference)}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -1003,7 +1018,7 @@ async function uploadFile(event) {
 async function uploadReferenceFile(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
-  if (file) await ctx?.uploadFreeCanvasReferenceImage?.(props.id, file)
+  if (file) await ctx?.uploadFreeCanvasReferenceMedia?.(props.id, file)
 }
 
 async function deleteNode() {
@@ -1032,9 +1047,18 @@ async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
   draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
   await saveDraft()
-  inputReferences.value.forEach((reference, index) => {
-    const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
-    updateReference(reference, { input })
+  let imageIndex = 0
+  inputReferences.value.forEach((reference) => {
+    if (reference.kind === 'image') {
+      const index = imageIndex++
+      const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
+      const enabled = draft.videoReferenceMode === 'multi'
+        || index === 0
+        || (draft.videoReferenceMode === 'first-last' && index === 1)
+      updateReference(reference, { input, enabled })
+      return
+    }
+    updateReference(reference, { enabled: draft.videoReferenceMode === 'omni' })
   })
 }
 
@@ -1113,12 +1137,25 @@ watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
 watch(
-  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.slot}`).join('|')}`,
+  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}`).join('|')}`,
   () => {
-    if (props.data.kind !== 'video' || videoReferenceMode.value !== 'first-last') return
-    inputReferences.value.forEach((reference, index) => {
-      const input = resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
-      if (reference.slot !== input) updateReference(reference, { input })
+    if (props.data.kind !== 'video') return
+    let imageIndex = 0
+    inputReferences.value.forEach((reference) => {
+      const isImage = reference.kind === 'image'
+      const index = isImage ? imageIndex++ : -1
+      const input = isImage
+        ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
+        : reference.slot
+      const enabled = isImage
+        ? videoReferenceMode.value === 'multi'
+          || index === 0
+          || (videoReferenceMode.value === 'first-last' && index === 1)
+        : videoReferenceMode.value === 'omni'
+      const patch = {}
+      if (reference.slot !== input) patch.input = input
+      if (reference.enabled !== enabled) patch.enabled = enabled
+      if (Object.keys(patch).length) updateReference(reference, patch)
     })
   },
   { flush: 'post', immediate: true },
@@ -1438,7 +1475,7 @@ watch(isSelected, (selected) => {
   flex: 0 0 94px;
   margin: 0;
 }
-.reference-card img, .reference-placeholder {
+.reference-card img, .reference-card video, .reference-card audio, .reference-placeholder {
   display: grid;
   width: 94px;
   height: 72px;
@@ -1450,6 +1487,8 @@ watch(isSelected, (selected) => {
   object-fit: cover;
   font-size: 11px;
 }
+.reference-card audio { padding: 6px; }
+.reference-card[data-reference-enabled='false'] { opacity: 0.45; }
 .reference-card[data-reference-state='ready'] img { border-color: #60a5fa; }
 .reference-index {
   position: absolute;

@@ -4,6 +4,7 @@ const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const { buildFeituoStatusUrl } = require('./feituoVideoClient');
+const usmercariVideoClient = require('./usmercariVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -14,6 +15,9 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 
 function hasConnectionCredential(opts = {}) {
   if (String(opts.api_key || '').trim()) return true;
+  if (String(opts.provider || '').toLowerCase() === 'usmercari') {
+    return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
+  }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
     const settings = typeof opts.settings === 'object' ? opts.settings : JSON.parse(opts.settings || '{}');
@@ -186,6 +190,11 @@ function createConfig(db, log, req) {
         endpoint = '/v1/task/submit/{model}';
         queryEndpoint = '/v1/task/query-status';
       }
+    } else if (p === 'usmercari' || p === 'usmercari_media') {
+      if (st === 'video') {
+        endpoint = '/cpa-file/submit/video';
+        queryEndpoint = '/cpa-file/fetch';
+      }
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -347,7 +356,9 @@ function toPublicConfig(config) {
   const { api_key, ...safe } = config;
   return {
     ...safe,
-    has_api_key: !!String(api_key || '').trim(),
+    has_api_key: !!String(api_key || '').trim()
+      || (String(config.provider || '').toLowerCase() === 'usmercari'
+        && !!usmercariVideoClient.resolveUsmercariApiKey(config)),
     settings: redactSettings(config.settings),
   };
 }
@@ -403,6 +414,29 @@ async function testConnection(opts) {
       || [1000, 1001, 1002, 1003].includes(Number(data.code))
       || message.includes('authorization') || message.includes('unauthorized');
     if (authFailed) throw new Error(data.message || data.msg || `可灵鉴权失败 (${res.status})`);
+    return;
+  }
+
+  // USMercari 连接测试只读取模型目录，禁止创建会扣费的视频任务。
+  if ((provider === 'usmercari' || provider === 'usmercari_media') && serviceType === 'video') {
+    const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${usmercariVideoClient.normalizeUsmercariBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`USMercari API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`USMercari 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : Object.keys(usmercariVideoClient.USMERCARI_MODELS))
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
     return;
   }
 

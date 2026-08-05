@@ -1,7 +1,7 @@
 <template>
   <div class="project-asset-node" :class="{ focused: data.focused }">
     <Handle
-      v-if="assetType === 'image'"
+      v-if="['image', 'video', 'audio'].includes(assetType)"
       class="node-handle node-handle-output"
       type="source"
       :position="Position.Right"
@@ -9,7 +9,7 @@
     <CanvasNodeStatusOverlay :node-id="id" />
     <div class="node-drag-hint">
       <span class="tag">{{ typeLabel }}</span>
-      <span>{{ assetType === 'image' ? '拖动 · 连线作为参考' : '拖动 · 预览/指派' }}</span>
+      <span>拖动 · 连线作为参考</span>
     </div>
     <div v-if="assetBadges.length" class="asset-badges">
       <span v-for="badge in assetBadges" :key="badge" class="asset-badge">{{ badge }}</span>

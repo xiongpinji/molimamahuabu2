@@ -5,7 +5,7 @@ const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'fai
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
 const VIDEO_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
-const FREE_VIDEO_REFERENCE_MODES = new Set(['first-last', 'multi'])
+const FREE_VIDEO_REFERENCE_MODES = new Set(['first-last', 'multi', 'omni'])
 const VIDEO_TOOL_OPERATIONS = new Set([
   'crop',
   'upscale',
@@ -56,13 +56,20 @@ function cleanString(value) {
 export function normalizeFreeCanvasVideoReferenceMode(value, references = []) {
   const mode = cleanString(value)
   if (FREE_VIDEO_REFERENCE_MODES.has(mode)) return mode
-  return (Array.isArray(references) ? references : []).some((reference) => (
+  const enabledReferences = (Array.isArray(references) ? references : [])
+    .filter((reference) => reference?.enabled !== false)
+  if (enabledReferences.some((reference) => ['video', 'audio'].includes(cleanString(reference?.kind)))) {
+    return 'omni'
+  }
+  return enabledReferences.some((reference) => (
     ['first-frame', 'last-frame'].includes(cleanString(reference?.slot ?? reference?.input))
   )) ? 'first-last' : 'multi'
 }
 
 export function resolveFreeCanvasVideoReferenceInput(mode, index) {
-  if (normalizeFreeCanvasVideoReferenceMode(mode) !== 'first-last') return 'reference-image'
+  const normalizedMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  if (normalizedMode === 'omni') return index === 0 ? 'first-frame' : 'reference-image'
+  if (normalizedMode !== 'first-last') return 'reference-image'
   if (index === 0) return 'first-frame'
   if (index === 1) return 'last-frame'
   return 'reference-image'
@@ -503,11 +510,12 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
     .filter((reference) => reference?.enabled !== false && reference?.url)
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
-    .slice(0, maxReferences)
-  const upstreamUrls = uniqueStrings([
-    ...(references.length ? [] : (options.upstreamUrls || [])),
-    ...references.map((reference) => reference.url),
-  ])
+  const imageReferences = references.filter((reference) => !reference.kind || reference.kind === 'image').slice(0, maxReferences)
+  const videoReferences = references.filter((reference) => reference.kind === 'video').slice(0, 1)
+  const audioReferences = references.filter((reference) => reference.kind === 'audio').slice(0, 1)
+  const upstreamUrls = uniqueStrings(references.length
+    ? imageReferences.map((reference) => reference.url)
+    : (options.upstreamUrls || []))
   const referenceUrls = uniqueStrings([
     ...upstreamUrls,
     ...(nodeData.characterReferenceUrls || []),
@@ -538,8 +546,14 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 
   if (nodeData.kind === 'video') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const firstFrameUrl = references.find((reference) => reference.slot === 'first-frame')?.url || referenceUrls[0] || ''
-    const lastFrameUrl = references.find((reference) => reference.slot === 'last-frame')?.url || ''
+    const explicitFirstFrame = imageReferences.find((reference) => reference.slot === 'first-frame')?.url || ''
+    const firstFrameUrl = explicitFirstFrame
+      || (videoReferences.length ? imageReferences[0]?.url : '')
+      || (!references.length ? referenceUrls[0] : '')
+    const lastFrameUrl = imageReferences.find((reference) => reference.slot === 'last-frame')?.url || ''
+    const referenceImageUrls = !references.length
+      ? referenceUrls
+      : uniqueStrings([...imageReferences.map((reference) => reference.url), ...(nodeData.characterReferenceUrls || [])])
     return withoutEmptyFields({
       drama_id: dramaId,
       prompt: decoratedVideoPrompt({ ...nodeData, content }),
@@ -547,7 +561,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
       last_frame_url: lastFrameUrl,
-      reference_image_urls: referenceUrls,
+      reference_image_urls: referenceImageUrls,
+      reference_video_url: videoReferences[0]?.url,
+      reference_audio_url: audioReferences[0]?.url,
       aspect_ratio: nodeData.aspectRatio,
       duration: nodeData.duration,
       style: nodeData.style,
@@ -579,7 +595,7 @@ export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNo
     .filter(Boolean))
 }
 
-export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
+export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], targetNodeId = '') {
   const target = String(targetNodeId || '')
   if (!target) return []
   const byId = new Map((Array.isArray(nodes) ? nodes : [])
@@ -592,23 +608,31 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
     const sourceId = String(edge?.source || '')
     const source = byId.get(sourceId)
     const sourceKind = getFreeCanvasNodeResultKind(source)
-    if (sourceKind !== 'image' || !sourceId || seen.has(sourceId)) continue
+    if (!['image', 'video', 'audio'].includes(sourceKind) || !sourceId || seen.has(sourceId)) continue
     seen.add(sourceId)
     const contract = edge?.data?.contract || {}
     const url = getFreeCanvasNodeResultUrl(source)
     references.push({
       nodeId: String(source.id),
       edgeId: String(edge?.id || ''),
-      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || '图片节点',
+      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name)
+        || ({ image: '图片节点', video: '视频节点', audio: '音频节点' }[sourceKind]),
       url,
+      kind: sourceKind,
       ready: Boolean(url),
-      slot: cleanString(contract.input) || 'reference-image',
+      slot: cleanString(contract.input) || ({ image: 'reference-image', video: 'reference-video', audio: 'reference-audio' }[sourceKind]),
       enabled: contract.enabled !== false,
       order: Number.isFinite(Number(contract.order)) ? Number(contract.order) : references.length,
       weight: Number.isFinite(Number(contract.weight)) ? Number(contract.weight) : 1,
     })
   }
   return references.sort((a, b) => a.order - b.order)
+}
+
+export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
+  return collectDirectUpstreamMediaReferences(nodes, edges, targetNodeId)
+    .filter((reference) => reference.kind === 'image')
+    .map(({ kind: _kind, ...reference }) => reference)
 }
 
 export function buildFreeCanvasReferenceMentionCandidates(references = []) {

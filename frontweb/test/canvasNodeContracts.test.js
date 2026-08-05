@@ -24,7 +24,20 @@ test('自由节点连接只允许真实模型能够消费的输入契约', () =>
   })
   assert.equal(resolveCanvasNodeConnection('image', 'audio').allowed, false)
   assert.equal(resolveCanvasNodeConnection('video', 'image').allowed, false)
-  assert.equal(resolveCanvasNodeConnection('audio', 'video').allowed, false)
+  assert.deepEqual(resolveCanvasNodeConnection('video', 'video'), {
+    allowed: true,
+    output: 'video',
+    input: 'reference-video',
+    label: '视频 → 视频参考',
+    slots: ['reference-video'],
+  })
+  assert.deepEqual(resolveCanvasNodeConnection('audio', 'video'), {
+    allowed: true,
+    output: 'audio',
+    input: 'reference-audio',
+    label: '音频 → 视频参考',
+    slots: ['reference-audio'],
+  })
 })
 
 test('四类节点只匹配各自真实服务类型', () => {
