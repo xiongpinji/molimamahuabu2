@@ -5158,7 +5158,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
           const settings = parseConfigSettingsJson(config);
           const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
-          const resultResponse = await fetch(resultUrl, {
+          const resultFetchOptions = {
             method: 'POST',
             headers: {
               Authorization: 'Bearer ' + (config.api_key || ''),
@@ -5166,7 +5166,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({ task_id: String(taskId) }),
-          });
+          };
+          if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+            resultFetchOptions.signal = AbortSignal.timeout(30_000);
+          }
+          const resultResponse = await fetch(resultUrl, resultFetchOptions);
           const resultRaw = await resultResponse.text();
           let resultData;
           try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }

@@ -184,6 +184,31 @@ describe('iCreat Seedance video protocol', () => {
     assert.deepEqual(result, { video_url: 'https://cdn.example/result.mp4' });
   });
 
+  it('bounds the completed-task result fetch so recovery can retry it', async () => {
+    let resultSignal;
+    let requestCount = 0;
+    global.fetch = async (_url, options) => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'SUCCEEDED' }) };
+      }
+      resultSignal = options.signal;
+      throw Object.assign(new Error('result fetch timed out'), { name: 'TimeoutError' });
+    };
+
+    const result = await pollVideoTask(null, log, 185, 'icreat-task-timeout', {
+      provider: 'icreat',
+      api_protocol: 'icreat_task',
+      base_url: 'https://api.icreat.ai',
+      api_key: 'secret',
+    }, 1, 0);
+
+    assert.equal(requestCount, 2);
+    assert.equal(resultSignal instanceof AbortSignal, true);
+    assert.equal(result.indeterminate, true);
+    assert.equal(result.provider_task_id, 'icreat-task-timeout');
+  });
+
   it('preserves the provider failure detail instead of returning only FAILED', async () => {
     global.fetch = async () => ({
       ok: true,
