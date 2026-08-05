@@ -1,5 +1,6 @@
 const userAuth = require('../services/userAuthService');
 const sessionCookie = require('../services/sessionCookieService');
+const providerAssetUrl = require('../services/providerAssetUrlService');
 
 function numericId(value) {
   const id = Number(value);
@@ -193,6 +194,12 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
   return (req, res, next) => {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
+    if (providerAssetUrl.verifyProviderAssetRequest({
+      pathname: `${req.baseUrl || ''}${req.path || ''}`,
+      expires: req.query?.[providerAssetUrl.EXPIRES_PARAM],
+      signature: req.query?.[providerAssetUrl.SIGNATURE_PARAM],
+      secret,
+    })) return next();
     const match = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''));
     const token = match?.[1] || sessionCookie.readSessionCookie(req);
     if (!token) return res.status(401).end();

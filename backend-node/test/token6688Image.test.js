@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const providerAssetUrl = require('../src/services/providerAssetUrlService');
 
 const {
   buildToken6688ImageBody,
@@ -9,9 +10,12 @@ const {
 
 const log = { info() {}, warn() {}, error() {} };
 const originalFetch = global.fetch;
+const originalPlatformJwtSecret = process.env.PLATFORM_JWT_SECRET;
 
 test.afterEach(() => {
   global.fetch = originalFetch;
+  if (originalPlatformJwtSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+  else process.env.PLATFORM_JWT_SECRET = originalPlatformJwtSecret;
 });
 
 test('Token6688 图片请求按模型映射尺寸并保留多图参考', () => {
@@ -142,4 +146,38 @@ test('生产 callImageApi 路由 Token6688，并按已实测上限允许九张�
   assert.equal(JSON.parse(request.options.body).model, 'gpt-image-2');
   assert.equal(JSON.parse(request.options.body).images.length, 9);
   assert.deepEqual(result, { image_url: 'https://cdn.example/result.jpg' });
+});
+
+test('Token6688 图生图把平台静态参考图转换为限时签名直链', async () => {
+  process.env.PLATFORM_JWT_SECRET = 'test-provider-asset-secret-at-least-32-characters';
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ url: 'https://cdn.example/result.jpg' }] }),
+    };
+  };
+
+  await callToken6688ImageApi({
+    base_url: 'https://qd.token6688.com',
+    api_key: 'secret',
+  }, log, {
+    model: 'token6688-gpt-image-2',
+    prompt: '使用平台内部参考图',
+    size: '1024x1024',
+    files_base_url: 'https://molimama.vip/static',
+    reference_image_urls: ['/static/projects/0011/images/frame.jpg'],
+  });
+
+  const body = JSON.parse(request.options.body);
+  const signedUrl = new URL(body.images[0]);
+  assert.equal(signedUrl.pathname, '/static/projects/0011/images/frame.jpg');
+  assert.equal(providerAssetUrl.verifyProviderAssetRequest({
+    pathname: signedUrl.pathname,
+    expires: signedUrl.searchParams.get(providerAssetUrl.EXPIRES_PARAM),
+    signature: signedUrl.searchParams.get(providerAssetUrl.SIGNATURE_PARAM),
+    secret: process.env.PLATFORM_JWT_SECRET,
+  }), true);
 });

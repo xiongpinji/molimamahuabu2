@@ -1,5 +1,7 @@
 'use strict';
 
+const providerAssetUrl = require('./providerAssetUrlService');
+
 const IMAGE_REFERENCE_LIMITS = Object.freeze({
   'doubao-seedream-5-0': 3,
   'gpt-image-2': 9,
@@ -120,6 +122,12 @@ function publicMediaUrls(values, filesBaseUrl) {
     .filter(Boolean))];
 }
 
+function providerMediaUrls(values, filesBaseUrl) {
+  return publicMediaUrls(values, filesBaseUrl).map((value) => providerAssetUrl.signProviderAssetUrl(value, {
+    filesBaseUrl,
+  }));
+}
+
 async function requestJson(url, apiKey, body) {
   const response = await fetch(url, {
     method: 'POST',
@@ -148,7 +156,7 @@ async function callImageApi(config, log, opts = {}) {
       prompt: opts.prompt,
       size: opts.size,
       quality: opts.quality,
-      images: publicMediaUrls(opts.reference_image_urls, opts.files_base_url),
+      images: providerMediaUrls(opts.reference_image_urls, opts.files_base_url),
     });
   } catch (error) {
     return { error: error.message };
@@ -208,16 +216,19 @@ async function callVideoApi(config, log, opts = {}) {
   const mode = hasFirstFrame && hasLastFrame
     ? 'first-last'
     : (hasFirstFrame ? 'first-frame' : undefined);
-  const images = publicMediaUrls([
-    opts.first_frame_url,
-    opts.last_frame_url,
-    opts.image_url,
-    ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
-  ], opts.files_base_url);
-  const videos = publicMediaUrls(opts.reference_video_urls, opts.files_base_url);
-  const audios = publicMediaUrls(opts.reference_audio_urls, opts.files_base_url);
+  let images;
+  let videos;
+  let audios;
   let body;
   try {
+    images = providerMediaUrls([
+      opts.first_frame_url,
+      opts.last_frame_url,
+      opts.image_url,
+      ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+    ], opts.files_base_url);
+    videos = providerMediaUrls(opts.reference_video_urls, opts.files_base_url);
+    audios = providerMediaUrls(opts.reference_audio_urls, opts.files_base_url);
     body = buildVideoBody({
       model: opts.model,
       prompt: opts.prompt,

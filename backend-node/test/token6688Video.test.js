@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const modelPriceService = require('../src/services/modelPriceService');
+const providerAssetUrl = require('../src/services/providerAssetUrlService');
 
 const {
   buildToken6688VideoBody,
@@ -12,9 +13,12 @@ const {
 
 const log = { info() {}, warn() {}, error() {} };
 const originalFetch = global.fetch;
+const originalPlatformJwtSecret = process.env.PLATFORM_JWT_SECRET;
 
 test.afterEach(() => {
   global.fetch = originalFetch;
+  if (originalPlatformJwtSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+  else process.env.PLATFORM_JWT_SECRET = originalPlatformJwtSecret;
 });
 
 test('Token6688 Seedance 三档按次扣固定积分，不乘 15 秒', (t) => {
@@ -156,6 +160,56 @@ test('生产 callVideoApi 路由 Token6688 并透传三类参考素材数组', a
   assert.deepEqual(body.videos, ['https://cdn.example/video.mp4']);
   assert.deepEqual(body.audios, ['https://cdn.example/audio.mp3']);
   assert.deepEqual(result, { task_id: 'task-production', status: 'pending' });
+});
+
+test('短剧工厂 Token6688 请求把本地静态素材路径转换为公网 HTTPS 直链', async () => {
+  process.env.PLATFORM_JWT_SECRET = 'test-provider-asset-secret-at-least-32-characters';
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ task_id: 'task-public-reference', status: 'pending' }),
+    };
+  };
+  const row = {
+    id: 91,
+    service_type: 'video',
+    provider: 'token6688',
+    api_protocol: 'token6688',
+    name: 'Token6688 视频',
+    base_url: 'https://qd.token6688.com',
+    api_key: 'secret',
+    model: JSON.stringify(['seedance-2-0-special-mini-720p']),
+    default_model: 'seedance-2-0-special-mini-720p',
+    endpoint: '/v1/videos/generations',
+    query_endpoint: '/v1/tasks/{taskId}',
+    priority: 0,
+    is_default: 1,
+    is_active: 1,
+    settings: null,
+  };
+  const db = { prepare: () => ({ all: () => [row] }) };
+
+  await callVideoApi(db, log, {
+    model: 'seedance-2-0-special-mini-720p',
+    prompt: '使用短剧工厂内部参考图',
+    reference_urls: ['/static/projects/0011/images/frame.jpg'],
+    files_base_url: 'https://molimama.vip/static',
+  });
+
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.images.length, 1);
+  const signedUrl = new URL(body.images[0]);
+  assert.equal(signedUrl.origin, 'https://molimama.vip');
+  assert.equal(signedUrl.pathname, '/static/projects/0011/images/frame.jpg');
+  assert.equal(providerAssetUrl.verifyProviderAssetRequest({
+    pathname: signedUrl.pathname,
+    expires: signedUrl.searchParams.get(providerAssetUrl.EXPIRES_PARAM),
+    signature: signedUrl.searchParams.get(providerAssetUrl.SIGNATURE_PARAM),
+    secret: process.env.PLATFORM_JWT_SECRET,
+  }), true);
 });
 
 test('生产 callVideoApi 根据显式首尾帧选择 first-last 模式', async () => {
