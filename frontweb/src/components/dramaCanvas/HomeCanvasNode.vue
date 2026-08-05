@@ -247,8 +247,8 @@
               <button
                 class="reference-remove"
                 type="button"
-                aria-label="取消参考素材"
-                title="取消参考素材"
+                :aria-label="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
+                :title="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
                 @click.stop="removeReference(reference)"
               >×</button>
               <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />

@@ -689,7 +689,7 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
   await expect(editor.getByRole('tab', { name: '多图参考' })).toHaveAttribute('aria-selected', 'true')
   await expect(editor.locator('.reference-card figcaption')).toHaveText('图片1')
   await expect(editor.getByRole('tab', { name: '动作模仿' })).toBeDisabled()
-  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeDisabled()
+  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeEnabled()
   await expect(editor.getByRole('tab', { name: '视频编辑' })).toBeDisabled()
 
   const promptInput = editor.getByRole('textbox', { name: '生成提示词' })

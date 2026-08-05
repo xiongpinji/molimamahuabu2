@@ -4498,14 +4498,16 @@ async function callVideoApi(db, log, opts) {
     seed,
     camera_fixed,
     watermark,
+    files_base_url,
+    storage_local_path,
+    video_gen_id
+  } = opts;
+  let {
     image_url,
     first_frame_url,
     last_frame_url,
     first_frame_local_path,
     last_frame_local_path,
-    files_base_url,
-    storage_local_path,
-    video_gen_id
   } = opts;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {
@@ -4517,6 +4519,17 @@ async function callVideoApi(db, log, opts) {
   let prompt = inputPrompt;
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
+  }
+  ({ image_url, first_frame_url, last_frame_url, first_frame_local_path, last_frame_local_path } = opts);
+  if (protocol !== 'usmercari_media' && !image_url && !first_frame_url) {
+    const firstReferenceUrl = Array.isArray(opts.reference_urls)
+      ? opts.reference_urls.find((value) => String(value || '').trim())
+      : '';
+    if (firstReferenceUrl) {
+      image_url = firstReferenceUrl;
+      first_frame_url = firstReferenceUrl;
+      opts = { ...opts, image_url, first_frame_url };
+    }
   }
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）

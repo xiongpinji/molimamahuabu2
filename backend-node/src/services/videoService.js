@@ -291,7 +291,16 @@ function create(db, log, req, options = {}) {
         if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
       } catch (_) {}
     }
-    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(body.reference_image_urls.slice(0, 10)) : null;
+    const referenceImageUrls = Array.isArray(body.reference_image_urls) ? body.reference_image_urls.slice(0, 10) : [];
+    const refs = Array.isArray(body.reference_image_urls) ? JSON.stringify(referenceImageUrls) : null;
+    const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
+    const firstReferenceFallback = ['usmercari', 'usmercari_media'].includes(videoProtocol)
+      ? null
+      : referenceImageUrls[0] || null;
+    const persistedFirstFrameUrl = body.first_frame_url
+      ?? body.first_frame_local_path
+      ?? body.image_url
+      ?? firstReferenceFallback;
     const referenceVideoUrl = String(body.reference_video_url || body.reference_video_urls?.[0] || '').trim() || null;
     const referenceAudioUrl = String(body.reference_audio_url || body.reference_audio_urls?.[0] || '').trim() || null;
     db.prepare(`INSERT INTO video_generations
@@ -303,7 +312,7 @@ function create(db, log, req, options = {}) {
         dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
-        body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
+        body.image_url ?? null, persistedFirstFrameUrl,
         body.last_frame_url ?? body.last_frame_local_path ?? null, refs, referenceVideoUrl, referenceAudioUrl, task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
