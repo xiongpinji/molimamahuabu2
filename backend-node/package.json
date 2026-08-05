@@ -16,7 +16,8 @@
     "backup:restore-drill": "node scripts/database-backup.js restore-drill",
     "audit:licenses": "node scripts/audit-production-licenses.js",
     "audit:image-node-release": "node scripts/audit-image-node-release.js",
-    "audit:incremental-release": "node scripts/verify-incremental-release-scope.js"
+    "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
+    "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js"
   },
   "engines": {
     "node": ">=20.9.0"
