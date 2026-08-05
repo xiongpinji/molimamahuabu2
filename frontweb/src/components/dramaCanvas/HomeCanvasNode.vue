@@ -65,6 +65,22 @@
         <span class="text-preview-icon" aria-hidden="true">☰</span>
         <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
       </template>
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <section v-else class="media-stage">
@@ -100,6 +116,22 @@
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
       </div>
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <ImageNodeToolbar
@@ -374,16 +406,24 @@
         </div>
 
         <div
-          v-if="data.status === 'running'"
+          v-if="isGenerationRunning"
           class="generation-progress"
+          :class="{ 'is-indeterminate': !hasActualGenerationProgress }"
           role="progressbar"
           aria-label="生成进度"
           aria-valuemin="0"
           aria-valuemax="100"
-          :aria-valuenow="generationProgress"
+          :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+          :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
         >
-          <div><span>生成进度</span><strong>{{ generationProgress }}%</strong></div>
-          <span class="generation-progress-track"><i :style="{ width: `${generationProgress}%` }" /></span>
+          <div>
+            <span>生成进度</span>
+            <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+            <span v-else class="generation-inline-spinner" aria-hidden="true" />
+          </div>
+          <span class="generation-progress-track">
+            <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+          </span>
         </div>
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
@@ -399,10 +439,11 @@
             type="button"
             class="run-button"
             :disabled="data.status === 'running' || !draft.content.trim()"
-            :aria-label="data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成')"
+            :aria-label="isGenerationRunning ? '节点生成进行中' : (data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成'))"
             @click.stop="runNode"
           >
-            {{ data.status === 'running' ? '生成中…' : '↑' }}
+            <span v-if="isGenerationRunning" class="run-spinner" aria-hidden="true" />
+            <span v-else aria-hidden="true">↑</span>
           </button>
         </div>
       </section>
@@ -440,6 +481,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -518,7 +560,15 @@ const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   draft.quantity,
   draft.duration,
 ) || null)
-const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
+const actualGenerationProgress = computed(() => (
+  props.data.progressKnown === true ? normalizeGenerationProgress(props.data.progress) : null
+))
+const isGenerationRunning = computed(() => (
+  props.data.status === 'running'
+  && props.data.generationActive === true
+))
+const hasActualGenerationProgress = computed(() => actualGenerationProgress.value !== null)
+const generationProgress = computed(() => actualGenerationProgress.value ?? 0)
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
@@ -1148,11 +1198,56 @@ watch(isSelected, (selected) => {
 .node-handle-input { left: -15px; }
 .node-handle-output { right: -15px; }
 .text-preview, .media-stage { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.node-generation-state {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  padding: 26px;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  border-radius: inherit;
+  background: rgba(24, 24, 27, 0.88);
+  box-sizing: border-box;
+}
+.node-generation-spinner,
+.run-spinner,
+.generation-inline-spinner {
+  display: inline-block;
+  border: 2px solid rgba(251, 123, 59, 0.22);
+  border-top-color: #fb7b3b;
+  border-radius: 50%;
+  animation: generation-spin 0.75s linear infinite;
+  box-sizing: border-box;
+}
+.node-generation-spinner { width: 34px; height: 34px; }
+.node-generation-state strong { color: #e4e4e7; font-size: 16px; font-weight: 600; }
+.node-generation-progress-track {
+  width: min(220px, 72%);
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #303036;
+}
+.node-generation-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #fb7b3b;
+  transition: width 180ms ease;
+}
+.node-generation-progress-track.is-indeterminate i,
+.generation-progress.is-indeterminate .generation-progress-track i {
+  width: 34%;
+  animation: generation-progress-slide 1.15s ease-in-out infinite;
+}
 .home-canvas-node.is-selected .text-preview,
 .home-canvas-node.is-selected .media-stage { cursor: grab; }
 .home-canvas-node.is-selected .text-preview:active,
 .home-canvas-node.is-selected .media-stage:active { cursor: grabbing; }
 .text-preview {
+  position: relative;
   display: grid;
   min-height: 220px;
   padding: 26px;
@@ -1531,8 +1626,9 @@ watch(isSelected, (selected) => {
 }
 .billing-note, .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
-.generation-progress > div { display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
+.generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
 .generation-progress strong { color: #d4d4d8; font-weight: 600; }
+.generation-inline-spinner { width: 14px; height: 14px; }
 .generation-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: #303036; }
 .generation-progress-track i { display: block; height: 100%; border-radius: inherit; background: #fb7b3b; transition: width 180ms ease; }
 .editor-error { margin: 14px 0 0; padding: 10px 12px; border: 1px solid rgba(248, 113, 113, 0.32); border-radius: 10px; background: rgba(127, 29, 29, 0.22); color: #fca5a5; font-size: 12px; line-height: 1.5; }
@@ -1565,6 +1661,7 @@ watch(isSelected, (selected) => {
 .image-lightbox > img,
 .image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .run-button {
+  display: grid;
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
@@ -1573,8 +1670,10 @@ watch(isSelected, (selected) => {
   background: #7c3f26;
   color: #fff;
   font-size: 22px;
+  place-items: center;
   cursor: pointer;
 }
+.run-spinner { width: 19px; height: 19px; border-color: rgba(255, 255, 255, 0.24); border-top-color: #fff; }
 .advanced-button {
   min-width: 54px;
   height: 34px;
@@ -1594,6 +1693,13 @@ watch(isSelected, (selected) => {
 .state-running::before { border-color: #60a5fa; }
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
+@keyframes generation-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes generation-progress-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(300%); }
+}
 @media (max-width: 760px) {
   .node-expanded-editor { right: 12px; bottom: 12px; left: 12px; width: auto; padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
