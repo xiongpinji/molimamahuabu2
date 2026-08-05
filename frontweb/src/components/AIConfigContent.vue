@@ -1426,7 +1426,6 @@ const providerConfigs = {
   ],
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['image-v1', 'image-v1-2k'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1439,7 +1438,6 @@ const providerConfigs = {
   ],
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
-    { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['image-v1', 'image-v1-2k'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1623,9 +1621,6 @@ const modelIdentifierTip = computed(() => {
   }
   if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'aihubcc') {
     return 'GPT/价格页图片模型走 /images/generations；Flow 的 Gemini/Imagen 模型由系统自动切换到 /chat/completions。'
-  }
-  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'djpsd_openapi') {
-    return '图片模型会原样提交；已真实生成验证模型为 image-v1、image-v1-2k。'
   }
   if (serviceType === 'video' && provider === 'aihubcc') {
     return 'Omni、Seedance、Grok 与 Flow Veo 均走 /videos 异步任务；veo-clean 是视频后处理，不属于普通生成模型。'
@@ -1866,11 +1861,6 @@ function onProviderChange(providerId) {
     form.value.query_endpoint = '/api/v1/video-jobs/{taskId}'
   }
   if (st === 'video' && providerId === 'djpsd_openapi') {
-    form.value.api_protocol = 'djpsd_openapi'
-    form.value.endpoint = '/v1/media/generate'
-    form.value.query_endpoint = '/v1/media/status?task_id={taskId}'
-  }
-  if ((st === 'image' || st === 'storyboard_image') && providerId === 'djpsd_openapi') {
     form.value.api_protocol = 'djpsd_openapi'
     form.value.endpoint = '/v1/media/generate'
     form.value.query_endpoint = '/v1/media/status?task_id={taskId}'
