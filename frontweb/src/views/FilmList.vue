@@ -499,7 +499,7 @@ const homeSelectedModel = computed(() => (
 ))
 const homeSelectedPrice = computed(() => estimateGenerationCredits(
   homeSelectedModel.value,
-  { duration: homeDuration.value },
+  { duration: homeDuration.value, resolution: homeResolution.value },
 ))
 const homeInsufficientCredits = computed(() => (
   homeSelectedPrice.value != null && homeBalance.value < homeSelectedPrice.value

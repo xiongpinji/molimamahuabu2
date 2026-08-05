@@ -252,7 +252,7 @@ const selectedModel = computed(() => (
 ))
 const selectedCredits = computed(() => estimateGenerationCredits(
   selectedModel.value,
-  { duration: duration.value },
+  { duration: duration.value, resolution: resolution.value },
 ))
 const insufficientCredits = computed(() => (
   selectedCredits.value != null && creditAccount.value.available < selectedCredits.value

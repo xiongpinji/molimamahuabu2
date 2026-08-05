@@ -237,7 +237,10 @@ function create(db, log, req, options = {}) {
       billingModel = videoConfig?.default_model || videoConfig?.model || null;
     }
     billingModel = modelPrice.canonicalModel(billingModel);
-    price = modelPrice.calculateCharge(db, billingModel, { duration });
+    price = modelPrice.calculateCharge(db, billingModel, {
+      duration,
+      resolution: body.resolution,
+    });
   }
 
   const persistedPrompt = storyboardId
@@ -305,6 +308,7 @@ function create(db, log, req, options = {}) {
         reservationId: reservation.id,
         model: billingModel,
         quantity: duration,
+        resolution: body.resolution,
         usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);

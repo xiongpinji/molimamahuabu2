@@ -50,6 +50,7 @@ function list(db) {
         label: price?.display_name || model,
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
+        resolution_prices: price?.resolution_prices || {},
         capabilities: safeCapabilities(config.settings),
       };
     }))

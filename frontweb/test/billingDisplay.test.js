@@ -13,3 +13,15 @@ test('视频模型价格显示为每秒积分且其他模型仍显示每次积�
   assert.equal(formatModelPrice({ credits: 6, billing_unit: 'request' }), '当前 6 积分/次')
   assert.equal(formatModelPrice({ credits: null, billing_unit: 'second' }), '尚未定价（按秒），当前禁止生成')
 })
+
+test('视频模型配置分辨率价格后同时显示 480P 和 720P 每秒积分', () => {
+  assert.equal(formatModelPrice({
+    category: 'video',
+    credits: 2,
+    billing_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 2 },
+      '720p': { credits: 5 },
+    },
+  }), '480P 2 积分/秒 · 720P 5 积分/秒')
+})

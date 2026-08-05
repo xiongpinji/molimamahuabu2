@@ -428,8 +428,8 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `本次预计扣除 ${estimatedCredits} 积分` : '本次消耗以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
-          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
+          <strong v-if="canGenerate" class="canvas-credit-callout-v1">{{ estimatedCredits != null ? `本次预计扣除 ${estimatedCredits} 积分` : '积分待管理员配置' }}</strong>
+          <span v-if="canGenerate && capability.declared === false" class="capability-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
@@ -559,6 +559,7 @@ const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   draft.model,
   draft.quantity,
   draft.duration,
+  draft.resolution,
 ) || null)
 const actualGenerationProgress = computed(() => (
   props.data.progressKnown === true ? normalizeGenerationProgress(props.data.progress) : null
@@ -1624,7 +1625,9 @@ watch(isSelected, (selected) => {
   gap: 10px;
   margin-top: 18px;
 }
-.billing-note, .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
+.canvas-credit-callout-v1 { margin-right: auto; color: #f59e0b; font-size: 12px; font-weight: 800; }
+.capability-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
 .generation-progress strong { color: #d4d4d8; font-weight: 600; }
