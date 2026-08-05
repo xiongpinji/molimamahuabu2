@@ -34,6 +34,17 @@
 - 视觉检查分别确认：文生图包含指定几何元素；单图图生图保留输入构图并完成背景/阴影变更；双图结果同时采用两个输入中明确可区分的构图与风格特征。
 - 本轮只实测到 2 张参考图，因此生产能力声明固定为 `maxReferences: 2`，不承诺更多张数。
 
+## 生产交付证据
+
+- 生产候选从实时 `/opt/moli-drama/current` 克隆，候选路径为 `/opt/moli-drama/releases/rehdasu-gpt-image2-20260805T121927`；发布前源文件 SHA-256 与本地提交一致。
+- 候选专项测试 7/7、`preflight:production`、SQLite `quick_check` 和 `canvas-credit-callout-v1` 源码/构建审计全部通过。
+- 发布前备份 `database-20260805T042628094Z` 完整性为 `ok`，SHA-256 `ac7c0b71a72a5d0f7e50a61b64098e510e47777be090b979778e754cc250ca4d`。
+- 共享门禁成功将生产从 `/opt/moli-drama/releases/icreat-reference-roles-livebase-20260805T085755CST` 切换到上述候选。
+- 生产应用链路真实复测：默认文字模型解析为 `gpt-5.6-terra` 并返回预期文本；`imageClient` 使用 `gpt-image-2` 生成 1024×1024 PNG、740,003 字节，SHA-256 `c2813efd5af73aa76959deef67b300506243ededaf1908b1ef039c4be0600796`，文件为 `/opt/moli-drama/shared/validation/rehdasu-gpt-image-2-app-path-20260805.png`。
+- 画布目录回读 `GPT Image 2`：40 积分、`maxReferences: 2`；文字默认配置回读为 `GPT-5.6 Terra`。
+- 被替换的旧文字 Key 指纹在活动配置中计数为 0；新 Key 只出现在 Rehdasu 文字和图片两个目标配置，其他供应商 Key 指纹与切换前一致。发布前备份按回滚制度保留，不作为活动配置读取。
+- 发布后 `moli-drama.service` 为 `active`、`NRestarts=0`、内部 `/health` 正常、近期错误计数 0；四类生成任务均为 0；AI 音乐进程 PID `206874`、`206895` 未变化。
+
 ## 验收门
 
 - [x] 新 Key 的模型列表包含两个目标模型。
@@ -41,8 +52,8 @@
 - [x] GPT Image 2 文生图、单图图生图、双图多参考全部通过。
 - [x] MIME 回归测试先失败、修复后通过。
 - [x] 后端专项、全量测试和前端生产构建通过。
-- [ ] 双轴复审通过。
-- [ ] 从实时生产 `current` 构建候选并通过共享发布门禁。
-- [ ] 生产默认文字模型回读为 Terra，GPT Image 2 出现在画布目录。
-- [ ] 被替换的旧文字配置 Key 已清除，其他供应商 Key 未变。
-- [ ] 健康、队列、数据库、日志和 AI 音乐隔离检查通过。
+- [x] 双轴复审通过。
+- [x] 从实时生产 `current` 构建候选并通过共享发布门禁。
+- [x] 生产默认文字模型回读为 Terra，GPT Image 2 出现在画布目录。
+- [x] 被替换的旧文字配置 Key 已清除，其他供应商 Key 未变。
+- [x] 健康、队列、数据库、日志和 AI 音乐隔离检查通过。
