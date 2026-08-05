@@ -251,8 +251,6 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     drama_id: 7,
     prompt: '镜头推近\n镜头运动：push-in\n视觉特效：film-grain\n音频要求：生成与画面同步的对白、环境音或音效。',
     model: 'kling',
-    image_url: 'https://cdn.example/first.png',
-    first_frame_url: 'https://cdn.example/first.png',
     reference_image_urls: [
       'https://cdn.example/first.png',
       'https://cdn.example/ref.png',
@@ -314,6 +312,9 @@ test('视频节点按模型能力传递多图片、音频和视频参考', () =>
   })
 
   assert.equal(payload.reference_image_urls.length, 5)
+  assert.equal('image_url' in payload, false)
+  assert.equal('first_frame_url' in payload, false)
+  assert.equal('last_frame_url' in payload, false)
   assert.deepEqual(payload.reference_audio_urls, ['/static/voice.wav'])
   assert.deepEqual(payload.reference_video_urls, ['/static/motion.mp4'])
 })

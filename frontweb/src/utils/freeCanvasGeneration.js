@@ -551,7 +551,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
         throw new Error(`${nodeData.model || '当前视频模型'} 最多支持 ${limit} 个${labels[type]}参考`)
       }
     }
-    const firstFrameUrl = imageReferences.find((reference) => reference.slot === 'first-frame')?.url || videoImageUrls[0] || ''
+    const firstFrameUrl = imageReferences.find((reference) => reference.slot === 'first-frame')?.url || ''
     const lastFrameUrl = imageReferences.find((reference) => reference.slot === 'last-frame')?.url || ''
     return withoutEmptyFields({
       drama_id: dramaId,
