@@ -42,6 +42,7 @@
 - 共享门禁成功将生产从 `/opt/moli-drama/releases/icreat-reference-roles-livebase-20260805T085755CST` 切换到上述候选。
 - 生产应用链路真实复测：默认文字模型解析为 `gpt-5.6-terra` 并返回预期文本；`imageClient` 使用 `gpt-image-2` 生成 1024×1024 PNG、740,003 字节，SHA-256 `c2813efd5af73aa76959deef67b300506243ededaf1908b1ef039c4be0600796`，文件为 `/opt/moli-drama/shared/validation/rehdasu-gpt-image-2-app-path-20260805.png`。
 - 画布目录回读 `GPT Image 2`：40 积分、`maxReferences: 2`；文字默认配置回读为 `GPT-5.6 Terra`。
+- 使用现有登录会话重新打开生产画布 `/canvas/48`，图片节点编辑器下拉列表实际出现 `GPT Image 2`，提交值为 `gpt-image-2`；只读检查未切换或保存用户节点。
 - 被替换的旧文字 Key 指纹在活动配置中计数为 0；新 Key 只出现在 Rehdasu 文字和图片两个目标配置，其他供应商 Key 指纹与切换前一致。发布前备份按回滚制度保留，不作为活动配置读取。
 - 发布后 `moli-drama.service` 为 `active`、`NRestarts=0`、内部 `/health` 正常、近期错误计数 0；四类生成任务均为 0；AI 音乐进程 PID `206874`、`206895` 未变化。
 
