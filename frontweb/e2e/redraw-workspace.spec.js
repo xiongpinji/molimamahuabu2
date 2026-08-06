@@ -115,8 +115,10 @@ const redrawShots = [
     duration: 12,
     resolution: '720p',
     count: 1,
+    quote: { amount: 4 },
     quote_snapshot: { amount: 4 },
-    source_video_ref: { url: 'https://fixtures.example/source.mp4', thumbnail_url: '' },
+    generation_availability: { ok: true },
+    source_video_ref: { asset_id: 910, url: 'https://fixtures.example/source.mp4', thumbnail_url: '', start_ms: 0, end_ms: 12000 },
     new_video_ref: null,
     status: 'draft',
     updated_at: '2026-08-06T08:30:00.000Z',
@@ -143,8 +145,10 @@ const redrawShots = [
     duration: 12,
     resolution: '720p',
     count: 1,
+    quote: { amount: 6 },
     quote_snapshot: { amount: 6 },
-    source_video_ref: { url: 'https://fixtures.example/source.mp4' },
+    generation_availability: { ok: true },
+    source_video_ref: { asset_id: 910, url: 'https://fixtures.example/source.mp4', start_ms: 12000, end_ms: 24000 },
     new_video_ref: null,
     status: 'failed',
     error_code: 'PROVIDER_FAILED',
@@ -173,9 +177,11 @@ const redrawShots = [
     duration: 12,
     resolution: '720p',
     count: 1,
+    quote: { amount: 8 },
     quote_snapshot: { amount: 8 },
-    source_video_ref: { url: 'https://fixtures.example/source.mp4' },
-    new_video_ref: { url: 'https://fixtures.example/generated.mp4' },
+    generation_availability: { ok: true },
+    source_video_ref: { asset_id: 910, url: 'https://fixtures.example/source.mp4', start_ms: 24000, end_ms: 36000 },
+    new_video_ref: { video_url: 'https://fixtures.example/generated.mp4' },
     status: 'completed',
     updated_at: '2026-08-06T08:32:00.000Z',
     generation: { task_id: 'task-completed-1303', status: 'completed', progress: 100, message: '完成' },
@@ -205,6 +211,7 @@ const localeOptions = [
   { locale: 'zh-CN', market: 'CN' },
   { locale: 'en-US', market: 'US' },
 ]
+const browserErrorsByPage = new WeakMap()
 
 function apiData(data) {
   return {
@@ -263,6 +270,8 @@ async function installFixtures(page, state) {
       return
     }
     if (method === 'GET' && pathname === `/api/v1/redraw/works/${workBase.id}`) {
+      state.workGets = (state.workGets || 0) + 1
+      if (typeof state.onGetWork === 'function') state.onGetWork(state)
       state.work = {
         ...(state.work || workBase),
         ...(state.quoteReady ? { analysis_quote: { credits: 6 } } : { analysis_quote: null }),
@@ -449,6 +458,19 @@ function generationFixtureState() {
 }
 
 test.describe('一键转绘输入与分析流程', () => {
+  test.beforeEach(async ({ page }) => {
+    const browserErrors = []
+    browserErrorsByPage.set(page, browserErrors)
+    page.on('pageerror', (error) => browserErrors.push(error.message))
+    page.on('console', (message) => {
+      if (message.type() === 'error') browserErrors.push(message.text())
+    })
+  })
+
+  test.afterEach(async ({ page }) => {
+    expect(browserErrorsByPage.get(page) || []).toEqual([])
+  })
+
   test('桌面端覆盖入口、上传、四类风格、报价门禁、payload 与刷新恢复', async ({ page }) => {
     const state = { projects: [], quoteReady: false, work: null, requests: [] }
     await installFixtures(page, state)
@@ -584,7 +606,9 @@ test.describe('一键转绘输入与分析流程', () => {
 
     await page.goto('/redraw/projects/41/works/710?step=3')
     await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
-    await expect(page.getByText('批量总预计扣除 10 积分')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 10 积分')).toBeVisible()
+    await expect(page.getByText('批量总价 10 积分')).toBeVisible()
+    await expect(page.getByText('分镜价格明细')).toBeVisible()
     await expect(page.getByText('本次预计扣除 4 积分')).toBeVisible()
     await expect(page.getByText('@角色 Maya · v3')).toBeVisible()
     await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /source\.mp4#t=0/)
@@ -625,6 +649,49 @@ test.describe('一键转绘输入与分析流程', () => {
     await assertNoPageHorizontalScroll(page)
   })
 
+  test('第三步未定价或生成能力关闭时禁用提交并显示后端原因', async ({ page }) => {
+    const state = generationFixtureState()
+    state.work.shots[0].quote = null
+    state.work.shots[0].quote_snapshot = null
+    state.work.shots[0].billing = { held: 0, charged: 0, released: 0, quote: null }
+    state.work.shots[0].generation_availability = {
+      ok: false,
+      code: 'no_verified_video_model',
+      reason: '当前语言市场没有已验证可读的视频生成能力',
+    }
+    await installFixtures(page, state)
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await expect(page.getByText('当前语言市场没有已验证可读的视频生成能力')).toHaveCount(2)
+    await expect(page.getByRole('button', { name: '生成本镜头' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '批量生成 2 镜' })).toBeDisabled()
+  })
+
+  test('第三步轮询从处理中到完成后停止且保留选中镜头', async ({ page }) => {
+    const state = generationFixtureState()
+    state.onGetWork = (fixtureState) => {
+      const shot = fixtureState.work?.shots?.find((item) => item.id === 1301)
+      if (!shot || shot.status !== 'processing' || fixtureState.workGets < 3) return
+      shot.status = 'completed'
+      shot.generation = { task_id: 'task-shot-1301', status: 'completed', progress: 100, message: '完成' }
+      shot.billing = { held: 0, charged: 4, released: 0, quote: { amount: 4 } }
+      shot.new_video_ref = { video_url: 'https://fixtures.example/generated.mp4' }
+      fixtureState.work.batches = shotBatches(fixtureState.work.shots)
+    }
+    await installFixtures(page, state)
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await page.getByRole('button', { name: '生成本镜头' }).click()
+    await expect(page.getByRole('button', { name: /镜头 1/ })).toHaveClass(/active/)
+    await expect(page.getByRole('button', { name: '新片' })).toBeEnabled({ timeout: 8000 })
+    await expect(page.locator('.shot-editor__heading').getByText('镜头 1')).toBeVisible()
+    await page.getByRole('button', { name: '新片' }).click()
+    await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /generated\.mp4#t=0/)
+    const getCountAfterCompletion = state.workGets
+    await page.waitForTimeout(3200)
+    expect(state.workGets).toBeLessThanOrEqual(getCountAfterCompletion + 1)
+  })
+
   test('第三步批量提交仅发送当前版本和复数镜头 ID', async ({ page }) => {
     const state = generationFixtureState()
     await installFixtures(page, state)
@@ -645,7 +712,7 @@ test.describe('一键转绘输入与分析流程', () => {
 
     await page.goto('/redraw/projects/41/works/710?step=3')
     await expect(page.getByText('按分镜生成并从后端恢复真实进度')).toBeVisible()
-    await expect(page.getByText('批量总预计扣除 10 积分')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 10 积分')).toBeVisible()
     await expect(page.getByText('本次预计扣除 4 积分')).toBeVisible()
     await expect(page.getByText('建议保持 10–15 秒')).toBeVisible()
     await assertNoPageHorizontalScroll(page)

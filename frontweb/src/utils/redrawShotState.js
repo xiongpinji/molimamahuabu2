@@ -47,8 +47,18 @@ export function filterShots(shots, filter = 'incomplete') {
 }
 
 export function quoteCredits(shot) {
+  const directQuote = shot?.quote
   const quote = shot?.billing?.quote
-  for (const value of [quote?.amount, quote?.credits, quote?.unit_amount, shot?.quote_snapshot?.amount, shot?.quote_snapshot?.credits]) {
+  for (const value of [
+    directQuote?.amount,
+    directQuote?.credits,
+    directQuote?.unit_amount,
+    quote?.amount,
+    quote?.credits,
+    quote?.unit_amount,
+    shot?.quote_snapshot?.amount,
+    shot?.quote_snapshot?.credits,
+  ]) {
     const credits = finiteCredits(value)
     if (credits !== null) return credits
   }
@@ -98,6 +108,9 @@ export function structuredReferences(assets) {
 export function generationAvailability(shot, gate) {
   if (gate?.ok !== true || (Array.isArray(gate?.missing) && gate.missing.length)) {
     return { ok: false, reason: '资产门禁未开放，请先完成资产审核' }
+  }
+  if (shot?.generation_availability?.ok === false) {
+    return { ok: false, reason: shot.generation_availability.reason || '生成能力不可用' }
   }
   if (quoteCredits(shot) === null) return { ok: false, reason: '积分待管理员配置' }
   const status = String(shot?.status || '')

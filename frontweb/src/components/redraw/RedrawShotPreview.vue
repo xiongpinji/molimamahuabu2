@@ -42,7 +42,7 @@ const mode = ref('source')
 
 function refUrl(reference) {
   if (typeof reference === 'string') return reference
-  return reference?.url || reference?.playback_url || reference?.download_url || ''
+  return reference?.url || reference?.video_url || reference?.playback_url || reference?.download_url || ''
 }
 
 function refPoster(reference) {

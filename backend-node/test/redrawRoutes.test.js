@@ -253,6 +253,63 @@ function insertVerifiedVideoUnderstandingConfig(db) {
   }), now, now);
 }
 
+function insertSourceAsset(db, values = {}) {
+  const now = values.created_at || NOW;
+  return db.prepare(`
+    INSERT INTO assets
+      (name, type, category, url, local_path, file_size, mime_type, duration, metadata, created_at, updated_at, deleted_at)
+    VALUES
+      (@name, @type, @category, @url, @local_path, @file_size, @mime_type, @duration, @metadata, @created_at, @updated_at, @deleted_at)
+  `).run({
+    name: 'source.mp4',
+    type: 'video',
+    category: 'redraw_source',
+    url: '',
+    local_path: 'redraw-sources/source.mp4',
+    file_size: 1234,
+    mime_type: 'video/mp4',
+    duration: 9,
+    metadata: '{}',
+    created_at: now,
+    updated_at: now,
+    deleted_at: null,
+    ...values,
+  }).lastInsertRowid;
+}
+
+function insertRedrawLocaleCapabilityConfig(db, entries) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'test-provider', '转绘生成能力', ?, ?, 1, 1, 0, ?, ?, ?)
+  `).run(
+    JSON.stringify(entries.map((entry) => entry.evidence?.video?.model || 'unverified-model')),
+    entries[0]?.evidence?.video?.model || 'unverified-model',
+    JSON.stringify({ redraw_locale_capabilities: entries }),
+    now,
+    now,
+  );
+}
+
+function verifiedVideoCapability(model = 'seedance 2.0', overrides = {}) {
+  return {
+    locale: 'en-US',
+    market: 'US',
+    status: 'verified',
+    evidence: {
+      video: {
+        provider: 'test-provider',
+        model,
+        task_id: `verified-${model}`,
+        terminal_status: 'completed',
+        artifact_id: `artifact-${model}`,
+      },
+    },
+    ...overrides,
+  };
+}
+
 test('转绘项目列表与创建按租户和用户隔离', () => {
   const db = createDb();
   try {
@@ -860,6 +917,252 @@ test('作品详情按当前版本返回可恢复的 shots batches 任务与账�
     assert.equal(refreshed.body.data.shots[0].billing.held, 0);
     assert.equal(refreshed.body.data.shots[0].billing.charged, 6);
     assert.equal('confirmed' in refreshed.body.data.shots[0].billing, false);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情为 draft 分镜返回 verified 生成快照、只读报价和安全源片引用', () => {
+  const db = createDb();
+  try {
+    prices.set(db, 'seedance 2.0', 2, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 3 } },
+    });
+    insertRedrawLocaleCapabilityConfig(db, [
+      verifiedVideoCapability('unpriced-unverified', { status: 'draft' }),
+      verifiedVideoCapability('seedance 2.0'),
+    ]);
+    const sourceAssetId = insertSourceAsset(db, {
+      url: '',
+      local_path: 'redraw-sources/source.mp4',
+    });
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3, source_asset_id: sourceAssetId });
+    const versionId = insertVersion(db, workId, {
+      locale: 'en-US',
+      market: 'US',
+      style_snapshot_json: JSON.stringify({ tone: 'warm' }),
+    });
+    const shotId = insertShot(db, versionId, {
+      start_ms: 1000,
+      end_ms: 7000,
+      duration_ms: 6000,
+      status: 'draft',
+      draft_json: JSON.stringify({
+        revision: 1,
+        model: 'client-stale-model',
+        duration: 6,
+        resolution: '720P',
+        count: 99,
+      }),
+    });
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      canReadArtifact: (assetId) => String(assetId) === 'artifact-seedance 2.0',
+    }));
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    const shot = result.body.data.shots[0];
+    assert.equal(shot.id, shotId);
+    assert.deepEqual(shot.generation_availability, { ok: true });
+    assert.equal(shot.model, 'seedance 2.0');
+    assert.equal(shot.duration, 6);
+    assert.equal(shot.resolution, '720p');
+    assert.equal(shot.count, 1);
+    assert.equal(shot.quote.amount, 18);
+    assert.equal(shot.quote.unit_amount, 18);
+    assert.equal(shot.billing.quote.amount, 18);
+    assert.equal(shot.billing.quote.unit_amount, 18);
+    assert.equal(shot.generation_snapshot.model, 'seedance 2.0');
+    assert.equal(shot.generation_snapshot.version_id, String(versionId));
+    assert.deepEqual(shot.generation_snapshot.shot_ids, [String(shotId)]);
+    assert.deepEqual(shot.source_video_ref, {
+      asset_id: Number(sourceAssetId),
+      url: '/static/redraw-sources/source.mp4',
+      start_ms: 1000,
+      end_ms: 7000,
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情无 verified evidence 或未定价时显式 blocked 且不创建 reservation', () => {
+  const db = createDb();
+  try {
+    insertRedrawLocaleCapabilityConfig(db, [
+      verifiedVideoCapability('unreadable-model'),
+    ]);
+    const projectId = insertProject(db);
+    const unreadableWorkId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const unreadableVersionId = insertVersion(db, unreadableWorkId, { locale: 'en-US', market: 'US' });
+    insertShot(db, unreadableVersionId, { status: 'draft' });
+    const unpricedWorkId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 3,
+      source_fingerprint: '9'.repeat(64),
+    });
+    const unpricedVersionId = insertVersion(db, unpricedWorkId, { locale: 'en-US', market: 'US' });
+    insertShot(db, unpricedVersionId, { status: 'failed' });
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      canReadArtifact: (assetId) => String(assetId) === 'artifact-unpriced-model',
+    }));
+
+    const noEvidence = captureResponse();
+    handlers.getWork(request({ id: unreadableWorkId }), noEvidence);
+    assert.equal(noEvidence.statusCode, 200);
+    assert.deepEqual(noEvidence.body.data.shots[0].generation_availability, {
+      ok: false,
+      code: 'no_verified_video_model',
+      reason: '当前语言市场没有已验证可读的视频生成能力',
+    });
+    assert.equal(noEvidence.body.data.shots[0].quote, null);
+
+    prices.ensureSchema(db);
+    insertRedrawLocaleCapabilityConfig(db, [
+      verifiedVideoCapability('unpriced-model', { market: 'US' }),
+    ]);
+    const unpriced = captureResponse();
+    handlers.getWork(request({ id: unpricedWorkId }), unpriced);
+    assert.equal(unpriced.statusCode, 200);
+    assert.equal(unpriced.body.data.shots[0].generation_availability.ok, false);
+    assert.equal(unpriced.body.data.shots[0].generation_availability.code, 'pricing_unconfigured');
+    assert.match(unpriced.body.data.shots[0].generation_availability.reason, /尚未配置积分价格/);
+    assert.equal(unpriced.body.data.shots[0].quote, null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情不覆盖 processing 和 completed 分镜的持久任务与报价', () => {
+  const db = createDb();
+  try {
+    prices.set(db, 'seedance 2.0', 2, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 3 } },
+    });
+    prices.set(db, 'new-verified-model', 9, { category: 'video', billing_unit: 'second' });
+    insertRedrawLocaleCapabilityConfig(db, [verifiedVideoCapability('new-verified-model')]);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const sourceAssetId = insertSourceAsset(db, {
+      url: 'https://unsafe.example/source.mp4',
+      local_path: 'redraw-sources/runtime-source.mp4',
+    });
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 3,
+      source_asset_id: sourceAssetId,
+    });
+    const versionId = insertVersion(db, workId, { locale: 'en-US', market: 'US' });
+    const processingShotId = insertShot(db, versionId, {
+      status: 'processing',
+      draft_json: JSON.stringify({
+        revision: 2,
+        generation: { reservation_id: 'reservation-processing', task_id: 'task-processing' },
+        quote_snapshot: { model: 'seedance 2.0' },
+      }),
+    });
+    const completedShotId = insertShot(db, versionId, {
+      shot_index: 2,
+      start_ms: 6000,
+      end_ms: 12000,
+      status: 'completed',
+      draft_json: JSON.stringify({
+        revision: 3,
+        generation: { reservation_id: 'reservation-completed', task_id: 'task-completed' },
+        new_video_ref: { asset_id: 901, video_url: 'https://cdn.example.com/completed.mp4' },
+      }),
+    });
+    const processingReservation = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'redraw-processing-existing',
+      model: 'seedance 2.0',
+      resourceType: 'redraw_shot',
+      resourceId: String(processingShotId),
+      amount: 18,
+    });
+    const completedReservation = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'redraw-completed-existing',
+      model: 'seedance 2.0',
+      resourceType: 'redraw_shot',
+      resourceId: String(completedShotId),
+      amount: 18,
+    });
+    creditLedger.confirm(db, completedReservation.id);
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, metadata, created_at, updated_at)
+      VALUES
+      ('task-processing', 'redraw_shot', 'processing', 55, '仍在生成', ?, 'tenant-a', 'user-a', ?, ?, ?),
+      ('task-completed', 'redraw_shot', 'completed', 100, '完成', ?, 'tenant-a', 'user-a', ?, ?, ?)`)
+      .run(
+        String(processingShotId),
+        JSON.stringify({ redraw_shot: {
+          reservation_id: processingReservation.id,
+          quote: { amount: 18, unit_amount: 18, snapshot: { model: 'seedance 2.0' } },
+        } }),
+        NOW,
+        NOW,
+        String(completedShotId),
+        JSON.stringify({ redraw_shot: {
+          reservation_id: completedReservation.id,
+          quote: { amount: 18, unit_amount: 18, snapshot: { model: 'seedance 2.0' } },
+        } }),
+        NOW,
+        NOW,
+      );
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      canReadArtifact: () => true,
+    }));
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    const [processing, completed] = result.body.data.shots;
+    assert.equal(processing.generation.task_id, 'task-processing');
+    assert.equal(processing.generation.status, 'processing');
+    assert.equal(processing.generation_snapshot, undefined);
+    assert.equal(processing.quote, undefined);
+    assert.deepEqual(processing.source_video_ref, {
+      asset_id: Number(sourceAssetId),
+      url: '/static/redraw-sources/runtime-source.mp4',
+      start_ms: 0,
+      end_ms: 6000,
+    });
+    assert.deepEqual(processing.billing, {
+      held: 18,
+      charged: 0,
+      released: 0,
+      quote: { amount: 18, unit_amount: 18, snapshot: { model: 'seedance 2.0' } },
+    });
+    assert.equal(completed.generation.task_id, 'task-completed');
+    assert.equal(completed.generation.status, 'completed');
+    assert.equal(completed.generation_snapshot, undefined);
+    assert.equal(completed.quote, undefined);
+    assert.deepEqual(completed.source_video_ref, {
+      asset_id: Number(sourceAssetId),
+      url: '/static/redraw-sources/runtime-source.mp4',
+      start_ms: 6000,
+      end_ms: 12000,
+    });
+    assert.deepEqual(completed.billing, {
+      held: 0,
+      charged: 18,
+      released: 0,
+      quote: { amount: 18, unit_amount: 18, snapshot: { model: 'seedance 2.0' } },
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().count, 2);
   } finally {
     db.close();
   }

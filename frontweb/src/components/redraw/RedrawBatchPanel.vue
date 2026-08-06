@@ -31,9 +31,16 @@
     </div>
     <footer>
       <div class="batch-credit" data-contract="canvas-credit-callout-v1">
-        <strong v-if="batchQuote.priced">批量总预计扣除 {{ batchQuote.total }} 积分</strong>
+        <strong v-if="batchQuote.priced">本次预计扣除 {{ batchQuote.total }} 积分</strong>
         <strong v-else>积分待管理员配置</strong>
+        <small v-if="batchQuote.priced">批量总价 {{ batchQuote.total }} 积分</small>
         <small v-if="batchReason">{{ batchReason }}</small>
+        <div v-if="targetShots.length" class="batch-price-details" aria-label="分镜价格明细">
+          <small>分镜价格明细</small>
+          <span v-for="shot in targetShots" :key="shot.id">
+            镜头 {{ shot.shot_index }}：{{ shotCreditText(shot) }} · held {{ billingValue(shot, 'held') }} / charged {{ billingValue(shot, 'charged') }} / released {{ billingValue(shot, 'released') }}
+          </span>
+        </div>
       </div>
       <el-button
         type="primary"
@@ -49,7 +56,7 @@
 <script setup>
 import { computed } from 'vue'
 import { Refresh, VideoPlay } from '@element-plus/icons-vue'
-import { filterShots, sumShotQuotes } from '@/utils/redrawShotState'
+import { filterShots, quoteCredits, sumShotQuotes } from '@/utils/redrawShotState'
 
 const props = defineProps({
   batches: { type: Array, default: () => [] },
@@ -75,16 +82,28 @@ const visibleBatches = computed(() => props.batches.map((batch) => ({
 const targetShots = computed(() => visibleShots.value.filter((shot) => ['draft', 'failed'].includes(String(shot.status))))
 const batchQuote = computed(() => sumShotQuotes(targetShots.value))
 const gateOpen = computed(() => props.gate?.ok === true && (!Array.isArray(props.gate?.missing) || !props.gate.missing.length))
-const canGenerateBatch = computed(() => gateOpen.value && batchQuote.value.priced && targetShots.value.length > 0 && !props.generating)
+const unavailableShot = computed(() => targetShots.value.find((shot) => shot?.generation_availability?.ok === false))
+const canGenerateBatch = computed(() => gateOpen.value && !unavailableShot.value && batchQuote.value.priced && targetShots.value.length > 0 && !props.generating)
 const batchReason = computed(() => {
   if (!gateOpen.value) return '资产门禁未开放，请先完成资产审核'
   if (!targetShots.value.length) return '当前筛选下没有可提交镜头'
+  if (unavailableShot.value) return unavailableShot.value.generation_availability?.reason || '生成能力不可用'
   if (!batchQuote.value.priced) return '有镜头尚未配置价格'
   return ''
 })
 
 function statusLabel(status) {
   return ({ draft: '待生成', processing: '生成中', completed: '已完成', failed: '失败', needs_attention: '需确认' })[status] || status || '未知'
+}
+
+function shotCreditText(shot) {
+  const credits = quoteCredits(shot)
+  return credits === null ? '积分待管理员配置' : `预计扣除 ${credits} 积分`
+}
+
+function billingValue(shot, key) {
+  const value = Number(shot?.billing?.[key])
+  return Number.isFinite(value) ? value : 0
 }
 </script>
 
@@ -109,6 +128,8 @@ footer { display: grid; gap: 10px; }
 .batch-credit { display: grid; gap: 4px; min-width: 0; padding: 11px; border: 1px solid #ff7139; border-radius: 8px; background: #25150f; }
 .batch-credit strong { color: #ff9a6d; overflow-wrap: anywhere; }
 .batch-credit small { color: #c9b0a6; overflow-wrap: anywhere; }
+.batch-price-details { display: grid; gap: 3px; color: #d8c2b7; font-size: 12px; }
+.batch-price-details span { overflow-wrap: anywhere; }
 footer :deep(.el-button) { width: 100%; margin-left: 0; }
 @media (max-width: 720px) { .batch-list { max-height: none; } }
 </style>

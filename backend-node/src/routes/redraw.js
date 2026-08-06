@@ -14,6 +14,7 @@ const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
+const redrawBillingService = require('../services/redrawBillingService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -250,6 +251,19 @@ function billingPayload(value) {
     held: billing.held ?? 0,
     released: billing.released ?? 0,
   };
+}
+
+function safeStaticAssetUrl(asset) {
+  const url = String(asset?.url || '').trim();
+  if (url.startsWith('/static/')) {
+    const normalizedUrl = url.replace(/\\/g, '/');
+    if (!normalizedUrl.split('/').includes('..')) return normalizedUrl;
+  }
+  const localPath = String(asset?.local_path || '').trim();
+  if (!localPath || path.isAbsolute(localPath) || /^[a-zA-Z]:[\\/]/.test(localPath)) return null;
+  const normalized = localPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized || normalized.split('/').includes('..')) return null;
+  return `/static/${normalized}`;
 }
 
 function parseStrictObject(value, label) {
@@ -520,6 +534,109 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
   }
 
+  function evidenceForLocaleCapability(entry) {
+    if (entry?.evidence && typeof entry.evidence === 'object') return entry.evidence.video;
+    return entry?.video_evidence_json || entry?.video_evidence;
+  }
+
+  function findVerifiedGenerationModel(version) {
+    const locale = String(version?.locale || '').trim();
+    const market = String(version?.market || '').trim();
+    if (!locale) return null;
+    const rows = db.prepare(`
+      SELECT settings
+      FROM ai_service_configs
+      WHERE COALESCE(is_active, 1) = 1
+        AND deleted_at IS NULL
+    `).all();
+    for (const row of rows) {
+      const settings = parseJSON(row.settings, {});
+      const entries = settings.redraw_locale_capabilities || settings.redrawLocaleCapabilities || [];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        if (entry.status !== 'verified') continue;
+        if (String(entry.locale || '').trim() !== locale) continue;
+        if (String(entry.market || '').trim() !== market) continue;
+        const evidence = evidenceForLocaleCapability(entry);
+        if (!redrawCapabilityService.validateGenerationEvidence(evidence, canReadArtifact)) continue;
+        const parsed = parseJSON(evidence, {});
+        const model = String(parsed.model || '').trim();
+        if (model) return model;
+      }
+    }
+    return null;
+  }
+
+  function durationSeconds(snapshot) {
+    const explicit = Number(snapshot.duration);
+    if (Number.isSafeInteger(explicit) && explicit >= 5 && explicit <= 15) return explicit;
+    const derived = Math.ceil(Number(snapshot.duration_ms || 0) / 1000);
+    return Math.max(5, Math.min(15, derived || 5));
+  }
+
+  function sourceVideoRef(work, snapshot) {
+    if (!work?.source_asset_id) return null;
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL')
+      .get(Number(work.source_asset_id));
+    const url = safeStaticAssetUrl(asset);
+    if (!asset || !url) return null;
+    return {
+      asset_id: Number(asset.id),
+      url,
+      start_ms: Number(snapshot.start_ms),
+      end_ms: Number(snapshot.end_ms),
+    };
+  }
+
+  function draftGenerationRuntime(work, version, raw, snapshot) {
+    if (!work || !version) return {};
+    if (!['draft', 'failed'].includes(String(raw.status || ''))) return {};
+    const model = findVerifiedGenerationModel(version);
+    if (!model) {
+      return {
+        generation_availability: {
+          ok: false,
+          code: 'no_verified_video_model',
+          reason: '当前语言市场没有已验证可读的视频生成能力',
+        },
+        quote: null,
+      };
+    }
+    const quote = redrawBillingService.quoteShotGeneration(db, {
+      tenantId: raw.tenant_id,
+      actorUserId: raw.user_id,
+      versionId: String(version.id),
+      shotId: String(raw.id),
+      model,
+      duration: durationSeconds(snapshot),
+      resolution: snapshot.resolution || '720p',
+      count: 1,
+      locale: version.locale,
+      styleSnapshot: parseJSON(version.style_snapshot_json, {}),
+      attempt: 1,
+    });
+    if (!quote.success) {
+      return {
+        generation_availability: {
+          ok: false,
+          code: quote.code,
+          reason: quote.message,
+        },
+        quote: null,
+      };
+    }
+    return {
+      model: quote.snapshot.model,
+      duration: quote.snapshot.duration,
+      resolution: quote.snapshot.resolution,
+      count: 1,
+      quote,
+      generation_snapshot: quote.snapshot,
+      generation_availability: { ok: true },
+    };
+  }
+
   function findOwnedAnalysisTask(work, currentOwner) {
     if (!work.task_id) return null;
     return db.prepare(`SELECT * FROM async_tasks
@@ -546,7 +663,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       : null);
   }
 
-  function shotRuntime(raw, snapshot, currentOwner) {
+  function shotRuntime(raw, snapshot, currentOwner, context = {}) {
     const video = raw.video_generation_id
       ? db.prepare(`SELECT * FROM video_generations
         WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
@@ -567,9 +684,18 @@ module.exports = function redrawRoutes(db, log, options = {}) {
           AND resource_type = 'redraw_shot' AND resource_id = ?`)
         .get(String(reservationId), currentOwner.tenantId, currentOwner.userId, String(raw.id))
       : null;
-    const billing = billingFromReservation(reservation, metadata.quote || null);
+    const draftRuntime = draftGenerationRuntime(context.work, context.version, raw, snapshot);
+    let billing = billingFromReservation(reservation, metadata.quote || null);
+    if (Object.prototype.hasOwnProperty.call(draftRuntime, 'quote')) {
+      billing = {
+        ...billing,
+        quote: draftRuntime.quote,
+      };
+    }
     return {
       ...snapshot,
+      ...draftRuntime,
+      source_video_ref: sourceVideoRef(context.work, snapshot),
       status: raw.status,
       updated_at: raw.updated_at,
       error_code: raw.error_code || null,
@@ -586,7 +712,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
   }
 
-  function listOwnedShotRuntime(version, currentOwner) {
+  function listOwnedShotRuntime(version, currentOwner, work) {
     const rows = db.prepare(`SELECT * FROM redraw_shots
       WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
       ORDER BY batch_index ASC, shot_index ASC, id ASC`)
@@ -594,7 +720,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const rowsById = new Map(rows.map((row) => [Number(row.id), row]));
     return shotService.snapshotShots(db, version.id, currentOwner)
       .filter((snapshot) => rowsById.has(Number(snapshot.id)))
-      .map((snapshot) => shotRuntime(rowsById.get(Number(snapshot.id)), snapshot, currentOwner));
+      .map((snapshot) => shotRuntime(rowsById.get(Number(snapshot.id)), snapshot, currentOwner, {
+        version,
+        work,
+      }));
   }
 
   function listProjects(req, res) {
@@ -693,7 +822,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentVersion = findVersionForWork(work, work.current_version, currentOwner);
     try {
       const task = findOwnedAnalysisTask(work, currentOwner);
-      const shots = currentVersion ? listOwnedShotRuntime(currentVersion, currentOwner) : [];
+      const shots = currentVersion ? listOwnedShotRuntime(currentVersion, currentOwner, work) : [];
       const batches = shotService.groupShotsIntoBatches(shots);
       return response.success(res, {
         ...mapWork(work, null, {

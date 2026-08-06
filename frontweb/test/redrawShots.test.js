@@ -61,6 +61,29 @@ test('筛选、报价汇总和轮询严格使用后端状态且区分零价与�
   assert.equal(shouldPollWork([{ status: 'completed', generation: { status: 'completed' } }]), false)
 })
 
+test('第三步生成门禁消费后端 availability、顶层 quote 和新片 video_url', async () => {
+  const { generationAvailability, quoteCredits, sumShotQuotes } = await shotState()
+  const priced = {
+    id: 21,
+    status: 'draft',
+    generation_availability: { ok: true },
+    quote: { amount: 9 },
+  }
+  const blocked = {
+    id: 22,
+    status: 'draft',
+    generation_availability: { ok: false, reason: '当前语言市场没有已验证可读的视频生成能力' },
+    quote: { amount: 9 },
+  }
+  assert.equal(quoteCredits(priced), 9)
+  assert.deepEqual(sumShotQuotes([priced]), { priced: true, total: 9 })
+  assert.deepEqual(generationAvailability(priced, { ok: true, missing: [] }), { ok: true, reason: '' })
+  assert.deepEqual(generationAvailability(blocked, { ok: true, missing: [] }), {
+    ok: false,
+    reason: '当前语言市场没有已验证可读的视频生成能力',
+  })
+})
+
 test('引用提示只使用当前版本已批准资产并保存结构化版本', async () => {
   const { approvedReferenceOptions, structuredReferences } = await shotState()
   const assets = [
@@ -98,11 +121,15 @@ test('第三步工作台覆盖批次、编辑、计费、重试、对照预览�
   assert.match(batchSource, /未完成/)
   assert.match(batchSource, /失败/)
   assert.match(batchSource, /已完成/)
-  assert.match(batchSource, /批量总预计扣除/)
+  assert.match(batchSource, /本次预计扣除/)
+  assert.match(batchSource, /批量总价/)
+  assert.match(batchSource, /分镜价格明细/)
+  assert.match(batchSource, /held|charged|released/)
   assert.match(previewSource, /原片/)
   assert.match(previewSource, /新片/)
   assert.match(previewSource, /source_video_ref/)
   assert.match(previewSource, /new_video_ref/)
+  assert.match(previewSource, /video_url/)
 })
 
 test('受保护积分文案和安全生成 payload 不接受客户端价格与产物字段', () => {
