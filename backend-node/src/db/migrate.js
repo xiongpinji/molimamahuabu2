@@ -717,6 +717,11 @@ function ensureRedrawCompatibility(database) {
 /** 49 号迁移前的最小兜底，确保旧 redraw_* 表具备索引依赖列。 */
 function ensureRedrawMigrationColumns(database) {
   const required = {
+    redraw_projects: [
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
     redraw_style_presets: [
       { name: 'stable_key', type: 'TEXT NOT NULL DEFAULT \'\'' },
       { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },

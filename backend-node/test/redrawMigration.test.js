@@ -131,6 +131,17 @@ test('旧的不完整 redraw_works 表可在迁移前补齐索引依赖列', () 
   `).run(), /UNIQUE/);
 });
 
+test('旧的不完整 redraw_projects 表可在迁移前补齐 owner 索引依赖列', () => {
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE redraw_projects (id INTEGER PRIMARY KEY AUTOINCREMENT)');
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.ok(columnNames(db, 'redraw_projects').includes('tenant_id'));
+  assert.ok(columnNames(db, 'redraw_projects').includes('user_id'));
+  assert.ok(columnNames(db, 'redraw_projects').includes('updated_at'));
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_projects_owner'").get());
+});
+
 test('源片指纹按活跃作品和租户隔离', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
