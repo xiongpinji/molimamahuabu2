@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { withKeys, withModifiers } from 'vue'
 
 const billingApi = fs.readFileSync(new URL('../src/api/billing.js', import.meta.url), 'utf8')
 const tenantConsole = fs.readFileSync(new URL('../src/views/TenantConsole.vue', import.meta.url), 'utf8')
@@ -220,6 +221,30 @@ test('套餐排序提交完整 ID 列表并在失败时回滚稳定顺序', () =
   assert.match(adminPanel, /stableOrder\.value\s*=\s*previousStableOrder/)
 })
 
+test('套餐行只处理自身键盘选择，不吞嵌套排序按钮事件', () => {
+  assert.match(adminPanel, /@keydown\.enter\.self\.prevent="selectItem\(item\)"/)
+  assert.match(adminPanel, /@keydown\.space\.self\.prevent="selectItem\(item\)"/)
+  assert.doesNotMatch(adminPanel, /@keydown\.(?:enter|space)\.prevent="selectItem\(item\)"/)
+
+  let selected = 0
+  let moved = 0
+  let prevented = 0
+  const row = {}
+  const button = {}
+  const event = {
+    key: 'Enter',
+    target: button,
+    currentTarget: row,
+    preventDefault: () => { prevented += 1 },
+  }
+  const selectFromRow = withKeys(withModifiers(() => { selected += 1 }, ['self', 'prevent']), ['enter'])
+  selectFromRow(event)
+  moved += 1
+  assert.equal(selected, 0)
+  assert.equal(prevented, 0)
+  assert.equal(moved, 1)
+})
+
 test('套餐管理器按三栏、两栏和单栏响应并保留失败草稿', () => {
   assert.match(adminPanel, /grid-template-columns:\s*300px\s+minmax\(420px,\s*1fr\)\s+minmax\(320px,\s*420px\)/)
   assert.match(adminPanel, /@media\s*\(max-width:\s*1200px\)[\s\S]*grid-template-columns:\s*300px\s+minmax\(0,\s*1fr\)/)
@@ -370,4 +395,75 @@ test('到账积分允许任意正整数并按原值保存', () => {
     is_featured: false,
     status: 'active',
   }).credits, 1501)
+})
+
+test('创建成功后列表刷新失败仍锁定服务端 ID，重试只能更新', async () => {
+  let createCalls = 0
+  let updateCalls = 0
+  const savedPackage = {
+    id: 'pkg-created',
+    name: '创建套餐',
+    badge_text: '',
+    ad_title: '创建成功',
+    ad_subtitle: '',
+    button_text: '立即购买',
+    amount_cents: 1000,
+    credits: 1501,
+    starts_at: null,
+    ends_at: null,
+    image_url: '/static/uploads/recharge-packages/created.png',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: 0,
+    status: 'active',
+  }
+  const harness = createAdminPanelHarness({
+    createRechargePackage: async () => { createCalls += 1; return savedPackage },
+    updateRechargePackage: async () => { updateCalls += 1; return savedPackage },
+    listAdminRechargePackages: async () => { throw new Error('refresh failed') },
+  })
+  Object.assign(harness.draft, {
+    name: savedPackage.name,
+    ad_title: savedPackage.ad_title,
+    button_text: savedPackage.button_text,
+    amount_yuan: 10,
+    credits: savedPackage.credits,
+    image_url: savedPackage.image_url,
+    accent_color: savedPackage.accent_color,
+    sort_order: 0,
+    is_featured: false,
+    status: 'active',
+  })
+
+  await harness.saveItem()
+  assert.equal(harness.draft.id, 'pkg-created')
+  await harness.saveItem()
+  assert.equal(createCalls, 1)
+  assert.equal(updateCalls, 1)
+  assert.ok(harness.messages.warning.every((message) => message.includes('保存成功但刷新失败')))
+  assert.deepEqual(harness.messages.error, [])
+})
+
+test('排序成功只同步顺序，不覆盖当前未保存广告草稿', async () => {
+  const serverItems = [
+    { id: 'b', name: 'B', ad_title: 'SERVER B', amount_cents: 2000, credits: 2000, sort_order: 0 },
+    { id: 'a', name: 'A', ad_title: 'SERVER A', image_url: '/static/uploads/recharge-packages/server.png', amount_cents: 1000, credits: 1000, sort_order: 1 },
+  ]
+  const harness = createAdminPanelHarness({
+    reorderRechargePackages: async () => serverItems,
+  })
+  harness.packages.value = [serverItems[1], serverItems[0]]
+  harness.stableOrder.value = ['a', 'b']
+  Object.assign(harness.draft, {
+    id: 'a',
+    name: 'A',
+    ad_title: 'UNSAVED',
+    image_url: '/static/uploads/recharge-packages/just-uploaded.png',
+    sort_order: 0,
+  })
+
+  await harness.persistOrder([serverItems[0], serverItems[1]])
+  assert.equal(harness.draft.ad_title, 'UNSAVED')
+  assert.equal(harness.draft.image_url, '/static/uploads/recharge-packages/just-uploaded.png')
+  assert.equal(harness.draft.sort_order, 1)
 })

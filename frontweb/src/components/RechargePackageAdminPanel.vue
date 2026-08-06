@@ -25,8 +25,8 @@
             draggable="true"
             tabindex="0"
             @click="selectItem(item)"
-            @keydown.enter.prevent="selectItem(item)"
-            @keydown.space.prevent="selectItem(item)"
+            @keydown.enter.self.prevent="selectItem(item)"
+            @keydown.space.self.prevent="selectItem(item)"
             @dragstart="beginDrag(index)"
             @dragover.prevent
             @drop="dropItem(index)"
@@ -271,13 +271,34 @@ async function saveItem() {
   const packageId = draft.id
   saving.value = packageId || 'new'
   try {
-    const saved = packageId
-      ? await updateRechargePackage(packageId, toPayload(draft))
-      : await createRechargePackage(toPayload(draft))
-    await load(saved?.id || packageId)
+    let saved
+    try {
+      saved = packageId
+        ? await updateRechargePackage(packageId, toPayload(draft))
+        : await createRechargePackage(toPayload(draft))
+    } catch (error) {
+      ElMessage.error(error?.message || '套餐保存失败，请稍后重试')
+      return
+    }
+
+    const savedId = saved?.id || packageId
+    const existingIndex = packages.value.findIndex((item) => item.id === savedId)
+    const normalizedSaved = normalizePackage({ ...saved, id: savedId }, existingIndex >= 0 ? existingIndex : packages.value.length)
+    if (existingIndex >= 0) {
+      packages.value = packages.value.map((item, index) => index === existingIndex ? normalizedSaved : item)
+    } else {
+      packages.value = [...packages.value, normalizedSaved]
+    }
+    stableOrder.value = packages.value.map((item) => item.id)
+    Object.assign(draft, emptyDraft(), normalizedSaved)
+
+    try {
+      await load(savedId)
+    } catch (error) {
+      ElMessage.warning('套餐保存成功但刷新失败，当前草稿已保留')
+      return
+    }
     ElMessage.success(packageId ? '充值套餐已保存' : '充值套餐已创建')
-  } catch (error) {
-    ElMessage.error(error?.message || '套餐保存失败，请稍后重试')
   } finally {
     saving.value = ''
   }
@@ -332,7 +353,7 @@ async function persistOrder(next) {
     packages.value = reordered.map(normalizePackage)
     stableOrder.value = packages.value.map((item) => item.id)
     const selected = packages.value.find((item) => item.id === draft.id)
-    if (selected) selectItem(selected)
+    if (selected) draft.sort_order = selected.sort_order
     ElMessage.success('套餐顺序已保存')
   } catch (error) {
     packages.value = previousStableOrder
