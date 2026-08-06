@@ -161,6 +161,7 @@ function createAdminPanelHarness(overrides = {}) {
     } = deps
     const ref = (value) => ({ value })
     const reactive = (value) => value
+    const computed = (getter) => ({ get value() { return getter() } })
     const watch = () => {}
     const onMounted = () => {}
     ${executable}
@@ -169,6 +170,8 @@ function createAdminPanelHarness(overrides = {}) {
       validate, selectItem, startCreate, saveItem, uploadImage, moveItem, persistOrder,
       hasLoadedPackages: typeof hasLoadedPackages === 'undefined' ? null : hasLoadedPackages,
       loadFailed: typeof loadFailed === 'undefined' ? null : loadFailed,
+      loadingPackages: typeof loadingPackages === 'undefined' ? null : loadingPackages,
+      managementLocked: typeof managementLocked === 'undefined' ? null : managementLocked,
       retryLoadPackages: typeof retryLoadPackages === 'undefined' ? null : retryLoadPackages,
     }
   `)(deps)
@@ -177,6 +180,27 @@ function createAdminPanelHarness(overrides = {}) {
 
 function markPackagesLoaded(harness) {
   if (harness.hasLoadedPackages) harness.hasLoadedPackages.value = true
+}
+
+function setValidNewDraft(harness) {
+  Object.assign(harness.draft, {
+    id: '',
+    name: '并发套餐',
+    badge_text: '',
+    ad_title: '并发写入保护',
+    ad_subtitle: '',
+    button_text: '立即购买',
+    amount_yuan: 10,
+    amount_cents: 1000,
+    credits: 1501,
+    starts_at: null,
+    ends_at: null,
+    image_url: '/static/uploads/recharge-packages/concurrency.png',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: false,
+    status: 'active',
+  })
 }
 
 test('套餐管理器提供全字段草稿、创建更新与用户端实时预览', () => {
@@ -219,7 +243,7 @@ test('套餐广告图上传校验格式且仅在成功后替换草稿图片', ()
 
 test('套餐排序提交完整 ID 列表并在失败时回滚稳定顺序', () => {
   assert.match(adminPanel, /reorderRechargePackages/)
-  assert.match(adminPanel, /:draggable="hasLoadedPackages\s*&&\s*!sorting"/)
+  assert.match(adminPanel, /:draggable="hasLoadedPackages\s*&&\s*!managementLocked"/)
   assert.match(adminPanel, /:aria-label="`上移/)
   assert.match(adminPanel, /:aria-label="`下移/)
   assert.match(adminPanel, /await\s+reorderRechargePackages\(next\.map\(\(item\)\s*=>\s*item\.id\)\)/)
@@ -575,6 +599,101 @@ test('首次加载错误态不伪装空库并禁用创建保存入口', () => {
   assert.match(adminPanel, /重新加载/)
   assert.match(adminPanel, /v-else-if="hasLoadedPackages\s*&&\s*packages\.length\s*===\s*0"/)
   assert.match(adminPanel, /@click="retryLoadPackages"/)
-  assert.match(adminPanel, /:disabled="!hasLoadedPackages\s*\|\|\s*loadingPackages"/)
-  assert.match(adminPanel, /if\s*\(!hasLoadedPackages\.value\)\s*return/)
+  assert.match(adminPanel, /:disabled="managementLocked"/)
+  assert.match(adminPanel, /if\s*\(managementLocked\.value\)\s*return/)
+  assert.match(adminPanel, /<fieldset\s+class="editor-form"\s+:disabled="managementLocked">/)
+  assert.match(adminPanel, /const\s+managementLocked\s*=\s*computed/)
+})
+
+test('并发重试复用同一个套餐 GET 且 loading 持续到请求结束', async () => {
+  let getCalls = 0
+  let resolveGet
+  const response = new Promise((resolve) => { resolveGet = resolve })
+  const harness = createAdminPanelHarness({
+    listAdminRechargePackages: async () => { getCalls += 1; return response },
+  })
+  assert.ok(harness.loadingPackages)
+
+  const first = harness.retryLoadPackages()
+  const second = harness.retryLoadPackages()
+  assert.equal(getCalls, 1)
+  assert.equal(harness.loadingPackages.value, true)
+  resolveGet([])
+  await Promise.all([first, second])
+  assert.equal(getCalls, 1)
+  assert.equal(harness.loadingPackages.value, false)
+  assert.equal(harness.hasLoadedPackages.value, true)
+})
+
+test('双击保存只创建一次且保存期间拒绝排序', async () => {
+  let createCalls = 0
+  let reorderCalls = 0
+  let resolveCreate
+  const createResult = new Promise((resolve) => { resolveCreate = resolve })
+  const saved = {
+    id: 'created-once',
+    name: '并发套餐',
+    ad_title: '并发写入保护',
+    button_text: '立即购买',
+    amount_cents: 1000,
+    credits: 1501,
+    image_url: '/static/uploads/recharge-packages/concurrency.png',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: 0,
+    status: 'active',
+  }
+  const harness = createAdminPanelHarness({
+    createRechargePackage: async () => { createCalls += 1; return createResult },
+    reorderRechargePackages: async () => { reorderCalls += 1; return [] },
+    listAdminRechargePackages: async () => [saved],
+  })
+  markPackagesLoaded(harness)
+  setValidNewDraft(harness)
+
+  const first = harness.saveItem()
+  const second = harness.saveItem()
+  await harness.persistOrder([])
+  assert.equal(createCalls, 1)
+  assert.equal(reorderCalls, 0)
+  resolveCreate(saved)
+  await Promise.all([first, second])
+})
+
+test('排序和上传期间拒绝其他写操作且重复上传只发一次', async () => {
+  let createCalls = 0
+  let reorderCalls = 0
+  let uploadCalls = 0
+  let resolveOrder
+  let resolveUpload
+  const orderResult = new Promise((resolve) => { resolveOrder = resolve })
+  const uploadResult = new Promise((resolve) => { resolveUpload = resolve })
+  const packageA = { id: 'a', name: 'A', amount_cents: 1000, credits: 1501, sort_order: 0 }
+  const harness = createAdminPanelHarness({
+    createRechargePackage: async () => { createCalls += 1; return {} },
+    reorderRechargePackages: async () => { reorderCalls += 1; return orderResult },
+    uploadRechargePackageImage: async () => { uploadCalls += 1; return uploadResult },
+  })
+  markPackagesLoaded(harness)
+  setValidNewDraft(harness)
+  harness.packages.value = [packageA]
+  harness.stableOrder.value = ['a']
+
+  const sorting = harness.persistOrder([packageA])
+  await harness.saveItem()
+  assert.equal(reorderCalls, 1)
+  assert.equal(createCalls, 0)
+  resolveOrder([packageA])
+  await sorting
+
+  const event = () => ({ target: { files: [{ type: 'image/png' }], value: 'selected' } })
+  const uploading = harness.uploadImage(event())
+  const duplicateUpload = harness.uploadImage(event())
+  await harness.saveItem()
+  await harness.persistOrder([packageA])
+  assert.equal(uploadCalls, 1)
+  assert.equal(createCalls, 0)
+  assert.equal(reorderCalls, 1)
+  resolveUpload({ url: '/static/uploads/recharge-packages/uploaded.png' })
+  await Promise.all([uploading, duplicateUpload])
 })

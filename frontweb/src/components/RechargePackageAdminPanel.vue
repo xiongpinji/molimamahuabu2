@@ -5,7 +5,7 @@
         <h2>充值套餐</h2>
         <p>编辑用户端套餐广告、金额、积分和限时规则。推荐套餐由后端事务保证全局唯一。</p>
       </div>
-      <el-button type="primary" :disabled="!hasLoadedPackages || loadingPackages" @click="startCreate">新增套餐</el-button>
+      <el-button type="primary" :disabled="managementLocked" @click="startCreate">新增套餐</el-button>
     </div>
 
     <div class="admin-grid">
@@ -28,7 +28,7 @@
             :key="item.id"
             class="sortable-item"
             :class="{ 'sortable-item--active': draft.id === item.id }"
-            :draggable="hasLoadedPackages && !sorting"
+            :draggable="hasLoadedPackages && !managementLocked"
             tabindex="0"
             @click="selectItem(item)"
             @keydown.enter.self.prevent="selectItem(item)"
@@ -51,13 +51,13 @@
               <button
                 type="button"
                 :aria-label="`上移 ${item.name}`"
-                :disabled="!hasLoadedPackages || sorting || index === 0"
+                :disabled="managementLocked || index === 0"
                 @click.stop="moveItem(index, index - 1)"
               >上移</button>
               <button
                 type="button"
                 :aria-label="`下移 ${item.name}`"
-                :disabled="!hasLoadedPackages || sorting || index === packages.length - 1"
+                :disabled="managementLocked || index === packages.length - 1"
                 @click.stop="moveItem(index, index + 1)"
               >下移</button>
             </div>
@@ -71,7 +71,7 @@
           <span>所有广告内容都会同步到用户端卡片</span>
         </div>
 
-        <div class="editor-form">
+        <fieldset class="editor-form" :disabled="managementLocked">
           <label><span>套餐名称</span><el-input v-model.trim="draft.name" maxlength="60" show-word-limit /></label>
           <label><span>角标文案</span><el-input v-model.trim="draft.badge_text" maxlength="20" show-word-limit /></label>
           <label class="field-wide"><span>广告主标题</span><el-input v-model.trim="draft.ad_title" maxlength="48" show-word-limit /></label>
@@ -92,24 +92,24 @@
             <span>广告图片</span>
             <div class="image-controls">
               <el-input v-model.trim="draft.image_url" placeholder="上传图片或填写 HTTPS 地址" />
-              <el-button :loading="uploading" :disabled="!hasLoadedPackages || loadingPackages" @click="imageInput?.click()">上传图片</el-button>
+              <el-button :loading="uploading" :disabled="managementLocked" @click="imageInput?.click()">上传图片</el-button>
               <input
                 ref="imageInput"
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
-                :disabled="!hasLoadedPackages || loadingPackages"
+                :disabled="managementLocked"
                 hidden
                 @change="uploadImage"
               >
             </div>
             <small>支持 JPG、PNG、WebP；上传失败或保存失败不会清空当前图片。</small>
           </label>
-        </div>
+        </fieldset>
 
         <div class="recommend-note">推荐套餐由后端事务保证全局唯一；保存新的推荐套餐后，原推荐会自动取消。</div>
         <div class="save-bar">
-          <el-button :disabled="!hasLoadedPackages || loadingPackages" @click="resetDraft">重置草稿</el-button>
-          <el-button type="primary" :loading="Boolean(saving)" :disabled="!hasLoadedPackages || loadingPackages" @click="saveItem">
+          <el-button :disabled="managementLocked" @click="resetDraft">重置草稿</el-button>
+          <el-button type="primary" :loading="Boolean(saving)" :disabled="managementLocked" @click="saveItem">
             {{ draft.id ? '保存套餐' : '创建套餐' }}
           </el-button>
         </div>
@@ -127,7 +127,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import RechargePackageCard from '@/components/RechargePackageCard.vue'
 import {
@@ -148,6 +148,10 @@ const sorting = ref(false)
 const uploading = ref(false)
 const imageInput = ref(null)
 const draggedIndex = ref(-1)
+let loadPromise = null
+
+const operationBusy = computed(() => Boolean(saving.value) || sorting.value || uploading.value || loadingPackages.value)
+const managementLocked = computed(() => !hasLoadedPackages.value || loadFailed.value || operationBusy.value)
 
 const emptyDraft = () => ({
   id: '',
@@ -255,11 +259,12 @@ function selectItem(item) {
 }
 
 function startCreate() {
-  if (!hasLoadedPackages.value) return
+  if (managementLocked.value) return
   Object.assign(draft, emptyDraft())
 }
 
 function resetDraft() {
+  if (managementLocked.value) return
   const selected = packages.value.find((item) => item.id === draft.id)
   if (selected) selectItem(selected)
   else startCreate()
@@ -279,21 +284,30 @@ function syncDraftSortOrder() {
   if (selected) draft.sort_order = selected.sort_order
 }
 
-async function load(preferredId = draft.id) {
+function load(preferredId = draft.id) {
+  if (loadPromise) return loadPromise
   loadingPackages.value = true
-  try {
-    const loaded = replacePackageList(await listAdminRechargePackages())
-    const selected = loaded.find((item) => item.id === preferredId)
-    if (selected) selectItem(selected)
-    else if (loaded.length > 0 && preferredId) selectItem(loaded[0])
-    else startCreate()
-    return loaded
-  } catch (error) {
-    if (!hasLoadedPackages.value) loadFailed.value = true
-    throw error
-  } finally {
-    loadingPackages.value = false
-  }
+  const request = (async () => {
+    try {
+      const loaded = replacePackageList(await listAdminRechargePackages())
+      const selected = loaded.find((item) => item.id === preferredId)
+      if (selected) selectItem(selected)
+      else if (loaded.length > 0 && preferredId) selectItem(loaded[0])
+      else Object.assign(draft, emptyDraft())
+      return loaded
+    } catch (error) {
+      if (!hasLoadedPackages.value) loadFailed.value = true
+      throw error
+    }
+  })()
+  const tracked = request.finally(() => {
+    if (loadPromise === tracked) {
+      loadPromise = null
+      loadingPackages.value = false
+    }
+  })
+  loadPromise = tracked
+  return tracked
 }
 
 async function retryLoadPackages() {
@@ -305,7 +319,7 @@ async function retryLoadPackages() {
 }
 
 async function saveItem() {
-  if (!hasLoadedPackages.value) return
+  if (managementLocked.value) return
   const error = validate(draft)
   if (error) return ElMessage.warning(error)
 
@@ -346,7 +360,7 @@ async function saveItem() {
 }
 
 async function uploadImage(event) {
-  if (!hasLoadedPackages.value) {
+  if (managementLocked.value) {
     event.target.value = ''
     return
   }
@@ -370,19 +384,19 @@ async function uploadImage(event) {
 }
 
 function beginDrag(index) {
-  if (!hasLoadedPackages.value || sorting.value) return
+  if (managementLocked.value) return
   draggedIndex.value = index
 }
 
 function dropItem(index) {
-  if (!hasLoadedPackages.value || sorting.value) return
+  if (managementLocked.value) return
   const fromIndex = draggedIndex.value
   draggedIndex.value = -1
   if (fromIndex >= 0) moveItem(fromIndex, index)
 }
 
 function moveItem(fromIndex, toIndex) {
-  if (!hasLoadedPackages.value || sorting.value || fromIndex === toIndex) return
+  if (managementLocked.value || fromIndex === toIndex) return
   if (fromIndex < 0 || toIndex < 0 || fromIndex >= packages.value.length || toIndex >= packages.value.length) return
   const next = packages.value.slice()
   const [moved] = next.splice(fromIndex, 1)
@@ -391,7 +405,7 @@ function moveItem(fromIndex, toIndex) {
 }
 
 async function persistOrder(next) {
-  if (!hasLoadedPackages.value) return
+  if (managementLocked.value) return
   const previous = packages.value
   const previousStableOrder = stableOrder.value.slice()
   packages.value = next
@@ -452,7 +466,7 @@ onMounted(retryLoadPackages)
 .sort-actions button { padding: 4px 8px; border: 1px solid #39393c; border-radius: 7px; color: #c7c7ca; background: #202022; cursor: pointer; }
 .sort-actions button:disabled { opacity: .38; cursor: not-allowed; }
 .sort-actions button:focus-visible { outline: 2px solid #ff7139; outline-offset: 2px; }
-.editor-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.editor-form { display: grid; min-width: 0; margin: 0; padding: 0; border: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .editor-form label { display: grid; align-content: start; gap: 7px; color: #a7a7ad; font-size: 12px; }
 .editor-form :deep(.el-input-number), .editor-form :deep(.el-select), .editor-form :deep(.el-date-editor) { width: 100%; }
 .field-wide { grid-column: 1 / -1; }

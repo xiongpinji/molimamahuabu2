@@ -188,6 +188,9 @@ async function mockRechargeApi(page, calls, options = {}) {
           body: JSON.stringify({ success: false, error: { message: '模拟首次套餐加载失败' } }),
         })
       }
+      if (options.adminGetDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, Number(options.adminGetDelayMs)))
+      }
       if (options.orderReadbackFailure && calls.orderPayloads.length > 0) {
         return route.fulfill({
           status: 500,
@@ -228,6 +231,9 @@ async function mockRechargeApi(page, calls, options = {}) {
       const packageId = decodeURIComponent(updateMatch[1])
       const body = request.postDataJSON()
       calls.packageUpdates.push({ method, pathname, body })
+      if (options.adminUpdateDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, Number(options.adminUpdateDelayMs)))
+      }
       if (body.is_featured) {
         adminPackages = adminPackages.map((item) => ({ ...item, is_featured: 0 }))
       }
@@ -245,6 +251,9 @@ async function mockRechargeApi(page, calls, options = {}) {
     if (method === 'PUT' && pathname === '/api/v1/billing/admin/recharge-packages/order') {
       const packageIds = request.postDataJSON().package_ids
       calls.orderPayloads.push(packageIds)
+      if (options.orderDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, Number(options.orderDelayMs)))
+      }
       if (orderFailure) {
         if (options.concurrentPackageOnOrderFailure && !adminPackages.some((item) => item.id === concurrentPackage.id)) {
           adminPackages = [...adminPackages, { ...concurrentPackage }]
@@ -627,7 +636,7 @@ test('排序与服务端回读均失败时恢复本地顺序并保留编辑草�
 test('管理员套餐首次加载失败时阻止写入，重试成功后才解除禁用', async ({ page }) => {
   const calls = createCalls()
   await seedAdminSession(page)
-  await mockRechargeApi(page, calls, { initialAdminGetFailures: 1 })
+  await mockRechargeApi(page, calls, { initialAdminGetFailures: 1, adminGetDelayMs: 250 })
   await page.goto('/billing-admin?tab=recharge')
 
   const admin = page.locator('.package-admin')
@@ -643,23 +652,60 @@ test('管理员套餐首次加载失败时阻止写入，重试成功后才解�
   await expect(createEntry).toBeDisabled()
   await expect(saveButton).toBeDisabled()
   await expect(uploadButton).toBeDisabled()
-  await field(admin, '套餐名称').locator('input').fill('禁止重复创建')
-  await field(admin, '广告主标题').locator('input').fill('首次加载失败草稿')
-  await field(admin, '广告图片').locator('input').first().fill('/static/uploads/recharge-packages/blocked.png')
+  await expect(field(admin, '套餐名称').locator('input')).toBeDisabled()
+  await expect(field(admin, '广告主标题').locator('input')).toBeDisabled()
+  await expect(field(admin, '售价（元）').getByRole('spinbutton')).toBeDisabled()
+  await expect(field(admin, '到账积分').getByRole('spinbutton')).toBeDisabled()
+  await expect(field(admin, '广告图片').locator('input').first()).toBeDisabled()
   await createEntry.dispatchEvent('click')
   await saveButton.dispatchEvent('click')
   await uploadButton.dispatchEvent('click')
-  await expect(field(admin, '套餐名称').locator('input')).toHaveValue('禁止重复创建')
   expect(calls.adminPackageCreates).toBe(0)
   expect(calls.orderPayloads).toEqual([])
   expect(calls.apiPosts).toEqual([])
 
-  await loadError.getByRole('button', { name: '重新加载' }).click()
+  const retryButton = loadError.getByRole('button', { name: '重新加载' })
+  await Promise.all([
+    retryButton.dispatchEvent('click'),
+    retryButton.dispatchEvent('click'),
+  ])
+  await expect.poll(() => calls.adminPackageGets).toBe(2)
   await expect(admin.locator('.package-load-error')).toHaveCount(0)
   await expect(admin.locator('.sortable-item')).toHaveCount(4)
   await expect(createEntry).toBeEnabled()
   await expect(saveButton).toBeEnabled()
-  await expect.poll(() => calls.adminPackageGets).toBe(2)
+  const nameInput = field(admin, '套餐名称').locator('input')
+  await expect(nameInput).toBeEnabled()
+  await nameInput.fill('重试后可编辑')
+  await expect(nameInput).toHaveValue('重试后可编辑')
   expect(calls.adminPackageCreates).toBe(0)
   expect(calls.orderPayloads).toEqual([])
+})
+
+test('管理员套餐排序与保存互斥且双击保存只发送一个更新请求', async ({ page }) => {
+  const calls = createCalls()
+  await seedAdminSession(page)
+  await mockRechargeApi(page, calls, { adminUpdateDelayMs: 250, orderDelayMs: 250 })
+  await page.goto('/billing-admin?tab=recharge')
+
+  const admin = page.locator('.package-admin')
+  await expect(admin.locator('.sortable-item')).toHaveCount(4)
+  await admin.locator('.sortable-item').filter({ hasText: 'PLUS' }).click()
+  await field(admin, '广告主标题').locator('input').fill('串行化套餐管理')
+
+  const saveButton = admin.getByRole('button', { name: '保存套餐' })
+  const moveDown = admin.locator('.sortable-item').filter({ hasText: 'PLUS' }).getByRole('button', { name: '下移 PLUS' })
+  await moveDown.dispatchEvent('click')
+  await saveButton.dispatchEvent('click')
+  await expect.poll(() => calls.orderPayloads).toHaveLength(1)
+  expect(calls.packageUpdates).toEqual([])
+  await expect(moveDown).toBeEnabled()
+
+  await Promise.all([
+    saveButton.dispatchEvent('click'),
+    saveButton.dispatchEvent('click'),
+  ])
+  await expect.poll(() => calls.packageUpdates).toHaveLength(1)
+  await expect(saveButton).toBeEnabled()
+  expect(calls.packageUpdates[0].body.ad_title).toBe('串行化套餐管理')
 })
