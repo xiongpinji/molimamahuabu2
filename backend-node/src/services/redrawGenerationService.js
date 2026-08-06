@@ -359,11 +359,18 @@ async function generateShot(ctx, input = {}) {
   });
   if (ctx.awaitCompletion === true) return enrich(await runShotGeneration(ctx, created.task_id));
   const schedule = ctx.schedule || ((callback) => setImmediate(callback));
-  schedule(() => {
-    runShotGeneration(ctx, created.task_id).catch((error) => {
-      ctx.log?.error?.('redraw shot background generation failed', { task_id: created.task_id, error: error.message });
-    });
-  });
+  schedule(() => runShotGeneration(ctx, created.task_id).catch((error) => {
+    try {
+      updateNeedsAttention(db, created.task_id, shot.id, error.message, now(ctx), created.video_generation_id);
+    } catch (stateError) {
+      ctx.log?.error?.('redraw shot background state update failed', {
+        task_id: created.task_id,
+        error: stateError.message,
+      });
+    }
+    ctx.log?.error?.('redraw shot background generation failed', { task_id: created.task_id, error: error.message });
+    return { status: 'needs_attention', error: error.message };
+  }));
   return enrich({ ...created, attempt: generation.attempt });
 }
 
@@ -651,7 +658,7 @@ async function runBounded(items, concurrency, worker) {
 
 function failBatchShotSafely(ctx, shot, error) {
   const { db } = ctx;
-  const current = db.prepare('SELECT video_generation_id FROM redraw_shots WHERE id = ?').get(shot.id);
+  const current = db.prepare('SELECT status, video_generation_id FROM redraw_shots WHERE id = ?').get(shot.id);
   const video = current?.video_generation_id
     ? db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(current.video_generation_id))
     : null;
@@ -665,15 +672,38 @@ function failBatchShotSafely(ctx, shot, error) {
   if (task && video && ['pending', 'processing'].includes(String(task.status))) {
     updateNeedsAttention(db, task.id, shot.id, error.message, now(ctx), video.id);
   }
+  const actualStatus = db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shot.id)?.status || 'failed';
   return enrichGenerationResult(db, {
     shot_id: shot.id,
     task_id: task?.id || null,
     video_generation_id: video?.id || null,
     reservation_id: reservationId,
-    status: task && video ? 'needs_attention' : 'failed',
+    status: actualStatus,
     error_code: error.code || 'REDRAW_BATCH_SHOT_FAILED',
     error: error.message,
   });
+}
+
+function scheduleBatchDrain(ctx, jobs, concurrency) {
+  if (!jobs.length) return;
+  const drain = () => runBounded(jobs, concurrency, async (job) => {
+    try {
+      return await job();
+    } catch (error) {
+      ctx.log?.error?.('redraw batch background generation failed', { error: error.message });
+      return null;
+    }
+  });
+  if (ctx.batchScheduler) {
+    ctx.batchScheduler(drain);
+    return;
+  }
+  const immediate = setImmediate(() => {
+    drain().catch((error) => {
+      ctx.log?.error?.('redraw batch drain failed', { error: error.message });
+    });
+  });
+  immediate.unref?.();
 }
 
 async function generateBatch(ctx, input = {}) {
@@ -721,18 +751,26 @@ async function generateBatch(ctx, input = {}) {
   const concurrency = Number.isSafeInteger(rawConcurrency) && rawConcurrency > 0
     ? Math.min(rawConcurrency, 8)
     : DEFAULT_GENERATION_CONCURRENCY;
-  const results = await runBounded(candidates, concurrency, async (shot) => {
+  const jobs = [];
+  const results = [];
+  for (const shot of candidates) {
     try {
-      const result = await generateShot({
+      const generationContext = {
         ...ctx,
-        awaitCompletion: true,
+        awaitCompletion: false,
         batchStyleSnapshot,
-      }, { ...input, shotId: shot.id, versionId: undefined, shotIds: undefined, version_id: undefined, shot_ids: undefined });
-      return { shot_id: shot.id, ...result };
+        schedule: (callback) => jobs.push(callback),
+      };
+      const shotInput = { ...input, shotId: shot.id, versionId: undefined, shotIds: undefined, version_id: undefined, shot_ids: undefined };
+      const result = shot.status === 'failed'
+        ? await retryShot(generationContext, shotInput)
+        : await generateShot(generationContext, shotInput);
+      results.push({ shot_id: shot.id, ...result });
     } catch (error) {
-      return failBatchShotSafely(ctx, shot, error);
+      results.push(failBatchShotSafely(ctx, shot, error));
     }
-  });
+  }
+  scheduleBatchDrain(ctx, jobs, concurrency);
   return { version_id: versionId, results, skipped };
 }
 

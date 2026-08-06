@@ -690,6 +690,7 @@ test('classifyVideoOutcome 不把不完整 completed 当 completed', () => {
 test('批量只提交同版本中通过门禁且未完成未处理的镜头，并逐镜独立计费', async () => {
   const state = setup();
   const submitted = [];
+  let scheduled = null;
   try {
     const shot1 = addShot(state.db, state.versionId, { shotIndex: 1 });
     const shot2 = addShot(state.db, state.versionId, { shotIndex: 2, status: 'completed' });
@@ -697,6 +698,7 @@ test('批量只提交同版本中通过门禁且未完成未处理的镜头，�
     const shot4 = addShot(state.db, state.versionId, { shotIndex: 4, status: 'processing' });
     const result = await generateBatch(ctx(state.db, {
       generationConcurrency: 2,
+      batchScheduler: (callback) => { scheduled = callback; },
       videoProcessor: async (db, _log, videoId) => {
         const row = db.prepare(`SELECT t.resource_id FROM video_generations v JOIN async_tasks t ON t.id = v.task_id WHERE v.id = ?`).get(videoId);
         submitted.push(Number(row.resource_id));
@@ -704,6 +706,9 @@ test('批量只提交同版本中通过门禁且未完成未处理的镜头，�
       },
     }), { versionId: state.versionId, shotIds: [shot1, shot2, shot3, shot4] });
 
+    assert.equal(result.results.every((item) => item.status === 'processing'), true);
+    assert.equal(typeof scheduled, 'function');
+    await scheduled();
     assert.deepEqual(submitted.sort((a, b) => a - b), [shot1, shot3]);
     assert.deepEqual(result.results.map((item) => item.shot_id), [shot1, shot3]);
     assert.equal(result.skipped.length, 2);
@@ -749,10 +754,12 @@ test('批量生成遵守 generationConcurrency 有界并发', async () => {
   const state = setup();
   let active = 0;
   let maxActive = 0;
+  let scheduled = null;
   try {
     const shotIds = Array.from({ length: 5 }, (_, index) => addShot(state.db, state.versionId, { shotIndex: index + 1 }));
     await generateBatch(ctx(state.db, {
       generationConcurrency: 2,
+      batchScheduler: (callback) => { scheduled = callback; },
       videoProcessor: async (db, _log, videoId) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
@@ -761,6 +768,7 @@ test('批量生成遵守 generationConcurrency 有界并发', async () => {
         active -= 1;
       },
     }), { versionId: state.versionId, shotIds });
+    await scheduled();
     assert.equal(maxActive, 2);
   } finally {
     state.db.close();
@@ -769,6 +777,7 @@ test('批量生成遵守 generationConcurrency 有界并发', async () => {
 
 test('批量单镜处理器异常不影响其他镜头且如实返回 held 账单', async () => {
   const state = setup();
+  let scheduled = null;
   try {
     const shotIds = [
       addShot(state.db, state.versionId, { shotIndex: 1 }),
@@ -777,17 +786,152 @@ test('批量单镜处理器异常不影响其他镜头且如实返回 held 账�
     let calls = 0;
     const result = await generateBatch(ctx(state.db, {
       generationConcurrency: 1,
+      batchScheduler: (callback) => { scheduled = callback; },
       videoProcessor: async (db, _log, videoId) => {
         calls += 1;
         if (calls === 1) throw new Error('processor exploded');
         db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'provider failed' WHERE id = ?").run(videoId);
       },
     }), { versionId: state.versionId, shotIds });
-    assert.equal(result.results[0].status, 'needs_attention');
+    assert.equal(result.results[0].status, 'processing');
     assert.equal(result.results[0].billing.held, 18);
-    assert.equal(result.results[1].status, 'failed');
-    assert.equal(result.results[1].billing.released, 18);
-    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations ORDER BY created_at, id LIMIT 1').get().status, 'held');
+    assert.equal(result.results[1].status, 'processing');
+    assert.equal(result.results[1].billing.held, 18);
+    await scheduled();
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotIds[0]).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotIds[1]).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(result.results[0].reservation_id).status, 'held');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(result.results[1].reservation_id).status, 'refunded');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量创建不等待供应商终态即可返回 processing，并将后台执行交给批次调度器', async () => {
+  const state = setup();
+  let scheduled = null;
+  let providerCalls = 0;
+  try {
+    const shotIds = [
+      addShot(state.db, state.versionId, { shotIndex: 1 }),
+      addShot(state.db, state.versionId, { shotIndex: 2 }),
+    ];
+    const batch = generateBatch(ctx(state.db, {
+      videoProcessor: async () => {
+        providerCalls += 1;
+        await new Promise(() => {});
+      },
+      batchScheduler: (callback) => { scheduled = callback; },
+    }), { versionId: state.versionId, shotIds });
+    const result = await Promise.race([
+      batch,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('batch waited for provider')), 250)),
+    ]);
+    assert.equal(providerCalls, 0);
+    assert.equal(typeof scheduled, 'function');
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results.every((item) => item.status === 'processing' && item.task_id && item.billing.held === 18), true);
+    assert.equal(count(state.db, 'async_tasks', "status = 'processing'"), 2);
+    assert.equal(count(state.db, 'tenant_usage_reservations', "status = 'held'"), 2);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量后台 drain 按 generationConcurrency 限流并与返回生命周期解耦', async () => {
+  const state = setup();
+  let scheduled = null;
+  let active = 0;
+  let maxActive = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  try {
+    const shotIds = Array.from({ length: 4 }, (_, index) => addShot(state.db, state.versionId, { shotIndex: index + 1 }));
+    const result = await generateBatch(ctx(state.db, {
+      generationConcurrency: 2,
+      batchScheduler: (callback) => { scheduled = callback; },
+      videoProcessor: async (db, _log, videoId) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'provider failed' WHERE id = ?").run(videoId);
+        active -= 1;
+      },
+    }), { versionId: state.versionId, shotIds });
+    assert.equal(result.results.every((item) => item.status === 'processing'), true);
+    const drain = scheduled();
+    for (let index = 0; index < 20 && active < 2; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(active, 2);
+    assert.equal(maxActive, 2);
+    release();
+    await drain;
+    assert.equal(maxActive, 2);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量中的明确 failed 镜头通过 retry 创建 attempt=2 新链且旧账保持原终态', async () => {
+  const state = setup();
+  let scheduled = null;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, videoId) => {
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'first failed' WHERE id = ?").run(videoId);
+      },
+    }), { shotId });
+    const oldTask = state.db.prepare('SELECT status, error, result FROM async_tasks WHERE id = ?').get(first.task_id);
+    const oldVideo = state.db.prepare('SELECT status, provider_task_id FROM video_generations WHERE id = ?').get(first.video_generation_id);
+    const oldReservation = state.db.prepare('SELECT status, operation_key FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id);
+
+    const batch = await generateBatch(ctx(state.db, {
+      batchScheduler: (callback) => { scheduled = callback; },
+    }), { versionId: state.versionId, shotIds: [shotId] });
+    const retried = batch.results[0];
+    assert.equal(typeof scheduled, 'function');
+    assert.equal(retried.status, 'processing');
+    assert.equal(retried.attempt, 2);
+    assert.notEqual(retried.task_id, first.task_id);
+    assert.notEqual(retried.video_generation_id, first.video_generation_id);
+    assert.notEqual(retried.reservation_id, first.reservation_id);
+    assert.notEqual(
+      state.db.prepare('SELECT operation_key FROM tenant_usage_reservations WHERE id = ?').get(retried.reservation_id).operation_key,
+      oldReservation.operation_key,
+    );
+    assert.deepEqual(state.db.prepare('SELECT status, error, result FROM async_tasks WHERE id = ?').get(first.task_id), oldTask);
+    assert.deepEqual(state.db.prepare('SELECT status, provider_task_id FROM video_generations WHERE id = ?').get(first.video_generation_id), oldVideo);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, oldReservation.status);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(retried.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量创建失败返回状态与数据库真实旧链一致，不伪报 needs_attention', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, videoId) => {
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'first failed' WHERE id = ?").run(videoId);
+      },
+    }), { shotId });
+    state.db.prepare("DELETE FROM model_credit_prices WHERE model = 'seedance 2.0'").run();
+    const batch = await generateBatch(ctx(state.db, { batchScheduler: () => {} }), {
+      versionId: state.versionId,
+      shotIds: [shotId],
+    });
+    const item = batch.results[0];
+    assert.equal(item.status, 'failed');
+    assert.equal(item.billing.released, 18);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, item.status);
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, item.status);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'refunded');
   } finally {
     state.db.close();
   }
