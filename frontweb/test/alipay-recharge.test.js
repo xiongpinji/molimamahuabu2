@@ -9,6 +9,9 @@ const platformHeader = fs.readFileSync(new URL('../src/components/PlatformHeader
 const routerSource = fs.readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
 const uploadApi = fs.readFileSync(new URL('../src/api/upload.js', import.meta.url), 'utf8')
 const rechargeCenterPath = new URL('../src/views/RechargeCenter.vue', import.meta.url)
+const packageCardPath = new URL('../src/components/RechargePackageCard.vue', import.meta.url)
+const customPanelPath = new URL('../src/components/CustomRechargePanel.vue', import.meta.url)
+const appSource = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 
 test('用户充值与管理员套餐统一使用支付宝充值接口', () => {
   for (const endpoint of [
@@ -21,14 +24,14 @@ test('用户充值与管理员套餐统一使用支付宝充值接口', () => {
   }
 })
 
-test('工作区页面同时展示固定比例充值、限时套餐广告图和本人订单', () => {
-  assert.match(tenantConsole, /1 元 = 100 积分/)
-  assert.match(tenantConsole, /自定义充值/)
-  assert.match(tenantConsole, /限时充值套餐/)
-  assert.match(tenantConsole, /rechargePackage\.image_url/)
-  assert.match(tenantConsole, /createAlipayRechargeOrder/)
-  assert.match(tenantConsole, /window\.location\.assign\(result\.payment_url\)/)
-  assert.match(tenantConsole, /本人充值记录/)
+test('工作区只保留充值中心入口，兑换码和积分流水不受影响', () => {
+  assert.doesNotMatch(tenantConsole, /createAlipayRechargeOrder/)
+  assert.doesNotMatch(tenantConsole, /listRechargePackages/)
+  assert.doesNotMatch(tenantConsole, /listAlipayRechargeOrders/)
+  assert.match(tenantConsole, /name:\s*'recharge-center'/)
+  assert.match(tenantConsole, /前往充值中心/)
+  assert.match(tenantConsole, /redeemCredits/)
+  assert.match(tenantConsole, /route\.query\.section\s*===\s*'redeem'/)
   assert.match(platformHeader, /充值积分/)
   assert.match(platformHeader, /name:\s*'recharge-center'/)
   assert.match(platformHeader, /name:\s*'tenant-console',\s*query:\s*\{\s*section:\s*'redeem'\s*\}/)
@@ -48,12 +51,66 @@ test('独立充值中心保留旧入口兼容并提供套餐管理 API', () => {
   assert.match(uploadApi, /request\.post\(\s*['"]\/billing\/admin\/recharge-packages\/image['"]\s*,\s*form\s*,/s)
 })
 
-test('充值中心占位页可供路由构建且不会提前发起业务请求', () => {
+test('独立充值中心并行加载数据并提供套餐、自定义和订单抽屉', () => {
   assert.equal(fs.existsSync(rechargeCenterPath), true)
   const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
-  assert.match(rechargeCenter, /充值中心/)
-  assert.match(rechargeCenter, /支付通道准备中/)
-  assert.doesNotMatch(rechargeCenter, /@\/api\/|request\.|fetch\(/)
+  for (const text of ['充值中心', '精选套餐', '自定义充值', '充值记录', '支付通道准备中']) {
+    assert.match(rechargeCenter, new RegExp(text))
+  }
+  assert.match(rechargeCenter, /Promise\.all\(\s*\[\s*getCreditAccount\(\),\s*getAlipayRechargeConfig\(\),\s*listRechargePackages\(\),\s*listAlipayRechargeOrders\(\),?\s*\]\s*\)/s)
+  assert.match(rechargeCenter, /<el-drawer/)
+  assert.match(rechargeCenter, /RechargePackageCard/)
+  assert.match(rechargeCenter, /CustomRechargePanel/)
+  assert.match(rechargeCenter, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/)
+  assert.match(rechargeCenter, /@media\s*\(max-width:\s*1024px\)[\s\S]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+  assert.match(rechargeCenter, /@media\s*\(max-width:\s*760px\)[\s\S]*grid-template-columns:\s*1fr/)
+})
+
+test('支付未配置时模板和处理函数双重拦截订单请求', () => {
+  const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
+  assert.match(rechargeCenter, /:disabled="!rechargeConfig\.configured"/)
+  assert.match(rechargeCenter, /if\s*\(!rechargeConfig\.value\.configured\)\s*return/)
+  assert.match(rechargeCenter, /createAlipayRechargeOrder/)
+  assert.ok(
+    rechargeCenter.indexOf('if (!rechargeConfig.value.configured) return')
+      < rechargeCenter.indexOf('createAlipayRechargeOrder({'),
+    '支付配置守卫必须先于订单 API 调用',
+  )
+  assert.match(rechargeCenter, /if\s*\(!result\?\.payment_url\)\s*return/)
+  assert.match(rechargeCenter, /window\.location\.assign\(result\.payment_url\)/)
+  assert.doesNotMatch(rechargeCenter, /payment_url:\s*['"]https?:\/\//)
+})
+
+test('套餐卡完整展示结构化广告与积分明细，禁用时不发出购买事件', () => {
+  assert.equal(fs.existsSync(packageCardPath), true)
+  const packageCard = fs.readFileSync(packageCardPath, 'utf8')
+  for (const field of ['badge_text', 'ad_title', 'ad_subtitle', 'button_text', 'image_url', 'accent_color']) {
+    assert.match(packageCard, new RegExp(`item\\.${field}`))
+  }
+  assert.match(packageCard, /packageCreditMetrics/)
+  assert.match(packageCard, /baseCredits/)
+  assert.match(packageCard, /bonusCredits/)
+  assert.match(packageCard, /creditsPerYuan/)
+  assert.match(packageCard, /if\s*\(props\.disabled\s*\|\|\s*props\.preview\)\s*return/)
+  assert.match(packageCard, /height:\s*230px/)
+  assert.match(packageCard, /min-height:\s*570px/)
+  assert.match(packageCard, /:alt="[^\"]*item\.name/)
+})
+
+test('自定义充值复用固定比例工具并在禁用时不发出购买事件', () => {
+  assert.equal(fs.existsSync(customPanelPath), true)
+  const customPanel = fs.readFileSync(customPanelPath, 'utf8')
+  assert.match(customPanel, /QUICK_RECHARGE_AMOUNTS/)
+  assert.match(customPanel, /creditsForCustomAmount/)
+  assert.match(customPanel, /validCustomAmount/)
+  assert.match(customPanel, /1\s*元\s*=\s*100\s*积分/)
+  assert.match(customPanel, /if\s*\(props\.disabled\)\s*return/)
+  assert.match(customPanel, /emit\(['"]purchase['"],\s*Number\(amount\.value\)\.toFixed\(2\)\)/)
+  assert.match(customPanel, /QUICK_RECHARGE_AMOUNTS\.length/)
+})
+
+test('充值中心隐藏全局账户悬浮徽标', () => {
+  assert.match(appSource, /route\.name\s*!==\s*'recharge-center'/)
 })
 
 test('平台后台保留可编辑充值套餐入口和广告图预览', () => {
