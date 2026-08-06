@@ -57,6 +57,7 @@ function createApp() {
       db,
       enabled: publicPlatformEnabled,
       secret: process.env.PLATFORM_JWT_SECRET,
+      storageRoot,
     }), express.static(storageRoot));
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);

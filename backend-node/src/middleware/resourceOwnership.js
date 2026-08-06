@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const userAuth = require('../services/userAuthService');
 const sessionCookie = require('../services/sessionCookieService');
@@ -15,6 +16,34 @@ function isRechargePackageImagePath(relativePath) {
     return false;
   }
   return /\.(?:jpg|png|webp)$/.test(segments.at(-1));
+}
+
+function isPathInside(parentPath, childPath) {
+  const relative = path.relative(parentPath, childPath);
+  return relative !== ''
+    && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
+function isExistingRechargePackageImage(storageRoot, relativePath) {
+  if (!storageRoot) return false;
+  try {
+    const realStorageRoot = fs.realpathSync(storageRoot);
+    const realPackageRoot = fs.realpathSync(path.join(
+      realStorageRoot,
+      'uploads',
+      'recharge-packages',
+    ));
+    if (!isPathInside(realStorageRoot, realPackageRoot)) return false;
+    const realFilePath = fs.realpathSync(path.join(
+      realStorageRoot,
+      ...relativePath.split('/'),
+    ));
+    return isPathInside(realPackageRoot, realFilePath) && fs.statSync(realFilePath).isFile();
+  } catch (_) {
+    return false;
+  }
 }
 
 function numericId(value) {
@@ -205,7 +234,7 @@ function createResourceOwnershipMiddleware({ db, enabled } = {}) {
   };
 }
 
-function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
+function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = {}) {
   return (req, res, next) => {
     if (!enabled) return next();
     if (!userAuth.validSecret(secret)) return res.status(503).end();
@@ -234,7 +263,10 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
     }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     const relativePath = pathValue.replace(/^\/+/, '');
-    if (pathValue === `/${relativePath}` && isRechargePackageImagePath(relativePath)) {
+    if (isRechargePackageImagePath(relativePath)) {
+      if (!isExistingRechargePackageImage(storageRoot, relativePath)) {
+        return res.status(404).end();
+      }
       req.user = user;
       return next();
     }
