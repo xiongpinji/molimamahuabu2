@@ -25,20 +25,21 @@ function createWorkFromSource(db, owner, projectId, sourceAsset) {
   const { tenantId, userId } = normalizeOwner(owner);
   const fingerprint = sourceFingerprint(sourceAsset);
   if (!tenantId) throw Object.assign(new Error('缺少租户'), { code: 'REDRAW_TENANT_REQUIRED' });
+  if (!userId) throw Object.assign(new Error('缺少用户'), { code: 'REDRAW_USER_REQUIRED' });
   if (!fingerprint) throw Object.assign(new Error('缺少源片指纹'), { code: 'REDRAW_SOURCE_FINGERPRINT_REQUIRED' });
   const project = db.prepare(
-    'SELECT id FROM redraw_projects WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(Number(projectId), String(tenantId));
+    'SELECT id FROM redraw_projects WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).get(Number(projectId), String(tenantId), String(userId));
   if (!project) {
     throw Object.assign(new Error('转绘项目不存在'), { code: 'REDRAW_PROJECT_NOT_FOUND' });
   }
 
   const existing = db.prepare(`
     SELECT * FROM redraw_works
-    WHERE tenant_id = ? AND source_fingerprint = ? AND deleted_at IS NULL
+    WHERE tenant_id = ? AND user_id = ? AND source_fingerprint = ? AND deleted_at IS NULL
     ORDER BY id ASC
     LIMIT 1
-  `).get(String(tenantId), fingerprint);
+  `).get(String(tenantId), String(userId), fingerprint);
   if (existing) return rowToWork(existing, true);
 
   const now = new Date().toISOString();
@@ -51,7 +52,7 @@ function createWorkFromSource(db, owner, projectId, sourceAsset) {
     `).run(
       Number(projectId),
       String(tenantId),
-      userId == null ? null : String(userId),
+      String(userId),
       sourceAsset?.name || '源片',
       sourceAsset?.id ?? sourceAsset?.asset_id ?? null,
       fingerprint,
@@ -64,10 +65,10 @@ function createWorkFromSource(db, owner, projectId, sourceAsset) {
     if (!/UNIQUE/i.test(String(error?.message || ''))) throw error;
     const row = db.prepare(`
       SELECT * FROM redraw_works
-      WHERE tenant_id = ? AND source_fingerprint = ? AND deleted_at IS NULL
+      WHERE tenant_id = ? AND user_id = ? AND source_fingerprint = ? AND deleted_at IS NULL
       ORDER BY id ASC
       LIMIT 1
-    `).get(String(tenantId), fingerprint);
+    `).get(String(tenantId), String(userId), fingerprint);
     if (row) return rowToWork(row, true);
     throw error;
   }

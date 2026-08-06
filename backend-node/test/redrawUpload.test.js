@@ -304,7 +304,7 @@ test('expandSourceUpload does not reuse a partial file already present at the st
   assert.equal(fs.readFileSync(partialPath, 'utf8'), 'partial');
 });
 
-test('createWorkFromSource reuses active same-tenant work but not other tenants or soft-deleted rows', () => {
+test('createWorkFromSource reuses active same-owner work but not other users, tenants or soft-deleted rows', () => {
   const { db, projectId } = createDb();
   try {
     const sourceAsset = {
@@ -321,6 +321,20 @@ test('createWorkFromSource reuses active same-tenant work but not other tenants 
     assert.equal(reused.id, first.id);
     assert.equal(reused.reused, true);
 
+    const otherUserProjectId = db.prepare(`
+      INSERT INTO redraw_projects
+        (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
+      VALUES ('tenant-a', 'user-b', '同租户其他用户项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
+    `).run(NOW, NOW).lastInsertRowid;
+    const otherUser = createWorkFromSource(
+      db,
+      { tenantId: 'tenant-a', userId: 'user-b' },
+      otherUserProjectId,
+      { ...sourceAsset, id: 303 },
+    );
+    assert.notEqual(otherUser.id, first.id);
+    assert.equal(otherUser.reused, false);
+
     const otherTenantProjectId = db.prepare(`
       INSERT INTO redraw_projects
         (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
@@ -330,7 +344,7 @@ test('createWorkFromSource reuses active same-tenant work but not other tenants 
       db,
       { tenantId: 'tenant-b', userId: 'user-b' },
       otherTenantProjectId,
-      { ...sourceAsset, id: 303 },
+      { ...sourceAsset, id: 404 },
     );
     assert.notEqual(otherTenant.id, first.id);
 
@@ -339,7 +353,7 @@ test('createWorkFromSource reuses active same-tenant work but not other tenants 
       db,
       { tenantId: 'tenant-a', userId: 'user-a' },
       projectId,
-      { ...sourceAsset, id: 404 },
+      { ...sourceAsset, id: 505 },
     );
     assert.notEqual(replacement.id, first.id);
     assert.equal(replacement.reused, false);
@@ -348,16 +362,30 @@ test('createWorkFromSource reuses active same-tenant work but not other tenants 
   }
 });
 
-test('createWorkFromSource rejects a project from another tenant before insert or reuse', () => {
+test('createWorkFromSource rejects a project from another tenant or user before insert or reuse', () => {
   const { db } = createDb();
   try {
     const now = new Date().toISOString();
+    const sameTenantOtherUserProjectId = db.prepare(`
+      INSERT INTO redraw_projects
+        (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
+      VALUES ('tenant-a', 'user-b', '同租户其他用户项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
+    `).run(now, now).lastInsertRowid;
     const otherTenantProjectId = db.prepare(`
       INSERT INTO redraw_projects
         (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
       VALUES ('tenant-b', 'user-b', '其他转绘项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
     `).run(now, now).lastInsertRowid;
 
+    assert.throws(
+      () => createWorkFromSource(
+        db,
+        { tenantId: 'tenant-a', userId: 'user-a' },
+        sameTenantOtherUserProjectId,
+        { id: 101, name: 'source.mp4', sha256: 'f'.repeat(64), duration_ms: 90000 },
+      ),
+      (error) => error?.code === 'REDRAW_PROJECT_NOT_FOUND',
+    );
     assert.throws(
       () => createWorkFromSource(
         db,

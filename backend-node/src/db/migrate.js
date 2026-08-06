@@ -88,6 +88,22 @@ function ensureColumns(database, table, columns) {
   }
 }
 
+function tableExists(database, table) {
+  return !!database
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+}
+
+function ensureRedrawWorkSourceIndex(database) {
+  if (!tableExists(database, 'redraw_works')) return;
+  database.exec(`
+    DROP INDEX IF EXISTS uq_redraw_work_source;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_work_source
+      ON redraw_works(tenant_id, user_id, source_fingerprint)
+      WHERE deleted_at IS NULL;
+  `);
+}
+
 /**
  * 全量兜底补列：覆盖所有表的所有业务列。
  * 对于旧数据库（用更早版本的 init 脚本创建、缺少部分列），
@@ -838,11 +854,9 @@ function ensureRedrawMigrationColumns(database) {
   };
 
   for (const [table, columns] of Object.entries(required)) {
-    const exists = database
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table);
-    if (exists) ensureColumns(database, table, columns);
+    if (tableExists(database, table)) ensureColumns(database, table, columns);
   }
+  ensureRedrawWorkSourceIndex(database);
 }
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
@@ -850,6 +864,7 @@ function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);
+  ensureRedrawWorkSourceIndex(database);
 }
 
 function main() {

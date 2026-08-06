@@ -161,14 +161,19 @@ test('旧的不完整 redraw_works 表可在迁移前补齐索引依赖列', () 
   assert.ok(columnNames(db, 'redraw_works').includes('deleted_at'));
   db.prepare(`
     INSERT INTO redraw_works
-      (tenant_id, source_fingerprint, deleted_at)
-    VALUES ('tenant-legacy', 'legacy-fingerprint', NULL)
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-legacy', 'user-a', 'legacy-fingerprint', NULL)
   `).run();
   assert.throws(() => db.prepare(`
     INSERT INTO redraw_works
-      (tenant_id, source_fingerprint, deleted_at)
-    VALUES ('tenant-legacy', 'legacy-fingerprint', NULL)
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-legacy', 'user-a', 'legacy-fingerprint', NULL)
   `).run(), /UNIQUE/);
+  assert.doesNotThrow(() => db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-legacy', 'user-b', 'legacy-fingerprint', NULL)
+  `).run());
 });
 
 test('旧的不完整 redraw_projects 表可在迁移前补齐 owner 索引依赖列', () => {
@@ -182,24 +187,63 @@ test('旧的不完整 redraw_projects 表可在迁移前补齐 owner 索引依�
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_redraw_projects_owner'").get());
 });
 
-test('源片指纹按活跃作品和租户隔离', () => {
+test('旧的租户级源片唯一索引会安全重建为租户用户级索引', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      source_fingerprint TEXT,
+      deleted_at TEXT
+    );
+    CREATE UNIQUE INDEX uq_redraw_work_source
+      ON redraw_works(tenant_id, source_fingerprint) WHERE deleted_at IS NULL;
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-a', 'user-a', 'same-source', NULL)
+  `).run());
+  assert.doesNotThrow(() => db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-a', 'user-b', 'same-source', NULL)
+  `).run());
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-a', 'user-b', 'same-source', NULL)
+  `).run(), /UNIQUE/);
+});
+
+test('源片指纹按活跃作品、租户和用户隔离', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const projectA = insertProject(db, 'tenant-a', 'user-a');
+  const projectSameTenantOtherUser = insertProject(db, 'tenant-a', 'user-b');
   const projectB = insertProject(db, 'tenant-b', 'user-b');
 
   const workId = insertWork(db, projectA);
   assert.throws(() => insertWork(db, projectA), /UNIQUE/);
 
+  const otherUserWorkId = insertWork(db, projectSameTenantOtherUser, {
+    user_id: 'user-b',
+    source_asset_id: 202,
+  });
+  assert.notEqual(otherUserWorkId, workId);
+
   const otherTenantWorkId = insertWork(db, projectB, {
     tenant_id: 'tenant-b',
     user_id: 'user-b',
-    source_asset_id: 202,
+    source_asset_id: 303,
   });
   assert.notEqual(otherTenantWorkId, workId);
 
   db.prepare('UPDATE redraw_works SET deleted_at = ? WHERE id = ?').run(NOW, workId);
-  const replacementId = insertWork(db, projectA, { source_asset_id: 303 });
+  const replacementId = insertWork(db, projectA, { source_asset_id: 404 });
   assert.notEqual(replacementId, workId);
 });
 

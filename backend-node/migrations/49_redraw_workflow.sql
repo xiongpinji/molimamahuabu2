@@ -60,8 +60,10 @@ CREATE TABLE IF NOT EXISTS redraw_works (
   FOREIGN KEY(project_id) REFERENCES redraw_projects(id)
 );
 
+DROP INDEX IF EXISTS uq_redraw_work_source;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_work_source
-  ON redraw_works(tenant_id, source_fingerprint) WHERE deleted_at IS NULL;
+  ON redraw_works(tenant_id, user_id, source_fingerprint) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_redraw_work_owner
   ON redraw_works(tenant_id, user_id, updated_at DESC);
