@@ -132,7 +132,9 @@ test('重复 reserve 遇到调价时响应 quote 与原 reservation 金额一致
     assert.equal(second.reservation_id, first.reservation_id);
     assert.equal(second.amount, 18);
     assert.equal(second.quote.amount, 18);
-    assert.equal(second.quote.unit_amount, 3);
+    assert.equal(first.quote.unit_amount, 18);
+    assert.equal(second.quote.unit_amount, first.quote.unit_amount);
+    assert.equal(second.quote.amount, second.quote.unit_amount * second.quote.count);
     assert.equal(second.quote.price_source, 'reservation');
     assert.deepEqual(second.billing, { held: 18, charged: 0, released: 0 });
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);

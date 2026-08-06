@@ -166,12 +166,17 @@ function quoteBatchGeneration(db, input) {
 
 function quoteForReservation(quote, reservation) {
   if (reservation.amount === quote.amount) return quote;
-  const shotCount = quote.snapshot.shot_ids.length;
-  const unitAmount = reservation.amount / quote.snapshot.duration / quote.count / shotCount;
+  if (reservation.amount % quote.count !== 0) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', '冻结计费金额无法还原单价');
+  }
+  const unitAmount = reservation.amount / quote.count;
+  if (!Number.isSafeInteger(unitAmount) || unitAmount <= 0) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', '冻结计费单价无效');
+  }
   return {
     ...quote,
     amount: reservation.amount,
-    unit_amount: Number.isSafeInteger(unitAmount) ? unitAmount : quote.unit_amount,
+    unit_amount: unitAmount,
     price_source: 'reservation',
   };
 }
