@@ -692,6 +692,7 @@ function ensureRedrawCompatibility(database) {
     { name: 'error_message', type: 'TEXT' },
     { name: 'created_at', type: 'TEXT' },
     { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
   ]);
 
   database.exec(`
@@ -712,8 +713,60 @@ function ensureRedrawCompatibility(database) {
     END;
   `);
 }
+
+/** 49 号迁移前的最小兜底，确保旧 redraw_* 表具备索引依赖列。 */
+function ensureRedrawMigrationColumns(database) {
+  const required = {
+    redraw_style_presets: [
+      { name: 'stable_key', type: 'TEXT NOT NULL DEFAULT \'\'' },
+      { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'category', type: 'TEXT NOT NULL DEFAULT \'live_action\'' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'sort_order', type: 'INTEGER NOT NULL DEFAULT 0' },
+    ],
+    redraw_works: [
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'source_fingerprint', type: 'TEXT NOT NULL DEFAULT \'\'' },
+      { name: 'updated_at', type: 'TEXT' },
+      { name: 'deleted_at', type: 'TEXT' },
+    ],
+    redraw_versions: [
+      { name: 'work_id', type: 'INTEGER' },
+      { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_assets: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'kind', type: 'TEXT NOT NULL DEFAULT \'character\'' },
+      { name: 'approval_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_shots: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'batch_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+      { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+      { name: 'updated_at', type: 'TEXT' },
+    ],
+    redraw_exports: [
+      { name: 'version_id', type: 'INTEGER' },
+      { name: 'export_type', type: 'TEXT NOT NULL DEFAULT \'video\'' },
+      { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    ],
+  };
+
+  for (const [table, columns] of Object.entries(required)) {
+    const exists = database
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    if (exists) ensureColumns(database, table, columns);
+  }
+}
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
+  ensureRedrawMigrationColumns(database);
   runMigrations(database);
   ensureAllColumns(database);
   ensureRedrawCompatibility(database);

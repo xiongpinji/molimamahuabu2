@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS redraw_exports (
   error_message TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  deleted_at TEXT,
   FOREIGN KEY(version_id) REFERENCES redraw_versions(id)
 );
 

@@ -9,6 +9,10 @@ function tableNames(db) {
   return db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
 }
 
+function columnNames(db, table) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+}
+
 function insertProject(db, tenantId = 'tenant-a', userId = 'user-a') {
   return db.prepare(`
     INSERT INTO redraw_projects
@@ -89,6 +93,7 @@ test('转绘迁移建立版本化领域表和唯一约束', () => {
   ]) {
     assert.ok(names.includes(name), name);
   }
+  assert.ok(columnNames(db, 'redraw_exports').includes('deleted_at'));
 
   db.prepare(`
     INSERT INTO redraw_style_presets
@@ -100,6 +105,30 @@ test('转绘迁移建立版本化领域表和唯一约束', () => {
       (stable_key, name, category, sort_order, version, status, created_at, updated_at)
     VALUES ('live-default', '重复', 'live_action', 2, 1, 'draft', ?, ?)
   `).run(NOW, NOW), /UNIQUE/);
+});
+
+test('旧的不完整 redraw_works 表可在迁移前补齐索引依赖列', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      source_fingerprint TEXT
+    );
+  `);
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.ok(columnNames(db, 'redraw_works').includes('deleted_at'));
+  db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-legacy', 'legacy-fingerprint', NULL)
+  `).run();
+  assert.throws(() => db.prepare(`
+    INSERT INTO redraw_works
+      (tenant_id, source_fingerprint, deleted_at)
+    VALUES ('tenant-legacy', 'legacy-fingerprint', NULL)
+  `).run(), /UNIQUE/);
 });
 
 test('源片指纹按活跃作品和租户隔离', () => {
