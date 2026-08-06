@@ -1109,22 +1109,28 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }
   }
 
+  async function resolveAssetQuote(asset, currentOwner) {
+    const quoteProvider = options.assetQuoteProvider;
+    const quote = typeof quoteProvider === 'function'
+      ? await quoteProvider({ asset, tenantId: currentOwner.tenantId, userId: currentOwner.userId })
+      : { credits: asset.quote_credits ?? null, model: asset.model || null };
+    const credits = Number(quote?.credits);
+    const validCredits = Number.isSafeInteger(credits) && credits > 0;
+    const model = String(quote?.model || '').trim() || null;
+    return {
+      asset_id: Number(asset.id),
+      model,
+      credits: validCredits ? credits : null,
+      priced: validCredits && Boolean(model),
+    };
+  }
+
   async function assetQuote(req, res) {
     const currentOwner = owner(req);
     const asset = findOwnedAsset(req.params.id, currentOwner);
     if (!asset) return response.notFound(res, '转绘资产不存在');
     try {
-      const quoteProvider = options.assetQuoteProvider;
-      const quote = typeof quoteProvider === 'function'
-        ? await quoteProvider({ asset, tenantId: currentOwner.tenantId, userId: currentOwner.userId })
-        : { credits: asset.quote_credits ?? null, model: asset.model || null };
-      const credits = Number(quote?.credits);
-      return response.success(res, {
-        asset_id: Number(asset.id),
-        model: quote?.model || null,
-        credits: Number.isSafeInteger(credits) && credits > 0 ? credits : null,
-        priced: Number.isSafeInteger(credits) && credits > 0,
-      });
+      return response.success(res, await resolveAssetQuote(asset, currentOwner));
     } catch (error) {
       if (String(error.code || '').startsWith('MODEL_') || error.code === 'INVALID_MODEL_PRICE') {
         return response.success(res, { asset_id: Number(asset.id), model: null, credits: null, priced: false });
@@ -1158,16 +1164,40 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const asset = findOwnedAsset(req.params.id, currentOwner);
     if (!asset) return response.notFound(res, '转绘资产不存在');
+    const clientControlledFields = [
+      'model',
+      'credit_amount',
+      'creditAmount',
+      'credits',
+      'quote',
+      'reservation',
+      'reservation_id',
+      'credit_reservation_id',
+    ];
+    if (clientControlledFields.some((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field))) {
+      return response.error(
+        res,
+        400,
+        'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN',
+        '资产生成模型与积分只能由服务端报价决定',
+      );
+    }
     const sourcePayload = parseJSON(asset.source_ref_json, {});
     const provider = options.assetGenerationProvider || options.assetProvider;
     if (typeof provider !== 'function') return response.badRequest(res, '资产生成能力尚未配置');
     try {
+      const quote = await resolveAssetQuote(asset, currentOwner);
+      if (!quote.priced) {
+        return response.error(res, 409, 'pricing_unconfigured', '资产生成积分待管理员配置');
+      }
       const generated = await redrawAssetService.generateAsset({
         db,
         versionId: asset.version_id,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
         provider,
+        model: quote.model,
+        creditAmount: quote.credits,
         assetReader: {
           canRead: (row) => Boolean(row && typeof canReadArtifact === 'function' && canReadArtifact(row.id)),
         },
@@ -1177,8 +1207,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         localizedName: req.body?.localized_name ?? asset.localized_name,
         localizedDescription: req.body?.localized_description ?? asset.localized_description,
         prompt: req.body?.prompt ?? asset.prompt,
-        model: req.body?.model,
-        creditAmount: req.body?.credit_amount,
+        model: quote.model,
+        creditAmount: quote.credits,
       });
       return response.accepted(res, {
         asset: generated,
@@ -1187,6 +1217,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         current_step: 2,
       });
     } catch (error) {
+      if (String(error.code || '').startsWith('MODEL_') || error.code === 'INVALID_MODEL_PRICE') {
+        return response.error(res, 409, 'pricing_unconfigured', '资产生成积分待管理员配置');
+      }
       if (String(error.code || '').startsWith('REDRAW_') || error.code === 'ASSET_NOT_READABLE') {
         return response.badRequest(res, error.message);
       }

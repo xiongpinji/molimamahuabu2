@@ -45,3 +45,10 @@ test('资产状态纯函数不会在前端伪造 approved，且门禁才开放�
   assert.match(workspaceSource, /RedrawAssetStep/)
   assert.match(workspaceSource, /allowedStep === 3/)
 })
+
+test('资产生成请求不提交客户端模型或积分，生成时由后端重新报价', () => {
+  assert.match(assetStepSource, /getAssetQuote\(asset\.id\)/)
+  assert.match(assetStepSource, /generateAsset\(asset\.id,\s*\{\s*prompt:\s*asset\.prompt\s*\}\)/)
+  assert.doesNotMatch(assetStepSource, /credit_amount/)
+  assert.doesNotMatch(assetStepSource, /generateAsset\([^\n]*model/)
+})

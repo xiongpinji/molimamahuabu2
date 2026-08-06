@@ -66,7 +66,7 @@ async function generate(asset) {
       ElMessage.warning('积分待管理员配置')
       return
     }
-    await redrawAPI.generateAsset(asset.id, { prompt: asset.prompt, credit_amount: quoteResult.credits })
+    await redrawAPI.generateAsset(asset.id, { prompt: asset.prompt })
     await refresh()
     ElMessage.success('资产生成任务已完成')
   }

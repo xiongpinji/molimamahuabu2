@@ -845,6 +845,166 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
   }
 });
 
+test('资产报价与生成都使用服务端模型和积分快照', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2, status: 'asset_review' });
+    const versionId = insertVersion(db, workId, { status: 'asset_review' });
+    const assetId = insertRedrawAsset(db, versionId, {
+      source_ref_json: JSON.stringify({ source_ref: { kind: 'character', id: 'character-1' } }),
+      asset_id: null,
+      approval_status: 'pending',
+      status: 'draft',
+    });
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+      VALUES (771, '生成角色', 'image', 'redraw', '', 'redraw/character-1.png', 'image/png', ?, ?)`)
+      .run(NOW, NOW);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    let quoteCalls = 0;
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async ({ asset, tenantId, userId }) => {
+        quoteCalls += 1;
+        assert.equal(asset.id, assetId);
+        assert.equal(tenantId, 'tenant-a');
+        assert.equal(userId, 'user-a');
+        return { credits: 7, model: 'verified-image-model' };
+      },
+      assetGenerationProvider: async ({ input }) => {
+        providerCalls += 1;
+        assert.equal(input.model, 'verified-image-model');
+        assert.equal(input.creditAmount, 7);
+        return {
+          status: 'completed',
+          asset_id: 771,
+          metadata: { views: ['front', 'side', 'back'] },
+        };
+      },
+      canReadArtifact: (id) => Number(id) === 771,
+    }));
+
+    const quoted = captureResponse();
+    await handlers.assetQuote(request({ id: assetId }), quoted);
+    assert.equal(quoted.statusCode, 200);
+    assert.deepEqual(quoted.body.data, {
+      asset_id: assetId,
+      model: 'verified-image-model',
+      credits: 7,
+      priced: true,
+    });
+
+    const generated = captureResponse();
+    await handlers.generateRedrawAsset(request({ id: assetId, body: { prompt: '英文角色三视图' } }), generated);
+    assert.equal(generated.statusCode, 202);
+    assert.equal(providerCalls, 1);
+    assert.equal(quoteCalls, 2);
+    const reservation = db.prepare(`
+      SELECT model, amount, status
+      FROM tenant_usage_reservations
+      WHERE resource_type = 'redraw_asset'
+    `).get();
+    assert.deepEqual(reservation, { model: 'verified-image-model', amount: 7, status: 'confirmed' });
+  } finally {
+    db.close();
+  }
+});
+
+test('资产生成拒绝客户端注入模型和积分且不触发报价、冻结或 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = insertVersion(db, workId, { status: 'asset_review' });
+    const assetId = insertRedrawAsset(db, versionId, {
+      source_ref_json: JSON.stringify({ source_ref: { kind: 'character', id: 'character-2' } }),
+      asset_id: null,
+      approval_status: 'pending',
+      status: 'draft',
+    });
+    let quoteCalls = 0;
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async () => {
+        quoteCalls += 1;
+        return { credits: 7, model: 'verified-image-model' };
+      },
+      assetGenerationProvider: async () => {
+        providerCalls += 1;
+        return { status: 'failed' };
+      },
+    }));
+
+    const result = captureResponse();
+    await handlers.generateRedrawAsset(request({
+      id: assetId,
+      body: { model: 'attacker-model', credit_amount: 0 },
+    }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.equal(result.body.error.code, 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN');
+    assert.equal(quoteCalls, 0);
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产未配置或无法解析服务端报价时 fail closed 且不冻结积分或调用 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2 });
+    const versionId = insertVersion(db, workId, { status: 'asset_review' });
+    const assetId = insertRedrawAsset(db, versionId, {
+      source_ref_json: JSON.stringify({ source_ref: { kind: 'scene', id: 'scene-1' } }),
+      kind: 'scene',
+      asset_id: null,
+      approval_status: 'pending',
+      status: 'draft',
+    });
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async () => ({ credits: null, model: 'verified-image-model' }),
+      assetGenerationProvider: async () => {
+        providerCalls += 1;
+        return { status: 'failed' };
+      },
+    }));
+
+    const result = captureResponse();
+    await handlers.generateRedrawAsset(request({ id: assetId, body: { prompt: '海外场景' } }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'pricing_unconfigured');
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+
+    const invalidPriceHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async () => {
+        throw Object.assign(new Error('invalid price'), { code: 'INVALID_MODEL_PRICE' });
+      },
+      assetGenerationProvider: async () => {
+        providerCalls += 1;
+        return { status: 'failed' };
+      },
+    }));
+    const invalidPrice = captureResponse();
+    await invalidPriceHandlers.generateRedrawAsset(
+      request({ id: assetId, body: { prompt: '海外场景' } }),
+      invalidPrice,
+    );
+    assert.equal(invalidPrice.statusCode, 409);
+    assert.equal(invalidPrice.body.error.code, 'pricing_unconfigured');
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('作品详情按当前版本返回可恢复的 shots batches 任务与账单状态', () => {
   const db = createDb();
   try {
