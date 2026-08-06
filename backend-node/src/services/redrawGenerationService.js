@@ -389,19 +389,33 @@ function classifyVideoOutcome(row, verification) {
   return { status: 'needs_attention', error: error || '视频状态未知，请人工确认后处理' };
 }
 
-function updateNeedsAttention(db, taskId, shotId, message, timestamp) {
+function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGenerationId = null) {
+  const safeMessage = String(message || '').slice(0, 500);
   db.prepare(`
     UPDATE redraw_shots
     SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION',
         error_message = ?, updated_at = ?
     WHERE id = ?
-  `).run(String(message || '').slice(0, 500), timestamp, shotId);
+  `).run(safeMessage, timestamp, shotId);
   db.prepare(`
     UPDATE async_tasks
     SET status = 'needs_attention', progress = 90, message = ?, error = ?,
         result = NULL, completed_at = NULL, updated_at = ?
     WHERE id = ?
-  `).run(String(message || '').slice(0, 500), String(message || '').slice(0, 500), timestamp, taskId);
+  `).run(safeMessage, safeMessage, timestamp, taskId);
+  if (videoGenerationId != null) {
+    db.prepare(`
+      UPDATE video_generations
+      SET status = 'needs_attention', error_msg = ?, updated_at = ?
+      WHERE id = ? AND task_id = ?
+    `).run(safeMessage, timestamp, Number(videoGenerationId), taskId);
+  } else {
+    db.prepare(`
+      UPDATE video_generations
+      SET status = 'needs_attention', error_msg = ?, updated_at = ?
+      WHERE task_id = ? AND deleted_at IS NULL
+    `).run(safeMessage, timestamp, taskId);
+  }
 }
 
 async function runShotGeneration(ctx, taskId) {
@@ -427,7 +441,7 @@ async function runShotGeneration(ctx, taskId) {
       imported = await importer(db, ctx.log || logNoop, row.id);
     } catch (error) {
       const timestamp = now(ctx);
-      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp);
+      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
   }
@@ -435,7 +449,7 @@ async function runShotGeneration(ctx, taskId) {
   const timestamp = now(ctx);
   if (outcome.status === 'completed') {
     if (!imported?.id) {
-      updateNeedsAttention(db, task.id, shot.id, '视频成片素材入库失败，请人工确认后处理', timestamp);
+      updateNeedsAttention(db, task.id, shot.id, '视频成片素材入库失败，请人工确认后处理', timestamp, row.id);
       return { status: 'needs_attention', task_id: task.id, video_generation_id: row.id };
     }
     const draft = strictJson(shot.draft_json, 'draft_json');
@@ -475,7 +489,7 @@ async function runShotGeneration(ctx, taskId) {
     redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'failed', outcome.error || '单镜视频生成失败');
     return { status: 'failed', error: outcome.error, task_id: task.id, video_generation_id: row.id };
   }
-  updateNeedsAttention(db, task.id, shot.id, outcome.error, timestamp);
+  updateNeedsAttention(db, task.id, shot.id, outcome.error, timestamp, row.id);
   return { status: 'needs_attention', error: outcome.error, task_id: task.id, video_generation_id: row.id };
 }
 

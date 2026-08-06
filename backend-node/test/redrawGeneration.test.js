@@ -365,7 +365,16 @@ test('completed 但成片校验或素材导入不完整时 needs_attention 且�
         },
         assetImporter: async () => (mode === 'import_failed' ? null : { id: 91 }),
       }), { shotId });
+      const video = state.db.prepare(`
+        SELECT status, error_msg, video_url, local_path
+        FROM video_generations
+        WHERE id = ?
+      `).get(result.video_generation_id);
       assert.equal(result.status, 'needs_attention');
+      assert.equal(video.status, 'needs_attention');
+      assert.match(video.error_msg, mode === 'import_failed' ? /素材入库失败/ : /视频|artifact|bad artifact|不完整/);
+      assert.equal(video.video_url, 'https://cdn.test/video.mp4');
+      if (mode !== 'missing_local_path') assert.equal(video.local_path, 'videos/shot.mp4');
       assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
     } finally {
       state.db.close();
@@ -391,10 +400,15 @@ test('processor 先写 completed result 后成片校验失败会清理 task 终�
     }), { shotId });
 
     const task = state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(result.task_id);
+    const video = state.db.prepare('SELECT status, error_msg, video_url, local_path FROM video_generations WHERE id = ?').get(result.video_generation_id);
     assert.equal(result.status, 'needs_attention');
     assert.equal(task.status, 'needs_attention');
     assert.equal(task.result, null);
     assert.equal(task.completed_at, null);
+    assert.equal(video.status, 'needs_attention');
+    assert.match(video.error_msg, /ffprobe failed/);
+    assert.equal(video.video_url, 'https://cdn.test/video.mp4');
+    assert.equal(video.local_path, 'videos/shot.mp4');
     assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
   } finally {
