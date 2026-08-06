@@ -104,6 +104,9 @@ test('validateGenerationEvidence requires provider, model, completed task, and r
   assert.equal(validateGenerationEvidence({ ...validEvidence(1), task_id: '' }, canReadArtifact), false);
   assert.equal(validateGenerationEvidence({ ...validEvidence(1), terminal_status: 'failed' }, canReadArtifact), false);
   assert.equal(validateGenerationEvidence({ ...validEvidence(2) }, canReadArtifact), false);
+  assert.equal(validateGenerationEvidence(validEvidence(1), () => {
+    throw new Error('artifact store unavailable');
+  }), false);
 });
 
 test('listPublicStylePresets only exposes verified presets with valid readable evidence', () => {
@@ -138,6 +141,27 @@ test('listPublicStylePresets only exposes verified presets with valid readable e
   assert.deepEqual(rows.map((row) => row.stable_key), ['visible-a', 'visible-b']);
 });
 
+test('listPublicStylePresets skips evidence when artifact read callback throws', () => {
+  const db = createDb();
+  insertStyle(db, {
+    stable_key: 'throws',
+    name: '抛错',
+    verification_evidence_json: JSON.stringify(validEvidence('throws')),
+  });
+  insertStyle(db, {
+    stable_key: 'visible',
+    name: '可见',
+    verification_evidence_json: JSON.stringify(validEvidence(1)),
+  });
+
+  const rows = listPublicStylePresets(db, (id) => {
+    if (id === 'throws') throw new Error('artifact store unavailable');
+    return id === 1;
+  });
+
+  assert.deepEqual(rows.map((row) => row.stable_key), ['visible']);
+});
+
 test('summarizeLocaleCapability maps verified outputs to production status', () => {
   assert.equal(summarizeLocaleCapability({ text: true, subtitles: true, tts: true, video: true }), 'full_output');
   assert.equal(summarizeLocaleCapability({ text: true, subtitles: true, tts: false, video: true }), 'subtitle_only');
@@ -148,6 +172,9 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
 test('listLocaleCapabilities ignores unreadable evidence and returns blocking reasons', () => {
   const db = createDb();
   insertConfig(db, [
+    null,
+    'bad-entry',
+    ['bad-entry'],
     {
       locale: 'en-US',
       market: 'US',
@@ -181,6 +208,17 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
       },
     },
     {
+      locale: 'de-DE',
+      market: 'DE',
+      status: 'verified',
+      evidence: {
+        text: validEvidence('throws'),
+        subtitles: validEvidence(20),
+        tts: validEvidence(21),
+        video: validEvidence(22),
+      },
+    },
+    {
       locale: 'zh-CN',
       market: 'CN',
       status: 'draft',
@@ -206,9 +244,13 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
     },
   ], { is_active: 0 });
 
-  const rows = listLocaleCapabilities(db, (id) => id !== 404);
+  const rows = listLocaleCapabilities(db, (id) => {
+    if (id === 'throws') throw new Error('artifact store unavailable');
+    return id !== 404;
+  });
 
   assert.deepEqual(rows, [
+    { locale: 'de-DE', market: 'DE', status: 'blocking', blocking: ['text'] },
     { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] },
     { locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['tts'] },
     { locale: 'ko-KR', market: 'KR', status: 'blocking', blocking: ['subtitles'] },

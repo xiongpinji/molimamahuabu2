@@ -14,7 +14,11 @@ function validateGenerationEvidence(evidence, canReadArtifact) {
   if (parsed.terminal_status !== 'completed') return false;
   if (parsed.artifact_id === undefined || parsed.artifact_id === null || parsed.artifact_id === '') return false;
   if (typeof canReadArtifact !== 'function') return false;
-  return canReadArtifact(parsed.artifact_id) === true;
+  try {
+    return canReadArtifact(parsed.artifact_id) === true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function listPublicStylePresets(db, canReadArtifact) {
@@ -43,7 +47,8 @@ function tableExists(db, table) {
 function collectLocaleEntries(settings) {
   const parsed = parseJson(settings);
   const entries = parsed.redraw_locale_capabilities || parsed.redrawLocaleCapabilities || [];
-  return Array.isArray(entries) ? entries : [];
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
 }
 
 function evidenceForCapability(entry, capability) {
