@@ -242,7 +242,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     const resumableRedrawTaskIds = new Set(
       db.prepare(
         `SELECT task_id FROM redraw_works
-         WHERE status = 'processing'
+         WHERE status = 'analyzing'
            AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''
            AND task_id IS NOT NULL AND TRIM(task_id) != ''`
       ).all().map((row) => row.task_id)
@@ -253,9 +253,6 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
-  rows = rows.filter(
-    (row) => row.type !== 'redraw_analysis' || !String(row.provider_task_id || '').trim()
-  );
   if (!rows.length) {
     reconcileOrphanedScriptAnalysisProjects(db, log);
     return 0;

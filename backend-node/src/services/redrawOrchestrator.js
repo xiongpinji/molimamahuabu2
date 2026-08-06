@@ -5,6 +5,9 @@ const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
 
+const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
+const RESUME_ERROR_SNIPPET_LIMIT = 512;
+
 function codedError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -59,16 +62,28 @@ function defaultCanRead(asset) {
   return createAssetReader({}).canRead(asset);
 }
 
+function isPathInside(parent, child) {
+  const from = process.platform === 'win32' ? path.resolve(parent).toLowerCase() : path.resolve(parent);
+  const to = process.platform === 'win32' ? path.resolve(child).toLowerCase() : path.resolve(child);
+  const relative = path.relative(from, to);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function createAssetReader(options = {}) {
-  const storageRoot = options.storageRoot || process.cwd();
+  const storageRoot = path.resolve(options.storageRoot || process.cwd());
   return {
     canRead(asset) {
       if (!asset) return false;
       if (asset.local_path) {
         const localPath = String(asset.local_path);
-        const absPath = path.isAbsolute(localPath) ? localPath : path.join(storageRoot, localPath);
+        if (path.isAbsolute(localPath)) return false;
+        const absPath = path.resolve(storageRoot, localPath);
         try {
-          fs.accessSync(absPath, fs.constants.R_OK);
+          const realRoot = fs.realpathSync(storageRoot);
+          if (!isPathInside(realRoot, absPath)) return false;
+          const realPath = fs.realpathSync(absPath);
+          if (!isPathInside(realRoot, realPath)) return false;
+          fs.accessSync(realPath, fs.constants.R_OK);
           return true;
         } catch (_) {
           return false;
@@ -139,6 +154,42 @@ function createProviderResumeUnavailable(message) {
   return codedError('REDRAW_PROVIDER_RESUME_UNAVAILABLE', message || '源片分析供应商恢复查询不可用');
 }
 
+function resumeQueryTimeoutMs() {
+  const raw = Number(process.env.REDRAW_RESUME_QUERY_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_RESUME_QUERY_TIMEOUT_MS;
+}
+
+function timeoutSignal(ms) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms).unref?.();
+  return controller.signal;
+}
+
+async function readErrorSnippet(response) {
+  try {
+    if (!response.body?.getReader) return (await response.text()).slice(0, RESUME_ERROR_SNIPPET_LIMIT);
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (total < RESUME_ERROR_SNIPPET_LIMIT) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.byteLength;
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8', 0, RESUME_ERROR_SNIPPET_LIMIT);
+  } catch (_) {
+    return '';
+  }
+}
+
 function createStartupResumeOptions(db, log, options = {}) {
   let config = null;
   try {
@@ -158,9 +209,10 @@ function createStartupResumeOptions(db, log, options = {}) {
         const headers = {};
         if (config.api_key) headers.authorization = `Bearer ${config.api_key}`;
         try {
-          const response = await fetch(url, { method: 'GET', headers });
+          const response = await fetch(url, { method: 'GET', headers, signal: timeoutSignal(resumeQueryTimeoutMs()) });
           if (!response.ok) {
-            throw createProviderResumeUnavailable(`源片分析恢复查询失败: HTTP ${response.status}`);
+            const detail = await readErrorSnippet(response);
+            throw createProviderResumeUnavailable(`源片分析恢复查询失败: HTTP ${response.status}${detail ? ` ${detail}` : ''}`);
           }
           return normalizeProviderResult(await response.json());
         } catch (error) {
@@ -201,17 +253,28 @@ async function startAnalysis(db, log, input, options = {}) {
     ).run(userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id);
     db.prepare(
       `UPDATE redraw_works
-       SET source_asset_id = ?, status = 'processing', current_step = 1, task_id = ?,
+       SET source_asset_id = ?, status = 'analyzing', current_step = 1, task_id = ?,
            credit_reservation_id = ?, updated_at = ?
        WHERE id = ?`
     ).run(sourceAssetId, task.id, reservation.id, now, work.id);
     return { task_id: task.id, reservation_id: reservation.id, model };
   })();
 
-  const providerResult = options.provider?.startAnalysis
-    ? await options.provider.startAnalysis({ work, sourceAssetId, config, operationKey: `redraw_analysis:${work.id}:${sourceAssetId}` })
-    : {};
+  let providerResult;
+  try {
+    providerResult = options.provider?.startAnalysis
+      ? await options.provider.startAnalysis({ work, sourceAssetId, config, operationKey: `redraw_analysis:${work.id}:${sourceAssetId}` })
+      : {};
+  } catch (error) {
+    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+    throw error;
+  }
   const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id || '';
+  if (!providerTaskId) {
+    const error = codedError('PROVIDER_TASK_ID_REQUIRED', '源片分析启动失败：缺少厂商任务 ID');
+    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+    throw error;
+  }
   if (providerTaskId) {
     db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), created.task_id);
@@ -378,7 +441,7 @@ async function resumeRedrawTasks(db, log, options = {}) {
               w.id AS work_id, w.provider_task_id AS work_provider_task_id
        FROM async_tasks t
        JOIN redraw_works w ON w.id = t.resource_id
-       WHERE t.type = 'redraw_analysis' AND t.status = 'processing' AND t.deleted_at IS NULL`
+       WHERE t.type = 'redraw_analysis' AND t.status = 'processing' AND w.status = 'analyzing' AND t.deleted_at IS NULL`
     ).all();
   } catch (error) {
     if (!/no such column: t\.provider_task_id/i.test(String(error.message || ''))) throw error;
@@ -387,7 +450,7 @@ async function resumeRedrawTasks(db, log, options = {}) {
               w.id AS work_id, w.provider_task_id AS work_provider_task_id
        FROM async_tasks t
        JOIN redraw_works w ON w.id = t.resource_id
-       WHERE t.type = 'redraw_analysis' AND t.status = 'processing' AND t.deleted_at IS NULL`
+       WHERE t.type = 'redraw_analysis' AND t.status = 'processing' AND w.status = 'analyzing' AND t.deleted_at IS NULL`
     ).all();
   }
   let resumed = 0;

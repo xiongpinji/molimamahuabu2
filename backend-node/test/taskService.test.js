@@ -187,6 +187,66 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
   });
 
+  it('keeps a redraw analysis task processing when analyzing work has provider_task_id', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;
+      CREATE TABLE redraw_works (
+        id TEXT PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        provider_task_id TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, provider_task_id, created_at, updated_at)
+       VALUES (?, 'redraw_analysis', 'processing', 90, '供应商处理中', ?, ?, ?, ?)`
+    ).run('task-resumable-redraw', 'work-redraw', 'provider-redraw', now, now);
+    db.prepare(
+      `INSERT INTO redraw_works (id, task_id, status, provider_task_id)
+       VALUES (?, ?, 'analyzing', ?)`
+    ).run('work-redraw', 'task-resumable-redraw', 'provider-redraw');
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 0);
+    const task = taskService.getTask(db, 'task-resumable-redraw');
+    assert.equal(task.status, 'processing');
+    assert.equal(task.error, null);
+  });
+
+  it('fails a provider-backed redraw analysis orphan when work is no longer analyzing', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;
+      CREATE TABLE redraw_works (
+        id TEXT PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        provider_task_id TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, provider_task_id, created_at, updated_at)
+       VALUES (?, 'redraw_analysis', 'processing', 90, '供应商处理中', ?, ?, ?, ?)`
+    ).run('task-stale-redraw', 'work-redraw', 'provider-redraw', now, now);
+    db.prepare(
+      `INSERT INTO redraw_works (id, task_id, status, provider_task_id)
+       VALUES (?, ?, 'failed', ?)`
+    ).run('work-redraw', 'task-stale-redraw', 'provider-redraw');
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 1);
+    const task = taskService.getTask(db, 'task-stale-redraw');
+    assert.equal(task.status, 'failed');
+    assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
+  });
+
   it('keeps a processing task alive while a long operation is running', async () => {
     const db = createTestDb();
     const now = new Date(Date.now() - 60_000).toISOString();
