@@ -56,6 +56,7 @@ test('用户通过同一支付宝入口创建自定义或套餐订单并只能�
   handlers.createAdminPackage({
     body: {
       name: '限时加赠包',
+      ad_title: '限时套餐广告',
       amount_yuan: '10',
       credits: 1500,
       image_url: 'https://cdn.example.com/promo.jpg',

@@ -281,6 +281,10 @@ test('套餐展示字段和广告图拒绝非法值且有效 HTTPS 仍可使用'
   ];
   const invalidImages = [
     '/static/other/banner.webp',
+    '/static/uploads/recharge-packages/../outside.webp',
+    '/static/uploads/recharge-packages/./a.webp',
+    '/static/uploads/recharge-packages//a.webp',
+    String.raw`/static/uploads/recharge-packages/nested\a.webp`,
     'http://cdn.example.com/banner.webp',
     'data:image/png;base64,AAAA',
     'javascript:alert(1)',
@@ -306,6 +310,47 @@ test('套餐展示字段和广告图拒绝非法值且有效 HTTPS 仍可使用'
   assert.equal(saved.accent_color, '#ff7139');
   assert.equal(saved.sort_order, 0);
   assert.equal(saved.is_featured, 0);
+
+  const nested = recharge.createPackage(db, {
+    ...valid,
+    name: '嵌套目录套餐',
+    imageUrl: '/static/uploads/recharge-packages/campaigns/2026/spring.webp',
+  });
+  assert.equal(
+    nested.image_url,
+    '/static/uploads/recharge-packages/campaigns/2026/spring.webp',
+  );
+});
+
+test('重复设置推荐套餐时返回业务错误而非 SQLite 唯一约束', () => {
+  const { db } = setup();
+  const packageInput = {
+    name: '推荐套餐',
+    adTitle: '推荐套餐广告',
+    amountYuan: '10',
+    credits: 1000,
+    imageUrl: 'https://cdn.example.com/featured.webp',
+    isFeatured: true,
+    status: 'active',
+  };
+  recharge.createPackage(db, packageInput);
+
+  assert.throws(
+    () => recharge.createPackage(db, { ...packageInput, name: '第二个推荐套餐' }),
+    (error) => error.code === 'INVALID_RECHARGE_PACKAGE'
+      && error.message === '推荐套餐只能设置一个',
+  );
+
+  const regular = recharge.createPackage(db, {
+    ...packageInput,
+    name: '普通套餐',
+    isFeatured: false,
+  });
+  assert.throws(
+    () => recharge.updatePackage(db, regular.id, packageInput),
+    (error) => error.code === 'INVALID_RECHARGE_PACKAGE'
+      && error.message === '推荐套餐只能设置一个',
+  );
 });
 
 test('ensureSchema 为旧套餐表补齐展示列和推荐套餐唯一索引', () => {

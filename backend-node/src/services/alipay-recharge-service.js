@@ -1,9 +1,11 @@
 const { randomUUID } = require('crypto');
+const path = require('path');
 const creditLedger = require('./creditLedgerService');
 
 const CREDIT_RATIO = 100;
 const MIN_AMOUNT_CENTS = 100;
 const MAX_AMOUNT_CENTS = 5_000_000;
+const PACKAGE_UPLOAD_PREFIX = '/static/uploads/recharge-packages/';
 
 function rechargeError(code, message) {
   const error = new Error(message);
@@ -126,6 +128,26 @@ function normalizeOptionalDate(value) {
   return parsed.toISOString();
 }
 
+function isValidLocalPackageImagePath(value) {
+  if (!value.startsWith(PACKAGE_UPLOAD_PREFIX) || value.includes('\\')) return false;
+  const relativePath = value.slice(PACKAGE_UPLOAD_PREFIX.length);
+  const segments = relativePath.split('/');
+  if (!relativePath || segments.some((segment) => !segment
+    || segment === '.' || segment === '..' || !/^[A-Za-z0-9_.-]+$/.test(segment))) {
+    return false;
+  }
+  const normalized = path.posix.normalize(value);
+  return normalized === value && normalized.startsWith(PACKAGE_UPLOAD_PREFIX);
+}
+
+function rethrowPackageWriteError(error) {
+  if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE'
+    && String(error.message).includes('recharge_packages.is_featured')) {
+    throw rechargeError('INVALID_RECHARGE_PACKAGE', '推荐套餐只能设置一个');
+  }
+  throw error;
+}
+
 function normalizePackage(input) {
   const name = String(input.name || '').trim();
   const amountCents = parsePackageAmount(input.amountYuan ?? input.amount_yuan);
@@ -171,7 +193,7 @@ function normalizePackage(input) {
   if (!imageUrl) {
     throw rechargeError('INVALID_RECHARGE_PACKAGE', '请填写套餐广告图片');
   }
-  const localUpload = /^\/static\/uploads\/recharge-packages\/[A-Za-z0-9_./-]+$/.test(imageUrl);
+  const localUpload = isValidLocalPackageImagePath(imageUrl);
   let secureRemote = false;
   try {
     const parsed = new URL(imageUrl);
@@ -204,14 +226,18 @@ function createPackage(db, input) {
   const value = normalizePackage(input);
   const id = randomUUID();
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO recharge_packages
-    (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
-      ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
-      value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
-      value.button_text, value.accent_color, value.sort_order, value.is_featured,
-      value.status, now, now);
+  try {
+    db.prepare(`INSERT INTO recharge_packages
+      (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
+        ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
+        value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
+        value.button_text, value.accent_color, value.sort_order, value.is_featured,
+        value.status, now, now);
+  } catch (error) {
+    rethrowPackageWriteError(error);
+  }
   return db.prepare('SELECT * FROM recharge_packages WHERE id = ?').get(id);
 }
 
@@ -222,15 +248,19 @@ function updatePackage(db, packageIdValue, input) {
     throw rechargeError('RECHARGE_PACKAGE_NOT_FOUND', '充值套餐不存在');
   }
   const value = normalizePackage(input);
-  db.prepare(`UPDATE recharge_packages
-    SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
-      image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
-      accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
-    WHERE id = ?`)
-    .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
-      value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
-      value.accent_color, value.sort_order, value.is_featured, value.status,
-      new Date().toISOString(), id);
+  try {
+    db.prepare(`UPDATE recharge_packages
+      SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
+        image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
+        accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
+      WHERE id = ?`)
+      .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
+        value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
+        value.accent_color, value.sort_order, value.is_featured, value.status,
+        new Date().toISOString(), id);
+  } catch (error) {
+    rethrowPackageWriteError(error);
+  }
   return db.prepare('SELECT * FROM recharge_packages WHERE id = ?').get(id);
 }
 
