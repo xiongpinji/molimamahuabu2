@@ -12,6 +12,7 @@ const videoService = require('./videoService');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
+const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
 const UNCERTAIN_MARKERS = ['结果未知', '状态未知', '仍可能处理中', '请勿重新提交'];
@@ -566,6 +567,19 @@ async function runShotGeneration(ctx, taskId) {
     ));
     try {
       return db.transaction(() => {
+        const claimed = db.prepare(`
+          UPDATE redraw_shots
+          SET status = 'pending', error_code = 'REDRAW_VIDEO_FINALIZING', updated_at = ?
+          WHERE id = ? AND status = 'processing' AND video_generation_id = ?
+        `).run(timestamp, shot.id, row.id);
+        if (claimed.changes !== 1) {
+          const freshTask = getTask(db, task.id, ownerCtx);
+          const freshVideo = getVideoForTask(db, freshTask, ownerCtx);
+          const freshShot = getShotForTask(db, freshTask, ownerCtx);
+          const concurrentResult = terminalTaskResult(freshTask, freshVideo, freshShot);
+          if (concurrentResult && !concurrentResult.degrade) return concurrentResult;
+          throw codedError('REDRAW_VIDEO_FINALIZATION_CONFLICT', '单镜视频正在由其他任务收口，请勿重复导入');
+        }
         imported = importer(db, ctx.log || logNoop, row.id);
         if (imported && typeof imported.then === 'function') {
           throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
@@ -686,14 +700,33 @@ function failBatchShotSafely(ctx, shot, error) {
 
 function scheduleBatchDrain(ctx, jobs, concurrency) {
   if (!jobs.length) return;
-  const drain = () => runBounded(jobs, concurrency, async (job) => {
-    try {
-      return await job();
-    } catch (error) {
+  const configured = Number(process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY || DEFAULT_GENERATION_CONCURRENCY);
+  const productionLimit = Number.isSafeInteger(configured) && configured > 0
+    ? Math.min(configured, 8)
+    : DEFAULT_GENERATION_CONCURRENCY;
+  const requestedLimit = Number.isSafeInteger(concurrency) && concurrency > 0
+    ? Math.min(concurrency, productionLimit)
+    : productionLimit;
+  const queueEnv = {
+    ...process.env,
+    GENERATION_REDRAW_VIDEO_CONCURRENCY: String(requestedLimit),
+  };
+  const drain = () => Promise.all(jobs.map((job) => (
+    runWithGenerationLimit('redraw_video', job, queueEnv).catch((error) => {
+      if (error.code === 'GENERATION_QUEUE_FULL' && job.redraw) {
+        updateNeedsAttention(
+          ctx.db,
+          job.redraw.task_id,
+          job.redraw.shot_id,
+          '转绘视频生成队列已满，请人工确认后重试',
+          now(ctx),
+          job.redraw.video_generation_id,
+        );
+      }
       ctx.log?.error?.('redraw batch background generation failed', { error: error.message });
       return null;
-    }
-  });
+    })
+  )));
   if (ctx.batchScheduler) {
     ctx.batchScheduler(drain);
     return;
@@ -759,6 +792,7 @@ async function generateBatch(ctx, input = {}) {
   const results = [];
   for (const shot of candidates) {
     try {
+      const jobStart = jobs.length;
       const generationContext = {
         ...ctx,
         awaitCompletion: false,
@@ -778,6 +812,13 @@ async function generateBatch(ctx, input = {}) {
       const result = shot.status === 'failed'
         ? await retryShot(generationContext, shotInput)
         : await generateShot(generationContext, shotInput);
+      if (jobs[jobStart]) {
+        jobs[jobStart].redraw = {
+          shot_id: shot.id,
+          task_id: result.task_id,
+          video_generation_id: result.video_generation_id,
+        };
+      }
       results.push({ shot_id: shot.id, ...result });
     } catch (error) {
       results.push(failBatchShotSafely(ctx, shot, error));
@@ -877,28 +918,35 @@ async function recoverInterruptedShotGenerations(ctx) {
 
 function markInterruptedShotGenerationsNeedsAttention(db, log, options = {}) {
   const timestamp = new Date().toISOString();
-  const rows = db.prepare(`
-    SELECT t.id AS task_id, t.progress AS task_progress,
-           s.id AS shot_id, v.id AS video_id, v.provider_task_id
-    FROM async_tasks t
-    JOIN redraw_shots s
-      ON CAST(s.id AS TEXT) = CAST(t.resource_id AS TEXT)
-      AND s.deleted_at IS NULL
-      AND s.tenant_id = t.tenant_id
-      AND s.user_id = t.user_id
-    JOIN video_generations v
-      ON v.task_id = t.id
-      AND v.deleted_at IS NULL
-      AND v.tenant_id = t.tenant_id
-      AND v.user_id = t.user_id
-      AND v.id = s.video_generation_id
-    WHERE t.type = 'redraw_shot' AND t.deleted_at IS NULL
-      AND (
-        t.status IN ('pending', 'processing')
-        OR (s.status = 'processing' AND t.status = 'completed' AND v.status = 'completed')
-        OR (s.status = 'processing' AND t.status = 'failed' AND v.status = 'failed')
-      )
-  `).all();
+  let rows;
+  try {
+    rows = db.prepare(`
+      SELECT t.id AS task_id, t.progress AS task_progress,
+             s.id AS shot_id, v.id AS video_id, v.provider_task_id
+      FROM async_tasks t
+      JOIN redraw_shots s
+        ON CAST(s.id AS TEXT) = CAST(t.resource_id AS TEXT)
+        AND s.deleted_at IS NULL
+        AND s.tenant_id = t.tenant_id
+        AND s.user_id = t.user_id
+      JOIN video_generations v
+        ON v.task_id = t.id
+        AND v.deleted_at IS NULL
+        AND v.tenant_id = t.tenant_id
+        AND v.user_id = t.user_id
+        AND v.id = s.video_generation_id
+      WHERE t.type = 'redraw_shot' AND t.deleted_at IS NULL
+        AND (
+          t.status IN ('pending', 'processing')
+          OR (s.status = 'processing' AND t.status = 'completed' AND v.status = 'completed')
+          OR (s.status = 'processing' AND t.status = 'failed' AND v.status = 'failed')
+        )
+    `).all();
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+    log?.warn?.('Skip redraw shot startup recovery for legacy schema', { error: error.message });
+    return 0;
+  }
   if (!rows.length) return 0;
   const interrupted = rows.filter((row) => !String(row.provider_task_id || '').trim());
   const recoverable = rows.filter((row) => String(row.provider_task_id || '').trim());

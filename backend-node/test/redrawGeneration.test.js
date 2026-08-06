@@ -11,6 +11,7 @@ const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
+const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
 const {
   generateShot,
   generateBatch,
@@ -343,6 +344,46 @@ test('completed 终态再次 run 直接复用结果不重跑处理器也不重�
     assert.deepEqual(state.db.prepare('SELECT status, video_url, local_path, error_msg FROM video_generations WHERE id = ?').get(first.video_generation_id), before.video);
     assert.equal(count(state.db, 'tenant_credit_ledger', "event_type = 'confirm'"), before.confirms);
   } finally {
+    state.db.close();
+  }
+});
+
+test('同一 task 两个 runner 并发成功收口只导入一次素材并只确认一次账单', async () => {
+  const state = setup();
+  let processorArrivals = 0;
+  let releaseProcessors;
+  const processorBarrier = new Promise((resolve) => { releaseProcessors = resolve; });
+  let importCalls = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    const runnerContext = ctx(state.db, {
+      videoProcessor: async (db, _log, videoId) => {
+        processorArrivals += 1;
+        if (processorArrivals === 2) releaseProcessors();
+        await processorBarrier;
+        db.prepare("UPDATE video_generations SET status = 'completed', video_url = 'https://cdn.test/race.mp4', local_path = 'videos/race.mp4' WHERE id = ?")
+          .run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: (db, _log, videoId) => {
+        importCalls += 1;
+        const assetId = addBaseAsset(db, { name: `race-${importCalls}`, category: 'video', localPath: 'videos/race.mp4' });
+        db.prepare('UPDATE assets SET video_gen_id = ? WHERE id = ?').run(videoId, assetId);
+        return { id: assetId };
+      },
+    });
+    const results = await Promise.all([
+      runShotGeneration(runnerContext, created.task_id),
+      runShotGeneration(runnerContext, created.task_id),
+    ]);
+    assert.deepEqual(results.map((result) => result.status), ['completed', 'completed']);
+    assert.equal(importCalls, 1);
+    assert.equal(count(state.db, 'assets', `video_gen_id = ${created.video_generation_id}`), 1);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'confirmed');
+    assert.equal(count(state.db, 'tenant_credit_ledger', `reservation_id = '${created.reservation_id}' AND event_type = 'confirm'`), 1);
+  } finally {
+    releaseProcessors?.();
     state.db.close();
   }
 });
@@ -904,6 +945,93 @@ test('批量后台 drain 按 generationConcurrency 限流并与返回生命周�
   }
 });
 
+test('两个批次同时 drain 共享全局 redraw_video 并发上限', async () => {
+  const state = setup();
+  const previousLimit = process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY;
+  let drainA = null;
+  let drainB = null;
+  let active = 0;
+  let maxActive = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY = '2';
+  resetGenerationConcurrencyForTests();
+  try {
+    const shots = Array.from({ length: 4 }, (_, index) => addShot(state.db, state.versionId, { shotIndex: index + 1 }));
+    const common = {
+      generationConcurrency: 8,
+      videoProcessor: async (db, _log, videoId) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'provider failed' WHERE id = ?").run(videoId);
+        active -= 1;
+      },
+    };
+    await generateBatch(ctx(state.db, { ...common, batchScheduler: (callback) => { drainA = callback; } }), {
+      versionId: state.versionId,
+      shotIds: shots.slice(0, 2),
+    });
+    await generateBatch(ctx(state.db, { ...common, batchScheduler: (callback) => { drainB = callback; } }), {
+      versionId: state.versionId,
+      shotIds: shots.slice(2),
+    });
+    const runningA = drainA();
+    const runningB = drainB();
+    for (let index = 0; index < 20 && active < 2; index += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(active, 2);
+    assert.equal(maxActive, 2);
+    release();
+    await Promise.all([runningA, runningB]);
+    assert.equal(maxActive, 2);
+  } finally {
+    release?.();
+    resetGenerationConcurrencyForTests();
+    if (previousLimit == null) delete process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY;
+    else process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY = previousLimit;
+    state.db.close();
+  }
+});
+
+test('全局 redraw_video 队列满时未执行任务转 needs_attention 且保持 held', async () => {
+  const state = setup();
+  const previousLimit = process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY;
+  const previousQueue = process.env.GENERATION_REDRAW_VIDEO_MAX_QUEUE_SIZE;
+  let scheduled = null;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY = '1';
+  process.env.GENERATION_REDRAW_VIDEO_MAX_QUEUE_SIZE = '1';
+  resetGenerationConcurrencyForTests();
+  try {
+    const shots = Array.from({ length: 3 }, (_, index) => addShot(state.db, state.versionId, { shotIndex: index + 1 }));
+    const batch = await generateBatch(ctx(state.db, {
+      batchScheduler: (callback) => { scheduled = callback; },
+      videoProcessor: async (db, _log, videoId) => {
+        await gate;
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'provider failed' WHERE id = ?").run(videoId);
+      },
+    }), { versionId: state.versionId, shotIds: shots });
+    const draining = scheduled();
+    for (let index = 0; index < 20; index += 1) {
+      if (state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shots[2]).status === 'needs_attention') break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shots[2]).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(batch.results[2].reservation_id).status, 'held');
+    release();
+    await draining;
+  } finally {
+    release?.();
+    resetGenerationConcurrencyForTests();
+    if (previousLimit == null) delete process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY;
+    else process.env.GENERATION_REDRAW_VIDEO_CONCURRENCY = previousLimit;
+    if (previousQueue == null) delete process.env.GENERATION_REDRAW_VIDEO_MAX_QUEUE_SIZE;
+    else process.env.GENERATION_REDRAW_VIDEO_MAX_QUEUE_SIZE = previousQueue;
+    state.db.close();
+  }
+});
+
 test('批量中的明确 failed 镜头通过 retry 创建 attempt=2 新链且旧账保持原终态', async () => {
   const state = setup();
   let scheduled = null;
@@ -1094,6 +1222,30 @@ test('启动孤儿清理排除带 provider_task_id 的 redraw_shot，交由转�
     assert.equal(failed, 0);
     assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'processing');
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('启动孤儿清理遇到跨租户 resource_id 混淆时不更新其他租户镜头', async () => {
+  const state = setup();
+  try {
+    const protectedShotId = addShot(state.db, state.versionId, { status: 'draft' });
+    const dirtyTask = taskService.createTask(state.db, log, 'redraw_shot', String(protectedShotId));
+    state.db.prepare(`UPDATE async_tasks
+      SET status = 'processing', tenant_id = 'tenant-b', user_id = 'user-b'
+      WHERE id = ?`).run(dirtyTask.id);
+    const now = new Date().toISOString();
+    const dirtyVideoId = state.db.prepare(`INSERT INTO video_generations
+      (status, task_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('processing', ?, 'tenant-b', 'user-b', ?, ?)`)
+      .run(dirtyTask.id, now, now).lastInsertRowid;
+
+    taskService.failOrphanedAsyncTasksOnStartup(state.db, log);
+
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(dirtyTask.id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(protectedShotId).status, 'draft');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(dirtyVideoId).status, 'processing');
   } finally {
     state.db.close();
   }

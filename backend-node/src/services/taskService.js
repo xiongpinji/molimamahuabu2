@@ -185,44 +185,20 @@ function cancelTask(db, log, taskId, reason) {
 /**
  * 进程内 setImmediate 任务在重启后会丢失；启动时将遗留的 pending/processing 标为失败，避免前端无限轮询。
  */
+function selectOrphanedAsyncTasks(db) {
+  const columns = new Set(db.prepare('PRAGMA table_info(async_tasks)').all().map((column) => column.name));
+  const optional = (name) => (columns.has(name) ? name : `NULL AS ${name}`);
+  return db.prepare(`
+    SELECT id, type, status, resource_id,
+           ${optional('credit_reservation_id')}, ${optional('provider_task_id')},
+           ${optional('tenant_id')}, ${optional('user_id')}
+    FROM async_tasks
+    WHERE status IN ('pending', 'processing')${columns.has('deleted_at') ? ' AND deleted_at IS NULL' : ''}
+  `).all();
+}
+
 function failOrphanedAsyncTasksOnStartup(db, log) {
-  let rows;
-  try {
-    rows = db.prepare(
-      `SELECT id, type, status, resource_id, credit_reservation_id, provider_task_id FROM async_tasks
-       WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-    ).all();
-  } catch (error) {
-    if (String(error.message || '').includes('provider_task_id')) {
-      try {
-        rows = db.prepare(
-          `SELECT id, type, status, resource_id, credit_reservation_id FROM async_tasks
-           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-        ).all().map((row) => ({ ...row, provider_task_id: null }));
-      } catch (innerError) {
-        if (!String(innerError.message || '').includes('credit_reservation_id')) throw innerError;
-        rows = db.prepare(
-          `SELECT id, type, status, resource_id FROM async_tasks
-           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-        ).all().map((row) => ({ ...row, credit_reservation_id: null, provider_task_id: null }));
-      }
-    } else if (String(error.message || '').includes('credit_reservation_id')) {
-      try {
-        rows = db.prepare(
-          `SELECT id, type, status, resource_id, provider_task_id FROM async_tasks
-           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-        ).all().map((row) => ({ ...row, credit_reservation_id: null }));
-      } catch (innerError) {
-        if (!String(innerError.message || '').includes('provider_task_id')) throw innerError;
-        rows = db.prepare(
-          `SELECT id, type, status, resource_id FROM async_tasks
-           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-        ).all().map((row) => ({ ...row, credit_reservation_id: null, provider_task_id: null }));
-      }
-    } else {
-      throw error;
-    }
-  }
+  let rows = selectOrphanedAsyncTasks(db);
   try {
     const resumableVideoTaskIds = new Set(
       db.prepare(
@@ -260,17 +236,27 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       const keepOutOfGenericCleanup = new Set();
       db.transaction(() => {
         for (const row of redrawRows) {
-          const video = db.prepare(`
+          keepOutOfGenericCleanup.add(row.id);
+          const hasOwner = String(row.tenant_id || '').trim() && String(row.user_id || '').trim();
+          const video = hasOwner ? db.prepare(`
             SELECT v.id, v.provider_task_id
             FROM video_generations v
             JOIN redraw_shots s
               ON s.video_generation_id = v.id
               AND CAST(s.id AS TEXT) = CAST(? AS TEXT)
               AND s.deleted_at IS NULL
+              AND s.tenant_id = ? AND s.user_id = ?
             WHERE v.task_id = ? AND v.deleted_at IS NULL
+              AND v.tenant_id = ? AND v.user_id = ?
             ORDER BY v.id DESC LIMIT 1
-          `).get(row.resource_id, row.id);
-          keepOutOfGenericCleanup.add(row.id);
+          `).get(
+            row.resource_id,
+            String(row.tenant_id),
+            String(row.user_id),
+            row.id,
+            String(row.tenant_id),
+            String(row.user_id),
+          ) : null;
           if (String(video?.provider_task_id || '').trim()) continue;
           db.prepare(`
             UPDATE async_tasks
@@ -280,15 +266,30 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
           `).run('服务重启后缺少厂商任务 ID，请勿重新提交', '服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, row.id);
           if (video) {
             db.prepare(`
-              UPDATE video_generations SET status = 'needs_attention', error_msg = ?, updated_at = ? WHERE id = ?
-            `).run('服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, video.id);
+              UPDATE video_generations SET status = 'needs_attention', error_msg = ?, updated_at = ?
+              WHERE id = ? AND tenant_id = ? AND user_id = ?
+            `).run(
+              '服务重启后缺少厂商任务 ID，请勿重新提交',
+              timestamp,
+              video.id,
+              String(row.tenant_id),
+              String(row.user_id),
+            );
           }
-          db.prepare(`
-            UPDATE redraw_shots
-            SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION',
-                error_message = ?, updated_at = ?
-            WHERE id = ? AND deleted_at IS NULL
-          `).run('服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, Number(row.resource_id));
+          if (hasOwner) {
+            db.prepare(`
+              UPDATE redraw_shots
+              SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION',
+                  error_message = ?, updated_at = ?
+              WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+            `).run(
+              '服务重启后缺少厂商任务 ID，请勿重新提交',
+              timestamp,
+              Number(row.resource_id),
+              String(row.tenant_id),
+              String(row.user_id),
+            );
+          }
         }
       })();
       rows = rows.filter((row) => !keepOutOfGenericCleanup.has(row.id));
