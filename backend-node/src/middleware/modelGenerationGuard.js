@@ -9,6 +9,7 @@ const MODEL_GENERATION_ROUTES = [
   ['POST', /^\/images(?:$|\/episode\/\d+\/(?:backgrounds\/extract|batch)$|\/scene\/\d+$)/],
   ['POST', /^\/image-tools\/operations$/],
   ['POST', /^\/video-tools\/operations$/],
+  ['POST', /^\/redraw\/works\/\d+\/analyze$/],
   ['POST', /^\/videos(?:$|\/image\/\d+$|\/episode\/\d+\/batch$)/],
   ['GET', /^\/storyboards\/episode\/\d+\/generate$/],
   ['POST', /^\/storyboards\/(?:batch-infer-params|\d+\/(?:frame-prompt|polish-prompt|universal-segment-polish-stream|classic-video-prompt-polish-stream|universal-segment-prompt-stream|universal-segment-prompt|upscale|regenerate-layout-description|rebuild-video-prompt))$/],

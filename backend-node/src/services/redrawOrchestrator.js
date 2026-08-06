@@ -229,6 +229,7 @@ async function startAnalysis(db, log, input, options = {}) {
   const work = getWork(db, input.workId);
   if (!work) throw codedError('REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
   const userId = String(input.userId || work.user_id || '');
+  const tenantId = input.tenantId || work.tenant_id;
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
 
   const config = loadVerifiedCapability(db);
@@ -241,6 +242,8 @@ async function startAnalysis(db, log, input, options = {}) {
   const created = db.transaction(() => {
     const reservation = creditLedger.reserve(db, {
       userId,
+      tenantId: tenantId == null ? null : String(tenantId),
+      actorUserId: userId,
       operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
       amount: price,
       model,
@@ -257,7 +260,12 @@ async function startAnalysis(db, log, input, options = {}) {
            credit_reservation_id = ?, updated_at = ?
        WHERE id = ?`
     ).run(sourceAssetId, task.id, reservation.id, now, work.id);
-    return { task_id: task.id, reservation_id: reservation.id, model };
+    return {
+      task_id: task.id,
+      reservation_id: reservation.id,
+      model,
+      billing: { charged: 0, held: reservation.amount, released: 0 },
+    };
   })();
 
   let providerResult;

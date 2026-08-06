@@ -19,6 +19,7 @@ test('covers GPT, image, and video generation routes', () => {
     ['POST', '/scenes/8/generate-panorama-image'],
     ['POST', '/image-tools/operations'],
     ['POST', '/video-tools/operations'],
+    ['POST', '/redraw/works/8/analyze'],
     ['POST', '/dramas/42/director/reference-analysis'],
     ['GET', '/storyboards/episode/3/generate'],
   ];

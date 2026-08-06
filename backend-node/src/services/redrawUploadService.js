@@ -154,7 +154,7 @@ function persistSourceFile(sourcePath, facts, limits = {}) {
     if (targetSize !== sourceSize || sha256File(targetPath) !== facts.sha256) {
       throw uploadError('REDRAW_STORAGE_CONFLICT', '已存在的源片文件不完整或内容不匹配');
     }
-    return relPath;
+    return { localPath: relPath, created: false };
   }
 
   const tempPath = path.join(
@@ -171,10 +171,11 @@ function persistSourceFile(sourcePath, facts, limits = {}) {
     fs.rmSync(tempPath, { force: true });
     throw error;
   }
-  return relPath;
+  return { localPath: relPath, created: true };
 }
 
-function toUploadItem(name, facts, prefix, localPath = null) {
+function toUploadItem(name, facts, prefix, persisted = null) {
+  const localPath = typeof persisted === 'string' ? persisted : persisted?.localPath;
   return {
     name,
     kind: facts.kind,
@@ -185,6 +186,7 @@ function toUploadItem(name, facts, prefix, localPath = null) {
     source_fingerprint: facts.sha256,
     local_path: localPath,
     url: localPath ? `/static/${localPath}` : controlledUrl(prefix, facts),
+    persisted_file_created: Boolean(persisted && typeof persisted === 'object' && persisted.created),
   };
 }
 
@@ -249,8 +251,8 @@ async function expandZipUpload(file, limits, probeVideo) {
         },
         probeVideo,
       );
-      const localPath = persistSourceFile(resolved, facts, limits);
-      items.push(toUploadItem(entryName, facts, limits.assetUrlPrefix, localPath));
+      const persisted = persistSourceFile(resolved, facts, limits);
+      items.push(toUploadItem(entryName, facts, limits.assetUrlPrefix, persisted));
     }
     return items;
   } finally {
@@ -264,8 +266,8 @@ async function expandSourceUpload(file, limits = {}, probeVideo) {
     return expandZipUpload(file, limits, probeVideo);
   }
   const facts = await validateSourceFile(file, limits, probeVideo);
-  const localPath = persistSourceFile(file.path, facts, limits);
-  return [toUploadItem(file.originalname || path.basename(file.path), facts, limits.assetUrlPrefix, localPath)];
+  const persisted = persistSourceFile(file.path, facts, limits);
+  return [toUploadItem(file.originalname || path.basename(file.path), facts, limits.assetUrlPrefix, persisted)];
 }
 
 module.exports = {

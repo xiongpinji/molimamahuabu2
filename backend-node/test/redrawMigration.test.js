@@ -219,6 +219,35 @@ test('旧的租户级源片唯一索引会安全重建为租户用户级索引',
   `).run(), /UNIQUE/);
 });
 
+test('源片唯一索引重建遇到活跃重复键会失败并保留旧索引', () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE redraw_works (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT,
+      user_id TEXT,
+      source_fingerprint TEXT,
+      deleted_at TEXT
+    );
+    CREATE INDEX uq_redraw_work_source
+      ON redraw_works(tenant_id, source_fingerprint);
+    INSERT INTO redraw_works
+      (tenant_id, user_id, source_fingerprint, deleted_at)
+    VALUES
+      ('tenant-a', 'user-a', 'duplicate-source', NULL),
+      ('tenant-a', 'user-a', 'duplicate-source', NULL);
+  `);
+
+  assert.throws(
+    () => runMigrationsAndEnsure(db),
+    /redraw_works active source duplicates/,
+  );
+  assert.deepEqual(
+    db.prepare('PRAGMA index_info(uq_redraw_work_source)').all().map((row) => row.name),
+    ['tenant_id', 'source_fingerprint'],
+  );
+});
+
 test('源片指纹按活跃作品、租户和用户隔离', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

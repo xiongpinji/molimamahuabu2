@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
@@ -228,6 +231,88 @@ test('上传源片创建作品并只返回受控路径', async () => {
     assert.equal('absolute_path' in created.body.data.items[0], false);
   } finally {
     db.close();
+  }
+});
+
+test('真实上传项先登记资产再创建作品', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      uploadService: {
+        expandSourceUpload: async () => [{
+          name: 'real.mp4',
+          source_fingerprint: 'c'.repeat(64),
+          sha256: 'c'.repeat(64),
+          duration_ms: 45000,
+          width: 1280,
+          height: 720,
+          kind: 'mp4',
+          local_path: 'redraw-sources/c.mp4',
+          url: '/static/redraw-sources/c.mp4',
+        }],
+      },
+    }));
+
+    const created = captureResponse();
+    await handlers.createWorks(request({
+      projectId,
+      file: { originalname: 'real.mp4', path: 'tmp/real.mp4' },
+    }), created);
+
+    assert.equal(created.statusCode, 201);
+    const work = db.prepare('SELECT * FROM redraw_works WHERE id = ?').get(created.body.data.items[0].id);
+    const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(work.source_asset_id);
+    assert.ok(asset);
+    assert.equal(asset.name, 'real.mp4');
+    assert.equal(asset.type, 'video');
+    assert.equal(asset.category, 'redraw_source');
+    assert.equal(asset.local_path, 'redraw-sources/c.mp4');
+    assert.equal(created.body.data.items[0].source_asset_id, asset.id);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品创建失败会补偿本次登记资产和新持久化文件', async () => {
+  const db = createDb();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-route-cleanup-'));
+  try {
+    const projectId = insertProject(db);
+    const localPath = 'redraw-sources/bad.mp4';
+    const absPath = path.join(tempRoot, localPath);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, 'bad video');
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      uploadLimits: { storageRoot: tempRoot },
+      uploadService: {
+        expandSourceUpload: async () => [{
+          name: 'bad.mp4',
+          source_fingerprint: 'd'.repeat(64),
+          sha256: 'd'.repeat(64),
+          duration_ms: 0,
+          width: 1280,
+          height: 720,
+          kind: 'mp4',
+          local_path: localPath,
+          url: '/static/redraw-sources/bad.mp4',
+          persisted_file_created: true,
+        }],
+      },
+    }));
+
+    const created = captureResponse();
+    await handlers.createWorks(request({
+      projectId,
+      file: { originalname: 'bad.mp4', path: 'tmp/bad.mp4' },
+    }), created);
+
+    assert.equal(created.statusCode, 500);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM assets WHERE deleted_at IS NULL').get().n, 0);
+    assert.equal(fs.existsSync(absPath), false);
+  } finally {
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 

@@ -96,12 +96,33 @@ function tableExists(database, table) {
 
 function ensureRedrawWorkSourceIndex(database) {
   if (!tableExists(database, 'redraw_works')) return;
-  database.exec(`
-    DROP INDEX IF EXISTS uq_redraw_work_source;
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_work_source
-      ON redraw_works(tenant_id, user_id, source_fingerprint)
-      WHERE deleted_at IS NULL;
-  `);
+  database.transaction(() => {
+    const duplicate = database.prepare(`
+      SELECT tenant_id, user_id, source_fingerprint, COUNT(*) AS count
+      FROM redraw_works
+      WHERE deleted_at IS NULL
+        AND tenant_id IS NOT NULL
+        AND user_id IS NOT NULL
+        AND source_fingerprint IS NOT NULL
+        AND source_fingerprint <> ''
+      GROUP BY tenant_id, user_id, source_fingerprint
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get();
+    if (duplicate) {
+      const error = new Error(
+        `redraw_works active source duplicates: tenant=${duplicate.tenant_id}, user=${duplicate.user_id}, source=${duplicate.source_fingerprint}, count=${duplicate.count}`,
+      );
+      error.code = 'REDRAW_WORK_SOURCE_DUPLICATE';
+      throw error;
+    }
+    database.exec(`
+      DROP INDEX IF EXISTS uq_redraw_work_source;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_work_source
+        ON redraw_works(tenant_id, user_id, source_fingerprint)
+        WHERE deleted_at IS NULL;
+    `);
+  })();
 }
 
 /**

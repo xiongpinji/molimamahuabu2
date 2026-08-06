@@ -342,6 +342,7 @@ test('startAnalysis uses analyzing status with real migrated redraw schema', asy
   runMigrationsAndEnsure(db);
   addVerifiedConfig(db);
   addStrictMigratedRedrawFixture(db);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 100);
 
   const started = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, {
     provider: { startAnalysis: async () => ({ provider_task_id: 'provider-strict' }) },
@@ -349,7 +350,45 @@ test('startAnalysis uses analyzing status with real migrated redraw schema', asy
 
   assert.equal(taskService.getTask(db, started.task_id).status, 'processing');
   assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'analyzing');
-  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+});
+
+test('startAnalysis charges tenant ledger and returns held billing without changing personal account', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  addVerifiedConfig(db);
+  addStrictMigratedRedrawFixture(db);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 100);
+  const personalBefore = creditLedger.getAccount(db, 'user-1');
+
+  const started = await redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+  }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'provider-tenant-ledger' }) },
+  });
+
+  assert.deepEqual(started.billing, { charged: 0, held: 6, released: 0 });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_reservations').get().n, 0);
+  assert.deepEqual(creditLedger.getAccount(db, 'user-1'), personalBefore);
+  const reservation = db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id);
+  assert.equal(reservation.tenant_id, 'tenant-1');
+  assert.equal(reservation.actor_user_id, 'user-1');
+  assert.equal(reservation.amount, 6);
+  assert.equal(reservation.status, 'held');
+  const ledger = db.prepare('SELECT * FROM tenant_credit_ledger WHERE reservation_id = ? AND event_type = ?')
+    .get(started.reservation_id, 'reserve');
+  assert.equal(ledger.tenant_id, 'tenant-1');
+  assert.equal(ledger.actor_user_id, 'user-1');
+  assert.equal(ledger.available_delta, -6);
+  assert.equal(ledger.held_delta, 6);
+  assert.deepEqual(creditLedger.getTenantAccount(db, 'tenant-1'), {
+    tenant_id: 'tenant-1',
+    available: 94,
+    held: 6,
+    spent: 0,
+  });
 });
 
 test('startAnalysis refunds and fails task/work when provider start throws', async () => {

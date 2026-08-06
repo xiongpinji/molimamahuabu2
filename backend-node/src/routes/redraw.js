@@ -9,6 +9,7 @@ const redrawService = require('../services/redrawService');
 const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
+const assetService = require('../services/assetService');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -46,6 +47,15 @@ function numericId(value) {
 function storageRootFromConfig(cfg = {}) {
   const raw = cfg?.storage?.local_path || './data/storage';
   return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
+}
+
+function safeStoragePath(storageRoot, localPath) {
+  if (!localPath || path.isAbsolute(String(localPath))) return null;
+  const root = path.resolve(storageRoot);
+  const target = path.resolve(root, String(localPath));
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return target;
 }
 
 function createCanReadArtifact(db, cfg) {
@@ -122,6 +132,52 @@ function billingPayload(value) {
     held: billing.held ?? 0,
     released: billing.released ?? 0,
   };
+}
+
+function registerSourceAsset(db, log, currentOwner, sourceAsset) {
+  const existingId = sourceAsset?.id ?? sourceAsset?.asset_id;
+  if (existingId != null) return { sourceAsset, asset: null };
+  const asset = assetService.create(db, log, {
+    name: sourceAsset?.name || '转绘源片',
+    type: 'video',
+    category: 'redraw_source',
+    url: sourceAsset?.url || '',
+    local_path: sourceAsset?.local_path || null,
+    file_size: sourceAsset?.file_size ?? sourceAsset?.size ?? null,
+    mime_type: sourceAsset?.mime_type || (sourceAsset?.kind ? `video/${sourceAsset.kind}` : null),
+    width: sourceAsset?.width ?? null,
+    height: sourceAsset?.height ?? null,
+    duration: sourceAsset?.duration_ms == null ? null : Number(sourceAsset.duration_ms) / 1000,
+    metadata: {
+      source: 'redraw_source_upload',
+      tenant_id: currentOwner.tenantId,
+      user_id: currentOwner.userId,
+      sha256: sourceAsset?.sha256 || null,
+      source_fingerprint: sourceAsset?.source_fingerprint || sourceAsset?.sha256 || null,
+      duration_ms: sourceAsset?.duration_ms ?? null,
+      kind: sourceAsset?.kind || null,
+    },
+  });
+  return {
+    asset,
+    sourceAsset: {
+      ...sourceAsset,
+      id: asset.id,
+      asset_id: asset.id,
+    },
+  };
+}
+
+function cleanupRegisteredSource(db, log, registered, storageRoot) {
+  if (!registered?.asset?.id) return;
+  try {
+    assetService.deleteById(db, log, registered.asset.id);
+  } catch (error) {
+    log?.warn?.({ err: error, asset_id: registered.asset.id }, 'redraw source asset cleanup failed');
+  }
+  if (!registered.sourceAsset?.persisted_file_created) return;
+  const target = safeStoragePath(storageRoot, registered.sourceAsset.local_path);
+  if (target) fs.rmSync(target, { force: true });
 }
 
 module.exports = function redrawRoutes(db, log, options = {}) {
@@ -212,17 +268,30 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }
     if (!req.file) return response.badRequest(res, '请上传转绘源片');
 
+    const registeredSources = [];
     try {
       const sources = await uploadService.expandSourceUpload(req.file, uploadLimits, options.probeVideo);
-      const items = sources.map((sourceAsset) => {
-        const work = redrawService.createWorkFromSource(db, currentOwner, projectId, sourceAsset);
-        if (!findOwnedWork(work.id, currentOwner)) {
-          throw Object.assign(new Error('转绘项目不存在'), { code: 'REDRAW_PROJECT_NOT_FOUND' });
+      const items = db.transaction(() => {
+        const createdItems = [];
+        for (const sourceAsset of sources) {
+          const registered = registerSourceAsset(db, log, currentOwner, sourceAsset);
+          registeredSources.push(registered);
+          const work = redrawService.createWorkFromSource(db, currentOwner, projectId, registered.sourceAsset);
+          if (!findOwnedWork(work.id, currentOwner)) {
+            throw Object.assign(new Error('转绘项目不存在'), { code: 'REDRAW_PROJECT_NOT_FOUND' });
+          }
+          if (work.reused === true && registered.asset?.id && Number(work.source_asset_id) !== Number(registered.asset.id)) {
+            cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
+          }
+          createdItems.push(mapWork(work, registered.sourceAsset));
         }
-        return mapWork(work, sourceAsset);
-      });
+        return createdItems;
+      })();
       return response.created(res, { items });
     } catch (error) {
+      for (const registered of registeredSources || []) {
+        cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
+      }
       if (error.code === 'REDRAW_PROJECT_NOT_FOUND') return response.notFound(res, '转绘项目不存在');
       if (String(error.code || '').startsWith('REDRAW_')) return response.badRequest(res, error.message);
       log?.error?.({ err: error }, 'redraw create works failed');
