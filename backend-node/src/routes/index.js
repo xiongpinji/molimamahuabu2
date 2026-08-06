@@ -24,6 +24,7 @@ const audioRoutes = require('./audio');
 const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const scriptAnalysisRoutes = require('./scriptAnalysis');
+const redrawRoutes = require('./redraw');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
 const directorReferenceRoutes = require('./directorReference');
@@ -202,6 +203,7 @@ function setupRouter(cfg, db, log) {
   const directorExport = directorExportRoutes(db, cfg, log);
   const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
+  const redraw = redrawRoutes(db, log, { cfg });
   r.get('/voice-catalog', voiceCatalog.list);
 
   // ---------- script analysis ----------
@@ -215,6 +217,16 @@ function setupRouter(cfg, db, log) {
   r.post('/script-analysis/projects/:id/review', scriptAnalysis.review);
   r.post('/script-analysis/projects/:id/run', scriptAnalysis.run);
   r.post('/script-analysis/projects/:id/import-to-factory', scriptAnalysis.importToFactory);
+
+  // ---------- redraw ----------
+  r.get('/redraw/projects', redraw.listProjects);
+  r.post('/redraw/projects', redraw.createProject);
+  r.get('/redraw/projects/:id', redraw.getProject);
+  r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
+  r.get('/redraw/works/:id', redraw.getWork);
+  r.get('/redraw/style-presets', redraw.listStylePresets);
+  r.get('/redraw/locales', redraw.listLocales);
+  r.post('/redraw/works/:id/analyze', redraw.analyzeWork);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
