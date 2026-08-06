@@ -15,7 +15,6 @@ const redrawReviewService = require('../services/redrawReviewService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
 const assetService = require('../services/assetService');
-const taskService = require('../services/taskService');
 const uploadServiceModule = require('../services/uploadService');
 
 const upload = multer({
@@ -272,6 +271,81 @@ function codedRouteError(code, message, details) {
   return error;
 }
 
+const SAFE_GENERATION_FIELDS = new Set([
+  'model', 'duration', 'resolution', 'aspect_ratio', 'aspectRatio', 'locale',
+  'negative_prompt', 'negativePrompt',
+]);
+const SAFE_BATCH_GENERATION_FIELDS = new Set([
+  ...SAFE_GENERATION_FIELDS,
+  'shot_ids', 'shotIds', 'version_id', 'versionId', 'count',
+]);
+
+function generationInputError(message) {
+  return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
+}
+
+function rejectAliasPair(input, snake, camel) {
+  if (Object.prototype.hasOwnProperty.call(input, snake)
+    && Object.prototype.hasOwnProperty.call(input, camel)) {
+    throw generationInputError(`${snake} 与 ${camel} 不能同时提交`);
+  }
+}
+
+function validateSafeGenerationFields(input, allowed) {
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) throw generationInputError(`生成参数不允许包含 ${key}`);
+  }
+  rejectAliasPair(input, 'aspect_ratio', 'aspectRatio');
+  rejectAliasPair(input, 'negative_prompt', 'negativePrompt');
+  for (const key of ['model', 'resolution', 'aspect_ratio', 'aspectRatio', 'locale', 'negative_prompt', 'negativePrompt']) {
+    if (Object.prototype.hasOwnProperty.call(input, key) && typeof input[key] !== 'string') {
+      throw generationInputError(`${key} 必须是字符串`);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'duration')) {
+    const duration = Number(input.duration);
+    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+      throw generationInputError('duration 必须是 5 到 15 秒的整数');
+    }
+  }
+}
+
+function singleGenerationInput(body) {
+  if (body != null && (typeof body !== 'object' || Array.isArray(body))) {
+    throw generationInputError('生成参数必须是对象');
+  }
+  const input = body || {};
+  const allowed = new Set([...SAFE_GENERATION_FIELDS, 'retry']);
+  validateSafeGenerationFields(input, allowed);
+  if (Object.prototype.hasOwnProperty.call(input, 'retry') && typeof input.retry !== 'boolean') {
+    throw generationInputError('retry 必须是布尔值');
+  }
+  const sanitized = {};
+  for (const key of SAFE_GENERATION_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) sanitized[key] = input[key];
+  }
+  return { input: sanitized, retry: input.retry === true };
+}
+
+function batchGenerationInput(body) {
+  if (body != null && (typeof body !== 'object' || Array.isArray(body))) {
+    throw generationInputError('生成参数必须是对象');
+  }
+  const input = body || {};
+  validateSafeGenerationFields(input, SAFE_BATCH_GENERATION_FIELDS);
+  rejectAliasPair(input, 'shot_ids', 'shotIds');
+  rejectAliasPair(input, 'version_id', 'versionId');
+  if (Object.prototype.hasOwnProperty.call(input, 'count') && Number(input.count) !== 1) {
+    throw generationInputError('批量生成 count 必须为 1');
+  }
+  const sanitized = {};
+  for (const key of SAFE_BATCH_GENERATION_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) sanitized[key] = input[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'count')) sanitized.count = 1;
+  return sanitized;
+}
+
 function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   const code = String(error?.code || '');
   if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
@@ -282,7 +356,7 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
     return response.error(res, 402, code, error.message || '积分不足', error.details);
   }
   if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
-    'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
+    'REDRAW_SHOT_EDIT_CONFLICT', 'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
     'REDRAW_SHOT_PRICING_UNCONFIGURED'].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, error.details);
   }
@@ -436,6 +510,42 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }
   }
 
+  function billingFromReservation(reservation, quote = null) {
+    const amount = Number(reservation?.amount || 0);
+    return {
+      held: reservation?.status === 'held' ? amount : 0,
+      charged: reservation?.status === 'confirmed' ? amount : 0,
+      released: reservation?.status === 'refunded' ? amount : 0,
+      quote,
+    };
+  }
+
+  function findOwnedAnalysisTask(work, currentOwner) {
+    if (!work.task_id) return null;
+    return db.prepare(`SELECT * FROM async_tasks
+      WHERE id = ? AND type = 'redraw_analysis' AND resource_id = ?
+        AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1`)
+      .get(String(work.task_id), String(work.id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function analysisBilling(work, currentOwner) {
+    const reservation = work.credit_reservation_id
+      ? db.prepare(`SELECT * FROM tenant_usage_reservations
+        WHERE id = ? AND tenant_id = ? AND actor_user_id = ?
+          AND resource_type = 'redraw_analysis' AND resource_id = ?`)
+        .get(
+          String(work.credit_reservation_id),
+          currentOwner.tenantId,
+          currentOwner.userId,
+          String(work.id),
+        )
+      : null;
+    return billingFromReservation(reservation, reservation
+      ? { model: reservation.model, amount: Number(reservation.amount) }
+      : null);
+  }
+
   function shotRuntime(raw, snapshot, currentOwner) {
     const video = raw.video_generation_id
       ? db.prepare(`SELECT * FROM video_generations
@@ -457,13 +567,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
           AND resource_type = 'redraw_shot' AND resource_id = ?`)
         .get(String(reservationId), currentOwner.tenantId, currentOwner.userId, String(raw.id))
       : null;
-    const amount = Number(reservation?.amount || 0);
-    const billing = {
-      held: reservation?.status === 'held' ? amount : 0,
-      confirmed: reservation?.status === 'confirmed' ? amount : 0,
-      released: reservation?.status === 'refunded' ? amount : 0,
-      quote: metadata.quote || null,
-    };
+    const billing = billingFromReservation(reservation, metadata.quote || null);
     return {
       ...snapshot,
       status: raw.status,
@@ -586,9 +690,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
     if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
-    const task = work.task_id ? taskService.getTask(db, work.task_id) : null;
     const currentVersion = findVersionForWork(work, work.current_version, currentOwner);
     try {
+      const task = findOwnedAnalysisTask(work, currentOwner);
       const shots = currentVersion ? listOwnedShotRuntime(currentVersion, currentOwner) : [];
       const batches = shotService.groupShotsIntoBatches(shots);
       return response.success(res, {
@@ -597,6 +701,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
           versionId: currentVersion?.id || null,
           analysisQuote: quoteAnalysis(db, log),
         }),
+        analysis_billing: analysisBilling(work, currentOwner),
         shots,
         batches,
       });
@@ -649,6 +754,14 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const shot = findOwnedShot(req.params.id, currentOwner);
     if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    if (!['draft', 'failed'].includes(String(shot.status))) {
+      return response.error(
+        res,
+        409,
+        'REDRAW_SHOT_EDIT_CONFLICT',
+        '当前分镜正在生成或已进入终态，不能原地编辑',
+      );
+    }
     const body = req.body || {};
     const expectedUpdatedAt = body.expected_updated_at ?? body.expectedUpdatedAt
       ?? body.updated_at ?? body.updatedAt;
@@ -739,7 +852,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         opening_state = ?, continuous_action = ?, ending_state = ?,
         prompt = ?, negative_prompt = ?, compiled_prompt_json = ?, draft_json = ?, updated_at = ?
         WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
-          AND updated_at = ? AND deleted_at IS NULL`)
+          AND status IN ('draft', 'failed') AND updated_at = ? AND deleted_at IS NULL`)
         .run(
           normalized.start_ms,
           normalized.end_ms,
@@ -762,6 +875,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
           shot.updated_at,
         );
       if (changed.changes !== 1) {
+        const latest = findOwnedShot(shot.id, currentOwner);
+        if (latest && !['draft', 'failed'].includes(String(latest.status))) {
+          throw codedRouteError('REDRAW_SHOT_EDIT_CONFLICT', '当前分镜正在生成或已进入终态，不能原地编辑');
+        }
         throw codedRouteError('REDRAW_SHOT_CONFLICT', '分镜已被其他操作更新，请刷新后重试');
       }
       const raw = findOwnedShot(shot.id, currentOwner);
@@ -788,15 +905,12 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const shot = findOwnedShot(req.params.id, currentOwner);
     if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
-    const body = { ...(req.body || {}) };
-    delete body.retry;
-    delete body.shot_id;
-    delete body.shotId;
-    body.shotId = shot.id;
     try {
-      const result = req.body?.retry === true
-        ? await generationService.retryShot(generationContext(currentOwner), body)
-        : await generationService.generateShot(generationContext(currentOwner), body);
+      const safe = singleGenerationInput(req.body);
+      const input = { ...safe.input, shotId: shot.id };
+      const result = safe.retry
+        ? await generationService.retryShot(generationContext(currentOwner), input)
+        : await generationService.generateShot(generationContext(currentOwner), input);
       return response.accepted(res, { shot_id: shot.id, ...result });
     } catch (error) {
       return sendRedrawError(res, error, '提交转绘单镜生成失败', log, { shotId: shot.id });
@@ -813,21 +927,16 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       return response.error(res, 400, 'REDRAW_BATCH_INPUT_INVALID', '批量生成不接受单镜 shot_id 或 shotId');
     }
     try {
-      let version;
-      if (body.version_id !== undefined || body.versionId !== undefined) {
-        const versionId = numericId(body.version_id ?? body.versionId);
-        if (!versionId) throw codedRouteError('REDRAW_BATCH_INPUT_INVALID', 'version_id 无效');
-        const ownedVersion = findOwnedVersion(versionId, currentOwner);
-        if (!ownedVersion) throw codedRouteError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在');
-        if (String(ownedVersion.work_id) !== String(work.id)) {
-          throw codedRouteError('REDRAW_VERSION_CONFLICT', '转绘版本不属于当前作品');
+      const input = batchGenerationInput(body);
+      const version = findVersionForWork(work, work.current_version, currentOwner);
+      if (!version) throw codedRouteError('REDRAW_VERSION_CONFLICT', '转绘作品没有可生成的当前版本');
+      if (input.version_id !== undefined || input.versionId !== undefined) {
+        const versionId = numericId(input.version_id ?? input.versionId);
+        if (!versionId) throw generationInputError('version_id 无效');
+        if (Number(version.id) !== versionId) {
+          throw codedRouteError('REDRAW_VERSION_CONFLICT', '只能生成作品当前版本');
         }
-        version = ownedVersion;
-      } else {
-        version = findVersionForWork(work, work.current_version, currentOwner);
-        if (!version) throw codedRouteError('REDRAW_VERSION_CONFLICT', '转绘作品没有可生成的当前版本');
       }
-      const input = { ...body };
       delete input.version_id;
       delete input.versionId;
       input.versionId = version.id;

@@ -20,6 +20,8 @@ test('covers GPT, image, and video generation routes', () => {
     ['POST', '/image-tools/operations'],
     ['POST', '/video-tools/operations'],
     ['POST', '/redraw/works/8/analyze'],
+    ['POST', '/redraw/shots/8/generate'],
+    ['POST', '/redraw/works/8/generate-batch'],
     ['POST', '/dramas/42/director/reference-analysis'],
     ['GET', '/storyboards/episode/3/generate'],
   ];
@@ -33,11 +35,13 @@ test('calls the shared limiter only for model generation routes', () => {
   const guard = createModelGenerationGuard((_req, _res, next) => { limited += 1; next(); });
   assert.equal(call(guard, 'POST', '/generation/characters').next, true);
   assert.equal(call(guard, 'POST', '/video-tools/operations').next, true);
+  assert.equal(call(guard, 'POST', '/redraw/shots/8/generate').next, true);
+  assert.equal(call(guard, 'POST', '/redraw/works/8/generate-batch').next, true);
   assert.equal(call(guard, 'GET', '/video-tools/capabilities').next, true);
   assert.equal(call(guard, 'GET', '/video-tools/operations/123').next, true);
   assert.equal(call(guard, 'POST', '/dramas').next, true);
   assert.equal(call(guard, 'POST', '/upload/image').next, true);
-  assert.equal(limited, 2);
+  assert.equal(limited, 4);
 });
 
 test('does not treat unsupported methods or ordinary updates as generation', () => {
