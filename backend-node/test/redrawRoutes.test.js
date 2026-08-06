@@ -6,6 +6,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
+const { setupRouter } = require('../src/routes');
 const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
@@ -91,6 +92,101 @@ function insertWork(db, projectId, values = {}) {
     task_id: null,
     provider_task_id: null,
     credit_reservation_id: null,
+    created_at: NOW,
+    updated_at: NOW,
+    deleted_at: null,
+    ...values,
+  }).lastInsertRowid;
+}
+
+function insertVersion(db, workId, values = {}) {
+  return db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       style_snapshot_json, status, created_at, updated_at, deleted_at)
+    VALUES
+      (@work_id, @tenant_id, @user_id, @version, @locale, @market, @localization_level,
+       @style_snapshot_json, @status, @created_at, @updated_at, @deleted_at)
+  `).run({
+    work_id: workId,
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version: 1,
+    locale: 'en-US',
+    market: 'US',
+    localization_level: 'faithful',
+    style_snapshot_json: '{}',
+    status: 'ready_to_generate',
+    created_at: NOW,
+    updated_at: NOW,
+    deleted_at: null,
+    ...values,
+  }).lastInsertRowid;
+}
+
+function insertRedrawAsset(db, versionId, values = {}) {
+  return db.prepare(`
+    INSERT INTO redraw_assets
+      (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+       asset_id, version_number, approval_status, status, created_at, updated_at, deleted_at)
+    VALUES
+      (@version_id, @tenant_id, @user_id, @kind, @source_ref_json, @localized_name,
+       @asset_id, @version_number, @approval_status, @status, @created_at, @updated_at, @deleted_at)
+  `).run({
+    version_id: versionId,
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    kind: 'character',
+    source_ref_json: '{}',
+    localized_name: 'Maya',
+    asset_id: 701,
+    version_number: 1,
+    approval_status: 'approved',
+    status: 'generated',
+    created_at: NOW,
+    updated_at: NOW,
+    deleted_at: null,
+    ...values,
+  }).lastInsertRowid;
+}
+
+function insertShot(db, versionId, values = {}) {
+  return db.prepare(`
+    INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms,
+       duration_ms, source_dialogue_json, localized_dialogue_json, references_json,
+       opening_state, continuous_action, ending_state, prompt, negative_prompt,
+       compiled_prompt_json, video_generation_id, status, error_code, error_message,
+       draft_json, created_at, updated_at, deleted_at)
+    VALUES
+      (@version_id, @tenant_id, @user_id, @batch_index, @shot_index, @start_ms, @end_ms,
+       @duration_ms, @source_dialogue_json, @localized_dialogue_json, @references_json,
+       @opening_state, @continuous_action, @ending_state, @prompt, @negative_prompt,
+       @compiled_prompt_json, @video_generation_id, @status, @error_code, @error_message,
+       @draft_json, @created_at, @updated_at, @deleted_at)
+  `).run({
+    version_id: versionId,
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    batch_index: 1,
+    shot_index: 1,
+    start_ms: 0,
+    end_ms: 6000,
+    duration_ms: 6000,
+    source_dialogue_json: '[]',
+    localized_dialogue_json: '[]',
+    references_json: '[]',
+    opening_state: '',
+    continuous_action: '',
+    ending_state: '',
+    prompt: 'Maya enters',
+    negative_prompt: '',
+    compiled_prompt_json: JSON.stringify({ text: 'Maya enters', revision: 1 }),
+    video_generation_id: null,
+    status: 'draft',
+    error_code: null,
+    error_message: null,
+    draft_json: JSON.stringify({ revision: 1, model: 'seedance 2.0', duration: 6, resolution: '720p', count: 1 }),
     created_at: NOW,
     updated_at: NOW,
     deleted_at: null,
@@ -687,6 +783,440 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
     assert.equal(review.statusCode, 200);
     assert.equal(review.body.data.asset.approval_status, 'approved');
     assert.equal(review.body.data.gate.ok, true);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情按当前版本返回可恢复的 shots batches 任务与账单状态', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId, {
+      status: 'processing',
+      draft_json: JSON.stringify({
+        revision: 2,
+        new_video_ref: { asset_id: 9001, url: '/static/redraw-videos/shot.mp4' },
+        generation: { reservation_id: 'reservation-api', task_id: 'task-api' },
+      }),
+    });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const reservation = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'redraw-route-api',
+      model: 'seedance 2.0',
+      resourceType: 'redraw_shot',
+      resourceId: String(shotId),
+      amount: 6,
+    });
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, metadata, created_at, updated_at)
+      VALUES ('task-api', 'redraw_shot', 'processing', 42, '供应商处理中', ?, 'tenant-a', 'user-a', ?, ?, ?)`)
+      .run(String(shotId), JSON.stringify({ redraw_shot: {
+        reservation_id: reservation.id,
+        quote: { amount: 6, unit_amount: 6, snapshot: { model: 'seedance 2.0' } },
+      } }), NOW, NOW);
+    const videoId = db.prepare(`INSERT INTO video_generations
+      (prompt, model, duration, resolution, status, task_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('Maya enters', 'seedance 2.0', 6, '720p', 'processing', 'task-api', 'tenant-a', 'user-a', ?, ?)`)
+      .run(NOW, NOW).lastInsertRowid;
+    db.prepare('UPDATE redraw_shots SET video_generation_id = ? WHERE id = ?').run(videoId, shotId);
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps());
+
+    const processing = captureResponse();
+    handlers.getWork(request({ id: workId }), processing);
+    assert.equal(processing.statusCode, 200);
+    assert.equal(processing.body.data.version_id, versionId);
+    assert.equal(processing.body.data.shots.length, 1);
+    assert.equal(processing.body.data.batches.length, 1);
+    assert.equal(processing.body.data.shots[0].status, 'processing');
+    assert.equal(processing.body.data.shots[0].video_generation_id, videoId);
+    assert.deepEqual(processing.body.data.shots[0].new_video_ref, {
+      asset_id: 9001,
+      url: '/static/redraw-videos/shot.mp4',
+    });
+    assert.deepEqual(processing.body.data.shots[0].generation, {
+      task_id: 'task-api',
+      status: 'processing',
+      progress: 42,
+      message: '供应商处理中',
+    });
+    assert.deepEqual(processing.body.data.shots[0].billing, {
+      held: 6,
+      confirmed: 0,
+      released: 0,
+      quote: { amount: 6, unit_amount: 6, snapshot: { model: 'seedance 2.0' } },
+    });
+
+    creditLedger.confirm(db, reservation.id);
+    db.prepare("UPDATE async_tasks SET status = 'completed', progress = 100, message = '完成' WHERE id = 'task-api'").run();
+    db.prepare("UPDATE redraw_shots SET status = 'completed' WHERE id = ?").run(shotId);
+    const refreshed = captureResponse();
+    handlers.getWork(request({ id: workId }), refreshed);
+    assert.equal(refreshed.body.data.shots[0].generation.status, 'completed');
+    assert.equal(refreshed.body.data.shots[0].billing.held, 0);
+    assert.equal(refreshed.body.data.shots[0].billing.confirmed, 6);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品没有当前版本时返回空 shots 与 batches 且越权仍为 404', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 0 });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const own = captureResponse();
+    handlers.getWork(request({ id: workId }), own);
+    assert.equal(own.statusCode, 200);
+    assert.deepEqual(own.body.data.shots, []);
+    assert.deepEqual(own.body.data.batches, []);
+
+    const otherUser = captureResponse();
+    handlers.getWork(request({ id: workId, userId: 'user-b' }), otherUser);
+    assert.equal(otherUser.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('分镜更新要求乐观锁并只写白名单且按批准资产重新规范化', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const assetId = insertRedrawAsset(db, versionId);
+    const shotId = insertShot(db, versionId, { status: 'failed', video_generation_id: 99 });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const missingLock = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: { prompt: '@Maya runs' } }), missingLock);
+    assert.equal(missingLock.statusCode, 400);
+    assert.equal(missingLock.body.error.code, 'REDRAW_SHOT_LOCK_REQUIRED');
+
+    const updated = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      start_ms: 1000,
+      end_ms: 8000,
+      prompt: '@Maya runs',
+      references: [{ kind: 'character', asset_id: assetId }],
+      model: 'seedance 2.0',
+      duration: 7,
+      resolution: '1080p',
+      count: 1,
+      status: 'completed',
+      video_generation_id: 12345,
+      tenant_id: 'tenant-b',
+      version_id: 999,
+      billing: { held: 0 },
+    } }), updated);
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.data.start_ms, 1000);
+    assert.equal(updated.body.data.duration_ms, 7000);
+    assert.equal(updated.body.data.prompt, '@Maya runs');
+    assert.equal(updated.body.data.references[0].asset_id, assetId);
+    assert.equal(updated.body.data.draft.revision, 2);
+    const stored = db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    assert.equal(stored.status, 'failed');
+    assert.equal(stored.video_generation_id, 99);
+    assert.equal(stored.tenant_id, 'tenant-a');
+    assert.equal(stored.version_id, versionId);
+    const storedDraft = JSON.parse(stored.draft_json);
+    const storedCompiled = JSON.parse(stored.compiled_prompt_json);
+    const storedReferences = JSON.parse(stored.references_json);
+    assert.equal(storedDraft.prompt, stored.prompt);
+    assert.equal(storedCompiled.text, stored.prompt);
+    assert.deepEqual(storedDraft.references, storedReferences);
+    assert.deepEqual(storedCompiled.references, storedReferences);
+    assert.equal(storedDraft.duration, storedCompiled.duration);
+
+    const conflict = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: { updated_at: NOW, prompt: '@Maya waits' } }), conflict);
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.error.code, 'REDRAW_SHOT_CONFLICT');
+  } finally {
+    db.close();
+  }
+});
+
+test('分镜更新的 version 锁校验 draft revision 并拒绝未知或未审批引用', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    insertRedrawAsset(db, versionId, { localized_name: '草稿道具', kind: 'prop', approval_status: 'pending' });
+    const shotId = insertShot(db, versionId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const versionConflict = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: { version: 999, prompt: 'new' } }), versionConflict);
+    assert.equal(versionConflict.statusCode, 409);
+    assert.equal(versionConflict.body.error.code, 'REDRAW_SHOT_CONFLICT');
+
+    const unknown = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: {
+      version: 1,
+      references: [{ kind: 'prop', asset_id: 99999 }],
+    } }), unknown);
+    assert.equal(unknown.statusCode, 400);
+    assert.equal(unknown.body.error.code, 'REDRAW_SHOT_INVALID');
+
+    const pending = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: {
+      version: 1,
+      references: ['@草稿道具'],
+    } }), pending);
+    assert.equal(pending.statusCode, 400);
+    assert.equal(pending.body.error.code, 'REDRAW_SHOT_INVALID');
+  } finally {
+    db.close();
+  }
+});
+
+test('结构化引用在资产重名时仍保持请求的精确资产身份', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const requestedAssetId = insertRedrawAsset(db, versionId, { localized_name: 'Maya', asset_id: 701 });
+    const otherAssetId = insertRedrawAsset(db, versionId, { localized_name: 'Maya', asset_id: 702 });
+    const shotId = insertShot(db, versionId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const updated = captureResponse();
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      references: [{ kind: 'character', asset_id: requestedAssetId }],
+    } }), updated);
+
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.data.references[0].asset_id, requestedAssetId);
+    assert.notEqual(updated.body.data.references[0].asset_id, otherAssetId);
+  } finally {
+    db.close();
+  }
+});
+
+test('旧分镜缺少生成设置时仍可编辑并补齐安全默认值', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId, {
+      draft_json: JSON.stringify({ revision: 1 }),
+      compiled_prompt_json: '{}',
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const updated = captureResponse();
+
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      prompt: 'legacy shot edited',
+    } }), updated);
+
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.data.draft.model, 'seedance 2.0');
+    assert.equal(updated.body.data.draft.duration, 6);
+    assert.equal(updated.body.data.draft.resolution, '720p');
+    assert.equal(updated.body.data.draft.count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('单镜生成与显式重试统一调用 generation service 并返回 202', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const calls = [];
+    const generationService = {
+      generateShot: async (context, input) => {
+        calls.push({ method: 'generate', context, input });
+        return { task_id: 'same-task', status: 'processing', billing: { held: 6, charged: 0, released: 0 } };
+      },
+      retryShot: async (context, input) => {
+        calls.push({ method: 'retry', context, input });
+        return { task_id: 'retry-task', status: 'processing', billing: { held: 6, charged: 0, released: 0 } };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+
+    const first = captureResponse();
+    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), first);
+    const duplicate = captureResponse();
+    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), duplicate);
+    const retry = captureResponse();
+    await handlers.generateShot(request({ id: shotId, body: { retry: true } }), retry);
+
+    assert.equal(first.statusCode, 202);
+    assert.equal(duplicate.body.data.task_id, 'same-task');
+    assert.equal(retry.statusCode, 202);
+    assert.equal(retry.body.data.task_id, 'retry-task');
+    assert.deepEqual(calls.map((call) => call.method), ['generate', 'generate', 'retry']);
+    assert.equal(calls[0].context.tenantId, 'tenant-a');
+    assert.equal(calls[0].context.userId, 'user-a');
+    assert.equal(calls[0].input.shotId, shotId);
+  } finally {
+    db.close();
+  }
+});
+
+test('分镜更新和生成对跨租户或跨用户统一返回 404 且不调用 generation service', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      generationService: {
+        generateShot: async () => { calls += 1; },
+        retryShot: async () => { calls += 1; },
+      },
+    }));
+
+    const tenantUpdate = captureResponse();
+    handlers.updateShot(request({ id: shotId, tenantId: 'tenant-b', body: { updated_at: NOW } }), tenantUpdate);
+    const userGenerate = captureResponse();
+    await handlers.generateShot(request({ id: shotId, userId: 'user-b' }), userGenerate);
+
+    assert.equal(tenantUpdate.statusCode, 404);
+    assert.equal(tenantUpdate.body.error.code, 'REDRAW_SHOT_NOT_FOUND');
+    assert.equal(userGenerate.statusCode, 404);
+    assert.equal(userGenerate.body.error.code, 'REDRAW_SHOT_NOT_FOUND');
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('单镜生成错误保持结构化 code details 与规定 HTTP 状态', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const failures = [
+      ['REDRAW_ASSET_REVIEW_REQUIRED', 409, { missing: [{ asset_id: 7 }] }],
+      ['INSUFFICIENT_CREDITS', 402, undefined],
+      ['REDRAW_SHOT_PRICING_UNCONFIGURED', 409, undefined],
+      ['REDRAW_RETRY_UNCERTAIN', 409, undefined],
+      ['INVALID_REDRAW_GENERATION_INPUT', 400, undefined],
+    ];
+    for (const [code, expectedStatus, details] of failures) {
+      const error = Object.assign(new Error(`error ${code}`), { code, details });
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+        generationService: { generateShot: async () => { throw error; }, retryShot: async () => { throw error; } },
+      }));
+      const result = captureResponse();
+      await handlers.generateShot(request({ id: shotId }), result);
+      assert.equal(result.statusCode, expectedStatus);
+      assert.equal(result.body.success, false);
+      assert.equal(result.body.error.code, code);
+      assert.deepEqual(result.body.error.details, details);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('未审批单镜生成返回 409 missing 且不会冻结积分或调用 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const assetId = insertRedrawAsset(db, versionId, { approval_status: 'pending' });
+    const shotId = insertShot(db, versionId, {
+      references_json: JSON.stringify([{ kind: 'character', asset_id: assetId }]),
+    });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      generationOptions: { videoProcessor: async () => { providerCalls += 1; } },
+    }));
+    const result = captureResponse();
+    await handlers.generateShot(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_ASSET_REVIEW_REQUIRED');
+    assert.equal(result.body.error.details.missing[0].asset_id, assetId);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_shot'").get().count, 0);
+    assert.equal(providerCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('批量生成严格绑定作品当前版本并拒绝 singular shot_id', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const otherWorkId = insertWork(db, projectId, { current_version: 1, source_fingerprint: 'e'.repeat(64) });
+    const otherVersionId = insertVersion(db, otherWorkId);
+    const calls = [];
+    const generationService = {
+      generateBatch: async (context, input) => {
+        calls.push({ context, input });
+        return { version_id: input.versionId, results: [{ shot_id: 1, status: 'processing', billing: { held: 6 } }], skipped: [] };
+      },
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+
+    const current = captureResponse();
+    await handlers.generateBatch(request({ id: workId, body: {} }), current);
+    assert.equal(current.statusCode, 202);
+    assert.equal(calls[0].input.versionId, versionId);
+
+    const mismatch = captureResponse();
+    await handlers.generateBatch(request({ id: workId, body: { version_id: otherVersionId } }), mismatch);
+    assert.equal(mismatch.statusCode, 409);
+    assert.equal(mismatch.body.error.code, 'REDRAW_VERSION_CONFLICT');
+
+    const singular = captureResponse();
+    await handlers.generateBatch(request({ id: workId, body: { shot_id: 1 } }), singular);
+    assert.equal(singular.statusCode, 400);
+    assert.equal(singular.body.error.code, 'REDRAW_BATCH_INPUT_INVALID');
+
+    const otherOwner = captureResponse();
+    await handlers.generateBatch(request({ id: workId, userId: 'user-b' }), otherOwner);
+    assert.equal(otherOwner.statusCode, 404);
+    assert.equal(calls.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('第三步四个转绘分镜 API 已真实注册在总路由', () => {
+  const db = createDb();
+  try {
+    const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
+    const routes = new Set(router.stack
+      .filter((layer) => layer.route)
+      .flatMap((layer) => Object.keys(layer.route.methods)
+        .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
+    assert.equal(routes.has('GET /redraw/works/:id'), true);
+    assert.equal(routes.has('PUT /redraw/shots/:id'), true);
+    assert.equal(routes.has('POST /redraw/shots/:id/generate'), true);
+    assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
   } finally {
     db.close();
   }

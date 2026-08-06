@@ -12,6 +12,8 @@ const redrawOrchestrator = require('../services/redrawOrchestrator');
 const localizationService = require('../services/localizationService');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
+const redrawShotService = require('../services/redrawShotService');
+const redrawGenerationService = require('../services/redrawGenerationService');
 const assetService = require('../services/assetService');
 const taskService = require('../services/taskService');
 const uploadServiceModule = require('../services/uploadService');
@@ -251,6 +253,46 @@ function billingPayload(value) {
   };
 }
 
+function parseStrictObject(value, label) {
+  if (value == null || value === '') return {};
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch (_) {}
+  const error = new Error(`${label} JSON 无效`);
+  error.code = 'REDRAW_SHOT_INVALID';
+  throw error;
+}
+
+function codedRouteError(code, message, details) {
+  const error = new Error(message);
+  error.code = code;
+  if (details !== undefined) error.details = details;
+  return error;
+}
+
+function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
+  const code = String(error?.code || '');
+  if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
+    'REDRAW_SHOT_TASK_NOT_FOUND', 'REDRAW_VIDEO_NOT_FOUND'].includes(code)) {
+    return response.error(res, 404, code, error.message || fallbackMessage, error.details);
+  }
+  if (code === 'INSUFFICIENT_CREDITS') {
+    return response.error(res, 402, code, error.message || '积分不足', error.details);
+  }
+  if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
+    'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
+    'REDRAW_SHOT_PRICING_UNCONFIGURED'].includes(code)) {
+    return response.error(res, 409, code, error.message || fallbackMessage, error.details);
+  }
+  if (code.startsWith('REDRAW_') || code.startsWith('INVALID_')) {
+    return response.error(res, 400, code, error.message || fallbackMessage, error.details);
+  }
+  log?.error?.({ err: error, ...context }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
+}
+
 function registerSourceAsset(db, log, currentOwner, sourceAsset) {
   const existingId = sourceAsset?.id ?? sourceAsset?.asset_id;
   if (existingId != null) return { sourceAsset, asset: null };
@@ -301,6 +343,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const uploadService = options.uploadService || redrawUploadService;
   const capabilityService = options.capabilityService || redrawCapabilityService;
   const orchestrator = options.orchestrator || redrawOrchestrator;
+  const shotService = options.shotService || redrawShotService;
+  const generationService = options.generationService || redrawGenerationService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -352,6 +396,101 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function findOwnedShot(id, currentOwner) {
+    return db.prepare(`
+      SELECT s.*
+      FROM redraw_shots s
+      JOIN redraw_versions v ON v.id = s.version_id
+      WHERE s.id = ?
+        AND s.tenant_id = ? AND s.user_id = ?
+        AND v.tenant_id = ? AND v.user_id = ?
+        AND s.deleted_at IS NULL AND v.deleted_at IS NULL
+      LIMIT 1
+    `).get(
+      Number(id),
+      currentOwner.tenantId,
+      currentOwner.userId,
+      currentOwner.tenantId,
+      currentOwner.userId,
+    );
+  }
+
+  function findVersionForWork(work, versionValue, currentOwner) {
+    const versionNumber = Number(versionValue);
+    if (!Number.isSafeInteger(versionNumber) || versionNumber <= 0) return null;
+    return db.prepare(`
+      SELECT * FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND version = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber);
+  }
+
+  function taskMetadata(row) {
+    try {
+      return parseStrictObject(row?.metadata, 'async_tasks.metadata').redraw_shot || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function shotRuntime(raw, snapshot, currentOwner) {
+    const video = raw.video_generation_id
+      ? db.prepare(`SELECT * FROM video_generations
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .get(Number(raw.video_generation_id), currentOwner.tenantId, currentOwner.userId)
+      : null;
+    const draftGeneration = snapshot.draft?.generation || {};
+    const taskId = video?.task_id || draftGeneration.task_id || null;
+    const task = taskId
+      ? db.prepare(`SELECT * FROM async_tasks
+        WHERE id = ? AND type = 'redraw_shot' AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .get(String(taskId), currentOwner.tenantId, currentOwner.userId)
+      : null;
+    const metadata = taskMetadata(task);
+    const reservationId = metadata.reservation_id || draftGeneration.reservation_id || null;
+    const reservation = reservationId
+      ? db.prepare(`SELECT * FROM tenant_usage_reservations
+        WHERE id = ? AND tenant_id = ? AND actor_user_id = ?
+          AND resource_type = 'redraw_shot' AND resource_id = ?`)
+        .get(String(reservationId), currentOwner.tenantId, currentOwner.userId, String(raw.id))
+      : null;
+    const amount = Number(reservation?.amount || 0);
+    const billing = {
+      held: reservation?.status === 'held' ? amount : 0,
+      confirmed: reservation?.status === 'confirmed' ? amount : 0,
+      released: reservation?.status === 'refunded' ? amount : 0,
+      quote: metadata.quote || null,
+    };
+    return {
+      ...snapshot,
+      status: raw.status,
+      updated_at: raw.updated_at,
+      error_code: raw.error_code || null,
+      error_message: raw.error_message || null,
+      video_generation_id: raw.video_generation_id || null,
+      new_video_ref: snapshot.new_video_ref || snapshot.draft?.new_video_ref || null,
+      generation: {
+        task_id: task?.id || null,
+        status: task?.status || null,
+        progress: task && Number.isFinite(Number(task.progress)) ? Number(task.progress) : null,
+        message: task?.message || null,
+      },
+      billing,
+    };
+  }
+
+  function listOwnedShotRuntime(version, currentOwner) {
+    const rows = db.prepare(`SELECT * FROM redraw_shots
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      ORDER BY batch_index ASC, shot_index ASC, id ASC`)
+      .all(version.id, currentOwner.tenantId, currentOwner.userId);
+    const rowsById = new Map(rows.map((row) => [Number(row.id), row]));
+    return shotService.snapshotShots(db, version.id)
+      .filter((snapshot) => rowsById.has(Number(snapshot.id)))
+      .map((snapshot) => shotRuntime(rowsById.get(Number(snapshot.id)), snapshot, currentOwner));
   }
 
   function listProjects(req, res) {
@@ -444,20 +583,259 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   }
 
   function getWork(req, res) {
-    const work = findOwnedWork(req.params.id, owner(req));
-    if (!work) return response.notFound(res, '转绘作品不存在');
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
     const task = work.task_id ? taskService.getTask(db, work.task_id) : null;
-    const currentVersion = db.prepare(`
-      SELECT id
-      FROM redraw_versions
-      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND version = ? AND deleted_at IS NULL
-      LIMIT 1
-    `).get(work.id, owner(req).tenantId, owner(req).userId, Number(work.current_version || 0));
-    return response.success(res, mapWork(work, null, {
-      task,
-      versionId: currentVersion?.id || null,
-      analysisQuote: quoteAnalysis(db, log),
-    }));
+    const currentVersion = findVersionForWork(work, work.current_version, currentOwner);
+    try {
+      const shots = currentVersion ? listOwnedShotRuntime(currentVersion, currentOwner) : [];
+      const batches = shotService.groupShotsIntoBatches(shots);
+      return response.success(res, {
+        ...mapWork(work, null, {
+          task,
+          versionId: currentVersion?.id || null,
+          analysisQuote: quoteAnalysis(db, log),
+        }),
+        shots,
+        batches,
+      });
+    } catch (error) {
+      return sendRedrawError(res, error, '读取转绘作品失败', log, { workId: work.id });
+    }
+  }
+
+  function referenceTokens(value, assetsById) {
+    if (value == null) return [];
+    if (!Array.isArray(value)) throw codedRouteError('REDRAW_SHOT_INVALID', 'references 必须是数组');
+    return value.map((reference) => {
+      if (typeof reference === 'string') return reference;
+      if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
+        throw codedRouteError('REDRAW_SHOT_INVALID', 'references 项无效');
+      }
+      const id = Number(reference.redraw_asset_id ?? reference.redrawAssetId ?? reference.asset_id ?? reference.assetId);
+      const asset = Number.isSafeInteger(id) ? assetsById.get(id) : null;
+      if (!asset || (reference.kind && String(reference.kind) !== String(asset.kind))) {
+        throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用包含未知资产');
+      }
+      if (!asset.localized_name) throw codedRouteError('REDRAW_SHOT_INVALID', '分镜引用资产缺少名称');
+      return `@__redraw_asset_${asset.id}`;
+    });
+  }
+
+  function nextUpdatedAt(previous) {
+    const timestamp = new Date().toISOString();
+    if (timestamp !== previous) return timestamp;
+    return new Date(new Date(previous).getTime() + 1).toISOString();
+  }
+
+  function validateGenerationDraft(input) {
+    const model = String(input.model || '').trim();
+    const duration = Number(input.duration);
+    const resolution = String(input.resolution || '').trim();
+    const count = Number(input.count);
+    if (!model) throw codedRouteError('REDRAW_SHOT_INVALID', 'model 不能为空');
+    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+      throw codedRouteError('REDRAW_SHOT_INVALID', 'duration 必须是 5 到 15 秒的整数');
+    }
+    if (!resolution) throw codedRouteError('REDRAW_SHOT_INVALID', 'resolution 不能为空');
+    if (!Number.isSafeInteger(count) || count <= 0) {
+      throw codedRouteError('REDRAW_SHOT_INVALID', 'count 必须是正整数');
+    }
+    return { model, duration, resolution, count };
+  }
+
+  function updateShot(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    const body = req.body || {};
+    const expectedUpdatedAt = body.expected_updated_at ?? body.expectedUpdatedAt
+      ?? body.updated_at ?? body.updatedAt;
+    const hasRevision = body.version !== undefined && body.version !== null && body.version !== '';
+    if (!expectedUpdatedAt && !hasRevision) {
+      return response.error(res, 400, 'REDRAW_SHOT_LOCK_REQUIRED', '更新分镜必须提交 updated_at 或 version');
+    }
+    try {
+      const current = shotService.snapshotShots(db, shot.version_id)
+        .find((item) => Number(item.id) === Number(shot.id));
+      if (!current) throw codedRouteError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+      const draft = parseStrictObject(shot.draft_json, 'draft_json');
+      const currentRevision = Number(draft.revision ?? 1);
+      if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(shot.updated_at)) {
+        throw codedRouteError('REDRAW_SHOT_CONFLICT', '分镜已被其他操作更新，请刷新后重试');
+      }
+      if (hasRevision && (!Number.isSafeInteger(Number(body.version))
+        || Number(body.version) !== currentRevision)) {
+        throw codedRouteError('REDRAW_SHOT_CONFLICT', '分镜版本已变化，请刷新后重试');
+      }
+
+      const assetRows = db.prepare(`SELECT * FROM redraw_assets
+        WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .all(shot.version_id, currentOwner.tenantId, currentOwner.userId);
+      const assetsById = new Map(assetRows.map((asset) => [Number(asset.id), asset]));
+      const approvedAssets = assetRows.map((asset) => ({
+        ...asset,
+        asset_id: asset.id,
+        name: `__redraw_asset_${asset.id}`,
+        display_name: asset.localized_name,
+      }));
+      const editableKeys = [
+        'start_ms', 'end_ms', 'opening_state', 'continuous_action', 'ending_state',
+        'shot_type', 'camera_movement', 'composition', 'lighting', 'atmosphere',
+        'source_dialogue', 'localized_dialogue', 'speaker', 'speakable_duration_ms',
+        'prompt', 'negative_prompt',
+      ];
+      const normalizedInput = {};
+      for (const key of editableKeys) {
+        normalizedInput[key] = Object.prototype.hasOwnProperty.call(body, key) ? body[key] : current[key];
+      }
+      normalizedInput.references = referenceTokens(
+        Object.prototype.hasOwnProperty.call(body, 'references') ? body.references : current.references,
+        assetsById,
+      );
+      let normalized;
+      try {
+        normalized = shotService.normalizeShot(normalizedInput, { approvedAssets });
+      } catch (error) {
+        throw codedRouteError('REDRAW_SHOT_INVALID', error.message || '转绘分镜内容无效');
+      }
+      normalized.references = normalized.references.map((reference) => ({
+        ...reference,
+        name: assetsById.get(Number(reference.asset_id))?.localized_name || reference.name,
+      }));
+      const generationDraft = validateGenerationDraft({
+        model: Object.prototype.hasOwnProperty.call(body, 'model') ? body.model : (current.model || 'seedance 2.0'),
+        duration: Object.prototype.hasOwnProperty.call(body, 'duration')
+          ? body.duration
+          : (current.duration || Math.max(5, Math.min(15, Math.ceil(current.duration_ms / 1000)))),
+        resolution: Object.prototype.hasOwnProperty.call(body, 'resolution')
+          ? body.resolution
+          : (current.resolution || '720p'),
+        count: Object.prototype.hasOwnProperty.call(body, 'count') ? body.count : (current.count || 1),
+      });
+      const compiledPrompt = {
+        ...current.compiled_prompt,
+        ...normalized,
+        ...generationDraft,
+        text: normalized.prompt || '',
+        prompt: normalized.prompt || '',
+        negative_prompt: normalized.negative_prompt || '',
+        references: normalized.references,
+      };
+      delete compiledPrompt.compiled_prompt;
+      const nextDraft = {
+        ...draft,
+        ...normalized,
+        ...generationDraft,
+        references: normalized.references,
+        revision: currentRevision + 1,
+      };
+      delete nextDraft.compiled_prompt;
+      const updatedAt = nextUpdatedAt(shot.updated_at);
+      const changed = db.prepare(`UPDATE redraw_shots SET
+        start_ms = ?, end_ms = ?, duration_ms = ?,
+        source_dialogue_json = ?, localized_dialogue_json = ?, references_json = ?,
+        opening_state = ?, continuous_action = ?, ending_state = ?,
+        prompt = ?, negative_prompt = ?, compiled_prompt_json = ?, draft_json = ?, updated_at = ?
+        WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ?
+          AND updated_at = ? AND deleted_at IS NULL`)
+        .run(
+          normalized.start_ms,
+          normalized.end_ms,
+          normalized.duration_ms,
+          JSON.stringify(normalized.source_dialogue || []),
+          JSON.stringify(normalized.localized_dialogue || []),
+          JSON.stringify(normalized.references || []),
+          normalized.opening_state || '',
+          normalized.continuous_action || '',
+          normalized.ending_state || '',
+          normalized.prompt || '',
+          normalized.negative_prompt || '',
+          JSON.stringify(compiledPrompt),
+          JSON.stringify(nextDraft),
+          updatedAt,
+          shot.id,
+          shot.version_id,
+          currentOwner.tenantId,
+          currentOwner.userId,
+          shot.updated_at,
+        );
+      if (changed.changes !== 1) {
+        throw codedRouteError('REDRAW_SHOT_CONFLICT', '分镜已被其他操作更新，请刷新后重试');
+      }
+      const raw = findOwnedShot(shot.id, currentOwner);
+      const snapshot = shotService.snapshotShots(db, shot.version_id)
+        .find((item) => Number(item.id) === Number(shot.id));
+      return response.success(res, shotRuntime(raw, snapshot, currentOwner));
+    } catch (error) {
+      return sendRedrawError(res, error, '更新转绘分镜失败', log, { shotId: shot.id });
+    }
+  }
+
+  function generationContext(currentOwner) {
+    return {
+      storageRoot: storageRootFromConfig(cfg),
+      ...(options.generationOptions || {}),
+      db,
+      log,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+    };
+  }
+
+  async function generateShot(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    const body = { ...(req.body || {}) };
+    delete body.retry;
+    delete body.shot_id;
+    delete body.shotId;
+    body.shotId = shot.id;
+    try {
+      const result = req.body?.retry === true
+        ? await generationService.retryShot(generationContext(currentOwner), body)
+        : await generationService.generateShot(generationContext(currentOwner), body);
+      return response.accepted(res, { shot_id: shot.id, ...result });
+    } catch (error) {
+      return sendRedrawError(res, error, '提交转绘单镜生成失败', log, { shotId: shot.id });
+    }
+  }
+
+  async function generateBatch(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, 'shot_id')
+      || Object.prototype.hasOwnProperty.call(body, 'shotId')) {
+      return response.error(res, 400, 'REDRAW_BATCH_INPUT_INVALID', '批量生成不接受单镜 shot_id 或 shotId');
+    }
+    try {
+      let version;
+      if (body.version_id !== undefined || body.versionId !== undefined) {
+        const versionId = numericId(body.version_id ?? body.versionId);
+        if (!versionId) throw codedRouteError('REDRAW_BATCH_INPUT_INVALID', 'version_id 无效');
+        const ownedVersion = findOwnedVersion(versionId, currentOwner);
+        if (!ownedVersion) throw codedRouteError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在');
+        if (String(ownedVersion.work_id) !== String(work.id)) {
+          throw codedRouteError('REDRAW_VERSION_CONFLICT', '转绘版本不属于当前作品');
+        }
+        version = ownedVersion;
+      } else {
+        version = findVersionForWork(work, work.current_version, currentOwner);
+        if (!version) throw codedRouteError('REDRAW_VERSION_CONFLICT', '转绘作品没有可生成的当前版本');
+      }
+      const input = { ...body };
+      delete input.version_id;
+      delete input.versionId;
+      input.versionId = version.id;
+      const result = await generationService.generateBatch(generationContext(currentOwner), input);
+      return response.accepted(res, result);
+    } catch (error) {
+      return sendRedrawError(res, error, '提交转绘批量生成失败', log, { workId: work.id });
+    }
   }
 
   function createVersion(req, res) {
@@ -701,6 +1079,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     getProject,
     createWorks,
     getWork,
+    updateShot,
+    generateShot,
+    generateBatch,
     createVersion,
     listVersionAssets,
     generationGate,
