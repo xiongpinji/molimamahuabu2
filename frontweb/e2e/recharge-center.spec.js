@@ -216,6 +216,7 @@ async function mockRechargeApi(page, calls, options = {}) {
       const body = request.postDataBuffer()?.toString('latin1') || ''
       const contentType = /Content-Type:\s*([^\r\n]+)/i.exec(body)?.[1] || ''
       calls.uploadContentTypes.push(contentType)
+      if (options.uploadResponseGate) await options.uploadResponseGate
       const url = ({
         'image/jpeg': '/static/uploads/recharge-packages/uploaded-jpg.jpg',
         'image/png': '/static/uploads/recharge-packages/uploaded-png.png',
@@ -231,6 +232,7 @@ async function mockRechargeApi(page, calls, options = {}) {
       const packageId = decodeURIComponent(updateMatch[1])
       const body = request.postDataJSON()
       calls.packageUpdates.push({ method, pathname, body })
+      if (options.adminUpdateResponseGate) await options.adminUpdateResponseGate
       if (options.adminUpdateDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, Number(options.adminUpdateDelayMs)))
       }
@@ -708,4 +710,58 @@ test('管理员套餐排序与保存互斥且双击保存只发送一个更新�
   await expect.poll(() => calls.packageUpdates).toHaveLength(1)
   await expect(saveButton).toBeEnabled()
   expect(calls.packageUpdates[0].body.ad_title).toBe('串行化套餐管理')
+})
+
+test('管理员套餐上传期间锁定选择并将延迟图片留在原套餐草稿', async ({ page }) => {
+  const calls = createCalls()
+  let releaseUpload
+  let releaseSave
+  const uploadResponseGate = new Promise((resolve) => { releaseUpload = resolve })
+  const adminUpdateResponseGate = new Promise((resolve) => { releaseSave = resolve })
+  await seedAdminSession(page)
+  await mockRechargeApi(page, calls, { uploadResponseGate, adminUpdateResponseGate })
+  await page.goto('/billing-admin?tab=recharge')
+
+  const admin = page.locator('.package-admin')
+  await expect(admin.locator('.sortable-item')).toHaveCount(4)
+  const plusRow = admin.locator('.sortable-item').filter({ hasText: 'PLUS' })
+  const proRow = admin.locator('.sortable-item').filter({ hasText: 'PRO' })
+  await plusRow.click()
+  const imageUrl = field(admin, '广告图片').locator('input').first()
+  const uploadAction = admin.locator('input[type="file"]').setInputFiles({
+    name: 'plus-late.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('delayed-plus-image'),
+  })
+
+  await expect.poll(() => calls.uploadContentTypes).toEqual(['image/png'])
+  await expect(plusRow).toHaveAttribute('aria-disabled', 'true')
+  await expect(proRow).toHaveAttribute('aria-disabled', 'true')
+  await expect(proRow).toHaveAttribute('tabindex', '-1')
+  await proRow.dispatchEvent('click')
+  await proRow.dispatchEvent('keydown', { key: 'Enter' })
+  await expect(admin.locator('.sortable-item--active')).toContainText('PLUS')
+  await expect(imageUrl).toHaveValue('/static/uploads/recharge-packages/plus.webp')
+
+  releaseUpload()
+  await uploadAction
+  await expect(imageUrl).toHaveValue('/static/uploads/recharge-packages/uploaded-png.png')
+  await expect(plusRow).toHaveAttribute('aria-disabled', 'false')
+  await expect(proRow).toHaveAttribute('tabindex', '0')
+
+  const saveButton = admin.getByRole('button', { name: '保存套餐' })
+  await saveButton.dispatchEvent('click')
+  await expect.poll(() => calls.packageUpdates).toHaveLength(1)
+  await expect(proRow).toHaveAttribute('aria-disabled', 'true')
+  await proRow.dispatchEvent('click')
+  await proRow.dispatchEvent('keydown', { key: 'Enter' })
+  await expect(admin.locator('.sortable-item--active')).toContainText('PLUS')
+  expect(calls.packageUpdates[0].body.image_url).toBe('/static/uploads/recharge-packages/uploaded-png.png')
+
+  releaseSave()
+  await expect(saveButton).toBeEnabled()
+  await expect(proRow).toHaveAttribute('aria-disabled', 'false')
+  await proRow.click()
+  await expect(admin.locator('.sortable-item--active')).toContainText('PRO')
+  await expect(imageUrl).toHaveValue('/static/uploads/recharge-packages/pro.webp')
 })

@@ -168,6 +168,7 @@ function createAdminPanelHarness(overrides = {}) {
     return {
       draft, packages, stableOrder, uploading, normalizePackage, toPayload,
       validate, selectItem, startCreate, saveItem, uploadImage, moveItem, persistOrder,
+      applyDraft: typeof applyDraft === 'undefined' ? null : applyDraft,
       hasLoadedPackages: typeof hasLoadedPackages === 'undefined' ? null : hasLoadedPackages,
       loadFailed: typeof loadFailed === 'undefined' ? null : loadFailed,
       loadingPackages: typeof loadingPackages === 'undefined' ? null : loadingPackages,
@@ -201,6 +202,26 @@ function setValidNewDraft(harness) {
     is_featured: false,
     status: 'active',
   })
+}
+
+function setValidPackage(id, name) {
+  return {
+    id,
+    name,
+    badge_text: '',
+    ad_title: `${name} 广告`,
+    ad_subtitle: '',
+    button_text: '立即购买',
+    amount_cents: 1000,
+    credits: 1501,
+    starts_at: null,
+    ends_at: null,
+    image_url: `/static/uploads/recharge-packages/${id}.png`,
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: 0,
+    status: 'active',
+  }
 }
 
 test('套餐管理器提供全字段草稿、创建更新与用户端实时预览', () => {
@@ -696,4 +717,40 @@ test('排序和上传期间拒绝其他写操作且重复上传只发一次', as
   assert.equal(reorderCalls, 1)
   resolveUpload({ url: '/static/uploads/recharge-packages/uploaded.png' })
   await Promise.all([uploading, duplicateUpload])
+})
+
+test('异步上传期间用户选择套餐保持当前草稿', async () => {
+  let resolveUpload
+  const uploadResult = new Promise((resolve) => { resolveUpload = resolve })
+  const harness = createAdminPanelHarness({
+    uploadRechargePackageImage: async () => uploadResult,
+  })
+  markPackagesLoaded(harness)
+  const plus = { ...setValidPackage('plus', 'PLUS'), image_url: '/static/uploads/recharge-packages/plus.png' }
+  const pro = { ...setValidPackage('pro', 'PRO'), image_url: '/static/uploads/recharge-packages/pro.png' }
+  harness.packages.value = [plus, pro]
+  harness.selectItem(plus)
+
+  const uploading = harness.uploadImage({ target: { files: [{ type: 'image/png' }], value: 'selected' } })
+  try {
+    assert.equal(harness.managementLocked.value, true)
+    harness.selectItem(pro)
+    assert.equal(harness.draft.id, 'plus')
+  } finally {
+    resolveUpload({ url: '/static/uploads/recharge-packages/uploaded-plus.png' })
+    await uploading
+  }
+  assert.equal(harness.draft.id, 'plus')
+  assert.equal(harness.draft.image_url, '/static/uploads/recharge-packages/uploaded-plus.png')
+})
+
+test('内部草稿应用不受管理锁影响且忙碌套餐行不可聚焦', () => {
+  const harness = createAdminPanelHarness()
+  markPackagesLoaded(harness)
+  assert.equal(typeof harness.applyDraft, 'function')
+  harness.uploading.value = true
+  harness.applyDraft(setValidPackage('server-selected', '服务器同步套餐'))
+  assert.equal(harness.draft.id, 'server-selected')
+  assert.match(adminPanel, /:aria-disabled="managementLocked"/)
+  assert.match(adminPanel, /:tabindex="managementLocked\s*\?\s*-1\s*:\s*0"/)
 })

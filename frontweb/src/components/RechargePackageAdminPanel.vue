@@ -27,9 +27,13 @@
             v-for="(item, index) in packages"
             :key="item.id"
             class="sortable-item"
-            :class="{ 'sortable-item--active': draft.id === item.id }"
+            :class="{
+              'sortable-item--active': draft.id === item.id,
+              'sortable-item--disabled': managementLocked,
+            }"
+            :aria-disabled="managementLocked"
             :draggable="hasLoadedPackages && !managementLocked"
-            tabindex="0"
+            :tabindex="managementLocked ? -1 : 0"
             @click="selectItem(item)"
             @keydown.enter.self.prevent="selectItem(item)"
             @keydown.space.self.prevent="selectItem(item)"
@@ -254,8 +258,13 @@ function isValidPackageImage(value) {
   }
 }
 
-function selectItem(item) {
+function applyDraft(item) {
   Object.assign(draft, emptyDraft(), normalizePackage(item))
+}
+
+function selectItem(item) {
+  if (managementLocked.value) return
+  applyDraft(item)
 }
 
 function startCreate() {
@@ -291,8 +300,8 @@ function load(preferredId = draft.id) {
     try {
       const loaded = replacePackageList(await listAdminRechargePackages())
       const selected = loaded.find((item) => item.id === preferredId)
-      if (selected) selectItem(selected)
-      else if (loaded.length > 0 && preferredId) selectItem(loaded[0])
+      if (selected) applyDraft(selected)
+      else if (loaded.length > 0 && preferredId) applyDraft(loaded[0])
       else Object.assign(draft, emptyDraft())
       return loaded
     } catch (error) {
@@ -345,7 +354,7 @@ async function saveItem() {
       packages.value = [...packages.value, normalizedSaved]
     }
     stableOrder.value = packages.value.map((item) => item.id)
-    Object.assign(draft, emptyDraft(), normalizedSaved)
+    applyDraft(normalizedSaved)
 
     try {
       await load(savedId)
@@ -455,6 +464,7 @@ onMounted(retryLoadPackages)
 .sortable-item { display: grid; gap: 9px; padding: 11px; border: 1px solid #303030; border-radius: 13px; background: #131313; cursor: pointer; }
 .sortable-item:hover, .sortable-item:focus-visible { border-color: #6d4636; outline: none; }
 .sortable-item--active { border-color: #ff7139; box-shadow: 0 0 0 1px rgba(255, 113, 57, .22); }
+.sortable-item--disabled { opacity: .68; cursor: not-allowed; }
 .sortable-summary { display: grid; grid-template-columns: 52px minmax(0, 1fr) 18px; gap: 9px; align-items: center; }
 .sortable-summary img, .sortable-placeholder { width: 52px; height: 52px; border-radius: 10px; object-fit: cover; }
 .sortable-placeholder { display: grid; place-items: center; color: #a7a7ad; background: #292929; }
