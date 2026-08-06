@@ -1,0 +1,252 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Database = require('better-sqlite3');
+
+const {
+  normalizeShot,
+  parseShotReferences,
+  groupShotsIntoBatches,
+  snapshotShots,
+} = require('../src/services/redrawShotService');
+
+const approvedAssets = [
+  {
+    localized_name: 'Maya',
+    asset_id: 101,
+    kind: 'character',
+    version_number: 3,
+    approval_status: 'approved',
+  },
+  {
+    localized_name: '旧仓库',
+    asset_id: 202,
+    kind: 'scene',
+    version_number: 2,
+    approval_status: 'approved',
+  },
+  {
+    localized_name: '怀表',
+    asset_id: 303,
+    kind: 'prop',
+    version_number: 4,
+    approval_status: 'approved',
+  },
+];
+
+test('分镜保留完整源合同并解析三类已批准资产引用', () => {
+  const shot = normalizeShot({
+    start_ms: 0,
+    end_ms: 12000,
+    opening_state: '门关着',
+    continuous_action: 'Maya 推门并停在门口',
+    ending_state: '门打开',
+    shot_type: '中景',
+    camera_movement: '缓慢推进',
+    composition: 'Maya 位于画面右侧',
+    lighting: '窗外冷光',
+    atmosphere: '紧张',
+    source_dialogue: [{ speaker: 'Maya', text: '有人吗？' }],
+    localized_dialogue: [{ speaker: 'Maya', text: 'Anyone here?' }],
+    speaker: 'Maya',
+    speakable_duration_ms: 2600,
+    prompt: '@Maya 走进 @旧仓库，拿起 @怀表',
+    negative_prompt: '身份漂移，背景跳变',
+    compiled_prompt: { provider: 'seedance', text: 'compiled prompt' },
+    source_video_ref: { asset_id: 1, start_ms: 0, end_ms: 12000 },
+    new_video_ref: { generation_id: 2 },
+    audio_ref: { asset_id: 3 },
+    subtitle_ref: { asset_id: 4 },
+  }, { approvedAssets });
+
+  assert.equal(shot.duration_ms, 12000);
+  assert.equal(shot.start_ms, 0);
+  assert.equal(shot.end_ms, 12000);
+  assert.equal(shot.opening_state, '门关着');
+  assert.equal(shot.continuous_action, 'Maya 推门并停在门口');
+  assert.equal(shot.ending_state, '门打开');
+  assert.equal(shot.shot_type, '中景');
+  assert.equal(shot.camera_movement, '缓慢推进');
+  assert.equal(shot.composition, 'Maya 位于画面右侧');
+  assert.equal(shot.lighting, '窗外冷光');
+  assert.equal(shot.atmosphere, '紧张');
+  assert.deepEqual(shot.source_dialogue, [{ speaker: 'Maya', text: '有人吗？' }]);
+  assert.deepEqual(shot.localized_dialogue, [{ speaker: 'Maya', text: 'Anyone here?' }]);
+  assert.equal(shot.speaker, 'Maya');
+  assert.equal(shot.speakable_duration_ms, 2600);
+  assert.equal(shot.prompt, '@Maya 走进 @旧仓库，拿起 @怀表');
+  assert.equal(shot.negative_prompt, '身份漂移，背景跳变');
+  assert.deepEqual(shot.compiled_prompt, { provider: 'seedance', text: 'compiled prompt' });
+  assert.deepEqual(shot.source_video_ref, { asset_id: 1, start_ms: 0, end_ms: 12000 });
+  assert.deepEqual(shot.new_video_ref, { generation_id: 2 });
+  assert.deepEqual(shot.audio_ref, { asset_id: 3 });
+  assert.deepEqual(shot.subtitle_ref, { asset_id: 4 });
+  assert.deepEqual(shot.references, [
+    { asset_id: 101, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' },
+    { asset_id: 202, kind: 'scene', version_number: 2, approval_status: 'approved', name: '旧仓库' },
+    { asset_id: 303, kind: 'prop', version_number: 4, approval_status: 'approved', name: '怀表' },
+  ]);
+});
+
+test('非法时间码会失败而不是静默纠正', () => {
+  assert.throws(() => normalizeShot({ start_ms: 12000, end_ms: 0 }), /时间码/);
+  assert.throws(() => normalizeShot({ start_ms: 0.5, end_ms: 12000 }), /时间码/);
+});
+
+test('未知 @ 引用被拒绝而不是静默当普通文本', () => {
+  assert.throws(() => parseShotReferences('@不存在'), /未知资产/);
+});
+
+test('未批准资产不能成为可生成引用', () => {
+  assert.throws(() => parseShotReferences('@草稿道具', [{
+    localized_name: '草稿道具',
+    asset_id: 404,
+    kind: 'prop',
+    version_number: 1,
+    approval_status: 'pending',
+  }]), /未批准/);
+});
+
+test('自动分批保持顺序并把相邻镜头控制在 10 到 15 秒目标内', () => {
+  const shots = [
+    { id: 'shot-1', duration_ms: 4000 },
+    { id: 'shot-2', duration_ms: 6000 },
+    { id: 'shot-3', duration_ms: 5000 },
+    { id: 'shot-4', duration_ms: 6000 },
+  ];
+
+  const batches = groupShotsIntoBatches(shots, 10_000, 15_000);
+
+  assert.deepEqual(batches.map((batch) => batch.shots.map((shot) => shot.id)), [
+    ['shot-1', 'shot-2'],
+    ['shot-3', 'shot-4'],
+  ]);
+  assert.deepEqual(batches.map((batch) => batch.batch_index), [1, 2]);
+  assert.deepEqual(batches.map((batch) => batch.duration_ms), [10000, 11000]);
+});
+
+test('超过目标上限的单镜独立成批', () => {
+  const shots = [
+    { id: 'long', duration_ms: 16000 },
+    { id: 'short-1', duration_ms: 5000 },
+    { id: 'short-2', duration_ms: 5000 },
+  ];
+
+  assert.deepEqual(
+    groupShotsIntoBatches(shots).map((batch) => batch.shots.map((shot) => shot.id)),
+    [['long'], ['short-1', 'short-2']],
+  );
+  assert.deepEqual(groupShotsIntoBatches(shots).map((batch) => batch.duration_ms), [16000, 10000]);
+});
+
+test('已有手工 batch_index 时保留原批次且不强制重切', () => {
+  const shots = [
+    { id: 'manual-1', duration_ms: 9000, batch_index: 7 },
+    { id: 'manual-2', duration_ms: 9000, batch_index: 7 },
+    { id: 'manual-3', duration_ms: 3000, batch_index: 9 },
+  ];
+
+  const batches = groupShotsIntoBatches(shots);
+
+  assert.deepEqual(batches.map((batch) => batch.shots.map((shot) => shot.id)), [
+    ['manual-1', 'manual-2'],
+    ['manual-3'],
+  ]);
+  assert.deepEqual(batches.map((batch) => batch.batch_index), [7, 9]);
+  assert.deepEqual(batches.map((batch) => batch.duration_ms), [18000, 3000]);
+  assert.deepEqual(shots.map((shot) => shot.batch_index), [7, 7, 9]);
+});
+
+test('提交快照按批次镜头排序、字段完整且不受后续数据库更新影响', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE redraw_shots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER NOT NULL,
+    batch_index INTEGER NOT NULL,
+    shot_index INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    source_dialogue_json TEXT NOT NULL,
+    localized_dialogue_json TEXT NOT NULL,
+    references_json TEXT NOT NULL,
+    opening_state TEXT NOT NULL,
+    continuous_action TEXT NOT NULL,
+    ending_state TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    negative_prompt TEXT NOT NULL,
+    compiled_prompt_json TEXT NOT NULL,
+    video_generation_id INTEGER,
+    audio_asset_id INTEGER,
+    subtitle_asset_id INTEGER,
+    draft_json TEXT,
+    deleted_at TEXT
+  )`);
+  const insert = db.prepare(`INSERT INTO redraw_shots
+    (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+     source_dialogue_json, localized_dialogue_json, references_json,
+     opening_state, continuous_action, ending_state, prompt, negative_prompt,
+     compiled_prompt_json, video_generation_id, audio_asset_id, subtitle_asset_id,
+     draft_json, deleted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`);
+  const draft = {
+    model: 'seedance-2.0',
+    duration: 12,
+    resolution: '1080p',
+    count: 2,
+    quote_snapshot: { total_credits: 48, unit_credits: 24 },
+    shot_type: '中景',
+    camera_movement: '推进',
+    composition: '中心构图',
+    lighting: '冷光',
+    atmosphere: '悬疑',
+    speaker: 'Maya',
+    speakable_duration_ms: 2400,
+    source_video_ref: { asset_id: 8 },
+    new_video_ref: { generation_id: 9 },
+    audio_ref: { asset_id: 10 },
+    subtitle_ref: { asset_id: 11 },
+  };
+  insert.run(7, 2, 1, 12000, 18000, 6000, '[]', '[]', '[]',
+    '走廊无人', 'Maya 转身', 'Maya 离开', 'second', 'second-negative', '{}', null, null, null, '{}');
+  insert.run(7, 1, 2, 0, 12000, 12000,
+    JSON.stringify([{ speaker: 'Maya', text: '有人吗？' }]),
+    JSON.stringify([{ speaker: 'Maya', text: 'Anyone here?' }]),
+    JSON.stringify([{ asset_id: 101, kind: 'character', version_number: 3, approval_status: 'approved' }]),
+    '门关着', 'Maya 推门', '门打开', 'first', 'first-negative',
+    JSON.stringify({ provider: 'seedance', text: 'compiled first' }),
+    91, 92, 93, JSON.stringify(draft));
+
+  const snapshot = snapshotShots(db, 7);
+  assert.deepEqual(snapshot.map((shot) => [shot.batch_index, shot.shot_index]), [[1, 2], [2, 1]]);
+  assert.equal(snapshot[0].prompt, 'first');
+  assert.equal(snapshot[0].negative_prompt, 'first-negative');
+  assert.deepEqual(snapshot[0].references, [
+    { asset_id: 101, kind: 'character', version_number: 3, approval_status: 'approved' },
+  ]);
+  assert.equal(snapshot[0].model, 'seedance-2.0');
+  assert.equal(snapshot[0].duration, 12);
+  assert.equal(snapshot[0].duration_ms, 12000);
+  assert.equal(snapshot[0].resolution, '1080p');
+  assert.equal(snapshot[0].count, 2);
+  assert.deepEqual(snapshot[0].quote_snapshot, { total_credits: 48, unit_credits: 24 });
+  assert.deepEqual(snapshot[0].compiled_prompt, { provider: 'seedance', text: 'compiled first' });
+  assert.deepEqual(snapshot[0].source_dialogue, [{ speaker: 'Maya', text: '有人吗？' }]);
+  assert.deepEqual(snapshot[0].localized_dialogue, [{ speaker: 'Maya', text: 'Anyone here?' }]);
+  assert.equal(snapshot[0].shot_type, '中景');
+  assert.equal(snapshot[0].camera_movement, '推进');
+  assert.deepEqual(snapshot[0].source_video_ref, { asset_id: 8 });
+  assert.deepEqual(snapshot[0].new_video_ref, { generation_id: 9 });
+  assert.deepEqual(snapshot[0].audio_ref, { asset_id: 10 });
+  assert.deepEqual(snapshot[0].subtitle_ref, { asset_id: 11 });
+
+  db.prepare(`UPDATE redraw_shots
+    SET prompt = 'edited', references_json = '[]', draft_json = '{}'
+    WHERE version_id = 7 AND batch_index = 1 AND shot_index = 2`).run();
+  assert.equal(snapshot[0].prompt, 'first');
+  assert.equal(snapshot[0].model, 'seedance-2.0');
+  assert.deepEqual(snapshot[0].references, [
+    { asset_id: 101, kind: 'character', version_number: 3, approval_status: 'approved' },
+  ]);
+  assert.deepEqual(snapshot[0].quote_snapshot, { total_credits: 48, unit_credits: 24 });
+  db.close();
+});
