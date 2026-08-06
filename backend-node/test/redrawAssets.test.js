@@ -9,6 +9,7 @@ const credits = require('../src/services/creditLedgerService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
   generateAsset,
+  generateCleanPlate,
   listAssets,
   updateAsset,
   listAssetVersions,
@@ -147,6 +148,120 @@ test('资产读取和更新按租户用户隔离', async () => {
   assert.equal(listAssets(state.db, context(state, root, 'user-b', 'tenant-b')).length, 0);
   assert.equal(updateAsset(state.db, context(state, root, 'user-b', 'tenant-b'), created.id, { localizedName: '越权' }), null);
   assert.equal(updateAsset(state.db, ownerCtx, created.id, { localizedName: '手机' }).localized_name, '手机');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('去人净景使用人物遮罩并保留源场景版本', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-plate-'));
+  for (const file of ['scene.png', 'mask.png', 'clean.png']) fs.writeFileSync(path.join(root, file), file);
+  addAsset(state.db, 401, 'scene.png');
+  addAsset(state.db, 402, 'mask.png');
+  addAsset(state.db, 403, 'clean.png');
+  const ctx = context(state, root);
+  const sceneAsset = {
+    source_asset_id: 401,
+    source_fingerprint: 'frame-1',
+    width: 1280,
+    height: 720,
+  };
+  const result = await generateCleanPlate({
+    ...ctx,
+    provider: async ({ input }) => {
+      assert.equal(input.mask_asset_id, 402);
+      assert.equal(input.source_asset_id, 401);
+      return {
+        status: 'completed',
+        asset_id: 403,
+        provider_task_id: 'clean-task-1',
+        quality: {
+          width: 1280,
+          height: 720,
+          mask_area_changed: true,
+          non_mask_similarity: 0.97,
+        },
+      };
+    },
+  }, sceneAsset, { mask_asset_id: 402, prompt: '去除人物并保留场景结构' });
+
+  assert.equal(result.clean_plate_asset_id, 403);
+  assert.equal(result.source_asset_id, 401);
+  assert.equal(result.mask_asset_id, 402);
+  assert.equal(result.generation_task_id, 'clean-task-1');
+  assert.equal(result.status, 'needs_attention');
+  assert.equal(result.approval_status, 'pending');
+  assert.equal(result.review_status, 'needs_review');
+  assert.equal(state.db.prepare('SELECT local_path FROM assets WHERE id = 401').get().local_path, 'scene.png');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('没有可审计遮罩时不提交去人生成', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-plate-no-mask-'));
+  let calls = 0;
+  await assert.rejects(
+    () => generateCleanPlate({
+      ...context(state, root),
+      provider: async () => { calls += 1; return { status: 'completed' }; },
+    }, { source_asset_id: 401 }, {}),
+    /人物遮罩/,
+  );
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('去人净景质量门禁失败时只退回本次积分', async () => {
+  const cases = [
+    { width: 640, height: 720, mask_area_changed: true, non_mask_similarity: 0.97 },
+    { width: 1280, height: 720, mask_area_changed: false, non_mask_similarity: 0.97 },
+    { width: 1280, height: 720, mask_area_changed: true, non_mask_similarity: 0.5 },
+  ];
+  for (const quality of cases) {
+    const state = setup();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-plate-quality-'));
+    for (const file of ['scene.png', 'mask.png', 'clean.png']) fs.writeFileSync(path.join(root, file), file);
+    addAsset(state.db, 411, 'scene.png');
+    addAsset(state.db, 412, 'mask.png');
+    addAsset(state.db, 413, 'clean.png');
+    const ctx = context(state, root);
+    await assert.rejects(
+      () => generateCleanPlate({
+        ...ctx,
+        provider: async () => ({ status: 'completed', asset_id: 413, quality }),
+      }, { source_asset_id: 411, width: 1280, height: 720 }, { mask_asset_id: 412 }),
+      /质量/,
+    );
+    const row = state.db.prepare('SELECT status, credit_reservation_id FROM redraw_assets').get();
+    assert.equal(row.status, 'failed');
+    assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+    fs.rmSync(root, { recursive: true, force: true });
+    state.db.close();
+  }
+});
+
+test('去人 provider 明确失败时按生成失败退款', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-clean-plate-provider-failure-'));
+  fs.writeFileSync(path.join(root, 'scene.png'), 'scene');
+  fs.writeFileSync(path.join(root, 'mask.png'), 'mask');
+  addAsset(state.db, 421, 'scene.png');
+  addAsset(state.db, 422, 'mask.png');
+  const ctx = context(state, root);
+  await assert.rejects(
+    () => generateCleanPlate({
+      ...ctx,
+      provider: async () => ({ status: 'failed', error: '供应商拒绝' }),
+    }, { source_asset_id: 421 }, { mask_asset_id: 422 }),
+    /供应商拒绝/,
+  );
+  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets').get();
+  assert.equal(row.status, 'failed');
+  assert.equal(row.error_code, 'REDRAW_ASSET_GENERATION_FAILED');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

@@ -54,7 +54,14 @@ function rowToAsset(row) {
   return {
     ...row,
     source_ref: sourcePayload.source_ref || sourcePayload.source || sourcePayload,
+    source_asset_id: sourcePayload.source_asset_id
+      ?? sourcePayload.source_ref?.source_asset_id
+      ?? row.source_asset_id
+      ?? null,
     snapshot: sourcePayload.snapshot || {},
+    review_status: row.status === 'needs_attention' && row.approval_status === 'pending'
+      ? 'needs_review'
+      : row.approval_status,
   };
 }
 
@@ -196,6 +203,38 @@ function readProviderAsset(db, assetId) {
   return db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId)) || null;
 }
 
+function assertReadableAsset(ctx, assetId, label) {
+  const asset = readProviderAsset(ctx.db, assetId);
+  const canRead = typeof ctx.assetReader?.canRead === 'function'
+    ? ctx.assetReader.canRead(asset)
+    : asset?.readable === true;
+  if (!asset || !canRead) throw codedError('ASSET_NOT_READABLE', `${label}资产不可读取`);
+  return asset;
+}
+
+function validateCleanPlateQuality(sceneAsset, options, providerResult) {
+  const quality = providerResult.quality || providerResult.metrics;
+  const width = Number(quality?.width);
+  const height = Number(quality?.height);
+  if (!quality || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw codedError('CLEAN_PLATE_QUALITY_UNVERIFIED', '净景质量未通过：缺少可审计尺寸');
+  }
+  const expectedWidth = Number(options.width || sceneAsset.width || sceneAsset.source_width);
+  const expectedHeight = Number(options.height || sceneAsset.height || sceneAsset.source_height);
+  if ((Number.isFinite(expectedWidth) && width !== expectedWidth)
+    || (Number.isFinite(expectedHeight) && height !== expectedHeight)) {
+    throw codedError('CLEAN_PLATE_QUALITY_FAILED', '净景质量未通过：输出尺寸与源场景不一致');
+  }
+  if (quality.mask_area_changed !== true) {
+    throw codedError('CLEAN_PLATE_QUALITY_FAILED', '净景质量未通过：遮罩区域没有可验证变化');
+  }
+  const similarity = Number(quality.non_mask_similarity);
+  const minimum = Number(options.nonMaskSimilarityMin ?? 0.9);
+  if (!Number.isFinite(similarity) || similarity < minimum) {
+    throw codedError('CLEAN_PLATE_QUALITY_FAILED', '净景质量未通过：非遮罩区域结构相似度不足');
+  }
+}
+
 function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   const { db, tenantId, userId } = assertContext(ctx);
   const attempt = db.prepare(`
@@ -254,6 +293,95 @@ async function generateAsset(ctx, input = {}) {
   }
 }
 
+async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
+  const { db } = assertContext(ctx);
+  const maskAssetId = options.mask_asset_id ?? options.maskAssetId;
+  if (!maskAssetId) throw codedError('CLEAN_PLATE_MASK_REQUIRED', '去人净景需要人物遮罩');
+  const sourceAssetId = sceneAsset.source_asset_id
+    ?? sceneAsset.sourceAssetId
+    ?? sceneAsset.asset_id
+    ?? sceneAsset.id;
+  if (!sourceAssetId) throw codedError('CLEAN_PLATE_SOURCE_REQUIRED', '去人净景缺少源场景资产');
+  assertReadableAsset(ctx, maskAssetId, '人物遮罩');
+  assertReadableAsset(ctx, sourceAssetId, '源场景');
+
+  const inputFrameFingerprint = options.inputFrameFingerprint
+    || options.input_frame_fingerprint
+    || sceneAsset.source_fingerprint
+    || sceneAsset.sourceFingerprint
+    || '';
+  const model = String(options.model || ctx.model || 'redraw-clean-plate');
+  const prompt = String(options.prompt || '去除人物并保留场景结构');
+  const sourceRef = {
+    source_asset_id: sourceAssetId,
+    source_fingerprint: String(inputFrameFingerprint),
+    source_ref: sceneAsset.source_ref || sceneAsset.sourceRef || {},
+  };
+  const attempt = createAssetAttempt({
+    ...ctx,
+    model,
+    creditAmount: options.creditAmount ?? ctx.creditAmount,
+  }, {
+    kind: 'scene',
+    sourceRef,
+    snapshot: {
+      mode: 'clean_plate',
+      source_asset_id: sourceAssetId,
+      mask_asset_id: maskAssetId,
+      input_frame_fingerprint: String(inputFrameFingerprint),
+      model,
+      prompt,
+    },
+    prompt,
+    generationTaskId: options.generationTaskId || options.generation_task_id || null,
+  });
+  const now = new Date().toISOString();
+  db.prepare('UPDATE redraw_assets SET mask_asset_id = ?, updated_at = ? WHERE id = ?')
+    .run(Number(maskAssetId), now, Number(attempt.id));
+
+  try {
+    if (typeof ctx.provider !== 'function') throw codedError('REDRAW_ASSET_PROVIDER_REQUIRED', '缺少净景生成 provider');
+    const providerResult = await ctx.provider({
+      attempt,
+      versionId: attempt.version_id,
+      input: {
+        ...sceneAsset,
+        source_asset_id: sourceAssetId,
+        mask_asset_id: Number(maskAssetId),
+        input_frame_fingerprint: inputFrameFingerprint,
+        model,
+        prompt,
+      },
+    });
+    const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id;
+    if (providerTaskId) {
+      db.prepare('UPDATE redraw_assets SET generation_task_id = ?, updated_at = ? WHERE id = ?')
+        .run(String(providerTaskId), new Date().toISOString(), Number(attempt.id));
+    }
+    const providerStatus = String(providerResult?.status || '').toLowerCase();
+    if (!['completed', 'complete', 'succeeded', 'success', 'done'].includes(providerStatus)) {
+      throw codedError('REDRAW_ASSET_GENERATION_FAILED', providerResult?.error || '净景生成失败');
+    }
+    validateCleanPlateQuality(sceneAsset, options, providerResult || {});
+    const finalized = finalizeAssetAttempt(ctx, attempt.id, providerResult);
+    db.prepare(`
+      UPDATE redraw_assets
+      SET clean_plate_asset_id = ?, mask_asset_id = ?, status = 'needs_attention',
+          approval_status = 'pending', updated_at = ?
+      WHERE id = ?
+    `).run(Number(finalized.asset_id), Number(maskAssetId), new Date().toISOString(), Number(attempt.id));
+    return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
+  } catch (error) {
+    const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
+    if (row?.status !== 'failed') {
+      db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
+        .run('failed', error.code || 'REDRAW_ASSET_GENERATION_FAILED', String(error.message || error), new Date().toISOString(), Number(attempt.id));
+      if (attempt.reservation_id) creditLedger.settleGeneration(db, attempt.reservation_id, 'failed', String(error.message || error));
+    }
+    throw error;
+  }
+}
+
 module.exports = {
   listAssets,
   updateAsset,
@@ -261,4 +389,5 @@ module.exports = {
   finalizeAssetAttempt,
   listAssetVersions,
   generateAsset,
+  generateCleanPlate,
 };
