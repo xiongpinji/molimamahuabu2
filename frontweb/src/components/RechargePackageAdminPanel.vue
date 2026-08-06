@@ -5,7 +5,7 @@
         <h2>充值套餐</h2>
         <p>编辑用户端套餐广告、金额、积分和限时规则。推荐套餐由后端事务保证全局唯一。</p>
       </div>
-      <el-button type="primary" @click="startCreate">新增套餐</el-button>
+      <el-button type="primary" :disabled="!hasLoadedPackages || loadingPackages" @click="startCreate">新增套餐</el-button>
     </div>
 
     <div class="admin-grid">
@@ -15,14 +15,20 @@
           <span>拖动或使用按钮排序</span>
         </div>
 
-        <el-empty v-if="packages.length === 0" description="暂无充值套餐" />
-        <div v-else class="sortable-list">
+        <div v-if="loadFailed && !hasLoadedPackages" class="package-load-error" role="alert">
+          <strong>套餐列表加载失败</strong>
+          <span>尚未确认服务器套餐，已暂停创建和排序，避免重复写入。</span>
+          <el-button :loading="loadingPackages" @click="retryLoadPackages">重新加载</el-button>
+        </div>
+        <div v-else-if="loadingPackages && !hasLoadedPackages" class="package-loading">正在加载套餐…</div>
+        <el-empty v-else-if="hasLoadedPackages && packages.length === 0" description="暂无充值套餐" />
+        <div v-else-if="hasLoadedPackages" class="sortable-list">
           <article
             v-for="(item, index) in packages"
             :key="item.id"
             class="sortable-item"
             :class="{ 'sortable-item--active': draft.id === item.id }"
-            draggable="true"
+            :draggable="hasLoadedPackages && !sorting"
             tabindex="0"
             @click="selectItem(item)"
             @keydown.enter.self.prevent="selectItem(item)"
@@ -45,13 +51,13 @@
               <button
                 type="button"
                 :aria-label="`上移 ${item.name}`"
-                :disabled="sorting || index === 0"
+                :disabled="!hasLoadedPackages || sorting || index === 0"
                 @click.stop="moveItem(index, index - 1)"
               >上移</button>
               <button
                 type="button"
                 :aria-label="`下移 ${item.name}`"
-                :disabled="sorting || index === packages.length - 1"
+                :disabled="!hasLoadedPackages || sorting || index === packages.length - 1"
                 @click.stop="moveItem(index, index + 1)"
               >下移</button>
             </div>
@@ -86,11 +92,12 @@
             <span>广告图片</span>
             <div class="image-controls">
               <el-input v-model.trim="draft.image_url" placeholder="上传图片或填写 HTTPS 地址" />
-              <el-button :loading="uploading" @click="imageInput?.click()">上传图片</el-button>
+              <el-button :loading="uploading" :disabled="!hasLoadedPackages || loadingPackages" @click="imageInput?.click()">上传图片</el-button>
               <input
                 ref="imageInput"
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                :disabled="!hasLoadedPackages || loadingPackages"
                 hidden
                 @change="uploadImage"
               >
@@ -101,8 +108,8 @@
 
         <div class="recommend-note">推荐套餐由后端事务保证全局唯一；保存新的推荐套餐后，原推荐会自动取消。</div>
         <div class="save-bar">
-          <el-button @click="resetDraft">重置草稿</el-button>
-          <el-button type="primary" :loading="Boolean(saving)" @click="saveItem">
+          <el-button :disabled="!hasLoadedPackages || loadingPackages" @click="resetDraft">重置草稿</el-button>
+          <el-button type="primary" :loading="Boolean(saving)" :disabled="!hasLoadedPackages || loadingPackages" @click="saveItem">
             {{ draft.id ? '保存套餐' : '创建套餐' }}
           </el-button>
         </div>
@@ -133,6 +140,9 @@ import { uploadRechargePackageImage } from '@/api/upload'
 
 const packages = ref([])
 const stableOrder = ref([])
+const hasLoadedPackages = ref(false)
+const loadFailed = ref(false)
+const loadingPackages = ref(false)
 const saving = ref('')
 const sorting = ref(false)
 const uploading = ref(false)
@@ -245,6 +255,7 @@ function selectItem(item) {
 }
 
 function startCreate() {
+  if (!hasLoadedPackages.value) return
   Object.assign(draft, emptyDraft())
 }
 
@@ -254,17 +265,47 @@ function resetDraft() {
   else startCreate()
 }
 
-async function load(preferredId = draft.id) {
-  const loaded = (await listAdminRechargePackages()).map(normalizePackage)
+function replacePackageList(records) {
+  const loaded = records.map(normalizePackage)
   packages.value = loaded
   stableOrder.value = loaded.map((item) => item.id)
-  const selected = loaded.find((item) => item.id === preferredId)
-  if (selected) selectItem(selected)
-  else if (loaded.length > 0 && preferredId) selectItem(loaded[0])
-  else startCreate()
+  hasLoadedPackages.value = true
+  loadFailed.value = false
+  return loaded
+}
+
+function syncDraftSortOrder() {
+  const selected = packages.value.find((item) => item.id === draft.id)
+  if (selected) draft.sort_order = selected.sort_order
+}
+
+async function load(preferredId = draft.id) {
+  loadingPackages.value = true
+  try {
+    const loaded = replacePackageList(await listAdminRechargePackages())
+    const selected = loaded.find((item) => item.id === preferredId)
+    if (selected) selectItem(selected)
+    else if (loaded.length > 0 && preferredId) selectItem(loaded[0])
+    else startCreate()
+    return loaded
+  } catch (error) {
+    if (!hasLoadedPackages.value) loadFailed.value = true
+    throw error
+  } finally {
+    loadingPackages.value = false
+  }
+}
+
+async function retryLoadPackages() {
+  try {
+    await load()
+  } catch (_) {
+    // 首次失败由持久错误态承接；已有稳定数据时保持当前列表。
+  }
 }
 
 async function saveItem() {
+  if (!hasLoadedPackages.value) return
   const error = validate(draft)
   if (error) return ElMessage.warning(error)
 
@@ -305,6 +346,10 @@ async function saveItem() {
 }
 
 async function uploadImage(event) {
+  if (!hasLoadedPackages.value) {
+    event.target.value = ''
+    return
+  }
   const file = event.target.files?.[0]
   event.target.value = ''
   if (!file) return
@@ -325,17 +370,19 @@ async function uploadImage(event) {
 }
 
 function beginDrag(index) {
+  if (!hasLoadedPackages.value || sorting.value) return
   draggedIndex.value = index
 }
 
 function dropItem(index) {
+  if (!hasLoadedPackages.value || sorting.value) return
   const fromIndex = draggedIndex.value
   draggedIndex.value = -1
   if (fromIndex >= 0) moveItem(fromIndex, index)
 }
 
 function moveItem(fromIndex, toIndex) {
-  if (sorting.value || fromIndex === toIndex) return
+  if (!hasLoadedPackages.value || sorting.value || fromIndex === toIndex) return
   if (fromIndex < 0 || toIndex < 0 || fromIndex >= packages.value.length || toIndex >= packages.value.length) return
   const next = packages.value.slice()
   const [moved] = next.splice(fromIndex, 1)
@@ -344,6 +391,7 @@ function moveItem(fromIndex, toIndex) {
 }
 
 async function persistOrder(next) {
+  if (!hasLoadedPackages.value) return
   const previous = packages.value
   const previousStableOrder = stableOrder.value.slice()
   packages.value = next
@@ -356,23 +404,23 @@ async function persistOrder(next) {
     if (selected) draft.sort_order = selected.sort_order
     ElMessage.success('套餐顺序已保存')
   } catch (error) {
-    packages.value = previousStableOrder
-      .map((id) => previous.find((item) => item.id === id))
-      .filter(Boolean)
-    stableOrder.value = previousStableOrder
-    ElMessage.error(error?.message || '套餐排序保存失败，已恢复原顺序')
+    try {
+      replacePackageList(await listAdminRechargePackages())
+      syncDraftSortOrder()
+      ElMessage.warning('套餐排序失败，已同步服务器最新数据')
+    } catch (_) {
+      packages.value = previousStableOrder
+        .map((id) => previous.find((item) => item.id === id))
+        .filter(Boolean)
+      stableOrder.value = previousStableOrder
+      ElMessage.error('套餐排序与服务器同步均失败，已恢复本地顺序')
+    }
   } finally {
     sorting.value = false
   }
 }
 
-onMounted(async () => {
-  try {
-    await load()
-  } catch (error) {
-    ElMessage.error(error?.message || '套餐列表加载失败')
-  }
-})
+onMounted(retryLoadPackages)
 </script>
 
 <style scoped>
@@ -385,6 +433,10 @@ onMounted(async () => {
 .column-heading { display: grid; gap: 4px; margin-bottom: 16px; }
 .column-heading strong { font-size: 16px; }
 .column-heading span { color: #929298; font-size: 12px; }
+.package-load-error { display: grid; gap: 10px; padding: 14px; border: 1px solid #74402f; border-radius: 12px; color: #f2c2ae; background: rgba(255, 113, 57, .08); }
+.package-load-error span, .package-loading { color: #a7a7ad; font-size: 12px; }
+.package-load-error :deep(.el-button) { justify-self: start; }
+.package-loading { padding: 16px 2px; }
 .sortable-list { display: grid; gap: 10px; }
 .sortable-item { display: grid; gap: 9px; padding: 11px; border: 1px solid #303030; border-radius: 13px; background: #131313; cursor: pointer; }
 .sortable-item:hover, .sortable-item:focus-visible { border-color: #6d4636; outline: none; }

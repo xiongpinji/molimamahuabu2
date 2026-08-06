@@ -166,10 +166,17 @@ function createAdminPanelHarness(overrides = {}) {
     ${executable}
     return {
       draft, packages, stableOrder, uploading, normalizePackage, toPayload,
-      validate, selectItem, saveItem, uploadImage, persistOrder,
+      validate, selectItem, startCreate, saveItem, uploadImage, moveItem, persistOrder,
+      hasLoadedPackages: typeof hasLoadedPackages === 'undefined' ? null : hasLoadedPackages,
+      loadFailed: typeof loadFailed === 'undefined' ? null : loadFailed,
+      retryLoadPackages: typeof retryLoadPackages === 'undefined' ? null : retryLoadPackages,
     }
   `)(deps)
   return { ...api, messages }
+}
+
+function markPackagesLoaded(harness) {
+  if (harness.hasLoadedPackages) harness.hasLoadedPackages.value = true
 }
 
 test('套餐管理器提供全字段草稿、创建更新与用户端实时预览', () => {
@@ -212,13 +219,14 @@ test('套餐广告图上传校验格式且仅在成功后替换草稿图片', ()
 
 test('套餐排序提交完整 ID 列表并在失败时回滚稳定顺序', () => {
   assert.match(adminPanel, /reorderRechargePackages/)
-  assert.match(adminPanel, /draggable="true"/)
+  assert.match(adminPanel, /:draggable="hasLoadedPackages\s*&&\s*!sorting"/)
   assert.match(adminPanel, /:aria-label="`上移/)
   assert.match(adminPanel, /:aria-label="`下移/)
   assert.match(adminPanel, /await\s+reorderRechargePackages\(next\.map\(\(item\)\s*=>\s*item\.id\)\)/)
   assert.match(adminPanel, /const\s+previous\s*=\s*packages\.value[\s\S]*const\s+previousStableOrder\s*=\s*stableOrder\.value\.slice\(\)/s)
   assert.match(adminPanel, /packages\.value\s*=\s*next[\s\S]*catch\s*\([^)]*\)\s*\{[\s\S]*previousStableOrder[\s\S]*previous\.find/s)
   assert.match(adminPanel, /stableOrder\.value\s*=\s*previousStableOrder/)
+  assert.match(adminPanel, /await\s+listAdminRechargePackages\(\)/)
 })
 
 test('套餐行只处理自身键盘选择，不吞嵌套排序按钮事件', () => {
@@ -251,7 +259,7 @@ test('套餐管理器按三栏、两栏和单栏响应并保留失败草稿', ()
   assert.match(adminPanel, /@media\s*\(max-width:\s*760px\)[\s\S]*grid-template-columns:\s*1fr/)
   assert.match(adminPanel, /catch\s*\(error\)\s*\{[\s\S]*套餐保存失败/s)
   assert.doesNotMatch(adminPanel, /catch\s*\(error\)\s*\{[^}]*Object\.assign\(draft,\s*emptyDraft\(\)\)/s)
-  assert.match(adminPanel, /v-if="packages\.length === 0"/)
+  assert.match(adminPanel, /v-else-if="hasLoadedPackages\s*&&\s*packages\.length\s*===\s*0"/)
   assert.match(adminPanel, /新增套餐/)
   assert.match(adminPanel, /推荐套餐由后端事务保证全局唯一/)
 })
@@ -310,6 +318,7 @@ test('广告图上传失败保留原图，成功后才替换', async () => {
   const failed = createAdminPanelHarness({
     uploadRechargePackageImage: async () => { throw new Error('upload failed') },
   })
+  markPackagesLoaded(failed)
   failed.draft.image_url = '/static/uploads/recharge-packages/original.png'
   const failedEvent = { target: { files: [{ type: 'image/png' }], value: 'selected' } }
   await failed.uploadImage(failedEvent)
@@ -318,6 +327,7 @@ test('广告图上传失败保留原图，成功后才替换', async () => {
   assert.deepEqual(failed.messages.error, ['upload failed'])
 
   const succeeded = createAdminPanelHarness()
+  markPackagesLoaded(succeeded)
   succeeded.draft.image_url = '/static/uploads/recharge-packages/original.png'
   await succeeded.uploadImage({ target: { files: [{ type: 'image/webp' }], value: 'selected' } })
   assert.equal(succeeded.draft.image_url, '/static/uploads/recharge-packages/new.png')
@@ -335,25 +345,29 @@ test('排序提交完整 ID，失败时恢复最近稳定顺序', async () => {
   const b = { id: 'b', name: 'B' }
   succeeded.packages.value = [a, b]
   succeeded.stableOrder.value = ['a', 'b']
+  markPackagesLoaded(succeeded)
   await succeeded.persistOrder([b, a])
   assert.deepEqual(payloads, [['b', 'a']])
   assert.deepEqual(succeeded.stableOrder.value, ['b', 'a'])
 
   const failed = createAdminPanelHarness({
     reorderRechargePackages: async () => { throw new Error('order failed') },
+    listAdminRechargePackages: async () => { throw new Error('readback failed') },
   })
   failed.packages.value = [a, b]
   failed.stableOrder.value = ['a', 'b']
+  markPackagesLoaded(failed)
   await failed.persistOrder([b, a])
   assert.deepEqual(failed.packages.value.map((item) => item.id), ['a', 'b'])
   assert.deepEqual(failed.stableOrder.value, ['a', 'b'])
-  assert.deepEqual(failed.messages.error, ['order failed'])
+  assert.deepEqual(failed.messages.error, ['套餐排序与服务器同步均失败，已恢复本地顺序'])
 })
 
 test('切换套餐使用独立草稿且保存失败保留当前图片', async () => {
   const harness = createAdminPanelHarness({
     updateRechargePackage: async () => { throw new Error('save failed') },
   })
+  markPackagesLoaded(harness)
   const listed = {
     id: 'pkg-1',
     name: '原套餐',
@@ -422,6 +436,7 @@ test('创建成功后列表刷新失败仍锁定服务端 ID，重试只能更�
     updateRechargePackage: async () => { updateCalls += 1; return savedPackage },
     listAdminRechargePackages: async () => { throw new Error('refresh failed') },
   })
+  markPackagesLoaded(harness)
   Object.assign(harness.draft, {
     name: savedPackage.name,
     ad_title: savedPackage.ad_title,
@@ -454,6 +469,7 @@ test('排序成功只同步顺序，不覆盖当前未保存广告草稿', async
   })
   harness.packages.value = [serverItems[1], serverItems[0]]
   harness.stableOrder.value = ['a', 'b']
+  markPackagesLoaded(harness)
   Object.assign(harness.draft, {
     id: 'a',
     name: 'A',
@@ -466,4 +482,99 @@ test('排序成功只同步顺序，不覆盖当前未保存广告草稿', async
   assert.equal(harness.draft.ad_title, 'UNSAVED')
   assert.equal(harness.draft.image_url, '/static/uploads/recharge-packages/just-uploaded.png')
   assert.equal(harness.draft.sort_order, 1)
+})
+
+test('排序失败优先回读含并发新增项的服务器集合并保留草稿', async () => {
+  const concurrent = [
+    { id: 'a', name: 'A', amount_cents: 1000, credits: 1000, sort_order: 0 },
+    { id: 'b', name: 'B', amount_cents: 2000, credits: 2000, sort_order: 1 },
+    { id: 'c', name: 'C', amount_cents: 3000, credits: 3000, sort_order: 2 },
+    { id: 'd', name: 'D', amount_cents: 4000, credits: 4000, sort_order: 3 },
+    { id: 'e', name: 'E', amount_cents: 5000, credits: 5000, sort_order: 4 },
+  ]
+  const harness = createAdminPanelHarness({
+    reorderRechargePackages: async () => { throw new Error('stale package set') },
+    listAdminRechargePackages: async () => concurrent,
+  })
+  harness.packages.value = concurrent.slice(0, 4)
+  harness.stableOrder.value = ['a', 'b', 'c', 'd']
+  markPackagesLoaded(harness)
+  Object.assign(harness.draft, {
+    id: 'a',
+    ad_title: 'UNSAVED',
+    image_url: '/static/uploads/recharge-packages/just-uploaded.png',
+    sort_order: 0,
+  })
+
+  await harness.persistOrder([concurrent[1], concurrent[0], concurrent[2], concurrent[3]])
+  assert.deepEqual(harness.packages.value.map((item) => item.id), ['a', 'b', 'c', 'd', 'e'])
+  assert.deepEqual(harness.stableOrder.value, ['a', 'b', 'c', 'd', 'e'])
+  assert.equal(harness.draft.ad_title, 'UNSAVED')
+  assert.equal(harness.draft.image_url, '/static/uploads/recharge-packages/just-uploaded.png')
+  assert.equal(harness.draft.sort_order, 0)
+  assert.deepEqual(harness.messages.warning, ['套餐排序失败，已同步服务器最新数据'])
+})
+
+test('排序失败且服务器回读失败时恢复调用前稳定顺序', async () => {
+  const packages = ['a', 'b', 'c', 'd'].map((id, index) => ({ id, name: id, sort_order: index }))
+  const harness = createAdminPanelHarness({
+    reorderRechargePackages: async () => { throw new Error('stale package set') },
+    listAdminRechargePackages: async () => { throw new Error('readback failed') },
+  })
+  harness.packages.value = packages
+  harness.stableOrder.value = ['a', 'b', 'c', 'd']
+  markPackagesLoaded(harness)
+
+  await harness.persistOrder([packages[1], packages[0], packages[2], packages[3]])
+  assert.deepEqual(harness.packages.value.map((item) => item.id), ['a', 'b', 'c', 'd'])
+  assert.deepEqual(harness.stableOrder.value, ['a', 'b', 'c', 'd'])
+  assert.deepEqual(harness.messages.error, ['套餐排序与服务器同步均失败，已恢复本地顺序'])
+})
+
+test('首次套餐加载失败保持阻断状态，重试成功后才允许写操作', async () => {
+  let getCalls = 0
+  let createCalls = 0
+  let reorderCalls = 0
+  let uploadCalls = 0
+  const harness = createAdminPanelHarness({
+    listAdminRechargePackages: async () => {
+      getCalls += 1
+      if (getCalls === 1) throw new Error('initial failed')
+      return []
+    },
+    createRechargePackage: async () => { createCalls += 1; return {} },
+    reorderRechargePackages: async () => { reorderCalls += 1; return [] },
+    uploadRechargePackageImage: async () => { uploadCalls += 1; return { url: '/static/uploads/recharge-packages/blocked.png' } },
+  })
+  assert.ok(harness.hasLoadedPackages)
+  assert.ok(harness.loadFailed)
+  assert.equal(typeof harness.retryLoadPackages, 'function')
+
+  await harness.retryLoadPackages()
+  assert.equal(harness.hasLoadedPackages.value, false)
+  assert.equal(harness.loadFailed.value, true)
+  harness.draft.name = '不得被清空'
+  harness.startCreate()
+  await harness.saveItem()
+  harness.moveItem(0, 1)
+  await harness.persistOrder([])
+  await harness.uploadImage({ target: { files: [{ type: 'image/png' }], value: 'selected' } })
+  assert.equal(harness.draft.name, '不得被清空')
+  assert.equal(createCalls, 0)
+  assert.equal(reorderCalls, 0)
+  assert.equal(uploadCalls, 0)
+
+  await harness.retryLoadPackages()
+  assert.equal(harness.hasLoadedPackages.value, true)
+  assert.equal(harness.loadFailed.value, false)
+  assert.deepEqual(harness.packages.value, [])
+})
+
+test('首次加载错误态不伪装空库并禁用创建保存入口', () => {
+  assert.match(adminPanel, /v-if="loadFailed\s*&&\s*!hasLoadedPackages"[^>]*class="package-load-error"/)
+  assert.match(adminPanel, /重新加载/)
+  assert.match(adminPanel, /v-else-if="hasLoadedPackages\s*&&\s*packages\.length\s*===\s*0"/)
+  assert.match(adminPanel, /@click="retryLoadPackages"/)
+  assert.match(adminPanel, /:disabled="!hasLoadedPackages\s*\|\|\s*loadingPackages"/)
+  assert.match(adminPanel, /if\s*\(!hasLoadedPackages\.value\)\s*return/)
 })
