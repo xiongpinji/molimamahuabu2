@@ -96,6 +96,9 @@ function categoryLabel(value) {
 function selectPreset(preset) {
   selectedPreset.value = preset
   selectedPresetId.value = preset?.id || null
+  freeStyle.positivePrompt = ''
+  freeStyle.negativePrompt = ''
+  freeStyle.referenceImage = null
   emit('update:selectedPreset', preset)
 }
 

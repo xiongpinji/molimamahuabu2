@@ -19,6 +19,14 @@
             @change="onFileChange"
           />
           <small>支持 MP4、MOV 或 ZIP 批量源片</small>
+          <el-button
+            v-if="!workState?.id"
+            :loading="uploading"
+            :disabled="!selectedFile"
+            @click="uploadSource"
+          >
+            上传源片
+          </el-button>
         </label>
         <label class="field">
           <span>语言 / 地区</span>
@@ -82,6 +90,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
+import {
+  analysisQuoteCredits,
+  buildAnalyzePayload,
+  canStartRedrawAnalysis,
+  taskStateFromWork,
+} from '@/utils/redrawWorkspaceState'
 
 const props = defineProps({
   projectId: {
@@ -98,29 +112,28 @@ const emit = defineEmits(['work-updated'])
 
 const fileInput = ref(null)
 const selectedFile = ref(null)
-const locale = ref('zh-CN')
-const market = ref('CN')
+const locale = ref('')
+const market = ref('')
 const aspectRatio = ref('16:9')
 const stylePresets = ref([])
 const localeOptions = ref([])
 const selectedPreset = ref(null)
 const freeStyle = ref({})
 const workState = ref(props.initialWork)
+const uploading = ref(false)
 const submitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 
 const aspectRatioOptions = ['16:9', '9:16', '1:1', '4:3']
-const estimateCredits = computed(() => {
-  const source = selectedPreset.value || {}
-  const credits = Number(source.analysis_credits ?? source.credits ?? source.price?.credits)
-  return Number.isSafeInteger(credits) && credits > 0 ? credits : null
-})
+const estimateCredits = computed(() => analysisQuoteCredits(workState.value))
 const hasValidQuote = computed(() => estimateCredits.value != null)
-const canStartAnalysis = computed(() => Boolean(
-  hasValidQuote.value
-    && (workState.value?.id || selectedFile.value)
-    && (selectedPreset.value || String(freeStyle.value?.positivePrompt || '').trim()),
-))
+const canStartAnalysis = computed(() => canStartRedrawAnalysis({
+  work: workState.value,
+  selectedFile: selectedFile.value,
+  locales: localeOptions.value,
+  selectedPreset: selectedPreset.value,
+  freeStyle: freeStyle.value,
+}))
 
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null
@@ -132,20 +145,18 @@ async function loadCapabilities() {
     redrawAPI.listLocales(),
   ])
   stylePresets.value = Array.isArray(presets) ? presets : []
-  localeOptions.value = Array.isArray(locales) && locales.length
-    ? locales
-    : [{ locale: 'zh-CN', market: 'CN' }]
+  localeOptions.value = Array.isArray(locales) ? locales : []
+  if (localeOptions.value.length) {
+    locale.value = localeOptions.value[0].locale || ''
+    market.value = localeOptions.value[0].market || ''
+  }
 }
 
 async function refreshWork() {
   if (!workState.value?.id) return
   const fresh = await redrawAPI.getWork(workState.value.id)
   workState.value = fresh
-  taskState.value = {
-    task_id: fresh.task_id || taskState.value.task_id || '',
-    status: fresh.status || taskState.value.status || '',
-    progress: fresh.status === 'asset_review' ? 100 : taskState.value.progress,
-  }
+  taskState.value = taskStateFromWork(fresh)
   emit('work-updated', fresh)
 }
 
@@ -160,16 +171,34 @@ async function ensureWork() {
   return created
 }
 
+async function uploadSource() {
+  uploading.value = true
+  try {
+    await ensureWork()
+  } catch (error) {
+    ElMessage.error(error.message || '上传源片失败')
+  } finally {
+    uploading.value = false
+  }
+}
+
 async function startAnalysis() {
   if (!canStartAnalysis.value) return
   submitting.value = true
   try {
     const work = await ensureWork()
-    const result = await redrawAPI.analyzeWork(work.id)
+    const result = await redrawAPI.analyzeWork(work.id, buildAnalyzePayload({
+      locale: locale.value,
+      market: market.value,
+      aspectRatio: aspectRatio.value,
+      selectedPreset: selectedPreset.value,
+      freeStyle: freeStyle.value,
+    }))
     taskState.value = {
       task_id: result.task_id,
-      status: result.provider_task_id ? 'processing' : 'submitted',
-      progress: 10,
+      status: '',
+      progress: 0,
+      message: '',
     }
     await refreshWork()
     ElMessage.success('源片分析已提交')

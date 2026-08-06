@@ -6,6 +6,8 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
+const prices = require('../src/services/modelPriceService');
+const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -135,6 +137,23 @@ function routeDeps(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function insertVerifiedVideoUnderstandingConfig(db) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video_understanding', 'test-provider', '已验证视频理解', 'GPT-5.5', 'GPT-5.5', 1, 1, 0, ?, ?, ?)
+  `).run(JSON.stringify({
+    real_generation_verified: true,
+    evidence: {
+      provider_task_id: 'verified-provider-task',
+      result_asset_id: 'verified-result',
+      result_asset_readable: true,
+      completed_at: now,
+    },
+  }), now, now);
 }
 
 test('转绘项目列表与创建按租户和用户隔离', () => {
@@ -356,6 +375,59 @@ test('作品状态读取按租户用户过滤', () => {
   }
 });
 
+test('作品状态返回真实分析报价和 async task 状态', () => {
+  const db = createDb();
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      status: 'analyzing',
+      current_step: 1,
+      task_id: 'task-real-progress',
+    });
+    db.prepare(`
+      INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, user_id, created_at, updated_at)
+      VALUES ('task-real-progress', 'redraw_analysis', 'processing', 64, '正在读取源片', ?, 'user-a', ?, ?)
+    `).run(String(workId), NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {}, info() {}, warn() {} }, routeDeps({
+      orchestrator: realRedrawOrchestrator,
+    }));
+
+    const own = captureResponse();
+    handlers.getWork(request({ id: workId }), own);
+
+    assert.equal(own.statusCode, 200);
+    assert.deepEqual(own.body.data.analysis_quote, { model: 'GPT-5.5', credits: 6, amount: 6 });
+    assert.equal(own.body.data.task_id, 'task-real-progress');
+    assert.equal(own.body.data.task_status, 'processing');
+    assert.equal(own.body.data.task_progress, 64);
+    assert.equal(own.body.data.task_message, '正在读取源片');
+  } finally {
+    db.close();
+  }
+});
+
+test('未验证能力或未配置价格时作品报价为 null', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const handlers = redrawRoutes(db, { error() {}, info() {}, warn() {} }, routeDeps({
+      orchestrator: realRedrawOrchestrator,
+    }));
+
+    const own = captureResponse();
+    handlers.getWork(request({ id: workId }), own);
+
+    assert.equal(own.statusCode, 200);
+    assert.equal(own.body.data.analysis_quote, null);
+  } finally {
+    db.close();
+  }
+});
+
 test('风格和语言目录来自能力服务且仅暴露验证结果', () => {
   const db = createDb();
   try {
@@ -395,14 +467,73 @@ test('提交分析返回异步任务、厂商任务与 billing 三键，并保�
     }));
 
     const submitted = captureResponse();
-    await handlers.analyzeWork(request({ id: workId }), submitted);
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'ja-JP',
+        market: 'JP',
+        aspect_ratio: '9:16',
+        style_preset_id: 7,
+      },
+    }), submitted);
     assert.equal(submitted.statusCode, 201);
     assert.equal(input.workId, workId);
     assert.equal(input.userId, 'user-a');
+    assert.deepEqual(input.analysisSettings, {
+      locale: 'ja-JP',
+      market: 'JP',
+      aspect_ratio: '9:16',
+      style_preset_id: 7,
+    });
     assert.equal(submitted.body.data.task_id, 'task-redraw');
     assert.equal(submitted.body.data.provider_task_id, 'provider-redraw');
     assert.deepEqual(Object.keys(submitted.body.data.billing).sort(), ['charged', 'held', 'released']);
     assert.equal(submitted.body.data.current_step, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('提交分析接受自由风格并保留参考图字段进入编排输入', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let input = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      orchestrator: {
+        startAnalysis: async (_db, _log, value) => {
+          input = value;
+          return {
+            task_id: 'task-redraw-free',
+            provider_task_id: 'provider-redraw-free',
+            billing: { charged: 0, held: 1, released: 0 },
+          };
+        },
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        aspect_ratio: '16:9',
+        free_style: {
+          positive: 'warm light',
+          negative: 'blur',
+          reference: { filename: 'style.png', id: 'asset-style' },
+        },
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    assert.deepEqual(input.analysisSettings.free_style, {
+      positive: 'warm light',
+      negative: 'blur',
+      reference: { filename: 'style.png', id: 'asset-style' },
+    });
   } finally {
     db.close();
   }

@@ -106,6 +106,7 @@ function createDb() {
       model TEXT,
       credit_reservation_id TEXT,
       provider_task_id TEXT,
+      metadata TEXT,
       created_at TEXT,
       updated_at TEXT,
       completed_at TEXT,
@@ -351,6 +352,47 @@ test('startAnalysis uses analyzing status with real migrated redraw schema', asy
   assert.equal(taskService.getTask(db, started.task_id).status, 'processing');
   assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'analyzing');
   assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+});
+
+test('startAnalysis writes requested redraw settings into async task metadata', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 6);
+
+  const started = await redraw.startAnalysis(db, log, {
+    workId: 'work-1',
+    userId: 'user-1',
+    analysisSettings: {
+      locale: 'ja-JP',
+      market: 'JP',
+      aspect_ratio: '9:16',
+      free_style: {
+        positive: 'warm light',
+        negative: 'blur',
+        reference: { filename: 'style.png', id: 'asset-style' },
+      },
+    },
+  }, {
+    provider: { startAnalysis: async ({ analysisSettings }) => {
+      assert.equal(analysisSettings.locale, 'ja-JP');
+      return { provider_task_id: 'provider-metadata' };
+    } },
+  });
+
+  const task = db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.deepEqual(JSON.parse(task.metadata), {
+    redraw_analysis: {
+      locale: 'ja-JP',
+      market: 'JP',
+      aspect_ratio: '9:16',
+      free_style: {
+        positive: 'warm light',
+        negative: 'blur',
+        reference: { filename: 'style.png', id: 'asset-style' },
+      },
+    },
+  });
 });
 
 test('startAnalysis charges tenant ledger and returns held billing without changing personal account', async () => {

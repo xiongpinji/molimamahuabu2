@@ -45,6 +45,17 @@ function loadVerifiedCapability(db) {
   throw codedError('VIDEO_UNDERSTANDING_NOT_VERIFIED', '视频理解模型缺少真实生成且结果可读的验证证据');
 }
 
+function quoteAnalysis(db) {
+  try {
+    const config = loadVerifiedCapability(db);
+    const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
+    const amount = modelPrice.calculateCharge(db, model);
+    return { model, credits: amount, amount };
+  } catch (_) {
+    return null;
+  }
+}
+
 function getWork(db, workId) {
   return db.prepare('SELECT * FROM redraw_works WHERE id = ?').get(String(workId)) || null;
 }
@@ -237,6 +248,10 @@ async function startAnalysis(db, log, input, options = {}) {
   const price = modelPrice.calculateCharge(db, model);
   const sourceAssetId = input.sourceAssetId || work.source_asset_id;
   if (!sourceAssetId) throw codedError('SOURCE_ASSET_REQUIRED', '缺少源片资产');
+  const analysisSettings = input.analysisSettings && typeof input.analysisSettings === 'object'
+    ? input.analysisSettings
+    : {};
+  const metadata = JSON.stringify({ redraw_analysis: analysisSettings });
 
   const now = new Date().toISOString();
   const created = db.transaction(() => {
@@ -254,6 +269,11 @@ async function startAnalysis(db, log, input, options = {}) {
     db.prepare(
       'UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ?, status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?'
     ).run(userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id);
+    safeUpdate(
+      db,
+      'UPDATE async_tasks SET metadata = ?, updated_at = ? WHERE id = ?',
+      [metadata, now, task.id],
+    );
     db.prepare(
       `UPDATE redraw_works
        SET source_asset_id = ?, status = 'analyzing', current_step = 1, task_id = ?,
@@ -271,7 +291,13 @@ async function startAnalysis(db, log, input, options = {}) {
   let providerResult;
   try {
     providerResult = options.provider?.startAnalysis
-      ? await options.provider.startAnalysis({ work, sourceAssetId, config, operationKey: `redraw_analysis:${work.id}:${sourceAssetId}` })
+      ? await options.provider.startAnalysis({
+        work,
+        sourceAssetId,
+        config,
+        analysisSettings,
+        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+      })
       : {};
   } catch (error) {
     markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
@@ -482,6 +508,7 @@ module.exports = {
   startAnalysis,
   runAnalyzeTask,
   resumeRedrawTasks,
+  quoteAnalysis,
   loadVerifiedCapability,
   createStartupResumeOptions,
   createAssetReader,

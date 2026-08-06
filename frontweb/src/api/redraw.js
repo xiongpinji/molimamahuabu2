@@ -26,7 +26,7 @@ export const redrawAPI = {
   listLocales() {
     return request.get('/redraw/locales')
   },
-  analyzeWork(workId) {
-    return request.post(`/redraw/works/${workId}/analyze`)
+  analyzeWork(workId, body = {}) {
+    return request.post(`/redraw/works/${workId}/analyze`, body)
   },
 }

@@ -10,6 +10,7 @@ const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
 const assetService = require('../services/assetService');
+const taskService = require('../services/taskService');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -82,8 +83,9 @@ function mapProject(row) {
   };
 }
 
-function mapWork(row, sourceAsset = null) {
+function mapWork(row, sourceAsset = null, extras = {}) {
   if (!row) return null;
+  const task = extras.task || null;
   const item = {
     id: row.id,
     project_id: row.project_id,
@@ -98,6 +100,10 @@ function mapWork(row, sourceAsset = null) {
     status: row.status,
     task_id: row.task_id,
     provider_task_id: row.provider_task_id,
+    analysis_quote: extras.analysisQuote || null,
+    task_status: task?.status || null,
+    task_progress: Number.isFinite(Number(task?.progress)) ? Number(task.progress) : null,
+    task_message: task?.message || null,
     reused: row.reused === true,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -107,6 +113,60 @@ function mapWork(row, sourceAsset = null) {
     item.url = sourceAsset.url || null;
   }
   return item;
+}
+
+function analysisQuote() {
+  return typeof redrawOrchestrator.quoteAnalysis === 'function'
+    ? redrawOrchestrator.quoteAnalysis
+    : () => null;
+}
+
+function normalizeFreeStyle(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const positive = String(value.positive ?? value.positivePrompt ?? '').trim();
+  const negative = String(value.negative ?? value.negativePrompt ?? '').trim();
+  const referenceValue = value.reference && typeof value.reference === 'object' ? value.reference : {};
+  const filename = String(referenceValue.filename ?? referenceValue.name ?? value.reference_filename ?? '').trim();
+  const id = String(referenceValue.id ?? value.reference_id ?? '').trim();
+  const reference = {};
+  if (filename) reference.filename = filename;
+  if (id) reference.id = id;
+  if (!positive && !negative && Object.keys(reference).length === 0) return null;
+  return {
+    positive,
+    negative,
+    ...(Object.keys(reference).length ? { reference } : {}),
+  };
+}
+
+function normalizeAnalysisSettings(body) {
+  const locale = String(body?.locale || '').trim();
+  const market = String(body?.market || '').trim();
+  const aspectRatio = String(body?.aspect_ratio || body?.aspectRatio || '').trim();
+  if (!locale) throw Object.assign(new Error('请选择语言'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+  if (!['16:9', '9:16', '1:1', '4:3'].includes(aspectRatio)) {
+    throw Object.assign(new Error('请选择有效输出比例'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+  }
+  const presetId = body?.style_preset_id ?? body?.stylePresetId;
+  const hasPreset = presetId !== undefined && presetId !== null && String(presetId).trim() !== '';
+  const freeStyle = normalizeFreeStyle(body?.free_style ?? body?.freeStyle);
+  if (hasPreset && freeStyle) {
+    throw Object.assign(new Error('普通预设和自由风格不能同时提交'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+  }
+  if (!hasPreset && !freeStyle) {
+    throw Object.assign(new Error('请选择风格预设或填写自由风格'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+  }
+  const settings = { locale, market, aspect_ratio: aspectRatio };
+  if (hasPreset) {
+    const stylePresetId = Number(presetId);
+    if (!Number.isInteger(stylePresetId) || stylePresetId <= 0) {
+      throw Object.assign(new Error('风格预设无效'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+    }
+    settings.style_preset_id = stylePresetId;
+  } else {
+    settings.free_style = freeStyle;
+  }
+  return settings;
 }
 
 function mapStylePreset(row) {
@@ -185,6 +245,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const capabilityService = options.capabilityService || redrawCapabilityService;
   const orchestrator = options.orchestrator || redrawOrchestrator;
   const cfg = options.cfg || {};
+  const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
   const uploadLimits = {
     storageRoot: storageRootFromConfig(cfg),
@@ -283,7 +344,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
           if (work.reused === true && registered.asset?.id && Number(work.source_asset_id) !== Number(registered.asset.id)) {
             cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
           }
-          createdItems.push(mapWork(work, registered.sourceAsset));
+          createdItems.push(mapWork(work, registered.sourceAsset, {
+            analysisQuote: quoteAnalysis(db),
+          }));
         }
         return createdItems;
       })();
@@ -304,7 +367,11 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   function getWork(req, res) {
     const work = findOwnedWork(req.params.id, owner(req));
     if (!work) return response.notFound(res, '转绘作品不存在');
-    return response.success(res, mapWork(work));
+    const task = work.task_id ? taskService.getTask(db, work.task_id) : null;
+    return response.success(res, mapWork(work, null, {
+      task,
+      analysisQuote: quoteAnalysis(db),
+    }));
   }
 
   function listStylePresets(_req, res) {
@@ -322,11 +389,13 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     if (!work) return response.notFound(res, '转绘作品不存在');
 
     try {
+      const analysisSettings = normalizeAnalysisSettings(req.body || {});
       const result = await orchestrator.startAnalysis(db, log, {
         workId: work.id,
         userId: currentOwner.userId,
         tenantId: currentOwner.tenantId,
         sourceAssetId: work.source_asset_id,
+        analysisSettings,
       }, options.analysisOptions || {});
       return response.created(res, {
         task_id: result.task_id,
@@ -342,6 +411,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       if (String(error.code || '').startsWith('REDRAW_') || error.code === 'SOURCE_ASSET_REQUIRED') {
         return response.badRequest(res, error.message);
       }
+      if (error.code === 'INVALID_REDRAW_ANALYSIS_SETTINGS') return response.badRequest(res, error.message);
       log?.error?.({ err: error, workId: req.params.id }, 'redraw analyze work failed');
       return response.internalError(res, error.message || '提交转绘分析失败');
     }
