@@ -98,6 +98,7 @@ function json(data, status = 200) {
 
 function createCalls() {
   return {
+    adminPackageGets: 0,
     createOrders: 0,
     orderPayloads: [],
     packageUpdates: [],
@@ -165,6 +166,7 @@ async function mockRechargeApi(page, calls, options = {}) {
       })
     }
     if (method === 'GET' && pathname === '/api/v1/billing/admin/recharge-packages') {
+      calls.adminPackageGets += 1
       return route.fulfill(json(adminPackages))
     }
     if (method === 'POST' && pathname === '/api/v1/billing/admin/recharge-packages/image') {
@@ -345,6 +347,7 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
 
   const admin = page.locator('.package-admin')
   await expect(admin.locator('.sortable-item')).toHaveCount(4)
+  expect(calls.adminPackageGets).toBe(1)
   await admin.locator('.sortable-item').filter({ hasText: 'PLUS' }).click()
 
   for (const label of [
@@ -433,6 +436,11 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
       status: 'inactive',
     },
   }])
+  await expect.poll(() => calls.adminPackageGets).toBe(2)
+  await page.reload()
+  await expect.poll(() => calls.adminPackageGets).toBe(3)
+  await expect(admin.locator('.sortable-item')).toHaveCount(4)
+  await admin.locator('.sortable-item').filter({ hasText: 'PLUS' }).click()
   await expect(field(admin, '套餐名称').locator('input')).toHaveValue('PLUS 新版')
   await expect(field(admin, '角标文案').locator('input')).toHaveValue('限时加赠')
   await expect(field(admin, '广告主标题').locator('input')).toHaveValue('实时预览新标题')
