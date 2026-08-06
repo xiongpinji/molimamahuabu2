@@ -464,6 +464,50 @@ test('startup resume without a configured queryer marks provider-backed task nee
   assert.equal(creditLedger.getAccount(db, 'user-1').held, 6);
 });
 
+test('startup resume marks provider-backed task needs_attention when query endpoint is unreachable', async () => {
+  const db = createDb();
+  const server = await listen(http.createServer((_, res) => res.end('unused')));
+  const port = server.address().port;
+  await close(server);
+  addVerifiedConfigWithQuery(db, `http://127.0.0.1:${port}`);
+  const started = await startWork(db, 'provider-unreachable');
+
+  const result = await redraw.resumeRedrawTasks(db, log, redraw.createStartupResumeOptions(db, log, { storageRoot: process.cwd() }));
+
+  assert.equal(result.resumed, 1);
+  assert.equal(taskService.getTask(db, started.task_id).status, 'needs_attention');
+  assert.match(taskService.getTask(db, started.task_id).error, /源片分析恢复查询不可用/);
+  assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-1').status, 'needs_attention');
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+  assert.equal(creditLedger.getAccount(db, 'user-1').held, 6);
+  assert.equal(creditLedger.getAccount(db, 'user-1').spent, 0);
+});
+
+test('startup resume marks provider-backed task needs_attention when query response is invalid JSON', async () => {
+  const db = createDb();
+  let server;
+  server = await listen(http.createServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{invalid-json');
+  }));
+  try {
+    addVerifiedConfigWithQuery(db, `http://127.0.0.1:${server.address().port}`);
+    const started = await startWork(db, 'provider-bad-json');
+
+    const result = await redraw.resumeRedrawTasks(db, log, redraw.createStartupResumeOptions(db, log, { storageRoot: process.cwd() }));
+
+    assert.equal(result.resumed, 1);
+    assert.equal(taskService.getTask(db, started.task_id).status, 'needs_attention');
+    assert.match(taskService.getTask(db, started.task_id).error, /源片分析恢复查询不可用/);
+    assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-1').status, 'needs_attention');
+    assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(started.reservation_id).status, 'held');
+    assert.equal(creditLedger.getAccount(db, 'user-1').held, 6);
+    assert.equal(creditLedger.getAccount(db, 'user-1').spent, 0);
+  } finally {
+    await close(server);
+  }
+});
+
 test('startup resume uses configured HTTP query endpoint to complete provider task', async () => {
   const db = createDb();
   let authorization = '';

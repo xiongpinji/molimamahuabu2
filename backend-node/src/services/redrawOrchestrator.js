@@ -157,11 +157,16 @@ function createStartupResumeOptions(db, log, options = {}) {
         const url = buildUrl(config.base_url, queryEndpoint, providerTaskId);
         const headers = {};
         if (config.api_key) headers.authorization = `Bearer ${config.api_key}`;
-        const response = await fetch(url, { method: 'GET', headers });
-        if (!response.ok) {
-          throw createProviderResumeUnavailable(`源片分析恢复查询失败: HTTP ${response.status}`);
+        try {
+          const response = await fetch(url, { method: 'GET', headers });
+          if (!response.ok) {
+            throw createProviderResumeUnavailable(`源片分析恢复查询失败: HTTP ${response.status}`);
+          }
+          return normalizeProviderResult(await response.json());
+        } catch (error) {
+          if (error.code === 'REDRAW_PROVIDER_RESUME_UNAVAILABLE') throw error;
+          throw createProviderResumeUnavailable(`源片分析恢复查询不可用: ${error.message}`);
         }
-        return normalizeProviderResult(await response.json());
       },
     },
     assetReader: createAssetReader({ storageRoot: options.storageRoot }),
