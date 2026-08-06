@@ -5,14 +5,20 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function parseJson(value, fallback) {
-  if (value && typeof value === 'object') return deepClone(value);
+function parseSnapshotJson(row, column, expectedType, options = {}) {
+  const raw = row[column];
+  if ((raw == null || raw === '') && options.emptyObject) return {};
+  let parsed;
   try {
-    const parsed = JSON.parse(value || '');
-    return parsed && typeof parsed === 'object' ? parsed : fallback;
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch (_) {
-    return fallback;
+    throw new Error(`shot ${row.id} ${column} JSON 解析失败`);
   }
+  const valid = expectedType === 'array'
+    ? Array.isArray(parsed)
+    : parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+  if (!valid) throw new Error(`shot ${row.id} ${column} JSON 类型错误`);
+  return parsed;
 }
 
 function readName(asset) {
@@ -29,6 +35,11 @@ function normalizeAsset(asset) {
   };
 }
 
+function referenceText(value) {
+  if (Array.isArray(value)) return value.map(referenceText).join(' ');
+  return String(value || '');
+}
+
 function parseShotReferences(text = '', approvedAssets = []) {
   const assetsByName = new Map();
   for (const asset of approvedAssets || []) {
@@ -39,7 +50,7 @@ function parseShotReferences(text = '', approvedAssets = []) {
 
   const references = [];
   const seenAssets = new Set();
-  for (const match of String(text || '').matchAll(/@([^\s@,，。；;：:、!?！？()[\]{}"'“”‘’]+)/g)) {
+  for (const match of referenceText(text).matchAll(/@([^\s@,，。；;：:、!?！？()[\]{}"'“”‘’]+)/g)) {
     const name = match[1];
     const asset = assetsByName.get(name);
     if (!asset) throw new Error(`未知资产: ${name}`);
@@ -103,7 +114,10 @@ function normalizeShot(input = {}, context = {}) {
   if (input.original_video_ref !== undefined && shot.source_video_ref === undefined) {
     shot.source_video_ref = deepClone(input.original_video_ref);
   }
-  shot.references = parseShotReferences(shot.prompt || '', context.approvedAssets || []);
+  const referenceInputs = [];
+  if (shot.prompt) referenceInputs.push(shot.prompt);
+  if (input.references !== undefined) referenceInputs.push(input.references);
+  shot.references = parseShotReferences(referenceInputs, context.approvedAssets || []);
   return deepClone(shot);
 }
 
@@ -125,6 +139,14 @@ function hasManualBatches(shots) {
   return shots.length > 0 && shots.every((shot) => Number.isInteger(shot.batch_index) && shot.batch_index > 0);
 }
 
+function remainingDuration(shots, startIndex) {
+  let total = 0;
+  for (let index = startIndex; index < shots.length; index += 1) {
+    total += positiveDuration(shots[index]);
+  }
+  return total;
+}
+
 function groupShotsIntoBatches(shots = [], minDurationMs = 10_000, maxDurationMs = 15_000) {
   if (hasManualBatches(shots)) {
     const batches = [];
@@ -142,7 +164,8 @@ function groupShotsIntoBatches(shots = [], minDurationMs = 10_000, maxDurationMs
   const batches = [];
   let current = [];
   let currentDuration = 0;
-  for (const shot of shots) {
+  for (let index = 0; index < shots.length; index += 1) {
+    const shot = shots[index];
     const duration = positiveDuration(shot);
     if (duration > maxDurationMs) {
       if (current.length) {
@@ -153,7 +176,12 @@ function groupShotsIntoBatches(shots = [], minDurationMs = 10_000, maxDurationMs
       batches.push(makeBatch(batches.length + 1, [shot]));
       continue;
     }
-    if (current.length && (currentDuration >= minDurationMs || currentDuration + duration > maxDurationMs)) {
+    const wouldExceedMax = currentDuration + duration > maxDurationMs;
+    const tailAfterAppend = remainingDuration(shots, index + 1);
+    const wouldLeaveAvoidableShortTail = currentDuration >= minDurationMs
+      && tailAfterAppend > 0
+      && tailAfterAppend < minDurationMs;
+    if (current.length && (wouldExceedMax || wouldLeaveAvoidableShortTail)) {
       batches.push(makeBatch(batches.length + 1, current));
       current = [];
       currentDuration = 0;
@@ -174,8 +202,11 @@ function snapshotShots(db, versionId) {
   `).all(versionId);
 
   return deepClone(rows.map((row) => {
-    const draft = parseJson(row.draft_json, {});
-    const compiledPrompt = parseJson(row.compiled_prompt_json, {});
+    const draft = parseSnapshotJson(row, 'draft_json', 'object', { emptyObject: true });
+    const compiledPrompt = parseSnapshotJson(row, 'compiled_prompt_json', 'object');
+    const sourceDialogue = parseSnapshotJson(row, 'source_dialogue_json', 'array');
+    const localizedDialogue = parseSnapshotJson(row, 'localized_dialogue_json', 'array');
+    const references = parseSnapshotJson(row, 'references_json', 'array');
     return {
       id: row.id,
       version_id: row.version_id,
@@ -192,14 +223,14 @@ function snapshotShots(db, versionId) {
       composition: draft.composition ?? compiledPrompt.composition,
       lighting: draft.lighting ?? compiledPrompt.lighting,
       atmosphere: draft.atmosphere ?? compiledPrompt.atmosphere,
-      source_dialogue: parseJson(row.source_dialogue_json, []),
-      localized_dialogue: parseJson(row.localized_dialogue_json, []),
+      source_dialogue: sourceDialogue,
+      localized_dialogue: localizedDialogue,
       speaker: draft.speaker ?? compiledPrompt.speaker,
       speakable_duration_ms: draft.speakable_duration_ms ?? compiledPrompt.speakable_duration_ms,
       prompt: row.prompt,
       negative_prompt: row.negative_prompt,
       compiled_prompt: compiledPrompt,
-      references: parseJson(row.references_json, []),
+      references,
       model: draft.model ?? compiledPrompt.model,
       duration: draft.duration ?? compiledPrompt.duration,
       resolution: draft.resolution ?? compiledPrompt.resolution,

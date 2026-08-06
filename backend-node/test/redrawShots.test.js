@@ -130,6 +130,49 @@ test('同一资产的多个别名只返回首次出现的一条引用', () => {
   assert.deepEqual(references.map((reference) => reference.name), ['Alice', 'Bob']);
 });
 
+test('分镜显式 references 会被校验并解析', () => {
+  const shot = normalizeShot({
+    start_ms: 0,
+    end_ms: 12000,
+    references: ['@Maya', '@旧仓库'],
+  }, { approvedAssets });
+
+  assert.deepEqual(shot.references.map((reference) => reference.asset_id), [101, 202]);
+});
+
+test('分镜显式 references 中未知或未审批资产会失败', () => {
+  assert.throws(() => normalizeShot({
+    start_ms: 0,
+    end_ms: 12000,
+    references: ['@不存在'],
+  }, { approvedAssets }), /未知资产/);
+
+  assert.throws(() => normalizeShot({
+    start_ms: 0,
+    end_ms: 12000,
+    references: ['@草稿道具'],
+  }, {
+    approvedAssets: [{
+      localized_name: '草稿道具',
+      asset_id: 404,
+      kind: 'prop',
+      version_number: 1,
+      approval_status: 'pending',
+    }],
+  }), /未审批/);
+});
+
+test('分镜 prompt 与显式 references 合并后按资产身份去重并保持顺序', () => {
+  const shot = normalizeShot({
+    start_ms: 0,
+    end_ms: 12000,
+    prompt: '@Maya 走进 @旧仓库',
+    references: ['@Maya', '@怀表'],
+  }, { approvedAssets });
+
+  assert.deepEqual(shot.references.map((reference) => reference.asset_id), [101, 202, 303]);
+});
+
 test('自动分批保持顺序并把相邻镜头控制在 10 到 15 秒目标内', () => {
   const shots = [
     { id: 'shot-1', duration_ms: 4000 },
@@ -146,6 +189,17 @@ test('自动分批保持顺序并把相邻镜头控制在 10 到 15 秒目标内
   ]);
   assert.deepEqual(batches.map((batch) => batch.batch_index), [1, 2]);
   assert.deepEqual(batches.map((batch) => batch.duration_ms), [10000, 11000]);
+});
+
+test('自动分批避免刚到目标下限时切出可避免短尾', () => {
+  const batches = groupShotsIntoBatches([
+    { id: 'shot-1', duration_ms: 6000 },
+    { id: 'shot-2', duration_ms: 4000 },
+    { id: 'shot-3', duration_ms: 5000 },
+  ], 10_000, 15_000);
+
+  assert.deepEqual(batches.map((batch) => batch.duration_ms), [15000]);
+  assert.deepEqual(batches[0].shots.map((shot) => shot.id), ['shot-1', 'shot-2', 'shot-3']);
 });
 
 test('自动分批追加前不能超过目标上限', () => {
@@ -283,4 +337,72 @@ test('提交快照按批次镜头排序、字段完整且不受后续数据库�
   ]);
   assert.deepEqual(snapshot[0].quote_snapshot, { total_credits: 48, unit_credits: 24 });
   db.close();
+});
+
+test('提交快照遇到坏 JSON 或错误结构时失败并指出镜头和列名', () => {
+  const cases = [
+    ['references_json', '{"bad"', /shot 31.*references_json/],
+    ['source_dialogue_json', '{}', /shot 31.*source_dialogue_json/],
+    ['localized_dialogue_json', '{"bad"', /shot 31.*localized_dialogue_json/],
+    ['compiled_prompt_json', '[]', /shot 31.*compiled_prompt_json/],
+    ['draft_json', '{"bad"', /shot 31.*draft_json/],
+  ];
+
+  for (const [column, value, pattern] of cases) {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY,
+      version_id INTEGER NOT NULL,
+      batch_index INTEGER NOT NULL,
+      shot_index INTEGER NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      source_dialogue_json TEXT NOT NULL,
+      localized_dialogue_json TEXT NOT NULL,
+      references_json TEXT NOT NULL,
+      opening_state TEXT NOT NULL,
+      continuous_action TEXT NOT NULL,
+      ending_state TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      negative_prompt TEXT NOT NULL,
+      compiled_prompt_json TEXT NOT NULL,
+      draft_json TEXT,
+      deleted_at TEXT
+    )`);
+    const row = {
+      id: 31,
+      version_id: 7,
+      batch_index: 1,
+      shot_index: 1,
+      start_ms: 0,
+      end_ms: 12000,
+      duration_ms: 12000,
+      source_dialogue_json: '[]',
+      localized_dialogue_json: '[]',
+      references_json: '[]',
+      opening_state: '',
+      continuous_action: '',
+      ending_state: '',
+      prompt: '',
+      negative_prompt: '',
+      compiled_prompt_json: '{}',
+      draft_json: '{}',
+      deleted_at: null,
+    };
+    row[column] = value;
+    db.prepare(`INSERT INTO redraw_shots
+      (id, version_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       source_dialogue_json, localized_dialogue_json, references_json,
+       opening_state, continuous_action, ending_state, prompt, negative_prompt,
+       compiled_prompt_json, draft_json, deleted_at)
+      VALUES
+      (@id, @version_id, @batch_index, @shot_index, @start_ms, @end_ms, @duration_ms,
+       @source_dialogue_json, @localized_dialogue_json, @references_json,
+       @opening_state, @continuous_action, @ending_state, @prompt, @negative_prompt,
+       @compiled_prompt_json, @draft_json, @deleted_at)`).run(row);
+
+    assert.throws(() => snapshotShots(db, 7), pattern);
+    db.close();
+  }
 });
