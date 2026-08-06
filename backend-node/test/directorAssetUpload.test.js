@@ -4,9 +4,13 @@ const path = require('path');
 const { Readable } = require('stream');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const express = require('express');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { setupRouter } = require('../src/routes');
 const uploadModule = require('../src/routes/upload');
+
+const VALID_WEBP = Buffer.from('524946460400000057454250', 'hex');
 
 function captureResponse() {
   return {
@@ -162,7 +166,7 @@ test('素材库媒体上传必须绑定自有项目，并注册项目素材记�
   }
 });
 
-test('套餐广告图上传二次校验格式并保存 WebP 到专用目录', () => {
+test('套餐广告图上传二次校验 MIME 与内容签名且拒绝 GIF', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-recharge-package-'));
   try {
     const handlers = uploadModule.routes({
@@ -182,29 +186,67 @@ test('套餐广告图上传二次校验格式并保存 WebP 到专用目录', ()
     assert.equal(gifResponse.statusCode, 400);
     assert.equal(fs.existsSync(path.join(tempRoot, 'uploads', 'recharge-packages')), false);
 
-    const webpResponse = captureResponse();
+    const forgedResponse = captureResponse();
     handlers.uploadRechargePackageImage({
       file: {
-        buffer: Buffer.from('524946460400000057454250', 'hex'),
+        buffer: Buffer.from('<html>not an image</html>'),
         originalname: 'promotion.webp',
         mimetype: 'image/webp',
-        size: 12,
+        size: 25,
       },
-    }, webpResponse);
-    assert.equal(webpResponse.statusCode, 200);
-    assert.equal(webpResponse.body.success, true);
-    assert.match(
-      webpResponse.body.data.url,
-      /^\/static\/uploads\/recharge-packages\/[^/]+\.webp$/,
-    );
-    assert.equal(
-      fs.existsSync(path.join(tempRoot, webpResponse.body.data.local_path)),
-      true,
-    );
+    }, forgedResponse);
+    assert.equal(forgedResponse.statusCode, 400);
+    assert.equal(fs.existsSync(path.join(tempRoot, 'uploads', 'recharge-packages')), false);
+
+    const mismatchedResponse = captureResponse();
+    handlers.uploadRechargePackageImage({
+      file: {
+        buffer: Buffer.from('89504e470d0a1a0a', 'hex'),
+        originalname: 'promotion.webp',
+        mimetype: 'image/webp',
+        size: 8,
+      },
+    }, mismatchedResponse);
+    assert.equal(mismatchedResponse.statusCode, 400);
+    assert.equal(fs.existsSync(path.join(tempRoot, 'uploads', 'recharge-packages')), false);
 
     const missingResponse = captureResponse();
     handlers.uploadRechargePackageImage({}, missingResponse);
     assert.equal(missingResponse.statusCode, 400);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('套餐广告图扩展名由 MIME 映射且不继承原文件名', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-recharge-extension-'));
+  try {
+    const handlers = uploadModule.routes({
+      storage: { local_path: tempRoot, base_url: '' },
+    }, { info() {}, warn() {}, error() {} });
+    const response = captureResponse();
+
+    handlers.uploadRechargePackageImage({
+      file: {
+        buffer: VALID_WEBP,
+        originalname: 'promotion.html',
+        mimetype: 'image/webp',
+        size: VALID_WEBP.length,
+      },
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.success, true);
+    assert.match(
+      response.body.data.url,
+      /^\/static\/uploads\/recharge-packages\/[^/]+\.webp$/,
+    );
+    assert.match(response.body.data.local_path, /\.webp$/);
+    assert.doesNotMatch(response.body.data.local_path, /\.html$/);
+    assert.equal(
+      fs.existsSync(path.join(tempRoot, response.body.data.local_path)),
+      true,
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -236,4 +278,49 @@ test('套餐广告图 Multer 将 GIF 映射为 400、超出 16MB 映射为 413',
   assert.equal(oversizedResult.statusCode, 413);
   assert.equal(oversizedResult.body.error.code, 'FILE_TOO_LARGE');
   assert.match(oversizedResult.body.error.message, /16MB/);
+});
+
+test('未授权套餐广告图 multipart 请求在 Multer 写盘前被拒绝且无文件残留', async () => {
+  const previous = {
+    mode: process.env.PUBLIC_PLATFORM_MODE,
+    jwt: process.env.PLATFORM_JWT_SECRET,
+    admin: process.env.PLATFORM_ADMIN_TOKEN,
+  };
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-recharge-auth-'));
+  const db = new Database(':memory:');
+  let server;
+  try {
+    process.env.PUBLIC_PLATFORM_MODE = 'true';
+    process.env.PLATFORM_JWT_SECRET = 'recharge-upload-jwt-secret-value-123456';
+    process.env.PLATFORM_ADMIN_TOKEN = 'recharge-upload-admin-token-value-123456';
+    runMigrationsAndEnsure(db);
+
+    const app = express();
+    app.use('/api/v1', setupRouter({
+      storage: { local_path: tempRoot, base_url: '' },
+    }, db, { info() {}, warn() {}, error() {} }));
+    server = await new Promise((resolve) => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+
+    const form = new FormData();
+    form.append('file', new Blob([VALID_WEBP], { type: 'image/webp' }), 'unauthorized.webp');
+    const result = await fetch(
+      `http://127.0.0.1:${server.address().port}/api/v1/billing/admin/recharge-packages/image`,
+      { method: 'POST', body: form },
+    );
+
+    assert.equal(result.status, 401);
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    if (previous.mode === undefined) delete process.env.PUBLIC_PLATFORM_MODE;
+    else process.env.PUBLIC_PLATFORM_MODE = previous.mode;
+    if (previous.jwt === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = previous.jwt;
+    if (previous.admin === undefined) delete process.env.PLATFORM_ADMIN_TOKEN;
+    else process.env.PLATFORM_ADMIN_TOKEN = previous.admin;
+  }
 });

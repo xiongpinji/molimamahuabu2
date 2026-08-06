@@ -7,7 +7,13 @@ const uploadService = require('../services/uploadService');
 const storageLayout = require('../services/storageLayout');
 
 const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-const allowedRechargePackageImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+const rechargePackageImageRules = {
+  'image/jpeg': { family: 'jpeg', extension: '.jpg' },
+  'image/jpg': { family: 'jpeg', extension: '.jpg' },
+  'image/png': { family: 'png', extension: '.png' },
+  'image/webp': { family: 'webp', extension: '.webp' },
+};
+const allowedRechargePackageImageTypes = Object.keys(rechargePackageImageRules);
 const maxSize = 16 * 1024 * 1024; // 16MB，单张图片上限
 const MAX_SIZE_MB = 16;
 const allowedMediaTypes = [
@@ -137,14 +143,22 @@ function resolveStorage(cfg) {
   };
 }
 
-function saveImageUpload(cfg, log, req, res, category, projectSubdir = null) {
+function saveImageUpload(
+  cfg,
+  log,
+  req,
+  res,
+  category,
+  projectSubdir = null,
+  storedName = req.file.originalname || 'image.png',
+) {
   const { storagePath, baseUrl } = resolveStorage(cfg);
   const result = uploadService.uploadFile(
     storagePath,
     baseUrl,
     log,
     req.file.buffer,
-    req.file.originalname || 'image.png',
+    storedName,
     req.file.mimetype,
     category,
     projectSubdir,
@@ -310,11 +324,20 @@ function routes(cfg, log, db, options = {}) {
       if (!req.file || !Buffer.isBuffer(req.file.buffer)) {
         return response.badRequest(res, '请选择文件');
       }
-      if (!allowedRechargePackageImageTypes.includes(req.file.mimetype)) {
+      const imageRule = rechargePackageImageRules[req.file.mimetype];
+      if (!imageRule || detectMediaFamily(req.file.buffer) !== imageRule.family) {
         return response.badRequest(res, '套餐广告图只支持 jpg、png、webp');
       }
       try {
-        return saveImageUpload(cfg, log, req, res, 'uploads/recharge-packages');
+        return saveImageUpload(
+          cfg,
+          log,
+          req,
+          res,
+          'uploads/recharge-packages',
+          null,
+          `recharge-package${imageRule.extension}`,
+        );
       } catch (err) {
         log.error('upload recharge package image', { error: err.message });
         return response.internalError(res, err.message || '上传失败');
