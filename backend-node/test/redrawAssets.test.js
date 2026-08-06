@@ -1,0 +1,152 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const Database = require('better-sqlite3');
+
+const credits = require('../src/services/creditLedgerService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const {
+  generateAsset,
+  listAssets,
+  updateAsset,
+  listAssetVersions,
+} = require('../src/services/redrawAssetService');
+
+function setup() {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  credits.setAccountBalance(db, 'user-a', 100);
+  credits.setAccountBalance(db, 'user-b', 100);
+  credits.setTenantAccountBalance(db, 'tenant-a', 100);
+  credits.setTenantAccountBalance(db, 'tenant-b', 100);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO redraw_projects
+    (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', '测试项目', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO redraw_works
+    (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', '测试作品', 1, 'source-a', 15000, ?, ?)`).run(now, now);
+  const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
+  db.prepare(`INSERT INTO redraw_versions
+    (work_id, tenant_id, user_id, version, locale, market, source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', '{}', 'facts-a', 'asset_review', ?, ?)`)
+    .run(workId, now, now);
+  const versionId = db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id;
+  return { db, workId, versionId };
+}
+
+function addAsset(db, id, localPath) {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+    VALUES (?, '生成图片', 'image', 'redraw', '', ?, 'image/png', ?, ?)`)
+    .run(id, localPath, now, now);
+}
+
+function context(setupResult, root, userId = 'user-a', tenantId = 'tenant-a') {
+  return {
+    db: setupResult.db,
+    versionId: setupResult.versionId,
+    tenantId,
+    userId,
+    assetReader: {
+      canRead(asset) {
+        return Boolean(asset?.local_path && fs.existsSync(path.join(root, asset.local_path)));
+      },
+    },
+    creditAmount: 5,
+  };
+}
+
+test('资产重绘追加版本且不覆盖上一可用产物', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-'));
+  fs.mkdirSync(path.join(root, 'redraw'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'redraw', 'v1.png'), 'v1');
+  fs.writeFileSync(path.join(root, 'redraw', 'v2.png'), 'v2');
+  addAsset(state.db, 101, 'redraw/v1.png');
+  addAsset(state.db, 102, 'redraw/v2.png');
+  const ctx = context(state, root);
+  const character = { kind: 'character', sourceRef: { id: 'c1' }, prompt: '角色正面、侧面、背面三视图' };
+
+  const v1 = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 101, metadata: { views: ['front', 'side', 'back'] } }) }, {
+    ...character,
+    generationTaskId: 'provider-task-1',
+  });
+  const v2 = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 102, metadata: { views: ['front', 'side', 'back'] } }) }, { ...character, prompt: '更新后的角色三视图' });
+
+  assert.equal(v1.version_number, 1);
+  assert.equal(v2.version_number, 2);
+  const billingFields = state.db.prepare('SELECT generation_task_id, credit_reservation_id FROM redraw_assets WHERE id = ?').get(v1.id);
+  assert.equal(billingFields.generation_task_id, 'provider-task-1');
+  assert.equal(typeof billingFields.credit_reservation_id, 'string');
+  assert.equal(credits.getReservation(state.db, billingFields.credit_reservation_id).status, 'confirmed');
+  assert.equal(state.db.prepare('SELECT asset_id FROM redraw_assets WHERE id = ?').get(v1.id).asset_id, 101);
+  assert.deepEqual(listAssetVersions(state.db, ctx, v2.id).map((row) => row.version_number), [2, 1]);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('资产来源对象键顺序变化仍追加同一来源的下一版本', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-source-order-'));
+  fs.writeFileSync(path.join(root, 'asset.png'), 'asset');
+  addAsset(state.db, 111, 'asset.png');
+  addAsset(state.db, 112, 'asset.png');
+  const ctx = { ...context(state, root), creditAmount: 0 };
+  const first = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 111 }) }, {
+    kind: 'prop',
+    sourceRef: { id: 'p-order', type: 'prop' },
+  });
+  const second = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 112 }) }, {
+    kind: 'prop',
+    sourceRef: { type: 'prop', id: 'p-order' },
+  });
+
+  assert.equal(first.version_number, 1);
+  assert.equal(second.version_number, 2);
+  assert.deepEqual(listAssetVersions(state.db, ctx, second.id).map((row) => row.version_number), [2, 1]);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('图片不可读时任务失败并释放积分', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-missing-'));
+  addAsset(state.db, 201, 'redraw/missing.png');
+  const ctx = context(state, root);
+  await assert.rejects(
+    () => generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 201 }) }, {
+      kind: 'scene',
+      sourceRef: { id: 's1' },
+      prompt: '场景背景',
+    }),
+    /不可读取/,
+  );
+  const row = state.db.prepare('SELECT status, credit_reservation_id FROM redraw_assets').get();
+  assert.equal(row.status, 'failed');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('资产读取和更新按租户用户隔离', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-owner-'));
+  fs.writeFileSync(path.join(root, 'asset.png'), 'asset');
+  addAsset(state.db, 301, 'asset.png');
+  const ownerCtx = context(state, root);
+  const created = await generateAsset({ ...ownerCtx, provider: async () => ({ status: 'completed', asset_id: 301 }) }, {
+    kind: 'prop',
+    sourceRef: { id: 'p1' },
+    localizedName: '旧手机',
+    prompt: '道具',
+  });
+  assert.equal(listAssets(state.db, ownerCtx).length, 1);
+  assert.equal(listAssets(state.db, context(state, root, 'user-b', 'tenant-b')).length, 0);
+  assert.equal(updateAsset(state.db, context(state, root, 'user-b', 'tenant-b'), created.id, { localizedName: '越权' }), null);
+  assert.equal(updateAsset(state.db, ownerCtx, created.id, { localizedName: '手机' }).localized_name, '手机');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});

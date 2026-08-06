@@ -748,6 +748,7 @@ function ensureRedrawCompatibility(database) {
     { name: 'clean_plate_asset_id', type: 'INTEGER' },
     { name: 'mask_asset_id', type: 'INTEGER' },
     { name: 'generation_task_id', type: 'TEXT' },
+    { name: 'credit_reservation_id', type: 'TEXT' },
     { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
     { name: 'approval_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
     { name: 'approved_by', type: 'TEXT' },
