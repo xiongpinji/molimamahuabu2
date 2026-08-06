@@ -158,6 +158,7 @@ function setupRouter(cfg, db, log) {
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
   r.get('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.listAdminPackages);
   r.post('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.createAdminPackage);
+  r.put('/billing/admin/recharge-packages/order', requireAdmin, requireBillingManager, alipayRecharge.reorderAdminPackages);
   r.put('/billing/admin/recharge-packages/:packageId', requireAdmin, requireBillingManager, alipayRecharge.updateAdminPackage);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。

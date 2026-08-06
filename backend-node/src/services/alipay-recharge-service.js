@@ -227,14 +227,20 @@ function createPackage(db, input) {
   const id = randomUUID();
   const now = new Date().toISOString();
   try {
-    db.prepare(`INSERT INTO recharge_packages
-      (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
-        ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
-        value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
-        value.button_text, value.accent_color, value.sort_order, value.is_featured,
-        value.status, now, now);
+    db.transaction(() => {
+      if (value.is_featured === 1) {
+        db.prepare(`UPDATE recharge_packages
+          SET is_featured = 0, updated_at = ? WHERE is_featured = 1`).run(now);
+      }
+      db.prepare(`INSERT INTO recharge_packages
+        (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
+          ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
+          value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
+          value.button_text, value.accent_color, value.sort_order, value.is_featured,
+          value.status, now, now);
+    })();
   } catch (error) {
     rethrowPackageWriteError(error);
   }
@@ -248,16 +254,22 @@ function updatePackage(db, packageIdValue, input) {
     throw rechargeError('RECHARGE_PACKAGE_NOT_FOUND', '充值套餐不存在');
   }
   const value = normalizePackage(input);
+  const now = new Date().toISOString();
   try {
-    db.prepare(`UPDATE recharge_packages
-      SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
-        image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
-        accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
-      WHERE id = ?`)
-      .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
-        value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
-        value.accent_color, value.sort_order, value.is_featured, value.status,
-        new Date().toISOString(), id);
+    db.transaction(() => {
+      if (value.is_featured === 1) {
+        db.prepare(`UPDATE recharge_packages
+          SET is_featured = 0, updated_at = ? WHERE is_featured = 1 AND id <> ?`).run(now, id);
+      }
+      db.prepare(`UPDATE recharge_packages
+        SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
+          image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
+          accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
+        WHERE id = ?`)
+        .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
+          value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
+          value.accent_color, value.sort_order, value.is_featured, value.status, now, id);
+    })();
   } catch (error) {
     rethrowPackageWriteError(error);
   }
@@ -266,7 +278,7 @@ function updatePackage(db, packageIdValue, input) {
 
 function listPackages(db) {
   ensureSchema(db);
-  return db.prepare('SELECT * FROM recharge_packages ORDER BY created_at DESC').all();
+  return db.prepare('SELECT * FROM recharge_packages ORDER BY sort_order ASC, created_at ASC').all();
 }
 
 function listAvailablePackages(db, nowValue = new Date().toISOString()) {
@@ -276,7 +288,36 @@ function listAvailablePackages(db, nowValue = new Date().toISOString()) {
     WHERE status = 'active'
       AND (starts_at IS NULL OR starts_at <= ?)
       AND (ends_at IS NULL OR ends_at > ?)
-    ORDER BY amount_cents ASC, created_at ASC`).all(now, now);
+    ORDER BY sort_order ASC, created_at ASC`).all(now, now);
+}
+
+function reorderPackages(db, packageIds) {
+  ensureSchema(db);
+  if (!Array.isArray(packageIds)) {
+    throw rechargeError('INVALID_RECHARGE_PACKAGE_ORDER', '套餐排序必须是套餐 ID 数组');
+  }
+  const ids = packageIds.map((id) => String(id ?? '').trim());
+  if (ids.some((id) => !id)) {
+    throw rechargeError('INVALID_RECHARGE_PACKAGE_ORDER', '套餐排序中不能包含空 ID');
+  }
+  const currentIds = db.prepare('SELECT id FROM recharge_packages').all().map((item) => item.id);
+  const uniqueIds = new Set(ids);
+  if (ids.length !== currentIds.length
+    || uniqueIds.size !== ids.length
+    || currentIds.some((id) => !uniqueIds.has(id))) {
+    throw rechargeError(
+      'INVALID_RECHARGE_PACKAGE_ORDER',
+      '套餐排序必须完整包含全部套餐，且不能重复或包含未知 ID',
+    );
+  }
+
+  const now = new Date().toISOString();
+  const update = db.prepare(`UPDATE recharge_packages
+    SET sort_order = ?, updated_at = ? WHERE id = ?`);
+  db.transaction(() => {
+    ids.forEach((id, index) => update.run(index, now, id));
+  })();
+  return listPackages(db);
 }
 
 function createOrder(db, input) {
@@ -429,6 +470,7 @@ module.exports = {
   updatePackage,
   listPackages,
   listAvailablePackages,
+  reorderPackages,
   createOrder,
   listOrders,
   processNotification,

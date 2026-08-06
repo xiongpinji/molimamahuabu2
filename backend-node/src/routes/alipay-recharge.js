@@ -6,7 +6,8 @@ function respondRechargeError(res, error) {
     response.error(res, 503, error.code, error.message);
     return true;
   }
-  if (['INVALID_RECHARGE_AMOUNT', 'INVALID_RECHARGE_ORDER', 'INVALID_RECHARGE_PACKAGE'].includes(error.code)) {
+  if (['INVALID_RECHARGE_AMOUNT', 'INVALID_RECHARGE_ORDER', 'INVALID_RECHARGE_PACKAGE',
+    'INVALID_RECHARGE_PACKAGE_ORDER'].includes(error.code)) {
     response.error(res, 400, error.code, error.message);
     return true;
   }
@@ -61,6 +62,15 @@ function routes(db, log, gateway) {
       } catch (error) {
         if (respondRechargeError(res, error)) return;
         log.error('alipay recharge admin update package', { error: error.message });
+        response.internalError(res, error.message);
+      }
+    },
+    reorderAdminPackages: (req, res) => {
+      try {
+        response.success(res, recharge.reorderPackages(db, req.body?.package_ids));
+      } catch (error) {
+        if (respondRechargeError(res, error)) return;
+        log.error('alipay recharge admin reorder packages', { error: error.message });
         response.internalError(res, error.message);
       }
     },

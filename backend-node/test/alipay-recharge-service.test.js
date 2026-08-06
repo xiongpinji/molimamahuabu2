@@ -24,6 +24,24 @@ function setup() {
   return { db, tenant };
 }
 
+function packageFixture(overrides = {}) {
+  return {
+    name: '标准套餐',
+    amount_yuan: '10.00',
+    credits: 1000,
+    image_url: 'https://cdn.example.com/recharge-package.webp',
+    badge_text: '推荐',
+    ad_title: '标准积分套餐',
+    ad_subtitle: '购买后积分立即到账',
+    button_text: '立即购买',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: 0,
+    status: 'active',
+    ...overrides,
+  };
+}
+
 test('用户自定义充值固定按 1 元兑换 100 积分且幂等建单不提前入账', () => {
   const { db, tenant } = setup();
   const first = recharge.createOrder(db, {
@@ -322,35 +340,126 @@ test('套餐展示字段和广告图拒绝非法值且有效 HTTPS 仍可使用'
   );
 });
 
-test('重复设置推荐套餐时返回业务错误而非 SQLite 唯一约束', () => {
+test('创建第二个推荐套餐时原子替换旧推荐', () => {
   const { db } = setup();
-  const packageInput = {
-    name: '推荐套餐',
-    adTitle: '推荐套餐广告',
-    amountYuan: '10',
-    credits: 1000,
-    imageUrl: 'https://cdn.example.com/featured.webp',
-    isFeatured: true,
-    status: 'active',
-  };
-  recharge.createPackage(db, packageInput);
+  const first = recharge.createPackage(db, packageFixture({
+    name: '首个推荐套餐',
+    is_featured: 1,
+  }));
+  db.prepare('UPDATE recharge_packages SET updated_at = ? WHERE id = ?')
+    .run('2026-01-01T00:00:00.000Z', first.id);
 
-  assert.throws(
-    () => recharge.createPackage(db, { ...packageInput, name: '第二个推荐套餐' }),
-    (error) => error.code === 'INVALID_RECHARGE_PACKAGE'
-      && error.message === '推荐套餐只能设置一个',
-  );
+  const second = recharge.createPackage(db, packageFixture({
+    name: '第二个推荐套餐',
+    image_url: 'https://cdn.example.com/second-featured.webp',
+    is_featured: 1,
+  }));
 
-  const regular = recharge.createPackage(db, {
-    ...packageInput,
+  const savedFirst = db.prepare('SELECT * FROM recharge_packages WHERE id = ?').get(first.id);
+  assert.equal(savedFirst.is_featured, 0);
+  assert.notEqual(savedFirst.updated_at, '2026-01-01T00:00:00.000Z');
+  assert.equal(second.is_featured, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM recharge_packages WHERE is_featured = 1').get().count, 1);
+});
+
+test('更新普通套餐为推荐时替换旧推荐且失败会回滚', () => {
+  const { db } = setup();
+  const featured = recharge.createPackage(db, packageFixture({
+    name: '旧推荐套餐',
+    is_featured: 1,
+  }));
+  const regular = recharge.createPackage(db, packageFixture({
     name: '普通套餐',
-    isFeatured: false,
-  });
+    image_url: 'https://cdn.example.com/regular.webp',
+  }));
+
+  const updated = recharge.updatePackage(db, regular.id, packageFixture({
+    name: '新推荐套餐',
+    image_url: 'https://cdn.example.com/new-featured.webp',
+    is_featured: 1,
+  }));
+  assert.equal(updated.is_featured, 1);
+  assert.equal(db.prepare('SELECT is_featured FROM recharge_packages WHERE id = ?').get(featured.id).is_featured, 0);
+
+  const rollbackTarget = recharge.createPackage(db, packageFixture({
+    name: '事务失败前普通套餐',
+    image_url: 'https://cdn.example.com/rollback.webp',
+  }));
+  db.exec(`CREATE TRIGGER fail_featured_update
+    BEFORE UPDATE OF is_featured ON recharge_packages
+    WHEN NEW.name = '事务失败套餐' AND NEW.is_featured = 1
+    BEGIN
+      SELECT RAISE(ABORT, 'forced featured update failure');
+    END`);
   assert.throws(
-    () => recharge.updatePackage(db, regular.id, packageInput),
-    (error) => error.code === 'INVALID_RECHARGE_PACKAGE'
-      && error.message === '推荐套餐只能设置一个',
+    () => recharge.updatePackage(db, rollbackTarget.id, packageFixture({
+      name: '事务失败套餐',
+      image_url: 'https://cdn.example.com/rollback.webp',
+      is_featured: 1,
+    })),
+    /forced featured update failure/,
   );
+  assert.equal(db.prepare('SELECT is_featured FROM recharge_packages WHERE id = ?').get(regular.id).is_featured, 1);
+  assert.equal(db.prepare('SELECT is_featured FROM recharge_packages WHERE id = ?').get(rollbackTarget.id).is_featured, 0);
+});
+
+test('套餐重排后管理列表和可用列表都严格按 sort_order 排序', () => {
+  const { db } = setup();
+  const first = recharge.createPackage(db, packageFixture({ name: '套餐一', sort_order: 30 }));
+  const second = recharge.createPackage(db, packageFixture({
+    name: '套餐二',
+    image_url: 'https://cdn.example.com/package-two.webp',
+    sort_order: 10,
+  }));
+  const third = recharge.createPackage(db, packageFixture({
+    name: '套餐三',
+    image_url: 'https://cdn.example.com/package-three.webp',
+    sort_order: 20,
+  }));
+
+  const orderedIds = [third.id, first.id, second.id];
+  const reordered = recharge.reorderPackages(db, orderedIds);
+
+  assert.deepEqual(reordered.map((item) => item.id), orderedIds);
+  assert.deepEqual(reordered.map((item) => item.sort_order), [0, 1, 2]);
+  assert.deepEqual(recharge.listPackages(db).map((item) => item.id), orderedIds);
+  assert.deepEqual(recharge.listAvailablePackages(db).map((item) => item.id), orderedIds);
+  assert.equal(new Set(reordered.map((item) => item.updated_at)).size, 1);
+});
+
+test('套餐重排拒绝重复、遗漏、未知、非数组和空 ID 且保持原顺序', () => {
+  const { db } = setup();
+  const first = recharge.createPackage(db, packageFixture({ name: '套餐一' }));
+  const second = recharge.createPackage(db, packageFixture({
+    name: '套餐二',
+    image_url: 'https://cdn.example.com/package-two.webp',
+  }));
+  const third = recharge.createPackage(db, packageFixture({
+    name: '套餐三',
+    image_url: 'https://cdn.example.com/package-three.webp',
+  }));
+  const originalOrder = [second.id, third.id, first.id];
+  recharge.reorderPackages(db, originalOrder);
+
+  for (const invalidOrder of [
+    [first.id, first.id, third.id],
+    [first.id, second.id],
+    [first.id, second.id, 'unknown-package'],
+    'not-an-array',
+    [first.id, '   ', third.id],
+  ]) {
+    assert.throws(
+      () => recharge.reorderPackages(db, invalidOrder),
+      (error) => error.code === 'INVALID_RECHARGE_PACKAGE_ORDER'
+        && /套餐/.test(error.message),
+    );
+    assert.deepEqual(recharge.listPackages(db).map((item) => item.id), originalOrder);
+  }
+});
+
+test('空套餐数据库允许提交空排序', () => {
+  const { db } = setup();
+  assert.deepEqual(recharge.reorderPackages(db, []), []);
 });
 
 test('ensureSchema 为旧套餐表补齐展示列和推荐套餐唯一索引', () => {

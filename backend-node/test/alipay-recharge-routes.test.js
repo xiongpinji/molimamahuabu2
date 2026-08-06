@@ -135,17 +135,65 @@ test('未配置支付宝时公开配置可读但创建订单返回 503', () => {
   assert.equal(created.result.body.error.code, 'ALIPAY_NOT_CONFIGURED');
 });
 
+test('管理员套餐排序接口返回最终顺序并将非法请求映射为 400', () => {
+  const { db, gateway } = setup();
+  const handlers = rechargeRoutes(db, log, gateway);
+  const first = recharge.createPackage(db, {
+    name: '套餐一',
+    amount_yuan: '10.00',
+    credits: 1000,
+    image_url: 'https://cdn.example.com/package-one.webp',
+    badge_text: '推荐',
+    ad_title: '套餐一广告',
+    ad_subtitle: '购买后积分立即到账',
+    button_text: '立即购买',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: 0,
+    status: 'active',
+  });
+  const second = recharge.createPackage(db, {
+    name: '套餐二',
+    amount_yuan: '20.00',
+    credits: 2200,
+    image_url: 'https://cdn.example.com/package-two.webp',
+    badge_text: '加赠',
+    ad_title: '套餐二广告',
+    ad_subtitle: '购买后享受额外积分',
+    button_text: '立即购买',
+    accent_color: '#ffaa33',
+    sort_order: 1,
+    is_featured: 1,
+    status: 'active',
+  });
+
+  const reordered = capture();
+  handlers.reorderAdminPackages({
+    body: { package_ids: [` ${second.id} `, first.id] },
+  }, reordered.res);
+  assert.deepEqual(reordered.result.body.data.map((item) => item.id), [second.id, first.id]);
+
+  const invalid = capture();
+  handlers.reorderAdminPackages({ body: { package_ids: [first.id] } }, invalid.res);
+  assert.equal(invalid.result.status, 400);
+  assert.equal(invalid.result.body.error.code, 'INVALID_RECHARGE_PACKAGE_ORDER');
+});
+
 test('充值路由保持通知公开、管理员套餐受保护和用户订单租户隔离的挂载顺序', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
   const notifyIndex = source.indexOf("r.post('/billing/recharge/alipay/notify'");
   const authIndex = source.indexOf('r.use(requireUser)');
   const tenantIndex = source.indexOf('r.use(createTenantContextMiddleware');
   const userOrderIndex = source.indexOf("r.post('/billing/recharge/alipay/orders'");
+  const reorderIndex = source.indexOf("r.put('/billing/admin/recharge-packages/order'");
+  const updateIndex = source.indexOf("r.put('/billing/admin/recharge-packages/:packageId'");
   assert.ok(notifyIndex >= 0 && notifyIndex < authIndex);
   assert.ok(userOrderIndex > tenantIndex);
+  assert.ok(reorderIndex >= 0 && reorderIndex < updateIndex && reorderIndex < tenantIndex);
   for (const route of [
     "r.get('/billing/admin/recharge-packages'",
     "r.post('/billing/admin/recharge-packages'",
+    "r.put('/billing/admin/recharge-packages/order'",
     "r.put('/billing/admin/recharge-packages/:packageId'",
   ]) {
     const line = source.split(/\r?\n/).find((item) => item.includes(route));
