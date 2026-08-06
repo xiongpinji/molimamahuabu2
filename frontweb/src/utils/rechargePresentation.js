@@ -1,6 +1,17 @@
 export const CUSTOM_RECHARGE_RATIO = 100
 export const QUICK_RECHARGE_AMOUNTS = [10, 30, 50, 100, 300, 500]
 
+export function normalizePaymentRedirectUrl(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' && url.hostname ? url.href : ''
+  } catch (_) {
+    return ''
+  }
+}
+
 export function legacyRechargeRedirect(to) {
   if (to?.name !== 'tenant-console' || to?.query?.section !== 'recharge') return null
   const { section: _section, ...query } = to.query

@@ -76,8 +76,11 @@ test('支付未配置时模板和处理函数双重拦截订单请求', () => {
       < rechargeCenter.indexOf('createAlipayRechargeOrder({'),
     '支付配置守卫必须先于订单 API 调用',
   )
-  assert.match(rechargeCenter, /if\s*\(!result\?\.payment_url\)\s*return/)
-  assert.match(rechargeCenter, /window\.location\.assign\(result\.payment_url\)/)
+  assert.match(rechargeCenter, /normalizePaymentRedirectUrl/)
+  assert.match(rechargeCenter, /const\s+paymentUrl\s*=\s*normalizePaymentRedirectUrl\(result\?\.payment_url\)/)
+  assert.match(rechargeCenter, /if\s*\(!paymentUrl\)\s*return/)
+  assert.match(rechargeCenter, /window\.location\.assign\(paymentUrl\)/)
+  assert.doesNotMatch(rechargeCenter, /window\.location\.assign\(result\.payment_url\)/)
   assert.doesNotMatch(rechargeCenter, /payment_url:\s*['"]https?:\/\//)
 })
 

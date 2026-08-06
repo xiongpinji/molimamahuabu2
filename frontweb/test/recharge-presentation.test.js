@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import * as rechargePresentation from '../src/utils/rechargePresentation.js'
 import {
   CUSTOM_RECHARGE_RATIO,
   QUICK_RECHARGE_AMOUNTS,
@@ -9,6 +10,25 @@ import {
   packageCreditMetrics,
   validCustomAmount,
 } from '../src/utils/rechargePresentation.js'
+
+test('支付跳转只接受绝对 HTTPS 地址并保留查询参数', () => {
+  assert.equal(typeof rechargePresentation.normalizePaymentRedirectUrl, 'function')
+  const { normalizePaymentRedirectUrl } = rechargePresentation
+  assert.equal(
+    normalizePaymentRedirectUrl('https://openapi.alipay.com/gateway.do?app_id=demo&method=pay'),
+    'https://openapi.alipay.com/gateway.do?app_id=demo&method=pay',
+  )
+  for (const value of [
+    'http://openapi.alipay.com/gateway.do',
+    'javascript:alert(1)',
+    '/api/v1/billing/recharge',
+    '',
+    null,
+    'not a url',
+  ]) {
+    assert.equal(normalizePaymentRedirectUrl(value), '')
+  }
+})
 
 test('旧充值入口移除 section 并保留其他查询参数和 hash', () => {
   const query = { section: 'recharge', source: 'campaign', tag: ['summer', 'vip'] }

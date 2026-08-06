@@ -133,6 +133,7 @@ import {
 import CustomRechargePanel from '@/components/CustomRechargePanel.vue'
 import RechargePackageCard from '@/components/RechargePackageCard.vue'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
+import { normalizePaymentRedirectUrl } from '@/utils/rechargePresentation'
 
 const router = useRouter()
 const mode = ref('packages')
@@ -188,8 +189,9 @@ async function beginRecharge(payload, target) {
       ...payload,
       client_order_key: createClientOrderKey(),
     })
-    if (!result?.payment_url) return ElMessage.warning('订单已创建，但暂未获得可用支付地址')
-    window.location.assign(result.payment_url)
+    const paymentUrl = normalizePaymentRedirectUrl(result?.payment_url)
+    if (!paymentUrl) return ElMessage.warning('订单已创建，但支付地址不安全或不可用')
+    window.location.assign(paymentUrl)
   } finally {
     payingTarget.value = ''
   }
