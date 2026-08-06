@@ -184,6 +184,7 @@ test('expandSourceUpload enforces zip entry count and total expanded size limits
 
 test('expandSourceUpload validates zip item duration between 15s and 180s and returns only controlled urls', async (t) => {
   const dir = makeTempDir(t);
+  const storageRoot = path.join(dir, 'storage');
   const zipPath = path.join(dir, 'sources.zip');
   const zip = new AdmZip();
   const mp4 = path.join(dir, 'clip.mp4');
@@ -216,19 +217,24 @@ test('expandSourceUpload validates zip item duration between 15s and 180s and re
       zipMinDurationMs: 15000,
       zipMaxDurationMs: 180000,
       assetUrlPrefix: '/static/redraw-sources',
+      storageRoot,
     },
     async () => ({ duration_ms: 180000, width: 1280, height: 720 }),
   );
 
   assert.equal(items.length, 1);
   assert.equal(items[0].url.startsWith('/static/redraw-sources/'), true);
+  assert.equal(items[0].url, `/static/${items[0].local_path}`);
   assert.equal(/^[A-Za-z]:/.test(items[0].url), false);
   assert.equal(JSON.stringify(items).includes(dir), false);
+  assert.equal(JSON.stringify(items).includes(storageRoot), false);
+  assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
   assert.equal(items[0].duration_ms, 180000);
 });
 
 test('expandSourceUpload returns one item for a single source upload', async (t) => {
   const dir = makeTempDir(t);
+  const storageRoot = path.join(dir, 'storage');
   const filePath = path.join(dir, 'single.mp4');
   writeMp4(filePath, 'single-video');
 
@@ -239,6 +245,7 @@ test('expandSourceUpload returns one item for a single source upload', async (t)
       minDurationMs: 15000,
       maxDurationMs: 3600000,
       assetUrlPrefix: '/static/redraw-sources',
+      storageRoot,
     },
     async () => ({ duration_ms: 3600000, width: 1920, height: 1080 }),
   );
@@ -246,7 +253,10 @@ test('expandSourceUpload returns one item for a single source upload', async (t)
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, 'mp4');
   assert.equal(items[0].url.startsWith('/static/redraw-sources/'), true);
+  assert.equal(items[0].url, `/static/${items[0].local_path}`);
   assert.equal(JSON.stringify(items).includes(dir), false);
+  assert.equal(JSON.stringify(items).includes(storageRoot), false);
+  assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
 });
 
 test('createWorkFromSource reuses active same-tenant work but not other tenants or soft-deleted rows', () => {

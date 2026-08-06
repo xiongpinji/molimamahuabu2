@@ -134,7 +134,27 @@ function controlledUrl(prefix, facts) {
   return `${safePrefix}/${facts.sha256}.${facts.kind}`;
 }
 
-function toUploadItem(name, facts, prefix) {
+function resolveStorageRoot(limits = {}) {
+  const raw = limits.storageRoot || limits.storageLocalPath || './data/storage';
+  return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
+}
+
+function persistSourceFile(sourcePath, facts, limits = {}) {
+  const relPath = `redraw-sources/${facts.sha256}.${facts.kind}`;
+  const storageRoot = resolveStorageRoot(limits);
+  const targetPath = path.resolve(storageRoot, relPath);
+  const resolvedRoot = path.resolve(storageRoot);
+  if (!targetPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw uploadError('REDRAW_STORAGE_PATH_UNSAFE', '源片存储路径不安全');
+  }
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  if (!fs.existsSync(targetPath)) {
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+  return relPath;
+}
+
+function toUploadItem(name, facts, prefix, localPath = null) {
   return {
     name,
     kind: facts.kind,
@@ -143,7 +163,8 @@ function toUploadItem(name, facts, prefix) {
     height: facts.height,
     sha256: facts.sha256,
     source_fingerprint: facts.sha256,
-    url: controlledUrl(prefix, facts),
+    local_path: localPath,
+    url: localPath ? `/static/${localPath}` : controlledUrl(prefix, facts),
   };
 }
 
@@ -196,7 +217,8 @@ async function expandZipUpload(file, limits, probeVideo) {
         },
         probeVideo,
       );
-      items.push(toUploadItem(entryName, facts, limits.assetUrlPrefix));
+      const localPath = persistSourceFile(resolved, facts, limits);
+      items.push(toUploadItem(entryName, facts, limits.assetUrlPrefix, localPath));
     }
     return items;
   } finally {
@@ -210,7 +232,8 @@ async function expandSourceUpload(file, limits = {}, probeVideo) {
     return expandZipUpload(file, limits, probeVideo);
   }
   const facts = await validateSourceFile(file, limits, probeVideo);
-  return [toUploadItem(file.originalname || path.basename(file.path), facts, limits.assetUrlPrefix)];
+  const localPath = persistSourceFile(file.path, facts, limits);
+  return [toUploadItem(file.originalname || path.basename(file.path), facts, limits.assetUrlPrefix, localPath)];
 }
 
 module.exports = {
