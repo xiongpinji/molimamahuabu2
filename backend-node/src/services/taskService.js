@@ -100,6 +100,7 @@ function rowToTask(r) {
     user_id: r.user_id,
     model: r.model,
     credit_reservation_id: r.credit_reservation_id,
+    provider_task_id: r.provider_task_id,
     created_at: r.created_at,
     updated_at: r.updated_at,
     completed_at: r.completed_at,
@@ -188,15 +189,39 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   let rows;
   try {
     rows = db.prepare(
-      `SELECT id, type, status, resource_id, credit_reservation_id FROM async_tasks
+      `SELECT id, type, status, resource_id, credit_reservation_id, provider_task_id FROM async_tasks
        WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
     ).all();
   } catch (error) {
-    if (!String(error.message || '').includes('credit_reservation_id')) throw error;
-    rows = db.prepare(
-      `SELECT id, type, status, resource_id FROM async_tasks
-       WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
-    ).all().map((row) => ({ ...row, credit_reservation_id: null }));
+    if (String(error.message || '').includes('provider_task_id')) {
+      try {
+        rows = db.prepare(
+          `SELECT id, type, status, resource_id, credit_reservation_id FROM async_tasks
+           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).all().map((row) => ({ ...row, provider_task_id: null }));
+      } catch (innerError) {
+        if (!String(innerError.message || '').includes('credit_reservation_id')) throw innerError;
+        rows = db.prepare(
+          `SELECT id, type, status, resource_id FROM async_tasks
+           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).all().map((row) => ({ ...row, credit_reservation_id: null, provider_task_id: null }));
+      }
+    } else if (String(error.message || '').includes('credit_reservation_id')) {
+      try {
+        rows = db.prepare(
+          `SELECT id, type, status, resource_id, provider_task_id FROM async_tasks
+           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).all().map((row) => ({ ...row, credit_reservation_id: null }));
+      } catch (innerError) {
+        if (!String(innerError.message || '').includes('provider_task_id')) throw innerError;
+        rows = db.prepare(
+          `SELECT id, type, status, resource_id FROM async_tasks
+           WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+        ).all().map((row) => ({ ...row, credit_reservation_id: null, provider_task_id: null }));
+      }
+    } else {
+      throw error;
+    }
   }
   try {
     const resumableVideoTaskIds = new Set(
@@ -213,6 +238,24 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
+  try {
+    const resumableRedrawTaskIds = new Set(
+      db.prepare(
+        `SELECT task_id FROM redraw_works
+         WHERE status = 'processing'
+           AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''
+           AND task_id IS NOT NULL AND TRIM(task_id) != ''`
+      ).all().map((row) => row.task_id)
+    );
+    rows = rows.filter(
+      (row) => row.type !== 'redraw_analysis' || !resumableRedrawTaskIds.has(row.id)
+    );
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  rows = rows.filter(
+    (row) => row.type !== 'redraw_analysis' || !String(row.provider_task_id || '').trim()
+  );
   if (!rows.length) {
     reconcileOrphanedScriptAnalysisProjects(db, log);
     return 0;
