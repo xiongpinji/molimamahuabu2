@@ -947,13 +947,11 @@ test('作品详情为 draft 分镜返回 verified 生成快照、只读报价和
     });
     const shotId = insertShot(db, versionId, {
       start_ms: 1000,
-      end_ms: 7000,
-      duration_ms: 6000,
+      end_ms: 13000,
+      duration_ms: 12000,
       status: 'draft',
       draft_json: JSON.stringify({
         revision: 1,
-        model: 'client-stale-model',
-        duration: 6,
         resolution: '720P',
         count: 99,
       }),
@@ -970,22 +968,73 @@ test('作品详情为 draft 分镜返回 verified 生成快照、只读报价和
     assert.equal(shot.id, shotId);
     assert.deepEqual(shot.generation_availability, { ok: true });
     assert.equal(shot.model, 'seedance 2.0');
-    assert.equal(shot.duration, 6);
+    assert.equal(shot.duration, 12);
     assert.equal(shot.resolution, '720p');
     assert.equal(shot.count, 1);
-    assert.equal(shot.quote.amount, 18);
-    assert.equal(shot.quote.unit_amount, 18);
-    assert.equal(shot.billing.quote.amount, 18);
-    assert.equal(shot.billing.quote.unit_amount, 18);
+    assert.equal(shot.quote.amount, 36);
+    assert.equal(shot.quote.unit_amount, 36);
+    assert.equal(shot.billing.quote.amount, 36);
+    assert.equal(shot.billing.quote.unit_amount, 36);
     assert.equal(shot.generation_snapshot.model, 'seedance 2.0');
+    assert.equal(shot.generation_snapshot.duration, 12);
+    assert.equal(shot.generation_snapshot.attempt, 1);
     assert.equal(shot.generation_snapshot.version_id, String(versionId));
     assert.deepEqual(shot.generation_snapshot.shot_ids, [String(shotId)]);
     assert.deepEqual(shot.source_video_ref, {
       asset_id: Number(sourceAssetId),
       url: '/static/redraw-sources/source.mp4',
       start_ms: 1000,
-      end_ms: 7000,
+      end_ms: 13000,
     });
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情 failed 分镜预报价 attempt 使用当前持久 attempt 加一', () => {
+  const db = createDb();
+  try {
+    prices.set(db, 'seedance 2.0', 2, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 3 } },
+    });
+    insertRedrawLocaleCapabilityConfig(db, [verifiedVideoCapability('seedance 2.0')]);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId, { locale: 'en-US', market: 'US' });
+    const shotId = insertShot(db, versionId, {
+      duration_ms: 12000,
+      status: 'failed',
+      draft_json: JSON.stringify({
+        revision: 4,
+        resolution: '720p',
+        generation: {
+          attempt: 4,
+          model: 'seedance 2.0',
+          duration: 12,
+          resolution: '720p',
+        },
+      }),
+      error_code: 'REDRAW_VIDEO_FAILED',
+      error_message: '上次生成失败',
+    });
+    const handlers = redrawRoutes(db, { error() {}, warn() {} }, routeDeps({
+      canReadArtifact: (assetId) => String(assetId) === 'artifact-seedance 2.0',
+    }));
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    const shot = result.body.data.shots[0];
+    assert.equal(shot.id, shotId);
+    assert.equal(shot.generation_snapshot.attempt, 5);
+    assert.equal(shot.generation_snapshot.duration, 12);
+    assert.equal(shot.quote.snapshot.attempt, 5);
+    assert.equal(shot.billing.quote.snapshot.attempt, 5);
+    assert.equal(shot.quote.amount, 36);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().count, 0);
   } finally {
     db.close();

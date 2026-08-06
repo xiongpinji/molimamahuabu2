@@ -85,6 +85,9 @@ function addRedrawAsset(db, versionId, input) {
 
 function addShot(db, versionId, overrides = {}) {
   const now = new Date().toISOString();
+  const durationMs = overrides.durationMs || overrides.duration_ms || 6000;
+  const startMs = overrides.startMs || overrides.start_ms || 0;
+  const endMs = overrides.endMs || overrides.end_ms || (startMs + durationMs);
   const references = overrides.references || [];
   const compiled = overrides.compiledPrompt || {
     text: 'compiled hero prompt',
@@ -98,10 +101,13 @@ function addShot(db, versionId, overrides = {}) {
   return db.prepare(`INSERT INTO redraw_shots
     (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
      references_json, prompt, negative_prompt, compiled_prompt_json, draft_json, status, created_at, updated_at)
-    VALUES (?, 'tenant-a', 'user-a', 1, ?, 0, 6000, 6000, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       versionId,
       overrides.shotIndex || 1,
+      startMs,
+      endMs,
+      durationMs,
       JSON.stringify(references),
       overrides.prompt || 'fallback prompt',
       overrides.negativePrompt || '',
@@ -1045,6 +1051,73 @@ test('批量生成使用 verified capability 模型贯穿报价、冻结、视�
   }
 });
 
+test('批量生成在本地化物化镜头缺省 duration 时从 duration_ms 推导 12 秒并保持幂等键稳定', async () => {
+  const state = setup();
+  const model = 'verified-redraw-video-12s';
+  let scheduled = null;
+  try {
+    prices.set(state.db, model, 5, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 7 } },
+    });
+    addVerifiedGenerationCapability(state.db, model);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 12000,
+      endMs: 12000,
+      draft: { revision: 1, resolution: '720p' },
+      compiledPrompt: {
+        text: 'localized materialized prompt',
+        resolution: '720p',
+        aspect_ratio: '9:16',
+      },
+    });
+
+    const batch = await generateBatch(ctx(state.db, {
+      canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
+      batchScheduler: (callback) => { scheduled = callback; },
+    }), {
+      versionId: state.versionId,
+      shotIds: [shotId],
+      model: 'client-forged-model',
+    });
+
+    assert.equal(typeof scheduled, 'function');
+    assert.equal(batch.results[0].status, 'processing');
+    const reservation = state.db.prepare('SELECT * FROM tenant_usage_reservations').get();
+    const video = state.db.prepare('SELECT * FROM video_generations').get();
+    const task = state.db.prepare("SELECT * FROM async_tasks WHERE type = 'redraw_shot'").get();
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    const metadata = JSON.parse(task.metadata).redraw_shot;
+
+    assert.equal(reservation.model, model);
+    assert.equal(reservation.amount, 84);
+    assert.match(reservation.operation_key, /redraw-shot:/);
+    assert.equal(video.model, model);
+    assert.equal(video.duration, 12);
+    assert.equal(task.model, model);
+    assert.equal(draft.generation.model, model);
+    assert.equal(draft.generation.duration, 12);
+    assert.equal(metadata.quote.snapshot.model, model);
+    assert.equal(metadata.quote.snapshot.duration, 12);
+    assert.equal(metadata.quote.snapshot.attempt, 1);
+    assert.equal(metadata.quote.amount, 84);
+    assert.equal(metadata.operation_key, reservation.operation_key);
+
+    const duplicate = await generateShot(ctx(state.db, {
+      canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
+      schedule() {},
+    }), { shotId });
+    assert.equal(duplicate.reused, true);
+    assert.equal(duplicate.reservation_id, reservation.id);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('批量显式镜头包含跨租户、跨版本或缺失时 fail closed 且零冻结', async () => {
   for (const invalidKind of ['other_version', 'other_owner', 'missing']) {
     const state = setup();
@@ -1416,6 +1489,56 @@ test('重试只对明确 failed 镜头创建 attempt=2 新任务新冻结且旧�
     assert.equal(state.db.prepare('SELECT status, provider_task_id FROM video_generations WHERE id = ?').get(first.video_generation_id).status, oldVideo.status);
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, oldReservation.status);
     assert.equal(count(state.db, 'tenant_credit_ledger', "reservation_id = '" + first.reservation_id + "' AND event_type = 'refund'"), 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('重试使用 failed 分镜当前持久 attempt 加一并写入 reservation task draft 快照', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 12000,
+      endMs: 12000,
+      draft: { revision: 1, resolution: '720p' },
+      compiledPrompt: {
+        text: 'retry localized prompt',
+        resolution: '720p',
+        aspect_ratio: '9:16',
+      },
+    });
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'first failed' WHERE id = ?").run(id);
+      },
+    }), { shotId });
+    const failedDraft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    failedDraft.generation.attempt = 4;
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify(failedDraft), shotId);
+    const oldReservation = state.db.prepare('SELECT operation_key FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id);
+
+    const retried = await retryShot(ctx(state.db, {
+      schedule: () => {},
+    }), { shotId });
+
+    const reservation = state.db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(retried.reservation_id);
+    const task = state.db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(retried.task_id);
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(retried.video_generation_id);
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    const metadata = JSON.parse(task.metadata).redraw_shot;
+
+    assert.equal(retried.attempt, 5);
+    assert.equal(reservation.amount, 36);
+    assert.notEqual(reservation.operation_key, oldReservation.operation_key);
+    assert.equal(video.duration, 12);
+    assert.equal(draft.generation.attempt, 5);
+    assert.equal(draft.generation.duration, 12);
+    assert.equal(metadata.attempt, 5);
+    assert.equal(metadata.quote.snapshot.attempt, 5);
+    assert.equal(metadata.quote.snapshot.duration, 12);
+    assert.equal(metadata.operation_key, reservation.operation_key);
   } finally {
     state.db.close();
   }

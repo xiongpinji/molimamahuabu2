@@ -61,6 +61,12 @@ function normalizeDuration(value) {
   return duration;
 }
 
+function durationFromShotMs(shot) {
+  const derived = Math.ceil(Number(shot?.duration_ms || 0) / 1000);
+  if (!Number.isSafeInteger(derived) || derived <= 0) return 5;
+  return Math.max(5, Math.min(15, derived));
+}
+
 function normalizeResolution(value) {
   if (value == null || value === '') return null;
   return String(value).trim().toLowerCase();
@@ -193,7 +199,7 @@ function buildGenerationInput(shot, input, parsed, verifiedModel) {
   if (!model) {
     throw codedError('REDRAW_NO_VERIFIED_VIDEO_MODEL', '当前语言市场没有已验证可读的视频生成能力');
   }
-  const duration = normalizeDuration(input.duration ?? draft.duration ?? compiled.duration ?? 5);
+  const duration = normalizeDuration(input.duration ?? draft.duration ?? compiled.duration ?? durationFromShotMs(shot));
   const resolution = normalizeResolution(input.resolution ?? draft.resolution ?? compiled.resolution ?? '720p');
   const aspectRatio = normalizeAspectRatio(input.aspect_ratio ?? input.aspectRatio ?? draft.aspect_ratio ?? draft.aspectRatio
     ?? compiled.aspect_ratio ?? compiled.aspectRatio ?? '16:9');

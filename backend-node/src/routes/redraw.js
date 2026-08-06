@@ -541,6 +541,14 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     return Math.max(5, Math.min(15, derived || 5));
   }
 
+  function generationAttempt(raw, snapshot) {
+    const draft = snapshot.draft || {};
+    const persisted = Number(draft.generation?.attempt ?? draft.attempt);
+    const hasPersisted = Number.isSafeInteger(persisted) && persisted > 0;
+    if (String(raw.status || '') === 'failed') return hasPersisted ? persisted + 1 : 2;
+    return hasPersisted ? persisted : 1;
+  }
+
   function sourceVideoRef(work, snapshot) {
     if (!work?.source_asset_id) return null;
     const asset = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL')
@@ -580,7 +588,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       count: 1,
       locale: version.locale,
       styleSnapshot: parseJSON(version.style_snapshot_json, {}),
-      attempt: 1,
+      attempt: generationAttempt(raw, snapshot),
     });
     if (!quote.success) {
       return {
