@@ -138,6 +138,14 @@ function insertDynamic(db, table, values) {
     .run(...names.map((name) => values[name]));
 }
 
+function updateDynamic(db, table, values, whereName, whereValue) {
+  const columns = tableColumns(db, table);
+  const names = Object.keys(values).filter((name) => columns.has(name));
+  if (!columns.has(whereName) || names.length === 0) return null;
+  return db.prepare(`UPDATE ${table} SET ${names.map((name) => `${name} = ?`).join(', ')} WHERE ${whereName} = ?`)
+    .run(...names.map((name) => values[name]), whereValue);
+}
+
 function buildUrl(baseUrl, endpoint, providerTaskId) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   const ep = String(endpoint || '').trim();
@@ -271,9 +279,17 @@ async function startAnalysis(db, log, input, options = {}) {
       resourceId: work.id,
     });
     const task = taskService.createTask(db, log, 'redraw_analysis', work.id);
-    db.prepare(
-      'UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ?, status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?'
-    ).run(userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id);
+    updateDynamic(db, 'async_tasks', {
+      tenant_id: tenantId == null ? null : String(tenantId),
+      user_id: userId,
+      resource_id: String(work.id),
+      model,
+      credit_reservation_id: reservation.id,
+      status: 'processing',
+      progress: 10,
+      message: '源片分析已开始',
+      updated_at: now,
+    }, 'id', task.id);
     db.prepare('UPDATE async_tasks SET metadata = ?, updated_at = ? WHERE id = ?')
       .run(metadata, now, task.id);
     db.prepare(

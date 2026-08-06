@@ -1387,6 +1387,64 @@ test('作品分析任务脏指针跨租户时不回显任务状态', () => {
   }
 });
 
+test('真实 startAnalysis 创建的任务可由同租户 GET work 写读闭环恢复', async () => {
+  const db = createDb();
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    creditLedger.setTenantAccountBalance(db, '42', 100);
+    const projectId = insertProject(db, { tenant_id: '42' });
+    const workId = insertWork(db, projectId, { tenant_id: '42' });
+    const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      orchestrator: realRedrawOrchestrator,
+      analysisOptions: {
+        provider: {
+          startAnalysis: async () => ({ provider_task_id: 'provider-analysis-owner-loop' }),
+        },
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      tenantId: 42,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        aspect_ratio: '9:16',
+        style_preset_id: 1,
+      },
+    }), submitted);
+    assert.equal(submitted.statusCode, 201);
+    const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(submitted.body.data.task_id);
+    assert.equal(task.tenant_id, '42');
+    assert.equal(task.user_id, 'user-a');
+    assert.equal(task.model, 'GPT-5.5');
+    assert.equal(task.status, 'processing');
+    assert.equal(task.progress, 10);
+    assert.ok(task.credit_reservation_id);
+    assert.equal(task.type, 'redraw_analysis');
+    assert.equal(String(task.resource_id), String(workId));
+    assert.equal(db.prepare('SELECT task_id FROM redraw_works WHERE id = ?').get(workId).task_id, task.id);
+
+    const own = captureResponse();
+    handlers.getWork(request({ id: workId, tenantId: 42 }), own);
+    assert.equal(own.statusCode, 200);
+    assert.equal(own.body.data.task_status, 'processing');
+    assert.equal(own.body.data.task_progress, 10);
+    assert.equal(own.body.data.task_message, '源片分析已开始');
+
+    const otherTenant = captureResponse();
+    handlers.getWork(request({ id: workId, tenantId: 43 }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    const otherUser = captureResponse();
+    handlers.getWork(request({ id: workId, tenantId: 42, userId: 'user-b' }), otherUser);
+    assert.equal(otherUser.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
 test('作品分析账单按冻结 reservation 返回 held charged released 与冻结报价', () => {
   const db = createDb();
   try {
