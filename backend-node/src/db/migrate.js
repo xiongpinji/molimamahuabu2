@@ -362,6 +362,7 @@ function ensureAllColumns(database) {
     { name: 'model',        type: 'TEXT' },
     { name: 'credit_reservation_id', type: 'TEXT' },
     { name: 'provider_task_id', type: 'TEXT' },
+    { name: 'metadata',     type: 'TEXT' },
   ]);
 
   // --- image_generations ---

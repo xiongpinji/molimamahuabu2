@@ -269,11 +269,8 @@ async function startAnalysis(db, log, input, options = {}) {
     db.prepare(
       'UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ?, status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?'
     ).run(userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id);
-    safeUpdate(
-      db,
-      'UPDATE async_tasks SET metadata = ?, updated_at = ? WHERE id = ?',
-      [metadata, now, task.id],
-    );
+    db.prepare('UPDATE async_tasks SET metadata = ?, updated_at = ? WHERE id = ?')
+      .run(metadata, now, task.id);
     db.prepare(
       `UPDATE redraw_works
        SET source_asset_id = ?, status = 'analyzing', current_step = 1, task_id = ?,

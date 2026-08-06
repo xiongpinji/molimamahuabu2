@@ -760,12 +760,13 @@ test('startup resume uses configured HTTP query endpoint to complete provider ta
   }
 });
 
-test('runMigrationsAndEnsure creates redraw analysis schema and async provider task id', () => {
+test('runMigrationsAndEnsure creates redraw analysis schema and async task metadata', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
 
   const asyncColumns = db.prepare('PRAGMA table_info(async_tasks)').all().map((row) => row.name);
   assert.ok(asyncColumns.includes('provider_task_id'));
+  assert.ok(asyncColumns.includes('metadata'));
   for (const table of ['redraw_works', 'redraw_versions', 'redraw_shots']) {
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table).name, table);
   }
@@ -773,6 +774,61 @@ test('runMigrationsAndEnsure creates redraw analysis schema and async provider t
   assert.ok(workColumns.includes('source_asset_id'));
   assert.ok(workColumns.includes('provider_task_id'));
   assert.ok(workColumns.includes('credit_reservation_id'));
+});
+
+test('migrated database persists redraw analysis metadata through startAnalysis', async () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  creditLedger.setAccountBalance(db, 'user-1', 100);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 100);
+  addVerifiedConfig(db);
+  prices.set(db, 'GPT-5.5', 6);
+  db.prepare("INSERT INTO assets (id, local_path, created_at, updated_at) VALUES (101, 'uploads/source.mp4', ?, ?)")
+    .run(now, now);
+  db.prepare(`
+    INSERT INTO redraw_projects (id, tenant_id, user_id, title, status, created_at, updated_at)
+    VALUES (1, 'tenant-1', 'user-1', '迁移元数据项目', 'draft', ?, ?)
+  `).run(now, now);
+  db.prepare(`
+    INSERT INTO redraw_works
+      (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms,
+       status, current_step, created_at, updated_at)
+    VALUES (1, 1, 'tenant-1', 'user-1', '迁移元数据作品', 101, 'metadata-fingerprint', 15000,
+      'draft', 1, ?, ?)
+  `).run(now, now);
+
+  const started = await redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+    analysisSettings: {
+      locale: 'ja-JP',
+      market: 'JP',
+      aspect_ratio: '9:16',
+      free_style: {
+        positive: 'warm light',
+        negative: 'blur',
+        reference: { filename: 'style.png', id: 'asset-style' },
+      },
+    },
+  }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'provider-migrated-metadata' }) },
+  });
+
+  const task = db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.deepEqual(JSON.parse(task.metadata), {
+    redraw_analysis: {
+      locale: 'ja-JP',
+      market: 'JP',
+      aspect_ratio: '9:16',
+      free_style: {
+        positive: 'warm light',
+        negative: 'blur',
+        reference: { filename: 'style.png', id: 'asset-style' },
+      },
+    },
+  });
 });
 
 test('createApp resumes redraw analysis tasks after orphan cleanup', async () => {
