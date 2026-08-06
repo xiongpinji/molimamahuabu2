@@ -21,6 +21,13 @@ function ensureSchema(db) {
       starts_at TEXT,
       ends_at TEXT,
       image_url TEXT NOT NULL,
+      badge_text TEXT NOT NULL DEFAULT '',
+      ad_title TEXT NOT NULL DEFAULT '',
+      ad_subtitle TEXT NOT NULL DEFAULT '',
+      button_text TEXT NOT NULL DEFAULT '立即购买',
+      accent_color TEXT NOT NULL DEFAULT '#ff7139',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_featured INTEGER NOT NULL DEFAULT 0 CHECK (is_featured IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -46,6 +53,25 @@ function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_recharge_orders_user_created
       ON tenant_recharge_orders(tenant_id, created_by, created_at DESC);
   `);
+  const packageColumns = new Set(
+    db.prepare('PRAGMA table_info(recharge_packages)').all().map((column) => column.name),
+  );
+  const presentationColumns = [
+    ['badge_text', "TEXT NOT NULL DEFAULT ''"],
+    ['ad_title', "TEXT NOT NULL DEFAULT ''"],
+    ['ad_subtitle', "TEXT NOT NULL DEFAULT ''"],
+    ['button_text', "TEXT NOT NULL DEFAULT '立即购买'"],
+    ['accent_color', "TEXT NOT NULL DEFAULT '#ff7139'"],
+    ['sort_order', 'INTEGER NOT NULL DEFAULT 0'],
+    ['is_featured', 'INTEGER NOT NULL DEFAULT 0 CHECK (is_featured IN (0, 1))'],
+  ];
+  for (const [name, definition] of presentationColumns) {
+    if (!packageColumns.has(name)) {
+      db.exec(`ALTER TABLE recharge_packages ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_recharge_packages_featured
+    ON recharge_packages(is_featured) WHERE is_featured = 1`);
 }
 
 function parseAmountCents(value, code, message) {
@@ -107,8 +133,36 @@ function normalizePackage(input) {
   const startsAt = normalizeOptionalDate(input.startsAt ?? input.starts_at);
   const endsAt = normalizeOptionalDate(input.endsAt ?? input.ends_at);
   const imageUrl = String(input.imageUrl ?? input.image_url ?? '').trim();
+  const badgeText = String(input.badgeText ?? input.badge_text ?? '').trim();
+  const adTitle = String(input.adTitle ?? input.ad_title ?? '').trim();
+  const adSubtitle = String(input.adSubtitle ?? input.ad_subtitle ?? '').trim();
+  const buttonInput = input.buttonText !== undefined
+    ? input.buttonText
+    : input.button_text !== undefined ? input.button_text : '立即购买';
+  const buttonText = String(buttonInput ?? '').trim();
+  const accentInput = input.accentColor !== undefined
+    ? input.accentColor
+    : input.accent_color !== undefined ? input.accent_color : '#ff7139';
+  const accentColor = String(accentInput ?? '').trim().toLowerCase();
+  const sortInput = input.sortOrder !== undefined
+    ? input.sortOrder
+    : input.sort_order !== undefined ? input.sort_order : 0;
+  const sortOrder = sortInput;
+  const featuredInput = input.isFeatured !== undefined
+    ? input.isFeatured
+    : input.is_featured !== undefined ? input.is_featured : 0;
+  let isFeatured = null;
+  if (featuredInput === true || featuredInput === 1 || featuredInput === '1') isFeatured = 1;
+  if (featuredInput === false || featuredInput === 0 || featuredInput === '0') isFeatured = 0;
   const status = String(input.status || 'active').trim();
   if (!name || name.length > 60
+    || badgeText.length > 20
+    || !adTitle || adTitle.length > 48
+    || adSubtitle.length > 80
+    || !buttonText || buttonText.length > 20
+    || !/^#[0-9a-f]{6}$/.test(accentColor)
+    || !Number.isSafeInteger(sortOrder) || sortOrder < 0
+    || isFeatured == null
     || !Number.isSafeInteger(credits) || credits <= 0 || credits > 100_000_000
     || !['active', 'inactive'].includes(status)
     || (startsAt && endsAt && startsAt >= endsAt)) {
@@ -117,9 +171,14 @@ function normalizePackage(input) {
   if (!imageUrl) {
     throw rechargeError('INVALID_RECHARGE_PACKAGE', '请填写套餐广告图片');
   }
+  const localUpload = /^\/static\/uploads\/recharge-packages\/[A-Za-z0-9_./-]+$/.test(imageUrl);
+  let secureRemote = false;
   try {
-    if (new URL(imageUrl).protocol !== 'https:') throw new Error('HTTPS required');
-  } catch (_) {
+    const parsed = new URL(imageUrl);
+    secureRemote = parsed.protocol === 'https:' && Boolean(parsed.hostname);
+  } catch (_) { // Invalid remote URL; the local path may still be valid.
+  }
+  if (!localUpload && !secureRemote) {
     throw rechargeError('INVALID_RECHARGE_PACKAGE', '套餐广告图必须使用有效的 HTTPS 地址');
   }
   return {
@@ -128,7 +187,14 @@ function normalizePackage(input) {
     credits,
     starts_at: startsAt,
     ends_at: endsAt,
-    image_url: imageUrl || null,
+    image_url: imageUrl,
+    badge_text: badgeText,
+    ad_title: adTitle,
+    ad_subtitle: adSubtitle,
+    button_text: buttonText,
+    accent_color: accentColor,
+    sort_order: sortOrder,
+    is_featured: isFeatured,
     status,
   };
 }
@@ -139,10 +205,13 @@ function createPackage(db, input) {
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO recharge_packages
-    (id, name, amount_cents, credits, starts_at, ends_at, image_url, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, name, amount_cents, credits, starts_at, ends_at, image_url, badge_text, ad_title,
+      ad_subtitle, button_text, accent_color, sort_order, is_featured, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, value.name, value.amount_cents, value.credits, value.starts_at,
-      value.ends_at, value.image_url, value.status, now, now);
+      value.ends_at, value.image_url, value.badge_text, value.ad_title, value.ad_subtitle,
+      value.button_text, value.accent_color, value.sort_order, value.is_featured,
+      value.status, now, now);
   return db.prepare('SELECT * FROM recharge_packages WHERE id = ?').get(id);
 }
 
@@ -155,10 +224,13 @@ function updatePackage(db, packageIdValue, input) {
   const value = normalizePackage(input);
   db.prepare(`UPDATE recharge_packages
     SET name = ?, amount_cents = ?, credits = ?, starts_at = ?, ends_at = ?,
-      image_url = ?, status = ?, updated_at = ?
+      image_url = ?, badge_text = ?, ad_title = ?, ad_subtitle = ?, button_text = ?,
+      accent_color = ?, sort_order = ?, is_featured = ?, status = ?, updated_at = ?
     WHERE id = ?`)
     .run(value.name, value.amount_cents, value.credits, value.starts_at, value.ends_at,
-      value.image_url, value.status, new Date().toISOString(), id);
+      value.image_url, value.badge_text, value.ad_title, value.ad_subtitle, value.button_text,
+      value.accent_color, value.sort_order, value.is_featured, value.status,
+      new Date().toISOString(), id);
   return db.prepare('SELECT * FROM recharge_packages WHERE id = ?').get(id);
 }
 
