@@ -35,10 +35,10 @@
         <strong v-else>积分待管理员配置</strong>
         <small v-if="batchQuote.priced">批量总价 {{ batchQuote.total }} 积分</small>
         <small v-if="batchReason">{{ batchReason }}</small>
-        <div v-if="targetShots.length" class="batch-price-details" aria-label="分镜价格明细">
+        <div v-if="visibleShots.length" class="batch-price-details" aria-label="分镜价格明细">
           <small>分镜价格明细</small>
-          <span v-for="shot in targetShots" :key="shot.id">
-            镜头 {{ shot.shot_index }}：{{ shotCreditText(shot) }} · held {{ billingValue(shot, 'held') }} / charged {{ billingValue(shot, 'charged') }} / released {{ billingValue(shot, 'released') }}
+          <span v-for="shot in visibleShots" :key="shot.id">
+            镜头 {{ shot.shot_index }}：{{ shotCreditText(shot) }} · 冻结 {{ billingValue(shot, 'held') }} / 已扣 {{ billingValue(shot, 'charged') }} / 已退 {{ billingValue(shot, 'released') }}
           </span>
         </div>
       </div>

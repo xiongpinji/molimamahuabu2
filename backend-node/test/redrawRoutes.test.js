@@ -1579,6 +1579,7 @@ test('客户端 attempt 不能绕过 processing 幂等并制造第二次任务�
       billing_unit: 'second',
       resolution_prices: { '720p': { credits: 3 } },
     });
+    insertRedrawLocaleCapabilityConfig(db, [verifiedVideoCapability('seedance 2.0')]);
     creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
     const projectId = insertProject(db);
     const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
@@ -1618,6 +1619,40 @@ test('客户端 attempt 不能绕过 processing 幂等并制造第二次任务�
   }
 });
 
+test('无 verified 生成能力时单镜生成 fail closed 且不冻结不提交', async () => {
+  const db = createDb();
+  try {
+    prices.set(db, 'seedance 2.0', 2, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 3 } },
+    });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      generationOptions: { videoProcessor: async () => { providerCalls += 1; } },
+      canReadArtifact: () => false,
+    }));
+
+    const result = captureResponse();
+    await handlers.generateShot(request({ id: shotId, body: { model: 'seedance 2.0' } }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.equal(result.body.error.code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type = 'redraw_shot'").get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM video_generations WHERE deleted_at IS NULL').get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tenant_usage_reservations WHERE resource_type = 'redraw_shot'").get().n, 0);
+    assert.equal(creditLedger.getTenantAccount(db, 'tenant-a').held, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('processing 镜头正常重复生成返回原任务且只保留一次冻结', async () => {
   const db = createDb();
   try {
@@ -1626,6 +1661,7 @@ test('processing 镜头正常重复生成返回原任务且只保留一次冻结
       billing_unit: 'second',
       resolution_prices: { '720p': { credits: 3 } },
     });
+    insertRedrawLocaleCapabilityConfig(db, [verifiedVideoCapability('seedance 2.0')]);
     creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
     const projectId = insertProject(db);
     const workId = insertWork(db, projectId, { current_version: 1, current_step: 3 });

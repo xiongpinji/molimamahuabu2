@@ -613,13 +613,27 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('@角色 Maya · v3')).toBeVisible()
     await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /source\.mp4#t=0/)
 
+    const referenceInput = page.locator('.reference-select input').first()
+    await referenceInput.click()
+    await referenceInput.fill('@Brooklyn')
+    await page.getByRole('option', { name: /Brooklyn Loft/ }).click()
+    await referenceInput.click()
+    await referenceInput.fill('@Brass')
+    await page.getByRole('option', { name: /Brass Key/ }).click()
+    await expect(page.getByText('@场景 Brooklyn Loft · v3')).toBeVisible()
+    await expect(page.getByText('@物品 Brass Key · v3')).toBeVisible()
+
     await page.getByRole('textbox', { name: '连续动作' }).fill('She unlocks the door, enters, and keeps moving forward.')
     await page.getByRole('button', { name: '保存镜头' }).click()
     await expect.poll(() => state.requests.filter((entry) => entry.method === 'PUT' && entry.pathname === '/api/v1/redraw/shots/1301').length).toBe(1)
     const saved = state.requests.find((entry) => entry.method === 'PUT' && entry.pathname === '/api/v1/redraw/shots/1301')
     expect(saved.body.updated_at).toBe('2026-08-06T08:30:00.000Z')
     expect(saved.body.count).toBe(1)
-    expect(saved.body.references).toEqual([{ redraw_asset_id: 1201, kind: 'character', version_number: 3 }])
+    expect(saved.body.references).toEqual([
+      { redraw_asset_id: 1201, kind: 'character', version_number: 3 },
+      { redraw_asset_id: 1202, kind: 'scene', version_number: 3 },
+      { redraw_asset_id: 1203, kind: 'prop', version_number: 3 },
+    ])
 
     await page.getByRole('button', { name: '生成本镜头' }).click()
     await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/shots/1301/generate')).toBe(true)
@@ -649,7 +663,25 @@ test.describe('一键转绘输入与分析流程', () => {
     await assertNoPageHorizontalScroll(page)
   })
 
-  test('第三步未定价或生成能力关闭时禁用提交并显示后端原因', async ({ page }) => {
+  test('第三步 pricing_unconfigured 时禁用提交并显示后端原因', async ({ page }) => {
+    const state = generationFixtureState()
+    state.work.shots[0].quote = null
+    state.work.shots[0].quote_snapshot = null
+    state.work.shots[0].billing = { held: 0, charged: 0, released: 0, quote: null }
+    state.work.shots[0].generation_availability = {
+      ok: false,
+      code: 'pricing_unconfigured',
+      reason: '视频模型尚未配置积分价格',
+    }
+    await installFixtures(page, state)
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await expect(page.getByText('视频模型尚未配置积分价格')).toHaveCount(2)
+    await expect(page.getByRole('button', { name: '生成本镜头' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '批量生成 2 镜' })).toBeDisabled()
+  })
+
+  test('第三步无生成能力时禁用提交并显示后端原因', async ({ page }) => {
     const state = generationFixtureState()
     state.work.shots[0].quote = null
     state.work.shots[0].quote_snapshot = null
@@ -667,26 +699,49 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByRole('button', { name: '批量生成 2 镜' })).toBeDisabled()
   })
 
-  test('第三步轮询从处理中到完成后停止且保留选中镜头', async ({ page }) => {
+  test('第三步资产 gate 关闭时单镜和批量都禁用', async ({ page }) => {
     const state = generationFixtureState()
+    state.gate = {
+      ok: false,
+      missing: [{ kind: 'character', asset_id: 1201, shot_ids: ['shot-01'], anchor: 'asset-1201-character' }],
+      current_step: 2,
+    }
+    await installFixtures(page, state)
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await expect(page.getByText('资产门禁未开放，请先完成资产审核')).toHaveCount(2)
+    await expect(page.getByRole('button', { name: '生成本镜头' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '批量生成 2 镜' })).toBeDisabled()
+  })
+
+  test('第三步先选非首镜后轮询从处理中到完成，停止且保留选中镜头', async ({ page }) => {
+    const state = generationFixtureState()
+    Object.assign(state.work.shots[1], {
+      status: 'draft',
+      error_code: null,
+      error_message: null,
+      generation: { task_id: null, status: null, progress: null, message: null },
+      billing: { held: 0, charged: 0, released: 0, quote: { amount: 6 } },
+    })
     state.onGetWork = (fixtureState) => {
-      const shot = fixtureState.work?.shots?.find((item) => item.id === 1301)
+      const shot = fixtureState.work?.shots?.find((item) => item.id === 1302)
       if (!shot || shot.status !== 'processing' || fixtureState.workGets < 3) return
       shot.status = 'completed'
-      shot.generation = { task_id: 'task-shot-1301', status: 'completed', progress: 100, message: '完成' }
-      shot.billing = { held: 0, charged: 4, released: 0, quote: { amount: 4 } }
+      shot.generation = { task_id: 'task-shot-1302', status: 'completed', progress: 100, message: '完成' }
+      shot.billing = { held: 0, charged: 6, released: 0, quote: { amount: 6 } }
       shot.new_video_ref = { video_url: 'https://fixtures.example/generated.mp4' }
       fixtureState.work.batches = shotBatches(fixtureState.work.shots)
     }
     await installFixtures(page, state)
 
     await page.goto('/redraw/projects/41/works/710?step=3')
+    await page.getByRole('button', { name: /镜头 2/ }).click()
     await page.getByRole('button', { name: '生成本镜头' }).click()
-    await expect(page.getByRole('button', { name: /镜头 1/ })).toHaveClass(/active/)
+    await expect(page.getByRole('button', { name: /镜头 2/ })).toHaveClass(/active/)
     await expect(page.getByRole('button', { name: '新片' })).toBeEnabled({ timeout: 8000 })
-    await expect(page.locator('.shot-editor__heading').getByText('镜头 1')).toBeVisible()
+    await expect(page.locator('.shot-editor__heading').getByText('镜头 2')).toBeVisible()
     await page.getByRole('button', { name: '新片' }).click()
-    await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /generated\.mp4#t=0/)
+    await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /generated\.mp4#t=12/)
     const getCountAfterCompletion = state.workGets
     await page.waitForTimeout(3200)
     expect(state.workGets).toBeLessThanOrEqual(getCountAfterCompletion + 1)

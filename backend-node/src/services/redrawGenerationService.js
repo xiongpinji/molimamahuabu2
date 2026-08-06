@@ -12,6 +12,7 @@ const videoService = require('./videoService');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
+const redrawCapabilityService = require('./redrawCapabilityService');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
@@ -70,6 +71,51 @@ function normalizeAspectRatio(value) {
   return String(value).trim();
 }
 
+function evidenceForLocaleCapability(entry) {
+  if (entry?.evidence && typeof entry.evidence === 'object') return entry.evidence.video;
+  return entry?.video_evidence_json || entry?.video_evidence;
+}
+
+function resolveVerifiedGenerationModel(db, version, canReadArtifact = () => false) {
+  const locale = String(version?.locale || version?.version_locale || '').trim();
+  const market = String(version?.market || '').trim();
+  if (!locale) return null;
+  const rows = db.prepare(`
+    SELECT settings
+    FROM ai_service_configs
+    WHERE COALESCE(is_active, 1) = 1
+      AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all();
+  for (const row of rows) {
+    let settings;
+    try {
+      settings = strictJson(row.settings, 'ai_service_configs.settings');
+    } catch (_) {
+      continue;
+    }
+    const entries = settings.redraw_locale_capabilities || settings.redrawLocaleCapabilities || [];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      if (entry.status !== 'verified') continue;
+      if (String(entry.locale || '').trim() !== locale) continue;
+      if (String(entry.market || '').trim() !== market) continue;
+      const evidence = evidenceForLocaleCapability(entry);
+      if (!redrawCapabilityService.validateGenerationEvidence(evidence, canReadArtifact)) continue;
+      let parsed;
+      try {
+        parsed = strictJson(evidence, 'redraw_locale_capabilities.video_evidence');
+      } catch (_) {
+        continue;
+      }
+      const model = String(parsed.model || '').trim();
+      if (model) return model;
+    }
+  }
+  return null;
+}
+
 function selectShot(db, ctx, shotInput) {
   const shotKey = shotInput.shot_id ?? shotInput.shotId;
   if (shotKey == null || String(shotKey).trim() === '') {
@@ -77,6 +123,7 @@ function selectShot(db, ctx, shotInput) {
   }
   const rows = db.prepare(`
     SELECT s.*, v.work_id, v.style_snapshot_json, v.locale AS version_locale,
+           v.market AS version_market,
            v.status AS version_status, v.deleted_at AS version_deleted_at
     FROM redraw_shots s
     JOIN redraw_versions v ON v.id = s.version_id
@@ -134,7 +181,7 @@ function ensureGateOpen(db, ctx, versionId) {
   return gate;
 }
 
-function buildGenerationInput(shot, input, parsed) {
+function buildGenerationInput(shot, input, parsed, verifiedModel) {
   const compiled = parsed.compiled;
   const draft = parsed.draft;
   const promptBase = String(compiled.text || compiled.prompt || shot.prompt || '').trim();
@@ -142,7 +189,10 @@ function buildGenerationInput(shot, input, parsed) {
     input.negative_prompt ?? input.negativePrompt ?? compiled.negative_prompt ?? compiled.negativePrompt ?? shot.negative_prompt ?? '',
   ).trim();
   const prompt = negative ? `${promptBase}\n\nNegative prompt: ${negative}` : promptBase;
-  const model = String(input.model || draft.model || compiled.model || 'seedance 2.0').trim();
+  const model = String(verifiedModel || '').trim();
+  if (!model) {
+    throw codedError('REDRAW_NO_VERIFIED_VIDEO_MODEL', '当前语言市场没有已验证可读的视频生成能力');
+  }
   const duration = normalizeDuration(input.duration ?? draft.duration ?? compiled.duration ?? 5);
   const resolution = normalizeResolution(input.resolution ?? draft.resolution ?? compiled.resolution ?? '720p');
   const aspectRatio = normalizeAspectRatio(input.aspect_ratio ?? input.aspectRatio ?? draft.aspect_ratio ?? draft.aspectRatio
@@ -265,7 +315,11 @@ async function generateShot(ctx, input = {}) {
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
   ensureGateOpen(db, ctx, shot.version_id);
-  const generation = buildGenerationInput(shot, input, parsed);
+  const verifiedModel = resolveVerifiedGenerationModel(db, {
+    locale: shot.version_locale,
+    market: shot.version_market,
+  }, ctx.canReadArtifact);
+  const generation = buildGenerationInput(shot, input, parsed, verifiedModel);
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
@@ -1093,4 +1147,5 @@ module.exports = {
   markInterruptedShotGenerationsNeedsAttention,
   verifyVideoArtifact,
   classifyVideoOutcome,
+  resolveVerifiedGenerationModel,
 };

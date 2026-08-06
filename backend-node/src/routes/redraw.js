@@ -534,40 +534,6 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
   }
 
-  function evidenceForLocaleCapability(entry) {
-    if (entry?.evidence && typeof entry.evidence === 'object') return entry.evidence.video;
-    return entry?.video_evidence_json || entry?.video_evidence;
-  }
-
-  function findVerifiedGenerationModel(version) {
-    const locale = String(version?.locale || '').trim();
-    const market = String(version?.market || '').trim();
-    if (!locale) return null;
-    const rows = db.prepare(`
-      SELECT settings
-      FROM ai_service_configs
-      WHERE COALESCE(is_active, 1) = 1
-        AND deleted_at IS NULL
-    `).all();
-    for (const row of rows) {
-      const settings = parseJSON(row.settings, {});
-      const entries = settings.redraw_locale_capabilities || settings.redrawLocaleCapabilities || [];
-      if (!Array.isArray(entries)) continue;
-      for (const entry of entries) {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-        if (entry.status !== 'verified') continue;
-        if (String(entry.locale || '').trim() !== locale) continue;
-        if (String(entry.market || '').trim() !== market) continue;
-        const evidence = evidenceForLocaleCapability(entry);
-        if (!redrawCapabilityService.validateGenerationEvidence(evidence, canReadArtifact)) continue;
-        const parsed = parseJSON(evidence, {});
-        const model = String(parsed.model || '').trim();
-        if (model) return model;
-      }
-    }
-    return null;
-  }
-
   function durationSeconds(snapshot) {
     const explicit = Number(snapshot.duration);
     if (Number.isSafeInteger(explicit) && explicit >= 5 && explicit <= 15) return explicit;
@@ -592,7 +558,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   function draftGenerationRuntime(work, version, raw, snapshot) {
     if (!work || !version) return {};
     if (!['draft', 'failed'].includes(String(raw.status || ''))) return {};
-    const model = findVerifiedGenerationModel(version);
+    const model = generationService.resolveVerifiedGenerationModel(db, version, canReadArtifact);
     if (!model) {
       return {
         generation_availability: {
@@ -1027,6 +993,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       log,
       tenantId: currentOwner.tenantId,
       userId: currentOwner.userId,
+      canReadArtifact,
     };
   }
 

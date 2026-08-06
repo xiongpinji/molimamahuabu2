@@ -33,6 +33,7 @@ function setup(overrides = {}) {
     billing_unit: 'second',
     resolution_prices: { '720p': { credits: 3 }, '480p': { credits: 2 } },
   });
+  addVerifiedGenerationCapability(db, 'seedance 2.0');
   credits.setTenantAccountBalance(db, 'tenant-a', 500);
   credits.setAccountBalance(db, 'user-a', 500);
   const now = new Date('2026-08-06T00:00:00.000Z').toISOString();
@@ -119,6 +120,7 @@ function ctx(db, overrides = {}) {
     tenantId: 'tenant-a',
     userId: 'user-a',
     clock: () => '2026-08-06T00:00:00.000Z',
+    canReadArtifact: () => true,
     ...overrides,
   };
 }
@@ -126,6 +128,119 @@ function ctx(db, overrides = {}) {
 function count(db, table, where = '1=1') {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
 }
+
+function addVerifiedGenerationCapability(db, model, overrides = {}) {
+  const now = new Date('2026-08-06T00:00:00.000Z').toISOString();
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'test-provider', '转绘生成能力', ?, ?, 1, 1, 0, ?, ?, ?)
+  `).run(
+    model,
+    model,
+    JSON.stringify({
+      redraw_locale_capabilities: [{
+        locale: overrides.locale || 'zh-CN',
+        market: overrides.market || 'CN',
+        status: 'verified',
+        evidence: {
+          video: {
+            provider: 'test-provider',
+            model,
+            task_id: `verified-${model}`,
+            terminal_status: 'completed',
+            artifact_id: `artifact-${model}`,
+          },
+        },
+      }],
+    }),
+    now,
+    now,
+  );
+}
+
+function addRawVideoConfig(db, settings, model = 'raw-config-model') {
+  const now = new Date('2026-08-06T00:00:00.000Z').toISOString();
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'test-provider', 'raw config', ?, ?, 1, 0, 0, ?, ?, ?)
+  `).run(model, model, settings, now, now);
+}
+
+test('verified 生成模型跳过坏配置并按确定顺序选中后续有效非 seedance 模型', async () => {
+  const state = setup();
+  const model = 'verified-later-video-v1';
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addRawVideoConfig(state.db, '{bad-settings-json', 'bad-settings');
+    addRawVideoConfig(state.db, JSON.stringify({
+      redraw_locale_capabilities: [{
+        locale: 'zh-CN',
+        market: 'CN',
+        status: 'verified',
+        video_evidence_json: '{bad-evidence-json',
+      }],
+    }), 'bad-evidence');
+    prices.set(state.db, model, 5, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 7 } },
+    });
+    addVerifiedGenerationCapability(state.db, model);
+    const shotId = addShot(state.db, state.versionId, {
+      draft: { model: 'draft-stale-model', duration: 6, resolution: '720p' },
+    });
+
+    const result = await generateShot(ctx(state.db, {
+      canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
+      schedule() {},
+    }), { shotId, model: 'client-forged-model' });
+
+    assert.equal(result.status, 'processing');
+    assert.equal(state.db.prepare('SELECT model FROM tenant_usage_reservations').get().model, model);
+    assert.equal(state.db.prepare('SELECT model FROM video_generations').get().model, model);
+    assert.equal(state.db.prepare("SELECT model FROM async_tasks WHERE type = 'redraw_shot'").get().model, model);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量生成全是坏 capability 配置时 fail closed 且不冻结不提交 provider', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addRawVideoConfig(state.db, '{bad-settings-json', 'bad-settings');
+    addRawVideoConfig(state.db, JSON.stringify({
+      redraw_locale_capabilities: [{
+        locale: 'zh-CN',
+        market: 'CN',
+        status: 'verified',
+        video_evidence_json: '{bad-evidence-json',
+      }],
+    }), 'bad-evidence');
+    const shotId = addShot(state.db, state.versionId);
+
+    const batch = await generateBatch(ctx(state.db, {
+      videoProcessor: async () => { providerCalls += 1; },
+    }), {
+      versionId: state.versionId,
+      shotIds: [shotId],
+      model: 'client-forged-model',
+    });
+
+    assert.equal(batch.results[0].error_code, 'REDRAW_NO_VERIFIED_VIDEO_MODEL');
+    assert.notEqual(batch.results[0].status, 'processing');
+    assert.equal(providerCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'async_tasks'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    state.db.close();
+  }
+});
 
 test('未审批 gate 不冻结、不建任务或视频、不调用处理器', async () => {
   const state = setup();
@@ -293,7 +408,7 @@ test('两个 draft 并发生成由 CAS 保证 loser 复用 winner 且只冻结�
   }
 });
 
-test('并发 loser 使用不同模型时 CAS 回滚并返回 conflict 不产生第二冻结', async () => {
+test('并发 loser 传入不同客户端模型时仍复用 verified 生成链且不产生第二冻结', async () => {
   const state = setup();
   prices.set(state.db, 'other-video-model', 4, {
     category: 'video',
@@ -325,8 +440,12 @@ test('并发 loser 使用不同模型时 CAS 回滚并返回 conflict 不产生�
     await firstEntered;
     const winner = await generateShot(context, { shotId, model: 'seedance 2.0' });
     releaseFirst();
-    await assert.rejects(loserPromise, (error) => error.code === 'REDRAW_SHOT_CONFLICT');
+    const loser = await loserPromise;
 
+    assert.equal(loser.reused, true);
+    assert.equal(loser.task_id, winner.task_id);
+    assert.equal(loser.video_generation_id, winner.video_generation_id);
+    assert.equal(loser.reservation_id, winner.reservation_id);
     assert.equal(count(state.db, "async_tasks", "type = 'redraw_shot'"), 1);
     assert.equal(count(state.db, 'video_generations'), 1);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
@@ -870,6 +989,57 @@ test('批量只提交同版本中通过门禁且未完成未处理的镜头，�
     assert.equal(result.skipped.length, 2);
     assert.equal(result.results.every((item) => item.task_id && item.billing.held === 18), true);
     assert.equal(count(state.db, 'tenant_usage_reservations'), 2);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('批量生成使用 verified capability 模型贯穿报价、冻结、视频任务和分镜快照', async () => {
+  const state = setup();
+  const model = 'verified-redraw-video-v9';
+  let scheduled = null;
+  try {
+    prices.set(state.db, model, 5, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 7 } },
+    });
+    addVerifiedGenerationCapability(state.db, model);
+    const shotId = addShot(state.db, state.versionId, {
+      draft: { model: 'client-stale-draft-model', duration: 6, resolution: '720p' },
+      compiledPrompt: {
+        text: 'compiled hero prompt',
+        model: 'compiled-stale-model',
+        duration: 6,
+        resolution: '720p',
+        aspect_ratio: '9:16',
+      },
+    });
+
+    const batch = await generateBatch(ctx(state.db, {
+      canReadArtifact: (artifactId) => artifactId === `artifact-${model}`,
+      batchScheduler: (callback) => { scheduled = callback; },
+    }), {
+      versionId: state.versionId,
+      shotIds: [shotId],
+      model: 'client-forged-model',
+    });
+
+    assert.equal(typeof scheduled, 'function');
+    assert.equal(batch.results[0].status, 'processing');
+    const reservation = state.db.prepare('SELECT * FROM tenant_usage_reservations').get();
+    const video = state.db.prepare('SELECT * FROM video_generations').get();
+    const task = state.db.prepare("SELECT * FROM async_tasks WHERE type = 'redraw_shot'").get();
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    const metadata = JSON.parse(task.metadata).redraw_shot;
+
+    assert.equal(reservation.model, model);
+    assert.equal(reservation.amount, 42);
+    assert.equal(video.model, model);
+    assert.equal(task.model, model);
+    assert.equal(draft.generation.model, model);
+    assert.equal(metadata.quote.snapshot.model, model);
+    assert.equal(metadata.quote.amount, 42);
   } finally {
     state.db.close();
   }
