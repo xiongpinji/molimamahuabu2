@@ -7,6 +7,7 @@ const {
   normalizeLocalizationResult,
   validateLocalizedFacts,
   createLocalizationVersion,
+  validateLocalizedDialogue,
 } = require('../src/services/localizationService');
 
 function sourceFacts() {
@@ -153,4 +154,68 @@ test('创建本地化版本拒绝与源事实不匹配的哈希', () => {
   );
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 0);
   db.close();
+});
+
+function sourceDialogue() {
+  return {
+    turns: [
+      { speaker_id: 'c1', source_text: '别回头', start_ms: 0, end_ms: 2_000, emotion: 'urgent', overlap_group: null },
+      { speaker_id: 'c2', source_text: '我知道', start_ms: 2_000, end_ms: 4_000, emotion: 'calm', overlap_group: null },
+      { speaker_id: 'c1', source_text: '快走', start_ms: 4_000, end_ms: 6_000, emotion: 'urgent', overlap_group: 'overlap-1' },
+    ],
+  };
+}
+
+test('台词保留说话顺序并在可说时长内', () => {
+  const check = validateLocalizedDialogue(sourceDialogue(), {
+    turns: [
+      { speaker_id: 'c1', localized_text: "Don't look back", start_ms: 0, end_ms: 2_000, emotion: 'urgent', overlap_group: null },
+      { speaker_id: 'c2', localized_text: 'I know', start_ms: 2_000, end_ms: 4_000, emotion: 'calm', overlap_group: null },
+      { speaker_id: 'c1', localized_text: 'Go now', start_ms: 4_000, end_ms: 6_000, emotion: 'urgent', overlap_group: 'overlap-1' },
+    ],
+  }, { locale: 'es-419', maxSpeechRate: 1.12 });
+  assert.equal(check.ok, true);
+  assert.equal(check.turns.map((turn) => turn.speaker_id).join(','), 'c1,c2,c1');
+  assert.equal(check.turns[2].overlap_group, 'overlap-1');
+});
+
+test('超速台词退回改写而不是改变视频速度', () => {
+  const check = validateLocalizedDialogue(sourceDialogue(), {
+    turns: [
+      { speaker_id: 'c1', localized_text: 'This line is much too long to fit inside the available shot duration', start_ms: 0, end_ms: 2_000, emotion: 'urgent', overlap_group: null },
+      { speaker_id: 'c2', localized_text: 'I know', start_ms: 2_000, end_ms: 4_000, emotion: 'calm', overlap_group: null },
+      { speaker_id: 'c1', localized_text: 'Go now', start_ms: 4_000, end_ms: 6_000, emotion: 'urgent', overlap_group: 'overlap-1' },
+    ],
+  }, { locale: 'en-US', maxSpeechRate: 1.12 });
+  assert.equal(check.ok, false);
+  assert.equal(check.reason, 'dialogue_duration_exceeded');
+  assert.equal(check.status, 'needs_rewrite');
+});
+
+test('阿拉伯语台词保留重叠组并标记 RTL', () => {
+  const check = validateLocalizedDialogue(sourceDialogue(), {
+    turns: [
+      { speaker_id: 'c1', localized_text: 'لا تلتفت', start_ms: 0, end_ms: 2_000, emotion: 'urgent', overlap_group: null },
+      { speaker_id: 'c2', localized_text: 'أعرف', start_ms: 2_000, end_ms: 4_000, emotion: 'calm', overlap_group: null },
+      { speaker_id: 'c1', localized_text: 'اذهب الآن', start_ms: 4_000, end_ms: 6_000, emotion: 'urgent', overlap_group: 'overlap-1' },
+    ],
+  }, { locale: 'ar', maxSpeechRate: 1.12 });
+  assert.equal(check.ok, true);
+  assert.equal(check.direction, 'rtl');
+  assert.equal(check.turns[2].overlap_group, 'overlap-1');
+});
+
+test('台词情绪改变时退回语义复核', () => {
+  const turns = sourceDialogue().turns.map((turn) => ({
+    speaker_id: turn.speaker_id,
+    localized_text: turn.source_text,
+    start_ms: turn.start_ms,
+    end_ms: turn.end_ms,
+    emotion: turn.emotion,
+    overlap_group: turn.overlap_group,
+  }));
+  turns[0].emotion = 'calm';
+  const check = validateLocalizedDialogue(sourceDialogue(), { turns }, { locale: 'en-US' });
+  assert.equal(check.ok, false);
+  assert.equal(check.reason, 'dialogue_emotion_mismatch');
 });

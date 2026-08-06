@@ -196,9 +196,87 @@ function createLocalizationVersion(db, owner, workId, input) {
   return transaction();
 }
 
+const RTL_LOCALES = new Set(['ar', 'ar-SA', 'ar-EG', 'fa', 'he', 'ur']);
+
+function dialogueDirection(locale) {
+  return RTL_LOCALES.has(String(locale || '')) ? 'rtl' : 'ltr';
+}
+
+function estimateSpeechMs(text, locale) {
+  const value = String(text || '').trim();
+  if (!value) return 0;
+  if (/^(zh|ja|ko)(-|$)/i.test(String(locale || ''))) {
+    return Array.from(value).length * 250;
+  }
+  const words = value.split(/\s+/u).filter(Boolean);
+  return words.length * 300;
+}
+
+function validateLocalizedDialogue(sourceTurn, localizedTurn, options = {}) {
+  const sourceTurns = Array.isArray(sourceTurn?.turns) ? sourceTurn.turns : [];
+  const turns = Array.isArray(localizedTurn?.turns) ? localizedTurn.turns : [];
+  const locale = String(options.locale || '').trim();
+  const maxSpeechRate = Number(options.maxSpeechRate || 1.12);
+  if (!sourceTurns.length || sourceTurns.length !== turns.length) {
+    return { ok: false, reason: 'dialogue_turn_count_mismatch', status: 'needs_rewrite' };
+  }
+  if (!Number.isFinite(maxSpeechRate) || maxSpeechRate <= 0) {
+    return { ok: false, reason: 'invalid_max_speech_rate', status: 'needs_rewrite' };
+  }
+
+  const normalizedTurns = [];
+  for (let index = 0; index < sourceTurns.length; index += 1) {
+    const source = sourceTurns[index] || {};
+    const localized = turns[index] || {};
+    if (String(source.speaker_id) !== String(localized.speaker_id)) {
+      return { ok: false, reason: 'dialogue_speaker_order_mismatch', status: 'needs_rewrite', turn_index: index };
+    }
+    if (Number(source.start_ms) !== Number(localized.start_ms) || Number(source.end_ms) !== Number(localized.end_ms)) {
+      return { ok: false, reason: 'dialogue_timing_mismatch', status: 'needs_rewrite', turn_index: index };
+    }
+    if (localized.emotion != null && String(localized.emotion) !== String(source.emotion || '')) {
+      return { ok: false, reason: 'dialogue_emotion_mismatch', status: 'needs_rewrite', turn_index: index };
+    }
+    if ((source.overlap_group || null) !== (localized.overlap_group || null)) {
+      return { ok: false, reason: 'dialogue_overlap_mismatch', status: 'needs_rewrite', turn_index: index };
+    }
+    const availableMs = Number(source.end_ms) - Number(source.start_ms);
+    if (!Number.isFinite(availableMs) || availableMs <= 0) {
+      return { ok: false, reason: 'dialogue_timing_invalid', status: 'needs_rewrite', turn_index: index };
+    }
+    const localizedText = String(localized.localized_text ?? localized.text ?? '').trim();
+    if (!localizedText) {
+      return { ok: false, reason: 'dialogue_text_missing', status: 'needs_rewrite', turn_index: index };
+    }
+    const estimatedDurationMs = estimateSpeechMs(localizedText, locale);
+    if (estimatedDurationMs > availableMs * maxSpeechRate) {
+      return {
+        ok: false,
+        reason: 'dialogue_duration_exceeded',
+        status: 'needs_rewrite',
+        turn_index: index,
+        estimated_duration_ms: estimatedDurationMs,
+        available_ms: availableMs,
+      };
+    }
+    normalizedTurns.push({
+      speaker_id: String(source.speaker_id),
+      source_text: String(source.source_text || source.text || ''),
+      localized_text: localizedText,
+      start_ms: Number(source.start_ms),
+      end_ms: Number(source.end_ms),
+      emotion: localized.emotion ?? source.emotion ?? null,
+      overlap_group: localized.overlap_group || null,
+      estimated_duration_ms: estimatedDurationMs,
+    });
+  }
+  return { ok: true, direction: dialogueDirection(locale), turns: normalizedTurns };
+}
+
 module.exports = {
   buildLocalizationInput,
   normalizeLocalizationResult,
   validateLocalizedFacts,
   createLocalizationVersion,
+  validateLocalizedDialogue,
 };
