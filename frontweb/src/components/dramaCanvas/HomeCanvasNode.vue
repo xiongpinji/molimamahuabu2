@@ -467,8 +467,12 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <strong v-if="canGenerate" class="canvas-credit-callout-v1">{{ estimatedCredits != null ? `本次预计扣除 ${estimatedCredits} 积分` : '积分待管理员配置' }}</strong>
-          <span v-if="canGenerate && capability.declared === false" class="capability-note">保守参数 · 最终由供应商校验</span>
+          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
+            <template v-else>积分待管理员配置</template>
+            <small>· {{ draft.quantity || 1 }} 次</small>
+          </span>
+          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
@@ -1742,8 +1746,22 @@ watch(isSelected, (selected) => {
   gap: 10px;
   margin-top: 18px;
 }
-.canvas-credit-callout-v1 { margin-right: auto; color: #f59e0b; font-size: 12px; font-weight: 800; }
-.capability-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.billing-cost {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-right: auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 177, 92, 0.65);
+  border-radius: 10px;
+  background: rgba(124, 64, 20, 0.42);
+  color: #ffd09a;
+  font-size: 13px;
+  font-weight: 800;
+}
+.billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
+.billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
+.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
 .editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
