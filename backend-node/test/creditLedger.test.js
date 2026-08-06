@@ -92,6 +92,26 @@ test('生成成功时结算预扣积分', () => {
   assert.equal(creditLedger.getReservation(db, held.id).status, 'confirmed');
 });
 
+test('相同 id 的租户迁移副本不抢占用户预扣结算', () => {
+  const db = setup(100);
+  const held = creditLedger.reserve(db, {
+    userId: 'user-1', operationKey: 'image:migrated', amount: 20,
+    model: 'gpt-image-2', resourceType: 'image', resourceId: 'migrated',
+  });
+  creditLedger.setTenantAccountBalance(db, 'personal:user-1', 100);
+  db.prepare(`
+    INSERT INTO tenant_usage_reservations
+      (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
+    VALUES (?, 'personal:user-1', 'image:migrated', 'user-1', 'gpt-image-2', 'image', 'migrated', 20, 'held', ?, ?)
+  `).run(held.id, new Date().toISOString(), new Date().toISOString());
+
+  creditLedger.settleGeneration(db, held.id, 'completed');
+
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id).status, 'confirmed');
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.id).status, 'held');
+  assert.equal(creditLedger.getAccount(db, 'user-1').spent, 20);
+});
+
 test('生成明确失败时退款', () => {
   const db = setup(100);
   const held = creditLedger.reserve(db, {

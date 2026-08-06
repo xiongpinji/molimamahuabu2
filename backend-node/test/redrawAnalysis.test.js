@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
@@ -13,6 +14,28 @@ const { normalizeSourceFacts } = require('../src/services/redrawAnalysisService'
 const redraw = require('../src/services/redrawOrchestrator');
 
 const log = { info() {}, warn() {}, error() {} };
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    const httpServer = server.listen(0, '127.0.0.1', () => resolve(httpServer));
+    httpServer.once('error', reject);
+  });
+}
+
+function close(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function waitFor(predicate, timeoutMs = 500) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return predicate();
+}
 
 function validFacts() {
   return {
@@ -61,6 +84,7 @@ function createDb() {
       api_key TEXT,
       model TEXT,
       default_model TEXT,
+      query_endpoint TEXT,
       is_active INTEGER,
       is_default INTEGER,
       priority INTEGER,
@@ -152,11 +176,38 @@ function addVerifiedConfig(db) {
   }), now, now);
 }
 
+function addVerifiedConfigWithQuery(db, baseUrl, queryEndpoint = '/query/{taskId}') {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, base_url, api_key, model, default_model, query_endpoint,
+       is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video_understanding', 'local-fake', '视频理解', ?, 'resume-secret',
+      'GPT-5.5', 'GPT-5.5', ?, 1, 1, 0, ?, ?, ?)
+  `).run(baseUrl, queryEndpoint, JSON.stringify({
+    real_generation_verified: true,
+    evidence: {
+      provider_task_id: 'verified-task',
+      result_asset_id: 'verified-result',
+      result_asset_readable: true,
+      completed_at: now,
+    },
+  }), now, now);
+}
+
 function addWorkAndAssets(db) {
   db.prepare('INSERT INTO assets (id, local_path) VALUES (?, ?)').run('asset-source', 'uploads/source.mp4');
   db.prepare('INSERT INTO assets (id, local_path) VALUES (?, ?)').run('asset-result', 'uploads/result.json');
   db.prepare('INSERT INTO redraw_works (id, user_id, source_asset_id, status, current_step) VALUES (?, ?, ?, ?, ?)')
     .run('work-1', 'user-1', 'asset-source', 'draft', 1);
+}
+
+async function startWork(db, providerTaskId = 'provider-1') {
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 6);
+  return redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: providerTaskId }) },
+  });
 }
 
 test('normalizeSourceFacts returns schema 1.0 and stable hash', () => {
@@ -267,6 +318,43 @@ test('runAnalyzeTask rejects unreadable assets before confirmation', async () =>
   assert.equal(creditLedger.getAccount(db, 'user-1').spent, 0);
 });
 
+test('default startup asset reader requires readable local files and does not trust url strings', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-assets-'));
+  try {
+    addWorkAndAssets(db);
+    db.prepare('UPDATE assets SET local_path = ? WHERE id = ?').run('missing/source.mp4', 'asset-source');
+    prices.set(db, 'GPT-5.5', 6);
+    const started = await redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+      provider: { startAnalysis: async () => ({ provider_task_id: 'provider-unreadable-local' }) },
+    });
+
+    const failed = await redraw.runAnalyzeTask(db, log, started.task_id, {
+      provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 'asset-result', facts: validFacts() }) },
+      assetReader: redraw.createAssetReader({ storageRoot: tempRoot }),
+    });
+    assert.equal(failed.status, 'failed');
+
+    db.prepare('DELETE FROM assets').run();
+    db.prepare('INSERT INTO assets (id, local_path) VALUES (?, ?)').run('asset-source-2', path.join(tempRoot, 'source.mp4'));
+    fs.writeFileSync(path.join(tempRoot, 'source.mp4'), 'source');
+    db.prepare('INSERT INTO assets (id, url) VALUES (?, ?)').run('asset-result-2', 'https://cdn.example/result.json');
+    db.prepare('INSERT INTO redraw_works (id, user_id, source_asset_id, status, current_step) VALUES (?, ?, ?, ?, ?)')
+      .run('work-url', 'user-1', 'asset-source-2', 'draft', 1);
+    const startedUrl = await redraw.startAnalysis(db, log, { workId: 'work-url', userId: 'user-1' }, {
+      provider: { startAnalysis: async () => ({ provider_task_id: 'provider-url' }) },
+    });
+    const urlFailed = await redraw.runAnalyzeTask(db, log, startedUrl.task_id, {
+      provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 'asset-result-2', facts: validFacts() }) },
+      assetReader: redraw.createAssetReader({ storageRoot: tempRoot }),
+    });
+    assert.equal(urlFailed.status, 'failed');
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('runAnalyzeTask detects facts_hash conflicts without mixing shots or settling again', async () => {
   const db = createDb();
   addVerifiedConfig(db);
@@ -363,6 +451,60 @@ test('resumeRedrawTasks polls provider-backed processing tasks and fails tasks w
   assert.equal(db.prepare("SELECT status FROM usage_reservations WHERE resource_id = 'work-2'").get().status, 'refunded');
 });
 
+test('startup resume without a configured queryer marks provider-backed task needs_attention', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  const started = await startWork(db, 'provider-no-queryer');
+
+  const result = await redraw.resumeRedrawTasks(db, log, redraw.createStartupResumeOptions(db, log, { storageRoot: process.cwd() }));
+
+  assert.equal(result.resumed, 1);
+  assert.equal(taskService.getTask(db, started.task_id).status, 'needs_attention');
+  assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-1').status, 'needs_attention');
+  assert.equal(creditLedger.getAccount(db, 'user-1').held, 6);
+});
+
+test('startup resume uses configured HTTP query endpoint to complete provider task', async () => {
+  const db = createDb();
+  let authorization = '';
+  let server;
+  server = await listen(http.createServer((req, res) => {
+    authorization = req.headers.authorization || '';
+    assert.equal(req.url, '/query/provider-http');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'completed',
+      result_asset_id: 'asset-result',
+      facts: validFacts(),
+    }));
+  }));
+  try {
+    addVerifiedConfigWithQuery(db, `http://127.0.0.1:${server.address().port}`);
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-http-assets-'));
+    try {
+      fs.mkdirSync(path.join(tempRoot, 'uploads'), { recursive: true });
+      fs.writeFileSync(path.join(tempRoot, 'uploads', 'source.mp4'), 'source');
+      fs.writeFileSync(path.join(tempRoot, 'uploads', 'result.json'), 'result');
+      addWorkAndAssets(db);
+      prices.set(db, 'GPT-5.5', 6);
+      const started = await redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+        provider: { startAnalysis: async () => ({ provider_task_id: 'provider-http' }) },
+      });
+
+      await redraw.resumeRedrawTasks(db, log, redraw.createStartupResumeOptions(db, log, { storageRoot: tempRoot }));
+
+      assert.equal(authorization, 'Bearer resume-secret');
+      assert.equal(taskService.getTask(db, started.task_id).status, 'completed');
+      assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-1').status, 'asset_review');
+      assert.equal(creditLedger.getAccount(db, 'user-1').spent, 6);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  } finally {
+    await close(server);
+  }
+});
+
 test('runMigrationsAndEnsure creates redraw analysis schema and async provider task id', () => {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
@@ -414,6 +556,10 @@ test('createApp resumes redraw analysis tasks after orphan cleanup', async () =>
     .run(now, now);
   db.prepare("INSERT INTO assets (id, local_path, created_at, updated_at) VALUES (102, 'uploads/result.json', ?, ?)")
     .run(now, now);
+  db.prepare(`
+    INSERT INTO redraw_projects (id, tenant_id, user_id, title, status, created_at, updated_at)
+    VALUES (1, 'tenant-1', 'user-1', '启动恢复项目', 'draft', ?, ?)
+  `).run(now, now);
   creditLedger.ensureSchema(db);
   creditLedger.setAccountBalance(db, 'user-1', 100);
   const held = creditLedger.reserve(db, {
@@ -422,17 +568,19 @@ test('createApp resumes redraw analysis tasks after orphan cleanup', async () =>
     amount: 6,
     model: 'GPT-5.5',
     resourceType: 'redraw_analysis',
-    resourceId: 'work-startup',
+    resourceId: '1',
   });
   db.prepare(`
     INSERT INTO async_tasks
       (id, type, status, progress, message, resource_id, user_id, model, credit_reservation_id, provider_task_id, created_at, updated_at)
-    VALUES ('task-startup', 'redraw_analysis', 'processing', 90, '', 'work-startup', 'user-1', 'GPT-5.5', ?, 'provider-startup', ?, ?)
+    VALUES ('task-startup', 'redraw_analysis', 'processing', 90, '', '1', 'user-1', 'GPT-5.5', ?, 'provider-startup', ?, ?)
   `).run(held.id, now, now);
   db.prepare(`
     INSERT INTO redraw_works
-      (id, user_id, source_asset_id, status, current_step, task_id, provider_task_id, credit_reservation_id, created_at, updated_at)
-    VALUES ('work-startup', 'user-1', '101', 'processing', 1, 'task-startup', 'provider-startup', ?, ?, ?)
+      (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms,
+       status, current_step, task_id, provider_task_id, credit_reservation_id, created_at, updated_at)
+    VALUES (1, 1, 'tenant-1', 'user-1', '启动恢复作品', 101, 'startup-fingerprint', 15000,
+      'analyzing', 1, 'task-startup', 'provider-startup', ?, ?, ?)
   `).run(held.id, now, now);
   db.close();
 
@@ -445,26 +593,43 @@ test('createApp resumes redraw analysis tasks after orphan cleanup', async () =>
     assetReader: { canRead: (asset) => Boolean(asset?.local_path || asset?.url) },
   });
 
+  let created;
   try {
     process.chdir(tempRoot);
     process.env.WEB_DIST_PATH = path.join(tempRoot, 'missing-web-dist');
     delete require.cache[require.resolve('../src/config')];
     delete require.cache[require.resolve('../src/app')];
     const { createApp } = require('../src/app');
-    const created = createApp();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    created = createApp();
+    await waitFor(() => {
+      const row = created.db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id);
+      return row?.status === 'confirmed';
+    }, 1000);
 
-    assert.equal(created.db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-startup').status, 'asset_review');
+    assert.equal(created.db.prepare('SELECT status FROM redraw_works WHERE id = ?').get(1).status, 'asset_review');
     assert.equal(taskService.getTask(created.db, 'task-startup').status, 'completed');
+    assert.equal(created.db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id).status, 'confirmed');
     assert.equal(creditLedger.getAccount(created.db, 'user-1').spent, 6);
-    require('../src/db').closeDb();
   } finally {
+    try {
+      require('../src/db').closeDb();
+    } catch (_) {
+      if (created?.db?.open) created.db.close();
+    }
     orchestrator.createStartupResumeOptions = originalCreateStartupResumeOptions;
     delete require.cache[require.resolve('../src/config')];
     delete require.cache[require.resolve('../src/app')];
     process.chdir(previousCwd);
     if (previousWebDist === undefined) delete process.env.WEB_DIST_PATH;
     else process.env.WEB_DIST_PATH = previousWebDist;
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+});
+
+test('createApp wires redraw resume before orphan cleanup', () => {
+  const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
+  assert.ok(
+    appSource.indexOf('resumeRedrawTasks') < appSource.indexOf('failOrphanedAsyncTasksOnStartup'),
+    'redraw resume must run before generic orphan cleanup'
+  );
 });

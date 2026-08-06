@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
@@ -54,7 +56,27 @@ function getAsset(db, assetId) {
 }
 
 function defaultCanRead(asset) {
-  return Boolean(asset && (asset.local_path || asset.url));
+  return createAssetReader({}).canRead(asset);
+}
+
+function createAssetReader(options = {}) {
+  const storageRoot = options.storageRoot || process.cwd();
+  return {
+    canRead(asset) {
+      if (!asset) return false;
+      if (asset.local_path) {
+        const localPath = String(asset.local_path);
+        const absPath = path.isAbsolute(localPath) ? localPath : path.join(storageRoot, localPath);
+        try {
+          fs.accessSync(absPath, fs.constants.R_OK);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      return asset.readable === true || asset.readable === 1 || asset.readable === 'true';
+    },
+  };
 }
 
 function assertAssetReadable(db, assetReader, assetId, label) {
@@ -73,12 +95,76 @@ function safeUpdate(db, sql, params) {
   }
 }
 
-function createStartupResumeOptions() {
+function tableColumns(db, table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+}
+
+function insertDynamic(db, table, values) {
+  const columns = tableColumns(db, table);
+  const names = Object.keys(values).filter((name) => columns.has(name));
+  const placeholders = names.map(() => '?').join(', ');
+  return db.prepare(`INSERT INTO ${table} (${names.join(', ')}) VALUES (${placeholders})`)
+    .run(...names.map((name) => values[name]));
+}
+
+function buildUrl(baseUrl, endpoint, providerTaskId) {
+  const base = String(baseUrl || '').replace(/\/$/, '');
+  const ep = String(endpoint || '').trim();
+  if (!base || !ep) return '';
+  const replaced = ep.replace('{taskId}', encodeURIComponent(String(providerTaskId)));
+  return replaced.startsWith('http://') || replaced.startsWith('https://')
+    ? replaced
+    : `${base}${replaced.startsWith('/') ? '' : '/'}${replaced}`;
+}
+
+function normalizeProviderResult(payload) {
+  const status = String(payload?.status || payload?.state || payload?.task_status || '').toLowerCase();
+  if (['completed', 'complete', 'succeeded', 'success', 'done'].includes(status)) {
+    return {
+      status: 'completed',
+      result_asset_id: payload.result_asset_id || payload.asset_id || payload.result_asset?.id,
+      facts: payload.facts || payload.source_facts || payload.result?.facts || payload.result?.source_facts,
+    };
+  }
+  if (['failed', 'failure', 'error', 'cancelled', 'canceled'].includes(status)) {
+    return { status: 'failed', error: payload.error || payload.message || '供应商源片分析失败' };
+  }
+  if (['processing', 'pending', 'running', 'queued', 'in_progress'].includes(status)) {
+    return { status: 'processing' };
+  }
+  return { status: 'unknown', error: '源片分析状态未知，请人工确认后再处理' };
+}
+
+function createProviderResumeUnavailable(message) {
+  return codedError('REDRAW_PROVIDER_RESUME_UNAVAILABLE', message || '源片分析供应商恢复查询不可用');
+}
+
+function createStartupResumeOptions(db, log, options = {}) {
+  let config = null;
+  try {
+    config = db ? loadVerifiedCapability(db) : null;
+  } catch (error) {
+    log?.warn?.('redraw resume capability unavailable', { code: error.code, message: error.message });
+  }
+  const queryEndpoint = config?.query_endpoint || parseSettings(config)?.query_endpoint;
+  const queryUrlTemplate = buildUrl(config?.base_url, queryEndpoint, '{taskId}');
   return {
     provider: {
-      pollAnalysisTask: async ({ providerTaskId }) => ({ status: 'processing', provider_task_id: providerTaskId }),
+      pollAnalysisTask: async ({ providerTaskId }) => {
+        if (!queryUrlTemplate) {
+          throw createProviderResumeUnavailable('video_understanding 未配置 query_endpoint，无法恢复源片分析任务');
+        }
+        const url = buildUrl(config.base_url, queryEndpoint, providerTaskId);
+        const headers = {};
+        if (config.api_key) headers.authorization = `Bearer ${config.api_key}`;
+        const response = await fetch(url, { method: 'GET', headers });
+        if (!response.ok) {
+          throw createProviderResumeUnavailable(`源片分析恢复查询失败: HTTP ${response.status}`);
+        }
+        return normalizeProviderResult(await response.json());
+      },
     },
-    assetReader: { canRead: defaultCanRead },
+    assetReader: createAssetReader({ storageRoot: options.storageRoot }),
   };
 }
 
@@ -168,18 +254,54 @@ function writeFactsOnce(db, work, normalized) {
         .run(JSON.stringify(normalized), normalized.facts_hash, now, existing.id);
       version = { ...existing, source_facts_json: JSON.stringify(normalized), facts_hash: normalized.facts_hash };
     } else {
-      const id = db.prepare(
-        'INSERT INTO redraw_versions (work_id, source_facts_json, facts_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-      ).run(work.id, JSON.stringify(normalized), normalized.facts_hash, now, now).lastInsertRowid;
+      const id = insertDynamic(db, 'redraw_versions', {
+        work_id: work.id,
+        tenant_id: work.tenant_id || null,
+        user_id: work.user_id || null,
+        version: 1,
+        locale: 'source',
+        market: '',
+        localization_level: 'faithful',
+        source_facts_json: JSON.stringify(normalized),
+        facts_hash: normalized.facts_hash,
+        status: 'asset_review',
+        created_at: now,
+        updated_at: now,
+      }).lastInsertRowid;
       version = { id, work_id: work.id, source_facts_json: JSON.stringify(normalized), facts_hash: normalized.facts_hash };
     }
   }
-  for (const shot of normalized.shots) {
-    db.prepare(
-      `INSERT OR IGNORE INTO redraw_shots
-        (work_id, version_id, shot_id, start_ms, end_ms, draft_json, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`
-    ).run(work.id, version.id, shot.id, shot.start_ms, shot.end_ms, JSON.stringify(shot), now, now);
+  const shotColumns = tableColumns(db, 'redraw_shots');
+  for (const [index, shot] of normalized.shots.entries()) {
+    if (shotColumns.has('work_id')) {
+      const existingShot = db.prepare('SELECT id FROM redraw_shots WHERE work_id = ? AND shot_id = ? LIMIT 1').get(work.id, shot.id);
+      if (existingShot) continue;
+    } else {
+      const existingShot = db.prepare('SELECT id FROM redraw_shots WHERE version_id = ? AND batch_index = ? AND shot_index = ? LIMIT 1')
+        .get(version.id, 1, index + 1);
+      if (existingShot) continue;
+    }
+    insertDynamic(db, 'redraw_shots', {
+      work_id: work.id,
+      version_id: version.id,
+      tenant_id: work.tenant_id || null,
+      user_id: work.user_id || null,
+      shot_id: shot.id,
+      batch_index: 1,
+      shot_index: index + 1,
+      start_ms: shot.start_ms,
+      end_ms: shot.end_ms,
+      duration_ms: shot.end_ms - shot.start_ms,
+      source_dialogue_json: JSON.stringify(shot.dialogue || []),
+      localized_dialogue_json: JSON.stringify(shot.dialogue || []),
+      opening_state: shot.opening_state,
+      continuous_action: shot.continuous_action,
+      ending_state: shot.ending_state,
+      draft_json: JSON.stringify(shot),
+      status: 'draft',
+      created_at: now,
+      updated_at: now,
+    });
   }
   db.prepare('UPDATE redraw_works SET status = ?, current_step = ?, error_msg = NULL, updated_at = ? WHERE id = ?')
     .run('asset_review', 2, now, work.id);
@@ -192,9 +314,18 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
   const work = getWork(db, task.resource_id);
   if (!work) throw codedError('REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
   const providerTaskId = task.provider_task_id || work.provider_task_id;
-  const result = options.provider?.pollAnalysisTask
-    ? await options.provider.pollAnalysisTask({ task, work, providerTaskId })
-    : { status: 'processing' };
+  let result;
+  try {
+    result = options.provider?.pollAnalysisTask
+      ? await options.provider.pollAnalysisTask({ task, work, providerTaskId })
+      : { status: 'unknown', error: '源片分析供应商恢复查询不可用' };
+  } catch (error) {
+    if (error.code === 'REDRAW_PROVIDER_RESUME_UNAVAILABLE') {
+      markNeedsAttention(db, task, work, error.message);
+      return { status: 'needs_attention', error: error.message };
+    }
+    throw error;
+  }
 
   if (result.status === 'processing' || result.status === 'pending') {
     taskService.updateTaskStatus(db, task.id, 'processing', 90, '供应商仍在分析源片');
@@ -277,4 +408,5 @@ module.exports = {
   resumeRedrawTasks,
   loadVerifiedCapability,
   createStartupResumeOptions,
+  createAssetReader,
 };

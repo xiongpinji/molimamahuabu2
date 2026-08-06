@@ -210,8 +210,8 @@ function listTenantAdjustments(db, tenantId, limitValue = 100) {
 
 function getReservation(db, id) {
   ensureSchema(db);
-  return db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(String(id))
-    || db.prepare('SELECT * FROM usage_reservations WHERE id = ?').get(String(id))
+  return db.prepare('SELECT * FROM usage_reservations WHERE id = ?').get(String(id))
+    || db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(String(id))
     || null;
 }
 
