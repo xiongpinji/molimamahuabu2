@@ -707,6 +707,9 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
 
   await editor.getByRole('tab', { name: '首尾帧' }).click()
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.[0]?.data?.contract?.input || ''
@@ -726,6 +729,9 @@ test('视频节点无参考图时保存首尾帧模式，并在新增两张参�
   let editor = page.getByRole('region', { name: '视频节点编辑器' })
   await editor.getByRole('tab', { name: '首尾帧' }).click()
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 未设置')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.videoReferenceMode || ''
@@ -772,6 +778,11 @@ test('视频节点无参考图时保存首尾帧模式，并在新增两张参�
   await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
   editor = page.getByRole('region', { name: '视频节点编辑器' })
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="last"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 图片2')
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.map((edge) => edge.data?.contract?.input).join(',') || ''

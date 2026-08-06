@@ -232,7 +232,35 @@
               @change="uploadReferenceFile"
             />
           </div>
-          <div v-if="inputReferences.length" class="reference-list">
+          <div v-if="data.kind === 'video' && videoReferenceMode === 'first-last'" class="first-last-slots" aria-label="首尾帧卡槽">
+            <figure
+              v-for="frameSlot in firstLastFrameSlots"
+              :key="frameSlot.key"
+              class="reference-card first-last-frame-slot"
+              :data-frame-slot="frameSlot.key"
+              :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
+              :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
+              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
+              @mousedown.right.prevent
+              @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
+            >
+              <span class="frame-slot-label">{{ frameSlot.label }}</span>
+              <button
+                v-if="frameSlot.reference"
+                class="reference-remove"
+                type="button"
+                aria-label="取消参考图"
+                title="取消参考图"
+                @click.stop="removeReference(frameSlot.reference)"
+              >×</button>
+              <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
+              <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
+              <figcaption :title="frameSlot.reference?.title || frameSlot.label">
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+              </figcaption>
+            </figure>
+          </div>
+          <div v-else-if="inputReferences.length" class="reference-list">
             <figure
               v-for="reference in inputReferences"
               :key="reference.nodeId"
@@ -593,6 +621,13 @@ const inputReferences = computed(() => (
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
+const firstLastFrameSlots = computed(() => {
+  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  return [
+    { key: 'first', label: '首帧', reference: imageReferences[0] || null },
+    { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
+  ]
+})
 const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
   draft.videoReferenceMode,
   inputReferences.value,
@@ -1468,6 +1503,12 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
 }
 .reference-actions select { min-width: 190px; }
+.first-last-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 94px));
+  gap: 10px;
+  margin-top: 12px;
+}
 .reference-list { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; }
 .reference-card {
   position: relative;
@@ -1486,6 +1527,20 @@ watch(isSelected, (selected) => {
   color: #71717a;
   object-fit: cover;
   font-size: 11px;
+}
+.first-last-frame-slot[data-reference-state='empty'] .reference-placeholder {
+  border-style: dashed;
+}
+.frame-slot-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(9, 9, 11, 0.84);
+  color: #f4f4f5;
+  font-size: 10px;
 }
 .reference-card audio { padding: 6px; }
 .reference-card[data-reference-enabled='false'] { opacity: 0.45; }
