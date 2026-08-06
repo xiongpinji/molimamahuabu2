@@ -115,6 +115,7 @@ function createCalls() {
     orderPayloads: [],
     packageUpdates: [],
     uploadContentTypes: [],
+    userGetCounts: { account: 0, config: 0, packages: 0, orders: 0 },
   }
 }
 
@@ -155,9 +156,27 @@ async function mockRechargeApi(page, calls, options = {}) {
     if (method === 'POST') calls.apiPosts.push({ method, pathname })
 
     if (method === 'GET' && pathname === '/api/v1/billing/account') {
+      calls.userGetCounts.account += 1
+      if (calls.userGetCounts.account <= Number(options.initialUserGetFailures?.account || 0)) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { message: '模拟积分账户加载失败' } }),
+        })
+      }
+      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
       return route.fulfill(json({ available: 88600, held: 0, spent: 11400 }))
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/alipay/config') {
+      calls.userGetCounts.config += 1
+      if (calls.userGetCounts.config <= Number(options.initialUserGetFailures?.config || 0)) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { message: '模拟支付配置加载失败' } }),
+        })
+      }
+      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
       return route.fulfill(json({
         configured,
         fixed_ratio_credits_per_yuan: 100,
@@ -166,9 +185,27 @@ async function mockRechargeApi(page, calls, options = {}) {
       }))
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/packages') {
+      calls.userGetCounts.packages += 1
+      if (calls.userGetCounts.packages <= Number(options.initialUserGetFailures?.packages || 0)) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { message: '模拟套餐加载失败' } }),
+        })
+      }
+      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
       return route.fulfill(json(rechargePackages))
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/alipay/orders') {
+      calls.userGetCounts.orders += 1
+      if (calls.userGetCounts.orders <= Number(options.initialUserGetFailures?.orders || 0)) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: { message: '模拟充值记录加载失败' } }),
+        })
+      }
+      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
       return route.fulfill(json(rechargeOrders))
     }
     if (method === 'POST' && pathname === '/api/v1/billing/recharge/alipay/orders') {
@@ -356,6 +393,54 @@ test('支付暂停时展示四个管理员套餐并阻止套餐与自定义下�
     method: 'POST',
     pathname: '/api/v2/fail-close-probe',
   }])
+})
+
+test('用户充值任一关键数据加载失败时零误导零下单，单在途重试后原子恢复', async ({ page }) => {
+  const calls = createCalls()
+  await seedAdminSession(page)
+  await mockRechargeApi(page, calls, {
+    initialUserGetFailures: { packages: 1 },
+    userGetDelayMs: 250,
+  })
+  await page.goto('/recharge')
+
+  const topbar = page.locator('.recharge-topbar')
+  const brand = topbar.locator('.recharge-brand')
+  await expect(brand.locator('img')).toHaveAttribute('src', '/moli-mama-logo.png')
+  await expect(brand.locator('img')).toHaveAttribute('alt', '茉莉妈妈')
+  await expect(brand).toContainText('充值中心')
+  const actions = topbar.locator('.topbar-actions')
+  await expect(actions.locator('.credit-balance strong')).toHaveText('--')
+  await expect(actions.getByRole('button', { name: '充值记录' })).toBeDisabled()
+  await expect(actions.getByRole('button', { name: '返回工作区' })).toBeVisible()
+  await expect(topbar.locator('.recharge-topbar__inner > .back-button')).toHaveCount(0)
+
+  const errorPanel = page.locator('.recharge-load-error')
+  await expect(errorPanel).toContainText('充值信息加载失败')
+  await expect(errorPanel).toContainText('模拟套餐加载失败')
+  await expect(page.getByText('支付通道准备中')).toHaveCount(0)
+  await expect(page.getByText('暂无可用套餐')).toHaveCount(0)
+  await expect(page.getByText('88,600')).toHaveCount(0)
+  await expect(page.locator('.mode-switch')).toHaveCount(0)
+  await expect(page.locator('.recharge-package-card')).toHaveCount(0)
+  await expect(page.locator('.custom-recharge-panel')).toHaveCount(0)
+  expect(calls.createOrders).toBe(0)
+  expect(calls.apiPosts).toEqual([])
+  const countsBeforeRetry = { ...calls.userGetCounts }
+
+  await errorPanel.getByRole('button', { name: '重新加载' }).evaluate((button) => {
+    button.click()
+    button.click()
+  })
+  await expect(page.locator('.recharge-package-card')).toHaveCount(4)
+  await expect(actions.locator('.credit-balance strong')).toHaveText('88,600')
+  await expect(actions.getByRole('button', { name: '充值记录' })).toBeEnabled()
+  await expect(page.locator('.channel-alert')).toContainText('支付通道准备中')
+  for (const key of ['account', 'config', 'packages', 'orders']) {
+    expect(calls.userGetCounts[key] - countsBeforeRetry[key]).toBe(1)
+  }
+  expect(calls.createOrders).toBe(0)
+  expect(calls.apiPosts).toEqual([])
 })
 
 test('支付通道就绪时非法自定义金额显示验证且不创建订单', async ({ page }) => {

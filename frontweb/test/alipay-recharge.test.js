@@ -13,6 +13,7 @@ const rechargeCenterPath = new URL('../src/views/RechargeCenter.vue', import.met
 const packageCardPath = new URL('../src/components/RechargePackageCard.vue', import.meta.url)
 const customPanelPath = new URL('../src/components/CustomRechargePanel.vue', import.meta.url)
 const appSource = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const rechargeLogoPath = new URL('../public/moli-mama-logo.png', import.meta.url)
 
 test('用户充值与管理员套餐统一使用支付宝充值接口', () => {
   for (const endpoint of [
@@ -65,6 +66,28 @@ test('独立充值中心并行加载数据并提供套餐、自定义和订单�
   assert.match(rechargeCenter, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/)
   assert.match(rechargeCenter, /@media\s*\(max-width:\s*1024px\)[\s\S]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
   assert.match(rechargeCenter, /@media\s*\(max-width:\s*760px\)[\s\S]*grid-template-columns:\s*1fr/)
+})
+
+test('充值中心加载失败时只显示可重试错误态并禁止下单', () => {
+  const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
+  assert.match(rechargeCenter, /const\s+loadState\s*=\s*ref\(['"]loading['"]\)/)
+  assert.match(rechargeCenter, /v-if="loadState\s*===\s*'loading'"/)
+  assert.match(rechargeCenter, /v-else-if="loadState\s*===\s*'error'"[\s\S]*充值信息加载失败/)
+  assert.match(rechargeCenter, /<template\s+v-else-if="loadState\s*===\s*'ready'">/)
+  assert.match(rechargeCenter, /class="retry-button"[\s\S]*@click="loadRechargeCenter"/)
+  assert.match(rechargeCenter, /if\s*\(loadRequest\)\s*return\s+loadRequest/)
+  assert.match(rechargeCenter, /if\s*\(loadState\.value\s*!==\s*'ready'\)\s*return/)
+  assert.match(rechargeCenter, /<el-drawer[\s\S]*v-if="loadState\s*===\s*'ready'"/)
+})
+
+test('充值中心顶栏使用真实品牌资产并将账户动作统一放在右侧', () => {
+  const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
+  assert.equal(fs.existsSync(rechargeLogoPath), true)
+  assert.match(rechargeCenter, /class="recharge-brand"[\s\S]*<img[\s\S]*src="\/moli-mama-logo\.png"[\s\S]*alt="茉莉妈妈"/)
+  assert.match(rechargeCenter, /class="recharge-brand"[\s\S]*<strong>充值中心<\/strong>/)
+  assert.match(rechargeCenter, /class="topbar-actions"[\s\S]*class="credit-balance"[\s\S]*class="history-button"[\s\S]*class="back-button"/)
+  assert.match(rechargeCenter, /class="history-button"[\s\S]*:disabled="loadState\s*!==\s*'ready'"/)
+  assert.doesNotMatch(rechargeCenter, /class="brand-mark"/)
 })
 
 test('支付未配置时模板和处理函数双重拦截订单请求', () => {
