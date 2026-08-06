@@ -285,7 +285,7 @@ test('awaitCompletion 成功后写回成片素材、task result 并确认账单'
           .run('completed', 'https://cdn.test/video.mp4', 'videos/shot.mp4', id);
       },
       artifactVerifier: async () => ({ duration: 6.1, width: 720, height: 1280 }),
-      assetImporter: async () => ({ id: 77 }),
+      assetImporter: () => ({ id: 77 }),
     }), { shotId });
 
     const shot = state.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
@@ -298,6 +298,46 @@ test('awaitCompletion 成功后写回成片素材、task result 并确认账单'
     assert.equal(draft.new_video_ref.video_url, 'https://cdn.test/video.mp4');
     assert.equal(JSON.parse(task.result).asset_id, 77);
     assert.equal(reservation.status, 'confirmed');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('completed 终态再次 run 直接复用结果不重跑处理器也不重复确认账单', async () => {
+  const state = setup();
+  let calls = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        calls += 1;
+        db.prepare('UPDATE video_generations SET status = ?, video_url = ?, local_path = ? WHERE id = ?')
+          .run('completed', 'https://cdn.test/video.mp4', 'videos/shot.mp4', id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: () => ({ id: 77 }),
+    }), { shotId });
+    const before = {
+      task: state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(first.task_id),
+      shot: state.db.prepare('SELECT status, draft_json FROM redraw_shots WHERE id = ?').get(shotId),
+      video: state.db.prepare('SELECT status, video_url, local_path, error_msg FROM video_generations WHERE id = ?').get(first.video_generation_id),
+      confirms: count(state.db, 'tenant_credit_ledger', "event_type = 'confirm'"),
+    };
+
+    const second = await runShotGeneration(ctx(state.db, {
+      videoProcessor: async () => { calls += 1; },
+    }), first.task_id);
+
+    assert.equal(second.status, 'completed');
+    assert.equal(second.task_id, first.task_id);
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(second.asset_id, 77);
+    assert.equal(calls, 1);
+    assert.deepEqual(state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(first.task_id), before.task);
+    assert.deepEqual(state.db.prepare('SELECT status, draft_json FROM redraw_shots WHERE id = ?').get(shotId), before.shot);
+    assert.deepEqual(state.db.prepare('SELECT status, video_url, local_path, error_msg FROM video_generations WHERE id = ?').get(first.video_generation_id), before.video);
+    assert.equal(count(state.db, 'tenant_credit_ledger', "event_type = 'confirm'"), before.confirms);
   } finally {
     state.db.close();
   }
@@ -318,6 +358,29 @@ test('明确失败会标记 shot failed 并退款', async () => {
     assert.equal(result.status, 'failed');
     assert.equal(state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'refunded');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('失败结算异常会回滚 failed 终态并原子降级 needs_attention 且保持 held', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    state.db.prepare('UPDATE tenant_credit_accounts SET held = 0 WHERE tenant_id = ?').run('tenant-a');
+    const result = await runShotGeneration(ctx(state.db, {
+      videoProcessor: async (db, _log, id) => {
+        db.prepare('UPDATE video_generations SET status = ?, error_msg = ? WHERE id = ?')
+          .run('failed', 'provider rejected prompt', id);
+      },
+    }), created.task_id);
+
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status, error FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
   } finally {
     state.db.close();
   }
@@ -363,7 +426,7 @@ test('completed 但成片校验或素材导入不完整时 needs_attention 且�
           if (mode === 'artifact_failed') throw Object.assign(new Error('bad artifact'), { code: 'REDRAW_VIDEO_ARTIFACT_INVALID' });
           return { duration: 6, width: 720, height: 1280 };
         },
-        assetImporter: async () => (mode === 'import_failed' ? null : { id: 91 }),
+        assetImporter: () => (mode === 'import_failed' ? null : { id: 91 }),
       }), { shotId });
       const video = state.db.prepare(`
         SELECT status, error_msg, video_url, local_path
@@ -379,6 +442,35 @@ test('completed 但成片校验或素材导入不完整时 needs_attention 且�
     } finally {
       state.db.close();
     }
+  }
+});
+
+test('素材导入写入后抛错会回滚新增 asset 并降级 needs_attention 保持 held', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        db.prepare('UPDATE video_generations SET status = ?, video_url = ?, local_path = ? WHERE id = ?')
+          .run('completed', 'https://cdn.test/video.mp4', 'videos/shot.mp4', id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: (db, _log, id) => {
+        addBaseAsset(db, { name: 'orphan-video', category: 'video', localPath: 'videos/shot.mp4' });
+        db.prepare('UPDATE assets SET video_gen_id = ? WHERE name = ?').run(id, 'orphan-video');
+        throw new Error('asset import exploded');
+      },
+    }), { shotId });
+
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(count(state.db, 'assets', "video_gen_id IS NOT NULL"), 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
+  } finally {
+    state.db.close();
   }
 });
 
@@ -416,6 +508,31 @@ test('processor 先写 completed result 后成片校验失败会清理 task 终�
   }
 });
 
+test('processor 写入互相矛盾终态时原子降级 needs_attention 且不重跑第二次', async () => {
+  const state = setup();
+  let calls = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    state.db.prepare("UPDATE redraw_shots SET status = 'completed' WHERE id = ?").run(shotId);
+    state.db.prepare("UPDATE async_tasks SET status = 'completed', result = '{}' WHERE id = ?").run(created.task_id);
+    state.db.prepare("UPDATE video_generations SET status = 'failed', error_msg = 'provider failed' WHERE id = ?").run(created.video_generation_id);
+
+    const result = await runShotGeneration(ctx(state.db, {
+      videoProcessor: async () => { calls += 1; },
+    }), created.task_id);
+
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(calls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
 test('resumeRedrawTasks 先将中断 redraw_shot 降级 needs_attention，避免视频恢复误失败和退款', async () => {
   const state = setup();
   try {
@@ -443,6 +560,65 @@ test('resumeRedrawTasks 先将中断 redraw_shot 降级 needs_attention，避免
   } finally {
     state.db.close();
   }
+});
+
+test('verifyVideoArtifact 使用 realpath 阻止指向根外的 symlink 但允许根内 symlink', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-symlink-'));
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-outside-'));
+  try {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const realInside = path.join(tempRoot, 'real', 'inside.mp4');
+    const realOutside = path.join(outsideRoot, 'outside.mp4');
+    const linkInside = path.join(tempRoot, 'videos', 'inside-link.mp4');
+    const linkOutside = path.join(tempRoot, 'videos', 'outside-link.mp4');
+    fs.mkdirSync(path.dirname(realInside), { recursive: true });
+    fs.mkdirSync(path.dirname(linkInside), { recursive: true });
+    fs.writeFileSync(realInside, Buffer.from('video'));
+    fs.writeFileSync(realOutside, Buffer.from('video'));
+    try {
+      fs.symlinkSync(realInside, linkInside);
+      fs.symlinkSync(realOutside, linkOutside);
+    } catch (error) {
+      t.skip(`symlink unavailable: ${error.message}`);
+      db.close();
+      return;
+    }
+    const now = new Date().toISOString();
+    const insideId = db.prepare(`INSERT INTO video_generations
+      (status, local_path, created_at, updated_at) VALUES ('completed', 'videos/inside-link.mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
+    const outsideId = db.prepare(`INSERT INTO video_generations
+      (status, local_path, created_at, updated_at) VALUES ('completed', 'videos/outside-link.mp4', ?, ?)`)
+      .run(now, now).lastInsertRowid;
+
+    const verified = await verifyVideoArtifact({
+      db,
+      storageRoot: tempRoot,
+      probeRunner: async () => ({ duration: 6, width: 720, height: 1280 }),
+    }, insideId);
+    assert.deepEqual(verified, { duration: 6, width: 720, height: 1280 });
+    await assert.rejects(
+      () => verifyVideoArtifact({
+        db,
+        storageRoot: tempRoot,
+        probeRunner: async () => ({ duration: 6, width: 720, height: 1280 }),
+      }, outsideId),
+      (error) => error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID',
+    );
+    db.close();
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('default ffprobe 调用设置超时、buffer、killSignal 和 Windows 隐藏窗口', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'redrawGenerationService.js'), 'utf8');
+  assert.match(source, /timeout:\s*15000/);
+  assert.match(source, /maxBuffer:\s*1024\s*\*\s*1024/);
+  assert.match(source, /killSignal:\s*'SIGKILL'/);
+  assert.match(source, /windowsHide:\s*true/);
 });
 
 test('verifyVideoArtifact 路径越界和缺文件 fail closed，probeRunner 成功时返回元数据', async () => {
