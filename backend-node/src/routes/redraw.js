@@ -11,6 +11,7 @@ const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
 const assetService = require('../services/assetService');
 const taskService = require('../services/taskService');
+const uploadServiceModule = require('../services/uploadService');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -22,6 +23,16 @@ const upload = multer({
   }),
   limits: { fileSize: 1024 * 1024 * 1024 },
 });
+
+const referenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    cb(null, /^image\/(png|jpe?g|webp)$/i.test(String(file.mimetype || '')));
+  },
+});
+
+const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -144,12 +155,13 @@ function normalizeAnalysisSettings(body) {
   const market = String(body?.market || '').trim();
   const aspectRatio = String(body?.aspect_ratio || body?.aspectRatio || '').trim();
   if (!locale) throw Object.assign(new Error('请选择语言'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
-  if (!['16:9', '9:16', '1:1', '4:3'].includes(aspectRatio)) {
+  if (!ALLOWED_ASPECT_RATIOS.has(aspectRatio)) {
     throw Object.assign(new Error('请选择有效输出比例'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
   }
   const presetId = body?.style_preset_id ?? body?.stylePresetId;
   const hasPreset = presetId !== undefined && presetId !== null && String(presetId).trim() !== '';
-  const freeStyle = normalizeFreeStyle(body?.free_style ?? body?.freeStyle);
+  const freeStyleValue = parseJSON(body?.free_style ?? body?.freeStyle, body?.free_style ?? body?.freeStyle);
+  const freeStyle = normalizeFreeStyle(freeStyleValue);
   if (hasPreset && freeStyle) {
     throw Object.assign(new Error('普通预设和自由风格不能同时提交'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
   }
@@ -167,6 +179,47 @@ function normalizeAnalysisSettings(body) {
     settings.free_style = freeStyle;
   }
   return settings;
+}
+
+function registerReferenceImage(db, log, currentOwner, file, cfg, uploadLimits) {
+  if (!file) return null;
+  const buffer = file.buffer || (file.path ? fs.readFileSync(file.path) : null);
+  if (!buffer) throw Object.assign(new Error('参考图上传内容为空'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+  const uploadLog = log && typeof log.info === 'function' ? log : { info() {} };
+  const uploaded = uploadServiceModule.uploadFile(
+    uploadLimits.storageRoot,
+    cfg?.storage?.base_url || '',
+    uploadLog,
+    buffer,
+    file.originalname || 'style-reference.png',
+    file.mimetype || 'image/png',
+    'redraw-references',
+  );
+  return assetService.create(db, log, {
+    name: file.originalname || 'style-reference.png',
+    type: 'image',
+    category: 'redraw_style_reference',
+    url: uploaded.url,
+    local_path: uploaded.local_path,
+    file_size: file.size ?? buffer.length,
+    mime_type: file.mimetype || 'image/png',
+    metadata: {
+      source: 'redraw_style_reference_upload',
+      tenant_id: currentOwner.tenantId,
+      user_id: currentOwner.userId,
+    },
+  });
+}
+
+function cleanupReferenceImage(db, log, asset, storageRoot) {
+  if (!asset?.id) return;
+  try {
+    assetService.deleteById(db, log, asset.id);
+  } catch (error) {
+    log?.warn?.({ err: error, asset_id: asset.id }, 'redraw reference asset cleanup failed');
+  }
+  const target = safeStoragePath(storageRoot, asset.local_path);
+  if (target) fs.rmSync(target, { force: true });
 }
 
 function mapStylePreset(row) {
@@ -345,7 +398,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
             cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
           }
           createdItems.push(mapWork(work, registered.sourceAsset, {
-            analysisQuote: quoteAnalysis(db),
+            analysisQuote: quoteAnalysis(db, log),
           }));
         }
         return createdItems;
@@ -370,7 +423,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const task = work.task_id ? taskService.getTask(db, work.task_id) : null;
     return response.success(res, mapWork(work, null, {
       task,
-      analysisQuote: quoteAnalysis(db),
+      analysisQuote: quoteAnalysis(db, log),
     }));
   }
 
@@ -388,8 +441,23 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const work = findOwnedWork(req.params.id, currentOwner);
     if (!work) return response.notFound(res, '转绘作品不存在');
 
+    let referenceAsset = null;
     try {
       const analysisSettings = normalizeAnalysisSettings(req.body || {});
+      if (req.file) {
+        if (!analysisSettings.free_style) {
+          throw Object.assign(new Error('参考图只能随自由风格提交'), { code: 'INVALID_REDRAW_ANALYSIS_SETTINGS' });
+        }
+        referenceAsset = registerReferenceImage(db, log, currentOwner, req.file, cfg, uploadLimits);
+        analysisSettings.free_style.reference = {
+          ...(analysisSettings.free_style.reference || {}),
+          filename: req.file.originalname || analysisSettings.free_style.reference?.filename || 'style-reference.png',
+          id: String(referenceAsset.id),
+          asset_id: referenceAsset.id,
+          url: referenceAsset.url,
+          local_path: referenceAsset.local_path,
+        };
+      }
       const result = await orchestrator.startAnalysis(db, log, {
         workId: work.id,
         userId: currentOwner.userId,
@@ -404,6 +472,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         current_step: 1,
       });
     } catch (error) {
+      cleanupReferenceImage(db, log, referenceAsset, uploadLimits.storageRoot);
       if (error.code === 'REDRAW_WORK_NOT_FOUND') return response.notFound(res, '转绘作品不存在');
       if (['INSUFFICIENT_CREDITS'].includes(error.code)) {
         return response.error(res, 402, error.code, error.message);
@@ -419,6 +488,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
 
   return {
     uploadSource: upload.single('file'),
+    uploadReferenceImage: referenceUpload.single('reference_image'),
     listProjects,
     createProject,
     getProject,

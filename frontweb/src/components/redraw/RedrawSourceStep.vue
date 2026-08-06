@@ -86,7 +86,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
@@ -123,8 +123,10 @@ const workState = ref(props.initialWork)
 const uploading = ref(false)
 const submitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
+let pollTimer = null
+let pollAttempts = 0
 
-const aspectRatioOptions = ['16:9', '9:16', '1:1', '4:3']
+const aspectRatioOptions = ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']
 const estimateCredits = computed(() => analysisQuoteCredits(workState.value))
 const hasValidQuote = computed(() => estimateCredits.value != null)
 const canStartAnalysis = computed(() => canStartRedrawAnalysis({
@@ -137,6 +139,46 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
 
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null
+}
+
+function isTerminalTaskState(work) {
+  const status = String(work?.task_status || work?.status || '').toLowerCase()
+  return ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(status) || Number(work?.current_step || 1) > 1
+}
+
+function shouldPollWork(work) {
+  const status = String(work?.task_status || work?.status || '').toLowerCase()
+  return Boolean(work?.id && ['pending', 'processing', 'analyzing'].includes(status) && !isTerminalTaskState(work))
+}
+
+function stopTaskPolling() {
+  if (!pollTimer) return
+  clearInterval(pollTimer)
+  pollTimer = null
+}
+
+function startTaskPolling() {
+  if (pollTimer || !shouldPollWork(workState.value)) return
+  pollAttempts = 0
+  pollTimer = setInterval(async () => {
+    pollAttempts += 1
+    if (pollAttempts > 120 || !shouldPollWork(workState.value)) {
+      stopTaskPolling()
+      return
+    }
+    try {
+      await refreshWork()
+    } catch (_) {
+      stopTaskPolling()
+    }
+  }, 2000)
+}
+
+function syncWork(next) {
+  workState.value = next
+  taskState.value = taskStateFromWork(next)
+  if (shouldPollWork(next)) startTaskPolling()
+  if (isTerminalTaskState(next)) stopTaskPolling()
 }
 
 async function loadCapabilities() {
@@ -155,9 +197,9 @@ async function loadCapabilities() {
 async function refreshWork() {
   if (!workState.value?.id) return
   const fresh = await redrawAPI.getWork(workState.value.id)
-  workState.value = fresh
-  taskState.value = taskStateFromWork(fresh)
+  syncWork(fresh)
   emit('work-updated', fresh)
+  return fresh
 }
 
 async function ensureWork() {
@@ -166,7 +208,7 @@ async function ensureWork() {
   const result = await redrawAPI.createWorks(props.projectId, selectedFile.value)
   const created = result?.items?.[0]
   if (!created?.id) throw new Error('后端未返回转绘作品')
-  workState.value = created
+  syncWork(created)
   emit('work-updated', created)
   return created
 }
@@ -201,6 +243,7 @@ async function startAnalysis() {
       message: '',
     }
     await refreshWork()
+    startTaskPolling()
     ElMessage.success('源片分析已提交')
   } catch (error) {
     ElMessage.error(error.message || '提交转绘分析失败')
@@ -216,6 +259,13 @@ onMounted(async () => {
 
 watch(() => props.initialWork, (next) => {
   workState.value = next
+  taskState.value = taskStateFromWork(next)
+  if (shouldPollWork(next)) startTaskPolling()
+  if (isTerminalTaskState(next)) stopTaskPolling()
+})
+
+onUnmounted(() => {
+  stopTaskPolling()
 })
 </script>
 

@@ -177,6 +177,20 @@ function addVerifiedConfig(db) {
   }), now, now);
 }
 
+test('quoteAnalysis throws and logs unknown schema errors instead of hiding them as missing price', () => {
+  const db = new Database(':memory:');
+  const errors = [];
+  try {
+    assert.throws(
+      () => redraw.quoteAnalysis(db, { error: (...args) => errors.push(args) }),
+      /no such table: ai_service_configs/,
+    );
+    assert.equal(errors.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
 function addVerifiedConfigWithQuery(db, baseUrl, queryEndpoint = '/query/{taskId}') {
   const now = new Date().toISOString();
   db.prepare(`

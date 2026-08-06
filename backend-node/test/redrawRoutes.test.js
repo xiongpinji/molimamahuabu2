@@ -6,6 +6,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
+const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 
@@ -494,6 +495,55 @@ test('提交分析返回异步任务、厂商任务与 billing 三键，并保�
   }
 });
 
+test('提交分析支持完整输出比例白名单并拒绝未知比例', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const acceptedRatios = [];
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      orchestrator: {
+        startAnalysis: async (_db, _log, value) => {
+          acceptedRatios.push(value.analysisSettings.aspect_ratio);
+          return {
+            task_id: `task-${acceptedRatios.length}`,
+            provider_task_id: `provider-${acceptedRatios.length}`,
+            billing: { charged: 0, held: 1, released: 0 },
+          };
+        },
+      },
+    }));
+
+    for (const ratio of ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']) {
+      const submitted = captureResponse();
+      await handlers.analyzeWork(request({
+        id: workId,
+        body: {
+          locale: 'ja-JP',
+          aspect_ratio: ratio,
+          style_preset_id: 7,
+        },
+      }), submitted);
+      assert.equal(submitted.statusCode, 201);
+    }
+
+    const rejected = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'ja-JP',
+        aspect_ratio: '2:1',
+        style_preset_id: 7,
+      },
+    }), rejected);
+
+    assert.equal(rejected.statusCode, 400);
+    assert.deepEqual(acceptedRatios, ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']);
+  } finally {
+    db.close();
+  }
+});
+
 test('提交分析接受自由风格并保留参考图字段进入编排输入', async () => {
   const db = createDb();
   try {
@@ -536,5 +586,62 @@ test('提交分析接受自由风格并保留参考图字段进入编排输入',
     });
   } finally {
     db.close();
+  }
+});
+
+test('提交分析 multipart 参考图登记为资产并写入自由风格 metadata', async () => {
+  const db = createDb();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-upload-'));
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const handlers = redrawRoutes(db, { error() {}, info() {} }, routeDeps({
+      cfg: { storage: { local_path: tempRoot, base_url: '/static' } },
+      uploadLimits: { storageRoot: tempRoot },
+      orchestrator: realRedrawOrchestrator,
+      analysisOptions: {
+        provider: {
+          startAnalysis: async () => ({ provider_task_id: 'provider-redraw-free-ref' }),
+        },
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        aspect_ratio: '3:4',
+        free_style: JSON.stringify({
+          positive: 'warm light',
+          negative: 'blur',
+        }),
+      },
+      file: {
+        originalname: 'style.png',
+        mimetype: 'image/png',
+        size: 7,
+        buffer: Buffer.from('png-ref'),
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    const asset = db.prepare("SELECT * FROM assets WHERE category = 'redraw_style_reference' AND deleted_at IS NULL").get();
+    assert.ok(asset);
+    assert.equal(asset.name, 'style.png');
+    assert.equal(asset.type, 'image');
+    assert.match(asset.local_path, /^redraw-references\//);
+    assert.ok(fs.existsSync(path.join(tempRoot, asset.local_path)));
+    const task = db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(submitted.body.data.task_id);
+    const metadata = JSON.parse(task.metadata);
+    assert.equal(metadata.redraw_analysis.free_style.reference.id, String(asset.id));
+    assert.equal(metadata.redraw_analysis.free_style.reference.url, asset.url);
+  } finally {
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

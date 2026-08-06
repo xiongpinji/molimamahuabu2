@@ -56,6 +56,25 @@ test('分析 payload 包含语言地区、比例、普通 preset 或自由风格
   })
 })
 
+test('自由风格真实参考图文件保留给 analyze API multipart 上传', () => {
+  const referenceFile = new File(['style'], 'style.png', { type: 'image/png' })
+
+  const payload = buildAnalyzePayload({
+    locale: 'en-US',
+    market: 'US',
+    aspectRatio: '3:4',
+    freeStyle: {
+      positivePrompt: 'warm light',
+      negativePrompt: 'blur',
+      referenceImage: referenceFile,
+    },
+  })
+
+  assert.equal(payload.aspect_ratio, '3:4')
+  assert.equal(payload.free_style.reference.filename, 'style.png')
+  assert.equal(payload.free_style.reference.file, referenceFile)
+})
+
 test('刷新恢复真实 task progress，不伪造 processing 进度', () => {
   assert.deepEqual(taskStateFromWork({
     task_id: 'task-1',

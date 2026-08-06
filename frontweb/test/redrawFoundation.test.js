@@ -34,6 +34,8 @@ test('一键转绘 API 使用统一 request 并导出阶段 1 所需真实接口
   assert.match(apiSource, /request\.post\(`\/redraw\/projects\/\$\{projectId\}\/works`/)
   assert.match(apiSource, /multipart\/form-data/)
   assert.match(apiSource, /request\.post\(`\/redraw\/works\/\$\{workId\}\/analyze`/)
+  assert.match(apiSource, /reference_image/)
+  assert.match(apiSource, /FormData/)
 })
 
 test('一键转绘在路由和主导航中作为真实工作台入口', () => {
@@ -71,9 +73,16 @@ test('第一步接入真实项目、源片上传、语言地区、比例、报�
   assert.match(sourceStepSource, /task_id/)
   assert.match(sourceStepSource, /status/)
   assert.match(sourceStepSource, /progress/)
+  assert.match(sourceStepSource, /taskStateFromWork\(next\)/)
+  assert.match(sourceStepSource, /setInterval/)
+  assert.match(sourceStepSource, /clearInterval/)
+  assert.match(sourceStepSource, /isTerminalTaskState/)
   assert.match(sourceStepSource, /本次预计扣除 \{\{ estimateCredits \}\} 积分/)
   assert.match(sourceStepSource, /积分待管理员配置/)
   assert.match(sourceStepSource, /canStartAnalysis/)
+  for (const ratio of ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']) {
+    assert.match(sourceStepSource, new RegExp(`'${ratio}'`), ratio)
+  }
 })
 
 test('风格预设轨道满足四类分段、固定卡片尺寸、横向滚动和自由风格输入合同', () => {

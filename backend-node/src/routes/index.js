@@ -226,7 +226,7 @@ function setupRouter(cfg, db, log) {
   r.get('/redraw/works/:id', redraw.getWork);
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
-  r.post('/redraw/works/:id/analyze', redraw.analyzeWork);
+  r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);

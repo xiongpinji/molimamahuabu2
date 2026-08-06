@@ -31,6 +31,7 @@ function referencePayload(referenceImage) {
   const reference = {}
   if (filename) reference.filename = filename
   if (id) reference.id = id
+  if (typeof referenceImage.arrayBuffer === 'function') reference.file = referenceImage
   return Object.keys(reference).length ? reference : null
 }
 

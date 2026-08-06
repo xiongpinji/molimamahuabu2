@@ -45,14 +45,18 @@ function loadVerifiedCapability(db) {
   throw codedError('VIDEO_UNDERSTANDING_NOT_VERIFIED', '视频理解模型缺少真实生成且结果可读的验证证据');
 }
 
-function quoteAnalysis(db) {
+function quoteAnalysis(db, log) {
   try {
     const config = loadVerifiedCapability(db);
     const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
     const amount = modelPrice.calculateCharge(db, model);
     return { model, credits: amount, amount };
-  } catch (_) {
-    return null;
+  } catch (error) {
+    if (['VIDEO_UNDERSTANDING_NOT_VERIFIED', 'MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(error.code)) {
+      return null;
+    }
+    log?.error?.('redraw analysis quote failed', { code: error.code, message: error.message });
+    throw error;
   }
 }
 
