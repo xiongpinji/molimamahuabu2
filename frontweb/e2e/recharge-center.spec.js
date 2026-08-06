@@ -100,6 +100,7 @@ function createCalls() {
   return {
     createOrders: 0,
     orderPayloads: [],
+    packageUpdates: [],
     uploadContentTypes: [],
   }
 }
@@ -122,6 +123,7 @@ function imageFixture(name) {
 async function mockRechargeApi(page, calls, options = {}) {
   const configured = options.configured ?? false
   const orderFailure = options.orderFailure ?? false
+  let adminPackages = rechargePackages.map((item) => ({ ...item }))
 
   await page.route('**/static/uploads/recharge-packages/**', async (route) => {
     const filename = new URL(route.request().url()).pathname.split('/').pop() || ''
@@ -163,16 +165,40 @@ async function mockRechargeApi(page, calls, options = {}) {
       })
     }
     if (method === 'GET' && pathname === '/api/v1/billing/admin/recharge-packages') {
-      return route.fulfill(json(rechargePackages))
+      return route.fulfill(json(adminPackages))
     }
     if (method === 'POST' && pathname === '/api/v1/billing/admin/recharge-packages/image') {
       const body = request.postDataBuffer()?.toString('latin1') || ''
       const contentType = /Content-Type:\s*([^\r\n]+)/i.exec(body)?.[1] || ''
       calls.uploadContentTypes.push(contentType)
+      const url = ({
+        'image/jpeg': '/static/uploads/recharge-packages/uploaded-jpg.jpg',
+        'image/png': '/static/uploads/recharge-packages/uploaded-png.png',
+        'image/webp': '/static/uploads/recharge-packages/uploaded-webp.webp',
+      })[contentType]
       return route.fulfill(json({
-        url: '/static/uploads/recharge-packages/new.webp',
-        local_path: 'uploads/recharge-packages/new.webp',
+        url,
+        local_path: url.replace('/static/', ''),
       }))
+    }
+    const updateMatch = pathname.match(/^\/api\/v1\/billing\/admin\/recharge-packages\/([^/]+)$/)
+    if (method === 'PUT' && updateMatch && updateMatch[1] !== 'order') {
+      const packageId = decodeURIComponent(updateMatch[1])
+      const body = request.postDataJSON()
+      calls.packageUpdates.push({ method, pathname, body })
+      if (body.is_featured) {
+        adminPackages = adminPackages.map((item) => ({ ...item, is_featured: 0 }))
+      }
+      const index = adminPackages.findIndex((item) => item.id === packageId)
+      const saved = {
+        ...adminPackages[index],
+        ...body,
+        id: packageId,
+        amount_cents: Math.round(Number(body.amount_yuan) * 100),
+        is_featured: body.is_featured ? 1 : 0,
+      }
+      adminPackages[index] = saved
+      return route.fulfill(json(saved))
     }
     if (method === 'PUT' && pathname === '/api/v1/billing/admin/recharge-packages/order') {
       const packageIds = request.postDataJSON().package_ids
@@ -185,9 +211,10 @@ async function mockRechargeApi(page, calls, options = {}) {
         })
       }
       const reordered = packageIds.map((id, index) => ({
-        ...rechargePackages.find((item) => item.id === id),
+        ...adminPackages.find((item) => item.id === id),
         sort_order: index,
       }))
+      adminPackages = reordered
       return route.fulfill(json(reordered))
     }
 
@@ -343,6 +370,22 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
   await field(admin, '广告主标题').locator('input').fill('实时预览新标题')
   await field(admin, '广告副标题').locator('input').fill('管理员可修改全部广告内容')
   await field(admin, '按钮文案').locator('input').fill('立即补充积分')
+  await field(admin, '售价（元）').getByRole('spinbutton').fill('15.01')
+  await field(admin, '到账积分').getByRole('spinbutton').fill('1501')
+
+  const expectedEndsAt = await page.evaluate(() => new Date(2027, 0, 2, 3, 4, 5).toISOString())
+  const endsAt = field(admin, '结束时间').getByRole('combobox')
+  await endsAt.fill('2027-01-02 03:04:05')
+  await endsAt.press('Tab')
+
+  await field(admin, '状态').locator('.el-select__wrapper').click()
+  await page.locator('.el-select-dropdown__item:visible').filter({ hasText: '停用' }).click()
+  await field(admin, '推荐套餐').locator('.el-switch').click()
+
+  await field(admin, '强调色').getByRole('button', { name: '颜色选择器' }).click()
+  const colorDialog = page.getByRole('dialog')
+  await colorDialog.getByRole('textbox').fill('#2f7ed8')
+  await colorDialog.getByRole('button', { name: '确定' }).click()
 
   const preview = admin.locator('.preview-column')
   await expect(preview).toContainText('PLUS 新版')
@@ -355,25 +398,69 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
 
   const fileInput = admin.locator('input[type="file"]')
   for (const upload of [
-    { name: 'banner.jpg', mimeType: 'image/jpeg' },
-    { name: 'banner.png', mimeType: 'image/png' },
-    { name: 'banner.webp', mimeType: 'image/webp' },
+    { name: 'banner.jpg', mimeType: 'image/jpeg', url: '/static/uploads/recharge-packages/uploaded-jpg.jpg' },
+    { name: 'banner.png', mimeType: 'image/png', url: '/static/uploads/recharge-packages/uploaded-png.png' },
+    { name: 'banner.webp', mimeType: 'image/webp', url: '/static/uploads/recharge-packages/uploaded-webp.webp' },
   ]) {
     await fileInput.setInputFiles({
       name: upload.name,
       mimeType: upload.mimeType,
       buffer: Buffer.from('mock-recharge-ad-image'),
     })
-    await expect(field(admin, '广告图片').locator('input').first()).toHaveValue('/static/uploads/recharge-packages/new.webp')
+    await expect(field(admin, '广告图片').locator('input').first()).toHaveValue(upload.url)
+    await expect(preview.locator('.package-image')).toHaveAttribute('src', upload.url)
   }
   expect(calls.uploadContentTypes).toEqual(['image/jpeg', 'image/png', 'image/webp'])
-  await expect(preview.locator('.package-image')).toHaveAttribute('src', '/static/uploads/recharge-packages/new.webp')
+
+  await admin.getByRole('button', { name: '保存套餐' }).click()
+  await expect.poll(() => calls.packageUpdates).toEqual([{
+    method: 'PUT',
+    pathname: '/api/v1/billing/admin/recharge-packages/plus',
+    body: {
+      name: 'PLUS 新版',
+      badge_text: '限时加赠',
+      ad_title: '实时预览新标题',
+      ad_subtitle: '管理员可修改全部广告内容',
+      button_text: '立即补充积分',
+      amount_yuan: '15.01',
+      credits: 1501,
+      starts_at: null,
+      ends_at: expectedEndsAt,
+      image_url: '/static/uploads/recharge-packages/uploaded-webp.webp',
+      accent_color: '#2f7ed8',
+      sort_order: 0,
+      is_featured: true,
+      status: 'inactive',
+    },
+  }])
+  await expect(field(admin, '套餐名称').locator('input')).toHaveValue('PLUS 新版')
+  await expect(field(admin, '角标文案').locator('input')).toHaveValue('限时加赠')
+  await expect(field(admin, '广告主标题').locator('input')).toHaveValue('实时预览新标题')
+  await expect(field(admin, '广告副标题').locator('input')).toHaveValue('管理员可修改全部广告内容')
+  await expect(field(admin, '按钮文案').locator('input')).toHaveValue('立即补充积分')
+  await expect(field(admin, '售价（元）').getByRole('spinbutton')).toHaveValue('15.01')
+  await expect(field(admin, '到账积分').getByRole('spinbutton')).toHaveValue('1501')
+  await expect(field(admin, '结束时间').getByRole('combobox')).toHaveValue('2027-01-02 03:04:05')
+  await expect(field(admin, '状态')).toContainText('停用')
+  await expect(field(admin, '推荐套餐').getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+  await expect(field(admin, '广告图片').locator('input').first()).toHaveValue('/static/uploads/recharge-packages/uploaded-webp.webp')
+  await expect(preview).toContainText('PLUS 新版')
+  await expect(preview).toContainText('限时加赠')
+  await expect(preview).toContainText('管理员可修改全部广告内容')
+  await expect(preview).toContainText('实时预览新标题')
+  await expect(preview).toContainText('¥15.01')
+  await expect(preview).toContainText('1,501')
+  await expect.poll(() => preview.locator('.recharge-package-card').evaluate(
+    (element) => element.style.getPropertyValue('--package-accent'),
+  )).toBe('#2f7ed8')
+  await expect(previewButton).toHaveText('立即补充积分')
+  await expect(previewButton).toBeDisabled()
 
   await previewButton.dispatchEvent('click')
   await expect.poll(() => calls.createOrders).toBe(0)
 })
 
-test('键盘下移提交完整顺序且不会触发行选择或丢失当前草稿', async ({ page }) => {
+test('Enter 与 Space 键盘排序提交完整顺序且不会触发行选择或丢失当前草稿', async ({ page }) => {
   const calls = createCalls()
   await seedAdminSession(page)
   await mockRechargeApi(page, calls)
@@ -383,7 +470,9 @@ test('键盘下移提交完整顺序且不会触发行选择或丢失当前草�
   await expect(admin.locator('.sortable-item')).toHaveCount(4)
   await admin.locator('.sortable-item').filter({ hasText: 'PLUS' }).click()
   const titleInput = field(admin, '广告主标题').locator('input')
+  const imageInput = field(admin, '广告图片').locator('input').first()
   await titleInput.fill('尚未保存的 PLUS 草稿')
+  await imageInput.fill('/static/uploads/recharge-packages/plus-draft.webp')
 
   const proRow = admin.locator('.sortable-item').filter({ hasText: 'PRO' })
   const moveDown = proRow.getByRole('button', { name: '下移 PRO' })
@@ -394,6 +483,20 @@ test('键盘下移提交完整顺序且不会触发行选择或丢失当前草�
     ['plus', 'max', 'pro', 'ultra'],
   ])
   await expect(titleInput).toHaveValue('尚未保存的 PLUS 草稿')
+  await expect(imageInput).toHaveValue('/static/uploads/recharge-packages/plus-draft.webp')
+  await expect(admin.locator('.sortable-item--active')).toContainText('PLUS')
+
+  const maxRow = admin.locator('.sortable-item').filter({ hasText: 'MAX' })
+  const moveUp = maxRow.getByRole('button', { name: '上移 MAX' })
+  await moveUp.focus()
+  await page.keyboard.press('Space')
+
+  await expect.poll(() => calls.orderPayloads).toEqual([
+    ['plus', 'max', 'pro', 'ultra'],
+    ['max', 'plus', 'pro', 'ultra'],
+  ])
+  await expect(titleInput).toHaveValue('尚未保存的 PLUS 草稿')
+  await expect(imageInput).toHaveValue('/static/uploads/recharge-packages/plus-draft.webp')
   await expect(admin.locator('.sortable-item--active')).toContainText('PLUS')
 })
 
