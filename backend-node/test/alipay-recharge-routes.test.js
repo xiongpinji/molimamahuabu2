@@ -185,18 +185,31 @@ test('充值路由保持通知公开、管理员套餐受保护和用户订单�
   const authIndex = source.indexOf('r.use(requireUser)');
   const tenantIndex = source.indexOf('r.use(createTenantContextMiddleware');
   const userOrderIndex = source.indexOf("r.post('/billing/recharge/alipay/orders'");
+  const imageUploadIndex = source.indexOf("r.post('/billing/admin/recharge-packages/image'");
   const reorderIndex = source.indexOf("r.put('/billing/admin/recharge-packages/order'");
   const updateIndex = source.indexOf("r.put('/billing/admin/recharge-packages/:packageId'");
+  const uploadHandlersDeclaration = 'const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });';
+  const uploadHandlersIndex = source.indexOf(uploadHandlersDeclaration);
   assert.ok(notifyIndex >= 0 && notifyIndex < authIndex);
   assert.ok(userOrderIndex > tenantIndex);
+  assert.ok(uploadHandlersIndex >= 0 && uploadHandlersIndex < imageUploadIndex);
+  assert.equal(source.split(uploadHandlersDeclaration).length - 1, 1);
+  assert.ok(imageUploadIndex >= 0 && imageUploadIndex < tenantIndex);
   assert.ok(reorderIndex >= 0 && reorderIndex < updateIndex && reorderIndex < tenantIndex);
   for (const route of [
     "r.get('/billing/admin/recharge-packages'",
     "r.post('/billing/admin/recharge-packages'",
+    "r.post('/billing/admin/recharge-packages/image'",
     "r.put('/billing/admin/recharge-packages/order'",
     "r.put('/billing/admin/recharge-packages/:packageId'",
   ]) {
     const line = source.split(/\r?\n/).find((item) => item.includes(route));
     assert.match(line || '', /requireAdmin, requireBillingManager/);
   }
+  const imageUploadLine = source.split(/\r?\n/)
+    .find((item) => item.includes("r.post('/billing/admin/recharge-packages/image'"));
+  assert.match(
+    imageUploadLine || '',
+    /requireAdmin, requireBillingManager, uploadHandlers\.multerRechargePackageImageSingle, uploadHandlers\.uploadRechargePackageImage/,
+  );
 });

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { Readable } = require('stream');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
@@ -20,6 +21,42 @@ function captureResponse() {
       return this;
     },
   };
+}
+
+function multipartRequest(file) {
+  const boundary = 'recharge-package-upload-test';
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.originalname}"\r\n`
+      + `Content-Type: ${file.mimetype}\r\n\r\n`,
+    ),
+    file.buffer,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  const req = Readable.from(body);
+  req.headers = {
+    'content-type': `multipart/form-data; boundary=${boundary}`,
+    'content-length': String(body.length),
+  };
+  req.method = 'POST';
+  req.url = '/';
+  return req;
+}
+
+function invokeMiddleware(middleware, req) {
+  return new Promise((resolve, reject) => {
+    const result = captureResponse();
+    const originalJson = result.json;
+    result.json = function json(body) {
+      originalJson.call(this, body);
+      resolve(result);
+      return this;
+    };
+    middleware(req, result, (err) => {
+      if (err) reject(err);
+      else resolve(result);
+    });
+  });
 }
 
 function insertDrama(db, tenantId, userId, title) {
@@ -123,4 +160,80 @@ test('素材库媒体上传必须绑定自有项目，并注册项目素材记�
     db.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('套餐广告图上传二次校验格式并保存 WebP 到专用目录', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-recharge-package-'));
+  try {
+    const handlers = uploadModule.routes({
+      storage: { local_path: tempRoot, base_url: '' },
+    }, { info() {}, warn() {}, error() {} });
+    assert.equal(typeof handlers.uploadRechargePackageImage, 'function');
+
+    const gifResponse = captureResponse();
+    handlers.uploadRechargePackageImage({
+      file: {
+        buffer: Buffer.from('GIF89a', 'ascii'),
+        originalname: 'promotion.gif',
+        mimetype: 'image/gif',
+        size: 6,
+      },
+    }, gifResponse);
+    assert.equal(gifResponse.statusCode, 400);
+    assert.equal(fs.existsSync(path.join(tempRoot, 'uploads', 'recharge-packages')), false);
+
+    const webpResponse = captureResponse();
+    handlers.uploadRechargePackageImage({
+      file: {
+        buffer: Buffer.from('524946460400000057454250', 'hex'),
+        originalname: 'promotion.webp',
+        mimetype: 'image/webp',
+        size: 12,
+      },
+    }, webpResponse);
+    assert.equal(webpResponse.statusCode, 200);
+    assert.equal(webpResponse.body.success, true);
+    assert.match(
+      webpResponse.body.data.url,
+      /^\/static\/uploads\/recharge-packages\/[^/]+\.webp$/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(tempRoot, webpResponse.body.data.local_path)),
+      true,
+    );
+
+    const missingResponse = captureResponse();
+    handlers.uploadRechargePackageImage({}, missingResponse);
+    assert.equal(missingResponse.statusCode, 400);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('套餐广告图 Multer 将 GIF 映射为 400、超出 16MB 映射为 413', async () => {
+  const handlers = uploadModule.routes({}, { info() {}, warn() {}, error() {} });
+  assert.equal(typeof handlers.multerRechargePackageImageSingle, 'function');
+
+  const gifResult = await invokeMiddleware(
+    handlers.multerRechargePackageImageSingle,
+    multipartRequest({
+      buffer: Buffer.from('GIF89a', 'ascii'),
+      originalname: 'promotion.gif',
+      mimetype: 'image/gif',
+    }),
+  );
+  assert.equal(gifResult.statusCode, 400);
+  assert.equal(gifResult.body.error.message, '套餐广告图只支持 jpg、png、webp');
+
+  const oversizedResult = await invokeMiddleware(
+    handlers.multerRechargePackageImageSingle,
+    multipartRequest({
+      buffer: Buffer.alloc((16 * 1024 * 1024) + 1),
+      originalname: 'promotion.webp',
+      mimetype: 'image/webp',
+    }),
+  );
+  assert.equal(oversizedResult.statusCode, 413);
+  assert.equal(oversizedResult.body.error.code, 'FILE_TOO_LARGE');
+  assert.match(oversizedResult.body.error.message, /16MB/);
 });

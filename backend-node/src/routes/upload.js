@@ -7,6 +7,7 @@ const uploadService = require('../services/uploadService');
 const storageLayout = require('../services/storageLayout');
 
 const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+const allowedRechargePackageImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 const maxSize = 16 * 1024 * 1024; // 16MB，单张图片上限
 const MAX_SIZE_MB = 16;
 const allowedMediaTypes = [
@@ -56,6 +57,18 @@ const upload = multer({
     const ct = file.mimetype || 'application/octet-stream';
     if (!allowedTypes.includes(ct)) {
       return cb(new Error('只支持图片格式 (jpg, png, gif, webp)'));
+    }
+    cb(null, true);
+  },
+});
+
+const rechargePackageImageUpload = multer({
+  storage: memoryStorage,
+  limits: { fileSize: maxSize },
+  fileFilter: (req, file, cb) => {
+    const ct = file.mimetype || 'application/octet-stream';
+    if (!allowedRechargePackageImageTypes.includes(ct)) {
+      return cb(new Error('套餐广告图只支持 jpg、png、webp'));
     }
     cb(null, true);
   },
@@ -122,6 +135,27 @@ function resolveStorage(cfg) {
     storagePath: path.isAbsolute(rawStorage) ? rawStorage : path.join(process.cwd(), rawStorage),
     baseUrl: cfg?.storage?.base_url || '',
   };
+}
+
+function saveImageUpload(cfg, log, req, res, category, projectSubdir = null) {
+  const { storagePath, baseUrl } = resolveStorage(cfg);
+  const result = uploadService.uploadFile(
+    storagePath,
+    baseUrl,
+    log,
+    req.file.buffer,
+    req.file.originalname || 'image.png',
+    req.file.mimetype,
+    category,
+    projectSubdir,
+  );
+  return response.success(res, {
+    url: result.url,
+    path: result.local_path,
+    local_path: result.local_path,
+    filename: req.file.originalname,
+    size: req.file.size,
+  });
 }
 
 function resolveMediaType(mimeType) {
@@ -226,10 +260,20 @@ function dramaExists(db, dramaId) {
 
 function routes(cfg, log, db, options = {}) {
   const singleUpload = upload.single('file');
+  const rechargePackageImageSingleUpload = rechargePackageImageUpload.single('file');
   const publicPlatformEnabled = Boolean(options.publicPlatformEnabled);
   const mediaSingleUpload = mediaUpload.single('file');
   return {
     multerSingle: singleUpload,
+    multerRechargePackageImageSingle: (req, res, next) => {
+      rechargePackageImageSingleUpload(req, res, (err) => {
+        if (!err) return next();
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          return response.error(res, 413, 'FILE_TOO_LARGE', '套餐广告图不能超过 16MB');
+        }
+        return response.badRequest(res, err.message || '套餐广告图上传失败');
+      });
+    },
     multerModelSingle: modelUpload.single('file'),
     multerMediaSingle: (req, res, next) => {
       mediaSingleUpload(req, res, (err) => {
@@ -245,11 +289,6 @@ function routes(cfg, log, db, options = {}) {
         return response.badRequest(res, '请选择文件');
       }
       try {
-        const rawStorage = cfg?.storage?.local_path || './data/storage';
-        const storagePath = path.isAbsolute(rawStorage)
-          ? rawStorage
-          : path.join(process.cwd(), rawStorage);
-        const baseUrl = cfg?.storage?.base_url || '';
         let projectSubdir = null;
         if (db) {
           const raw = req.body?.drama_id;
@@ -261,26 +300,24 @@ function routes(cfg, log, db, options = {}) {
             projectSubdir = storageLayout.getProjectStorageSubdir(db, did);
           }
         }
-        const result = uploadService.uploadFile(
-          storagePath,
-          baseUrl,
-          log,
-          req.file.buffer,
-          req.file.originalname || 'image.png',
-          req.file.mimetype,
-          'uploads',
-          projectSubdir
-        );
-        response.success(res, {
-          url: result.url,
-          path: result.local_path,
-          local_path: result.local_path,
-          filename: req.file.originalname,
-          size: req.file.size,
-        });
+        saveImageUpload(cfg, log, req, res, 'uploads', projectSubdir);
       } catch (err) {
         log.error('upload image', { error: err.message });
         response.internalError(res, err.message || '上传失败');
+      }
+    },
+    uploadRechargePackageImage: (req, res) => {
+      if (!req.file || !Buffer.isBuffer(req.file.buffer)) {
+        return response.badRequest(res, '请选择文件');
+      }
+      if (!allowedRechargePackageImageTypes.includes(req.file.mimetype)) {
+        return response.badRequest(res, '套餐广告图只支持 jpg、png、webp');
+      }
+      try {
+        return saveImageUpload(cfg, log, req, res, 'uploads/recharge-packages');
+      } catch (err) {
+        log.error('upload recharge package image', { error: err.message });
+        return response.internalError(res, err.message || '上传失败');
       }
     },
     uploadModel: (req, res) => {

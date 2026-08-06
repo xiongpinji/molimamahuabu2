@@ -80,6 +80,7 @@ function setupRouter(cfg, db, log) {
     log,
     require('../services/alipay-gateway').createAlipayGateway(process.env),
   );
+  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
@@ -158,6 +159,7 @@ function setupRouter(cfg, db, log) {
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
   r.get('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.listAdminPackages);
   r.post('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.createAdminPackage);
+  r.post('/billing/admin/recharge-packages/image', requireAdmin, requireBillingManager, uploadHandlers.multerRechargePackageImageSingle, uploadHandlers.uploadRechargePackageImage);
   r.put('/billing/admin/recharge-packages/order', requireAdmin, requireBillingManager, alipayRecharge.reorderAdminPackages);
   r.put('/billing/admin/recharge-packages/:packageId', requireAdmin, requireBillingManager, alipayRecharge.updateAdminPackage);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
@@ -191,7 +193,6 @@ function setupRouter(cfg, db, log) {
   const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
   const propLibrary = propLibraryRoutes(db, cfg, log);
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
-  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);
