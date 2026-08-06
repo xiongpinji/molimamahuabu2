@@ -52,7 +52,7 @@ test('单镜报价按时长、分辨率和 count 计价并返回稳定快照', (
     assert.deepEqual(quote.snapshot, {
       model: 'seedance 2.0',
       duration: 6,
-      resolution: '720P',
+      resolution: '720p',
       count: 2,
       locale: 'zh-CN',
       style_snapshot: { lighting: 'soft', palette: ['red', 'cyan'] },
@@ -78,6 +78,89 @@ test('styleSnapshot 对象键顺序不同得到相同 input_hash', () => {
     }));
 
     assert.equal(first.snapshot.input_hash, second.snapshot.input_hash);
+  } finally {
+    db.close();
+  }
+});
+
+test('model 和 resolution 等价写法得到同一 input_hash 和 reservation', () => {
+  const db = setup();
+  try {
+    const first = billing.reserveShotGeneration(db, shotInput({
+      model: ' Seedance 2.0 ',
+      resolution: '720P',
+      count: 1,
+    }));
+    const second = billing.reserveShotGeneration(db, shotInput({
+      model: 'seedance 2.0',
+      resolution: '720p',
+      count: 1,
+    }));
+    const third = billing.reserveShotGeneration(db, shotInput({
+      model: 'SEEDANCE 2.0',
+      resolution: ' 720P ',
+      count: 1,
+    }));
+
+    assert.equal(first.quote.snapshot.input_hash, second.quote.snapshot.input_hash);
+    assert.equal(second.quote.snapshot.input_hash, third.quote.snapshot.input_hash);
+    assert.equal(first.reservation_id, second.reservation_id);
+    assert.equal(second.reservation_id, third.reservation_id);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+    assert.equal(credits.getTenantAccount(db, 'tenant-redraw').held, 18);
+  } finally {
+    db.close();
+  }
+});
+
+test('重复 reserve 遇到调价时响应 quote 与原 reservation 金额一致', () => {
+  const db = setup();
+  try {
+    const input = shotInput({ count: 1, duration: 6, resolution: '720p' });
+    const first = billing.reserveShotGeneration(db, input);
+
+    prices.set(db, 'seedance 2.0', 2, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: {
+        '720p': { credits: 5 },
+      },
+    });
+    const second = billing.reserveShotGeneration(db, input);
+
+    assert.equal(first.amount, 18);
+    assert.equal(second.reservation_id, first.reservation_id);
+    assert.equal(second.amount, 18);
+    assert.equal(second.quote.amount, 18);
+    assert.equal(second.quote.unit_amount, 3);
+    assert.equal(second.quote.price_source, 'reservation');
+    assert.deepEqual(second.billing, { held: 18, charged: 0, released: 0 });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('__proto__ 和 constructor 自有键参与稳定 input_hash 且非 JSON 值 fail closed', () => {
+  const db = setup();
+  try {
+    const empty = billing.quoteShotGeneration(db, shotInput({ styleSnapshot: {} }));
+    const protoKey = billing.quoteShotGeneration(db, shotInput({
+      styleSnapshot: JSON.parse('{"__proto__":{"tone":"warm"}}'),
+    }));
+    const constructorFirst = billing.quoteShotGeneration(db, shotInput({
+      styleSnapshot: { constructor: { tone: 'warm' }, a: 1 },
+    }));
+    const constructorSecond = billing.quoteShotGeneration(db, shotInput({
+      styleSnapshot: { a: 1, constructor: { tone: 'warm' } },
+    }));
+
+    assert.notEqual(empty.snapshot.input_hash, protoKey.snapshot.input_hash);
+    assert.equal(constructorFirst.snapshot.input_hash, constructorSecond.snapshot.input_hash);
+    assert.throws(
+      () => billing.quoteShotGeneration(db, shotInput({ styleSnapshot: new Date('2026-08-06T00:00:00.000Z') })),
+      (error) => error.code === 'INVALID_REDRAW_BILLING_INPUT',
+    );
   } finally {
     db.close();
   }

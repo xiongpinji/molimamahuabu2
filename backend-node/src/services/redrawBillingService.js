@@ -36,14 +36,33 @@ function accountId(input) {
 }
 
 function stableValue(value) {
+  if (value == null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受可 JSON 序列化的值');
+    }
+    return value;
+  }
+  if (['undefined', 'function', 'symbol', 'bigint'].includes(typeof value)) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受可 JSON 序列化的值');
+  }
   if (Array.isArray(value)) return value.map(stableValue);
   if (value && typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受普通对象');
+    }
     return Object.keys(value).sort().reduce((result, key) => {
-      result[key] = stableValue(value[key]);
+      Object.defineProperty(result, key, {
+        value: stableValue(value[key]),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
       return result;
-    }, {});
+    }, Object.create(null));
   }
-  return value;
+  throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受可 JSON 序列化的值');
 }
 
 function stableHash(value) {
@@ -71,11 +90,18 @@ function uniqueShotIds(values) {
   return ids;
 }
 
+function normalizeSnapshotResolution(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  return modelPrice.normalizeResolution(trimmed) || trimmed.toLowerCase();
+}
+
 function buildSnapshot(input, shotIds, count, attempt) {
   const snapshotInput = {
-    model: requiredString(input.model, 'model'),
+    model: modelPrice.canonicalModel(input.model),
     duration: assertVideoDuration(input.duration),
-    resolution: input.resolution == null ? null : String(input.resolution),
+    resolution: normalizeSnapshotResolution(input.resolution),
     count,
     locale: input.locale == null ? null : String(input.locale),
     style_snapshot: input.styleSnapshot ?? null,
@@ -138,6 +164,18 @@ function quoteBatchGeneration(db, input) {
   };
 }
 
+function quoteForReservation(quote, reservation) {
+  if (reservation.amount === quote.amount) return quote;
+  const shotCount = quote.snapshot.shot_ids.length;
+  const unitAmount = reservation.amount / quote.snapshot.duration / quote.count / shotCount;
+  return {
+    ...quote,
+    amount: reservation.amount,
+    unit_amount: Number.isSafeInteger(unitAmount) ? unitAmount : quote.unit_amount,
+    price_source: 'reservation',
+  };
+}
+
 function reserveShotGeneration(db, input) {
   if (input.shotIds != null) {
     throw codedError('INVALID_REDRAW_BILLING_INPUT', 'reserveShotGeneration 只接受单镜 shotId');
@@ -157,12 +195,13 @@ function reserveShotGeneration(db, input) {
     resourceId: shotId,
     amount: quote.amount,
   });
+  const reservationQuote = quoteForReservation(quote, reservation);
   return {
     success: true,
     reservation_id: reservation.id,
     operation_key: operationKey,
     amount: reservation.amount,
-    quote,
+    quote: reservationQuote,
     billing: billingForReservation(reservation),
     status: reservation.status,
   };
