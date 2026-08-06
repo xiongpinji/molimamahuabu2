@@ -273,12 +273,17 @@ onUnmounted(() => {
 .redraw-source-step {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .source-card,
 .task-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
   padding: 20px;
   border: 1px solid #2a2a2a;
   border-radius: 8px;
@@ -292,6 +297,11 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.section-heading > div {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -304,23 +314,29 @@ onUnmounted(() => {
 h2 {
   margin: 0;
   font-size: 20px;
+  overflow-wrap: anywhere;
 }
 
 .source-grid {
   display: grid;
   grid-template-columns: minmax(240px, 1.2fr) minmax(240px, 1fr) 220px;
   gap: 14px;
+  min-width: 0;
 }
 
 .field {
   display: grid;
   align-content: start;
   gap: 8px;
+  min-width: 0;
   color: #d8d8d8;
   font-size: 13px;
 }
 
 .field input[type="file"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   padding: 10px;
   border: 1px solid #333;
   border-radius: 6px;
@@ -336,6 +352,13 @@ h2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+  min-width: 0;
+}
+
+.inline-fields :deep(.el-select),
+.field :deep(.el-segmented) {
+  max-width: 100%;
+  min-width: 0;
 }
 
 .canvas-credit-callout-v1 {

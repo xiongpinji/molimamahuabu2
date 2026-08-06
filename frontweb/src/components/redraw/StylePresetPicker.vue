@@ -138,7 +138,9 @@ watch(freeStyle, () => {
 <style scoped>
 .style-preset-picker {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+  min-width: 0;
 }
 
 .preset-track {
@@ -148,9 +150,17 @@ watch(freeStyle, () => {
   grid-template-columns: repeat(auto-fill, 156px);
   gap: 12px;
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   padding-bottom: 8px;
+}
+
+.style-preset-picker :deep(.el-segmented) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .preset-card {

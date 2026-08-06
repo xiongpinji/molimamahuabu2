@@ -111,7 +111,9 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 22px;
+  box-sizing: border-box;
   width: min(1240px, calc(100% - 32px));
+  min-width: 0;
   margin: 0 auto;
   padding: 24px 0 48px;
 }
@@ -120,6 +122,7 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   display: grid;
   align-content: start;
   gap: 10px;
+  min-width: 0;
 }
 
 .redraw-step {
@@ -127,12 +130,15 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   grid-template-columns: 34px 1fr;
   gap: 10px;
   align-items: center;
+  box-sizing: border-box;
   padding: 14px;
   border: 1px solid #2a2a2a;
   border-radius: 8px;
   background: #151515;
   color: #d8d8d8;
   text-align: left;
+  min-width: 0;
+  white-space: normal;
 }
 
 .redraw-step.active {
@@ -149,6 +155,11 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   font-weight: 800;
 }
 
+.redraw-step strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .redraw-workspace__body {
   min-width: 0;
 }
@@ -157,7 +168,12 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
   margin-bottom: 18px;
+}
+
+.redraw-workspace__heading > div {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -170,6 +186,7 @@ watch(() => [route.params.projectId, route.params.workId], loadWorkspace)
 h1 {
   margin: 0;
   font-size: 24px;
+  overflow-wrap: anywhere;
 }
 
 .redraw-placeholder {
@@ -186,8 +203,7 @@ h1 {
   }
 
   .redraw-steps {
-    grid-template-columns: repeat(4, minmax(120px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 </style>
