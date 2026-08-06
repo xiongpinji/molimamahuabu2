@@ -750,6 +750,37 @@ test('批量显式镜头包含跨租户、跨版本或缺失时 fail closed 且�
   }
 });
 
+test('批量同时携带 singular shot_id 或 shotId 时在任何冻结和任务创建前 fail closed', async () => {
+  for (const singularKey of ['shot_id', 'shotId']) {
+    const state = setup();
+    try {
+      const shotA = addShot(state.db, state.versionId, { shotIndex: 1 });
+      const now = new Date().toISOString();
+      state.db.prepare(`INSERT INTO redraw_versions
+        (work_id, tenant_id, user_id, version, locale, market, style_snapshot_json, status, created_at, updated_at)
+        SELECT work_id, tenant_id, user_id, 2, locale, market, style_snapshot_json, status, ?, ?
+        FROM redraw_versions WHERE id = ?`).run(now, now, state.versionId);
+      const versionB = state.db.prepare('SELECT MAX(id) AS id FROM redraw_versions').get().id;
+      const shotB = addShot(state.db, versionB, { shotIndex: 2 });
+      const before = state.db.prepare('SELECT id, status FROM redraw_shots ORDER BY id').all();
+
+      await assert.rejects(
+        () => generateBatch(ctx(state.db), {
+          versionId: state.versionId,
+          shotIds: [shotA],
+          [singularKey]: shotB,
+        }),
+        (error) => error.code === 'REDRAW_BATCH_INPUT_INVALID',
+      );
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+      assert.equal(count(state.db, 'async_tasks'), 0);
+      assert.deepEqual(state.db.prepare('SELECT id, status FROM redraw_shots ORDER BY id').all(), before);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
 test('批量生成遵守 generationConcurrency 有界并发', async () => {
   const state = setup();
   let active = 0;

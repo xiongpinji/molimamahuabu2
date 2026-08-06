@@ -709,6 +709,10 @@ function scheduleBatchDrain(ctx, jobs, concurrency) {
 async function generateBatch(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  if (Object.prototype.hasOwnProperty.call(input, 'shot_id')
+    || Object.prototype.hasOwnProperty.call(input, 'shotId')) {
+    throw codedError('REDRAW_BATCH_INPUT_INVALID', '批量生成不接受单镜 shot_id 或 shotId');
+  }
   const versionId = normalizeVersionId(input.version_id ?? input.versionId);
   const explicitIds = normalizeBatchShotIds(input.shot_ids ?? input.shotIds);
   const preflight = db.transaction(() => {
@@ -761,7 +765,16 @@ async function generateBatch(ctx, input = {}) {
         batchStyleSnapshot,
         schedule: (callback) => jobs.push(callback),
       };
-      const shotInput = { ...input, shotId: shot.id, versionId: undefined, shotIds: undefined, version_id: undefined, shot_ids: undefined };
+      const shotInput = {
+        ...input,
+        shot_id: undefined,
+        shotId: undefined,
+        shot_ids: undefined,
+        shotIds: undefined,
+        version_id: undefined,
+        versionId: undefined,
+      };
+      shotInput.shotId = shot.id;
       const result = shot.status === 'failed'
         ? await retryShot(generationContext, shotInput)
         : await generateShot(generationContext, shotInput);
