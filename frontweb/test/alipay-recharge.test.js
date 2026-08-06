@@ -125,6 +125,7 @@ const adminPanel = fs.readFileSync(
   new URL('../src/components/RechargePackageAdminPanel.vue', import.meta.url),
   'utf8',
 )
+const packageCardSource = fs.readFileSync(packageCardPath, 'utf8')
 
 function createAdminPanelHarness(overrides = {}) {
   const script = adminPanel.match(/<script setup>([\s\S]*?)<\/script>/)?.[1] || ''
@@ -188,8 +189,12 @@ test('套餐管理器提供全字段草稿、创建更新与用户端实时预�
   }
   assert.match(adminPanel, /createRechargePackage/)
   assert.match(adminPanel, /updateRechargePackage/)
-  assert.match(adminPanel, /<RechargePackageCard\s+:item="draft"\s+preview\s+disabled/s)
+  assert.match(adminPanel, /<RechargePackageCard\s+:item="draft"\s+preview\s*\/>/s)
+  assert.doesNotMatch(adminPanel, /<RechargePackageCard[^>]*\sdisabled[\s/>]/s)
   assert.doesNotMatch(adminPanel, /@purchase=/)
+  assert.match(packageCardSource, /props\.item\.button_text\s*\|\|\s*'立即购买'/)
+  assert.match(packageCardSource, /:disabled="disabled\s*\|\|\s*preview\s*\|\|\s*loading"/)
+  assert.match(packageCardSource, /if\s*\(props\.disabled\s*\|\|\s*props\.preview\)\s*return/)
 })
 
 test('套餐广告图上传校验格式且仅在成功后替换草稿图片', () => {
@@ -343,4 +348,26 @@ test('切换套餐使用独立草稿且保存失败保留当前图片', async ()
   await harness.saveItem()
   assert.equal(harness.draft.image_url, '/static/uploads/recharge-packages/original.png')
   assert.deepEqual(harness.messages.error, ['save failed'])
+})
+
+test('到账积分允许任意正整数并按原值保存', () => {
+  assert.match(adminPanel, /v-model="draft\.credits"[^>]*:step="1"/)
+  assert.doesNotMatch(adminPanel, /v-model="draft\.credits"[^>]*step-strictly/)
+  const { toPayload } = createAdminPanelHarness()
+  assert.equal(toPayload({
+    name: '非整百套餐',
+    badge_text: '',
+    ad_title: '到账 1501 积分',
+    ad_subtitle: '',
+    button_text: '立即购买',
+    amount_yuan: 15,
+    credits: 1501,
+    starts_at: null,
+    ends_at: null,
+    image_url: '/static/uploads/recharge-packages/1501.png',
+    accent_color: '#ff7139',
+    sort_order: 0,
+    is_featured: false,
+    status: 'active',
+  }).credits, 1501)
 })

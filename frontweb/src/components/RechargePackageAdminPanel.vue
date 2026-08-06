@@ -73,7 +73,7 @@
           <label><span>按钮文案</span><el-input v-model.trim="draft.button_text" maxlength="20" show-word-limit /></label>
           <label><span>强调色</span><el-color-picker v-model="draft.accent_color" color-format="hex" /></label>
           <label><span>售价（元）</span><el-input-number v-model="draft.amount_yuan" :min="0.01" :max="50000" :precision="2" /></label>
-          <label><span>到账积分</span><el-input-number v-model="draft.credits" :min="1" :max="100000000" :step="100" step-strictly /></label>
+          <label><span>到账积分</span><el-input-number v-model="draft.credits" :min="1" :max="100000000" :step="1" /></label>
           <label><span>开始时间</span><el-date-picker v-model="draft.starts_at" type="datetime" placeholder="立即生效" /></label>
           <label><span>结束时间</span><el-date-picker v-model="draft.ends_at" type="datetime" placeholder="长期有效" /></label>
           <label><span>状态</span><el-select v-model="draft.status"><el-option label="启用" value="active" /><el-option label="停用" value="inactive" /></el-select></label>
@@ -113,7 +113,7 @@
           <strong>用户端实时预览</strong>
           <span>预览按钮始终禁用，不会创建订单</span>
         </div>
-        <RechargePackageCard :item="draft" preview disabled />
+        <RechargePackageCard :item="draft" preview />
       </aside>
     </div>
   </section>
