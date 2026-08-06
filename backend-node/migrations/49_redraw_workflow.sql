@@ -42,26 +42,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_style_version
 CREATE INDEX IF NOT EXISTS idx_redraw_style_catalog
   ON redraw_style_presets(category, status, sort_order);
 
-CREATE TABLE IF NOT EXISTS redraw_locale_capabilities (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  locale TEXT NOT NULL,
-  market TEXT NOT NULL DEFAULT '',
-  text_evidence_json TEXT NOT NULL DEFAULT '{}',
-  subtitles_evidence_json TEXT NOT NULL DEFAULT '{}',
-  tts_evidence_json TEXT NOT NULL DEFAULT '{}',
-  video_evidence_json TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'verified', 'disabled')),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  deleted_at TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_redraw_locale_market
-  ON redraw_locale_capabilities(locale, market);
-
-CREATE INDEX IF NOT EXISTS idx_redraw_locale_catalog
-  ON redraw_locale_capabilities(status, locale, market);
-
 CREATE TABLE IF NOT EXISTS redraw_works (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL,

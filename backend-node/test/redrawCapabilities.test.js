@@ -34,17 +34,14 @@ function createDb() {
       deleted_at TEXT
     );
 
-    CREATE TABLE redraw_locale_capabilities (
+    CREATE TABLE ai_service_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      locale TEXT NOT NULL,
-      market TEXT NOT NULL DEFAULT '',
-      text_evidence_json TEXT NOT NULL DEFAULT '{}',
-      subtitles_evidence_json TEXT NOT NULL DEFAULT '{}',
-      tts_evidence_json TEXT NOT NULL DEFAULT '{}',
-      video_evidence_json TEXT NOT NULL DEFAULT '{}',
-      status TEXT NOT NULL DEFAULT 'draft',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
+      service_type TEXT,
+      provider TEXT,
+      name TEXT,
+      model TEXT,
+      is_active INTEGER DEFAULT 1,
+      settings TEXT,
       deleted_at TEXT
     );
   `);
@@ -79,22 +76,20 @@ function insertStyle(db, values) {
   });
 }
 
-function insertLocale(db, values) {
+function insertConfig(db, entries, values = {}) {
   db.prepare(`
-    INSERT INTO redraw_locale_capabilities
-      (locale, market, text_evidence_json, subtitles_evidence_json, tts_evidence_json, video_evidence_json, status, created_at, updated_at)
+    INSERT INTO ai_service_configs
+      (service_type, provider, name, model, is_active, settings, deleted_at)
     VALUES
-      (@locale, @market, @text_evidence_json, @subtitles_evidence_json, @tts_evidence_json, @video_evidence_json, @status, @created_at, @updated_at)
+      (@service_type, @provider, @name, @model, @is_active, @settings, @deleted_at)
   `).run({
-    locale: 'en-US',
-    market: 'US',
-    text_evidence_json: '{}',
-    subtitles_evidence_json: '{}',
-    tts_evidence_json: '{}',
-    video_evidence_json: '{}',
-    status: 'verified',
-    created_at: NOW,
-    updated_at: NOW,
+    service_type: 'video',
+    provider: 'provider-a',
+    name: 'Locale capability config',
+    model: 'model-a',
+    is_active: 1,
+    settings: JSON.stringify({ redraw_locale_capabilities: entries }),
+    deleted_at: null,
     ...values,
   });
 }
@@ -152,29 +147,64 @@ test('summarizeLocaleCapability maps verified outputs to production status', () 
 
 test('listLocaleCapabilities ignores unreadable evidence and returns blocking reasons', () => {
   const db = createDb();
-  insertLocale(db, {
-    locale: 'en-US',
-    market: 'US',
-    text_evidence_json: JSON.stringify(validEvidence(1)),
-    subtitles_evidence_json: JSON.stringify(validEvidence(2)),
-    tts_evidence_json: JSON.stringify(validEvidence(3)),
-    video_evidence_json: JSON.stringify(validEvidence(4)),
-  });
-  insertLocale(db, {
-    locale: 'ja-JP',
-    market: 'JP',
-    text_evidence_json: JSON.stringify(validEvidence(5)),
-    subtitles_evidence_json: JSON.stringify(validEvidence(6)),
-    video_evidence_json: JSON.stringify(validEvidence(7)),
-  });
-  insertLocale(db, {
-    locale: 'ko-KR',
-    market: 'KR',
-    text_evidence_json: JSON.stringify(validEvidence(8)),
-    subtitles_evidence_json: JSON.stringify(validEvidence(404)),
-    tts_evidence_json: JSON.stringify(validEvidence(9)),
-    video_evidence_json: JSON.stringify(validEvidence(10)),
-  });
+  insertConfig(db, [
+    {
+      locale: 'en-US',
+      market: 'US',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(1),
+        subtitles: validEvidence(2),
+        tts: validEvidence(3),
+        video: validEvidence(4),
+      },
+    },
+    {
+      locale: 'ja-JP',
+      market: 'JP',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(5),
+        subtitles: validEvidence(6),
+        video: validEvidence(7),
+      },
+    },
+    {
+      locale: 'ko-KR',
+      market: 'KR',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(8),
+        subtitles: validEvidence(404),
+        tts: validEvidence(9),
+        video: validEvidence(10),
+      },
+    },
+    {
+      locale: 'zh-CN',
+      market: 'CN',
+      status: 'draft',
+      evidence: {
+        text: validEvidence(11),
+        subtitles: validEvidence(12),
+        tts: validEvidence(13),
+        video: validEvidence(14),
+      },
+    },
+  ]);
+  insertConfig(db, [
+    {
+      locale: 'fr-FR',
+      market: 'FR',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(15),
+        subtitles: validEvidence(16),
+        tts: validEvidence(17),
+        video: validEvidence(18),
+      },
+    },
+  ], { is_active: 0 });
 
   const rows = listLocaleCapabilities(db, (id) => id !== 404);
 

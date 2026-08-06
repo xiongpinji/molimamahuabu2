@@ -133,6 +133,7 @@ test('转绘迁移建立版本化领域表和唯一约束', () => {
     assert.ok(names.includes(name), name);
   }
   assert.ok(columnNames(db, 'redraw_exports').includes('deleted_at'));
+  assert.equal(names.includes('redraw_locale_capabilities'), false);
 
   db.prepare(`
     INSERT INTO redraw_style_presets
