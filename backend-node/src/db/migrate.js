@@ -549,10 +549,174 @@ function ensureAllColumns(database) {
   } catch (_) {}
 }
 
+/** 转绘工作流旧库兜底：只补列和事实层保护触发器，不改写既有数据。 */
+function ensureRedrawCompatibility(database) {
+  ensureColumns(database, 'redraw_projects', [
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'title', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'default_locale', type: 'TEXT NOT NULL DEFAULT \'en-US\'' },
+    { name: 'default_market', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localization_level', type: 'TEXT NOT NULL DEFAULT \'faithful\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_style_presets', [
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'stable_key', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'name', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'category', type: 'TEXT NOT NULL DEFAULT \'live_action\'' },
+    { name: 'sort_order', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'prompt_template', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'negative_prompt_template', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'preview_asset_id', type: 'INTEGER' },
+    { name: 'compatible_models_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'supported_ratios_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'verification_evidence_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_works', [
+    { name: 'project_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'title', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'source_asset_id', type: 'INTEGER' },
+    { name: 'source_fingerprint', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'duration_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'current_version', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'current_step', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_versions', [
+    { name: 'work_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'version', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'locale', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'market', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localization_level', type: 'TEXT NOT NULL DEFAULT \'faithful\'' },
+    { name: 'source_facts_json', type: 'TEXT' },
+    { name: 'glossary_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'name_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'culture_map_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'style_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'capability_snapshot_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'facts_hash', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_assets', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'kind', type: 'TEXT NOT NULL DEFAULT \'character\'' },
+    { name: 'source_ref_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'localized_name', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'localized_description', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'asset_id', type: 'INTEGER' },
+    { name: 'voice_asset_id', type: 'INTEGER' },
+    { name: 'clean_plate_asset_id', type: 'INTEGER' },
+    { name: 'mask_asset_id', type: 'INTEGER' },
+    { name: 'generation_task_id', type: 'TEXT' },
+    { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'approval_status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+    { name: 'approved_by', type: 'TEXT' },
+    { name: 'approved_at', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_shots', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'batch_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'shot_index', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'start_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'end_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'duration_ms', type: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'source_dialogue_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'localized_dialogue_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'references_json', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+    { name: 'opening_state', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'continuous_action', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'ending_state', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'negative_prompt', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'compiled_prompt_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'video_generation_id', type: 'INTEGER' },
+    { name: 'audio_asset_id', type: 'INTEGER' },
+    { name: 'subtitle_asset_id', type: 'INTEGER' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'redraw_exports', [
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'tenant_id', type: 'TEXT' },
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'export_type', type: 'TEXT NOT NULL DEFAULT \'video\'' },
+    { name: 'video_merge_id', type: 'INTEGER' },
+    { name: 'asset_id', type: 'INTEGER' },
+    { name: 'subtitle_asset_id', type: 'INTEGER' },
+    { name: 'project_asset_id', type: 'INTEGER' },
+    { name: 'version_number', type: 'INTEGER NOT NULL DEFAULT 1' },
+    { name: 'manifest_json', type: 'TEXT NOT NULL DEFAULT \'{}\'' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'pending\'' },
+    { name: 'error_code', type: 'TEXT' },
+    { name: 'error_message', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+  ]);
+
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS redraw_versions_facts_immutable_update
+    BEFORE UPDATE OF source_facts_json, facts_hash ON redraw_versions
+    WHEN (OLD.source_facts_json IS NOT NULL OR OLD.facts_hash IS NOT NULL)
+       AND (NEW.source_facts_json IS NOT OLD.source_facts_json OR NEW.facts_hash IS NOT OLD.facts_hash)
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw source facts immutable');
+    END;
+  `);
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS redraw_versions_facts_immutable_delete
+    BEFORE DELETE ON redraw_versions
+    WHEN OLD.source_facts_json IS NOT NULL OR OLD.facts_hash IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'redraw source facts immutable');
+    END;
+  `);
+}
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */
 function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
+  ensureRedrawCompatibility(database);
 }
 
 function main() {
