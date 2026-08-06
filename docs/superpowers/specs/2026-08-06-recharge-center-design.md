@@ -88,7 +88,7 @@
 | `amount_cents` | `1` 至 `5000000` 分 |
 | `credits` | 正整数，最多 `100000000` |
 | `starts_at` / `ends_at` | 可选 ISO 8601 时间；结束时间必须晚于开始时间 |
-| `image_url` | 必填；只接受后台上传得到的 `/uploads/` 相对地址或 HTTPS 地址 |
+| `image_url` | 必填；只接受后台上传得到的同源 `/static/uploads/recharge-packages/` 地址或 HTTPS 地址 |
 | `accent_color` | `#RRGGBB`，默认 `#ff7139` |
 | `sort_order` | 非负整数，由拖动排序统一更新 |
 | `is_featured` | `0/1`；全表最多 1 条为 `1` |
@@ -102,7 +102,7 @@
 - 复用现有 `uploadService` 和存储目录，不复制上传系统。
 - 路由必须经过 `requireAdmin` 与 `requireBillingManager`。
 - 仅接受 JPEG、PNG、WebP；沿用服务器统一上传大小上限。
-- 返回同源 `/uploads/` 地址，管理员保存套餐时再写入 `image_url`。
+- 沿用现有 `uploadService` 合同，返回同源 `/static/uploads/recharge-packages/` 地址，管理员保存套餐时再写入 `image_url`。
 - 上传失败不修改当前套餐图片；保存套餐失败也不清空已有图片。
 
 ## 数据模型
