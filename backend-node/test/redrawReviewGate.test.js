@@ -63,6 +63,45 @@ function addShot(db, versionId, shotIndex, references) {
   );
 }
 
+test('零分镜版本 fail closed 并返回 shots_missing', () => {
+  const state = setup();
+  try {
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.equal(gate.ok, false);
+    assert.deepEqual(gate.blocking, [{ code: 'shots_missing', reason: '当前版本没有可生成分镜' }]);
+    assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('源事实存在但资产草稿未物化时返回 required_assets_missing', () => {
+  const state = setup();
+  try {
+    state.db.prepare('UPDATE redraw_versions SET source_facts_json = ? WHERE id = ?').run(JSON.stringify({
+      characters: [{ id: 'c1' }],
+      scenes: [{ id: 's1' }],
+      props: [{ id: 'p1' }],
+    }), state.versionId);
+    addShot(state.db, state.versionId, 1, []);
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.equal(gate.ok, false);
+    assert.deepEqual(gate.blocking, [{
+      code: 'required_assets_missing',
+      reason: '当前版本的本地化资产尚未物化',
+      kinds: ['character', 'scene', 'prop'],
+      assets: [
+        { kind: 'character', source_id: 'c1' },
+        { kind: 'scene', source_id: 's1' },
+        { kind: 'prop', source_id: 'p1' },
+      ],
+    }]);
+    assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('返回每个未审批引用及直接定位信息', () => {
   const state = setup();
   try {

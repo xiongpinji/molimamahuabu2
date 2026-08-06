@@ -114,6 +114,42 @@ function isApprovedAsset(row) {
     && String(row.approval_status) === 'approved');
 }
 
+function sourceFactId(kind, value) {
+  if (!value || typeof value !== 'object') return '';
+  return String(value.id || value[`${kind}_id`] || value[`${kind}Id`] || '').trim();
+}
+
+function materializedSourceId(kind, row) {
+  const payload = parseJson(row?.source_ref_json, {});
+  const source = payload.source_ref || payload.source || payload;
+  return sourceFactId(kind, source);
+}
+
+function missingRequiredAssets(db, version) {
+  const facts = parseJson(version.source_facts_json, {});
+  const rows = db.prepare(`
+    SELECT kind, source_ref_json
+    FROM redraw_assets
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).all(version.id, version.tenant_id, version.user_id);
+  const materialized = new Set(rows.map((row) => `${row.kind}:${materializedSourceId(row.kind, row)}`));
+  const missing = [];
+  for (const [kind, values] of [
+    ['character', facts.characters],
+    ['scene', facts.scenes],
+    ['prop', facts.props],
+  ]) {
+    if (!Array.isArray(values)) continue;
+    for (const value of values) {
+      const sourceId = sourceFactId(kind, value);
+      if (sourceId && !materialized.has(`${kind}:${sourceId}`)) {
+        missing.push({ kind, source_id: sourceId });
+      }
+    }
+  }
+  return missing;
+}
+
 function evaluateGenerationGate(db, versionId, owner = {}) {
   if (!db) throw codedError('REDRAW_REVIEW_DB_REQUIRED', '缺少数据库');
   const version = getVersion(db, versionId, owner);
@@ -123,6 +159,19 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
     WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
   `).all(version.id, version.tenant_id, version.user_id);
+  const blocking = [];
+  if (shots.length === 0) {
+    blocking.push({ code: 'shots_missing', reason: '当前版本没有可生成分镜' });
+  }
+  const requiredAssets = missingRequiredAssets(db, version);
+  if (requiredAssets.length > 0) {
+    blocking.push({
+      code: 'required_assets_missing',
+      reason: '当前版本的本地化资产尚未物化',
+      kinds: [...new Set(requiredAssets.map((item) => item.kind))],
+      assets: requiredAssets,
+    });
+  }
   const missing = new Map();
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
@@ -144,11 +193,19 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
+  if (items.length > 0) {
+    blocking.push({
+      code: 'asset_not_approved',
+      reason: '存在尚未生成或批准的分镜引用资产',
+      asset_count: items.length,
+    });
+  }
   return {
-    ok: items.length === 0,
+    ok: blocking.length === 0,
     version_id: Number(version.id),
-    current_step: items.length === 0 ? 3 : 2,
+    current_step: blocking.length === 0 ? 3 : 2,
     missing: items,
+    blocking,
   };
 }
 

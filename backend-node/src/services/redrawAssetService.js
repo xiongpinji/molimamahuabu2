@@ -145,15 +145,24 @@ function createAssetAttempt(ctx, input = {}) {
   if (!sourceRef || typeof sourceRef !== 'object') throw codedError('REDRAW_ASSET_SOURCE_REQUIRED', '缺少资产来源引用');
   const sourceKey = stableJson(sourceRef);
   const previousRows = db.prepare(`
-    SELECT version_number, source_ref_json
+    SELECT *
     FROM redraw_assets
     WHERE version_id = ? AND kind = ?
       AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
   `).all(Number(version.id), kind, tenantId, userId);
-  const previous = previousRows
-    .filter((row) => stableJson(parseJson(row.source_ref_json, {}).source_ref || {}) === sourceKey)
+  const matchingRows = previousRows
+    .filter((row) => stableJson(parseJson(row.source_ref_json, {}).source_ref || {}) === sourceKey);
+  if (matchingRows.some((row) => String(row.status) === 'processing')) {
+    throw codedError('REDRAW_ASSET_ATTEMPT_IN_PROGRESS', '该资产已有生成任务处理中');
+  }
+  const placeholder = matchingRows
+    .filter((row) => String(row.status) === 'draft'
+      && !row.generation_task_id && !row.credit_reservation_id && !row.asset_id
+      && !row.voice_asset_id && !row.clean_plate_asset_id)
+    .sort((left, right) => Number(right.version_number) - Number(left.version_number) || Number(right.id) - Number(left.id))[0] || null;
+  const previous = matchingRows
     .reduce((max, row) => Math.max(max, Number(row.version_number || 0)), 0);
-  const versionNumber = previous + 1;
+  const versionNumber = placeholder ? Number(placeholder.version_number) : previous + 1;
   const snapshot = input.snapshot || input.generationSnapshot || input.generation_snapshot || {};
   let reservation = null;
   const amount = Number(ctx.creditAmount || input.creditAmount || 0);
@@ -174,19 +183,41 @@ function createAssetAttempt(ctx, input = {}) {
       });
     }
     const sourcePayload = JSON.stringify({ source_ref: sourceRef, snapshot });
+    const localizedName = String(input.localizedName ?? input.localized_name ?? placeholder?.localized_name ?? '');
+    const localizedDescription = String(input.localizedDescription ?? input.localized_description
+      ?? placeholder?.localized_description ?? '');
+    const prompt = String(input.prompt ?? placeholder?.prompt ?? '');
+    const generationTaskId = input.generationTaskId || input.generation_task_id || null;
+    if (placeholder) {
+      const claimed = db.prepare(`
+        UPDATE redraw_assets
+        SET source_ref_json = ?, localized_name = ?, localized_description = ?, prompt = ?,
+            generation_task_id = ?, credit_reservation_id = ?, approval_status = 'pending',
+            status = 'processing', error_code = NULL, error_message = NULL, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'draft'
+          AND generation_task_id IS NULL AND credit_reservation_id IS NULL
+          AND asset_id IS NULL AND voice_asset_id IS NULL AND clean_plate_asset_id IS NULL
+      `).run(
+        sourcePayload, localizedName, localizedDescription, prompt,
+        generationTaskId, reservation?.id || null, now,
+        Number(placeholder.id), tenantId, userId,
+      );
+      if (claimed.changes !== 1) {
+        throw codedError('REDRAW_ASSET_ATTEMPT_CONFLICT', '资产草稿已被其他任务认领');
+      }
+      return Number(placeholder.id);
+    }
     const result = db.prepare(`
-      INSERT INTO redraw_assets
-        (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
-         localized_description, prompt, generation_task_id, credit_reservation_id, version_number,
-         approval_status, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'processing', ?, ?)
-    `).run(
-      Number(version.id), tenantId, userId, kind, sourcePayload,
-      String(input.localizedName || input.localized_name || ''),
-      String(input.localizedDescription || input.localized_description || ''),
-      String(input.prompt || ''), input.generationTaskId || input.generation_task_id || null,
-      reservation?.id || null, versionNumber, now, now,
-    );
+        INSERT INTO redraw_assets
+          (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+           localized_description, prompt, generation_task_id, credit_reservation_id, version_number,
+           approval_status, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'processing', ?, ?)
+      `).run(
+        Number(version.id), tenantId, userId, kind, sourcePayload,
+        localizedName, localizedDescription, prompt, generationTaskId,
+        reservation?.id || null, versionNumber, now, now,
+      );
     return Number(result.lastInsertRowid);
   })();
   return {

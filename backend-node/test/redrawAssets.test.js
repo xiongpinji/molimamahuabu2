@@ -45,6 +45,25 @@ function addAsset(db, id, localPath) {
     .run(id, localPath, now, now);
 }
 
+function addDraftPlaceholder(db, state, input = {}) {
+  const now = new Date().toISOString();
+  const result = db.prepare(`INSERT INTO redraw_assets
+    (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+     localized_description, prompt, version_number, approval_status, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', ?, ?, ?, ?, ?, 1, 'pending', 'draft', ?, ?)`)
+    .run(
+      state.versionId,
+      input.kind || 'character',
+      JSON.stringify({ source_ref: input.sourceRef || { id: 'c-placeholder' } }),
+      input.localizedName || 'Maya',
+      input.localizedDescription || 'localized character',
+      input.prompt || 'placeholder prompt',
+      now,
+      now,
+    );
+  return Number(result.lastInsertRowid);
+}
+
 function context(setupResult, root, userId = 'user-a', tenantId = 'tenant-a') {
   return {
     db: setupResult.db,
@@ -85,6 +104,51 @@ test('资产重绘追加版本且不覆盖上一可用产物', async () => {
   assert.equal(credits.getReservation(state.db, billingFields.credit_reservation_id).status, 'confirmed');
   assert.equal(state.db.prepare('SELECT asset_id FROM redraw_assets WHERE id = ?').get(v1.id).asset_id, 101);
   assert.deepEqual(listAssetVersions(state.db, ctx, v2.id).map((row) => row.version_number), [2, 1]);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('首次生成原子认领本地化草稿且并发重复提交 fail closed', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-placeholder-'));
+  fs.writeFileSync(path.join(root, 'asset.png'), 'asset');
+  addAsset(state.db, 109, 'asset.png');
+  const placeholderId = addDraftPlaceholder(state.db, state, {
+    sourceRef: { id: 'c-placeholder' },
+  });
+  let releaseProvider;
+  let providerCalls = 0;
+  const provider = async () => {
+    providerCalls += 1;
+    await new Promise((resolve) => { releaseProvider = resolve; });
+    return { status: 'completed', asset_id: 109, metadata: { views: ['front', 'side', 'back'] } };
+  };
+  const ctx = { ...context(state, root), provider };
+  const first = generateAsset(ctx, {
+    kind: 'character',
+    sourceRef: { id: 'c-placeholder' },
+    prompt: 'generated prompt',
+  });
+
+  await assert.rejects(
+    () => generateAsset(ctx, {
+      kind: 'character',
+      sourceRef: { id: 'c-placeholder' },
+      prompt: 'duplicate prompt',
+    }),
+    (error) => error.code === 'REDRAW_ASSET_ATTEMPT_IN_PROGRESS',
+  );
+  assert.equal(providerCalls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+
+  releaseProvider();
+  const generated = await first;
+  assert.equal(generated.id, placeholderId);
+  assert.equal(generated.version_number, 1);
+  assert.equal(generated.status, 'generated');
+  assert.equal(generated.prompt, 'generated prompt');
+  assert.deepEqual(listAssetVersions(state.db, ctx, generated.id).map((row) => row.version_number), [1]);
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });
