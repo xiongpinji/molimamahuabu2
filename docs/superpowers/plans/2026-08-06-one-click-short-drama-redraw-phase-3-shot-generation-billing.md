@@ -37,7 +37,7 @@
 - 创建：`backend-node/src/services/redrawShotService.js`
 - 测试：`backend-node/test/redrawShots.test.js`
 
-- [ ] **步骤 1：编写失败的分镜合同测试**
+- [x] **步骤 1：编写失败的分镜合同测试**
 
 ```js
 test('分镜保留源时间码、开场动作和镜尾状态', () => {
@@ -51,21 +51,21 @@ test('未知 @ 引用被拒绝而不是静默当普通文本', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test test/redrawShots.test.js`
 
 预期：FAIL，提示找不到镜头服务。
 
-- [ ] **步骤 3：实现镜头服务**
+- [x] **步骤 3：实现镜头服务**
 
 导出 `normalizeShot(input, context)`、`parseShotReferences(text, approvedAssets)`、`groupShotsIntoBatches(shots, 10_000, 15_000)`、`snapshotShots(db, versionId)`。镜头字段必须完整覆盖规格第 6.3 章；源台词与本地化台词分列保存；每个引用保存 `asset_id/version_number/approval_status`。
 
-- [ ] **步骤 4：实现批次边界和并发快照**
+- [x] **步骤 4：实现批次边界和并发快照**
 
 自动分析生成的相邻镜头按 10–15 秒目标分批，用户手动调整后不强制重切；提交生成时复制 prompt、negative prompt、references、model、duration、resolution、count 和报价快照，编辑新版本不改变运行中的快照。
 
-- [ ] **步骤 5：运行测试并提交**
+- [x] **步骤 5：运行测试并提交**
 
 运行：`cd backend-node; node --test test/redrawShots.test.js`，预期 PASS。
 
@@ -81,7 +81,7 @@ git commit -m "feat: 增加转绘分镜与资产引用"
 - 创建：`backend-node/src/services/redrawBillingService.js`
 - 测试：`backend-node/test/redrawShotBilling.test.js`
 
-- [ ] **步骤 1：编写失败的计费测试**
+- [x] **步骤 1：编写失败的计费测试**
 
 ```js
 test('同一镜头和参数重复提交只产生一个冻结', () => {
@@ -98,13 +98,13 @@ test('失败释放、成功结算并返回三项余额字段', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test test/redrawShotBilling.test.js`
 
 预期：FAIL，提示找不到计费服务。
 
-- [ ] **步骤 3：实现报价快照和 operation key**
+- [x] **步骤 3：实现报价快照和 operation key**
 
 导出 `quoteShotGeneration(db, input)`、`quoteBatchGeneration(db, input)`、`reserveShotGeneration(db, input)`、`settleShotGeneration(db, reservationId, outcome, reason)`。报价输入包含模型、时长、清晰度、数量、locale、style snapshot 和 shot IDs；定价缺失返回 `pricing_unconfigured`，不创建 reservation。
 
@@ -116,13 +116,13 @@ const operationKey = ['redraw-shot', tenantId, versionId, shotId, inputHash, att
 
 服务必须调用现有 `creditLedgerService.reserve/settleGeneration`，不自行更新余额表。
 
-- [ ] **步骤 4：运行计费测试和既有账本回归**
+- [x] **步骤 4：运行计费测试和既有账本回归**
 
 运行：`cd backend-node; node --test test/redrawShotBilling.test.js test/creditLedger.test.js test/videoBilling.test.js`
 
 预期：PASS，既有 reservation 唯一键行为不变。
 
-- [ ] **步骤 5：提交计费服务**
+- [x] **步骤 5：提交计费服务**
 
 ```powershell
 git add backend-node/src/services/redrawBillingService.js backend-node/test/redrawShotBilling.test.js
@@ -137,7 +137,7 @@ git commit -m "feat: 增加转绘分镜幂等计费"
 - 修改：`backend-node/src/services/redrawOrchestrator.js`
 - 测试：`backend-node/test/redrawGeneration.test.js`
 
-- [ ] **步骤 1：编写失败的单镜任务测试**
+- [x] **步骤 1：编写失败的单镜任务测试**
 
 ```js
 test('未通过资产门禁时不调用供应商', async () => {
@@ -154,21 +154,21 @@ test('成功必须验证视频文件并写回 shot', async () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test test/redrawGeneration.test.js`
 
 预期：FAIL，提示找不到生成服务。
 
-- [ ] **步骤 3：实现单镜提交顺序**
+- [x] **步骤 3：实现单镜提交顺序**
 
 `generateShot` 先读取 shot/version、调用 `evaluateGenerationGate`、生成 quote、reserve，再创建 `async_tasks(type='redraw_shot')` 与现有 video generation 记录。供应商输入使用编译后的 prompt、负面词、资产受控 URL、目标比例、时长、分辨率和数量 1。
 
-- [ ] **步骤 4：实现成功/失败终态**
+- [x] **步骤 4：实现成功/失败终态**
 
 成功条件同时要求供应商成功终态、视频文件可读、FFprobe 时长与分辨率可读；写回 `video_generation_id`、asset 引用和 `status='completed'` 后结算。明确失败释放，结果不完整或状态未知写 `needs_attention` 并保持账单 held。
 
-- [ ] **步骤 5：运行单镜测试并提交**
+- [x] **步骤 5：运行单镜测试并提交**
 
 运行：`cd backend-node; node --test test/redrawGeneration.test.js test/videoRecovery.test.js`，预期 PASS。
 
@@ -186,7 +186,7 @@ git commit -m "feat: 增加转绘单镜视频生成"
 - 修改：`backend-node/src/services/taskService.js`
 - 测试：`backend-node/test/redrawGeneration.test.js`
 
-- [ ] **步骤 1：编写失败的批量与重试测试**
+- [x] **步骤 1：编写失败的批量与重试测试**
 
 ```js
 test('批量只提交通过门禁且未完成的镜头', async () => {
@@ -202,21 +202,21 @@ test('重试失败镜头创建新 attempt 但不重复结算旧任务', async ()
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test --test-name-pattern="批量|重试" test/redrawGeneration.test.js`
 
 预期：FAIL，提示批量函数不存在。
 
-- [ ] **步骤 3：实现批量快照和并发上限**
+- [x] **步骤 3：实现批量快照和并发上限**
 
 批量提交在事务内锁定版本快照，筛选 `status NOT IN ('completed','processing')`，逐镜预检门禁和报价；按现有任务能力设置有限并发，不在循环内绕过账本。返回每镜 `shot_id/task_id/status/billing`。
 
-- [ ] **步骤 4：实现恢复扫描**
+- [x] **步骤 4：实现恢复扫描**
 
 服务启动扫描 `redraw_shot` 的供应商任务 ID；成功回读并验证文件后完成，明确失败释放，未知状态写 `needs_attention`。同一 task ID 不再次调用 provider；retry 只对 failed 镜头递增 attempt 并生成新 operation key。
 
-- [ ] **步骤 5：运行恢复/计费回归并提交**
+- [x] **步骤 5：运行恢复/计费回归并提交**
 
 运行：`cd backend-node; node --test test/redrawGeneration.test.js test/redrawShotBilling.test.js test/taskService.test.js`，预期 PASS。
 
@@ -232,21 +232,21 @@ git commit -m "feat: 增加转绘批量生成与任务恢复"
 - 修改：`backend-node/src/routes/redraw.js`
 - 修改：`backend-node/test/redrawRoutes.test.js`
 
-- [ ] **步骤 1：编写失败的 API 测试**
+- [x] **步骤 1：编写失败的 API 测试**
 
 覆盖 `GET /redraw/works/:id` 返回 shots/batches、`PUT /redraw/shots/:id` 乐观锁、`POST /redraw/shots/:id/generate`、`POST /redraw/works/:id/generate-batch`。断言未审批返回 409/结构化 missing，积分不足返回 402，重复 operation 返回原 task。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test test/redrawRoutes.test.js`
 
 预期：FAIL，提示路由 handler 不存在。
 
-- [ ] **步骤 3：实现路由**
+- [x] **步骤 3：实现路由**
 
 更新接口要求 `updated_at` 或 `version`；生成接口统一调用 service，不在 route 中创建供应商任务或操作余额。所有响应使用总索引中的成功结构和错误字段 `code/message/details`。
 
-- [ ] **步骤 4：运行后端回归并提交**
+- [x] **步骤 4：运行后端回归并提交**
 
 运行：`cd backend-node; node --test test/redrawRoutes.test.js test/redrawReviewGate.test.js`，预期 PASS。
 
@@ -269,35 +269,35 @@ git commit -m "feat: 暴露转绘分镜生成接口"
 - 创建：`frontweb/test/redrawShots.test.js`
 - 修改：`frontweb/e2e/redraw-workspace.spec.js`
 
-- [ ] **步骤 1：编写失败的 UI 测试**
+- [x] **步骤 1：编写失败的 UI 测试**
 
 断言页面包含批次、源视频缩略图、原片/新片切换、10–15 秒分镜、`@角色/@场景/@物品` 自动提示、开场/连续动作/镜尾字段、模型/时长/清晰度/数量、逐镜积分和批量总价。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd frontweb; node --test test/redrawShots.test.js`
 
 预期：FAIL，提示组件不存在。
 
-- [ ] **步骤 3：实现编辑器和引用提示**
+- [x] **步骤 3：实现编辑器和引用提示**
 
 编辑器把引用保存为结构化对象，不依赖显示文本；输入 `@` 时从当前版本 approved 资产中过滤，保存前显示引用版本。时间码使用数值输入和稳定宽高，错误镜头保持独立重试按钮。
 
-- [ ] **步骤 4：实现批次面板和计费展示**
+- [x] **步骤 4：实现批次面板和计费展示**
 
 批量面板显示未完成/失败/已完成筛选和总报价明细；未定价或资产门禁失败时按钮禁用并显示原因。所有按钮使用现有图标库，生成按钮旁显示醒目预计扣分。
 
-- [ ] **步骤 5：实现对照预览和刷新恢复**
+- [x] **步骤 5：实现对照预览和刷新恢复**
 
 按相同时间码切换原视频/新视频；任务轮询只读取后端状态，成功前不假设产物 URL，刷新从 `getWork` 恢复当前批次和 selected shot。
 
-- [ ] **步骤 6：运行前端测试、构建和 E2E**
+- [x] **步骤 6：运行前端测试、构建和 E2E**
 
 运行：`cd frontweb; node --test test/redrawShots.test.js test/redrawAssets.test.js; npm run build; npx playwright test e2e/redraw-workspace.spec.js --project=chromium`
 
 预期：全部 PASS，无布局重叠、无未处理控制台错误。
 
-- [ ] **步骤 7：提交第三步 UI**
+- [x] **步骤 7：提交第三步 UI**
 
 ```powershell
 git add frontweb/src/components/redraw/RedrawShotStep.vue frontweb/src/components/redraw/RedrawShotEditor.vue frontweb/src/components/redraw/RedrawBatchPanel.vue frontweb/src/components/redraw/RedrawShotPreview.vue frontweb/src/utils/redrawShotState.js frontweb/src/api/redraw.js frontweb/src/views/RedrawWorkspace.vue frontweb/test/redrawShots.test.js frontweb/e2e/redraw-workspace.spec.js
@@ -306,6 +306,8 @@ git commit -m "feat: 交付转绘分镜管理与批量生成"
 ```
 
 ### 任务 7：阶段 3 真实生成和计费审计
+
+> 当前状态：`blocked`。真实本地化编排、应用级资产报价/供应商接入、当前版本已审批资产链和 verified 视频同链证据尚不完整；本轮未获授权发起新的付费模型调用，因此以下步骤保持未完成。
 
 - [ ] **步骤 1：使用已审批资产提交一个真实分镜**
 
