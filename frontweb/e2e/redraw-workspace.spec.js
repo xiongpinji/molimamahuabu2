@@ -30,6 +30,31 @@ const processingWork = {
   analysis_quote: { credits: 6 },
 }
 
+const redrawAssets = [
+  {
+    id: 1201,
+    version_id: 812,
+    kind: 'character',
+    localized_name: '林夏',
+    localized_description: '主角，保留原片服装事实。',
+    status: 'generated',
+    approval_status: 'pending',
+    asset_id: 2201,
+    updated_at: '2026-08-06T08:10:00.000Z',
+  },
+  {
+    id: 1202,
+    version_id: 812,
+    kind: 'scene',
+    localized_name: '旧城天台',
+    localized_description: '本地化场景与去人净景已生成。',
+    status: 'generated',
+    approval_status: 'pending',
+    clean_plate_asset_id: 2202,
+    updated_at: '2026-08-06T08:10:00.000Z',
+  },
+]
+
 const stylePresets = [
   { id: 11, name: '二维清透', category: 'two_dimensional', preview_url: '' },
   { id: 12, name: '三维质感', category: 'three_dimensional', preview_url: '' },
@@ -103,6 +128,45 @@ async function installFixtures(page, state) {
       await route.fulfill(apiData(state.work))
       return
     }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
+      await route.fulfill(apiData(state.assets))
+      return
+    }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/generation-gate') {
+      await route.fulfill(apiData(state.gate))
+      return
+    }
+    if (method === 'GET' && pathname.startsWith('/api/v1/redraw/assets/') && pathname.endsWith('/quote')) {
+      await route.fulfill(apiData({
+        asset_id: Number(pathname.split('/')[5]),
+        model: 'fixture-redraw-model',
+        credits: state.assetQuoteReady ? 8 : null,
+        priced: state.assetQuoteReady,
+      }))
+      return
+    }
+    if (method === 'POST' && pathname.startsWith('/api/v1/redraw/assets/') && pathname.endsWith('/review')) {
+      const assetId = Number(pathname.split('/')[5])
+      const body = request.postDataJSON()
+      const asset = state.assets.find((item) => item.id === assetId)
+      if (!asset) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ success: false }) })
+        return
+      }
+      asset.approval_status = body.action
+      asset.updated_at = body.action === 'approved' ? '2026-08-06T08:11:00.000Z' : '2026-08-06T08:12:00.000Z'
+      state.gate = buildAssetGate(state.assets)
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({
+        asset,
+        gate: state.gate,
+        version_id: 812,
+        status: state.gate.ok ? 'ready_to_generate' : 'asset_review',
+        current_step: state.gate.current_step,
+        updated_at: asset.updated_at,
+      }))
+      return
+    }
     if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/analyze`) {
       const contentType = request.headers()['content-type'] || ''
       const bodyText = request.postDataBuffer().toString('utf8')
@@ -114,6 +178,18 @@ async function installFixtures(page, state) {
 
     await route.fulfill(apiData({ items: [] }))
   })
+}
+
+function buildAssetGate(assets) {
+  const missing = assets
+    .filter((asset) => asset.approval_status !== 'approved')
+    .map((asset) => ({
+      kind: asset.kind,
+      asset_id: asset.id,
+      shot_ids: asset.kind === 'character' ? ['shot-01'] : ['shot-02'],
+      anchor: `asset-${asset.id}-${asset.kind}`,
+    }))
+  return { ok: missing.length === 0, missing, current_step: missing.length === 0 ? 3 : 2 }
 }
 
 async function assertNoPageHorizontalScroll(page) {
@@ -239,5 +315,60 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.locator('.task-card')).toContainText('68%')
     await assertNoPageHorizontalScroll(page)
     await assertTextFits(page, '上传源片并锁定转绘基础设置')
+  })
+
+  test('第二步资产审核批准后开放门禁，退回后重新关闭', async ({ page }) => {
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      assetQuoteReady: true,
+      work: { ...workBase, current_step: 2, status: 'asset_review', version_id: 812 },
+      assets: redrawAssets.map((asset) => ({ ...asset })),
+      gate: buildAssetGate(redrawAssets),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.goto('/redraw/projects/41/works/710?step=2')
+    await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
+    await expect(page.getByText('还有资产需要确认')).toBeVisible()
+    await expect(page.getByText('2 项待处理')).toBeVisible()
+
+    await page.getByRole('button', { name: '批准' }).first().click()
+    await expect(page.getByText('1 项待处理')).toBeVisible()
+    await page.getByRole('button', { name: '场景' }).click()
+    await page.getByRole('button', { name: '批准' }).click()
+    await expect(page.getByText('资产已全部确认，可进入批量转绘')).toBeVisible()
+    await expect(page.getByText('已开放')).toBeVisible()
+    await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeEnabled()
+
+    await page.getByRole('button', { name: '角色' }).click()
+    await page.getByRole('button', { name: '退回' }).click()
+    await expect(page.getByText('还有资产需要确认')).toBeVisible()
+    await expect(page.getByText('1 项待处理')).toBeVisible()
+    await expect(page.getByText('已开放')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeDisabled()
+    expect(state.requests.filter((entry) => entry.pathname.endsWith('/review'))).toHaveLength(3)
+  })
+
+  test('第二步资产审核移动端无横向页面滚动', async ({ page }) => {
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      assetQuoteReady: true,
+      work: { ...workBase, current_step: 2, status: 'asset_review', version_id: 812 },
+      assets: redrawAssets.map((asset) => ({ ...asset })),
+      gate: buildAssetGate(redrawAssets),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 390, height: 844 })
+
+    await page.goto('/redraw/projects/41/works/710?step=2')
+    await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 8 积分')).toBeVisible()
+    await assertNoPageHorizontalScroll(page)
+    await assertTextFits(page, '确认本地化资产后再进入批量转绘')
   })
 })

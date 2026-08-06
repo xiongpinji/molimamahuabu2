@@ -334,35 +334,35 @@ git commit -m "feat: 强制审核转绘引用资产"
 - 创建：`frontweb/test/redrawAssets.test.js`
 - 修改：`frontweb/e2e/redraw-workspace.spec.js`
 
-- [ ] **步骤 1：编写失败的 UI 合同测试**
+- [x] **步骤 1：编写失败的 UI 合同测试**
 
 断言角色三视图、源/本地化场景、去人净景、物品文字、版本切换、音色试听、审核按钮、缺失清单、预计扣分和未定价禁用均存在；断言 UI 不会仅在前端把资产标记 approved。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd frontweb; node --test test/redrawAssets.test.js`
 
 预期：FAIL，提示组件不存在。
 
-- [ ] **步骤 3：实现第二步资产视图**
+- [x] **步骤 3：实现第二步资产视图**
 
 资产类型使用 tabs；卡片不嵌套卡片，固定媒体比例和操作栏高度。场景卡提供“原场景 / 本地化 / 去人净景”分段切换，去人按钮使用人物移除图标并有 tooltip。所有生成动作先取服务端报价，显示加粗积分文案。
 
-- [ ] **步骤 4：实现审核缺失定位**
+- [x] **步骤 4：实现审核缺失定位**
 
 `RedrawReviewGate` 只渲染后端返回的 `missing`，点击条目滚动并聚焦对应 `anchor`。全部 approved 后后端返回 `current_step: 3`，前端才开放第三步；刷新重新读取。
 
-- [ ] **步骤 5：扩展浏览器测试**
+- [x] **步骤 5：扩展浏览器测试**
 
 覆盖生成角色版本、场景去人失败/重试、选择外语音色、逐项批准、退回后门禁重新关闭、刷新恢复版本。夹具路径只验证交互；真实 TTS/图片证据另行记录。
 
-- [ ] **步骤 6：运行前端回归和构建**
+- [x] **步骤 6：运行前端回归和构建**
 
 运行：`cd frontweb; node --test test/redrawFoundation.test.js test/redrawAssets.test.js; npm run build; npx playwright test e2e/redraw-workspace.spec.js --project=chromium`
 
 预期：全部 PASS，桌面和移动无重叠、溢出或布局位移。
 
-- [ ] **步骤 7：提交阶段 2 UI**
+- [x] **步骤 7：提交阶段 2 UI**
 
 ```powershell
 git add frontweb/src/components/redraw/RedrawAssetStep.vue frontweb/src/components/redraw/RedrawAssetCard.vue frontweb/src/components/redraw/RedrawVoicePicker.vue frontweb/src/components/redraw/RedrawReviewGate.vue frontweb/src/utils/redrawAssetState.js frontweb/src/api/redraw.js frontweb/src/views/RedrawWorkspace.vue frontweb/test/redrawAssets.test.js frontweb/e2e/redraw-workspace.spec.js

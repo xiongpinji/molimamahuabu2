@@ -39,6 +39,31 @@ export const redrawAPI = {
   getWork(workId) {
     return request.get(`/redraw/works/${workId}`)
   },
+  createVersion(workId, body) {
+    return request.post(`/redraw/works/${workId}/versions`, body)
+  },
+  listAssets(versionId, kind) {
+    const suffix = kind ? `?kind=${encodeURIComponent(kind)}` : ''
+    return request.get(`/redraw/versions/${versionId}/assets${suffix}`)
+  },
+  getGenerationGate(versionId) {
+    return request.get(`/redraw/versions/${versionId}/generation-gate`)
+  },
+  getAssetQuote(assetId) {
+    return request.get(`/redraw/assets/${assetId}/quote`)
+  },
+  updateAsset(assetId, body) {
+    return request.put(`/redraw/assets/${assetId}`, body)
+  },
+  generateAsset(assetId, body = {}) {
+    return request.post(`/redraw/assets/${assetId}/generate`, body)
+  },
+  reviewAsset(assetId, body) {
+    return request.post(`/redraw/assets/${assetId}/review`, {
+      ...body,
+      expected_updated_at: body?.expected_updated_at || body?.expectedUpdatedAt,
+    })
+  },
   listStylePresets() {
     return request.get('/redraw/style-presets')
   },

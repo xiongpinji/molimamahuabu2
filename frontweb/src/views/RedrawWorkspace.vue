@@ -33,8 +33,17 @@
           :initial-work="work"
           @work-updated="onWorkUpdated"
         />
+        <RedrawAssetStep
+          v-else-if="allowedStep === 2"
+          :work="work"
+          :version-id="work?.version_id"
+          @work-updated="onWorkUpdated"
+        />
+        <div v-else-if="allowedStep === 3" class="redraw-placeholder">
+          资产门禁已开放，批量转绘将在下一阶段接入。
+        </div>
         <div v-else class="redraw-placeholder">
-          后续步骤已由后端门禁控制，当前前端阶段只开放第一步。
+          当前步骤由后端门禁控制。
         </div>
       </section>
     </main>
@@ -46,6 +55,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import RedrawSourceStep from '@/components/redraw/RedrawSourceStep.vue'
+import RedrawAssetStep from '@/components/redraw/RedrawAssetStep.vue'
 import { redrawAPI } from '@/api/redraw'
 import { isExistingWorkId, normalizeStep, resolveAllowedStep } from '@/utils/redrawWorkspaceState'
 

@@ -110,6 +110,7 @@ function mapWork(row, sourceAsset = null, extras = {}) {
     source_fingerprint: row.source_fingerprint,
     duration_ms: row.duration_ms,
     current_version: row.current_version,
+    version_id: extras.versionId || null,
     current_step: row.current_step,
     status: row.status,
     task_id: row.task_id,
@@ -446,8 +447,15 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const work = findOwnedWork(req.params.id, owner(req));
     if (!work) return response.notFound(res, '转绘作品不存在');
     const task = work.task_id ? taskService.getTask(db, work.task_id) : null;
+    const currentVersion = db.prepare(`
+      SELECT id
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND version = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(work.id, owner(req).tenantId, owner(req).userId, Number(work.current_version || 0));
     return response.success(res, mapWork(work, null, {
       task,
+      versionId: currentVersion?.id || null,
       analysisQuote: quoteAnalysis(db, log),
     }));
   }
@@ -507,6 +515,31 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     } catch (error) {
       if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
       return response.internalError(res, error.message || '读取生成审核门禁失败');
+    }
+  }
+
+  async function assetQuote(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) return response.notFound(res, '转绘资产不存在');
+    try {
+      const quoteProvider = options.assetQuoteProvider;
+      const quote = typeof quoteProvider === 'function'
+        ? await quoteProvider({ asset, tenantId: currentOwner.tenantId, userId: currentOwner.userId })
+        : { credits: asset.quote_credits ?? null, model: asset.model || null };
+      const credits = Number(quote?.credits);
+      return response.success(res, {
+        asset_id: Number(asset.id),
+        model: quote?.model || null,
+        credits: Number.isSafeInteger(credits) && credits > 0 ? credits : null,
+        priced: Number.isSafeInteger(credits) && credits > 0,
+      });
+    } catch (error) {
+      if (String(error.code || '').startsWith('MODEL_') || error.code === 'INVALID_MODEL_PRICE') {
+        return response.success(res, { asset_id: Number(asset.id), model: null, credits: null, priced: false });
+      }
+      log?.error?.({ err: error, assetId: asset.id }, 'redraw asset quote failed');
+      return response.internalError(res, error.message || '读取资产报价失败');
     }
   }
 
@@ -671,6 +704,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     createVersion,
     listVersionAssets,
     generationGate,
+    assetQuote,
     updateRedrawAsset,
     generateRedrawAsset,
     reviewRedrawAsset,
