@@ -36,7 +36,7 @@ function accountId(input) {
 }
 
 function stableValue(value) {
-  if (value == null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
       throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受可 JSON 序列化的值');
@@ -46,7 +46,16 @@ function stableValue(value) {
   if (['undefined', 'function', 'symbol', 'bigint'].includes(typeof value)) {
     throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照只接受可 JSON 序列化的值');
   }
-  if (Array.isArray(value)) return value.map(stableValue);
+  if (Array.isArray(value)) {
+    const result = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+        throw codedError('INVALID_REDRAW_BILLING_INPUT', '计费快照数组不能包含空洞');
+      }
+      result.push(stableValue(value[index]));
+    }
+    return result;
+  }
   if (value && typeof value === 'object') {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {

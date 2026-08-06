@@ -163,6 +163,18 @@ test('__proto__ 和 constructor 自有键参与稳定 input_hash 且非 JSON 值
       () => billing.quoteShotGeneration(db, shotInput({ styleSnapshot: new Date('2026-08-06T00:00:00.000Z') })),
       (error) => error.code === 'INVALID_REDRAW_BILLING_INPUT',
     );
+    assert.throws(
+      () => billing.quoteShotGeneration(db, shotInput({ styleSnapshot: { bad: undefined } })),
+      (error) => error.code === 'INVALID_REDRAW_BILLING_INPUT',
+    );
+    assert.throws(
+      () => billing.quoteShotGeneration(db, shotInput({ styleSnapshot: [undefined] })),
+      (error) => error.code === 'INVALID_REDRAW_BILLING_INPUT',
+    );
+    assert.throws(
+      () => billing.quoteShotGeneration(db, shotInput({ styleSnapshot: Array(1) })),
+      (error) => error.code === 'INVALID_REDRAW_BILLING_INPUT',
+    );
   } finally {
     db.close();
   }
