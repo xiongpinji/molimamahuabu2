@@ -4,6 +4,7 @@ const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const redrawGenerationService = require('./redrawGenerationService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -509,6 +510,15 @@ module.exports = {
   startAnalysis,
   runAnalyzeTask,
   resumeRedrawTasks,
+  generateShot(db, log, input, options = {}) {
+    return redrawGenerationService.generateShot({
+      db,
+      log,
+      tenantId: input?.tenantId,
+      userId: input?.userId,
+      ...options,
+    }, input);
+  },
   quoteAnalysis,
   loadVerifiedCapability,
   createStartupResumeOptions,
