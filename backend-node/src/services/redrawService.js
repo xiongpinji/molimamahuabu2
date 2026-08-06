@@ -26,6 +26,12 @@ function createWorkFromSource(db, owner, projectId, sourceAsset) {
   const fingerprint = sourceFingerprint(sourceAsset);
   if (!tenantId) throw Object.assign(new Error('缺少租户'), { code: 'REDRAW_TENANT_REQUIRED' });
   if (!fingerprint) throw Object.assign(new Error('缺少源片指纹'), { code: 'REDRAW_SOURCE_FINGERPRINT_REQUIRED' });
+  const project = db.prepare(
+    'SELECT id FROM redraw_projects WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
+  ).get(Number(projectId), String(tenantId));
+  if (!project) {
+    throw Object.assign(new Error('转绘项目不存在'), { code: 'REDRAW_PROJECT_NOT_FOUND' });
+  }
 
   const existing = db.prepare(`
     SELECT * FROM redraw_works

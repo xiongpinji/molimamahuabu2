@@ -142,6 +142,21 @@ test('expandSourceUpload rejects zip path traversal and cleans extraction temp f
   assert.deepEqual(fs.readdirSync(tempRoot), []);
 });
 
+test('expandSourceUpload normalizes corrupt zip archives to a redraw domain error', async (t) => {
+  const dir = makeTempDir(t);
+  const zipPath = path.join(dir, 'corrupt.zip');
+  fs.writeFileSync(zipPath, 'not-a-zip');
+
+  await assert.rejects(
+    () => expandSourceUpload(
+      makeUpload(zipPath, { originalname: 'corrupt.zip', mimetype: 'application/zip' }),
+      { maxBytes: 1024 * 1024, zipMaxEntries: 20, zipMaxTotalBytes: 1024 * 1024 },
+      async () => ({ duration_ms: 16000, width: 1280, height: 720 }),
+    ),
+    (error) => error?.code === 'REDRAW_ZIP_INVALID',
+  );
+});
+
 test('safeZipEntry rejects absolute, drive-letter and non-video entries', () => {
   assert.throws(() => safeZipEntry('/tmp/source.mp4'), (error) => error?.code === 'REDRAW_ZIP_UNSAFE_PATH');
   assert.throws(() => safeZipEntry('C:\\tmp\\source.mp4'), (error) => error?.code === 'REDRAW_ZIP_UNSAFE_PATH');
@@ -259,6 +274,36 @@ test('expandSourceUpload returns one item for a single source upload', async (t)
   assert.equal(fs.existsSync(path.join(storageRoot, items[0].local_path)), true);
 });
 
+test('expandSourceUpload does not reuse a partial file already present at the stable storage path', async (t) => {
+  const dir = makeTempDir(t);
+  const storageRoot = path.join(dir, 'storage');
+  const filePath = path.join(dir, 'single.mp4');
+  writeMp4(filePath, 'single-video');
+  const facts = await validateSourceFile(
+    makeUpload(filePath),
+    { maxBytes: 1024 * 1024, minDurationMs: 15000, maxDurationMs: 3600000 },
+    async () => ({ duration_ms: 3600000, width: 1920, height: 1080 }),
+  );
+  const partialPath = path.join(storageRoot, 'redraw-sources', `${facts.sha256}.mp4`);
+  fs.mkdirSync(path.dirname(partialPath), { recursive: true });
+  fs.writeFileSync(partialPath, 'partial');
+
+  await assert.rejects(
+    () => expandSourceUpload(
+      makeUpload(filePath),
+      {
+        maxBytes: 1024 * 1024,
+        minDurationMs: 15000,
+        maxDurationMs: 3600000,
+        storageRoot,
+      },
+      async () => ({ duration_ms: 3600000, width: 1920, height: 1080 }),
+    ),
+    (error) => error?.code === 'REDRAW_STORAGE_CONFLICT',
+  );
+  assert.equal(fs.readFileSync(partialPath, 'utf8'), 'partial');
+});
+
 test('createWorkFromSource reuses active same-tenant work but not other tenants or soft-deleted rows', () => {
   const { db, projectId } = createDb();
   try {
@@ -298,6 +343,31 @@ test('createWorkFromSource reuses active same-tenant work but not other tenants 
     );
     assert.notEqual(replacement.id, first.id);
     assert.equal(replacement.reused, false);
+  } finally {
+    db.close();
+  }
+});
+
+test('createWorkFromSource rejects a project from another tenant before insert or reuse', () => {
+  const { db } = createDb();
+  try {
+    const now = new Date().toISOString();
+    const otherTenantProjectId = db.prepare(`
+      INSERT INTO redraw_projects
+        (tenant_id, user_id, title, default_locale, default_market, localization_level, status, created_at, updated_at)
+      VALUES ('tenant-b', 'user-b', '其他转绘项目', 'en-US', 'US', 'faithful', 'draft', ?, ?)
+    `).run(now, now).lastInsertRowid;
+
+    assert.throws(
+      () => createWorkFromSource(
+        db,
+        { tenantId: 'tenant-a', userId: 'user-a' },
+        otherTenantProjectId,
+        { id: 101, name: 'source.mp4', sha256: 'f'.repeat(64), duration_ms: 90000 },
+      ),
+      (error) => error?.code === 'REDRAW_PROJECT_NOT_FOUND',
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_works').get().count, 0);
   } finally {
     db.close();
   }

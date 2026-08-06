@@ -148,8 +148,28 @@ function persistSourceFile(sourcePath, facts, limits = {}) {
     throw uploadError('REDRAW_STORAGE_PATH_UNSAFE', '源片存储路径不安全');
   }
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  if (!fs.existsSync(targetPath)) {
-    fs.copyFileSync(sourcePath, targetPath);
+  const sourceSize = fs.statSync(sourcePath).size;
+  if (fs.existsSync(targetPath)) {
+    const targetSize = fs.statSync(targetPath).size;
+    if (targetSize !== sourceSize || sha256File(targetPath) !== facts.sha256) {
+      throw uploadError('REDRAW_STORAGE_CONFLICT', '已存在的源片文件不完整或内容不匹配');
+    }
+    return relPath;
+  }
+
+  const tempPath = path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+  );
+  try {
+    fs.copyFileSync(sourcePath, tempPath);
+    if (fs.statSync(tempPath).size !== sourceSize || sha256File(tempPath) !== facts.sha256) {
+      throw uploadError('REDRAW_STORAGE_WRITE_FAILED', '源片持久化校验失败');
+    }
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
   }
   return relPath;
 }
@@ -173,8 +193,14 @@ function assertZipSize(file, limits = {}) {
 }
 
 async function expandZipUpload(file, limits, probeVideo) {
-  const zip = new AdmZip(file.path);
-  const entries = zip.getEntries().filter((entry) => !entry.isDirectory);
+  let zip;
+  let entries;
+  try {
+    zip = new AdmZip(file.path);
+    entries = zip.getEntries().filter((entry) => !entry.isDirectory);
+  } catch (_) {
+    throw uploadError('REDRAW_ZIP_INVALID', 'ZIP 文件损坏或格式不受支持');
+  }
   const maxEntries = Number(limits.zipMaxEntries ?? 20);
   if (entries.length > maxEntries) {
     throw uploadError('REDRAW_ZIP_TOO_MANY_ENTRIES', 'ZIP 源片数量超过限制');
@@ -202,7 +228,13 @@ async function expandZipUpload(file, limits, probeVideo) {
         throw uploadError('REDRAW_ZIP_UNSAFE_PATH', 'ZIP 条目路径不安全');
       }
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.writeFileSync(resolved, entry.getData());
+      let data;
+      try {
+        data = entry.getData();
+      } catch (_) {
+        throw uploadError('REDRAW_ZIP_ENTRY_READ_FAILED', 'ZIP 条目读取失败');
+      }
+      fs.writeFileSync(resolved, data);
       const facts = await validateSourceFile(
         {
           path: resolved,
