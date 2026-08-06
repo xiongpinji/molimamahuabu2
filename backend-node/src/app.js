@@ -22,6 +22,11 @@ function createApp() {
   const taskService = require('./services/taskService');
   taskService.failOrphanedAsyncTasksOnStartup(db, log);
 
+  const redrawOrchestrator = require('./services/redrawOrchestrator');
+  redrawOrchestrator.resumeRedrawTasks(db, log, redrawOrchestrator.createStartupResumeOptions()).catch((error) => {
+    log.error('Resume redraw analysis tasks failed', { error: error.message });
+  });
+
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
 

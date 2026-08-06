@@ -29,7 +29,15 @@ function validateRange(range, name, durationMs) {
 
 function normalizeRanges(value, name, durationMs) {
   assertNonEmptyArray(value, name);
-  return value.map((range, index) => validateRange(range, `${name}[${index}]`, durationMs));
+  let previousEnd = 0;
+  return value.map((range, index) => {
+    const normalized = validateRange(range, `${name}[${index}]`, durationMs);
+    if (index > 0 && normalized.start_ms < previousEnd) {
+      throw new Error(`${name} 时间码必须单调且不能重叠`);
+    }
+    previousEnd = normalized.end_ms;
+    return normalized;
+  });
 }
 
 function stableStringify(value) {

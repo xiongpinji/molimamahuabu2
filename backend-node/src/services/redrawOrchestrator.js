@@ -50,15 +50,11 @@ function getTask(db, taskId) {
 
 function getAsset(db, assetId) {
   if (!assetId) return null;
-  try {
-    return db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(String(assetId)) || null;
-  } catch (_) {
-    return { id: String(assetId) };
-  }
+  return db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId) || null;
 }
 
 function defaultCanRead(asset) {
-  return Boolean(asset && (asset.local_path || asset.url || asset.id));
+  return Boolean(asset && (asset.local_path || asset.url));
 }
 
 function assertAssetReadable(db, assetReader, assetId, label) {
@@ -75,6 +71,15 @@ function safeUpdate(db, sql, params) {
     if (/no such column/i.test(String(error.message || ''))) return null;
     throw error;
   }
+}
+
+function createStartupResumeOptions() {
+  return {
+    provider: {
+      pollAnalysisTask: async ({ providerTaskId }) => ({ status: 'processing', provider_task_id: providerTaskId }),
+    },
+    assetReader: { canRead: defaultCanRead },
+  };
 }
 
 async function startAnalysis(db, log, input, options = {}) {
@@ -100,11 +105,9 @@ async function startAnalysis(db, log, input, options = {}) {
       resourceId: work.id,
     });
     const task = taskService.createTask(db, log, 'redraw_analysis', work.id);
-    safeUpdate(
-      db,
-      'UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ?, status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?',
-      [userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id]
-    );
+    db.prepare(
+      'UPDATE async_tasks SET user_id = ?, model = ?, credit_reservation_id = ?, status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?'
+    ).run(userId, model, reservation.id, 'processing', 10, '源片分析已开始', now, task.id);
     db.prepare(
       `UPDATE redraw_works
        SET source_asset_id = ?, status = 'processing', current_step = 1, task_id = ?,
@@ -119,7 +122,8 @@ async function startAnalysis(db, log, input, options = {}) {
     : {};
   const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id || '';
   if (providerTaskId) {
-    safeUpdate(db, 'UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?', [String(providerTaskId), new Date().toISOString(), created.task_id]);
+    db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
+      .run(String(providerTaskId), new Date().toISOString(), created.task_id);
     db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), work.id);
   }
@@ -151,7 +155,13 @@ function writeFactsOnce(db, work, normalized) {
   let version = db.prepare(
     'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
   ).get(work.id);
-  if (!version) {
+  if (version) {
+    if (version.facts_hash === normalized.facts_hash) return { version, changed: false };
+    const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
+    error.existing_hash = version.facts_hash;
+    error.incoming_hash = normalized.facts_hash;
+    throw error;
+  } else {
     const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
     if (existing) {
       db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ?, updated_at = ? WHERE id = ?')
@@ -173,7 +183,7 @@ function writeFactsOnce(db, work, normalized) {
   }
   db.prepare('UPDATE redraw_works SET status = ?, current_step = ?, error_msg = NULL, updated_at = ? WHERE id = ?')
     .run('asset_review', 2, now, work.id);
-  return version;
+  return { version, changed: true };
 }
 
 async function runAnalyzeTask(db, log, taskId, options = {}) {
@@ -203,16 +213,22 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
     assertAssetReadable(db, options.assetReader, work.source_asset_id, '源片');
     assertAssetReadable(db, options.assetReader, result.result_asset_id || result.result_asset?.id, '分析结果');
     const normalized = normalizeSourceFacts(result.facts || result.source_facts);
-    const version = db.transaction(() => writeFactsOnce(db, work, normalized))();
-    taskService.updateTaskResult(db, task.id, {
-      status: 'completed',
-      work_id: work.id,
-      version_id: version.id,
-      facts_hash: normalized.facts_hash,
-    });
-    creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized))();
+    if (changed || task.status !== 'completed') {
+      taskService.updateTaskResult(db, task.id, {
+        status: 'completed',
+        work_id: work.id,
+        version_id: version.id,
+        facts_hash: normalized.facts_hash,
+      });
+      creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+    }
     return { status: 'completed', facts_hash: normalized.facts_hash };
   } catch (error) {
+    if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
+      markNeedsAttention(db, task, work, error.message);
+      return { status: 'needs_attention', error: error.message };
+    }
     markFailure(db, log, task, work, error.message);
     return { status: 'failed', error: error.message };
   }
@@ -260,4 +276,5 @@ module.exports = {
   runAnalyzeTask,
   resumeRedrawTasks,
   loadVerifiedCapability,
+  createStartupResumeOptions,
 };

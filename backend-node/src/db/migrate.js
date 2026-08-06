@@ -324,6 +324,7 @@ function ensureAllColumns(database) {
     { name: 'tenant_id',    type: 'TEXT' },
     { name: 'model',        type: 'TEXT' },
     { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'provider_task_id', type: 'TEXT' },
   ]);
 
   // --- image_generations ---
@@ -433,6 +434,80 @@ function ensureAllColumns(database) {
     { name: 'created_at',   type: 'TEXT' },
     { name: 'updated_at',   type: 'TEXT' },
     { name: 'deleted_at',   type: 'TEXT' },
+  ]);
+
+  // --- redraw source analysis ---
+  try {
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_works (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      source_asset_id TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      current_step INTEGER DEFAULT 1,
+      task_id TEXT,
+      provider_task_id TEXT,
+      credit_reservation_id TEXT,
+      error_msg TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id TEXT NOT NULL,
+      source_facts_json TEXT,
+      facts_hash TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    )`);
+    database.exec(`CREATE TABLE IF NOT EXISTS redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id TEXT NOT NULL,
+      version_id INTEGER,
+      shot_id TEXT,
+      start_ms INTEGER,
+      end_ms INTEGER,
+      draft_json TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT,
+      UNIQUE(work_id, shot_id)
+    )`);
+  } catch (_) {}
+  ensureColumns(database, 'redraw_works', [
+    { name: 'user_id', type: 'TEXT' },
+    { name: 'source_asset_id', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'current_step', type: 'INTEGER DEFAULT 1' },
+    { name: 'task_id', type: 'TEXT' },
+    { name: 'provider_task_id', type: 'TEXT' },
+    { name: 'credit_reservation_id', type: 'TEXT' },
+    { name: 'error_msg', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+  ensureColumns(database, 'redraw_versions', [
+    { name: 'work_id', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'source_facts_json', type: 'TEXT' },
+    { name: 'facts_hash', type: 'TEXT' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
+  ]);
+  ensureColumns(database, 'redraw_shots', [
+    { name: 'work_id', type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'version_id', type: 'INTEGER' },
+    { name: 'shot_id', type: 'TEXT' },
+    { name: 'start_ms', type: 'INTEGER' },
+    { name: 'end_ms', type: 'INTEGER' },
+    { name: 'draft_json', type: 'TEXT' },
+    { name: 'status', type: 'TEXT NOT NULL DEFAULT \'draft\'' },
+    { name: 'created_at', type: 'TEXT' },
+    { name: 'updated_at', type: 'TEXT' },
+    { name: 'deleted_at', type: 'TEXT' },
   ]);
 
   // --- character_libraries ---
