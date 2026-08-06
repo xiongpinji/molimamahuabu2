@@ -4,6 +4,45 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const NOW = '2026-08-06T00:00:00.000Z';
+const LIVE_ACTION_STYLE_NAMES = [
+  '默认风格',
+  '古典武侠风',
+  '宫斗权谋冷峻风格',
+  '国产悬疑冷调',
+  '古偶唯美柔光',
+  '国产都市写实',
+  '武侠江湖写实摄影风格',
+  '90 年代中国农村电影风格',
+  '中式暖调蓝辉风格',
+  '90 年代港片风格',
+  '日式青春胶片',
+  '日式生活自然',
+  '日本黑白胶片摄影风格',
+  '韩剧都市柔光',
+  '韩国冷淡风电影风格',
+  '复古科幻原子朋克',
+  '90 年代写实电影风格',
+  '复古叙事电影风格',
+  '美式复古好莱坞',
+  '老式工业影视风格',
+  '复古战争电影风格',
+  '复古电影摄影风格',
+  '美式复古怪异影视风格',
+  '美式经济上行风格',
+  '美式复古影视风格',
+  '好莱坞黑白电影风格',
+  '霓虹赛博电影风格',
+  '荒野电影风格',
+  '橙黄色电影风格',
+  '恐怖电影风格',
+  '荒诞高调白色色调电影风格',
+  '蓝橙色调影视风格',
+  '工业电影风格',
+  '科技感电影风格',
+  '悬疑电影风格',
+  '希腊神话电影风格',
+  '紫色色调电影风格',
+];
 
 function tableNames(db) {
   return db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
@@ -204,4 +243,36 @@ test('版本号、分镜顺序和锁定事实不可变', () => {
       (version_id, batch_index, shot_index, start_ms, end_ms, duration_ms, status, created_at, updated_at)
     VALUES (?, 1, 1, 10000, 20000, 10000, 'draft', ?, ?)
   `).run(versionId, NOW, NOW), /UNIQUE/);
+});
+
+test('转绘风格目录只种入 37 个未验证真人风格草稿且迁移幂等', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  const rows = db.prepare(`
+    SELECT name, category, status, verification_evidence_json
+    FROM redraw_style_presets
+    WHERE stable_key LIKE 'redraw-live-action-style-%'
+    ORDER BY sort_order ASC
+  `).all();
+
+  assert.equal(rows.length, 37);
+  assert.deepEqual(rows.map((row) => row.name), LIVE_ACTION_STYLE_NAMES);
+  for (const row of rows) {
+    assert.equal(row.category, 'live_action');
+    assert.equal(row.status, 'draft');
+    assert.equal(row.verification_evidence_json, '{}');
+  }
+
+  assert.equal(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM redraw_style_presets
+    WHERE category IN ('anime_2d', 'anime_3d')
+  `).get().count, 0);
+  assert.equal(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM redraw_style_presets
+    WHERE category = 'free'
+  `).get().count, 0);
 });
