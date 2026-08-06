@@ -106,6 +106,30 @@ test('未批准资产不能成为可生成引用', () => {
   }]), /未批准/);
 });
 
+test('同一资产的多个别名只返回首次出现的一条引用', () => {
+  const references = parseShotReferences('@Alice 走向 @艾丽丝，然后看向 @Bob', [
+    {
+      name: 'Alice',
+      localized_name: '艾丽丝',
+      asset_id: 501,
+      kind: 'character',
+      version_number: 2,
+      approval_status: 'approved',
+    },
+    {
+      name: 'Bob',
+      localized_name: '鲍勃',
+      asset_id: 502,
+      kind: 'character',
+      version_number: 1,
+      approval_status: 'approved',
+    },
+  ]);
+
+  assert.deepEqual(references.map((reference) => reference.asset_id), [501, 502]);
+  assert.deepEqual(references.map((reference) => reference.name), ['Alice', 'Bob']);
+});
+
 test('自动分批保持顺序并把相邻镜头控制在 10 到 15 秒目标内', () => {
   const shots = [
     { id: 'shot-1', duration_ms: 4000 },
@@ -122,6 +146,16 @@ test('自动分批保持顺序并把相邻镜头控制在 10 到 15 秒目标内
   ]);
   assert.deepEqual(batches.map((batch) => batch.batch_index), [1, 2]);
   assert.deepEqual(batches.map((batch) => batch.duration_ms), [10000, 11000]);
+});
+
+test('自动分批追加前不能超过目标上限', () => {
+  const batches = groupShotsIntoBatches([
+    { id: 'shot-1', duration_ms: 8000 },
+    { id: 'shot-2', duration_ms: 8000 },
+  ], 10_000, 15_000);
+
+  assert.deepEqual(batches.map((batch) => batch.duration_ms), [8000, 8000]);
+  assert.ok(batches.every((batch) => batch.duration_ms <= 15_000));
 });
 
 test('超过目标上限的单镜独立成批', () => {

@@ -38,15 +38,16 @@ function parseShotReferences(text = '', approvedAssets = []) {
   }
 
   const references = [];
-  const seen = new Set();
+  const seenAssets = new Set();
   for (const match of String(text || '').matchAll(/@([^\s@,，。；;：:、!?！？()[\]{}"'“”‘’]+)/g)) {
     const name = match[1];
-    if (seen.has(name)) continue;
     const asset = assetsByName.get(name);
     if (!asset) throw new Error(`未知资产: ${name}`);
     const normalized = normalizeAsset(asset);
     if (normalized.approval_status !== 'approved') throw new Error(`资产未审批/未批准: ${name}`);
-    seen.add(name);
+    const key = `${normalized.kind}:${normalized.asset_id}`;
+    if (seenAssets.has(key)) continue;
+    seenAssets.add(key);
     references.push(normalized);
   }
   return references;
@@ -152,7 +153,7 @@ function groupShotsIntoBatches(shots = [], minDurationMs = 10_000, maxDurationMs
       batches.push(makeBatch(batches.length + 1, [shot]));
       continue;
     }
-    if (current.length && currentDuration >= minDurationMs) {
+    if (current.length && (currentDuration >= minDurationMs || currentDuration + duration > maxDurationMs)) {
       batches.push(makeBatch(batches.length + 1, current));
       current = [];
       currentDuration = 0;
