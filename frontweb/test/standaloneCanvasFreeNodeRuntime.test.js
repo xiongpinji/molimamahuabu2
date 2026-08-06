@@ -179,7 +179,7 @@ test('画布保存使用串行队列并在执行时构造最新布局', () => {
   assert.match(canvasSource, /let canvasPersistQueue = Promise\.resolve\(\)/)
   assert.match(canvasSource, /function persistCanvasState\(options = \{\}\) \{[\s\S]*const runPersist = \(\) => persistCanvasStateNow\(options\)[\s\S]*canvasPersistQueue = canvasPersistQueue\.then\(runPersist, runPersist\)[\s\S]*return canvasPersistQueue[\s\S]*\}/)
   assert.match(canvasSource, /async function persistCanvasStateNow\(\{ layoutOnly = false, groupsOnly = false \} = \{\}\)/)
-  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
+  assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*syncRenderedNodesToGraph\(\)[\s\S]*const persistedGraphNodes = stripLocalImagePreviewsForPersistence\(allGraphNodes\.value\)[\s\S]*buildCanvasLayoutPayload\([\s\S]*persistedGraphNodes,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value/)
   assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*const updated = await layoutPersistence\.update/)
 })
 

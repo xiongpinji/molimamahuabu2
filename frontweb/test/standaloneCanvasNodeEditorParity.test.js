@@ -65,7 +65,7 @@ test('四类节点编辑器暴露 LibTV 核心参数且不隐藏在假配置按�
   assert.match(nodeSource, /aria-label="清晰度"/)
   assert.match(nodeSource, /aria-label="生成数量"/)
   assert.match(nodeSource, /aria-label="负面提示词"/)
-  assert.match(nodeSource, /aria-label="镜头运动"/)
+  assert.match(nodeSource, /aria-label="视频运镜"/)
   assert.match(nodeSource, /aria-label="视觉特效"/)
   assert.match(nodeSource, /aria-label="生成音频"/)
   assert.match(nodeSource, /aria-label="音色"/)
@@ -137,12 +137,13 @@ test('图片工具条和下拉菜单计入编辑器下边界且关闭操作取�
   assert.match(nodeSource, /function onEditorKeydown\(event\) \{[\s\S]*window\.clearTimeout\(mediaOpenTimer\)[\s\S]*if \(!isSelected\.value \|\| editorHidden\.value\) return/)
 })
 
-test('选中节点可从主体按住左键拖动且编辑器尺寸收紧', () => {
+test('选中节点可从主体按住左键拖动且编辑器按视口等比适配', () => {
   assert.doesNotMatch(nodeSource, /class="node-drag-grip"/)
   assert.match(nodeSource, /\.home-canvas-node\.is-selected \.(text-preview|media-stage)/)
-  assert.match(nodeSource, /width:\s*min\(860px/)
-  assert.match(nodeSource, /max-height:\s*calc\(100vh - 32px\)/)
-  assert.match(nodeSource, /overflow-y:\s*auto/)
+  assert.match(nodeSource, /const panelWidth = 860/)
+  assert.match(nodeSource, /width:\s*860px/)
+  assert.match(nodeSource, /max-height:\s*none/)
+  assert.match(nodeSource, /overflow:\s*visible/)
 })
 
 test('图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放', () => {
@@ -150,7 +151,7 @@ test('图片视频节点使用大画幅预览，运行中明确显示生成状�
   assert.match(nodeSource, /\.kind-image \.node-media,[\s\S]*\.kind-video \.node-media[\s\S]*height:\s*360px/)
   assert.match(nodeSource, /props\.data\.status === 'running'[\s\S]*生成中/)
   assert.match(dramaCanvasSource, /:max-zoom="8"/)
-  assert.match(dramaCanvasSource, /:zoom-on-scroll="false"/)
+  assert.match(dramaCanvasSource, /:zoom-on-scroll="canvasPreferences\.wheel_action === 'zoom'"/)
   assert.match(dramaCanvasSource, /zoom-activation-key-code="Control"/)
 })
 
