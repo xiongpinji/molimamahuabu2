@@ -253,6 +253,49 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   } catch (error) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
+  try {
+    const redrawRows = rows.filter((row) => row.type === 'redraw_shot');
+    if (redrawRows.length) {
+      const timestamp = new Date().toISOString();
+      const keepOutOfGenericCleanup = new Set();
+      db.transaction(() => {
+        for (const row of redrawRows) {
+          const video = db.prepare(`
+            SELECT v.id, v.provider_task_id
+            FROM video_generations v
+            JOIN redraw_shots s
+              ON s.video_generation_id = v.id
+              AND CAST(s.id AS TEXT) = CAST(? AS TEXT)
+              AND s.deleted_at IS NULL
+            WHERE v.task_id = ? AND v.deleted_at IS NULL
+            ORDER BY v.id DESC LIMIT 1
+          `).get(row.resource_id, row.id);
+          keepOutOfGenericCleanup.add(row.id);
+          if (String(video?.provider_task_id || '').trim()) continue;
+          db.prepare(`
+            UPDATE async_tasks
+            SET status = 'needs_attention', progress = CASE WHEN COALESCE(progress, 0) > 90 THEN progress ELSE 90 END,
+                message = ?, error = ?, result = NULL, completed_at = NULL, updated_at = ?
+            WHERE id = ?
+          `).run('服务重启后缺少厂商任务 ID，请勿重新提交', '服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, row.id);
+          if (video) {
+            db.prepare(`
+              UPDATE video_generations SET status = 'needs_attention', error_msg = ?, updated_at = ? WHERE id = ?
+            `).run('服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, video.id);
+          }
+          db.prepare(`
+            UPDATE redraw_shots
+            SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION',
+                error_message = ?, updated_at = ?
+            WHERE id = ? AND deleted_at IS NULL
+          `).run('服务重启后缺少厂商任务 ID，请勿重新提交', timestamp, Number(row.resource_id));
+        }
+      })();
+      rows = rows.filter((row) => !keepOutOfGenericCleanup.has(row.id));
+    }
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
   if (!rows.length) {
     reconcileOrphanedScriptAnalysisProjects(db, log);
     return 0;

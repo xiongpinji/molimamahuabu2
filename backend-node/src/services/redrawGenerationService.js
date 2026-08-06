@@ -16,6 +16,9 @@ const redrawReviewService = require('./redrawReviewService');
 const execFileAsync = promisify(execFile);
 const UNCERTAIN_MARKERS = ['结果未知', '状态未知', '仍可能处理中', '请勿重新提交'];
 const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新提交';
+const DEFAULT_GENERATION_CONCURRENCY = 3;
+const DEFAULT_RECOVERY_WAIT_MS = 60 * 60 * 1000;
+const DEFAULT_RECOVERY_POLL_MS = 1000;
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -87,6 +90,34 @@ function selectShot(db, ctx, shotInput) {
   const shot = rows[0] || null;
   if (!shot) throw codedError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在或无权访问');
   return shot;
+}
+
+function normalizeVersionId(value) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw codedError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在');
+  }
+  return id;
+}
+
+function normalizeBatchShotIds(value) {
+  if (value == null) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw codedError('REDRAW_BATCH_SHOT_INVALID', 'shot_ids 必须是非空数组');
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const id = Number(raw);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw codedError('REDRAW_BATCH_SHOT_INVALID', '批量镜头不存在、跨版本或无权访问');
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
 }
 
 function ensureGateOpen(db, ctx, versionId) {
@@ -231,10 +262,10 @@ async function generateShot(ctx, input = {}) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
   const reusable = findReusable(db, shot, generation.attempt);
-  if (reusable) return reusable;
+  if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
   if (shot.video_generation_id) {
     const existing = db.prepare('SELECT status FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id));
-    if (existing?.status === 'failed') {
+    if (existing?.status === 'failed' && ctx.retryFailedShot !== true) {
       throw codedError('REDRAW_SHOT_RETRY_REQUIRED', '该镜头上次生成失败，请使用重试流程');
     }
   }
@@ -252,7 +283,7 @@ async function generateShot(ctx, input = {}) {
       resolution: generation.resolution,
       count: 1,
       locale: generation.locale,
-      styleSnapshot: parsed.styleSnapshot,
+      styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
       attempt: generation.attempt,
     });
     if (!reservation.success) {
@@ -321,20 +352,43 @@ async function generateShot(ctx, input = {}) {
     };
   })();
 
-  if (ctx.awaitCompletion === true) return runShotGeneration(ctx, created.task_id);
+  const enrich = (result) => enrichGenerationResult(db, {
+    ...result,
+    reservation_id: created.reservation_id,
+    attempt: generation.attempt,
+  });
+  if (ctx.awaitCompletion === true) return enrich(await runShotGeneration(ctx, created.task_id));
   const schedule = ctx.schedule || ((callback) => setImmediate(callback));
   schedule(() => {
     runShotGeneration(ctx, created.task_id).catch((error) => {
       ctx.log?.error?.('redraw shot background generation failed', { task_id: created.task_id, error: error.message });
     });
   });
-  return created;
+  return enrich({ ...created, attempt: generation.attempt });
 }
 
 const logNoop = { info() {}, warn() {}, error() {} };
 
 function taskMetadata(task) {
   return strictJson(task.metadata, 'async_tasks.metadata').redraw_shot || {};
+}
+
+function billingForReservationRow(row) {
+  if (!row) return { held: 0, charged: 0, released: 0 };
+  if (row.status === 'confirmed') return { held: 0, charged: row.amount, released: 0 };
+  if (row.status === 'refunded') return { held: 0, charged: 0, released: row.amount };
+  return { held: row.amount, charged: 0, released: 0 };
+}
+
+function enrichGenerationResult(db, result) {
+  const reservationId = result?.reservation_id;
+  const reservation = reservationId
+    ? db.prepare('SELECT id, status, amount FROM tenant_usage_reservations WHERE id = ?').get(reservationId)
+    : null;
+  return {
+    ...result,
+    billing: billingForReservationRow(reservation),
+  };
 }
 
 function ownerMatches(row, ctx) {
@@ -455,12 +509,17 @@ function terminalTaskResult(task, video, shot) {
 
 async function runShotGeneration(ctx, taskId) {
   const { db } = ctx;
-  const task = getTask(db, taskId, ctx);
+  const ownerCtx = ctx.tenantId && ctx.userId ? ctx : null;
+  const task = getTask(db, taskId, ownerCtx);
   const metadata = taskMetadata(task);
-  const video = getVideoForTask(db, task, ctx);
-  const shot = getShotForTask(db, task, ctx);
+  const video = getVideoForTask(db, task, ownerCtx);
+  const shot = getShotForTask(db, task, ownerCtx);
   const terminal = terminalTaskResult(task, video, shot);
-  if (terminal) {
+  const recoveredRemoteTerminal = ctx.recoverExistingProvider === true
+    && !terminalStatus(shot)
+    && ['completed', 'failed'].includes(String(video.status))
+    && String(task.status) === String(video.status);
+  if (terminal && !recoveredRemoteTerminal) {
     if (terminal.degrade) {
       const timestamp = now(ctx);
       updateNeedsAttention(db, task.id, shot.id, terminal.error, timestamp, video.id);
@@ -468,10 +527,17 @@ async function runShotGeneration(ctx, taskId) {
     }
     return terminal;
   }
-  const processor = ctx.videoProcessor || ((database, logger, videoGenerationId) => (
-    videoService.processVideoGeneration(database, logger, videoGenerationId)
-  ));
-  await processor(db, ctx.log || logNoop, video.id);
+  if (ctx.recoverExistingProvider === true && !String(video.provider_task_id || '').trim()) {
+    const timestamp = now(ctx);
+    updateNeedsAttention(db, task.id, shot.id, INTERRUPTED_MESSAGE, timestamp, video.id);
+    return { status: 'needs_attention', error: INTERRUPTED_MESSAGE, task_id: task.id, video_generation_id: video.id };
+  }
+  const processor = ctx.recoverExistingProvider === true
+    ? (ctx.videoRecoveryProcessor || waitForRecoveredVideo)
+    : (ctx.videoProcessor || ((database, logger, videoGenerationId) => (
+      videoService.processVideoGeneration(database, logger, videoGenerationId)
+    )));
+  if (!recoveredRemoteTerminal) await processor(db, ctx.log || logNoop, video.id);
   const row = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(video.id);
   let verification = null;
   let imported = null;
@@ -553,11 +619,216 @@ async function runShotGeneration(ctx, taskId) {
   return { status: 'needs_attention', error: outcome.error, task_id: task.id, video_generation_id: row.id };
 }
 
-function markInterruptedShotGenerationsNeedsAttention(db, log) {
+async function waitForRecoveredVideo(db, _log, videoGenerationId, options = {}) {
+  const maxWaitMs = Number(options.recoveryMaxWaitMs || DEFAULT_RECOVERY_WAIT_MS);
+  const pollMs = Number(options.recoveryPollMs || DEFAULT_RECOVERY_POLL_MS);
+  const deadline = Date.now() + (Number.isFinite(maxWaitMs) && maxWaitMs > 0 ? maxWaitMs : DEFAULT_RECOVERY_WAIT_MS);
+  while (Date.now() < deadline) {
+    const row = db.prepare('SELECT status FROM video_generations WHERE id = ? AND deleted_at IS NULL')
+      .get(Number(videoGenerationId));
+    if (!row || row.status !== 'processing') return;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, Number.isFinite(pollMs) && pollMs > 0 ? pollMs : DEFAULT_RECOVERY_POLL_MS);
+      timer.unref?.();
+    });
+  }
+}
+
+async function runBounded(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function consume() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+  const limit = Math.min(items.length, Math.max(1, concurrency));
+  await Promise.all(Array.from({ length: limit }, () => consume()));
+  return results;
+}
+
+function failBatchShotSafely(ctx, shot, error) {
+  const { db } = ctx;
+  const current = db.prepare('SELECT video_generation_id FROM redraw_shots WHERE id = ?').get(shot.id);
+  const video = current?.video_generation_id
+    ? db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(current.video_generation_id))
+    : null;
+  const task = video?.task_id
+    ? db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(video.task_id)
+    : null;
+  let reservationId = null;
+  try {
+    reservationId = task ? taskMetadata(task).reservation_id : null;
+  } catch (_) {}
+  if (task && video && ['pending', 'processing'].includes(String(task.status))) {
+    updateNeedsAttention(db, task.id, shot.id, error.message, now(ctx), video.id);
+  }
+  return enrichGenerationResult(db, {
+    shot_id: shot.id,
+    task_id: task?.id || null,
+    video_generation_id: video?.id || null,
+    reservation_id: reservationId,
+    status: task && video ? 'needs_attention' : 'failed',
+    error_code: error.code || 'REDRAW_BATCH_SHOT_FAILED',
+    error: error.message,
+  });
+}
+
+async function generateBatch(ctx, input = {}) {
+  const { db } = ctx;
+  if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  const versionId = normalizeVersionId(input.version_id ?? input.versionId);
+  const explicitIds = normalizeBatchShotIds(input.shot_ids ?? input.shotIds);
+  const preflight = db.transaction(() => {
+    const version = db.prepare(`
+      SELECT * FROM redraw_versions
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(versionId, String(ctx.tenantId), String(ctx.userId));
+    if (!version) throw codedError('REDRAW_VERSION_NOT_FOUND', '转绘版本不存在或无权访问');
+    const batchStyleSnapshot = strictJson(version.style_snapshot_json, 'redraw_versions.style_snapshot_json');
+    ensureGateOpen(db, ctx, versionId);
+
+    let rows;
+    if (explicitIds) {
+      const placeholders = explicitIds.map(() => '?').join(',');
+      rows = db.prepare(`
+        SELECT * FROM redraw_shots
+        WHERE id IN (${placeholders}) AND version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      `).all(...explicitIds, versionId, String(ctx.tenantId), String(ctx.userId));
+      if (rows.length !== explicitIds.length) {
+        throw codedError('REDRAW_BATCH_SHOT_INVALID', '批量镜头不存在、跨版本或无权访问');
+      }
+      const byId = new Map(rows.map((row) => [Number(row.id), row]));
+      rows = explicitIds.map((id) => byId.get(id));
+    } else {
+      rows = db.prepare(`
+        SELECT * FROM redraw_shots
+        WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        ORDER BY batch_index ASC, shot_index ASC, id ASC
+      `).all(versionId, String(ctx.tenantId), String(ctx.userId));
+    }
+    return { batchStyleSnapshot, rows };
+  })();
+  const { batchStyleSnapshot, rows } = preflight;
+
+  const candidates = rows.filter((row) => !['completed', 'processing'].includes(String(row.status)));
+  const skipped = rows.filter((row) => ['completed', 'processing'].includes(String(row.status)))
+    .map((row) => ({ shot_id: row.id, status: row.status }));
+  const rawConcurrency = Number(ctx.generationConcurrency ?? DEFAULT_GENERATION_CONCURRENCY);
+  const concurrency = Number.isSafeInteger(rawConcurrency) && rawConcurrency > 0
+    ? Math.min(rawConcurrency, 8)
+    : DEFAULT_GENERATION_CONCURRENCY;
+  const results = await runBounded(candidates, concurrency, async (shot) => {
+    try {
+      const result = await generateShot({
+        ...ctx,
+        awaitCompletion: true,
+        batchStyleSnapshot,
+      }, { ...input, shotId: shot.id, versionId: undefined, shotIds: undefined, version_id: undefined, shot_ids: undefined });
+      return { shot_id: shot.id, ...result };
+    } catch (error) {
+      return failBatchShotSafely(ctx, shot, error);
+    }
+  });
+  return { version_id: versionId, results, skipped };
+}
+
+function markRetryUncertain(db, shot, task, video, message, timestamp) {
+  if (task && video) {
+    updateNeedsAttention(db, task.id, shot.id, message, timestamp, video.id);
+    return;
+  }
+  db.prepare(`
+    UPDATE redraw_shots
+    SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION', error_message = ?, updated_at = ?
+    WHERE id = ?
+  `).run(message, timestamp, shot.id);
+}
+
+async function retryShot(ctx, input = {}) {
+  const { db } = ctx;
+  if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  const shot = selectShot(db, ctx, input);
+  if (shot.status !== 'failed') {
+    throw codedError('REDRAW_SHOT_RETRY_REQUIRED', '仅明确失败的镜头可以重试');
+  }
+  const video = shot.video_generation_id
+    ? db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id))
+    : null;
+  const task = video?.task_id
+    ? db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(video.task_id)
+    : null;
+  let metadata = null;
+  let reservation = null;
+  try {
+    metadata = task ? taskMetadata(task) : null;
+    reservation = metadata?.reservation_id
+      ? db.prepare('SELECT * FROM tenant_usage_reservations WHERE id = ?').get(metadata.reservation_id)
+      : null;
+  } catch (_) {}
+  const oldTerminalClear = video?.status === 'failed'
+    && task?.status === 'failed'
+    && reservation?.status === 'refunded'
+    && String(task?.resource_id || '') === String(shot.id)
+    && String(reservation?.tenant_id || '') === String(ctx.tenantId)
+    && reservation?.resource_type === 'redraw_shot'
+    && String(reservation?.resource_id || '') === String(shot.id)
+    && ownerMatches(video, ctx)
+    && ownerMatches(task, ctx);
+  if (!oldTerminalClear) {
+    const message = '旧生成任务终态不明确，请人工确认后处理，禁止重复提交';
+    markRetryUncertain(db, shot, task, video, message, now(ctx));
+    throw codedError('REDRAW_RETRY_UNCERTAIN', message);
+  }
+  const draft = strictJson(shot.draft_json, 'draft_json');
+  const previousAttempt = Number(draft.generation?.attempt ?? draft.attempt ?? 1);
+  const attempt = Number.isSafeInteger(previousAttempt) && previousAttempt > 0 ? previousAttempt + 1 : 2;
+  return generateShot({ ...ctx, retryFailedShot: true }, { ...input, shotId: shot.id, attempt });
+}
+
+async function recoverInterruptedShotGenerations(ctx) {
+  const { db } = ctx;
+  if (!db) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  const ownerClause = ctx.tenantId && ctx.userId ? ' AND t.tenant_id = ? AND t.user_id = ?' : '';
+  const ownerParams = ctx.tenantId && ctx.userId ? [String(ctx.tenantId), String(ctx.userId)] : [];
+  const rows = db.prepare(`
+    SELECT t.id AS task_id
+    FROM async_tasks t
+    JOIN video_generations v ON v.task_id = t.id AND v.deleted_at IS NULL
+    JOIN redraw_shots s ON s.video_generation_id = v.id AND s.deleted_at IS NULL
+    WHERE t.type = 'redraw_shot' AND t.deleted_at IS NULL
+      AND v.tenant_id = t.tenant_id AND v.user_id = t.user_id
+      AND s.tenant_id = t.tenant_id AND s.user_id = t.user_id
+      AND s.status = 'processing'
+      AND (
+        (t.status IN ('pending', 'processing') AND v.status = 'processing')
+        OR (t.status = 'completed' AND v.status = 'completed')
+        OR (t.status = 'failed' AND v.status = 'failed')
+      )
+      AND v.provider_task_id IS NOT NULL AND TRIM(v.provider_task_id) != ''${ownerClause}
+    ORDER BY t.created_at ASC, t.id ASC
+  `).all(...ownerParams);
+  const rawConcurrency = Number(ctx.generationConcurrency ?? DEFAULT_GENERATION_CONCURRENCY);
+  const concurrency = Number.isSafeInteger(rawConcurrency) && rawConcurrency > 0
+    ? Math.min(rawConcurrency, 8)
+    : DEFAULT_GENERATION_CONCURRENCY;
+  return runBounded(rows, concurrency, async (row) => runShotGeneration({
+    ...ctx,
+    recoverExistingProvider: true,
+    videoRecoveryProcessor: ctx.videoRecoveryProcessor
+      ? ((database, logger, videoId) => ctx.videoRecoveryProcessor(database, logger, videoId))
+      : ((database, logger, videoId) => waitForRecoveredVideo(database, logger, videoId, ctx)),
+  }, row.task_id));
+}
+
+function markInterruptedShotGenerationsNeedsAttention(db, log, options = {}) {
   const timestamp = new Date().toISOString();
   const rows = db.prepare(`
     SELECT t.id AS task_id, t.progress AS task_progress,
-           s.id AS shot_id, v.id AS video_id
+           s.id AS shot_id, v.id AS video_id, v.provider_task_id
     FROM async_tasks t
     JOIN redraw_shots s
       ON CAST(s.id AS TEXT) = CAST(t.resource_id AS TEXT)
@@ -570,13 +841,18 @@ function markInterruptedShotGenerationsNeedsAttention(db, log) {
       AND v.tenant_id = t.tenant_id
       AND v.user_id = t.user_id
       AND v.id = s.video_generation_id
-    WHERE t.type = 'redraw_shot'
-      AND t.status IN ('pending', 'processing')
-      AND t.deleted_at IS NULL
+    WHERE t.type = 'redraw_shot' AND t.deleted_at IS NULL
+      AND (
+        t.status IN ('pending', 'processing')
+        OR (s.status = 'processing' AND t.status = 'completed' AND v.status = 'completed')
+        OR (s.status = 'processing' AND t.status = 'failed' AND v.status = 'failed')
+      )
   `).all();
   if (!rows.length) return 0;
+  const interrupted = rows.filter((row) => !String(row.provider_task_id || '').trim());
+  const recoverable = rows.filter((row) => String(row.provider_task_id || '').trim());
   db.transaction(() => {
-    for (const row of rows) {
+    for (const row of interrupted) {
       db.prepare(`
         UPDATE async_tasks
         SET status = 'needs_attention',
@@ -597,8 +873,21 @@ function markInterruptedShotGenerationsNeedsAttention(db, log) {
       `).run(INTERRUPTED_MESSAGE, timestamp, row.video_id);
     }
   })();
-  log?.warn?.('Interrupted redraw shot generations marked needs_attention', { count: rows.length });
-  return rows.length;
+  if (interrupted.length) {
+    log?.warn?.('Interrupted redraw shot generations marked needs_attention', { count: interrupted.length });
+  }
+  if (recoverable.length) {
+    const schedule = options.schedule || ((callback) => setImmediate(callback));
+    schedule(() => recoverInterruptedShotGenerations({
+      db,
+      log,
+      ...(options.recoveryContext || {}),
+    }).catch((error) => {
+      log?.error?.('Recover redraw shot generations failed', { error: error.message });
+    }));
+    log?.info?.('Recoverable redraw shot generations scheduled', { count: recoverable.length });
+  }
+  return interrupted.length;
 }
 
 function isInside(parent, child) {
@@ -669,6 +958,9 @@ async function verifyVideoArtifact(ctx, videoGenerationId) {
 
 module.exports = {
   generateShot,
+  generateBatch,
+  retryShot,
+  recoverInterruptedShotGenerations,
   runShotGeneration,
   markInterruptedShotGenerationsNeedsAttention,
   verifyVideoArtifact,
