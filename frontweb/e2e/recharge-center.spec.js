@@ -99,6 +99,7 @@ function json(data, status = 200) {
 function createCalls() {
   return {
     adminPackageGets: 0,
+    apiPosts: [],
     createOrders: 0,
     orderPayloads: [],
     packageUpdates: [],
@@ -135,10 +136,12 @@ async function mockRechargeApi(page, calls, options = {}) {
     })
   })
 
-  await page.route('**/api/v1/**', async (route) => {
+  // Root-only equivalent of **/api/**; the raw glob would also match Vite's /src/api modules.
+  await page.route(/^https?:\/\/[^/]+\/api\/(?:.*)$/, async (route) => {
     const request = route.request()
     const { pathname } = new URL(request.url())
     const method = request.method()
+    if (method === 'POST') calls.apiPosts.push({ method, pathname })
 
     if (method === 'GET' && pathname === '/api/v1/billing/account') {
       return route.fulfill(json({ available: 88600, held: 0, spent: 11400 }))
@@ -287,6 +290,21 @@ test('支付暂停时展示四个管理员套餐并阻止套餐与自定义下�
   await customButton.dispatchEvent('click')
 
   await expect.poll(() => calls.createOrders).toBe(0)
+  expect(calls.apiPosts).toEqual([])
+
+  const probeStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/v2/fail-close-probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ probe: true }),
+    })
+    return response.status
+  })
+  expect(probeStatus).toBe(404)
+  expect(calls.apiPosts).toEqual([{
+    method: 'POST',
+    pathname: '/api/v2/fail-close-probe',
+  }])
 })
 
 test('支付通道就绪时非法自定义金额显示验证且不创建订单', async ({ page }) => {
@@ -299,6 +317,7 @@ test('支付通道就绪时非法自定义金额显示验证且不创建订单',
   await page.locator('.custom-purchase').click()
   await expect(page.getByText('充值金额需在 1.00 至 50000.00 元之间')).toBeVisible()
   await expect.poll(() => calls.createOrders).toBe(0)
+  expect(calls.apiPosts).toEqual([])
 })
 
 for (const viewport of [
@@ -336,6 +355,7 @@ for (const viewport of [
     if (viewport.width === 390) expect(featuredTransform).toBe('none')
     if (viewport.width === 1440) expect(featuredTransform).not.toBe('none')
     expect(calls.createOrders).toBe(0)
+    expect(calls.apiPosts).toEqual([])
   })
 }
 
@@ -414,6 +434,11 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
     await expect(preview.locator('.package-image')).toHaveAttribute('src', upload.url)
   }
   expect(calls.uploadContentTypes).toEqual(['image/jpeg', 'image/png', 'image/webp'])
+  expect(calls.apiPosts).toEqual([
+    { method: 'POST', pathname: '/api/v1/billing/admin/recharge-packages/image' },
+    { method: 'POST', pathname: '/api/v1/billing/admin/recharge-packages/image' },
+    { method: 'POST', pathname: '/api/v1/billing/admin/recharge-packages/image' },
+  ])
 
   await admin.getByRole('button', { name: '保存套餐' }).click()
   await expect.poll(() => calls.packageUpdates).toEqual([{
@@ -466,6 +491,7 @@ test('管理员完整编辑字段实时更新预览并支持三种广告图片�
 
   await previewButton.dispatchEvent('click')
   await expect.poll(() => calls.createOrders).toBe(0)
+  expect(calls.apiPosts).toHaveLength(3)
 })
 
 test('Enter 与 Space 键盘排序提交完整顺序且不会触发行选择或丢失当前草稿', async ({ page }) => {
@@ -493,6 +519,7 @@ test('Enter 与 Space 键盘排序提交完整顺序且不会触发行选择或�
   await expect(titleInput).toHaveValue('尚未保存的 PLUS 草稿')
   await expect(imageInput).toHaveValue('/static/uploads/recharge-packages/plus-draft.webp')
   await expect(admin.locator('.sortable-item--active')).toContainText('PLUS')
+  expect(calls.apiPosts).toEqual([])
 
   const maxRow = admin.locator('.sortable-item').filter({ hasText: 'MAX' })
   const moveUp = maxRow.getByRole('button', { name: '上移 MAX' })
@@ -527,4 +554,5 @@ test('排序失败恢复服务端顺序并保留编辑草稿', async ({ page }) 
   await expect.poll(() => calls.orderPayloads).toEqual([
     ['pro', 'plus', 'max', 'ultra'],
   ])
+  expect(calls.apiPosts).toEqual([])
 })
