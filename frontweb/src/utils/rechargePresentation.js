@@ -1,8 +1,14 @@
 export const CUSTOM_RECHARGE_RATIO = 100
 export const QUICK_RECHARGE_AMOUNTS = [10, 30, 50, 100, 300, 500]
 
+export function legacyRechargeRedirect(to) {
+  if (to?.name !== 'tenant-console' || to?.query?.section !== 'recharge') return null
+  const { section: _section, ...query } = to.query
+  return { name: 'recharge-center', query, hash: to.hash }
+}
+
 function amountToCents(amount) {
-  const match = String(amount ?? '').match(/^(\d+)(?:\.(\d{1,2}))?$/)
+  const match = String(amount ?? '').trim().match(/^(\d{1,5})(?:\.(\d{1,2}))?$/)
   if (!match) return null
 
   const cents = (BigInt(match[1]) * 100n) + BigInt((match[2] || '').padEnd(2, '0'))

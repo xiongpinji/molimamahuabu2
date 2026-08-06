@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { readSession } from '@/utils/authSession'
 import { authRedirect } from '@/utils/authGuard'
+import { legacyRechargeRedirect } from '@/utils/rechargePresentation'
 
 const publicPlatformMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 
@@ -147,9 +148,8 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  if (to.name === 'tenant-console' && to.query.section === 'recharge') {
-    return { name: 'recharge-center' }
-  }
+  const legacyRedirect = legacyRechargeRedirect(to)
+  if (legacyRedirect) return legacyRedirect
   if (to.meta.title) {
     document.title = `${to.meta.title} - 茉莉妈妈短剧制作平台`
   }

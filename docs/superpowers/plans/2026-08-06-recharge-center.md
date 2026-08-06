@@ -455,6 +455,7 @@ git commit -m "feat(充值): 增加套餐广告图上传"
 **文件：**
 - 创建：`frontweb/src/utils/rechargePresentation.js`
 - 创建：`frontweb/test/recharge-presentation.test.js`
+- 创建：`frontweb/src/views/RechargeCenter.vue`（最小可构建占位，任务 5 完成页面）
 - 修改：`frontweb/src/api/billing.js:24-38,80-90`
 - 修改：`frontweb/src/api/upload.js:3-20`
 - 修改：`frontweb/src/router/index.js:94-121,143-148`
@@ -579,19 +580,22 @@ if (to.name === 'tenant-console' && to.query.section === 'recharge') {
 
 `PlatformHeader.goRecharge()` 改为 `router.push({ name: 'recharge-center' })`；兑换入口保持原样。
 
+同时创建最小 `RechargeCenter.vue` 占位组件，确保本任务提交单独执行 Vite 构建时可解析路由；任务 5 在同一文件上完成正式页面，不能留下不可构建的中间提交。
+
 - [ ] **步骤 5：运行前端目标测试确认通过**
 
 ```powershell
 cd frontweb
 node --test test/recharge-presentation.test.js test/alipay-recharge.test.js
+npm run build
 ```
 
-预期：两个文件全部通过。
+预期：两个文件全部通过，Vite 生产构建退出码 0。
 
 - [ ] **步骤 6：提交任务 4**
 
 ```powershell
-git add frontweb/src/utils/rechargePresentation.js frontweb/test/recharge-presentation.test.js frontweb/src/api/billing.js frontweb/src/api/upload.js frontweb/src/router/index.js frontweb/src/components/PlatformHeader.vue frontweb/test/alipay-recharge.test.js
+git add frontweb/src/utils/rechargePresentation.js frontweb/test/recharge-presentation.test.js frontweb/src/views/RechargeCenter.vue frontweb/src/api/billing.js frontweb/src/api/upload.js frontweb/src/router/index.js frontweb/src/components/PlatformHeader.vue frontweb/test/alipay-recharge.test.js
 git commit -m "feat(充值): 建立充值中心前端合同"
 ```
 
@@ -600,7 +604,7 @@ git commit -m "feat(充值): 建立充值中心前端合同"
 **文件：**
 - 创建：`frontweb/src/components/RechargePackageCard.vue`
 - 创建：`frontweb/src/components/CustomRechargePanel.vue`
-- 创建：`frontweb/src/views/RechargeCenter.vue`
+- 修改：`frontweb/src/views/RechargeCenter.vue`
 - 修改：`frontweb/src/views/TenantConsole.vue:35-51,103-181,250-330,369-388,485-526,558-574`
 - 修改：`frontweb/src/App.vue:4`
 - 修改：`frontweb/test/alipay-recharge.test.js`
