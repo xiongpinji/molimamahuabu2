@@ -99,7 +99,6 @@ function updateAsset(db, ctx, assetId, changes = {}) {
     localizedName: 'localized_name',
     localizedDescription: 'localized_description',
     prompt: 'prompt',
-    approvalStatus: 'approval_status',
   };
   for (const [input, column] of Object.entries(fields)) {
     if (changes[input] !== undefined) {
@@ -108,6 +107,9 @@ function updateAsset(db, ctx, assetId, changes = {}) {
     }
   }
   if (updates.length === 0) return rowToAsset(row);
+  updates.push("approval_status = 'pending'");
+  updates.push('approved_by = NULL');
+  updates.push('approved_at = NULL');
   params.push(new Date().toISOString(), Number(assetId));
   db.prepare(`UPDATE redraw_assets SET ${updates.join(', ')}, updated_at = ? WHERE id = ?`).run(...params);
   return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(assetId)));

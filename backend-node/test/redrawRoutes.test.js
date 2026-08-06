@@ -645,3 +645,49 @@ test('提交分析 multipart 参考图登记为资产并写入自由风格 metad
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审核状态', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2, status: 'asset_review' });
+    db.prepare(`INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', 'asset_review', ?, ?)`).run(workId, NOW, NOW);
+    const versionId = db.prepare('SELECT id FROM redraw_versions WHERE work_id = ?').get(workId).id;
+    const assetNow = new Date().toISOString();
+    db.prepare(`INSERT INTO redraw_assets
+      (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id,
+       version_number, approval_status, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 'scene', '{}', '场景', 990, 1, 'pending', 'generated', ?, ?)`).run(versionId, assetNow, assetNow);
+    const asset = db.prepare('SELECT * FROM redraw_assets WHERE version_id = ?').get(versionId);
+    db.prepare(`INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       references_json, status, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 1, 1, 0, 1000, 1000, ?, 'draft', ?, ?)`).run(
+      versionId, JSON.stringify([{ kind: 'scene', asset_id: asset.id }]), assetNow, assetNow,
+    );
+    const handlers = redrawRoutes(db, { error() {}, info() {} }, routeDeps({ canReadArtifact: () => true }));
+
+    const gate = captureResponse();
+    handlers.generationGate(request({ id: versionId }), gate);
+    assert.equal(gate.statusCode, 200);
+    assert.equal(gate.body.data.ok, false);
+    assert.equal(gate.body.data.missing[0].asset_id, asset.id);
+
+    const update = captureResponse();
+    handlers.updateRedrawAsset(request({ id: asset.id, body: { approval_status: 'approved' } }), update);
+    assert.equal(update.statusCode, 400);
+
+    const review = captureResponse();
+    handlers.reviewRedrawAsset(request({ id: asset.id, body: {
+      action: 'approved',
+      expected_updated_at: asset.updated_at,
+    } }), review);
+    assert.equal(review.statusCode, 200);
+    assert.equal(review.body.data.asset.approval_status, 'approved');
+    assert.equal(review.body.data.gate.ok, true);
+  } finally {
+    db.close();
+  }
+});

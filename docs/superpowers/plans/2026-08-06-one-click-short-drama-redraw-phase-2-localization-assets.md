@@ -282,7 +282,7 @@ git commit -m "feat: 增加转绘外语音色门禁"
 - 测试：`backend-node/test/redrawReviewGate.test.js`
 - 修改：`backend-node/test/redrawRoutes.test.js`
 
-- [ ] **步骤 1：编写失败的门禁测试**
+- [x] **步骤 1：编写失败的门禁测试**
 
 ```js
 test('返回每个未审批引用及直接定位信息', () => {
@@ -297,23 +297,23 @@ test('退回已引用净景会重新关闭视频生成门禁', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：`cd backend-node; node --test test/redrawReviewGate.test.js`
 
 预期：FAIL，提示找不到审核服务。
 
-- [ ] **步骤 3：实现审核事务和路由**
+- [x] **步骤 3：实现审核事务和路由**
 
 `reviewAsset` 使用 `expected_updated_at` 做乐观锁，只允许 `approved/rejected`；审批写 `approved_by/approved_at/version_number`。新增版本、修改提示词、替换音色或重绘都会重置当前版本审核。开放规格中的版本创建、资产更新、资产生成、资产审核路由，并保持统一成功字段。
 
-- [ ] **步骤 4：运行后端阶段 2 回归**
+- [x] **步骤 4：运行后端阶段 2 回归**
 
 运行：`cd backend-node; node --test test/redrawLocalization.test.js test/redrawAssets.test.js test/redrawVoices.test.js test/redrawReviewGate.test.js test/redrawRoutes.test.js`
 
 预期：全部 PASS。
 
-- [ ] **步骤 5：提交审核门禁和 API**
+- [x] **步骤 5：提交审核门禁和 API**
 
 ```powershell
 git add backend-node/src/services/redrawReviewService.js backend-node/src/routes/redraw.js backend-node/src/routes/index.js backend-node/test/redrawReviewGate.test.js backend-node/test/redrawRoutes.test.js

@@ -9,6 +9,9 @@ const redrawService = require('../services/redrawService');
 const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
+const localizationService = require('../services/localizationService');
+const redrawAssetService = require('../services/redrawAssetService');
+const redrawReviewService = require('../services/redrawReviewService');
 const assetService = require('../services/assetService');
 const taskService = require('../services/taskService');
 const uploadServiceModule = require('../services/uploadService');
@@ -328,6 +331,28 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
   }
 
+  function findOwnedVersion(id, currentOwner) {
+    return db.prepare(`
+      SELECT *
+      FROM redraw_versions
+      WHERE id = ?
+        AND tenant_id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+    `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function findOwnedAsset(id, currentOwner) {
+    return db.prepare(`
+      SELECT *
+      FROM redraw_assets
+      WHERE id = ?
+        AND tenant_id = ?
+        AND user_id = ?
+        AND deleted_at IS NULL
+    `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
   function listProjects(req, res) {
     const currentOwner = owner(req);
     const rows = db.prepare(`
@@ -427,6 +452,155 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }));
   }
 
+  function createVersion(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.notFound(res, '转绘作品不存在');
+    const sourceVersion = db.prepare(`
+      SELECT source_facts_json, facts_hash
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        AND source_facts_json IS NOT NULL
+      ORDER BY version ASC
+      LIMIT 1
+    `).get(work.id, currentOwner.tenantId, currentOwner.userId);
+    if (!sourceVersion) return response.badRequest(res, '源片事实尚未确认');
+    try {
+      const version = localizationService.createLocalizationVersion(db, currentOwner, work.id, {
+        ...req.body,
+        sourceFacts: parseJSON(sourceVersion.source_facts_json, {}),
+        sourceFactsHash: sourceVersion.facts_hash,
+      });
+      const now = new Date().toISOString();
+      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, version.id);
+      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, work.id);
+      return response.created(res, {
+        version,
+        work_id: Number(work.id),
+        project_id: Number(work.project_id),
+        status: 'asset_review',
+        current_step: 2,
+        updated_at: now,
+      });
+    } catch (error) {
+      if (String(error.code || '').startsWith('LOCALIZATION_')) return response.badRequest(res, error.message);
+      log?.error?.({ err: error, workId: work.id }, 'redraw create version failed');
+      return response.internalError(res, error.message || '创建本地化版本失败');
+    }
+  }
+
+  function listVersionAssets(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    return response.success(res, redrawAssetService.listAssets(db, {
+      versionId: version.id,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+    }, { kind: req.query?.kind }));
+  }
+
+  function generationGate(req, res) {
+    const currentOwner = owner(req);
+    try {
+      return response.success(res, redrawReviewService.evaluateGenerationGate(db, req.params.id, currentOwner));
+    } catch (error) {
+      if (error.code === 'REDRAW_VERSION_NOT_FOUND') return response.notFound(res, '本地化版本不存在');
+      return response.internalError(res, error.message || '读取生成审核门禁失败');
+    }
+  }
+
+  function updateRedrawAsset(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) return response.notFound(res, '转绘资产不存在');
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'approval_status')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'approvalStatus')) {
+      return response.badRequest(res, '审核状态只能通过审核接口修改');
+    }
+    const updated = redrawAssetService.updateAsset(db, {
+      versionId: asset.version_id,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+    }, asset.id, {
+      localizedName: req.body?.localized_name ?? req.body?.localizedName,
+      localizedDescription: req.body?.localized_description ?? req.body?.localizedDescription,
+      prompt: req.body?.prompt,
+    });
+    return response.success(res, updated);
+  }
+
+  async function generateRedrawAsset(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) return response.notFound(res, '转绘资产不存在');
+    const sourcePayload = parseJSON(asset.source_ref_json, {});
+    const provider = options.assetGenerationProvider || options.assetProvider;
+    if (typeof provider !== 'function') return response.badRequest(res, '资产生成能力尚未配置');
+    try {
+      const generated = await redrawAssetService.generateAsset({
+        db,
+        versionId: asset.version_id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        provider,
+        assetReader: {
+          canRead: (row) => Boolean(row && typeof canReadArtifact === 'function' && canReadArtifact(row.id)),
+        },
+      }, {
+        kind: asset.kind,
+        sourceRef: sourcePayload.source_ref || sourcePayload.source || {},
+        localizedName: req.body?.localized_name ?? asset.localized_name,
+        localizedDescription: req.body?.localized_description ?? asset.localized_description,
+        prompt: req.body?.prompt ?? asset.prompt,
+        model: req.body?.model,
+        creditAmount: req.body?.credit_amount,
+      });
+      return response.accepted(res, {
+        asset: generated,
+        version_id: Number(asset.version_id),
+        status: generated.status,
+        current_step: 2,
+      });
+    } catch (error) {
+      if (String(error.code || '').startsWith('REDRAW_') || error.code === 'ASSET_NOT_READABLE') {
+        return response.badRequest(res, error.message);
+      }
+      log?.error?.({ err: error, assetId: asset.id }, 'redraw asset generation failed');
+      return response.internalError(res, error.message || '生成转绘资产失败');
+    }
+  }
+
+  function reviewRedrawAsset(req, res) {
+    const currentOwner = owner(req);
+    const asset = findOwnedAsset(req.params.id, currentOwner);
+    if (!asset) return response.notFound(res, '转绘资产不存在');
+    try {
+      const reviewed = redrawReviewService.reviewAsset(db, asset.id, {
+        action: req.body?.action,
+        expected_updated_at: req.body?.expected_updated_at ?? req.body?.expectedUpdatedAt,
+        reviewerId: currentOwner.userId,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      });
+      const gate = redrawReviewService.evaluateGenerationGate(db, asset.version_id, currentOwner);
+      return response.success(res, {
+        asset: reviewed,
+        gate,
+        version_id: Number(asset.version_id),
+        status: gate.ok ? 'ready_to_generate' : 'asset_review',
+        current_step: gate.current_step,
+        updated_at: reviewed.updated_at,
+      });
+    } catch (error) {
+      if (error.code === 'REDRAW_ASSET_NOT_FOUND') return response.notFound(res, '转绘资产不存在');
+      if (error.code === 'REDRAW_REVIEW_CONFLICT') return response.error(res, 409, error.code, error.message);
+      if (String(error.code || '').startsWith('REDRAW_REVIEW_')) return response.badRequest(res, error.message);
+      log?.error?.({ err: error, assetId: asset.id }, 'redraw asset review failed');
+      return response.internalError(res, error.message || '审核转绘资产失败');
+    }
+  }
+
   function listStylePresets(_req, res) {
     const rows = capabilityService.listPublicStylePresets(db, canReadArtifact);
     return response.success(res, rows.map(mapStylePreset));
@@ -494,6 +668,12 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     getProject,
     createWorks,
     getWork,
+    createVersion,
+    listVersionAssets,
+    generationGate,
+    updateRedrawAsset,
+    generateRedrawAsset,
+    reviewRedrawAsset,
     listStylePresets,
     listLocales,
     analyzeWork,

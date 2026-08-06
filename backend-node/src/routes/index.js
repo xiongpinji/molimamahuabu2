@@ -227,6 +227,12 @@ function setupRouter(cfg, db, log) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.post('/redraw/works/:id/versions', redraw.createVersion);
+  r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
+  r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
+  r.post('/redraw/assets/:id/generate', redraw.generateRedrawAsset);
+  r.post('/redraw/assets/:id/review', redraw.reviewRedrawAsset);
 
   // ---------- dramas ----------
   r.get('/dramas', drama.listDramas);
