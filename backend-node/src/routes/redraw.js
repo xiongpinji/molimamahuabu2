@@ -592,7 +592,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       ORDER BY batch_index ASC, shot_index ASC, id ASC`)
       .all(version.id, currentOwner.tenantId, currentOwner.userId);
     const rowsById = new Map(rows.map((row) => [Number(row.id), row]));
-    return shotService.snapshotShots(db, version.id)
+    return shotService.snapshotShots(db, version.id, currentOwner)
       .filter((snapshot) => rowsById.has(Number(snapshot.id)))
       .map((snapshot) => shotRuntime(rowsById.get(Number(snapshot.id)), snapshot, currentOwner));
   }
@@ -744,10 +744,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       throw codedRouteError('REDRAW_SHOT_INVALID', 'duration 必须是 5 到 15 秒的整数');
     }
     if (!resolution) throw codedRouteError('REDRAW_SHOT_INVALID', 'resolution 不能为空');
-    if (!Number.isSafeInteger(count) || count <= 0) {
-      throw codedRouteError('REDRAW_SHOT_INVALID', 'count 必须是正整数');
+    if (!Number.isSafeInteger(count) || count !== 1) {
+      throw codedRouteError('REDRAW_SHOT_INVALID', '单镜 count 必须为 1');
     }
-    return { model, duration, resolution, count };
+    return { model, duration, resolution, count: 1 };
   }
 
   function updateShot(req, res) {
@@ -770,7 +770,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       return response.error(res, 400, 'REDRAW_SHOT_LOCK_REQUIRED', '更新分镜必须提交 updated_at 或 version');
     }
     try {
-      const current = shotService.snapshotShots(db, shot.version_id)
+      const current = shotService.snapshotShots(db, shot.version_id, currentOwner)
         .find((item) => Number(item.id) === Number(shot.id));
       if (!current) throw codedRouteError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
       const draft = parseStrictObject(shot.draft_json, 'draft_json');
@@ -882,7 +882,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         throw codedRouteError('REDRAW_SHOT_CONFLICT', '分镜已被其他操作更新，请刷新后重试');
       }
       const raw = findOwnedShot(shot.id, currentOwner);
-      const snapshot = shotService.snapshotShots(db, shot.version_id)
+      const snapshot = shotService.snapshotShots(db, shot.version_id, currentOwner)
         .find((item) => Number(item.id) === Number(shot.id));
       return response.success(res, shotRuntime(raw, snapshot, currentOwner));
     } catch (error) {

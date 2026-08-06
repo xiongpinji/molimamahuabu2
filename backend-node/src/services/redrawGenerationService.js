@@ -223,10 +223,17 @@ function parseShotPayload(shot) {
   };
 }
 
-function findReusable(db, shot, attempt) {
+function findReusable(db, shot, attempt, expectedGeneration = null) {
   if (!shot.video_generation_id) return null;
   const video = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id));
   if (!video || !['processing', 'completed', 'needs_attention'].includes(String(video.status))) return null;
+  if (expectedGeneration && (
+    String(video.model || '') !== String(expectedGeneration.model || '')
+    || Number(video.duration) !== Number(expectedGeneration.duration)
+    || String(video.resolution || '') !== String(expectedGeneration.resolution || '')
+    || String(video.aspect_ratio || '') !== String(expectedGeneration.aspect_ratio || '')
+    || String(video.prompt || '') !== String(expectedGeneration.prompt || '')
+  )) return null;
   const draft = strictJson(shot.draft_json, 'draft_json');
   if (Number(draft.generation?.attempt ?? draft.attempt ?? 1) !== Number(attempt)) return null;
   const task = video.task_id
@@ -262,96 +269,118 @@ async function generateShot(ctx, input = {}) {
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
-  const reusable = findReusable(db, shot, generation.attempt);
+  const reusable = findReusable(db, shot, generation.attempt, generation);
   if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
   if (shot.video_generation_id) {
     const existing = db.prepare('SELECT status FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(shot.video_generation_id));
     if (existing?.status === 'failed' && ctx.retryFailedShot !== true) {
       throw codedError('REDRAW_SHOT_RETRY_REQUIRED', '该镜头上次生成失败，请使用重试流程');
     }
+    if (existing && existing.status !== 'failed') {
+      throw codedError('REDRAW_SHOT_CONFLICT', '镜头已有不同参数的生成任务，请刷新后重试');
+    }
   }
   const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
-  const created = db.transaction(() => {
-    ensureGateOpen(db, ctx, shot.version_id);
-    const reservation = redrawBillingService.reserveShotGeneration(db, {
-      tenantId: ctx.tenantId,
-      userId: ctx.userId,
-      actorUserId: ctx.userId,
-      versionId: shot.version_id,
-      shotId: String(shot.id),
-      model: generation.model,
-      duration: generation.duration,
-      resolution: generation.resolution,
-      count: 1,
-      locale: generation.locale,
-      styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
-      attempt: generation.attempt,
-    });
-    if (!reservation.success) {
-      throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', reservation.message || '单镜视频模型未配置价格');
-    }
-    const task = taskService.createTask(db, ctx.log || logNoop, 'redraw_shot', String(shot.id));
-    const timestamp = now(ctx);
-    const metadata = {
-      redraw_shot: {
-        reservation_id: reservation.reservation_id,
-        operation_key: reservation.operation_key,
-        billing: reservation.billing,
-        quote: reservation.quote,
-        version_id: shot.version_id,
-        shot_id: shot.id,
-        attempt: generation.attempt,
-      },
-    };
-    db.prepare(`
-      UPDATE async_tasks
-      SET status = 'processing', progress = 1, message = ?, tenant_id = ?, user_id = ?,
-          model = ?, metadata = ?, updated_at = ?
-      WHERE id = ?
-    `).run('单镜视频生成已开始', String(ctx.tenantId), String(ctx.userId), generation.model, JSON.stringify(metadata), timestamp, task.id);
-    const videoId = db.prepare(`INSERT INTO video_generations
-      (provider, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
-       status, task_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
-      VALUES (NULL, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
-      .run(
-        generation.prompt,
-        generation.model,
-        generation.duration,
-        generation.aspect_ratio,
-        generation.resolution,
-        JSON.stringify(referenceImageUrls),
-        task.id,
-        String(ctx.tenantId),
-        String(ctx.userId),
-        timestamp,
-        timestamp,
-      ).lastInsertRowid;
-    db.prepare(`
-      UPDATE redraw_shots
-      SET video_generation_id = ?, status = 'processing', error_code = NULL, error_message = NULL,
-          draft_json = ?, updated_at = ?
-      WHERE id = ?
-    `).run(videoId, mergeDraft(parsed.draft, {
-      generation: {
-        task_id: task.id,
-        video_generation_id: videoId,
-        reservation_id: reservation.reservation_id,
-        operation_key: reservation.operation_key,
+  if (typeof ctx.beforeCreateTransaction === 'function') {
+    await ctx.beforeCreateTransaction({ shot, generation });
+  }
+  let created;
+  try {
+    created = db.transaction(() => {
+      ensureGateOpen(db, ctx, shot.version_id);
+      const reservation = redrawBillingService.reserveShotGeneration(db, {
+        tenantId: ctx.tenantId,
+        userId: ctx.userId,
+        actorUserId: ctx.userId,
+        versionId: shot.version_id,
+        shotId: String(shot.id),
         model: generation.model,
         duration: generation.duration,
         resolution: generation.resolution,
-        aspect_ratio: generation.aspect_ratio,
         count: 1,
+        locale: generation.locale,
+        styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
         attempt: generation.attempt,
-      },
-    }), timestamp, shot.id);
-    return {
-      status: 'processing',
-      task_id: task.id,
-      video_generation_id: videoId,
-      reservation_id: reservation.reservation_id,
-    };
-  })();
+      });
+      if (!reservation.success) {
+        throw codedError('REDRAW_SHOT_PRICING_UNCONFIGURED', reservation.message || '单镜视频模型未配置价格');
+      }
+      const task = taskService.createTask(db, ctx.log || logNoop, 'redraw_shot', String(shot.id));
+      const timestamp = now(ctx);
+      const metadata = {
+        redraw_shot: {
+          reservation_id: reservation.reservation_id,
+          operation_key: reservation.operation_key,
+          billing: reservation.billing,
+          quote: reservation.quote,
+          version_id: shot.version_id,
+          shot_id: shot.id,
+          attempt: generation.attempt,
+        },
+      };
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'processing', progress = 1, message = ?, tenant_id = ?, user_id = ?,
+            model = ?, metadata = ?, updated_at = ?
+        WHERE id = ?
+      `).run('单镜视频生成已开始', String(ctx.tenantId), String(ctx.userId), generation.model, JSON.stringify(metadata), timestamp, task.id);
+      const videoId = db.prepare(`INSERT INTO video_generations
+        (provider, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
+         status, task_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+        VALUES (NULL, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
+        .run(
+          generation.prompt,
+          generation.model,
+          generation.duration,
+          generation.aspect_ratio,
+          generation.resolution,
+          JSON.stringify(referenceImageUrls),
+          task.id,
+          String(ctx.tenantId),
+          String(ctx.userId),
+          timestamp,
+          timestamp,
+        ).lastInsertRowid;
+      const changed = db.prepare(`
+        UPDATE redraw_shots
+        SET video_generation_id = ?, status = 'processing', error_code = NULL, error_message = NULL,
+            draft_json = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
+          AND status = ? AND video_generation_id IS ? AND updated_at IS ? AND deleted_at IS NULL
+      `).run(videoId, mergeDraft(parsed.draft, {
+        generation: {
+          task_id: task.id,
+          video_generation_id: videoId,
+          reservation_id: reservation.reservation_id,
+          operation_key: reservation.operation_key,
+          model: generation.model,
+          duration: generation.duration,
+          resolution: generation.resolution,
+          aspect_ratio: generation.aspect_ratio,
+          count: 1,
+          attempt: generation.attempt,
+        },
+      }), timestamp, shot.id, String(ctx.tenantId), String(ctx.userId), shot.version_id,
+      shot.status, shot.video_generation_id, shot.updated_at);
+      if (changed.changes !== 1) {
+        throw codedError('REDRAW_SHOT_CREATE_CONFLICT', '转绘镜头生成状态已变化');
+      }
+      return {
+        status: 'processing',
+        task_id: task.id,
+        video_generation_id: videoId,
+        reservation_id: reservation.reservation_id,
+      };
+    })();
+  } catch (error) {
+    if (error.code !== 'REDRAW_SHOT_CREATE_CONFLICT') throw error;
+    const fresh = selectShot(db, ctx, input);
+    const freshReusable = findReusable(db, fresh, generation.attempt, generation);
+    if (freshReusable) {
+      return enrichGenerationResult(db, { ...freshReusable, attempt: generation.attempt });
+    }
+    throw codedError('REDRAW_SHOT_CONFLICT', '转绘镜头生成状态已变化，请刷新后重试');
+  }
 
   const enrich = (result) => enrichGenerationResult(db, {
     ...result,

@@ -249,6 +249,121 @@ test('重复相同 attempt 复用已有 processing task/video/reservation', asyn
   }
 });
 
+test('两个 draft 并发生成由 CAS 保证 loser 复用 winner 且只冻结调度一次', async () => {
+  const state = setup();
+  let hookCalls = 0;
+  let scheduled = 0;
+  let releaseFirst;
+  let firstEnteredResolve;
+  const firstEntered = new Promise((resolve) => { firstEnteredResolve = resolve; });
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const beforeCreateTransaction = async () => {
+    hookCalls += 1;
+    if (hookCalls === 1) {
+      firstEnteredResolve();
+      await firstBlocked;
+    }
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const context = ctx(state.db, {
+      beforeCreateTransaction,
+      schedule: () => { scheduled += 1; },
+    });
+    const firstPromise = generateShot(context, { shotId });
+    await Promise.resolve();
+    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
+    await firstEntered;
+    const winner = await generateShot(context, { shotId });
+    releaseFirst();
+    const loser = await firstPromise;
+
+    assert.equal(loser.reused, true);
+    assert.equal(loser.task_id, winner.task_id);
+    assert.equal(loser.video_generation_id, winner.video_generation_id);
+    assert.equal(loser.reservation_id, winner.reservation_id);
+    assert.equal(count(state.db, "async_tasks", "type = 'redraw_shot'"), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 18);
+    assert.equal(scheduled, 1);
+  } finally {
+    releaseFirst?.();
+    state.db.close();
+  }
+});
+
+test('并发 loser 使用不同模型时 CAS 回滚并返回 conflict 不产生第二冻结', async () => {
+  const state = setup();
+  prices.set(state.db, 'other-video-model', 4, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '720p': { credits: 4 } },
+  });
+  let hookCalls = 0;
+  let scheduled = 0;
+  let releaseFirst;
+  let firstEnteredResolve;
+  const firstEntered = new Promise((resolve) => { firstEnteredResolve = resolve; });
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const beforeCreateTransaction = async () => {
+    hookCalls += 1;
+    if (hookCalls === 1) {
+      firstEnteredResolve();
+      await firstBlocked;
+    }
+  };
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const context = ctx(state.db, {
+      beforeCreateTransaction,
+      schedule: () => { scheduled += 1; },
+    });
+    const loserPromise = generateShot(context, { shotId, model: 'other-video-model' });
+    await Promise.resolve();
+    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
+    await firstEntered;
+    const winner = await generateShot(context, { shotId, model: 'seedance 2.0' });
+    releaseFirst();
+    await assert.rejects(loserPromise, (error) => error.code === 'REDRAW_SHOT_CONFLICT');
+
+    assert.equal(count(state.db, "async_tasks", "type = 'redraw_shot'"), 1);
+    assert.equal(count(state.db, 'video_generations'), 1);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 1);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 18);
+    assert.equal(scheduled, 1);
+    assert.equal(winner.status, 'processing');
+  } finally {
+    releaseFirst?.();
+    state.db.close();
+  }
+});
+
+test('创建事务前 updated_at 被改变时 CAS 回滚且不冻结不调度', async () => {
+  const state = setup();
+  let scheduled = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        beforeCreateTransaction: async () => {
+          state.db.prepare('UPDATE redraw_shots SET updated_at = ? WHERE id = ?')
+            .run('2026-08-06T00:00:01.000Z', shotId);
+        },
+        schedule: () => { scheduled += 1; },
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_SHOT_CONFLICT',
+    );
+    assert.equal(count(state.db, "async_tasks", "type = 'redraw_shot'"), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+    assert.equal(scheduled, 0);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('跨租户调用 redraw_shot task fail closed 且不调用处理器不改状态账单', async () => {
   const state = setup();
   let calls = 0;

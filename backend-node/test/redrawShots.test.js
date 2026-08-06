@@ -406,3 +406,50 @@ test('提交快照遇到坏 JSON 或错误结构时失败并指出镜头和列�
     db.close();
   }
 });
+
+test('owner 快照在 SQL 解析前过滤同版本跨租户坏 JSON 且 owner 自身坏 JSON 仍失败', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE redraw_shots (
+    id INTEGER PRIMARY KEY,
+    version_id INTEGER NOT NULL,
+    tenant_id TEXT,
+    user_id TEXT,
+    batch_index INTEGER NOT NULL,
+    shot_index INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    source_dialogue_json TEXT NOT NULL,
+    localized_dialogue_json TEXT NOT NULL,
+    references_json TEXT NOT NULL,
+    opening_state TEXT NOT NULL,
+    continuous_action TEXT NOT NULL,
+    ending_state TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    negative_prompt TEXT NOT NULL,
+    compiled_prompt_json TEXT NOT NULL,
+    draft_json TEXT,
+    deleted_at TEXT
+  )`);
+  const insert = db.prepare(`INSERT INTO redraw_shots
+    (id, version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms,
+     duration_ms, source_dialogue_json, localized_dialogue_json, references_json,
+     opening_state, continuous_action, ending_state, prompt, negative_prompt,
+     compiled_prompt_json, draft_json, deleted_at)
+    VALUES (?, 7, ?, ?, 1, ?, 0, 6000, 6000, '[]', '[]', ?, '', '', '', ?, '', '{}', '{}', NULL)`);
+  insert.run(1, 'tenant-a', 'user-a', 1, '[]', 'owned');
+  insert.run(2, 'tenant-b', 'user-b', 2, '{bad json', 'foreign');
+  try {
+    const snapshots = snapshotShots(db, 7, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.deepEqual(snapshots.map((shot) => shot.id), [1]);
+    assert.equal(snapshots[0].prompt, 'owned');
+
+    db.prepare("UPDATE redraw_shots SET references_json = '{bad json' WHERE id = 1").run();
+    assert.throws(
+      () => snapshotShots(db, 7, { tenantId: 'tenant-a', userId: 'user-a' }),
+      /shot 1.*references_json/,
+    );
+  } finally {
+    db.close();
+  }
+});

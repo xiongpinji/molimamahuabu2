@@ -886,6 +886,44 @@ test('作品没有当前版本时返回空 shots 与 batches 且越权仍为 404
   }
 });
 
+test('同版本跨租户坏分镜不影响 owner GET PUT 而 owner 坏 JSON 仍 fail closed', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const ownShotId = insertShot(db, versionId);
+    insertShot(db, versionId, {
+      tenant_id: 'tenant-b',
+      user_id: 'user-b',
+      shot_index: 2,
+      references_json: '{bad foreign json',
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const listed = captureResponse();
+    handlers.getWork(request({ id: workId }), listed);
+    assert.equal(listed.statusCode, 200);
+    assert.deepEqual(listed.body.data.shots.map((shot) => shot.id), [ownShotId]);
+
+    const updated = captureResponse();
+    handlers.updateShot(request({ id: ownShotId, body: {
+      updated_at: NOW,
+      prompt: 'owner edit remains isolated',
+    } }), updated);
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.data.prompt, 'owner edit remains isolated');
+
+    db.prepare("UPDATE redraw_shots SET references_json = '{bad owned json' WHERE id = ?").run(ownShotId);
+    const ownedBroken = captureResponse();
+    handlers.getWork(request({ id: workId }), ownedBroken);
+    assert.equal(ownedBroken.statusCode, 500);
+    assert.equal(ownedBroken.body.error.code, 'INTERNAL_ERROR');
+  } finally {
+    db.close();
+  }
+});
+
 test('分镜更新要求乐观锁并只写白名单且按批准资产重新规范化', () => {
   const db = createDb();
   try {
@@ -1030,6 +1068,30 @@ test('旧分镜缺少生成设置时仍可编辑并补齐安全默认值', () =>
     assert.equal(updated.body.data.draft.duration, 6);
     assert.equal(updated.body.data.draft.resolution, '720p');
     assert.equal(updated.body.data.draft.count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('分镜 PUT 拒绝 count 大于 1 且保持数据库零修改', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const before = db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+    const result = captureResponse();
+
+    handlers.updateShot(request({ id: shotId, body: {
+      updated_at: NOW,
+      count: 99,
+    } }), result);
+
+    assert.equal(result.statusCode, 400);
+    assert.equal(result.body.error.code, 'REDRAW_SHOT_INVALID');
+    assert.deepEqual(db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(shotId), before);
   } finally {
     db.close();
   }

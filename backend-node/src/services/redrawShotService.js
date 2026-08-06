@@ -193,13 +193,18 @@ function groupShotsIntoBatches(shots = [], minDurationMs = 10_000, maxDurationMs
   return batches;
 }
 
-function snapshotShots(db, versionId) {
+function snapshotShots(db, versionId, owner = null) {
+  const hasOwner = owner?.tenantId != null && owner?.userId != null;
+  const ownerClause = hasOwner ? ' AND tenant_id = ? AND user_id = ?' : '';
+  const params = hasOwner
+    ? [versionId, String(owner.tenantId), String(owner.userId)]
+    : [versionId];
   const rows = db.prepare(`
     SELECT *
     FROM redraw_shots
-    WHERE version_id = ? AND deleted_at IS NULL
+    WHERE version_id = ? AND deleted_at IS NULL${ownerClause}
     ORDER BY batch_index ASC, shot_index ASC, id ASC
-  `).all(versionId);
+  `).all(...params);
 
   return deepClone(rows.map((row) => {
     const draft = parseSnapshotJson(row, 'draft_json', 'object', { emptyObject: true });
