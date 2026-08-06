@@ -59,7 +59,7 @@ test('独立充值中心并行加载数据并提供套餐、自定义和订单�
   for (const text of ['充值中心', '精选套餐', '自定义充值', '充值记录', '支付通道准备中']) {
     assert.match(rechargeCenter, new RegExp(text))
   }
-  assert.match(rechargeCenter, /Promise\.all\(\s*\[\s*getCreditAccount\(\),\s*getAlipayRechargeConfig\(\),\s*listRechargePackages\(\),\s*listAlipayRechargeOrders\(\),?\s*\]\s*\)/s)
+  assert.match(rechargeCenter, /Promise\.all\(\s*\[\s*getCreditAccount\(requestConfig\),\s*getAlipayRechargeConfig\(requestConfig\),\s*listRechargePackages\(requestConfig\),\s*listAlipayRechargeOrders\(requestConfig\),?\s*\]\s*\)/s)
   assert.match(rechargeCenter, /<el-drawer/)
   assert.match(rechargeCenter, /RechargePackageCard/)
   assert.match(rechargeCenter, /CustomRechargePanel/)
@@ -78,6 +78,26 @@ test('充值中心加载失败时只显示可重试错误态并禁止下单', ()
   assert.match(rechargeCenter, /if\s*\(loadRequest\)\s*return\s+loadRequest/)
   assert.match(rechargeCenter, /if\s*\(loadState\.value\s*!==\s*'ready'\)\s*return/)
   assert.match(rechargeCenter, /<el-drawer[\s\S]*v-if="loadState\s*===\s*'ready'"/)
+})
+
+test('充值中心静默取消同批读取并丢弃卸载后的迟到结果', () => {
+  const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
+  for (const [name, endpoint] of [
+    ['getCreditAccount', '/billing/account'],
+    ['getAlipayRechargeConfig', '/billing/recharge/alipay/config'],
+    ['listRechargePackages', '/billing/recharge/packages'],
+    ['listAlipayRechargeOrders', '/billing/recharge/alipay/orders'],
+  ]) {
+    assert.match(billingApi, new RegExp(`function\\s+${name}\\(config\\)\\s*\\{\\s*return\\s+request\\.get\\(\\s*['"]${endpoint.replaceAll('/', '\\/')}['"]\\s*,\\s*config\\s*\\)`))
+  }
+  assert.match(rechargeCenter, /import\s*\{[^}]*onBeforeUnmount[^}]*\}\s*from\s*['"]vue['"]/s)
+  assert.match(rechargeCenter, /new\s+AbortController\(\)/)
+  assert.match(rechargeCenter, /const\s+requestConfig\s*=\s*\{\s*silentError:\s*true,\s*signal:\s*controller\.signal\s*\}/)
+  assert.match(rechargeCenter, /controller\.abort\(\)/)
+  assert.match(rechargeCenter, /generation\s*!==\s*loadGeneration/)
+  assert.match(rechargeCenter, /!isMounted/)
+  assert.match(rechargeCenter, /onBeforeUnmount\(\(\)\s*=>\s*\{[\s\S]*loadGeneration\s*\+=\s*1[\s\S]*loadController\?\.abort\(\)/)
+  assert.doesNotMatch(rechargeCenter, /ElMessage\.error\(/)
 })
 
 test('充值中心顶栏使用真实品牌资产并将账户动作统一放在右侧', () => {

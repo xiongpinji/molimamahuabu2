@@ -106,6 +106,37 @@ function json(data, status = 200) {
   }
 }
 
+function createControlledRouteGate({ expectedCompletions = 1, allowAbort = false } = {}) {
+  let release
+  let markComplete
+  let completionCount = 0
+  const promise = new Promise((resolve) => { release = resolve })
+  const completed = new Promise((resolve) => { markComplete = resolve })
+  return {
+    allowAbort,
+    promise,
+    completed,
+    release,
+    complete() {
+      completionCount += 1
+      if (completionCount >= expectedCompletions) markComplete()
+    },
+  }
+}
+
+async function fulfillUserGet(route, options, key, attempt, response) {
+  const gate = options.userGetResponseGates?.[key]?.[attempt]
+  if (!gate) return route.fulfill(response)
+  await gate.promise
+  try {
+    return await route.fulfill(response)
+  } catch (error) {
+    if (!gate.allowAbort) throw error
+  } finally {
+    gate.complete()
+  }
+}
+
 function createCalls() {
   return {
     adminPackageGets: 0,
@@ -126,6 +157,34 @@ async function seedAdminSession(page) {
       user: { id: 'admin-1', email: 'admin@example.com', role: 'admin' },
     }))
     window.localStorage.setItem('moli_mama_tenant_id', 'tenant-1')
+  })
+}
+
+async function trackErrorToasts(page) {
+  await page.addInitScript(() => {
+    window.__rechargeErrorToastCount = 0
+    window.addEventListener('DOMContentLoaded', () => {
+      const seen = new WeakSet()
+      const record = (element) => {
+        if (!(element instanceof Element)) return
+        const messages = element.matches('.el-message--error')
+          ? [element]
+          : [...element.querySelectorAll('.el-message--error')]
+        for (const message of messages) {
+          if (seen.has(message)) continue
+          seen.add(message)
+          window.__rechargeErrorToastCount += 1
+        }
+      }
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          record(mutation.target)
+          for (const node of mutation.addedNodes) record(node)
+        }
+      })
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] })
+      window.__rechargeErrorToastObserver = observer
+    }, { once: true })
   })
 }
 
@@ -157,27 +216,27 @@ async function mockRechargeApi(page, calls, options = {}) {
 
     if (method === 'GET' && pathname === '/api/v1/billing/account') {
       calls.userGetCounts.account += 1
+      const attempt = calls.userGetCounts.account
       if (calls.userGetCounts.account <= Number(options.initialUserGetFailures?.account || 0)) {
-        return route.fulfill({
+        return fulfillUserGet(route, options, 'account', attempt, {
           status: 500,
           contentType: 'application/json',
           body: JSON.stringify({ success: false, error: { message: '模拟积分账户加载失败' } }),
         })
       }
-      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
-      return route.fulfill(json({ available: 88600, held: 0, spent: 11400 }))
+      return fulfillUserGet(route, options, 'account', attempt, json({ available: 88600, held: 0, spent: 11400 }))
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/alipay/config') {
       calls.userGetCounts.config += 1
+      const attempt = calls.userGetCounts.config
       if (calls.userGetCounts.config <= Number(options.initialUserGetFailures?.config || 0)) {
-        return route.fulfill({
+        return fulfillUserGet(route, options, 'config', attempt, {
           status: 500,
           contentType: 'application/json',
           body: JSON.stringify({ success: false, error: { message: '模拟支付配置加载失败' } }),
         })
       }
-      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
-      return route.fulfill(json({
+      return fulfillUserGet(route, options, 'config', attempt, json({
         configured,
         fixed_ratio_credits_per_yuan: 100,
         min_amount_yuan: '1.00',
@@ -186,27 +245,27 @@ async function mockRechargeApi(page, calls, options = {}) {
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/packages') {
       calls.userGetCounts.packages += 1
+      const attempt = calls.userGetCounts.packages
       if (calls.userGetCounts.packages <= Number(options.initialUserGetFailures?.packages || 0)) {
-        return route.fulfill({
+        return fulfillUserGet(route, options, 'packages', attempt, {
           status: 500,
           contentType: 'application/json',
           body: JSON.stringify({ success: false, error: { message: '模拟套餐加载失败' } }),
         })
       }
-      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
-      return route.fulfill(json(rechargePackages))
+      return fulfillUserGet(route, options, 'packages', attempt, json(rechargePackages))
     }
     if (method === 'GET' && pathname === '/api/v1/billing/recharge/alipay/orders') {
       calls.userGetCounts.orders += 1
+      const attempt = calls.userGetCounts.orders
       if (calls.userGetCounts.orders <= Number(options.initialUserGetFailures?.orders || 0)) {
-        return route.fulfill({
+        return fulfillUserGet(route, options, 'orders', attempt, {
           status: 500,
           contentType: 'application/json',
           body: JSON.stringify({ success: false, error: { message: '模拟充值记录加载失败' } }),
         })
       }
-      if (options.userGetDelayMs) await new Promise((resolve) => setTimeout(resolve, Number(options.userGetDelayMs)))
-      return route.fulfill(json(rechargeOrders))
+      return fulfillUserGet(route, options, 'orders', attempt, json(rechargeOrders))
     }
     if (method === 'POST' && pathname === '/api/v1/billing/recharge/alipay/orders') {
       calls.createOrders += 1
@@ -312,6 +371,11 @@ async function mockRechargeApi(page, calls, options = {}) {
     }
 
     if (method === 'GET' && pathname === '/api/v1/billing/prices') return route.fulfill(json([]))
+    if (method === 'GET' && pathname === '/api/v1/tenants') {
+      return route.fulfill(json([{ id: 'tenant-1', name: '测试工作区', slug: 'test', role: 'admin' }]))
+    }
+    if (method === 'GET' && pathname === '/api/v1/tenants/tenant-1/members') return route.fulfill(json([]))
+    if (method === 'GET' && pathname === '/api/v1/billing/credit-transactions') return route.fulfill(json([]))
     if (method === 'GET' && pathname === '/api/v1/billing/admin/users') return route.fulfill(json([]))
     if (method === 'GET' && pathname === '/api/v1/billing/admin/tenants') return route.fulfill(json([]))
     if (method === 'GET' && pathname === '/api/v1/billing/admin/credit-transactions') return route.fulfill(json([]))
@@ -397,10 +461,12 @@ test('支付暂停时展示四个管理员套餐并阻止套餐与自定义下�
 
 test('用户充值任一关键数据加载失败时零误导零下单，单在途重试后原子恢复', async ({ page }) => {
   const calls = createCalls()
+  const retryGate = createControlledRouteGate()
+  await trackErrorToasts(page)
   await seedAdminSession(page)
   await mockRechargeApi(page, calls, {
-    initialUserGetFailures: { packages: 1 },
-    userGetDelayMs: 250,
+    initialUserGetFailures: { config: 1, packages: 1 },
+    userGetResponseGates: { packages: { 2: retryGate } },
   })
   await page.goto('/recharge')
 
@@ -417,7 +483,9 @@ test('用户充值任一关键数据加载失败时零误导零下单，单在�
 
   const errorPanel = page.locator('.recharge-load-error')
   await expect(errorPanel).toContainText('充值信息加载失败')
-  await expect(errorPanel).toContainText('模拟套餐加载失败')
+  await expect(errorPanel).toContainText(/模拟支付配置加载失败|模拟套餐加载失败/)
+  await expect(page.locator('.el-message--error')).toHaveCount(0)
+  expect(await page.evaluate(() => window.__rechargeErrorToastCount)).toBe(0)
   await expect(page.getByText('支付通道准备中')).toHaveCount(0)
   await expect(page.getByText('暂无可用套餐')).toHaveCount(0)
   await expect(page.getByText('88,600')).toHaveCount(0)
@@ -432,15 +500,51 @@ test('用户充值任一关键数据加载失败时零误导零下单，单在�
     button.click()
     button.click()
   })
+  await expect.poll(() => calls.userGetCounts.packages - countsBeforeRetry.packages).toBe(1)
+  for (const key of ['account', 'config', 'packages', 'orders']) {
+    expect(calls.userGetCounts[key] - countsBeforeRetry[key]).toBe(1)
+  }
+  retryGate.release()
+  await retryGate.completed
   await expect(page.locator('.recharge-package-card')).toHaveCount(4)
   await expect(actions.locator('.credit-balance strong')).toHaveText('88,600')
   await expect(actions.getByRole('button', { name: '充值记录' })).toBeEnabled()
   await expect(page.locator('.channel-alert')).toContainText('支付通道准备中')
-  for (const key of ['account', 'config', 'packages', 'orders']) {
-    expect(calls.userGetCounts[key] - countsBeforeRetry[key]).toBe(1)
-  }
+  await expect(page.locator('.el-message--error')).toHaveCount(0)
+  expect(await page.evaluate(() => window.__rechargeErrorToastCount)).toBe(0)
   expect(calls.createOrders).toBe(0)
   expect(calls.apiPosts).toEqual([])
+})
+
+test('充值加载中离开页面会取消同批请求且不在新页面显示迟到错误', async ({ page }) => {
+  const calls = createCalls()
+  const lateFailureGate = createControlledRouteGate({ allowAbort: true })
+  const abortedPackageRequests = []
+  page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname === '/api/v1/billing/recharge/packages') {
+      abortedPackageRequests.push(request.failure()?.errorText || 'request failed')
+    }
+  })
+  await trackErrorToasts(page)
+  await seedAdminSession(page)
+  await mockRechargeApi(page, calls, {
+    initialUserGetFailures: { packages: 1 },
+    userGetResponseGates: { packages: { 1: lateFailureGate } },
+  })
+  await page.goto('/recharge')
+  await expect(page.locator('.recharge-loading-state')).toBeVisible()
+  await expect.poll(() => calls.userGetCounts.packages).toBe(1)
+
+  await page.getByRole('button', { name: '返回工作区' }).first().click()
+  await expect(page).toHaveURL(/\/tenant-console(?:\?|$)/)
+  await expect.poll(() => abortedPackageRequests.length).toBe(1)
+  lateFailureGate.release()
+  await lateFailureGate.completed
+
+  await expect(page.locator('.recharge-load-error')).toHaveCount(0)
+  await expect(page.locator('.el-message--error')).toHaveCount(0)
+  expect(await page.evaluate(() => window.__rechargeErrorToastCount)).toBe(0)
+  expect(calls.createOrders).toBe(0)
 })
 
 test('支付通道就绪时非法自定义金额显示验证且不创建订单', async ({ page }) => {

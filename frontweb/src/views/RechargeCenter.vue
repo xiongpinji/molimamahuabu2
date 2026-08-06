@@ -138,12 +138,12 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getCreditAccount } from '@/api/auth'
 import {
   createAlipayRechargeOrder,
+  getCreditAccount,
   getAlipayRechargeConfig,
   listAlipayRechargeOrders,
   listRechargePackages,
@@ -169,6 +169,9 @@ const rechargeOrders = ref([])
 const ordersOpen = ref(false)
 const payingTarget = ref('')
 let loadRequest = null
+let loadController = null
+let loadGeneration = 0
+let isMounted = false
 
 function backToWorkspace() {
   router.push({ name: 'tenant-console' })
@@ -180,16 +183,21 @@ function createClientOrderKey() {
 
 function loadRechargeCenter() {
   if (loadRequest) return loadRequest
+  const generation = ++loadGeneration
+  const controller = new AbortController()
+  const requestConfig = { silentError: true, signal: controller.signal }
+  loadController = controller
   loadState.value = 'loading'
   loadError.value = ''
   ordersOpen.value = false
-  loadRequest = Promise.all([
-      getCreditAccount(),
-      getAlipayRechargeConfig(),
-      listRechargePackages(),
-      listAlipayRechargeOrders(),
+  const request = Promise.all([
+      getCreditAccount(requestConfig),
+      getAlipayRechargeConfig(requestConfig),
+      listRechargePackages(requestConfig),
+      listAlipayRechargeOrders(requestConfig),
     ])
     .then(([credit, config, packages, orders]) => {
+      if (!isMounted || generation !== loadGeneration || controller.signal.aborted) return
       const nextAccount = normalizeCreditAccount(credit)
       const nextConfig = { ...rechargeConfig.value, ...config }
       const nextPackages = Array.isArray(packages) ? packages : []
@@ -201,10 +209,18 @@ function loadRechargeCenter() {
       loadState.value = 'ready'
     })
     .catch((error) => {
+      controller.abort()
+      if (!isMounted || generation !== loadGeneration) return
+      if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError') return
       loadError.value = error?.message || '请稍后重试'
       loadState.value = 'error'
     })
-    .finally(() => { loadRequest = null })
+    .finally(() => {
+      if (generation !== loadGeneration) return
+      if (loadController === controller) loadController = null
+      if (loadRequest === request) loadRequest = null
+    })
+  loadRequest = request
   return loadRequest
 }
 
@@ -246,7 +262,18 @@ function statusLabel(status) {
   return ({ pending: '待支付', paid: '已到账', closed: '已关闭', failed: '失败' })[status] || status || '-'
 }
 
-onMounted(loadRechargeCenter)
+onMounted(() => {
+  isMounted = true
+  loadRechargeCenter()
+})
+
+onBeforeUnmount(() => {
+  isMounted = false
+  loadGeneration += 1
+  loadController?.abort()
+  loadController = null
+  loadRequest = null
+})
 </script>
 
 <style scoped>

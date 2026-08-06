@@ -21,16 +21,20 @@ export function listCreditTransactions() {
   return request.get('/billing/credit-transactions')
 }
 
-export function getAlipayRechargeConfig() {
-  return request.get('/billing/recharge/alipay/config')
+export function getCreditAccount(config) {
+  return request.get('/billing/account', config)
 }
 
-export function listRechargePackages() {
-  return request.get('/billing/recharge/packages')
+export function getAlipayRechargeConfig(config) {
+  return request.get('/billing/recharge/alipay/config', config)
 }
 
-export function listAlipayRechargeOrders() {
-  return request.get('/billing/recharge/alipay/orders')
+export function listRechargePackages(config) {
+  return request.get('/billing/recharge/packages', config)
+}
+
+export function listAlipayRechargeOrders(config) {
+  return request.get('/billing/recharge/alipay/orders', config)
 }
 
 export function createAlipayRechargeOrder(data) {
