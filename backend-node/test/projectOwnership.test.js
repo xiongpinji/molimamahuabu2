@@ -1,5 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const express = require('express');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { createResourceOwnershipMiddleware, createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
@@ -125,4 +129,52 @@ test('静态媒体支持 HttpOnly 会话 Cookie，并只允许当前用户生成
     },
   }, otherRes, () => {});
   assert.equal(otherRes.statusCode, 404);
+});
+
+test('公开模式登录后只放行受控目录内的套餐广告图', async () => {
+  const { db } = setup();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'moli-recharge-static-'));
+  const packageDir = path.join(tempRoot, 'uploads', 'recharge-packages');
+  const adjacentDir = path.join(tempRoot, 'uploads', 'other');
+  let server;
+  try {
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.mkdirSync(adjacentDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, 'valid.webp'), Buffer.from('524946460400000057454250', 'hex'));
+    fs.writeFileSync(path.join(packageDir, 'blocked.gif'), Buffer.from('GIF89a', 'ascii'));
+    fs.writeFileSync(path.join(packageDir, 'blocked.html'), '<html>blocked</html>');
+    fs.writeFileSync(path.join(adjacentDir, 'valid.webp'), Buffer.from('524946460400000057454250', 'hex'));
+
+    const app = express();
+    app.use('/static', createStaticOwnershipMiddleware({ db, enabled: true, secret: SECRET }), express.static(tempRoot));
+    server = await new Promise((resolve) => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const token = auth.issueToken({ id: 'user-1', email: 'one@example.com', role: 'user' }, SECRET);
+    const authorized = { headers: { authorization: `Bearer ${token}` } };
+
+    const malformedPath = response();
+    let malformedPathAllowed = false;
+    createStaticOwnershipMiddleware({ db, enabled: true, secret: SECRET })({
+      path: '//uploads/recharge-packages/valid.webp',
+      get(name) { return name === 'authorization' ? `Bearer ${token}` : ''; },
+    }, malformedPath, () => { malformedPathAllowed = true; });
+    assert.equal(malformedPathAllowed, false);
+    assert.equal(malformedPath.statusCode, 404);
+
+    const allowed = await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`, authorized);
+    assert.equal(allowed.status, 200);
+    assert.deepEqual(Buffer.from(await allowed.arrayBuffer()), Buffer.from('524946460400000057454250', 'hex'));
+
+    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/valid.webp`)).status, 401);
+    assert.equal((await fetch(`${baseUrl}/static/uploads/other/valid.webp`, authorized)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/%252e%252e%252fother%252fvalid.webp`, authorized)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/blocked.gif`, authorized)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/static/uploads/recharge-packages/blocked.html`, authorized)).status, 404);
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

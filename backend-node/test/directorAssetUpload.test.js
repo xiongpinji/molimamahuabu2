@@ -9,6 +9,7 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { setupRouter } = require('../src/routes');
 const uploadModule = require('../src/routes/upload');
+const recharge = require('../src/services/alipay-recharge-service');
 
 const VALID_WEBP = Buffer.from('524946460400000057454250', 'hex');
 
@@ -248,6 +249,57 @@ test('套餐广告图扩展名由 MIME 映射且不继承原文件名', () => {
       true,
     );
   } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('套餐广告图忽略 HTTP base_url 返回同源路径并可创建和更新套餐', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-mini-drama-recharge-url-'));
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const handlers = uploadModule.routes({
+      storage: { local_path: tempRoot, base_url: 'http://localhost:5679/static' },
+    }, { info() {}, warn() {}, error() {} }, db);
+    const file = {
+      buffer: VALID_WEBP,
+      originalname: 'promotion.webp',
+      mimetype: 'image/webp',
+      size: VALID_WEBP.length,
+    };
+
+    const genericResponse = captureResponse();
+    handlers.uploadImage({ file, body: {} }, genericResponse);
+    assert.match(genericResponse.body.data.url, /^http:\/\/localhost:5679\/static\/uploads\//);
+
+    const packageResponse = captureResponse();
+    handlers.uploadRechargePackageImage({ file }, packageResponse);
+    assert.equal(packageResponse.statusCode, 200);
+    assert.match(packageResponse.body.data.url, /^\/static\/uploads\/recharge-packages\/[^/]+\.webp$/);
+    assert.equal(packageResponse.body.data.path, packageResponse.body.data.local_path);
+    assert.equal(packageResponse.body.data.url, `/static/${packageResponse.body.data.local_path.replace(/\\/g, '/')}`);
+
+    const created = recharge.createPackage(db, {
+      name: '上传广告图套餐',
+      amountYuan: '10.00',
+      credits: 1000,
+      imageUrl: packageResponse.body.data.url,
+      adTitle: '上传广告图',
+      status: 'active',
+    });
+    assert.equal(created.image_url, packageResponse.body.data.url);
+
+    const updated = recharge.updatePackage(db, created.id, {
+      name: '上传广告图套餐更新',
+      amountYuan: '20.00',
+      credits: 2200,
+      imageUrl: packageResponse.body.data.url,
+      adTitle: '上传广告图更新',
+      status: 'active',
+    });
+    assert.equal(updated.image_url, packageResponse.body.data.url);
+  } finally {
+    db.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

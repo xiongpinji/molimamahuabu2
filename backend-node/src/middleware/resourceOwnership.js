@@ -1,5 +1,21 @@
+const path = require('path');
 const userAuth = require('../services/userAuthService');
 const sessionCookie = require('../services/sessionCookieService');
+
+const RECHARGE_PACKAGE_UPLOAD_PREFIX = 'uploads/recharge-packages/';
+
+function isRechargePackageImagePath(relativePath) {
+  if (!relativePath.startsWith(RECHARGE_PACKAGE_UPLOAD_PREFIX) || relativePath.includes('\\')) {
+    return false;
+  }
+  if (path.posix.normalize(relativePath) !== relativePath) return false;
+  const segments = relativePath.slice(RECHARGE_PACKAGE_UPLOAD_PREFIX.length).split('/');
+  if (segments.some((segment) => !segment
+    || segment === '.' || segment === '..' || !/^[A-Za-z0-9_.-]+$/.test(segment))) {
+    return false;
+  }
+  return /\.(?:jpg|png|webp)$/.test(segments.at(-1));
+}
 
 function numericId(value) {
   const id = Number(value);
@@ -218,6 +234,10 @@ function createStaticOwnershipMiddleware({ db, enabled, secret } = {}) {
     }
     const project = /^\/projects\/(\d+)_/.exec(pathValue);
     const relativePath = pathValue.replace(/^\/+/, '');
+    if (pathValue === `/${relativePath}` && isRechargePackageImagePath(relativePath)) {
+      req.user = user;
+      return next();
+    }
     const owned = project
       ? db.prepare(`SELECT d.id FROM dramas d
           WHERE d.id = ? AND d.deleted_at IS NULL

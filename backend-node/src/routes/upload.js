@@ -330,7 +330,7 @@ function routes(cfg, log, db, options = {}) {
       }
       try {
         return saveImageUpload(
-          cfg,
+          { ...cfg, storage: { ...cfg?.storage, base_url: '' } },
           log,
           req,
           res,
