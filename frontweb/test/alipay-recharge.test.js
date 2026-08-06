@@ -6,6 +6,8 @@ const billingApi = fs.readFileSync(new URL('../src/api/billing.js', import.meta.
 const tenantConsole = fs.readFileSync(new URL('../src/views/TenantConsole.vue', import.meta.url), 'utf8')
 const billingAdmin = fs.readFileSync(new URL('../src/views/BillingAdmin.vue', import.meta.url), 'utf8')
 const platformHeader = fs.readFileSync(new URL('../src/components/PlatformHeader.vue', import.meta.url), 'utf8')
+const routerSource = fs.readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
+const uploadApi = fs.readFileSync(new URL('../src/api/upload.js', import.meta.url), 'utf8')
 
 test('用户充值与管理员套餐统一使用支付宝充值接口', () => {
   for (const endpoint of [
@@ -27,7 +29,23 @@ test('工作区页面同时展示固定比例充值、限时套餐广告图和�
   assert.match(tenantConsole, /window\.location\.assign\(result\.payment_url\)/)
   assert.match(tenantConsole, /本人充值记录/)
   assert.match(platformHeader, /充值积分/)
-  assert.match(platformHeader, /section: 'recharge'/)
+  assert.match(platformHeader, /name:\s*'recharge-center'/)
+  assert.match(platformHeader, /name:\s*'tenant-console',\s*query:\s*\{\s*section:\s*'redeem'\s*\}/)
+})
+
+test('独立充值中心保留旧入口兼容并提供套餐管理 API', () => {
+  assert.match(routerSource, /path:\s*['"]\/recharge['"]/)
+  assert.match(routerSource, /name:\s*['"]recharge-center['"]/)
+  assert.match(routerSource, /import\(['"]@\/views\/RechargeCenter\.vue['"]\)/)
+  assert.match(routerSource, /title:\s*['"]充值中心['"],\s*requiresAuth:\s*true/)
+  assert.match(routerSource, /to\.name\s*===\s*['"]tenant-console['"]/)
+  assert.match(routerSource, /to\.query\.section\s*===\s*['"]recharge['"]/)
+  assert.match(routerSource, /return\s+\{\s*name:\s*['"]recharge-center['"]\s*\}/)
+  assert.match(billingApi, /function\s+reorderRechargePackages\(packageIds\)/)
+  assert.match(billingApi, /request\.put\(\s*['"]\/billing\/admin\/recharge-packages\/order['"]\s*,\s*\{\s*package_ids:\s*packageIds\s*\}/s)
+  assert.match(uploadApi, /function\s+uploadRechargePackageImage\(file\)/)
+  assert.match(uploadApi, /form\.append\(\s*['"]file['"]\s*,\s*file\s*\)/)
+  assert.match(uploadApi, /request\.post\(\s*['"]\/billing\/admin\/recharge-packages\/image['"]\s*,\s*form\s*,/s)
 })
 
 test('平台后台保留可编辑充值套餐入口和广告图预览', () => {

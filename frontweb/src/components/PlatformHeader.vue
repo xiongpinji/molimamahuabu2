@@ -144,7 +144,7 @@ function goRedeem() {
 }
 
 function goRecharge() {
-  router.push({ name: 'tenant-console', query: { section: 'recharge' } })
+  router.push({ name: 'recharge-center' })
 }
 
 function goLogin() {

@@ -89,6 +89,10 @@ export function updateRechargePackage(packageId, data) {
   return request.put(`/billing/admin/recharge-packages/${encodeURIComponent(packageId)}`, data)
 }
 
+export function reorderRechargePackages(packageIds) {
+  return request.put('/billing/admin/recharge-packages/order', { package_ids: packageIds })
+}
+
 export function createRedeemCode(data) {
   return request.post('/billing/admin/redeem-codes', data)
 }
