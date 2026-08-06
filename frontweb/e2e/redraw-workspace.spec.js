@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+
+const fixtureVideoPath = fileURLToPath(new URL('../../项目截图/1.mp4', import.meta.url))
 
 const project = {
   id: 41,
@@ -55,6 +58,142 @@ const redrawAssets = [
   },
 ]
 
+const approvedRedrawAssets = [
+  {
+    id: 1201,
+    version_id: 812,
+    version_number: 3,
+    kind: 'character',
+    localized_name: 'Maya',
+    status: 'generated',
+    approval_status: 'approved',
+    asset_id: 2201,
+    updated_at: '2026-08-06T08:20:00.000Z',
+  },
+  {
+    id: 1202,
+    version_id: 812,
+    version_number: 3,
+    kind: 'scene',
+    localized_name: 'Brooklyn Loft',
+    status: 'generated',
+    approval_status: 'approved',
+    clean_plate_asset_id: 2202,
+    updated_at: '2026-08-06T08:20:00.000Z',
+  },
+  {
+    id: 1203,
+    version_id: 812,
+    version_number: 3,
+    kind: 'prop',
+    localized_name: 'Brass Key',
+    status: 'generated',
+    approval_status: 'approved',
+    asset_id: 2203,
+    updated_at: '2026-08-06T08:20:00.000Z',
+  },
+]
+
+const redrawShots = [
+  {
+    id: 1301,
+    version_id: 812,
+    batch_index: 1,
+    shot_index: 1,
+    start_ms: 0,
+    end_ms: 12000,
+    duration_ms: 12000,
+    opening_state: 'Maya waits outside the door.',
+    continuous_action: 'She turns the key and pushes the door.',
+    ending_state: 'The door opens into the loft.',
+    source_dialogue: ['你终于来了。'],
+    localized_dialogue: ['You finally made it.'],
+    prompt: '@Maya enters @Brooklyn Loft with @Brass Key',
+    negative_prompt: 'blurred face',
+    references: [{ asset_id: 1201, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' }],
+    model: 'fixture-video-model-from-backend',
+    duration: 12,
+    resolution: '720p',
+    count: 1,
+    quote_snapshot: { amount: 4 },
+    source_video_ref: { url: 'https://fixtures.example/source.mp4', thumbnail_url: '' },
+    new_video_ref: null,
+    status: 'draft',
+    updated_at: '2026-08-06T08:30:00.000Z',
+    generation: { task_id: null, status: null, progress: null, message: null },
+    billing: { held: 0, charged: 0, released: 0, quote: { amount: 4 } },
+  },
+  {
+    id: 1302,
+    version_id: 812,
+    batch_index: 1,
+    shot_index: 2,
+    start_ms: 12000,
+    end_ms: 24000,
+    duration_ms: 12000,
+    opening_state: 'Maya stands at the threshold.',
+    continuous_action: 'She scans the empty room.',
+    ending_state: 'She notices a light upstairs.',
+    source_dialogue: [],
+    localized_dialogue: [],
+    prompt: '@Maya scans @Brooklyn Loft',
+    negative_prompt: '',
+    references: [{ asset_id: 1201, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' }],
+    model: 'fixture-video-model-from-backend',
+    duration: 12,
+    resolution: '720p',
+    count: 1,
+    quote_snapshot: { amount: 6 },
+    source_video_ref: { url: 'https://fixtures.example/source.mp4' },
+    new_video_ref: null,
+    status: 'failed',
+    error_code: 'PROVIDER_FAILED',
+    error_message: '供应商明确失败，可修改后独立重试',
+    updated_at: '2026-08-06T08:31:00.000Z',
+    generation: { task_id: 'task-failed-1302', status: 'failed', progress: 22, message: '供应商失败' },
+    billing: { held: 0, charged: 0, released: 6, quote: { amount: 6 } },
+  },
+  {
+    id: 1303,
+    version_id: 812,
+    batch_index: 2,
+    shot_index: 3,
+    start_ms: 24000,
+    end_ms: 36000,
+    duration_ms: 12000,
+    opening_state: 'Maya reaches the staircase.',
+    continuous_action: 'She walks up without looking back.',
+    ending_state: 'She disappears above the landing.',
+    source_dialogue: ['别回头。'],
+    localized_dialogue: ["Don't look back."],
+    prompt: '@Maya climbs the staircase',
+    negative_prompt: '',
+    references: [{ asset_id: 1201, kind: 'character', version_number: 3, approval_status: 'approved', name: 'Maya' }],
+    model: 'fixture-video-model-from-backend',
+    duration: 12,
+    resolution: '720p',
+    count: 1,
+    quote_snapshot: { amount: 8 },
+    source_video_ref: { url: 'https://fixtures.example/source.mp4' },
+    new_video_ref: { url: 'https://fixtures.example/generated.mp4' },
+    status: 'completed',
+    updated_at: '2026-08-06T08:32:00.000Z',
+    generation: { task_id: 'task-completed-1303', status: 'completed', progress: 100, message: '完成' },
+    billing: { held: 0, charged: 8, released: 0, quote: { amount: 8 } },
+  },
+]
+
+function shotBatches(shots) {
+  return [1, 2].map((batchIndex) => {
+    const items = shots.filter((shot) => shot.batch_index === batchIndex)
+    return {
+      batch_index: batchIndex,
+      duration_ms: items.reduce((total, shot) => total + shot.duration_ms, 0),
+      shots: items,
+    }
+  }).filter((batch) => batch.shots.length)
+}
+
 const stylePresets = [
   { id: 11, name: '二维清透', category: 'two_dimensional', preview_url: '' },
   { id: 12, name: '三维质感', category: 'three_dimensional', preview_url: '' },
@@ -81,6 +220,9 @@ async function installFixtures(page, state) {
       token: 'e2e-redraw-token',
       user: { id: 'user-redraw-e2e', email: 'redraw-e2e@example.test', role: 'admin' },
     }))
+  })
+  await page.route('https://fixtures.example/*.mp4', async (route) => {
+    await route.fulfill({ path: fixtureVideoPath, contentType: 'video/mp4' })
   })
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -126,6 +268,48 @@ async function installFixtures(page, state) {
         ...(state.quoteReady ? { analysis_quote: { credits: 6 } } : { analysis_quote: null }),
       }
       await route.fulfill(apiData(state.work))
+      return
+    }
+    if (method === 'PUT' && /^\/api\/v1\/redraw\/shots\/\d+$/.test(pathname)) {
+      const shotId = Number(pathname.split('/').at(-1))
+      const body = request.postDataJSON()
+      const shot = state.work?.shots?.find((item) => item.id === shotId)
+      if (!shot) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ success: false }) })
+        return
+      }
+      Object.assign(shot, body, {
+        count: 1,
+        references: body.references,
+        updated_at: `2026-08-06T08:4${state.requests.length}:00.000Z`,
+      })
+      state.work.batches = shotBatches(state.work.shots)
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData(shot))
+      return
+    }
+    if (method === 'POST' && /^\/api\/v1\/redraw\/shots\/\d+\/generate$/.test(pathname)) {
+      const shotId = Number(pathname.split('/')[5])
+      const body = request.postDataJSON()
+      const shot = state.work?.shots?.find((item) => item.id === shotId)
+      shot.status = 'processing'
+      shot.generation = { task_id: `task-shot-${shotId}`, status: 'processing', progress: 12, message: '供应商处理中' }
+      shot.billing = { held: shot.billing.quote.amount, charged: 0, released: 0, quote: shot.billing.quote }
+      state.work.batches = shotBatches(state.work.shots)
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({ shot_id: shotId, task_id: shot.generation.task_id, status: 'processing' }))
+      return
+    }
+    if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/generate-batch`) {
+      const body = request.postDataJSON()
+      for (const shot of state.work?.shots || []) {
+        if (!body.shot_ids.includes(shot.id)) continue
+        shot.status = 'processing'
+        shot.generation = { task_id: `task-batch-${shot.id}`, status: 'processing', progress: 5, message: '批量任务已提交' }
+      }
+      state.work.batches = shotBatches(state.work.shots)
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({ status: 'processing', items: body.shot_ids.map((shotId) => ({ shot_id: shotId })) }))
       return
     }
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
@@ -241,6 +425,27 @@ async function selectFreeStyleWithReference(page) {
     mimeType: 'image/png',
     buffer: Buffer.from('reference-image-fixture'),
   })
+}
+
+function generationFixtureState() {
+  const shots = structuredClone(redrawShots)
+  return {
+    projects: [project],
+    quoteReady: true,
+    assetQuoteReady: true,
+    work: {
+      ...workBase,
+      current_step: 3,
+      current_version: 1,
+      version_id: 812,
+      status: 'ready_to_generate',
+      shots,
+      batches: shotBatches(shots),
+    },
+    assets: structuredClone(approvedRedrawAssets),
+    gate: { ok: true, missing: [], current_step: 3 },
+    requests: [],
+  }
 }
 
 test.describe('一键转绘输入与分析流程', () => {
@@ -370,5 +575,80 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('本次预计扣除 8 积分')).toBeVisible()
     await assertNoPageHorizontalScroll(page)
     await assertTextFits(page, '确认本地化资产后再进入批量转绘')
+  })
+
+  test('第三步按后端快照编辑、单镜提交、失败重试并切换已完成新片', async ({ page }) => {
+    const state = generationFixtureState()
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 1440, height: 1000 })
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
+    await expect(page.getByText('批量总预计扣除 10 积分')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 4 积分')).toBeVisible()
+    await expect(page.getByText('@角色 Maya · v3')).toBeVisible()
+    await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /source\.mp4#t=0/)
+
+    await page.getByRole('textbox', { name: '连续动作' }).fill('She unlocks the door, enters, and keeps moving forward.')
+    await page.getByRole('button', { name: '保存镜头' }).click()
+    await expect.poll(() => state.requests.filter((entry) => entry.method === 'PUT' && entry.pathname === '/api/v1/redraw/shots/1301').length).toBe(1)
+    const saved = state.requests.find((entry) => entry.method === 'PUT' && entry.pathname === '/api/v1/redraw/shots/1301')
+    expect(saved.body.updated_at).toBe('2026-08-06T08:30:00.000Z')
+    expect(saved.body.count).toBe(1)
+    expect(saved.body.references).toEqual([{ redraw_asset_id: 1201, kind: 'character', version_number: 3 }])
+
+    await page.getByRole('button', { name: '生成本镜头' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/shots/1301/generate')).toBe(true)
+    const generated = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/shots/1301/generate')
+    expect(generated.body).toEqual({
+      model: 'fixture-video-model-from-backend',
+      duration: 12,
+      resolution: '720p',
+    })
+    expect(generated.body).not.toHaveProperty('count')
+    expect(generated.body).not.toHaveProperty('credit_amount')
+    expect(generated.body).not.toHaveProperty('new_video_ref')
+
+    await page.getByRole('button', { name: /镜头 2/ }).click()
+    await expect(page.getByText('供应商明确失败，可修改后独立重试')).toBeVisible()
+    await page.getByRole('button', { name: '独立重试' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/shots/1302/generate')).toBe(true)
+    const retried = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/shots/1302/generate')
+    expect(retried.body.retry).toBe(true)
+    expect(retried.body).not.toHaveProperty('count')
+
+    await page.getByRole('button', { name: '已完成', exact: true }).click()
+    await page.getByRole('button', { name: /镜头 3/ }).click()
+    await expect(page.getByRole('button', { name: '新片' })).toBeEnabled()
+    await page.getByRole('button', { name: '新片' }).click()
+    await expect(page.locator('.shot-preview video')).toHaveAttribute('src', /generated\.mp4#t=24/)
+    await assertNoPageHorizontalScroll(page)
+  })
+
+  test('第三步批量提交仅发送当前版本和复数镜头 ID', async ({ page }) => {
+    const state = generationFixtureState()
+    await installFixtures(page, state)
+    await page.goto('/redraw/projects/41/works/710?step=3')
+
+    await page.getByRole('button', { name: '批量生成 2 镜' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/works/710/generate-batch')).toBe(true)
+    const batch = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/works/710/generate-batch')
+    expect(batch.body).toEqual({ version_id: 812, shot_ids: [1301, 1302] })
+    expect(batch.body).not.toHaveProperty('shot_id')
+    expect(batch.body).not.toHaveProperty('count')
+  })
+
+  test('第三步移动端批次、预览、编辑和积分合同无横向溢出', async ({ page }) => {
+    const state = generationFixtureState()
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 390, height: 844 })
+
+    await page.goto('/redraw/projects/41/works/710?step=3')
+    await expect(page.getByText('按分镜生成并从后端恢复真实进度')).toBeVisible()
+    await expect(page.getByText('批量总预计扣除 10 积分')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 4 积分')).toBeVisible()
+    await expect(page.getByText('建议保持 10–15 秒')).toBeVisible()
+    await assertNoPageHorizontalScroll(page)
+    await assertTextFits(page, '本次预计扣除 4 积分')
   })
 })

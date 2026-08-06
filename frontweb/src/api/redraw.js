@@ -39,6 +39,15 @@ export const redrawAPI = {
   getWork(workId) {
     return request.get(`/redraw/works/${workId}`)
   },
+  updateShot(shotId, body) {
+    return request.put(`/redraw/shots/${shotId}`, body)
+  },
+  generateShot(shotId, body = {}) {
+    return request.post(`/redraw/shots/${shotId}/generate`, body)
+  },
+  generateBatch(workId, body = {}) {
+    return request.post(`/redraw/works/${workId}/generate-batch`, body)
+  },
   createVersion(workId, body) {
     return request.post(`/redraw/works/${workId}/versions`, body)
   },
