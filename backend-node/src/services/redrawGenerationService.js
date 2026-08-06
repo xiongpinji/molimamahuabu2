@@ -15,6 +15,7 @@ const redrawReviewService = require('./redrawReviewService');
 
 const execFileAsync = promisify(execFile);
 const UNCERTAIN_MARKERS = ['结果未知', '状态未知', '仍可能处理中', '请勿重新提交'];
+const INTERRUPTED_MESSAGE = '供应商状态未知/服务重启，请勿重新提交';
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -336,20 +337,38 @@ function taskMetadata(task) {
   return strictJson(task.metadata, 'async_tasks.metadata').redraw_shot || {};
 }
 
-function getTask(db, taskId) {
+function ownerMatches(row, ctx) {
+  return String(row?.tenant_id || '') === String(ctx.tenantId || '')
+    && String(row?.user_id || '') === String(ctx.userId || '');
+}
+
+function getTask(db, taskId, ctx = null) {
   const task = db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(String(taskId));
   if (!task || task.type !== 'redraw_shot') throw codedError('REDRAW_SHOT_TASK_NOT_FOUND', '单镜视频任务不存在');
+  if (ctx && !ownerMatches(task, ctx)) throw codedError('REDRAW_SHOT_NOT_FOUND', '单镜视频任务不存在或无权访问');
   return task;
 }
 
-function getVideoForTask(db, task) {
-  const row = db.prepare('SELECT * FROM video_generations WHERE task_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(task.id);
+function getVideoForTask(db, task, ctx = null) {
+  const ownerClause = ctx ? ' AND tenant_id = ? AND user_id = ?' : '';
+  const ownerParams = ctx ? [String(ctx.tenantId), String(ctx.userId)] : [];
+  const row = db.prepare(`SELECT * FROM video_generations
+    WHERE task_id = ? AND deleted_at IS NULL${ownerClause}
+    ORDER BY id DESC LIMIT 1`).get(task.id, ...ownerParams);
   if (!row) throw codedError('REDRAW_VIDEO_NOT_FOUND', '单镜视频记录不存在');
   return row;
 }
 
-function getShotForTask(db, task) {
-  const shot = db.prepare('SELECT * FROM redraw_shots WHERE id = ? AND deleted_at IS NULL').get(Number(task.resource_id));
+function getShotForTask(db, task, ctx = null) {
+  const ownerClause = ctx ? ' AND s.tenant_id = ? AND s.user_id = ? AND v.tenant_id = ? AND v.user_id = ?' : '';
+  const ownerParams = ctx ? [String(ctx.tenantId), String(ctx.userId), String(ctx.tenantId), String(ctx.userId)] : [];
+  const shot = db.prepare(`
+    SELECT s.*
+    FROM redraw_shots s
+    JOIN redraw_versions v ON v.id = s.version_id AND v.deleted_at IS NULL
+    WHERE s.id = ? AND s.deleted_at IS NULL${ownerClause}
+    LIMIT 1
+  `).get(Number(task.resource_id), ...ownerParams);
   if (!shot) throw codedError('REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
   return shot;
 }
@@ -379,17 +398,18 @@ function updateNeedsAttention(db, taskId, shotId, message, timestamp) {
   `).run(String(message || '').slice(0, 500), timestamp, shotId);
   db.prepare(`
     UPDATE async_tasks
-    SET status = 'needs_attention', progress = 90, message = ?, error = ?, updated_at = ?
+    SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+        result = NULL, completed_at = NULL, updated_at = ?
     WHERE id = ?
   `).run(String(message || '').slice(0, 500), String(message || '').slice(0, 500), timestamp, taskId);
 }
 
 async function runShotGeneration(ctx, taskId) {
   const { db } = ctx;
-  const task = getTask(db, taskId);
+  const task = getTask(db, taskId, ctx);
   const metadata = taskMetadata(task);
-  const video = getVideoForTask(db, task);
-  const shot = getShotForTask(db, task);
+  const video = getVideoForTask(db, task, ctx);
+  const shot = getShotForTask(db, task, ctx);
   const processor = ctx.videoProcessor || ((database, logger, videoGenerationId) => (
     videoService.processVideoGeneration(database, logger, videoGenerationId)
   ));
@@ -459,6 +479,54 @@ async function runShotGeneration(ctx, taskId) {
   return { status: 'needs_attention', error: outcome.error, task_id: task.id, video_generation_id: row.id };
 }
 
+function markInterruptedShotGenerationsNeedsAttention(db, log) {
+  const timestamp = new Date().toISOString();
+  const rows = db.prepare(`
+    SELECT t.id AS task_id, t.progress AS task_progress,
+           s.id AS shot_id, v.id AS video_id
+    FROM async_tasks t
+    JOIN redraw_shots s
+      ON CAST(s.id AS TEXT) = CAST(t.resource_id AS TEXT)
+      AND s.deleted_at IS NULL
+      AND s.tenant_id = t.tenant_id
+      AND s.user_id = t.user_id
+    JOIN video_generations v
+      ON v.task_id = t.id
+      AND v.deleted_at IS NULL
+      AND v.tenant_id = t.tenant_id
+      AND v.user_id = t.user_id
+      AND v.id = s.video_generation_id
+    WHERE t.type = 'redraw_shot'
+      AND t.status IN ('pending', 'processing')
+      AND t.deleted_at IS NULL
+  `).all();
+  if (!rows.length) return 0;
+  db.transaction(() => {
+    for (const row of rows) {
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention',
+            progress = CASE WHEN COALESCE(progress, 0) > 90 THEN progress ELSE 90 END,
+            message = ?, error = ?, result = NULL, completed_at = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(INTERRUPTED_MESSAGE, INTERRUPTED_MESSAGE, timestamp, row.task_id);
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION',
+            error_message = ?, updated_at = ?
+        WHERE id = ?
+      `).run(INTERRUPTED_MESSAGE, timestamp, row.shot_id);
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ?
+      `).run(INTERRUPTED_MESSAGE, timestamp, row.video_id);
+    }
+  })();
+  log?.warn?.('Interrupted redraw shot generations marked needs_attention', { count: rows.length });
+  return rows.length;
+}
+
 function isInside(parent, child) {
   const resolvedParent = path.resolve(parent);
   const resolvedChild = path.resolve(child);
@@ -516,6 +584,7 @@ async function verifyVideoArtifact(ctx, videoGenerationId) {
 module.exports = {
   generateShot,
   runShotGeneration,
+  markInterruptedShotGenerationsNeedsAttention,
   verifyVideoArtifact,
   classifyVideoOutcome,
 };

@@ -470,6 +470,7 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
 }
 
 async function resumeRedrawTasks(db, log, options = {}) {
+  const shotNeedsAttention = redrawGenerationService.markInterruptedShotGenerationsNeedsAttention(db, log);
   let rows;
   try {
     rows = db.prepare(
@@ -503,7 +504,7 @@ async function resumeRedrawTasks(db, log, options = {}) {
       failed += 1;
     }
   }
-  return { resumed, failed };
+  return { resumed, failed, shot_needs_attention: shotNeedsAttention };
 }
 
 module.exports = {

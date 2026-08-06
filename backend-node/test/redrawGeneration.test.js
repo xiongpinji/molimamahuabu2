@@ -8,8 +8,12 @@ const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const taskService = require('../src/services/taskService');
+const videoService = require('../src/services/videoService');
+const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const {
   generateShot,
+  runShotGeneration,
   verifyVideoArtifact,
   classifyVideoOutcome,
 } = require('../src/services/redrawGenerationService');
@@ -240,6 +244,36 @@ test('重复相同 attempt 复用已有 processing task/video/reservation', asyn
   }
 });
 
+test('跨租户调用 redraw_shot task fail closed 且不调用处理器不改状态账单', async () => {
+  const state = setup();
+  let calls = 0;
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    const beforeTask = state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(created.task_id);
+    const beforeShot = state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId);
+    const beforeVideo = state.db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const beforeReservation = state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id);
+
+    await assert.rejects(
+      () => runShotGeneration(ctx(state.db, {
+        tenantId: 'tenant-b',
+        userId: 'user-b',
+        videoProcessor: async () => { calls += 1; },
+      }), created.task_id),
+      (error) => ['REDRAW_SHOT_NOT_FOUND', 'UNAUTHORIZED', 'REDRAW_SHOT_TASK_NOT_FOUND'].includes(error.code),
+    );
+
+    assert.equal(calls, 0);
+    assert.deepEqual(state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(created.task_id), beforeTask);
+    assert.deepEqual(state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId), beforeShot);
+    assert.deepEqual(state.db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.video_generation_id), beforeVideo);
+    assert.deepEqual(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id), beforeReservation);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('awaitCompletion 成功后写回成片素材、task result 并确认账单', async () => {
   const state = setup();
   try {
@@ -336,6 +370,64 @@ test('completed 但成片校验或素材导入不完整时 needs_attention 且�
     } finally {
       state.db.close();
     }
+  }
+});
+
+test('processor 先写 completed result 后成片校验失败会清理 task 终态并保持 held', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        const taskId = db.prepare('SELECT task_id FROM video_generations WHERE id = ?').get(id).task_id;
+        db.prepare('UPDATE video_generations SET status = ?, video_url = ?, local_path = ? WHERE id = ?')
+          .run('completed', 'https://cdn.test/video.mp4', 'videos/shot.mp4', id);
+        taskService.updateTaskResult(db, taskId, { status: 'completed', video_generation_id: id });
+      },
+      artifactVerifier: async () => {
+        throw Object.assign(new Error('ffprobe failed'), { code: 'REDRAW_VIDEO_ARTIFACT_INVALID' });
+      },
+    }), { shotId });
+
+    const task = state.db.prepare('SELECT status, result, completed_at FROM async_tasks WHERE id = ?').get(result.task_id);
+    assert.equal(result.status, 'needs_attention');
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(task.result, null);
+    assert.equal(task.completed_at, null);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('resumeRedrawTasks 先将中断 redraw_shot 降级 needs_attention，避免视频恢复误失败和退款', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+
+    const resumed = await redrawOrchestrator.resumeRedrawTasks(state.db, log);
+    videoService.resumeProcessingVideoGenerations(state.db, log);
+
+    const task = state.db.prepare('SELECT status, result, completed_at, error FROM async_tasks WHERE id = ?').get(created.task_id);
+    const shot = state.db.prepare('SELECT status, error_message FROM redraw_shots WHERE id = ?').get(shotId);
+    const video = state.db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const reservation = state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id);
+
+    assert.equal(resumed.shot_needs_attention, 1);
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(task.result, null);
+    assert.equal(task.completed_at, null);
+    assert.match(task.error, /请勿重新提交/);
+    assert.equal(shot.status, 'needs_attention');
+    assert.match(shot.error_message, /请勿重新提交/);
+    assert.equal(video.status, 'needs_attention');
+    assert.match(video.error_msg, /请勿重新提交/);
+    assert.equal(reservation.status, 'held');
+  } finally {
+    state.db.close();
   }
 });
 
