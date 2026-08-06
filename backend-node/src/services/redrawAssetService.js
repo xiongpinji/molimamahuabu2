@@ -162,6 +162,9 @@ function createAssetAttempt(ctx, input = {}) {
     .sort((left, right) => Number(right.version_number) - Number(left.version_number) || Number(right.id) - Number(left.id))[0] || null;
   const previous = matchingRows
     .reduce((max, row) => Math.max(max, Number(row.version_number || 0)), 0);
+  if (!placeholder && previous === 0 && ctx.allowUnmaterializedDraft !== true) {
+    throw codedError('REDRAW_ASSET_PLACEHOLDER_REQUIRED', '当前版本缺少可认领的本地化资产草稿');
+  }
   const versionNumber = placeholder ? Number(placeholder.version_number) : previous + 1;
   const snapshot = input.snapshot || input.generationSnapshot || input.generation_snapshot || {};
   let reservation = null;
@@ -354,6 +357,7 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
     ...ctx,
     model,
     creditAmount: options.creditAmount ?? ctx.creditAmount,
+    allowUnmaterializedDraft: true,
   }, {
     kind: 'scene',
     sourceRef,

@@ -92,62 +92,16 @@ function readShotReferences(row) {
 }
 
 function findAsset(db, version, reference) {
-  let row = db.prepare(`
+  return db.prepare(`
     SELECT * FROM redraw_assets
     WHERE id = ? AND version_id = ? AND tenant_id = ? AND user_id = ? AND kind = ? AND deleted_at IS NULL
-  `).get(reference.asset_id, version.id, version.tenant_id, version.user_id, reference.kind);
-  if (row) return row;
-  row = db.prepare(`
-    SELECT * FROM redraw_assets
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND kind = ? AND deleted_at IS NULL
-      AND (asset_id = ? OR voice_asset_id = ? OR clean_plate_asset_id = ?)
-    ORDER BY version_number DESC, id DESC
-    LIMIT 1
-  `).get(version.id, version.tenant_id, version.user_id, reference.kind,
-    reference.asset_id, reference.asset_id, reference.asset_id);
-  return row || null;
+  `).get(reference.asset_id, version.id, version.tenant_id, version.user_id, reference.kind) || null;
 }
 
 function isApprovedAsset(row) {
   return Boolean(row
     && ['generated', 'needs_attention'].includes(String(row.status))
     && String(row.approval_status) === 'approved');
-}
-
-function sourceFactId(kind, value) {
-  if (!value || typeof value !== 'object') return '';
-  return String(value.id || value[`${kind}_id`] || value[`${kind}Id`] || '').trim();
-}
-
-function materializedSourceId(kind, row) {
-  const payload = parseJson(row?.source_ref_json, {});
-  const source = payload.source_ref || payload.source || payload;
-  return sourceFactId(kind, source);
-}
-
-function missingRequiredAssets(db, version) {
-  const facts = parseJson(version.source_facts_json, {});
-  const rows = db.prepare(`
-    SELECT kind, source_ref_json
-    FROM redraw_assets
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
-  `).all(version.id, version.tenant_id, version.user_id);
-  const materialized = new Set(rows.map((row) => `${row.kind}:${materializedSourceId(row.kind, row)}`));
-  const missing = [];
-  for (const [kind, values] of [
-    ['character', facts.characters],
-    ['scene', facts.scenes],
-    ['prop', facts.props],
-  ]) {
-    if (!Array.isArray(values)) continue;
-    for (const value of values) {
-      const sourceId = sourceFactId(kind, value);
-      if (sourceId && !materialized.has(`${kind}:${sourceId}`)) {
-        missing.push({ kind, source_id: sourceId });
-      }
-    }
-  }
-  return missing;
 }
 
 function evaluateGenerationGate(db, versionId, owner = {}) {
@@ -163,21 +117,16 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
   if (shots.length === 0) {
     blocking.push({ code: 'shots_missing', reason: '当前版本没有可生成分镜' });
   }
-  const requiredAssets = missingRequiredAssets(db, version);
-  if (requiredAssets.length > 0) {
-    blocking.push({
-      code: 'required_assets_missing',
-      reason: '当前版本的本地化资产尚未物化',
-      kinds: [...new Set(requiredAssets.map((item) => item.kind))],
-      assets: requiredAssets,
-    });
-  }
   const missing = new Map();
+  let invalidReferenceCount = 0;
+  let unapprovedReferenceCount = 0;
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
     for (const reference of readShotReferences(shot)) {
       const row = findAsset(db, version, reference);
       if (isApprovedAsset(row)) continue;
+      if (row) unapprovedReferenceCount += 1;
+      else invalidReferenceCount += 1;
       const assetId = row ? Number(row.id) : reference.asset_id;
       const key = referenceKey(reference.kind, assetId);
       const item = missing.get(key) || {
@@ -193,11 +142,18 @@ function evaluateGenerationGate(db, versionId, owner = {}) {
   const items = [...missing.values()].sort((left, right) => (
     left.shot_ids[0] - right.shot_ids[0] || left.kind.localeCompare(right.kind) || left.asset_id - right.asset_id
   ));
-  if (items.length > 0) {
+  if (invalidReferenceCount > 0) {
+    blocking.push({
+      code: 'asset_reference_invalid',
+      reason: '分镜引用不属于当前版本的转绘资产',
+      asset_count: invalidReferenceCount,
+    });
+  }
+  if (unapprovedReferenceCount > 0) {
     blocking.push({
       code: 'asset_not_approved',
       reason: '存在尚未生成或批准的分镜引用资产',
-      asset_count: items.length,
+      asset_count: unapprovedReferenceCount,
     });
   }
   return {

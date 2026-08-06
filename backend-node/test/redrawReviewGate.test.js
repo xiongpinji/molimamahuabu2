@@ -75,7 +75,7 @@ test('零分镜版本 fail closed 并返回 shots_missing', () => {
   }
 });
 
-test('源事实存在但资产草稿未物化时返回 required_assets_missing', () => {
+test('未被分镜引用的可选源事实资产不会全局阻塞门禁', () => {
   const state = setup();
   try {
     state.db.prepare('UPDATE redraw_versions SET source_facts_json = ? WHERE id = ?').run(JSON.stringify({
@@ -85,18 +85,32 @@ test('源事实存在但资产草稿未物化时返回 required_assets_missing',
     }), state.versionId);
     addShot(state.db, state.versionId, 1, []);
     const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
-    assert.equal(gate.ok, false);
-    assert.deepEqual(gate.blocking, [{
-      code: 'required_assets_missing',
-      reason: '当前版本的本地化资产尚未物化',
-      kinds: ['character', 'scene', 'prop'],
-      assets: [
-        { kind: 'character', source_id: 'c1' },
-        { kind: 'scene', source_id: 's1' },
-        { kind: 'prop', source_id: 'p1' },
-      ],
-    }]);
+    assert.equal(gate.ok, true);
+    assert.deepEqual(gate.blocking, []);
     assert.deepEqual(gate.missing, []);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('门禁只接受同版本 redraw_assets.id 并拒绝底层素材 asset_id 兜底', () => {
+  const state = setup();
+  try {
+    const scene = addAsset(state.db, { id: 61, kind: 'scene', approvalStatus: 'approved' });
+    addShot(state.db, state.versionId, 1, [{ kind: 'scene', asset_id: scene.asset_id }]);
+    const gate = evaluateGenerationGate(state.db, state.versionId, { tenantId: 'tenant-a', userId: 'user-a' });
+    assert.equal(gate.ok, false);
+    assert.deepEqual(gate.missing, [{
+      kind: 'scene',
+      asset_id: scene.asset_id,
+      shot_ids: [1],
+      anchor: `asset-${scene.asset_id}-scene`,
+    }]);
+    assert.deepEqual(gate.blocking, [{
+      code: 'asset_reference_invalid',
+      reason: '分镜引用不属于当前版本的转绘资产',
+      asset_count: 1,
+    }]);
   } finally {
     state.db.close();
   }

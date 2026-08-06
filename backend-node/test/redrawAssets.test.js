@@ -89,6 +89,7 @@ test('资产重绘追加版本且不覆盖上一可用产物', async () => {
   addAsset(state.db, 102, 'redraw/v2.png');
   const ctx = context(state, root);
   const character = { kind: 'character', sourceRef: { id: 'c1' }, prompt: '角色正面、侧面、背面三视图' };
+  addDraftPlaceholder(state.db, state, character);
 
   const v1 = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 101, metadata: { views: ['front', 'side', 'back'] } }) }, {
     ...character,
@@ -153,6 +154,29 @@ test('首次生成原子认领本地化草稿且并发重复提交 fail closed',
   state.db.close();
 });
 
+test('首次生成缺少本地化草稿时零冻结且不调用 provider', async () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-no-placeholder-'));
+  let providerCalls = 0;
+  const ctx = {
+    ...context(state, root),
+    provider: async () => {
+      providerCalls += 1;
+      return { status: 'failed', error: 'should not run' };
+    },
+  };
+
+  await assert.rejects(
+    () => generateAsset(ctx, { kind: 'character', sourceRef: { id: 'missing-draft' } }),
+    (error) => error.code === 'REDRAW_ASSET_PLACEHOLDER_REQUIRED',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
 test('资产来源对象键顺序变化仍追加同一来源的下一版本', async () => {
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-source-order-'));
@@ -160,6 +184,7 @@ test('资产来源对象键顺序变化仍追加同一来源的下一版本', as
   addAsset(state.db, 111, 'asset.png');
   addAsset(state.db, 112, 'asset.png');
   const ctx = { ...context(state, root), creditAmount: 0 };
+  addDraftPlaceholder(state.db, state, { kind: 'prop', sourceRef: { id: 'p-order', type: 'prop' } });
   const first = await generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 111 }) }, {
     kind: 'prop',
     sourceRef: { id: 'p-order', type: 'prop' },
@@ -181,6 +206,7 @@ test('图片不可读时任务失败并释放积分', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-missing-'));
   addAsset(state.db, 201, 'redraw/missing.png');
   const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'scene', sourceRef: { id: 's1' } });
   await assert.rejects(
     () => generateAsset({ ...ctx, provider: async () => ({ status: 'completed', asset_id: 201 }) }, {
       kind: 'scene',
@@ -202,6 +228,7 @@ test('资产读取和更新按租户用户隔离', async () => {
   fs.writeFileSync(path.join(root, 'asset.png'), 'asset');
   addAsset(state.db, 301, 'asset.png');
   const ownerCtx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'prop', sourceRef: { id: 'p1' } });
   const created = await generateAsset({ ...ownerCtx, provider: async () => ({ status: 'completed', asset_id: 301 }) }, {
     kind: 'prop',
     sourceRef: { id: 'p1' },
