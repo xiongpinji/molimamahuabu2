@@ -17,6 +17,14 @@ function assertPositiveInteger(value, name) {
   return number;
 }
 
+function assertVideoDuration(value) {
+  const duration = Number(value);
+  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
+    throw codedError('INVALID_VIDEO_DURATION', '视频时长必须是 5 到 15 秒之间的整数');
+  }
+  return duration;
+}
+
 function requiredString(value, name) {
   const string = String(value ?? '').trim();
   if (!string) throw codedError('INVALID_REDRAW_BILLING_INPUT', `${name} 不能为空`);
@@ -66,7 +74,7 @@ function uniqueShotIds(values) {
 function buildSnapshot(input, shotIds, count, attempt) {
   const snapshotInput = {
     model: requiredString(input.model, 'model'),
-    duration: Number(input.duration),
+    duration: assertVideoDuration(input.duration),
     resolution: input.resolution == null ? null : String(input.resolution),
     count,
     locale: input.locale == null ? null : String(input.locale),
@@ -155,7 +163,7 @@ function reserveShotGeneration(db, input) {
     operation_key: operationKey,
     amount: reservation.amount,
     quote,
-    billing: { held: reservation.amount, charged: 0, released: 0 },
+    billing: billingForReservation(reservation),
     status: reservation.status,
   };
 }

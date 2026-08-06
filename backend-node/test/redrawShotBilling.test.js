@@ -102,6 +102,23 @@ test('未配置价格返回 pricing_unconfigured 且不创建 reservation', () =
   }
 });
 
+test('按次计费模型也拒绝 5 到 15 秒之外或非整数的 duration 且不创建 reservation', () => {
+  for (const duration of [4, 16, 7.5]) {
+    const db = setup();
+    try {
+      prices.set(db, 'gpt-image-2', 9, { category: 'image', billing_unit: 'request' });
+
+      assert.throws(
+        () => billing.reserveShotGeneration(db, shotInput({ model: 'gpt-image-2', duration })),
+        (error) => error.code === 'INVALID_VIDEO_DURATION',
+      );
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('同一镜头和参数重复 reserve 返回同一 reservation 且余额只冻结一次', () => {
   const db = setup();
   try {
@@ -115,6 +132,48 @@ test('同一镜头和参数重复 reserve 返回同一 reservation 且余额只�
     assert.equal(credits.getTenantAccount(db, 'tenant-redraw').held, 18);
     assert.equal(credits.getTenantAccount(db, 'tenant-redraw').available, 482);
     assert.deepEqual(first.billing, { held: 18, charged: 0, released: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test('终态 reservation 再次 reserve 返回真实幂等 billing 状态', () => {
+  const db = setup();
+  try {
+    const completedInput = shotInput({ shotId: 'shot-terminal-completed', count: 1 });
+    const refundedInput = shotInput({ shotId: 'shot-terminal-refunded', count: 1 });
+    const completed = billing.reserveShotGeneration(db, completedInput);
+    const refunded = billing.reserveShotGeneration(db, refundedInput);
+
+    billing.settleShotGeneration(db, completed.reservation_id, 'completed');
+    billing.settleShotGeneration(db, refunded.reservation_id, 'failed', '供应商明确失败');
+
+    assert.deepEqual(
+      billing.reserveShotGeneration(db, completedInput),
+      {
+        success: true,
+        reservation_id: completed.reservation_id,
+        operation_key: completed.operation_key,
+        amount: 18,
+        quote: completed.quote,
+        billing: { held: 0, charged: 18, released: 0 },
+        status: 'confirmed',
+      },
+    );
+    assert.deepEqual(
+      billing.reserveShotGeneration(db, refundedInput),
+      {
+        success: true,
+        reservation_id: refunded.reservation_id,
+        operation_key: refunded.operation_key,
+        amount: 18,
+        quote: refunded.quote,
+        billing: { held: 0, charged: 0, released: 18 },
+        status: 'refunded',
+      },
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_credit_ledger WHERE event_type = 'reserve'").get().count, 2);
   } finally {
     db.close();
   }
