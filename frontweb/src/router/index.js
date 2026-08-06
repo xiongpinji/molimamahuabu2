@@ -132,6 +132,18 @@ const router = createRouter({
       meta: { title: '剧本分析', requiresAuth: true }
     },
     {
+      path: '/redraw',
+      name: 'redraw-projects',
+      component: () => import('@/views/RedrawProjectList.vue'),
+      meta: { title: '一键转绘', requiresAuth: true }
+    },
+    {
+      path: '/redraw/projects/:projectId/works/:workId',
+      name: 'redraw-workspace',
+      component: () => import('@/views/RedrawWorkspace.vue'),
+      meta: { title: '一键转绘工作台', requiresAuth: true }
+    },
+    {
       path: '/media-library',
       name: 'media-library',
       component: () => import('@/views/MediaLibrary.vue'),
