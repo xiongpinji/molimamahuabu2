@@ -15,7 +15,9 @@ function stableStringify(value) {
 }
 
 function factsHash(sourceFacts) {
-  return createHash('sha256').update(stableStringify(sourceFacts)).digest('hex');
+  const hashable = clone(sourceFacts);
+  if (hashable && typeof hashable === 'object') delete hashable.facts_hash;
+  return createHash('sha256').update(stableStringify(hashable)).digest('hex');
 }
 
 function clone(value) {
@@ -147,19 +149,74 @@ function normalizeLocalizationResult(raw, sourceFacts) {
   };
 }
 
+function parseJson(value, fallback) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed == null ? fallback : parsed;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function localizedDialogueByShot(input) {
+  const rows = input.dialogue || input.localizedDialogue || input.localized_dialogue || [];
+  if (!Array.isArray(rows)) {
+    throw Object.assign(new Error('localized dialogue 必须是数组'), { code: 'LOCALIZATION_INVALID_INPUT' });
+  }
+  const byShot = new Map();
+  for (const row of rows) {
+    assertObject(row, 'localized_dialogue[]');
+    const shotId = String(row.shot_id ?? row.shotId ?? '').trim();
+    if (!shotId) {
+      throw Object.assign(new Error('localized dialogue 必须提供 shot_id'), {
+        code: 'LOCALIZATION_DIALOGUE_SHOT_REQUIRED',
+      });
+    }
+    if (byShot.has(shotId)) {
+      throw Object.assign(new Error(`localized dialogue 的 shot_id 重复: ${shotId}`), {
+        code: 'LOCALIZATION_DIALOGUE_SHOT_DUPLICATE',
+      });
+    }
+    const turns = row.turns ?? row.dialogue ?? row.localized_dialogue ?? [];
+    if (!Array.isArray(turns)) {
+      throw Object.assign(new Error(`localized dialogue ${shotId} 的 turns 必须是数组`), {
+        code: 'LOCALIZATION_INVALID_INPUT',
+      });
+    }
+    byShot.set(shotId, clone(turns));
+  }
+  return byShot;
+}
+
+function overlapsShot(ranges, shot) {
+  return Array.isArray(ranges) && ranges.some((range) => (
+    Number.isFinite(Number(range?.start_ms))
+      && Number.isFinite(Number(range?.end_ms))
+      && Number(range.start_ms) < Number(shot.end_ms)
+      && Number(range.end_ms) > Number(shot.start_ms)
+  ));
+}
+
+function localizedAssetName(kind, item, input) {
+  const nameMap = input.nameMap || input.name_map || {};
+  const cultureMap = input.cultureMap || input.culture_map || {};
+  const glossary = input.glossary || input.glossaryMap || {};
+  if (kind === 'character') return String(nameMap[item.id] ?? nameMap[item.source_name] ?? item.source_name ?? '');
+  if (kind === 'scene') return String(cultureMap[item.id] ?? cultureMap[item.location] ?? item.location ?? '');
+  return String(glossary[item.id] ?? glossary[item.name] ?? item.name ?? '');
+}
+
+function sourceAssetDescription(kind, item) {
+  if (kind === 'scene') return [item.location, item.time].filter(Boolean).join(' · ');
+  return String(item.source_name || item.name || '');
+}
+
 function createLocalizationVersion(db, owner, workId, input) {
   const { tenantId, userId } = normalizeOwner(owner);
   if (!tenantId) throw Object.assign(new Error('缺少租户'), { code: 'LOCALIZATION_TENANT_REQUIRED' });
   if (!userId) throw Object.assign(new Error('缺少用户'), { code: 'LOCALIZATION_USER_REQUIRED' });
   assertObject(input, 'localization_input');
   const locale = assertLocale(input.locale);
-  const work = db.prepare(`
-    SELECT id, current_version
-    FROM redraw_works
-    WHERE id = ? AND tenant_id = ? AND user_id = ?
-  `).get(Number(workId), String(tenantId), String(userId));
-  if (!work) throw Object.assign(new Error('转绘作品不存在'), { code: 'LOCALIZATION_WORK_NOT_FOUND' });
-
   const sourceFacts = input.sourceFacts || input.source_facts;
   assertObject(sourceFacts, 'source_facts');
   const expectedFactsHash = factsHash(sourceFacts);
@@ -171,27 +228,157 @@ function createLocalizationVersion(db, owner, workId, input) {
       received: String(suppliedFactsHash),
     });
   }
+  const dialogueByShot = localizedDialogueByShot(input);
   const now = new Date().toISOString();
-  const insert = db.prepare(`
-    INSERT INTO redraw_versions
-      (work_id, tenant_id, user_id, version, locale, market, localization_level,
-       source_facts_json, glossary_json, name_map_json, culture_map_json,
-       style_snapshot_json, facts_hash, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
-  `);
-  const updateWork = db.prepare('UPDATE redraw_works SET current_version = ?, updated_at = ? WHERE id = ?');
-  const nextVersion = Number(work.current_version || 0) + 1;
   const transaction = db.transaction(() => {
-    const result = insert.run(
+    const work = db.prepare(`
+      SELECT id, current_version
+      FROM redraw_works
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).get(Number(workId), String(tenantId), String(userId));
+    if (!work) throw Object.assign(new Error('转绘作品不存在'), { code: 'LOCALIZATION_WORK_NOT_FOUND' });
+    const sourceVersion = db.prepare(`
+      SELECT *
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND source_facts_json IS NOT NULL AND deleted_at IS NULL
+      ORDER BY version ASC, id ASC
+      LIMIT 1
+    `).get(Number(workId), String(tenantId), String(userId));
+    if (!sourceVersion) {
+      throw Object.assign(new Error('源片事实版本不存在'), { code: 'LOCALIZATION_SOURCE_VERSION_REQUIRED' });
+    }
+    const persistedSourceFacts = parseJson(sourceVersion.source_facts_json, null);
+    assertObject(persistedSourceFacts, 'source_facts');
+    const persistedFactsHash = String(sourceVersion.facts_hash || factsHash(persistedSourceFacts));
+    if (persistedFactsHash !== expectedFactsHash) {
+      throw Object.assign(new Error('本地化输入事实哈希不匹配'), {
+        code: 'LOCALIZATION_FACT_HASH_MISMATCH',
+        expected: persistedFactsHash,
+        received: expectedFactsHash,
+      });
+    }
+    const sourceShots = db.prepare(`
+      SELECT *
+      FROM redraw_shots
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      ORDER BY batch_index ASC, shot_index ASC, id ASC
+    `).all(Number(sourceVersion.id), String(tenantId), String(userId));
+    if (sourceShots.length === 0) {
+      throw Object.assign(new Error('源片事实版本没有可物化分镜'), { code: 'LOCALIZATION_SOURCE_SHOTS_REQUIRED' });
+    }
+    const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) AS value FROM redraw_versions WHERE work_id = ?').get(Number(workId)).value) + 1;
+    const result = db.prepare(`
+      INSERT INTO redraw_versions
+        (work_id, tenant_id, user_id, version, locale, market, localization_level,
+         source_facts_json, glossary_json, name_map_json, culture_map_json,
+         style_snapshot_json, facts_hash, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+    `).run(
       Number(workId), String(tenantId), String(userId), nextVersion, locale,
       String(input.market || ''), String(input.localizationLevel || input.localization_level || 'faithful'),
-      JSON.stringify(sourceFacts), JSON.stringify(input.glossary || input.glossaryMap || {}),
+      sourceVersion.source_facts_json, JSON.stringify(input.glossary || input.glossaryMap || {}),
       JSON.stringify(input.nameMap || input.name_map || {}), JSON.stringify(input.cultureMap || input.culture_map || {}),
       JSON.stringify(input.styleSnapshot || input.style_snapshot || {}),
-      expectedFactsHash, now, now,
+      persistedFactsHash, now, now,
     );
-    updateWork.run(nextVersion, now, Number(workId));
-    return { id: Number(result.lastInsertRowid), version: nextVersion, work_id: Number(workId), locale };
+    const versionId = Number(result.lastInsertRowid);
+    const assetByStableId = new Map();
+    const insertAsset = db.prepare(`
+      INSERT INTO redraw_assets
+        (version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
+         localized_description, prompt, version_number, approval_status, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, 'pending', 'draft', ?, ?)
+    `);
+    for (const [kind, items] of [
+      ['character', persistedSourceFacts.characters],
+      ['scene', persistedSourceFacts.scenes],
+      ['prop', persistedSourceFacts.props],
+    ]) {
+      for (const item of Array.isArray(items) ? items : []) {
+        const stableId = String(item?.id || '').trim();
+        if (!stableId) continue;
+        const asset = insertAsset.run(
+          versionId,
+          String(tenantId),
+          String(userId),
+          kind,
+          JSON.stringify({ source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: item }),
+          localizedAssetName(kind, item, input),
+          sourceAssetDescription(kind, item),
+          now,
+          now,
+        );
+        assetByStableId.set(`${kind}:${stableId}`, Number(asset.lastInsertRowid));
+      }
+    }
+
+    const factShots = new Map((persistedSourceFacts.shots || []).map((shot) => [String(shot.id), shot]));
+    const insertShot = db.prepare(`
+      INSERT INTO redraw_shots
+        (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+         start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+         references_json, opening_state, continuous_action, ending_state, prompt,
+         negative_prompt, compiled_prompt_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '{}', 'draft', ?, ?)
+    `);
+    for (const sourceShot of sourceShots) {
+      const stableShotId = String(sourceShot.shot_id || '').trim();
+      const factShot = factShots.get(stableShotId) || {};
+      if (!stableShotId) {
+        throw Object.assign(new Error('源片分镜缺少稳定 shot_id'), { code: 'LOCALIZATION_SOURCE_SHOT_ID_REQUIRED' });
+      }
+      const sourceDialogue = parseJson(sourceShot.source_dialogue_json, factShot.dialogue || []);
+      const references = [];
+      const seen = new Set();
+      for (const turn of Array.isArray(sourceDialogue) ? sourceDialogue : []) {
+        const stableId = String(turn?.speaker_id || '').trim();
+        const assetId = assetByStableId.get(`character:${stableId}`);
+        if (!assetId || seen.has(`character:${assetId}`)) continue;
+        seen.add(`character:${assetId}`);
+        references.push({ kind: 'character', asset_id: assetId, anchor: `character:${stableId}` });
+      }
+      for (const scene of Array.isArray(persistedSourceFacts.scenes) ? persistedSourceFacts.scenes : []) {
+        const assetId = assetByStableId.get(`scene:${scene.id}`);
+        if (!assetId || !overlapsShot(scene.source_ranges, sourceShot)) continue;
+        references.push({ kind: 'scene', asset_id: assetId, anchor: `scene:${scene.id}` });
+      }
+      for (const prop of Array.isArray(persistedSourceFacts.props) ? persistedSourceFacts.props : []) {
+        const assetId = assetByStableId.get(`prop:${prop.id}`);
+        if (!assetId || !overlapsShot(prop.evidence_ranges, sourceShot)) continue;
+        references.push({ kind: 'prop', asset_id: assetId, anchor: `prop:${prop.id}` });
+      }
+      insertShot.run(
+        Number(workId),
+        stableShotId,
+        versionId,
+        String(tenantId),
+        String(userId),
+        Number(sourceShot.batch_index || 1),
+        Number(sourceShot.shot_index),
+        Number(sourceShot.start_ms),
+        Number(sourceShot.end_ms),
+        Number(sourceShot.duration_ms || Number(sourceShot.end_ms) - Number(sourceShot.start_ms)),
+        JSON.stringify(sourceDialogue),
+        JSON.stringify(dialogueByShot.get(stableShotId) || []),
+        JSON.stringify(references),
+        String(sourceShot.opening_state || factShot.opening_state || ''),
+        String(sourceShot.continuous_action || factShot.continuous_action || ''),
+        String(sourceShot.ending_state || factShot.ending_state || ''),
+        now,
+        now,
+      );
+    }
+    db.prepare('UPDATE redraw_works SET current_version = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ?')
+      .run(nextVersion, now, Number(workId), String(tenantId), String(userId));
+    return {
+      id: versionId,
+      version: nextVersion,
+      work_id: Number(workId),
+      locale,
+      shot_count: sourceShots.length,
+      asset_count: assetByStableId.size,
+    };
   });
   return transaction();
 }

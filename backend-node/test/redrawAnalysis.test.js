@@ -117,6 +117,7 @@ function createDb() {
       user_id TEXT,
       source_asset_id TEXT,
       status TEXT,
+      current_version INTEGER NOT NULL DEFAULT 0,
       current_step INTEGER,
       task_id TEXT,
       provider_task_id TEXT,
@@ -127,6 +128,7 @@ function createDb() {
     CREATE TABLE redraw_versions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       work_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
       source_facts_json TEXT,
       facts_hash TEXT,
       created_at TEXT,
@@ -326,6 +328,7 @@ test('runAnalyzeTask writes facts and draft shots once, then confirms credits', 
 
   const work = db.prepare('SELECT * FROM redraw_works WHERE id = ?').get('work-1');
   assert.equal(work.status, 'asset_review');
+  assert.equal(work.current_version, 1);
   assert.equal(work.current_step, 2);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = ? AND facts_hash IS NOT NULL').get('work-1').n, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_shots WHERE work_id = ?').get('work-1').n, 2);
@@ -571,6 +574,7 @@ test('runAnalyzeTask detects facts_hash conflicts without mixing shots or settli
 
   assert.equal(conflict.status, 'needs_attention');
   assert.equal(db.prepare('SELECT status FROM redraw_works WHERE id = ?').get('work-1').status, 'needs_attention');
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = ?').get('work-1').current_version, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = ?').get('work-1').n, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_shots WHERE work_id = ?').get('work-1').n, 2);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM credit_ledger WHERE event_type = 'confirm'").get().n, 1);

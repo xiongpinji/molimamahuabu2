@@ -18,9 +18,28 @@ function sourceFacts() {
       { id: 'c1', source_name: '小满', relationships: [{ id: 'rel-1', from: 'c1', to: 'c2', type: 'sister' }] },
       { id: 'c2', source_name: '阿岚', relationships: [] },
     ],
-    scenes: [{ id: 's1', location: '天台', time: '夜' }],
-    props: [{ id: 'p1', name: '旧手机' }],
-    shots: [{ id: 'shot-1', start_ms: 0, end_ms: 10_000 }],
+    scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 10_000 }] }],
+    props: [{ id: 'p1', name: '旧手机', evidence_ranges: [{ start_ms: 1_200, end_ms: 1_800 }] }],
+    shots: [
+      {
+        id: 'shot-1',
+        start_ms: 0,
+        end_ms: 5_000,
+        dialogue: [{ speaker_id: 'c1', text: '别回头' }],
+        opening_state: '小满站在天台边',
+        continuous_action: '小满低头查看旧手机',
+        ending_state: '屏幕亮起陌生消息',
+      },
+      {
+        id: 'shot-2',
+        start_ms: 5_000,
+        end_ms: 10_000,
+        dialogue: [],
+        opening_state: '屏幕显示未来日期',
+        continuous_action: '小满抬头环顾天台',
+        ending_state: '小满转身离开',
+      },
+    ],
     causal_chain: [{ id: 'cause-1', from: 'message', to: 'departure', text: '消息促使小满离开' }],
     reversals: [{ id: 'reverse-1', text: '阿岚其实在楼下等待' }],
     locked_facts: [{ id: 'fact-1', text: '小满在天台收到旧手机消息' }],
@@ -69,8 +88,98 @@ function createDb() {
       updated_at TEXT NOT NULL,
       deleted_at TEXT
     );
+    CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
+    CREATE TABLE redraw_assets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL,
+      tenant_id TEXT,
+      user_id TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('character', 'scene', 'prop', 'voice')),
+      source_ref_json TEXT NOT NULL DEFAULT '{}',
+      localized_name TEXT NOT NULL DEFAULT '',
+      localized_description TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL DEFAULT '',
+      asset_id INTEGER,
+      voice_asset_id INTEGER,
+      clean_plate_asset_id INTEGER,
+      mask_asset_id INTEGER,
+      generation_task_id TEXT,
+      version_number INTEGER NOT NULL DEFAULT 1,
+      approval_status TEXT NOT NULL DEFAULT 'pending',
+      approved_by TEXT,
+      approved_at TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE TABLE redraw_shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_id INTEGER,
+      shot_id TEXT,
+      version_id INTEGER NOT NULL,
+      tenant_id TEXT,
+      user_id TEXT,
+      batch_index INTEGER NOT NULL,
+      shot_index INTEGER NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      source_dialogue_json TEXT NOT NULL DEFAULT '[]',
+      localized_dialogue_json TEXT NOT NULL DEFAULT '[]',
+      references_json TEXT NOT NULL DEFAULT '[]',
+      opening_state TEXT NOT NULL DEFAULT '',
+      continuous_action TEXT NOT NULL DEFAULT '',
+      ending_state TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL DEFAULT '',
+      negative_prompt TEXT NOT NULL DEFAULT '',
+      compiled_prompt_json TEXT NOT NULL DEFAULT '{}',
+      video_generation_id INTEGER,
+      audio_asset_id INTEGER,
+      subtitle_asset_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'draft',
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE UNIQUE INDEX uq_redraw_shot_order ON redraw_shots(version_id, batch_index, shot_index);
   `);
-  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id) VALUES (1, ?, ?)').run('tenant-a', 'user-a');
+  const now = new Date().toISOString();
+  const facts = sourceFacts();
+  const sourceFactsHash = buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
+  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id, current_version, updated_at) VALUES (1, ?, ?, 1, ?)')
+    .run('tenant-a', 'user-a', now);
+  const sourceVersionId = Number(db.prepare(`
+    INSERT INTO redraw_versions
+      (work_id, tenant_id, user_id, version, locale, market, localization_level,
+       source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 1, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)
+  `).run(JSON.stringify(facts), sourceFactsHash, now, now).lastInsertRowid);
+  const insertShot = db.prepare(`
+    INSERT INTO redraw_shots
+      (work_id, shot_id, version_id, tenant_id, user_id, batch_index, shot_index,
+       start_ms, end_ms, duration_ms, source_dialogue_json, localized_dialogue_json,
+       references_json, opening_state, continuous_action, ending_state, created_at, updated_at)
+    VALUES (1, ?, ?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?)
+  `);
+  facts.shots.forEach((shot, index) => insertShot.run(
+    shot.id,
+    sourceVersionId,
+    index + 1,
+    shot.start_ms,
+    shot.end_ms,
+    shot.end_ms - shot.start_ms,
+    JSON.stringify(shot.dialogue),
+    shot.opening_state,
+    shot.continuous_action,
+    shot.ending_state,
+    now,
+    now,
+  ));
   return db;
 }
 
@@ -120,7 +229,7 @@ test('本地化结果事实哈希不匹配时拒绝写入', () => {
   );
 });
 
-test('创建本地化版本只追加版本并且不改写源事实', () => {
+test('创建本地化版本原子物化目标分镜与同版本资产引用且不改写源事实', () => {
   const db = createDb();
   const facts = sourceFacts();
   const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
@@ -132,13 +241,86 @@ test('创建本地化版本只追加版本并且不改写源事实', () => {
     cultureMap: { currency: 'USD' },
     glossary: { 旧手机: 'old phone' },
     styleSnapshot: { stable_key: 'style-1', version: 1 },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
+    }],
   });
-  assert.equal(result.version, 1);
-  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
+  assert.equal(result.version, 2);
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 2);
   const row = db.prepare('SELECT * FROM redraw_versions WHERE id = ?').get(result.id);
   assert.equal(row.source_facts_json, JSON.stringify(facts));
   assert.deepEqual(JSON.parse(row.name_map_json), { 小满: 'Maya' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 2);
+
+  const assets = db.prepare('SELECT * FROM redraw_assets WHERE version_id = ? ORDER BY id').all(result.id);
+  assert.equal(assets.length, 4);
+  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'character', 'scene', 'prop']);
+  assert.equal(assets.every((asset) => asset.status === 'draft' && asset.approval_status === 'pending'), true);
+  assert.deepEqual(JSON.parse(assets[0].source_ref_json).source_ref, {
+    kind: 'character',
+    id: 'c1',
+    stable_id: 'c1',
+  });
+  assert.equal(assets[0].localized_name, 'Maya');
+  assert.equal(assets[3].localized_name, 'old phone');
+
+  const targetShots = db.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(result.id);
+  assert.equal(targetShots.length, 2);
+  assert.equal(targetShots[0].source_dialogue_json, JSON.stringify(facts.shots[0].dialogue));
+  assert.deepEqual(JSON.parse(targetShots[0].localized_dialogue_json), [
+    { speaker_id: 'c1', localized_text: "Don't look back" },
+  ]);
+  assert.equal(targetShots[0].opening_state, facts.shots[0].opening_state);
+  assert.equal(targetShots[0].continuous_action, facts.shots[0].continuous_action);
+  assert.equal(targetShots[0].ending_state, facts.shots[0].ending_state);
+
+  const assetByStableId = new Map(assets.map((asset) => [JSON.parse(asset.source_ref_json).source_ref.stable_id, asset]));
+  const firstReferences = JSON.parse(targetShots[0].references_json);
+  assert.deepEqual(firstReferences.map((reference) => reference.kind), ['character', 'scene', 'prop']);
+  assert.equal(firstReferences.every((reference) => Number.isInteger(reference.asset_id)), true);
+  assert.deepEqual(firstReferences.map((reference) => reference.asset_id), [
+    assetByStableId.get('c1').id,
+    assetByStableId.get('s1').id,
+    assetByStableId.get('p1').id,
+  ]);
+  assert.deepEqual(JSON.parse(targetShots[1].references_json), [{
+    kind: 'scene',
+    asset_id: assetByStableId.get('s1').id,
+    anchor: 'scene:s1',
+  }]);
+  assert.equal(firstReferences.some((reference) => reference.asset_id === assetByStableId.get('c2').id), false);
+
+  const sourceShots = db.prepare('SELECT * FROM redraw_shots WHERE version_id != ? ORDER BY shot_index').all(result.id);
+  assert.equal(sourceShots[0].localized_dialogue_json, '[]');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id != ?').get(result.id).count, 0);
+  db.close();
+});
+
+test('物化任一步失败时回滚版本、分镜、资产并保持当前版本指针', () => {
+  const db = createDb();
+  const facts = sourceFacts();
+  db.exec(`
+    CREATE TRIGGER fail_localized_prop
+    BEFORE INSERT ON redraw_assets
+    WHEN NEW.kind = 'prop'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced asset failure');
+    END;
+  `);
+
+  assert.throws(
+    () => createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+      locale: 'en-US',
+      sourceFacts: facts,
+      sourceFactsHash: buildLocalizationInput(facts, { locale: 'en-US' }).source_facts_hash,
+    }),
+    /forced asset failure/,
+  );
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots').get().count, 2);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets').get().count, 0);
   db.close();
 });
 
@@ -152,7 +334,8 @@ test('创建本地化版本拒绝与源事实不匹配的哈希', () => {
     }),
     (error) => error.code === 'LOCALIZATION_FACT_HASH_MISMATCH',
   );
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
   db.close();
 });
 

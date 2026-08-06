@@ -358,15 +358,18 @@ function markNeedsAttention(db, task, work, message) {
 
 function writeFactsOnce(db, work, normalized) {
   const now = new Date().toISOString();
+  let changed = true;
   let version = db.prepare(
     'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
   ).get(work.id);
   if (version) {
-    if (version.facts_hash === normalized.facts_hash) return { version, changed: false };
-    const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
-    error.existing_hash = version.facts_hash;
-    error.incoming_hash = normalized.facts_hash;
-    throw error;
+    if (version.facts_hash !== normalized.facts_hash) {
+      const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
+      error.existing_hash = version.facts_hash;
+      error.incoming_hash = normalized.facts_hash;
+      throw error;
+    }
+    changed = false;
   } else {
     const existing = db.prepare('SELECT * FROM redraw_versions WHERE work_id = ? ORDER BY id ASC LIMIT 1').get(work.id);
     if (existing) {
@@ -423,9 +426,14 @@ function writeFactsOnce(db, work, normalized) {
       updated_at: now,
     });
   }
-  db.prepare('UPDATE redraw_works SET status = ?, current_step = ?, error_msg = NULL, updated_at = ? WHERE id = ?')
-    .run('asset_review', 2, now, work.id);
-  return { version, changed: true };
+  updateDynamic(db, 'redraw_works', {
+    status: 'asset_review',
+    current_version: Number(version.version || 1),
+    current_step: 2,
+    error_msg: null,
+    updated_at: now,
+  }, 'id', work.id);
+  return { version, changed };
 }
 
 async function runAnalyzeTask(db, log, taskId, options = {}) {
