@@ -1445,7 +1445,7 @@ test('资产批量报价只接受资产 ID 并使用服务端 quote', async () =
     assert.equal(serviceInput.ctx.userId, 'user-a');
     assert.equal(typeof serviceInput.ctx.canReadArtifact, 'function');
     assert.equal(typeof serviceInput.ctx.provider, 'function');
-    assert.equal(typeof serviceInput.ctx.schedule, 'function');
+    assert.equal(Object.prototype.hasOwnProperty.call(serviceInput.ctx, 'schedule'), false);
     assert.equal('model' in serviceInput.input, false);
     assert.equal('provider' in serviceInput.input, false);
     assert.equal(result.body.data.total_credits, 9);
@@ -1484,6 +1484,55 @@ test('资产批量报价未定价返回 409 并保留服务详情', async () => 
     assert.equal(result.body.error.code, 'REDRAW_ASSET_BATCH_UNPRICED');
     assert.deepEqual(result.body.error.details.blocked, [{ asset_id: assetId, code: 'REDRAW_CAPABILITY_UNVERIFIED', message: '未验证' }]);
     assert.equal(result.body.error.details.quote_hash, 'hash-blocked');
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量路由只在显式提供服务端 schedule 时传入 ctx', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    const serverSchedule = () => Promise.resolve();
+    let quoteSchedule = null;
+    let startSchedule = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchSchedule: serverSchedule,
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: (ctx) => {
+          quoteSchedule = ctx.schedule;
+          return {
+            priced: true,
+            version_id: versionId,
+            total_credits: 4,
+            items: [{ asset_id: assetId, credits: 4 }],
+            blocked: [],
+            quote_hash: 'hash-schedule',
+          };
+        },
+        startAssetBatch: (ctx) => {
+          startSchedule = ctx.schedule;
+          return {
+            batch: { id: 45, status: 'pending', attempt_ids: [assetId] },
+            task: { id: 'task-schedule', status: 'pending' },
+            completion: new Promise(() => {}),
+          };
+        },
+      }),
+    }));
+
+    const quote = captureResponse();
+    await handlers.assetBatchQuote(request({ id: versionId, body: { asset_ids: [assetId] } }), quote);
+    assert.equal(quote.statusCode, 200);
+    assert.equal(quoteSchedule, serverSchedule);
+
+    const created = captureResponse();
+    await handlers.createAssetBatch(request({
+      id: versionId,
+      body: { asset_ids: [assetId], quote_hash: 'hash-schedule', idempotency_key: 'idem-schedule' },
+    }), created);
+    assert.equal(created.statusCode, 202);
+    assert.equal(startSchedule, serverSchedule);
   } finally {
     db.close();
   }
@@ -1528,13 +1577,38 @@ test('资产批量创建返回 202 映射真实 service shape 且不等待 compl
       idempotencyKey: 'idem-1',
     });
     assert.equal(typeof serviceInput.ctx.provider, 'function');
-    assert.equal(typeof serviceInput.ctx.schedule, 'function');
+    assert.equal(Object.prototype.hasOwnProperty.call(serviceInput.ctx, 'schedule'), false);
     assert.equal(result.statusCode, 202);
     assert.equal(result.body.data.batch_id, 44);
     assert.equal(result.body.data.task_id, 'task-real-shape');
     assert.equal(result.body.data.status, 'pending');
     assert.deepEqual(result.body.data.billing, { charged: 0, held: 0, released: 0 });
     assert.equal(result.body.data.current_step, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量创建拒绝异步 startAssetBatch contract 且不等待返回 Promise', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        startAssetBatch: () => new Promise(() => {}),
+      }),
+    }));
+
+    const startedAt = Date.now();
+    const result = captureResponse();
+    await handlers.createAssetBatch(request({
+      id: versionId,
+      body: { asset_ids: [assetId], quote_hash: 'hash-server', idempotency_key: 'idem-async-start' },
+    }), result);
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.error.code, 'INTERNAL_ERROR');
   } finally {
     db.close();
   }

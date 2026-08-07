@@ -683,16 +683,6 @@ function isMissingSchemaError(error) {
   return /no such (table|column)/i.test(String(error?.message || ''));
 }
 
-function defaultAssetBatchSchedule(job) {
-  return new Promise((resolve, reject) => {
-    setImmediate(() => {
-      Promise.resolve()
-        .then(job)
-        .then(resolve, reject);
-    });
-  });
-}
-
 function registerSourceAsset(db, log, currentOwner, sourceAsset) {
   const existingId = sourceAsset?.id ?? sourceAsset?.asset_id;
   if (existingId != null) return { sourceAsset, asset: null };
@@ -806,7 +796,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   }
 
   function assetBatchContext(version, currentOwner) {
-    return {
+    const ctx = {
       db,
       versionId: Number(version.id),
       tenantId: currentOwner.tenantId,
@@ -816,10 +806,11 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         canRead: (row) => Boolean(row && typeof canReadArtifact === 'function' && canReadArtifact(row.id)),
       },
       provider: options.assetGenerationProvider || options.assetProvider,
-      schedule: options.assetBatchSchedule || options.schedule || defaultAssetBatchSchedule,
       concurrency: Number(options.assetBatchConcurrency || options.assetConcurrency || 3),
       log,
     };
+    if (typeof options.assetBatchSchedule === 'function') ctx.schedule = options.assetBatchSchedule;
+    return ctx;
   }
 
   function findOwnedShot(id, currentOwner) {
@@ -1613,7 +1604,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       );
     }
     try {
-      const result = await assetBatchService.startAssetBatch(ctx, input);
+      const result = assetBatchService.startAssetBatch(ctx, input);
+      if (result && typeof result.then === 'function') {
+        throw new Error('assetBatchService.startAssetBatch must return synchronously');
+      }
       return response.accepted(res, assetBatchResponsePayload(
         result,
         assetBatchBillingPayload(db, result, currentOwner),
