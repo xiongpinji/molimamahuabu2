@@ -130,13 +130,10 @@ function sourceRefOf(attempt = {}, input = {}) {
     || {};
 }
 
-function snapshotOf(attempt = {}, input = {}) {
+function snapshotOf(attempt = {}) {
   const payload = sourcePayloadOf(attempt);
   return attempt.snapshot
     || payload.snapshot
-    || input.snapshot
-    || input.generationSnapshot
-    || input.generation_snapshot
     || {};
 }
 
@@ -168,7 +165,7 @@ function normalizeAssetRequest(request = {}) {
   const input = request.input || {};
   const attempt = request.attempt || request.asset || input.asset || {};
   const sourceRef = sourceRefOf(attempt, input);
-  const snapshot = snapshotOf(attempt, input);
+  const snapshot = snapshotOf(attempt);
   const snapshotModel = trim(snapshot.model);
   const requestModel = trim(request.model);
   if (snapshotModel && requestModel && requestModel !== snapshotModel) {

@@ -404,6 +404,85 @@ test('generateAsset does not fallback to input model when no persisted snapshot 
   }
 });
 
+test('generateAsset ignores input snapshot model when no persisted snapshot or trusted request model exists', async () => {
+  const storageRoot = tempStorage();
+  const imageCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => adapters.generateAsset({
+        versionId: 7,
+        attempt: { id: 5, kind: 'prop', prompt: 'prop' },
+        input: {
+          snapshot: { model: 'input-snapshot-model', provider: 'input-snapshot-provider' },
+        },
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_MODEL_REQUIRED',
+    );
+    assert.equal(imageCalls.length, 0);
+  } finally {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('generateAsset trusted request model is not affected by input snapshot model or provider', async () => {
+  const storageRoot = tempStorage();
+  const imageCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await adapters.generateAsset({
+      versionId: 7,
+      model: 'trusted-request-model',
+      attempt: { id: 5, kind: 'prop', prompt: 'prop' },
+      input: {
+        snapshot: { model: 'input-snapshot-model', provider: 'input-snapshot-provider' },
+      },
+    });
+
+    assert.equal(imageCalls[0][2].model, 'trusted-request-model');
+    assert.equal(imageCalls[0][2].preferred_provider, undefined);
+  } finally {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('redrawAssetService.generateAsset contract reaches voice adapter and probes duration', async () => {
   const state = setupAssetContractState();
   const synthCalls = [];
