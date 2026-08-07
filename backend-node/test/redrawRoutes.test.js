@@ -1055,6 +1055,88 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
   }
 });
 
+test('本地化版本提交默认真实 orchestrator 无 provider 时同步拒绝且无副作用', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1 });
+    const sourceVersionId = insertVersion(db, workId, {
+      locale: 'source',
+      market: '',
+      status: 'asset_review',
+      style_snapshot_json: JSON.stringify({ tone: 'thriller' }),
+    });
+    const sourceFacts = {
+      schema_version: '1.0',
+      episode_hook: { summary: 'locked hook' },
+      causal_chain: [],
+      reversals: [],
+      locked_facts: [],
+      characters: [],
+      scenes: [],
+      props: [],
+      shots: [],
+    };
+    db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ? WHERE id = ?')
+      .run(JSON.stringify(sourceFacts), 'source-facts-hash', sourceVersionId);
+    insertRedrawLocaleCapabilityConfig(db, [{
+      locale: 'en-US',
+      market: 'US',
+      status: 'verified',
+      evidence: {
+        text: {
+          provider: 'verified-provider',
+          model: 'gpt-localize',
+          task_id: 'verified-localization-text',
+          terminal_status: 'completed',
+          artifact_id: 'readable-localization-artifact',
+        },
+      },
+    }]);
+    prices.set(db, 'gpt-localize', 7, { category: 'text' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      canReadArtifact: () => true,
+      localizationOrchestrator: undefined,
+      localizationProvider: undefined,
+    }));
+
+    const quoted = captureResponse();
+    handlers.localizationQuote(request({
+      id: workId,
+      body: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+    }), quoted);
+    assert.equal(quoted.statusCode, 200);
+    const before = {
+      versions: db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count,
+      tasks: db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count,
+      reservations: db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count,
+    };
+
+    const result = captureResponse();
+    await handlers.createVersion(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        localization_level: 'faithful',
+        quote_hash: quoted.body.data.quote_hash,
+        idempotency_key: 'idem-no-provider',
+      },
+    }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_LOCALIZATION_PROVIDER_UNAVAILABLE');
+    assert.deepEqual({
+      versions: db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count,
+      tasks: db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count,
+      reservations: db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count,
+    }, before);
+  } finally {
+    db.close();
+  }
+});
+
 test('本地化版本提交映射 quote changed 与余额不足错误', async () => {
   const db = createDb();
   try {

@@ -1315,6 +1315,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
     try {
       rejectLocalizationClientControl(req.body || {});
+      if (localizationOrchestrator === redrawLocalizationOrchestrator && typeof options.localizationProvider !== 'function') {
+        return response.error(res, 409, 'REDRAW_LOCALIZATION_PROVIDER_UNAVAILABLE', '本地化供应商未配置');
+      }
       const result = localizationOrchestrator.startLocalization(
         db,
         log,
