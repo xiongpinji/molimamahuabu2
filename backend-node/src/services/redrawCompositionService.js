@@ -46,13 +46,14 @@ function stableStringify(value) {
 }
 
 function sha256(value) {
-  return crypto.createHash('sha256').update(String(value)).digest('hex');
+  return crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex');
 }
 
 function requestHash(input) {
   return sha256(stableStringify({
     version_id: Number(input.versionId),
     audio_mode: input.audioMode || 'replace',
+    input_hash: input.inputHash || '',
   }));
 }
 
@@ -116,7 +117,11 @@ function resolveReadableContained(root, localPath, label) {
     if (!isInside(realRoot, realAbs)) {
       throw codedError('REDRAW_COMPOSITION_PATH_INVALID', `${label} realpath escapes storage`);
     }
-    return { relative, absolute: abs, real: realAbs };
+    const stat = fs.statSync(realAbs);
+    if (!stat.isFile()) {
+      throw codedError('REDRAW_COMPOSITION_PATH_UNREADABLE', `${label} is not a regular file`);
+    }
+    return { relative, absolute: abs, real: realAbs, bytes: fs.readFileSync(realAbs) };
   } catch (error) {
     if (error.code && String(error.code).startsWith('REDRAW_COMPOSITION_')) throw error;
     throw codedError('REDRAW_COMPOSITION_PATH_UNREADABLE', `${label} file unreadable`);
@@ -128,10 +133,10 @@ function tableColumns(db, table) {
 }
 
 function ownerMatches(row, ctx, columns, label) {
-  if (columns.has('tenant_id') && row.tenant_id != null && String(row.tenant_id) !== String(ctx.tenantId)) {
+  if (columns.has('tenant_id') && (row.tenant_id == null || String(row.tenant_id) !== String(ctx.tenantId))) {
     throw codedError('REDRAW_COMPOSITION_OWNER_MISMATCH', `${label} tenant mismatch`);
   }
-  if (columns.has('user_id') && row.user_id != null && String(row.user_id) !== String(ctx.userId)) {
+  if (columns.has('user_id') && (row.user_id == null || String(row.user_id) !== String(ctx.userId))) {
     throw codedError('REDRAW_COMPOSITION_OWNER_MISMATCH', `${label} user mismatch`);
   }
 }
@@ -165,7 +170,7 @@ async function verifyVideo(ctx, root, shot, videoRow, expectedSize) {
     duration_ms: actualMs,
     width,
     height,
-    hash: sha256(`${videoRow.id}:${file.relative}:${actualMs}:${width}x${height}`),
+    hash: sha256(file.bytes),
   };
 }
 
@@ -173,6 +178,9 @@ function validateTimeline(shots) {
   if (!shots.length) throw codedError('REDRAW_COMPOSITION_SHOTS_EMPTY', 'no completed shots');
   let expectedStart = 0;
   return shots.map((shot) => {
+    if (shot.status !== 'completed' || !shot.video_generation_id) {
+      throw codedError('REDRAW_COMPOSITION_SHOT_INCOMPLETE', 'version has incomplete shot');
+    }
     if (Number(shot.start_ms) !== expectedStart) {
       throw codedError('REDRAW_COMPOSITION_TIMELINE_INVALID', 'timeline has gap or overlap');
     }
@@ -214,16 +222,25 @@ function validateAudioSegment(ctx, root, shot, segment) {
   if (!asset || asset.type !== 'audio' || asset.category !== 'redraw_dialogue') {
     throw codedError('REDRAW_COMPOSITION_AUDIO_INVALID', 'dialogue audio asset invalid');
   }
-  const metadata = parseJson(asset.metadata, {}, 'asset.metadata');
+  const metadata = parseJson(asset.metadata, {}, 'asset.metadata')?.redraw_dialogue;
   const segmentId = String(segment.segment_id ?? segment.id ?? '');
-  if (String(metadata.tenant_id) !== String(ctx.tenantId)
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+    || String(metadata.tenant_id) !== String(ctx.tenantId)
     || String(metadata.user_id) !== String(ctx.userId)
     || Number(metadata.version_id) !== Number(shot.version_id)
     || String(metadata.segment_id) !== segmentId
-    || String(metadata.reservation_status) !== 'confirmed'
     || String(metadata.reservation_id) !== String(segment.reservation_id)
     || String(metadata.idempotency_key) !== String(segment.idempotency_key)) {
     throw codedError('REDRAW_COMPOSITION_AUDIO_OWNER_MISMATCH', 'dialogue audio metadata mismatch');
+  }
+  const reservation = ctx.db.prepare(`
+    SELECT * FROM tenant_usage_reservations
+    WHERE id = ? AND tenant_id = ? AND status = 'confirmed'
+      AND resource_type = 'redraw_dialogue' AND resource_id = ?
+    LIMIT 1
+  `).get(String(segment.reservation_id), String(ctx.tenantId), `${shot.version_id}:${segmentId}`);
+  if (!reservation) {
+    throw codedError('REDRAW_COMPOSITION_AUDIO_RESERVATION_INVALID', 'dialogue reservation is not confirmed for segment');
   }
   const startMs = Number(segment.start_ms);
   const endMs = Number(segment.end_ms);
@@ -244,7 +261,7 @@ function validateAudioSegment(ctx, root, shot, segment) {
     duration_ms: durationMs,
     reservation_id: segment.reservation_id,
     idempotency_key: segment.idempotency_key,
-    hash: sha256(`${asset.id}:${file.relative}:${durationMs}:${startMs}-${endMs}`),
+    hash: sha256(file.bytes),
   };
 }
 
@@ -278,7 +295,7 @@ async function buildCompositionPlan(ctx, input) {
   const shots = db.prepare(`
     SELECT * FROM redraw_shots
     WHERE version_id = ? AND tenant_id = ? AND user_id = ?
-      AND status = 'completed' AND deleted_at IS NULL
+      AND deleted_at IS NULL
     ORDER BY batch_index ASC, shot_index ASC, id ASC
   `).all(versionId, String(ctx.tenantId), String(ctx.userId));
   const timeline = validateTimeline(shots);
@@ -336,21 +353,8 @@ async function createComposition(ctx, input) {
   const versionId = normalizeVersionId(input.versionId);
   const key = String(input.idempotencyKey || '').trim();
   if (!key) throw codedError('REDRAW_COMPOSITION_IDEMPOTENCY_REQUIRED', 'idempotencyKey required');
-  const hash = requestHash({ versionId, audioMode: input.audioMode || 'replace' });
-  const existing = ctx.db.prepare(`
-    SELECT * FROM redraw_exports
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
-      AND json_extract(manifest_json, '$.idempotency_key') = ?
-    ORDER BY id DESC LIMIT 1
-  `).get(versionId, String(ctx.tenantId), String(ctx.userId), key);
-  if (existing) {
-    const manifest = parseJson(existing.manifest_json, {}, 'manifest_json');
-    if (manifest.request_hash !== hash) {
-      throw codedError('REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT', 'idempotency key reused with different request');
-    }
-    return existing;
-  }
   const plan = await buildCompositionPlan(ctx, { versionId, audioMode: input.audioMode || 'replace' });
+  const hash = requestHash({ versionId, audioMode: input.audioMode || 'replace', inputHash: plan.input_hash });
   const createdAt = now(ctx);
   const manifest = {
     idempotency_key: key,
@@ -359,6 +363,19 @@ async function createComposition(ctx, input) {
     plan: stripAbsolutePaths(plan),
   };
   return runImmediate(ctx.db, () => {
+    const existing = ctx.db.prepare(`
+      SELECT * FROM redraw_exports
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        AND json_extract(manifest_json, '$.idempotency_key') = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(versionId, String(ctx.tenantId), String(ctx.userId), key);
+    if (existing) {
+      const existingManifest = parseJson(existing.manifest_json, {}, 'manifest_json');
+      if (existingManifest.request_hash !== hash) {
+        throw codedError('REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT', 'idempotency key reused with different request');
+      }
+      return existing;
+    }
     const active = ctx.db.prepare(`
       SELECT id FROM redraw_exports
       WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND export_type = 'video'
@@ -380,9 +397,48 @@ async function createComposition(ctx, input) {
   });
 }
 
-function buildOutputPaths(root, versionId, exportId) {
-  const dir = `redraw/version-${versionId}/exports/${exportId}`;
+function assertPlainDirectory(dir, realParent = null) {
+  let stat;
+  try {
+    stat = fs.lstatSync(dir);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      fs.mkdirSync(dir);
+      stat = fs.lstatSync(dir);
+    } else {
+      throw error;
+    }
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw codedError('REDRAW_COMPOSITION_OUTPUT_PATH_UNSAFE', 'composition output directory is not a plain directory');
+  }
+  const real = fs.realpathSync.native(dir);
+  if (realParent && !isInside(realParent, real)) {
+    throw codedError('REDRAW_COMPOSITION_OUTPUT_PATH_UNSAFE', 'composition output directory escapes base');
+  }
+  return real;
+}
+
+function prepareOutputWorkspace(root, versionId, exportId) {
+  const realRoot = assertPlainDirectory(root);
+  const redrawDir = path.join(root, 'redraw');
+  const realRedraw = assertPlainDirectory(redrawDir, realRoot);
+  const versionDir = path.join(redrawDir, `version-${versionId}`);
+  const realVersion = assertPlainDirectory(versionDir, realRedraw);
+  const exportsDir = path.join(versionDir, 'exports');
+  const realExports = assertPlainDirectory(exportsDir, realVersion);
+  const workspaceAbs = fs.mkdtempSync(path.join(exportsDir, `export-${exportId}-`));
+  const workspaceStat = fs.lstatSync(workspaceAbs);
+  if (!workspaceStat.isDirectory() || workspaceStat.isSymbolicLink()) {
+    throw codedError('REDRAW_COMPOSITION_OUTPUT_PATH_UNSAFE', 'composition output workspace unsafe');
+  }
+  const realWorkspace = fs.realpathSync.native(workspaceAbs);
+  if (!isInside(realExports, realWorkspace)) {
+    throw codedError('REDRAW_COMPOSITION_OUTPUT_PATH_UNSAFE', 'composition output workspace escapes base');
+  }
+  const dir = path.relative(root, workspaceAbs).replace(/\\/g, '/');
   return {
+    workspace: { absolute: workspaceAbs, real: realWorkspace, baseReal: realExports },
     mp4: { relative: `${dir}/composition.mp4`, absolute: path.join(root, dir, 'composition.mp4') },
     srt: { relative: `${dir}/composition.srt`, absolute: path.join(root, dir, 'composition.srt') },
     vtt: { relative: `${dir}/composition.vtt`, absolute: path.join(root, dir, 'composition.vtt') },
@@ -390,12 +446,12 @@ function buildOutputPaths(root, versionId, exportId) {
 }
 
 function ffmpegArgs(plan, outputs) {
-  const args = ['-y'];
+  const args = ['-hide_banner', '-loglevel', 'error', '-y'];
   for (const input of plan.video_inputs) args.push('-i', input.absolute_path);
   for (const input of plan.audio_inputs) args.push('-i', input.absolute_path);
   const videoLabels = plan.video_inputs.map((input, index) => {
     const label = `v${index}`;
-    return `[${index}:v]scale=${plan.dimensions.width}:${plan.dimensions.height}:flags=lanczos,setsar=1,format=yuv420p[${label}]`;
+    return `[${index}:v]setpts=PTS-STARTPTS,scale=${plan.dimensions.width}:${plan.dimensions.height}:flags=lanczos,setsar=1,format=yuv420p[${label}]`;
   });
   const concatInputs = plan.video_inputs.map((_input, index) => `[v${index}]`).join('');
   const audioOffset = plan.video_inputs.length;
@@ -419,6 +475,8 @@ function ffmpegArgs(plan, outputs) {
     'aac',
     '-movflags',
     '+faststart',
+    '-t',
+    String(plan.total_duration_ms / 1000),
     outputs.mp4.absolute,
   );
   return args;
@@ -467,35 +525,66 @@ function insertAsset(db, ctx, output, type, mimeType, metadata, durationSeconds)
   ).lastInsertRowid;
 }
 
-function cleanupOutputs(outputs) {
-  for (const output of Object.values(outputs)) {
-    try {
-      const root = path.dirname(path.dirname(path.dirname(path.dirname(output.absolute))));
-      if (isInside(root, output.absolute)) fs.rmSync(output.absolute, { force: true });
-    } catch (_) {}
+function assertTreeHasNoLinks(dir) {
+  const stat = fs.lstatSync(dir);
+  if (stat.isSymbolicLink()) throw codedError('REDRAW_COMPOSITION_OUTPUT_PATH_UNSAFE', 'cleanup path contains link');
+  if (!stat.isDirectory()) return;
+  for (const name of fs.readdirSync(dir)) {
+    assertTreeHasNoLinks(path.join(dir, name));
   }
+}
+
+function cleanupWorkspace(outputs) {
+  if (!outputs?.workspace?.absolute) return;
+  try {
+    const stat = fs.lstatSync(outputs.workspace.absolute);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+    const realWorkspace = fs.realpathSync.native(outputs.workspace.absolute);
+    if (realWorkspace !== outputs.workspace.real || !isInside(outputs.workspace.baseReal, realWorkspace)) return;
+    assertTreeHasNoLinks(outputs.workspace.absolute);
+    fs.rmSync(outputs.workspace.absolute, { recursive: true, force: true });
+  } catch (_) {}
 }
 
 async function runComposition(ctx, exportId) {
   const db = ctx.db;
   const id = Number(exportId);
-  const row = db.prepare('SELECT * FROM redraw_exports WHERE id = ? AND deleted_at IS NULL').get(id);
+  const row = db.prepare(`
+    SELECT * FROM redraw_exports
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(id, String(ctx.tenantId), String(ctx.userId));
   if (!row) throw codedError('REDRAW_COMPOSITION_EXPORT_NOT_FOUND', 'export not found');
   if (row.status === 'completed') return row;
-  if (row.status !== 'pending' && row.status !== 'processing') {
+  if (row.status !== 'pending') {
     throw codedError('REDRAW_COMPOSITION_EXPORT_STATE_INVALID', 'export is not runnable');
   }
+  const existingManifest = parseJson(row.manifest_json, {}, 'manifest_json');
+  const plan = await buildCompositionPlan(ctx, {
+    versionId: row.version_id,
+    audioMode: 'replace',
+  });
+  const expectedHash = requestHash({
+    versionId: row.version_id,
+    audioMode: existingManifest.audio_mode || 'replace',
+    inputHash: plan.input_hash,
+  });
+  if (existingManifest?.plan?.input_hash !== plan.input_hash || existingManifest.request_hash !== expectedHash) {
+    throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'composition inputs changed after create');
+  }
   runImmediate(db, () => {
-    db.prepare(`UPDATE redraw_exports SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(ctx), id);
+    const info = db.prepare(`
+      UPDATE redraw_exports
+      SET status = 'processing', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'pending' AND deleted_at IS NULL
+    `).run(now(ctx), id, String(ctx.tenantId), String(ctx.userId));
+    if (info.changes !== 1) {
+      throw codedError('REDRAW_COMPOSITION_EXPORT_STATE_INVALID', 'export is not runnable');
+    }
   });
   const root = storageRoot(ctx);
-  const outputs = buildOutputPaths(root, row.version_id, id);
+  let outputs = null;
   try {
-    const plan = await buildCompositionPlan(ctx, {
-      versionId: row.version_id,
-      audioMode: 'replace',
-    });
-    fs.mkdirSync(path.dirname(outputs.mp4.absolute), { recursive: true });
+    outputs = prepareOutputWorkspace(root, row.version_id, id);
     fs.writeFileSync(outputs.srt.absolute, plan.subtitles.srt, 'utf8');
     fs.writeFileSync(outputs.vtt.absolute, plan.subtitles.vtt, 'utf8');
     const args = ffmpegArgs(plan, outputs);
@@ -504,7 +593,8 @@ async function runComposition(ctx, exportId) {
     const probe = ctx.probeRunner ? await ctx.probeRunner(outputs.mp4.absolute) : await defaultProbeRunner(outputs.mp4.absolute);
     const actualMs = Math.round(Number(probe?.duration) * 1000);
     const tolerance = Math.max(VIDEO_TOLERANCE_MS, Math.round(plan.total_duration_ms * VIDEO_TOLERANCE_RATIO));
-    if (!probe?.hasVideo || !probe?.hasAudio || !Number.isFinite(actualMs) || Math.abs(actualMs - plan.total_duration_ms) > tolerance) {
+    if (!probe?.hasVideo || !probe?.hasAudio || !Number.isFinite(actualMs) || Math.abs(actualMs - plan.total_duration_ms) > tolerance
+      || Number(probe.width) !== Number(plan.dimensions.width) || Number(probe.height) !== Number(plan.dimensions.height)) {
       throw codedError('REDRAW_COMPOSITION_OUTPUT_INVALID', 'composition output probe invalid');
     }
     const completedAt = now(ctx);
@@ -528,7 +618,11 @@ async function runComposition(ctx, exportId) {
         ...baseMetadata,
         kind: 'subtitle_vtt',
       }, null);
-      const existingManifest = parseJson(row.manifest_json, {}, 'manifest_json');
+      const outputHashes = {
+        mp4: probe.hash || sha256(fs.readFileSync(outputs.mp4.absolute)),
+        srt: sha256(fs.readFileSync(outputs.srt.absolute)),
+        vtt: sha256(fs.readFileSync(outputs.vtt.absolute)),
+      };
       const manifest = {
         idempotency_key: existingManifest.idempotency_key,
         request_hash: existingManifest.request_hash,
@@ -547,26 +641,33 @@ async function runComposition(ctx, exportId) {
           mp4_asset_id: mp4AssetId,
           srt_asset_id: srtAssetId,
           vtt_asset_id: vttAssetId,
-          hash: probe.hash || sha256(fs.readFileSync(outputs.mp4.absolute)),
+          hash: outputHashes.mp4,
+          hashes: outputHashes,
           probe,
         },
       };
-      db.prepare(`
+      const update = db.prepare(`
         UPDATE redraw_exports
         SET status = 'completed', asset_id = ?, subtitle_asset_id = ?,
             manifest_json = ?, updated_at = ?, error_code = NULL, error_message = NULL
-        WHERE id = ?
-      `).run(mp4AssetId, srtAssetId, JSON.stringify(manifest), completedAt, id);
-      return db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(id);
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'processing'
+      `).run(mp4AssetId, srtAssetId, JSON.stringify(manifest), completedAt, id, String(ctx.tenantId), String(ctx.userId));
+      if (update.changes !== 1) {
+        throw codedError('REDRAW_COMPOSITION_EXPORT_STATE_INVALID', 'export completion CAS failed');
+      }
+      return db.prepare(`
+        SELECT * FROM redraw_exports
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).get(id, String(ctx.tenantId), String(ctx.userId));
     });
   } catch (error) {
-    cleanupOutputs(outputs);
+    cleanupWorkspace(outputs);
     runImmediate(db, () => {
       db.prepare(`
         UPDATE redraw_exports
         SET status = 'failed', error_code = ?, error_message = ?, updated_at = ?
-        WHERE id = ?
-      `).run(error.code || 'REDRAW_COMPOSITION_FAILED', error.message, now(ctx), id);
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'processing'
+      `).run(error.code || 'REDRAW_COMPOSITION_FAILED', error.message, now(ctx), id, String(ctx.tenantId), String(ctx.userId));
     });
     throw error;
   }
