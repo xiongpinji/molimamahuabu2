@@ -38,8 +38,8 @@
       </aside>
 
       <main class="edit-main">
-        <RedrawPlayerCompare :version-id="resolvedVersionId" :source-url="sourceUrl" :exports="exports" />
-        <RedrawExportPanel v-if="resolvedVersionId" :version-id="resolvedVersionId" :exports="exports" />
+        <RedrawPlayerCompare :source-url="sourceUrl" :exports="exportArtifacts" />
+        <RedrawExportPanel v-if="resolvedVersionId" :exports="exportArtifacts" />
       </main>
     </div>
   </section>
@@ -51,8 +51,10 @@ import { redrawAPI } from '@/api/redraw'
 import {
   canStartComposition,
   canStartDialogue,
+  expandExportArtifacts,
   normalizeTimelineShots,
   shouldPollTask,
+  sourcePreviewUrl,
   statusLabel,
   worstShotStatus,
 } from '@/utils/redrawTimelineState'
@@ -72,6 +74,7 @@ const dialogueQuote = ref(null)
 const dialogueTask = ref(null)
 const compositionTask = ref(null)
 const exports = ref([])
+const exportRow = ref(null)
 const loadError = ref('')
 const dialogueStarting = ref(false)
 const composing = ref(false)
@@ -80,7 +83,8 @@ let pollTimer = null
 const resolvedVersionId = computed(() => props.versionId || localWork.value?.version_id || localWork.value?.current_version_id)
 const shots = computed(() => normalizeTimelineShots(localWork.value?.shots || []))
 const worstStatus = computed(() => worstShotStatus(shots.value))
-const sourceUrl = computed(() => localWork.value?.source_video_url || localWork.value?.source_video_ref?.url || '')
+const sourceUrl = computed(() => sourcePreviewUrl(shots.value, selectedShotId.value))
+const exportArtifacts = computed(() => expandExportArtifacts(exportRow.value))
 
 function idempotencyKey(prefix) {
   const value = globalThis.crypto?.randomUUID?.()
@@ -108,10 +112,18 @@ async function loadDialogueQuote() {
 async function loadExports() {
   const versionId = resolvedVersionId.value
   if (!versionId) return
-  exports.value = await redrawAPI.listExports(versionId)
-  if (exports.value?.length) {
-    const complete = exports.value.find((item) => item.status === 'completed')
-    if (complete?.id) await redrawAPI.getExport(versionId, complete.id)
+  const rows = await redrawAPI.listExports(versionId)
+  exports.value = Array.isArray(rows) ? rows : []
+  const targetId = compositionTask.value?.export_id || compositionTask.value?.exportId || exports.value[0]?.id
+  const row = targetId ? exports.value.find((item) => String(item.id) === String(targetId)) : exports.value[0]
+  exportRow.value = row?.id ? await redrawAPI.getExport(row.id) : null
+  if (compositionTask.value && exportRow.value?.status) {
+    compositionTask.value = {
+      ...compositionTask.value,
+      export_id: exportRow.value.id,
+      status: exportRow.value.status,
+      message: exportRow.value.error_message || compositionTask.value.message,
+    }
   }
 }
 
@@ -149,7 +161,11 @@ async function compose() {
   composing.value = true
   try {
     const result = await redrawAPI.composeVersion(versionId, { idempotency_key: compositionIdempotencyKey.value, audio_mode: 'replace' })
-    compositionTask.value = result?.task || result
+    const nextTask = result?.task || result
+    compositionTask.value = {
+      ...nextTask,
+      export_id: result?.export_id || nextTask?.export_id || nextTask?.exportId,
+    }
     syncPolling()
   } catch (error) {
     loadError.value = errorReason(error, '启动合成失败')

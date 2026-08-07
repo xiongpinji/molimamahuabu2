@@ -23,7 +23,6 @@ import { redrawAPI } from '@/api/redraw'
 import { exportByKind } from '@/utils/redrawTimelineState'
 
 const props = defineProps({
-  versionId: { type: [String, Number], default: null },
   sourceUrl: { type: String, default: '' },
   exports: { type: Array, default: () => [] },
 })
@@ -42,19 +41,19 @@ function clearObjectUrl() {
 }
 
 async function loadExportPreview() {
-  if (mode.value !== 'export' || !props.versionId || !mp4Export.value?.id) {
+  if (mode.value !== 'export' || !mp4Export.value?.exportId || !mp4Export.value?.kind) {
     if (mode.value !== 'export') clearObjectUrl()
     return
   }
-  const key = `${props.versionId}:${mp4Export.value.id}`
+  const key = `${mp4Export.value.exportId}:${mp4Export.value.kind}`
   if (loadingKey.value === key && objectUrl.value) return
   loadingKey.value = key
   clearObjectUrl()
-  const blob = await redrawAPI.downloadExport(props.versionId, mp4Export.value.id)
+  const blob = await redrawAPI.downloadExport(mp4Export.value.exportId, mp4Export.value.kind)
   objectUrl.value = URL.createObjectURL(blob)
 }
 
-watch(() => [mode.value, props.versionId, mp4Export.value?.id], loadExportPreview)
+watch(() => [mode.value, mp4Export.value?.exportId, mp4Export.value?.kind], loadExportPreview)
 onBeforeUnmount(clearObjectUrl)
 </script>
 

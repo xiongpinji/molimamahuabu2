@@ -28,6 +28,8 @@ test('第四步状态纯函数固定源片顺序并只在配音完成后允许�
     canStartDialogue,
     canStartComposition,
     exportByKind,
+    expandExportArtifacts,
+    sourcePreviewUrl,
   } = await editState()
   const shots = [
     { id: 3, shot_index: 3, start_ms: 2000, end_ms: 3000, status: 'completed' },
@@ -42,6 +44,19 @@ test('第四步状态纯函数固定源片顺序并只在配音完成后允许�
   assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'failed' }, null), false)
   assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'completed' }, { status: 'processing' }), false)
   assert.equal(exportByKind([{ kind: 'mp4', id: 9 }], 'mp4')?.id, 9)
+  assert.deepEqual(expandExportArtifacts({
+    id: 88,
+    status: 'completed',
+    hashes: { mp4: '1'.repeat(64), srt: '2'.repeat(64), vtt: null },
+  }), [
+    { exportId: 88, kind: 'mp4', sha256: '1'.repeat(64), status: 'completed' },
+    { exportId: 88, kind: 'srt', sha256: '2'.repeat(64), status: 'completed' },
+  ])
+  assert.equal(sourcePreviewUrl(shots, 3), '')
+  assert.equal(sourcePreviewUrl([
+    { id: 1, source_video_ref: { url: 'https://fixtures.example/first.mp4' } },
+    { id: 2, source_video_ref: { url: 'https://fixtures.example/second.mp4', local_path: 'C:/secret.mp4' } },
+  ], 2), 'https://fixtures.example/second.mp4')
 })
 
 test('第四步 API 只暴露报价、启动、状态、合成、导出列表和 blob 下载入口', () => {
@@ -60,7 +75,10 @@ test('第四步 API 只暴露报价、启动、状态、合成、导出列表和
   assert.match(apiSource, /dialogue\/start/)
   assert.match(apiSource, /dialogue\/tasks/)
   assert.match(apiSource, /compose/)
-  assert.match(apiSource, /exports/)
+  assert.match(apiSource, /listExports\(versionId\)[\s\S]*\/redraw\/versions\/\$\{versionId\}\/exports/)
+  assert.match(apiSource, /getExport\(exportId\)[\s\S]*\/redraw\/exports\/\$\{exportId\}/)
+  assert.match(apiSource, /downloadExport\(exportId,\s*kind\)[\s\S]*\/redraw\/exports\/\$\{exportId\}\/download\/\$\{encodeURIComponent\(kind\)\}/)
+  assert.doesNotMatch(apiSource, /versions\/\$\{versionId\}\/exports\/\$\{exportId\}/)
   assert.match(apiSource, /responseType:\s*['"]blob['"]/)
 })
 
@@ -91,10 +109,14 @@ test('第四步提交 payload 不接受客户端模型、价格、路径或产�
 
 test('第四步 blob 预览和下载必须走鉴权接口并在卸载时 revoke object URL', () => {
   assert.match(compareSource, /downloadExport/)
+  assert.match(compareSource, /mp4Export\.value\.exportId/)
+  assert.match(compareSource, /mp4Export\.value\.kind/)
   assert.match(compareSource, /URL\.createObjectURL/)
   assert.match(compareSource, /URL\.revokeObjectURL/)
   assert.match(compareSource, /onBeforeUnmount/)
   assert.match(exportSource, /downloadExport/)
+  assert.match(exportSource, /item\.exportId/)
+  assert.match(exportSource, /item\.kind/)
   assert.match(exportSource, /URL\.createObjectURL/)
   assert.match(exportSource, /a\.download/)
   assert.doesNotMatch(compareSource, /export\.local|local_path|absolute_path|file_path/)

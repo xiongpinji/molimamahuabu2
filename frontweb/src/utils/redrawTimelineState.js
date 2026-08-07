@@ -63,6 +63,26 @@ export function exportByKind(exports = [], kind) {
     .find((item) => String(item?.kind || '').toLowerCase() === String(kind || '').toLowerCase())
 }
 
+export function expandExportArtifacts(exportRow) {
+  const row = Array.isArray(exportRow) ? exportRow[0] : exportRow
+  if (!row?.id) return []
+  const hashes = row.hashes && typeof row.hashes === 'object' ? row.hashes : {}
+  return ['mp4', 'srt', 'vtt']
+    .filter((kind) => typeof hashes[kind] === 'string' && hashes[kind])
+    .map((kind) => ({
+      exportId: row.id,
+      kind,
+      sha256: hashes[kind],
+      status: row.status || 'unknown',
+    }))
+}
+
+export function sourcePreviewUrl(shots = [], selectedShotId = null) {
+  const ordered = normalizeTimelineShots(shots)
+  const selected = ordered.find((shot) => String(shot.id) === String(selectedShotId))
+  return selected?.source_video_ref?.url || ordered[0]?.source_video_ref?.url || ''
+}
+
 export function worstShotStatus(shots = []) {
   return normalizeTimelineShots(shots).reduce((status, shot) => (
     statusRank(shot.status) > statusRank(status) ? shot.status : status

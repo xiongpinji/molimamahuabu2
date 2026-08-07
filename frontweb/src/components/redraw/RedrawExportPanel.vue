@@ -6,7 +6,7 @@
     </header>
     <div v-if="!exports.length" class="empty">暂无完成导出。</div>
     <ul v-else>
-      <li v-for="item in exports" :key="item.id">
+      <li v-for="item in exports" :key="`${item.exportId}-${item.kind}`">
         <div>
           <strong>{{ String(item.kind || '').toUpperCase() }}</strong>
           <small>{{ item.status || 'unknown' }}</small>
@@ -29,17 +29,16 @@
 import { redrawAPI } from '@/api/redraw'
 
 const props = defineProps({
-  versionId: { type: [String, Number], required: true },
   exports: { type: Array, default: () => [] },
 })
 
 async function download(item) {
-  const blob = await redrawAPI.downloadExport(props.versionId, item.id)
+  const blob = await redrawAPI.downloadExport(item.exportId, item.kind)
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   const suffix = String(item.kind || 'bin').toLowerCase()
   a.href = url
-  a.download = `redraw-export-${item.id}.${suffix}`
+  a.download = `redraw-export-${item.exportId}.${suffix}`
   a.click()
   URL.revokeObjectURL(url)
 }

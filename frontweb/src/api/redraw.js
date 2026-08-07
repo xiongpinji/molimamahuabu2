@@ -116,10 +116,10 @@ export const redrawAPI = {
   listExports(versionId) {
     return request.get(`/redraw/versions/${versionId}/exports`)
   },
-  getExport(versionId, exportId) {
-    return request.get(`/redraw/versions/${versionId}/exports/${exportId}`)
+  getExport(exportId) {
+    return request.get(`/redraw/exports/${exportId}`)
   },
-  downloadExport(versionId, exportId) {
-    return request.get(`/redraw/versions/${versionId}/exports/${exportId}/download`, { responseType: 'blob' })
+  downloadExport(exportId, kind) {
+    return request.get(`/redraw/exports/${exportId}/download/${encodeURIComponent(kind)}`, { responseType: 'blob' })
   },
 }

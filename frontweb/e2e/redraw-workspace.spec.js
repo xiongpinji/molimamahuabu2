@@ -528,8 +528,9 @@ async function installFixtures(page, state) {
         status: 'processing',
         progress: 40,
         message: '合成处理中',
+        export_id: 901,
       }
-      await route.fulfill(apiData({ task: state.compositionTask }))
+      await route.fulfill(apiData({ task: state.compositionTask, export_id: 901 }))
       return
     }
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/exports') {
@@ -538,23 +539,31 @@ async function installFixtures(page, state) {
         state.compositionPolls = (state.compositionPolls || 0) + 1
         state.compositionTask = { ...state.compositionTask, status: 'completed', progress: 100 }
         state.exports = [
-          { id: 901, kind: 'mp4', status: 'completed', sha256: '1'.repeat(64) },
-          { id: 902, kind: 'srt', status: 'completed', sha256: '2'.repeat(64) },
-          { id: 903, kind: 'vtt', status: 'completed', sha256: '3'.repeat(64) },
+          {
+            id: 901,
+            status: 'completed',
+            hashes: {
+              mp4: '1'.repeat(64),
+              srt: '2'.repeat(64),
+              vtt: '3'.repeat(64),
+            },
+          },
         ]
       }
       await route.fulfill(apiData(state.exports || []))
       return
     }
-    if (method === 'GET' && /^\/api\/v1\/redraw\/versions\/812\/exports\/\d+$/.test(pathname)) {
+    if (method === 'GET' && /^\/api\/v1\/redraw\/exports\/\d+$/.test(pathname)) {
       const exportId = Number(pathname.split('/').at(-1))
       await route.fulfill(apiData((state.exports || []).find((item) => item.id === exportId) || null))
       return
     }
-    if (method === 'GET' && /^\/api\/v1\/redraw\/versions\/812\/exports\/\d+\/download$/.test(pathname)) {
+    if (method === 'GET' && /^\/api\/v1\/redraw\/exports\/\d+\/download\/(?:mp4|srt|vtt)$/.test(pathname)) {
       state.requests.push({ method, pathname })
-      const exportId = Number(pathname.split('/').at(-2))
-      if (exportId === 901) {
+      const parts = pathname.split('/')
+      const exportId = Number(parts.at(-3))
+      const kind = parts.at(-1)
+      if (exportId === 901 && kind === 'mp4') {
         await route.fulfill({ path: fixtureVideoPath, contentType: 'video/mp4' })
       } else {
         await route.fulfill({ body: 'WEBVTT\n\n00:00.000 --> 00:01.000\nYou finally made it.', contentType: 'text/vtt' })
@@ -1174,7 +1183,7 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByRole('button', { name: '工厂导入不可用' })).toBeDisabled()
 
     await page.getByRole('button', { name: '新成片' }).click()
-    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/exports/901/download')).toBe(true)
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/exports/901/download/mp4')).toBe(true)
     await assertNoPageHorizontalScroll(page)
   })
 })
