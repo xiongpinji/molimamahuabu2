@@ -8,6 +8,10 @@ function codePointLength(value) {
   return Array.from(String(value || '')).length;
 }
 
+function normalizeNewlines(value) {
+  return String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
 function directionForLocale(locale) {
   const normalized = String(locale || DEFAULT_LOCALE).toLowerCase();
   return RTL_LOCALE_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}-`))
@@ -89,7 +93,7 @@ function wrapLineByWords(line, maxLineCodePoints, maxLines) {
 }
 
 function layoutCueText(text, limits) {
-  const explicitLines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const explicitLines = normalizeNewlines(text).split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
   const lines = [];
@@ -125,7 +129,7 @@ function validateSubtitles(inputCues, options = {}) {
 
     if (text && Number.isInteger(cue.start_ms) && Number.isInteger(cue.end_ms) && cue.end_ms > cue.start_ms) {
       const durationSeconds = (cue.end_ms - cue.start_ms) / 1000;
-      const cps = codePointLength(text.replace(/\s+/g, '')) / durationSeconds;
+      const cps = codePointLength(normalizeNewlines(cue.text)) / durationSeconds;
       if (cps > limits.maxCharsPerSecond) {
         errors.push({ segment_id: cue.segment_id, reason: 'subtitle_reading_speed_exceeded' });
       }
@@ -156,7 +160,7 @@ function validateSubtitles(inputCues, options = {}) {
 function serializeCueText(cue) {
   const lines = Array.isArray(cue.lines) && cue.lines.length > 0
     ? cue.lines
-    : String(cue.text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    : normalizeNewlines(cue.text).split('\n');
   return lines.map(escapeSubtitleText).join('\n');
 }
 

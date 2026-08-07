@@ -103,6 +103,20 @@ test('English P0 limits 20 cps, 42 code points per line, two lines, and never tr
   assert.ok(result.errors.some((error) => error.segment_id === 'too-long' && error.reason === 'subtitle_line_length_exceeded'));
 });
 
+test('reading speed counts spaces and client options cannot relax 20 cps', () => {
+  const result = buildSubtitles([
+    { segment_id: 'spaces-count', start_ms: 0, end_ms: 1000, text: 'a a a a a a a a a a a' },
+  ], { locale: 'en-US', maxCharsPerSecond: 999 });
+
+  assert.equal(result.status, 'needs_rewrite');
+  assert.equal(result.srt, null);
+  assert.equal(result.vtt, null);
+  assert.ok(result.errors.some((error) => (
+    error.segment_id === 'spaces-count'
+    && error.reason === 'subtitle_reading_speed_exceeded'
+  )));
+});
+
 test('RTL locale marks direction and serializers escape HTML while preserving safe line breaks', () => {
   const cues = validateSubtitles([
     { segment_id: 'rtl', start_ms: 0, end_ms: 3000, text: 'مرحبا & <b>أهلا</b>\nثانيا' },
