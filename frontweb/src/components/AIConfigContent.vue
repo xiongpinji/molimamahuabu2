@@ -360,6 +360,7 @@
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
             <el-option label="DJPSD 开放 API（图片 / 视频异步任务）" value="djpsd_openapi" />
             <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
+            <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
             <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
@@ -544,6 +545,17 @@ input_reference = (图片文件，可选)</pre>
                   <b>创建：</b><code>POST /v1/task/submit/{model}</code>；<b>查询：</b><code>POST /v1/task/query-status</code>；<b>取结果：</b><code>POST /v1/task/get-result</code><br>
                   <b>模型：</b><code>bytedance/seedance-2-0-fast</code>、<code>bytedance/seedance-2-0-mini</code><br>
                   <b>认证：</b><code>Authorization: Bearer {api_key}</code>，并发送 <code>X-ICREAT-AI-GROUP: default</code>。连接测试只查询不存在的任务，不会提交计费任务。
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="toapis-video">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> ToAPIs — Seedance 2 异步生成</template>
+                <div class="ph-body">
+                  <b>Base URL：</b><code>https://toapis.com</code><br>
+                  <b>接口：</b><code>POST /v1/videos/generations</code>（创建），<code>GET /v1/videos/generations/{taskId}</code>（查询）<br>
+                  <b>模型：</b><code>seedance-2-fast</code>、<code>seedance-2-mini</code><br>
+                  <b>分辨率：</b>仅支持 <code>480P</code>、<code>720P</code>；不支持 1080P。<br>
+                  <b>开放门禁：</b>这些模型必须在真实生成验证成功后才可在前端可见；连接测试不能代替真实生成验证。<br>
+                  <b>参考素材：</b>支持参考图、参考视频和参考音频；首尾帧模式与全能参考模式互斥，不得同时使用。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="jimeng-ai-api-vid">
@@ -1464,6 +1476,8 @@ const providerConfigs = {
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
+    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
+    { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
@@ -1527,6 +1541,9 @@ const providerProtocolMap = {
   icreat: 'icreat_task',
   icreat_task: 'icreat_task',
   djpsd_openapi: 'djpsd_openapi',
+  usmercari: 'usmercari_media',
+  usmercari_media: 'usmercari_media',
+  toapis: 'toapis_video',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1563,6 +1580,8 @@ function getBaseUrlForProvider(provider) {
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
+  if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
+  if (p === 'toapis') return 'https://toapis.com'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1709,7 +1728,12 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
   } else if (service_type === 'video') {
-    if (proto === 'icreat_task' || p === 'icreat') {
+    if (proto === 'toapis_video' || p === 'toapis') {
+      submitPath = endpoint || '/v1/videos/generations'
+    } else if (proto === 'usmercari_media' || p === 'usmercari') {
+      submitPath = endpoint || '/cpa-file/submit/video'
+      queryPath = '/cpa-file/fetch'
+    } else if (proto === 'icreat_task' || p === 'icreat') {
       submitPath = endpoint || '/v1/task/submit/{model}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       submitPath = endpoint || '/videos'
@@ -1770,6 +1794,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'toapis_video' || p === 'toapis') {
+      queryPath = '/v1/videos/generations/{taskId}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       queryPath = '/videos/{taskId}'
     } else if (proto === 'icreat_task' || p === 'icreat') {
@@ -1913,6 +1939,16 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'icreat_task'
     form.value.endpoint = '/v1/task/submit/{model}'
     form.value.query_endpoint = '/v1/task/query-status'
+  }
+  if (st === 'video' && (providerId === 'usmercari' || providerId === 'usmercari_media')) {
+    form.value.api_protocol = 'usmercari_media'
+    form.value.endpoint = '/cpa-file/submit/video'
+    form.value.query_endpoint = '/cpa-file/fetch'
+  }
+  if (st === 'video' && providerId === 'toapis') {
+    form.value.api_protocol = 'toapis_video'
+    form.value.endpoint = '/v1/videos/generations'
+    form.value.query_endpoint = '/v1/videos/generations/{taskId}'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
