@@ -1493,9 +1493,15 @@ test('资产批量路由只在显式提供服务端 schedule 时传入 ctx', asy
   const db = createDb();
   try {
     const { versionId, assetId } = setupAssetBatchFixture(db);
-    const serverSchedule = () => Promise.resolve();
+    const scheduledJobs = [];
+    const sentinel = Promise.resolve('scheduled-result');
+    const serverSchedule = (job) => {
+      scheduledJobs.push(job);
+      return job();
+    };
     let quoteSchedule = null;
     let startSchedule = null;
+    let scheduledReturn = null;
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({
       assetBatchSchedule: serverSchedule,
       assetBatchService: makeAssetBatchService({
@@ -1512,6 +1518,7 @@ test('资产批量路由只在显式提供服务端 schedule 时传入 ctx', asy
         },
         startAssetBatch: (ctx) => {
           startSchedule = ctx.schedule;
+          scheduledReturn = ctx.schedule(() => sentinel);
           return {
             batch: { id: 45, status: 'pending', attempt_ids: [assetId] },
             task: { id: 'task-schedule', status: 'pending' },
@@ -1533,6 +1540,8 @@ test('资产批量路由只在显式提供服务端 schedule 时传入 ctx', asy
     }), created);
     assert.equal(created.statusCode, 202);
     assert.equal(startSchedule, serverSchedule);
+    assert.equal(scheduledJobs.length, 1);
+    assert.equal(scheduledReturn, sentinel);
   } finally {
     db.close();
   }
