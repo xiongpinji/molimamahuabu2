@@ -16,7 +16,7 @@
 
 `productComplete=false`
 
-本次只证明本地实现、fake-provider/fixture 合同、前端恢复逻辑和 SQLite 账本相关自动化仍可运行。没有付费授权、目标 Key、AGENTS 要求的已验证模型、真实可读产物、供应商账本或最终成片，因此不得声称“1:1 产品完成”，不得写入生产模型目录，不得发布生产。
+本次只证明本地实现、fake-provider/fixture 合同、前端恢复逻辑和 SQLite 账本相关自动化仍可运行。现已获得付费授权，但仍没有目标供应商、目标 Key、隔离租户、预算上限、AGENTS 要求的已验证模型、真实可读产物、供应商账本或最终成片，因此不得声称“1:1 产品完成”，不得写入生产模型目录，不得发布生产。
 
 ## 本次新增浏览器合同
 
@@ -74,7 +74,7 @@
 - `passed`：本地实现与 Playwright fake-provider/fixture 合同，覆盖本地化确认、hidden draft 未泄漏、materialized draft 资产批量生成、部分失败、只重试失败项、审核开放 Step3、请求体禁止客户端控制字段、桌面/移动无横向滚动和 console/pageerror 归零。
 - `passed`：恢复逻辑，本地化 reload 恢复、轮询 GET work 推进 Step2、资产批次轮询 GET work/listAssets 恢复 partial_failed/completed。
 - `passed`：SQLite 账本相关后端自动化随 `backend-node npm test` 全量通过，后端全量 `962 / 961 pass / 0 fail / 1 skipped`。
-- `blocked`：真实文本本地化。缺少付费授权、目标 Key、已验证目标模型、真实供应商任务和可读本地化产物。
+- `blocked`：真实文本本地化。付费授权已满足，但仍缺少目标供应商、目标 Key、隔离租户、预算上限、已验证目标模型、真实供应商任务和可读本地化产物。
 - `blocked`：角色图、净景、道具和 TTS。fixture 只证明前端合同，不证明真实供应商生成、尺寸/质量/时长或可读文件。
 - `blocked`：供应商账本。没有真实 reservation、provider task、扣费/退款流水与供应商侧账单核对。
 - `blocked`：最终成片。没有真实镜头视频、播放、下载、归档或审计产物。
