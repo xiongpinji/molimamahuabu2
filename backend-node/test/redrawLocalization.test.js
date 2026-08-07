@@ -27,7 +27,14 @@ function sourceFacts() {
         id: 'shot-1',
         start_ms: 0,
         end_ms: 5_000,
-        dialogue: [{ speaker_id: 'c1', text: '别回头' }],
+        dialogue: [{
+          speaker_id: 'c1',
+          text: '别回头',
+          start_ms: 500,
+          end_ms: 2_500,
+          emotion: 'urgent',
+          overlap_group: null,
+        }],
         opening_state: '小满站在天台边',
         continuous_action: '小满低头查看旧手机',
         ending_state: '屏幕亮起陌生消息',
@@ -285,7 +292,16 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
   assert.equal(targetShots.length, 2);
   assert.equal(targetShots[0].source_dialogue_json, JSON.stringify(facts.shots[0].dialogue));
   assert.deepEqual(JSON.parse(targetShots[0].localized_dialogue_json), [
-    { speaker_id: 'c1', localized_text: "Don't look back" },
+    {
+      speaker_id: 'c1',
+      source_text: '别回头',
+      localized_text: "Don't look back",
+      start_ms: 500,
+      end_ms: 2_500,
+      emotion: 'urgent',
+      overlap_group: null,
+      estimated_duration_ms: 900,
+    },
   ]);
   assert.equal(targetShots[0].opening_state, facts.shots[0].opening_state);
   assert.equal(targetShots[0].continuous_action, facts.shots[0].continuous_action);
@@ -463,11 +479,12 @@ test('物化任一步失败时回滚版本、分镜、资产并保持当前版�
   `);
 
   assert.throws(
-    () => createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
-      locale: 'en-US',
-      sourceFacts: facts,
-      sourceFactsHash: buildLocalizationInput(facts, { locale: 'en-US' }).source_facts_hash,
-    }),
+    () => createLocalizationVersion(
+      db,
+      { tenantId: 'tenant-a', userId: 'user-a' },
+      1,
+      localizationPayload({ sourceFacts: facts }),
+    ),
     /forced asset failure/,
   );
   assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
@@ -490,6 +507,56 @@ test('创建本地化版本拒绝与源事实不匹配的哈希', () => {
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
   assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
   db.close();
+});
+
+test('物化本地化对白时由服务端保留源片说话人和时间码', () => {
+  const db = createDb();
+  const result = createLocalizationVersion(
+    db,
+    { tenantId: 'tenant-a', userId: 'user-a' },
+    1,
+    localizationPayload(),
+  );
+  const shot = db.prepare('SELECT localized_dialogue_json FROM redraw_shots WHERE version_id = ? AND shot_index = 1')
+    .get(result.id);
+  const [turn] = JSON.parse(shot.localized_dialogue_json);
+  assert.deepEqual(
+    {
+      speaker_id: turn.speaker_id,
+      start_ms: turn.start_ms,
+      end_ms: turn.end_ms,
+      emotion: turn.emotion,
+      estimated_duration_ms: turn.estimated_duration_ms,
+    },
+    {
+      speaker_id: 'c1',
+      start_ms: 500,
+      end_ms: 2_500,
+      emotion: 'urgent',
+      estimated_duration_ms: 900,
+    },
+  );
+  db.close();
+});
+
+test('物化本地化对白拒绝提供方改写说话人或时间码', () => {
+  for (const turns of [
+    [{ speaker_id: 'c2', localized_text: "Don't look back" }],
+    [{ speaker_id: 'c1', localized_text: "Don't look back", start_ms: 700, end_ms: 2_500 }],
+  ]) {
+    const db = createDb();
+    assert.throws(
+      () => createLocalizationVersion(
+        db,
+        { tenantId: 'tenant-a', userId: 'user-a' },
+        1,
+        localizationPayload({ dialogue: [{ shot_id: 'shot-1', turns }] }),
+      ),
+      (error) => error.code === 'LOCALIZATION_DIALOGUE_INVALID',
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 1);
+    db.close();
+  }
 });
 
 function sourceDialogue() {

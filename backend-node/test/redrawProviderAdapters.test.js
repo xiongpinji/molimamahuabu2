@@ -132,7 +132,10 @@ test('localize calls text client with verified model and parses JSON result', as
   assert.equal(calls[0][2], 'text');
   assert.match(calls[0][3], /facts-hash/);
   assert.match(calls[0][4], /JSON/i);
-  for (const term of ['shot IDs', 'order', 'timing', 'speakers', 'causal', 'reversal', 'locked facts', 'hook']) {
+  for (const term of [
+    'shot IDs', 'order', 'timing', 'speakers', 'causal', 'reversal', 'locked facts', 'hook',
+    'facts_hash', 'dialogue', 'start_ms', 'end_ms', 'localized_text',
+  ]) {
     assert.match(calls[0][4], new RegExp(term, 'i'));
   }
   assert.equal(calls[0][5].model, 'verified-text-model');

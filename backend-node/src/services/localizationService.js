@@ -238,11 +238,20 @@ function findOwnedDraftVersion(db, owner, draftVersionId, workId) {
   return draft;
 }
 
-function localizedDialogueByShot(input) {
+function localizedDialogueError(shotId, reason) {
+  return Object.assign(new Error(`localized dialogue ${shotId}: ${reason}`), {
+    code: 'LOCALIZATION_DIALOGUE_INVALID',
+    reason,
+    shot_id: shotId,
+  });
+}
+
+function localizedDialogueByShot(input, sourceFacts, locale) {
   const rows = input.dialogue || input.localizedDialogue || input.localized_dialogue || [];
   if (!Array.isArray(rows)) {
     throw Object.assign(new Error('localized dialogue 必须是数组'), { code: 'LOCALIZATION_INVALID_INPUT' });
   }
+  const sourceShots = new Map((sourceFacts.shots || []).map((shot) => [String(shot.id), shot]));
   const byShot = new Map();
   for (const row of rows) {
     assertObject(row, 'localized_dialogue[]');
@@ -257,6 +266,7 @@ function localizedDialogueByShot(input) {
         code: 'LOCALIZATION_DIALOGUE_SHOT_DUPLICATE',
       });
     }
+    if (!sourceShots.has(shotId)) throw localizedDialogueError(shotId, 'dialogue_shot_unknown');
     const turns = row.turns ?? row.dialogue ?? row.localized_dialogue ?? [];
     if (!Array.isArray(turns)) {
       throw Object.assign(new Error(`localized dialogue ${shotId} 的 turns 必须是数组`), {
@@ -264,6 +274,50 @@ function localizedDialogueByShot(input) {
       });
     }
     byShot.set(shotId, clone(turns));
+  }
+
+  for (const [shotId, sourceShot] of sourceShots) {
+    const sourceTurns = Array.isArray(sourceShot.dialogue) ? sourceShot.dialogue : [];
+    const localizedTurns = byShot.get(shotId);
+    if (!sourceTurns.length) {
+      if (localizedTurns?.length) throw localizedDialogueError(shotId, 'dialogue_turn_count_mismatch');
+      continue;
+    }
+    if (!localizedTurns) throw localizedDialogueError(shotId, 'dialogue_missing');
+
+    const timedTurns = sourceTurns.filter((turn) => turn?.start_ms != null || turn?.end_ms != null);
+    if (timedTurns.length === 0) {
+      if (localizedTurns.length !== sourceTurns.length) {
+        throw localizedDialogueError(shotId, 'dialogue_turn_count_mismatch');
+      }
+      for (let index = 0; index < sourceTurns.length; index += 1) {
+        if (String(sourceTurns[index]?.speaker_id) !== String(localizedTurns[index]?.speaker_id)) {
+          throw localizedDialogueError(shotId, 'dialogue_speaker_order_mismatch');
+        }
+      }
+      continue;
+    }
+    if (timedTurns.length !== sourceTurns.length || sourceTurns.some((turn) => turn.start_ms == null || turn.end_ms == null)) {
+      throw localizedDialogueError(shotId, 'dialogue_source_timing_incomplete');
+    }
+
+    const enrichedTurns = localizedTurns.map((turn, index) => {
+      const source = sourceTurns[index] || {};
+      return {
+        ...turn,
+        start_ms: turn?.start_ms ?? source.start_ms,
+        end_ms: turn?.end_ms ?? source.end_ms,
+        emotion: turn?.emotion ?? source.emotion ?? null,
+        overlap_group: turn?.overlap_group ?? source.overlap_group ?? null,
+      };
+    });
+    const validation = validateLocalizedDialogue(
+      { turns: sourceTurns },
+      { turns: enrichedTurns },
+      { locale, maxSpeechRate: input.maxSpeechRate || input.max_speech_rate },
+    );
+    if (!validation.ok) throw localizedDialogueError(shotId, validation.reason);
+    byShot.set(shotId, validation.turns);
   }
   return byShot;
 }
@@ -308,7 +362,6 @@ function createLocalizationVersion(db, owner, workId, input) {
       received: String(suppliedFactsHash),
     });
   }
-  const dialogueByShot = localizedDialogueByShot(input);
   const transaction = db.transaction(() => {
     const now = new Date().toISOString();
     const work = db.prepare(`
@@ -338,6 +391,7 @@ function createLocalizationVersion(db, owner, workId, input) {
         received: expectedFactsHash,
       });
     }
+    const dialogueByShot = localizedDialogueByShot(input, persistedSourceFacts, locale);
     const draft = input.draftVersionId != null
       ? findOwnedDraftVersion(db, owner, input.draftVersionId, workId)
       : createLocalizationDraftRecord(db, owner, workId, {

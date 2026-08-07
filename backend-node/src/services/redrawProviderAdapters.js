@@ -323,6 +323,11 @@ function createRedrawProviderAdapters(deps = {}) {
       'Return strict JSON only.',
       'Localize the supplied redraw source facts for the requested locale and market.',
       'Preserve shot IDs, shot order, timing, speakers, causal links, reversal beats, locked facts, and the hook.',
+      'Return every supplied source-fact field unchanged and copy source_facts_hash into facts_hash.',
+      'Return name_map, culture_map, glossary, and dialogue.',
+      'dialogue must be [{"shot_id":"...","turns":[{"speaker_id":"...","localized_text":"...","start_ms":0,"end_ms":1,"emotion":null,"overlap_group":null}]}].',
+      'For every dialogue turn preserve speaker_id, order, start_ms, end_ms, emotion, and overlap_group exactly; translate only localized_text.',
+      'Do not omit, merge, split, reorder, or invent dialogue turns or source facts.',
       'Do not add provider task identifiers for synchronous text completion.',
     ].join('\n');
     const userPrompt = JSON.stringify({
