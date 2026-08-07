@@ -7,10 +7,12 @@ import {
   canConfirmLocalization,
   canStartRedrawAnalysis,
   createRedrawStyleSelection,
+  createLocalizationConfirmationSnapshot,
   localizationQuoteCredits,
   localizationTaskState,
   localeReady,
   createLocalizationQuoteRequestGate,
+  isCurrentLocalizationConfirmation,
   resolveUpdatedStep,
   redrawWorkflowPhase,
   shouldResetLocalizationIdempotencyKey,
@@ -290,6 +292,60 @@ test('本地化报价请求按 work 和目标参数去重且不吞不同作品�
   assert.equal(gate.isActive(requestA), true)
   gate.finish(requestA)
   assert.equal(gate.begin(requestA), true)
+})
+
+test('本地化报价 gate 分离 active 去重与当前期望 key', () => {
+  const gate = createLocalizationQuoteRequestGate()
+  const requestA = { workId: 1, locale: 'en-US', market: 'US', localizationLevel: 'faithful' }
+  const requestB = { workId: 2, locale: 'en-US', market: 'US', localizationLevel: 'faithful' }
+
+  assert.equal(gate.begin(requestA), true)
+  assert.equal(gate.begin(requestB), true)
+  assert.equal(gate.begin(requestA), false)
+  assert.equal(gate.accepts(requestA), true)
+  assert.equal(gate.accepts(requestB), false)
+  gate.finish(requestA)
+  assert.equal(gate.begin(requestA), true)
+})
+
+test('本地化确认二次报价只接受同 work 同上下文且仍在确认阶段', () => {
+  const snapshot = createLocalizationConfirmationSnapshot({
+    work: {
+      id: 1,
+      workflow_phase: 'analysis_review',
+      localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+    },
+    quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+  })
+
+  assert.equal(isCurrentLocalizationConfirmation(snapshot, {
+    work: { id: 2, workflow_phase: 'analysis_review' },
+    quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+  }), false)
+  assert.equal(isCurrentLocalizationConfirmation(snapshot, {
+    work: { id: 1, workflow_phase: 'analysis_review' },
+    quoteBody: { locale: 'ja-JP', market: 'JP', localization_level: 'faithful' },
+  }), false)
+  assert.equal(isCurrentLocalizationConfirmation(snapshot, {
+    work: { id: 1, workflow_phase: 'localizing' },
+    quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+  }), false)
+  assert.equal(isCurrentLocalizationConfirmation(snapshot, {
+    work: {
+      id: 1,
+      workflow_phase: 'analysis_review',
+      localization_quote: { priced: true, credits: 9, quote_hash: 'quote-new' },
+    },
+    quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+  }), false)
+  assert.equal(isCurrentLocalizationConfirmation(snapshot, {
+    work: {
+      id: 1,
+      workflow_phase: 'analysis_review',
+      localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+    },
+    quoteBody: { locale: 'en-US', market: 'US', localization_level: 'faithful' },
+  }), true)
 })
 
 test('真实公开 localization_billing released 是本地化失败重试证据', () => {

@@ -139,9 +139,11 @@ export function localizationQuoteRequestKey(input) {
 
 export function createLocalizationQuoteRequestGate() {
   const active = new Set()
+  let desiredKey = ''
   return {
     begin(input) {
       const key = localizationQuoteRequestKey(input)
+      desiredKey = key
       if (active.has(key)) return false
       active.add(key)
       return true
@@ -152,7 +154,44 @@ export function createLocalizationQuoteRequestGate() {
     isActive(input) {
       return active.has(localizationQuoteRequestKey(input))
     },
+    accepts(input) {
+      return desiredKey === localizationQuoteRequestKey(input)
+    },
   }
+}
+
+export function createLocalizationConfirmationSnapshot({ work, quoteBody }) {
+  const request = {
+    workId: work?.id,
+    locale: quoteBody?.locale,
+    market: quoteBody?.market,
+    localizationLevel: quoteBody?.localization_level || quoteBody?.localizationLevel || 'faithful',
+  }
+  return {
+    workId: work?.id,
+    phase: redrawWorkflowPhase(work),
+    previousHash: String(work?.localization_quote?.quote_hash || '').trim(),
+    requestKey: localizationQuoteRequestKey(request),
+    quoteBody: {
+      locale: String(quoteBody?.locale || '').trim(),
+      market: String(quoteBody?.market || '').trim(),
+      localization_level: String(quoteBody?.localization_level || quoteBody?.localizationLevel || 'faithful').trim() || 'faithful',
+    },
+  }
+}
+
+export function isCurrentLocalizationConfirmation(snapshot, { work, quoteBody }) {
+  if (!snapshot?.workId || String(work?.id || '') !== String(snapshot.workId)) return false
+  if (redrawWorkflowPhase(work) !== snapshot.phase) return false
+  if (!['analysis_review', 'localization_needs_attention', 'failed'].includes(snapshot.phase)) return false
+  if (!canConfirmLocalization(work, snapshot.previousHash)) return false
+  const currentKey = localizationQuoteRequestKey({
+    workId: work?.id,
+    locale: quoteBody?.locale,
+    market: quoteBody?.market,
+    localizationLevel: quoteBody?.localization_level || quoteBody?.localizationLevel || 'faithful',
+  })
+  return currentKey === snapshot.requestKey
 }
 
 export function buildLocalizationPayload(body) {

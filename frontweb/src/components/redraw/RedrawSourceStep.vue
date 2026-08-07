@@ -146,10 +146,11 @@ import {
   buildLocalizationPayload,
   canConfirmLocalization,
   canStartRedrawAnalysis,
+  createLocalizationConfirmationSnapshot,
   localizationQuoteCredits,
   localizationTaskState,
   createLocalizationQuoteRequestGate,
-  localizationQuoteRequestKey,
+  isCurrentLocalizationConfirmation,
   redrawWorkflowPhase,
   shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
@@ -186,7 +187,6 @@ const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
 const localizationIdempotencyKey = ref('')
 const localizationQuoteGate = createLocalizationQuoteRequestGate()
-const latestLocalizationQuoteKey = ref('')
 let pollTimer = null
 let pollAttempts = 0
 
@@ -320,11 +320,15 @@ async function ensureLocalizationQuote(work = workState.value) {
   }
   const quoteRequest = localizationQuoteRequest(work)
   if (!localizationQuoteGate.begin(quoteRequest)) return
-  const requestKey = localizationQuoteRequestKey(quoteRequest)
-  latestLocalizationQuoteKey.value = requestKey
   try {
     const quote = await redrawAPI.quoteLocalization(work.id, quoteRequest.body)
-    if (workState.value?.id !== work.id || latestLocalizationQuoteKey.value !== requestKey) return
+    if (
+      workState.value?.id !== work.id
+        || !localizationQuoteGate.accepts(quoteRequest)
+        || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(workState.value))
+    ) {
+      return
+    }
     workState.value = {
       ...workState.value,
       localization_quote: quote?.localization_quote || quote,
@@ -391,15 +395,19 @@ async function confirmLocalization() {
   localizationSubmitting.value = true
   try {
     const work = await ensureWork()
-    const previousHash = String(workState.value?.localization_quote?.quote_hash || '').trim()
-    const quote = await redrawAPI.quoteLocalization(work.id, localizationQuoteBody())
+    const quoteBody = localizationQuoteBody()
+    const snapshot = createLocalizationConfirmationSnapshot({ work: workState.value, quoteBody })
+    const quote = await redrawAPI.quoteLocalization(work.id, quoteBody)
+    if (!isCurrentLocalizationConfirmation(snapshot, { work: workState.value, quoteBody: localizationQuoteBody() })) {
+      return
+    }
     const nextWork = {
       ...workState.value,
       localization_quote: quote?.localization_quote || quote,
     }
     syncWork(nextWork)
     const nextHash = String(nextWork.localization_quote?.quote_hash || '').trim()
-    if (!canConfirmLocalization(nextWork, previousHash)) {
+    if (!canConfirmLocalization(nextWork, snapshot.previousHash)) {
       ElMessage.warning('本地化报价已变化，请重新确认')
       return
     }
@@ -407,9 +415,9 @@ async function confirmLocalization() {
       localizationIdempotencyKey.value = crypto.randomUUID()
     }
     const result = await redrawAPI.createVersion(work.id, buildLocalizationPayload({
-      locale: locale.value || 'en-US',
-      market: market.value || 'US',
-      localizationLevel: 'faithful',
+      locale: snapshot.quoteBody.locale,
+      market: snapshot.quoteBody.market,
+      localizationLevel: snapshot.quoteBody.localization_level,
       quoteHash: nextHash,
       idempotencyKey: localizationIdempotencyKey.value,
     }))
