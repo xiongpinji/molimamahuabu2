@@ -1,12 +1,14 @@
-# 一键转绘阶段 3 分镜生成与计费门禁记录
+# 一键转绘阶段 3 门禁记录
 
-日期：2026-08-07
+日期：2026-08-07 19:14:20 +08:00
+
+工作树：`C:\Users\canqu\Documents\茉莉妈妈2\worktrees\baseline-canvas-video-first-last-20260806`
 
 分支：`codex/short-drama-redraw-design`
 
-代码提交：`1603d7a4`、`542e3252`、`a51cb45e`、`a69bd5c4`、`3991a396`、`859b46c1`、`02018249`、`b742ceb5`
+基线 HEAD：`7060393d155297a1617ccfcf3ade698417ad36b5`
 
-范围：阶段 3 任务 1–6、阶段 2 到阶段 3 的结构同链修复和本地自动化验收；未发起新的付费模型调用，未执行生产部署。
+范围：Task11 本地 Playwright fixture 合同闭环；未发起真实 provider、付费调用或生产部署。
 
 ## 门禁结论
 
@@ -14,48 +16,71 @@
 
 `productComplete=false`
 
-阶段 3 任务 1–6 的代码、计费合同和浏览器交互已经完成；任务 7 的真实视频生成、同请求幂等、失败注入和重启恢复没有执行。当前仍缺少真实本地化编排入口、真实资产报价/供应商接入、当前转绘版本绑定的已审批资产链，以及通过可读产物验证的目标视频模型同链证据，因此不得声称已经实现可生产的“1:1 完全替换出片”。
+本次只证明本地实现、fake-provider/fixture 合同、前端恢复逻辑和 SQLite 账本相关自动化仍可运行。没有付费授权、目标 Key、AGENTS 要求的已验证模型、真实可读产物、供应商账本或最终成片，因此不得声称“1:1 产品完成”，不得写入生产模型目录，不得发布生产。
 
-## 已完成能力
+## 本次新增浏览器合同
 
-- 分镜保留源时间码、源/英文对白分列、开场状态、连续动作、镜尾状态和结构化资产引用。
-- 单镜与批量生成统一使用当前版本快照，支持失败重试、processing 幂等、有限并发和重启后的原任务回读。
-- 视频模型只从服务端 verified locale capability 解析；客户端不能改变模型、attempt、积分、产物或内部任务字段。
-- 分镜报价、冻结、成功结算、明确失败释放和未知状态 held/needs_attention 均由后端账本驱动。
-- 资产生成首次认领已物化草稿，只接受同租户、同用户、同版本的 `redraw_assets.id`，零分镜和未审批引用均 fail closed。
-- 资产 GET 报价与 POST 生成共用服务端报价器；POST 会重新报价。客户端模型/积分/reservation 注入返回 `400 REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN`；未定价或价格异常返回 `409 pricing_unconfigured`，provider 与 reservation 均为 0。
-- 前端覆盖批次、筛选、结构化 `@角色/@场景/@物品`、单镜/批量提交、失败重试、原片/新片对照、后端轮询恢复和醒目积分合同 `canvas-credit-callout-v1`。
+- analysis task `completed` 且 `workflow_phase=analysis_review` 时仍停在 Step1，并显示服务端本地化报价 9 积分。
+- 点击“确认英文 1:1 本地化”会二次请求 `/redraw/works/710/localization-quote`，再用服务端 `quote_hash` 创建 `/redraw/works/710/versions`。
+- 本地化 `localizing` 显示独立 `task-localization-812` 和 33% 进度；页面 reload 后可从 GET work 恢复。
+- 后续 GET work 返回 `current_step=2/version_id=812/workflow_phase=asset_review` 后，页面经轮询自动进入 Step2。
+- Step2 显示资产批量总价 18；首次批量创建后轮询 GET work/listAssets，恢复 `partial_failed` 的 2 成功 / 1 失败 / 3 总数。
+- “一键重试失败项”在 subset quote hash 变化时要求再次确认；最终 `/assets/batches` 请求的 `asset_ids` 只含失败资产 `1202`，不含成功项 `1201/1203`。
+- 重试成功后资产可批准；全部批准后 gate 推进 `current_step=3`，`03 批量转绘` 开放。
+- create version 与两次 asset batch 请求正文断言只含允许字段；不含 `model/provider/credits/credit_amount/dialogue/localized_dialogue/characters/maps`。
+- Desktop 1440 和 390px 关键页面继续执行无横向滚动检查；所有 Playwright 用例沿用 `pageerror` 和 console error 归零门禁。
 
 ## 自动化证据
 
-- 完整后端：`866 tests / 865 pass / 0 fail / 1 skip`。
-- 转绘相关前端 Node 合同：`16/16` 通过。
-- 前端生产构建：`npm run build` 通过；只有既有 chunk 大小警告。
-- Chromium：`frontweb/e2e/redraw-workspace.spec.js` `11/11` 通过，覆盖桌面端、390px 移动端、未定价、无模型、资产门禁、单镜、批量、失败重试、轮询停止和控制台错误断言。
-- 独立规格审查：阶段 3 任务 6 最终 `APPROVED`。
-- 独立代码审查：`02018249` 与 `b742ceb5` 均 `APPROVED`，0 个遗留问题。
-- `git diff --check` 通过。
+- 首红：`cd frontweb; $env:PLAYWRIGHT_REUSE_SERVER='0'; npx playwright test e2e/redraw-workspace.spec.js` 首次有效运行 `10 passed / 2 failed`。新增场景失败于未返回“本地化报价 9 积分”；既有 Step2 因 fixture 扩为 3 项资产后旧断言仍按 2 项失败。
+- 定向 Playwright：同命令，`12 passed`，耗时约 1.3 分钟。
+- 后端全量：`cd backend-node; npm test`。第一次 180 秒超时且无统计；延长后 exit 0，`962 tests / 961 pass / 0 fail / 1 skipped / 0 todo`，`duration_ms 197193.3268`。skip 名称：`verifyVideoArtifact 使用 realpath 阻止指向根外的 symlink 但允许根内 symlink`，原因 `symlink unavailable: EPERM`。
+- 前端 Node 全量：`cd frontweb; node --test test/*.test.js`，exit 1，`615 tests / 605 pass / 10 fail / 0 skipped / 0 todo`，`duration_ms 27545.574`。
+- 前端构建：`cd frontweb; npm run build` exit 0，Vite `built in 28.73s`，仅有大 chunk 警告。
+- Diff 检查：`git diff --check` exit 0；仅提示 `frontweb/e2e/redraw-workspace.spec.js` 下次 Git 触碰时 LF 会替换为 CRLF。
 
-## 非转绘基线失败
+## 前端既有失败比较
 
-完整前端 Node 套件为 `595 tests / 585 pass / 10 fail`。10 个失败全部位于：
+本次前端 Node 全量仍为 10 个失败，失败文件只限既有画布基线范围：
 
 - `frontweb/test/canvasInteractionEntrypoints.test.js`
 - `frontweb/test/standaloneCanvasFreeNodeRuntime.test.js`
 - `frontweb/test/standaloneCanvasNodeEditorParity.test.js`
 
-这些测试和对应 `frontweb/src/views/DramaCanvas.vue` 从阶段 3 基线 `c8c46c21` 到当前代码提交没有 diff；本任务未修改这些画布模块，因此不在本阶段顺带修复。
+当前失败断言：
 
-## 视觉验收边界
+- 画布保留 LibTV 式导航、框选和拖拽历史入口
+- 节点拖拽停止后立即刷新布局缓存并同步视口
+- 右键空白画布提供 LibTV 式添加节点入口并使用点击位置
+- 右键节点支持追加下游分镜并自动创建手动连线
+- 右键节点支持在现有下游连线中插入分镜并重连
+- 右键分镜节点支持克隆到旁边
+- 画布保存使用串行队列并在执行时构造最新布局
+- 四类节点编辑器暴露 LibTV 核心参数且不隐藏在假配置按钮后
+- 选中节点可从主体按住左键拖动且编辑器尺寸收紧
+- 图片视频节点使用大画幅预览，运行中明确显示生成状态且画布支持高倍缩放
 
-功能性浏览器验收有效，但像素级视觉验收阻塞。仓库缺少 `reference.png`、视觉规格、视觉规格复审、设计系统响应式规格和合规报告；详见 `07_validation/visual_acceptance/blocked-report.md`。在提供这些输入前，不声明与竞品界面视觉 1:1。
+本任务只修改转绘 Playwright fixture/用例和本报告；未修改上述画布实现或 Node 测试文件，因此这些失败按既有基线记录，不作为 Task11 新失败。
 
-## 阶段 4 / 真实任务前置条件
+## 证据分级
 
-1. 完成真实文本本地化编排：verified `text_localization`、异步任务、服务端报价、reservation、供应商 task ID、重启恢复、失败释放和目标对白时长质检。
-2. 在应用总路由接入真实 `assetQuoteProvider/assetGenerationProvider`，并用当前版本完成角色、场景、物品、净景和英文音色的可读产物及逐项审批。
-3. 重新生成通过尺寸与非遮罩相似度门禁的去人净景。
-4. 只在存在与 locale/market 匹配且可读产物验证的 verified 视频能力时，由用户明确授权一次新的付费真实分镜生成。
-5. 对同一真实请求执行重复提交、失败注入、未知状态和后端重启恢复审计，确认 provider task、reservation、shot、video asset 和账本一致。
+- `passed`：本地实现与 Playwright fake-provider/fixture 合同，覆盖本地化确认、资产批量部分失败、只重试失败项、审核开放 Step3、请求体禁止客户端控制字段、桌面/移动无横向滚动和 console/pageerror 归零。
+- `passed`：恢复逻辑，本地化 reload 恢复、轮询 GET work 推进 Step2、资产批次轮询 GET work/listAssets 恢复 partial_failed/completed。
+- `passed`：SQLite 账本相关后端自动化随 `backend-node npm test` 全量通过，后端全量 `962 / 961 pass / 0 fail / 1 skipped`。
+- `blocked`：真实文本本地化。缺少付费授权、目标 Key、已验证目标模型、真实供应商任务和可读本地化产物。
+- `blocked`：角色图、净景、道具和 TTS。fixture 只证明前端合同，不证明真实供应商生成、尺寸/质量/时长或可读文件。
+- `blocked`：供应商账本。没有真实 reservation、provider task、扣费/退款流水与供应商侧账单核对。
+- `blocked`：最终成片。没有真实镜头视频、播放、下载、归档或审计产物。
+- `not_released`：未执行 `/opt/moli-drama` 生产候选、共享门禁或生产切换。
 
-任一条件缺失时保持 `blocked`，不把模型写入转绘目录，不执行生产发布。
+## Task12 前置条件
+
+进入真实供应商 Task12 前必须同时具备：
+
+1. 用户明确付费授权。
+2. 目标 Key 与隔离租户。
+3. AGENTS 要求的已验证模型，且每个模型已用目标 Key 完成真实生成。
+4. 真实文本本地化、角色图、净景、道具、TTS 和视频供应商任务 ID。
+5. 可读产物、尺寸、时长、hash、播放/下载证据。
+6. SQLite 账本 reservation、charged/released、供应商账单和失败退款审计。
+7. 不含密钥的任务文档证据链。

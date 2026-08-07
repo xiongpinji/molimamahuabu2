@@ -56,7 +56,39 @@ const redrawAssets = [
     clean_plate_asset_id: 2202,
     updated_at: '2026-08-06T08:10:00.000Z',
   },
+  {
+    id: 1203,
+    version_id: 812,
+    kind: 'prop',
+    localized_name: '铜钥匙',
+    localized_description: '关键道具，保持金属钥匙设定。',
+    status: 'generated',
+    approval_status: 'pending',
+    asset_id: 2203,
+    updated_at: '2026-08-06T08:10:00.000Z',
+  },
 ]
+
+const localizationQuote = {
+  priced: true,
+  credits: 9,
+  model: 'verified-text-model',
+  input_hash: 'f'.repeat(64),
+  quote_hash: 'e'.repeat(64),
+}
+
+const assetBatchQuote = {
+  priced: true,
+  total_credits: 18,
+  quote_hash: 'd'.repeat(64),
+  blocking: [],
+  items: redrawAssets.map((asset) => ({
+    asset_id: asset.id,
+    kind: asset.kind,
+    model: asset.kind === 'voice' ? 'verified-tts' : 'verified-image',
+    credits: 6,
+  })),
+}
 
 const approvedRedrawAssets = [
   {
@@ -279,6 +311,39 @@ async function installFixtures(page, state) {
       await route.fulfill(apiData(state.work))
       return
     }
+    if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/localization-quote`) {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({ ...localizationQuote }))
+      return
+    }
+    if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/versions`) {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      state.work = {
+        ...(state.work || analysisReviewWork()),
+        status: 'localizing',
+        workflow_phase: 'localizing',
+        current_step: 1,
+        version_id: 812,
+        current_version: 2,
+        localization_quote: { ...localizationQuote },
+        localization_task: {
+          id: 'task-localization-812',
+          status: 'processing',
+          progress: 33,
+          message: '英文 1:1 本地化处理中',
+        },
+        localization_billing: { held: 9, charged: 0, released: 0, quote: { ...localizationQuote } },
+      }
+      await route.fulfill(apiData({
+        task_id: 'task-localization-812',
+        status: 'processing',
+        progress: 33,
+        billing: state.work.localization_billing,
+      }))
+      return
+    }
     if (method === 'PUT' && /^\/api\/v1\/redraw\/shots\/\d+$/.test(pathname)) {
       const shotId = Number(pathname.split('/').at(-1))
       const body = request.postDataJSON()
@@ -329,6 +394,46 @@ async function installFixtures(page, state) {
       await route.fulfill(apiData(state.gate))
       return
     }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/assets/batch-quote') {
+      const body = request.postDataJSON()
+      const assetIds = Array.isArray(body?.asset_ids) ? body.asset_ids.map(Number) : []
+      const items = assetBatchQuote.items.filter((item) => !assetIds.length || assetIds.includes(item.asset_id))
+      const quote = {
+        ...assetBatchQuote,
+        total_credits: items.reduce((sum, item) => sum + item.credits, 0),
+        quote_hash: assetIds.length && state.nextAssetBatchQuoteHash ? state.nextAssetBatchQuoteHash : assetBatchQuote.quote_hash,
+        items,
+      }
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData(quote))
+      return
+    }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/assets/batches') {
+      const body = request.postDataJSON()
+      const assetIds = Array.isArray(body?.asset_ids) ? body.asset_ids.map(Number) : state.assets.map((asset) => asset.id)
+      const batch = {
+        id: body.asset_ids?.length ? 502 : 501,
+        status: 'processing',
+        total_count: assetIds.length,
+        success_count: 0,
+        failed_count: 0,
+      }
+      state.work = {
+        ...(state.work || workBase),
+        asset_batch: batch,
+        workflow_phase: 'asset_generating',
+        current_step: 2,
+        version_id: 812,
+      }
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({
+        batch,
+        task_id: body.asset_ids?.length ? 'task-asset-batch-retry' : 'task-asset-batch-all',
+        status: 'processing',
+        billing: { held: assetIds.length * 6, charged: 0, released: 0, quote_hash: body.quote_hash },
+      }))
+      return
+    }
     if (method === 'GET' && pathname.startsWith('/api/v1/redraw/assets/') && pathname.endsWith('/quote')) {
       await route.fulfill(apiData({
         asset_id: Number(pathname.split('/')[5]),
@@ -349,6 +454,12 @@ async function installFixtures(page, state) {
       asset.approval_status = body.action
       asset.updated_at = body.action === 'approved' ? '2026-08-06T08:11:00.000Z' : '2026-08-06T08:12:00.000Z'
       state.gate = buildAssetGate(state.assets)
+      state.work = {
+        ...(state.work || workBase),
+        status: state.gate.ok ? 'ready_to_generate' : 'asset_review',
+        current_step: state.gate.current_step,
+        workflow_phase: state.gate.ok ? 'video_generation' : 'asset_review',
+      }
       state.requests.push({ method, pathname, body })
       await route.fulfill(apiData({
         asset,
@@ -457,6 +568,34 @@ function generationFixtureState() {
   }
 }
 
+function analysisReviewWork() {
+  return {
+    ...workBase,
+    status: 'analysis_review',
+    workflow_phase: 'analysis_review',
+    current_step: 1,
+    analysis_quote: { credits: 6 },
+    analysis_task: {
+      id: 'task-analysis-completed-710',
+      status: 'completed',
+      progress: 100,
+      message: '分析已完成',
+    },
+    localization_task: null,
+    localization_billing: { held: 0, charged: 0, released: 0, quote: null },
+  }
+}
+
+function forbiddenClientFields(body) {
+  const text = JSON.stringify(body)
+  return ['model', 'provider', 'credits', 'credit_amount', 'dialogue', 'localized_dialogue', 'characters', 'maps']
+    .filter((field) => text.includes(`"${field}"`))
+}
+
+function expectOnlyKeys(body, keys) {
+  expect(Object.keys(body).sort()).toEqual([...keys].sort())
+}
+
 test.describe('一键转绘输入与分析流程', () => {
   test.beforeEach(async ({ page }) => {
     const browserErrors = []
@@ -544,6 +683,96 @@ test.describe('一键转绘输入与分析流程', () => {
     await assertTextFits(page, '上传源片并锁定转绘基础设置')
   })
 
+  test('本地化确认后资产批次部分失败只重试失败项并开放第三步', async ({ page }) => {
+    const state = {
+      projects: [project],
+      quoteReady: true,
+      assetQuoteReady: true,
+      work: analysisReviewWork(),
+      assets: structuredClone(redrawAssets),
+      gate: buildAssetGate(redrawAssets),
+      requests: [],
+    }
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.goto('/redraw/projects/41/works/710?step=1')
+    await expect(page.getByText('服务端分析摘要')).toBeVisible()
+    await expect(page.getByRole('button', { name: '02 资产审核' })).toBeDisabled()
+    await expect(page.getByText('本地化报价 9 积分')).toBeVisible()
+
+    await page.getByRole('button', { name: '确认英文 1:1 本地化' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/works/710/versions')).toBe(true)
+    const versionCreate = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/works/710/versions')
+    expectOnlyKeys(versionCreate.body, ['locale', 'market', 'localization_level', 'quote_hash', 'idempotency_key'])
+    expect(versionCreate.body.quote_hash).toBe(localizationQuote.quote_hash)
+    expect(forbiddenClientFields(versionCreate.body)).toEqual([])
+    await expect(page.getByText('本地化任务 task-localization-812')).toBeVisible()
+    await expect(page.locator('.task-card')).toContainText('processing')
+    await expect(page.locator('.task-card')).toContainText('33%')
+
+    await page.reload()
+    await expect(page.getByText('本地化任务 task-localization-812')).toBeVisible()
+
+    state.work = {
+      ...state.work,
+      status: 'asset_review',
+      workflow_phase: 'asset_review',
+      current_step: 2,
+      version_id: 812,
+      current_version: 2,
+      localization_task: {
+        id: 'task-localization-812',
+        status: 'completed',
+        progress: 100,
+        message: '完成',
+      },
+      localization_billing: { held: 0, charged: 9, released: 0, quote: localizationQuote },
+      asset_batch: null,
+    }
+    await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 18 积分')).toBeVisible()
+
+    await page.getByRole('button', { name: '一键批量生成全部资产' }).click()
+    await expect.poll(() => state.requests.filter((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches').length).toBe(1)
+    const firstBatch = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches')
+    expectOnlyKeys(firstBatch.body, ['quote_hash', 'idempotency_key'])
+    expect(firstBatch.body.quote_hash).toBe(assetBatchQuote.quote_hash)
+    expect(forbiddenClientFields(firstBatch.body)).toEqual([])
+
+    state.work.asset_batch = { id: 501, status: 'partial_failed', total_count: 3, success_count: 2, failed_count: 1 }
+    state.assets = state.assets.map((asset) => asset.id === 1202
+      ? { ...asset, status: 'failed', approval_status: 'pending', error_message: '净景失败' }
+      : { ...asset, status: 'generated', approval_status: 'pending' })
+    await page.waitForTimeout(3200)
+    await expect(page.getByText('2 成功 / 1 失败 / 3 总数')).toBeVisible()
+    await expect(page.getByRole('button', { name: '一键重试失败项' })).toBeVisible()
+
+    state.nextAssetBatchQuoteHash = 'c'.repeat(64)
+    await page.getByRole('button', { name: '一键重试失败项' }).click()
+    await expect(page.getByRole('button', { name: '一键重试失败项' })).toBeEnabled()
+    await page.getByRole('button', { name: '一键重试失败项' }).click()
+    await expect.poll(() => state.requests.filter((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches').length).toBe(2)
+    const retryBatch = state.requests.filter((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches').at(-1)
+    expectOnlyKeys(retryBatch.body, ['quote_hash', 'idempotency_key', 'asset_ids'])
+    expect(retryBatch.body.asset_ids).toEqual([1202])
+    expect(retryBatch.body.asset_ids).not.toContain(1201)
+    expect(retryBatch.body.asset_ids).not.toContain(1203)
+    expect(retryBatch.body.quote_hash).toBe('c'.repeat(64))
+    expect(forbiddenClientFields(retryBatch.body)).toEqual([])
+
+    state.work.asset_batch = { id: 502, status: 'completed', total_count: 1, success_count: 1, failed_count: 0 }
+    state.assets = state.assets.map((asset) => ({ ...asset, status: 'generated', approval_status: 'pending' }))
+    await page.waitForTimeout(3200)
+    for (const kind of ['角色', '场景', '物品']) {
+      await page.getByRole('button', { name: kind }).click()
+      await page.getByRole('button', { name: '批准' }).click()
+    }
+    await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeEnabled()
+    await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
+    await assertNoPageHorizontalScroll(page)
+  })
+
   test('第二步资产审核批准后开放门禁，退回后重新关闭', async ({ page }) => {
     const state = {
       projects: [project],
@@ -560,23 +789,26 @@ test.describe('一键转绘输入与分析流程', () => {
     await page.goto('/redraw/projects/41/works/710?step=2')
     await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
     await expect(page.getByText('还有资产需要确认')).toBeVisible()
-    await expect(page.getByText('2 项待处理')).toBeVisible()
+    await expect(page.getByText('3 项待处理')).toBeVisible()
 
     await page.getByRole('button', { name: '批准' }).first().click()
-    await expect(page.getByText('1 项待处理')).toBeVisible()
+    await expect(page.getByText('2 项待处理')).toBeVisible()
     await page.getByRole('button', { name: '场景' }).click()
     await page.getByRole('button', { name: '批准' }).click()
-    await expect(page.getByText('资产已全部确认，可进入批量转绘')).toBeVisible()
-    await expect(page.getByText('已开放')).toBeVisible()
+    await expect(page.getByText('1 项待处理')).toBeVisible()
+    await page.getByRole('button', { name: '物品' }).click()
+    await page.getByRole('button', { name: '批准' }).click()
     await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeEnabled()
+    await expect(page.getByRole('heading', { name: '按分镜生成并从后端恢复真实进度' })).toBeVisible()
 
+    await page.getByRole('button', { name: '02 资产审核' }).click()
     await page.getByRole('button', { name: '角色' }).click()
     await page.getByRole('button', { name: '退回' }).click()
     await expect(page.getByText('还有资产需要确认')).toBeVisible()
     await expect(page.getByText('1 项待处理')).toBeVisible()
     await expect(page.getByText('已开放')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '03 批量转绘' })).toBeDisabled()
-    expect(state.requests.filter((entry) => entry.pathname.endsWith('/review'))).toHaveLength(3)
+    expect(state.requests.filter((entry) => entry.pathname.endsWith('/review'))).toHaveLength(4)
   })
 
   test('第二步资产审核移动端无横向页面滚动', async ({ page }) => {
