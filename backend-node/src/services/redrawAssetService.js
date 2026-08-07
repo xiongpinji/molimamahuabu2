@@ -170,7 +170,7 @@ function createAssetAttempt(ctx, input = {}) {
   let reservation = null;
   const amount = Number(ctx.creditAmount || input.creditAmount || 0);
   const model = String(input.model || ctx.model || 'redraw-asset');
-  const operationKey = `redraw_asset:${version.id}:${kind}:${sourceKey}:${versionNumber}`;
+  const operationKey = String(input.operationKey || ctx.operationKey || `redraw_asset:${version.id}:${kind}:${sourceKey}:${versionNumber}`);
   const now = new Date().toISOString();
   const transaction = db.transaction(() => {
     if (amount > 0) {
@@ -280,17 +280,16 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   if (!attempt) throw codedError('REDRAW_ASSET_NOT_FOUND', '转绘资产尝试不存在');
   const reservationId = attempt.credit_reservation_id || null;
   const fail = (message, code = 'REDRAW_ASSET_GENERATION_FAILED') => {
-    const now = new Date().toISOString();
-    db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
-      .run('failed', code, String(message), now, Number(attempt.id));
-    if (reservationId) creditLedger.settleGeneration(db, reservationId, 'failed', String(message));
+    failAssetAttempt(ctx, attempt.id, Object.assign(new Error(String(message)), { code }));
     throw codedError(code, String(message));
   };
   const status = String(providerResult.status || '').toLowerCase();
   if (!['completed', 'complete', 'succeeded', 'success', 'done'].includes(status)) {
     return fail(providerResult.error || '资产生成失败');
   }
-  const assetId = providerResult.asset_id || providerResult.assetId || providerResult.asset?.id;
+  const assetId = providerResult.asset_id || providerResult.assetId || providerResult.asset?.id
+    || providerResult.voice_asset_id || providerResult.voiceAssetId
+    || providerResult.clean_plate_asset_id || providerResult.cleanPlateAssetId;
   const asset = readProviderAsset(db, assetId);
   const canRead = typeof ctx.assetReader?.canRead === 'function'
     ? ctx.assetReader.canRead(asset)
@@ -301,13 +300,45 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
     return fail('角色资产缺少正面、侧面、背面三视图', 'CHARACTER_VIEWS_INCOMPLETE');
   }
   const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE redraw_assets
-    SET asset_id = ?, status = 'generated', approval_status = 'pending',
-        error_code = NULL, error_message = NULL, updated_at = ?
-    WHERE id = ?
-  `).run(Number(asset.id), now, Number(attempt.id));
+  if (attempt.kind === 'voice') {
+    db.prepare(`
+      UPDATE redraw_assets
+      SET voice_asset_id = ?, status = 'generated', approval_status = 'pending',
+          error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(Number(asset.id), now, Number(attempt.id));
+  } else if (attempt.kind === 'scene' && providerResult.clean_plate === true) {
+    db.prepare(`
+      UPDATE redraw_assets
+      SET clean_plate_asset_id = ?, status = 'needs_attention', approval_status = 'pending',
+          error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(Number(asset.id), now, Number(attempt.id));
+  } else {
+    db.prepare(`
+      UPDATE redraw_assets
+      SET asset_id = ?, status = 'generated', approval_status = 'pending',
+          error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(Number(asset.id), now, Number(attempt.id));
+  }
   if (reservationId) creditLedger.settleGeneration(db, reservationId, 'completed');
+  return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
+}
+
+function failAssetAttempt(ctx, attemptId, error) {
+  const { db, tenantId, userId } = assertContext(ctx);
+  const attempt = db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(Number(attemptId), tenantId, userId);
+  if (!attempt) throw codedError('REDRAW_ASSET_NOT_FOUND', '转绘资产尝试不存在');
+  const message = String(error?.message || error || '资产生成失败');
+  const code = String(error?.code || 'REDRAW_ASSET_GENERATION_FAILED');
+  const now = new Date().toISOString();
+  db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
+    .run('failed', code, message, now, Number(attempt.id));
+  if (attempt.credit_reservation_id) creditLedger.settleGeneration(db, attempt.credit_reservation_id, 'failed', message);
   return rowToAsset(db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attempt.id)));
 }
 
@@ -320,10 +351,7 @@ async function generateAsset(ctx, input = {}) {
   } catch (error) {
     const row = ctx.db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(attempt.id);
     if (row?.status !== 'failed') {
-      const now = new Date().toISOString();
-      ctx.db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
-        .run('failed', error.code || 'REDRAW_ASSET_GENERATION_FAILED', String(error.message || error), now, attempt.id);
-      if (attempt.reservation_id) creditLedger.settleGeneration(ctx.db, attempt.reservation_id, 'failed', String(error.message || error));
+      failAssetAttempt(ctx, attempt.id, error);
     }
     throw error;
   }
@@ -411,9 +439,7 @@ async function generateCleanPlate(ctx, sceneAsset = {}, options = {}) {
   } catch (error) {
     const row = db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(Number(attempt.id));
     if (row?.status !== 'failed') {
-      db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
-        .run('failed', error.code || 'REDRAW_ASSET_GENERATION_FAILED', String(error.message || error), new Date().toISOString(), Number(attempt.id));
-      if (attempt.reservation_id) creditLedger.settleGeneration(db, attempt.reservation_id, 'failed', String(error.message || error));
+      failAssetAttempt(ctx, attempt.id, error);
     }
     throw error;
   }
@@ -424,6 +450,7 @@ module.exports = {
   updateAsset,
   createAssetAttempt,
   finalizeAssetAttempt,
+  failAssetAttempt,
   listAssetVersions,
   generateAsset,
   generateCleanPlate,

@@ -8,6 +8,9 @@ const Database = require('better-sqlite3');
 const credits = require('../src/services/creditLedgerService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
+  createAssetAttempt,
+  finalizeAssetAttempt,
+  failAssetAttempt,
   generateAsset,
   generateCleanPlate,
   listAssets,
@@ -353,6 +356,50 @@ test('去人 provider 明确失败时按生成失败退款', async () => {
   assert.equal(row.status, 'failed');
   assert.equal(row.error_code, 'REDRAW_ASSET_GENERATION_FAILED');
   assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字段', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-finalize-kind-'));
+  for (const file of ['voice.mp3', 'clean.png']) fs.writeFileSync(path.join(root, file), file);
+  addAsset(state.db, 501, 'voice.mp3');
+  addAsset(state.db, 502, 'clean.png');
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'v1' } });
+  addDraftPlaceholder(state.db, state, { kind: 'scene', sourceRef: { id: 's-clean' } });
+  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'v1' } });
+  const sceneAttempt = createAssetAttempt(ctx, { kind: 'scene', sourceRef: { id: 's-clean' } });
+
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 501 });
+  const scene = finalizeAssetAttempt(ctx, sceneAttempt.id, { status: 'completed', clean_plate_asset_id: 502, clean_plate: true });
+
+  assert.equal(voice.voice_asset_id, 501);
+  assert.equal(voice.asset_id, null);
+  assert.equal(voice.status, 'generated');
+  assert.equal(scene.clean_plate_asset_id, 502);
+  assert.equal(scene.asset_id, null);
+  assert.equal(scene.status, 'needs_attention');
+  assert.equal(scene.review_status, 'needs_review');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('failAssetAttempt 标记失败并复用生成结算退款', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-fail-attempt-'));
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'prop', sourceRef: { id: 'p-fail' } });
+  const attempt = createAssetAttempt(ctx, { kind: 'prop', sourceRef: { id: 'p-fail' } });
+
+  const failed = failAssetAttempt(ctx, attempt.id, Object.assign(new Error('provider rejected'), { code: 'FAKE_FAILED' }));
+  const reservation = state.db.prepare('SELECT credit_reservation_id FROM redraw_assets WHERE id = ?').get(attempt.id);
+
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error_code, 'FAKE_FAILED');
+  assert.equal(failed.error_message, 'provider rejected');
+  assert.equal(credits.getReservation(state.db, reservation.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });
