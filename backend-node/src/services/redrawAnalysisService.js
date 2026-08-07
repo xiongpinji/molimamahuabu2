@@ -40,6 +40,31 @@ function normalizeRanges(value, name, durationMs) {
   });
 }
 
+function normalizeDialogueLine(line, name, shotRange) {
+  assertObject(line, name);
+  if (!line.speaker_id) throw new Error(`${name}.speaker_id 必须提供`);
+
+  const hasStart = line.start_ms != null;
+  const hasEnd = line.end_ms != null;
+  if (hasStart !== hasEnd) throw new Error(`${name} 时间码必须同时提供 start_ms 和 end_ms`);
+
+  const normalized = {
+    speaker_id: String(line.speaker_id),
+    text: String(line.text || ''),
+  };
+  if (hasStart) {
+    const range = validateRange(line, name, shotRange.end_ms);
+    if (range.start_ms < shotRange.start_ms || range.end_ms > shotRange.end_ms) {
+      throw new Error(`${name} 时间码必须位于所属分镜内`);
+    }
+    normalized.start_ms = range.start_ms;
+    normalized.end_ms = range.end_ms;
+  }
+  if (line.emotion != null) normalized.emotion = String(line.emotion);
+  if (line.overlap_group != null) normalized.overlap_group = String(line.overlap_group);
+  return normalized;
+}
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -107,10 +132,6 @@ function normalizeSourceFacts(raw) {
     if (index > 0 && range.start_ms < previousEnd) throw new Error('shots 时间码重叠');
     previousEnd = range.end_ms;
     const dialogue = Array.isArray(shot.dialogue) ? shot.dialogue : [];
-    for (const [dialogueIndex, line] of dialogue.entries()) {
-      assertObject(line, `shots[${index}].dialogue[${dialogueIndex}]`);
-      if (!line.speaker_id) throw new Error(`shots[${index}].dialogue[${dialogueIndex}].speaker_id 必须提供`);
-    }
     for (const field of ['opening_state', 'continuous_action', 'ending_state']) {
       if (shot[field] == null || String(shot[field]).trim() === '') throw new Error(`shots[${index}].${field} 必须提供`);
     }
@@ -118,7 +139,11 @@ function normalizeSourceFacts(raw) {
       id: String(shot.id),
       start_ms: range.start_ms,
       end_ms: range.end_ms,
-      dialogue: dialogue.map((line) => ({ speaker_id: String(line.speaker_id), text: String(line.text || '') })),
+      dialogue: dialogue.map((line, dialogueIndex) => normalizeDialogueLine(
+        line,
+        `shots[${index}].dialogue[${dialogueIndex}]`,
+        range,
+      )),
       screen_text: String(shot.screen_text || ''),
       opening_state: String(shot.opening_state),
       continuous_action: String(shot.continuous_action),

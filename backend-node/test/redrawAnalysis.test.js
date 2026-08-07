@@ -48,7 +48,14 @@ function validFacts() {
         id: 'sh1',
         start_ms: 0,
         end_ms: 5000,
-        dialogue: [{ speaker_id: 'c1', text: '别回头' }],
+        dialogue: [{
+          speaker_id: 'c1',
+          text: '别回头',
+          start_ms: 800,
+          end_ms: 2_000,
+          emotion: '紧张',
+          overlap_group: null,
+        }],
         screen_text: '三年前',
         opening_state: '阿岚站在门边',
         continuous_action: '阿岚推门进入',
@@ -253,6 +260,9 @@ test('normalizeSourceFacts returns schema 1.0 and stable hash', () => {
   assert.equal(first.duration_ms, 10_000);
   assert.equal(first.facts_hash, second.facts_hash);
   assert.equal(first.shots[0].dialogue[0].speaker_id, 'c1');
+  assert.equal(first.shots[0].dialogue[0].start_ms, 800);
+  assert.equal(first.shots[0].dialogue[0].end_ms, 2_000);
+  assert.equal(first.shots[0].dialogue[0].emotion, '紧张');
 });
 
 test('normalizeSourceFacts rejects incomplete facts, missing speaker and invalid timecodes', () => {
@@ -262,6 +272,12 @@ test('normalizeSourceFacts rejects incomplete facts, missing speaker and invalid
     delete raw.shots[0].dialogue[0].speaker_id;
     normalizeSourceFacts(raw);
   }, /speaker_id/);
+  assert.throws(() => {
+    const raw = validFacts();
+    raw.shots[0].dialogue[0].start_ms = 2_500;
+    raw.shots[0].dialogue[0].end_ms = 5_500;
+    normalizeSourceFacts(raw);
+  }, /dialogue.*时间码/);
   assert.throws(() => {
     const raw = validFacts();
     raw.shots[1].start_ms = 4000;
