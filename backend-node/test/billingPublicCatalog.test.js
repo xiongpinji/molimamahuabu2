@@ -55,3 +55,106 @@ test('用户模型目录只返回管理员启用、已验证且已计费的模�
     }],
   );
 });
+
+test('公共计费目录对 USMercari 图片复用真实验证和完整档位价格门禁', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT,
+    provider TEXT,
+    api_protocol TEXT,
+    api_key TEXT,
+    model TEXT,
+    default_model TEXT,
+    is_active INTEGER DEFAULT 1,
+    verification_status TEXT DEFAULT 'pending',
+    verified_capabilities TEXT DEFAULT '{}',
+    deleted_at TEXT
+  )`);
+  const capabilities = {
+    'gpt-image-2-2-4k': {
+      supportsTextToImage: true,
+      supportsImageReference: true,
+      maxReferences: 6,
+      resolutions: ['1k', '2k'],
+    },
+  };
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
+    VALUES ('image', 'usmercari_image', 'usmercari_image', 'secret', ?, 1, 'verified', ?)`)
+    .run(JSON.stringify(['gpt-image-2-2-4k']), JSON.stringify(capabilities));
+  modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
+    category: 'image', display_name: 'GPT Image 2', public_note: '仅开放已验证档位',
+    resolution_prices: { '1k': { credits: 70, cost_micros_per_unit: 80000 } },
+  });
+  const handlers = billingRoutes(db, log);
+  let captured = capture();
+  handlers.listPublicCatalog({}, captured.res);
+  assert.deepEqual(captured.result.body.data, []);
+
+  modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
+    category: 'image', display_name: 'GPT Image 2', public_note: '仅开放已验证档位',
+    resolution_prices: {
+      '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      '4k': { credits: 105, cost_micros_per_unit: 120000 },
+    },
+  });
+  captured = capture();
+  handlers.listPublicCatalog({}, captured.res);
+  assert.equal(captured.result.body.data.length, 1);
+  assert.equal(captured.result.body.data[0].public_note, '仅开放已验证档位');
+  assert.deepEqual(Object.keys(captured.result.body.data[0].resolution_prices), ['1k', '2k']);
+  db.close();
+});
+
+test('公共计费目录识别 USMercari 图片专用环境 Key', () => {
+  const db = new Database(':memory:');
+  const previousImageKey = process.env.USMERCARI_IMAGE_API_KEY;
+  const previousGenericKey = process.env.USMERCARI_API_KEY;
+  delete process.env.USMERCARI_API_KEY;
+  process.env.USMERCARI_IMAGE_API_KEY = 'env-image-key';
+  try {
+    db.exec(`CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      service_type TEXT,
+      provider TEXT,
+      api_protocol TEXT,
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      is_active INTEGER DEFAULT 1,
+      verification_status TEXT DEFAULT 'pending',
+      verified_capabilities TEXT DEFAULT '{}',
+      deleted_at TEXT
+    )`);
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
+      VALUES ('image', 'usmercari_image', 'usmercari_image', '', ?, 1, 'verified', ?)`)
+      .run(JSON.stringify(['gpt-image-2-2-4k']), JSON.stringify({
+        'gpt-image-2-2-4k': {
+          supportsTextToImage: true,
+          supportsImageReference: true,
+          maxReferences: 1,
+          resolutions: ['1k', '2k'],
+        },
+      }));
+    modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
+      category: 'image',
+      resolution_prices: {
+        '1k': { credits: 70, cost_micros_per_unit: 80000 },
+        '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      },
+    });
+    const handlers = billingRoutes(db, log);
+    const captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.equal(captured.result.body.data.length, 1);
+  } finally {
+    if (previousImageKey === undefined) delete process.env.USMERCARI_IMAGE_API_KEY;
+    else process.env.USMERCARI_IMAGE_API_KEY = previousImageKey;
+    if (previousGenericKey === undefined) delete process.env.USMERCARI_API_KEY;
+    else process.env.USMERCARI_API_KEY = previousGenericKey;
+    db.close();
+  }
+});

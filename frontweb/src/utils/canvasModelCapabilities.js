@@ -1,3 +1,5 @@
+import { normalizeQuickGenerationCatalog } from './homeQuickGeneration.js'
+
 const DEFAULTS = {
   image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 0, declared: false },
   video: {
@@ -39,14 +41,27 @@ function normalizeCapabilities(kind, value) {
 }
 
 export function normalizeCanvasModelCatalog(items = []) {
-  return items.filter((item) => item?.model && item?.kind).map((item) => ({
-    model: String(item.model),
-    label: String(item.label || item.model),
-    kind: String(item.kind),
+  return normalizeQuickGenerationCatalog(items).map((item) => ({
+    model: item.model,
+    label: item.label,
+    publicNote: item.publicNote,
+    verificationStatus: item.verificationStatus,
+    protocol: item.protocol,
+    kind: item.kind,
     credits: Number.isFinite(Number(item.credits)) && Number(item.credits) > 0 ? Number(item.credits) : null,
     billingUnit: String(item.billing_unit || item.billingUnit || '').trim(),
+    resolutionPrices: item.resolution_prices || {},
     capabilities: normalizeCapabilities(item.kind, item.capabilities),
   }))
+}
+const CATALOG_ONLY_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2'])
+
+export function filterCanvasCatalogFallbackModels(models = [], kind = '') {
+  const uniqueModels = [...new Set((Array.isArray(models) ? models : [])
+    .map((model) => String(model || '').trim())
+    .filter(Boolean))]
+  if (kind !== 'image') return uniqueModels
+  return uniqueModels.filter((model) => !CATALOG_ONLY_IMAGE_MODELS.has(model.toLowerCase()))
 }
 
 export function canvasModelCapability(catalog, kind, model) {
@@ -82,11 +97,25 @@ export function canvasModelOptions(catalog, kind, requirements = {}) {
     })
 }
 
-export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {
+export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
   const entry = canvasModelEntry(catalog, kind, model)
-  if (!entry?.credits) return null
+  const normalizedResolution = String(resolution).trim().toLowerCase()
+  const hasResolutionPrices = Object.keys(entry?.resolutionPrices || {}).length > 0
+  const tierCredits = ['image', 'video'].includes(kind)
+    ? Number(entry?.resolutionPrices?.[normalizedResolution]?.credits)
+    : NaN
+  if (hasResolutionPrices && ['image', 'video'].includes(kind)
+      && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
+  const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0 ? tierCredits : entry?.credits
+  if (!credits) return null
+  const normalizedQuantity = Number(quantity)
+  if (!Number.isSafeInteger(normalizedQuantity) || normalizedQuantity < 1 || normalizedQuantity > 4) return null
+  const declaredQuantities = Array.isArray(entry?.capabilities?.quantities)
+    ? entry.capabilities.quantities.map(Number)
+    : []
+  if (entry?.capabilities?.declared && declaredQuantities.length && !declaredQuantities.includes(normalizedQuantity)) return null
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)
     : 1
-  return entry.credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
+  return credits * normalizedQuantity * durationMultiplier
 }

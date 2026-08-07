@@ -221,7 +221,9 @@ test('自由节点生成请求按 kind 构造且不携带 storyboard_id', () => 
     model: 'flux',
     aspect_ratio: '16:9',
     style: 'cinematic',
+    resolution: '2k',
     size: '2048x1152',
+    n: 2,
     negative_prompt: '模糊，低清晰度',
     reference_images: [
       'https://cdn.example/a.png',
@@ -370,6 +372,47 @@ test('视频节点在付费请求前明确拒绝超过模型上限的参考素�
     })),
     capability: { referenceTypes: ['image'], maxImageReferences: 10 },
   }), /video-v1.*最多支持 10 个图片参考/)
+})
+
+test('图片节点在提交前拒绝超过模型上限的参考图而不是静默截断', () => {
+  const upstreamReferences = Array.from({ length: 7 }, (_, index) => ({
+    kind: 'image',
+    url: `https://cdn.example/reference-${index + 1}.png`,
+    order: index,
+  }))
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '保持全部参考人物一致',
+    model: 'nano-banana-2',
+    aspectRatio: '1:1',
+    resolution: '1K',
+  }, {
+    dramaId: 7,
+    upstreamReferences,
+  }), /最多支持 6 张参考图/)
+})
+
+test('图片节点大小计算不区分分辨率大小写并同步透传小写档位', () => {
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'image',
+    content: '纵向人物海报',
+    model: 'nano-banana-2',
+    aspectRatio: '9:16',
+    resolution: '4k',
+    quantity: 1,
+  }, { dramaId: 7, maxReferences: 6 })
+  assert.equal(payload.resolution, '4k')
+  assert.equal(payload.size, '2304x4096')
+  assert.equal(payload.n, 1)
+})
+
+test('图片节点阻断 GPT 4K 和 USMercari 未验证的多张数量', () => {
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'image', content: '海报', model: 'gpt-image-2-2-4k', aspectRatio: '1:1', resolution: '4k', quantity: 1,
+  }, { dramaId: 7 }), /只开放 1k、2k/)
+  assert.throws(() => buildFreeCanvasGenerationRequest({
+    kind: 'image', content: '海报', model: 'nano-banana-2', aspectRatio: '1:1', resolution: '2k', quantity: 2,
+  }, { dramaId: 7 }), /只开放单张生成/)
 })
 
 test('文本连线内容按契约进入下游图片、视频和音频模型输入', () => {

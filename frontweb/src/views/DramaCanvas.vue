@@ -687,6 +687,7 @@ import {
   canvasModelEntry,
   canvasModelOptions,
   estimateCanvasCredits,
+  filterCanvasCatalogFallbackModels,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
 import {
@@ -977,15 +978,28 @@ function getFreeNodeModelOptions(kind, nodeOrId) {
   const referenceCount = kind === 'image'
     ? freeCanvasNodeInputReferences(nodeOrId).filter((reference) => reference.ready && reference.enabled !== false).length
     : 0
-  return canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
+  const catalogOptions = canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
+  if (catalogOptions.length) return catalogOptions
+  const serviceType = canvasModelServiceType(kind)
+  return serviceType
+    ? filterCanvasCatalogFallbackModels(
+      getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType),
+      kind,
+    )
+      .map((model) => ({ value: model, label: model }))
+    : []
 }
 
 function getFreeNodeModelCapability(kind, model) {
   return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
 }
 
-function getFreeNodeEstimatedCredits(kind, model, quantity, duration) {
-  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration)
+function getFreeNodeModelMetadata(kind, model) {
+  return canvasModelEntry(freeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeEstimatedCredits(kind, model, quantity, duration, resolution) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration, resolution)
 }
 
 async function loadFreeCanvasModelConfigs() {
@@ -6244,6 +6258,7 @@ provide(CANVAS_CONTEXT_KEY, {
   openFreeNodeAssetLibrary,
   getFreeNodeModelOptions,
   getFreeNodeModelCapability,
+  getFreeNodeModelMetadata,
   getFreeNodeEstimatedCredits,
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,

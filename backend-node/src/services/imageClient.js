@@ -12,6 +12,8 @@ const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
+const generationCost = require('./generationCostLedgerService');
+const assetService = require('./assetService');
 const aihubccClient = require('./aihubccClient');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
@@ -435,42 +437,110 @@ async function callDjpsdOpenApiImageApi(config, log, opts = {}) {
  * @param {string} [preferredProvider] - 指定供应商（如 openai / dashscope），只在该 provider 的配置中选
  * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图）；缺省为 'image'
  */
-function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
+function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
+  const candidates = getImageConfigCandidates(
+    db,
+    preferredModel,
+    preferredProvider,
+    imageServiceType,
+    preferredConfigId,
+  );
+  if (candidates.length > 0) return candidates[0];
+  return preferredModel
+    ? canvasProviderConfigService.getConfig('image', preferredModel)
+    : null;
+}
+
+function requiresImageVerification(config) {
+  return String(config?.provider || '').toLowerCase() === 'usmercari_image'
+    || String(config?.api_protocol || '').toLowerCase() === 'usmercari_image';
+}
+
+function hasVerifiedImageModel(config, preferredModel) {
+  if (!requiresImageVerification(config)) return true;
+  if (config.verification_status !== 'verified') return false;
+  const selection = mediaModelSelection.parseQualifiedSelection(preferredModel);
+  const model = String(selection?.upstreamModel || preferredModel || config.default_model || config.model?.[0] || '').trim();
+  const key = Object.keys(config.verified_capabilities || {})
+    .find((item) => String(item).trim().toLowerCase() === model.toLowerCase());
+  const capabilities = key ? config.verified_capabilities[key] : null;
+  return Boolean(capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities));
+}
+
+function isVerifiedImageFallbackConfig(config) {
+  const status = config?.verification_status;
+  return status == null || status === '' || status === 'verified';
+}
+
+function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (serviceType === 'storyboard_image'
-    && (configs.length === 0 || preferredModel || preferredProvider)) {
-    const knownIds = new Set(configs.map((config) => Number(config.id)));
-    configs = configs.concat(
-      aiConfigService.listConfigs(db, 'image')
-        .filter((config) => !knownIds.has(Number(config.id))),
-    );
+  if (serviceType === 'storyboard_image') {
+    const fallbackConfigs = aiConfigService.listConfigs(db, 'image');
+    const ids = new Set(configs.map((config) => String(config.id)));
+    configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
   }
   let active = configs.filter((c) => c.is_active);
-  if (active.length === 0) {
-    return preferredModel
-      ? canvasProviderConfigService.getConfig('image', preferredModel)
-      : null;
+  active = active.filter((config) => hasVerifiedImageModel(config, preferredModel));
+  if (preferredConfigId != null && String(preferredConfigId).trim()) {
+    const selected = active.filter((config) => String(config.id) === String(preferredConfigId));
+    if (selected.length > 0) active = selected;
+  }
+  if (preferredModel && usmercariImageClient.USMERCARI_IMAGE_MODELS[String(preferredModel || '').trim().toLowerCase()]) {
+    const strict = active.filter((config) => String(config.provider || '').toLowerCase() === 'usmercari_image'
+      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image');
+    if (strict.length > 0) {
+      active = [
+        ...strict,
+        ...active.filter((config) => !strict.includes(config)),
+      ];
+    }
   }
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
-    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    const selected = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    return selected ? [selected] : [];
   }
   if (preferredProvider && String(preferredProvider).trim()) {
     const want = String(preferredProvider).trim().toLowerCase();
     const byProvider = active.filter((c) => (c.provider || '').toLowerCase() === want);
-    if (byProvider.length > 0) active = byProvider;
+    if (byProvider.length > 0) {
+      active = [
+        ...byProvider,
+        ...active.filter((c) => (c.provider || '').toLowerCase() !== want),
+      ];
+    }
   }
   if (preferredModel) {
-    for (const c of active) {
+    const matching = active.filter((c) => {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      if (models.includes(preferredModel)) return c;
-    }
-    return canvasProviderConfigService.getConfig('image', preferredModel);
+      return models.includes(preferredModel);
+    });
+    const isDefaultModel = matching.some((config) => config.is_default);
+    active = isDefaultModel
+      ? [...matching, ...active.filter((config) => !matching.includes(config))]
+      : matching;
   }
-  // 显式使用前端设置的「默认」：优先 is_default，再按 priority 降序（listConfigs 已按 is_default DESC, priority DESC 排序，取第一个即可）
-  const defaultOne = active.find((c) => c.is_default);
-  if (defaultOne) return defaultOne;
-  return active[0];
+  if (active.length < 2) return active;
+
+  const hasPrices = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'model_credit_prices'",
+  ).get());
+  if (!hasPrices) return active;
+  const primaryModel = getModelFromConfig(active[0], preferredModel);
+  const primaryPrice = db.prepare(
+    "SELECT credits FROM model_credit_prices WHERE model = ? COLLATE NOCASE AND status = 'enabled'",
+  ).get(primaryModel)?.credits;
+  if (!Number.isSafeInteger(primaryPrice) || primaryPrice <= 0) return [active[0]];
+  return [
+    active[0],
+    ...active.slice(1).filter((config) => {
+      const model = getModelFromConfig(config, preferredModel);
+      const price = db.prepare(
+        "SELECT credits FROM model_credit_prices WHERE model = ? COLLATE NOCASE AND status = 'enabled'",
+      ).get(model)?.credits;
+      return price === primaryPrice;
+    }),
+  ];
 }
 
 function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
@@ -621,6 +691,13 @@ function configuredImageReferenceLimit(config, model) {
   const protocol = String(config?.api_protocol || '').toLowerCase();
   if (provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688') {
     return token6688Client.IMAGE_REFERENCE_LIMITS[String(model || '').trim()] ?? 0;
+  }
+  if (requiresImageVerification(config)) {
+    const target = String(model || '').trim().toLowerCase();
+    const key = Object.keys(config?.verified_capabilities || {})
+      .find((item) => String(item).trim().toLowerCase() === target);
+    const limit = Number(key ? config.verified_capabilities[key]?.maxReferences : 0);
+    return Number.isInteger(limit) && limit >= 0 ? limit : 0;
   }
   try {
     const settings = typeof config?.settings === 'string'
@@ -1431,6 +1508,40 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
   }
 }
 
+function resolveUsmercariPublicImageRef(value, filesBaseUrl, storageLocalPath) {
+  if (!value || !String(value).trim()) return null;
+  const raw = String(value).trim();
+  const base = String(filesBaseUrl || '').trim().replace(/\/+$/, '');
+  let baseUrl;
+  try {
+    baseUrl = new URL(base);
+    if (!usmercariImageClient.parseStorageBaseUrl(base)) return null;
+  } catch (_) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(raw)) {
+    return usmercariImageClient.isAllowedStoragePublicImageUrl(raw, base) ? raw : null;
+  }
+
+  let relative = raw.split(/[?#]/, 1)[0];
+  if (path.isAbsolute(relative) && !/^[/\\]static[/\\]/i.test(relative)) {
+    if (!storageLocalPath) return null;
+    const storageRoot = path.resolve(storageLocalPath);
+    const absolute = path.resolve(relative);
+    const withinRoot = absolute !== storageRoot && absolute.startsWith(storageRoot + path.sep);
+    if (!withinRoot) return null;
+    relative = path.relative(storageRoot, absolute);
+  }
+  relative = relative.replace(/\\/g, '/').replace(/^\/+/, '');
+  let decoded;
+  try { decoded = decodeURIComponent(relative); } catch (_) { return null; }
+  if (decoded.split('/').includes('..')) return null;
+  const baseEndsWithStatic = /\/static\/?$/i.test(baseUrl.pathname);
+  if (baseEndsWithStatic) relative = relative.replace(/^static\//i, '');
+  const resolved = `${base}/${relative}`;
+  return usmercariImageClient.isAllowedStoragePublicImageUrl(resolved, base) ? resolved : null;
+}
+
 // 通义万象：支持参考图（角色/场景），content 为 [text, image, image, ...]；本地调试时参考图可转 base64
 // 通义千问 qwen-image：仅支持 content 中一个 text，用同步接口，parameters 不含 stream/enable_interleave
 async function callDashScopeImageApi(config, log, opts) {
@@ -1985,6 +2096,7 @@ async function callImageApi(db, log, opts) {
     resolution,
     drama_id,
     preferred_provider,
+    preferred_config_id,
     character_id,
     image_type,
     image_gen_id,
@@ -1999,11 +2111,53 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
+  const preferredConfigId = preferred_config_id ?? opts.preferredConfigId;
+  const candidates = getImageConfigCandidates(
+    db,
+    preferredModel,
+    preferredProvider,
+    imageServiceType,
+    preferredConfigId,
+  );
+  const config = opts._imageConfigOverride
+    || candidates[0]
+    || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId);
   if (!config) {
     throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
   }
   const model = getModelFromConfig(config, preferredModel);
+  const configKey = config.id != null
+    ? `id:${config.id}`
+    : [config.base_url, config.endpoint, config.provider, model].join('|');
+  const attempted = new Set(Array.isArray(opts._attemptedImageConfigKeys)
+    ? opts._attemptedImageConfigKeys.map(String)
+    : []);
+  attempted.add(configKey);
+  const nextConfig = candidates.find((candidate) => {
+    const candidateModel = getModelFromConfig(candidate, preferredModel);
+    const key = candidate.id != null
+      ? `id:${candidate.id}`
+      : [candidate.base_url, candidate.endpoint, candidate.provider, candidateModel].join('|');
+    return !attempted.has(key) && isVerifiedImageFallbackConfig(candidate);
+  });
+  const switchToNextConfig = (error, status) => {
+    if (!nextConfig) return null;
+    log.warn('Image API provider unavailable, switching verified model', {
+      image_gen_id,
+      status,
+      error,
+      from_config_id: config.id,
+      from_model: model,
+      to_config_id: nextConfig.id,
+      to_model: getModelFromConfig(nextConfig, preferredModel),
+    });
+    return callImageApi(db, log, {
+      ...opts,
+      model: preferredModel || undefined,
+      _imageConfigOverride: nextConfig,
+      _attemptedImageConfigKeys: Array.from(attempted),
+    });
+  };
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
@@ -2096,8 +2250,11 @@ async function callImageApi(db, log, opts) {
       return { error: `USMercari 图片模型 ${model} 最多支持 6 张参考图` };
     }
     const resolvedReferences = rawReferences
-      .map((reference) => resolveImageRef(reference, files_base_url, storage_local_path))
+      .map((reference) => resolveUsmercariPublicImageRef(reference, files_base_url, storage_local_path))
       .filter(Boolean);
+    if (resolvedReferences.length !== rawReferences.length) {
+      return { error: 'USMercari 参考图无法组成公网 URL，请检查 STORAGE_BASE_URL 与素材路径' };
+    }
     return usmercariImageClient.callUsmercariImageApi(config, log, {
       prompt: effectivePrompt,
       model,
@@ -2106,7 +2263,9 @@ async function callImageApi(db, log, opts) {
       resolution: resolution || '1k',
       image_gen_id,
       reference_image_urls: resolvedReferences,
+      files_base_url,
       storage_local_path,
+      allowed_reference_base_url: files_base_url,
     });
   }
 
@@ -2321,6 +2480,56 @@ function settleImageCredit(db, log, imageGenId, outcome, message = '') {
   }
 }
 
+async function verifyStrictLocalImageArtifact(storagePath, localPath) {
+  if (!localPath) throw new Error('图片未生成本地文件');
+  const storageRoot = path.resolve(storagePath);
+  const absolutePath = path.resolve(storageRoot, localPath);
+  const relative = path.relative(storageRoot, absolutePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('图片本地文件路径越出存储目录');
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('图片本地文件为空');
+  const sharp = getSharp();
+  if (!sharp) throw new Error('图片校验组件 sharp 不可用');
+  const metadata = await sharp(fs.readFileSync(absolutePath)).metadata();
+  if (!metadata.width || !metadata.height || !metadata.format) throw new Error('图片文件不可读取');
+  const mimeByFormat = {
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    avif: 'image/avif',
+  };
+  return {
+    fileSize: stat.size,
+    width: metadata.width,
+    height: metadata.height,
+    mimeType: mimeByFormat[metadata.format] || `image/${metadata.format}`,
+  };
+}
+
+function createStrictGeneratedAsset(db, row, persisted, artifact) {
+  return assetService.create(db, null, {
+    drama_id: row.drama_id ?? null,
+    storyboard_id: row.storyboard_id ?? null,
+    name: `生成图片 ${row.id}`,
+    type: 'image',
+    category: row.scene_id != null ? 'scene' : row.character_id != null ? 'character' : 'generation',
+    url: persisted.url,
+    local_path: persisted.local_path,
+    file_size: artifact.fileSize,
+    mime_type: artifact.mimeType,
+    width: artifact.width,
+    height: artifact.height,
+    image_gen_id: row.id,
+    metadata: {
+      source: 'image_generation',
+      model: row.model || null,
+      resolution: row.resolution || null,
+      quantity: row.quantity || 1,
+    },
+  });
+}
+
 function createAndGenerateImage(db, log, opts) {
   const {
     drama_id,
@@ -2330,6 +2539,9 @@ function createAndGenerateImage(db, log, opts) {
     prompt,
     model,
     size,
+    resolution,
+    n,
+    quantity,
     quality,
     provider,
     user_negative_prompt,
@@ -2344,18 +2556,55 @@ function createAndGenerateImage(db, log, opts) {
   const dramaIdNum = Number(drama_id) || 0;
   const charIdNum = character_id != null ? Number(character_id) : null;
   const sceneIdNum = scene_id != null ? Number(scene_id) : null;
+  let effectiveModel = String(model || '').trim() || null;
+  if (!effectiveModel) {
+    try {
+      effectiveModel = resolveImageModel(db, null, null, 'image');
+    } catch (error) {
+      if (billingEnabled) throw error;
+    }
+  }
 
   let billedModel = null;
   let billedCredits = null;
+  let billingRequest = null;
+  let requestSnapshot = null;
+  const requestedQuantity = Number(n ?? quantity ?? 1);
+  try {
+    const imageService = require('./imageService');
+    billingRequest = imageService.resolveImageBillingRequest(db, {
+      model: effectiveModel,
+      provider,
+      resolution,
+      n: requestedQuantity,
+    }, 'image', {
+      requirePricing: billingEnabled === true,
+      allowMissingModel: !billingEnabled,
+    });
+  } catch (error) {
+    if (billingEnabled || ['MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_RESOLUTION_REQUIRED', 'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED', 'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(error.code)) {
+      throw error;
+    }
+  }
+  if (billingRequest) {
+    effectiveModel = billingRequest.model || effectiveModel;
+    requestSnapshot = billingRequest.requestSnapshot || null;
+  }
+  const isStrictUsmercari = billingRequest?.protocol === 'usmercari_image'
+    || requestSnapshot?.protocol === 'usmercari_image';
   if (billingEnabled) {
     if (!userId) {
       const error = new Error('请先登录');
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(model || '');
-    billedCredits = modelPriceService.requirePrice(db, billedModel);
+    billedModel = billingRequest?.model;
+    billedCredits = billingRequest?.credits;
+    if (!billedModel || !Number.isSafeInteger(Number(billedCredits))) {
+      const modelPriceService = require('./modelPriceService');
+      billedModel = modelPriceService.canonicalModel(effectiveModel || '');
+      billedCredits = modelPriceService.requirePrice(db, billedModel);
+    }
   }
   const active = findActiveAssetImage(db, charIdNum, sceneIdNum, {
     billingEnabled,
@@ -2390,8 +2639,8 @@ function createAndGenerateImage(db, log, opts) {
     }
     const billingColumns = billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, ?, NULL' : '';
-    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, resolution, quantity, request_snapshot, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, billingRequest?.provider || provider || 'openai', prompt || '', negRow, effectiveModel, size || null, billingRequest?.resolution || null, billingRequest?.quantity || requestedQuantity || 1, requestSnapshot ? JSON.stringify(requestSnapshot) : null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(tenantId ? String(tenantId) : null, String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -2409,6 +2658,13 @@ function createAndGenerateImage(db, log, opts) {
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, imageGenId);
       db.prepare('UPDATE async_tasks SET credit_reservation_id = ?, model = ? WHERE id = ?')
         .run(reservation.id, billedModel, taskId);
+      generationCost.record(db, {
+        reservationId: reservation.id,
+        model: billedModel,
+        resolution: billingRequest?.resolution || null,
+        quantity: billingRequest?.quantity || 1,
+        usageSource: 'configured',
+      });
       auditEvent.record(db, {
         userId,
         tenantId,
@@ -2433,8 +2689,12 @@ function createAndGenerateImage(db, log, opts) {
         '正在等待图片生成服务...',
         () => runWithGenerationLimit('image', () => callImageApi(db, log, {
           prompt,
-          model,
+          model: effectiveModel,
+          preferred_provider: billingRequest?.provider || undefined,
+          preferred_config_id: billingRequest?.configId || requestSnapshot?.config_id || undefined,
           size,
+          resolution: billingRequest?.resolution || undefined,
+          n: billingRequest?.quantity || 1,
           quality,
           drama_id: drama_id,
           character_id: character_id,
@@ -2445,42 +2705,78 @@ function createAndGenerateImage(db, log, opts) {
       );
       const now2 = new Date().toISOString();
       if (result.error) {
+        const resultError = result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error;
         db.prepare(
           'UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?'
-        ).run('failed', result.error, now2, imageGenId);
-        taskService.updateTaskError(db, taskId, result.error);
-        settleImageCredit(db, log, imageGenId, 'failed', result.error);
+        ).run('failed', resultError, now2, imageGenId);
+        taskService.updateTaskError(db, taskId, resultError);
+        settleImageCredit(db, log, imageGenId, 'failed', resultError);
         if (charIdNum != null) {
           try {
-            db.prepare('UPDATE characters SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, charIdNum);
+            db.prepare('UPDATE characters SET error_msg = ?, updated_at = ? WHERE id = ?').run(resultError, now2, charIdNum);
           } catch (_) {}
         }
         if (sceneIdNum != null) {
           try {
-            db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, sceneIdNum);
+            db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(resultError, now2, sceneIdNum);
           } catch (_) {}
         }
-        log.error('Image generation failed', { image_gen_id: imageGenId, error: result.error });
+        log.error('Image generation failed', { image_gen_id: imageGenId, error: resultError });
         return;
       }
       let localPath = null;
-      try {
-        const loadConfig = require('../config').loadConfig;
-        const cfg = loadConfig();
-        const storagePath = path.isAbsolute(cfg.storage?.local_path)
-          ? cfg.storage.local_path
-          : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-        const category = sceneIdNum != null ? 'scenes' : (charIdNum != null ? 'characters' : 'images');
-        const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaIdNum);
-        localPath = await uploadService.downloadImageToLocal(
-          storagePath,
-          result.image_url,
-          category,
-          log,
-          'ig',
-          projectSubdir
-        );
-      } catch (_) {}
+      const cfg = loadConfig();
+      const storagePath = path.isAbsolute(cfg.storage?.local_path)
+        ? cfg.storage.local_path
+        : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+      const category = sceneIdNum != null ? 'scenes' : (charIdNum != null ? 'characters' : 'images');
+      const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaIdNum);
+      localPath = await uploadService.downloadImageToLocal(
+        storagePath,
+        result.image_url,
+        category,
+        log,
+        'ig',
+        projectSubdir
+      );
+      if (isStrictUsmercari) {
+        let artifact;
+        try {
+          artifact = await verifyStrictLocalImageArtifact(storagePath, localPath);
+        } catch (saveErr) {
+          const msg = `图片本地保存失败：${saveErr.message || saveErr}`;
+          db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+            .run('failed', msg.slice(0, 500), now2, imageGenId);
+          taskService.updateTaskError(db, taskId, msg);
+          settleImageCredit(db, log, imageGenId, 'failed', msg);
+          return;
+        }
+        const persistedUrl = '/static/' + String(localPath).replace(/^\/+/, '');
+        const rowForAsset = db.prepare('SELECT * FROM image_generations WHERE id = ?').get(imageGenId);
+        db.transaction(() => {
+          db.prepare(
+            'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+          ).run('completed', persistedUrl, localPath, now2, now2, imageGenId);
+          createStrictGeneratedAsset(db, { ...rowForAsset, id: imageGenId }, { url: persistedUrl, local_path: localPath }, artifact);
+          taskService.updateTaskResult(db, taskId, { image_generation_id: imageGenId, image_url: persistedUrl, local_path: localPath, status: 'completed' });
+          if (charIdNum != null) {
+            db.prepare('UPDATE characters SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?')
+              .run(persistedUrl, localPath, now2, charIdNum);
+          }
+          if (sceneIdNum != null) {
+            if (imageType === 'scene_panorama') {
+              db.prepare('UPDATE scenes SET panorama_image_url = ?, panorama_local_path = ?, updated_at = ? WHERE id = ?')
+                .run(persistedUrl, localPath, now2, sceneIdNum);
+            } else {
+              db.prepare('UPDATE scenes SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?')
+                .run(persistedUrl, localPath, now2, sceneIdNum);
+            }
+          }
+        })();
+        settleImageCredit(db, log, imageGenId, 'completed');
+        log.info('Image generation completed', { image_gen_id: imageGenId, local_path: localPath });
+        return;
+      }
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {
         db.prepare(

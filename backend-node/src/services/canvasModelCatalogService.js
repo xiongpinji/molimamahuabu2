@@ -88,6 +88,31 @@ function safeCapabilities(settings, config = {}, model = '') {
   }
 }
 
+function isUsmercariImageConfig(config) {
+  return KIND_BY_SERVICE[config.service_type] === 'image'
+    && (String(config.provider || '').toLowerCase() === 'usmercari_image'
+      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image');
+}
+
+function verifiedImageCapabilities(config, model, price) {
+  if (!isUsmercariImageConfig(config)) return null;
+  if (config.verification_status !== 'verified' || !aiConfigService.hasConnectionCredential(config)) return false;
+  const target = String(model || '').trim().toLowerCase();
+  const capabilityKey = Object.keys(config.verified_capabilities || {})
+    .find((item) => String(item).trim().toLowerCase() === target);
+  const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? [...new Set(capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
+    : [];
+  if (!capabilities.supportsTextToImage || !resolutions.length || !price) return false;
+  const allPriced = resolutions.every((resolution) => {
+    const credits = price.resolution_prices?.[resolution]?.credits;
+    return Number.isSafeInteger(credits) && credits > 0;
+  });
+  return allPriced ? { ...capabilities, resolutions } : false;
+}
+
 function list(db, options = {}) {
   const prices = new Map(modelPriceService.list(db)
     .filter((row) => row.status === 'enabled')
@@ -114,20 +139,32 @@ function list(db, options = {}) {
       if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
       if (!Number.isSafeInteger(price?.credits) || price.credits <= 0) return null;
+      const verifiedCapabilities = verifiedImageCapabilities(config, upstreamModel, price);
+      if (verifiedCapabilities === false) return null;
+      const resolutionPrices = verifiedCapabilities
+        ? Object.fromEntries(verifiedCapabilities.resolutions.map((resolution) => [
+          resolution,
+          price.resolution_prices[resolution],
+        ]))
+        : price?.resolution_prices || {};
       seen.add(key);
       return {
         kind,
         model,
         upstream_model: upstreamModel,
         label: price?.display_name || model,
+        public_note: price?.public_note || null,
         provider: String(config.provider || '').toLowerCase(),
         config_id: config.id,
         default_voice_id: config.service_type === 'tts' ? String(config.voice_id || '').trim() : '',
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
+        resolution_prices: resolutionPrices,
+        verification_status: config.verification_status || 'pending',
+        protocol: config.api_protocol || config.provider || '',
         capabilities: kind === 'video'
           ? videoReferenceCapabilityService.resolve(config, upstreamModel)
-          : safeCapabilities(config.settings, config, upstreamModel),
+          : (verifiedCapabilities || safeCapabilities(config.settings, config, upstreamModel)),
       };
     })
     .filter(Boolean);

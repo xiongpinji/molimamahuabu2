@@ -167,3 +167,109 @@ test('Token6688 画布目录按模型公开图片参考上限和 Seedance 9/3/9 
   assert.equal(imageRoutePayload.data.includes('token6688-unverified-image'), false);
   assert.equal(imageRoutePayload.data.includes('token6688-gpt-image-2'), true);
 });
+
+test('USMercari 图片目录只公开有 Key、已验证且所有验证档位已定价的模型', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  const capabilities = {
+    'gpt-image-2-2-4k': {
+      supportsTextToImage: true, supportsImageReference: true, maxReferences: 6,
+      resolutions: ['1k', '2k'],
+    },
+    'nano-banana-2': {
+      supportsTextToImage: true, supportsImageReference: true, maxReferences: 6,
+      resolutions: ['1k', '2k', '4k'],
+    },
+  };
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES ('image', 'usmercari_image', 'usmercari_image', 'USMercari 图片',
+      'https://chat-ai.mercarimx.com', 'secret', ?, 'gpt-image-2-2-4k', 1, 'verified', ?, ?, ?)`)
+    .run(JSON.stringify(Object.keys(capabilities)), JSON.stringify(capabilities), now, now);
+  modelPriceService.set(db, 'gpt-image-2-2-4k', 70, {
+    category: 'image', display_name: 'GPT Image 2', public_note: '稳定高精度，支持参考图',
+    resolution_prices: {
+      '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+    },
+  });
+
+  let models = list(db);
+  const gpt = models.find((item) => item.model === 'gpt-image-2-2-4k');
+  assert.equal(gpt.label, 'GPT Image 2');
+  assert.equal(gpt.public_note, '稳定高精度，支持参考图');
+  assert.equal(gpt.verification_status, 'verified');
+  assert.deepEqual(gpt.capabilities.resolutions, ['1k', '2k']);
+  assert.equal(gpt.capabilities.resolutions.includes('4k'), false);
+  assert.equal(models.some((item) => item.model === 'nano-banana-2'), false);
+
+  modelPriceService.set(db, 'nano-banana-2', 70, {
+    category: 'image', display_name: 'Nano Banana 2', public_note: '支持最高 4K',
+    resolution_prices: {
+      '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      '4k': { credits: 105, cost_micros_per_unit: 120000 },
+    },
+  });
+  models = list(db);
+  const nano = models.find((item) => item.model === 'nano-banana-2');
+  assert.deepEqual(nano.capabilities.resolutions, ['1k', '2k', '4k']);
+  assert.deepEqual(nano.resolution_prices['4k'], { credits: 105, cost_micros_per_unit: 120000 });
+  db.close();
+});
+
+test('USMercari 图片目录识别专用环境 Key，canvas 与 billing Key 门禁一致', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const previousImageKey = process.env.USMERCARI_IMAGE_API_KEY;
+  const previousGenericKey = process.env.USMERCARI_API_KEY;
+  delete process.env.USMERCARI_API_KEY;
+  process.env.USMERCARI_IMAGE_API_KEY = 'env-image-key';
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, verification_status, verified_capabilities, created_at, updated_at)
+      VALUES ('image', 'usmercari_image', 'usmercari_image', 'USMercari 图片',
+        'https://chat-ai.mercarimx.com', '', ?, 'gpt-image-2-2-4k', 1, 'verified', ?, ?, ?)`)
+      .run(JSON.stringify(['gpt-image-2-2-4k']), JSON.stringify({
+        'gpt-image-2-2-4k': {
+          supportsTextToImage: true,
+          supportsImageReference: true,
+          maxReferences: 1,
+          resolutions: ['1k', '2k'],
+        },
+      }), now, now);
+    modelPriceService.set(db, 'gpt-image-2-2-4k', 70, {
+      category: 'image',
+      resolution_prices: {
+        '1k': { credits: 70, cost_micros_per_unit: 80000 },
+        '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      },
+    });
+    assert.equal(list(db).some((item) => item.model === 'gpt-image-2-2-4k'), true);
+  } finally {
+    if (previousImageKey === undefined) delete process.env.USMERCARI_IMAGE_API_KEY;
+    else process.env.USMERCARI_IMAGE_API_KEY = previousImageKey;
+    if (previousGenericKey === undefined) delete process.env.USMERCARI_API_KEY;
+    else process.env.USMERCARI_API_KEY = previousGenericKey;
+    db.close();
+  }
+});
+
+test('新增真实验证列不会隐藏已验证且已定价的既有非 USMercari 图片模型', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, base_url, api_key, model, is_active,
+     verification_status, created_at, updated_at)
+    VALUES ('image', 'openai', 'Existing Image', 'https://example.invalid', 'secret', ?, 1,
+      'verified', ?, ?)`)
+    .run(JSON.stringify(['existing-image']), now, now);
+  modelPriceService.set(db, 'existing-image', 12, { category: 'image' });
+  assert.equal(list(db).some((item) => item.model === 'existing-image'), true);
+  db.close();
+});

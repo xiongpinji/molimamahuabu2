@@ -205,6 +205,7 @@ import '@vue-flow/minimap/dist/style.css'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { dramaAPI } from '@/api/drama'
 import { uploadAPI } from '@/api/upload'
+import request from '@/utils/request'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
@@ -239,6 +240,12 @@ import {
   collectDirectUpstreamMediaReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import {
+  canvasModelCapability,
+  canvasModelEntry,
+  estimateCanvasCredits,
+  normalizeCanvasModelCatalog,
+} from '@/utils/canvasModelCapabilities'
 
 const router = useRouter()
 
@@ -267,6 +274,7 @@ const localPreviewUrls = new Set()
 const bindingProjects = ref([])
 const bindingProjectId = ref('')
 const bindingProject = ref(false)
+const homeCanvasModelCatalog = ref([])
 
 const nodeTypes = { homeCanvasNode: markRaw(HomeCanvasNode) }
 const edgeTypes = { libtv: markRaw(LibTvCanvasEdge) }
@@ -440,6 +448,32 @@ function freeCanvasNodeInputReferences(nodeId) {
   return node?.data?.kind === 'video'
     ? collectDirectUpstreamMediaReferences(nodes.value, edges.value, String(nodeId || ''))
     : collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
+}
+
+function getFreeNodeModelOptions(kind) {
+  return homeCanvasModelCatalog.value.filter((item) => item.kind === kind)
+}
+
+function getFreeNodeModelCapability(kind, model) {
+  return canvasModelCapability(homeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeModelMetadata(kind, model) {
+  return canvasModelEntry(homeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeEstimatedCredits(kind, model, quantity, duration, resolution) {
+  return estimateCanvasCredits(homeCanvasModelCatalog.value, kind, model, quantity, duration, resolution)
+}
+
+async function loadHomeCanvasModelCatalog() {
+  try {
+    const catalog = await request.get('/canvas/model-catalog')
+    homeCanvasModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalog) ? catalog : [])
+  } catch (error) {
+    homeCanvasModelCatalog.value = []
+    console.warn('load home canvas model catalog failed', error)
+  }
 }
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
@@ -960,6 +994,10 @@ provide(CANVAS_CONTEXT_KEY, {
   updateFreeCanvasNode,
   deleteFreeCanvasNode,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
+  getFreeNodeModelOptions,
+  getFreeNodeModelCapability,
+  getFreeNodeModelMetadata,
+  getFreeNodeEstimatedCredits,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
@@ -970,6 +1008,7 @@ onMounted(() => {
   canvasAlive = true
   window.addEventListener('keydown', onCanvasKeydown)
   void loadBindingProjects()
+  void loadHomeCanvasModelCatalog()
 })
 
 onBeforeUnmount(() => {

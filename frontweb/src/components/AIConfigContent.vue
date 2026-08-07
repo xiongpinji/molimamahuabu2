@@ -114,7 +114,7 @@
                 <span v-else class="no-default">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="画布状态" width="96">
+            <el-table-column label="画布状态（验证状态）" width="140">
               <template #default="{ row }">
                 <el-tag v-if="row.verification_status === 'verified'" type="success" size="small">已验证</el-tag>
                 <el-tag v-else-if="row.verification_status === 'failed'" type="danger" size="small">验证失败</el-tag>
@@ -359,6 +359,8 @@
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
             <el-option label="DJPSD 开放 API（图片 / 视频异步任务）" value="djpsd_openapi" />
+            <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
+            <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1126,7 +1128,15 @@ input_reference = (图片文件，可选)</pre>
       <p v-if="testResult === null">正在测试…</p>
       <template v-else-if="testResult">
         <el-alert
-          v-if="testServiceType === 'image' || testServiceType === 'storyboard_image' || testServiceType === 'video'"
+          v-if="testProvider === 'usmercari_image'"
+          type="success"
+          title="只读连通性测试成功"
+          description="本次只检查 API Key、网络和模型列表，不会把模型标记为 verified。只有完成真实生成、结果文件校验和定价后才能通过用户目录门禁。"
+          show-icon
+          :closable="false"
+        />
+        <el-alert
+          v-else-if="testServiceType === 'image' || testServiceType === 'storyboard_image' || testServiceType === 'video'"
           type="success"
           title="连接成功"
           description="API Key 有效，网络已连通。提示：测试仅验证 Key 合法性，不实际生成图片/视频，模型名填错、账号未开通该功能或配额不足时实际生成仍可能报错。"
@@ -1427,6 +1437,7 @@ const providerConfigs = {
   image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
+    { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1440,6 +1451,7 @@ const providerConfigs = {
   storyboard_image: [
     { id: 'aihubcc', name: 'AIHubCC 图片', models: AIHUBCC_IMAGE_MODELS },
     { id: 'token6688', name: 'Token6688 图片', models: ['doubao-seedream-5-0', 'token6688-gpt-image-2', 'gemini-3-pro-image'] },
+    { id: 'usmercari_image', name: 'USMercari 图片', models: ['gpt-image-2-2-4k', 'nano-banana-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1493,6 +1505,7 @@ const providerConfigs = {
 const providerProtocolMap = {
   aihubcc: 'aihubcc',
   token6688: 'token6688',
+  usmercari_image: 'usmercari_image',
   // image / storyboard_image
   volcengine: 'volcengine',
   volces: 'volcengine',
@@ -1531,6 +1544,7 @@ function getBaseUrlForProvider(provider) {
   const p = String(provider).toLowerCase()
   if (p === 'aihubcc') return 'https://aihubcc.cc/v1'
   if (p === 'token6688' || p === 'tokengo') return 'https://qd.token6688.com'
+  if (p === 'usmercari_image') return 'https://chat-ai.mercarimx.com'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
   if (p === 'volces' || p === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3'
@@ -1629,6 +1643,9 @@ const modelIdentifierTip = computed(() => {
   }
   if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'token6688') {
     return 'Token6688 的 GPT Image 2 使用独立模型标识 token6688-gpt-image-2，避免与其他供应商同名模型互相覆盖。'
+  }
+  if ((serviceType === 'image' || serviceType === 'storyboard_image') && provider === 'usmercari_image') {
+    return 'gpt-image-2-2-4k 只开放已实测的 1K/2K；nano-banana-2 开放 1K/2K/4K。模型名会原样提交。'
   }
   if (serviceType === 'video' && provider === 'aihubcc') {
     return 'Omni、Seedance、Grok 与 Flow Veo 均走 /videos 异步任务；veo-clean 是视频后处理，不属于普通生成模型。'
@@ -1841,6 +1858,11 @@ function onProviderChange(providerId) {
     form.value.endpoint = '/images/generations'
     form.value.query_endpoint = '/videos/{taskId}'
   }
+  if (providerId === 'usmercari_image' && (st === 'image' || st === 'storyboard_image')) {
+    form.value.api_protocol = 'usmercari_image'
+    form.value.endpoint = '/v1/images/generations'
+    form.value.query_endpoint = ''
+  }
   if (providerId === 'aihubcc' && st === 'video') {
     form.value.endpoint = '/videos'
     form.value.query_endpoint = '/videos/{taskId}'
@@ -1937,6 +1959,20 @@ function serviceTypeLabel(t) {
     model_ark_asset: 'SD2 资产库',
   }
   return map[t] || t
+}
+
+const VERIFICATION_STATUS_META = {
+  pending: { label: '待验证', type: 'warning' },
+  verified: { label: '已验证', type: 'success' },
+  failed: { label: '验证失败', type: 'danger' },
+}
+
+function isUsmercariImageConfig(row) {
+  return row?.provider === 'usmercari_image' || row?.api_protocol === 'usmercari_image'
+}
+
+function verificationStatusMeta(value) {
+  return VERIFICATION_STATUS_META[value] || VERIFICATION_STATUS_META.pending
 }
 
 function voicePolicyDescription(row) {
@@ -2253,7 +2289,7 @@ async function openTest(row) {
   testResult.value = null
   testError.value = ''
   testServiceType.value = row.service_type || 'text'
-  testProvider.value = row.provider || ''
+  testProvider.value = row.api_protocol === 'usmercari_image' ? 'usmercari_image' : (row.provider || '')
   try {
     await aiAPI.testConnection({
       config_id: row.id,

@@ -81,7 +81,7 @@
                         :key="item.model"
                         :value="item.model"
                       >
-                        {{ item.display_name || item.model }}
+                        {{ item.label || item.model }}
                       </option>
                     </select>
                   </label>
@@ -102,11 +102,14 @@
                       <option :value="15">15s</option>
                     </select>
                   </label>
-                  <label v-if="homeMediaType === 'video'" class="home-control">
-                    <select v-model="homeResolution" aria-label="视频清晰度">
-                      <option value="480p">480P</option>
-                      <option value="720p">720P</option>
-                      <option value="1080p">1080P</option>
+                  <label v-if="homeMediaType === 'image' || homeMediaType === 'video'" class="home-control">
+                    <select v-model="homeResolution" :aria-label="homeMediaType === 'image' ? '图片清晰度' : '视频清晰度'">
+                      <option v-for="value in homeResolutions" :key="value" :value="value">{{ value.toUpperCase() }}</option>
+                    </select>
+                  </label>
+                  <label v-if="homeMediaType === 'image'" class="home-control">
+                    <select v-model.number="homeQuantity" aria-label="图片数量">
+                      <option v-for="value in homeQuantityOptions" :key="value" :value="value">{{ value }} 张</option>
                     </select>
                   </label>
                 </div>
@@ -127,6 +130,10 @@
                   </button>
                 </div>
               </div>
+              <p v-if="homeSelectedModel?.publicNote" class="home-composer__model-note">
+                {{ homeSelectedModel.publicNote }}
+                <span v-if="homeSelectedModel.verificationStatus === 'verified'">· 已验证</span>
+              </p>
             </div>
           </section>
 
@@ -443,9 +450,12 @@ import { dramaAPI } from '@/api/drama'
 import { listGenerationCatalog } from '@/api/billing'
 import { getCreditAccount } from '@/api/auth'
 import { uploadAPI } from '@/api/upload'
+import request from '@/utils/request'
 import {
   estimateGenerationCredits,
+  normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
 import {
   normalizeProjectMode,
@@ -470,6 +480,7 @@ const homeModel = ref('')
 const homeAspectRatio = ref('16:9')
 const homeDuration = ref(5)
 const homeResolution = ref('720p')
+const homeQuantity = ref(1)
 const homeGenerationCatalog = ref([])
 const homeBalance = ref(0)
 const homeReferenceInput = ref(null)
@@ -497,9 +508,14 @@ const homeModelOptions = computed(() => {
 const homeSelectedModel = computed(() => (
   homeModelOptions.value.find((item) => item.model === homeModel.value) || null
 ))
+const homeResolutions = computed(() => quickGenerationResolutions(homeSelectedModel.value || {}, homeMediaType.value))
+const homeQuantityOptions = computed(() => {
+  const declared = homeSelectedModel.value?.capabilities?.quantities
+  return Array.isArray(declared) && declared.length ? declared : [1]
+})
 const homeSelectedPrice = computed(() => estimateGenerationCredits(
   homeSelectedModel.value,
-  { duration: homeDuration.value },
+  { duration: homeDuration.value, resolution: homeResolution.value, quantity: homeQuantity.value },
 ))
 const homeInsufficientCredits = computed(() => (
   homeSelectedPrice.value != null && homeBalance.value < homeSelectedPrice.value
@@ -535,15 +551,28 @@ async function onHomeReferenceChange(event) {
 }
 
 async function loadHomeGenerationConfig() {
-  const [catalog, account] = await Promise.allSettled([
+  const [canvasCatalog, legacyCatalog, account] = await Promise.allSettled([
+    request.get('/canvas/model-catalog'),
     listGenerationCatalog(),
     getCreditAccount(),
   ])
-  homeGenerationCatalog.value = catalog.status === 'fulfilled' && Array.isArray(catalog.value)
-    ? catalog.value
-    : []
+  const rawCatalog = canvasCatalog.status === 'fulfilled' && Array.isArray(canvasCatalog.value)
+    ? canvasCatalog.value
+    : legacyCatalog.status === 'fulfilled' && Array.isArray(legacyCatalog.value)
+      ? legacyCatalog.value
+      : []
+  homeGenerationCatalog.value = normalizeQuickGenerationCatalog(rawCatalog)
   homeBalance.value = account.status === 'fulfilled' ? Number(account.value?.available || 0) : 0
   homeModel.value = homeModelOptions.value[0]?.model || ''
+  syncHomeResolution()
+}
+
+function syncHomeResolution() {
+  const allowed = homeResolutions.value
+  const current = String(homeResolution.value || '').trim().toLowerCase()
+  if (allowed.length && !allowed.includes(current)) homeResolution.value = allowed[0]
+  else if (current) homeResolution.value = current
+  if (!homeQuantityOptions.value.includes(Number(homeQuantity.value))) homeQuantity.value = homeQuantityOptions.value[0] || 1
 }
 
 function startFromComposer() {
@@ -570,6 +599,7 @@ function startFromComposer() {
     aspectRatio: homeAspectRatio.value,
     duration: homeDuration.value,
     resolution: homeResolution.value,
+    quantity: homeQuantity.value,
     referenceImageUrl: homeMediaType.value === 'text' ? '' : homeReferenceImageUrl.value,
     autoStart: true,
   })
@@ -964,7 +994,10 @@ watch(projectMode, () => {
 
 watch(homeMediaType, () => {
   homeModel.value = homeModelOptions.value[0]?.model || ''
+  syncHomeResolution()
 })
+
+watch(homeModel, syncHomeResolution)
 </script>
 
 <style scoped>
@@ -1255,6 +1288,12 @@ html.light .btn-import {
   justify-content: space-between;
   gap: 18px;
   margin-top: auto;
+}
+.home-composer__model-note {
+  margin: 10px 0 0;
+  color: #a8a8af;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .home-composer__controls,
 .home-composer__submit {

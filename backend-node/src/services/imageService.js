@@ -40,8 +40,18 @@ function rowToItem(r) {
     provider: r.provider,
     prompt: r.prompt,
     model: r.model,
+    resolution: r.resolution ?? undefined,
+    quantity: r.quantity == null ? 1 : Number(r.quantity),
     image_url: r.image_url,
     local_path: r.local_path,
+    result_images: (() => {
+      try {
+        const parsed = JSON.parse(r.result_images || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    })(),
     status: r.status,
     task_id: r.task_id,
     error_msg: r.error_msg,
@@ -74,7 +84,262 @@ const promptI18n = require('./promptI18n');
 const creditLedger = require('./creditLedgerService');
 const auditEvent = require('./auditEventService');
 const textGenerationBilling = require('./text-generation-billing-service');
+const aiConfigService = require('./aiConfigService');
+const modelPriceService = require('./modelPriceService');
+const generationCost = require('./generationCostLedgerService');
+const assetService = require('./assetService');
+const { resolveUsmercariApiKey } = require('./usmercariVideoClient');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
+
+const USMERCARI_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2']);
+
+function imageRequestError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function parseJsonObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function staticProjectReferencePath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  let pathname = raw;
+  let isConfiguredStorageUrl = false;
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      if (url.username || url.password) return null;
+      const cfg = require('../config').loadConfig();
+      const baseUrl = String(cfg.storage?.base_url || '').trim();
+      if (!baseUrl) return null;
+      const base = new URL(baseUrl);
+      if (url.origin !== base.origin) return null;
+      isConfiguredStorageUrl = true;
+      pathname = url.pathname;
+    }
+  } catch (_) {
+    return null;
+  }
+  let decoded = pathname;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch (_) {
+      return null;
+    }
+  }
+  const isStaticCandidate = isConfiguredStorageUrl || decoded.startsWith('/static') || pathname.startsWith('/static');
+  if (decoded.includes('\\')) {
+    if (isStaticCandidate) {
+      throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图路径非法');
+    }
+    return null;
+  }
+  const normalized = path.posix.normalize(decoded);
+  if (normalized !== decoded) {
+    if (isStaticCandidate) {
+      throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图路径非法');
+    }
+    return null;
+  }
+  if (!normalized.startsWith('/static/projects/')) return null;
+  return normalized.replace(/^\/static\/+/, '');
+}
+
+function findPlatformReference(db, relativePath, originalUrl) {
+  const asset = db.prepare(`SELECT id, drama_id, metadata FROM assets
+    WHERE deleted_at IS NULL AND type = 'image' AND (local_path = ? OR url = ? OR url = ?)
+    ORDER BY id DESC LIMIT 1`).get(relativePath, `/static/${relativePath}`, originalUrl);
+  if (asset) return { source: 'asset', drama_id: asset.drama_id, metadata: parseJsonObject(asset.metadata) };
+  const generated = db.prepare(`SELECT id, drama_id FROM image_generations
+    WHERE deleted_at IS NULL AND status = 'completed' AND (local_path = ? OR image_url = ? OR image_url = ?)
+    ORDER BY id DESC LIMIT 1`).get(relativePath, `/static/${relativePath}`, originalUrl);
+  if (generated) return { source: 'image_generation', drama_id: generated.drama_id, metadata: {} };
+  return null;
+}
+
+function assertReferenceImagesAllowed(db, referenceImages, dramaId, options = {}) {
+  if (!Array.isArray(referenceImages) || referenceImages.length === 0) return;
+  const platformReferences = [];
+  for (const ref of referenceImages) {
+    const relativePath = staticProjectReferencePath(ref);
+    if (relativePath) platformReferences.push({ ref, relativePath });
+  }
+  if (platformReferences.length === 0) return;
+  const targetDramaId = Number(dramaId);
+  if (!Number.isSafeInteger(targetDramaId) || targetDramaId <= 0) {
+    throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图所属项目不存在');
+  }
+  const drama = db.prepare('SELECT id, tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL').get(targetDramaId);
+  if (!drama) throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图所属项目不存在');
+  if (options.tenantId) {
+    if (!drama.tenant_id || String(drama.tenant_id) !== String(options.tenantId)) {
+      throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图请求租户与当前项目不一致');
+    }
+  } else if (drama.tenant_id) {
+    throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图请求租户与当前项目不一致');
+  } else if (!options.userId || String(drama.user_id || '') !== String(options.userId)) {
+    throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图请求用户与当前项目不一致');
+  }
+  for (const { ref, relativePath } of platformReferences) {
+    const row = findPlatformReference(db, relativePath, String(ref || '').trim());
+    if (!row) {
+      throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图不是当前项目可用素材');
+    }
+    const metadata = row.metadata || {};
+    if (row.drama_id == null && metadata.system_shared === true) continue;
+    if (Number(row.drama_id) !== targetDramaId) {
+      throw imageRequestError('IMAGE_REFERENCE_FORBIDDEN', '参考图不属于当前项目');
+    }
+  }
+}
+
+function configuredImageModels(config) {
+  return [
+    ...(Array.isArray(config?.model) ? config.model : []),
+    config?.default_model,
+  ].map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function findConfiguredImageModel(db, imageServiceType, requestedModel) {
+  const serviceTypes = imageServiceType === 'storyboard_image'
+    ? ['storyboard_image', 'image']
+    : [imageServiceType || 'image'];
+  const requested = String(requestedModel || '').trim().toLowerCase();
+  for (const serviceType of serviceTypes) {
+    const configs = aiConfigService.listConfigs(db, serviceType).filter((config) => config.is_active);
+    if (!requested && configs.length > 0) return configs[0];
+    const matches = configs.filter((config) => configuredImageModels(config)
+      .some((model) => model.toLowerCase() === requested));
+    const matched = USMERCARI_IMAGE_MODELS.has(requested)
+      ? matches.find((config) => String(config.provider || '').toLowerCase() === 'usmercari_image'
+        || String(config.api_protocol || '').toLowerCase() === 'usmercari_image') || matches[0]
+      : matches[0];
+    if (matched) return matched;
+  }
+  return null;
+}
+
+function normalizeUsmercariCapabilities(config, model) {
+  const all = config?.verified_capabilities;
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return null;
+  const key = Object.keys(all).find((item) => item.toLowerCase() === String(model).toLowerCase());
+  const raw = key ? all[key] : null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    supportsTextToImage: raw.supportsTextToImage === true,
+    supportsImageReference: raw.supportsImageReference === true,
+    maxReferences: Number.isSafeInteger(Number(raw.maxReferences))
+      ? Number(raw.maxReferences)
+      : 0,
+    resolutions: Array.isArray(raw.resolutions)
+      ? raw.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+      : [],
+  };
+}
+
+function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
+  const requirePricing = options.requirePricing !== false;
+  const requestedModel = String(req.model || '').trim();
+  const requestedCanonical = requestedModel ? requestedModel.toLowerCase() : '';
+  const requestedIsStrict = USMERCARI_IMAGE_MODELS.has(requestedCanonical);
+  let config = findConfiguredImageModel(db, imageServiceType, requestedModel);
+  if (!config && !requestedIsStrict) {
+    config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
+  }
+  const rawSelectedModel = requestedModel
+    || config?.default_model
+    || configuredImageModels(config)[0];
+  if (!rawSelectedModel && options.allowMissingModel) return null;
+  const selectedModel = modelPriceService.canonicalModel(
+    rawSelectedModel,
+  );
+  const strictUsmercari = USMERCARI_IMAGE_MODELS.has(selectedModel)
+    || String(config?.provider || '').toLowerCase() === 'usmercari_image'
+    || String(config?.api_protocol || '').toLowerCase() === 'usmercari_image';
+  const referenceImages = Array.isArray(req.reference_images)
+    ? req.reference_images.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const quantity = Number(req.n ?? req.quantity ?? 1);
+  if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > 4) {
+    throw imageRequestError('INVALID_IMAGE_QUANTITY', '图片数量必须是 1 到 4 的整数');
+  }
+  let resolution = modelPriceService.normalizeResolution(req.resolution, 'image');
+  let capabilities = null;
+  if (strictUsmercari) {
+    if (!config || config.verification_status !== 'verified') {
+      throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过真实生成验证`);
+    }
+    if (!resolveUsmercariApiKey(config)) {
+      throw imageRequestError('MODEL_CREDENTIAL_MISSING', `${selectedModel} 未配置有效的 USMercari API Key`);
+    }
+    capabilities = normalizeUsmercariCapabilities(config, selectedModel);
+    if (!capabilities || !capabilities.supportsTextToImage) {
+      throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过文生图真实验证`);
+    }
+    if (!String(req.resolution || '').trim()) {
+      throw imageRequestError('IMAGE_RESOLUTION_REQUIRED', '请选择图片分辨率');
+    }
+    if (quantity !== 1) {
+      throw imageRequestError('INVALID_IMAGE_QUANTITY', 'USMercari 图片数量目前仅开放已实测的 1 张');
+    }
+    if (!resolution || !capabilities.resolutions.includes(resolution)) {
+      throw imageRequestError('IMAGE_RESOLUTION_NOT_VERIFIED', `${selectedModel} 的该分辨率尚未通过真实生成验证`);
+    }
+    if (referenceImages.length > 0 && !capabilities.supportsImageReference) {
+      throw imageRequestError('IMAGE_REFERENCE_NOT_VERIFIED', `${selectedModel} 尚未通过参考图真实验证`);
+    }
+    if (referenceImages.length > capabilities.maxReferences) {
+      throw imageRequestError(
+        'IMAGE_REFERENCE_LIMIT_EXCEEDED',
+        `${selectedModel} 最多支持 ${capabilities.maxReferences} 张参考图`,
+      );
+    }
+  }
+  if (!strictUsmercari && !resolution) resolution = null;
+  if (requirePricing) modelPriceService.ensureSchema(db);
+  const credits = requirePricing
+    ? modelPriceService.calculateCharge(db, selectedModel, { resolution, quantity })
+    : null;
+  const cost = requirePricing
+    ? modelPriceService.quoteCost(db, selectedModel, { resolution, quantity })
+    : null;
+  const protocol = String(config?.api_protocol || config?.provider || '').trim().toLowerCase();
+  return {
+    model: selectedModel,
+    provider: config?.provider || req.provider || 'openai',
+    configId: config?.id ?? null,
+    protocol,
+    resolution,
+    quantity,
+    referenceImages,
+    credits,
+    cost,
+    requestSnapshot: {
+      model: selectedModel,
+      provider: config?.provider || req.provider || 'openai',
+      protocol,
+      config_id: config?.id ?? null,
+      resolution,
+      quantity,
+      reference_images: referenceImages,
+      credits,
+      cost_micros_per_unit: cost && quantity > 0 ? Math.ceil(cost.cost_micros / quantity) : 0,
+      ...(capabilities ? { capabilities } : {}),
+    },
+  };
+}
 
 function settleImageCredit(db, log, row, outcome, message = '') {
   if (!row?.credit_reservation_id) return null;
@@ -676,6 +941,63 @@ function mergePromptWithStyle(prompt, style) {
   return base + ', ' + styleText;
 }
 
+async function verifyLocalImageArtifact(storagePath, localPath) {
+  if (!localPath) throw new Error('图片本地文件路径为空');
+  const storageRoot = path.resolve(storagePath);
+  const absolutePath = path.resolve(storageRoot, localPath);
+  const relative = path.relative(storageRoot, absolutePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('图片本地文件路径越出存储目录');
+  }
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('图片本地文件为空');
+  const sharp = require('sharp');
+  const metadata = await sharp(fs.readFileSync(absolutePath)).metadata();
+  if (!metadata.width || !metadata.height || !metadata.format) {
+    throw new Error('图片文件不可读取');
+  }
+  const mimeByFormat = {
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    avif: 'image/avif',
+  };
+  return {
+    absolutePath,
+    fileSize: stat.size,
+    width: metadata.width,
+    height: metadata.height,
+    mimeType: mimeByFormat[metadata.format] || `image/${metadata.format}`,
+  };
+}
+
+function createGeneratedImageAsset(db, row, persistedImage, artifact, index, total) {
+  return assetService.create(db, null, {
+    drama_id: row.drama_id ?? null,
+    storyboard_id: row.storyboard_id ?? null,
+    name: total > 1 ? `生成图片 ${row.id}-${index + 1}` : `生成图片 ${row.id}`,
+    type: 'image',
+    category: row.scene_id != null
+      ? 'scene'
+      : row.character_id != null ? 'character' : 'generation',
+    url: persistedImage.url,
+    local_path: persistedImage.local_path,
+    file_size: artifact.fileSize,
+    mime_type: artifact.mimeType,
+    width: artifact.width,
+    height: artifact.height,
+    image_gen_id: row.id,
+    metadata: {
+      source: 'image_generation',
+      model: row.model || null,
+      resolution: row.resolution || null,
+      index,
+      quantity: total,
+    },
+  });
+}
+
 function findActiveForTarget(db, storyboardId, frameType, options = {}) {
   if (!storyboardId) return null;
   const ownerClause = options.billingEnabled
@@ -721,24 +1043,29 @@ function create(db, log, req, options = {}) {
   }
   let billedModel = null;
   let billedCredits = null;
+  const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
   if (options.billingEnabled) {
     if (!options.userId) {
       const error = new Error('请先登录');
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const imageServiceType = req.storyboard_id ? 'storyboard_image' : 'image';
-    const config = imageClient.getDefaultImageConfig(db, req.model, req.provider, imageServiceType);
-    billedModel = req.model || config?.default_model || (Array.isArray(config?.model) ? config.model[0] : config?.model);
-    const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(billedModel);
-    billedCredits = modelPriceService.requirePrice(db, billedModel);
+  }
+  const billingRequest = resolveImageBillingRequest(db, req, imageServiceType, {
+    requirePricing: options.billingEnabled === true,
+    allowMissingModel: !options.billingEnabled,
+  });
+  if (options.billingEnabled) {
+    billedModel = billingRequest.model;
+    billedCredits = billingRequest.credits;
   }
   const sceneId = req.scene_id != null ? Number(req.scene_id) : null;
-  const refImagesJson =
-    req.reference_images && Array.isArray(req.reference_images)
-      ? JSON.stringify(req.reference_images.slice(0, 10))
-      : null;
+  const normalizedReferenceImages = billingRequest?.referenceImages
+    || (Array.isArray(req.reference_images) ? req.reference_images.slice(0, 10) : []);
+  assertReferenceImagesAllowed(db, normalizedReferenceImages, req.drama_id, options);
+  const refImagesJson = normalizedReferenceImages.length
+    ? JSON.stringify(normalizedReferenceImages)
+    : null;
   if (req.reference_images && Array.isArray(req.reference_images)) {
     log.info('reference_images 完整路径（请求入参）', {
       image_gen_create: true,
@@ -752,6 +1079,11 @@ function create(db, log, req, options = {}) {
   if (!reqSize && req.aspect_ratio) {
     reqSize = aspectRatioToSize(req.aspect_ratio) || null;
   }
+  const resolution = billingRequest?.resolution
+    || modelPriceService.normalizeResolution(req.resolution, 'image')
+    || null;
+  const quantity = billingRequest?.quantity || 1;
+  const requestSnapshot = billingRequest ? JSON.stringify(billingRequest.requestSnapshot) : null;
   const useFirstFrameLayoutLock = resolveUseFirstFrameLayoutLock(req, frameType);
   const created = db.transaction(() => {
     const task = taskService.createTask(db, log, 'image_generation', String(req.drama_id || ''));
@@ -763,20 +1095,20 @@ function create(db, log, req, options = {}) {
     const billingColumns = options.billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = options.billingEnabled ? ', ?, ?, NULL' : '';
     const params = [
-      req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId, req.provider || 'openai',
+      req.storyboard_id ?? null, Number(req.drama_id) || 0, sceneId,
+      billingRequest?.provider || req.provider || 'openai',
       mergedPrompt, req.negative_prompt ?? null, billedModel || req.model || null, frameType,
-      refImagesJson, useFirstFrameLayoutLock, reqSize, taskId, now, now,
+      refImagesJson, useFirstFrameLayoutLock, reqSize, resolution, quantity, requestSnapshot,
+      taskId, now, now,
     ];
     if (options.billingEnabled) params.push(options.tenantId || null, String(options.userId));
     const info = db.prepare(
-      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, status, task_id, created_at, updated_at${billingColumns})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
+      `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, negative_prompt, model, frame_type, reference_images, use_first_frame_layout_lock, size, resolution, quantity, request_snapshot, status, task_id, created_at, updated_at${billingColumns})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?${billingValues})`
     ).run(...params);
     const imageGenId = info.lastInsertRowid;
     if (!imageGenId) throw new Error('insert failed');
     if (options.billingEnabled) {
-      const creditLedger = require('./creditLedgerService');
-      const generationCost = require('./generationCostLedgerService');
       const reservation = creditLedger.reserve(db, {
         tenantId: options.tenantId,
         actorUserId: options.userId,
@@ -790,7 +1122,8 @@ function create(db, log, req, options = {}) {
       generationCost.record(db, {
         reservationId: reservation.id,
         model: billedModel,
-        quantity: 1,
+        resolution,
+        quantity,
         usageSource: 'configured',
       });
       db.prepare('UPDATE image_generations SET credit_reservation_id = ? WHERE id = ?')
@@ -831,6 +1164,11 @@ async function processImageGeneration(db, log, imageGenId) {
     log.info('[图生] 已被处理，跳过', { id: imageGenId, status: row.status });
     return;
   }
+  let requestSnapshot = {};
+  try {
+    const parsed = JSON.parse(row.request_snapshot || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) requestSnapshot = parsed;
+  } catch (_) {}
 
   log.info('[图生] ▶ 开始', {
     id: imageGenId,
@@ -956,7 +1294,13 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // ── Step 1: 获取 AI 配置 ──────────────────────────────────────────
-    const config = imageClient.getDefaultImageConfig(db, row.model, null, imageServiceType);
+    const config = imageClient.getDefaultImageConfig(
+      db,
+      requestSnapshot.model || row.model,
+      requestSnapshot.provider || null,
+      imageServiceType,
+      requestSnapshot.config_id || null,
+    );
     if (!config) {
       log.error('[图生] ✗ 未找到图片 AI 配置', { id: imageGenId, imageServiceType, elapsed: elapsed() });
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
@@ -1659,8 +2003,12 @@ async function processImageGeneration(db, log, imageGenId) {
 
     const result = await taskService.withTaskHeartbeat(db, row.task_id, '正在等待图片生成服务...', () => imageClient.callImageApi(db, log, {
       prompt: finalPrompt,
-      model: row.model,
+      model: requestSnapshot.model || row.model,
+      preferred_provider: requestSnapshot.provider || undefined,
+      preferred_config_id: requestSnapshot.config_id || undefined,
       size: imageSize,
+      resolution: requestSnapshot.resolution || row.resolution || undefined,
+      n: requestSnapshot.quantity || row.quantity || 1,
       quality: row.quality,
       drama_id: row.drama_id,
       character_id: row.character_id,
@@ -1677,68 +2025,38 @@ async function processImageGeneration(db, log, imageGenId) {
 
     const now2 = new Date().toISOString();
     if (result.error) {
+      const providerError = result.indeterminate
+        ? `供应商最终状态未知：${result.error}`
+        : result.error;
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
-        'failed', (result.error || '').slice(0, 500), now2, imageGenId
+        'failed', (providerError || '').slice(0, 500), now2, imageGenId
       );
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
-      log.error('[图生] ✗ API返回错误', { id: imageGenId, error: result.error, total_elapsed: elapsed() });
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, providerError);
+      log.error('[图生] ✗ API返回错误', { id: imageGenId, error: providerError, total_elapsed: elapsed() });
       if (row.scene_id != null) {
-        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, row.scene_id); } catch (_) {}
+        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(providerError, now2, row.scene_id); } catch (_) {}
       }
       if (row.storyboard_id != null) {
-        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(result.error, now2, row.storyboard_id); } catch (_) {}
+        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(providerError, now2, row.storyboard_id); } catch (_) {}
       }
-      settleImageCredit(db, log, row, 'failed', result.error);
+      settleImageCredit(db, log, row, 'failed', providerError);
       return;
     }
 
-    // ── Step 5: 保存图片到本地 ───────────────────────────────────────
+    // ── Step 5: 保存并验证全部图片 ───────────────────────────────────
     log.info('[图生] Step5 保存到本地 →', { id: imageGenId, elapsed: elapsed() });
     const tSave = Date.now();
-    let localPath = null;
-    let saveErrorMsg = '';
-    try {
-      const storagePath = path.isAbsolute(cfg.storage?.local_path)
-        ? cfg.storage.local_path
-        : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-      const category =
-        row.scene_id != null ? 'scenes' : row.character_id != null ? 'characters' : 'images';
-      const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
-      localPath = await uploadService.downloadImageToLocal(
-        storagePath,
-        result.image_url,
-        category,
-        log,
-        'ig',
-        projectSubdir
-      );
-      if (localPath && imageSize) {
-        const absImg = path.join(storagePath, localPath);
-        await normalizeLocalImageToTargetSize(absImg, imageSize, log, { id: imageGenId });
-      }
-      log.info('[图生] Step5 保存完成', { id: imageGenId, local_path: localPath, save_ms: Date.now() - tSave, elapsed: elapsed() });
-
-      // Step5.1：单帧/场景图等若 API 返回像素与 Step3 目标不一致，则 letterbox 到目标画布（Gemini 常见）
-      if (
-        localPath &&
-        imageSize &&
-        !isGridFrameType(row.frame_type)
-      ) {
-        const absNorm = path.join(storagePath, localPath);
-        await normalizeSavedImageToTargetPixels(absNorm, imageSize, log, { id: imageGenId, size: imageSize });
-      }
-    } catch (saveErr) {
-      saveErrorMsg = saveErr.message || String(saveErr);
-      log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErrorMsg, elapsed: elapsed() });
-    }
-
-    if (!localPath) {
-      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成本地文件'}；未标记完成，请重试生成`).slice(0, 500);
+    const requestedQuantity = Number(requestSnapshot.quantity || row.quantity || 1);
+    const providerImageUrls = [
+      ...(Array.isArray(result.image_urls) ? result.image_urls : []),
+      result.image_url,
+    ].map((item) => String(item || '').trim()).filter((item, index, all) => item && all.indexOf(item) === index);
+    if (providerImageUrls.length < requestedQuantity) {
+      const msg = `图片生成结果数量不足：请求 ${requestedQuantity} 张，实际返回 ${providerImageUrls.length} 张`;
       db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
         'failed', msg, now2, imageGenId
       );
       if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
-      log.error('[图生] ✗ 本地 artifact 未落盘，拒绝标记完成', { id: imageGenId, error: msg, total_elapsed: elapsed() });
       if (row.scene_id != null) {
         try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
       }
@@ -1748,49 +2066,118 @@ async function processImageGeneration(db, log, imageGenId) {
       settleImageCredit(db, log, row, 'failed', msg);
       return;
     }
-
-    // 入库的 image_url：优先指向本地静态路径，避免前端仍用 Gemini 返回的 data URL
-    let persistedImageUrl = result.image_url;
-    if (localPath) {
-      persistedImageUrl = '/static/' + String(localPath).replace(/^\//, '');
+    const storagePath = path.isAbsolute(cfg.storage?.local_path)
+      ? cfg.storage.local_path
+      : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const category = row.scene_id != null ? 'scenes' : row.character_id != null ? 'characters' : 'images';
+    const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
+    const persistedImages = [];
+    let saveErrorMsg = '';
+    try {
+      for (let index = 0; index < requestedQuantity; index += 1) {
+        const localPath = await uploadService.downloadImageToLocal(
+          storagePath,
+          providerImageUrls[index],
+          category,
+          log,
+          index === 0 ? 'ig' : `ig_${index + 1}`,
+          projectSubdir,
+        );
+        if (!localPath) throw new Error(`第 ${index + 1} 张图片未生成本地文件`);
+        if (imageSize) {
+          const absoluteImagePath = path.join(storagePath, localPath);
+          await normalizeLocalImageToTargetSize(absoluteImagePath, imageSize, log, { id: imageGenId, index });
+          if (!isGridFrameType(row.frame_type)) {
+            await normalizeSavedImageToTargetPixels(
+              absoluteImagePath,
+              imageSize,
+              log,
+              { id: imageGenId, index, size: imageSize },
+            );
+          }
+        }
+        const artifact = await verifyLocalImageArtifact(storagePath, localPath);
+        persistedImages.push({
+          url: '/static/' + String(localPath).replace(/^\//, ''),
+          local_path: localPath,
+          artifact,
+        });
+      }
+    } catch (saveErr) {
+      saveErrorMsg = saveErr.message || String(saveErr);
+      log.warn('[图生] Step5 保存失败', { id: imageGenId, err: saveErrorMsg, elapsed: elapsed() });
     }
+    if (persistedImages.length !== requestedQuantity) {
+      const msg = (`图片本地保存失败：${saveErrorMsg || '未生成完整本地文件'}；未标记完成，请重试生成`).slice(0, 500);
+      db.prepare('UPDATE image_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?').run(
+        'failed', msg, now2, imageGenId,
+      );
+      if (row.task_id) taskService.updateTaskError(db, row.task_id, msg);
+      if (row.scene_id != null) {
+        try { db.prepare('UPDATE scenes SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.scene_id); } catch (_) {}
+      }
+      if (row.storyboard_id != null) {
+        try { db.prepare('UPDATE storyboards SET error_msg = ?, updated_at = ? WHERE id = ?').run(msg, now2, row.storyboard_id); } catch (_) {}
+      }
+      settleImageCredit(db, log, row, 'failed', msg);
+      return;
+    }
+    log.info('[图生] Step5 保存完成', {
+      id: imageGenId,
+      count: persistedImages.length,
+      save_ms: Date.now() - tSave,
+      elapsed: elapsed(),
+    });
+
+    const primaryImage = persistedImages[0];
+    const localPath = primaryImage.local_path;
+    const persistedImageUrl = primaryImage.url;
 
     // ── Step 6: 写库 & 任务完成 ──────────────────────────────────────
-    db.prepare(
-      'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
-    ).run('completed', persistedImageUrl, localPath, now2, now2, imageGenId);
-    if (row.task_id) {
-      taskService.updateTaskResult(db, row.task_id, {
-        image_generation_id: imageGenId,
-        image_url: persistedImageUrl,
-        status: 'completed',
+    db.transaction(() => {
+      db.prepare(
+        'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, result_images = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+      ).run(
+        'completed',
+        persistedImageUrl,
+        localPath,
+        JSON.stringify(persistedImages.map((item) => ({ url: item.url, local_path: item.local_path }))),
+        now2,
+        now2,
+        imageGenId,
+      );
+      persistedImages.forEach((item, index) => {
+        createGeneratedImageAsset(db, row, item, item.artifact, index, persistedImages.length);
       });
-    }
-    settleImageCredit(db, log, row, 'completed');
-    
-    if (row.scene_id != null && row.storyboard_id == null) {
-      // 旧图追加到 extra_images，与上传逻辑保持一致
-      const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(row.scene_id);
-      const oldPath = oldScene?.local_path || oldScene?.image_url || '';
-      let sceneExtras = [];
-      try { sceneExtras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
-      if (!Array.isArray(sceneExtras)) sceneExtras = [];
-      if (oldPath && !sceneExtras.includes(oldPath)) sceneExtras.push(oldPath);
-      const sceneExtraJson = sceneExtras.length ? JSON.stringify(sceneExtras) : null;
-      try {
-        db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
-          persistedImageUrl, localPath, sceneExtraJson, now2, row.scene_id
-        );
-      } catch (e) {
-        if ((e.message || '').includes('extra_images')) {
-          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
-            persistedImageUrl, localPath, now2, row.scene_id
+      if (row.scene_id != null && row.storyboard_id == null) {
+        const oldScene = db.prepare('SELECT local_path, image_url, extra_images FROM scenes WHERE id = ?').get(row.scene_id);
+        const oldPath = oldScene?.local_path || oldScene?.image_url || '';
+        let sceneExtras = [];
+        try { sceneExtras = oldScene?.extra_images ? JSON.parse(oldScene.extra_images) : []; } catch (_) {}
+        if (!Array.isArray(sceneExtras)) sceneExtras = [];
+        if (oldPath && !sceneExtras.includes(oldPath)) sceneExtras.push(oldPath);
+        const sceneExtraJson = sceneExtras.length ? JSON.stringify(sceneExtras) : null;
+        try {
+          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, extra_images = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+            persistedImageUrl, localPath, sceneExtraJson, now2, row.scene_id,
           );
-        } else {
-          throw e;
+        } catch (error) {
+          if (!(error.message || '').includes('extra_images')) throw error;
+          db.prepare("UPDATE scenes SET image_url = ?, local_path = ?, status = 'generated', updated_at = ? WHERE id = ?").run(
+            persistedImageUrl, localPath, now2, row.scene_id,
+          );
         }
       }
-    }
+      if (row.task_id) {
+        taskService.updateTaskResult(db, row.task_id, {
+          image_generation_id: imageGenId,
+          image_url: persistedImageUrl,
+          images: persistedImages.map((item) => ({ url: item.url, local_path: item.local_path })),
+          status: 'completed',
+        });
+      }
+    })();
+    settleImageCredit(db, log, row, 'completed');
     log.info('[图生] ✓ 完成', { id: imageGenId, local_path: localPath, total_elapsed: elapsed() });
 
     // ── 首尾帧绑定决策 ─────────────────────────────────────────────
@@ -2017,6 +2404,8 @@ module.exports = {
   syncStoryboardCharacters,
   findActiveForTarget,
   settleImageCredit,
+  resolveImageBillingRequest,
+  verifyLocalImageArtifact,
   splitConfiguredGridToImages,
   buildConfiguredGridPrompt,
 };

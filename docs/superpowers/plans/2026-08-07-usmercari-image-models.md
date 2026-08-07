@@ -1,14 +1,16 @@
 # USMercari 两个图片模型全站接入实施计划
 
+> **2026-08-07 执行修订（覆盖下文冲突步骤）：** `gpt-image-2-2-4k` 仅开放 1K/2K，`nano-banana-2` 开放 1K/2K/4K。GPT 4K 的失败证据保留为禁止开放门禁。图片档位使用独立 `model_image_resolution_prices` 表，不重建现有视频档位表；所有测试、界面与验收按每模型 `verified_capabilities.resolutions` 动态收敛。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 `subagent-driven-development`（推荐）或 `executing-plans` 逐任务实现此计划。步骤使用复选框（`- [ ]`）跟踪进度；每个任务遵循测试先行，只有前一门禁通过才进入下一任务。
 
-**目标：** 接入 `gpt-image-2-2-4k` 与 `nano-banana-2`，让管理员配置、模型展示名/备注、1K/2K/4K 人民币成本、积分价格和真实验证状态同步到首页、画布和短剧工厂，并让文生图、最多六张参考图生图、资产落库、失败退款形成可验证闭环。
+**目标：** 接入 `gpt-image-2-2-4k` 与 `nano-banana-2`，让管理员配置、模型展示名/备注、各自已验证分辨率的人民币成本、积分价格和真实验证状态同步到首页、画布和短剧工厂，并让单次生成 1 张图片的文生图、最多六张参考图生图、资产落库、失败退款形成可验证闭环。
 
-**架构：** 新增独立 `usmercari_image` 协议适配器；图片任务在入库和积分预扣前完成模型、分辨率、参考图数量、验证状态和价格校验。后台将现有视频分辨率价格表兼容扩展为图片档位价格，用户端只消费统一画布模型目录。供应商返回 URL 必须由后端下载、验图并保存到当前租户/项目后才算成功。
+**架构：** 新增独立 `usmercari_image` 协议适配器；图片任务在入库和积分预扣前完成模型、分辨率、参考图数量、验证状态和价格校验。后台使用独立图片分辨率价格表，用户端只消费统一画布模型目录。供应商返回 URL 必须由后端下载、验图并保存到当前租户/项目后才算成功。
 
 **技术栈：** Node.js 20、Express、SQLite/better-sqlite3、Vue 3、Element Plus、Node test runner、Playwright、Sharp。
 
-**已确认价格：** 两个模型相同；1K 成本 ¥0.08/张、70 积分，2K 成本 ¥0.10/张、87 积分，4K 成本 ¥0.12/张、105 积分。供应商截图金额是人民币，不做美元换算。
+**已确认价格：** 两个模型的已开放同档价格相同；1K 成本 ¥0.08/张、70 积分，2K 成本 ¥0.10/张、87 积分；4K 成本 ¥0.12/张、105 积分只用于 `nano-banana-2`。供应商截图金额是人民币，不做美元换算。
 
 **硬门禁：** 通用后端适配代码可以先存在，但真实生成通过前不得把模型写入前端供应商预设、用户模型目录或生产 `ai_service_configs`。本计划不包含生产切换；部署需用户另行明确授权。
 
@@ -16,7 +18,7 @@
 
 ## 文件职责
 
-- `backend-node/src/services/usmercariImageClient.js`：唯一负责 USMercari 图片上传、generations/edits 请求和供应商响应解析的文件。
+- `backend-node/src/services/usmercariImageClient.js`：唯一负责 USMercari 图片公网参考 URL、generations 请求和供应商响应解析的文件。
 - `backend-node/src/services/imageClient.js`：只做协议选择和统一参数转发，不复制供应商协议细节。
 - `backend-node/src/services/imageService.js`：负责预扣前门禁、任务/价格快照、结果验图落库和终态退款。
 - `backend-node/src/services/modelPriceService.js`：负责图片/视频档位合法性、管理员价格读写、积分和人民币成本计算。
@@ -95,38 +97,28 @@ it('uses the USMercari generations JSON contract', async () => {
 })
 ```
 
-- [ ] **步骤 2：编写参考图上传失败测试**
+- [ ] **步骤 2：编写公网参考图合同测试**
 
-用本地临时 PNG 证明每张图片先调用 `POST /v1/media/upload/image`，随后 `POST /v1/images/edits` 只提交供应商返回的 `image_ids`，不提交站内 Cookie、私有 URL 或本机路径。
+证明参考图只接受服务端配置 `STORAGE_BASE_URL` 同源路径下的本站静态资源公网 URL；单张通过 `image_url`、多张通过 `image_urls` 随 `POST /v1/images/generations` 提交。私网地址、其他域名、本机路径、相对 URL 和带认证信息的 URL 都必须在供应商调用前拒绝。
 
 ```js
-it('uploads private references before edits', async () => {
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'usmercari-image-test-'))
-  const pngPath = path.join(tempDir, 'reference.png')
-  await sharp({ create: { width: 8, height: 8, channels: 3, background: '#cc6633' } }).png().toFile(pngPath)
-  const request = captureSequence([
-    { id: 'media-1' },
-    { data: [{ url: 'https://cdn.example/edited.png' }] },
-  ])
-  try {
-    await usmercariImageClient.create({
-      ...validInput,
-      fetchImpl: request.fetch,
-      referenceFiles: [{ path: pngPath, mimeType: 'image/png', extension: 'png' }],
-    })
-    assert.match(request.calls[0].url, /\/v1\/media\/upload\/image$/)
-    assert.deepEqual(request.calls[1].body.image_ids, ['media-1'])
-    assert.equal(JSON.stringify(request.calls[1].body).includes('/static/projects/'), false)
-    assert.equal(JSON.stringify(request.calls[1].body).includes(pngPath), false)
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true })
-  }
+it('uses one public reference on the generations contract', async () => {
+  const request = captureFetch({ data: [{ url: 'https://cdn.example/edited.png' }] })
+  await usmercariImageClient.create({
+    ...validInput,
+    fetchImpl: request.fetch,
+    referenceImageUrls: ['https://molimama.vip/static/projects/1/reference.png'],
+    allowedReferenceBaseUrl: 'https://molimama.vip/static',
+  })
+  assert.match(request.calls[0].url, /\/v1\/images\/generations$/)
+  assert.equal(request.calls[0].body.image_url, 'https://molimama.vip/static/projects/1/reference.png')
+  assert.equal(request.calls[0].body.image_urls, undefined)
 })
 ```
 
 - [ ] **步骤 3：编写输入与结果边界失败测试**
 
-覆盖：零张参考图走 generations；1–6 张走 edits；第 7 张在任何 HTTP 调用前失败；HTML/502、空 `data`、缺少 URL 和不可下载结果均失败；同名 `nano-banana-2` 仍命中 `usmercari_image` 而不是旧 `nano_banana` 协议。
+覆盖：零张和 1–6 张参考图都走 generations；单张发送 `image_url`，多张发送 `image_urls`；第 7 张在任何 HTTP 调用前失败；HTML/502、空 `data`、缺少 URL 和不可下载结果均失败；同名 `nano-banana-2` 仍命中 `usmercari_image` 而不是旧 `nano_banana` 协议。
 
 ```js
 it('blocks the seventh reference before provider I/O', async () => {
@@ -135,7 +127,8 @@ it('blocks the seventh reference before provider I/O', async () => {
     usmercariImageClient.create({
       ...validInput,
       fetchImpl: async () => { calls += 1 },
-      referenceFiles: Array(7).fill({ path: 'never-read.png', mimeType: 'image/png', extension: 'png' }),
+      referenceImageUrls: Array(7).fill('https://molimama.vip/static/projects/1/reference.png'),
+      allowedReferenceBaseUrl: 'https://molimama.vip/static',
     }),
     /最多 6 张参考图/,
   )
@@ -174,33 +167,31 @@ git commit -m "test: 锁定 USMercari 图片协议"
 
 - [ ] **步骤 1：实现输入标准化和能力校验**
 
-允许模型仅为 `gpt-image-2-2-4k`、`nano-banana-2`；分辨率仅为 `1k`、`2k`、`4k`；数量至少 1；参考图最多 6。错误发生在上传和生成请求之前，不允许 `slice(0, 6)` 静默裁剪。
+允许模型仅为 `gpt-image-2-2-4k`、`nano-banana-2`；GPT 仅允许 `1k/2k`，Nano 允许 `1k/2k/4k`；数量必须为 1；参考图最多 6。错误发生在生成请求之前，不允许静默改写数量或用 `slice(0, 6)` 裁剪参考图。
 
 ```js
-const MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2'])
-const RESOLUTIONS = new Set(['1k', '2k', '4k'])
+const MODELS = {
+  'gpt-image-2-2-4k': new Set(['1k', '2k']),
+  'nano-banana-2': new Set(['1k', '2k', '4k']),
+}
 
 function validateRequest({ model, resolution, n, referenceFiles = [] }) {
-  if (!MODELS.has(model)) throw new Error(`USMercari 图片模型不支持: ${model}`)
-  if (!RESOLUTIONS.has(resolution)) throw new Error(`USMercari 图片分辨率不支持: ${resolution}`)
-  if (!Number.isInteger(n) || n < 1) throw new Error('图片数量必须为正整数')
+  if (!MODELS[model]) throw new Error(`USMercari 图片模型不支持: ${model}`)
+  if (!MODELS[model].has(resolution)) throw new Error(`USMercari 图片分辨率不支持: ${resolution}`)
+  if (!Number.isInteger(n) || n !== 1) throw new Error('图片数量目前仅开放 1 张')
   if (referenceFiles.length > 6) throw new Error('USMercari 图片模型最多 6 张参考图')
 }
 ```
 
-- [ ] **步骤 2：实现私有参考图上传**
+- [ ] **步骤 2：实现公网参考图解析与请求**
 
-复用现有站内素材解析/归属校验，把已验证图片读取为受限大小的数据；上传只发送图片内容与扩展名。收集 `media id` 后调用 edits。
+复用现有站内素材解析/归属校验，把已验证素材转换成 `STORAGE_BASE_URL` 同源路径下的本站静态资源公网 URL。只允许匿名可取的公网 HTTP(S) 地址；单张写入 `image_url`，多张写入 `image_urls`，都调用 generations。未通过实测的 upload/edits 合同不得启用。
 
 ```js
-async function uploadReference({ fetchImpl, baseUrl, headers, file }) {
-  const data = await fs.promises.readFile(file.path)
-  const response = await postJson(fetchImpl, `${baseUrl}/v1/media/upload/image`, headers, {
-    data: `data:${file.mimeType};base64,${data.toString('base64')}`,
-    extension: file.extension,
-  })
-  if (!response.id) throw new Error('USMercari 参考图上传未返回 media id')
-  return response.id
+function appendReferences(body, publicReferences) {
+  if (publicReferences.length === 1) body.image_url = publicReferences[0]
+  if (publicReferences.length > 1) body.image_urls = publicReferences
+  return body
 }
 ```
 
@@ -289,25 +280,20 @@ async function inspectDownloadedImage(buffer) {
 
 - [ ] **步骤 2：准备最小验证素材**
 
-生成或选择当前项目可读的小尺寸 PNG，脚本通过与生产相同的上传路径验证参考图能力。临时文件放在受控临时目录并在完成后删除，不把用户素材提交到 Git。
+准备一个匿名可读的 HTTPS 测试图片，并通过 `USMERCARI_VERIFY_REFERENCE_URL` 传给验证脚本。该地址必须与生产相同，能够被供应商直接拉取；不把用户素材或带签名的私有地址提交到 Git。
 
 ```js
-const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'usmercari-image-verify-'))
-const referencePath = path.join(tempDir, 'reference.png')
-await sharp({ create: { width: 128, height: 128, channels: 3, background: '#cc6633' } }).png().toFile(referencePath)
-try {
-  await runVerificationMatrix({ apiKey, referencePath })
-} finally {
-  await fs.promises.rm(tempDir, { recursive: true, force: true })
-}
+const referenceUrl = String(process.env.USMERCARI_VERIFY_REFERENCE_URL || '').trim()
+if (!/^https:\/\//i.test(referenceUrl)) throw new Error('USMERCARI_VERIFY_REFERENCE_URL 必须是 HTTPS 公网地址')
+await runVerificationMatrix({ apiKey, referenceUrl })
 ```
 
-- [ ] **步骤 3：真实验证六个文生图组合**
+- [ ] **步骤 3：真实验证五个允许开放的文生图组合，并记录 GPT 4K 失败证据**
 
 按顺序运行：
 
 ```text
-gpt-image-2-2-4k: 1k, 2k, 4k
+gpt-image-2-2-4k: 1k, 2k（4k 已失败，禁止开放）
 nano-banana-2: 1k, 2k, 4k
 ```
 
@@ -315,7 +301,7 @@ nano-banana-2: 1k, 2k, 4k
 
 - [ ] **步骤 4：真实验证两个参考图组合**
 
-两个模型各至少执行一次 1K 参考图生图，证明上传、`image_ids`、edits、下载和验图完整成功。
+两个模型各至少执行一次 1K 公网参考图生图，证明 `image_url`、generations、下载和验图完整成功；未验证通过的上传/edits 合同不得启用。
 
 - [ ] **步骤 5：写入脱敏证据并判断门禁**
 
@@ -340,11 +326,12 @@ git commit -m "test: 记录 USMercari 图片真实生成证据"
 
 - [ ] **步骤 1：编写迁移和计价失败测试**
 
-证明：现有 480p/720p 视频行迁移后值不变；图片允许 `1k/2k/4k`；其他值拒绝；图片每张成本为 80000/100000/120000 微元、积分为 70/87/105；视频仍按每秒计价。
+证明：现有 480p/720p 视频行迁移后值不变；图片价格表可存 `1k/2k/4k`，但模型公开与生成仍按验证能力收敛；其他值拒绝；图片每张成本为 80000/100000/120000 微元、积分为 70/87/105；视频仍按每秒计价。
 
 ```js
-assert.equal(modelPrice.calculateCharge(db, 'gpt-image-2-2-4k', { resolution: '1k', quantity: 2 }), 140)
-assert.equal(modelPrice.quoteCost(db, 'gpt-image-2-2-4k', { resolution: '4k', quantity: 3 }), 360000)
+assert.equal(modelPrice.calculateCharge(db, 'gpt-image-2-2-4k', { resolution: '1k', quantity: 1 }), 70)
+assert.throws(() => modelPrice.quoteCost(db, 'gpt-image-2-2-4k', { resolution: '4k', quantity: 1 }), /未配置/)
+assert.equal(modelPrice.quoteCost(db, 'nano-banana-2', { resolution: '4k', quantity: 1 }), 120000)
 assert.throws(() => modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
   category: 'image', resolution_prices: { '1080p': { credits: 70, cost_micros_per_unit: 80000 } },
 }), /图片分辨率/)
@@ -352,22 +339,17 @@ assert.throws(() => modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
 
 - [ ] **步骤 2：实现兼容迁移**
 
-重建 `model_resolution_prices`，移除只允许 480p/720p 的旧 CHECK，新增通用 `cost_micros_per_unit`，完整复制旧行、索引与更新时间。旧视频 `cost_micros_per_second` 通过兼容读写映射保留，不丢历史数据。
+新增独立 `model_image_resolution_prices`，图片档位不重建或改写 `model_resolution_prices`。旧视频 `cost_micros_per_second` 和 480p/720p 行保持原样，不丢历史数据。
 
 ```sql
-ALTER TABLE model_resolution_prices RENAME TO model_resolution_prices_legacy;
-CREATE TABLE model_resolution_prices (
+CREATE TABLE IF NOT EXISTS model_image_resolution_prices (
   model TEXT NOT NULL COLLATE NOCASE,
-  resolution TEXT NOT NULL,
+  resolution TEXT NOT NULL CHECK (resolution IN ('1k', '2k', '4k')),
   credits INTEGER NOT NULL CHECK (credits > 0),
   cost_micros_per_unit INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_unit >= 0),
   updated_at TEXT NOT NULL,
   PRIMARY KEY (model, resolution)
 );
-INSERT INTO model_resolution_prices (model, resolution, credits, cost_micros_per_unit, updated_at)
-SELECT model, resolution, credits, cost_micros_per_second, updated_at
-FROM model_resolution_prices_legacy;
-DROP TABLE model_resolution_prices_legacy;
 ```
 
 - [ ] **步骤 3：让价格服务按类别声明档位**
@@ -434,14 +416,14 @@ assert.equal(models.some((item) => item.model === 'unverified-model'), false)
 assert.deepEqual(models.find((item) => item.model === 'gpt-image-2-2-4k'), {
   kind: 'image',
   model: 'gpt-image-2-2-4k',
-  label: 'GPT Image 2 · 4K',
+  label: 'GPT Image 2',
   public_note: '高精度商品与角色图，支持最多 6 张参考图',
   verification_status: 'verified',
   enabled: true,
   resolution_prices: {
-    '1k': { credits: 70 }, '2k': { credits: 87 }, '4k': { credits: 105 },
+    '1k': { credits: 70 }, '2k': { credits: 87 },
   },
-  capabilities: { supportsTextToImage: true, supportsImageReference: true, maxReferences: 6, resolutions: ['1k', '2k', '4k'] },
+  capabilities: { supportsTextToImage: true, supportsImageReference: true, maxReferences: 6, resolutions: ['1k', '2k'] },
 })
 ```
 
@@ -529,10 +511,11 @@ function isUsmercariImageVisible(config) {
 
 - [ ] **步骤 4：扩展图片价格编辑器**
 
-图片显示 1K/2K/4K 三行，成本单位明确为“人民币元/张”，积分单位为“积分/张”；视频 480P/720P 的“元/秒”界面保持原样。填入两个模型的 0.08/0.10/0.12 与 70/87/105。
+图片按模型显示档位：GPT 显示 1K/2K，Nano 显示 1K/2K/4K；成本单位明确为“人民币元/张”，积分单位为“积分/张”。视频 480P/720P 的“元/秒”界面保持原样。
 
 ```js
-function resolutionKeys(category) {
+function resolutionKeys(category, model) {
+  if (category === 'image' && model === 'gpt-image-2-2-4k') return ['1k', '2k']
   if (category === 'image') return ['1k', '2k', '4k']
   if (category === 'video') return ['480p', '720p']
   return []
@@ -582,15 +565,16 @@ assert.equal(db.prepare("SELECT COUNT(*) count FROM tenant_credit_ledger WHERE k
 assert.equal(providerCalls, 0)
 ```
 
-- [ ] **步骤 2：编写三档预扣与退款测试**
+- [ ] **步骤 2：编写每模型已验证档位预扣与退款测试**
 
-对两个模型分别证明 1K/2K/4K 按 70/87/105 × `n` 预扣；供应商失败、HTML 错误、结果下载/验图/保存失败均进入终态失败并完整退款；重复终态处理不重复退款。
+证明 GPT 1K/2K 与 Nano 1K/2K/4K 按对应档位预扣 1 张图片的积分；`n != 1` 和 GPT 4K 都在任务入库和预扣前拒绝。供应商失败、HTML 错误、结果下载/验图/保存失败均进入终态失败并完整退款；重复终态处理不重复退款。
 
 ```js
 for (const [resolution, credits] of [['1k', 70], ['2k', 87], ['4k', 105]]) {
-  const row = createImage({ model: 'nano-banana-2', resolution, n: 2 })
-  assert.equal(readHeldCredits(row.billing_reference), credits * 2)
+  const row = createImage({ model: 'nano-banana-2', resolution, n: 1 })
+  assert.equal(readHeldCredits(row.billing_reference), credits)
 }
+assert.throws(() => createImage({ model: 'nano-banana-2', resolution: '1k', n: 2 }), /仅开放.*1 张/)
 settleImageCredit(db, log, failedRow, 'failed', '结果图片不可读')
 settleImageCredit(db, log, failedRow, 'failed', '重复回调')
 assert.equal(readRefundCount(failedRow.billing_reference), 1)
@@ -676,7 +660,7 @@ git commit -m "feat: 接入图片档位计费与资产闭环"
 
 - [ ] **步骤 1：编写统一目录与请求失败测试**
 
-首页和两个画布入口显示相同的管理员展示名、备注、能力与已验证档位；请求提交真实 model ID 和小写 `1k/2k/4k`；切换档位时预计扣分同步变为 70/87/105。
+首页和两个画布入口显示相同的管理员展示名、备注、能力与已验证档位；请求提交真实 model ID 和小写档位；GPT 只能选 1K/2K，Nano 可选 1K/2K/4K，预计扣分随档位同步。
 
 ```js
 assert.deepEqual(buildFreeCanvasGenerationRequest({
@@ -684,7 +668,8 @@ assert.deepEqual(buildFreeCanvasGenerationRequest({
 }), {
   model: 'gpt-image-2-2-4k', resolution: '2k', size: '2048x1152', aspect_ratio: '16:9', prompt: '森林',
 })
-assert.equal(estimateCredits(catalogModel, { resolution: '4k', quantity: 1 }), 105)
+assert.equal(estimateCredits(gptCatalogModel, { resolution: '4k', quantity: 1 }), null)
+assert.equal(estimateCredits(nanoCatalogModel, { resolution: '4k', quantity: 1 }), 105)
 
 export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
   const entry = normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
@@ -899,13 +884,13 @@ for (const mutation of [
 
 - [ ] **步骤 2：实现发布合同验证器**
 
-验证器读取仓库文件而不是调用供应商；它确认脱敏证据含 8 个成功组合、两个模型/三档价格准确、目录具有 verified/enable/key/price 门禁、显式协议存在、扣分合同仍在。任何一项缺失都阻止候选发布。
+验证器读取仓库文件而不是调用供应商；它确认脱敏证据含 7 个允许开放的成功组合和 GPT 4K 失败标记、每模型档位价格准确、目录具有 verified/enable/key/price 门禁、显式协议存在、扣分合同仍在。任何一项缺失都阻止候选发布。
 
 ```js
 const requiredEvidence = [
   'gpt-image-2-2-4k|text-to-image|1k|verified',
   'gpt-image-2-2-4k|text-to-image|2k|verified',
-  'gpt-image-2-2-4k|text-to-image|4k|verified',
+  'gpt-image-2-2-4k|text-to-image|4k|failed',
   'gpt-image-2-2-4k|image-to-image|1k|verified',
   'nano-banana-2|text-to-image|1k|verified',
   'nano-banana-2|text-to-image|2k|verified',
@@ -945,17 +930,19 @@ npm run build
 
 - [ ] **步骤 6：执行本地浏览器实操**
 
-用专用端口、`PLAYWRIGHT_REUSE_SERVER=0` 运行：管理员填写/读取两模型展示名、备注、三档价格；首页、画布和短剧工厂列表一致；未验证/停用/缺价立即消失或禁用；1K/2K/4K 扣分提示正确；第 7 张参考图无预扣；生成成功后成品可打开并回填正确节点/资产。
+用专用端口、`PLAYWRIGHT_REUSE_SERVER=0` 运行：管理员填写/读取两模型展示名、备注和各自档位价格；首页、画布和短剧工厂列表一致；未验证/停用/缺价立即消失或禁用；GPT 不显示 4K、Nano 4K 扣分提示为 105 积分；第 7 张参考图无预扣；生成成功后成品可打开并回填正确节点/资产。
 
 ```js
 test('USMercari 图片模型在三个入口共享目录与价格门禁', async ({ page }) => {
   await page.goto('/ai-config')
-  await expect(page.getByText('GPT Image 2 · 4K')).toBeVisible()
+  await expect(page.getByText('GPT Image 2')).toBeVisible()
   await expect(page.getByText('高精度商品与角色图，支持最多 6 张参考图')).toBeVisible()
 
   for (const path of ['/', '/canvas', '/film-create']) {
     await page.goto(path)
     await page.getByRole('combobox', { name: '图片模型' }).selectOption('gpt-image-2-2-4k')
+    await expect(page.getByRole('combobox', { name: '图片分辨率' }).locator('option[value="4k"]')).toHaveCount(0)
+    await page.getByRole('combobox', { name: '图片模型' }).selectOption('nano-banana-2')
     await page.getByRole('combobox', { name: '图片分辨率' }).selectOption('4k')
     await expect(page.getByText('本次预计扣除 105 积分')).toBeVisible()
   }
@@ -1024,8 +1011,7 @@ sudo /opt/moli-drama/shared/release-guard/activate-protected-release.sh CANDIDAT
       "verification_status": "verified",
       "resolution_prices": {
         "1k": { "credits": 70, "cost_micros_per_unit": 80000 },
-        "2k": { "credits": 87, "cost_micros_per_unit": 100000 },
-        "4k": { "credits": 105, "cost_micros_per_unit": 120000 }
+        "2k": { "credits": 87, "cost_micros_per_unit": 100000 }
       }
     },
     {
@@ -1051,10 +1037,10 @@ sudo /opt/moli-drama/shared/release-guard/activate-protected-release.sh CANDIDAT
 
 只有同时满足以下条件才能称为“接入完成”：
 
-1. 两个模型各自 1K/2K/4K 文生图、各一次参考图生图均为真实成功终态；
+1. GPT 的 1K/2K、Nano 的 1K/2K/4K 文生图及各一次参考图生图均为真实成功终态，GPT 4K 失败证据已固化为拒绝门禁；
 2. 所有结果已下载、Sharp 可打开、尺寸/哈希/账务证据齐全；
 3. 首页、画布、短剧工厂和管理员后台使用同一展示名、备注、能力和定价源；
-4. 1K/2K/4K 分别预扣 70/87/105 积分，成本分别记 ¥0.08/¥0.10/¥0.12 每张；
+4. 已开放的 1K/2K/4K 分别预扣 70/87/105 积分，成本分别记 ¥0.08/¥0.10/¥0.12 每张，GPT 不可使用 4K；
 5. 未验证、停用、缺 Key 或缺价不会出现在用户入口，且后端不可绕过；
 6. 参考图最多六张，第七张在任务入库和积分预扣前阻断；
 7. 供应商失败、下载失败、验图失败和落库失败均退款且幂等；

@@ -3,17 +3,33 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const sharp = require('sharp');
+const Database = require('better-sqlite3');
 
 const { callUsmercariImageApi } = require('../src/services/usmercariImageClient');
+const { loadConfig } = require('../src/config');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const aiConfigService = require('../src/services/aiConfigService');
 
 const BASE_URL = String(process.env.USMERCARI_IMAGE_BASE_URL || 'https://chat-ai.mercarimx.com').replace(/\/+$/, '');
 const MODELS = ['gpt-image-2-2-4k', 'nano-banana-2'];
-const RESOLUTIONS = ['1k', '2k', '4k'];
+const RESOLUTIONS_BY_MODEL = Object.freeze({
+  'gpt-image-2-2-4k': Object.freeze(['1k', '2k']),
+  'nano-banana-2': Object.freeze(['1k', '2k', '4k']),
+});
+const APPROVED_MATRIX = Object.freeze([
+  ['gpt-image-2-2-4k', 'text-to-image', '1k'],
+  ['gpt-image-2-2-4k', 'text-to-image', '2k'],
+  ['gpt-image-2-2-4k', 'image-to-image', '1k'],
+  ['nano-banana-2', 'text-to-image', '1k'],
+  ['nano-banana-2', 'text-to-image', '2k'],
+  ['nano-banana-2', 'text-to-image', '4k'],
+  ['nano-banana-2', 'image-to-image', '1k'],
+]);
 const log = { info() {}, warn() {}, error() {} };
 
 function buildVerificationCases(selector = process.env.USMERCARI_VERIFY_CASES) {
   const cases = MODELS.flatMap((model) => [
-    ...RESOLUTIONS.map((resolution) => ({ model, capability: 'text-to-image', resolution })),
+    ...RESOLUTIONS_BY_MODEL[model].map((resolution) => ({ model, capability: 'text-to-image', resolution })),
     { model, capability: 'image-to-image', resolution: '1k' },
   ]);
   const requested = String(selector || '').split(/[;,]/).map((value) => value.trim()).filter(Boolean);
@@ -27,6 +43,85 @@ function buildVerificationCases(selector = process.env.USMERCARI_VERIFY_CASES) {
   });
   if (new Set(requested).size !== requested.length) throw new Error('验证用例不能重复');
   return selected;
+}
+
+function requiresReferenceUrl(cases) {
+  return (Array.isArray(cases) ? cases : []).some((item) => item.capability === 'image-to-image');
+}
+
+function buildVerifiedCapabilities(results) {
+  const capabilities = {};
+  for (const item of Array.isArray(results) ? results : []) {
+    const model = String(item.model || '').trim();
+    const capability = String(item.capability || '').trim();
+    const resolution = String(item.requested_resolution || '').trim().toLowerCase();
+    if (!model || !resolution || !Number(item.width) || !Number(item.height)) continue;
+    const current = capabilities[model] || {
+      supportsTextToImage: false,
+      supportsImageReference: false,
+      maxReferences: 0,
+      resolutions: [],
+    };
+    if (capability === 'text-to-image') current.supportsTextToImage = true;
+    if (capability === 'image-to-image') {
+      current.supportsImageReference = true;
+      const referenceCount = Number(item.reference_count);
+      current.maxReferences = Math.max(
+        current.maxReferences,
+        Number.isSafeInteger(referenceCount) && referenceCount > 0 ? referenceCount : 1,
+      );
+    }
+    if (!current.resolutions.includes(resolution)) current.resolutions.push(resolution);
+    capabilities[model] = current;
+  }
+  for (const item of Object.values(capabilities)) item.resolutions.sort();
+  return capabilities;
+}
+
+function hasCompleteApprovedMatrix(results) {
+  const completed = new Set();
+  for (const item of Array.isArray(results) ? results : []) {
+    const model = String(item.model || '').trim();
+    const capability = String(item.capability || '').trim();
+    const resolution = String(item.requested_resolution || '').trim().toLowerCase();
+    if (!Number(item.width) || !Number(item.height)) continue;
+    completed.add(`${model}|${capability}|${resolution}`);
+  }
+  return APPROVED_MATRIX.every(([model, capability, resolution]) => (
+    completed.has(`${model}|${capability}|${resolution}`)
+  ));
+}
+
+function openVerificationDb() {
+  const dbPath = String(process.env.USMERCARI_VERIFY_DATABASE_PATH || process.env.DATABASE_PATH || '').trim()
+    || loadConfig().database?.path;
+  if (!dbPath || dbPath === ':memory:') throw new Error('缺少可写入验证状态的数据库路径');
+  const absolute = path.resolve(process.cwd(), dbPath);
+  const db = new Database(absolute);
+  runMigrationsAndEnsure(db);
+  return db;
+}
+
+function recordVerificationResult(results, error = null) {
+  const configId = Number(process.env.USMERCARI_VERIFY_CONFIG_ID || 0);
+  if (!configId) return null;
+  const db = openVerificationDb();
+  try {
+    if (error) {
+      return aiConfigService.recordVerification(db, configId, {
+        status: 'failed',
+        error: error.message || error,
+      });
+    }
+    if (!hasCompleteApprovedMatrix(results)) return null;
+    return aiConfigService.recordVerification(db, configId, {
+      status: 'verified',
+      verifiedAt: new Date().toISOString(),
+      capabilities: buildVerifiedCapabilities(results),
+    });
+  } finally {
+    db.close();
+  }
 }
 
 function requireApiKey() {
@@ -67,25 +162,18 @@ async function downloadAndInspect(url, outputPath, resolution) {
   };
 }
 
-async function createReferenceDataUri(tempDir) {
-  const referencePath = path.join(tempDir, 'reference.png');
-  const buffer = await sharp({
-    create: { width: 256, height: 256, channels: 3, background: '#c66a36' },
-  })
-    .composite([{ input: Buffer.from('<svg width="256" height="256"><circle cx="128" cy="128" r="68" fill="#17334a"/></svg>') }])
-    .png()
-    .toBuffer();
-  await fs.promises.writeFile(referencePath, buffer);
-  return `data:image/png;base64,${buffer.toString('base64')}`;
+async function verificationReferenceSource(_tempDir, explicitUrl = process.env.USMERCARI_VERIFY_REFERENCE_URL) {
+  const value = String(explicitUrl || '').trim();
+  if (!/^https:\/\//i.test(value)) throw new Error('USMERCARI_VERIFY_REFERENCE_URL 必须是 HTTPS 公网地址');
+  return value;
 }
 
-async function verificationReferenceSource(tempDir, explicitUrl = process.env.USMERCARI_VERIFY_REFERENCE_URL) {
-  const value = String(explicitUrl || '').trim();
-  if (value) {
-    if (!/^https:\/\//i.test(value)) throw new Error('USMERCARI_VERIFY_REFERENCE_URL 必须是 HTTPS 公网地址');
-    return value;
-  }
-  return createReferenceDataUri(tempDir);
+function buildVerificationReferences(capability, referenceUrl) {
+  if (capability !== 'image-to-image') return { reference_image_urls: [] };
+  return {
+    reference_image_urls: [referenceUrl],
+    allowed_reference_base_url: referenceUrl,
+  };
 }
 
 async function verifyOne({ apiKey, outputDir, model, resolution, capability, referenceDataUri }) {
@@ -98,7 +186,7 @@ async function verifyOne({ apiKey, outputDir, model, resolution, capability, ref
     n: 1,
     aspect_ratio: '1:1',
     resolution,
-    reference_image_urls: capability === 'image-to-image' ? [referenceDataUri] : [],
+    ...buildVerificationReferences(capability, referenceDataUri),
   });
   if (result.indeterminate) throw new Error(result.error);
   if (result.error) throw new Error(result.error);
@@ -124,13 +212,15 @@ async function verifyOne({ apiKey, outputDir, model, resolution, capability, ref
 
 async function runVerification() {
   const apiKey = requireApiKey();
+  const cases = buildVerificationCases();
   const temporaryRoot = !process.env.USMERCARI_VERIFY_OUTPUT_DIR;
   const outputDir = process.env.USMERCARI_VERIFY_OUTPUT_DIR
     ? path.resolve(process.env.USMERCARI_VERIFY_OUTPUT_DIR)
     : await fs.promises.mkdtemp(path.join(os.tmpdir(), 'usmercari-image-verify-'));
   await fs.promises.mkdir(outputDir, { recursive: true });
-  const referenceDataUri = await verificationReferenceSource(outputDir);
-  const cases = buildVerificationCases();
+  const referenceDataUri = requiresReferenceUrl(cases)
+    ? await verificationReferenceSource(outputDir)
+    : '';
   const results = [];
   let activeCase = null;
   try {
@@ -147,6 +237,7 @@ async function runVerification() {
       selected_cases: cases.map((item) => `${item.model}|${item.capability}|${item.resolution}`),
       results,
     }, null, 2)}\n`);
+    recordVerificationResult(results);
     process.stdout.write(`VERIFIED ${results.length}/${cases.length} evidence=${evidencePath}\n`);
     return { outputDir, results, temporaryRoot };
   } catch (error) {
@@ -159,6 +250,7 @@ async function runVerification() {
       error: String(error.message || error).slice(0, 800),
     }, null, 2)}\n`);
     error.message = `${error.message}；脱敏失败证据: ${failurePath}`;
+    recordVerificationResult(results, error);
     throw error;
   }
 }
@@ -172,8 +264,13 @@ if (require.main === module) {
 
 module.exports = {
   assertResolutionBand,
+  buildVerifiedCapabilities,
+  hasCompleteApprovedMatrix,
   buildVerificationCases,
+  buildVerificationReferences,
   downloadAndInspect,
+  requiresReferenceUrl,
+  recordVerificationResult,
   runVerification,
   verificationReferenceSource,
 };

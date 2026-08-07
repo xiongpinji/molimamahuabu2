@@ -16,6 +16,10 @@ const SERVICE_CATEGORIES = {
   audio: 'audio',
 };
 
+function hasConnectionCredential(config) {
+  return require('./aiConfigService').hasConnectionCredential(config);
+}
+
 function priceError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -70,6 +74,7 @@ function ensureSchema(db) {
   ensureColumn(db, 'cost_micros_per_unit', 'ALTER TABLE model_credit_prices ADD COLUMN cost_micros_per_unit INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'input_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'output_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'public_note', 'ALTER TABLE model_credit_prices ADD COLUMN public_note TEXT');
   db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
     model TEXT NOT NULL COLLATE NOCASE,
     resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p')),
@@ -116,7 +121,7 @@ function withResolutionPrices(db, row) {
 }
 
 function readRow(db, model) {
-  const row = db.prepare(`SELECT model, display_name, category, credits, status, billing_unit,
+  const row = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
     FROM model_credit_prices WHERE model = ? COLLATE NOCASE`).get(model) || null;
@@ -216,7 +221,7 @@ function defaultCategory(model) {
 
 function list(db) {
   ensureSchema(db);
-  const rows = db.prepare(`SELECT model, display_name, category, credits, status, billing_unit,
+  const rows = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
     FROM model_credit_prices ORDER BY category, model COLLATE NOCASE`).all()
@@ -240,6 +245,7 @@ function list(db) {
     })
     .map((item) => byModel.get(item.model.toLowerCase()) || {
     ...item,
+    public_note: null,
     credits: null,
     status: 'unconfigured',
     billing_unit: item.category === 'video' ? 'second' : 'request',
@@ -258,27 +264,84 @@ function listPublic(db) {
   if (!hasTable(db, 'ai_service_configs')) return [];
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
-  const activeModels = new Set();
+  const configsByModel = new Map();
+  const addConfig = (model, upstreamModel, config) => {
+    const key = String(model || '').trim().toLowerCase();
+    if (!key) return;
+    const entries = configsByModel.get(key) || [];
+    entries.push({ config, upstreamModel: String(upstreamModel || model).trim() });
+    configsByModel.set(key, entries);
+  };
   for (const entry of mediaModelSelection.listEntries(rows)) {
     const row = entry.config;
     if (!row.is_active) continue;
     if (row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
-    activeModels.add(entry.model.toLowerCase());
+    addConfig(entry.model, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
     if (isToken6688Config(row) && row.verification_status !== 'verified') continue;
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
-      if (model && isRealGenerationVerified(row, model)) activeModels.add(model.toLowerCase());
+      if (model && isRealGenerationVerified(row, model)) addConfig(model, model, row);
     }
   }
-  return list(db).filter((row) => (
-    row.status === 'enabled'
-    && Number.isSafeInteger(row.credits)
-    && row.credits > 0
-    && activeModels.has(row.model.toLowerCase())
-  ));
+  return list(db).flatMap((row) => {
+    if (row.status !== 'enabled' || !Number.isSafeInteger(row.credits) || row.credits <= 0) return [];
+    const entries = configsByModel.get(row.model.toLowerCase()) || [];
+    const selected = mediaModelSelection.parseQualifiedSelection(row.model);
+    const upstreamModel = selected?.upstreamModel || entries[0]?.upstreamModel || row.model;
+    const protectedUsmercariModel = ['gpt-image-2-2-4k', 'nano-banana-2']
+      .includes(String(upstreamModel).toLowerCase());
+    const strictEntries = entries.filter((entry) => isStrictPublicConfig(entry.config));
+    const candidates = protectedUsmercariModel || strictEntries.length ? strictEntries : entries;
+    const matched = candidates.find((entry) => isPublicConfigReady(entry.config, row, entry.upstreamModel));
+    if (!matched) return [];
+    if (!isStrictPublicConfig(matched.config)) return [row];
+    const resolutions = verifiedImageResolutions(matched.config, matched.upstreamModel);
+    return [{
+      ...row,
+      resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+        .filter(([resolution]) => resolutions.includes(String(resolution).toLowerCase()))),
+    }];
+  });
+}
+
+function isStrictPublicConfig(config) {
+  return String(config.provider || '').toLowerCase() === 'usmercari_image'
+    || String(config.api_protocol || '').toLowerCase() === 'usmercari_image';
+}
+
+function verifiedImageCapabilities(config, model) {
+  let capabilities = config.verified_capabilities || {};
+  try {
+    if (typeof capabilities === 'string') capabilities = JSON.parse(capabilities || '{}');
+  } catch (_) {
+    capabilities = {};
+  }
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return {};
+  const target = String(model || '').toLowerCase();
+  const key = Object.keys(capabilities).find((item) => item.toLowerCase() === target);
+  return key ? capabilities[key] || {} : {};
+}
+
+function verifiedImageResolutions(config, model) {
+  const capabilities = verifiedImageCapabilities(config, model);
+  return Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+}
+
+function isPublicConfigReady(config, price, model = price.model) {
+  if (!isStrictPublicConfig(config)) return true;
+  if (config.verification_status !== 'verified'
+      || !hasConnectionCredential(config)) return false;
+  const modelCapabilities = verifiedImageCapabilities(config, model);
+  const resolutions = verifiedImageResolutions(config, model);
+  return modelCapabilities?.supportsTextToImage === true
+    && resolutions.length > 0
+    && resolutions.every((resolution) => Number.isSafeInteger(price.resolution_prices?.[resolution]?.credits)
+      && price.resolution_prices[resolution].credits > 0);
 }
 
 function set(db, value, creditsValue, options = {}) {
@@ -292,6 +355,7 @@ function set(db, value, creditsValue, options = {}) {
   const category = String(options.category || existing?.category || 'other').trim().toLowerCase();
   const status = String(options.status || existing?.status || 'enabled').trim().toLowerCase();
   const displayName = String(options.displayName || options.display_name || existing?.display_name || model).trim();
+  const publicNote = String(options.publicNote ?? options.public_note ?? existing?.public_note ?? '').trim();
   const configuredBillingUnit = String(options.billingUnit || options.billing_unit || existing?.billing_unit
     || billingUnit(model, category)).trim().toLowerCase();
   const costUnit = String(options.costUnit || options.cost_unit || existing?.cost_unit
@@ -314,6 +378,9 @@ function set(db, value, creditsValue, options = {}) {
   if (!displayName || displayName.length > 120) {
     throw priceError('INVALID_MODEL_PRICE', '模型显示名称必须是 1 到 120 个字符');
   }
+  if (publicNote.length > 500) {
+    throw priceError('INVALID_MODEL_PRICE', '模型公开备注不能超过 500 个字符');
+  }
   const resolutionPrices = options.resolution_prices == null
     ? null
     : Object.entries(options.resolution_prices).map(([value, tier]) => {
@@ -333,11 +400,12 @@ function set(db, value, creditsValue, options = {}) {
   const updatedAt = new Date().toISOString();
   db.transaction(() => {
     db.prepare(`INSERT INTO model_credit_prices
-        (model, display_name, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
+        (model, display_name, public_note, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
          input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(model) DO UPDATE SET
         display_name = excluded.display_name,
+        public_note = excluded.public_note,
         category = excluded.category,
         credits = excluded.credits,
         status = excluded.status,
@@ -347,7 +415,7 @@ function set(db, value, creditsValue, options = {}) {
         input_cost_micros_per_1k = excluded.input_cost_micros_per_1k,
         output_cost_micros_per_1k = excluded.output_cost_micros_per_1k,
         updated_at = excluded.updated_at`)
-      .run(model, displayName, category, credits, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
+      .run(model, displayName, publicNote || null, category, credits, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
         inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
     if (resolutionPrices != null) {
       if (category === 'image') {
@@ -401,6 +469,9 @@ function quoteCost(db, value, usage = {}) {
     throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前图片分辨率积分待管理员配置');
   }
   const costUnit = tier ? (row.category === 'video' ? 'second' : 'image') : row.cost_unit;
+  if (costUnit === 'image' && !Number.isSafeInteger(requestedQuantity)) {
+    throw priceError('INVALID_MODEL_PRICE', '图片数量必须是正整数');
+  }
   const quantity = costUnit === 'request' ? 1 : requestedQuantity;
   const costMicros = costUnit === 'token'
     ? Math.ceil((inputTokens * row.input_cost_micros_per_1k

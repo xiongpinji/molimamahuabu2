@@ -1,4 +1,5 @@
 import { assetMediaUrl } from './mediaUrl.js'
+import { imageModelMaxReferences, validateQuickImageSelection } from './homeQuickGeneration.js'
 
 const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
@@ -123,7 +124,7 @@ function normalizeSkillSnapshot(value) {
 }
 
 function imageSizeFromResolution(aspectRatio, resolution) {
-  const longEdge = { '1K': 1024, '2K': 2048, '4K': 4096 }[cleanString(resolution)]
+  const longEdge = { '1k': 1024, '2k': 2048, '4k': 4096 }[cleanString(resolution).toLowerCase()]
   if (!longEdge) return ''
   const [rawWidth, rawHeight] = cleanString(aspectRatio).split(':').map(Number)
   if (!rawWidth || !rawHeight) return ''
@@ -475,7 +476,11 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     ...(options.upstreamTexts || []),
     nodeData.content,
   ]).join('\n\n')
-  const maxReferences = nonNegativeInteger(options.maxReferences, 10)
+  const configuredMaxReferences = nonNegativeInteger(options.maxReferences, 10)
+  const verifiedMaxReferences = nodeData.kind === 'image' ? imageModelMaxReferences(nodeData.model) : null
+  const maxReferences = verifiedMaxReferences == null
+    ? configuredMaxReferences
+    : Math.min(configuredMaxReferences, verifiedMaxReferences)
   const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
     .filter((reference) => reference?.enabled !== false && reference?.url)
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
@@ -488,6 +493,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
     ...upstreamImageUrls,
     ...(nodeData.characterReferenceUrls || []),
   ])
+  if (nodeData.kind === 'image' && referenceUrls.length > maxReferences) {
+    throw new Error(`当前模型最多支持 ${maxReferences} 张参考图，请先移除多余参考图`)
+  }
 
   if (nodeData.kind === 'text') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
@@ -500,23 +508,29 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 
   if (nodeData.kind === 'image') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const imageReferenceLimit = nonNegativeInteger(
+    const declaredImageReferenceLimit = nonNegativeInteger(
       options.capability?.maxReferences,
       maxReferences,
     )
+    const imageReferenceLimit = Math.min(declaredImageReferenceLimit, maxReferences)
     if (referenceUrls.length > imageReferenceLimit) {
       if (imageReferenceLimit === 0) {
         throw new Error(`${nodeData.model || '当前图片模型'} 当前不支持参考图`)
       }
       throw new Error(`${nodeData.model || '当前图片模型'} 最多支持 ${imageReferenceLimit} 个图片参考`)
     }
+    const resolution = cleanString(nodeData.resolution || '1k').toLowerCase()
+    const quantity = positiveInteger(nodeData.quantity) || 1
+    validateQuickImageSelection({ model: nodeData.model, resolution, quantity })
     return withoutEmptyFields({
       drama_id: dramaId,
       prompt: content,
       model: nodeData.model,
       aspect_ratio: nodeData.aspectRatio,
       style: nodeData.style,
-      size: imageSizeFromResolution(nodeData.aspectRatio, nodeData.resolution),
+      resolution,
+      size: imageSizeFromResolution(nodeData.aspectRatio, resolution),
+      n: quantity,
       negative_prompt: nodeData.negativePrompt,
       reference_images: referenceUrls,
     })

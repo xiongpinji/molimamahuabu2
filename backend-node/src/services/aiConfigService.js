@@ -4,6 +4,7 @@ const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const token6688Client = require('./token6688Client');
+const usmercariVideoClient = require('./usmercariVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -14,6 +15,10 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 
 function hasConnectionCredential(opts = {}) {
   if (String(opts.api_key || '').trim()) return true;
+  if (['usmercari', 'usmercari_image'].includes(String(opts.provider || '').toLowerCase())
+      || String(opts.api_protocol || '').toLowerCase() === 'usmercari_image') {
+    return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
+  }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
     const settings = typeof opts.settings === 'object' ? opts.settings : JSON.parse(opts.settings || '{}');
@@ -212,6 +217,8 @@ function createConfig(db, log, req) {
         endpoint = '/v1/videos/generations';
         queryEndpoint = '/v1/tasks/{taskId}';
       }
+    } else if (p === 'usmercari_image') {
+      if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
     }
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
@@ -340,6 +347,44 @@ function deleteConfig(db, log, id) {
   return true;
 }
 
+const VERIFICATION_STATUSES = new Set(['pending', 'verified', 'failed']);
+
+function redactRealVerificationError(error) {
+  return String(error || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/(api[-_ ]?key|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]+/gi, '$1=[REDACTED]')
+    .slice(0, 800);
+}
+
+function recordVerification(db, configId, result = {}) {
+  const id = Number(configId);
+  const existing = getConfig(db, id);
+  if (!existing) throw new Error('配置不存在');
+  const status = String(result.status || '').trim().toLowerCase();
+  if (!VERIFICATION_STATUSES.has(status)) {
+    throw new Error('验证状态必须是 pending、verified 或 failed');
+  }
+  const capabilities = result.capabilities && typeof result.capabilities === 'object' && !Array.isArray(result.capabilities)
+    ? result.capabilities
+    : {};
+  const now = new Date().toISOString();
+  const verifiedAt = status === 'verified'
+    ? String(result.verifiedAt || now)
+    : null;
+  const error = status === 'failed'
+    ? redactRealVerificationError(result.error || '真实生成验证失败')
+    : null;
+  db.prepare(`UPDATE ai_service_configs
+      SET verification_status = ?,
+          verified_capabilities = ?,
+          verified_at = ?,
+          verification_error = ?,
+          updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL`)
+    .run(status, JSON.stringify(capabilities), verifiedAt, error, now, id);
+  return getConfig(db, id);
+}
+
 function rowToConfig(r) {
   const cfg = {
     id: r.id,
@@ -356,8 +401,9 @@ function rowToConfig(r) {
     priority: r.priority ?? 0,
     is_default: !!r.is_default,
     is_active: r.is_active == null ? true : !!r.is_active,
-    verification_status: r.verification_status || 'unverified',
+    verification_status: String(r.verification_status || 'pending'),
     verification_checked_at: r.verification_checked_at || null,
+    verified_capabilities: parseObject(r.verified_capabilities),
     verified_at: r.verified_at || null,
     verification_error: r.verification_error || null,
     settings: r.settings,
@@ -373,6 +419,16 @@ function rowToConfig(r) {
     } catch (_) {}
   }
   return cfg;
+}
+
+function parseObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
 }
 
 const SENSITIVE_SETTING_KEYS = new Set([
@@ -406,7 +462,10 @@ function toPublicConfig(config) {
   const { api_key, ...safe } = config;
   return {
     ...safe,
-    has_api_key: !!String(api_key || '').trim(),
+    has_api_key: !!String(api_key || '').trim()
+      || ((['usmercari', 'usmercari_image'].includes(String(config.provider || '').toLowerCase())
+        || String(config.api_protocol || '').toLowerCase() === 'usmercari_image')
+        && !!usmercariVideoClient.resolveUsmercariApiKey(config)),
     settings: redactSettings(config.settings),
   };
 }
@@ -460,6 +519,7 @@ async function testConnection(opts) {
   const model = models[0] || '';
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   const provider = (opts.provider || 'openai').toLowerCase();
+  const protocol = String(opts.api_protocol || '').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
   let isAIHubHost = false;
@@ -504,6 +564,53 @@ async function testConnection(opts) {
       || [1000, 1001, 1002, 1003].includes(Number(data.code))
       || message.includes('authorization') || message.includes('unauthorized');
     if (authFailed) throw new Error(data.message || data.msg || `可灵鉴权失败 (${res.status})`);
+    return;
+  }
+
+  // USMercari 连接测试只读取模型目录，禁止创建会扣费的视频任务。
+  if ((provider === 'usmercari' || provider === 'usmercari_media') && serviceType === 'video') {
+    const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${usmercariVideoClient.normalizeUsmercariBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`USMercari API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`USMercari 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : Object.keys(usmercariVideoClient.USMERCARI_MODELS))
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // USMercari 图片连接测试只读取模型目录。真实验证状态只能由实生成证据写入，
+  // 不能由这个不会产生结果文件的探针升级。
+  if ((provider === 'usmercari_image' || protocol === 'usmercari_image')
+      && (serviceType === 'image' || serviceType === 'storyboard_image')) {
+    const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${usmercariVideoClient.normalizeUsmercariBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`USMercari API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`USMercari 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const missing = models.map((item) => String(item || '').trim()).filter(Boolean)
+      .filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
     return;
   }
 
@@ -985,6 +1092,7 @@ module.exports = {
   createConfig,
   updateConfig,
   deleteConfig,
+  recordVerification,
   testConnection,
   getVendorLockStatus,
   applyVendorLock,

@@ -31,13 +31,16 @@ function routes(db, cfg, log, options = {}) {
         response.created(res, rec);
       } catch (err) {
         log.error('images create', { error: err.message });
-        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'MODEL_RESOLUTION_PRICE_REQUIRED',
+          'MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {
           return response.error(res, 402, err.code, '积分不足，请充值后重试');
         }
-        if (err.code === 'UNSUPPORTED_BILLING_MODEL') {
+        if (['UNSUPPORTED_BILLING_MODEL', 'IMAGE_RESOLUTION_REQUIRED',
+          'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED',
+          'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {
           return response.badRequest(res, err.message);
         }
         response.internalError(res, err.message);

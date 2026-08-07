@@ -266,17 +266,22 @@
         </div>
 
         <div class="editor-options">
-          <label v-if="canGenerate" class="editor-field field-model">
+          <label v-if="canGenerate || modelOptions.length" class="editor-field field-model">
             <span>模型</span>
             <select
               v-model="draft.model"
               aria-label="生成模型"
-              @change="saveDraft"
+              @change="onModelChange"
             >
               <option value="">{{ defaultModelLabel }}</option>
               <option v-for="option in modelOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
             </select>
           </label>
+          <p v-if="currentModelMetadata?.publicNote || currentModelMetadata?.label" class="model-metadata">
+            <strong>{{ currentModelMetadata.label || currentModelMetadata.model }}</strong>
+            <span v-if="currentModelMetadata.publicNote">{{ currentModelMetadata.publicNote }}</span>
+            <em v-if="currentModelMetadata.verificationStatus === 'verified'">已验证</em>
+          </p>
 
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
@@ -291,7 +296,7 @@
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
-              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ value }}</option>
+              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ String(value).toUpperCase() }}</option>
             </select>
           </label>
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
@@ -388,6 +393,7 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
+          <!-- canvas-credit-callout-v1 -->
           <span v-if="canGenerate" class="billing-cost" aria-live="polite">
             <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
             <template v-else>积分待管理员配置</template>
@@ -515,7 +521,15 @@ const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'fun
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
-const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
+const currentModelMetadata = computed(() => (
+  ctx?.getFreeNodeModelMetadata?.(props.data.kind, draft.model)
+  || null
+))
+const capability = computed(() => (
+  ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model)
+  || currentModelMetadata.value?.capabilities
+  || {}
+))
 const referenceAccept = computed(() => {
   if (props.data.kind === 'image') return 'image/*'
   const types = capability.value.referenceTypes || ['image']
@@ -526,6 +540,7 @@ const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   draft.model,
   draft.quantity,
   draft.duration,
+  draft.resolution,
 ) || null)
 const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
@@ -583,7 +598,7 @@ function syncDraft() {
   draft.aspectRatio = props.data.aspectRatio || '16:9'
   draft.duration = Number(props.data.duration) || 5
   draft.style = props.data.style || ''
-  draft.resolution = props.data.resolution || (props.data.kind === 'image' ? '2K' : '720p')
+  draft.resolution = String(props.data.resolution || (props.data.kind === 'image' ? '1k' : '720p')).toLowerCase()
   draft.quantity = Math.min(4, Math.max(1, Number(props.data.quantity) || 1))
   draft.negativePrompt = props.data.negativePrompt || ''
   draft.voiceId = props.data.voiceId || ''
@@ -597,6 +612,19 @@ function syncDraft() {
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
+}
+
+async function onModelChange() {
+  draft.model = draft.model.trim()
+  const resolutions = Array.isArray(capability.value.resolutions) ? capability.value.resolutions : []
+  const normalizedResolution = String(draft.resolution || '').trim().toLowerCase()
+  if (resolutions.length && !resolutions.includes(normalizedResolution)) draft.resolution = resolutions[0]
+  else if (normalizedResolution) draft.resolution = normalizedResolution
+  const quantities = Array.isArray(capability.value.quantities) && capability.value.quantities.length
+    ? capability.value.quantities.map(Number)
+    : [1]
+  if (!quantities.includes(Number(draft.quantity))) draft.quantity = quantities[0]
+  await saveDraft()
 }
 
 async function saveDraft() {
@@ -1536,6 +1564,19 @@ watch(isSelected, (selected) => {
   font: inherit;
 }
 .field-model { grid-column: span 2; }
+.model-metadata {
+  display: flex;
+  grid-column: span 2;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+.model-metadata strong { color: #e4e4e7; font-weight: 600; }
+.model-metadata span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-metadata em { color: #86efac; font-style: normal; white-space: nowrap; }
 .field-wide { grid-column: span 2; }
 .editor-check { display: flex; align-items: flex-end; gap: 8px; padding: 0 4px 9px; color: #d4d4d8; font-size: 11px; }
 .editor-footer {

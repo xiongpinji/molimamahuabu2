@@ -402,6 +402,36 @@
             :options="generationStyleOptions"
             @change="() => saveProjectSettings(true)"
           />
+          <el-select
+            v-model="selectedImageModel"
+            placeholder="选择图片模型"
+            style="width: 220px"
+            :disabled="imageModelOptions.length === 0 || batchImageRunning || pipelineRunning"
+            @change="onImageModelChange"
+          >
+            <el-option
+              v-for="item in imageModelOptions"
+              :key="item.model"
+              :label="item.label"
+              :value="item.model"
+              :title="item.publicNote || item.label"
+            />
+          </el-select>
+          <el-select
+            v-if="selectedImageUsesTiers"
+            v-model="imageResolution"
+            placeholder="图片清晰度"
+            style="width: 105px"
+            :disabled="selectedImageResolutionOptions.length === 0 || batchImageRunning || pipelineRunning"
+            @change="onImageResolutionChange"
+          >
+            <el-option
+              v-for="resolution in selectedImageResolutionOptions"
+              :key="resolution"
+              :label="resolution.toUpperCase()"
+              :value="resolution"
+            />
+          </el-select>
           <el-button
             type="primary"
             :loading="pipelineRunning && !pipelinePaused"
@@ -422,6 +452,15 @@
             <el-button v-if="!pipelinePaused" type="warning" @click="pipelinePaused = true">⏸ 暂停</el-button>
             <el-button v-else type="success" @click="onPipelineResume">▶ 继续</el-button>
           </template>
+        </div>
+        <div class="film-image-model-meta">
+          <span v-if="selectedImageModelPublicNote" class="film-image-model-note">{{ selectedImageModelPublicNote }}</span>
+          <!-- canvas-credit-callout-v1: 图片生成必须保留醒目积分提示 -->
+          <span class="billing-cost canvas-credit-callout-v1" aria-live="polite">
+            <strong v-if="imageGenerationCredits">本次预计扣除 {{ imageGenerationCredits }} 积分</strong>
+            <strong v-else>积分待管理员配置</strong>
+            <span>（单张）</span>
+          </span>
         </div>
         <div v-if="pipelineRunning || pipelineErrorLog.length > 0" class="pipeline-status">
           <div v-if="pipelineCurrentStep" class="pipeline-current-step">
@@ -913,6 +952,36 @@
           </div>
           <template v-if="storyboards.length > 0">
             <div class="sb-batch-right">
+              <el-select
+                v-model="selectedImageModel"
+                class="sb-video-model-select"
+                placeholder="选择图片模型"
+                :disabled="imageModelOptions.length === 0 || batchImageRunning || pipelineRunning"
+                @change="onImageModelChange"
+              >
+                <el-option
+                  v-for="item in imageModelOptions"
+                  :key="item.model"
+                  :label="item.label"
+                  :value="item.model"
+                  :title="item.publicNote || item.label"
+                />
+              </el-select>
+              <el-select
+                v-if="selectedImageUsesTiers"
+                v-model="imageResolution"
+                class="sb-video-model-select"
+                placeholder="图片清晰度"
+                :disabled="selectedImageResolutionOptions.length === 0 || batchImageRunning || pipelineRunning"
+                @change="onImageResolutionChange"
+              >
+                <el-option
+                  v-for="resolution in selectedImageResolutionOptions"
+                  :key="resolution"
+                  :label="resolution.toUpperCase()"
+                  :value="resolution"
+                />
+              </el-select>
               <el-select
                 v-model="selectedVideoModel"
                 class="sb-video-model-select"
@@ -2857,6 +2926,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import request from '@/utils/request'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { getModelsFromAiConfig } from '@/utils/modelSelection'
+import { estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
 import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
@@ -2986,6 +3056,111 @@ const scriptContent = computed({
 const videoResolution = storeVideoResolution
 const selectedVideoModel = ref('')
 const videoModelOptions = ref([])
+const imageModelCatalog = ref([])
+const selectedImageModel = ref('')
+const imageResolution = ref('1k')
+const imageModelOptions = computed(() => imageModelCatalog.value.filter((item) => item.kind === 'image'))
+const selectedImageModelMetadata = computed(() =>
+  imageModelOptions.value.find((item) => item.model === selectedImageModel.value) || null
+)
+const selectedImageModelPublicNote = computed(() => selectedImageModelMetadata.value?.publicNote || '')
+
+function isUsmercariImageModelEntry(entry) {
+  return String(entry?.protocol || '').trim().toLowerCase() === 'usmercari_image'
+}
+
+const selectedImageUsesTiers = computed(() => isUsmercariImageModelEntry(selectedImageModelMetadata.value))
+const selectedImageResolutionOptions = computed(() => {
+  const declared = Array.isArray(selectedImageModelMetadata.value?.capabilities?.resolutions)
+    ? selectedImageModelMetadata.value.capabilities.resolutions
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+    : []
+  const prices = selectedImageModelMetadata.value?.resolutionPrices || {}
+  return [...new Set(declared)].filter((resolution) => {
+    const credits = Number(prices?.[resolution]?.credits)
+    return Number.isSafeInteger(credits) && credits > 0
+  })
+})
+const imageGenerationCredits = computed(() => selectedImageUsesTiers.value
+  ? estimateCanvasCredits(
+    imageModelCatalog.value,
+    'image',
+    selectedImageModel.value,
+    1,
+    1,
+    imageResolution.value,
+  )
+  : Number(selectedImageModelMetadata.value?.credits) || null)
+
+function imageGenerationOptions({ notify = false } = {}) {
+  const entry = selectedImageModelMetadata.value
+  if (!entry) {
+    if (notify) ElMessage.error('当前没有可用的图片模型，请联系管理员完成验证与定价')
+    return null
+  }
+  const usesTiers = isUsmercariImageModelEntry(entry)
+  const resolution = usesTiers
+    ? String(imageResolution.value || '').trim().toLowerCase()
+    : ''
+  if (usesTiers && !selectedImageResolutionOptions.value.includes(resolution)) {
+    if (notify) ElMessage.error('当前图片模型不支持该清晰度，或尚未配置档位积分')
+    return null
+  }
+  const estimatedCredits = usesTiers
+    ? estimateCanvasCredits(
+      imageModelCatalog.value,
+      'image',
+      entry.model,
+      1,
+      1,
+      resolution,
+    )
+    : Number(entry.credits)
+  if (!Number.isSafeInteger(estimatedCredits) || estimatedCredits <= 0) {
+    if (notify) ElMessage.error('当前图片模型尚未配置有效积分价格，请联系管理员')
+    return null
+  }
+  return usesTiers ? { model: entry.model, resolution } : { model: entry.model }
+}
+
+function requireImageGenerationOptions() {
+  return imageGenerationOptions({ notify: true })
+}
+
+function syncSelectedImageResolution(preferred = imageResolution.value) {
+  if (!selectedImageUsesTiers.value) return
+  const normalized = String(preferred || '').trim().toLowerCase()
+  imageResolution.value = selectedImageResolutionOptions.value.includes(normalized)
+    ? normalized
+    : (selectedImageResolutionOptions.value[0] || '')
+}
+
+function onImageModelChange() {
+  syncSelectedImageResolution()
+  saveProjectSettings(false)
+}
+
+function onImageResolutionChange() {
+  imageResolution.value = String(imageResolution.value || '').trim().toLowerCase()
+  saveProjectSettings(false)
+}
+
+async function loadImageModelOptions() {
+  try {
+    const catalog = await request.get('/canvas/model-catalog')
+    imageModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalog) ? catalog : [])
+    const savedModel = String(store.drama?.metadata?.image_model || '').trim()
+    const candidate = savedModel || selectedImageModel.value
+    selectedImageModel.value = imageModelOptions.value.some((item) => item.model === candidate)
+      ? candidate
+      : (imageModelOptions.value[0]?.model || '')
+    syncSelectedImageResolution(store.drama?.metadata?.image_resolution || imageResolution.value)
+  } catch (_) {
+    imageModelCatalog.value = []
+    selectedImageModel.value = ''
+  }
+}
 const videoVoicePolicyByModel = ref({})
 const videoMusic = ref('')
 const videoSfx = ref('')
@@ -3113,7 +3288,7 @@ const {
   editCharLibrarySaving, addingCharToLibraryId, addingCharToMaterialId, addingCharFromLibraryId,
   charRoleLabel, onGenerateCharacters: onGenerateCharactersRaw, openAddCharacter, stopCharacterPromptPoll, editCharacter,
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
-  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
+  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
   onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
   openVoiceCatalog, bindVoiceCatalog, playVoiceCatalogPreview,
   loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
@@ -3137,7 +3312,7 @@ const {
   editPropLibrarySaving, addingPropToLibraryId, addingPropToMaterialId, addingPropFromLibraryId,
   onExtractProps: onExtractPropsRaw, stopPropPromptPoll, editProp, doGeneratePropPrompt, savePropRefImageIfAny,
   clearPropRefImage, doExtractPropFromImage, submitEditProp, submitAddProp,
-  onClosePropDialog, onDeleteProp, onGeneratePropImage,
+  onClosePropDialog, onDeleteProp,
   loadPropLibraryList, debouncedLoadPropLibrary, loadDramaAllPropList, debouncedLoadDramaAllPropList,
   onPropLibraryDialogOpen, onPropLibraryTabChange, isPropAddToEpisodeLoading,
   openEditPropLibrary, submitEditPropLibrary,
@@ -3159,13 +3334,127 @@ const {
   editSceneLibrarySaving, addingSceneToLibraryId, addingSceneToMaterialId, addingSceneFromLibraryId,
   onExtractScenes: onExtractScenesRaw, openAddScene, stopScenePromptPoll, editScene, doGenerateScenePrompt, doGenerateSceneSinglePrompt,
   saveSceneRefImageIfAny, clearSceneRefImage, doExtractSceneFromImage, submitEditScene,
-  onCloseSceneDialog, onDeleteScene, onGenerateSceneImage,
+  onCloseSceneDialog, onDeleteScene,
   loadSceneLibraryList, debouncedLoadSceneLibrary, loadDramaAllSceneList, debouncedLoadDramaAllSceneList,
   onSceneLibraryDialogOpen, onSceneLibraryTabChange, isSceneAddToEpisodeLoading,
   openEditSceneLibrary, submitEditSceneLibrary,
   onDeleteSceneLibrary, onAddSceneToLibrary, onAddSceneToMaterialLibrary,
   onAddSceneFromLibrary, onAddDramaSceneToEpisode,
 } = useScenes({ store, dramaId, currentEpisodeId, getSelectedStyle, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI })
+
+function buildFactoryAssetImageMeta(entity, resourceType, typeLabel, name) {
+  const dramaTitle = store.drama?.title || ''
+  const episodeNumber = store.currentEpisode?.episode_number
+  const episodeLabel = dramaTitle ? `${dramaTitle} · 第${episodeNumber ?? ''}集` : `第${episodeNumber ?? ''}集`
+  return {
+    dramaId: dramaId.value,
+    episodeId: currentEpisodeId.value,
+    dramaTitle,
+    episodeNumber,
+    resourceType,
+    resourceId: entity.id,
+    label: `${episodeLabel} ${typeLabel}: ${name || entity.id}`,
+  }
+}
+
+async function submitCatalogAssetImage({ entity, loadingSet, meta, submit, currentHasImage, successMessage }) {
+  entity.errorMsg = ''
+  entity.error_msg = ''
+  if (!tryAcquireGenerationLock(loadingSet, entity.id)) {
+    ElMessage.info('图片正在生成，请勿重复点击')
+    return
+  }
+  genStore.markRunning(meta)
+  try {
+    const res = await submit()
+    const taskId = res?.image_generation?.task_id ?? res?.task_id
+    if (taskId) {
+      const pollRes = await pollTask(taskId, () => loadDrama(), meta)
+      if (pollRes?.status !== 'completed') throw new Error(pollRes?.error || '图片生成失败')
+      await loadDrama()
+    } else {
+      await loadDrama()
+      const ready = await pollUntilResourceHasImage(currentHasImage)
+      if (!ready) throw new Error('等待超时，图片仍未生成')
+    }
+    if (!currentHasImage()) throw new Error('任务显示完成，但图片未成功写入')
+    genStore.markDone(meta)
+    ElMessage.success(successMessage)
+  } catch (e) {
+    entity.errorMsg = e.message || '生成失败'
+    entity.error_msg = entity.errorMsg
+    genStore.markFailed(meta, entity.errorMsg)
+    ElMessage.error(entity.errorMsg)
+  } finally {
+    releaseGenerationLock(loadingSet, entity.id)
+  }
+}
+
+async function onGenerateCharacterImage(char) {
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
+  const meta = buildFactoryAssetImageMeta(char, GEN_RESOURCE.CHAR_IMAGE, '角色图', char.name)
+  return submitCatalogAssetImage({
+    entity: char,
+    loadingSet: generatingCharIds,
+    meta,
+    submit: () => request.post(`/characters/${char.id}/generate-image`, {
+      ...imageOptions,
+      style: getSelectedStyle(),
+    }),
+    currentHasImage: () => {
+      const list = store.drama?.characters ?? store.currentEpisode?.characters ?? []
+      const current = list.find((item) => Number(item.id) === Number(char.id))
+      return !!(current && (current.image_url || current.local_path))
+    },
+    successMessage: '角色图片已生成',
+  })
+}
+
+async function onGeneratePropImage(prop, useQuadGrid = false) {
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
+  const meta = buildFactoryAssetImageMeta(prop, GEN_RESOURCE.PROP_IMAGE, '道具图', prop.name)
+  return submitCatalogAssetImage({
+    entity: prop,
+    loadingSet: generatingPropIds,
+    meta,
+    submit: () => request.post(`/props/${prop.id}/generate`, {
+      ...imageOptions,
+      style: getSelectedStyle(),
+      use_quad_grid: !!useQuadGrid,
+    }),
+    currentHasImage: () => {
+      const list = store.drama?.props ?? store.currentEpisode?.props ?? store.props ?? []
+      const current = list.find((item) => Number(item.id) === Number(prop.id))
+      return !!(current && (current.image_url || current.local_path))
+    },
+    successMessage: '道具图片已生成',
+  })
+}
+
+async function onGenerateSceneImage(scene, useQuadGrid = false) {
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
+  const meta = buildFactoryAssetImageMeta(scene, GEN_RESOURCE.SCENE_IMAGE, '场景图', scene.location)
+  return submitCatalogAssetImage({
+    entity: scene,
+    loadingSet: generatingSceneIds,
+    meta,
+    submit: () => sceneAPI.generateImage({
+      scene_id: scene.id,
+      ...imageOptions,
+      style: getSelectedStyle(),
+      use_quad_grid: !!useQuadGrid,
+    }),
+    currentHasImage: () => {
+      const list = store.drama?.scenes ?? store.currentEpisode?.scenes ?? []
+      const current = list.find((item) => Number(item.id) === Number(scene.id))
+      return !!(current && (current.image_url || current.local_path))
+    },
+    successMessage: '场景图片已生成',
+  })
+}
 
 async function onGenerateCharacters() {
   trackFilmCreateAction('generate_characters_click')
@@ -4519,6 +4808,8 @@ const showSbFramePromptPreview = openFramePromptEditor
 
 async function onGenerateSbFrameImage(sb, slot) {
   if (!dramaId.value || !sb?.id) return
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
   const retryAllowed = await confirmUnknownResultRetry(sb.errorMsg || sb.error_msg, () =>
     ElMessageBox.confirm(
       '上一次图片请求连接中断，供应商可能已经受理或扣费，但平台未收到结果。请先核对生成记录或供应商账单。仍要再次提交吗？',
@@ -4586,7 +4877,7 @@ async function onGenerateSbFrameImage(sb, slot) {
       storyboard_id: sb.id,
       drama_id: dramaId.value,
       prompt,
-      model: undefined,
+      ...imageOptions,
       style: getSelectedStyle(),
       frame_type: frameTypeForSlot(slot),
       aspect_ratio: projectAspectRatio.value || '16:9',
@@ -4646,6 +4937,8 @@ async function onGenerateSbFramePair(sb) {
 
 async function onGenerateSbImage(sb) {
   if (!dramaId.value || !sb?.id) return
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
   const retryAllowed = await confirmUnknownResultRetry(sb.errorMsg || sb.error_msg, () =>
     ElMessageBox.confirm(
       '上一次图片请求连接中断，供应商可能已经受理或扣费，但平台未收到结果。请先核对生成记录或供应商账单。仍要再次提交吗？',
@@ -4685,7 +4978,7 @@ async function onGenerateSbImage(sb) {
       storyboard_id: sb.id,
       drama_id: dramaId.value,
       prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
-      model: undefined,
+      ...imageOptions,
       style: getSelectedStyle(),
       frame_type: gridMode.value !== 'single' ? gridMode.value : undefined,
       aspect_ratio: projectAspectRatio.value || '16:9',
@@ -4894,6 +5187,11 @@ async function loadDrama() {
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
+    const savedImageModel = String(d.metadata?.image_model || '').trim()
+    if (savedImageModel && imageModelOptions.value.some((item) => item.model === savedImageModel)) {
+      selectedImageModel.value = savedImageModel
+    }
+    syncSelectedImageResolution(d.metadata?.image_resolution || imageResolution.value)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
@@ -5097,6 +5395,8 @@ function scrollToStoryboard(sbId) {
 /** 对关联分镜批量重新生成图片 */
 async function onRegenAffectedSbImages(assetKey, affectedBoards) {
   if (!affectedBoards.length || regenSbImagesForAsset.has(assetKey)) return
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
   try {
     await ElMessageBox.confirm(
       `将为 ${affectedBoards.length} 个关联分镜重新生成图片（#${affectedBoards.map((s) => s.storyboard_number).join('、#')}），原有图片将被覆盖，是否继续？`,
@@ -5128,6 +5428,7 @@ async function onRegenAffectedSbImages(assetKey, affectedBoards) {
           storyboard_id: sb.id,
           drama_id: dramaId.value,
           prompt,
+          ...imageOptions,
           style: getSelectedStyle(),
           frame_type: frameTypeForCreate,
           aspect_ratio: projectAspectRatio.value || '16:9',
@@ -5293,6 +5594,8 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     aspect_ratio: projectAspectRatio.value || '16:9',
     video_clip_duration: videoClipDuration.value || 5,
     video_model: selectedVideoModel.value || undefined,
+    image_model: selectedImageModel.value || undefined,
+    image_resolution: selectedImageUsesTiers.value ? imageResolution.value : undefined,
     storyboard_include_narration: !!storyboardIncludeNarration.value,
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
@@ -7356,6 +7659,8 @@ async function onInsertStoryboardBefore(sb) {
 
 async function startBatchImageGeneration() {
   if (!currentEpisodeId.value || batchImageRunning.value || pipelineRunning.value) return
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
   batchImageErrors.value = []
   batchImageStopping.value = false
   batchImageRunning.value = true
@@ -7393,6 +7698,7 @@ async function startBatchImageGeneration() {
             storyboard_id: sb.id,
             drama_id: dramaId.value,
             prompt,
+            ...imageOptions,
             style: getSelectedStyle(),
             frame_type: frameTypeForCreate,
             aspect_ratio: projectAspectRatio.value || '16:9',
@@ -7836,6 +8142,8 @@ async function runOneClickPipeline(textOnly = false) {
   const episodeId = currentEpisodeId.value
   const dramaIdVal = dramaId.value
   if (!episodeId || !dramaIdVal) return
+  const imageOptions = textOnly ? null : requireImageGenerationOptions()
+  if (!textOnly && !imageOptions) return
   const style = getSelectedStyle()
 
   try {
@@ -8011,7 +8319,10 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '角色图 ' + (char.name || char.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await characterAPI.generateImage(char.id, undefined, style)
+            const res = await request.post(`/characters/${char.id}/generate-image`, {
+              ...imageOptions,
+              style,
+            })
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8047,7 +8358,12 @@ async function runOneClickPipeline(textOnly = false) {
           const stepName = '场景图 ' + (scene.location || scene.id)
           const ok = await pipelineWithRetry(stepName, async () => {
             const useQuad = !!sceneUseQuadGrid.value
-            const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })
+            const res = await sceneAPI.generateImage({
+              scene_id: scene.id,
+              ...imageOptions,
+              style,
+              use_quad_grid: useQuad,
+            })
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8082,12 +8398,11 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(
-              prop.id,
-              undefined,
+            const res = await request.post(`/props/${prop.id}/generate`, {
+              ...imageOptions,
               style,
-              propUseQuadGrid.value
-            )
+              use_quad_grid: !!propUseQuadGrid.value,
+            })
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8144,7 +8459,7 @@ async function runOneClickPipeline(textOnly = false) {
               storyboard_id: sb.id,
               drama_id: dramaIdVal,
               prompt,
-              model: undefined,
+              ...imageOptions,
               style,
               frame_type: frameTypeForCreate,
               aspect_ratio: projectAspectRatio.value || '16:9',
@@ -8282,6 +8597,8 @@ async function runRepairPipeline() {
   const episodeId = currentEpisodeId.value
   const dramaIdVal = dramaId.value
   if (!episodeId || !dramaIdVal) return
+  const imageOptions = requireImageGenerationOptions()
+  if (!imageOptions) return
   const style = getSelectedStyle()
 
   try {
@@ -8317,7 +8634,10 @@ async function runRepairPipeline() {
         await checkPause()
         const stepName = '角色图 ' + (char.name || char.id)
         const ok = await pipelineWithRetry(stepName, async () => {
-          const res = await characterAPI.generateImage(char.id, undefined, style)
+          const res = await request.post(`/characters/${char.id}/generate-image`, {
+            ...imageOptions,
+            style,
+          })
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
             const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8366,7 +8686,12 @@ async function runRepairPipeline() {
         const stepName = '场景图 ' + (scene.location || scene.id)
         const ok = await pipelineWithRetry(stepName, async () => {
           const useQuad = !!sceneUseQuadGrid.value
-          const res = await sceneAPI.generateImage({ scene_id: scene.id, model: undefined, style, use_quad_grid: useQuad })
+          const res = await sceneAPI.generateImage({
+            scene_id: scene.id,
+            ...imageOptions,
+            style,
+            use_quad_grid: useQuad,
+          })
           const taskId = res?.image_generation?.task_id ?? res?.task_id
           if (taskId) {
             const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8416,12 +8741,11 @@ async function runRepairPipeline() {
         try {
           const stepName = '道具图 ' + (prop.name || prop.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const res = await propAPI.generateImage(
-              prop.id,
-              undefined,
+            const res = await request.post(`/props/${prop.id}/generate`, {
+              ...imageOptions,
               style,
-              propUseQuadGrid.value
-            )
+              use_quad_grid: !!propUseQuadGrid.value,
+            })
             const taskId = res?.image_generation?.task_id ?? res?.task_id
             if (taskId) {
               const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -8505,7 +8829,7 @@ async function runRepairPipeline() {
             storyboard_id: sb.id,
             drama_id: dramaIdVal,
             prompt,
-            model: undefined,
+            ...imageOptions,
             style,
             frame_type: frameTypeForCreate,
             aspect_ratio: projectAspectRatio.value || '16:9',
@@ -8630,7 +8954,7 @@ function applyRouteToStore() {
 onMounted(async () => {
   loadPipelineConcurrency()
   applyRouteToStore()
-  await loadVideoModelOptions()
+  await Promise.all([loadVideoModelOptions(), loadImageModelOptions()])
 })
 
 watch(() => route.params.id, () => {
@@ -9362,6 +9686,32 @@ html.light .section-title { color: #1e1b4b; }
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.film-image-model-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.film-image-model-note {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.film-image-model-meta .billing-cost {
+  margin-left: auto;
+  padding: 7px 12px;
+  border: 1px solid rgba(255, 132, 58, 0.55);
+  border-radius: 7px;
+  background: rgba(255, 132, 58, 0.12);
+  color: #ff9a5c;
+  white-space: nowrap;
+}
+.film-image-model-meta .billing-cost strong {
+  font-size: 13px;
+  font-weight: 700;
 }
 .one-click-label {
   font-size: 14px;

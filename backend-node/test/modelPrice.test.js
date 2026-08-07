@@ -263,4 +263,8 @@ test('图片分辨率价格拒绝视频档位且有分档时必须明确选择�
     () => prices.quoteCost(db, 'tiered-image', { resolution: '2k', quantity: 1 }),
     (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
   );
+  assert.throws(
+    () => prices.quoteCost(db, 'tiered-image', { resolution: '1k', quantity: 1.5 }),
+    (error) => error.code === 'INVALID_MODEL_PRICE',
+  );
 });

@@ -1,18 +1,12 @@
 const {
   normalizeUsmercariBaseUrl,
   resolveUsmercariApiKey,
-  uploadUsmercariMedia,
 } = require('./usmercariVideoClient');
+const net = require('net');
 
-// 这里只描述通用适配器可提交的供应商声明值；用户目录仍须读取独立的真实验证门禁。
-const DECLARED_RESOLUTIONS = Object.freeze(['1k', '2k', '4k']);
-const DECLARED_IMAGE_SPEC = Object.freeze({
-  resolutions: DECLARED_RESOLUTIONS,
-  maxReferences: 6,
-});
 const USMERCARI_IMAGE_MODELS = Object.freeze({
-  'gpt-image-2-2-4k': DECLARED_IMAGE_SPEC,
-  'nano-banana-2': DECLARED_IMAGE_SPEC,
+  'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), maxReferences: 6 }),
+  'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), maxReferences: 6 }),
 });
 
 function normalizeResolution(value) {
@@ -23,6 +17,65 @@ function normalizeReferences(values) {
   return (Array.isArray(values) ? values : [])
     .map((value) => String(value || '').trim())
     .filter(Boolean);
+}
+
+function normalizedHostname(url) {
+  return String(url.hostname || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+function isPrivateIpv4(host) {
+  const parts = host.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a === 0;
+}
+
+function isUnsafeStorageHost(hostname) {
+  const host = String(hostname || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host || host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (net.isIP(host) === 4) return isPrivateIpv4(host);
+  if (net.isIP(host) === 6) {
+    if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+    const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateIpv4(mapped[1]);
+  }
+  return false;
+}
+
+function parseStorageBaseUrl(baseUrl) {
+  try {
+    const parsed = new URL(String(baseUrl || '').trim());
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password || isUnsafeStorageHost(normalizedHostname(parsed))) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isAllowedStoragePublicImageUrl(value, allowedBaseUrl) {
+  const base = parseStorageBaseUrl(allowedBaseUrl);
+  if (!base) return false;
+  let url;
+  try {
+    url = new URL(String(value || '').trim());
+  } catch (_) {
+    return false;
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return false;
+  if (url.username || url.password) return false;
+  if (isUnsafeStorageHost(normalizedHostname(url))) return false;
+  if (url.origin !== base.origin) return false;
+  const basePath = base.pathname.replace(/\/+$/, '') || '/';
+  const targetPath = url.pathname;
+  return basePath === '/'
+    ? targetPath.startsWith('/')
+    : targetPath === basePath || targetPath.startsWith(`${basePath}/`);
 }
 
 function validateUsmercariImageOptions(opts = {}) {
@@ -39,8 +92,8 @@ function validateUsmercariImageOptions(opts = {}) {
   }
 
   const n = Number(opts.n ?? 1);
-  if (!Number.isSafeInteger(n) || n < 1 || n > 4) {
-    throw new Error('USMercari 图片数量必须是 1 到 4 之间的整数');
+  if (!Number.isSafeInteger(n) || n !== 1) {
+    throw new Error('USMercari 图片数量目前仅开放已实测的 1 张');
   }
 
   const aspectRatio = String(opts.aspect_ratio || '1:1').trim().replace('：', ':');
@@ -113,36 +166,27 @@ async function callUsmercariImageApi(config, log, opts = {}) {
     return { error: error.message };
   }
 
-  const publicReferences = checked.references.filter((reference) => /^https?:\/\//i.test(reference));
-  const usePublicReferenceContract = publicReferences.length === checked.references.length;
-  let imageIds = [];
-  if (!usePublicReferenceContract) {
-    try {
-      for (const reference of checked.references) {
-        imageIds.push(await uploadUsmercariMedia({ ...config, base_url: baseUrl }, 'image', reference, {
-          storage_local_path: opts.storage_local_path,
-        }));
-      }
-    } catch (error) {
-      return { error: error.message };
-    }
+  const allowedBaseUrl = opts.allowed_reference_base_url || opts.files_base_url || '';
+  const publicReferences = checked.references.filter((reference) => (
+    isAllowedStoragePublicImageUrl(reference, allowedBaseUrl)
+  ));
+  if (publicReferences.length !== checked.references.length) {
+    return { error: 'USMercari 参考图必须是配置 STORAGE_BASE_URL 下的站内静态资源公网 URL' };
   }
 
   const body = {
     ...buildUsmercariImageBody(opts),
-    ...(publicReferences.length === 1 && usePublicReferenceContract ? { image_url: publicReferences[0] } : {}),
-    ...(publicReferences.length > 1 && usePublicReferenceContract ? { image_urls: publicReferences } : {}),
-    ...(imageIds.length ? { image_ids: imageIds } : {}),
+    ...(publicReferences.length === 1 ? { image_url: publicReferences[0] } : {}),
+    ...(publicReferences.length > 1 ? { image_urls: publicReferences } : {}),
   };
-  const endpoint = imageIds.length ? '/v1/images/edits' : '/v1/images/generations';
-  const url = `${baseUrl}${endpoint}`;
+  const url = `${baseUrl}/v1/images/generations`;
   log?.info?.('[USMercari 图片] 创建任务', {
     image_gen_id: opts.image_gen_id,
     model: body.model,
     resolution: body.resolution,
     aspect_ratio: body.aspect_ratio,
     quantity: body.n,
-    reference_count: imageIds.length,
+    reference_count: publicReferences.length,
   });
 
   let response;
@@ -176,5 +220,7 @@ module.exports = {
   validateUsmercariImageOptions,
   buildUsmercariImageBody,
   parseUsmercariImagePayload,
+  isAllowedStoragePublicImageUrl,
+  parseStorageBaseUrl,
   callUsmercariImageApi,
 };

@@ -5,11 +5,17 @@ const imageClient = require('./imageClient');
 const propService = require('./propService');
 const uploadService = require('./uploadService');
 const storageLayout = require('./storageLayout');
-const { aspectRatioToSize } = require('./imageService');
+const {
+  aspectRatioToSize,
+  resolveImageBillingRequest,
+  verifyLocalImageArtifact,
+} = require('./imageService');
 const creditLedger = require('./creditLedgerService');
-const modelPrice = require('./modelPriceService');
 const generationCost = require('./generationCostLedgerService');
 const auditEvent = require('./auditEventService');
+const assetService = require('./assetService');
+
+const USMERCARI_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2']);
 
 const PROP_FOUR_VIEW_PROMPT = [
   '在同一张画布中展示该道具的四个视角：正面、背面、左侧面、右侧面。',
@@ -126,6 +132,8 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     result = await imageClient.callImageApi(db, log, {
       prompt: fullPrompt,
       size: imageSize,
+      resolution: opts?.resolution || undefined,
+      n: 1,
       drama_id: prop.drama_id,
       model: model || undefined,
       preferred_provider: preferredProvider || undefined,
@@ -139,7 +147,13 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   }
 
   if (result.error) {
-    failPropImageGeneration(db, log, taskId, propId, result.error);
+    failPropImageGeneration(
+      db,
+      log,
+      taskId,
+      propId,
+      result.indeterminate ? `供应商最终状态未知：${result.error}` : result.error,
+    );
     return;
   }
   if (!result.image_url) {
@@ -151,8 +165,10 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   taskService.updateTaskStatus(db, taskId, 'processing', 80, '正在保存图片...');
 
   let localPath = null;
+  let artifact = null;
+  let storagePath = null;
   try {
-    const storagePath = path.isAbsolute(cfg.storage?.local_path)
+    storagePath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, prop.drama_id);
@@ -164,9 +180,26 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       'prop_' + propId,
       projectSubdir
     );
-  } catch (_) {}
+    if (USMERCARI_IMAGE_MODELS.has(String(model || '').toLowerCase())) {
+      artifact = await verifyLocalImageArtifact(storagePath, localPath);
+    }
+  } catch (error) {
+    if (USMERCARI_IMAGE_MODELS.has(String(model || '').toLowerCase())) {
+      failPropImageGeneration(db, log, taskId, propId, `图片本地保存失败：${error.message}`);
+      return;
+    }
+  }
+
+  if (USMERCARI_IMAGE_MODELS.has(String(model || '').toLowerCase()) && !localPath) {
+    failPropImageGeneration(db, log, taskId, propId, '图片本地保存失败：未生成本地文件');
+    return;
+  }
 
   const now = new Date().toISOString();
+  const isStrictUsmercari = USMERCARI_IMAGE_MODELS.has(String(model || '').toLowerCase());
+  const persistedImageUrl = isStrictUsmercari && localPath
+    ? '/static/' + String(localPath).replace(/^\//, '')
+    : result.image_url;
   // 旧图追加到 extra_images，与上传逻辑保持一致
   const oldProp = db.prepare('SELECT local_path, image_url, extra_images FROM props WHERE id = ?').get(propId);
   const oldPath = oldProp?.local_path || oldProp?.image_url || '';
@@ -175,25 +208,47 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   if (!Array.isArray(extras)) extras = [];
   if (oldPath && !extras.includes(oldPath)) extras.push(oldPath);
   const extraJson = extras.length ? JSON.stringify(extras) : null;
-  try {
-    db.prepare(
-      'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
-    ).run(result.image_url, localPath, extraJson, now, propId);
-  } catch (e) {
-    if ((e.message || '').includes('extra_images')) {
-      db.prepare('UPDATE props SET image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
-    } else {
-      throw e;
+  db.transaction(() => {
+    try {
+      db.prepare(
+        'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
+      ).run(persistedImageUrl, localPath, extraJson, now, propId);
+    } catch (e) {
+      if ((e.message || '').includes('extra_images')) {
+        db.prepare('UPDATE props SET image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(persistedImageUrl, localPath, now, propId);
+      } else {
+        throw e;
+      }
     }
-  }
 
-  taskService.updateTaskResult(db, taskId, {
-    image_url: result.image_url,
-    local_path: localPath,
-    prop_id: propId,
-  });
+    if (artifact) {
+      assetService.create(db, log, {
+        drama_id: prop.drama_id,
+        name: `${prop.name || '道具'} 图片`,
+        type: 'image',
+        category: 'prop',
+        url: persistedImageUrl,
+        local_path: localPath,
+        file_size: artifact.fileSize,
+        mime_type: artifact.mimeType,
+        width: artifact.width,
+        height: artifact.height,
+        metadata: {
+          source: 'prop_image_generation',
+          prop_id: propId,
+          model,
+          resolution: opts?.resolution || null,
+        },
+      });
+    }
+    taskService.updateTaskResult(db, taskId, {
+      image_url: persistedImageUrl,
+      local_path: localPath,
+      prop_id: propId,
+    });
+  })();
   settlePropImageCredit(db, log, taskId, 'completed');
-  log.info('Prop image generation completed', { prop_id: propId, image_url: result.image_url, local_path: localPath });
+  log.info('Prop image generation completed', { prop_id: propId, image_url: persistedImageUrl, local_path: localPath });
 }
 
 function generatePropImage(db, log, propId, opts) {
@@ -212,12 +267,19 @@ function generatePropImage(db, log, propId, opts) {
       error.code = 'UNAUTHORIZED';
       throw error;
     }
-    const cfg = require('../config').loadConfig();
-    const preferredProvider = cfg?.ai?.default_image_provider || null;
-    billedModel = modelPrice.canonicalModel(
-      options.model || imageClient.resolveImageModel(db, null, preferredProvider, 'image'),
-    );
-    billedCredits = modelPrice.requirePrice(db, billedModel);
+  }
+  const billingRequest = resolveImageBillingRequest(db, {
+    model: options.model,
+    provider: options.provider,
+    resolution: options.resolution,
+    n: 1,
+  }, 'image', {
+    requirePricing: options.billingEnabled === true,
+    allowMissingModel: !options.billingEnabled,
+  });
+  if (options.billingEnabled) {
+    billedModel = billingRequest.model;
+    billedCredits = billingRequest.credits;
   }
 
   const task = db.transaction(() => {
@@ -236,8 +298,9 @@ function generatePropImage(db, log, propId, opts) {
     generationCost.record(db, {
       reservationId: reservation.id,
       model: billedModel,
+      resolution: billingRequest.resolution,
       quantity: 1,
-      usageSource: 'unavailable',
+      usageSource: 'configured',
     });
     db.prepare(
       `UPDATE async_tasks
@@ -265,7 +328,9 @@ function generatePropImage(db, log, propId, opts) {
   const schedule = typeof options.schedule === 'function'
     ? options.schedule
     : (callback) => setImmediate(callback);
-  const processingOptions = billedModel ? { ...options, model: billedModel } : options;
+  const processingOptions = billingRequest
+    ? { ...options, model: billingRequest.model, resolution: billingRequest.resolution }
+    : options;
   schedule(() => {
     processPropImageGeneration(db, log, task.id, propId, processingOptions).catch((err) => {
       log.error('processPropImageGeneration fatal', { error: err.message, task_id: task.id });

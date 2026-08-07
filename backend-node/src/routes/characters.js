@@ -6,6 +6,26 @@ const characterLibraryService = require('../services/characterLibraryService');
 const storageLayout = require('../services/storageLayout');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
+function respondGenerationError(res, err) {
+  if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED', 'TEXT_MODEL_NOT_CONFIGURED'].includes(err.code)) {
+    response.error(res, 503, err.code, err.message);
+    return true;
+  }
+  if (['MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_RESOLUTION_REQUIRED', 'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED', 'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(err.code)) {
+    response.error(res, 400, err.code, err.message);
+    return true;
+  }
+  if (err.code === 'INSUFFICIENT_CREDITS') {
+    response.error(res, 402, err.code, '积分不足，请兑换积分后重试');
+    return true;
+  }
+  if (err.code === 'UNAUTHORIZED') {
+    response.error(res, 401, err.code, err.message);
+    return true;
+  }
+  return false;
+}
+
 function routes(db, cfg, log, uploadService, generationOptions = {}) {
   return {
     getOne: (req, res) => {
@@ -87,6 +107,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
             userId: req.user?.id,
             tenantId: req.tenant?.id,
             textModel: body.text_model_name || body.text_model || undefined,
+            resolution: body.resolution || undefined,
           }
         );
         if (!out.ok) {
@@ -117,6 +138,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
             userId: req.user?.id,
             tenantId: req.tenant?.id,
             textModel: body.text_model_name || body.text_model || undefined,
+            resolution: body.resolution || undefined,
           }
         );
         if (!out.ok) {
@@ -131,6 +153,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
       } catch (err) {
         log.error('characters generate-image', { error: err.message });
         if (textGenerationBilling.respondError(response, res, err)) return;
+        if (respondGenerationError(res, err)) return;
         response.internalError(res, err.message);
       }
     },
@@ -299,6 +322,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
             userId: req.user?.id,
             tenantId: req.tenant?.id,
             textModel: body.text_model_name || body.text_model || undefined,
+            resolution: body.resolution || undefined,
           },
         );
         if (!out.ok) {
@@ -310,6 +334,7 @@ function routes(db, cfg, log, uploadService, generationOptions = {}) {
       } catch (err) {
         log.error('characters generate-four-view-image', { error: err.message });
         if (textGenerationBilling.respondError(response, res, err)) return;
+        if (respondGenerationError(res, err)) return;
         response.internalError(res, err.message);
       }
     },

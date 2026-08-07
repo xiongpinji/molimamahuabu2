@@ -80,12 +80,21 @@
               <el-option label="15秒" :value="15" />
             </el-select>
           </div>
-          <div v-if="mode === 'video'" class="form-item">
+          <div v-if="mode === 'image' || mode === 'video'" class="form-item">
             <div class="form-label">清晰度</div>
             <el-select v-model="resolution">
-              <el-option label="480P" value="480p" />
-              <el-option label="720P" value="720p" />
-              <el-option label="1080P" value="1080p" />
+              <el-option
+                v-for="value in selectedResolutions"
+                :key="value"
+                :label="value.toUpperCase()"
+                :value="value"
+              />
+            </el-select>
+          </div>
+          <div v-if="mode === 'image'" class="form-item">
+            <div class="form-label">数量</div>
+            <el-select v-model.number="quantity">
+              <el-option v-for="value in quantityOptions" :key="value" :label="`${value} 张`" :value="value" />
             </el-select>
           </div>
           <div v-if="mode === 'script'" class="form-item">
@@ -103,10 +112,14 @@
               <el-option
                 v-for="item in modelOptions"
                 :key="item.model"
-                :label="item.display_name || item.model"
+                :label="item.label || item.model"
                 :value="item.model"
               />
             </el-select>
+            <small v-if="selectedModel?.publicNote" class="model-public-note">
+              {{ selectedModel.publicNote }}
+              <span v-if="selectedModel.verificationStatus === 'verified'">· 已验证</span>
+            </small>
           </div>
         </div>
 
@@ -211,14 +224,15 @@ import { videosAPI } from '@/api/videos'
 import { uploadAPI } from '@/api/upload'
 import { generationSettingsAPI } from '@/api/prompts'
 import { generationAPI } from '@/api/generation'
-import { listGenerationCatalog } from '@/api/billing'
 import { getCreditAccount } from '@/api/auth'
 import request from '@/utils/request'
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
 import {
   buildQuickGenerationRequest,
   estimateGenerationCredits,
+  normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
 import { parseTaskResult, resolveTaskMediaUrl } from '@/utils/taskResult'
 
@@ -229,6 +243,7 @@ const style = ref('')
 const aspectRatio = ref('16:9')
 const duration = ref(5)
 const resolution = ref('720p')
+const quantity = ref(1)
 const episodeCount = ref(1)
 const model = ref('')
 const generationCatalog = ref([])
@@ -250,9 +265,14 @@ const modelOptions = computed(() => {
 const selectedModel = computed(() => (
   modelOptions.value.find((item) => item.model === model.value) || null
 ))
+const selectedResolutions = computed(() => quickGenerationResolutions(selectedModel.value || {}, mode.value))
+const quantityOptions = computed(() => {
+  const declared = selectedModel.value?.capabilities?.quantities
+  return Array.isArray(declared) && declared.length ? declared : [1]
+})
 const selectedCredits = computed(() => estimateGenerationCredits(
   selectedModel.value,
-  { duration: duration.value },
+  { duration: duration.value, resolution: resolution.value, quantity: quantity.value },
 ))
 const insufficientCredits = computed(() => (
   selectedCredits.value != null && creditAccount.value.available < selectedCredits.value
@@ -268,12 +288,12 @@ async function refreshCreditAccount() {
 
 onMounted(async () => {
   const [catalog] = await Promise.allSettled([
-    listGenerationCatalog(),
+    request.get('/canvas/model-catalog'),
     refreshCreditAccount(),
   ])
-  generationCatalog.value = catalog.status === 'fulfilled' && Array.isArray(catalog.value)
-    ? catalog.value
-    : []
+  generationCatalog.value = normalizeQuickGenerationCatalog(
+    catalog.status === 'fulfilled' && Array.isArray(catalog.value) ? catalog.value : [],
+  )
   const routeMode = ['text', 'image', 'video', 'script'].includes(String(route.query.mode))
     ? String(route.query.mode)
     : null
@@ -287,6 +307,7 @@ onMounted(async () => {
   aspectRatio.value = draft?.aspectRatio || '16:9'
   duration.value = Number(draft?.duration) || 5
   resolution.value = draft?.resolution || '720p'
+  quantity.value = Number(draft?.quantity) || 1
   if (draft?.referenceImageUrl) {
     refImageDataUrl.value = draft.referenceImageUrl
     refImageLocalPath.value = draft.referenceImageUrl.startsWith('/static/')
@@ -296,6 +317,7 @@ onMounted(async () => {
   model.value = modelOptions.value.some((item) => item.model === draft?.model)
     ? draft.model
     : (modelOptions.value[0]?.model || '')
+  syncSelectedResolution()
   sessionStorage.removeItem('moli_quick_create_draft')
   try {
     const res = await generationSettingsAPI.get()
@@ -307,10 +329,19 @@ onMounted(async () => {
   }
 })
 
-watch(mode, () => {
+function syncSelectedResolution() {
+  const allowed = selectedResolutions.value
+  const current = String(resolution.value || '').trim().toLowerCase()
+  if (allowed.length && !allowed.includes(current)) resolution.value = allowed[0]
+  else if (current) resolution.value = current
+  if (!quantityOptions.value.includes(Number(quantity.value))) quantity.value = quantityOptions.value[0] || 1
+}
+
+watch([mode, model], () => {
   if (!modelOptions.value.some((item) => item.model === model.value)) {
     model.value = modelOptions.value[0]?.model || ''
   }
+  syncSelectedResolution()
 })
 
 function triggerRefImageUpload() {
@@ -418,6 +449,7 @@ async function generate() {
       aspectRatio: aspectRatio.value,
       duration: duration.value,
       resolution: resolution.value,
+      quantity: quantity.value,
       referenceImageUrl,
       requestId: globalThis.crypto?.randomUUID?.() || `home-${Date.now()}`,
     })
@@ -635,15 +667,25 @@ async function pollVideoTask(taskId, item) {
 
 .form-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
 .form-item {
-  flex: 1;
+  min-width: 108px;
+  flex: 1 1 108px;
 }
 
 .form-item .el-select {
   width: 100%;
+}
+
+.model-public-note {
+  display: block;
+  margin-top: 6px;
+  color: #92929a;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .ref-image-zone {
