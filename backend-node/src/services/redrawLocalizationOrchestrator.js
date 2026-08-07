@@ -1,0 +1,438 @@
+const { createHash } = require('node:crypto');
+
+const creditLedger = require('./creditLedgerService');
+const localizationService = require('./localizationService');
+const modelPrice = require('./modelPriceService');
+const redrawCapability = require('./redrawCapabilityService');
+const taskService = require('./taskService');
+
+function codedError(code, message, details = {}) {
+  return Object.assign(new Error(message), { code, ...details });
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((result, key) => {
+      result[key] = stableValue(value[key]);
+      return result;
+    }, {});
+  }
+  return value;
+}
+
+function stableHash(value) {
+  return createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex');
+}
+
+function parseJson(value, fallback = null) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed == null ? fallback : parsed;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function trim(value) {
+  return String(value ?? '').trim();
+}
+
+function ownerFromInput(input) {
+  const tenantId = trim(input.tenantId ?? input.tenant_id);
+  const userId = trim(input.userId ?? input.user_id);
+  if (!tenantId) throw codedError('REDRAW_LOCALIZATION_TENANT_REQUIRED', '缺少租户');
+  if (!userId) throw codedError('REDRAW_LOCALIZATION_USER_REQUIRED', '缺少用户');
+  return { tenantId, userId };
+}
+
+function normalizeStartInput(input = {}) {
+  const owner = ownerFromInput(input);
+  const workId = Number(input.workId ?? input.work_id);
+  if (!Number.isSafeInteger(workId) || workId <= 0) {
+    throw codedError('REDRAW_LOCALIZATION_WORK_REQUIRED', '缺少转绘作品');
+  }
+  const locale = trim(input.locale);
+  if (!locale) throw codedError('REDRAW_LOCALIZATION_LOCALE_REQUIRED', '缺少本地化 locale');
+  const idempotencyKey = trim(input.idempotencyKey ?? input.idempotency_key);
+  if (!idempotencyKey) {
+    throw codedError('REDRAW_LOCALIZATION_IDEMPOTENCY_REQUIRED', '缺少本地化幂等键');
+  }
+  return {
+    ...owner,
+    workId,
+    locale,
+    market: trim(input.market),
+    localizationLevel: trim(input.localizationLevel ?? input.localization_level) || 'faithful',
+    idempotencyKey,
+    quoteHash: trim(input.quoteHash ?? input.quote_hash),
+    canReadArtifact: input.canReadArtifact,
+  };
+}
+
+function getOwnedWork(db, input) {
+  const work = db.prepare(`
+    SELECT *
+    FROM redraw_works
+    WHERE id = ? AND tenant_id = ? AND user_id = ?
+  `).get(Number(input.workId), String(input.tenantId), String(input.userId));
+  if (!work) throw codedError('REDRAW_LOCALIZATION_WORK_NOT_FOUND', '转绘作品不存在');
+  return work;
+}
+
+function buildLocalizationSnapshot(db, input = {}) {
+  const normalized = {
+    ...input,
+    ...ownerFromInput(input),
+    workId: Number(input.workId ?? input.work_id),
+    locale: trim(input.locale),
+    market: trim(input.market),
+    localizationLevel: trim(input.localizationLevel ?? input.localization_level) || 'faithful',
+  };
+  getOwnedWork(db, normalized);
+  const sourceVersion = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+      AND deleted_at IS NULL
+    ORDER BY version ASC, id ASC
+    LIMIT 1
+  `).get(normalized.workId, normalized.tenantId, normalized.userId);
+  if (!sourceVersion) {
+    throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '本地化需要先完成源片事实确认');
+  }
+  const sourceFacts = parseJson(sourceVersion.source_facts_json, null);
+  if (!sourceFacts || typeof sourceFacts !== 'object' || Array.isArray(sourceFacts)) {
+    throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '源片事实不可读取');
+  }
+  const localizationInput = localizationService.buildLocalizationInput(sourceFacts, {
+    locale: normalized.locale,
+    market: normalized.market,
+    localizationLevel: normalized.localizationLevel,
+    styleSnapshot: parseJson(sourceVersion.style_snapshot_json, {}),
+  });
+  return {
+    input: localizationInput,
+    source_version_id: Number(sourceVersion.id),
+    facts_hash: sourceVersion.facts_hash || localizationInput.source_facts_hash,
+  };
+}
+
+function quoteLocalization(db, input = {}) {
+  const snapshot = buildLocalizationSnapshot(db, input);
+  const capability = redrawCapability.resolveVerifiedLocaleCapability(db, {
+    locale: trim(input.locale),
+    market: trim(input.market),
+    capability: 'text',
+    canReadArtifact: input.canReadArtifact,
+  });
+  if (!capability) {
+    return { priced: false, code: 'REDRAW_LOCALIZATION_CAPABILITY_UNVERIFIED' };
+  }
+  let credits;
+  try {
+    credits = modelPrice.requirePrice(db, capability.model);
+  } catch (error) {
+    if (error.code === 'MODEL_PRICE_NOT_CONFIGURED') {
+      return { priced: false, code: 'pricing_unconfigured' };
+    }
+    throw error;
+  }
+  const fullSnapshot = {
+    ...snapshot,
+    capability: {
+      provider: capability.provider,
+      model: capability.model,
+      evidence: capability.evidence,
+    },
+  };
+  return {
+    priced: true,
+    credits,
+    model: capability.model,
+    input_hash: stableHash(fullSnapshot.input),
+    quote_hash: stableHash({ snapshot: fullSnapshot, credits }),
+    snapshot: fullSnapshot,
+  };
+}
+
+function findExistingDraft(db, input) {
+  return db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND localization_idempotency_key = ? AND deleted_at IS NULL
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(input.workId, input.tenantId, input.userId, input.idempotencyKey);
+}
+
+function getExistingStart(db, input) {
+  const draft = findExistingDraft(db, input);
+  if (!draft) return null;
+  const quote = quoteLocalization(db, input);
+  if (draft.localization_input_hash && draft.localization_input_hash !== quote.input_hash) {
+    throw codedError('REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT', '相同本地化幂等键对应的输入已变化');
+  }
+  const task = draft.localization_task_id ? taskService.getTask(db, draft.localization_task_id) : null;
+  return {
+    task_id: draft.localization_task_id,
+    reservation_id: draft.localization_credit_reservation_id,
+    draft_version_id: Number(draft.id),
+    task,
+    reservation: draft.localization_credit_reservation_id
+      ? creditLedger.getReservation(db, draft.localization_credit_reservation_id)
+      : null,
+    completion: null,
+  };
+}
+
+function insertTask(db, log, input, quote, draftId, reservationId) {
+  const task = taskService.createTask(db, log, 'redraw_localization', String(input.workId));
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE async_tasks
+    SET tenant_id = ?, user_id = ?, model = ?, credit_reservation_id = ?,
+        status = 'pending', progress = 0, message = ?, updated_at = ?
+    WHERE id = ?
+  `).run(
+    input.tenantId,
+    input.userId,
+    quote.model,
+    reservationId,
+    '本地化任务已创建',
+    now,
+    task.id,
+  );
+  db.prepare(`
+    UPDATE redraw_versions
+    SET localization_task_id = ?, localization_credit_reservation_id = ?,
+        localization_input_hash = ?, localization_model_snapshot_json = ?, updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ?
+  `).run(
+    task.id,
+    reservationId,
+    quote.input_hash,
+    JSON.stringify(quote.snapshot),
+    now,
+    draftId,
+    input.tenantId,
+    input.userId,
+  );
+  return taskService.getTask(db, task.id);
+}
+
+function createStartRecords(db, log, input, quote) {
+  return db.transaction(() => {
+    const draft = localizationService.createLocalizationDraft(db, {
+      tenantId: input.tenantId,
+      userId: input.userId,
+    }, input.workId, {
+      locale: input.locale,
+      market: input.market,
+      localizationLevel: input.localizationLevel,
+      inputHash: quote.input_hash,
+      idempotencyKey: input.idempotencyKey,
+      modelSnapshot: quote.snapshot,
+    });
+    const reservation = creditLedger.reserve(db, {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      actorUserId: input.userId,
+      operationKey: [
+        'redraw-localization',
+        input.tenantId,
+        input.userId,
+        input.workId,
+        quote.input_hash,
+        input.idempotencyKey,
+      ].join(':'),
+      amount: quote.credits,
+      model: quote.model,
+      resourceType: 'redraw_localization',
+      resourceId: String(input.workId),
+    });
+    const task = insertTask(db, log, input, quote, Number(draft.id), reservation.id);
+    return {
+      task_id: task.id,
+      reservation_id: reservation.id,
+      draft_version_id: Number(draft.id),
+      quote,
+    };
+  }).immediate();
+}
+
+function setProcessing(db, taskId) {
+  db.prepare(`
+    UPDATE async_tasks
+    SET status = 'processing', progress = 10, message = ?, updated_at = ?
+    WHERE id = ? AND status IN ('pending', 'processing')
+  `).run('正在执行本地化', new Date().toISOString(), taskId);
+}
+
+function setProviderTaskId(db, taskId, providerTaskId) {
+  if (!trim(providerTaskId)) return;
+  db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
+    .run(trim(providerTaskId), new Date().toISOString(), taskId);
+}
+
+function setNeedsAttention(db, taskId, message) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE async_tasks
+    SET status = 'needs_attention', progress = CASE WHEN COALESCE(progress, 0) > 90 THEN progress ELSE 90 END,
+        message = ?, error = ?, completed_at = NULL, updated_at = ?
+    WHERE id = ?
+  `).run(message || '本地化供应商状态未知，请人工确认', message || '本地化供应商状态未知，请人工确认', now, taskId);
+}
+
+function markFailed(db, taskId, reservationId, message) {
+  taskService.updateTaskError(db, taskId, message || '本地化失败');
+  creditLedger.settleGeneration(db, reservationId, 'failed', message || '本地化失败');
+}
+
+function markCompleted(db, taskId, reservationId, result) {
+  taskService.updateTaskResult(db, taskId, result);
+  creditLedger.settleGeneration(db, reservationId, 'completed');
+}
+
+function isUnknownError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  return error?.unknown === true
+    || code.includes('UNKNOWN')
+    || code.includes('TIMEOUT')
+    || message.includes('结果未知')
+    || message.includes('状态未知')
+    || message.includes('最终状态未知');
+}
+
+function runLocalizationJob(db, records, deps) {
+  return (async () => {
+    const { task_id: taskId, reservation_id: reservationId, draft_version_id: draftVersionId, quote } = records;
+    let providerCalled = false;
+    try {
+      setProcessing(db, taskId);
+      if (typeof deps.provider !== 'function') {
+        throw codedError('REDRAW_LOCALIZATION_PROVIDER_REQUIRED', '缺少本地化供应商');
+      }
+      providerCalled = true;
+      const providerResult = await deps.provider({
+        taskId,
+        model: quote.model,
+        locale: quote.snapshot.input.locale,
+        market: quote.snapshot.input.market,
+        input: quote.snapshot.input,
+      });
+      const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id || '';
+      setProviderTaskId(db, taskId, providerTaskId);
+      if (!providerResult || !Object.prototype.hasOwnProperty.call(providerResult, 'result')) {
+        throw codedError('REDRAW_LOCALIZATION_EMPTY_RESULT', '本地化供应商返回结果为空');
+      }
+      const normalized = localizationService.normalizeLocalizationResult(
+        providerResult.result,
+        quote.snapshot.input.source_facts,
+      );
+      const materialized = localizationService.materializeLocalizationDraft(db, {
+        tenantId: quote.snapshot.input.tenantId || records.tenantId,
+        userId: quote.snapshot.input.userId || records.userId,
+      }, draftVersionId, {
+        workId: Number(quote.snapshot.input.workId || records.workId),
+        locale: quote.snapshot.input.locale,
+        market: quote.snapshot.input.market,
+        localizationLevel: quote.snapshot.input.localization_level,
+        sourceFacts: normalized.source_facts,
+        sourceFactsHash: normalized.facts_hash,
+        glossary: normalized.glossary,
+        nameMap: normalized.name_map,
+        cultureMap: normalized.culture_map,
+        dialogue: normalized.dialogue,
+        styleSnapshot: quote.snapshot.input.style_snapshot,
+        modelSnapshot: quote.snapshot,
+      });
+      markCompleted(db, taskId, reservationId, {
+        status: 'completed',
+        work_id: Number(records.workId),
+        version_id: materialized.id,
+        facts_hash: normalized.facts_hash,
+      });
+      return { status: 'completed', version_id: materialized.id };
+    } catch (error) {
+      if (providerCalled && isUnknownError(error)) {
+        setNeedsAttention(db, taskId, error.message);
+      } else {
+        markFailed(db, taskId, reservationId, error.message);
+      }
+      throw error;
+    }
+  })();
+}
+
+function startLocalization(db, log, input = {}, deps = {}) {
+  const normalized = normalizeStartInput(input);
+  const existing = getExistingStart(db, normalized);
+  if (existing) return existing;
+
+  const quote = quoteLocalization(db, normalized);
+  if (!quote.priced) throw codedError(quote.code, '本地化模型暂不可报价', { quote });
+  if (normalized.quoteHash !== quote.quote_hash) {
+    throw codedError('REDRAW_LOCALIZATION_QUOTE_CHANGED', '本地化报价已变化，请重新确认', { quote });
+  }
+
+  const created = createStartRecords(db, log, normalized, quote);
+  const records = {
+    ...created,
+    tenantId: normalized.tenantId,
+    userId: normalized.userId,
+    workId: normalized.workId,
+  };
+  const schedule = typeof deps.schedule === 'function' ? deps.schedule : (job) => setImmediate(job);
+  const completion = schedule(() => runLocalizationJob(db, records, deps));
+  return {
+    task_id: created.task_id,
+    reservation_id: created.reservation_id,
+    draft_version_id: created.draft_version_id,
+    completion,
+  };
+}
+
+function reconcileOrphanedTasks(db, log) {
+  let rows;
+  try {
+    rows = db.prepare(`
+      SELECT *
+      FROM async_tasks
+      WHERE type = 'redraw_localization'
+        AND status IN ('pending', 'processing')
+        AND deleted_at IS NULL
+    `).all();
+  } catch (error) {
+    if (/no such (table|column)/i.test(String(error.message || ''))) return { needs_attention: 0, failed: 0 };
+    throw error;
+  }
+
+  let needsAttention = 0;
+  let failed = 0;
+  for (const row of rows) {
+    if (trim(row.provider_task_id)) {
+      setNeedsAttention(db, row.id, '服务重启后本地化供应商任务状态未知，请人工确认');
+      needsAttention += 1;
+      log?.warn?.('redraw localization orphan needs attention', { task_id: row.id });
+    } else {
+      markFailed(db, row.id, row.credit_reservation_id, '服务重启后本地化任务未派发，已退款');
+      failed += 1;
+      log?.warn?.('redraw localization orphan failed before dispatch', { task_id: row.id });
+    }
+  }
+  return { needs_attention: needsAttention, failed };
+}
+
+module.exports = {
+  stableValue,
+  stableHash,
+  buildLocalizationSnapshot,
+  quoteLocalization,
+  startLocalization,
+  reconcileOrphanedTasks,
+};

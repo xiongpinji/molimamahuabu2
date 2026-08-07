@@ -189,7 +189,7 @@ function selectOrphanedAsyncTasks(db) {
   const columns = new Set(db.prepare('PRAGMA table_info(async_tasks)').all().map((column) => column.name));
   const optional = (name) => (columns.has(name) ? name : `NULL AS ${name}`);
   return db.prepare(`
-    SELECT id, type, status, resource_id,
+    SELECT id, type, ${optional('task_type')}, status, resource_id,
            ${optional('credit_reservation_id')}, ${optional('provider_task_id')},
            ${optional('tenant_id')}, ${optional('user_id')}
     FROM async_tasks
@@ -199,6 +199,10 @@ function selectOrphanedAsyncTasks(db) {
 
 function failOrphanedAsyncTasksOnStartup(db, log) {
   let rows = selectOrphanedAsyncTasks(db);
+  rows = rows.filter((row) => {
+    const kind = String(row.type || row.task_type || '');
+    return !['redraw_localization', 'redraw_asset_batch'].includes(kind);
+  });
   try {
     const resumableVideoTaskIds = new Set(
       db.prepare(
