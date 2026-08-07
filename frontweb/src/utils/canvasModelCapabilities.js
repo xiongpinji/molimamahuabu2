@@ -55,13 +55,19 @@ export function normalizeCanvasModelCatalog(items = []) {
   }))
 }
 const CATALOG_ONLY_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2'])
+const CATALOG_ONLY_VIDEO_MODELS = new Set(['seedance-2-fast', 'seedance-2-mini'])
 
 export function filterCanvasCatalogFallbackModels(models = [], kind = '') {
   const uniqueModels = [...new Set((Array.isArray(models) ? models : [])
     .map((model) => String(model || '').trim())
     .filter(Boolean))]
-  if (kind !== 'image') return uniqueModels
-  return uniqueModels.filter((model) => !CATALOG_ONLY_IMAGE_MODELS.has(model.toLowerCase()))
+  if (kind === 'image') {
+    return uniqueModels.filter((model) => !CATALOG_ONLY_IMAGE_MODELS.has(model.toLowerCase()))
+  }
+  if (kind === 'video') {
+    return uniqueModels.filter((model) => !CATALOG_ONLY_VIDEO_MODELS.has(model.toLowerCase()))
+  }
+  return uniqueModels
 }
 
 export function canvasModelCapability(catalog, kind, model) {
@@ -104,6 +110,7 @@ export function estimateCanvasCredits(catalog, kind, model, quantity = 1, durati
   const tierCredits = ['image', 'video'].includes(kind)
     ? Number(entry?.resolutionPrices?.[normalizedResolution]?.credits)
     : NaN
+  if (entry?.protocol === 'toapis_video' && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
   if (hasResolutionPrices && ['image', 'video'].includes(kind)
       && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
   const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0 ? tierCredits : entry?.credits
@@ -114,6 +121,12 @@ export function estimateCanvasCredits(catalog, kind, model, quantity = 1, durati
     ? entry.capabilities.quantities.map(Number)
     : []
   if (entry?.capabilities?.declared && declaredQuantities.length && !declaredQuantities.includes(normalizedQuantity)) return null
+  if (kind === 'video' && entry?.protocol === 'toapis_video') {
+    const durations = Array.isArray(entry.capabilities?.durations)
+      ? entry.capabilities.durations.map(Number)
+      : []
+    if (!durations.includes(Number(duration))) return null
+  }
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)
     : 1

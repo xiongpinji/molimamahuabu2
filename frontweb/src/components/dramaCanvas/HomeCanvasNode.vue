@@ -65,6 +65,22 @@
         <span class="text-preview-icon" aria-hidden="true">☰</span>
         <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
       </template>
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <section v-else class="media-stage">
@@ -100,6 +116,22 @@
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
       </div>
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <ImageNodeToolbar
@@ -145,8 +177,10 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
+              :disabled="!supportsFirstLastMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'first-last'"
+              :title="supportsFirstLastMode ? '使用首帧或首尾帧生成' : '当前模型未开放首尾帧参考'"
               @click="setVideoReferenceMode('first-last')"
             >
               首尾帧
@@ -154,14 +188,24 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'multi' }"
+              :disabled="!supportsImageReferenceMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'multi'"
+              :title="supportsImageReferenceMode ? '使用多张参考图生成' : '当前模型未开放多图参考'"
               @click="setVideoReferenceMode('multi')"
             >
               多图参考
             </button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
-            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放全能参考">全能参考</button>
+            <button
+              type="button"
+              :class="{ active: videoReferenceMode === 'omni' }"
+              :disabled="!supportsOmniReferenceMode"
+              role="tab"
+              :aria-selected="videoReferenceMode === 'omni'"
+              :title="supportsOmniReferenceMode ? '使用图片、视频或音频参考' : '当前模型未开放全能参考'"
+              @click="setVideoReferenceMode('omni')"
+            >全能参考</button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
           </div>
           <label class="camera-pill">
@@ -178,48 +222,77 @@
           </label>
         </div>
 
-        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考素材">
+        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" :aria-label="data.kind === 'video' ? '自动参考素材' : '自动参考图'">
           <div class="reference-heading">
-            <strong>参考素材 · 连线自动采用</strong>
+            <strong>{{ data.kind === 'video' ? '参考图 / 视频 / 音频 · 连线自动采用' : '参考图 · 连线自动采用' }}</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
           <div class="reference-actions">
-            <button v-if="canUpload" type="button" aria-label="上传参考素材" @click="chooseReferenceFile">+ 上传参考素材</button>
+            <button v-if="canUploadReference" type="button" :aria-label="data.kind === 'video' ? '上传参考素材' : '上传参考图'" @click="chooseReferenceFile">+ {{ data.kind === 'video' ? '上传参考素材' : '上传参考图' }}</button>
             <input
-              v-if="canUpload"
+              v-if="canUploadReference"
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              :accept="referenceAccept"
+              :accept="referenceMediaAccept"
               @change="uploadReferenceFile"
             />
           </div>
-          <div v-if="inputReferences.length" class="reference-list">
+          <div v-if="data.kind === 'video' && videoReferenceMode === 'first-last'" class="first-last-slots" aria-label="首尾帧卡槽">
             <figure
-              v-for="(reference, index) in inputReferences"
+              v-for="frameSlot in firstLastFrameSlots"
+              :key="frameSlot.key"
+              class="reference-card first-last-frame-slot"
+              :data-frame-slot="frameSlot.key"
+              :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
+              :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
+              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
+              @mousedown.right.prevent
+              @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
+            >
+              <span class="frame-slot-label">{{ frameSlot.label }}</span>
+              <button
+                v-if="frameSlot.reference"
+                class="reference-remove"
+                type="button"
+                aria-label="取消参考图"
+                title="取消参考图"
+                @click.stop="removeReference(frameSlot.reference)"
+              >×</button>
+              <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
+              <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
+              <figcaption :title="frameSlot.reference?.title || frameSlot.label">
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+              </figcaption>
+            </figure>
+          </div>
+          <div v-else-if="inputReferences.length" class="reference-list">
+            <figure
+              v-for="reference in inputReferences"
               :key="reference.nodeId"
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
-              :title="`右键引用为 @${referenceTypeLabel(reference.kind)}${index + 1}`"
+              :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
+              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="insertReferenceToken(index)"
+              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
             >
-              <span class="reference-index">{{ index + 1 }}</span>
+              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
               <button
                 class="reference-remove"
                 type="button"
-                aria-label="取消参考素材"
-                title="取消参考素材"
+                :aria-label="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
+                :title="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
                 @click.stop="removeReference(reference)"
               >×</button>
               <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
-              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted playsinline />
-              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls />
-              <span v-else class="reference-placeholder">等待{{ referenceTypeLabel(reference.kind) }}</span>
-              <figcaption :title="reference.title">{{ referenceTypeLabel(reference.kind) }}{{ index + 1 }}</figcaption>
+              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
+              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
+              <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
-          <p v-else-if="data.kind === 'video'" class="reference-empty">把模型支持的图片、音频或视频节点连接进来，生成时会按能力自动采用。</p>
+          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
           <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
 
@@ -247,14 +320,16 @@
             class="reference-mention-menu"
             aria-label="@选择参考图"
           >
+            <!-- canvas-reference-numbered-mentions-v1 -->
             <button
               v-for="candidate in filteredReferenceCandidates"
               :key="candidate.nodeId"
               type="button"
+              :title="candidate.title"
               @mousedown.prevent="selectReferenceMention(candidate)"
             >
               <img :src="candidate.url" alt="" />
-              <span>{{ candidate.title }}</span>
+              <span>{{ candidate.label }}</span>
             </button>
             <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
           </div>
@@ -325,7 +400,7 @@
               <option value="light-leak">漏光</option>
             </select>
           </label>
-          <label v-if="data.kind === 'video' && capability.supportsAudio !== false" class="editor-check">
+          <label v-if="data.kind === 'video' && capability.supportsAudio === true" class="editor-check">
             <input v-model="draft.includeAudio" type="checkbox" aria-label="生成音频" @change="saveDraft" />
             <span>同步音频</span>
           </label>
@@ -379,16 +454,24 @@
         </div>
 
         <div
-          v-if="data.status === 'running'"
+          v-if="isGenerationRunning"
           class="generation-progress"
+          :class="{ 'is-indeterminate': !hasActualGenerationProgress }"
           role="progressbar"
           aria-label="生成进度"
           aria-valuemin="0"
           aria-valuemax="100"
-          :aria-valuenow="generationProgress"
+          :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+          :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
         >
-          <div><span>生成进度</span><strong>{{ generationProgress }}%</strong></div>
-          <span class="generation-progress-track"><i :style="{ width: `${generationProgress}%` }" /></span>
+          <div>
+            <span>生成进度</span>
+            <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+            <span v-else class="generation-inline-spinner" aria-hidden="true" />
+          </div>
+          <span class="generation-progress-track">
+            <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+          </span>
         </div>
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
@@ -403,16 +486,17 @@
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
-          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" @click.stop="runSubgraph">运行下游</button>
+          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" :disabled="estimatedCredits == null" @click.stop="runSubgraph">运行下游</button>
           <button
             v-if="canGenerate"
             type="button"
             class="run-button"
-            :disabled="data.status === 'running' || !draft.content.trim()"
-            :aria-label="data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成')"
+            :disabled="data.status === 'running' || !draft.content.trim() || estimatedCredits == null"
+            :aria-label="isGenerationRunning ? '节点生成进行中' : (data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成'))"
             @click.stop="runNode"
           >
-            {{ data.status === 'running' ? '生成中…' : '↑' }}
+            <span v-if="isGenerationRunning" class="run-spinner" aria-hidden="true" />
+            <span v-else aria-hidden="true">↑</span>
           </button>
         </div>
       </section>
@@ -450,6 +534,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
+import {
+  normalizeFreeCanvasVideoReferenceMode,
+  resolveFreeCanvasVideoReferenceInput,
+} from '@/utils/freeCanvasGeneration'
+import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -498,6 +588,7 @@ const draft = reactive({
   cameraMovement: '',
   effect: '',
   includeAudio: false,
+  videoReferenceMode: '',
 })
 const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio: '♫' }[props.data.kind] || '◈'))
 const mediaEmptyLabel = computed(() => {
@@ -519,6 +610,36 @@ const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入�
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
+function capabilityAllows(name, fallback = true) {
+  if (capability.value?.declared === false) return fallback
+  return capability.value?.[name] === true
+}
+const supportsFirstLastMode = computed(() => (
+  capabilityAllows('supportsFirstFrame') || capabilityAllows('supportsLastFrame')
+))
+const supportsImageReferenceMode = computed(() => capabilityAllows('supportsImageReference'))
+const supportsOmniReferenceMode = computed(() => (
+  capability.value.supportsImageReference === true
+  || capability.value.supportsVideoReference === true
+  || capability.value.supportsAudioReference === true
+  || capability.value?.declared === false
+))
+const canUploadReference = computed(() => {
+  if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
+  if (props.data.kind !== 'video') return true
+  if (videoReferenceMode.value === 'first-last') return supportsFirstLastMode.value
+  if (videoReferenceMode.value === 'multi') return supportsImageReferenceMode.value
+  return supportsOmniReferenceMode.value
+})
+const referenceMediaAccept = computed(() => {
+  if (props.data.kind !== 'video') return 'image/*'
+  if (videoReferenceMode.value === 'first-last' || videoReferenceMode.value === 'multi') return 'image/*'
+  const accepted = []
+  if (capabilityAllows('supportsImageReference')) accepted.push('image/*')
+  if (capabilityAllows('supportsVideoReference')) accepted.push('video/*')
+  if (capabilityAllows('supportsAudioReference')) accepted.push('audio/*')
+  return accepted.join(',') || 'image/*'
+})
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
 const currentModelMetadata = computed(() => (
@@ -530,11 +651,6 @@ const capability = computed(() => (
   || currentModelMetadata.value?.capabilities
   || {}
 ))
-const referenceAccept = computed(() => {
-  if (props.data.kind === 'image') return 'image/*'
-  const types = capability.value.referenceTypes || ['image']
-  return types.map((type) => `${type}/*`).join(',') || 'image/*'
-})
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -542,17 +658,31 @@ const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   draft.duration,
   draft.resolution,
 ) || null)
-const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
+const actualGenerationProgress = computed(() => (
+  props.data.progressKnown === true ? normalizeGenerationProgress(props.data.progress) : null
+))
+const isGenerationRunning = computed(() => (
+  props.data.status === 'running'
+  && props.data.generationActive === true
+))
+const hasActualGenerationProgress = computed(() => actualGenerationProgress.value !== null)
+const generationProgress = computed(() => actualGenerationProgress.value ?? 0)
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
-    ? (ctx?.getFreeNodeInputReferences?.(props.id) || []).map((reference) => ({ kind: reference.kind || 'image', ...reference }))
+    ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
-const videoReferenceMode = computed(() => (
-  inputReferences.value.some((reference) => ['first-frame', 'last-frame'].includes(reference.slot))
-    ? 'first-last'
-    : 'multi'
+const firstLastFrameSlots = computed(() => {
+  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  return [
+    { key: 'first', label: '首帧', reference: imageReferences[0] || null },
+    { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
+  ]
+})
+const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
+  draft.videoReferenceMode,
+  inputReferences.value,
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -562,7 +692,10 @@ const referenceCandidates = computed(() => (
 const filteredReferenceCandidates = computed(() => {
   const query = mentionQuery.value.trim().toLowerCase()
   if (!query) return referenceCandidates.value
-  return referenceCandidates.value.filter((candidate) => String(candidate.title || '').toLowerCase().includes(query))
+  return referenceCandidates.value.filter((candidate) => (
+    String(candidate.label || '').toLowerCase().includes(query)
+    || String(candidate.title || '').toLowerCase().includes(query)
+  ))
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
@@ -612,6 +745,7 @@ function syncDraft() {
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
+  draft.videoReferenceMode = props.data.videoReferenceMode || ''
 }
 
 async function onModelChange() {
@@ -624,6 +758,29 @@ async function onModelChange() {
     ? capability.value.quantities.map(Number)
     : [1]
   if (!quantities.includes(Number(draft.quantity))) draft.quantity = quantities[0]
+  const durations = videoDurationOptionsForCapability(capability.value)
+  if (props.data.kind === 'video' && !durations.includes(Number(draft.duration))) {
+    draft.duration = durations[0]
+  }
+  if (props.data.kind === 'video' && capability.value.supportsAudio !== true) {
+    draft.includeAudio = false
+  }
+  if (props.data.kind === 'video') {
+    const currentModeSupported = (
+      (videoReferenceMode.value === 'first-last' && supportsFirstLastMode.value)
+      || (videoReferenceMode.value === 'multi' && supportsImageReferenceMode.value)
+      || (videoReferenceMode.value === 'omni' && supportsOmniReferenceMode.value)
+    )
+    if (!currentModeSupported) {
+      draft.videoReferenceMode = supportsFirstLastMode.value
+        ? 'first-last'
+        : supportsImageReferenceMode.value
+          ? 'multi'
+          : supportsOmniReferenceMode.value
+            ? 'omni'
+            : ''
+    }
+  }
   await saveDraft()
 }
 
@@ -654,6 +811,7 @@ async function saveDraft() {
     cameraMovement: draft.cameraMovement,
     effect: draft.effect,
     includeAudio: draft.includeAudio === true,
+    ...(props.data.kind === 'video' ? { videoReferenceMode: videoReferenceMode.value } : {}),
   })
   draftDirty = false
 }
@@ -742,9 +900,10 @@ function handleContentBlur(event) {
 
 async function selectReferenceMention(candidate) {
   const sourceNodeId = String(candidate?.nodeId || '')
-  if (!sourceNodeId || mentionStart.value < 0) return
-  const cursor = mentionStart.value + String(candidate.title || '').length + 2
-  draft.content = `${draft.content.slice(0, mentionStart.value)}@${candidate.title} ${draft.content.slice(mentionEnd.value)}`
+  const mentionToken = String(candidate?.mentionToken || '')
+  if (!sourceNodeId || !mentionToken || mentionStart.value < 0) return
+  const cursor = mentionStart.value + mentionToken.length + 1
+  draft.content = `${draft.content.slice(0, mentionStart.value)}${mentionToken} ${draft.content.slice(mentionEnd.value)}`
   mentionStart.value = -1
   mentionEnd.value = -1
   mentionQuery.value = ''
@@ -755,7 +914,12 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-async function insertReferenceToken(index) {
+function referenceOrdinal(reference) {
+  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
+  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+}
+
+async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
   const input = contentInput.value
   const value = String(draft.content || '')
@@ -769,8 +933,7 @@ async function insertReferenceToken(index) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const reference = inputReferences.value[index]
-  const token = `@${referenceTypeLabel(reference?.kind)}${index + 1}`
+  const token = `@图片${referenceOrdinal(reference)}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -977,7 +1140,7 @@ async function uploadFile(event) {
 async function uploadReferenceFile(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
-  if (file) await ctx?.uploadFreeCanvasReferenceImage?.(props.id, file)
+  if (file) await ctx?.uploadFreeCanvasReferenceMedia?.(props.id, file)
 }
 
 async function deleteNode() {
@@ -1002,18 +1165,32 @@ function updateReference(reference, patch) {
   ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
 }
 
-function setVideoReferenceMode(mode) {
+async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
-  inputReferences.value.filter((reference) => reference.kind === 'image').forEach((reference, index) => {
-    const input = mode === 'first-last'
-      ? (index === 0 ? 'first-frame' : index === 1 ? 'last-frame' : 'reference-image')
-      : 'reference-image'
-    updateReference(reference, { input })
+  if (mode === 'first-last' && !supportsFirstLastMode.value) return
+  if (mode === 'multi' && !supportsImageReferenceMode.value) return
+  if (mode === 'omni' && !supportsOmniReferenceMode.value) return
+  draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  await saveDraft()
+  let imageIndex = 0
+  inputReferences.value.forEach((reference) => {
+    if (reference.kind === 'image') {
+      const index = imageIndex++
+      const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
+      const enabled = draft.videoReferenceMode === 'multi'
+        || (draft.videoReferenceMode === 'omni' && capabilityAllows('supportsImageReference'))
+        || (draft.videoReferenceMode === 'first-last' && index === 0)
+        || (draft.videoReferenceMode === 'first-last' && index === 1)
+      updateReference(reference, { input, enabled })
+      return
+    }
+    updateReference(reference, {
+      enabled: draft.videoReferenceMode === 'omni'
+        && (reference.kind === 'video'
+          ? capabilityAllows('supportsVideoReference')
+          : capabilityAllows('supportsAudioReference')),
+    })
   })
-}
-
-function referenceTypeLabel(kind) {
-  return ({ image: '图片', audio: '音频', video: '视频' }[kind] || '素材')
 }
 
 function removeReference(reference) {
@@ -1090,6 +1267,34 @@ onBeforeUnmount(() => {
 watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
+watch(
+  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}`).join('|')}`,
+  () => {
+    if (props.data.kind !== 'video') return
+    let imageIndex = 0
+    inputReferences.value.forEach((reference) => {
+      const isImage = reference.kind === 'image'
+      const index = isImage ? imageIndex++ : -1
+      const input = isImage
+        ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
+        : reference.slot
+      const enabled = isImage
+        ? videoReferenceMode.value === 'multi'
+          || (videoReferenceMode.value === 'omni' && capabilityAllows('supportsImageReference'))
+          || (videoReferenceMode.value === 'first-last' && index === 0)
+          || (videoReferenceMode.value === 'first-last' && index === 1)
+        : videoReferenceMode.value === 'omni'
+          && (reference.kind === 'video'
+            ? capabilityAllows('supportsVideoReference')
+            : capabilityAllows('supportsAudioReference'))
+      const patch = {}
+      if (reference.slot !== input) patch.input = input
+      if (reference.enabled !== enabled) patch.enabled = enabled
+      if (Object.keys(patch).length) updateReference(reference, patch)
+    })
+  },
+  { flush: 'post', immediate: true },
+)
 watch(isSelected, (selected) => {
   if (selected) {
     editorHidden.value = false
@@ -1189,11 +1394,56 @@ watch(isSelected, (selected) => {
 .node-handle-input { left: -15px; }
 .node-handle-output { right: -15px; }
 .text-preview, .media-stage { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.node-generation-state {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  padding: 26px;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  border-radius: inherit;
+  background: rgba(24, 24, 27, 0.88);
+  box-sizing: border-box;
+}
+.node-generation-spinner,
+.run-spinner,
+.generation-inline-spinner {
+  display: inline-block;
+  border: 2px solid rgba(251, 123, 59, 0.22);
+  border-top-color: #fb7b3b;
+  border-radius: 50%;
+  animation: generation-spin 0.75s linear infinite;
+  box-sizing: border-box;
+}
+.node-generation-spinner { width: 34px; height: 34px; }
+.node-generation-state strong { color: #e4e4e7; font-size: 16px; font-weight: 600; }
+.node-generation-progress-track {
+  width: min(220px, 72%);
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #303036;
+}
+.node-generation-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #fb7b3b;
+  transition: width 180ms ease;
+}
+.node-generation-progress-track.is-indeterminate i,
+.generation-progress.is-indeterminate .generation-progress-track i {
+  width: 34%;
+  animation: generation-progress-slide 1.15s ease-in-out infinite;
+}
 .home-canvas-node.is-selected .text-preview,
 .home-canvas-node.is-selected .media-stage { cursor: grab; }
 .home-canvas-node.is-selected .text-preview:active,
 .home-canvas-node.is-selected .media-stage:active { cursor: grabbing; }
 .text-preview {
+  position: relative;
   display: grid;
   min-height: 220px;
   padding: 26px;
@@ -1353,6 +1603,12 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
 }
 .reference-actions select { min-width: 190px; }
+.first-last-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 94px));
+  gap: 10px;
+  margin-top: 12px;
+}
 .reference-list { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; }
 .reference-card {
   position: relative;
@@ -1372,10 +1628,23 @@ watch(isSelected, (selected) => {
   object-fit: cover;
   font-size: 11px;
 }
-.reference-card audio { padding: 6px; object-fit: contain; }
-.reference-card[data-reference-state='ready'] img,
-.reference-card[data-reference-state='ready'] video,
-.reference-card[data-reference-state='ready'] audio { border-color: #60a5fa; }
+.first-last-frame-slot[data-reference-state='empty'] .reference-placeholder {
+  border-style: dashed;
+}
+.frame-slot-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(9, 9, 11, 0.84);
+  color: #f4f4f5;
+  font-size: 10px;
+}
+.reference-card audio { padding: 6px; }
+.reference-card[data-reference-enabled='false'] { opacity: 0.45; }
+.reference-card[data-reference-state='ready'] img { border-color: #60a5fa; }
 .reference-index {
   position: absolute;
   top: 5px;
@@ -1601,11 +1870,12 @@ watch(isSelected, (selected) => {
 }
 .billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
 .billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
-.billing-note { color: #71717a; font-size: 11px; }
-.editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
+.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
-.generation-progress > div { display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
+.generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
 .generation-progress strong { color: #d4d4d8; font-weight: 600; }
+.generation-inline-spinner { width: 14px; height: 14px; }
 .generation-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: #303036; }
 .generation-progress-track i { display: block; height: 100%; border-radius: inherit; background: #fb7b3b; transition: width 180ms ease; }
 .editor-error { margin: 14px 0 0; padding: 10px 12px; border: 1px solid rgba(248, 113, 113, 0.32); border-radius: 10px; background: rgba(127, 29, 29, 0.22); color: #fca5a5; font-size: 12px; line-height: 1.5; }
@@ -1638,6 +1908,7 @@ watch(isSelected, (selected) => {
 .image-lightbox > img,
 .image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .run-button {
+  display: grid;
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
@@ -1646,8 +1917,10 @@ watch(isSelected, (selected) => {
   background: #7c3f26;
   color: #fff;
   font-size: 22px;
+  place-items: center;
   cursor: pointer;
 }
+.run-spinner { width: 19px; height: 19px; border-color: rgba(255, 255, 255, 0.24); border-top-color: #fff; }
 .advanced-button {
   min-width: 54px;
   height: 34px;
@@ -1667,6 +1940,13 @@ watch(isSelected, (selected) => {
 .state-running::before { border-color: #60a5fa; }
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
+@keyframes generation-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes generation-progress-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(300%); }
+}
 @media (max-width: 760px) {
   .node-expanded-editor { right: 12px; bottom: 12px; left: 12px; width: auto; padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -1,9 +1,42 @@
+import {
+  assertVideoDurationAllowed,
+  videoDurationOptionsForCapability,
+} from './videoDuration.js'
+
 const QUICK_GENERATION_MODES = new Set(['text', 'image', 'video'])
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k']
+const STRICT_CATALOG_PROTOCOLS = new Set(['usmercari_image', 'toapis_video'])
 const VERIFIED_IMAGE_MODELS = Object.freeze({
   'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), quantities: Object.freeze([1]), maxReferences: 6 }),
   'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), quantities: Object.freeze([1]), maxReferences: 6 }),
 })
+const VERIFIED_VIDEO_MODELS = Object.freeze({
+  'seedance-2-fast': Object.freeze({
+    resolutions: Object.freeze(['480p', '720p']),
+    durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)),
+  }),
+  'seedance-2-mini': Object.freeze({
+    resolutions: Object.freeze(['480p', '720p']),
+    durations: Object.freeze([4, 8, 10, 12, 15]),
+  }),
+})
+const STRICT_CATALOG_PROVIDER_PROTOCOLS = Object.freeze({
+  toapis: 'toapis_video',
+  toapis_video: 'toapis_video',
+  usmercari: 'usmercari_image',
+  usmercari_image: 'usmercari_image',
+})
+
+function catalogProtocol(item = {}) {
+  const protocol = String(item.protocol || item.api_protocol || '').trim().toLowerCase()
+  if (STRICT_CATALOG_PROTOCOLS.has(protocol)) return protocol
+  const provider = String(item.provider || '').trim().toLowerCase()
+  if (STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]) return STRICT_CATALOG_PROVIDER_PROTOCOLS[provider]
+  const model = String(item.model || '').trim().toLowerCase()
+  if (verifiedImageModel(model)) return 'usmercari_image'
+  if (verifiedVideoModel(model)) return 'toapis_video'
+  return protocol
+}
 
 function normalizeMode(value) {
   const mode = String(value || '').trim().toLowerCase()
@@ -22,6 +55,39 @@ function normalizeImageResolution(value, fallback = '1k') {
 
 function verifiedImageModel(model) {
   return VERIFIED_IMAGE_MODELS[String(model || '').trim().toLowerCase()] || null
+}
+
+function verifiedVideoModel(model) {
+  return VERIFIED_VIDEO_MODELS[String(model || '').trim().toLowerCase()] || null
+}
+
+function uniqueNormalizedStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean))]
+}
+
+function intersectValues(declared, verified) {
+  if (!verified) return declared
+  return declared.filter((value) => verified.includes(value))
+}
+
+function effectiveVideoCapability(model, capability = {}) {
+  const limits = verifiedVideoModel(model)
+  if (!limits) return capability || {}
+  const declaredResolutions = uniqueNormalizedStrings(capability?.resolutions)
+  const declaredDurations = Array.isArray(capability?.durations)
+    ? capability.durations.map(Number).filter(Number.isSafeInteger)
+    : []
+  return {
+    ...(capability || {}),
+    resolutions: declaredResolutions.length
+      ? intersectValues(declaredResolutions, limits.resolutions)
+      : [...limits.resolutions],
+    durations: declaredDurations.length
+      ? intersectValues(declaredDurations, limits.durations)
+      : [...limits.durations],
+  }
 }
 
 export function imageModelMaxReferences(model) {
@@ -64,25 +130,31 @@ export function normalizeQuickGenerationCatalog(items = []) {
   return (Array.isArray(items) ? items : [])
     .filter((item) => item?.model && (item?.kind || item?.category))
     .filter((item) => {
-      const protocol = String(item.protocol || item.api_protocol || '').trim().toLowerCase()
+      const protocol = catalogProtocol(item)
       const verificationStatus = String(item.verification_status || item.verificationStatus || '').trim().toLowerCase()
-      return protocol !== 'usmercari_image' || verificationStatus === 'verified'
+      return !STRICT_CATALOG_PROTOCOLS.has(protocol) || verificationStatus === 'verified'
     })
     .map((item) => {
       const model = String(item.model).trim()
       const category = String(item.kind || item.category).trim().toLowerCase()
-      const declaredResolutions = Array.isArray(item.capabilities?.resolutions)
-        ? item.capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
-        : []
+      const protocol = catalogProtocol(item)
+      const declaredResolutions = uniqueNormalizedStrings(item.capabilities?.resolutions)
       const verifiedLimits = category === 'image' ? verifiedImageModel(model) : null
+      const verifiedVideoLimits = category === 'video' ? verifiedVideoModel(model) : null
       const verifiedResolutions = verifiedLimits?.resolutions
-      const allowedResolutions = verifiedResolutions
-        ? declaredResolutions.filter((value) => verifiedResolutions.includes(value))
-        : declaredResolutions
+        || verifiedVideoLimits?.resolutions
+      const allowedResolutions = intersectValues(declaredResolutions, verifiedResolutions)
+      const declaredDurations = Array.isArray(item.capabilities?.durations)
+        ? item.capabilities.durations.map(Number).filter(Number.isSafeInteger)
+        : []
+      const allowedDurations = intersectValues(declaredDurations, verifiedVideoLimits?.durations)
       const resolutionPrices = normalizeResolutionPrices(
         item.resolution_prices || item.resolutionPrices,
-        category === 'image' && verifiedResolutions ? verifiedResolutions : null,
+        verifiedResolutions || null,
       )
+      const exposedResolutions = STRICT_CATALOG_PROTOCOLS.has(protocol)
+        ? allowedResolutions.filter((resolution) => Number(resolutionPrices?.[resolution]?.credits) > 0)
+        : allowedResolutions
       return {
         ...item,
         model,
@@ -92,17 +164,26 @@ export function normalizeQuickGenerationCatalog(items = []) {
         display_name: String(item.label || item.display_name || model),
         publicNote: String(item.public_note || item.publicNote || '').trim(),
         verificationStatus: String(item.verification_status || item.verificationStatus || '').trim(),
-        protocol: String(item.protocol || item.api_protocol || '').trim(),
+        protocol,
         resolution_prices: resolutionPrices,
         capabilities: {
           ...(item.capabilities || {}),
-          ...(allowedResolutions.length ? { resolutions: allowedResolutions } : {}),
+          ...(exposedResolutions.length ? { resolutions: exposedResolutions } : {}),
+          ...(allowedDurations.length ? { durations: allowedDurations } : {}),
           ...(verifiedLimits ? {
             quantities: [...verifiedLimits.quantities],
             maxReferences: verifiedLimits.maxReferences,
           } : {}),
         },
       }
+    })
+    .filter((item) => {
+      if (!STRICT_CATALOG_PROTOCOLS.has(item.protocol)) return true
+      const verifiedModel = item.category === 'image'
+        ? verifiedImageModel(item.model)
+        : verifiedVideoModel(item.model)
+      if (!verifiedModel || !item.capabilities.resolutions?.length) return false
+      return item.protocol !== 'toapis_video' || item.capabilities.durations?.length
     })
 }
 
@@ -119,20 +200,48 @@ export function quickGenerationResolutions(model = {}, mode = '') {
   return category === 'image' ? ['1k', '2k'] : category === 'video' ? ['720p'] : []
 }
 
-export function normalizeQuickGenerationDraft(value = {}) {
+export function quickGenerationDurations(model = {}) {
+  const capability = effectiveVideoCapability(model?.model, model?.capabilities || {})
+  return videoDurationOptionsForCapability(capability)
+}
+
+export function normalizeQuickGenerationDraft(value = {}, modelMetadata = {}) {
   const mode = normalizeMode(value.mode)
+  const hasModelMetadata = Boolean(modelMetadata?.model)
+  const capability = hasModelMetadata
+    ? effectiveVideoCapability(modelMetadata.model, modelMetadata?.capabilities || {})
+    : {}
+  const durationOptions = videoDurationOptionsForCapability(capability)
+  const requestedDuration = Math.trunc(Number(value.duration) || durationOptions[0] || 5)
+  const resolutionOptions = hasModelMetadata ? quickGenerationResolutions(modelMetadata, mode) : []
+  const requestedResolution = String(value.resolution || (mode === 'image' ? '1k' : '720p')).trim().toLowerCase()
+  const quantityOptions = Array.isArray(capability.quantities) && capability.quantities.length
+    ? capability.quantities.map(Number).filter(Number.isSafeInteger)
+    : [1, 2, 3, 4]
+  const requestedQuantity = Math.trunc(Number(value.quantity) || 1)
   return {
     mode,
     prompt: String(value.prompt || '').trim(),
     model: String(value.model || '').trim(),
     aspectRatio: String(value.aspectRatio || '16:9').trim() || '16:9',
-    duration: Math.min(15, Math.max(5, Math.trunc(Number(value.duration) || 5))),
+    duration: mode === 'video'
+      ? (hasModelMetadata
+        ? (durationOptions.includes(requestedDuration) ? requestedDuration : durationOptions[0])
+        : requestedDuration)
+      : Math.min(15, Math.max(5, requestedDuration)),
     resolution: mode === 'image'
       ? normalizeImageResolution(value.resolution)
-      : String(value.resolution || '720p').trim().toLowerCase() || '720p',
-    quantity: Math.min(4, Math.max(1, Math.trunc(Number(value.quantity) || 1))),
+      : (resolutionOptions.length && !resolutionOptions.includes(requestedResolution)
+        ? resolutionOptions[0]
+        : requestedResolution || '720p'),
+    quantity: quantityOptions.includes(requestedQuantity)
+      ? requestedQuantity
+      : quantityOptions[0] || 1,
     autoStart: value.autoStart === true,
     referenceImageUrl: normalizeReferenceImageUrl(value.referenceImageUrl),
+    generateAudio: hasModelMetadata
+      ? capability.supportsAudio === true && value.generateAudio === true
+      : value.generateAudio === true,
   }
 }
 
@@ -141,7 +250,9 @@ export function estimateGenerationCredits(model = {}, options = {}) {
   const prices = model?.resolution_prices || model?.resolutionPrices || {}
   const hasResolutionPrices = Object.keys(prices).length > 0
   const tierCredits = Number(prices?.[resolution]?.credits)
-  const category = String(model?.category || model?.kind || '').trim().toLowerCase()
+  const protocol = String(model?.protocol || model?.api_protocol || '').trim().toLowerCase()
+  if (protocol === 'toapis_video' && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
+  const category = String(model?.category || model?.kind || (model?.billing_unit === 'second' ? 'video' : '')).trim().toLowerCase()
   if (hasResolutionPrices && ['image', 'video'].includes(category)
       && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
   const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0
@@ -153,7 +264,11 @@ export function estimateGenerationCredits(model = {}, options = {}) {
   if (category === 'image') return credits * quantity
   if (model?.billing_unit !== 'second') return credits
   const duration = Number(options.duration)
-  if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) return null
+  try {
+    assertVideoDurationAllowed(duration, effectiveVideoCapability(model?.model, model?.capabilities || {}))
+  } catch (_) {
+    return null
+  }
   return credits * duration * quantity
 }
 
@@ -192,9 +307,25 @@ export function buildQuickGenerationRequest(input = {}) {
     return { endpoint: '/images', body }
   }
 
-  body.duration = Math.min(15, Math.max(5, Math.trunc(Number(input.duration) || 5)))
-  body.resolution = String(input.resolution || '720p').trim() || '720p'
+  const providedCapability = input.capability || input.capabilities || {}
+  if (verifiedVideoModel(model) && !Object.keys(providedCapability).length) {
+    throw new Error('当前视频模型目录尚未就绪，请刷新后重试')
+  }
+  const capability = effectiveVideoCapability(input.model, providedCapability)
+  const declaredResolutions = uniqueNormalizedStrings(capability.resolutions)
+  const requestedResolution = String(input.resolution || '720p').trim().toLowerCase() || '720p'
+  if (declaredResolutions.length && !declaredResolutions.includes(requestedResolution)) {
+    throw new Error(`当前模型视频清晰度仅支持 ${declaredResolutions.join('、')}`)
+  }
+  body.duration = assertVideoDurationAllowed(input.duration, capability)
+  body.resolution = requestedResolution
+  if (input.generateAudio === true && capability.supportsAudio !== true) {
+    throw new Error('当前模型未开放同步音频')
+  }
+  if (capability.supportsAudio === true) body.generate_audio = input.generateAudio === true
   if (referenceImageUrl) {
+    if (capability.supportsFirstFrame === false) throw new Error('当前模型未开放首帧参考')
+    body.reference_mode = 'first_last'
     body.first_frame_url = referenceImageUrl.startsWith('/static/')
       ? referenceImageUrl.slice('/static/'.length)
       : referenceImageUrl

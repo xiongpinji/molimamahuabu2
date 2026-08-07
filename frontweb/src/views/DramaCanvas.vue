@@ -2862,12 +2862,23 @@ function freeCanvasReferenceCandidates(nodeOrId) {
 
 function canAcceptFreeCanvasVideoReference(targetNode, sourceKind) {
   const capability = getFreeNodeModelCapability('video', targetNode.data?.model)
-  if (!(capability.referenceTypes || ['image']).includes(sourceKind)) {
+  const supportKey = {
+    image: 'supportsImageReference',
+    audio: 'supportsAudioReference',
+    video: 'supportsVideoReference',
+  }[sourceKind]
+  const declaredSupport = capability[supportKey]
+  const supportsReference = capability.declared === false
+    || declaredSupport === true
+    || (declaredSupport == null && (capability.referenceTypes || ['image']).includes(sourceKind))
+  if (!supportsReference) {
     ElMessage.warning(`${targetNode.data?.model || '当前视频模型'}不支持${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}参考`)
     return false
   }
   const limitKey = `max${sourceKind[0].toUpperCase()}${sourceKind.slice(1)}References`
-  const limit = Number(capability[limitKey] ?? (sourceKind === 'image' ? capability.maxReferences : 0))
+  const limit = capability.declared === false && sourceKind !== 'image'
+    ? 10
+    : Number(capability[limitKey] ?? (sourceKind === 'image' ? capability.maxReferences : 0))
   const currentCount = collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
     .filter((reference) => reference.kind === sourceKind).length
   if (Number.isInteger(limit) && currentCount >= limit) {
@@ -2943,6 +2954,8 @@ async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
     ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
+
+const uploadFreeCanvasReferenceMedia = uploadFreeCanvasReferenceImage
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
   const mutate = (edge) => {
@@ -4305,6 +4318,38 @@ function nodeInputReferenceUrls(node) {
   return [...new Set(urls)]
 }
 
+function canvasReferenceKind(value, url = '') {
+  const kind = String(value || '').trim().toLowerCase()
+  if (kind.includes('video')) return 'video'
+  if (kind.includes('audio') || kind.includes('voice')) return 'audio'
+  if (/\.(?:mp4|mov|m4v|webm)(?:$|[?#])/i.test(url)) return 'video'
+  if (/\.(?:mp3|wav|m4a|aac|ogg|oga|flac)(?:$|[?#])/i.test(url)) return 'audio'
+  return 'image'
+}
+
+function nodeInputReferences(node) {
+  const targetId = String(node?.id || '')
+  if (!targetId) return []
+  const references = []
+  for (const edge of allGraphEdges.value) {
+    if (String(edge?.target || '') !== targetId) continue
+    const sourceNode = findGraphNode(edge.source)
+    const url = nodeResultUrl(sourceNode)
+      || (sourceNode?.type === 'canvasProjectAsset' ? assetDisplayUrl(sourceNode.data?.asset) : '')
+    if (url) references.push({ kind: canvasReferenceKind(sourceNode?.data?.kind || sourceNode?.data?.asset?.type, url), url })
+  }
+  for (const asset of nodeAssignedAssets(node)) {
+    const url = assetDisplayUrl(asset)
+    if (url) references.push({ kind: canvasReferenceKind(asset?.type || asset?.media_type || asset?.asset_type, url), url })
+  }
+  const seen = new Set()
+  return references.filter((reference) => {
+    if (seen.has(reference.url)) return false
+    seen.add(reference.url)
+    return true
+  })
+}
+
 function nodeAssignedAssets(node) {
   const fromNode = Array.isArray(node?.data?.assignedAssets) ? node.data.assignedAssets : []
   if (fromNode.length) return fromNode
@@ -5602,6 +5647,7 @@ async function runCanvasNodeStep(node, step) {
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
   const upstreamReferenceUrlsForNode = nodeInputReferenceUrls(node)
+  const upstreamReferencesForNode = nodeInputReferences(node)
   const previousResultPayload = previousNodeStepResultPayload(statusIds)
   const baseStatusPayload = {
     step,
@@ -5621,6 +5667,7 @@ async function runCanvasNodeStep(node, step) {
     const genOpts = {
       ...getCanvasGenerationOptions(),
       upstreamReferenceUrls: upstreamReferenceUrlsForNode,
+      upstreamReferences: upstreamReferencesForNode,
     }
     let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
@@ -6107,6 +6154,7 @@ function getCanvasGenerationOptions() {
     ...getDramaGenerationOptions(drama.value),
     ...generationOverrides.value,
     imagesBySbId: imagesBySbId.value,
+    modelCatalog: freeCanvasModelCatalog.value,
   }
 }
 
@@ -6120,6 +6168,7 @@ function updateGenerationOptions(patch = {}) {
       ...metadata,
       aspect_ratio: current.aspectRatio || '16:9',
       video_resolution: current.videoResolution || '480p',
+      video_duration: current.videoDuration || 5,
     }
     if (Object.hasOwn(patch, 'imageModel')) nextMetadata.image_model = current.imageModel || null
     if (Object.hasOwn(patch, 'videoModel')) nextMetadata.video_model = current.videoModel || null
@@ -6134,6 +6183,7 @@ function updateGenerationOptions(patch = {}) {
       ...(parseDramaMetadata(drama.value?.metadata) || {}),
       aspect_ratio: latest.aspectRatio || '16:9',
       video_resolution: latest.videoResolution || '480p',
+      video_duration: latest.videoDuration || 5,
     }
     try {
       await dramaAPI.saveOutline(dramaId.value, { metadata })
@@ -6263,6 +6313,7 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
+  uploadFreeCanvasReferenceMedia,
   uploadFreeCanvasReferenceImage,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
@@ -7779,8 +7830,8 @@ watch(() => route.params.id, () => {
   loadDrama()
 }, { immediate: true })
 
-watch(isStandaloneCanvas, (standalone) => {
-  if (standalone) void loadFreeCanvasModelConfigs()
+watch(isStandaloneCanvas, () => {
+  void loadFreeCanvasModelConfigs()
 }, { immediate: true })
 
 watch(drama, () => {

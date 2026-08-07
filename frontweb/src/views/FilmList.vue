@@ -37,7 +37,7 @@
             <button
               class="home-composer__reference"
               type="button"
-              :disabled="homeMediaType === 'text' || homeReferenceUploading"
+              :disabled="!homeSupportsReferenceImage || homeReferenceUploading"
               @click="triggerHomeReferenceUpload"
             >
               <img v-if="homeReferencePreview" :src="homeReferencePreview" alt="已上传的参考图" />
@@ -97,10 +97,12 @@
                   </label>
                   <label v-if="homeMediaType === 'video'" class="home-control">
                     <select v-model.number="homeDuration" aria-label="视频时长">
-                      <option :value="5">5s</option>
-                      <option :value="10">10s</option>
-                      <option :value="15">15s</option>
+                      <option v-for="value in homeDurationOptions" :key="value" :value="value">{{ value }}s</option>
                     </select>
+                  </label>
+                  <label v-if="homeMediaType === 'video' && homeSelectedModel?.capabilities?.supportsAudio === true" class="home-control">
+                    <input v-model="homeGenerateAudio" type="checkbox" aria-label="同步音频" />
+                    <span>同步音频</span>
                   </label>
                   <label v-if="homeMediaType === 'image' || homeMediaType === 'video'" class="home-control">
                     <select v-model="homeResolution" :aria-label="homeMediaType === 'image' ? '图片清晰度' : '视频清晰度'">
@@ -447,7 +449,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Plus, User, PictureFilled, Box, Download, Upload, QuestionFilled, FolderOpened, Grid, CopyDocument, Search } from '@element-plus/icons-vue'
 import PlatformHeader from '@/components/PlatformHeader.vue'
 import { dramaAPI } from '@/api/drama'
-import { listGenerationCatalog } from '@/api/billing'
 import { getCreditAccount } from '@/api/auth'
 import { uploadAPI } from '@/api/upload'
 import request from '@/utils/request'
@@ -455,6 +456,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationDurations,
   quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
 import {
@@ -479,6 +481,7 @@ const homeMediaType = ref('video')
 const homeModel = ref('')
 const homeAspectRatio = ref('16:9')
 const homeDuration = ref(5)
+const homeGenerateAudio = ref(false)
 const homeResolution = ref('720p')
 const homeQuantity = ref(1)
 const homeGenerationCatalog = ref([])
@@ -509,6 +512,7 @@ const homeSelectedModel = computed(() => (
   homeModelOptions.value.find((item) => item.model === homeModel.value) || null
 ))
 const homeResolutions = computed(() => quickGenerationResolutions(homeSelectedModel.value || {}, homeMediaType.value))
+const homeDurationOptions = computed(() => quickGenerationDurations(homeSelectedModel.value || {}))
 const homeQuantityOptions = computed(() => {
   const declared = homeSelectedModel.value?.capabilities?.quantities
   return Array.isArray(declared) && declared.length ? declared : [1]
@@ -522,9 +526,18 @@ const homeInsufficientCredits = computed(() => (
 ))
 
 function triggerHomeReferenceUpload() {
-  if (homeMediaType.value === 'text' || homeReferenceUploading.value) return
+  if (!homeSupportsReferenceImage.value || homeReferenceUploading.value) return
   homeReferenceInput.value?.click()
 }
+
+const homeSupportsReferenceImage = computed(() => {
+  if (homeMediaType.value === 'text') return false
+  const capability = homeSelectedModel.value?.capabilities || {}
+  if (homeMediaType.value === 'image') return capability.supportsImageReference !== false
+  return homeSelectedModel.value?.protocol === 'toapis_video'
+    ? capability.supportsFirstFrame === true
+    : capability.supportsFirstFrame !== false
+})
 
 async function onHomeReferenceChange(event) {
   const file = event.target.files?.[0]
@@ -551,16 +564,13 @@ async function onHomeReferenceChange(event) {
 }
 
 async function loadHomeGenerationConfig() {
-  const [canvasCatalog, legacyCatalog, account] = await Promise.allSettled([
+  const [canvasCatalog, account] = await Promise.allSettled([
     request.get('/canvas/model-catalog'),
-    listGenerationCatalog(),
     getCreditAccount(),
   ])
   const rawCatalog = canvasCatalog.status === 'fulfilled' && Array.isArray(canvasCatalog.value)
     ? canvasCatalog.value
-    : legacyCatalog.status === 'fulfilled' && Array.isArray(legacyCatalog.value)
-      ? legacyCatalog.value
-      : []
+    : []
   homeGenerationCatalog.value = normalizeQuickGenerationCatalog(rawCatalog)
   homeBalance.value = account.status === 'fulfilled' ? Number(account.value?.available || 0) : 0
   homeModel.value = homeModelOptions.value[0]?.model || ''
@@ -573,6 +583,8 @@ function syncHomeResolution() {
   if (allowed.length && !allowed.includes(current)) homeResolution.value = allowed[0]
   else if (current) homeResolution.value = current
   if (!homeQuantityOptions.value.includes(Number(homeQuantity.value))) homeQuantity.value = homeQuantityOptions.value[0] || 1
+  if (!homeDurationOptions.value.includes(Number(homeDuration.value))) homeDuration.value = homeDurationOptions.value[0] || 5
+  if (homeSelectedModel.value?.capabilities?.supportsAudio !== true) homeGenerateAudio.value = false
 }
 
 function startFromComposer() {
@@ -600,9 +612,10 @@ function startFromComposer() {
     duration: homeDuration.value,
     resolution: homeResolution.value,
     quantity: homeQuantity.value,
-    referenceImageUrl: homeMediaType.value === 'text' ? '' : homeReferenceImageUrl.value,
+    referenceImageUrl: homeSupportsReferenceImage.value ? homeReferenceImageUrl.value : '',
+    generateAudio: homeGenerateAudio.value,
     autoStart: true,
-  })
+  }, homeSelectedModel.value || {})
   sessionStorage.setItem('moli_quick_create_draft', JSON.stringify(draft))
   router.push({ name: 'free-create', query: { mode: homeMediaType.value, source: 'home' } })
 }

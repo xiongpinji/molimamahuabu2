@@ -374,6 +374,23 @@ test('视频节点在付费请求前明确拒绝超过模型上限的参考素�
   }), /video-v1.*最多支持 10 个图片参考/)
 })
 
+test('未声明能力的旧视频模型仍沿用旧参考合同而不会被当成零引用能力', () => {
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video', content: '镜头推近', model: 'legacy-video', duration: 5, resolution: '720p',
+  }, {
+    dramaId: 7,
+    capability: {
+      declared: false,
+      resolutions: ['720p'],
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      maxReferences: 3,
+    },
+    upstreamReferences: [{ kind: 'video', url: 'https://cdn.example/reference.mp4' }],
+  })
+
+  assert.deepEqual(payload.reference_video_urls, ['https://cdn.example/reference.mp4'])
+})
+
 test('图片节点在提交前拒绝超过模型上限的参考图而不是静默截断', () => {
   const upstreamReferences = Array.from({ length: 7 }, (_, index) => ({
     kind: 'image',
@@ -524,6 +541,42 @@ test('collectDirectUpstreamMediaReferences 分类收集图片、音频和视频�
     collectDirectUpstreamMediaReferences(nodes, edges, 'target-video').map((item) => item.kind),
     ['image', 'audio', 'video'],
   )
+})
+
+test('全能参考收集图片、视频、音频并构造真实视频请求字段', () => {
+  const nodes = [
+    { id: 'image', data: { kind: 'image', title: '首帧', url: '/static/first.png' } },
+    { id: 'video-ref', data: { kind: 'video', title: '动作参考', url: '/static/motion.mp4' } },
+    { id: 'audio-ref', data: { kind: 'audio', title: '声音参考', url: '/static/voice.mp3' } },
+    { id: 'target', data: { kind: 'video', title: '目标视频' } },
+  ]
+  const edges = [
+    { id: 'image-edge', source: 'image', target: 'target', data: { contract: { input: 'first-frame', order: 0 } } },
+    { id: 'video-edge', source: 'video-ref', target: 'target', data: { contract: { input: 'reference-video', order: 1 } } },
+    { id: 'audio-edge', source: 'audio-ref', target: 'target', data: { contract: { input: 'reference-audio', order: 2 } } },
+  ]
+  const references = collectDirectUpstreamMediaReferences(nodes, edges, 'target')
+
+  assert.deepEqual(references.map(({ kind, slot, url }) => ({ kind, slot, url })), [
+    { kind: 'image', slot: 'first-frame', url: '/static/first.png' },
+    { kind: 'video', slot: 'reference-video', url: '/static/motion.mp4' },
+    { kind: 'audio', slot: 'reference-audio', url: '/static/voice.mp3' },
+  ])
+  assert.deepEqual(buildFreeCanvasGenerationRequest({
+    kind: 'video', content: '跟随参考动作', model: 'MiniMax H3', aspectRatio: '16:9', duration: 5, resolution: '480p',
+  }, { dramaId: 7, upstreamReferences: references, maxReferences: 4 }), {
+    drama_id: 7,
+    prompt: '跟随参考动作',
+    model: 'MiniMax H3',
+    image_url: '/static/first.png',
+    first_frame_url: '/static/first.png',
+    reference_image_urls: ['/static/first.png'],
+    reference_video_urls: ['/static/motion.mp4'],
+    reference_audio_urls: ['/static/voice.mp3'],
+    aspect_ratio: '16:9',
+    duration: 5,
+    resolution: '480p',
+  })
 })
 
 test('getFreeCanvasNodeResultUrl 兼容当前 URL 与多结果数组', () => {

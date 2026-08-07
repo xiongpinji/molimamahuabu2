@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import * as quickGeneration from '../src/utils/homeQuickGeneration.js'
 
 import {
   buildQuickGenerationRequest,
@@ -99,6 +100,46 @@ test('首页目录保留管理员展示信息并只开放真实验证的图片�
   assert.deepEqual(catalog[2].capabilities.quantities, [1, 2])
 })
 
+test('首页目录不能因缺少 protocol 而放行 provider 或受保护模型的未验证配置', () => {
+  const catalog = normalizeQuickGenerationCatalog([
+    {
+      kind: 'video',
+      model: 'seedance-2-fast',
+      provider: 'toapis',
+      verification_status: 'pending',
+      resolution_prices: { '480p': { credits: 1 }, '720p': { credits: 2 } },
+      capabilities: { resolutions: ['480p', '720p'], durations: [4, 5] },
+    },
+    {
+      kind: 'video',
+      model: 'seedance-2-mini',
+      provider: 'openai',
+      verification_status: 'verified',
+      resolution_prices: { '480p': { credits: 1 }, '720p': { credits: 2 } },
+      capabilities: {},
+    },
+    {
+      kind: 'image',
+      model: 'nano-banana-2',
+      provider: 'usmercari',
+      verification_status: 'pending',
+      resolution_prices: { '1k': { credits: 1 } },
+      capabilities: { resolutions: ['1k'] },
+    },
+    {
+      kind: 'video',
+      model: 'seedance-2-fast',
+      provider: 'toapis',
+      verification_status: 'verified',
+      resolution_prices: { '480p': { credits: 1 }, '720p': { credits: 2 } },
+      capabilities: { resolutions: ['480p', '720p'], durations: [4, 5] },
+    },
+  ])
+
+  assert.deepEqual(catalog.map((item) => item.model), ['seedance-2-fast'])
+  assert.equal(catalog[0].protocol, 'toapis_video')
+})
+
 test('首页草稿只接受文字、图片和视频并携带一次性自动生成标记', () => {
   assert.deepEqual(normalizeQuickGenerationDraft({
     mode: 'text',
@@ -116,9 +157,16 @@ test('首页草稿只接受文字、图片和视频并携带一次性自动生�
     quantity: 1,
     autoStart: true,
     referenceImageUrl: '/static/uploads/reference.png',
+    generateAudio: false,
   })
   assert.equal(normalizeQuickGenerationDraft({ mode: 'script' }).mode, 'image')
   assert.equal(normalizeQuickGenerationDraft({ mode: 'image', resolution: '720p' }).resolution, '1k')
+})
+
+test('首页视频时长使用目录能力而不是固定 5/10/15 秒', () => {
+  assert.deepEqual(quickGeneration.quickGenerationDurations?.({
+    kind: 'video', capabilities: { durations: [4, 8, 10, 12, 15] },
+  }), [4, 8, 10, 12, 15])
 })
 
 test('文字、图片和视频请求均保留所选模型及对应生成参数', () => {
@@ -151,6 +199,7 @@ test('文字、图片和视频请求均保留所选模型及对应生成参数',
     body: {
       prompt: '人物走入雨幕', model: 'video-model', style: 'cinematic',
       aspect_ratio: '16:9', duration: 10, resolution: '1080p',
+      reference_mode: 'first_last',
       first_frame_url: 'uploads/reference.png', image_url: '/static/uploads/reference.png',
     },
   })

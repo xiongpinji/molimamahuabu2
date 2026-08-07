@@ -1,3 +1,5 @@
+import { assertVideoDurationAllowed } from './videoDuration.js'
+
 function normalizeReferenceUrls(value) {
   if (!Array.isArray(value)) return undefined
   const urls = [...new Set(value.map((url) => String(url || '').trim()).filter(Boolean))]
@@ -23,11 +25,64 @@ function buildVideoGenerationRequest({
   firstFrameUrl,
   lastFrameUrl,
   referenceImageUrls,
+  referenceVideoUrls,
+  referenceAudioUrls,
+  referenceMode,
+  generateAudio,
   style,
   aspectRatio,
   resolution,
   duration,
+  capability,
 } = {}) {
+  const referenceImageUrlList = normalizeReferenceUrls(referenceImageUrls)
+  const referenceVideoUrlList = normalizeReferenceUrls(referenceVideoUrls)
+  const referenceAudioUrlList = normalizeReferenceUrls(referenceAudioUrls)
+  const normalizedReferenceMode = String(referenceMode || '').trim()
+  const capabilityDeclared = capability?.declared === true
+  const hasFrameSlots = Boolean(firstFrameUrl || lastFrameUrl)
+  const hasOmniReferences = Boolean(
+    referenceImageUrlList?.length
+    || referenceVideoUrlList?.length
+    || referenceAudioUrlList?.length
+  )
+  if ((capabilityDeclared || normalizedReferenceMode)
+      && ((hasFrameSlots && hasOmniReferences)
+        || (normalizedReferenceMode === 'first_last' && hasOmniReferences)
+        || (normalizedReferenceMode === 'omni' && hasFrameSlots))) {
+    throw new Error('首尾帧模式与全能参考模式互斥')
+  }
+  if (capabilityDeclared) {
+    const normalizedResolution = String(resolution || '').trim().toLowerCase()
+    const allowedResolutions = Array.isArray(capability.resolutions)
+      ? capability.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+      : []
+    if (allowedResolutions.length && !allowedResolutions.includes(normalizedResolution)) {
+      throw new Error(`当前模型不支持 ${normalizedResolution || '未选择'} 清晰度；可用档位：${allowedResolutions.join('、')}`)
+    }
+    assertVideoDurationAllowed(duration, capability)
+    if (firstFrameUrl && capability.supportsFirstFrame !== true) {
+      throw new Error('当前模型不支持首帧参考')
+    }
+    if (lastFrameUrl && capability.supportsLastFrame !== true) {
+      throw new Error('当前模型不支持尾帧参考')
+    }
+    for (const [urls, supportKey, limitKey, unit, label] of [
+      [referenceImageUrlList, 'supportsImageReference', 'maxReferences', '张', '参考图'],
+      [referenceVideoUrlList, 'supportsVideoReference', 'maxVideoReferences', '个', '参考视频'],
+      [referenceAudioUrlList, 'supportsAudioReference', 'maxAudioReferences', '个', '参考音频'],
+    ]) {
+      if (!urls?.length) continue
+      if (capability[supportKey] !== true) throw new Error(`当前模型未开放${label}`)
+      const max = Number(capability[limitKey])
+      if (Number.isSafeInteger(max) && max >= 0 && urls.length > max) {
+        throw new Error(`当前模型最多支持 ${max} ${unit}${label}`)
+      }
+    }
+    if (generateAudio === true && capability.supportsAudio !== true) {
+      throw new Error('当前模型不支持同步音频')
+    }
+  }
   return removeEmptyFields({
     drama_id: dramaId,
     storyboard_id: storyboardId,
@@ -36,7 +91,11 @@ function buildVideoGenerationRequest({
     image_url: imageUrl || undefined,
     first_frame_url: firstFrameUrl || undefined,
     last_frame_url: lastFrameUrl || undefined,
-    reference_image_urls: normalizeReferenceUrls(referenceImageUrls),
+    reference_image_urls: referenceImageUrlList,
+    reference_video_urls: referenceVideoUrlList,
+    reference_audio_urls: referenceAudioUrlList,
+    reference_mode: normalizedReferenceMode || undefined,
+    generate_audio: generateAudio ?? undefined,
     style: style || undefined,
     aspect_ratio: aspectRatio || undefined,
     resolution: resolution || undefined,

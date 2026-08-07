@@ -27,9 +27,19 @@ test('视频模型默认时长可写入和读取设置且保留其他字段', ()
   assert.equal(readVideoDurationSetting('{"video_duration":19}'), 5)
 })
 
-test('AI 视频模型表单提供 5 到 15 秒默认时长并写入设置', () => {
+test('ToAPIs 管理员默认时长按当前模型能力读写并保留 4 秒', () => {
+  const fastCapability = { durations: Array.from({ length: 12 }, (_, index) => index + 4) }
+  const miniCapability = { durations: [4, 8, 10, 12, 15] }
+
+  assert.equal(mergeVideoDurationSetting('{}', 4, fastCapability).video_duration, 4)
+  assert.equal(readVideoDurationSetting('{"video_duration":4}', fastCapability), 4)
+  assert.equal(mergeVideoDurationSetting('{}', 5, miniCapability).video_duration, 4)
+  assert.equal(readVideoDurationSetting('{"video_duration":5}', miniCapability), 4)
+})
+
+test('AI 视频模型表单按当前模型能力提供默认时长并写入设置', () => {
   assert.match(aiConfigSource, /v-model="form\.video_duration"/)
-  assert.match(aiConfigSource, /v-for="duration in VIDEO_DURATION_OPTIONS"/)
-  assert.match(aiConfigSource, /video_duration:\s*readVideoDurationSetting\(row\.settings\)/)
-  assert.match(aiConfigSource, /mergeVideoDurationSetting\(prev\?\.settings,\s*form\.value\.video_duration\)/)
+  assert.match(aiConfigSource, /v-for="duration in adminVideoDurationOptions"/)
+  assert.match(aiConfigSource, /video_duration:\s*readVideoDurationSetting\(row\.settings,\s*adminVideoCapabilityFor\(row\)\)/)
+  assert.match(aiConfigSource, /mergeVideoDurationSetting\(prev\?\.settings,\s*form\.value\.video_duration,\s*adminVideoCapability\.value\)/)
 })

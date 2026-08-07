@@ -38,6 +38,126 @@ test('请求审计保留分镜模型、参考图和首尾帧字段', () => {
   assert.equal(payload.duration, 5)
 })
 
+test('全能参考请求保留完整多模态数组、参考模式与 false 同步音频快照', () => {
+  const payload = buildVideoGenerationRequest({
+    dramaId: 14,
+    storyboardId: 216,
+    prompt: '森林中的跟拍镜头',
+    model: 'seedance-2-mini',
+    referenceImageUrls: [
+      'https://molimama.vip/static/projects/0014/assets/scene.png',
+      'https://molimama.vip/static/projects/0014/assets/scene.png',
+      'https://molimama.vip/static/projects/0014/assets/role.png',
+    ],
+    referenceVideoUrls: [
+      'https://molimama.vip/static/projects/0014/assets/motion.mp4',
+      'https://molimama.vip/static/projects/0014/assets/motion.mp4',
+    ],
+    referenceAudioUrls: [
+      'https://molimama.vip/static/projects/0014/assets/voice.mp3',
+    ],
+    referenceMode: 'omni',
+    generateAudio: false,
+    resolution: '720p',
+    duration: 8,
+    capability: {
+      declared: true,
+      resolutions: ['480p', '720p'],
+      durations: [4, 8, 10, 12, 15],
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      supportsAudio: true,
+      maxReferences: 4,
+      maxVideoReferences: 3,
+      maxAudioReferences: 3,
+    },
+  })
+
+  assert.deepEqual(payload.reference_image_urls, [
+    'https://molimama.vip/static/projects/0014/assets/scene.png',
+    'https://molimama.vip/static/projects/0014/assets/role.png',
+  ])
+  assert.deepEqual(payload.reference_video_urls, [
+    'https://molimama.vip/static/projects/0014/assets/motion.mp4',
+  ])
+  assert.deepEqual(payload.reference_audio_urls, [
+    'https://molimama.vip/static/projects/0014/assets/voice.mp3',
+  ])
+  assert.equal(payload.reference_mode, 'omni')
+  assert.equal(payload.generate_audio, false)
+})
+
+test('声明能力的视频请求拒绝越界档位、超量引用和首尾帧/全能混用', () => {
+  const capability = {
+    declared: true,
+    resolutions: ['480p', '720p'],
+    durations: [4, 8, 10, 12, 15],
+    supportsImageReference: true,
+    supportsVideoReference: true,
+    supportsAudioReference: true,
+    supportsAudio: true,
+    maxReferences: 1,
+    maxVideoReferences: 1,
+    maxAudioReferences: 1,
+  }
+  const base = {
+    model: 'seedance-2-fast',
+    prompt: '森林中的跟拍镜头',
+    resolution: '720p',
+    duration: 8,
+    capability,
+  }
+
+  assert.throws(
+    () => buildVideoGenerationRequest({ ...base, resolution: '1080p' }),
+    /不支持 1080p 清晰度/,
+  )
+  assert.throws(
+    () => buildVideoGenerationRequest({ ...base, duration: 5 }),
+    /仅支持 4、8、10、12、15 秒/,
+  )
+  assert.throws(
+    () => buildVideoGenerationRequest({ ...base, referenceImageUrls: ['a.png', 'b.png'], referenceMode: 'omni' }),
+    /最多支持 1 张参考图/,
+  )
+  assert.throws(
+    () => buildVideoGenerationRequest({
+      ...base,
+      firstFrameUrl: 'first.png',
+      referenceImageUrls: ['ref.png'],
+      referenceMode: 'first_last',
+    }),
+    /首尾帧模式与全能参考模式互斥/,
+  )
+})
+
+test('声明能力的视频请求拒绝未开放的首帧和尾帧槽位', () => {
+  const base = {
+    model: 'seedance-2-fast',
+    prompt: '森林中的跟拍镜头',
+    resolution: '720p',
+    duration: 8,
+    referenceMode: 'first_last',
+  }
+  const capability = {
+    declared: true,
+    resolutions: ['480p', '720p'],
+    durations: [4, 8, 10, 12, 15],
+    supportsFirstFrame: false,
+    supportsLastFrame: false,
+  }
+
+  assert.throws(
+    () => buildVideoGenerationRequest({ ...base, firstFrameUrl: 'first.png', capability }),
+    /不支持首帧参考/,
+  )
+  assert.throws(
+    () => buildVideoGenerationRequest({ ...base, lastFrameUrl: 'last.png', capability }),
+    /不支持尾帧参考/,
+  )
+})
+
 test('请求审计区分参考音频候选与实际视频请求体', () => {
   const payload = buildVideoGenerationRequest({
     dramaId: 14,

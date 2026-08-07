@@ -386,12 +386,12 @@
             <el-option label="21:9 宽银幕" value="21:9" />
           </el-select>
           <el-select v-model="videoClipDuration" style="width: 105px" @change="() => saveProjectSettings(false)">
-            <el-option label="4秒/段" :value="4" />
-            <el-option label="5秒/段" :value="5" />
-            <el-option label="8秒/段" :value="8" />
-            <el-option label="10秒/段" :value="10" />
-            <el-option label="12秒/段" :value="12" />
-            <el-option label="15秒/段" :value="15" />
+            <el-option
+              v-for="duration in selectedVideoDurationOptions"
+              :key="duration"
+              :label="`${duration}秒/段`"
+              :value="duration"
+            />
           </el-select>
           <el-select v-model="scriptLanguage" placeholder="分镜语言" clearable style="width: 105px">
             <el-option label="中文" value="zh" />
@@ -435,7 +435,7 @@
           <el-button
             type="primary"
             :loading="pipelineRunning && !pipelinePaused"
-            :disabled="!currentEpisodeId || pipelineRunning"
+            :disabled="!currentEpisodeId || pipelineRunning || !selectedVideoGenerationReady"
             @click="startOneClickPipeline"
           >
             一键成片带图片视频
@@ -460,6 +460,15 @@
             <strong v-if="imageGenerationCredits">本次预计扣除 {{ imageGenerationCredits }} 积分</strong>
             <strong v-else>积分待管理员配置</strong>
             <span>（单张）</span>
+          </span>
+        </div>
+        <div class="film-image-model-meta">
+          <span v-if="selectedVideoModelPublicNote" class="film-image-model-note">{{ selectedVideoModelPublicNote }}</span>
+          <!-- canvas-credit-callout-v1: 视频生成必须保留醒目积分提示 -->
+          <span class="billing-cost canvas-credit-callout-v1" aria-live="polite">
+            <strong v-if="selectedVideoGenerationCredits">本次预计扣除 {{ selectedVideoGenerationCredits }} 积分</strong>
+            <strong v-else>积分待管理员配置</strong>
+            <span>（每段 {{ videoClipDuration }} 秒）</span>
           </span>
         </div>
         <div v-if="pipelineRunning || pipelineErrorLog.length > 0" class="pipeline-status">
@@ -989,7 +998,13 @@
                 :disabled="videoModelOptions.length === 0 || batchVideoRunning || pipelineRunning"
                 @change="onVideoModelChange"
               >
-                <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+                <el-option
+                  v-for="item in videoModelOptions"
+                  :key="item.model"
+                  :label="item.label"
+                  :value="item.model"
+                  :title="item.publicNote || item.label"
+                />
               </el-select>
               <el-button
                 type="success"
@@ -1006,7 +1021,7 @@
                 plain
                 size="large"
                 :loading="batchVideoRunning"
-                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
+                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning || !selectedVideoGenerationReady"
                 @click="startBatchVideoGeneration"
               >
                 批量生成分镜视频
@@ -1601,7 +1616,7 @@
                     size="small"
                     class="sb-generate-video-btn"
                     :loading="isSbVideoGenerating(sb.id)"
-                    :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)"
+                    :disabled="!sbCanSubmitVideo(sb) || !canGenerateSbVideo(sb) || isSbVideoGenerating(sb.id)"
                     @click="onGenerateSbVideo(sb)"
                   >
                     生成分镜视频
@@ -1640,7 +1655,7 @@
                 </div>
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
-                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
+                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || !canGenerateSbVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
                 <el-button
                   size="small"
                   :loading="extractingVoiceSbIds.has(sb.id)"
@@ -1672,7 +1687,13 @@
                   @change="onStoryboardVideoModelChange(sb)"
                 >
                   <el-option label="跟随项目默认" value="" />
-                  <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+                  <el-option
+                    v-for="item in videoModelOptions"
+                    :key="item.model"
+                    :label="item.label"
+                    :value="item.model"
+                    :title="item.publicNote || item.label"
+                  />
                 </el-select>
                 <el-tag
                   v-if="getStoryboardVoicePolicy(sb)"
@@ -1738,14 +1759,24 @@
               :disabled="videoModelOptions.length === 0 || batchVideoRunning || pipelineRunning"
               @change="onVideoModelChange"
             >
-              <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+              <el-option
+                v-for="item in videoModelOptions"
+                :key="item.model"
+                :label="item.label"
+                :value="item.model"
+                :title="item.publicNote || item.label"
+              />
             </el-select>
+            <span v-if="selectedVideoModelPublicNote" class="film-image-model-note">{{ selectedVideoModelPublicNote }}</span>
           </el-form-item>
           <el-form-item label="分辨率">
             <el-select v-model="videoResolution" style="width: 160px">
-              <el-option label="480p" value="480p" />
-              <el-option label="720p" value="720p" />
-              <el-option label="1080p" value="1080p" />
+              <el-option
+                v-for="resolution in selectedVideoResolutionOptions"
+                :key="resolution"
+                :label="resolution.toUpperCase()"
+                :value="resolution"
+              />
             </el-select>
           </el-form-item>
           <!--
@@ -2622,7 +2653,14 @@
         <el-row :gutter="12">
           <el-col :span="6">
             <el-form-item label="时长(秒)">
-              <el-input-number v-model="sbDuration[videoParamsTarget.id]" :min="1" :max="60" style="width:100%" />
+              <el-select v-model="sbDuration[videoParamsTarget.id]" style="width:100%">
+                <el-option
+                  v-for="duration in videoDurationOptionsForModel(getStoryboardVideoModel(videoParamsTarget))"
+                  :key="duration"
+                  :label="`${duration}秒`"
+                  :value="duration"
+                />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="6">
@@ -2910,7 +2948,6 @@ import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskSto
 import { syncGeneratingSetsFromStore, buildEpisodeContext, buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
-import { aiAPI } from '@/api/ai'
 import { characterAPI } from '@/api/characters'
 import { propAPI } from '@/api/props'
 import { sceneAPI } from '@/api/scenes'
@@ -2919,13 +2956,13 @@ import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
 import { storyboardsAPI } from '@/api/storyboards'
 import { uploadAPI } from '@/api/upload'
+import { aiAPI } from '@/api/ai'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
 import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import request from '@/utils/request'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
-import { getModelsFromAiConfig } from '@/utils/modelSelection'
 import { estimateCanvasCredits, normalizeCanvasModelCatalog } from '@/utils/canvasModelCapabilities'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
@@ -2933,8 +2970,12 @@ import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/
 import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
+import { assertVideoDurationAllowed, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
-import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+import {
+  buildVideoGenerationAudit,
+  buildVideoGenerationRequest,
+} from '@/utils/videoGenerationRequest'
 import {
   buildFactoryGenerationPreflight,
   buildScriptAnalysisProvenance,
@@ -3055,7 +3096,12 @@ const scriptContent = computed({
 })
 const videoResolution = storeVideoResolution
 const selectedVideoModel = ref('')
-const videoModelOptions = ref([])
+const videoModelCatalog = ref([])
+const videoModelOptions = computed(() => videoModelCatalog.value.filter((item) => item.kind === 'video'))
+const selectedVideoModelMetadata = computed(() =>
+  videoModelOptions.value.find((item) => item.model === selectedVideoModel.value) || null
+)
+const selectedVideoModelPublicNote = computed(() => selectedVideoModelMetadata.value?.publicNote || '')
 const imageModelCatalog = ref([])
 const selectedImageModel = ref('')
 const imageResolution = ref('1k')
@@ -3064,6 +3110,72 @@ const selectedImageModelMetadata = computed(() =>
   imageModelOptions.value.find((item) => item.model === selectedImageModel.value) || null
 )
 const selectedImageModelPublicNote = computed(() => selectedImageModelMetadata.value?.publicNote || '')
+
+function videoModelMetadata(model) {
+  const value = String(model || '').trim()
+  return videoModelOptions.value.find((item) => item.model === value) || null
+}
+
+function videoResolutionOptionsForModel(model) {
+  const entry = videoModelMetadata(model)
+  if (!entry) return []
+  if (!entry?.capabilities?.declared) return ['480p', '720p', '1080p']
+  const declared = Array.isArray(entry?.capabilities?.resolutions)
+    ? entry.capabilities.resolutions
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+    : []
+  const priced = Object.keys(entry?.resolutionPrices || {})
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((resolution) => Number.isSafeInteger(Number(entry.resolutionPrices?.[resolution]?.credits))
+      && Number(entry.resolutionPrices[resolution].credits) > 0)
+  return [...new Set(declared)].filter((resolution) => priced.includes(resolution))
+}
+
+function videoDurationOptionsForModel(model) {
+  return videoDurationOptionsForCapability(videoModelMetadata(model)?.capabilities)
+}
+
+const selectedVideoResolutionOptions = computed(() => videoResolutionOptionsForModel(selectedVideoModel.value))
+const selectedVideoDurationOptions = computed(() => videoDurationOptionsForModel(selectedVideoModel.value))
+function videoGenerationCreditsFor(model, resolution, duration) {
+  const entry = videoModelMetadata(model)
+  const normalizedResolution = String(resolution || '').trim().toLowerCase()
+  if (entry?.capabilities?.declared
+      && !videoResolutionOptionsForModel(model).includes(normalizedResolution)) return null
+  return estimateCanvasCredits(
+    videoModelCatalog.value,
+    'video',
+    model,
+    1,
+    duration,
+    resolution,
+  )
+}
+const selectedVideoGenerationCredits = computed(() => videoGenerationCreditsFor(
+  selectedVideoModel.value,
+  videoResolution.value,
+  videoClipDuration.value,
+))
+const selectedVideoGenerationReady = computed(() =>
+  Number.isSafeInteger(selectedVideoGenerationCredits.value) && selectedVideoGenerationCredits.value > 0
+)
+
+function requireSelectedVideoGenerationReady() {
+  if (selectedVideoGenerationReady.value) return true
+  ElMessage.error('当前视频模型该清晰度尚未配置有效积分价格，请联系管理员')
+  return false
+}
+
+function canGenerateSbVideo(sb) {
+  const model = getStoryboardVideoModel(sb)
+  const credits = videoGenerationCreditsFor(
+    model,
+    videoResolution.value,
+    getSbVideoDurationForApi(sb),
+  )
+  return Number.isSafeInteger(credits) && credits > 0
+}
 
 function isUsmercariImageModelEntry(entry) {
   return String(entry?.protocol || '').trim().toLowerCase() === 'usmercari_image'
@@ -3148,7 +3260,7 @@ function onImageResolutionChange() {
 
 async function loadImageModelOptions() {
   try {
-    const catalog = await request.get('/canvas/model-catalog')
+    const catalog = await aiAPI.listCanvasModels()
     imageModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalog) ? catalog : [])
     const savedModel = String(store.drama?.metadata?.image_model || '').trim()
     const candidate = savedModel || selectedImageModel.value
@@ -3161,7 +3273,6 @@ async function loadImageModelOptions() {
     selectedImageModel.value = ''
   }
 }
-const videoVoicePolicyByModel = ref({})
 const videoMusic = ref('')
 const videoSfx = ref('')
 const videoQuality = ref('high')
@@ -5185,6 +5296,8 @@ async function loadDrama() {
     generationStyle.value = d.style || ''
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
+    const savedVideoResolution = String((d.metadata && d.metadata.video_resolution) || '').trim().toLowerCase()
+    if (savedVideoResolution) videoResolution.value = savedVideoResolution
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
     const savedImageModel = String(d.metadata?.image_model || '').trim()
@@ -5593,6 +5706,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     story_style: storyStyle.value || undefined,
     aspect_ratio: projectAspectRatio.value || '16:9',
     video_clip_duration: videoClipDuration.value || 5,
+    video_resolution: videoResolution.value || undefined,
     video_model: selectedVideoModel.value || undefined,
     image_model: selectedImageModel.value || undefined,
     image_resolution: selectedImageUsesTiers.value ? imageResolution.value : undefined,
@@ -6775,8 +6889,8 @@ function getSbUniversalOmniRefSlots(sb) {
   return out
 }
 
-/** 全能模式：场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；供可灵 Omni / 火山多图参考，最多 10，方舟侧最多取 9 张） */
-function collectSbOmniReferenceAbsoluteUrls(sb, model = getStoryboardVideoModel(sb)) {
+/** 全能模式：完整收集场景/角色/物品绝对 URL；超限由目录能力门禁显式拒绝。 */
+function collectSbOmniReferenceAbsoluteUrls(sb) {
   if (!sb?.id) return []
   const urls = []
   const seen = new Set()
@@ -6794,7 +6908,7 @@ function collectSbOmniReferenceAbsoluteUrls(sb, model = getStoryboardVideoModel(
   for (const p of getSbSelectedProps(sb.id)) {
     if (hasAssetImage(p)) pushAbs(assetImageUrl(p))
   }
-  return urls.slice(0, 10)
+  return urls
 }
 
 /** 非 Seedance2 全能降级：仅场景参考图（若有） */
@@ -6808,55 +6922,79 @@ function collectSbSceneOnlyReferenceAbsoluteUrls(sb) {
   return []
 }
 
-let activeVideoAiConfigCache = null
-let activeVideoAiConfigsCache = []
-let activeVideoAiConfigCacheAt = 0
-const ACTIVE_VIDEO_AI_CONFIG_TTL_MS = 15000
-
-function publicVideoConfigs(rows) {
-  return [...new Set((Array.isArray(rows) ? rows : [])
-    .map((model) => String(model || '').trim())
-    .filter(Boolean))]
-    .map((model, index) => ({
-      model: [model],
-      default_model: model,
-      is_default: index === 0,
-    }))
-}
-
-function invalidateActiveVideoAiConfigCache() {
-  activeVideoAiConfigCache = null
-  activeVideoAiConfigsCache = []
-  activeVideoAiConfigCacheAt = 0
-}
-
 async function loadVideoModelOptions() {
   try {
-    const rows = await aiAPI.listVideoModels()
-    const active = publicVideoConfigs(rows)
-    const models = [...new Set(active.flatMap(getModelsFromAiConfig))]
-    const voicePolicies = {}
-    for (const config of active) {
-      const fallback = videoVoicePolicyForConfig(config)
-      if (fallback?.model) voicePolicies[String(fallback.model)] = fallback
+    const catalogRows = await aiAPI.listCanvasModels()
+    videoModelCatalog.value = normalizeCanvasModelCatalog(Array.isArray(catalogRows) ? catalogRows : [])
+    const models = videoModelOptions.value.map((item) => item.model)
+    const selectedWasAvailable = models.includes(selectedVideoModel.value)
+    if (!selectedWasAvailable) {
+      selectedVideoModel.value = models[0] || ''
     }
-    videoModelOptions.value = models
-    videoVoicePolicyByModel.value = voicePolicies
-    if (!models.includes(selectedVideoModel.value)) {
-      const preferredConfig = active.find((config) => config.is_default) || active[0]
-      selectedVideoModel.value = videoModelNameFromAiConfig(preferredConfig) || models[0] || ''
-    }
-    activeVideoAiConfigsCache = active
-    activeVideoAiConfigCache = active.find((config) => config.is_default) || active[0] || null
-    activeVideoAiConfigCacheAt = Date.now()
+    if (!selectedWasAvailable) syncVideoSelectionForModel(selectedVideoModel.value)
   } catch {
-    videoModelOptions.value = []
-    videoVoicePolicyByModel.value = {}
+    videoModelCatalog.value = []
   }
 }
 
-function onVideoModelChange() {
-  saveProjectSettings(false)
+async function onVideoModelChange() {
+  syncVideoSelectionForModel(selectedVideoModel.value)
+  const durations = videoDurationOptionsForModel(selectedVideoModel.value)
+  const nextDurations = { ...sbDuration.value }
+  const updates = []
+  for (const sb of store.storyboards || []) {
+    if (String(sbVideoModel.value[sb.id] || sb.video_model || '').trim()) continue
+    const current = Number(nextDurations[sb.id] ?? sb.duration)
+    if (!durations.length || durations.includes(current)) continue
+    const duration = durations[0]
+    nextDurations[sb.id] = duration
+    sb.duration = duration
+    updates.push(storyboardsAPI.update(sb.id, { duration }))
+  }
+  sbDuration.value = nextDurations
+  await saveProjectSettings(false)
+  const results = await Promise.allSettled(updates)
+  if (results.some((result) => result.status === 'rejected')) {
+    ElMessage.warning('部分分镜的模型时长校正未保存，请重试')
+  }
+}
+
+function syncVideoSelectionForModel(model, sb = null) {
+  const resolutions = videoResolutionOptionsForModel(model)
+  const currentResolution = String(videoResolution.value || '').trim().toLowerCase()
+  if (resolutions.length && !resolutions.includes(currentResolution)) {
+    videoResolution.value = resolutions[0]
+  }
+  const durations = videoDurationOptionsForModel(model)
+  const currentDuration = sb
+    ? Number(sbDuration.value[sb.id] ?? sb.duration)
+    : Number(videoClipDuration.value)
+  if (durations.length && !durations.includes(currentDuration)) {
+    if (sb?.id != null) sbDuration.value = { ...sbDuration.value, [sb.id]: durations[0] }
+    else videoClipDuration.value = durations[0]
+  }
+}
+
+function requireStoryboardVideoGenerationOptions(sb) {
+  const model = getStoryboardVideoModel(sb)
+  const entry = videoModelMetadata(model)
+  if (!entry) throw new Error('当前没有可用的视频模型，请联系管理员完成验证与定价')
+  const resolution = String(videoResolution.value || '').trim().toLowerCase()
+  const resolutions = videoResolutionOptionsForModel(model)
+  if (entry.capabilities?.declared && !resolutions.includes(resolution)) {
+    throw new Error(`当前视频模型不支持 ${resolution || '未选择'} 清晰度；可用档位：${resolutions.join('、') || '无'}`)
+  }
+  const duration = getSbVideoDurationForApi(sb)
+  try {
+    assertVideoDurationAllowed(duration, entry.capabilities)
+  } catch (error) {
+    throw new Error(`当前视频模型不支持 ${duration || '未选择'} 秒；${error.message}`)
+  }
+  const estimatedCredits = videoGenerationCreditsFor(model, resolution, duration)
+  if (!Number.isSafeInteger(estimatedCredits) || estimatedCredits <= 0) {
+    throw new Error('当前视频模型该清晰度尚未配置有效积分价格，请联系管理员')
+  }
+  return { entry, model, resolution, duration, estimatedCredits }
 }
 
 function getStoryboardVideoModel(sb) {
@@ -6864,9 +7002,20 @@ function getStoryboardVideoModel(sb) {
   return override || String(selectedVideoModel.value || '').trim()
 }
 
+function videoCatalogPublicConfig(model) {
+  const entry = videoModelMetadata(model)
+  if (!entry) return null
+  return {
+    model: [entry.model],
+    default_model: entry.model,
+    api_protocol: entry.protocol || null,
+  }
+}
+
 function getStoryboardVoicePolicy(sb) {
   const model = getStoryboardVideoModel(sb)
-  return model ? videoVoicePolicyByModel.value[model] || null : null
+  const config = videoCatalogPublicConfig(model)
+  return config ? videoVoicePolicyForConfig(config) : null
 }
 
 function getStoryboardVoicePromptPreview(sb) {
@@ -6903,6 +7052,28 @@ function getStoryboardVoiceReferences(sb) {
     .filter(Boolean)
 }
 
+function collectStoryboardReferenceUrls(...values) {
+  const urls = []
+  const seen = new Set()
+  for (const value of values.flat(Infinity)) {
+    const raw = typeof value === 'string' ? value : value?.url
+    const absolute = toAbsoluteImageUrl(raw)
+    if (!absolute || seen.has(absolute)) continue
+    seen.add(absolute)
+    urls.push(absolute)
+  }
+  return urls
+}
+
+function getStoryboardReferenceAudioUrls(sb) {
+  return collectStoryboardReferenceUrls(
+    sb?.reference_audio_urls,
+    sb?.audio_reference_urls,
+    sb?.reference_audio_url,
+    getStoryboardVoiceReferences(sb),
+  )
+}
+
 function getNonMutatingMainImageUrlForVideo(sb) {
   return getSbFirstFrameUrl(sb)
 }
@@ -6917,9 +7088,16 @@ function getNonMutatingContinuityFirstFrameUrl(sb, fallbackUrl = '') {
 
 /** 组装真实提交与只读审计共用的分镜视频请求；审计模式不触发选格位/上传尾帧等写操作。 */
 async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSelection = false } = {}) {
-  const sbModel = getStoryboardVideoModel(sb)
+  const selection = requireStoryboardVideoGenerationOptions(sb)
+  const sbModel = selection.model
+  const entry = selection.entry
+  const capability = entry.capabilities || {}
+  const strictToapis = String(entry.protocol || '').trim().toLowerCase() === 'toapis_video'
   const universal = isSbUniversalMode(sb.id)
-  const useOmni = universalOmniApi == null ? universal : universalOmniApi
+  const requestedOmni = universalOmniApi == null ? universal : universalOmniApi
+  const useOmni = strictToapis
+    ? requestedOmni && capability.supportsImageReference === true
+    : requestedOmni
   const omniRefs = useOmni ? collectSbOmniReferenceAbsoluteUrls(sb, sbModel) : []
   const sceneOnlyRefs = universal && !useOmni ? collectSbSceneOnlyReferenceAbsoluteUrls(sb) : []
   let absoluteUrl = ''
@@ -6946,11 +7124,13 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
   }
 
-  const continuityFirstFrameUrl = persistGridSelection
+  const continuityFirstFrameUrl = !strictToapis && persistGridSelection
     ? await resolveContinuityFirstFrameUrl(sb, '')
-    : getNonMutatingContinuityFirstFrameUrl(sb, '')
+    : (!strictToapis ? getNonMutatingContinuityFirstFrameUrl(sb, '') : '')
   const firstLast = sbVideoFirstLastUrls(sb, universalOmniApi, absoluteUrl || undefined)
-  const { first: firstFrameUrl, last: lastFrameUrl } = useOmni
+  const { first: firstFrameUrl, last: lastFrameUrl } = strictToapis && useOmni
+    ? { first: undefined, last: undefined }
+    : useOmni
     ? { first: continuityFirstFrameUrl || undefined, last: undefined }
     : { first: continuityFirstFrameUrl || firstLast.first, last: firstLast.last }
   if (useOmni && firstFrameUrl && referenceUrls && !referenceUrls.includes(firstFrameUrl)) {
@@ -6960,26 +7140,50 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceUrls = [...referenceUrls, lastFrameUrl]
   }
   const preferClassicPrompt = universal && !useOmni
+  const referenceImageUrls = useOmni ? referenceUrls : undefined
+  // 短剧工厂当前没有参考视频选择器；不能把分镜产物臆造成供应商参考视频。
+  const referenceVideoUrls = undefined
+  const referenceAudioUrls = useOmni && capability.supportsAudioReference === true
+    ? getStoryboardReferenceAudioUrls(sb)
+    : undefined
+  for (const [urls, limit, label] of [
+    [referenceImageUrls, capability.maxReferences, '参考图'],
+    [referenceVideoUrls, capability.maxVideoReferences, '参考视频'],
+    [referenceAudioUrls, capability.maxAudioReferences, '参考音频'],
+  ]) {
+    const max = Number(limit)
+    if (capability.declared && Number.isSafeInteger(max) && max >= 0 && (urls?.length || 0) > max) {
+      throw new Error(`${entry.label || sbModel} 最多支持 ${max} 个${label}，请调整后重试`)
+    }
+  }
+  const referenceMode = useOmni
+    ? 'omni'
+    : (firstFrameUrl || lastFrameUrl ? 'first_last' : 'text')
   const payload = buildVideoGenerationRequest({
     dramaId: dramaId.value,
     storyboardId: sb.id,
     prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
     model: sbModel || undefined,
-    imageUrl: firstFrameUrl || (!useOmni ? (absoluteUrl || undefined) : undefined),
+    imageUrl: strictToapis ? undefined : (firstFrameUrl || (!useOmni ? (absoluteUrl || undefined) : undefined)),
     firstFrameUrl,
     lastFrameUrl,
-    referenceImageUrls: referenceUrls,
+    referenceImageUrls: useOmni ? referenceImageUrls : undefined,
+    referenceVideoUrls,
+    referenceAudioUrls,
+    referenceMode,
+    generateAudio: capability.supportsAudio === true ? false : undefined,
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
-    resolution: videoResolution.value || undefined,
-    duration: getSbVideoDurationForApi(sb),
+    resolution: selection.resolution || undefined,
+    duration: selection.duration,
+    capability,
   })
   return {
     payload,
     model: sbModel,
     universal,
     universalOmniApi: useOmni,
-    config: await getActiveVideoAiConfig(sbModel),
+    config: videoCatalogPublicConfig(sbModel),
     voicePolicy: getStoryboardVoicePolicy(sb),
     voicePrompt: getStoryboardVoicePromptPreview(sb),
     voiceReferences: getStoryboardVoiceReferences(sb),
@@ -6994,9 +7198,7 @@ async function onPreviewSbVideoRequest(sb) {
   sbVideoRequestAuditLoading.value = true
   sbVideoRequestAuditTarget.value = sb
   try {
-    const model = getStoryboardVideoModel(sb)
-    const config = await getActiveVideoAiConfig(model)
-    const universalOmniApi = isSbUniversalMode(sb.id) && canUseUniversalOmniVideoApi(config)
+    const universalOmniApi = isSbUniversalMode(sb.id)
     const context = await buildSbVideoRequestContext(sb, { universalOmniApi })
     sbVideoRequestAudit.value = buildVideoGenerationAudit({
       payload: context.payload,
@@ -7016,65 +7218,22 @@ async function onPreviewSbVideoRequest(sb) {
 async function onStoryboardVideoModelChange(sb) {
   if (!sb?.id) return
   const model = String(sbVideoModel.value[sb.id] || '').trim()
+  const effectiveModel = model || String(selectedVideoModel.value || '').trim()
+  syncVideoSelectionForModel(effectiveModel, sb)
+  const duration = Number(sbDuration.value[sb.id] ?? sb.duration)
   try {
-    await storyboardsAPI.update(sb.id, { video_model: model || null })
+    await storyboardsAPI.update(sb.id, {
+      video_model: model || null,
+      ...(Number.isFinite(duration) && duration > 0 ? { duration } : {}),
+    })
     sb.video_model = model || null
+    if (Number.isFinite(duration) && duration > 0) sb.duration = duration
+    await saveProjectSettings(false)
     ElMessage.success(model ? `已为分镜设置模型：${model}` : '已恢复跟随项目默认模型')
   } catch (e) {
     sbVideoModel.value = { ...sbVideoModel.value, [sb.id]: sb.video_model ? String(sb.video_model) : '' }
     ElMessage.error(e.message || '保存分镜模型失败')
   }
-}
-
-async function getActiveVideoAiConfig(preferredModel = selectedVideoModel.value) {
-  const now = Date.now()
-  if (activeVideoAiConfigCache && now - activeVideoAiConfigCacheAt < ACTIVE_VIDEO_AI_CONFIG_TTL_MS) {
-    return activeVideoAiConfigsCache.find((config) => getModelsFromAiConfig(config).includes(preferredModel)) || activeVideoAiConfigCache
-  }
-  try {
-    const rows = await aiAPI.listVideoModels()
-    const active = publicVideoConfigs(rows)
-    activeVideoAiConfigsCache = active
-    activeVideoAiConfigCache = active.find((c) => c.is_default) || active[0] || null
-  } catch {
-    activeVideoAiConfigCache = null
-  }
-  activeVideoAiConfigCacheAt = now
-  return activeVideoAiConfigCache
-}
-
-function videoModelNameFromAiConfig(cfg) {
-  if (!cfg) return ''
-  const dm = (cfg.default_model || '').toString().trim()
-  if (dm) return dm
-  const m = cfg.model
-  if (Array.isArray(m) && m.length) return String(m[0]).trim()
-  return String(m || '').trim()
-}
-
-/** 模型名含 seedance 且含 2-0（与后端 videoClient 判定 Seedance 2.x 对齐） */
-function isSeedance2VideoModel(modelName) {
-  const m = String(modelName || '').toLowerCase()
-  if (!m.includes('seedance')) return false
-  return /2[-_]0/.test(m) || /seedance[-_]?2|seedance2/.test(m)
-}
-
-/** 全能分镜 + 当前视频配置是否可走多图参考（火山 Seedance 2.0、可灵 Omni、Agnes Video 等） */
-function canUseUniversalOmniVideoApi(cfg) {
-  if (!cfg) return false
-  const model = videoModelNameFromAiConfig(cfg).toLowerCase()
-  return isSeedance2VideoModel(model)
-    || /grok.*video|video.*grok/.test(model)
-    || /kling.*omni|omni.*kling/.test(model)
-    || /agnes-video/.test(model)
-}
-
-async function confirmUniversalNonSeedance2Video() {
-  await ElMessageBox.confirm(
-    '你当前视频模型不支持多图参考，全能模式将降级：优先用分镜主图，否则仅传场景参考图。是否继续？',
-    '全能模式与模型不匹配',
-    { confirmButtonText: '继续', cancelButtonText: '取消', type: 'warning' }
-  )
 }
 
 function onEditSbImagePrompt(sb) {
@@ -7370,31 +7529,11 @@ async function onGenerateSbVideo(sb) {
     )
   )
   if (!retryAllowed) return
-  const sbModel = getStoryboardVideoModel(sb)
   const universal = isSbUniversalMode(sb.id)
-  let universalOmniApi = universal
-  if (universal) {
-    const videoCfg = await getActiveVideoAiConfig(sbModel)
-    if (!canUseUniversalOmniVideoApi(videoCfg)) {
-      try {
-        await confirmUniversalNonSeedance2Video()
-      } catch {
-        return
-      }
-      universalOmniApi = false
-    }
-  }
-  const omniRefs = universalOmniApi ? collectSbOmniReferenceAbsoluteUrls(sb, sbModel) : []
-  const sceneOnlyRefs = universal && !universalOmniApi ? collectSbSceneOnlyReferenceAbsoluteUrls(sb) : []
+  const universalOmniApi = universal
+  const omniRefs = universalOmniApi ? collectSbOmniReferenceAbsoluteUrls(sb) : []
   const hasClassicFrame = !!getSbFirstFrameUrl(sb)
-  let hasAnyImage = false
-  if (universalOmniApi) {
-    hasAnyImage = omniRefs.length > 0
-  } else if (universal) {
-    hasAnyImage = hasClassicFrame || sceneOnlyRefs.length > 0
-  } else {
-    hasAnyImage = hasClassicFrame
-  }
+  const hasAnyImage = universalOmniApi ? omniRefs.length > 0 : hasClassicFrame
   if (!hasAnyImage) {
     if (!universal) {
       await ElMessageBox.alert(
@@ -7406,15 +7545,24 @@ async function onGenerateSbVideo(sb) {
     }
     try {
       await ElMessageBox.confirm(
-        universalOmniApi
-          ? '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？'
-          : '当前没有分镜主图且无场景参考图，将仅按文字提示词生成视频，效果可能不稳定。确认继续？',
-        universalOmniApi ? '全能模式无参考图' : '全能降级无参考图',
+        '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？',
+        '全能模式无参考图',
         { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
       )
     } catch {
       return
     }
+  }
+  let requestContext
+  try {
+    requestContext = await buildSbVideoRequestContext(sb, {
+      universalOmniApi,
+      persistGridSelection: true,
+    })
+  } catch (e) {
+    sbVideoErrors.value[sb.id] = e.message || '视频参数校验失败'
+    ElMessage.error(e.message || '视频参数校验失败')
+    return
   }
   generatingSbVideoIds.add(sb.id)
   const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
@@ -7428,10 +7576,6 @@ async function onGenerateSbVideo(sb) {
   }
   storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   try {
-    const requestContext = await buildSbVideoRequestContext(sb, {
-      universalOmniApi,
-      persistGridSelection: true,
-    })
     const res = await videosAPI.create(requestContext.payload)
     if (res?.task_id) {
       const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
@@ -7740,6 +7884,7 @@ async function startBatchImageGeneration() {
 
 async function startBatchVideoGeneration() {
   if (!currentEpisodeId.value || batchVideoRunning.value || pipelineRunning.value) return
+  if (!requireSelectedVideoGenerationReady()) return
   batchVideoErrors.value = []
   batchVideoStopping.value = false
   batchVideoRunning.value = true
@@ -7787,6 +7932,10 @@ async function startBatchVideoGeneration() {
           continue
         }
         try {
+          const requestContext = await buildSbVideoRequestContext(sb, {
+            universalOmniApi: universal,
+            persistGridSelection: true,
+          })
           generatingSbVideoIds.add(sb.id)
           // 批量生成时清除手动指定的视频，确保合成时使用最新生成记录
           storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
@@ -7795,35 +7944,7 @@ async function startBatchVideoGeneration() {
             delete next[sb.id]
             sbSelectedVideoId.value = next
           }
-          const firstFrameUrl = await getMainImageUrlForVideo(sb)
-          const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
-          const continuityFirstFrameUrl = contiguity ? await resolveContinuityFirstFrameUrl(sb, '') : ''
-          const { first: vFirst, last: vLast } = universal
-            ? { first: continuityFirstFrameUrl || undefined, last: undefined }
-            : sbVideoFirstLastUrls(sb, false, continuityFirstFrameUrl || absoluteUrl || undefined)
-          let refUrls = universal
-            ? (omniRefs.length ? omniRefs : undefined)
-            : (absoluteUrl ? [absoluteUrl] : undefined)
-          if (vFirst && refUrls && !refUrls.includes(vFirst)) {
-            refUrls = [vFirst, ...refUrls]
-          }
-          if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
-            refUrls = [...refUrls, vLast]
-          }
-          const res = await videosAPI.create({
-            drama_id: dramaId.value,
-            storyboard_id: sb.id,
-            prompt: buildSbVideoPromptForApi(sb),
-            model: sbModel || undefined,
-            image_url: vFirst || undefined,
-            first_frame_url: vFirst,
-            last_frame_url: vLast,
-            reference_image_urls: refUrls,
-            style: getSelectedStyle(),
-            aspect_ratio: projectAspectRatio.value || '16:9',
-            resolution: videoResolution.value || undefined,
-            duration: getSbVideoDurationForApi(sb),
-          })
+          const res = await videosAPI.create(requestContext.payload)
           if (res?.task_id) {
             const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
             const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
@@ -8094,6 +8215,7 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
 
 async function startOneClickPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  if (!requireSelectedVideoGenerationReady()) return
   trackFilmCreateAction('one_click_generate_start')
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
@@ -8508,30 +8630,11 @@ async function runOneClickPipeline(textOnly = false) {
         try {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const universal = isSbUniversalMode(sb.id)
-            const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-            const firstFrameUrl = await getMainImageUrlForVideo(sb)
-            const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
-            const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
-            let refUrls = universal
-              ? (omniRefs.length ? omniRefs : undefined)
-              : (absoluteUrl ? [absoluteUrl] : undefined)
-            if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
-              refUrls = [...refUrls, vLast]
-            }
-            const res = await videosAPI.create({
-              drama_id: dramaIdVal,
-              storyboard_id: sb.id,
-              prompt: buildSbVideoPromptForApi(sb),
-              image_url: vFirst || undefined,
-              first_frame_url: vFirst,
-              last_frame_url: vLast,
-              reference_image_urls: refUrls,
-              style,
-              aspect_ratio: projectAspectRatio.value || '16:9',
-              resolution: videoResolution.value || undefined,
-              duration: getSbVideoDurationForApi(sb),
+            const requestContext = await buildSbVideoRequestContext(sb, {
+              universalOmniApi: isSbUniversalMode(sb.id),
+              persistGridSelection: true,
             })
+            const res = await videosAPI.create(requestContext.payload)
             if (res?.task_id) {
               const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
               const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
@@ -8579,6 +8682,7 @@ async function runOneClickPipeline(textOnly = false) {
 
 async function startRepairPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  if (!requireSelectedVideoGenerationReady()) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineActiveTasks.clear()
@@ -8863,29 +8967,11 @@ async function runRepairPipeline() {
         try {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
           const ok = await pipelineWithRetry(stepName, async () => {
-            const universal = isSbUniversalMode(sb.id)
-            const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-            const firstFrameUrl = await getMainImageUrlForVideo(sb)
-            const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
-            const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
-            let refUrls = universal
-              ? (omniRefs.length ? omniRefs : undefined)
-              : (absoluteUrl ? [absoluteUrl] : undefined)
-            if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
-              refUrls = [...refUrls, vLast]
-            }
-            const res = await videosAPI.create({
-              drama_id: dramaIdVal,
-              storyboard_id: sb.id,
-              prompt: buildSbVideoPromptForApi(sb),
-              image_url: vFirst || undefined,
-              first_frame_url: vFirst,
-              last_frame_url: vLast,
-              reference_image_urls: refUrls,
-              aspect_ratio: projectAspectRatio.value || '16:9',
-              resolution: videoResolution.value || undefined,
-              duration: getSbVideoDurationForApi(sb),
+            const requestContext = await buildSbVideoRequestContext(sb, {
+              universalOmniApi: isSbUniversalMode(sb.id),
+              persistGridSelection: true,
             })
+            const res = await videosAPI.create(requestContext.payload)
             if (res?.task_id) {
               const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
               const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)

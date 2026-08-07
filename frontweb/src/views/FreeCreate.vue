@@ -39,7 +39,7 @@
           />
         </div>
 
-        <div v-if="mode === 'image' || mode === 'video'" class="form-section">
+        <div v-if="supportsReferenceImage" class="form-section">
           <div class="form-label">参考图（可选）</div>
           <div class="ref-image-zone" @click="triggerRefImageUpload" @dragover.prevent @drop.prevent="onRefImageDrop">
             <template v-if="refImageDataUrl">
@@ -75,10 +75,12 @@
           <div v-if="mode === 'video'" class="form-item">
             <div class="form-label">时长</div>
             <el-select v-model="duration">
-              <el-option label="5秒" :value="5" />
-              <el-option label="10秒" :value="10" />
-              <el-option label="15秒" :value="15" />
+              <el-option v-for="value in selectedDurationOptions" :key="value" :label="`${value}秒`" :value="value" />
             </el-select>
+          </div>
+          <div v-if="mode === 'video' && selectedModel?.capabilities?.supportsAudio === true" class="form-item">
+            <div class="form-label">音频</div>
+            <el-checkbox v-model="generateAudio">同步生成音频</el-checkbox>
           </div>
           <div v-if="mode === 'image' || mode === 'video'" class="form-item">
             <div class="form-label">清晰度</div>
@@ -232,6 +234,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationCatalog,
   normalizeQuickGenerationDraft,
+  quickGenerationDurations,
   quickGenerationResolutions,
 } from '@/utils/homeQuickGeneration'
 import { parseTaskResult, resolveTaskMediaUrl } from '@/utils/taskResult'
@@ -242,6 +245,7 @@ const prompt = ref('')
 const style = ref('')
 const aspectRatio = ref('16:9')
 const duration = ref(5)
+const generateAudio = ref(false)
 const resolution = ref('720p')
 const quantity = ref(1)
 const episodeCount = ref(1)
@@ -255,6 +259,7 @@ const refImageLocalPath = ref(null)
 const refImageInput = ref(null)
 const refImageUploading = ref(false)
 const refImageUploadError = ref('')
+const restoringDraft = ref(true)
 const creditAccount = ref(normalizeCreditAccount())
 /** 与后端视频异步超时一致（分钟 → 毫秒） */
 const videoPollMaxMs = ref(30 * 60 * 1000)
@@ -266,6 +271,14 @@ const selectedModel = computed(() => (
   modelOptions.value.find((item) => item.model === model.value) || null
 ))
 const selectedResolutions = computed(() => quickGenerationResolutions(selectedModel.value || {}, mode.value))
+const selectedDurationOptions = computed(() => quickGenerationDurations(selectedModel.value || {}))
+const supportsReferenceImage = computed(() => {
+  if (mode.value === 'image') return selectedModel.value?.capabilities?.supportsImageReference !== false
+  if (mode.value !== 'video') return false
+  return selectedModel.value?.protocol === 'toapis_video'
+    ? selectedModel.value?.capabilities?.supportsFirstFrame === true
+    : selectedModel.value?.capabilities?.supportsFirstFrame !== false
+})
 const quantityOptions = computed(() => {
   const declared = selectedModel.value?.capabilities?.quantities
   return Array.isArray(declared) && declared.length ? declared : [1]
@@ -301,7 +314,7 @@ onMounted(async () => {
   try {
     rawDraft = JSON.parse(sessionStorage.getItem('moli_quick_create_draft') || 'null')
   } catch (_) {}
-  const draft = normalizeQuickGenerationDraft(rawDraft || {})
+  let draft = normalizeQuickGenerationDraft(rawDraft || {})
   mode.value = routeMode || draft.mode
   prompt.value = typeof draft?.prompt === 'string' ? draft.prompt : ''
   aspectRatio.value = draft?.aspectRatio || '16:9'
@@ -317,32 +330,36 @@ onMounted(async () => {
   model.value = modelOptions.value.some((item) => item.model === draft?.model)
     ? draft.model
     : (modelOptions.value[0]?.model || '')
-  syncSelectedResolution()
+  generateAudio.value = draft.generateAudio
   sessionStorage.removeItem('moli_quick_create_draft')
   try {
     const res = await generationSettingsAPI.get()
     const m = Math.max(1, Number(res?.video_generation_timeout_minutes) || 30)
     videoPollMaxMs.value = m * 60 * 1000
   } catch (_) {}
+  restoringDraft.value = false
   if (draft?.autoStart && ['text', 'image', 'video'].includes(mode.value) && prompt.value && model.value) {
     await generate()
   }
 })
 
-function syncSelectedResolution() {
+function syncSelectedParameters() {
   const allowed = selectedResolutions.value
   const current = String(resolution.value || '').trim().toLowerCase()
   if (allowed.length && !allowed.includes(current)) resolution.value = allowed[0]
   else if (current) resolution.value = current
   if (!quantityOptions.value.includes(Number(quantity.value))) quantity.value = quantityOptions.value[0] || 1
+  if (!selectedDurationOptions.value.includes(Number(duration.value))) duration.value = selectedDurationOptions.value[0] || 5
+  if (selectedModel.value?.capabilities?.supportsAudio !== true) generateAudio.value = false
 }
 
 watch([mode, model], () => {
   if (!modelOptions.value.some((item) => item.model === model.value)) {
     model.value = modelOptions.value[0]?.model || ''
   }
-  syncSelectedResolution()
-})
+  if (restoringDraft.value) return
+  syncSelectedParameters()
+}, { flush: 'sync' })
 
 function triggerRefImageUpload() {
   refImageInput.value?.click()
@@ -450,7 +467,9 @@ async function generate() {
       duration: duration.value,
       resolution: resolution.value,
       quantity: quantity.value,
-      referenceImageUrl,
+      referenceImageUrl: supportsReferenceImage.value ? referenceImageUrl : '',
+      capability: selectedModel.value?.capabilities || {},
+      generateAudio: generateAudio.value,
       requestId: globalThis.crypto?.randomUUID?.() || `home-${Date.now()}`,
     })
     if (mode.value === 'text') {

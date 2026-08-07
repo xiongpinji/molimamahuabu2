@@ -877,13 +877,13 @@ input_reference = (图片文件，可选)</pre>
           <template #label><span class="form-label-tip">默认时长</span></template>
           <el-select v-model="form.video_duration" style="width: 100%">
             <el-option
-              v-for="duration in VIDEO_DURATION_OPTIONS"
+              v-for="duration in adminVideoDurationOptions"
               :key="duration"
               :label="`${duration} 秒`"
               :value="duration"
             />
           </el-select>
-          <p class="field-tip">视频节点未单独选择时长时使用；可选 5–15 秒。</p>
+          <p class="field-tip">视频节点未单独选择时长时使用；当前模型可选 {{ adminVideoDurationOptions.join('、') }} 秒。</p>
         </el-form-item>
         <el-form-item v-if="isDeepSeekOfficialForm">
           <template #label>
@@ -1226,7 +1226,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
-import { VIDEO_DURATION_OPTIONS, mergeVideoDurationSetting, readVideoDurationSetting } from '@/utils/videoDuration'
+import { mergeVideoDurationSetting, readVideoDurationSetting, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1329,6 +1329,18 @@ const form = ref({
 const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
+const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
+  'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
+})
+function adminVideoCapabilityFor(config = {}) {
+  if (config.service_type !== 'video') return null
+  const isToapis = config.api_protocol === 'toapis_video' || config.provider === 'toapis'
+  const model = config.default_model || (Array.isArray(config.model) ? config.model[0] : '')
+  return isToapis ? TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null : null
+}
+const adminVideoCapability = computed(() => adminVideoCapabilityFor(form.value))
+const adminVideoDurationOptions = computed(() => videoDurationOptionsForCapability(adminVideoCapability.value))
 const auditedImageToolReferenceConfig = computed(() => (
   isAuditedImageToolReferenceConfig({
     serviceType: form.value.service_type,
@@ -1350,6 +1362,17 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => [form.value.service_type, form.value.api_protocol, form.value.provider, form.value.default_model],
+  () => {
+    const allowed = adminVideoDurationOptions.value
+    const current = Number(form.value.video_duration)
+    if (form.value.service_type === 'video' && !allowed.includes(current)) {
+      form.value.video_duration = allowed[0]
+    }
+  },
 )
 
 function onServiceTypeChange() {
@@ -2118,7 +2141,7 @@ function openEdit(row) {
     query_endpoint: row.query_endpoint || '',
     modelText: modelList.join('\n'),
     default_model: defaultInList ? row.default_model : (modelList[0] || ''),
-    video_duration: readVideoDurationSetting(row.settings),
+    video_duration: readVideoDurationSetting(row.settings, adminVideoCapabilityFor(row)),
     deepseek_thinking: deepseekSettings.thinking,
     deepseek_reasoning_effort: deepseekSettings.effort,
     priority: row.priority ?? 0,
@@ -2147,7 +2170,7 @@ async function submit() {
     let settings = undefined
     if (form.value.service_type === 'video') {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
-      const baseS = mergeVideoDurationSetting(prev?.settings, form.value.video_duration)
+      const baseS = mergeVideoDurationSetting(prev?.settings, form.value.video_duration, adminVideoCapability.value)
       if (form.value.api_protocol === 'kling_omni') {
         if ((form.value.kling_access_key || '').trim()) baseS.kling_access_key = form.value.kling_access_key.trim()
         else delete baseS.kling_access_key
