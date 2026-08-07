@@ -1489,6 +1489,80 @@ test('资产批量报价未定价返回 409 并保留服务详情', async () => 
   }
 });
 
+test('资产批量接口只允许当前已提升版本且历史和隐藏 draft 零副作用', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 2, current_step: 2, status: 'asset_review' });
+    const historicalVersionId = insertVersion(db, workId, { version: 1, status: 'asset_review' });
+    const draftVersionId = insertVersion(db, workId, { version: 2, status: 'draft' });
+    const historicalAssetId = insertRedrawAsset(db, historicalVersionId, { asset_id: null, status: 'draft' });
+    const draftAssetId = insertRedrawAsset(db, draftVersionId, { asset_id: null, status: 'draft' });
+    let quoteCalls = 0;
+    let startCalls = 0;
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetGenerationProvider: async () => { providerCalls += 1; return {}; },
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => { quoteCalls += 1; return {}; },
+        startAssetBatch: () => { startCalls += 1; return {}; },
+      }),
+    }));
+
+    for (const [versionId, assetId] of [[historicalVersionId, historicalAssetId], [draftVersionId, draftAssetId]]) {
+      const quote = captureResponse();
+      await handlers.assetBatchQuote(request({ id: versionId, body: { asset_ids: [assetId] } }), quote);
+      assert.equal(quote.statusCode, 409);
+      assert.equal(quote.body.error.code, 'REDRAW_ASSET_VERSION_NOT_CURRENT');
+
+      const create = captureResponse();
+      await handlers.createAssetBatch(request({
+        id: versionId,
+        body: { asset_ids: [assetId], quote_hash: 'hash', idempotency_key: `idem-${versionId}` },
+      }), create);
+      assert.equal(create.statusCode, 409);
+      assert.equal(create.body.error.code, 'REDRAW_ASSET_VERSION_NOT_CURRENT');
+    }
+
+    assert.equal(quoteCalls, 0);
+    assert.equal(startCalls, 0);
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM async_tasks').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tenant_usage_reservations').get().n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量接口拒绝非对象 body 且 quote primitive 不触发默认全量', async () => {
+  const db = createDb();
+  try {
+    const { versionId } = setupAssetBatchFixture(db);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => { calls += 1; return {}; },
+        startAssetBatch: () => { calls += 1; return {}; },
+      }),
+    }));
+
+    for (const body of [[], 'asset_ids=1', 1, true, false]) {
+      const quote = captureResponse();
+      await handlers.assetBatchQuote(request({ id: versionId, body }), quote);
+      assert.equal(quote.statusCode, 400);
+      assert.equal(quote.body.error.code, 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN');
+
+      const create = captureResponse();
+      await handlers.createAssetBatch(request({ id: versionId, body }), create);
+      assert.equal(create.statusCode, 400);
+      assert.equal(create.body.error.code, 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN');
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
 test('资产批量路由只在显式提供服务端 schedule 时传入 ctx', async () => {
   const db = createDb();
   try {
@@ -1623,15 +1697,17 @@ test('资产批量创建拒绝异步 startAssetBatch contract 且不等待返回
   }
 });
 
-test('资产批量创建兼容 stub shape 并支持幂等重放同 batch/task', async () => {
+test('资产批量创建原样透传 idempotency_key 并返回 service 给出的同 batch/task', async () => {
   const db = createDb();
   try {
     const { versionId, assetId } = setupAssetBatchFixture(db);
     let calls = 0;
+    const inputs = [];
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({
       assetBatchService: makeAssetBatchService({
-        startAssetBatch: () => {
+        startAssetBatch: (_ctx, input) => {
           calls += 1;
+          inputs.push(input);
           return {
             batch_id: 55,
             task_id: 'task-stub-shape',
@@ -1655,6 +1731,7 @@ test('资产批量创建兼容 stub shape 并支持幂等重放同 batch/task', 
       assert.deepEqual(result.body.data.billing, { charged: 0, held: 5, released: 0 });
     }
     assert.equal(calls, 2);
+    assert.deepEqual(inputs.map((input) => input.idempotencyKey), ['idem-replay', 'idem-replay']);
   } finally {
     db.close();
   }

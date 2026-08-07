@@ -461,8 +461,8 @@ function localizationBillingPayload(result) {
 }
 
 function rejectAssetBatchClientControl(body, allowedFields) {
-  const input = body || {};
-  if (input != null && (typeof input !== 'object' || Array.isArray(input))) {
+  const input = body == null ? {} : body;
+  if (typeof input !== 'object' || Array.isArray(input)) {
     throw codedRouteError(
       'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN',
       '批量资产参数必须是对象',
@@ -479,7 +479,7 @@ function rejectAssetBatchClientControl(body, allowedFields) {
 }
 
 function assetBatchAssetIds(body) {
-  if (!Object.prototype.hasOwnProperty.call(body || {}, 'asset_ids')) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(body, 'asset_ids')) return undefined;
   const value = body.asset_ids;
   if (!Array.isArray(value) || value.length === 0) {
     throw codedRouteError('REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN', 'asset_ids 必须是正整数数组');
@@ -500,16 +500,18 @@ function assetBatchAssetIds(body) {
 }
 
 function assetBatchQuoteInput(body) {
-  rejectAssetBatchClientControl(body, ASSET_BATCH_QUOTE_FIELDS);
-  return { assetIds: assetBatchAssetIds(body || {}) };
+  const input = body == null ? {} : body;
+  rejectAssetBatchClientControl(input, ASSET_BATCH_QUOTE_FIELDS);
+  return { assetIds: assetBatchAssetIds(input) };
 }
 
 function assetBatchCreateInput(body) {
-  rejectAssetBatchClientControl(body, ASSET_BATCH_CREATE_FIELDS);
+  const input = body == null ? {} : body;
+  rejectAssetBatchClientControl(input, ASSET_BATCH_CREATE_FIELDS);
   return {
-    assetIds: assetBatchAssetIds(body || {}),
-    quoteHash: String(body?.quote_hash || '').trim(),
-    idempotencyKey: String(body?.idempotency_key || '').trim(),
+    assetIds: assetBatchAssetIds(input),
+    quoteHash: String(input.quote_hash || '').trim(),
+    idempotencyKey: String(input.idempotency_key || '').trim(),
   };
 }
 
@@ -608,6 +610,7 @@ function sendAssetBatchError(res, error, fallbackMessage, log, context = {}) {
     return response.error(res, 402, code, error.message || '积分不足', details);
   }
   if ([
+    'REDRAW_ASSET_VERSION_NOT_CURRENT',
     'REDRAW_ASSET_BATCH_QUOTE_CHANGED',
     'REDRAW_ASSET_QUOTE_CHANGED',
     'REDRAW_ASSET_BATCH_UNPRICED',
@@ -782,6 +785,19 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function assertCurrentPromotedAssetBatchVersion(version, currentOwner) {
+    const work = findOwnedWork(version.work_id, currentOwner);
+    if (!work
+      || String(version.status || '') === 'draft'
+      || Number(version.version) !== Number(work.current_version)) {
+      throw codedRouteError(
+        'REDRAW_ASSET_VERSION_NOT_CURRENT',
+        '批量资产生成只能用于当前已提升版本',
+      );
+    }
+    return work;
   }
 
   function findOwnedAsset(id, currentOwner) {
@@ -1561,9 +1577,14 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
     if (!version) return response.notFound(res, '本地化版本不存在');
+    try {
+      assertCurrentPromotedAssetBatchVersion(version, currentOwner);
+    } catch (error) {
+      return sendAssetBatchError(res, error, '批量资产版本不可用', log, { versionId: req.params.id });
+    }
     let input;
     try {
-      input = assetBatchQuoteInput(req.body || {});
+      input = assetBatchQuoteInput(req.body);
     } catch (error) {
       return sendAssetBatchError(res, error, '批量资产报价参数无效', log, { versionId: req.params.id });
     }
@@ -1588,9 +1609,14 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
     if (!version) return response.notFound(res, '本地化版本不存在');
+    try {
+      assertCurrentPromotedAssetBatchVersion(version, currentOwner);
+    } catch (error) {
+      return sendAssetBatchError(res, error, '批量资产版本不可用', log, { versionId: req.params.id });
+    }
     let input;
     try {
-      input = assetBatchCreateInput(req.body || {});
+      input = assetBatchCreateInput(req.body);
     } catch (error) {
       return sendAssetBatchError(res, error, '批量资产生成参数无效', log, { versionId: req.params.id });
     }
