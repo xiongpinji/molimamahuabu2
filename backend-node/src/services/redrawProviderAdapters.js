@@ -61,6 +61,16 @@ function requirePositiveDimension(value, name) {
   return number;
 }
 
+function optionalPositiveDimension(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+async function defaultImageMetadataProbe(absolutePath) {
+  const sharp = require('sharp');
+  return sharp(absolutePath).metadata();
+}
+
 function mimeFromPath(localPath, fallback) {
   const ext = path.extname(localPath).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
@@ -203,6 +213,7 @@ function createRedrawProviderAdapters(deps = {}) {
   const db = deps.db;
   const log = deps.log || { info() {}, warn() {}, error() {} };
   const cfg = deps.cfg || {};
+  const imageMetadataProbe = deps.imageMetadataProbe || defaultImageMetadataProbe;
 
   async function localize(request = {}) {
     const model = trim(request.model);
@@ -314,22 +325,23 @@ function createRedrawProviderAdapters(deps = {}) {
     if (!imageUrl) throw codedError('REDRAW_IMAGE_PROVIDER_EMPTY_RESULT', 'image provider returned no image url');
     let localPath = null;
     localPath = await downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, normalized.taskId || attempt.id);
-    const absolutePath = path.join(storageRoot, localPath);
+    const { abs: absolutePath } = scopedAbsolutePath(storageRoot, localPath, versionDir);
     if (!fs.existsSync(absolutePath)) throw codedError('ASSET_NOT_READABLE', 'downloaded redraw asset is not readable');
     let width;
     let height;
     try {
-      width = requirePositiveDimension(
-        imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width,
-        'width',
-      );
-      height = requirePositiveDimension(
-        imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height,
-        'height',
-      );
+      const metadata = await imageMetadataProbe(absolutePath);
+      width = requirePositiveDimension(metadata?.width, 'width');
+      height = requirePositiveDimension(metadata?.height, 'height');
+      const providerWidth = optionalPositiveDimension(imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width);
+      const providerHeight = optionalPositiveDimension(imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height);
+      if ((providerWidth != null && providerWidth !== width) || (providerHeight != null && providerHeight !== height)) {
+        throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'redraw image artifact dimensions conflict with provider metadata');
+      }
     } catch (error) {
       cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw error;
+      if (error?.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID') throw error;
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact is invalid or unreadable');
     }
     const providerTaskId = providerTaskIdOf(imageResult);
     const metadata = {

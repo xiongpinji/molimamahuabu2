@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const realAssetService = require('../src/services/assetService');
@@ -23,6 +24,32 @@ function makeReadableFile(root, rel, contents = 'x') {
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, contents);
   return rel.replace(/\\/g, '/');
+}
+
+async function makePngFile(root, rel, width = 640, height = 360) {
+  const abs = path.join(root, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  const bytes = await sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: { r: 20, g: 120, b: 200, alpha: 1 },
+    },
+  }).png().toBuffer();
+  fs.writeFileSync(abs, bytes);
+  return rel.replace(/\\/g, '/');
+}
+
+async function pngBuffer(width = 640, height = 360) {
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: { r: 20, g: 120, b: 200, alpha: 1 },
+    },
+  }).png().toBuffer();
 }
 
 function setupAssetContractState() {
@@ -150,7 +177,7 @@ test('generateAsset registers readable clean plate image without fabricating mis
     uploadService: {
       async downloadImageToLocal(...args) {
         downloadCalls.push(args);
-        return makeReadableFile(storageRoot, 'redraw-assets/v7/scene.png', 'png');
+        return makePngFile(storageRoot, 'redraw-assets/v7/scene.png', 1024, 576);
       },
     },
     assetService: {
@@ -220,7 +247,7 @@ test('redrawAssetService.generateAsset contract reaches image adapter with snaps
     },
     uploadService: {
       async downloadImageToLocal() {
-        return makeReadableFile(state.storageRoot, `redraw-assets/v${state.versionId}/prop.png`, 'png');
+        return makePngFile(state.storageRoot, `redraw-assets/v${state.versionId}/prop.png`, 640, 360);
       },
     },
     assetService: {
@@ -275,7 +302,7 @@ test('generateAsset prefers persisted attempt snapshot over conflicting input mo
     },
     uploadService: {
       async downloadImageToLocal() {
-        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+        return makePngFile(storageRoot, 'redraw-assets/v7/prop.png', 640, 360);
       },
     },
     assetService: {
@@ -325,7 +352,7 @@ test('generateAsset rejects explicit model or provider conflicting with persiste
     },
     uploadService: {
       async downloadImageToLocal() {
-        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+        return makePngFile(storageRoot, 'redraw-assets/v7/prop.png', 640, 360);
       },
     },
     assetService: {
@@ -456,7 +483,7 @@ test('generateAsset trusted request model is not affected by input snapshot mode
     },
     uploadService: {
       async downloadImageToLocal() {
-        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+        return makePngFile(storageRoot, 'redraw-assets/v7/prop.png', 640, 360);
       },
     },
     assetService: {
@@ -582,43 +609,153 @@ test('generateAsset rejects downloaded image outside exact redraw version storag
   }
 });
 
-test('generateAsset requires positive finite image dimensions before registration', async () => {
-  for (const imageResult of [
-    { image_url: 'https://provider.example/scene.png' },
-    { image_url: 'https://provider.example/scene.png', width: 0, height: 360 },
-    { image_url: 'https://provider.example/scene.png', width: -1, height: 360 },
-  ]) {
-    const storageRoot = tempStorage();
-    const created = [];
-    const adapters = createRedrawProviderAdapters({
-      db: {},
-      log: createLog(),
-      cfg: { storage: { local_path: storageRoot } },
-      imageClient: { async callImageApi() { return imageResult; } },
-      uploadService: {
-        async downloadImageToLocal() {
-          return makeReadableFile(storageRoot, 'redraw-assets/v7/scene.png', 'png');
-        },
+test('generateAsset probes actual image dimensions when provider omits them', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png' };
       },
-      assetService: {
-        create(_db, _log, payload) {
-          created.push(payload);
-          return { id: 1, ...payload };
-        },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makePngFile(storageRoot, 'redraw-assets/v7/scene.png', 321, 123);
       },
-    });
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
 
-    await assert.rejects(
-      () => adapters.generateAsset({
-        taskId: 9,
-        versionId: 7,
-        model: 'verified-image-model',
-        asset: { id: 5, kind: 'scene', prompt: 'clean room' },
-      }),
-      (error) => error.code === 'REDRAW_IMAGE_DIMENSIONS_REQUIRED',
-    );
-    assert.equal(created.length, 0);
-  }
+  const result = await adapters.generateAsset({
+    taskId: 9,
+    versionId: 7,
+    model: 'verified-image-model',
+    asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(created[0].width, 321);
+  assert.equal(created[0].height, 123);
+  assert.deepEqual(created[0].metadata.quality, { width: 321, height: 123 });
+});
+
+test('generateAsset rejects invalid provider dimensions when actual image probe also fails', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png', width: 0, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(storageRoot, 'redraw-assets/v7/scene.png', 'not an image');
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+    }),
+    (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID',
+  );
+  assert.equal(created.length, 0);
+});
+
+test('generateAsset rejects provider dimensions that conflict with actual file metadata', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png', width: 640, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makePngFile(storageRoot, 'redraw-assets/v7/scene.png', 320, 180);
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+    }),
+    (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID' && /dimension/i.test(error.message),
+  );
+  assert.equal(created.length, 0);
+});
+
+test('generateAsset rejects non-image downloaded artifact before registration', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png' };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(storageRoot, 'redraw-assets/v7/scene.png', 'not an image');
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+    }),
+    (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID',
+  );
+  assert.equal(created.length, 0);
 });
 
 test('generateAsset default image download uses public downloader and rejects private URLs before registration', async () => {
@@ -665,7 +802,7 @@ test('generateAsset writes public image bytes into scoped storage and cleans the
         return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
       },
     },
-    publicImageDownloader: async () => ({ bytes: Buffer.from('png-bytes'), mimeType: 'image/png' }),
+    publicImageDownloader: async () => ({ bytes: await pngBuffer(640, 360), mimeType: 'image/png' }),
     assetService: {
       create(_db, _log, payload) {
         writtenPath = payload.local_path;
