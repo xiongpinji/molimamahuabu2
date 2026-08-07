@@ -28,7 +28,7 @@ function jsonResponse(payload, status = 200) {
 }
 
 describe('USMercari image protocol', () => {
-  it('declares only the two requested image models and three priced resolutions', () => {
+  it('declares only the two requested image models and supplier resolution values', () => {
     assert.deepEqual(Object.keys(USMERCARI_IMAGE_MODELS), [
       'gpt-image-2-2-4k',
       'nano-banana-2',
@@ -142,6 +142,27 @@ describe('USMercari image protocol', () => {
     assert.equal(result.image_url, 'https://cdn.example/edited.png');
   });
 
+  it('uses the documented generations image_url contract for public references', async () => {
+    const requests = [];
+    global.fetch = async (url, options) => {
+      requests.push({ url: String(url), body: JSON.parse(options.body) });
+      return jsonResponse({ data: [{ url: 'https://cdn.example/referenced.png' }] });
+    };
+
+    const result = await callUsmercariImageApi({
+      base_url: 'https://chat-ai.mercarimx.com', api_key: 'secret',
+    }, log, {
+      model: 'nano-banana-2', prompt: 'keep the subject', resolution: '1k',
+      reference_image_urls: ['https://assets.example/reference.png'],
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://chat-ai.mercarimx.com/v1/images/generations');
+    assert.equal(requests[0].body.image_url, 'https://assets.example/reference.png');
+    assert.equal(requests[0].body.image_urls, undefined);
+    assert.equal(result.image_url, 'https://cdn.example/referenced.png');
+  });
+
   it('routes nano-banana-2 through explicit usmercari_image instead of nano_banana', async () => {
     const db = new Database(':memory:');
     runMigrationsAndEnsure(db);
@@ -189,6 +210,15 @@ describe('USMercari image protocol', () => {
     });
     assert.match(html.error, /502/);
     assert.doesNotMatch(html.error, /<!DOCTYPE html>/i);
+
+    global.fetch = async () => jsonResponse({
+      detail: { code: 'unsupported_resolution', message: '4K is not supported for this ratio' },
+    }, 400);
+    const structured = await callUsmercariImageApi({ api_key: 'secret' }, log, {
+      model: 'gpt-image-2-2-4k', prompt: 'x', resolution: '4k',
+    });
+    assert.match(structured.error, /unsupported_resolution/);
+    assert.match(structured.error, /4K is not supported/);
 
     global.fetch = async () => jsonResponse({ data: [] });
     const empty = await callUsmercariImageApi({ api_key: 'secret' }, log, {

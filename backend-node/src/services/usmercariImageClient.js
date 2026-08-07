@@ -4,14 +4,15 @@ const {
   uploadUsmercariMedia,
 } = require('./usmercariVideoClient');
 
-const VERIFIED_RESOLUTIONS = Object.freeze(['1k', '2k', '4k']);
-const VERIFIED_IMAGE_SPEC = Object.freeze({
-  resolutions: VERIFIED_RESOLUTIONS,
+// 这里只描述通用适配器可提交的供应商声明值；用户目录仍须读取独立的真实验证门禁。
+const DECLARED_RESOLUTIONS = Object.freeze(['1k', '2k', '4k']);
+const DECLARED_IMAGE_SPEC = Object.freeze({
+  resolutions: DECLARED_RESOLUTIONS,
   maxReferences: 6,
 });
 const USMERCARI_IMAGE_MODELS = Object.freeze({
-  'gpt-image-2-2-4k': VERIFIED_IMAGE_SPEC,
-  'nano-banana-2': VERIFIED_IMAGE_SPEC,
+  'gpt-image-2-2-4k': DECLARED_IMAGE_SPEC,
+  'nano-banana-2': DECLARED_IMAGE_SPEC,
 });
 
 function normalizeResolution(value) {
@@ -71,7 +72,10 @@ function parseJson(raw) {
 
 function providerMessage(payload, raw, fallback) {
   const message = payload?.detail || payload?.message || payload?.error;
-  if (message) return String(message).slice(0, 300);
+  if (message) {
+    if (typeof message === 'string') return message.slice(0, 300);
+    try { return JSON.stringify(message).slice(0, 300); } catch (_) { return '供应商返回了结构化错误'; }
+  }
   if (/^\s*</.test(String(raw || ''))) return '供应商返回了非 JSON 错误页';
   return String(raw || fallback).slice(0, 300);
 }
@@ -109,19 +113,25 @@ async function callUsmercariImageApi(config, log, opts = {}) {
     return { error: error.message };
   }
 
+  const publicReferences = checked.references.filter((reference) => /^https?:\/\//i.test(reference));
+  const usePublicReferenceContract = publicReferences.length === checked.references.length;
   let imageIds = [];
-  try {
-    for (const reference of checked.references) {
-      imageIds.push(await uploadUsmercariMedia({ ...config, base_url: baseUrl }, 'image', reference, {
-        storage_local_path: opts.storage_local_path,
-      }));
+  if (!usePublicReferenceContract) {
+    try {
+      for (const reference of checked.references) {
+        imageIds.push(await uploadUsmercariMedia({ ...config, base_url: baseUrl }, 'image', reference, {
+          storage_local_path: opts.storage_local_path,
+        }));
+      }
+    } catch (error) {
+      return { error: error.message };
     }
-  } catch (error) {
-    return { error: error.message };
   }
 
   const body = {
     ...buildUsmercariImageBody(opts),
+    ...(publicReferences.length === 1 && usePublicReferenceContract ? { image_url: publicReferences[0] } : {}),
+    ...(publicReferences.length > 1 && usePublicReferenceContract ? { image_urls: publicReferences } : {}),
     ...(imageIds.length ? { image_ids: imageIds } : {}),
   };
   const endpoint = imageIds.length ? '/v1/images/edits' : '/v1/images/generations';
