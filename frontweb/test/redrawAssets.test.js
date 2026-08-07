@@ -82,6 +82,7 @@ test('资产批量状态纯函数 fail closed 并计算进度', async () => {
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [] }, null), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'pending' }), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'processing' }), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'partial_failed' }), false)
 
   assert.deepEqual(state.failedAssetIds({ items: [
     { id: 2, status: 'failed' },
@@ -128,6 +129,8 @@ test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创
   assert.match(assetStepSource, /canvas-credit-callout-v1/)
   assert.match(assetStepSource, /积分待管理员配置/)
   assert.match(assetStepSource, /一键重试失败项/)
+  assert.match(assetStepSource, /startAssetBatch\(failedIds\.value\)/)
+  assert.match(assetStepSource, /ids\.length\)\s*body\.asset_ids\s*=\s*ids/)
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*model/)
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*provider/)
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credits/)

@@ -213,7 +213,8 @@ async function startAssetBatch(assetIds = null) {
   try {
     const nextQuote = await loadAssetBatchQuote(ids)
     const nextHash = quoteHash(nextQuote)
-    if (!previousHash || !nextHash || nextHash !== previousHash || !canStartAssetBatch(nextQuote, activeBatch.value)) {
+    const gateBatch = ids.length ? null : activeBatch.value
+    if (!previousHash || !nextHash || nextHash !== previousHash || !canStartAssetBatch(nextQuote, gateBatch)) {
       ElMessage.warning('批量报价已更新，请再次确认')
       return
     }

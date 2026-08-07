@@ -50,7 +50,7 @@ export function canStartAssetBatch(quote, batch) {
     && Array.isArray(blockers)
     && blockers.length === 0
     && (!items || items.length > 0)
-    && !['pending', 'processing'].includes(status)
+    && !['pending', 'processing', 'partial_failed'].includes(status)
 }
 
 export function failedAssetIds(source) {
