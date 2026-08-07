@@ -16,6 +16,7 @@ const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
 const redrawBillingService = require('../services/redrawBillingService');
 const redrawAssetBatchService = require('../services/redrawAssetBatchService');
+const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -335,6 +336,25 @@ const ASSET_BATCH_CLIENT_CONTROL_FIELDS = new Set([
 ]);
 const ASSET_BATCH_QUOTE_FIELDS = new Set(['asset_ids']);
 const ASSET_BATCH_CREATE_FIELDS = new Set(['asset_ids', 'quote_hash', 'idempotency_key']);
+const DIALOGUE_CLIENT_CONTROL_FIELDS = new Set([
+  'model',
+  'provider',
+  'asset',
+  'asset_id',
+  'assetId',
+  'path',
+  'local_path',
+  'localPath',
+  'url',
+  'audio_url',
+  'audioUrl',
+  'credits',
+  'credit_amount',
+  'creditAmount',
+  'reservation_id',
+  'reservationId',
+]);
+const DIALOGUE_START_FIELDS = new Set(['quote_hash', 'idempotency_key']);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
@@ -525,6 +545,66 @@ function assetBatchResponsePayload(result, billing) {
     billing,
     current_step: 2,
   };
+}
+
+function rejectDialogueClientControl(body, allowedFields = null) {
+  const input = body == null ? {} : body;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw codedRouteError('REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN', '配音参数必须是对象');
+  }
+  for (const key of Object.keys(input)) {
+    if (DIALOGUE_CLIENT_CONTROL_FIELDS.has(key) || (allowedFields && !allowedFields.has(key))) {
+      throw codedRouteError(
+        'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN',
+        '配音模型、积分、资产和路径只能由服务端决定',
+      );
+    }
+  }
+}
+
+function dialogueStartInput(body) {
+  rejectDialogueClientControl(body, DIALOGUE_START_FIELDS);
+  return {
+    quoteHash: String(body?.quote_hash || '').trim(),
+    idempotencyKey: String(body?.idempotency_key || '').trim(),
+  };
+}
+
+function dialogueTaskPayload(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    status: row.status,
+    progress: Number(row.progress || 0),
+    message: row.message || null,
+    result: parseJSON(row.result, null),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    completed_at: row.completed_at || null,
+  };
+}
+
+function sendDialogueError(res, error, fallbackMessage, log, context = {}) {
+  const code = String(error?.code || '');
+  const details = error?.details || (error?.quote ? { quote: error.quote } : undefined);
+  if (code === 'INSUFFICIENT_CREDITS') {
+    return response.error(res, 402, code, '积分不足，请充值后重试');
+  }
+  if ([
+    'REDRAW_DIALOGUE_PLAN_NOT_READY',
+    'REDRAW_DIALOGUE_QUOTE_MISMATCH',
+    'REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT',
+    'REDRAW_DIALOGUE_RETRY_REQUIRED',
+    'pricing_unconfigured',
+  ].includes(code)) {
+    return response.error(res, 409, code, error.message || fallbackMessage, details);
+  }
+  if (code === 'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN'
+    || code.startsWith('REDRAW_DIALOGUE_')) {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  log?.error?.({ err: error, ...context }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
 }
 
 function reservationBillingFromRows(rows) {
@@ -745,6 +825,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       concurrency: ctx.concurrency,
     }),
   };
+  const dialogueOrchestrator = options.dialogueOrchestrator || redrawDialogueOrchestrator;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -827,6 +908,17 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
     if (typeof options.assetBatchSchedule === 'function') ctx.schedule = options.assetBatchSchedule;
     return ctx;
+  }
+
+  function dialogueContext(version, currentOwner) {
+    const reader = redrawOrchestrator.createAssetReader({ storageRoot: storageRootFromConfig(cfg) });
+    return {
+      db,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(version.id),
+      canReadAudioAsset: (asset) => reader.canRead(asset),
+    };
   }
 
   function findOwnedShot(id, currentOwner) {
@@ -1661,6 +1753,82 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }
   }
 
+  function dialogueQuote(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    try {
+      rejectDialogueClientControl(req.body || {});
+      const quote = dialogueOrchestrator.quoteDialogue(db, dialogueContext(version, currentOwner));
+      if (quote.status !== 'ready') {
+        return response.error(res, 409, 'REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划需要重写', { quote });
+      }
+      return response.success(res, quote);
+    } catch (error) {
+      return sendDialogueError(res, error, '读取配音报价失败', log, { versionId: version.id });
+    }
+  }
+
+  async function startDialogue(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    let input;
+    try {
+      input = dialogueStartInput(req.body || {});
+    } catch (error) {
+      return sendDialogueError(res, error, '配音参数无效', log, { versionId: version.id });
+    }
+    const provider = options.dialogueProvider;
+    if (typeof provider !== 'function') {
+      return response.error(res, 409, 'REDRAW_DIALOGUE_PROVIDER_REQUIRED', '配音生成能力尚未配置');
+    }
+    try {
+      const ctx = dialogueContext(version, currentOwner);
+      const result = dialogueOrchestrator.startDialogue(db, log, ctx, input, {
+        schedule: options.dialogueSchedule,
+        canReadAudioAsset: ctx.canReadAudioAsset,
+        synthesizeSegment: (segment) => provider({
+          taskId: segment.task_id,
+          versionId: Number(version.id),
+          model: segment.model,
+          locale: version.locale,
+          segment,
+          kind: 'dialogue',
+        }),
+      });
+      return response.accepted(res, {
+        task_id: result.task_id,
+        status: result.status || 'pending',
+        quote: result.quote,
+      });
+    } catch (error) {
+      return sendDialogueError(res, error, '提交配音任务失败', log, { versionId: version.id });
+    }
+  }
+
+  function getDialogueTask(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    const row = db.prepare(`
+      SELECT *
+      FROM async_tasks
+      WHERE id = ? AND type = 'redraw_dialogue'
+        AND resource_id LIKE ?
+        AND tenant_id = ? AND user_id = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+    `).get(
+      String(req.params.taskId || ''),
+      `redraw_dialogue:${Number(version.id)}:%`,
+      currentOwner.tenantId,
+      currentOwner.userId,
+    );
+    if (!row) return response.error(res, 404, 'REDRAW_DIALOGUE_TASK_NOT_FOUND', '配音任务不存在');
+    return response.success(res, dialogueTaskPayload(row));
+  }
+
   function generationGate(req, res) {
     const currentOwner = owner(req);
     try {
@@ -1895,6 +2063,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     listVersionAssets,
     assetBatchQuote,
     createAssetBatch,
+    dialogueQuote,
+    startDialogue,
+    getDialogueTask,
     generationGate,
     assetQuote,
     updateRedrawAsset,

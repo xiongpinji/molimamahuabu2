@@ -271,6 +271,15 @@ function routeDeps(overrides = {}) {
       }),
     },
     assetGenerationProvider: async () => ({ status: 'completed' }),
+    dialogueOrchestrator: {
+      quoteDialogue: () => ({ status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' }),
+      startDialogue: () => ({
+        task_id: 'task-dialogue',
+        status: 'pending',
+        quote: { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' },
+        completion: new Promise(() => {}),
+      }),
+    },
     ...overrides,
   };
 }
@@ -3241,6 +3250,91 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端模型积分字段', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      dialogueOrchestrator: {
+        quoteDialogue: (_db, input) => {
+          calls.push({ name: 'quote', input });
+          return { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' };
+        },
+        startDialogue: (_db, _log, ctx, input) => {
+          calls.push({ name: 'start', ctx, input });
+          db.prepare(`INSERT INTO async_tasks
+            (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
+            VALUES ('task-dialogue-route', 'redraw_dialogue', 'completed', 100, 'done', ?, ?, ?, ?, ?)`)
+            .run(`redraw_dialogue:${versionId}:hash`, ctx.tenantId, ctx.userId, NOW, NOW);
+          return {
+            task_id: 'task-dialogue-route',
+            status: 'completed',
+            quote: { status: 'ready', total_credits: 4, quote_hash: 'dialogue-quote-ok' },
+            completion: Promise.resolve(),
+          };
+        },
+      },
+      dialogueProvider: async () => ({ status: 'completed' }),
+    }));
+
+    const quote = captureResponse();
+    handlers.dialogueQuote(request({ id: versionId, body: { model: 'attacker' } }), quote);
+    assert.equal(quote.statusCode, 400);
+    assert.equal(quote.body.error.code, 'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN');
+
+    const okQuote = captureResponse();
+    handlers.dialogueQuote(request({ id: versionId, body: {} }), okQuote);
+    assert.equal(okQuote.statusCode, 200);
+    assert.equal(okQuote.body.data.quote_hash, 'dialogue-quote-ok');
+    assert.equal(calls[0].input.versionId, versionId);
+    assert.equal(calls[0].input.tenantId, 'tenant-a');
+
+    const badStart = captureResponse();
+    await handlers.startDialogue(request({
+      id: versionId,
+      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route', credits: 1 },
+    }), badStart);
+    assert.equal(badStart.statusCode, 400);
+    assert.equal(badStart.body.error.code, 'REDRAW_DIALOGUE_CLIENT_CONTROL_FORBIDDEN');
+
+    const start = captureResponse();
+    await handlers.startDialogue(request({
+      id: versionId,
+      body: { quote_hash: 'dialogue-quote-ok', idempotency_key: 'idem-route' },
+    }), start);
+    assert.equal(start.statusCode, 202);
+    assert.equal(start.body.data.task_id, 'task-dialogue-route');
+    assert.equal(start.body.data.quote.quote_hash, 'dialogue-quote-ok');
+    assert.deepEqual(calls[1].input, { quoteHash: 'dialogue-quote-ok', idempotencyKey: 'idem-route' });
+
+    const status = captureResponse();
+    handlers.getDialogueTask({
+      params: { id: String(versionId), taskId: 'task-dialogue-route' },
+      tenant: { id: 'tenant-a' },
+      user: { id: 'user-a' },
+    }, status);
+    assert.equal(status.statusCode, 200);
+    assert.equal(status.body.data.id, 'task-dialogue-route');
+    assert.equal(status.body.data.status, 'completed');
+
+    const otherTenant = captureResponse();
+    handlers.getDialogueTask({
+      params: { id: String(versionId), taskId: 'task-dialogue-route' },
+      tenant: { id: 'tenant-b' },
+      user: { id: 'user-a' },
+    }, otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
   } finally {
     db.close();
   }

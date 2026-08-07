@@ -210,7 +210,8 @@ function setupRouter(cfg, db, log, options = {}) {
     || options.assetProvider
     || redrawOptions.assetGenerationProvider
     || redrawOptions.assetProvider;
-  const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider;
+  const explicitDialogueProvider = options.dialogueProvider || redrawOptions.dialogueProvider;
+  const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider || !explicitDialogueProvider;
   const redrawAdapters = needsRedrawAdapters
     ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
         db,
@@ -230,11 +231,19 @@ function setupRouter(cfg, db, log, options = {}) {
         ...request,
         model: request.model ?? request.input?.model,
       });
+  const defaultDialogueProvider = explicitDialogueProvider
+    ? null
+    : async (request = {}) => redrawAdapters.generateAsset({
+        ...request,
+        kind: 'dialogue',
+        model: request.model,
+      });
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
+    dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
   });
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -267,6 +276,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
   r.post('/redraw/versions/:id/assets/batches', redraw.createAssetBatch);
+  r.post('/redraw/versions/:id/dialogue/quote', redraw.dialogueQuote);
+  r.post('/redraw/versions/:id/dialogue/start', redraw.startDialogue);
+  r.get('/redraw/versions/:id/dialogue/tasks/:taskId', redraw.getDialogueTask);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);

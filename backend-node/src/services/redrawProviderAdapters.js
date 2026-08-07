@@ -591,6 +591,131 @@ function createRedrawProviderAdapters(deps = {}) {
     };
   }
 
+  function dialogueContext(request = {}, normalized = {}) {
+    const segment = request.segment || request.dialogueSegment || {};
+    const required = [
+      'tenant_id',
+      'user_id',
+      'version_id',
+      'segment_id',
+      'idempotency_key',
+      'reservation_id',
+    ];
+    const ctx = {};
+    for (const key of required) {
+      const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      const value = segment[key] ?? segment[camel];
+      if (value == null || trim(value) === '') {
+        throw codedError('REDRAW_DIALOGUE_CONTEXT_REQUIRED', 'redraw dialogue server segment context is required');
+      }
+      ctx[key] = key === 'version_id' ? Number(value) : trim(value);
+    }
+    if (!Number.isSafeInteger(ctx.version_id) || ctx.version_id <= 0) {
+      throw codedError('REDRAW_DIALOGUE_CONTEXT_REQUIRED', 'redraw dialogue server segment context is required');
+    }
+    if (Number(normalized.versionId) !== ctx.version_id) {
+      throw codedError('REDRAW_DIALOGUE_CONTEXT_REQUIRED', 'redraw dialogue version context mismatch');
+    }
+    const text = trim(segment.text || segment.localized_text || segment.localizedText);
+    if (!text) throw codedError('REDRAW_PROVIDER_PROMPT_REQUIRED', 'redraw dialogue text is required');
+    return {
+      ...ctx,
+      text,
+      voice_id: trim(segment.voice_id || segment.voiceId),
+      shot_id: segment.shot_id || segment.shotId || null,
+      turn_index: segment.turn_index ?? segment.turnIndex ?? null,
+    };
+  }
+
+  async function generateDialogueAsset(request, normalized, storageRoot, versionDir) {
+    const ctx = dialogueContext(request, normalized);
+    const synthesize = requireMethod(deps, 'ttsService', './ttsService', 'synthesize');
+    const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
+    const config = deps.ttsConfig || (() => {
+      const { selectTtsConfig } = require('./ttsConfigSelectionService');
+      return selectTtsConfig(db, normalized.model);
+    })();
+    const result = await synthesize(db, log, {
+      text: ctx.text,
+      storyboard_id: normalized.taskId || ctx.segment_id,
+      config: { ...config, default_model: normalized.model, model: normalized.model },
+      storage_base: storageRoot,
+      storage_subdir: `redraw-assets/${versionDir}`,
+      voice_id: ctx.voice_id || undefined,
+      locale: normalized.locale,
+    });
+    if (isUnknownProviderResult(result)) {
+      return {
+        status: 'unknown',
+        unknown: true,
+        provider_task_id: providerTaskIdOf(result),
+        error: result?.error || 'dialogue provider task status unknown',
+      };
+    }
+    const localPath = assertScopedAssetPath(result.local_path, versionDir);
+    const absolutePath = path.join(storageRoot, localPath);
+    if (!fs.existsSync(absolutePath)) {
+      throw codedError('ASSET_NOT_READABLE', 'downloaded redraw dialogue asset is not readable');
+    }
+    let duration = Number(result?.duration ?? result?.metadata?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      duration = probeDuration(absolutePath);
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw dialogue provider returned no positive duration');
+    }
+    const providerTaskId = providerTaskIdOf(result);
+    if (!trim(providerTaskId)) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw codedError('REDRAW_DIALOGUE_PROVIDER_TASK_REQUIRED', 'redraw dialogue provider task id is required');
+    }
+    const dialogueMetadata = {
+      tenant_id: ctx.tenant_id,
+      user_id: ctx.user_id,
+      version_id: ctx.version_id,
+      segment_id: ctx.segment_id,
+      idempotency_key: ctx.idempotency_key,
+      reservation_id: ctx.reservation_id,
+      provider_task_id: providerTaskId,
+    };
+    const metadata = {
+      source: 'redraw_provider_adapter',
+      kind: 'dialogue',
+      locale: normalized.locale,
+      voice_id: ctx.voice_id || null,
+      duration,
+      provider_task_id: providerTaskId,
+      model: normalized.model,
+      redraw_dialogue: dialogueMetadata,
+    };
+    let registered;
+    try {
+      registered = createAsset(db, log, {
+        name: `redraw dialogue ${ctx.segment_id}`,
+        type: 'audio',
+        category: 'redraw_dialogue',
+        url: result.audio_url || result.url || '',
+        local_path: localPath,
+        mime_type: 'audio/mpeg',
+        duration,
+        metadata,
+      });
+    } catch (error) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw error;
+    }
+    return {
+      status: 'completed',
+      asset_id: registered.id,
+      audio_asset_id: registered.id,
+      readable: true,
+      provider_task_id: providerTaskId,
+      metadata,
+      duration,
+    };
+  }
+
   async function generateAsset(request = {}) {
     const normalized = normalizeAssetRequest(request);
     const model = trim(normalized.model);
@@ -601,6 +726,7 @@ function createRedrawProviderAdapters(deps = {}) {
     const versionDir = `v${Number(versionId) || trim(versionId)}`;
     const storageRoot = storageRootFrom(cfg);
     if (kind === 'voice') return generateVoiceAsset(request, normalized, storageRoot, versionDir);
+    if (kind === 'dialogue') return generateDialogueAsset(request, normalized, storageRoot, versionDir);
     if (['character', 'scene', 'prop'].includes(kind)) {
       return generateImageAsset(request, normalized, storageRoot, versionDir);
     }

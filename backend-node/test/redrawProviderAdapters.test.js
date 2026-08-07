@@ -1223,6 +1223,109 @@ test('generateAsset voice cleans scoped TTS file if registration fails', async (
   assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
 });
 
+test('generateAsset dialogue reuses TTS storage but writes isolated category and server metadata', async () => {
+  const storageRoot = tempStorage();
+  const synthCalls = [];
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-dialogue-model' },
+    ttsService: {
+      async synthesize(...args) {
+        synthCalls.push(args);
+        return {
+          local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue.mp3', 'mp3'),
+          provider_task_id: 'provider-dialogue-1',
+          duration: 1.25,
+        };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 188, ...payload };
+      },
+    },
+  });
+
+  const result = await adapters.generateAsset({
+    versionId: 8,
+    model: 'verified-dialogue-model',
+    locale: 'en-US',
+    kind: 'dialogue',
+    segment: {
+      tenant_id: 'tenant-a',
+      user_id: 'user-a',
+      version_id: 8,
+      segment_id: '801:0',
+      text: 'Come with me.',
+      voice_id: 'voice-c1',
+      idempotency_key: 'idem-dialogue',
+      reservation_id: 'reservation-dialogue',
+    },
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.asset_id, 188);
+  assert.equal(result.duration, 1.25);
+  assert.equal(result.provider_task_id, 'provider-dialogue-1');
+  assert.equal(synthCalls.length, 1);
+  assert.equal(synthCalls[0][2].text, 'Come with me.');
+  assert.equal(synthCalls[0][2].voice_id, 'voice-c1');
+  assert.equal(synthCalls[0][2].storage_subdir, 'redraw-assets/v8');
+  assert.equal(created[0].type, 'audio');
+  assert.equal(created[0].category, 'redraw_dialogue');
+  assert.equal(created[0].metadata.kind, 'dialogue');
+  assert.deepEqual(created[0].metadata.redraw_dialogue, {
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    version_id: 8,
+    segment_id: '801:0',
+    idempotency_key: 'idem-dialogue',
+    reservation_id: 'reservation-dialogue',
+    provider_task_id: 'provider-dialogue-1',
+  });
+});
+
+test('generateAsset dialogue fails closed without server segment bindings before TTS', async () => {
+  const storageRoot = tempStorage();
+  let synthCalls = 0;
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-dialogue-model' },
+    ttsService: {
+      async synthesize() {
+        synthCalls += 1;
+        return { local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue.mp3', 'mp3'), duration: 1 };
+      },
+    },
+    assetService: { create(_db, _log, payload) { return { id: 1, ...payload }; } },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-dialogue-model',
+      kind: 'dialogue',
+      segment: {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: 8,
+        segment_id: '801:0',
+        text: 'Come with me.',
+        voice_id: 'voice-c1',
+        idempotency_key: 'idem-dialogue',
+      },
+    }),
+    (error) => error.code === 'REDRAW_DIALOGUE_CONTEXT_REQUIRED',
+  );
+  assert.equal(synthCalls, 0);
+});
+
 test('setupRouter bridges fake redraw asset adapters with trusted input model', async () => {
   const routesPath = require.resolve('../src/routes');
   const redrawPath = require.resolve('../src/routes/redraw');
@@ -1324,6 +1427,7 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
     const redrawOptions = seen.find((entry) => typeof entry.assetGenerationProvider === 'function'
       && !entry.factoryDeps);
     assert.notEqual(redrawOptions.assetGenerationProvider, fakeAdapters.generateAsset);
+    assert.equal(typeof redrawOptions.dialogueProvider, 'function');
     await redrawOptions.assetGenerationProvider({
       attempt: { id: 1, kind: 'prop' },
       input: { model: 'server-verified-model', provider: 'ignored-input-provider' },
@@ -1333,6 +1437,14 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
     assert.equal(adapterRequests[0].model, 'server-verified-model');
     assert.equal(adapterRequests[0].provider, undefined);
     assert.equal(adapterRequests[0].input.model, 'server-verified-model');
+    await redrawOptions.dialogueProvider({
+      segment: { text: 'Hello' },
+      model: 'server-dialogue-model',
+      versionId: 7,
+    });
+    assert.equal(adapterRequests.length, 2);
+    assert.equal(adapterRequests[1].kind, 'dialogue');
+    assert.equal(adapterRequests[1].model, 'server-dialogue-model');
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;
@@ -1367,6 +1479,7 @@ test('setupRouter uses explicit redraw providers without creating default adapte
   const seen = [];
   const localizationProvider = async () => ({});
   const assetGenerationProvider = async () => ({});
+  const dialogueProvider = async () => ({});
   require.cache[redrawPath] = {
     id: redrawPath,
     filename: redrawPath,
@@ -1436,10 +1549,11 @@ test('setupRouter uses explicit redraw providers without creating default adapte
   try {
     const { setupRouter } = require('../src/routes');
     setupRouter({ storage: {} }, {}, createLog(), {
-      redrawOptions: { localizationProvider, assetGenerationProvider },
+      redrawOptions: { localizationProvider, assetGenerationProvider, dialogueProvider },
     });
     assert.equal(seen.some((entry) => entry.localizationProvider === localizationProvider), true);
     assert.equal(seen.some((entry) => entry.assetGenerationProvider === assetGenerationProvider), true);
+    assert.equal(seen.some((entry) => entry.dialogueProvider === dialogueProvider), true);
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;
