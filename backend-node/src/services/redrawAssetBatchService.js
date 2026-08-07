@@ -63,6 +63,36 @@ function capabilityForKind(kind) {
   }[String(kind)] || '';
 }
 
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function dimensionsFromSnapshot(snapshot = {}) {
+  const sourceWidth = positiveNumber(snapshot.source_width);
+  const sourceHeight = positiveNumber(snapshot.source_height);
+  if (sourceWidth && sourceHeight) return { width: sourceWidth, height: sourceHeight };
+  const width = positiveNumber(snapshot.width);
+  const height = positiveNumber(snapshot.height);
+  return width && height ? { width, height } : null;
+}
+
+function trustedSourceDimensions(db, row, version) {
+  const sourcePayload = parseJson(row.source_ref_json, {});
+  const snapshotDimensions = dimensionsFromSnapshot(sourcePayload.snapshot || {});
+  if (snapshotDimensions) return snapshotDimensions;
+  const sourceAsset = db.prepare(`
+    SELECT assets.width, assets.height
+    FROM redraw_works
+    JOIN assets ON assets.id = redraw_works.source_asset_id
+    WHERE redraw_works.id = ? AND redraw_works.tenant_id = ? AND redraw_works.user_id = ?
+      AND redraw_works.deleted_at IS NULL AND assets.deleted_at IS NULL
+  `).get(Number(version.work_id), row.tenant_id, row.user_id);
+  const width = positiveNumber(sourceAsset?.width);
+  const height = positiveNumber(sourceAsset?.height);
+  return width && height ? { width, height } : null;
+}
+
 function getVersion(db, ctx) {
   const { tenantId, userId, versionId } = assertContext({ ...ctx, db });
   const version = db.prepare(`
@@ -103,7 +133,8 @@ function isCompletedProviderResult(result) {
 }
 
 function isSystemError(error) {
-  return error instanceof TypeError
+  return error?.system === true
+    || error instanceof TypeError
     || String(error?.code || '').startsWith('SQLITE_')
     || /database|constraint|readonly|transaction|connection/i.test(String(error?.message || ''));
 }
@@ -159,6 +190,9 @@ function rowToItem(row, version, ctx) {
   const capabilityName = capabilityForKind(row.kind);
   const sourcePayload = parseJson(row.source_ref_json, {});
   const prompt = String(row.prompt || '');
+  const cleanPlateDimensions = row.kind === 'scene' && capabilityName === 'clean_plate_image'
+    ? trustedSourceDimensions(ctx.db, row, version)
+    : null;
   const base = {
     asset_id: Number(row.id),
     version_id: Number(row.version_id),
@@ -166,7 +200,19 @@ function rowToItem(row, version, ctx) {
     kind: row.kind,
     prompt_hash: hash(prompt),
     capability: capabilityName,
+    ...(cleanPlateDimensions ? {
+      expected_width: cleanPlateDimensions.width,
+      expected_height: cleanPlateDimensions.height,
+    } : {}),
   };
+  if (row.kind === 'scene' && capabilityName === 'clean_plate_image' && !cleanPlateDimensions) {
+    return {
+      ...base,
+      source_ref: sourcePayload.source_ref || {},
+      priced: false,
+      blocking: { code: 'CLEAN_PLATE_SOURCE_DIMENSIONS_REQUIRED', message: '净景源场景缺少可审计尺寸' },
+    };
+  }
   const resolved = redrawCapability.resolveVerifiedLocaleCapability(ctx.db, {
     locale: version.locale,
     market: version.market,
@@ -260,6 +306,8 @@ function quoteAssetBatch(db, input = {}) {
     evidence: item.evidence || null,
     credits: item.credits || 0,
     source_ref: item.source_ref,
+    expected_width: item.expected_width,
+    expected_height: item.expected_height,
   }));
   const quote = {
     priced,
@@ -326,21 +374,49 @@ function createOwnedTask(db, log, type, resourceId, ctx) {
 function updateProviderTask(db, taskId, providerTaskId) {
   if (!providerTaskId) return;
   try {
-    db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
+    const result = db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), taskId);
-  } catch (_) {}
+    if (result.changes !== 1) {
+      throw codedError('REDRAW_ASSET_PROVIDER_TASK_ID_WRITE_FAILED', `provider_task_id audit write failed for task ${taskId}`);
+    }
+  } catch (error) {
+    throw codedError(
+      'REDRAW_ASSET_PROVIDER_TASK_ID_WRITE_FAILED',
+      `provider_task_id audit write failed for task ${taskId}: ${error.message || error}`,
+      { system: true },
+    );
+  }
 }
 
 async function runPool(items, concurrency, worker) {
   let index = 0;
+  let fatal = null;
+  const state = {
+    hasFatal: () => Boolean(fatal),
+    setFatal(error) {
+      if (!fatal) fatal = error;
+    },
+  };
   const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
     while (index < items.length) {
+      if (fatal) break;
       const current = items[index];
       index += 1;
-      await worker(current);
+      try {
+        await worker(current, state);
+      } catch (error) {
+        if (isSystemError(error)) {
+          state.setFatal(error);
+          break;
+        }
+        throw error;
+      }
     }
   });
-  await Promise.all(workers);
+  const results = await Promise.allSettled(workers);
+  if (fatal) throw fatal;
+  const rejected = results.find((result) => result.status === 'rejected');
+  if (rejected) throw rejected.reason;
 }
 
 function startAssetBatch(ctx = {}, input = {}, options = {}) {
@@ -408,6 +484,8 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         evidence: item.evidence,
         credits: item.credits,
         quote_hash: quote.quote_hash,
+        expected_width: item.expected_width,
+        expected_height: item.expected_height,
       };
       const attempt = createAssetAttempt({
         ...ctx,
@@ -465,7 +543,8 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
       base.db.prepare("UPDATE redraw_asset_batches SET status = 'processing', updated_at = ? WHERE id = ?")
         .run(now, created.batch.id);
       taskService.updateTaskStatus(base.db, created.task.id, 'processing', 5, '正在批量生成转绘资产');
-      await runPool(created.childTasks, Number(options.concurrency || ctx.concurrency || 3), async ({ item, childTask, attemptId }) => {
+      await runPool(created.childTasks, Number(options.concurrency || ctx.concurrency || 3), async ({ item, childTask, attemptId }, pool) => {
+        if (pool.hasFatal()) return;
         const asset = base.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attemptId));
         let result;
         try {
@@ -482,6 +561,7 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
           });
         } catch (error) {
           if (isSystemError(error)) throw error;
+          if (pool.hasFatal()) return;
           if (isUnknownProviderResult(error)) {
             const providerTaskId = providerTaskIdOf(error);
             if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
@@ -493,8 +573,10 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
           taskService.updateTaskError(base.db, childTask.id, String(error.message || error));
           return;
         }
+        if (pool.hasFatal()) return;
         const providerTaskId = providerTaskIdOf(result);
         if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
+        if (pool.hasFatal()) return;
         if (isUnknownProviderResult(result)) {
           markAssetNeedsAttention(ctx, attemptId, result?.error || '供应商任务状态未知');
           taskService.updateTaskStatus(base.db, childTask.id, 'needs_attention', 90, result?.error || '供应商任务状态未知');
@@ -507,8 +589,12 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
           return;
         }
         try {
+          if (pool.hasFatal()) return;
           if (item.kind === 'scene' && item.capability === 'clean_plate_image') {
-            validateCleanPlateQuality(asset, {}, result || {});
+            validateCleanPlateQuality(asset, {
+              width: item.expected_width,
+              height: item.expected_height,
+            }, result || {});
           }
           const finalized = finalizeAssetAttempt(ctx, attemptId, {
             ...(result || {}),

@@ -25,13 +25,13 @@ function setupBatchState(options = {}) {
     fs.writeFileSync(path.join(root, 'artifacts', file), file);
   }
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, duration, width, height, created_at, updated_at)
     VALUES
-      (101, 'character', 'image', 'redraw', '', 'artifacts/character.png', 'image/png', ?, ?),
-      (102, 'scene', 'image', 'redraw', '', 'artifacts/scene.png', 'image/png', ?, ?),
-      (103, 'prop', 'image', 'redraw', '', 'artifacts/prop.png', 'image/png', ?, ?),
-      (104, 'voice', 'audio', 'redraw', '', 'artifacts/voice.mp3', 'audio/mpeg', ?, ?),
-      (900, 'evidence', 'text', 'redraw', '', 'artifacts/evidence.txt', 'text/plain', ?, ?)`)
+      (101, 'character', 'image', 'redraw', '', 'artifacts/character.png', 'image/png', NULL, 1280, 720, ?, ?),
+      (102, 'scene', 'image', 'redraw', '', 'artifacts/scene.png', 'image/png', NULL, 1280, 720, ?, ?),
+      (103, 'prop', 'image', 'redraw', '', 'artifacts/prop.png', 'image/png', NULL, 1280, 720, ?, ?),
+      (104, 'voice', 'audio', 'redraw', '', 'artifacts/voice.mp3', 'audio/mpeg', 3.2, NULL, NULL, ?, ?),
+      (900, 'evidence', 'text', 'redraw', '', 'artifacts/evidence.txt', 'text/plain', NULL, NULL, NULL, ?, ?)`)
     .run(now, now, now, now, now, now, now, now, now, now);
   db.prepare(`INSERT INTO redraw_projects
     (tenant_id, user_id, title, created_at, updated_at)
@@ -407,6 +407,172 @@ test('startAssetBatch keeps provider system errors unknown without refunding hel
   assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(attempt.credit_reservation_id).status, 'held');
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'refunded'").get().count, 0);
   cleanup(state);
+});
+
+test('startAssetBatch drains started workers after fatal and prevents late settlement side effects', async () => {
+  const state = setupBatchState();
+  const selected = [state.assetIds.character, state.assetIds.prop];
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: selected });
+  let releaseDelayed;
+  let completionSettled = false;
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async (job) => {
+      if (job.asset.kind === 'character') throw new TypeError('provider fatal for character');
+      await new Promise((resolve) => { releaseDelayed = resolve; });
+      return { status: 'completed', asset_id: 103 };
+    },
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'fatal-drain', assetIds: selected }, { concurrency: 2 });
+  const observed = started.completion.then(
+    (value) => {
+      completionSettled = true;
+      return value;
+    },
+    (error) => {
+      completionSettled = true;
+      throw error;
+    },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const settledBeforeDelayedProviderReturned = completionSettled;
+  releaseDelayed();
+  await assert.rejects(observed, /provider fatal for character/);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(settledBeforeDelayedProviderReturned, false);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const attempts = state.db.prepare(`SELECT status, error_code, credit_reservation_id, asset_id
+    FROM redraw_assets WHERE id IN (${started.batch.asset_ids.map(() => '?').join(',')})`).all(...started.batch.asset_ids);
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(attempts.every((row) => row.status === 'needs_attention'), true);
+  assert.equal(attempts.every((row) => row.error_code === 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN'), true);
+  assert.equal(attempts.every((row) => row.asset_id === null), true);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'confirmed'").get().count, 0);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'refunded'").get().count, 0);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 2);
+  cleanup(state);
+});
+
+test('startAssetBatch treats provider task id persistence failure as fatal before finalize', async () => {
+  const state = setupBatchState();
+  state.db.exec(`
+    CREATE TRIGGER block_provider_task_id_update
+    BEFORE UPDATE OF provider_task_id ON async_tasks
+    WHEN NEW.provider_task_id = 'blocked-provider'
+    BEGIN
+      SELECT RAISE(FAIL, 'provider_task_id audit write failed');
+    END;
+  `);
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async () => ({ status: 'completed', asset_id: 103, provider_task_id: 'blocked-provider' }),
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'provider-id-write-fatal', assetIds: [state.assetIds.prop] });
+
+  await assert.rejects(started.completion, /provider_task_id audit write failed/);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const attempt = state.db.prepare('SELECT status, error_code, error_message, credit_reservation_id, asset_id, generation_task_id FROM redraw_assets WHERE id = ?')
+    .get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+  assert.equal(batch.status, 'needs_attention');
+  assert.match(batch.error_message, /provider_task_id/);
+  assert.equal(attempt.status, 'needs_attention');
+  assert.equal(attempt.asset_id, null);
+  assert.match(attempt.error_message, /provider_task_id/);
+  assert.equal(childTask.status, 'needs_attention');
+  assert.equal(childTask.provider_task_id, null);
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(attempt.credit_reservation_id).status, 'held');
+  cleanup(state);
+});
+
+test('quoteAssetBatch blocks scene clean plate when trusted source dimensions are missing', () => {
+  const state = setupBatchState();
+  state.db.prepare('UPDATE assets SET width = NULL, height = NULL WHERE id = 101').run();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.scene] });
+
+  assert.equal(quote.priced, false);
+  assert.equal(quote.blocked[0].code, 'CLEAN_PLATE_SOURCE_DIMENSIONS_REQUIRED');
+  assert.throws(
+    () => startAssetBatch(state.ctx, { quoteHash: quote.quote_hash, idempotencyKey: 'missing-clean-dimensions', assetIds: [state.assetIds.scene] }),
+    (error) => error.code === 'REDRAW_ASSET_BATCH_UNPRICED',
+  );
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count, 0);
+  cleanup(state);
+});
+
+test('quoteAssetBatch uses scene snapshot dimensions before version source asset dimensions', () => {
+  const state = setupBatchState();
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?').run(
+    JSON.stringify({
+      source_ref: { id: 'scene-1', kind: 'scene' },
+      snapshot: { source_width: 320, source_height: 180 },
+    }),
+    state.assetIds.scene,
+  );
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.scene] });
+
+  assert.equal(quote.priced, true);
+  assert.equal(quote.items[0].expected_width, 320);
+  assert.equal(quote.items[0].expected_height, 180);
+  cleanup(state);
+});
+
+test('startAssetBatch validates clean plate output against quoted source dimensions', async () => {
+  const mismatch = setupBatchState();
+  mismatch.db.prepare('UPDATE assets SET width = 320, height = 180 WHERE id = 101').run();
+  const mismatchQuote = quoteAssetBatch(mismatch.db, { ...mismatch.ctx, assetIds: [mismatch.assetIds.scene] });
+  assert.equal(mismatchQuote.items[0].expected_width, 320);
+  assert.equal(mismatchQuote.items[0].expected_height, 180);
+  const mismatchStarted = startAssetBatch({
+    ...mismatch.ctx,
+    provider: async () => ({
+      status: 'completed',
+      asset_id: 102,
+      quality: {
+        width: 640,
+        height: 360,
+        mask_area_changed: true,
+        non_mask_similarity: 0.97,
+      },
+    }),
+    schedule: (job) => job(),
+  }, { quoteHash: mismatchQuote.quote_hash, idempotencyKey: 'clean-dim-mismatch', assetIds: [mismatch.assetIds.scene] });
+  await mismatchStarted.completion;
+  const mismatchAttempt = mismatch.db.prepare('SELECT status, error_code, credit_reservation_id, source_ref_json FROM redraw_assets WHERE id = ?')
+    .get(mismatchStarted.batch.asset_ids[0]);
+  assert.equal(mismatchAttempt.status, 'failed');
+  assert.equal(mismatchAttempt.error_code, 'CLEAN_PLATE_QUALITY_FAILED');
+  assert.equal(JSON.parse(mismatchAttempt.source_ref_json).snapshot.expected_width, 320);
+  assert.equal(mismatch.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(mismatchAttempt.credit_reservation_id).status, 'refunded');
+  cleanup(mismatch);
+
+  const success = setupBatchState();
+  success.db.prepare('UPDATE assets SET width = 320, height = 180 WHERE id = 101').run();
+  const successQuote = quoteAssetBatch(success.db, { ...success.ctx, assetIds: [success.assetIds.scene] });
+  const successStarted = startAssetBatch({
+    ...success.ctx,
+    provider: async () => ({
+      status: 'completed',
+      asset_id: 102,
+      quality: {
+        width: 320,
+        height: 180,
+        mask_area_changed: true,
+        non_mask_similarity: 0.97,
+      },
+    }),
+    schedule: (job) => job(),
+  }, { quoteHash: successQuote.quote_hash, idempotencyKey: 'clean-dim-match', assetIds: [success.assetIds.scene] });
+  await successStarted.completion;
+  const successAttempt = success.db.prepare('SELECT status, clean_plate_asset_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(successStarted.batch.asset_ids[0]);
+  assert.equal(successAttempt.status, 'needs_attention');
+  assert.equal(successAttempt.clean_plate_asset_id, 102);
+  assert.equal(success.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(successAttempt.credit_reservation_id).status, 'confirmed');
+  cleanup(success);
 });
 
 test('startAssetBatch reports completed and failed for all-success and all-failed batches with per-attempt snapshots', async () => {

@@ -48,11 +48,11 @@ function addAsset(db, id, localPath) {
     .run(id, localPath, now, now);
 }
 
-function addTypedAsset(db, id, localPath, type, mimeType) {
+function addTypedAsset(db, id, localPath, type, mimeType, duration = null) {
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
-    VALUES (?, '生成资产', ?, 'redraw', '', ?, ?, ?, ?)`)
-    .run(id, type, localPath, mimeType, now, now);
+  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, duration, created_at, updated_at)
+    VALUES (?, '生成资产', ?, 'redraw', '', ?, ?, ?, ?, ?)`)
+    .run(id, type, localPath, mimeType, duration, now, now);
 }
 
 function addDraftPlaceholder(db, state, input = {}) {
@@ -371,7 +371,7 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-finalize-kind-'));
   for (const file of ['voice.mp3', 'clean.png']) fs.writeFileSync(path.join(root, file), file);
-  addTypedAsset(state.db, 501, 'voice.mp3', 'audio', 'audio/mpeg');
+  addTypedAsset(state.db, 501, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
   addAsset(state.db, 502, 'clean.png');
   const ctx = context(state, root);
   addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'v1' } });
@@ -419,6 +419,27 @@ test('finalizeAssetAttempt rejects non-audio assets for voice output without con
   const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(voiceAttempt.id);
   assert.equal(row.status, 'failed');
   assert.equal(row.error_code, 'VOICE_ASSET_TYPE_INVALID');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects zero-duration voice output without confirming credits', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-duration-'));
+  fs.writeFileSync(path.join(root, 'silent.mp3'), 'silent');
+  addTypedAsset(state.db, 505, 'silent.mp3', 'audio', 'audio/mpeg', 0);
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'voice-zero' } });
+  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'voice-zero' } });
+
+  assert.throws(
+    () => finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 505 }),
+    (error) => error.code === 'VOICE_ASSET_DURATION_INVALID',
+  );
+  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(voiceAttempt.id);
+  assert.equal(row.status, 'failed');
+  assert.equal(row.error_code, 'VOICE_ASSET_DURATION_INVALID');
   assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();

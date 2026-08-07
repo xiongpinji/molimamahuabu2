@@ -274,8 +274,8 @@ function validateCleanPlateQuality(sceneAsset, options, providerResult) {
 function cleanPlateQualityOptions(attempt, providerResult = {}) {
   const snapshot = parseJson(attempt.source_ref_json, {}).snapshot || {};
   return {
-    width: providerResult.width ?? providerResult.source_width ?? snapshot.width ?? snapshot.source_width,
-    height: providerResult.height ?? providerResult.source_height ?? snapshot.height ?? snapshot.source_height,
+    width: snapshot.expected_width ?? snapshot.source_width ?? snapshot.width,
+    height: snapshot.expected_height ?? snapshot.source_height ?? snapshot.height,
     nonMaskSimilarityMin: providerResult.nonMaskSimilarityMin ?? providerResult.non_mask_similarity_min,
   };
 }
@@ -306,6 +306,12 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   if (!asset || !canRead) return fail('生成图片不可读取', 'ASSET_NOT_READABLE');
   if (attempt.kind === 'voice' && asset.type !== 'audio' && !String(asset.mime_type || '').startsWith('audio/')) {
     return fail('语音资产类型不是音频', 'VOICE_ASSET_TYPE_INVALID');
+  }
+  if (attempt.kind === 'voice') {
+    const duration = Number(asset.duration ?? providerResult.duration);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return fail('语音资产缺少有效时长', 'VOICE_ASSET_DURATION_INVALID');
+    }
   }
   if (attempt.kind === 'character' && providerResult.metadata?.views
     && (!Array.isArray(providerResult.metadata.views) || providerResult.metadata.views.length < 3)) {
