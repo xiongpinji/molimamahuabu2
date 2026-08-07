@@ -1,5 +1,39 @@
 const { randomUUID } = require('crypto');
 
+function upgradeAdjustmentEventTypes(db) {
+  const table = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'tenant_credit_adjustments'`).get();
+  if (!table || String(table.sql).includes("'recharge'")) return;
+  // SQLite 不能直接修改 CHECK 约束，因此在单个事务内重建并保留历史流水。
+  db.transaction(() => {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_credit_adjustments_tenant_created;
+      ALTER TABLE tenant_credit_adjustments RENAME TO tenant_credit_adjustments_legacy;
+      CREATE TABLE tenant_credit_adjustments (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        actor_user_id TEXT,
+        event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust', 'recharge')),
+        amount INTEGER NOT NULL CHECK (amount != 0),
+        reason TEXT NOT NULL,
+        reference_type TEXT NOT NULL,
+        reference_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (tenant_id, reference_type, reference_id)
+      );
+      INSERT INTO tenant_credit_adjustments
+        (id, tenant_id, actor_user_id, event_type, amount, reason,
+          reference_type, reference_id, created_at)
+        SELECT id, tenant_id, actor_user_id, event_type, amount, reason,
+          reference_type, reference_id, created_at
+        FROM tenant_credit_adjustments_legacy;
+      DROP TABLE tenant_credit_adjustments_legacy;
+      CREATE INDEX idx_credit_adjustments_tenant_created
+        ON tenant_credit_adjustments(tenant_id, created_at DESC);
+    `);
+  })();
+}
+
 function ensureSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS credit_accounts (
@@ -73,7 +107,7 @@ function ensureSchema(db) {
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
       actor_user_id TEXT,
-      event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust')),
+      event_type TEXT NOT NULL CHECK (event_type IN ('redeem', 'admin_adjust', 'recharge')),
       amount INTEGER NOT NULL CHECK (amount != 0),
       reason TEXT NOT NULL,
       reference_type TEXT NOT NULL,
@@ -84,6 +118,7 @@ function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_credit_adjustments_tenant_created
       ON tenant_credit_adjustments(tenant_id, created_at DESC);
   `);
+  upgradeAdjustmentEventTypes(db);
 }
 
 function getAccount(db, userId) {
@@ -130,7 +165,7 @@ function adjustTenantBalance(db, input) {
   if (!tenantId || !Number.isSafeInteger(amount) || amount === 0) {
     throw new Error('积分调整参数无效');
   }
-  if (!['redeem', 'admin_adjust'].includes(eventType)) throw new Error('积分调整类型无效');
+  if (!['redeem', 'admin_adjust', 'recharge'].includes(eventType)) throw new Error('积分调整类型无效');
   if (!reason || reason.length > 240 || !referenceType || !referenceId) {
     throw new Error('积分调整原因或引用无效');
   }

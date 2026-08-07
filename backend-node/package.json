@@ -25,6 +25,7 @@
   "dependencies": {
     "@volcengine/openapi": "^1.36.2",
     "adm-zip": "^0.6.0",
+    "alipay-sdk": "^4.14.0",
     "better-sqlite3": "^11.6.0",
     "buffer": "^6.0.3",
     "cors": "^2.8.5",

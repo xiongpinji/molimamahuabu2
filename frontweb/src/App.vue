@@ -1,7 +1,10 @@
 <template>
   <div class="app">
     <router-view />
-    <AccountBadge v-if="!personalCenterOpen && route.name !== 'personal-center'" @open="personalCenterOpen = true" />
+    <AccountBadge
+      v-if="!personalCenterOpen && route.name !== 'personal-center' && route.name !== 'recharge-center'"
+      @open="personalCenterOpen = true"
+    />
     <el-dialog
       v-model="personalCenterOpen"
       class="personal-center-dialog"

@@ -86,6 +86,12 @@ test('生产示例环境文件只包含占位符且公开注册默认关闭', ()
   assert.match(example, /^SMTP_HOST=/m);
   assert.match(example, /^SMTP_FROM=/m);
   assert.match(example, /^SMTP_PASSWORD=CHANGE_ME_/m);
+  assert.match(example, /^ALIPAY_APP_ID=$/m);
+  assert.match(example, /^ALIPAY_SELLER_ID=$/m);
+  assert.match(example, /^ALIPAY_PRIVATE_KEY=$/m);
+  assert.match(example, /^ALIPAY_PUBLIC_KEY=$/m);
+  assert.match(example, /^ALIPAY_NOTIFY_URL=https:\/\//m);
+  assert.match(example, /^ALIPAY_RETURN_URL=https:\/\//m);
   assert.doesNotMatch(example, /sk-[A-Za-z0-9]/);
 });
 

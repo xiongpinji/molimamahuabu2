@@ -67,7 +67,7 @@ test('现有 Node 工作流统一使用 Node.js 24 且发布流程不绕过 TLS'
   for (const name of ['backend-node-tests.yml', 'frontend-e2e.yml', 'release.yml']) {
     const workflowText = fs.readFileSync(path.join(root, '.github', 'workflows', name), 'utf8');
     assert.doesNotMatch(workflowText, /node-version:\s*['"]22['"]/);
-    assert.match(workflowText, /node-version:\s*['"]24['"]/);
+    assert.match(workflowText, /node-version:\s*['"]24(?:\.\d+\.\d+)?['"]/);
     assert.doesNotMatch(workflowText, /NODE_TLS_REJECT_UNAUTHORIZED/);
   }
 });
