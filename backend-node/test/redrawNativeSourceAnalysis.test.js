@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 
 const nativeAnalysis = require('../src/services/redrawNativeSourceAnalysisService');
 const assetService = require('../src/services/assetService');
@@ -18,17 +19,24 @@ function createDb() {
   return db;
 }
 
-function validFacts() {
+function validFacts(durationMs = 1000) {
   return {
-    duration_ms: 1000,
+    duration_ms: durationMs,
     characters: [{ id: 'c1', source_name: '林娜', relationships: [] }],
-    scenes: [{ id: 's1', location: '室内', time: '白天', source_ranges: [{ start_ms: 0, end_ms: 1000 }] }],
-    props: [{ id: 'p1', name: '手机', evidence_ranges: [{ start_ms: 0, end_ms: 1000 }] }],
+    scenes: [{ id: 's1', location: '室内', time: '白天', source_ranges: [{ start_ms: 0, end_ms: durationMs }] }],
+    props: [{ id: 'p1', name: '手机', evidence_ranges: [{ start_ms: 0, end_ms: Math.min(1000, durationMs) }] }],
     shots: [{
       id: 'sh1',
       start_ms: 0,
-      end_ms: 1000,
-      dialogue: [{ speaker_id: 'c1', text: '你好' }],
+      end_ms: durationMs,
+      dialogue: [{
+        speaker_id: 'c1',
+        text: '你好',
+        start_ms: Math.min(100, Math.max(0, durationMs - 2)),
+        end_ms: Math.min(900, Math.max(1, durationMs - 1)),
+        emotion: '平静',
+        overlap_group: null,
+      }],
       screen_text: '',
       opening_state: '林娜看向镜头',
       continuous_action: '她举起手机',
@@ -83,6 +91,24 @@ function createSampleVideo(storageRoot) {
   return relative;
 }
 
+function createLateMarkerVideo(storageRoot) {
+  const relative = path.join('uploads', 'native-late-marker.mp4').replace(/\\/g, '/');
+  const absolute = path.join(storageRoot, relative);
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  execFileSync('ffmpeg', [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-y',
+    '-f', 'lavfi',
+    '-i', 'color=c=blue:size=320x180:rate=12:duration=15',
+    '-f', 'lavfi',
+    '-i', 'color=c=red:size=320x180:rate=12:duration=1',
+    '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0,format=yuv420p',
+    absolute,
+  ], { stdio: 'pipe' });
+  return relative;
+}
+
 test('analyzeNativeSource creates contact sheets, strict facts JSON and a readable registered result asset', async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-storage-'));
   const db = createDb();
@@ -98,8 +124,12 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
       visionDetailed: async (payload) => {
         calls.push(payload);
         assert.equal(payload.imageSources.length, 2);
+        assert.match(payload.userPrompt, /start_ms/);
+        assert.match(payload.userPrompt, /end_ms/);
+        assert.match(payload.userPrompt, /gap-free/);
         for (const source of payload.imageSources) {
-          assert.match(source.localAbsPath, /redraw-analysis/);
+          assert.match(source.localAbsPath, /redraw-native-/);
+          assert.equal(path.resolve(source.localAbsPath).startsWith(path.resolve(storageRoot)), false);
           assert.equal(fs.existsSync(source.localAbsPath), true);
         }
         return {
@@ -136,6 +166,96 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
     assert.equal(saved.provider_task_id, 'vision-real-id-1');
     assert.equal(saved.raw_hash, 'a'.repeat(64));
     assert.equal(saved.facts.facts_hash, result.facts.facts_hash);
+    assert.equal(calls[0].imageSources.every((source) => !fs.existsSync(source.localAbsPath)), true);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('analyzeNativeSource samples the full duration and includes a distinct late frame', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-late-'));
+  const db = createDb();
+  try {
+    const sourceRelative = createLateMarkerVideo(storageRoot);
+    addWork(db, { localPath: sourceRelative });
+    let sheetPaths = [];
+    let sawLateRed = false;
+    const result = await nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async (payload) => {
+        sheetPaths = payload.imageSources.map((source) => source.localAbsPath);
+        assert.equal(sheetPaths.length, 5);
+        for (const sheetPath of sheetPaths) {
+          const { data, info } = await sharp(sheetPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+          for (let offset = 0; offset < data.length; offset += info.channels) {
+            if (data[offset] > 180 && data[offset + 1] < 90 && data[offset + 2] < 90) {
+              sawLateRed = true;
+              break;
+            }
+          }
+        }
+        return {
+          text: JSON.stringify({ source_facts: validFacts(16_000) }),
+          provider_task_id: 'vision-late-id',
+          model: 'vision-model',
+          raw_hash: 'b'.repeat(64),
+        };
+      },
+    }, {
+      workId: 1,
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      taskId: 'task-native-late',
+      model: 'vision-model',
+    });
+
+    assert.equal(result.diagnostics.sheet_count, 5);
+    assert.equal(sawLateRed, true);
+    assert.equal(sheetPaths.every((sheetPath) => !fs.existsSync(sheetPath)), true);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('analyzeNativeSource rejects native dialogue without exact timings before asset creation', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-timing-'));
+  const db = createDb();
+  try {
+    const sourceRelative = createSampleVideo(storageRoot);
+    addWork(db, { localPath: sourceRelative });
+    const facts = validFacts();
+    delete facts.shots[0].dialogue[0].start_ms;
+    delete facts.shots[0].dialogue[0].end_ms;
+    await assert.rejects(
+      () => nativeAnalysis.analyzeNativeSource({
+        db,
+        log,
+        storageRoot,
+        assetService,
+        visionDetailed: async () => ({
+          text: JSON.stringify({ source_facts: facts }),
+          provider_task_id: 'vision-missing-timing',
+          model: 'vision-model',
+          raw_hash: 'c'.repeat(64),
+        }),
+      }, {
+        workId: 1,
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        taskId: 'task-native-timing',
+        model: 'vision-model',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_DIALOGUE_TIMING_REQUIRED',
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_analysis'").get().count,
+      0,
+    );
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

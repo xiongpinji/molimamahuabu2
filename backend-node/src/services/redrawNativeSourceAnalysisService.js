@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -92,16 +93,43 @@ async function ffprobeVideo(sourcePath, timeoutMs) {
   };
 }
 
-async function createSheet(sourcePath, outputPath, mode, timeoutMs) {
-  const filter = mode === 'lower_third'
-    ? 'crop=iw:ih/3:0:ih*2/3,fps=1,scale=160:-1,tile=3x2:padding=4:margin=4'
-    : 'fps=1,scale=160:-1,tile=3x2:padding=4:margin=4';
+const SHEET_COLUMNS = 4;
+const SHEET_FRAMES = 12;
+
+function sheetPlan(durationMs, mode) {
+  const sampleRate = mode === 'lower_third' ? 2 : 1;
+  const windowSeconds = SHEET_FRAMES / sampleRate;
+  const durationSeconds = durationMs / 1000;
+  const pages = [];
+  for (let startSeconds = 0; startSeconds < durationSeconds; startSeconds += windowSeconds) {
+    const pageDurationSeconds = Math.min(windowSeconds, durationSeconds - startSeconds);
+    pages.push({
+      startSeconds,
+      durationSeconds: pageDurationSeconds,
+      sampleRate,
+      frameCount: Math.max(1, Math.ceil(pageDurationSeconds * sampleRate)),
+    });
+  }
+  return pages;
+}
+
+function sheetFilter(mode, page) {
+  const rows = Math.ceil(page.frameCount / SHEET_COLUMNS);
+  const prefix = mode === 'lower_third' ? 'crop=iw:ih/3:0:ih*2/3,' : '';
+  const offset = page.startSeconds.toFixed(3);
+  const timestamp = `drawtext=text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
+  return `${prefix}fps=${page.sampleRate},scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
+}
+
+async function createSheet(sourcePath, outputPath, mode, page, timeoutMs) {
   await execFileChecked('ffmpeg', [
     '-hide_banner',
     '-loglevel', 'error',
     '-y',
+    '-ss', page.startSeconds.toFixed(3),
     '-i', sourcePath,
-    '-vf', filter,
+    '-t', page.durationSeconds.toFixed(3),
+    '-vf', sheetFilter(mode, page),
     '-frames:v', '1',
     outputPath,
   ], timeoutMs);
@@ -164,11 +192,54 @@ function getAsset(db, assetId) {
 function buildPrompt(probe) {
   return [
     'You are analyzing a short-drama source video for strict 1:1 redraw.',
-    'Return ONLY JSON. Use the exact schema under source_facts.',
+    'Return ONLY JSON with one top-level key named source_facts.',
+    'The images cover the full source in chronological pages. Every tile is labeled with its page offset and relative timestamp.',
     'Do not invent characters, scenes, props, reversals, dialogue, or timing that is not visible.',
-    'Required source_facts fields: duration_ms, characters, scenes, props, shots, causal_chain, locked_facts, reversals, episode_hook.',
+    'For dialogue, transcribe only visibly burned-in subtitles or visible screen dialogue; never infer speech from faces.',
+    'Every non-empty dialogue line MUST contain speaker_id, text, integer start_ms, integer end_ms, emotion, and overlap_group.',
+    'Shots MUST be chronological, gap-free, non-overlapping, start at 0, and end at duration_ms.',
+    'Use this exact source_facts schema:',
+    '{"duration_ms":0,"characters":[{"id":"c1","source_name":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","start_ms":0,"end_ms":1,"dialogue":[{"speaker_id":"c1","text":"","start_ms":0,"end_ms":1,"emotion":"","overlap_group":null}],"screen_text":"","opening_state":"","continuous_action":"","ending_state":""}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
+    'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
   ].join('\n');
+}
+
+function assertStrictNativeFacts(facts, probe) {
+  if (Math.abs(Number(facts.duration_ms) - Number(probe.duration_ms)) > 250) {
+    throw codedError('REDRAW_NATIVE_DURATION_MISMATCH', '视觉分析时长与 ffprobe 实测时长不一致');
+  }
+  let previousShotEnd = 0;
+  for (const [shotIndex, shot] of facts.shots.entries()) {
+    if (Number(shot.start_ms) !== previousShotEnd) {
+      throw codedError('REDRAW_NATIVE_TIMELINE_INCOMPLETE', `shots[${shotIndex}] 未形成无缝时间轴`);
+    }
+    previousShotEnd = Number(shot.end_ms);
+    let previousDialogueEnd = Number(shot.start_ms);
+    let previousOverlapGroup = null;
+    for (const [dialogueIndex, line] of shot.dialogue.entries()) {
+      if (!String(line.text || '').trim()) continue;
+      if (!Number.isSafeInteger(line.start_ms) || !Number.isSafeInteger(line.end_ms)) {
+        throw codedError(
+          'REDRAW_NATIVE_DIALOGUE_TIMING_REQUIRED',
+          `shots[${shotIndex}].dialogue[${dialogueIndex}] 缺少严格时间码`,
+        );
+      }
+      const overlapGroup = line.overlap_group || null;
+      if (line.start_ms < previousDialogueEnd
+        && (!overlapGroup || overlapGroup !== previousOverlapGroup)) {
+        throw codedError(
+          'REDRAW_NATIVE_DIALOGUE_TIMING_INVALID',
+          `shots[${shotIndex}].dialogue[${dialogueIndex}] 时间码重叠`,
+        );
+      }
+      previousDialogueEnd = Math.max(previousDialogueEnd, line.end_ms);
+      previousOverlapGroup = overlapGroup;
+    }
+  }
+  if (previousShotEnd !== Number(facts.duration_ms)) {
+    throw codedError('REDRAW_NATIVE_TIMELINE_INCOMPLETE', '分镜时间轴未覆盖完整源片');
+  }
 }
 
 function relativeToStorage(storageRoot, absolutePath) {
@@ -192,6 +263,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
   const storageRoot = resolveStorageRoot(ctx.storageRoot);
   const taskId = safeSegment(input.taskId || input.task_id, 'taskId');
   const workDir = path.join(storageRoot, 'redraw-analysis', taskId);
+  const sheetDir = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-native-${taskId}-`));
   const createdWorkDir = !fs.existsSync(workDir);
   const createdPaths = [];
 
@@ -201,18 +273,27 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     const source = resolveSourcePath(storageRoot, sourceAsset.local_path);
     ensureDir(workDir);
     const probe = await ffprobeVideo(source.absolute, Number(input.probeTimeoutMs || 15000));
-    const fullSheet = path.join(workDir, 'contact-sheet-full.jpg');
-    const subtitleSheet = path.join(workDir, 'contact-sheet-lower-third.jpg');
-    await createSheet(source.absolute, fullSheet, 'full', Number(input.ffmpegTimeoutMs || 30000));
-    createdPaths.push(fullSheet);
-    await createSheet(source.absolute, subtitleSheet, 'lower_third', Number(input.ffmpegTimeoutMs || 30000));
-    createdPaths.push(subtitleSheet);
+    const sheets = [];
+    for (const mode of ['full', 'lower_third']) {
+      const pages = sheetPlan(probe.duration_ms, mode);
+      for (const [index, page] of pages.entries()) {
+        const sheetPath = path.join(sheetDir, `contact-sheet-${mode}-${index + 1}.jpg`);
+        await createSheet(
+          source.absolute,
+          sheetPath,
+          mode,
+          page,
+          Number(input.ffmpegTimeoutMs || 30000),
+        );
+        sheets.push({ mode, path: sheetPath, sha256: sha256File(sheetPath) });
+      }
+    }
 
     const vision = await visionDetailed({
       userPrompt: buildPrompt(probe),
       systemPrompt: 'Return strict JSON only for short-drama source analysis.',
-      imageSources: [{ localAbsPath: fullSheet }, { localAbsPath: subtitleSheet }],
-      options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 4000), temperature: 0.1 },
+      imageSources: sheets.map((sheet) => ({ localAbsPath: sheet.path })),
+      options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 8000), temperature: 0.1 },
       source: { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) },
     });
     if (!vision?.provider_task_id) {
@@ -220,6 +301,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     }
     const parsed = parseJsonObject(vision.text);
     const facts = normalizeSourceFacts(parsed.source_facts || parsed);
+    assertStrictNativeFacts(facts, probe);
     const output = {
       schema_version: '1.0',
       work_id: Number(work.id),
@@ -237,10 +319,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
           height: probe.height,
           codec: probe.codec,
         },
-        sheets: {
-          full_sha256: sha256File(fullSheet),
-          lower_third_sha256: sha256File(subtitleSheet),
-        },
+        sheets: sheets.map((sheet) => ({ mode: sheet.mode, sha256: sheet.sha256 })),
       },
     };
     const resultPath = path.join(workDir, 'source-analysis.json');
@@ -275,7 +354,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
         duration_ms: probe.duration_ms,
         width: probe.width,
         height: probe.height,
-        sheet_count: 2,
+        sheet_count: sheets.length,
         raw_hash: vision.raw_hash || null,
       },
     };
@@ -288,6 +367,8 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       }
     }
     throw error;
+  } finally {
+    fs.rmSync(sheetDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 
