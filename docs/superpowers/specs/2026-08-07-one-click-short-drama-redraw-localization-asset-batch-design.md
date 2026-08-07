@@ -156,11 +156,14 @@
 - `localization_task_id TEXT`；
 - `localization_credit_reservation_id TEXT`；
 - `localization_input_hash TEXT`；
+- `localization_idempotency_key TEXT`；
 - `localization_model_snapshot_json TEXT NOT NULL DEFAULT '{}'`。
 
 第二次确认时先创建 `status=draft` 的隐藏目标版本并写入以上字段；它不更新 `redraw_works.current_version`，也不进入普通版本列表。任务成功后，服务端在同一事务内写入镜头和资产草稿、更新版本状态并切换 `current_version/current_step`。任务失败时保留该草稿行作为审计记录，但后续重试创建新版本号，不复用可能含有旧模型快照的失败草稿。
 
 源片分析继续使用 `redraw_works.task_id/provider_task_id/credit_reservation_id`。目标版本字段只关联本地化，不复用或覆盖分析字段。
+
+对非空 `localization_idempotency_key` 建立 `(tenant_id, user_id, work_id, localization_idempotency_key)` 唯一索引，保证网络重放不会创建第二个隐藏版本或第二笔冻结。
 
 ### 6.2 资产批次表
 
