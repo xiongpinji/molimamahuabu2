@@ -87,9 +87,11 @@ export function redrawWorkflowPhase(work) {
   const localizationStatus = normalizedStatus(work?.localization_task?.status)
   if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return 'localizing'
   if (['failed', 'needs_attention'].includes(localizationStatus)) return 'localization_needs_attention'
-  if (localizationStatus === 'completed' || Number(work?.current_step || 1) > 1) return 'assets'
+  if (localizationStatus === 'completed') return 'assets'
   const phase = normalizedStatus(work?.workflow_phase)
+  if (['asset_review', 'assets'].includes(phase)) return 'assets'
   if (phase) return phase
+  if (Number(work?.current_step || 1) > 1) return 'assets'
   if (normalizedStatus(work?.analysis_task?.status) === 'completed') return 'analysis_review'
   return 'source'
 }
@@ -114,6 +116,12 @@ export function canConfirmLocalization(work, expectedQuoteHash) {
   if (!['localization_needs_attention', 'failed'].includes(phase)) return false
   const task = work?.localization_task || {}
   return normalizedStatus(task.status || task.task_status) === 'failed' && hasRefundOrReleaseEvidence(task)
+}
+
+export function shouldResetLocalizationIdempotencyKey(work) {
+  const task = work?.localization_task || {}
+  const status = normalizedStatus(task.status || task.task_status)
+  return status === 'completed' || (status === 'failed' && hasRefundOrReleaseEvidence(task))
 }
 
 export function buildLocalizationPayload(body) {

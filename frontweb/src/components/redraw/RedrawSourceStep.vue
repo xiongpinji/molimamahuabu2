@@ -149,6 +149,7 @@ import {
   localizationQuoteCredits,
   localizationTaskState,
   redrawWorkflowPhase,
+  shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
 } from '@/utils/redrawWorkspaceState'
 
@@ -266,7 +267,7 @@ function syncWork(next) {
   workflowPhase.value = redrawWorkflowPhase(next)
   taskState.value = taskStateFromWork(next)
   localizationState.value = localizationTaskState(next)
-  if (localizationState.value.status === 'completed' || canConfirmLocalization(next)) {
+  if (shouldResetLocalizationIdempotencyKey(next)) {
     localizationIdempotencyKey.value = ''
   }
   if (shouldPollWork(next)) startTaskPolling()
@@ -382,7 +383,7 @@ async function confirmLocalization() {
     }
     syncWork(nextWork)
     const nextHash = String(nextWork.localization_quote?.quote_hash || '').trim()
-    if (previousHash && nextHash && nextHash !== previousHash) {
+    if (!canConfirmLocalization(nextWork, previousHash)) {
       ElMessage.warning('本地化报价已变化，请重新确认')
       return
     }

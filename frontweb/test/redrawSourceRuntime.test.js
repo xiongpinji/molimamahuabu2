@@ -11,6 +11,7 @@ import {
   localizationTaskState,
   localeReady,
   redrawWorkflowPhase,
+  shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
 } from '../src/utils/redrawWorkspaceState.js'
 
@@ -178,6 +179,33 @@ test('本地化报价哈希变化时不能用旧报价提交', () => {
   assert.equal(canConfirmLocalization(work, 'quote-new'), true)
 })
 
+test('二次报价缺失、未定价或哈希变化都必须失败关闭', () => {
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: '' },
+  }, 'quote-9'), false)
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: false, credits: 9, quote_hash: 'quote-9' },
+  }, 'quote-9'), false)
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-new' },
+  }, 'quote-9'), false)
+})
+
+test('明确服务端 workflow_phase 优先于 current_step 兼容回退', () => {
+  assert.equal(redrawWorkflowPhase({
+    current_step: 2,
+    workflow_phase: 'analysis_review',
+  }), 'analysis_review')
+  assert.equal(redrawWorkflowPhase({
+    current_step: 2,
+    workflow_phase: 'asset_review',
+  }), 'assets')
+  assert.equal(redrawWorkflowPhase({ current_step: 2 }), 'assets')
+})
+
 test('本地化轮询阶段独立于分析任务和 current_step', () => {
   assert.equal(redrawWorkflowPhase({
     current_step: 1,
@@ -220,5 +248,22 @@ test('本地化重试必须明确失败且明确已退款或释放，否则失�
     workflow_phase: 'localization_needs_attention',
     localization_task: { id: 'loc-1', status: 'failed', credit_hold_status: 'released' },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), true)
+})
+
+test('本地化幂等键只在完成或明确失败且已退款释放后重置', () => {
+  assert.equal(shouldResetLocalizationIdempotencyKey({
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), false)
+  assert.equal(shouldResetLocalizationIdempotencyKey({
+    workflow_phase: 'localization_needs_attention',
+    localization_task: { id: 'loc-1', status: 'failed' },
+  }), false)
+  assert.equal(shouldResetLocalizationIdempotencyKey({
+    localization_task: { id: 'loc-1', status: 'completed' },
+  }), true)
+  assert.equal(shouldResetLocalizationIdempotencyKey({
+    localization_task: { id: 'loc-1', status: 'failed', refund_status: 'refunded' },
   }), true)
 })
