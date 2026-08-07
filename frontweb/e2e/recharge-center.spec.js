@@ -459,6 +459,48 @@ test('支付暂停时展示四个管理员套餐并阻止套餐与自定义下�
   }])
 })
 
+test('页面滚动后充值方式切换栏保持在顶部导航栏下方', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 650 })
+  const calls = createCalls()
+  await openRechargeCenter(page, calls)
+
+  await page.evaluate(() => window.scrollTo(0, 320))
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(200)
+
+  const topbar = await page.locator('.recharge-topbar').boundingBox()
+  const modeSwitch = await page.locator('.mode-switch').boundingBox()
+  expect(topbar).not.toBeNull()
+  expect(modeSwitch).not.toBeNull()
+  expect(modeSwitch.y).toBeGreaterThanOrEqual(topbar.y + topbar.height + 8)
+})
+
+test('自定义充值金额使用紧凑深色输入框且不展示增减按钮', async ({ page }) => {
+  const calls = createCalls()
+  await openRechargeCenter(page, calls)
+  await page.getByRole('button', { name: '自定义充值' }).click()
+
+  const amountInput = page.locator('.amount-input')
+  await expect(amountInput.locator('.el-input-number__decrease')).toHaveCount(0)
+  await expect(amountInput.locator('.el-input-number__increase')).toHaveCount(0)
+
+  const styles = await amountInput.evaluate((element) => {
+    const wrapper = element.querySelector('.el-input__wrapper')
+    const input = element.querySelector('.el-input__inner')
+    const wrapperStyle = getComputedStyle(wrapper)
+    const inputStyle = getComputedStyle(input)
+    return {
+      height: wrapper.getBoundingClientRect().height,
+      backgroundColor: wrapperStyle.backgroundColor,
+      color: inputStyle.color,
+      fontSize: Number.parseFloat(inputStyle.fontSize),
+    }
+  })
+  expect(styles.height).toBeLessThanOrEqual(72)
+  expect(styles.backgroundColor).toBe('rgb(16, 16, 16)')
+  expect(styles.color).toBe('rgb(255, 255, 255)')
+  expect(styles.fontSize).toBeLessThanOrEqual(42)
+})
+
 test('用户充值任一关键数据加载失败时零误导零下单，单在途重试后原子恢复', async ({ page }) => {
   const calls = createCalls()
   const retryGate = createControlledRouteGate()

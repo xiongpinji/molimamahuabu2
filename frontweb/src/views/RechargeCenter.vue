@@ -327,7 +327,7 @@ onBeforeUnmount(() => {
 .hero-eyebrow { color: #ff8e64; font-size: 12px; font-weight: 800; letter-spacing: .22em; }
 .recharge-hero h1 { margin: 12px 0 14px; font-size: clamp(34px, 4.8vw, 58px); line-height: 1.08; letter-spacing: -.045em; }
 .recharge-hero p { max-width: 670px; margin: 0 auto; color: #a7a7ad; font-size: 15px; line-height: 1.8; }
-.mode-switch { display: grid; grid-template-columns: 1fr 1fr; width: min(390px, 100%); margin: 38px auto 28px; padding: 5px; border: 1px solid #2a2a2a; border-radius: 999px; background: #151515; }
+.mode-switch { position: sticky; top: 82px; z-index: 12; display: grid; grid-template-columns: 1fr 1fr; width: min(390px, 100%); margin: 38px auto 28px; padding: 5px; border: 1px solid #2a2a2a; border-radius: 999px; background: #151515; }
 .mode-switch button { min-height: 50px; border: 0; border-radius: 999px; color: #97979d; font: inherit; font-weight: 800; background: transparent; cursor: pointer; }
 .mode-switch button:hover,
 .mode-switch button:focus-visible { color: #fff; outline: none; }
@@ -358,6 +358,7 @@ onBeforeUnmount(() => {
   .history-button,
   .back-button { padding: 0 10px; }
   .recharge-content { padding: 40px 16px 58px; }
+  .mode-switch { top: 78px; }
   .recharge-hero h1 { font-size: 36px; }
   .recharge-grid { grid-template-columns: 1fr; }
   .recharge-grid :deep(.recharge-package-card--featured) { transform: none; }
