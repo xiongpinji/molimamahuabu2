@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import { normalizeCanvasModelCatalog } from '../src/utils/canvasModelCapabilities.js'
 
 const source = fs.readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8')
+const aiApiSource = fs.readFileSync(new URL('../src/api/ai.js', import.meta.url), 'utf8')
 
 test('FilmCreate 依赖的统一目录以能力与价格取交集：GPT 去掉 4K，Nano 保留 4K', () => {
   const catalog = normalizeCanvasModelCatalog([
@@ -27,7 +28,8 @@ test('FilmCreate 依赖的统一目录以能力与价格取交集：GPT 去掉 4
 })
 
 test('短剧工厂从统一目录读取图片模型的名称、备注、能力与分档价格', () => {
-  assert.match(source, /request\.get\('\/canvas\/model-catalog'\)/)
+  assert.match(source, /aiAPI\.listCanvasModels\(\)/)
+  assert.match(aiApiSource, /listCanvasModels\(\)\s*\{[\s\S]*request\.get\('\/canvas\/model-catalog'\)/)
   assert.match(source, /normalizeCanvasModelCatalog/)
   assert.match(source, /imageModelCatalog\.value\.filter\(\(item\) => item\.kind === 'image'\)/)
   assert.match(source, /selectedImageModelMetadata\.value\?\.publicNote/)

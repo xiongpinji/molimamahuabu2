@@ -9,6 +9,7 @@ import {
   collectDirectUpstreamResultUrls,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
+  normalizeFreeCanvasSubmissionReferences,
   normalizeFreeCanvasNode,
   normalizeFreeCanvasNodeData,
   resolveFreeCanvasResultUrl,
@@ -319,6 +320,90 @@ test('视频节点按模型能力传递多图片、音频和视频参考', () =>
   assert.equal('last_frame_url' in payload, false)
   assert.deepEqual(payload.reference_audio_urls, ['/static/voice.wav'])
   assert.deepEqual(payload.reference_video_urls, ['/static/motion.mp4'])
+})
+
+test('右键媒体序号与实际提交数组共享过滤、排序和去重顺序', () => {
+  const upstreamReferences = [
+    { edgeId: 'pending-video', kind: 'video', url: '', ready: false, order: 0 },
+    { edgeId: 'audio-1', kind: 'audio', url: '/static/voice.wav', ready: true, order: 1 },
+    { edgeId: 'video-1', kind: 'video', url: '/static/motion-a.mp4', ready: true, order: 2 },
+    { edgeId: 'video-duplicate', kind: 'video', url: '/static/motion-a.mp4', ready: true, order: 3 },
+    { edgeId: 'disabled-video', kind: 'video', url: '/static/disabled.mp4', ready: true, enabled: false, order: 4 },
+    { edgeId: 'video-2', kind: 'video', url: '/static/motion-b.mp4', ready: true, order: 5 },
+  ]
+  const submissionReferences = normalizeFreeCanvasSubmissionReferences(upstreamReferences)
+  assert.deepEqual(submissionReferences.map((reference) => reference.edgeId), [
+    'audio-1',
+    'video-1',
+    'video-2',
+  ])
+
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '按引用顺序生成',
+    model: 'omni-model',
+  }, {
+    dramaId: 7,
+    upstreamReferences,
+    capability: {
+      referenceTypes: ['audio', 'video'],
+      maxAudioReferences: 1,
+      maxVideoReferences: 2,
+    },
+  })
+  assert.deepEqual(payload.reference_audio_urls, ['/static/voice.wav'])
+  assert.deepEqual(payload.reference_video_urls, ['/static/motion-a.mp4', '/static/motion-b.mp4'])
+})
+
+test('首尾帧按实际提交序列取前两张且不会把同一张图重复提交', () => {
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '首尾帧测试',
+    model: 'first-last-model',
+    videoReferenceMode: 'first-last',
+  }, {
+    dramaId: 7,
+    upstreamReferences: [
+      { kind: 'image', url: '', ready: false, slot: 'first-frame', order: 0 },
+      { kind: 'image', url: '/static/last-ready.png', ready: true, slot: 'last-frame', order: 1 },
+    ],
+    capability: {
+      referenceTypes: ['image'],
+      supportsFirstFrame: true,
+      supportsLastFrame: true,
+      maxImageReferences: 2,
+    },
+  })
+
+  assert.equal(payload.reference_mode, 'first_last')
+  assert.equal(payload.first_frame_url, '/static/last-ready.png')
+  assert.equal(payload.image_url, '/static/last-ready.png')
+  assert.equal('last_frame_url' in payload, false)
+})
+
+test('首尾帧忽略失效连接的旧卡槽并采用后续两张有效图片', () => {
+  const payload = buildFreeCanvasGenerationRequest({
+    kind: 'video',
+    content: '首尾帧连续性测试',
+    model: 'first-last-model',
+    videoReferenceMode: 'first-last',
+  }, {
+    dramaId: 7,
+    upstreamReferences: [
+      { kind: 'image', url: '', ready: false, slot: 'first-frame', order: 0 },
+      { kind: 'image', url: '/static/first-ready.png', ready: true, slot: 'last-frame', order: 1 },
+      { kind: 'image', url: '/static/last-ready.png', ready: true, slot: 'reference-image', order: 2 },
+    ],
+    capability: {
+      referenceTypes: ['image'],
+      supportsFirstFrame: true,
+      supportsLastFrame: true,
+      maxImageReferences: 2,
+    },
+  })
+
+  assert.equal(payload.first_frame_url, '/static/first-ready.png')
+  assert.equal(payload.last_frame_url, '/static/last-ready.png')
 })
 
 test('视频节点在付费请求前拒绝当前模型未声明的媒体参考', () => {

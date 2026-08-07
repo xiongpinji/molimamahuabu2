@@ -99,9 +99,14 @@ test('参考图卡片不再显示用途、排序、权重和启用选项', () =>
 })
 
 test('视频参考素材支持右键在描述光标处插入对应媒体引用', () => {
-  assert.match(nodeSource, /@contextmenu\.prevent\.stop="insertReferenceToken\(index\)"/)
-  assert.match(nodeSource, /function insertReferenceToken\(index\)/)
-  assert.match(nodeSource, /const token = `@\$\{referenceTypeLabel\(reference\?\.kind\)\}\$\{index \+ 1\}`/)
+  assert.match(nodeSource, /normalizeFreeCanvasSubmissionReferences\(inputReferences\.value\)/)
+  assert.match(nodeSource, /@contextmenu\.prevent\.stop="canInsertReferenceToken\(reference\) && insertReferenceToken\(reference\)"/)
+  assert.match(nodeSource, /function referenceTypeLabel\(kind\)/)
+  assert.match(nodeSource, /function referenceSubmissionOrdinal\(reference\)/)
+  assert.match(nodeSource, /function canInsertReferenceToken\(reference\)/)
+  assert.match(nodeSource, /function insertReferenceToken\(reference\)/)
+  assert.match(nodeSource, /const ordinal = referenceSubmissionOrdinal\(reference\)[\s\S]*if \(ordinal < 1\) return/)
+  assert.match(nodeSource, /const token = `@\$\{referenceTypeLabel\(reference\?\.kind\)\}\$\{ordinal\}`/)
   assert.match(nodeSource, /@select="rememberContentSelection"/)
 })
 

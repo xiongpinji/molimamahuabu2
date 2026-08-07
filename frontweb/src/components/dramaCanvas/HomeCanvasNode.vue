@@ -246,7 +246,7 @@
               :data-frame-slot="frameSlot.key"
               :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
               :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
-              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
+              :title="frameSlot.reference ? `右键引用为 @图片${referenceSubmissionOrdinal(frameSlot.reference)}` : frameSlot.label"
               @mousedown.right.prevent
               @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
             >
@@ -262,7 +262,7 @@
               <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
               <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
               <figcaption :title="frameSlot.reference?.title || frameSlot.label">
-                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceSubmissionOrdinal(frameSlot.reference)}` : '未设置' }}
               </figcaption>
             </figure>
           </div>
@@ -273,11 +273,11 @@
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
               :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
-              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
+              :title="canInsertReferenceToken(reference) ? `右键引用为 @${referenceTypeLabel(reference.kind)}${referenceSubmissionOrdinal(reference)}` : reference.title"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
+              @contextmenu.prevent.stop="canInsertReferenceToken(reference) && insertReferenceToken(reference)"
             >
-              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
+              <span class="reference-index">{{ referenceSubmissionOrdinal(reference) || '—' }}</span>
               <button
                 class="reference-remove"
                 type="button"
@@ -289,7 +289,7 @@
               <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
               <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
               <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
-              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceSubmissionOrdinal(reference) || '未采用' }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
@@ -537,6 +537,7 @@ import { useCanvasContext } from '@/composables/useCanvasContext'
 import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import {
   normalizeFreeCanvasVideoReferenceMode,
+  normalizeFreeCanvasSubmissionReferences,
   resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
 import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
@@ -673,8 +674,9 @@ const inputReferences = computed(() => (
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
+const submittedInputReferences = computed(() => normalizeFreeCanvasSubmissionReferences(inputReferences.value))
 const firstLastFrameSlots = computed(() => {
-  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  const imageReferences = submittedInputReferences.value.filter((reference) => reference.kind === 'image')
   return [
     { key: 'first', label: '首帧', reference: imageReferences[0] || null },
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
@@ -914,13 +916,27 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-function referenceOrdinal(reference) {
-  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
-  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+function referenceSubmissionOrdinal(reference) {
+  const matchingReferences = submittedInputReferences.value.filter((item) => item.kind === reference?.kind)
+  return matchingReferences.findIndex((item) => (
+    item === reference
+    || (reference?.edgeId && item.edgeId === reference.edgeId)
+    || (reference?.nodeId && item.nodeId === reference.nodeId)
+  )) + 1
+}
+
+function canInsertReferenceToken(reference) {
+  return referenceSubmissionOrdinal(reference) > 0
+}
+
+function referenceTypeLabel(kind) {
+  return ({ image: '图片', video: '视频', audio: '音频' }[kind] || '素材')
 }
 
 async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
+  const ordinal = referenceSubmissionOrdinal(reference)
+  if (ordinal < 1) return
   const input = contentInput.value
   const value = String(draft.content || '')
   const liveSelection = input && document.activeElement === input
@@ -933,7 +949,7 @@ async function insertReferenceToken(reference) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${referenceOrdinal(reference)}`
+  const token = `@${referenceTypeLabel(reference?.kind)}${ordinal}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`

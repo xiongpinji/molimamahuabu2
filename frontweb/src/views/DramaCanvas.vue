@@ -669,6 +669,7 @@ import {
   collectDirectUpstreamMediaReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
+  normalizeFreeCanvasSubmissionReferences,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
@@ -2853,7 +2854,9 @@ function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
   return buildFreeCanvasReferenceMentionCandidates(
-    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+    normalizeFreeCanvasSubmissionReferences(
+      collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+    ),
   )
 }
 

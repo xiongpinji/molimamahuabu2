@@ -12,6 +12,7 @@ const contextMenuSource = readFileSync(resolve(__dirname, '../src/components/dra
 const accountBadgeSource = readFileSync(resolve(__dirname, '../src/components/AccountBadge.vue'), 'utf8')
 const imagesSource = readFileSync(resolve(__dirname, '../src/api/images.js'), 'utf8')
 const videosSource = readFileSync(resolve(__dirname, '../src/api/videos.js'), 'utf8')
+const generationSource = readFileSync(resolve(__dirname, '../src/utils/freeCanvasGeneration.js'), 'utf8')
 
 test('自由节点配置面板保存并回填模型、比例和时长字段，并记住视频参数', () => {
   assert.match(canvasSource, /freeNodeForm = ref\(\{ title: '', content: '', url: '', model: '', aspectRatio: '16:9', duration: 5 \}\)/)
@@ -92,11 +93,10 @@ test('图片和视频编辑器可上传参考素材，视频 @ 只列出已经�
   assert.match(canvasSource, /function attachFreeCanvasReference\(targetNodeOrId, sourceNodeOrId\)/)
   assert.match(canvasSource, /onConnect\(\{ source: sourceNode\.id, target: targetNode\.id \}\)/)
   assert.match(canvasSource, /uploadFreeCanvasReferenceMedia,\s*\n\s*uploadFreeCanvasReferenceImage,\s*\n\s*attachFreeCanvasReference,/)
-  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}collectDirectUpstreamImageReferences/)
-  assert.match(canvasSource, /reference\.ready && reference\.enabled !== false/)
+  assert.match(canvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
+  assert.match(generationSource, /export function buildFreeCanvasReferenceMentionCandidates\(references = \[\]\)[\s\S]*reference\.nodeId && reference\.ready && reference\.enabled !== false/)
+  assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}buildFreeCanvasReferenceMentionCandidates\([\s\S]*collectDirectUpstreamImageReferences/)
   assert.doesNotMatch(canvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,500}allGraphNodes\.value\s*\.filter/)
-  assert.match(homeCanvasSource, /function freeCanvasReferenceCandidates\(nodeOrId\)[\s\S]{0,500}collectDirectUpstreamImageReferences/)
-  assert.match(homeCanvasSource, /reference\.ready && reference\.enabled !== false/)
   assert.doesNotMatch(homeCanvasSource, /function freeCanvasReferenceCandidates[\s\S]{0,600}!connectedNodeIds\.has/)
 })
 

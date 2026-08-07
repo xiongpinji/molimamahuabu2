@@ -103,6 +103,24 @@ function uniqueStrings(values) {
     .filter(Boolean))]
 }
 
+export function normalizeFreeCanvasSubmissionReferences(references = []) {
+  const seen = new Set()
+  return (Array.isArray(references) ? references : [])
+    .filter((reference) => (
+      reference?.enabled !== false
+      && reference?.ready !== false
+      && cleanString(reference?.url)
+    ))
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
+    .filter((reference) => {
+      const kind = ['image', 'video', 'audio'].includes(reference?.kind) ? reference.kind : 'image'
+      const key = `${kind}\u0000${cleanString(reference?.url)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
 function booleanValue(value) {
   return value === true
 }
@@ -514,9 +532,7 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const maxReferences = verifiedMaxReferences == null
     ? configuredMaxReferences
     : Math.min(configuredMaxReferences, verifiedMaxReferences)
-  const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
-    .filter((reference) => reference?.enabled !== false && reference?.url)
-    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
+  const references = normalizeFreeCanvasSubmissionReferences(options.upstreamReferences)
   const imageReferences = references.filter((reference) => (reference.kind || 'image') === 'image')
   const upstreamImageUrls = uniqueStrings([
     ...(imageReferences.length ? [] : (options.upstreamUrls || [])),
@@ -584,11 +600,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       : nodeData.duration
     const explicitMode = FREE_VIDEO_REFERENCE_MODES.has(cleanString(nodeData.videoReferenceMode))
     const referenceMode = normalizeFreeCanvasVideoReferenceMode(nodeData.videoReferenceMode, references)
-    const firstFrameReference = imageReferences.find((reference) => reference.slot === 'first-frame')
-      || imageReferences[0]
-    const lastFrameReference = imageReferences.find((reference) => reference.slot === 'last-frame')
-      || imageReferences[1]
-    const hasOmniReferences = imageReferences.some((reference) => !['first-frame', 'last-frame'].includes(reference.slot))
+    const firstFrameReference = imageReferences[0]
+    const lastFrameReference = imageReferences[1]
+    const hasOmniReferences = imageReferences.length > 2
       || videoReferences.length > 0
       || audioReferences.length > 0
       || (nodeData.characterReferenceUrls || []).length > 0
