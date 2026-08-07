@@ -197,8 +197,18 @@ function selectOrphanedAsyncTasks(db) {
   `).all();
 }
 
+function reconcileOrphanedRedrawLocalizationTasks(db, log) {
+  try {
+    // Delayed require avoids a module initialization cycle with redrawLocalizationOrchestrator.
+    require('./redrawLocalizationOrchestrator').reconcileOrphanedTasks(db, log);
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+}
+
 function failOrphanedAsyncTasksOnStartup(db, log) {
   let rows = selectOrphanedAsyncTasks(db);
+  reconcileOrphanedRedrawLocalizationTasks(db, log);
   rows = rows.filter((row) => {
     const kind = String(row.type || row.task_type || '');
     return !['redraw_localization', 'redraw_asset_batch'].includes(kind);

@@ -337,6 +337,45 @@ test('starts localization, writes provider task id, materializes draft, complete
   db.close();
 });
 
+test('default scheduler returns awaitable tracked completion and clears in-flight on success', async () => {
+  const db = createDb();
+  const quote = quoteLocalization(db, quoteInput());
+  const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput(),
+    idempotencyKey: 'idem-default-schedule',
+    quoteHash: quote.quote_hash,
+  }, { provider: providerReturning(localizedResult()) });
+
+  assert.equal(typeof started.completion?.then, 'function');
+  assert.equal(taskService.getInFlightTaskCount(), 1);
+  await started.completion;
+  assert.equal(taskService.getTask(db, started.task_id).status, 'completed');
+  assert.equal(taskService.getInFlightTaskCount(), 0);
+  db.close();
+});
+
+test('default scheduler returns awaitable rejection and clears in-flight on failure', async () => {
+  const db = createDb();
+  const quote = quoteLocalization(db, quoteInput());
+  const provider = async () => {
+    const error = new Error('provider rejected');
+    error.code = 'PROVIDER_FAILED';
+    throw error;
+  };
+  const started = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput(),
+    idempotencyKey: 'idem-default-failure',
+    quoteHash: quote.quote_hash,
+  }, { provider });
+
+  assert.equal(typeof started.completion?.then, 'function');
+  assert.equal(taskService.getInFlightTaskCount(), 1);
+  await assert.rejects(started.completion, (error) => error.code === 'PROVIDER_FAILED');
+  assert.equal(taskService.getTask(db, started.task_id).status, 'failed');
+  assert.equal(taskService.getInFlightTaskCount(), 0);
+  db.close();
+});
+
 test('deterministic provider failure fails task, refunds reservation, and keeps hidden draft', async () => {
   const db = createDb();
   const provider = async () => {
@@ -351,6 +390,53 @@ test('deterministic provider failure fails task, refunds reservation, and keeps 
   assert.equal(credits.getReservation(db, started.reservation_id).status, 'refunded');
   assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = 1').get().current_step, 1);
   assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(started.draft_version_id).status, 'draft');
+  db.close();
+});
+
+test('local normalize or materialize timeout after provider result is deterministic failure and refund', async () => {
+  const db = createDb();
+  const provider = providerReturning(localizedResult({
+    causal_chain: [{ id: 'cause-1', from: 'message', to: 'departure', text: 'LOCAL TIMEOUT while validating' }],
+  }));
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-local-timeout' }, { provider });
+  await assert.rejects(started.completion, (error) => error.code === 'LOCALIZATION_FACT_CONFLICT');
+  assert.equal(taskService.getTask(db, started.task_id).status, 'failed');
+  assert.equal(credits.getReservation(db, started.reservation_id).status, 'refunded');
+  db.close();
+});
+
+test('local materialize timeout after structured provider result is failed and refunded', async () => {
+  const db = createDb();
+  db.exec(`
+    CREATE TRIGGER fail_local_materialize_timeout
+    BEFORE INSERT ON redraw_assets
+    BEGIN
+      SELECT RAISE(ABORT, 'LOCAL TIMEOUT while materializing draft');
+    END;
+  `);
+  const provider = providerReturning(localizedResult());
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-materialize-timeout' }, { provider });
+  await assert.rejects(started.completion, /LOCAL TIMEOUT while materializing draft/);
+  assert.equal(taskService.getTask(db, started.task_id).status, 'failed');
+  assert.equal(credits.getReservation(db, started.reservation_id).status, 'refunded');
+  db.close();
+});
+
+test('provider unknown error carrying task id persists provider task and keeps reservation held', async () => {
+  const db = createDb();
+  const provider = async () => {
+    const error = new Error('provider accepted but final status unknown');
+    error.code = 'PROVIDER_STATUS_UNKNOWN';
+    error.unknown = true;
+    error.provider_task_id = 'provider-unknown-42';
+    throw error;
+  };
+  const started = await startWithQuote(db, { idempotencyKey: 'idem-unknown-task-id' }, { provider });
+  await assert.rejects(started.completion, (error) => error.code === 'PROVIDER_STATUS_UNKNOWN');
+  const task = taskService.getTask(db, started.task_id);
+  assert.equal(task.status, 'needs_attention');
+  assert.equal(task.provider_task_id, 'provider-unknown-42');
+  assert.equal(credits.getReservation(db, started.reservation_id).status, 'held');
   db.close();
 });
 
@@ -418,6 +504,36 @@ test('same idempotency key replays existing task without another draft, reservat
   db.close();
 });
 
+test('same idempotency key replays without current capability, price, readable evidence, schedule, or provider call', async () => {
+  const db = createDb();
+  const provider = providerReturning(localizedResult());
+  const first = await startWithQuote(db, { idempotencyKey: 'idem-offline-replay' }, { provider });
+  await first.completion;
+
+  db.prepare('DELETE FROM ai_service_configs').run();
+  db.prepare('DELETE FROM model_credit_prices').run();
+  let scheduled = 0;
+  const replay = startLocalization(db, { info() {}, warn() {}, error() {} }, {
+    ...quoteInput({ canReadArtifact: () => false }),
+    idempotencyKey: 'idem-offline-replay',
+    quoteHash: 'stale-client-quote',
+  }, {
+    provider,
+    schedule: (job) => {
+      scheduled += 1;
+      return job();
+    },
+  });
+
+  assert.equal(replay.task_id, first.task_id);
+  assert.equal(replay.reservation_id, first.reservation_id);
+  assert.equal(replay.draft_version_id, first.draft_version_id);
+  assert.equal(replay.completion, null);
+  assert.equal(provider.calls.length, 1);
+  assert.equal(scheduled, 0);
+  db.close();
+});
+
 test('same idempotency key with changed input is rejected while a new key may start', async () => {
   const db = createDb();
   const provider = providerReturning(localizedResult());
@@ -478,6 +594,33 @@ test('empty provider result is a deterministic failure and refund', async () => 
   db.close();
 });
 
+test('startup cleanup delegates localization reconcile while keeping generic cleanup exclusion', async () => {
+  const db = createDb();
+  const withProvider = await startWithQuote(db, { idempotencyKey: 'idem-startup-provider' }, {
+    provider: async () => ({ provider_task_id: 'provider-startup', result: localizedResult() }),
+    schedule: () => null,
+  });
+  db.prepare("UPDATE async_tasks SET provider_task_id = 'provider-startup', status = 'processing' WHERE id = ?")
+    .run(withProvider.task_id);
+  const noProvider = await startWithQuote(db, { idempotencyKey: 'idem-startup-none' }, {
+    provider: providerReturning(localizedResult()),
+    schedule: () => null,
+  });
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO async_tasks (id, type, status, progress, message, resource_id, created_at, updated_at)
+    VALUES ('task-asset-batch-startup', 'redraw_asset_batch', 'processing', 10, '', '1', ?, ?)
+  `).run(now, now);
+
+  assert.equal(taskService.failOrphanedAsyncTasksOnStartup(db, { info() {}, warn() {} }), 0);
+  assert.equal(taskService.getTask(db, withProvider.task_id).status, 'needs_attention');
+  assert.equal(credits.getReservation(db, withProvider.reservation_id).status, 'held');
+  assert.equal(taskService.getTask(db, noProvider.task_id).status, 'failed');
+  assert.equal(credits.getReservation(db, noProvider.reservation_id).status, 'refunded');
+  assert.equal(taskService.getTask(db, 'task-asset-batch-startup').status, 'processing');
+  db.close();
+});
+
 test('startup generic orphan cleanup excludes redraw localization and asset batch task types', () => {
   const db = createDb();
   const now = new Date().toISOString();
@@ -495,7 +638,7 @@ test('startup generic orphan cleanup excludes redraw localization and asset batc
   `).run(now, now);
 
   assert.equal(taskService.failOrphanedAsyncTasksOnStartup(db, { info() {}, warn() {} }), 1);
-  assert.equal(taskService.getTask(db, 'task-localization').status, 'processing');
+  assert.equal(taskService.getTask(db, 'task-localization').status, 'failed');
   assert.equal(taskService.getTask(db, 'task-asset-batch').status, 'processing');
   assert.equal(taskService.getTask(db, 'task-other').status, 'failed');
   db.close();
