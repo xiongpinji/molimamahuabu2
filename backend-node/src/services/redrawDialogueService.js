@@ -165,6 +165,8 @@ function buildDialoguePlan(db, input = {}) {
     return {
       segment_id: `${ref.shot.id}:${ref.turn_index}`,
       version_id: Number(version.id),
+      tenant_id: String(input.tenantId),
+      user_id: String(input.userId),
       shot_row_id: Number(ref.shot.id),
       shot_id: String(ref.shot.shot_id || ref.shot.id),
       batch_index: Number(ref.shot.batch_index),
@@ -257,6 +259,40 @@ function canReadAsset(ctx, asset) {
   return Boolean(asset && Number(asset.duration) > 0
     && typeof ctx.canReadAudioAsset === 'function'
     && ctx.canReadAudioAsset(asset) === true);
+}
+
+function getReservationByOperationKey(db, tenantId, opKey) {
+  return db.prepare(`
+    SELECT * FROM tenant_usage_reservations
+    WHERE tenant_id = ? AND operation_key = ?
+  `).get(String(tenantId), String(opKey)) || null;
+}
+
+function reservationStatus(db, reservationId) {
+  return creditLedger.getReservation(db, reservationId)?.status || null;
+}
+
+function validateDialogueAudioAsset(ctx, segment, asset, output, idempotencyKey, reservationId) {
+  if (!canReadAsset(ctx, asset) || asset.category !== RESOURCE_TYPE) return false;
+  const metadata = parseJson(asset.metadata, {})?.redraw_dialogue;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+  const expected = {
+    tenant_id: String(ctx.tenantId),
+    user_id: String(ctx.userId),
+    version_id: Number(segment.version_id),
+    segment_id: String(segment.segment_id),
+    idempotency_key: String(idempotencyKey),
+    reservation_id: String(reservationId),
+  };
+  if (String(metadata.tenant_id) !== expected.tenant_id) return false;
+  if (String(metadata.user_id) !== expected.user_id) return false;
+  if (Number(metadata.version_id) !== expected.version_id) return false;
+  if (String(metadata.segment_id) !== expected.segment_id) return false;
+  if (String(metadata.idempotency_key) !== expected.idempotency_key) return false;
+  if (String(metadata.reservation_id) !== expected.reservation_id) return false;
+  if (output?.provider_task_id != null
+    && String(metadata.provider_task_id || '') !== String(output.provider_task_id)) return false;
+  return true;
 }
 
 function readShotDraft(shot) {
@@ -354,40 +390,82 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
   if (quote.quote_hash !== quoteHash) throw codedError('REDRAW_DIALOGUE_QUOTE_MISMATCH', '配音报价已变化');
 
   const shotAudits = readAudits(db, plan.segments);
-  for (const segment of plan.segments) {
-    const audit = shotAudits.get(segment.shot_row_id)?.segments.get(segment.segment_id);
-    if (audit?.idempotency_key !== idempotencyKey || audit?.quote_hash !== quoteHash) continue;
-    if (audit.status === 'needs_attention') {
-      throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
-    }
-    if (audit.status === 'failed' || audit.reservation_status === 'refunded') {
-      throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
-    }
-    if (audit.status === 'completed' && canReadAsset(ctx, getAsset(db, audit.audio_asset_id))) continue;
-  }
-
-  if (plan.segments.every((segment) => {
-    const audit = shotAudits.get(segment.shot_row_id)?.segments.get(segment.segment_id);
-    return audit?.idempotency_key === idempotencyKey
-      && audit?.quote_hash === quoteHash
-      && audit.status === 'completed'
-      && canReadAsset(ctx, getAsset(db, audit.audio_asset_id));
-  })) {
-    return { status: 'completed', segment_count: plan.segments.length, quote_hash: quoteHash };
-  }
-
-  if (typeof ctx.synthesizeSegment !== 'function') {
-    throw codedError('REDRAW_DIALOGUE_SYNTHESIZER_REQUIRED', '缺少配音生成器');
-  }
 
   for (const segment of plan.segments) {
     const holder = shotAudits.get(segment.shot_row_id);
     const existing = holder.segments.get(segment.segment_id);
     if (existing?.idempotency_key === idempotencyKey
-      && existing?.quote_hash === quoteHash
-      && existing.status === 'completed'
-      && canReadAsset(ctx, getAsset(db, existing.audio_asset_id))) {
-      continue;
+      && existing?.quote_hash === quoteHash) {
+      if (existing.status === 'needs_attention' || existing.status === 'processing') {
+        if (existing.status === 'processing') {
+          holder.segments.set(segment.segment_id, safeAudit(segment, {
+            ...existing,
+            status: 'needs_attention',
+            error_code: 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+          }));
+          writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+        }
+        throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
+      }
+      if (existing.status === 'failed' || existing.reservation_status === 'refunded') {
+        throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
+      }
+      if (existing.status === 'completed') {
+        const asset = getAsset(db, existing.audio_asset_id);
+        if (validateDialogueAudioAsset(ctx, segment, asset, existing, idempotencyKey, existing.reservation_id)
+          && reservationStatus(db, existing.reservation_id) === 'confirmed') {
+          continue;
+        }
+        throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
+      }
+      if (existing.status === 'provider_completed') {
+        const asset = getAsset(db, existing.audio_asset_id);
+        if (!validateDialogueAudioAsset(ctx, segment, asset, existing, idempotencyKey, existing.reservation_id)) {
+          const currentStatus = reservationStatus(db, existing.reservation_id);
+          const refunded = currentStatus === 'held'
+            ? creditLedger.refund(db, existing.reservation_id, 'audio_invalid')
+            : creditLedger.getReservation(db, existing.reservation_id);
+          holder.segments.set(segment.segment_id, safeAudit(segment, {
+            ...existing,
+            status: 'failed',
+            reservation_status: refunded?.status || currentStatus,
+            error_code: 'REDRAW_DIALOGUE_AUDIO_INVALID',
+          }));
+          writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+          throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
+        }
+        const currentStatus = reservationStatus(db, existing.reservation_id);
+        const confirmed = currentStatus === 'confirmed'
+          ? creditLedger.getReservation(db, existing.reservation_id)
+          : creditLedger.confirm(db, existing.reservation_id);
+        if (confirmed.status !== 'confirmed') {
+          throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+        }
+        holder.segments.set(segment.segment_id, safeAudit(segment, {
+          ...existing,
+          status: 'completed',
+          reservation_status: confirmed.status,
+          audio_duration: Number(asset.duration),
+        }));
+        writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+        continue;
+      }
+    }
+
+    const opKey = operationKey(idempotencyKey, quoteHash, segment);
+    const existingReservation = getReservationByOperationKey(db, ctx.tenantId, opKey);
+    if (existingReservation) {
+      if (existingReservation.status === 'refunded') {
+        throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
+      }
+      if (existingReservation.status === 'held') {
+        throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
+      }
+      throw codedError('REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT', '配音幂等状态不可重投');
+    }
+
+    if (typeof ctx.synthesizeSegment !== 'function') {
+      throw codedError('REDRAW_DIALOGUE_SYNTHESIZER_REQUIRED', '缺少配音生成器');
     }
     const reservation = reserveSegment(db, ctx, quoteHash, idempotencyKey, segment);
     if (reservation.status !== 'held') {
@@ -397,32 +475,41 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
       throw codedError(code, '配音幂等状态不可重投');
     }
     try {
-      const output = await ctx.synthesizeSegment({
+      if (typeof ctx.beforeProcessingAuditWrite === 'function') {
+        await ctx.beforeProcessingAuditWrite({ segment, reservation, operation_key: opKey });
+      }
+      holder.segments.set(segment.segment_id, safeAudit(segment, {
+        status: 'processing',
+        idempotency_key: idempotencyKey,
+        quote_hash: quoteHash,
+        reservation_id: reservation.id,
+        reservation_status: reservation.status,
+        operation_key: opKey,
+      }));
+      writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+    } catch (error) {
+      creditLedger.refund(db, reservation.id, error?.code || 'processing_audit_failed');
+      throw error;
+    }
+    if (typeof ctx.afterProcessingAuditWrite === 'function') {
+      await ctx.afterProcessingAuditWrite({ segment, reservation, operation_key: opKey });
+    }
+
+    let output;
+    let asset;
+    let assetId;
+    try {
+      output = await ctx.synthesizeSegment({
         ...segment,
         quote_hash: quoteHash,
         idempotency_key: idempotencyKey,
         reservation_id: reservation.id,
       });
-      const assetId = Number(output?.asset_id ?? output?.audio_asset_id);
-      const asset = getAsset(db, assetId);
-      if (!canReadAsset(ctx, asset)) {
+      assetId = Number(output?.asset_id ?? output?.audio_asset_id);
+      asset = getAsset(db, assetId);
+      if (!validateDialogueAudioAsset(ctx, segment, asset, output, idempotencyKey, reservation.id)) {
         throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
       }
-      const confirmed = creditLedger.confirm(db, reservation.id);
-      if (confirmed.status !== 'confirmed') {
-        throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
-      }
-      holder.segments.set(segment.segment_id, safeAudit(segment, {
-        status: 'completed',
-        idempotency_key: idempotencyKey,
-        quote_hash: quoteHash,
-        reservation_id: reservation.id,
-        reservation_status: confirmed.status,
-        provider_task_id: output?.provider_task_id || null,
-        audio_asset_id: assetId,
-        audio_duration: Number(asset.duration),
-      }));
-      writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
     } catch (error) {
       if (error?.unknown === true || error?.code === 'PROVIDER_STATUS_UNKNOWN') {
         holder.segments.set(segment.segment_id, safeAudit(segment, {
@@ -431,6 +518,7 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
           quote_hash: quoteHash,
           reservation_id: reservation.id,
           reservation_status: reservation.status,
+          operation_key: opKey,
           provider_task_id: error.provider_task_id || null,
           error_code: 'PROVIDER_STATUS_UNKNOWN',
         }));
@@ -444,11 +532,46 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
         quote_hash: quoteHash,
         reservation_id: reservation.id,
         reservation_status: refunded.status,
+        operation_key: opKey,
         error_code: error?.code || 'REDRAW_DIALOGUE_SYNTHESIS_FAILED',
       }));
       writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
       throw error;
     }
+    holder.segments.set(segment.segment_id, safeAudit(segment, {
+      status: 'provider_completed',
+      idempotency_key: idempotencyKey,
+      quote_hash: quoteHash,
+      reservation_id: reservation.id,
+      reservation_status: reservation.status,
+      operation_key: opKey,
+      provider_task_id: output?.provider_task_id || null,
+      audio_asset_id: assetId,
+      audio_duration: Number(asset.duration),
+    }));
+    writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+    if (typeof ctx.afterProviderCompletedAuditWrite === 'function') {
+      await ctx.afterProviderCompletedAuditWrite({ segment, reservation, output, asset });
+    }
+    const confirmed = creditLedger.confirm(db, reservation.id);
+    if (confirmed.status !== 'confirmed') {
+      throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+    }
+    if (typeof ctx.afterConfirmBeforeCompletedAuditWrite === 'function') {
+      await ctx.afterConfirmBeforeCompletedAuditWrite({ segment, reservation: confirmed, output, asset });
+    }
+    holder.segments.set(segment.segment_id, safeAudit(segment, {
+      status: 'completed',
+      idempotency_key: idempotencyKey,
+      quote_hash: quoteHash,
+      reservation_id: reservation.id,
+      reservation_status: confirmed.status,
+      operation_key: opKey,
+      provider_task_id: output?.provider_task_id || null,
+      audio_asset_id: assetId,
+      audio_duration: Number(asset.duration),
+    }));
+    writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
   }
 
   return { status: 'completed', segment_count: plan.segments.length, quote_hash: quoteHash };

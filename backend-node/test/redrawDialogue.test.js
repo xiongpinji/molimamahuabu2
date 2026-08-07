@@ -66,12 +66,34 @@ function addVoiceSample(db, id, localPath) {
     VALUES (?, '样音', 'audio', 'voice', ?, 'audio/mpeg', 1.2, ?, ?)`).run(id, localPath, now, now);
 }
 
-function addAudioAsset(db, id, duration = 1.1) {
+function addAudioAsset(db, id, segment, options = {}) {
   const now = new Date().toISOString();
+  const providerTaskId = options.providerTaskId || `provider-${segment.segment_id}`;
+  const metadata = {
+    redraw_dialogue: {
+      tenant_id: segment.tenant_id,
+      user_id: segment.user_id,
+      version_id: segment.version_id,
+      segment_id: segment.segment_id,
+      idempotency_key: segment.idempotency_key,
+      reservation_id: segment.reservation_id,
+      provider_task_id: providerTaskId,
+      ...(options.metadata || {}),
+    },
+  };
   db.prepare(`INSERT INTO assets
-    (id, name, type, category, local_path, mime_type, duration, created_at, updated_at)
-    VALUES (?, '生成配音', 'audio', 'redraw_dialogue', ?, 'audio/mpeg', ?, ?, ?)`)
-    .run(id, `dialogue-${id}.mp3`, duration, now, now);
+    (id, name, type, category, local_path, mime_type, duration, metadata, created_at, updated_at)
+    VALUES (?, '生成配音', 'audio', ?, ?, 'audio/mpeg', ?, ?, ?, ?)`)
+    .run(
+      id,
+      options.category || 'redraw_dialogue',
+      `dialogue-${id}.mp3`,
+      options.duration ?? 1.1,
+      JSON.stringify(metadata),
+      now,
+      now,
+    );
+  return providerTaskId;
 }
 
 function voiceSnapshot(audioAssetId, voiceId) {
@@ -202,8 +224,8 @@ test('synthesizeDialogueForVersion reserves, calls provider with snapshot voice,
   const result = await synthesizeDialogueForVersion(ctx(state, {
     synthesizeSegment: async (segment) => {
       providerCalls.push(segment);
-      addAudioAsset(state.db, nextAssetId, 1.2);
-      return { asset_id: nextAssetId++, provider_task_id: `provider-${segment.segment_id}` };
+      const providerTaskId = addAudioAsset(state.db, nextAssetId, segment, { duration: 1.2 });
+      return { asset_id: nextAssetId++, provider_task_id: providerTaskId };
     },
   }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-success' });
 
@@ -284,8 +306,9 @@ test('refunded same idempotency fails closed without provider replay or new rese
   const retry = await synthesizeDialogueForVersion(ctx(state, {
     synthesizeSegment: async (segment) => {
       calls += 1;
-      addAudioAsset(state.db, 932 + calls, 1.1);
-      return { asset_id: 932 + calls, provider_task_id: `provider-retry-${segment.segment_id}` };
+      const assetId = 932 + calls;
+      const providerTaskId = addAudioAsset(state.db, assetId, segment, { providerTaskId: `provider-retry-${segment.segment_id}` });
+      return { asset_id: assetId, provider_task_id: providerTaskId };
     },
   }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-refunded-retry' });
   assert.equal(retry.status, 'completed');
@@ -303,10 +326,10 @@ test('missing audio readability validator fails closed and refunds generated seg
   await assert.rejects(
     () => synthesizeDialogueForVersion(ctx(state, {
       canReadAudioAsset: undefined,
-      synthesizeSegment: async () => {
+      synthesizeSegment: async (segment) => {
         calls += 1;
-        addAudioAsset(state.db, nextAssetId, 1.1);
-        return { asset_id: nextAssetId++, provider_task_id: 'provider-audio' };
+        const providerTaskId = addAudioAsset(state.db, nextAssetId, segment, { providerTaskId: 'provider-audio' });
+        return { asset_id: nextAssetId++, provider_task_id: providerTaskId };
       },
     }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-no-reader' }),
     (error) => error.code === 'REDRAW_DIALOGUE_AUDIO_INVALID',
@@ -320,6 +343,202 @@ test('missing audio readability validator fails closed and refunds generated seg
   state.db.close();
 });
 
+test('processing audit write failure before provider dispatch refunds reservation', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      beforeProcessingAuditWrite: () => {
+        throw Object.assign(new Error('processing audit write failed'), { code: 'TEST_PROCESSING_AUDIT_FAILED' });
+      },
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not run');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-audit-write-fail' }),
+    (error) => error.code === 'TEST_PROCESSING_AUDIT_FAILED',
+  );
+
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
+  const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
+  assert.equal(draft.dialogue_generation?.segments?.length || 0, 0);
+  state.db.close();
+});
+
+test('processing audit before dispatch blocks same idempotency provider replay', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      afterProcessingAuditWrite: () => {
+        throw Object.assign(new Error('crash before dispatch'), { code: 'TEST_CRASH_BEFORE_DISPATCH' });
+      },
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not run');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-processing' }),
+    (error) => error.code === 'TEST_CRASH_BEFORE_DISPATCH',
+  );
+
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('held').count, 1);
+  const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
+  assert.equal(draft.dialogue_generation.segments[0].status, 'processing');
+  assert.equal(draft.dialogue_generation.segments[0].reservation_status, 'held');
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not run');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-processing' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+  );
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  state.db.close();
+});
+
+test('provider_completed audit recovers by confirming without provider replay', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+  let nextAssetId = 951;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      afterProviderCompletedAuditWrite: () => {
+        throw Object.assign(new Error('crash before confirm'), { code: 'TEST_CRASH_BEFORE_CONFIRM' });
+      },
+      synthesizeSegment: async (segment) => {
+        calls += 1;
+        const assetId = nextAssetId++;
+        const providerTaskId = addAudioAsset(state.db, assetId, segment, { providerTaskId: 'provider-completed' });
+        return { asset_id: assetId, provider_task_id: providerTaskId };
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-provider-completed' }),
+    (error) => error.code === 'TEST_CRASH_BEFORE_CONFIRM',
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('held').count, 1);
+
+  const replay = await synthesizeDialogueForVersion(ctx(state, {
+    synthesizeSegment: async () => {
+      calls += 1;
+      throw new Error('must not run');
+    },
+  }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-provider-completed' });
+
+  assert.equal(replay.status, 'completed');
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations LIMIT 1').get().status, 'confirmed');
+  const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+    .dialogue_generation.segments[0];
+  assert.equal(audit.status, 'completed');
+  assert.equal(audit.reservation_status, 'confirmed');
+  assert.equal(audit.audio_asset_id, 951);
+  state.db.close();
+});
+
+test('confirmed reservation recovers completed audit without provider replay', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+  let nextAssetId = 961;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      afterConfirmBeforeCompletedAuditWrite: () => {
+        throw Object.assign(new Error('crash after confirm'), { code: 'TEST_CRASH_AFTER_CONFIRM' });
+      },
+      synthesizeSegment: async (segment) => {
+        calls += 1;
+        const assetId = nextAssetId++;
+        const providerTaskId = addAudioAsset(state.db, assetId, segment, { providerTaskId: 'provider-confirmed' });
+        return { asset_id: assetId, provider_task_id: providerTaskId };
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-confirmed' }),
+    (error) => error.code === 'TEST_CRASH_AFTER_CONFIRM',
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations LIMIT 1').get().status, 'confirmed');
+
+  const replay = await synthesizeDialogueForVersion(ctx(state, {
+    synthesizeSegment: async () => {
+      calls += 1;
+      throw new Error('must not run');
+    },
+  }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-confirmed' });
+
+  assert.equal(replay.status, 'completed');
+  assert.equal(calls, 1);
+  const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+    .dialogue_generation.segments[0];
+  assert.equal(audit.status, 'completed');
+  assert.equal(audit.reservation_status, 'confirmed');
+  assert.equal(audit.audio_asset_id, 961);
+  state.db.close();
+});
+
+test('generated audio must be redraw dialogue asset bound to current segment and reservation', async () => {
+  const cases = [
+    {
+      name: 'wrong category',
+      options: { category: 'voice' },
+    },
+    {
+      name: 'wrong tenant',
+      options: { metadata: { tenant_id: 'tenant-b' } },
+    },
+    {
+      name: 'wrong provider task',
+      options: { providerTaskId: 'metadata-task', outputProviderTaskId: 'output-task' },
+    },
+  ];
+
+  for (const item of cases) {
+    const state = setup();
+    state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+    const quote = quoteDialoguePlan(state.db, ctx(state));
+    let calls = 0;
+    let nextAssetId = 971;
+
+    await assert.rejects(
+      () => synthesizeDialogueForVersion(ctx(state, {
+        synthesizeSegment: async (segment) => {
+          calls += 1;
+          const assetId = nextAssetId++;
+          const providerTaskId = addAudioAsset(state.db, assetId, segment, item.options);
+          return {
+            asset_id: assetId,
+            provider_task_id: item.options.outputProviderTaskId || providerTaskId,
+          };
+        },
+      }), { quoteHash: quote.quote_hash, idempotencyKey: `idem-asset-${item.name}` }),
+      (error) => error.code === 'REDRAW_DIALOGUE_AUDIO_INVALID',
+    );
+
+    assert.equal(calls, 1);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
+    const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+      .dialogue_generation.segments[0];
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.reservation_status, 'refunded');
+    state.db.close();
+  }
+});
+
 test('unknown provider result stays held, needs_attention, and same idempotency does not resubmit completed segments', async () => {
   const state = setup();
   const quote = quoteDialoguePlan(state.db, ctx(state));
@@ -330,8 +549,8 @@ test('unknown provider result stays held, needs_attention, and same idempotency 
       synthesizeSegment: async (segment) => {
         calls += 1;
         if (calls === 1) {
-          addAudioAsset(state.db, 911, 1.2);
-          return { asset_id: 911, provider_task_id: 'provider-ok' };
+          const providerTaskId = addAudioAsset(state.db, 911, segment, { duration: 1.2, providerTaskId: 'provider-ok' });
+          return { asset_id: 911, provider_task_id: providerTaskId };
         }
         const error = new Error('供应商任务仍可能处理中');
         error.code = 'PROVIDER_STATUS_UNKNOWN';
@@ -390,10 +609,10 @@ test('same idempotency returns completed readable segments without duplicate pro
   let calls = 0;
   let nextAssetId = 921;
   const first = await synthesizeDialogueForVersion(ctx(state, {
-    synthesizeSegment: async () => {
+    synthesizeSegment: async (segment) => {
       calls += 1;
-      addAudioAsset(state.db, nextAssetId, 1.1);
-      return { asset_id: nextAssetId++, provider_task_id: `provider-${calls}` };
+      const providerTaskId = addAudioAsset(state.db, nextAssetId, segment, { providerTaskId: `provider-${calls}` });
+      return { asset_id: nextAssetId++, provider_task_id: providerTaskId };
     },
   }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-replay' });
   const second = await synthesizeDialogueForVersion(ctx(state, {
