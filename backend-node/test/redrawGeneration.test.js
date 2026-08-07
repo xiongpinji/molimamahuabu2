@@ -52,7 +52,7 @@ function setup(overrides = {}) {
     VALUES (?, 'tenant-a', 'user-a', 1, 'zh-CN', 'CN', ?, 'ready_to_generate', ?, ?)`)
     .run(workId, JSON.stringify(overrides.styleSnapshot || { tone: 'warm', lens: '35mm' }), now, now);
   const versionId = db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id;
-  return { db, now, versionId };
+  return { db, now, workId, versionId };
 }
 
 function addBaseAsset(db, input) {
@@ -133,6 +133,15 @@ function ctx(db, overrides = {}) {
 
 function count(db, table, where = '1=1') {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
+}
+
+function workflowState(db, versionId) {
+  return db.prepare(`
+    SELECT v.status AS version_status, w.status AS work_status, w.current_step
+    FROM redraw_versions v
+    JOIN redraw_works w ON w.id = v.work_id
+    WHERE v.id = ?
+  `).get(versionId);
 }
 
 function addVerifiedGenerationCapability(db, model, overrides = {}) {
@@ -543,6 +552,130 @@ test('awaitCompletion 成功后写回成片素材、task result 并确认账单'
     assert.equal(draft.new_video_ref.video_url, 'https://cdn.test/video.mp4');
     assert.equal(JSON.parse(task.result).asset_id, 77);
     assert.equal(reservation.status, 'confirmed');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('单镜开始生成时后端将 work/version 固定回第三步', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    state.db.prepare("UPDATE redraw_versions SET status = 'composing' WHERE id = ?").run(state.versionId);
+    state.db.prepare("UPDATE redraw_works SET status = 'composing', current_step = 4 WHERE id = ?").run(state.workId);
+
+    const result = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+
+    assert.equal(result.status, 'processing');
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
+  } finally {
+    state.db.close();
+  }
+});
+
+test('只有最后一个完成且全部分镜有 video_generation_id 才推进第四步', async () => {
+  const state = setup();
+  try {
+    const firstShotId = addShot(state.db, state.versionId, { shotIndex: 1 });
+    const secondShotId = addShot(state.db, state.versionId, { shotIndex: 2, startMs: 6000 });
+    const completeCtx = ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        db.prepare('UPDATE video_generations SET status = ?, video_url = ?, local_path = ? WHERE id = ?')
+          .run('completed', `https://cdn.test/${id}.mp4`, `videos/${id}.mp4`, id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: (_db, _log, id) => ({ id: 7000 + Number(id) }),
+    });
+
+    await generateShot(completeCtx, { shotId: firstShotId });
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
+
+    await generateShot(completeCtx, { shotId: secondShotId });
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'composing',
+      work_status: 'composing',
+      current_step: 4,
+    });
+  } finally {
+    state.db.close();
+  }
+});
+
+test('第四步推进只统计当前 owner/version 的有效分镜', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    const now = new Date().toISOString();
+    state.db.prepare(`INSERT INTO redraw_shots
+      (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+       references_json, prompt, negative_prompt, compiled_prompt_json, draft_json, status, created_at, updated_at)
+      VALUES (?, 'tenant-b', 'user-b', 1, 99, 0, 6000, 6000, '[]', 'foreign', '', '{}', '{}', 'draft', ?, ?)`)
+      .run(state.versionId, now, now);
+
+    await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        db.prepare('UPDATE video_generations SET status = ?, video_url = ?, local_path = ? WHERE id = ?')
+          .run('completed', 'https://cdn.test/owner.mp4', 'videos/owner.mp4', id);
+      },
+      artifactVerifier: async () => ({ duration: 6, width: 720, height: 1280 }),
+      assetImporter: () => ({ id: 88 }),
+    }), { shotId });
+
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'composing',
+      work_status: 'composing',
+      current_step: 4,
+    });
+    assert.equal(
+      state.db.prepare("SELECT status FROM redraw_shots WHERE version_id = ? AND tenant_id = 'tenant-b'").get(state.versionId).status,
+      'draft',
+    );
+  } finally {
+    state.db.close();
+  }
+});
+
+test('失败和重试都会把旧第四步降级回第三步', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    state.db.prepare("UPDATE redraw_versions SET status = 'composing' WHERE id = ?").run(state.versionId);
+    state.db.prepare("UPDATE redraw_works SET status = 'composing', current_step = 4 WHERE id = ?").run(state.workId);
+    const failed = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      videoProcessor: async (db, _log, id) => {
+        db.prepare('UPDATE video_generations SET status = ?, error_msg = ? WHERE id = ?')
+          .run('failed', 'provider failed', id);
+      },
+    }), { shotId });
+
+    assert.equal(failed.status, 'failed');
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
+
+    state.db.prepare("UPDATE redraw_versions SET status = 'composing' WHERE id = ?").run(state.versionId);
+    state.db.prepare("UPDATE redraw_works SET status = 'composing', current_step = 4 WHERE id = ?").run(state.workId);
+    const retried = await retryShot(ctx(state.db, { schedule: () => {} }), { shotId });
+
+    assert.equal(retried.status, 'processing');
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
   } finally {
     state.db.close();
   }

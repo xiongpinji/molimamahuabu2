@@ -425,6 +425,7 @@ async function generateShot(ctx, input = {}) {
       if (changed.changes !== 1) {
         throw codedError('REDRAW_SHOT_CREATE_CONFLICT', '转绘镜头生成状态已变化');
       }
+      setVersionGenerationStep(db, ctx, shot.version_id, timestamp);
       return {
         status: 'processing',
         task_id: task.id,
@@ -486,6 +487,63 @@ function enrichGenerationResult(db, result) {
     ...result,
     billing: billingForReservationRow(reservation),
   };
+}
+
+function setVersionGenerationStep(db, ctx, versionId, timestamp) {
+  db.prepare(`
+    UPDATE redraw_versions
+    SET status = 'generating', updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(timestamp, Number(versionId), String(ctx.tenantId), String(ctx.userId));
+  db.prepare(`
+    UPDATE redraw_works
+    SET status = 'generating', current_step = 3, updated_at = ?
+    WHERE id = (
+      SELECT work_id FROM redraw_versions
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    )
+      AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(
+    timestamp,
+    Number(versionId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+  );
+}
+
+function advanceVersionIfAllShotsCompleted(db, ctx, versionId, timestamp) {
+  const gate = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'completed' AND video_generation_id IS NOT NULL THEN 0 ELSE 1 END) AS incomplete
+    FROM redraw_shots
+    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(Number(versionId), String(ctx.tenantId), String(ctx.userId));
+  if (!gate || Number(gate.total) < 1 || Number(gate.incomplete || 0) !== 0) return false;
+  db.prepare(`
+    UPDATE redraw_versions
+    SET status = 'composing', updated_at = ?
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(timestamp, Number(versionId), String(ctx.tenantId), String(ctx.userId));
+  db.prepare(`
+    UPDATE redraw_works
+    SET status = 'composing', current_step = 4, updated_at = ?
+    WHERE id = (
+      SELECT work_id FROM redraw_versions
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    )
+      AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).run(
+    timestamp,
+    Number(versionId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+    String(ctx.tenantId),
+    String(ctx.userId),
+  );
+  return true;
 }
 
 function ownerMatches(row, ctx) {
@@ -567,6 +625,17 @@ function updateNeedsAttention(db, taskId, shotId, message, timestamp, videoGener
         SET status = 'needs_attention', error_msg = ?, updated_at = ?
         WHERE task_id = ? AND deleted_at IS NULL
       `).run(safeMessage, timestamp, taskId);
+    }
+    const shot = db.prepare(`
+      SELECT version_id, tenant_id, user_id
+      FROM redraw_shots
+      WHERE id = ? AND deleted_at IS NULL
+    `).get(shotId);
+    if (shot?.version_id && shot?.tenant_id && shot?.user_id) {
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
     }
   })();
 }
@@ -690,6 +759,10 @@ async function runShotGeneration(ctx, taskId) {
               draft_json = ?, updated_at = ?
           WHERE id = ?
         `).run(row.id, mergeDraft(draft, { generation: { completed_at: timestamp }, new_video_ref: newVideoRef }), timestamp, shot.id);
+        advanceVersionIfAllShotsCompleted(db, {
+          tenantId: shot.tenant_id,
+          userId: shot.user_id,
+        }, shot.version_id, timestamp);
         taskService.updateTaskResult(db, task.id, {
           status: 'completed',
           shot_id: shot.id,
@@ -716,6 +789,10 @@ async function runShotGeneration(ctx, taskId) {
               error_message = ?, updated_at = ?
           WHERE id = ?
         `).run(String(outcome.error || '').slice(0, 500), timestamp, shot.id);
+        setVersionGenerationStep(db, {
+          tenantId: shot.tenant_id,
+          userId: shot.user_id,
+        }, shot.version_id, timestamp);
         taskService.updateTaskError(db, task.id, outcome.error || '单镜视频生成失败');
         redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'failed', outcome.error || '单镜视频生成失败');
       })();
