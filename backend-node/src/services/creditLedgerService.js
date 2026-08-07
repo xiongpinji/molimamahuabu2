@@ -232,26 +232,7 @@ function reserve(db, input) {
   return db.transaction(() => {
     const existing = db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
     if (existing) return existing;
-    const now = new Date().toISOString();
-    const changed = db.prepare(`UPDATE credit_accounts
-      SET available = available - ?, held = held + ?, updated_at = ?
-      WHERE user_id = ? AND available >= ?`)
-      .run(amount, amount, now, String(input.userId), amount);
-    if (changed.changes !== 1) {
-      const error = new Error('额度不足');
-      error.code = 'INSUFFICIENT_CREDITS';
-      throw error;
-    }
-    const id = randomUUID();
-    db.prepare(`INSERT INTO usage_reservations
-      (id, operation_key, user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?, ?)`)
-      .run(id, String(input.operationKey), String(input.userId), String(input.model), String(input.resourceType), String(input.resourceId), amount, now, now);
-    db.prepare(`INSERT INTO credit_ledger
-      (id, reservation_id, user_id, event_type, available_delta, held_delta, spent_delta, created_at)
-      VALUES (?, ?, ?, 'reserve', ?, ?, 0, ?)`)
-      .run(randomUUID(), id, String(input.userId), -amount, amount, now);
-    return getReservation(db, id);
+    return createUserReservation(db, input, amount);
   })();
 }
 
@@ -262,29 +243,83 @@ function reserveTenant(db, input, amount) {
     const existing = db.prepare(`SELECT * FROM tenant_usage_reservations
       WHERE tenant_id = ? AND operation_key = ?`).get(tenantId, operationKey);
     if (existing) return existing;
-    const now = new Date().toISOString();
-    const changed = db.prepare(`UPDATE tenant_credit_accounts
-      SET available = available - ?, held = held + ?, updated_at = ?
-      WHERE tenant_id = ? AND available >= ?`)
-      .run(amount, amount, now, tenantId, amount);
-    if (changed.changes !== 1) {
-      const error = new Error('额度不足');
-      error.code = 'INSUFFICIENT_CREDITS';
-      throw error;
-    }
-    const id = randomUUID();
-    const actorUserId = input.actorUserId || input.userId || null;
-    db.prepare(`INSERT INTO tenant_usage_reservations
-      (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'held', ?, ?)`)
-      .run(id, tenantId, operationKey, actorUserId == null ? null : String(actorUserId),
-        String(input.model), String(input.resourceType), String(input.resourceId), amount, now, now);
-    db.prepare(`INSERT INTO tenant_credit_ledger
-      (id, reservation_id, tenant_id, actor_user_id, event_type, available_delta, held_delta, spent_delta, created_at)
-      VALUES (?, ?, ?, ?, 'reserve', ?, ?, 0, ?)`)
-      .run(randomUUID(), id, tenantId, actorUserId == null ? null : String(actorUserId), -amount, amount, now);
-    return getReservation(db, id);
+    return createTenantReservation(db, input, amount);
   })();
+}
+
+function createUserReservation(db, input, amount) {
+  const now = new Date().toISOString();
+  const changed = db.prepare(`UPDATE credit_accounts
+    SET available = available - ?, held = held + ?, updated_at = ?
+    WHERE user_id = ? AND available >= ?`)
+    .run(amount, amount, now, String(input.userId), amount);
+  if (changed.changes !== 1) {
+    const error = new Error('额度不足');
+    error.code = 'INSUFFICIENT_CREDITS';
+    throw error;
+  }
+  const id = randomUUID();
+  db.prepare(`INSERT INTO usage_reservations
+    (id, operation_key, user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?, ?)`)
+    .run(id, String(input.operationKey), String(input.userId), String(input.model), String(input.resourceType), String(input.resourceId), amount, now, now);
+  db.prepare(`INSERT INTO credit_ledger
+    (id, reservation_id, user_id, event_type, available_delta, held_delta, spent_delta, created_at)
+    VALUES (?, ?, ?, 'reserve', ?, ?, 0, ?)`)
+    .run(randomUUID(), id, String(input.userId), -amount, amount, now);
+  return getReservation(db, id);
+}
+
+function createTenantReservation(db, input, amount) {
+  const tenantId = String(input.tenantId);
+  const now = new Date().toISOString();
+  const changed = db.prepare(`UPDATE tenant_credit_accounts
+    SET available = available - ?, held = held + ?, updated_at = ?
+    WHERE tenant_id = ? AND available >= ?`)
+    .run(amount, amount, now, tenantId, amount);
+  if (changed.changes !== 1) {
+    const error = new Error('额度不足');
+    error.code = 'INSUFFICIENT_CREDITS';
+    throw error;
+  }
+  const id = randomUUID();
+  const actorUserId = input.actorUserId || input.userId || null;
+  db.prepare(`INSERT INTO tenant_usage_reservations
+    (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'held', ?, ?)`)
+    .run(id, tenantId, String(input.operationKey), actorUserId == null ? null : String(actorUserId),
+      String(input.model), String(input.resourceType), String(input.resourceId), amount, now, now);
+  db.prepare(`INSERT INTO tenant_credit_ledger
+    (id, reservation_id, tenant_id, actor_user_id, event_type, available_delta, held_delta, spent_delta, created_at)
+    VALUES (?, ?, ?, ?, 'reserve', ?, ?, 0, ?)`)
+    .run(randomUUID(), id, tenantId, actorUserId == null ? null : String(actorUserId), -amount, amount, now);
+  return getReservation(db, id);
+}
+
+function claim(db, input) {
+  ensureSchema(db);
+  const amount = validateReservationInput(input);
+  return db.transaction(() => {
+    const existing = input.tenantId
+      ? db.prepare(`SELECT * FROM tenant_usage_reservations
+        WHERE tenant_id = ? AND operation_key = ?`).get(String(input.tenantId), String(input.operationKey))
+      : db.prepare('SELECT * FROM usage_reservations WHERE operation_key = ?').get(String(input.operationKey));
+    if (existing) return { reservation: existing, created: false };
+    let reservation = input.tenantId
+      ? createTenantReservation(db, input, amount)
+      : createUserReservation(db, input, amount);
+    if (typeof input.onCreated === 'function') {
+      try {
+        input.onCreated(reservation);
+      } catch (error) {
+        reservation = reservation.tenant_id
+          ? settleTenant(db, reservation, 'refunded', error?.code || 'claim_failed')
+          : settleUser(db, reservation, 'refunded', error?.code || 'claim_failed');
+        return { reservation, created: true, error };
+      }
+    }
+    return { reservation, created: true };
+  }).immediate();
 }
 
 function settle(db, reservationId, target, reason) {
@@ -293,29 +328,33 @@ function settle(db, reservationId, target, reason) {
     if (!row) throw new Error('额度预扣记录不存在');
     if (row.status !== 'held') return row;
     if (row.tenant_id) return settleTenant(db, row, target, reason);
-    const now = new Date().toISOString();
-    if (target === 'confirmed') {
-      db.prepare(`UPDATE credit_accounts SET held = held - ?, spent = spent + ?, updated_at = ? WHERE user_id = ? AND held >= ?`)
-        .run(row.amount, row.amount, now, row.user_id, row.amount);
-    } else {
-      db.prepare(`UPDATE credit_accounts SET held = held - ?, available = available + ?, updated_at = ? WHERE user_id = ? AND held >= ?`)
-        .run(row.amount, row.amount, now, row.user_id, row.amount);
-    }
-    db.prepare('UPDATE usage_reservations SET status = ?, reason = ?, updated_at = ? WHERE id = ? AND status = ?')
-      .run(target, reason || null, now, row.id, 'held');
-    db.prepare(`INSERT OR IGNORE INTO credit_ledger
-      (id, reservation_id, user_id, event_type, available_delta, held_delta, spent_delta, reason, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
-        randomUUID(), row.id, row.user_id, target === 'confirmed' ? 'confirm' : 'refund',
-        target === 'confirmed' ? 0 : row.amount,
-        -row.amount,
-        target === 'confirmed' ? row.amount : 0,
-        reason || null,
-        now
-      );
-    return getReservation(db, row.id);
+    return settleUser(db, row, target, reason);
   })();
+}
+
+function settleUser(db, row, target, reason) {
+  const now = new Date().toISOString();
+  if (target === 'confirmed') {
+    db.prepare(`UPDATE credit_accounts SET held = held - ?, spent = spent + ?, updated_at = ? WHERE user_id = ? AND held >= ?`)
+      .run(row.amount, row.amount, now, row.user_id, row.amount);
+  } else {
+    db.prepare(`UPDATE credit_accounts SET held = held - ?, available = available + ?, updated_at = ? WHERE user_id = ? AND held >= ?`)
+      .run(row.amount, row.amount, now, row.user_id, row.amount);
+  }
+  db.prepare('UPDATE usage_reservations SET status = ?, reason = ?, updated_at = ? WHERE id = ? AND status = ?')
+    .run(target, reason || null, now, row.id, 'held');
+  db.prepare(`INSERT OR IGNORE INTO credit_ledger
+    (id, reservation_id, user_id, event_type, available_delta, held_delta, spent_delta, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      randomUUID(), row.id, row.user_id, target === 'confirmed' ? 'confirm' : 'refund',
+      target === 'confirmed' ? 0 : row.amount,
+      -row.amount,
+      target === 'confirmed' ? row.amount : 0,
+      reason || null,
+      now
+    );
+  return getReservation(db, row.id);
 }
 
 function settleTenant(db, row, target, reason) {
@@ -376,6 +415,7 @@ module.exports = {
   adjustTenantBalance,
   listTenantAdjustments,
   getReservation,
+  claim,
   reserve,
   confirm,
   refund,

@@ -261,13 +261,6 @@ function canReadAsset(ctx, asset) {
     && ctx.canReadAudioAsset(asset) === true);
 }
 
-function getReservationByOperationKey(db, tenantId, opKey) {
-  return db.prepare(`
-    SELECT * FROM tenant_usage_reservations
-    WHERE tenant_id = ? AND operation_key = ?
-  `).get(String(tenantId), String(opKey)) || null;
-}
-
 function reservationStatus(db, reservationId) {
   return creditLedger.getReservation(db, reservationId)?.status || null;
 }
@@ -366,8 +359,8 @@ function operationKey(idempotencyKey, quoteHash, segment) {
   ].join(':');
 }
 
-function reserveSegment(db, ctx, quoteHash, idempotencyKey, segment) {
-  return creditLedger.reserve(db, {
+function claimSegment(db, ctx, quoteHash, idempotencyKey, segment, onCreated) {
+  return creditLedger.claim(db, {
     tenantId: ctx.tenantId,
     userId: ctx.userId,
     actorUserId: ctx.userId,
@@ -376,6 +369,7 @@ function reserveSegment(db, ctx, quoteHash, idempotencyKey, segment) {
     resourceType: RESOURCE_TYPE,
     resourceId: `${segment.version_id}:${segment.segment_id}`,
     amount: modelPrice.requirePrice(db, segment.voice_snapshot.model),
+    onCreated,
   });
 }
 
@@ -453,30 +447,12 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
     }
 
     const opKey = operationKey(idempotencyKey, quoteHash, segment);
-    const existingReservation = getReservationByOperationKey(db, ctx.tenantId, opKey);
-    if (existingReservation) {
-      if (existingReservation.status === 'refunded') {
-        throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
-      }
-      if (existingReservation.status === 'held') {
-        throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
-      }
-      throw codedError('REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT', '配音幂等状态不可重投');
-    }
-
     if (typeof ctx.synthesizeSegment !== 'function') {
       throw codedError('REDRAW_DIALOGUE_SYNTHESIZER_REQUIRED', '缺少配音生成器');
     }
-    const reservation = reserveSegment(db, ctx, quoteHash, idempotencyKey, segment);
-    if (reservation.status !== 'held') {
-      const code = reservation.status === 'refunded'
-        ? 'REDRAW_DIALOGUE_RETRY_REQUIRED'
-        : 'REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT';
-      throw codedError(code, '配音幂等状态不可重投');
-    }
-    try {
+    const claim = claimSegment(db, ctx, quoteHash, idempotencyKey, segment, (reservation) => {
       if (typeof ctx.beforeProcessingAuditWrite === 'function') {
-        await ctx.beforeProcessingAuditWrite({ segment, reservation, operation_key: opKey });
+        ctx.beforeProcessingAuditWrite({ segment, reservation, operation_key: opKey });
       }
       holder.segments.set(segment.segment_id, safeAudit(segment, {
         status: 'processing',
@@ -487,9 +463,23 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
         operation_key: opKey,
       }));
       writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
-    } catch (error) {
-      creditLedger.refund(db, reservation.id, error?.code || 'processing_audit_failed');
-      throw error;
+    });
+    const reservation = claim.reservation;
+    if (claim.error) throw claim.error;
+    if (!claim.created) {
+      if (reservation.status === 'refunded') {
+        throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
+      }
+      if (reservation.status === 'held') {
+        throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
+      }
+      throw codedError('REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT', '配音幂等状态不可重投');
+    }
+    if (reservation.status !== 'held') {
+      const code = reservation.status === 'refunded'
+        ? 'REDRAW_DIALOGUE_RETRY_REQUIRED'
+        : 'REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT';
+      throw codedError(code, '配音幂等状态不可重投');
     }
     if (typeof ctx.afterProcessingAuditWrite === 'function') {
       await ctx.afterProcessingAuditWrite({ segment, reservation, operation_key: opKey });

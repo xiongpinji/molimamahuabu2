@@ -408,6 +408,40 @@ test('processing audit before dispatch blocks same idempotency provider replay',
   state.db.close();
 });
 
+test('existing held claim for same operation key blocks provider dispatch without new reservation', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  const idempotencyKey = 'idem-existing-held';
+  const operationKey = `redraw_dialogue:${idempotencyKey}:${state.versionId}:801:0:${quote.quote_hash}`;
+  credits.reserve(state.db, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    actorUserId: 'user-a',
+    operationKey,
+    model: 'speech-2.8-turbo',
+    resourceType: 'redraw_dialogue',
+    resourceId: `${state.versionId}:801:0`,
+    amount: 4,
+  });
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not run');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey }),
+    (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+  );
+
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('held').count, 1);
+  state.db.close();
+});
+
 test('provider_completed audit recovers by confirming without provider replay', async () => {
   const state = setup();
   state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
