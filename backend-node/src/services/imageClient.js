@@ -179,7 +179,7 @@ async function callAihubccImageApi(config, log, opts = {}) {
  * @param {object} db
  * @param {string} [preferredModel] - 指定模型名时，在匹配到的配置中选含该模型的
  * @param {string} [preferredProvider] - 指定供应商（如 openai / dashscope），只在该 provider 的配置中选
- * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图）；缺省为 'image'
+ * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图），或 redraw_* 转绘资产；缺省为 'image'
  */
 function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
   const candidates = getImageConfigCandidates(
@@ -198,11 +198,16 @@ function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServi
 
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
-  let configs = aiConfigService.listConfigs(db, serviceType);
-  if (serviceType === 'storyboard_image') {
-    const fallbackConfigs = aiConfigService.listConfigs(db, 'image');
-    const ids = new Set(configs.map((config) => String(config.id)));
-    configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
+  const serviceTypes = getImageConfigServiceTypeChain(serviceType);
+  const seenIds = new Set();
+  let configs = [];
+  for (const candidateServiceType of serviceTypes) {
+    for (const config of aiConfigService.listConfigs(db, candidateServiceType)) {
+      const id = String(config.id);
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      configs.push(config);
+    }
   }
   const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
     .some((column) => column.name === 'verification_status');
@@ -254,6 +259,18 @@ function getImageConfigCandidates(db, preferredModel, preferredProvider, imageSe
       return price === primaryPrice;
     }),
   ];
+}
+
+function getImageConfigServiceTypeChain(serviceType) {
+  if (serviceType === 'storyboard_image') return ['storyboard_image', 'image'];
+  if (
+    serviceType === 'redraw_character'
+    || serviceType === 'redraw_scene'
+    || serviceType === 'redraw_prop'
+  ) {
+    return [serviceType, 'storyboard_image', 'image'];
+  }
+  return [serviceType];
 }
 
 function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
