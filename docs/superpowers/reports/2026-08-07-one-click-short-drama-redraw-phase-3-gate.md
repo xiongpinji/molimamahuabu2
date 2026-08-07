@@ -91,3 +91,31 @@
 5. 可读产物、尺寸、时长、hash、播放/下载证据。
 6. SQLite 账本 reservation、charged/released、供应商账单和失败退款审计。
 7. 不含密钥的任务文档证据链。
+
+## Task 12 授权预检（2026-08-07）
+
+预检工作树：`C:\Users\canqu\Documents\茉莉妈妈2\worktrees\baseline-canvas-video-first-last-20260806`
+
+预检分支：`codex/short-drama-redraw-design`
+
+预检 HEAD：`b01a322134cebb767f2a73c5bc28fa293d053e70`
+
+预检前 Git 状态：干净。
+
+权威门禁：只有同时满足用户明确授权付费调用、目标环境存在目标 Key、目标模型已有符合 AGENTS.md 的真实生成验证记录、本次不写生产业务数据，才允许进入真实供应商验收。任一条件不满足，本报告必须保持 `status=blocked` 和 `productComplete=false`。
+
+### 逐项结论
+
+- `passed`：用户已在 2026-08-07 明确回复“真实付费验收”，付费调用授权这一项已满足。
+- `blocked`：用户尚未提供目标供应商、Key 的安全注入位置、隔离测试租户和预算上限，无法确定本次验收的目标环境与成本边界。
+- `blocked`：目标工作树 `backend-node/data/drama_generator.db` 不存在；`config.yaml` 只配置 `./data/drama_generator.db` 和本地 storage，不含 AI Key。
+- `blocked`：当前进程环境按变量名检查，没有 `AIHUBCC`、`OPENAI`、`RUNWAY`、`KLING`、`VEO`、`VOLC`、`ARK`、`SEED`、`ELEVEN`、`FISH`、`MINIMAX` 等本任务相关 Key；只有与本任务无关的 `XAGENT_DEEPSEEK_API_KEY`，不得使用。
+- `blocked`：同一项目其他四个本地 `drama_generator.db` 的 `ai_service_configs` 为空。
+- `blocked`：`research/libtv-open-source-audit/repos/LocalMiniDrama` 的数据库虽有 text/image/video 配置和 Key，但 `verification_status` 均为 `null`，且它不是目标验收 worktree 或隔离租户；不得搬用，也不得视为已验证目标环境。
+- `blocked`：未发现 TTS 配置。
+- `blocked`：每个文本、图片、TTS、视频目标模型都尚缺使用目标 Key 完成的真实生成、成功终态、可读产物验证记录；数据库里的 `has_key`、旧文档记录或只读连接测试都不能替代 AGENTS.md 要求的真实生成验证。
+- `blocked`：因关键条件不满足，本轮未发起任何真实或付费供应商请求，未产生 provider task、资产、账本或成片，未写生产业务数据，未部署。
+
+### 下一步必需输入
+
+继续 Task12 前，用户需要提供目标供应商、Key 的安全注入位置、隔离测试租户和预算上限。随后每个文本、图片、TTS、视频目标模型必须先用目标 Key 完成一次真实生成，等待成功终态并验证结果文件可读取，再把不含密钥的证据记录到任务文档。上述条件全部满足前，不得进入真实供应商验收，不得把模型写入生产模型目录，不得声明产品完成。
