@@ -267,16 +267,22 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
   const idempotencyKey = String(input.idempotencyKey || input.idempotency_key || '').trim();
   if (!idempotencyKey) throw codedError('REDRAW_ASSET_BATCH_IDEMPOTENCY_REQUIRED', '缺少批量幂等键');
   const log = ctx.log || { info() {}, warn() {}, error() {} };
-  const existing = base.db.prepare(`
-    SELECT * FROM redraw_asset_batches
-    WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND idempotency_key = ? AND deleted_at IS NULL
-  `).get(base.versionId, base.tenantId, base.userId, idempotencyKey);
-  if (existing) {
-    return { batch: rowToBatch(existing), task: taskService.getTask(base.db, existing.task_id), completion: Promise.resolve(rowToBatch(existing)) };
-  }
 
   let created;
   const tx = base.db.transaction(() => {
+    const existing = base.db.prepare(`
+      SELECT * FROM redraw_asset_batches
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND idempotency_key = ? AND deleted_at IS NULL
+    `).get(base.versionId, base.tenantId, base.userId, idempotencyKey);
+    options.trace?.({ event: 'idempotency_read', inImmediateTransaction: base.db.inTransaction === true, existing: Boolean(existing) });
+    if (existing) {
+      created = {
+        replay: true,
+        batch: rowToBatch(existing),
+        task: taskService.getTask(base.db, existing.task_id),
+      };
+      return;
+    }
     const quote = quoteAssetBatch(base.db, { ...ctx, assetIds: input.assetIds ?? input.asset_ids });
     if (!quote.priced) throw codedError('REDRAW_ASSET_BATCH_UNPRICED', '批量资产存在未验证能力或未配置价格', { quote });
     if (String(input.quoteHash || input.quote_hash || '') !== quote.quote_hash) {
@@ -304,6 +310,18 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
     const childTasks = [];
     for (const item of quote.items) {
       const childTask = createOwnedTask(base.db, log, 'redraw_asset', `redraw_asset:${item.asset_id}`, base);
+      const snapshot = {
+        asset_id: item.asset_id,
+        version_number: item.version_number,
+        kind: item.kind,
+        prompt_hash: item.prompt_hash,
+        capability: item.capability,
+        provider: item.provider,
+        model: item.model,
+        evidence: item.evidence,
+        credits: item.credits,
+        quote_hash: quote.quote_hash,
+      };
       const attempt = createAssetAttempt({
         ...ctx,
         db: base.db,
@@ -315,6 +333,7 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         localizedName: item.localized_name,
         localizedDescription: item.localized_description,
         prompt: item.prompt,
+        snapshot,
         generationTaskId: childTask.id,
         operationKey: `redraw_asset_batch:${base.tenantId}:${base.userId}:${base.versionId}:${item.asset_id}:${item.version_number}:${item.prompt_hash}:${idempotencyKey}`,
       });
@@ -329,7 +348,24 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
       childTasks,
     };
   });
-  tx.immediate();
+  try {
+    tx.immediate();
+  } catch (error) {
+    if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE' || error?.code === 'SQLITE_CONSTRAINT') {
+      const existing = base.db.prepare(`
+        SELECT * FROM redraw_asset_batches
+        WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND idempotency_key = ? AND deleted_at IS NULL
+      `).get(base.versionId, base.tenantId, base.userId, idempotencyKey);
+      if (existing) {
+        const batch = rowToBatch(existing);
+        return { batch, task: taskService.getTask(base.db, existing.task_id), completion: Promise.resolve(batch) };
+      }
+    }
+    throw error;
+  }
+  if (created?.replay) {
+    return { batch: created.batch, task: created.task, completion: Promise.resolve(created.batch) };
+  }
 
   const work = async () => {
     const now = new Date().toISOString();
@@ -356,7 +392,10 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
           base.db.prepare('UPDATE redraw_assets SET generation_task_id = ?, updated_at = ? WHERE id = ?')
             .run(String(providerTaskId), new Date().toISOString(), Number(attemptId));
         }
-        const finalized = finalizeAssetAttempt(ctx, attemptId, result || {});
+        const finalized = finalizeAssetAttempt(ctx, attemptId, {
+          ...(result || {}),
+          clean_plate: item.kind === 'scene' && item.capability === 'clean_plate_image',
+        });
         taskService.updateTaskResult(base.db, childTask.id, { asset_id: finalized.id, status: finalized.status });
       } catch (error) {
         failAssetAttempt(ctx, attemptId, error);

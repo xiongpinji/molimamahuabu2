@@ -247,13 +247,17 @@ test('startAssetBatch dispatches after commit, settles partial failure, and retr
   });
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'confirmed'").get().count, 3);
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'refunded'").get().count, 1);
+  const scene = state.db.prepare("SELECT asset_id, clean_plate_asset_id, status FROM redraw_assets WHERE kind = 'scene' ORDER BY id DESC LIMIT 1").get();
+  assert.equal(scene.asset_id, null);
+  assert.equal(scene.clean_plate_asset_id, null);
+  assert.equal(scene.status, 'failed');
   const retryQuote = quoteAssetBatch(state.db, state.ctx);
   assert.deepEqual(retryQuote.items.map((item) => item.kind), ['scene']);
   assert.equal(retryQuote.total_credits, 5);
   cleanup(state);
 });
 
-test('startAssetBatch reports completed and failed for all-success and all-failed batches', async () => {
+test('startAssetBatch reports completed and failed for all-success and all-failed batches with per-attempt snapshots', async () => {
   const success = setupBatchState();
   const successQuote = quoteAssetBatch(success.db, success.ctx);
   const successStarted = startAssetBatch({
@@ -267,6 +271,34 @@ test('startAssetBatch reports completed and failed for all-success and all-faile
   }, { quoteHash: successQuote.quote_hash, idempotencyKey: 'all-success' });
   await successStarted.completion;
   assert.equal(getAssetBatch(success.db, success.ctx, successStarted.batch.id).status, 'completed');
+  const rows = success.db.prepare(`
+    SELECT id, kind, source_ref_json, asset_id, clean_plate_asset_id, voice_asset_id, status
+    FROM redraw_assets
+    WHERE id IN (${successStarted.batch.asset_ids.map(() => '?').join(',')})
+    ORDER BY CASE kind WHEN 'character' THEN 1 WHEN 'scene' THEN 2 WHEN 'prop' THEN 3 WHEN 'voice' THEN 4 ELSE 9 END
+  `).all(...successStarted.batch.asset_ids);
+  const byKind = new Map(successQuote.items.map((item) => [item.kind, item]));
+  for (const row of rows) {
+    const snapshot = JSON.parse(row.source_ref_json).snapshot;
+    const quoted = byKind.get(row.kind);
+    assert.equal(snapshot.asset_id, quoted.asset_id);
+    assert.equal(snapshot.version_number, quoted.version_number);
+    assert.equal(snapshot.kind, quoted.kind);
+    assert.equal(snapshot.prompt_hash, quoted.prompt_hash);
+    assert.equal(snapshot.capability, quoted.capability);
+    assert.equal(snapshot.provider, quoted.provider);
+    assert.equal(snapshot.model, quoted.model);
+    assert.deepEqual(snapshot.evidence, quoted.evidence);
+    assert.equal(snapshot.credits, quoted.credits);
+    assert.equal(snapshot.quote_hash, successQuote.quote_hash);
+  }
+  const scene = rows.find((row) => row.kind === 'scene');
+  const prop = rows.find((row) => row.kind === 'prop');
+  assert.equal(scene.clean_plate_asset_id, 102);
+  assert.equal(scene.asset_id, null);
+  assert.equal(scene.status, 'needs_attention');
+  assert.equal(prop.asset_id, 103);
+  assert.equal(prop.clean_plate_asset_id, null);
   cleanup(success);
 
   const failed = setupBatchState();
@@ -285,6 +317,7 @@ test('startAssetBatch reports completed and failed for all-success and all-faile
 test('startAssetBatch idempotency replays the existing batch without refreezing or dispatching', async () => {
   const state = setupBatchState();
   const quote = quoteAssetBatch(state.db, state.ctx);
+  const batchReads = [];
   let calls = 0;
   const first = startAssetBatch({
     ...state.ctx,
@@ -297,19 +330,31 @@ test('startAssetBatch idempotency replays the existing batch without refreezing 
       };
     },
     schedule: (job) => job(),
-  }, { quoteHash: quote.quote_hash, idempotencyKey: 'same-key' });
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'same-key' }, {
+    trace(event) {
+      if (event.event === 'idempotency_read') batchReads.push(event);
+    },
+  });
   const replay = startAssetBatch({
     ...state.ctx,
     provider: async () => {
       throw new Error('must not dispatch replay');
     },
-  }, { quoteHash: quote.quote_hash, idempotencyKey: 'same-key' });
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'same-key' }, {
+    trace(event) {
+      if (event.event === 'idempotency_read') batchReads.push(event);
+    },
+  });
   await first.completion;
 
   assert.equal(replay.batch.id, first.batch.id);
   assert.equal(replay.task.id, first.task.id);
   assert.equal(calls, 4);
+  assert.equal(batchReads.length, 2);
+  assert.equal(batchReads.every((entry) => entry.inImmediateTransaction === true), true);
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 4);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count, 1);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 1);
   cleanup(state);
 });
 
