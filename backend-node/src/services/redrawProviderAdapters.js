@@ -171,8 +171,16 @@ function normalizeAssetRequest(request = {}) {
   const snapshot = snapshotOf(attempt, input);
   const snapshotModel = trim(snapshot.model);
   const requestModel = trim(request.model);
-  const inputModel = trim(input.model);
-  const model = requestModel || snapshotModel || inputModel;
+  if (snapshotModel && requestModel && requestModel !== snapshotModel) {
+    throw codedError('REDRAW_PROVIDER_MODEL_SNAPSHOT_MISMATCH', 'request model does not match persisted asset snapshot model');
+  }
+  const snapshotProvider = trim(snapshot.provider);
+  const requestProvider = trim(request.provider);
+  if (snapshotProvider && requestProvider && requestProvider !== snapshotProvider) {
+    throw codedError('REDRAW_PROVIDER_MODEL_SNAPSHOT_MISMATCH', 'request provider does not match persisted asset snapshot provider');
+  }
+  const model = snapshotModel || requestModel;
+  const provider = snapshotProvider || requestProvider || null;
   const kind = trim(attempt.kind || input.kind || request.kind);
   const versionId = request.versionId || request.version_id || attempt.version_id || attempt.versionId;
   return {
@@ -181,6 +189,7 @@ function normalizeAssetRequest(request = {}) {
     sourceRef,
     snapshot,
     model,
+    provider,
     kind,
     versionId,
     locale: request.locale || input.locale || null,
@@ -267,14 +276,14 @@ function createRedrawProviderAdapters(deps = {}) {
   }
 
   async function generateImageAsset(request, normalized, storageRoot, versionDir) {
-    const { attempt, input, kind, sourceRef, snapshot, model, prompt } = normalized;
+    const { attempt, input, kind, sourceRef, model, provider, prompt } = normalized;
     if (!prompt) throw codedError('REDRAW_PROVIDER_PROMPT_REQUIRED', 'redraw image prompt is required');
     const callImageApi = requireMethod(deps, 'imageClient', './imageClient', 'callImageApi');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
     const imageResult = await callImageApi(db, log, {
       prompt,
       model,
-      preferred_provider: snapshot.provider || undefined,
+      preferred_provider: provider || undefined,
       imageServiceType: `redraw_${kind}`,
       image_type: `redraw_${kind}`,
       image_gen_id: normalized.taskId,
@@ -330,7 +339,7 @@ function createRedrawProviderAdapters(deps = {}) {
       source: 'redraw_provider_adapter',
       kind,
       model,
-      provider: snapshot.provider || null,
+      provider,
       locale: normalized.locale,
       market: normalized.market,
       provider_task_id: providerTaskId,

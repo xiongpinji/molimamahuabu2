@@ -310,6 +310,100 @@ test('generateAsset prefers persisted attempt snapshot over conflicting input mo
   }
 });
 
+test('generateAsset rejects explicit model or provider conflicting with persisted attempt snapshot before client call', async () => {
+  const storageRoot = tempStorage();
+  const imageCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  const attempt = {
+    id: 5,
+    kind: 'prop',
+    prompt: 'prop',
+    source_ref_json: JSON.stringify({
+      source_ref: { id: 'prop-1' },
+      snapshot: { model: 'persisted-model', provider: 'persisted-provider' },
+    }),
+  };
+
+  try {
+    await assert.rejects(
+      () => adapters.generateAsset({
+        versionId: 7,
+        model: 'other-model',
+        attempt,
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_MODEL_SNAPSHOT_MISMATCH',
+    );
+    await assert.rejects(
+      () => adapters.generateAsset({
+        versionId: 7,
+        model: 'persisted-model',
+        provider: 'other-provider',
+        attempt,
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_MODEL_SNAPSHOT_MISMATCH',
+    );
+    assert.equal(imageCalls.length, 0);
+  } finally {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('generateAsset does not fallback to input model when no persisted snapshot or trusted request model exists', async () => {
+  const storageRoot = tempStorage();
+  const imageCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => adapters.generateAsset({
+        versionId: 7,
+        attempt: { id: 5, kind: 'prop', prompt: 'prop' },
+        input: { model: 'input-only-model' },
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_MODEL_REQUIRED',
+    );
+    assert.equal(imageCalls.length, 0);
+  } finally {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('redrawAssetService.generateAsset contract reaches voice adapter and probes duration', async () => {
   const state = setupAssetContractState();
   const synthCalls = [];
