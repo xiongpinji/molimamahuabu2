@@ -20,6 +20,12 @@ export function analysisQuoteCredits(work) {
   return Number.isSafeInteger(credits) && credits > 0 ? credits : null
 }
 
+export function localizationQuoteCredits(work) {
+  const quote = work?.localization_quote
+  const credits = Number(quote?.credits ?? quote?.amount)
+  return quote?.priced === true && Number.isSafeInteger(credits) && credits > 0 ? credits : null
+}
+
 export function localeReady(locales) {
   return Array.isArray(locales) && locales.length > 0
 }
@@ -62,6 +68,61 @@ export function taskStateFromWork(work) {
     status: work?.task_status || work?.status || '',
     progress: Number.isFinite(Number(work?.task_progress)) ? Number(work.task_progress) : 0,
     message: work?.task_message || '',
+  }
+}
+
+function normalizedStatus(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function hasRefundOrReleaseEvidence(task) {
+  return ['refunded', 'refund_confirmed'].includes(normalizedStatus(task?.refund_status))
+    || ['released', 'release_confirmed'].includes(normalizedStatus(task?.credit_hold_status))
+    || task?.refunded === true
+    || task?.credits_refunded === true
+    || task?.credit_released === true
+}
+
+export function redrawWorkflowPhase(work) {
+  const localizationStatus = normalizedStatus(work?.localization_task?.status)
+  if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return 'localizing'
+  if (['failed', 'needs_attention'].includes(localizationStatus)) return 'localization_needs_attention'
+  if (localizationStatus === 'completed' || Number(work?.current_step || 1) > 1) return 'assets'
+  const phase = normalizedStatus(work?.workflow_phase)
+  if (phase) return phase
+  if (normalizedStatus(work?.analysis_task?.status) === 'completed') return 'analysis_review'
+  return 'source'
+}
+
+export function localizationTaskState(work) {
+  const task = work?.localization_task || {}
+  const progress = Number(task.progress ?? task.task_progress)
+  return {
+    task_id: task.id || task.task_id || '',
+    status: task.status || task.task_status || '',
+    progress: Number.isFinite(progress) ? progress : 0,
+    message: task.message || task.task_message || '',
+  }
+}
+
+export function canConfirmLocalization(work, expectedQuoteHash) {
+  const quote = work?.localization_quote
+  if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false
+  if (expectedQuoteHash && String(quote.quote_hash).trim() !== String(expectedQuoteHash).trim()) return false
+  const phase = redrawWorkflowPhase(work)
+  if (phase === 'analysis_review') return true
+  if (!['localization_needs_attention', 'failed'].includes(phase)) return false
+  const task = work?.localization_task || {}
+  return normalizedStatus(task.status || task.task_status) === 'failed' && hasRefundOrReleaseEvidence(task)
+}
+
+export function buildLocalizationPayload(body) {
+  return {
+    locale: String(body?.locale || '').trim(),
+    market: String(body?.market || '').trim(),
+    localization_level: String(body?.localizationLevel || 'faithful').trim(),
+    quote_hash: String(body?.quoteHash || '').trim(),
+    idempotency_key: String(body?.idempotencyKey || '').trim(),
   }
 }
 

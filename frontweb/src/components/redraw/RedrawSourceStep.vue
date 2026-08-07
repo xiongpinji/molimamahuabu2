@@ -1,6 +1,6 @@
 <template>
   <section class="redraw-source-step">
-    <div class="source-card">
+    <div v-if="!['analysis_review', 'localizing', 'localization_needs_attention', 'failed'].includes(workflowPhase)" class="source-card">
       <div class="section-heading">
         <div>
           <p class="eyebrow">01 · 源片输入</p>
@@ -82,6 +82,56 @@
       </div>
       <el-progress :percentage="taskState.progress" :stroke-width="6" color="#ff7139" />
     </section>
+
+    <section v-if="workflowPhase === 'analysis_review'" class="task-card">
+      <div>
+        <strong>服务端分析摘要</strong>
+        <span>{{ workState?.analysis_task?.status || taskState.status || 'completed' }}</span>
+      </div>
+      <p>{{ workState?.analysis_summary || workState?.analysis_task?.message || '分析已完成，请确认后创建英文 1:1 本地化版本。' }}</p>
+      <div class="billing-row">
+        <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
+        <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
+        <el-button
+          type="primary"
+          :loading="localizationSubmitting"
+          :disabled="!canSubmitLocalization"
+          @click="confirmLocalization"
+        >
+          确认英文 1:1 本地化
+        </el-button>
+      </div>
+    </section>
+
+    <section v-if="workflowPhase === 'localizing'" class="task-card">
+      <div>
+        <strong>本地化任务 {{ localizationState.task_id }}</strong>
+        <span>{{ localizationState.status || 'processing' }}</span>
+      </div>
+      <el-progress :percentage="localizationState.progress" :stroke-width="6" color="#4c9ffe" />
+      <p>请勿重复提交</p>
+    </section>
+
+    <section v-if="['localization_needs_attention', 'failed'].includes(workflowPhase)" class="task-card">
+      <div>
+        <strong>本地化失败</strong>
+        <span>{{ localizationState.status || 'failed' }}</span>
+      </div>
+      <p>{{ localizationState.message || workState?.localization_error || '服务端错误' }}</p>
+      <p v-if="!canSubmitLocalization">等待退款确认</p>
+      <div class="billing-row">
+        <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
+        <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
+        <el-button
+          type="primary"
+          :loading="localizationSubmitting"
+          :disabled="!canSubmitLocalization"
+          @click="confirmLocalization"
+        >
+          重试英文 1:1 本地化
+        </el-button>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -93,7 +143,12 @@ import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
   analysisQuoteCredits,
   buildAnalyzePayload,
+  buildLocalizationPayload,
+  canConfirmLocalization,
   canStartRedrawAnalysis,
+  localizationQuoteCredits,
+  localizationTaskState,
+  redrawWorkflowPhase,
   taskStateFromWork,
 } from '@/utils/redrawWorkspaceState'
 
@@ -122,13 +177,20 @@ const freeStyle = ref({})
 const workState = ref(props.initialWork)
 const uploading = ref(false)
 const submitting = ref(false)
+const localizationSubmitting = ref(false)
+const localizationQuoting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
+const localizationState = ref(localizationTaskState(props.initialWork))
+const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
+const localizationIdempotencyKey = ref('')
 let pollTimer = null
 let pollAttempts = 0
 
 const aspectRatioOptions = ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']
 const estimateCredits = computed(() => analysisQuoteCredits(workState.value))
 const hasValidQuote = computed(() => estimateCredits.value != null)
+const localizationCredits = computed(() => localizationQuoteCredits(workState.value))
+const hasLocalizationQuote = computed(() => localizationCredits.value != null)
 const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   work: workState.value,
   selectedFile: selectedFile.value,
@@ -136,19 +198,44 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   selectedPreset: selectedPreset.value,
   freeStyle: freeStyle.value,
 }))
+const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
 
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null
 }
 
+function localizationQuoteBody() {
+  return {
+    locale: locale.value || 'en-US',
+    market: market.value || 'US',
+    localization_level: 'faithful',
+  }
+}
+
 function isTerminalTaskState(work) {
-  const status = String(work?.task_status || work?.status || '').toLowerCase()
-  return ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(status) || Number(work?.current_step || 1) > 1
+  const phase = redrawWorkflowPhase(work)
+  const analysisStatus = String(work?.analysis_task?.status || work?.task_status || work?.status || '').toLowerCase()
+  const localizationStatus = String(work?.localization_task?.status || '').toLowerCase()
+  if (phase === 'localizing') return false
+  if (['pending', 'processing', 'analyzing'].includes(analysisStatus)) return false
+  if (['pending', 'processing', 'localizing'].includes(localizationStatus)) return false
+  return ['analysis_review', 'localization_needs_attention', 'failed', 'assets'].includes(phase)
+    || ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(analysisStatus)
+    || ['completed', 'failed', 'needs_attention', 'cancelled', 'canceled'].includes(localizationStatus)
 }
 
 function shouldPollWork(work) {
-  const status = String(work?.task_status || work?.status || '').toLowerCase()
-  return Boolean(work?.id && ['pending', 'processing', 'analyzing'].includes(status) && !isTerminalTaskState(work))
+  const analysisStatus = String(work?.analysis_task?.status || work?.task_status || work?.status || '').toLowerCase()
+  const localizationStatus = String(work?.localization_task?.status || '').toLowerCase()
+  return Boolean(
+    work?.id
+      && (
+        ['pending', 'processing', 'analyzing'].includes(analysisStatus)
+          || ['pending', 'processing', 'localizing'].includes(localizationStatus)
+          || redrawWorkflowPhase(work) === 'localizing'
+      )
+      && !isTerminalTaskState(work),
+  )
 }
 
 function stopTaskPolling() {
@@ -176,9 +263,15 @@ function startTaskPolling() {
 
 function syncWork(next) {
   workState.value = next
+  workflowPhase.value = redrawWorkflowPhase(next)
   taskState.value = taskStateFromWork(next)
+  localizationState.value = localizationTaskState(next)
+  if (localizationState.value.status === 'completed' || canConfirmLocalization(next)) {
+    localizationIdempotencyKey.value = ''
+  }
   if (shouldPollWork(next)) startTaskPolling()
   if (isTerminalTaskState(next)) stopTaskPolling()
+  ensureLocalizationQuote(next)
 }
 
 async function loadCapabilities() {
@@ -200,6 +293,30 @@ async function refreshWork() {
   syncWork(fresh)
   emit('work-updated', fresh)
   return fresh
+}
+
+async function ensureLocalizationQuote(work = workState.value) {
+  if (
+    localizationQuoting.value
+      || !work?.id
+      || work?.localization_quote
+      || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
+  ) {
+    return
+  }
+  localizationQuoting.value = true
+  try {
+    const quote = await redrawAPI.quoteLocalization(work.id, localizationQuoteBody())
+    if (workState.value?.id !== work.id) return
+    workState.value = {
+      ...workState.value,
+      localization_quote: quote?.localization_quote || quote,
+    }
+  } catch (error) {
+    ElMessage.error(error.message || '获取本地化报价失败')
+  } finally {
+    localizationQuoting.value = false
+  }
 }
 
 async function ensureWork() {
@@ -252,6 +369,51 @@ async function startAnalysis() {
   }
 }
 
+async function confirmLocalization() {
+  if (!canSubmitLocalization.value || localizationSubmitting.value) return
+  localizationSubmitting.value = true
+  try {
+    const work = await ensureWork()
+    const previousHash = String(workState.value?.localization_quote?.quote_hash || '').trim()
+    const quote = await redrawAPI.quoteLocalization(work.id, localizationQuoteBody())
+    const nextWork = {
+      ...workState.value,
+      localization_quote: quote?.localization_quote || quote,
+    }
+    syncWork(nextWork)
+    const nextHash = String(nextWork.localization_quote?.quote_hash || '').trim()
+    if (previousHash && nextHash && nextHash !== previousHash) {
+      ElMessage.warning('本地化报价已变化，请重新确认')
+      return
+    }
+    if (!localizationIdempotencyKey.value) {
+      localizationIdempotencyKey.value = crypto.randomUUID()
+    }
+    const result = await redrawAPI.createVersion(work.id, buildLocalizationPayload({
+      locale: locale.value || 'en-US',
+      market: market.value || 'US',
+      localizationLevel: 'faithful',
+      quoteHash: nextHash,
+      idempotencyKey: localizationIdempotencyKey.value,
+    }))
+    localizationState.value = localizationTaskState({
+      localization_task: {
+        id: result?.task_id || result?.localization_task?.id,
+        status: result?.status || result?.localization_task?.status || 'processing',
+        progress: result?.progress || 0,
+        message: result?.message || '',
+      },
+    })
+    await refreshWork()
+    startTaskPolling()
+    ElMessage.success('英文 1:1 本地化已提交')
+  } catch (error) {
+    ElMessage.error(error.message || '提交英文 1:1 本地化失败')
+  } finally {
+    localizationSubmitting.value = false
+  }
+}
+
 onMounted(async () => {
   await loadCapabilities()
   await refreshWork()
@@ -259,9 +421,12 @@ onMounted(async () => {
 
 watch(() => props.initialWork, (next) => {
   workState.value = next
+  workflowPhase.value = redrawWorkflowPhase(next)
   taskState.value = taskStateFromWork(next)
+  localizationState.value = localizationTaskState(next)
   if (shouldPollWork(next)) startTaskPolling()
   if (isTerminalTaskState(next)) stopTaskPolling()
+  ensureLocalizationQuote(next)
 })
 
 onUnmounted(() => {

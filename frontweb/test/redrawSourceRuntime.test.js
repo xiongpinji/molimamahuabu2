@@ -3,9 +3,14 @@ import assert from 'node:assert/strict'
 import {
   analysisQuoteCredits,
   buildAnalyzePayload,
+  buildLocalizationPayload,
+  canConfirmLocalization,
   canStartRedrawAnalysis,
   createRedrawStyleSelection,
+  localizationQuoteCredits,
+  localizationTaskState,
   localeReady,
+  redrawWorkflowPhase,
   taskStateFromWork,
 } from '../src/utils/redrawWorkspaceState.js'
 
@@ -111,4 +116,109 @@ test('普通 preset 与自由风格双向互斥并保留参考图字段', () => 
   selection.selectPreset({ id: 3, name: '真人写实' })
   assert.equal(selection.selectedPreset.id, 3)
   assert.deepEqual(selection.freeStyle, { positivePrompt: '', negativePrompt: '', referenceImage: null })
+})
+
+test('分析完成后停留确认态且本地化任务独立恢复', () => {
+  assert.equal(redrawWorkflowPhase({
+    current_step: 1,
+    workflow_phase: 'analysis_review',
+    analysis_task: { status: 'completed' },
+  }), 'analysis_review')
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), true)
+  assert.deepEqual(localizationTaskState({
+    localization_task: { id: 'loc-1', status: 'processing', progress: 35 },
+  }), {
+    task_id: 'loc-1',
+    status: 'processing',
+    progress: 35,
+    message: '',
+  })
+})
+
+test('本地化 payload 只提交服务端允许字段且修剪字符串', () => {
+  assert.deepEqual(buildLocalizationPayload({
+    locale: ' en-US ',
+    market: ' US ',
+    localizationLevel: ' faithful ',
+    quoteHash: ' quote-9 ',
+    idempotencyKey: ' idem-1 ',
+    model: 'forbidden',
+    credits: 9,
+    dialogue: [{ source: 'ja' }],
+    maps: { role: 'name' },
+  }), {
+    locale: 'en-US',
+    market: 'US',
+    localization_level: 'faithful',
+    quote_hash: 'quote-9',
+    idempotency_key: 'idem-1',
+  })
+})
+
+test('本地化 payload 缺省使用服务端 faithful 等级', () => {
+  assert.equal(buildLocalizationPayload({
+    locale: 'en-US',
+    market: 'US',
+    quoteHash: 'quote-9',
+    idempotencyKey: 'idem-1',
+  }).localization_level, 'faithful')
+})
+
+test('本地化报价哈希变化时不能用旧报价提交', () => {
+  const work = {
+    workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-new' },
+  }
+
+  assert.equal(localizationQuoteCredits(work), 9)
+  assert.equal(canConfirmLocalization(work, 'quote-old'), false)
+  assert.equal(canConfirmLocalization(work, 'quote-new'), true)
+})
+
+test('本地化轮询阶段独立于分析任务和 current_step', () => {
+  assert.equal(redrawWorkflowPhase({
+    current_step: 1,
+    workflow_phase: 'localizing',
+    analysis_task: { status: 'completed' },
+    localization_task: { id: 'loc-1', status: 'processing' },
+  }), 'localizing')
+  assert.deepEqual(localizationTaskState({
+    current_step: 2,
+    analysis_task: { status: 'completed' },
+    localization_task: { id: 'loc-2', status: 'completed', progress: 100, message: 'done' },
+  }), {
+    task_id: 'loc-2',
+    status: 'completed',
+    progress: 100,
+    message: 'done',
+  })
+})
+
+test('本地化失败状态优先于后端回落的分析确认阶段', () => {
+  assert.equal(redrawWorkflowPhase({
+    workflow_phase: 'analysis_review',
+    analysis_task: { status: 'completed' },
+    localization_task: { id: 'loc-1', status: 'failed' },
+  }), 'localization_needs_attention')
+})
+
+test('本地化重试必须明确失败且明确已退款或释放，否则失败关闭', () => {
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'localization_needs_attention',
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), false)
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'localization_needs_attention',
+    localization_task: { id: 'loc-1', status: 'failed', refund_status: 'refunded' },
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), true)
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'localization_needs_attention',
+    localization_task: { id: 'loc-1', status: 'failed', credit_hold_status: 'released' },
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), true)
 })

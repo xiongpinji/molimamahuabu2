@@ -26,6 +26,8 @@ test('一键转绘 API 使用统一 request 并导出阶段 1 所需真实接口
     'listStylePresets',
     'listLocales',
     'analyzeWork',
+    'quoteLocalization',
+    'createVersion',
   ]) {
     assert.match(apiSource, new RegExp(`${name}\\(`), name)
   }
@@ -34,6 +36,8 @@ test('一键转绘 API 使用统一 request 并导出阶段 1 所需真实接口
   assert.match(apiSource, /request\.post\(`\/redraw\/projects\/\$\{projectId\}\/works`/)
   assert.match(apiSource, /multipart\/form-data/)
   assert.match(apiSource, /request\.post\(`\/redraw\/works\/\$\{workId\}\/analyze`/)
+  assert.match(apiSource, /request\.post\(`\/redraw\/works\/\$\{workId\}\/localization-quote`,\s*body\)/)
+  assert.match(apiSource, /request\.post\(`\/redraw\/works\/\$\{workId\}\/versions`,\s*body\)/)
   assert.match(apiSource, /reference_image/)
   assert.match(apiSource, /FormData/)
 })
@@ -74,6 +78,8 @@ test('第一步接入真实项目、源片上传、语言地区、比例、报�
   assert.match(sourceStepSource, /status/)
   assert.match(sourceStepSource, /progress/)
   assert.match(sourceStepSource, /taskStateFromWork\(next\)/)
+  assert.match(sourceStepSource, /redrawWorkflowPhase\(next\)/)
+  assert.match(sourceStepSource, /localizationTaskState\(next\)/)
   assert.match(sourceStepSource, /setInterval/)
   assert.match(sourceStepSource, /clearInterval/)
   assert.match(sourceStepSource, /isTerminalTaskState/)
@@ -83,6 +89,33 @@ test('第一步接入真实项目、源片上传、语言地区、比例、报�
   for (const ratio of ['1:1', '9:16', '16:9', '3:4', '4:3', '21:9']) {
     assert.match(sourceStepSource, new RegExp(`'${ratio}'`), ratio)
   }
+})
+
+test('分析确认与英文 1:1 本地化使用服务端报价、独立轮询和失败退款门禁', () => {
+  for (const name of [
+    'redrawWorkflowPhase',
+    'localizationQuoteCredits',
+    'canConfirmLocalization',
+    'localizationTaskState',
+    'buildLocalizationPayload',
+  ]) {
+    assert.match(stateSource, new RegExp(`export function ${name}\\(`), name)
+  }
+  assert.match(sourceStepSource, /analysis_review/)
+  assert.match(sourceStepSource, /localizing/)
+  assert.match(sourceStepSource, /localization_needs_attention/)
+  assert.match(sourceStepSource, /服务端分析摘要/)
+  assert.match(sourceStepSource, /本地化报价/)
+  assert.match(sourceStepSource, /确认英文 1:1 本地化/)
+  assert.match(sourceStepSource, /请勿重复提交/)
+  assert.match(sourceStepSource, /等待退款确认/)
+  assert.match(sourceStepSource, /crypto\.randomUUID\(\)/)
+  assert.match(sourceStepSource, /redrawAPI\.quoteLocalization/)
+  assert.match(sourceStepSource, /ensureLocalizationQuote/)
+  assert.match(sourceStepSource, /redrawAPI\.createVersion/)
+  assert.match(sourceStepSource, /quote_hash/)
+  assert.match(sourceStepSource, /报价已变化/)
+  assert.doesNotMatch(sourceStepSource, /current_step[^;\n]+>\s*1[^;\n]+analysis/)
 })
 
 test('风格预设轨道满足四类分段、固定卡片尺寸、横向滚动和自由风格输入合同', () => {

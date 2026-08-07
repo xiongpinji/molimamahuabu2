@@ -48,6 +48,9 @@ export const redrawAPI = {
   generateBatch(workId, body = {}) {
     return request.post(`/redraw/works/${workId}/generate-batch`, body)
   },
+  quoteLocalization(workId, body) {
+    return request.post(`/redraw/works/${workId}/localization-quote`, body)
+  },
   createVersion(workId, body) {
     return request.post(`/redraw/works/${workId}/versions`, body)
   },
