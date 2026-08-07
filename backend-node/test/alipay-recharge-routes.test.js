@@ -2,15 +2,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const express = require('express');
 const Database = require('better-sqlite3');
 
 const rechargeRoutes = require('../src/routes/alipay-recharge');
+const { setupRouter } = require('../src/routes');
 const recharge = require('../src/services/alipay-recharge-service');
 const tenantService = require('../src/services/tenantService');
 const userAuth = require('../src/services/userAuthService');
 const creditLedger = require('../src/services/creditLedgerService');
 
 const log = { error() {} };
+const SECRET = 'recharge-route-jwt-secret-value-123456';
+const ADMIN_TOKEN = 'recharge-route-admin-token-value-123456';
 
 function capture() {
   const result = {};
@@ -43,10 +47,109 @@ function setup() {
     configured: true,
     appId: 'app-123',
     sellerId: '2088000000000000',
-    createPaymentUrl(order) { return `https://pay.example.com/${order.out_trade_no}`; },
+    createPaymentUrl(order) {
+      return `https://openapi.alipay.com/gateway.do?out_trade_no=${encodeURIComponent(order.out_trade_no)}`;
+    },
     verifyNotification(payload) { return payload.sign === 'valid'; },
   };
   return { db, tenant, gateway };
+}
+
+function insertPlatformUser(db, { id, email, platformRole = 'user' }) {
+  db.prepare(`INSERT INTO platform_users
+    (id, email, password_hash, password_salt, role, platform_role, status)
+    VALUES (?, ?, 'hash', 'salt', ?, ?, 'active')`)
+    .run(id, email, platformRole === 'admin' ? 'admin' : 'user', platformRole);
+}
+
+function tokenFor(user) {
+  return userAuth.issueToken({ id: user.id, email: user.email, role: user.platformRole }, SECRET);
+}
+
+async function setupAdminHttpServer() {
+  const db = new Database(':memory:');
+  userAuth.ensureSchema(db);
+  tenantService.ensureSchema(db);
+  creditLedger.ensureSchema(db);
+  recharge.ensureSchema(db);
+  insertPlatformUser(db, {
+    id: 'plain-user',
+    email: 'plain@example.com',
+    platformRole: 'user',
+  });
+  insertPlatformUser(db, {
+    id: 'billing-admin',
+    email: 'billing-admin@example.com',
+    platformRole: 'admin',
+  });
+  const seededPackage = recharge.createPackage(db, {
+    name: '权限矩阵套餐',
+    amount_yuan: '10.00',
+    credits: 1000,
+    image_url: 'https://cdn.example.com/permission.webp',
+    ad_title: '权限矩阵广告',
+    status: 'active',
+  });
+  const previousEnv = {
+    PUBLIC_PLATFORM_MODE: process.env.PUBLIC_PLATFORM_MODE,
+    PLATFORM_JWT_SECRET: process.env.PLATFORM_JWT_SECRET,
+    PLATFORM_ADMIN_TOKEN: process.env.PLATFORM_ADMIN_TOKEN,
+  };
+  process.env.PUBLIC_PLATFORM_MODE = 'true';
+  process.env.PLATFORM_JWT_SECRET = SECRET;
+  process.env.PLATFORM_ADMIN_TOKEN = ADMIN_TOKEN;
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api/v1', setupRouter({}, db, log));
+  const server = await new Promise((resolve) => {
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}/api/v1`;
+  return {
+    db,
+    server,
+    baseUrl,
+    seededPackage,
+    plainToken: tokenFor({ id: 'plain-user', email: 'plain@example.com', platformRole: 'user' }),
+    adminToken: tokenFor({ id: 'billing-admin', email: 'billing-admin@example.com', platformRole: 'admin' }),
+    async close() {
+      await new Promise((resolve) => server.close(resolve));
+      db.close();
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    },
+  };
+}
+
+async function jsonRequest(baseUrl, endpoint, { method = 'GET', token, body } = {}) {
+  const headers = {};
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: text ? JSON.parse(text) : null,
+  };
+}
+
+function adminPackagePayload(overrides = {}) {
+  return {
+    name: 'HTTP 权限新增套餐',
+    amount_yuan: '20.00',
+    credits: 2200,
+    image_url: 'https://cdn.example.com/http-permission.webp',
+    ad_title: 'HTTP 权限广告',
+    status: 'active',
+    ...overrides,
+  };
 }
 
 test('用户通过同一支付宝入口创建自定义或套餐订单并只能查看本人记录', () => {
@@ -73,7 +176,7 @@ test('用户通过同一支付宝入口创建自定义或套餐订单并只能�
   }, created.res);
   assert.equal(created.result.status, 201);
   assert.equal(created.result.body.data.order.credits, 1500);
-  assert.match(created.result.body.data.payment_url, /^https:\/\/pay\.example\.com\//);
+  assert.match(created.result.body.data.payment_url, /^https:\/\/openapi\.alipay\.com\/gateway\.do\?/);
 
   const listed = capture();
   handlers.listOrders({ user: { id: 'user-1' }, tenant }, listed.res);
@@ -212,4 +315,97 @@ test('充值路由保持通知公开、管理员套餐受保护和用户订单�
     imageUploadLine || '',
     /requireAdmin, requireBillingManager, uploadHandlers\.multerRechargePackageImageSingle, uploadHandlers\.uploadRechargePackageImage/,
   );
+});
+
+test('管理员套餐 list/create/update/reorder 真实 HTTP 路由要求计费管理员权限', async () => {
+  const ctx = await setupAdminHttpServer();
+  try {
+    const endpoints = [
+      {
+        name: 'list',
+        method: 'GET',
+        path: '/billing/admin/recharge-packages',
+        successStatus: 200,
+        assertSuccess(body) {
+          assert.equal(body.success, true);
+          assert.deepEqual(body.data.map((item) => item.id), [ctx.seededPackage.id]);
+        },
+      },
+      {
+        name: 'create',
+        method: 'POST',
+        path: '/billing/admin/recharge-packages',
+        body: adminPackagePayload({ name: 'HTTP 权限新增套餐' }),
+        successStatus: 201,
+        assertSuccess(body) {
+          assert.equal(body.success, true);
+          assert.equal(body.data.name, 'HTTP 权限新增套餐');
+          assert.equal(body.data.credits, 2200);
+        },
+      },
+      {
+        name: 'update',
+        method: 'PUT',
+        path: `/billing/admin/recharge-packages/${ctx.seededPackage.id}`,
+        body: adminPackagePayload({
+          name: 'HTTP 权限更新套餐',
+          image_url: 'https://cdn.example.com/http-permission-updated.webp',
+        }),
+        successStatus: 200,
+        assertSuccess(body) {
+          assert.equal(body.success, true);
+          assert.equal(body.data.id, ctx.seededPackage.id);
+          assert.equal(body.data.name, 'HTTP 权限更新套餐');
+        },
+      },
+      {
+        name: 'reorder',
+        method: 'PUT',
+        path: '/billing/admin/recharge-packages/order',
+        body: { package_ids: [ctx.seededPackage.id] },
+        successStatus: 200,
+        assertSuccess(body) {
+          assert.equal(body.success, true);
+          assert.deepEqual(body.data.map((item) => item.id), this.body.package_ids);
+        },
+      },
+    ];
+
+    for (const endpoint of endpoints) {
+      if (endpoint.name === 'reorder') {
+        endpoint.body = {
+          package_ids: ctx.db.prepare('SELECT id FROM recharge_packages ORDER BY sort_order ASC, created_at ASC')
+            .all()
+            .map((item) => item.id),
+        };
+      }
+      const countBefore = ctx.db.prepare('SELECT COUNT(*) AS count FROM recharge_packages').get().count;
+      const anonymous = await jsonRequest(ctx.baseUrl, endpoint.path, {
+        method: endpoint.method,
+        body: endpoint.body,
+      });
+      assert.equal(anonymous.status, 401, `${endpoint.name} should reject anonymous users`);
+      assert.equal(anonymous.body.error.code, 'UNAUTHORIZED');
+      assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM recharge_packages').get().count, countBefore);
+
+      const plainUser = await jsonRequest(ctx.baseUrl, endpoint.path, {
+        method: endpoint.method,
+        token: ctx.plainToken,
+        body: endpoint.body,
+      });
+      assert.equal(plainUser.status, 403, `${endpoint.name} should reject non-admin users`);
+      assert.equal(plainUser.body.error.code, 'ADMIN_ROLE_REQUIRED');
+      assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM recharge_packages').get().count, countBefore);
+
+      const admin = await jsonRequest(ctx.baseUrl, endpoint.path, {
+        method: endpoint.method,
+        token: ctx.adminToken,
+        body: endpoint.body,
+      });
+      assert.equal(admin.status, endpoint.successStatus, `${endpoint.name} should allow billing admins`);
+      endpoint.assertSuccess(admin.body);
+    }
+  } finally {
+    await ctx.close();
+  }
 });

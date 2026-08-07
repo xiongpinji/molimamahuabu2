@@ -30,7 +30,9 @@ ALIPAY_RETURN_URL=https://你的域名/tenant-console?section=recharge
 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
 ```
 
-生产环境默认使用上述正式网关。只有在支付宝沙箱联调时才覆盖为沙箱网关，并使用配套沙箱应用和账号，正式与沙箱密钥不能混用。
+生产环境默认使用上述正式网关。新版沙箱联调只允许覆盖为
+`https://openapi-sandbox.dl.alipaydev.com/gateway.do`，并使用配套沙箱应用和账号；
+其他网关地址会让支付通道保持关闭，正式与沙箱密钥不能混用。
 
 ## 上线前核对
 

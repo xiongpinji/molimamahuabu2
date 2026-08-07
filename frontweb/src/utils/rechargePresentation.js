@@ -1,12 +1,23 @@
 export const CUSTOM_RECHARGE_RATIO = 100
 export const QUICK_RECHARGE_AMOUNTS = [10, 30, 50, 100, 300, 500]
+const ALLOWED_ALIPAY_PAYMENT_GATEWAYS = new Set([
+  'https://openapi.alipay.com/gateway.do',
+  'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
+])
 
 export function normalizePaymentRedirectUrl(value) {
   const raw = String(value ?? '').trim()
   if (!raw) return ''
   try {
     const url = new URL(raw)
-    return url.protocol === 'https:' && url.hostname ? url.href : ''
+    const gateway = `${url.origin}${url.pathname}`
+    return url.protocol === 'https:'
+      && !url.username
+      && !url.password
+      && !url.hash
+      && ALLOWED_ALIPAY_PAYMENT_GATEWAYS.has(gateway)
+      ? url.href
+      : ''
   } catch (_) {
     return ''
   }

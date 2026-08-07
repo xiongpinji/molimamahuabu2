@@ -539,6 +539,43 @@ test('合法支付宝成功通知原子入账且重复通知不重复增加积�
   assert.equal(adjustments[0].reference_id, order.id);
 });
 
+test('支付宝通知入账流水写入失败时回滚订单状态、交易号、余额和流水', () => {
+  const { db, tenant } = setup();
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    amountYuan: '12.34',
+    clientOrderKey: 'notify-rollback-order',
+  });
+  db.exec(`CREATE TRIGGER fail_recharge_adjustment_insert
+    BEFORE INSERT ON tenant_credit_adjustments
+    WHEN NEW.event_type = 'recharge'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced recharge adjustment failure');
+    END`);
+
+  assert.throws(
+    () => recharge.processNotification(db, {
+      sign: 'valid-signature',
+      app_id: 'app-123',
+      seller_id: '2088000000000000',
+      trade_status: 'TRADE_SUCCESS',
+      out_trade_no: order.out_trade_no,
+      trade_no: '2026080322000000000100',
+      total_amount: '12.34',
+    }, fakeGateway()),
+    /forced recharge adjustment failure/,
+  );
+
+  const persisted = db.prepare('SELECT * FROM tenant_recharge_orders WHERE id = ?').get(order.id);
+  assert.equal(persisted.status, 'pending');
+  assert.equal(persisted.alipay_trade_no, null);
+  assert.equal(persisted.paid_at, null);
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_adjustments
+    WHERE tenant_id = ? AND event_type = 'recharge'`).get(tenant.id).count, 0);
+});
+
 test('低于一元的套餐订单仍能按支付宝通知金额正确入账', () => {
   const { db, tenant } = setup();
   const rechargePackage = recharge.createPackage(db, {
@@ -637,4 +674,67 @@ test('同一支付宝交易号不能为两个订单重复入账', () => {
   assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 1000);
   assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_adjustments
     WHERE event_type = 'recharge'`).get().count, 1);
+});
+
+test('跨租户订单查询和支付宝通知入账互相隔离', () => {
+  const { db, tenant: firstTenant } = setup();
+  db.prepare(`INSERT INTO platform_users
+    (id, email, password_hash, password_salt, status)
+    VALUES ('user-2', 'second-owner@example.com', 'hash', 'salt', 'active')`).run();
+  const secondTenant = tenantService.createTenant(db, 'user-2', {
+    name: '二号工作区',
+    slug: 'workspace-two',
+  });
+  creditLedger.setTenantAccountBalance(db, secondTenant.id, 0);
+
+  const firstOrder = recharge.createOrder(db, {
+    tenantId: firstTenant.id,
+    userId: 'user-1',
+    amountYuan: '10',
+    clientOrderKey: 'same-client-key',
+  });
+  const secondOrder = recharge.createOrder(db, {
+    tenantId: secondTenant.id,
+    userId: 'user-2',
+    amountYuan: '20',
+    clientOrderKey: 'same-client-key',
+  });
+
+  assert.notEqual(firstOrder.id, secondOrder.id);
+  assert.throws(
+    () => recharge.listOrders(db, secondTenant.id, 'user-1'),
+    (error) => error.code === 'TENANT_NOT_FOUND',
+  );
+  assert.throws(
+    () => recharge.createOrder(db, {
+      tenantId: secondTenant.id,
+      userId: 'user-1',
+      amountYuan: '30',
+      clientOrderKey: 'cross-tenant-create',
+    }),
+    (error) => error.code === 'TENANT_NOT_FOUND',
+  );
+
+  recharge.processNotification(db, {
+    sign: 'valid-signature',
+    app_id: 'app-123',
+    seller_id: '2088000000000000',
+    trade_status: 'TRADE_SUCCESS',
+    out_trade_no: secondOrder.out_trade_no,
+    trade_no: '2026080322000000000200',
+    total_amount: '20.00',
+  }, fakeGateway());
+
+  assert.equal(creditLedger.getTenantAccount(db, firstTenant.id).available, 0);
+  assert.equal(creditLedger.getTenantAccount(db, secondTenant.id).available, 2000);
+  assert.deepEqual(
+    creditLedger.listTenantAdjustments(db, firstTenant.id)
+      .filter((item) => item.event_type === 'recharge'),
+    [],
+  );
+  assert.equal(
+    creditLedger.listTenantAdjustments(db, secondTenant.id)
+      .filter((item) => item.event_type === 'recharge').length,
+    1,
+  );
 });

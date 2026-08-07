@@ -11,7 +11,7 @@ class FakeAlipaySdk {
 
   pageExecute(method, httpMethod, params) {
     this.pageRequest = { method, httpMethod, params };
-    return 'https://openapi.alipay.test/gateway.do?signed=1';
+    return FakeAlipaySdk.nextPageUrl;
   }
 
   checkNotifySignV2(payload) {
@@ -19,6 +19,8 @@ class FakeAlipaySdk {
     return payload.sign === 'valid';
   }
 }
+
+FakeAlipaySdk.nextPageUrl = 'https://openapi.alipay.com/gateway.do?signed=1';
 
 const configuredEnv = {
   ALIPAY_APP_ID: 'app-123',
@@ -41,6 +43,7 @@ test('支付宝配置不完整时关闭支付且不创建 SDK', () => {
 });
 
 test('支付宝适配器生成电脑网站支付链接并使用官方通知验签', () => {
+  FakeAlipaySdk.nextPageUrl = 'https://openapi.alipay.com/gateway.do?signed=1';
   const gateway = createAlipayGateway(configuredEnv, { AlipaySdk: FakeAlipaySdk });
   const url = gateway.createPaymentUrl({
     out_trade_no: 'MOLI123',
@@ -67,7 +70,52 @@ test('支付宝适配器生成电脑网站支付链接并使用官方通知验�
   });
   assert.equal(sdk.pageRequest.params.notifyUrl, configuredEnv.ALIPAY_NOTIFY_URL);
   assert.equal(sdk.pageRequest.params.returnUrl, configuredEnv.ALIPAY_RETURN_URL);
-  assert.match(url, /^https:\/\/openapi\.alipay\.test\//);
+  assert.match(url, /^https:\/\/openapi\.alipay\.com\/gateway\.do\?/);
   assert.equal(gateway.verifyNotification({ sign: 'valid' }), true);
   assert.deepEqual(sdk.notifyPayload, { sign: 'valid' });
+});
+
+test('支付宝网关只允许官方生产与新版沙箱地址', () => {
+  for (const gatewayUrl of [
+    'https://openapi.alipay.com/gateway.do',
+    'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
+  ]) {
+    FakeAlipaySdk.lastInstance = null;
+    const gateway = createAlipayGateway(
+      { ...configuredEnv, ALIPAY_GATEWAY: gatewayUrl },
+      { AlipaySdk: FakeAlipaySdk },
+    );
+    assert.equal(gateway.configured, true);
+    assert.equal(FakeAlipaySdk.lastInstance.options.gateway, gatewayUrl);
+  }
+
+  for (const gatewayUrl of [
+    'https://pay.example.com/gateway.do',
+    'https://openapi.alipay.com.example.com/gateway.do',
+    'https://openapi.alipay.com:444/gateway.do',
+    'https://user@openapi.alipay.com/gateway.do',
+    'https://openapi.alipay.com/not-gateway.do',
+  ]) {
+    FakeAlipaySdk.lastInstance = null;
+    const gateway = createAlipayGateway(
+      { ...configuredEnv, ALIPAY_GATEWAY: gatewayUrl },
+      { AlipaySdk: FakeAlipaySdk },
+    );
+    assert.equal(gateway.configured, false, gatewayUrl);
+    assert.equal(FakeAlipaySdk.lastInstance, null, gatewayUrl);
+  }
+});
+
+test('支付宝 SDK 返回非官方支付地址时拒绝跳转', () => {
+  FakeAlipaySdk.nextPageUrl = 'https://pay.example.com/phishing';
+  const gateway = createAlipayGateway(configuredEnv, { AlipaySdk: FakeAlipaySdk });
+  assert.throws(
+    () => gateway.createPaymentUrl({
+      out_trade_no: 'MOLI-UNTRUSTED',
+      amount_cents: 100,
+      credits: 100,
+    }),
+    (error) => error.code === 'ALIPAY_PAYMENT_URL_INVALID',
+  );
+  FakeAlipaySdk.nextPageUrl = 'https://openapi.alipay.com/gateway.do?signed=1';
 });

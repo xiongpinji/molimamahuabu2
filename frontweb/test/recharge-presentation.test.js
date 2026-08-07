@@ -11,15 +11,24 @@ import {
   validCustomAmount,
 } from '../src/utils/rechargePresentation.js'
 
-test('支付跳转只接受绝对 HTTPS 地址并保留查询参数', () => {
+test('支付跳转只接受支付宝官方生产与新版沙箱网关并保留查询参数', () => {
   assert.equal(typeof rechargePresentation.normalizePaymentRedirectUrl, 'function')
   const { normalizePaymentRedirectUrl } = rechargePresentation
   assert.equal(
     normalizePaymentRedirectUrl('https://openapi.alipay.com/gateway.do?app_id=demo&method=pay'),
     'https://openapi.alipay.com/gateway.do?app_id=demo&method=pay',
   )
+  assert.equal(
+    normalizePaymentRedirectUrl('https://openapi-sandbox.dl.alipaydev.com/gateway.do?app_id=demo'),
+    'https://openapi-sandbox.dl.alipaydev.com/gateway.do?app_id=demo',
+  )
   for (const value of [
     'http://openapi.alipay.com/gateway.do',
+    'https://pay.example.com/gateway.do',
+    'https://openapi.alipay.com.example.com/gateway.do',
+    'https://openapi.alipay.com:444/gateway.do',
+    'https://user@openapi.alipay.com/gateway.do',
+    'https://openapi.alipay.com/not-gateway.do',
     'javascript:alert(1)',
     '/api/v1/billing/recharge',
     '',
