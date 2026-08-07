@@ -8,6 +8,7 @@ const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
+const toapisVideoClient = require('./toapisVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -44,6 +45,7 @@ function inferVideoProtocol(provider) {
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
   if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
+  if (p === 'toapis' || p === 'toapis_video') return 'toapis_video';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -344,6 +346,7 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
     protocol = 'icreat_task';
   }
+  if (provider === 'toapis' || provider === 'toapis_video') protocol = 'toapis_video';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -1269,6 +1272,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
+  else if (proto === 'toapis_video') defaultEp = '/v1/videos/generations/{taskId}';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -4690,6 +4694,34 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'toapis_video') {
+    const hasMultimodalReferences = [
+      opts.reference_urls,
+      opts.reference_video_urls,
+      opts.reference_audio_urls,
+    ].some((values) => Array.isArray(values) && values.some((value) => String(value || '').trim()))
+      || String(opts.voice_reference_url || '').trim();
+    return toapisVideoClient.callToapisVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: hasMultimodalReferences ? '' : opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      reference_video_urls: opts.reference_video_urls,
+      reference_audio_urls: opts.reference_audio_urls,
+      voice_reference_url: opts.voice_reference_url,
+      generate_audio: opts.generate_audio,
+      client_business_id: opts.client_business_id || (video_gen_id ? `video-${video_gen_id}` : ''),
+      video_gen_id,
+    }, {
+      fetchImpl: opts.fetchImpl,
+    });
+  }
   if (protocol === 'dashscope') {
     return callDashScopeVideoApi(config, log, {
       prompt,
@@ -5004,7 +5036,7 @@ async function callVideoApi(db, log, opts) {
 /**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
-async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
+async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000, requestOpts = {}) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config);
   const isDashScope = protocol === 'dashscope';
@@ -5021,6 +5053,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
   const isToken6688 = protocol === 'token6688';
+  const isToapis = protocol === 'toapis_video';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5043,6 +5076,21 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
+      if (isToapis) {
+        const pollRound = attempt + 1;
+        const result = await toapisVideoClient.fetchToapisTask(config, taskId, {
+          fetchImpl: requestOpts.fetchImpl,
+        });
+        log.info('[ToAPIs 视频] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          progress: result.progress,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
       let url, headers, method = 'GET', requestBody;
       if (isKling) {
         // task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx`
@@ -5510,6 +5558,8 @@ module.exports = {
   pollVideoTask,
   getSupportedVideoDurationsForModel: aihubccClient.getSupportedVideoDurationsForModel,
   normalizeVideoDurationForModel: aihubccClient.normalizeVideoDurationForModel,
+  inferVideoProtocol,
+  resolveVideoProtocol,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,
