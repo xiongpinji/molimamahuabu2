@@ -1,5 +1,6 @@
 const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const Database = require('better-sqlite3');
 
 const {
   USMERCARI_IMAGE_MODELS,
@@ -7,6 +8,9 @@ const {
   buildUsmercariImageBody,
   callUsmercariImageApi,
 } = require('../src/services/usmercariImageClient');
+const { callImageApi } = require('../src/services/imageClient');
+const aiConfigService = require('../src/services/aiConfigService');
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
 const originalFetch = global.fetch;
 const log = { info() {}, warn() {}, error() {} };
@@ -136,6 +140,46 @@ describe('USMercari image protocol', () => {
     });
     assert.equal(JSON.stringify(edit.body).includes('data:image/'), false);
     assert.equal(result.image_url, 'https://cdn.example/edited.png');
+  });
+
+  it('routes nano-banana-2 through explicit usmercari_image instead of nano_banana', async () => {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'usmercari_image',
+      api_protocol: 'usmercari_image',
+      name: 'USMercari 图片',
+      base_url: 'https://chat-ai.mercarimx.com',
+      api_key: 'secret',
+      model: ['nano-banana-2'],
+      default_model: 'nano-banana-2',
+      is_default: true,
+      is_active: true,
+    });
+    const requests = [];
+    global.fetch = async (url, options) => {
+      const request = { url: String(url), body: JSON.parse(options.body) };
+      requests.push(request);
+      if (request.url.endsWith('/v1/media/upload/image')) return jsonResponse({ id: 'ref-id' });
+      return jsonResponse({ data: [{ url: 'https://cdn.example/routed.png' }] });
+    };
+
+    try {
+      const result = await callImageApi(db, log, {
+        model: 'nano-banana-2',
+        prompt: 'test',
+        aspect_ratio: '16:9',
+        resolution: '2k',
+        reference_image_urls: ['data:image/png;base64,aW1hZ2U='],
+        imageServiceType: 'image',
+      });
+      assert.equal(result.image_url, 'https://cdn.example/routed.png');
+      assert.equal(requests.some((request) => request.url.endsWith('/api/v1/nanobanana/generate-2')), false);
+      assert.deepEqual(requests.at(-1).body.image_ids, ['ref-id']);
+    } finally {
+      db.close();
+    }
   });
 
   it('rejects HTML, empty data and interrupted paid submissions without retrying', async () => {

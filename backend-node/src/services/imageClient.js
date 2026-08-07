@@ -18,6 +18,7 @@ const mediaModelSelection = require('./mediaModelSelectionService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
 const { downloadPublicImage } = require('./publicImageDownload');
+const usmercariImageClient = require('./usmercariImageClient');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -104,6 +105,7 @@ function inferProtocol(provider, model) {
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'djpsd_openapi';
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
+  if (p === 'usmercari_image') return 'usmercari_image';
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
   if (/seedream|doubao/i.test(model || '')) return 'volcengine';
@@ -1980,6 +1982,7 @@ async function callImageApi(db, log, opts) {
     model: preferredModel,
     size,
     quality,
+    resolution,
     drama_id,
     preferred_provider,
     character_id,
@@ -2084,6 +2087,26 @@ async function callImageApi(db, log, opts) {
       image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
+    });
+  }
+
+  if (protocol === 'usmercari_image') {
+    const rawReferences = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
+    if (rawReferences.length > 6) {
+      return { error: `USMercari 图片模型 ${model} 最多支持 6 张参考图` };
+    }
+    const resolvedReferences = rawReferences
+      .map((reference) => resolveImageRef(reference, files_base_url, storage_local_path))
+      .filter(Boolean);
+    return usmercariImageClient.callUsmercariImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      n: opts.n || 1,
+      aspect_ratio: opts.aspect_ratio || '1:1',
+      resolution: resolution || '1k',
+      image_gen_id,
+      reference_image_urls: resolvedReferences,
+      storage_local_path,
     });
   }
 
