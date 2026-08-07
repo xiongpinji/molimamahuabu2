@@ -2,15 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const videoService = require('../src/services/videoService');
+const rawVideoService = require('../src/services/videoService');
 const videoClient = require('../src/services/videoClient');
 const aiConfig = require('../src/services/aiConfigService');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
+const videoService = {
+  ...rawVideoService,
+  create(db, logger, request, options = {}) {
+    return rawVideoService.create(db, logger, request, { ...options, evidenceRoots });
+  },
+  processVideoGeneration(db, logger, id, runtime = {}) {
+    return rawVideoService.processVideoGeneration(db, logger, id, { ...runtime, evidenceRoots });
+  },
+};
 
 function setup() {
   const db = new Database(':memory:');
@@ -52,7 +62,7 @@ function configureToapis(db, {
     aiConfig.recordVerification(db, config.id, {
       status: verificationStatus,
       capabilities: {
-        [model]: {
+        [model]: withExternalModelEvidence(model, {
           durations: officialDurations,
           resolutions,
           supportsFirstFrame: true,
@@ -61,7 +71,7 @@ function configureToapis(db, {
           supportsVideoReference: true,
           supportsAudioReference: true,
           supportsAudio: true,
-        },
+        }),
       },
     });
   }
@@ -284,12 +294,12 @@ test('ToAPIs protected environment credential is valid but cannot replace model 
     aiConfig.recordVerification(db, config.id, {
       status: 'verified',
       capabilities: {
-        'seedance-2-fast': {
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
           durations: [4], resolutions: ['480p'],
           supportsFirstFrame: true, supportsLastFrame: true,
           supportsImageReference: true, supportsVideoReference: true,
           supportsAudioReference: true, supportsAudio: true,
-        },
+        }),
       },
     });
     const created = videoService.create(db, log, {

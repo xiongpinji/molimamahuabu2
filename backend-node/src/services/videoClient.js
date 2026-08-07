@@ -9,6 +9,8 @@ const aihubccClient = require('./aihubccClient');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const toapisVideoClient = require('./toapisVideoClient');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
+const modelPriceService = require('./modelPriceService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
@@ -1197,7 +1199,7 @@ function parseKlingOmniPollVideoUrl(data) {
 }
 
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
-function getDefaultVideoConfig(db, preferredModel) {
+function getDefaultVideoConfig(db, preferredModel, evidenceRoots) {
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
   const preferred = String(preferredModel || '').trim().toLowerCase();
@@ -1207,8 +1209,12 @@ function getDefaultVideoConfig(db, preferredModel) {
         .map((value) => String(value || '').trim().toLowerCase());
       if (!protocols.some((value) => value === 'toapis' || value === 'toapis_video')) return false;
       const models = Array.isArray(config.model) ? config.model : [config.model];
+      const capabilityKey = Object.keys(config.verified_capabilities || {})
+        .find((value) => String(value).trim().toLowerCase() === preferred);
+      const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
       return config.verification_status === 'verified'
         && aiConfigService.hasConnectionCredential(config)
+        && hasTrustedEvidenceBinding(preferred, capabilities, evidenceRoots)
         && [...models, config.default_model]
           .some((value) => String(value || '').trim().toLowerCase() === preferred);
     }) || null;
@@ -1237,6 +1243,109 @@ function getDefaultVideoConfig(db, preferredModel) {
   }
   const defaultOne = active.find((c) => c.is_default);
   return defaultOne != null ? defaultOne : active[0];
+}
+
+function toapisGateError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function getVerifiedToapisCapabilities(config, model) {
+  const all = config?.verified_capabilities;
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return null;
+  const target = String(model || '').trim().toLowerCase();
+  const key = Object.keys(all).find((item) => String(item).trim().toLowerCase() === target);
+  const capabilities = key ? all[key] : null;
+  return capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities)
+    ? capabilities
+    : null;
+}
+
+function assertToapisVideoSubmitReady(db, config, model, request, evidenceRoots) {
+  const target = String(model || '').trim().toLowerCase();
+  const checked = toapisVideoClient.validateToapisVideoOptions({ ...request, model: target });
+  const protocols = [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase());
+  const configuredModels = [
+    ...(Array.isArray(config?.model) ? config.model : [config?.model]),
+    config?.default_model,
+  ].map((value) => String(value || '').trim().toLowerCase());
+  if (config?.service_type !== 'video' || config?.is_active !== true
+      || !protocols.some((value) => value === 'toapis' || value === 'toapis_video')
+      || !configuredModels.includes(target)) {
+    throw toapisGateError('TOAPIS_CONFIG_MISMATCH', `${target} 未绑定当前启用的 ToAPIs 视频配置`);
+  }
+  if (config.verification_status !== 'verified') {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 尚未通过真实生成验证`);
+  }
+  if (!aiConfigService.hasConnectionCredential(config)) {
+    throw toapisGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的 ToAPIs API Key`);
+  }
+  const capabilities = getVerifiedToapisCapabilities(config, target);
+  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 的真实生成证据与当前发布不一致`);
+  }
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase())
+    : [];
+  const durations = Array.isArray(capabilities.durations)
+    ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+    : [];
+  if (!resolutions.includes(checked.resolution)) {
+    throw toapisGateError('VIDEO_RESOLUTION_NOT_VERIFIED', `${target} 的 ${checked.resolution} 尚未通过真实生成验证`);
+  }
+  if (!durations.includes(checked.duration)) {
+    throw toapisGateError('VIDEO_DURATION_NOT_VERIFIED', `${target} 的 ${checked.duration} 秒尚未通过真实生成验证`);
+  }
+  if (checked.firstFrame && capabilities.supportsFirstFrame !== true) {
+    throw toapisGateError('VIDEO_FIRST_FRAME_NOT_VERIFIED', `${target} 的首帧模式尚未通过真实验证`);
+  }
+  if (checked.lastFrame && capabilities.supportsLastFrame !== true) {
+    throw toapisGateError('VIDEO_LAST_FRAME_NOT_VERIFIED', `${target} 的尾帧模式尚未通过真实验证`);
+  }
+  const references = [
+    [checked.images, 'supportsImageReference', 'maxReferences', '参考图'],
+    [checked.videos, 'supportsVideoReference', 'maxVideoReferences', '参考视频'],
+    [checked.audio, 'supportsAudioReference', 'maxAudioReferences', '参考音频'],
+  ];
+  for (const [values, supportKey, limitKey, label] of references) {
+    if (!values.length) continue;
+    if (capabilities[supportKey] !== true) {
+      throw toapisGateError('VIDEO_REFERENCE_NOT_VERIFIED', `${target} 的${label}尚未通过真实验证`);
+    }
+    const limit = Number(capabilities[limitKey]);
+    if (!Number.isSafeInteger(limit) || limit < 0 || values.length > limit) {
+      throw toapisGateError('VIDEO_REFERENCE_LIMIT_EXCEEDED', `${target} 的${label}数量超过已验证上限`);
+    }
+  }
+  if (request.generate_audio === true && capabilities.supportsAudio !== true) {
+    throw toapisGateError('VIDEO_AUDIO_NOT_VERIFIED', `${target} 的同步音频尚未通过真实验证`);
+  }
+
+  const price = modelPriceService.list(db)
+    .find((item) => String(item.model || '').trim().toLowerCase() === target);
+  const tier = price?.resolution_prices?.[checked.resolution];
+  if (!price || price.category !== 'video' || price.status !== 'enabled'
+      || !Number.isSafeInteger(tier?.credits) || tier.credits <= 0
+      || !Number.isSafeInteger(tier?.cost_micros_per_second) || tier.cost_micros_per_second <= 0) {
+    throw toapisGateError(
+      'MODEL_RESOLUTION_PRICE_REQUIRED',
+      `${target} 的 ${checked.resolution} 积分待管理员配置`,
+    );
+  }
+  const credits = modelPriceService.calculateCharge(db, target, {
+    resolution: checked.resolution,
+    duration: checked.duration,
+    allowedDurations: durations,
+  });
+  if (!Number.isSafeInteger(credits) || credits !== tier.credits * checked.duration) {
+    throw toapisGateError(
+      'MODEL_RESOLUTION_PRICE_REQUIRED',
+      `${target} 的 ${checked.resolution} 积分待管理员配置`,
+    );
+  }
+  return checked;
 }
 
 // ?????? API ????? /contents/generations/tasks?base ???????????????
@@ -4554,7 +4663,7 @@ async function callAihubccVideoApi(config, log, opts = {}) {
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
-async function callVideoApi(db, log, opts) {
+async function callVideoApi(db, log, opts, runtime = {}) {
   const {
     prompt: inputPrompt,
     model: preferredModel,
@@ -4573,7 +4682,7 @@ async function callVideoApi(db, log, opts) {
     storage_local_path,
     video_gen_id
   } = opts;
-  const config = getDefaultVideoConfig(db, preferredModel);
+  const config = getDefaultVideoConfig(db, preferredModel, runtime.evidenceRoots);
   if (!config) {
     throw new Error('???????????AI ?????? video ?????????');
   }
@@ -4714,7 +4823,7 @@ async function callVideoApi(db, log, opts) {
       opts.reference_audio_urls,
     ].some((values) => Array.isArray(values) && values.some((value) => String(value || '').trim()))
       || String(opts.voice_reference_url || '').trim();
-    return toapisVideoClient.callToapisVideoApi(config, log, {
+    const toapisRequest = {
       ...opts,
       model,
       prompt,
@@ -4731,7 +4840,13 @@ async function callVideoApi(db, log, opts) {
       generate_audio: opts.generate_audio,
       client_business_id: opts.client_business_id || (video_gen_id ? `video-${video_gen_id}` : ''),
       video_gen_id,
-    }, {
+    };
+    try {
+      assertToapisVideoSubmitReady(db, config, model, toapisRequest, runtime.evidenceRoots);
+    } catch (error) {
+      return { error: error.message };
+    }
+    return toapisVideoClient.callToapisVideoApi(config, log, toapisRequest, {
       fetchImpl: opts.fetchImpl,
     });
   }

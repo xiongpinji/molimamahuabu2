@@ -8,13 +8,23 @@ const path = require('node:path');
 const aiConfig = require('../src/services/aiConfigService');
 const credits = require('../src/services/creditLedgerService');
 const imageClient = require('../src/services/imageClient');
-const imageService = require('../src/services/imageService');
+const rawImageService = require('../src/services/imageService');
 const prices = require('../src/services/modelPriceService');
 const uploadService = require('../src/services/uploadService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const storageLayout = require('../src/services/storageLayout');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
+const imageService = {
+  ...rawImageService,
+  create(db, logger, request, options = {}) {
+    return rawImageService.create(db, logger, request, { ...options, evidenceRoots });
+  },
+  processImageGeneration(db, logger, id, runtime = {}) {
+    return rawImageService.processImageGeneration(db, logger, id, { ...runtime, evidenceRoots });
+  },
+};
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
@@ -47,10 +57,10 @@ function assertNoSideEffects(db) {
 function installModel(db, model, resolutions, options = {}) {
   const config = aiConfig.createConfig(db, log, {
     service_type: 'image',
-    provider: 'usmercari_image',
-    api_protocol: 'usmercari_image',
+    provider: options.provider || 'usmercari_image',
+    api_protocol: options.apiProtocol || 'usmercari_image',
     name: `${model} 测试配置`,
-    base_url: 'https://chat-ai.mercarimx.com',
+    base_url: options.baseUrl || 'https://chat-ai.mercarimx.com',
     api_key: options.apiKey === undefined ? 'test-key' : options.apiKey,
     model: [model],
     default_model: model,
@@ -60,12 +70,12 @@ function installModel(db, model, resolutions, options = {}) {
     SET verification_status = ?, verified_capabilities = ?, is_active = ? WHERE id = ?`).run(
     options.verificationStatus || 'verified',
     JSON.stringify({
-      [model]: {
+      [model]: withExternalModelEvidence(model, {
         supportsTextToImage: true,
         supportsImageReference: true,
         maxReferences: 6,
         resolutions,
-      },
+      }),
     }),
     options.isActive === false ? 0 : 1,
     config.id,
@@ -126,6 +136,16 @@ test('USMercari 图片在验证、档位或参考图门禁失败时不创建任�
     {
       name: '模型配置已停用',
       install: (db) => installModel(db, 'nano-banana-2', ['1k', '2k', '4k'], { isActive: false }),
+      body: {},
+      code: 'MODEL_NOT_VERIFIED',
+    },
+    {
+      name: '受保护模型禁止使用同名的其他供应商配置',
+      install: (db) => installModel(db, 'nano-banana-2', ['1k', '2k', '4k'], {
+        provider: 'openai',
+        apiProtocol: 'openai',
+        baseUrl: 'https://wrong-provider.example/v1',
+      }),
       body: {},
       code: 'MODEL_NOT_VERIFIED',
     },
@@ -241,12 +261,12 @@ test('USMercari 图片按分辨率预扣并持久化不可变请求及人民币�
       reference_images: ['/static/ref-a.png'],
       credits: 87,
       cost_micros_per_unit: 100000,
-      capabilities: {
+      capabilities: withExternalModelEvidence('gpt-image-2-2-4k', {
         supportsTextToImage: true,
         supportsImageReference: true,
         maxReferences: 6,
         resolutions: ['1k', '2k'],
-      },
+      }),
     });
   } finally {
     db.close();
@@ -525,6 +545,35 @@ test('USMercari 图片异步执行使用创建时快照，成功后写入素材�
   assert.equal(asset.type, 'image');
   assert.equal(asset.url, image.image_url);
   assert.equal(asset.local_path, image.local_path);
+});
+
+test('USMercari 图片证据绑定在预扣后被篡改时不调用供应商并完整退款', async (t) => {
+  const { db, dramaId } = setup();
+  installModel(db, 'nano-banana-2', ['1k', '2k', '4k']);
+  const originalCall = imageClient.callImageApi;
+  let providerCalls = 0;
+  imageClient.callImageApi = async () => {
+    providerCalls += 1;
+    return { image_url: 'https://cdn.example/should-not-run.png' };
+  };
+  t.after(() => {
+    imageClient.callImageApi = originalCall;
+    db.close();
+  });
+
+  const created = createImage(db, dramaId, { resolution: '1k' });
+  const row = db.prepare('SELECT credit_reservation_id FROM image_generations WHERE id = ?').get(created.id);
+  const config = aiConfig.listConfigs(db, 'image').find((item) => item.provider === 'usmercari_image');
+  const capabilities = JSON.parse(JSON.stringify(config.verified_capabilities));
+  capabilities['nano-banana-2'].evidence_sha256 = '0'.repeat(64);
+  db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = ?')
+    .run(JSON.stringify(capabilities), config.id);
+
+  await imageService.processImageGeneration(db, log, created.id);
+
+  assert.equal(providerCalls, 0);
+  assert.equal(db.prepare('SELECT status FROM image_generations WHERE id = ?').get(created.id).status, 'failed');
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
 });
 
 test('USMercari 图片明确失败完整退款且重复处理不重复退款', async (t) => {

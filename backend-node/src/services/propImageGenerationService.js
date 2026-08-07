@@ -138,7 +138,7 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
       model: model || undefined,
       preferred_provider: preferredProvider || undefined,
       user_negative_prompt: userNeg || undefined,
-    });
+    }, { evidenceRoots: opts?.evidenceRoots });
   } catch (err) {
     const errMsg = '图片生成请求失败: ' + (err.message || '未知错误');
     log.error('Prop image API failed', { prop_id: propId, error: err.message });
@@ -276,6 +276,7 @@ function generatePropImage(db, log, propId, opts) {
   }, 'image', {
     requirePricing: options.billingEnabled === true,
     allowMissingModel: !options.billingEnabled,
+    evidenceRoots: options.evidenceRoots,
   });
   if (options.billingEnabled) {
     billedModel = billingRequest.model;

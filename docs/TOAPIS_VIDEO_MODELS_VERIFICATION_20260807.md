@@ -66,8 +66,9 @@
 ```powershell
 $env:TOAPIS_API_KEY = '<由受保护 secret 注入>'
 $env:TOAPIS_VERIFY_DEDICATED_TOKEN = '1' # 仅用于本轮验证、无其他业务并发
-$env:TOAPIS_VERIFY_OUTPUT_DIR = '<本站长期静态验证资产目录>'
-$env:TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL = 'https://molimama.vip/<对应公开验证目录>'
+$env:TOAPIS_VERIFY_OUTPUT_DIR = '/opt/moli-drama/shared/verification-state/toapis-video-v1'
+$env:TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR = '/opt/moli-drama/shared/release-evidence/external-models-v1/public/toapis'
+$env:TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL = 'https://molimama.vip/verification-assets/toapis'
 $env:TOAPIS_VERIFY_FIRST_FRAME_URL = 'https://molimama.vip/<首帧测试资产>'
 $env:TOAPIS_VERIFY_LAST_FRAME_URL = 'https://molimama.vip/<尾帧测试资产>'
 $env:TOAPIS_VERIFY_REFERENCE_IMAGE_URL = 'https://molimama.vip/<参考图测试资产>'
@@ -78,6 +79,8 @@ $env:TOAPIS_EXPECTED_COST_YUAN_JSON = '<每个用例的预计人民币成本 JSO
 $env:TOAPIS_VERIFIED_PRICING_JSON = '<四个模型分辨率档位的成本与扣分复核 JSON>'
 npm run verify:toapis-video
 ```
+
+`TOAPIS_VERIFY_OUTPUT_DIR` 保存锁、恢复状态、账单快照和最终证据 JSON，不得通过 Web 暴露；只有独立的 `TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR` 中的 MP4 成品允许由 `/verification-assets/toapis/` 匿名读取。两个目录必须完全分离，避免后续原子轮换公开证据时删除防重复扣费状态，也避免状态和账单文件被公开。验证工具拒绝相同或互相包含的目录，也拒绝其他域名或公开路径。
 
 脚本先以原子 `wx` 文件锁独占整轮验证，再在每次付费 POST 前把该组合写成 `submitting`。第二个进程无法并发进入；异常退出后遗留的锁也不会自动抢占，必须人工核对供应商任务后处理。如果连接中断、HTTP 408/5xx、进程退出或响应无法确认是否受理，下一次运行只会停止并要求人工补入供应商 `task_id`，绝不会自动再次 POST。已取得 `task_id` 的组合只轮询原任务；已下载组合会重新校验本地文件哈希、ffprobe 与公网可读性，不会重复生成。`ffprobe` 子进程只继承运行所需的系统路径与临时目录变量，不继承供应商 Key 或 Authorization。
 

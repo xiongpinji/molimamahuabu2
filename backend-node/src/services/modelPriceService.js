@@ -9,6 +9,7 @@ const VIDEO_RESOLUTIONS = ['480p', '720p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
 const toapisVideoClient = require('./toapisVideoClient');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -262,11 +263,12 @@ function list(db) {
     .map((row) => ({ ...row, billing_unit: billingUnit(row.model, row.category, row.billing_unit) }));
 }
 
-function listPublic(db) {
+function listPublic(db, options = {}) {
   if (!hasTable(db, 'ai_service_configs')) return [];
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
   const configsByModel = new Map();
+  const strictUpstreamKeys = new Set();
   const addConfig = (model, upstreamModel, config) => {
     const key = String(model || '').trim().toLowerCase();
     if (!key) return;
@@ -279,6 +281,9 @@ function listPublic(db) {
     if (!row.is_active) continue;
     if (!isStrictPublicConfig(row) && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
+    if (isStrictPublicConfig(row)) {
+      strictUpstreamKeys.add(`${entry.kind}:${entry.upstreamModel.toLowerCase()}`);
+    }
     addConfig(entry.model, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
@@ -293,11 +298,19 @@ function listPublic(db) {
     const entries = configsByModel.get(row.model.toLowerCase()) || [];
     const selected = mediaModelSelection.parseQualifiedSelection(row.model);
     const upstreamModel = selected?.upstreamModel || entries[0]?.upstreamModel || row.model;
+    const strictUpstreamKey = `${row.category}:${String(upstreamModel).toLowerCase()}`;
+    if (strictUpstreamKeys.has(strictUpstreamKey)
+        && !entries.some((entry) => isStrictPublicConfig(entry.config))) return [];
     const protectedUsmercariModel = ['gpt-image-2-2-4k', 'nano-banana-2']
       .includes(String(upstreamModel).toLowerCase());
     const strictEntries = entries.filter((entry) => isStrictPublicConfig(entry.config));
     const candidates = protectedUsmercariModel || strictEntries.length ? strictEntries : entries;
-    const matched = candidates.find((entry) => isPublicConfigReady(entry.config, row, entry.upstreamModel));
+    const matched = candidates.find((entry) => isPublicConfigReady(
+      entry.config,
+      row,
+      entry.upstreamModel,
+      options.evidenceRoots,
+    ));
     if (!matched) return [];
     if (!isStrictPublicConfig(matched.config)) return [row];
     const resolutions = verifiedPublicResolutions(matched.config, matched.upstreamModel);
@@ -346,7 +359,7 @@ function verifiedPublicResolutions(config, model) {
     : [];
 }
 
-function isPublicConfigReady(config, price, model = price.model) {
+function isPublicConfigReady(config, price, model = price.model, evidenceRoots) {
   const protocol = strictPublicProtocol(config);
   if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return true;
   if ((protocol === 'usmercari_image' && price.category !== 'image')
@@ -354,6 +367,7 @@ function isPublicConfigReady(config, price, model = price.model) {
   if (config.verification_status !== 'verified'
       || !hasConnectionCredential(config)) return false;
   const modelCapabilities = verifiedPublicCapabilities(config, model);
+  if (!hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots)) return false;
   const resolutions = verifiedPublicResolutions(config, model);
   if (protocol === 'toapis_video') {
     const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()];

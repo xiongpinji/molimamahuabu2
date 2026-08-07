@@ -6,13 +6,23 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
-const videoService = require('../src/services/videoService');
+const rawVideoService = require('../src/services/videoService');
 const videoClient = require('../src/services/videoClient');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
+const videoService = {
+  ...rawVideoService,
+  create(db, logger, request, options = {}) {
+    return rawVideoService.create(db, logger, request, { ...options, evidenceRoots });
+  },
+  processVideoGeneration(db, logger, id, runtime = {}) {
+    return rawVideoService.processVideoGeneration(db, logger, id, { ...runtime, evidenceRoots });
+  },
+};
 const ORIGINAL_CWD = process.cwd();
 
 function withTempConfig(t, options = {}) {
@@ -68,16 +78,16 @@ function setup(t, options = {}) {
   ).run(
     JSON.stringify(['seedance-2-mini']),
     JSON.stringify({
-      'seedance-2-mini': {
+      'seedance-2-mini': withExternalModelEvidence('seedance-2-mini', {
         durations: [4, 8, 10, 12, 15], resolutions: ['480p', '720p'],
         supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
         supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
-      },
-      'seedance-2-fast': {
+      }),
+      'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
         durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['480p', '720p'],
         supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
         supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
-      },
+      }),
     }),
     now,
     now

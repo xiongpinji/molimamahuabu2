@@ -21,6 +21,8 @@ const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { aspectRatioLabelFromPixelSize } = require('./mediaAspectRatioSpec');
 const { downloadPublicImage } = require('./publicImageDownload');
 const usmercariImageClient = require('./usmercariImageClient');
+const modelPriceService = require('./modelPriceService');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -467,9 +469,82 @@ function hasVerifiedImageModel(config, preferredModel) {
   return Boolean(capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities));
 }
 
+function imageGateError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function verifiedImageCapabilities(config, model) {
+  let all = config?.verified_capabilities || {};
+  try {
+    if (typeof all === 'string') all = JSON.parse(all || '{}');
+  } catch (_) {
+    all = {};
+  }
+  const target = String(model || '').trim().toLowerCase();
+  const key = Object.keys(all || {}).find((item) => String(item).trim().toLowerCase() === target);
+  const capabilities = key ? all[key] : null;
+  return capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities)
+    ? capabilities
+    : null;
+}
+
+function assertUsmercariImageSubmitReady(db, config, model, opts, evidenceRoots) {
+  const target = String(model || '').trim().toLowerCase();
+  const official = usmercariImageClient.USMERCARI_IMAGE_MODELS[target];
+  if (!official || config?.verification_status !== 'verified') {
+    throw imageGateError('MODEL_NOT_VERIFIED', `${target || 'USMercari 图片模型'} 尚未通过真实生成验证`);
+  }
+  if (!aiConfigService.hasConnectionCredential(config)) {
+    throw imageGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的 USMercari API Key`);
+  }
+  const capabilities = verifiedImageCapabilities(config, target);
+  if (!capabilities || !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)
+      || capabilities.supportsTextToImage !== true) {
+    throw imageGateError('MODEL_NOT_VERIFIED', `${target} 的真实生成证据与当前发布不一致`);
+  }
+  const resolution = usmercariImageClient.normalizeResolution(opts?.resolution);
+  const verifiedResolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase())
+    : [];
+  if (!official.resolutions.includes(resolution) || !verifiedResolutions.includes(resolution)) {
+    throw imageGateError('IMAGE_RESOLUTION_NOT_VERIFIED', `${target} 的 ${resolution} 尚未通过真实生成验证`);
+  }
+  const references = Array.isArray(opts?.reference_image_urls)
+    ? opts.reference_image_urls.filter(Boolean)
+    : [];
+  if (references.length > 0 && capabilities.supportsImageReference !== true) {
+    throw imageGateError('IMAGE_REFERENCE_NOT_VERIFIED', `${target} 尚未通过参考图真实验证`);
+  }
+  const maxReferences = Math.min(Number(official.maxReferences), Number(capabilities.maxReferences));
+  if (!Number.isSafeInteger(maxReferences) || maxReferences < 0 || references.length > maxReferences) {
+    throw imageGateError('IMAGE_REFERENCE_LIMIT_EXCEEDED', `${target} 的参考图数量超过已验证上限`);
+  }
+  const quantity = Number(opts?.n ?? 1);
+  if (quantity !== 1) throw imageGateError('INVALID_IMAGE_QUANTITY', 'USMercari 图片数量目前仅开放已实测的 1 张');
+  const price = modelPriceService.list(db)
+    .find((item) => String(item.model || '').trim().toLowerCase() === target);
+  const credits = modelPriceService.calculateCharge(db, target, { resolution, quantity });
+  if (!price || price.category !== 'image' || price.status !== 'enabled'
+      || !Number.isSafeInteger(credits) || credits <= 0
+      || !Number.isSafeInteger(price.resolution_prices?.[resolution]?.credits)
+      || price.resolution_prices[resolution].credits !== credits) {
+    throw imageGateError('MODEL_RESOLUTION_PRICE_REQUIRED', `${target} 的 ${resolution} 积分待管理员配置`);
+  }
+  return { capabilities, quantity, references, resolution };
+}
+
 function isVerifiedImageFallbackConfig(config) {
   const status = config?.verification_status;
   return status == null || status === '' || status === 'verified';
+}
+
+function isUsmercariImageConfig(config, model) {
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  const protocol = String(config?.api_protocol || '').trim().toLowerCase()
+    || inferProtocol(provider, model || getModelFromConfig(config));
+  return protocol === 'usmercari_image';
 }
 
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
@@ -487,14 +562,7 @@ function getImageConfigCandidates(db, preferredModel, preferredProvider, imageSe
     if (selected.length > 0) active = selected;
   }
   if (preferredModel && usmercariImageClient.USMERCARI_IMAGE_MODELS[String(preferredModel || '').trim().toLowerCase()]) {
-    const strict = active.filter((config) => String(config.provider || '').toLowerCase() === 'usmercari_image'
-      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image');
-    if (strict.length > 0) {
-      active = [
-        ...strict,
-        ...active.filter((config) => !strict.includes(config)),
-      ];
-    }
+    active = active.filter((config) => isUsmercariImageConfig(config, preferredModel));
   }
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
     const selected = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
@@ -2087,7 +2155,7 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
-async function callImageApi(db, log, opts) {
+async function callImageApi(db, log, opts, runtime = {}) {
   const {
     prompt,
     model: preferredModel,
@@ -2156,11 +2224,15 @@ async function callImageApi(db, log, opts) {
       model: preferredModel || undefined,
       _imageConfigOverride: nextConfig,
       _attemptedImageConfigKeys: Array.from(attempted),
-    });
+    }, runtime);
   };
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+  if (usmercariImageClient.USMERCARI_IMAGE_MODELS[String(model || '').trim().toLowerCase()]
+      && protocol !== 'usmercari_image') {
+    throw imageGateError('MODEL_PROTOCOL_MISMATCH', `${model} 必须使用已验证的 USMercari 图片协议配置`);
+  }
   const referenceCount = Array.isArray(reference_image_urls)
     ? reference_image_urls.filter(Boolean).length
     : 0;
@@ -2246,9 +2318,11 @@ async function callImageApi(db, log, opts) {
 
   if (protocol === 'usmercari_image') {
     const rawReferences = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
-    if (rawReferences.length > 6) {
-      return { error: `USMercari 图片模型 ${model} 最多支持 6 张参考图` };
-    }
+    const submit = assertUsmercariImageSubmitReady(db, config, model, {
+      n: opts.n ?? 1,
+      reference_image_urls: rawReferences,
+      resolution: resolution || '1k',
+    }, runtime.evidenceRoots);
     const resolvedReferences = rawReferences
       .map((reference) => resolveUsmercariPublicImageRef(reference, files_base_url, storage_local_path))
       .filter(Boolean);
@@ -2258,9 +2332,9 @@ async function callImageApi(db, log, opts) {
     return usmercariImageClient.callUsmercariImageApi(config, log, {
       prompt: effectivePrompt,
       model,
-      n: opts.n || 1,
+      n: submit.quantity,
       aspect_ratio: opts.aspect_ratio || '1:1',
-      resolution: resolution || '1k',
+      resolution: submit.resolution,
       image_gen_id,
       reference_image_urls: resolvedReferences,
       files_base_url,
@@ -2530,7 +2604,7 @@ function createStrictGeneratedAsset(db, row, persisted, artifact) {
   });
 }
 
-function createAndGenerateImage(db, log, opts) {
+function createAndGenerateImage(db, log, opts, runtime = {}) {
   const {
     drama_id,
     character_id,
@@ -2580,6 +2654,7 @@ function createAndGenerateImage(db, log, opts) {
     }, 'image', {
       requirePricing: billingEnabled === true,
       allowMissingModel: !billingEnabled,
+      evidenceRoots: runtime.evidenceRoots,
     });
   } catch (error) {
     if (billingEnabled || ['MODEL_NOT_VERIFIED', 'MODEL_CREDENTIAL_MISSING', 'IMAGE_RESOLUTION_REQUIRED', 'IMAGE_RESOLUTION_NOT_VERIFIED', 'IMAGE_REFERENCE_NOT_VERIFIED', 'IMAGE_REFERENCE_LIMIT_EXCEEDED', 'INVALID_IMAGE_QUANTITY'].includes(error.code)) {
@@ -2701,7 +2776,7 @@ function createAndGenerateImage(db, log, opts) {
           image_type,
           image_gen_id: imageGenId,
           user_negative_prompt: user_negative_prompt || undefined,
-        }))
+        }, runtime))
       );
       const now2 = new Date().toISOString();
       if (result.error) {

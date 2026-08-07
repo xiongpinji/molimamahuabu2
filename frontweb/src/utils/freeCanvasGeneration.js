@@ -758,6 +758,20 @@ export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], tar
   return references.sort((a, b) => a.order - b.order)
 }
 
+export function buildFreeCanvasReferenceMentionCandidates(references = []) {
+  return (Array.isArray(references) ? references : [])
+    .map((reference, index) => ({
+      nodeId: String(reference?.nodeId || ''),
+      title: reference?.title || '图片节点',
+      label: `图片${index + 1}`,
+      mentionToken: `@图片${index + 1}`,
+      url: reference?.url,
+      ready: reference?.ready,
+      enabled: reference?.enabled,
+    }))
+    .filter((reference) => reference.nodeId && reference.ready && reference.enabled !== false)
+}
+
 export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNodeId = '') {
   const target = String(targetNodeId || '')
   if (!target) return []

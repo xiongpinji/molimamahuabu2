@@ -53,7 +53,7 @@ function completeEvidence() {
         } : {}),
       },
       artifact: {
-        public_url: `https://molimama.vip/static/verification/${id}.mp4`,
+        public_url: `https://molimama.vip/verification-assets/toapis/${id}.mp4`,
         output_file: `${id}.mp4`,
         bytes: 1024,
         sha256: crypto.createHash('sha256').update(id).digest('hex'),

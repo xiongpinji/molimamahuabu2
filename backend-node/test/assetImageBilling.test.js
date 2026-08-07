@@ -11,6 +11,7 @@ const uploadService = require('../src/services/uploadService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
 const ONE_PIXEL_PNG = Buffer.from(
@@ -38,7 +39,7 @@ function createAssetImage(db, asset = {}) {
     billingEnabled: true,
     userId: asset.userId ?? 'user-1',
     schedule() {},
-  });
+  }, { evidenceRoots });
 }
 
 function installUsmercariImageModel(db, model, resolutions, options = {}) {
@@ -57,12 +58,12 @@ function installUsmercariImageModel(db, model, resolutions, options = {}) {
     SET verification_status = ?, verified_capabilities = ? WHERE id = ?`).run(
     options.verificationStatus || 'verified',
     JSON.stringify({
-      [model]: {
+      [model]: withExternalModelEvidence(model, {
         supportsTextToImage: true,
         supportsImageReference: true,
         maxReferences: 6,
         resolutions,
-      },
+      }),
     }),
     config.id,
   );
@@ -74,6 +75,7 @@ function installUsmercariImageModel(db, model, resolutions, options = {}) {
       { credits: resolution === '4k' ? 105 : 70, cost_micros_per_unit: resolution === '4k' ? 120000 : 80000 },
     ])),
   });
+  return config;
 }
 
 test('公开计费模式缺少图片价格时不创建旧资产图片任务', () => {
@@ -185,7 +187,7 @@ test('人物、场景和全景图未显式传模型时统一使用已验证的�
     billingEnabled: true,
     userId: 'user-1',
     schedule() {},
-  });
+  }, { evidenceRoots });
 
   const character = createWithoutModel({ characterId: 41, imageType: 'character_reference' });
   const scene = createWithoutModel({ sceneId: 51, imageType: 'scene_reference' });
@@ -293,7 +295,7 @@ test('旧资产 strict USMercari n=2 在创建任务和预扣前失败', () => {
       billingEnabled: true,
       userId: 'user-1',
       schedule() {},
-    }), (error) => {
+    }, { evidenceRoots }), (error) => {
       assert.equal(error.code, 'INVALID_IMAGE_QUANTITY');
       return true;
     });
@@ -319,7 +321,7 @@ test('旧资产 strict USMercari 非计费入口也拒绝 n=2 而不创建任务
       n: 2,
       billingEnabled: false,
       schedule() {},
-    }), (error) => {
+    }, { evidenceRoots }), (error) => {
       assert.equal(error.code, 'INVALID_IMAGE_QUANTITY');
       return true;
     });
@@ -374,7 +376,7 @@ test('旧资产 strict USMercari 成功保存本站静态图，下载失败退�
     billingEnabled: true,
     userId: 'user-1',
     schedule(callback) { scheduled = callback; },
-  });
+  }, { evidenceRoots });
 
   await scheduled();
   const row = db.prepare('SELECT status, image_url, local_path, error_msg, credit_reservation_id FROM image_generations WHERE id = ?').get(created.id);
@@ -401,7 +403,7 @@ test('旧资产 strict USMercari 成功保存本站静态图，下载失败退�
     billingEnabled: true,
     userId: 'user-1',
     schedule(callback) { failedScheduled = callback; },
-  });
+  }, { evidenceRoots });
 
   await failedScheduled();
   const failedRow = db.prepare('SELECT status, error_msg, credit_reservation_id FROM image_generations WHERE id = ?').get(failed.id);
@@ -410,4 +412,52 @@ test('旧资产 strict USMercari 成功保存本站静态图，下载失败退�
   assert.match(failedRow.error_msg, /本地保存失败|未生成本地文件/);
   assert.equal(db.prepare('SELECT COUNT(*) count FROM assets WHERE image_gen_id = ?').get(failed.id).count, 0);
   assert.equal(credits.getReservation(db, failedRow.credit_reservation_id).status, 'refunded');
+});
+
+test('旧资产异步提交前证据失效时不调用 USMercari', async (t) => {
+  const db = setup(500);
+  const originalFetch = global.fetch;
+  const originalDownload = uploadService.downloadImageToLocal;
+  t.after(() => {
+    global.fetch = originalFetch;
+    uploadService.downloadImageToLocal = originalDownload;
+    db.close();
+  });
+  const config = installUsmercariImageModel(db, 'nano-banana-2', ['1k', '2k', '4k']);
+  let posts = 0;
+  global.fetch = async () => {
+    posts += 1;
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ url: 'https://cdn.example/must-not-submit.png' }] }),
+    };
+  };
+  uploadService.downloadImageToLocal = async () => null;
+  let scheduled;
+  const created = imageClient.createAndGenerateImage(db, log, {
+    drama_id: 1,
+    character_id: 21,
+    prompt: 'evidence changed after reservation',
+    model: 'nano-banana-2',
+    provider: 'usmercari_image',
+    resolution: '1k',
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule(callback) { scheduled = callback; },
+  }, { evidenceRoots });
+  const capabilities = JSON.parse(db.prepare(
+    'SELECT verified_capabilities FROM ai_service_configs WHERE id = ?',
+  ).get(config.id).verified_capabilities);
+  capabilities['nano-banana-2'].evidence_sha256 = '0'.repeat(64);
+  db.prepare('UPDATE ai_service_configs SET verified_capabilities = ? WHERE id = ?')
+    .run(JSON.stringify(capabilities), config.id);
+
+  await scheduled();
+
+  const row = db.prepare('SELECT status, credit_reservation_id FROM image_generations WHERE id = ?')
+    .get(created.id);
+  assert.equal(posts, 0);
+  assert.equal(row.status, 'failed');
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
 });

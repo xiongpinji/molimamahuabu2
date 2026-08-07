@@ -3,6 +3,7 @@ const mediaModelSelection = require('./mediaModelSelectionService');
 const modelPriceService = require('./modelPriceService');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 const toapisVideoClient = require('./toapisVideoClient');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 const KIND_BY_SERVICE = {
   text: 'text',
@@ -120,7 +121,7 @@ function strictVerifiedProtocol(config) {
   return null;
 }
 
-function verifiedModelCapabilities(config, model, price) {
+function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   const protocol = strictVerifiedProtocol(config);
   if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return null;
   if (config.verification_status !== 'verified' || !aiConfigService.hasConnectionCredential(config)) return false;
@@ -129,6 +130,8 @@ function verifiedModelCapabilities(config, model, price) {
     .find((item) => String(item).trim().toLowerCase() === target);
   const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
   if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
+  if (!hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) return false;
+  const { evidence_contract: _evidenceContract, evidence_sha256: _evidenceSha256, ...publicCapabilitySource } = capabilities;
   const allowedResolutions = protocol === 'usmercari_image'
     ? modelPriceService.IMAGE_RESOLUTIONS
     : modelPriceService.VIDEO_RESOLUTIONS;
@@ -137,7 +140,7 @@ function verifiedModelCapabilities(config, model, price) {
       .map((item) => String(item || '').trim().toLowerCase())
       .filter((resolution) => allowedResolutions.includes(resolution)))]
     : [];
-  let publicCapabilities = { ...capabilities, resolutions };
+  let publicCapabilities = { ...publicCapabilitySource, resolutions };
   if (protocol === 'toapis_video') {
     const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[target];
     const verifiedDurations = new Set(Array.isArray(capabilities.durations)
@@ -211,7 +214,7 @@ function list(db, options = {}) {
       if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
       if (!Number.isSafeInteger(price?.credits) || price.credits <= 0) return null;
-      const verifiedCapabilities = verifiedModelCapabilities(config, upstreamModel, price);
+      const verifiedCapabilities = verifiedModelCapabilities(config, upstreamModel, price, options.evidenceRoots);
       if (verifiedCapabilities === false) return null;
       const resolutionPrices = verifiedCapabilities
         ? Object.fromEntries(verifiedCapabilities.resolutions.map((resolution) => [

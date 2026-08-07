@@ -216,7 +216,11 @@ function validateCompletedResult(item) {
         || !hasExactRoles(request.audio_with_roles, ['reference_audio'])) return false;
   }
   const artifact = item.artifact || {};
-  try { assertMoliPublicAssetBaseUrl(artifact.public_url); } catch (_) { return false; }
+  try {
+    const outputFile = assertSafeMp4Basename(artifact.output_file);
+    const publicUrl = new URL(assertMoliPublicArtifactUrl(artifact.public_url));
+    if (publicUrl.pathname.slice(publicUrl.pathname.lastIndexOf('/') + 1) !== outputFile) return false;
+  } catch (_) { return false; }
   if (!String(artifact.output_file || '').trim()
       || !Number.isFinite(Number(artifact.bytes)) || Number(artifact.bytes) <= 0
       || !/^[a-f0-9]{64}$/i.test(String(artifact.sha256 || ''))
@@ -396,6 +400,7 @@ async function fetchBalance(apiKey, fetchImpl = globalThis.fetch) {
 }
 
 async function assertPublicArtifact(url, expectedSha256, fetchImpl = globalThis.fetch) {
+  assertMoliPublicArtifactUrl(url);
   const response = await fetchImpl(url, { method: 'GET' });
   if (response.status !== 200) throw new Error(`本站长期资产公网读取失败 (${response.status})`);
   const buffer = Buffer.from(await response.arrayBuffer());
@@ -403,16 +408,83 @@ async function assertPublicArtifact(url, expectedSha256, fetchImpl = globalThis.
   if (sha256 !== expectedSha256) throw new Error('本站公网资产与本地校验文件哈希不一致');
 }
 
+function buildReleaseEvidence(results, pricing, costReview, now = new Date()) {
+  const generated = new Date(now);
+  if (!Number.isFinite(generated.getTime())) throw new Error('ToAPIs 证据生成时间无效');
+  const generatedAt = generated.toISOString();
+  return redactEvidence({
+    contract_version: EVIDENCE_VERSION,
+    provider_origin: BASE_URL,
+    generated_at: generatedAt,
+    valid_until: new Date(generated.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    results,
+    pricing,
+    cost_review: costReview || null,
+  });
+}
+
+function assertMoliPublicArtifactUrl(url) {
+  const raw = String(url || '').trim();
+  const parsed = new URL(raw);
+  if (parsed.origin !== 'https://molimama.vip'
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || parsed.href !== raw
+      || !/^\/verification-assets\/toapis\/[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4$/.test(parsed.pathname)) {
+    throw new Error('本站长期资产必须位于 https://molimama.vip/verification-assets/toapis/');
+  }
+  return parsed.href;
+}
+
+function assertSafeMp4Basename(value) {
+  const fileName = String(value || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._~-]*\.mp4$/.test(fileName) || path.basename(fileName) !== fileName) {
+    throw new Error('ToAPIs 成品文件名必须是安全的 .mp4 basename');
+  }
+  return fileName;
+}
+
 function assertMoliPublicAssetBaseUrl(value) {
   let parsed;
   try { parsed = new URL(String(value || '').trim()); } catch (_) {
-    throw new Error('TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL 必须是 molimama.vip 的 HTTPS 地址');
+    throw new Error('TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL 必须固定为 https://molimama.vip/verification-assets/toapis');
   }
-  const hostname = parsed.hostname.toLowerCase();
-  if (parsed.protocol !== 'https:' || (hostname !== 'molimama.vip' && !hostname.endsWith('.molimama.vip'))) {
-    throw new Error('TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL 必须是 molimama.vip 的 HTTPS 地址');
+  const pathname = parsed.pathname.replace(/\/+$/, '');
+  if (parsed.origin !== 'https://molimama.vip'
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || pathname !== '/verification-assets/toapis') {
+    throw new Error('TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL 必须固定为 https://molimama.vip/verification-assets/toapis');
   }
-  return parsed.href.replace(/\/+$/, '');
+  return 'https://molimama.vip/verification-assets/toapis';
+}
+
+function resolveVerificationPaths(env = process.env) {
+  const outputDirRaw = String(env.TOAPIS_VERIFY_OUTPUT_DIR || '').trim();
+  const publicArtifactDirRaw = String(env.TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR || '').trim();
+  if (!outputDirRaw) throw new Error('缺少 TOAPIS_VERIFY_OUTPUT_DIR；私有验证状态必须写入受保护目录');
+  if (!publicArtifactDirRaw) throw new Error('缺少 TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR；真实成品必须写入固定 public/toapis 目录');
+  if (!path.isAbsolute(outputDirRaw) || !path.isAbsolute(publicArtifactDirRaw)) {
+    throw new Error('ToAPIs 验证目录必须使用绝对路径');
+  }
+  const outputDir = path.resolve(outputDirRaw);
+  const publicArtifactDir = path.resolve(publicArtifactDirRaw);
+  if (outputDir === publicArtifactDir) throw new Error('公网成品目录不能与私有验证目录相同');
+  const publicFromPrivate = path.relative(outputDir, publicArtifactDir);
+  const privateFromPublic = path.relative(publicArtifactDir, outputDir);
+  const publicInsidePrivate = publicFromPrivate && !publicFromPrivate.startsWith(`..${path.sep}`)
+    && publicFromPrivate !== '..' && !path.isAbsolute(publicFromPrivate);
+  const privateInsidePublic = privateFromPublic && !privateFromPublic.startsWith(`..${path.sep}`)
+    && privateFromPublic !== '..' && !path.isAbsolute(privateFromPublic);
+  if (publicInsidePrivate || privateInsidePublic) {
+    throw new Error('公网成品目录必须与私有验证目录分离');
+  }
+  return {
+    outputDir,
+    publicArtifactDir,
+    publicAssetBaseUrl: assertMoliPublicAssetBaseUrl(env.TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL),
+    statePath: path.join(outputDir, 'toapis-video-verification-state.json'),
+    evidencePath: path.join(outputDir, 'toapis-video-verification.json'),
+    lockPath: path.join(outputDir, '.toapis-video-verification.lock'),
+  };
 }
 
 async function downloadAndInspect(url, filePath, item, publicUrl, deps = {}) {
@@ -444,9 +516,12 @@ async function downloadAndInspect(url, filePath, item, publicUrl, deps = {}) {
 }
 
 async function verifyStoredArtifact(entry, item, context, deps = {}) {
-  const fileName = path.basename(String(entry.artifact?.output_file || ''));
-  if (!fileName) throw new Error(`${item.id} 缺少本站长期资产文件名`);
-  const filePath = path.join(context.outputDir, fileName);
+  const fileName = assertSafeMp4Basename(entry.artifact?.output_file);
+  const publicUrl = new URL(assertMoliPublicArtifactUrl(entry.artifact?.public_url));
+  if (publicUrl.pathname.slice(publicUrl.pathname.lastIndexOf('/') + 1) !== fileName) {
+    throw new Error(`${item.id} 本站长期资产 URL 与文件名不一致`);
+  }
+  const filePath = path.join(context.artifactOutputDir, fileName);
   const buffer = await fs.promises.readFile(filePath);
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   if (sha256 !== entry.artifact.sha256) throw new Error(`${item.id} 本站长期资产哈希不匹配`);
@@ -657,7 +732,7 @@ async function processCase(item, context, deps = {}) {
     const publicUrl = casePublicUrl(context.publicAssetBaseUrl, fileName);
     entry.artifact = await downloadAndInspect(
       completed.videoUrl,
-      path.join(context.outputDir, fileName),
+      path.join(context.artifactOutputDir, fileName),
       item,
       publicUrl,
       deps,
@@ -687,14 +762,17 @@ async function runVerification(deps = {}) {
   normalizeToapisBaseUrl(process.env.TOAPIS_BASE_URL || BASE_URL);
   requireDedicatedVerificationToken();
   const apiKey = requireApiKey();
-  const outputDirRaw = String(process.env.TOAPIS_VERIFY_OUTPUT_DIR || '').trim();
-  const publicAssetBaseUrl = assertMoliPublicAssetBaseUrl(process.env.TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL);
-  if (!outputDirRaw) throw new Error('缺少 TOAPIS_VERIFY_OUTPUT_DIR；真实成品必须写入本站长期测试资产目录');
-  const outputDir = path.resolve(outputDirRaw);
+  const {
+    outputDir,
+    publicArtifactDir,
+    publicAssetBaseUrl,
+    statePath,
+    evidencePath,
+    lockPath,
+  } = resolveVerificationPaths(process.env);
   await fs.promises.mkdir(outputDir, { recursive: true });
-  const statePath = path.join(outputDir, 'toapis-video-verification-state.json');
-  const evidencePath = path.join(outputDir, 'toapis-video-verification.json');
-  const releaseLock = acquireVerificationLock(path.join(outputDir, '.toapis-video-verification.lock'));
+  await fs.promises.mkdir(publicArtifactDir, { recursive: true });
+  const releaseLock = acquireVerificationLock(lockPath);
   try {
   const state = readJson(statePath, { state_version: STATE_VERSION, cases: {} });
   if (state.state_version !== STATE_VERSION || !state.cases || typeof state.cases !== 'object') {
@@ -704,6 +782,7 @@ async function runVerification(deps = {}) {
     apiKey,
     config: { base_url: BASE_URL, api_key: apiKey },
     outputDir,
+    artifactOutputDir: publicArtifactDir,
     publicAssetBaseUrl,
     statePath,
     state,
@@ -724,14 +803,7 @@ async function runVerification(deps = {}) {
     }
     const results = await verifyAllStoredResults(context, deps);
     const pricing = loadPricingEvidence();
-    const evidence = redactEvidence({
-      contract_version: EVIDENCE_VERSION,
-      provider_origin: BASE_URL,
-      generated_at: new Date().toISOString(),
-      results,
-      pricing,
-      cost_review: state.last_cost_review || null,
-    });
+    const evidence = buildReleaseEvidence(results, pricing, state.last_cost_review || null);
     writeJsonAtomic(evidencePath, evidence);
     if (context.confirmCostReview && !canConfirmCostReview(context)) {
       throw new Error('本轮发生了付费提交或运行开始前尚未完成 8 个组合，费用确认必须在下一次零 POST 运行中执行');
@@ -771,6 +843,7 @@ module.exports = {
   assertMoliPublicAssetBaseUrl,
   assertPublicArtifact,
   buildRequiredMatrix,
+  buildReleaseEvidence,
   buildVerificationRequest,
   buildVerifiedCapabilities,
   calculateBalanceDelta,
@@ -783,6 +856,7 @@ module.exports = {
   redactEvidence,
   requireDedicatedVerificationToken,
   requiredPriceFloors,
+  resolveVerificationPaths,
   runVerification,
   safeChildProcessEnv,
   selectVerificationCases,

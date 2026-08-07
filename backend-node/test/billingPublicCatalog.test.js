@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const billingRoutes = require('../src/routes/billing');
 const modelPrice = require('../src/services/modelPriceService');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { error() {} };
 
@@ -37,7 +38,7 @@ test('用户模型目录只返回管理员启用、已验证且已计费的模�
   );
   modelPrice.set(db, 'gpt-image-2', 12, { category: 'image', display_name: '图片模型' });
   modelPrice.set(db, 'seedance 2.0', 35, { category: 'video' });
-  const handlers = billingRoutes(db, log);
+  const handlers = billingRoutes(db, log, { evidenceRoots });
   const { res, result } = capture();
 
   handlers.listPublicCatalog({}, res);
@@ -72,12 +73,12 @@ test('公共计费目录对 USMercari 图片复用真实验证和完整档位价
     deleted_at TEXT
   )`);
   const capabilities = {
-    'gpt-image-2-2-4k': {
+    'gpt-image-2-2-4k': withExternalModelEvidence('gpt-image-2-2-4k', {
       supportsTextToImage: true,
       supportsImageReference: true,
       maxReferences: 6,
       resolutions: ['1k', '2k'],
-    },
+    }),
   };
   db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
@@ -87,7 +88,7 @@ test('公共计费目录对 USMercari 图片复用真实验证和完整档位价
     category: 'image', display_name: 'GPT Image 2', public_note: '仅开放已验证档位',
     resolution_prices: { '1k': { credits: 70, cost_micros_per_unit: 80000 } },
   });
-  const handlers = billingRoutes(db, log);
+  const handlers = billingRoutes(db, log, { evidenceRoots });
   let captured = capture();
   handlers.listPublicCatalog({}, captured.res);
   assert.deepEqual(captured.result.body.data, []);
@@ -132,12 +133,12 @@ test('公共计费目录识别 USMercari 图片专用环境 Key', () => {
       (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
       VALUES ('image', 'usmercari_image', 'usmercari_image', '', ?, 1, 'verified', ?)`)
       .run(JSON.stringify(['gpt-image-2-2-4k']), JSON.stringify({
-        'gpt-image-2-2-4k': {
+        'gpt-image-2-2-4k': withExternalModelEvidence('gpt-image-2-2-4k', {
           supportsTextToImage: true,
           supportsImageReference: true,
           maxReferences: 1,
           resolutions: ['1k', '2k'],
-        },
+        }),
       }));
     modelPrice.set(db, 'gpt-image-2-2-4k', 70, {
       category: 'image',
@@ -146,7 +147,7 @@ test('公共计费目录识别 USMercari 图片专用环境 Key', () => {
         '2k': { credits: 87, cost_micros_per_unit: 100000 },
       },
     });
-    const handlers = billingRoutes(db, log);
+    const handlers = billingRoutes(db, log, { evidenceRoots });
     const captured = capture();
     handlers.listPublicCatalog({}, captured.res);
     assert.equal(captured.result.body.data.length, 1);
@@ -181,7 +182,9 @@ test('公共计费目录对 ToAPIs 视频复用真实验证、凭据和完整档
       (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
       VALUES ('video', 'toapis', 'toapis_video', 'stored-key', ?, 1, 'verified', ?)`)
       .run(JSON.stringify(['seedance-2-fast']), JSON.stringify({
-        'seedance-2-fast': { durations: [4, 5], resolutions: ['480p', '720p'] },
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [4, 5], resolutions: ['480p', '720p'],
+        }),
       }));
     modelPrice.set(db, 'seedance-2-fast', 511, {
       category: 'video',
@@ -189,7 +192,7 @@ test('公共计费目录对 ToAPIs 视频复用真实验证、凭据和完整档
         '480p': { credits: 511, cost_micros_per_second: 584000 },
       },
     });
-    const handlers = billingRoutes(db, log);
+    const handlers = billingRoutes(db, log, { evidenceRoots });
     let captured = capture();
     handlers.listPublicCatalog({}, captured.res);
     assert.deepEqual(captured.result.body.data, []);
@@ -213,7 +216,9 @@ test('公共计费目录对 ToAPIs 视频复用真实验证、凭据和完整档
 
     db.prepare("UPDATE ai_service_configs SET verification_status = 'verified', verified_capabilities = ?")
       .run(JSON.stringify({
-        'seedance-2-fast': { durations: [99], resolutions: ['480p', '720p'] },
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [99], resolutions: ['480p', '720p'],
+        }),
       }));
     captured = capture();
     handlers.listPublicCatalog({}, captured.res);

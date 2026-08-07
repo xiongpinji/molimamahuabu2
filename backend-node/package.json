@@ -20,6 +20,7 @@
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
     "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
+    "audit:usmercari-image": "node scripts/verify-usmercari-image-release-contract.js",
     "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
     "audit:toapis-video": "node scripts/verify-toapis-video-release-contract.js"
   },

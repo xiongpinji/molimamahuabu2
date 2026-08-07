@@ -3,14 +3,18 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
 const {
+  USMERCARI_IMAGE_ORIGIN,
   USMERCARI_IMAGE_MODELS,
+  normalizeUsmercariImageBaseUrl,
   validateUsmercariImageOptions,
   buildUsmercariImageBody,
   callUsmercariImageApi,
 } = require('../src/services/usmercariImageClient');
 const { callImageApi } = require('../src/services/imageClient');
 const aiConfigService = require('../src/services/aiConfigService');
+const modelPriceService = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const originalFetch = global.fetch;
 const log = { info() {}, warn() {}, error() {} };
@@ -28,6 +32,39 @@ function jsonResponse(payload, status = 200) {
 }
 
 describe('USMercari image protocol', () => {
+  it('locks provider requests to the reviewed HTTPS origin', async () => {
+    assert.equal(USMERCARI_IMAGE_ORIGIN, 'https://chat-ai.mercarimx.com');
+    assert.equal(normalizeUsmercariImageBaseUrl('https://chat-ai.mercarimx.com/'), USMERCARI_IMAGE_ORIGIN);
+    assert.equal(normalizeUsmercariImageBaseUrl('https://chat-ai.mercarimx.com/v1/'), USMERCARI_IMAGE_ORIGIN);
+
+    const blocked = [
+      'http://chat-ai.mercarimx.com',
+      'https://evil.example',
+      'https://chat-ai.mercarimx.com.evil.example',
+      'https://user:secret@chat-ai.mercarimx.com',
+      'https://chat-ai.mercarimx.com:444',
+      'https://chat-ai.mercarimx.com/v2',
+      'https://chat-ai.mercarimx.com/?redirect=https://evil.example',
+      'https://chat-ai.mercarimx.com/#fragment',
+    ];
+    for (const value of blocked) {
+      assert.throws(() => normalizeUsmercariImageBaseUrl(value), /官方 HTTPS 地址/);
+    }
+
+    let calls = 0;
+    global.fetch = async () => {
+      calls += 1;
+      return jsonResponse({ data: [{ url: 'https://cdn.example/unexpected.png' }] });
+    };
+    for (const base_url of blocked) {
+      const result = await callUsmercariImageApi({ base_url, api_key: 'secret' }, log, {
+        model: 'nano-banana-2', prompt: 'x', resolution: '1k',
+      });
+      assert.match(result.error, /官方 HTTPS 地址/);
+    }
+    assert.equal(calls, 0);
+  });
+
   it('declares only the two requested image models and supplier resolution values', () => {
     assert.deepEqual(Object.keys(USMERCARI_IMAGE_MODELS), [
       'gpt-image-2-2-4k',
@@ -217,13 +254,22 @@ describe('USMercari image protocol', () => {
     db.prepare(`UPDATE ai_service_configs
       SET verification_status = 'verified', verified_capabilities = ? WHERE id = ?`)
       .run(JSON.stringify({
-        'nano-banana-2': {
+        'nano-banana-2': withExternalModelEvidence('nano-banana-2', {
           supportsTextToImage: true,
           supportsImageReference: true,
           maxReferences: 6,
           resolutions: ['1k', '2k', '4k'],
-        },
+        }),
       }), config.id);
+    modelPriceService.set(db, 'nano-banana-2', 70, {
+      category: 'image',
+      cost_unit: 'image',
+      resolution_prices: {
+        '1k': { credits: 70, cost_micros_per_unit: 80000 },
+        '2k': { credits: 87, cost_micros_per_unit: 100000 },
+        '4k': { credits: 105, cost_micros_per_unit: 120000 },
+      },
+    });
     const requests = [];
     global.fetch = async (url, options) => {
       const request = { url: String(url), body: JSON.parse(options.body) };
@@ -243,11 +289,105 @@ describe('USMercari image protocol', () => {
         imageServiceType: 'image',
         preferred_provider: 'usmercari_image',
         preferred_config_id: config.id,
-      });
+      }, { evidenceRoots });
       assert.equal(result.image_url, 'https://cdn.example/routed.png');
       assert.equal(requests.some((request) => request.url.endsWith('/api/v1/nanobanana/generate-2')), false);
       assert.equal(requests.at(-1).url, 'https://chat-ai.mercarimx.com/v1/images/generations');
       assert.equal(requests.at(-1).body.image_url, 'https://molimama.vip/static/projects/demo/reference.png');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks the direct USMercari submit when the current resolution price is missing', async () => {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const config = aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'usmercari_image',
+      api_protocol: 'usmercari_image',
+      name: 'USMercari direct gate',
+      base_url: 'https://chat-ai.mercarimx.com',
+      api_key: 'secret',
+      model: ['nano-banana-2'],
+      default_model: 'nano-banana-2',
+      is_default: true,
+      is_active: true,
+    });
+    db.prepare(`UPDATE ai_service_configs
+      SET verification_status = 'verified', verified_capabilities = ? WHERE id = ?`)
+      .run(JSON.stringify({
+        'nano-banana-2': withExternalModelEvidence('nano-banana-2', {
+          supportsTextToImage: true,
+          supportsImageReference: true,
+          maxReferences: 6,
+          resolutions: ['1k', '2k', '4k'],
+        }),
+      }), config.id);
+    let posts = 0;
+    global.fetch = async () => {
+      posts += 1;
+      return jsonResponse({ data: [{ url: 'https://cdn.example/must-not-submit.png' }] });
+    };
+    try {
+      await assert.rejects(callImageApi(db, log, {
+        model: 'nano-banana-2',
+        prompt: 'must be priced',
+        resolution: '2k',
+        preferred_provider: 'usmercari_image',
+        preferred_config_id: config.id,
+      }, { evidenceRoots }), (error) => error.code === 'MODEL_PRICE_NOT_CONFIGURED');
+      assert.equal(posts, 0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('blocks a protected model from a non-USMercari override before provider I/O', async () => {
+    const db = new Database(':memory:');
+    runMigrationsAndEnsure(db);
+    const config = aiConfigService.createConfig(db, log, {
+      service_type: 'image',
+      provider: 'openai',
+      api_protocol: 'openai',
+      name: '错误的同名图片配置',
+      base_url: 'https://wrong-provider.example/v1',
+      api_key: 'secret',
+      model: ['nano-banana-2'],
+      default_model: 'nano-banana-2',
+      is_default: true,
+      is_active: true,
+    });
+    db.prepare(`UPDATE ai_service_configs
+      SET verification_status = 'verified', verified_capabilities = ? WHERE id = ?`)
+      .run(JSON.stringify({
+        'nano-banana-2': withExternalModelEvidence('nano-banana-2', {
+          supportsTextToImage: true,
+          supportsImageReference: true,
+          maxReferences: 6,
+          resolutions: ['1k', '2k', '4k'],
+        }),
+      }), config.id);
+    modelPriceService.set(db, 'nano-banana-2', 70, {
+      category: 'image',
+      cost_unit: 'image',
+      resolution_prices: {
+        '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      },
+    });
+    let posts = 0;
+    global.fetch = async () => {
+      posts += 1;
+      return jsonResponse({ data: [{ url: 'https://cdn.example/must-not-submit.png' }] });
+    };
+    try {
+      await assert.rejects(callImageApi(db, log, {
+        model: 'nano-banana-2',
+        prompt: 'must stay on the reviewed provider',
+        resolution: '1k',
+        _imageConfigOverride: config,
+      }, { evidenceRoots }), (error) => error.code === 'MODEL_PROTOCOL_MISMATCH');
+      assert.equal(posts, 0);
     } finally {
       db.close();
     }

@@ -10,6 +10,7 @@ const prices = require('../src/services/modelPriceService');
 const canvasProviderConfigService = require('../src/services/canvasProviderConfigService');
 const aiConfig = require('../src/services/aiConfigService');
 const { list, parseModels, safeCapabilities } = catalog;
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, error() {}, errorw() {} };
 
@@ -59,7 +60,7 @@ test('画布目录自动公开配置内全部已验证且已定价模型并使�
   modelPriceService.set(db, 'image-unverified', 30, { category: 'image' });
 
   assert.deepEqual(
-    list(db).filter((item) => item.kind === 'image').map((item) => ({
+    list(db, { evidenceRoots }).filter((item) => item.kind === 'image').map((item) => ({
       model: item.model,
       label: item.label,
       credits: item.credits,
@@ -69,6 +70,32 @@ test('画布目录自动公开配置内全部已验证且已定价模型并使�
       { model: 'image-one', label: '写实图片 Pro', credits: 18 },
     ],
   );
+});
+
+test('canvas model catalog exposes video resolution prices to the node editor', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, model, default_model, is_active, verification_status, settings, created_at, updated_at)
+    VALUES ('video', 'test', 'Resolution Video', ?, 'resolution-video', 1, 'verified', ?, ?, ?)`)
+    .run(JSON.stringify(['resolution-video']), JSON.stringify({
+      canvas_capabilities: { resolutions: ['480p', '720p'] },
+    }), now, now);
+  prices.set(db, 'resolution-video', 2, {
+    category: 'video',
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  });
+
+  const item = catalog.list(db, { evidenceRoots }).find((row) => row.model === 'resolution-video');
+  assert.deepEqual(item.resolution_prices, {
+    '480p': { credits: 2, cost_micros_per_second: 50000 },
+    '720p': { credits: 5, cost_micros_per_second: 120000 },
+  });
+  db.close();
 });
 
 test('Token6688 画布目录按模型公开图片参考上限和 Seedance 9/3/9 能力', (t) => {
@@ -177,14 +204,14 @@ test('USMercari 图片目录只公开有 Key、已验证且所有验证档位已
   runMigrationsAndEnsure(db);
   const now = new Date().toISOString();
   const capabilities = {
-    'gpt-image-2-2-4k': {
+    'gpt-image-2-2-4k': withExternalModelEvidence('gpt-image-2-2-4k', {
       supportsTextToImage: true, supportsImageReference: true, maxReferences: 6,
       resolutions: ['1k', '2k'],
-    },
-    'nano-banana-2': {
+    }),
+    'nano-banana-2': withExternalModelEvidence('nano-banana-2', {
       supportsTextToImage: true, supportsImageReference: true, maxReferences: 6,
       resolutions: ['1k', '2k', '4k'],
-    },
+    }),
   };
   db.prepare(`INSERT INTO ai_service_configs
     (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
@@ -200,7 +227,7 @@ test('USMercari 图片目录只公开有 Key、已验证且所有验证档位已
     },
   });
 
-  let models = list(db);
+  let models = list(db, { evidenceRoots });
   const gpt = models.find((item) => item.model === 'gpt-image-2-2-4k');
   assert.equal(gpt.label, 'GPT Image 2');
   assert.equal(gpt.public_note, '稳定高精度，支持参考图');
@@ -217,7 +244,7 @@ test('USMercari 图片目录只公开有 Key、已验证且所有验证档位已
       '4k': { credits: 105, cost_micros_per_unit: 120000 },
     },
   });
-  models = list(db);
+  models = list(db, { evidenceRoots });
   const nano = models.find((item) => item.model === 'nano-banana-2');
   assert.deepEqual(nano.capabilities.resolutions, ['1k', '2k', '4k']);
   assert.deepEqual(nano.resolution_prices['4k'], { credits: 105, cost_micros_per_unit: 120000 });
@@ -239,12 +266,12 @@ test('USMercari 图片目录识别专用环境 Key，canvas 与 billing Key 门�
       VALUES ('image', 'usmercari_image', 'usmercari_image', 'USMercari 图片',
         'https://chat-ai.mercarimx.com', '', ?, 'gpt-image-2-2-4k', 1, 'verified', ?, ?, ?)`)
       .run(JSON.stringify(['gpt-image-2-2-4k']), JSON.stringify({
-        'gpt-image-2-2-4k': {
+        'gpt-image-2-2-4k': withExternalModelEvidence('gpt-image-2-2-4k', {
           supportsTextToImage: true,
           supportsImageReference: true,
           maxReferences: 1,
           resolutions: ['1k', '2k'],
-        },
+        }),
       }), now, now);
     modelPriceService.set(db, 'gpt-image-2-2-4k', 70, {
       category: 'image',
@@ -253,7 +280,7 @@ test('USMercari 图片目录识别专用环境 Key，canvas 与 billing Key 门�
         '2k': { credits: 87, cost_micros_per_unit: 100000 },
       },
     });
-    assert.equal(list(db).some((item) => item.model === 'gpt-image-2-2-4k'), true);
+    assert.equal(list(db, { evidenceRoots }).some((item) => item.model === 'gpt-image-2-2-4k'), true);
   } finally {
     if (previousImageKey === undefined) delete process.env.USMERCARI_IMAGE_API_KEY;
     else process.env.USMERCARI_IMAGE_API_KEY = previousImageKey;
@@ -274,7 +301,7 @@ test('新增真实验证列不会隐藏已验证且已定价的既有非 USMerca
       'verified', ?, ?)`)
     .run(JSON.stringify(['existing-image']), now, now);
   modelPriceService.set(db, 'existing-image', 12, { category: 'image' });
-  assert.equal(list(db).some((item) => item.model === 'existing-image'), true);
+  assert.equal(list(db, { evidenceRoots }).some((item) => item.model === 'existing-image'), true);
   db.close();
 });
 
@@ -286,12 +313,12 @@ test('ToAPIs 视频目录同时要求启用、真实验证、凭据、模型能�
   try {
     const now = new Date().toISOString();
     const capabilities = {
-      'seedance-2-fast': {
+      'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
         durations: [4, 5, 6, 99],
         resolutions: ['480P', '720p', '1080p'],
         maxReferences: 1,
         supportsImageReference: true,
-      },
+      }),
     };
     db.prepare(`INSERT INTO ai_service_configs
       (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
@@ -309,7 +336,7 @@ test('ToAPIs 视频目录同时要求启用、真实验证、凭据、模型能�
       },
     });
 
-    const toapisItems = () => catalog.list(db).filter((item) => item.protocol === 'toapis_video');
+    const toapisItems = () => catalog.list(db, { evidenceRoots }).filter((item) => item.protocol === 'toapis_video');
     assert.deepEqual(toapisItems(), []);
 
     db.prepare("UPDATE ai_service_configs SET api_key = 'stored-key' WHERE provider = 'toapis'").run();
@@ -371,11 +398,11 @@ test('ToAPIs Mini 目录时长只发布验证证据与官方模型矩阵的交�
     VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs Mini', 'https://toapis.com', 'stored-key', ?,
       'seedance-2-mini', 1, 'verified', ?, ?, ?)`)
     .run(JSON.stringify(['seedance-2-mini']), JSON.stringify({
-      'seedance-2-mini': {
+      'seedance-2-mini': withExternalModelEvidence('seedance-2-mini', {
         durations: [99, 15, 12, 10, 8, 5, 4],
         resolutions: ['480p'],
         supportsImageReference: false,
-      },
+      }),
     }), now, now);
   prices.set(db, 'seedance-2-mini', 294, {
     category: 'video',
@@ -384,7 +411,7 @@ test('ToAPIs Mini 目录时长只发布验证证据与官方模型矩阵的交�
     },
   });
 
-  const item = catalog.list(db).find((row) => row.model === 'seedance-2-mini');
+  const item = catalog.list(db, { evidenceRoots }).find((row) => row.model === 'seedance-2-mini');
   assert.deepEqual(item.capabilities, {
     durations: [4, 8, 10, 12, 15],
     resolutions: ['480p'],
@@ -420,7 +447,7 @@ test('受保护环境 Key 是有效 credential，但 pending ToAPIs 仍阻断同
 
     const strictConfig = aiConfig.listConfigs(db, 'video').find((config) => config.provider === 'toapis');
     assert.equal(aiConfig.hasConnectionCredential(strictConfig), true);
-    assert.deepEqual(catalog.list(db).filter((item) => item.kind === 'video'
+    assert.deepEqual(catalog.list(db, { evidenceRoots }).filter((item) => item.kind === 'video'
       && item.model === 'seedance-2-fast'), []);
   } finally {
     if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
@@ -454,7 +481,7 @@ test('pending ToAPIs strict key 阻止 canvas provider fallback 重新注入同�
       kind: 'video', model: 'seedance-2-fast', label: 'Unsafe fallback', capabilities: { durations: [5] },
     }];
 
-    assert.deepEqual(catalog.list(db).filter((item) => item.kind === 'video'
+    assert.deepEqual(catalog.list(db, { evidenceRoots }).filter((item) => item.kind === 'video'
       && item.model === 'seedance-2-fast'), []);
   } finally {
     canvasProviderConfigService.listSafe = originalListSafe;

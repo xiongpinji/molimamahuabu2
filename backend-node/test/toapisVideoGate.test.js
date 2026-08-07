@@ -8,6 +8,7 @@ const videoRoutes = require('../src/routes/videos');
 const aiConfig = require('../src/services/aiConfigService');
 const modelPrice = require('../src/services/modelPriceService');
 const videoService = require('../src/services/videoService');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
 
@@ -41,7 +42,9 @@ test('旧 video-models 路由不公开缺少任一严格门槛的 ToAPIs 模型'
     aiConfig.recordVerification(db, config.id, {
       status: 'verified',
       capabilities: {
-        'seedance-2-fast': { durations: [4, 5], resolutions: ['480p', '720p'] },
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [4, 5], resolutions: ['480p', '720p'],
+        }),
       },
     });
     modelPrice.set(db, 'seedance-2-fast', 511, {
@@ -50,7 +53,7 @@ test('旧 video-models 路由不公开缺少任一严格门槛的 ToAPIs 模型'
         '480p': { credits: 511, cost_micros_per_second: 584000 },
       },
     });
-    const handlers = aiConfigRoutes(db, log, {});
+    const handlers = aiConfigRoutes(db, log, {}, { evidenceRoots });
     let captured = capture();
     handlers.listPublicVideoModels({}, captured.res);
     assert.deepEqual(captured.result.body.data, []);

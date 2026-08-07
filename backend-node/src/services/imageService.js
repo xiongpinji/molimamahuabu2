@@ -89,6 +89,7 @@ const modelPriceService = require('./modelPriceService');
 const generationCost = require('./generationCostLedgerService');
 const assetService = require('./assetService');
 const { resolveUsmercariApiKey } = require('./usmercariVideoClient');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getGridLayout, isGridFrameType, getGridCells } = require('./gridLayout');
 
 const USMERCARI_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2']);
@@ -212,6 +213,12 @@ function configuredImageModels(config) {
   ].map((item) => String(item || '').trim()).filter(Boolean);
 }
 
+function isUsmercariImageConfig(config) {
+  const protocol = String(config?.api_protocol || '').trim().toLowerCase()
+    || String(config?.provider || '').trim().toLowerCase();
+  return protocol === 'usmercari_image';
+}
+
 function findConfiguredImageModel(db, imageServiceType, requestedModel) {
   const serviceTypes = imageServiceType === 'storyboard_image'
     ? ['storyboard_image', 'image']
@@ -223,8 +230,7 @@ function findConfiguredImageModel(db, imageServiceType, requestedModel) {
     const matches = configs.filter((config) => configuredImageModels(config)
       .some((model) => model.toLowerCase() === requested));
     const matched = USMERCARI_IMAGE_MODELS.has(requested)
-      ? matches.find((config) => String(config.provider || '').toLowerCase() === 'usmercari_image'
-        || String(config.api_protocol || '').toLowerCase() === 'usmercari_image') || matches[0]
+      ? matches.find(isUsmercariImageConfig)
       : matches[0];
     if (matched) return matched;
   }
@@ -246,6 +252,8 @@ function normalizeUsmercariCapabilities(config, model) {
     resolutions: Array.isArray(raw.resolutions)
       ? raw.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
       : [],
+    evidence_contract: String(raw.evidence_contract || ''),
+    evidence_sha256: String(raw.evidence_sha256 || '').toLowerCase(),
   };
 }
 
@@ -281,10 +289,16 @@ function resolveImageBillingRequest(db, req, imageServiceType, options = {}) {
     if (!config || config.verification_status !== 'verified') {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过真实生成验证`);
     }
+    if (USMERCARI_IMAGE_MODELS.has(selectedModel) && !isUsmercariImageConfig(config)) {
+      throw imageRequestError('MODEL_PROTOCOL_MISMATCH', `${selectedModel} 必须使用已验证的 USMercari 图片协议配置`);
+    }
     if (!resolveUsmercariApiKey(config)) {
       throw imageRequestError('MODEL_CREDENTIAL_MISSING', `${selectedModel} 未配置有效的 USMercari API Key`);
     }
     capabilities = normalizeUsmercariCapabilities(config, selectedModel);
+    if (!hasTrustedEvidenceBinding(selectedModel, capabilities, options.evidenceRoots)) {
+      throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 的真实生成证据与当前发布不一致`);
+    }
     if (!capabilities || !capabilities.supportsTextToImage) {
       throw imageRequestError('MODEL_NOT_VERIFIED', `${selectedModel} 尚未通过文生图真实验证`);
     }
@@ -1054,6 +1068,7 @@ function create(db, log, req, options = {}) {
   const billingRequest = resolveImageBillingRequest(db, req, imageServiceType, {
     requirePricing: options.billingEnabled === true,
     allowMissingModel: !options.billingEnabled,
+    evidenceRoots: options.evidenceRoots,
   });
   if (options.billingEnabled) {
     billedModel = billingRequest.model;
@@ -1144,14 +1159,14 @@ function create(db, log, req, options = {}) {
   })();
   const { imageGenId, taskId } = created;
   const schedule = options.schedule || ((callback) => setImmediate(callback));
-  schedule(() => processImageGeneration(db, log, imageGenId));
+  schedule(() => processImageGeneration(db, log, imageGenId, { evidenceRoots: options.evidenceRoots }));
   return { id: imageGenId, task_id: taskId, status: 'pending', ...getById(db, imageGenId) };
 }
 
 /**
  * 异步处理图片生成：与 Go ProcessImageGeneration 对齐，调用图生 API 并更新记录与任务
  */
-async function processImageGeneration(db, log, imageGenId) {
+async function processImageGeneration(db, log, imageGenId, runtime = {}) {
   const t0 = Date.now();
   const elapsed = () => `${Date.now() - t0}ms`;
 
@@ -1309,6 +1324,24 @@ async function processImageGeneration(db, log, imageGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置图片模型');
       settleImageCredit(db, log, row, 'failed', '未配置图片模型');
       return;
+    }
+    const processingModel = String(requestSnapshot.model || row.model || '').trim().toLowerCase();
+    const strictUsmercari = USMERCARI_IMAGE_MODELS.has(processingModel)
+      || String(config.provider || '').toLowerCase() === 'usmercari_image'
+      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image';
+    if (strictUsmercari) {
+      const currentCapabilities = normalizeUsmercariCapabilities(config, processingModel);
+      const snapshotCapabilities = requestSnapshot.capabilities;
+      const sameEvidence = currentCapabilities && snapshotCapabilities
+        && currentCapabilities.evidence_contract === snapshotCapabilities.evidence_contract
+        && currentCapabilities.evidence_sha256 === snapshotCapabilities.evidence_sha256;
+      if (config.verification_status !== 'verified'
+          || !resolveUsmercariApiKey(config)
+          || !hasTrustedEvidenceBinding(processingModel, currentCapabilities, runtime.evidenceRoots)
+          || !hasTrustedEvidenceBinding(processingModel, snapshotCapabilities, runtime.evidenceRoots)
+          || !sameEvidence) {
+        throw imageRequestError('MODEL_NOT_VERIFIED', `${processingModel} 的真实生成证据已失效，已取消供应商提交`);
+      }
     }
     log.info('[图生] Step1 AI配置', {
       id: imageGenId,
@@ -2020,7 +2053,7 @@ async function processImageGeneration(db, log, imageGenId) {
       system_prompt: apiSystemPrompt,
       negative_prompt: row.negative_prompt || undefined,
       frame_identity_lock: isFrameIdentityLock,
-    }));
+    }, runtime));
     log.info('[图生] Step4 图生 API 返回', { id: imageGenId, api_ms: Date.now() - tApi, has_error: !!result.error, elapsed: elapsed() });
 
     const now2 = new Date().toISOString();

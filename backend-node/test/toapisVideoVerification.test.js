@@ -7,6 +7,7 @@ const { describe, it } = require('node:test');
 
 const {
   buildRequiredMatrix,
+  buildReleaseEvidence,
   buildVerificationRequest,
   buildVerifiedCapabilities,
   assertMoliPublicAssetBaseUrl,
@@ -19,6 +20,7 @@ const {
   assertPublicArtifact,
   parseFfprobeJson,
   redactEvidence,
+  resolveVerificationPaths,
   requireDedicatedVerificationToken,
   requiredPriceFloors,
   safeChildProcessEnv,
@@ -43,7 +45,7 @@ function completedEvidence() {
       referenceAudioUrl: 'https://assets.example/ref.mp3',
     }),
     artifact: {
-      public_url: `https://molimama.vip/static/verification/${item.id}.mp4`,
+      public_url: `https://molimama.vip/verification-assets/toapis/${item.id}.mp4`,
       output_file: `${item.id}.mp4`,
       bytes: 1024,
       sha256: crypto.createHash('sha256').update(item.id).digest('hex'),
@@ -194,23 +196,70 @@ describe('ToAPIs real video verification contract', () => {
     const bytes = Buffer.from('public-video-bytes');
     const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
     const fetchImpl = async () => ({ status: 200, arrayBuffer: async () => bytes });
-    await assert.doesNotReject(() => assertPublicArtifact('https://molimama.vip/static/test.mp4', sha256, fetchImpl));
+    await assert.doesNotReject(() => assertPublicArtifact('https://molimama.vip/verification-assets/toapis/test.mp4', sha256, fetchImpl));
     await assert.rejects(
-      () => assertPublicArtifact('https://molimama.vip/static/test.mp4', 'a'.repeat(64), fetchImpl),
+      () => assertPublicArtifact('https://molimama.vip/verification-assets/toapis/test.mp4', 'a'.repeat(64), fetchImpl),
       /哈希不一致/,
+    );
+    await assert.rejects(
+      () => assertPublicArtifact('https://assets.molimama.vip/toapis/test.mp4', sha256, fetchImpl),
+      /verification-assets\/toapis/,
     );
   });
 
-  it('requires the long-term public asset base to stay on the molimama.vip site', () => {
+  it('requires the fixed anonymous verification asset path on molimama.vip', () => {
     assert.equal(
-      assertMoliPublicAssetBaseUrl('https://molimama.vip/static/verification/toapis'),
-      'https://molimama.vip/static/verification/toapis',
+      assertMoliPublicAssetBaseUrl('https://molimama.vip/verification-assets/toapis/'),
+      'https://molimama.vip/verification-assets/toapis',
     );
-    assert.equal(
-      assertMoliPublicAssetBaseUrl('https://assets.molimama.vip/toapis/'),
-      'https://assets.molimama.vip/toapis',
-    );
+    assert.throws(() => assertMoliPublicAssetBaseUrl('https://assets.molimama.vip/toapis/'), /verification-assets\/toapis/);
+    assert.throws(() => assertMoliPublicAssetBaseUrl('https://molimama.vip/static/verification/toapis'), /verification-assets\/toapis/);
     assert.throws(() => assertMoliPublicAssetBaseUrl('https://example.com/toapis'), /molimama\.vip/);
+  });
+
+  it('keeps private verification state outside the public artifact directory', () => {
+    const root = path.join(os.tmpdir(), 'toapis-verification-layout');
+    const privateRoot = path.join(root, 'private-state');
+    const publicRoot = path.join(root, 'release-evidence', 'public', 'toapis');
+    const paths = resolveVerificationPaths({
+      TOAPIS_VERIFY_OUTPUT_DIR: privateRoot,
+      TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: publicRoot,
+      TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+    });
+    assert.equal(paths.outputDir, path.resolve(privateRoot));
+    assert.equal(paths.publicArtifactDir, path.resolve(publicRoot));
+    assert.equal(path.relative(paths.publicArtifactDir, paths.statePath).startsWith('..'), true);
+    assert.equal(path.relative(paths.publicArtifactDir, paths.evidencePath).startsWith('..'), true);
+    assert.throws(() => resolveVerificationPaths({
+      TOAPIS_VERIFY_OUTPUT_DIR: root,
+      TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: root,
+      TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+    }), /不能与私有验证目录相同/);
+    assert.throws(() => resolveVerificationPaths({
+      TOAPIS_VERIFY_OUTPUT_DIR: root,
+      TOAPIS_VERIFY_PUBLIC_ARTIFACT_DIR: path.join(root, 'public', 'toapis'),
+      TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+    }), /必须与私有验证目录分离/);
+    assert.throws(() => resolveVerificationPaths({
+      TOAPIS_VERIFY_OUTPUT_DIR: root,
+      TOAPIS_VERIFY_PUBLIC_ASSET_BASE_URL: 'https://molimama.vip/verification-assets/toapis',
+    }), /PUBLIC_ARTIFACT_DIR/);
+  });
+
+  it('emits the freshness window required by the shared release verifier', () => {
+    const generatedAt = '2026-08-08T00:00:00.000Z';
+    const evidence = buildReleaseEvidence(
+      completedEvidence(),
+      baselinePricing(),
+      { run_id: 'review-run-1' },
+      generatedAt,
+    );
+    assert.equal(evidence.contract_version, 'toapis-video-real-verification-v1');
+    assert.equal(evidence.generated_at, generatedAt);
+    assert.equal(
+      Date.parse(evidence.valid_until) - Date.parse(evidence.generated_at),
+      7 * 24 * 60 * 60 * 1000,
+    );
   });
 
   it('calculates real supplier debit from before and after balance snapshots', () => {
@@ -316,6 +365,7 @@ describe('ToAPIs real video verification contract', () => {
     fs.writeFileSync(path.join(outputDir, results[0].artifact.output_file), results[0].id);
     const context = {
       outputDir,
+      artifactOutputDir: outputDir,
       statePath,
       state: { state_version: 'toapis-video-verification-state-v1', cases: Object.fromEntries(results.map((item) => [item.id, item])) },
       confirmCostReview: true,
@@ -422,5 +472,20 @@ describe('ToAPIs real video verification contract', () => {
     const forgedBilling = completedEvidence();
     forgedBilling[0].billing.debited_balance = 0.2;
     assert.equal(hasCompleteRequiredMatrix(forgedBilling), false);
+
+    for (const fileName of ['not-video.txt', 'no-extension', 'video.mp4.json']) {
+      const wrongArtifactType = completedEvidence();
+      wrongArtifactType[0].artifact.output_file = fileName;
+      wrongArtifactType[0].artifact.public_url = `https://molimama.vip/verification-assets/toapis/${fileName}`;
+      assert.equal(hasCompleteRequiredMatrix(wrongArtifactType), false);
+    }
+
+    const mismatchedArtifactName = completedEvidence();
+    mismatchedArtifactName[0].artifact.public_url = 'https://molimama.vip/verification-assets/toapis/another.mp4';
+    assert.equal(hasCompleteRequiredMatrix(mismatchedArtifactName), false);
+
+    const nonCanonicalArtifactUrl = completedEvidence();
+    nonCanonicalArtifactUrl[0].artifact.public_url = `https://molimama.vip/verification-assets/toapis/sub/../${nonCanonicalArtifactUrl[0].artifact.output_file}`;
+    assert.equal(hasCompleteRequiredMatrix(nonCanonicalArtifactUrl), false);
   });
 });

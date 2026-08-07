@@ -143,6 +143,7 @@ const modelPrice = require('./modelPriceService');
 const auditEvent = require('./auditEventService');
 const voicePrompt = require('./storyboardVoicePromptService');
 const videoReferenceCapability = require('./videoReferenceCapabilityService');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
 function parseReferenceUrls(value) {
@@ -274,7 +275,7 @@ function verifiedCapabilitiesForModel(config, model) {
   return result && typeof result === 'object' && !Array.isArray(result) ? result : null;
 }
 
-function toapisReadyState(db, model) {
+function toapisReadyState(db, model, evidenceRoots) {
   const target = String(model || '').trim().toLowerCase();
   const official = TOAPIS_VIDEO_MODELS[target];
   if (!official) return null;
@@ -292,6 +293,7 @@ function toapisReadyState(db, model) {
     if (config.is_active
         && config.verification_status === 'verified'
         && aiConfigService.hasConnectionCredential(config)
+        && hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)
         && durations.length
         && resolutions.length) {
       return { config, capabilities, official, durations, resolutions, model: target };
@@ -674,7 +676,7 @@ function create(db, log, req, options = {}) {
     || configModels(videoConfig)[0]
     || '').trim() || null;
   const toapisState = TOAPIS_VIDEO_MODELS[String(model || '').toLowerCase()]
-    ? toapisReadyState(db, model)
+    ? toapisReadyState(db, model, options.evidenceRoots)
     : null;
   if (toapisState) {
     videoConfig = toapisState.config;
@@ -945,7 +947,7 @@ function create(db, log, req, options = {}) {
   })();
 
   const schedule = options.schedule || ((callback) => setImmediate(callback));
-  schedule(() => processVideoGeneration(db, log, result.id));
+  schedule(() => processVideoGeneration(db, log, result.id, { evidenceRoots: options.evidenceRoots }));
   return getById(db, result.id) || { id: result.id, task_id: result.taskId, status: 'processing' };
 }
 
@@ -1465,7 +1467,7 @@ function resumeProcessingVideoGenerations(db, log) {
   }
 }
 
-async function processVideoGeneration(db, log, videoGenId) {
+async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
   if (activeVideoPolls.has(videoGenId)) {
     log.info('Video generation already in progress, skip duplicate', { videoGenId });
     return;
@@ -1578,7 +1580,9 @@ async function processVideoGeneration(db, log, videoGenId) {
         );
       }
     }
-    if (TOAPIS_VIDEO_MODELS[normalizedProcessingModel]) toapisReadyState(db, normalizedProcessingModel);
+    if (TOAPIS_VIDEO_MODELS[normalizedProcessingModel]) {
+      toapisReadyState(db, normalizedProcessingModel, runtime.evidenceRoots);
+    }
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,
       model: snapshot.model ?? row.model,
@@ -1603,7 +1607,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
-    });
+    }, runtime);
     const now2 = new Date().toISOString();
     if (result.indeterminate) {
       const message = `VIDEO_SUBMISSION_INDETERMINATE: ${String(result.error || '供应商提交结果未知，请人工对账').slice(0, 450)}`;

@@ -1,13 +1,33 @@
 const {
-  normalizeUsmercariBaseUrl,
   resolveUsmercariApiKey,
 } = require('./usmercariVideoClient');
 const net = require('net');
+
+const USMERCARI_IMAGE_ORIGIN = 'https://chat-ai.mercarimx.com';
 
 const USMERCARI_IMAGE_MODELS = Object.freeze({
   'gpt-image-2-2-4k': Object.freeze({ resolutions: Object.freeze(['1k', '2k']), maxReferences: 6 }),
   'nano-banana-2': Object.freeze({ resolutions: Object.freeze(['1k', '2k', '4k']), maxReferences: 6 }),
 });
+
+function normalizeUsmercariImageBaseUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || USMERCARI_IMAGE_ORIGIN).trim());
+  } catch (_) {
+    throw new Error(`USMercari 图片接口必须使用官方 HTTPS 地址 ${USMERCARI_IMAGE_ORIGIN}`);
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  if (parsed.origin !== USMERCARI_IMAGE_ORIGIN
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+      || !['/', '/v1'].includes(pathname)) {
+    throw new Error(`USMercari 图片接口必须使用官方 HTTPS 地址 ${USMERCARI_IMAGE_ORIGIN}`);
+  }
+  return USMERCARI_IMAGE_ORIGIN;
+}
 
 function normalizeResolution(value) {
   return String(value || '1k').trim().toLowerCase();
@@ -136,7 +156,7 @@ function providerMessage(payload, raw, fallback) {
 function absoluteImageUrl(value, baseUrl) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  try { return new URL(raw, `${normalizeUsmercariBaseUrl(baseUrl)}/`).toString(); } catch (_) { return ''; }
+  try { return new URL(raw, `${normalizeUsmercariImageBaseUrl(baseUrl)}/`).toString(); } catch (_) { return ''; }
 }
 
 function parseUsmercariImagePayload(payload, baseUrl) {
@@ -157,7 +177,12 @@ function parseUsmercariImagePayload(payload, baseUrl) {
 async function callUsmercariImageApi(config, log, opts = {}) {
   const apiKey = resolveUsmercariApiKey(config);
   if (!apiKey) return { error: 'USMercari API Key 未配置' };
-  const baseUrl = normalizeUsmercariBaseUrl(config?.base_url || 'https://chat-ai.mercarimx.com');
+  let baseUrl;
+  try {
+    baseUrl = normalizeUsmercariImageBaseUrl(config?.base_url);
+  } catch (error) {
+    return { error: error.message };
+  }
 
   let checked;
   try {
@@ -211,11 +236,13 @@ async function callUsmercariImageApi(config, log, opts = {}) {
     };
   }
   if (!payload) return { error: 'USMercari 图片生成返回了非 JSON 响应' };
-  return parseUsmercariImagePayload(payload, config?.base_url);
+  return parseUsmercariImagePayload(payload, baseUrl);
 }
 
 module.exports = {
+  USMERCARI_IMAGE_ORIGIN,
   USMERCARI_IMAGE_MODELS,
+  normalizeUsmercariImageBaseUrl,
   normalizeResolution,
   validateUsmercariImageOptions,
   buildUsmercariImageBody,

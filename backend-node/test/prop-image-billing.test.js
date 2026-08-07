@@ -11,6 +11,7 @@ const taskService = require('../src/services/taskService');
 const uploadService = require('../src/services/uploadService');
 const { createResourceOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {}, errorw() {} };
 
@@ -49,6 +50,7 @@ function billingOptions(extra = {}) {
     tenantId: 'tenant-a',
     userId: 'user-1',
     schedule() {},
+    evidenceRoots,
     ...extra,
   };
 }
@@ -68,12 +70,12 @@ function installUsmercariPropModel(db) {
   db.prepare(`UPDATE ai_service_configs
     SET verification_status = 'verified', verified_capabilities = ? WHERE id = ?`).run(
     JSON.stringify({
-      'nano-banana-2': {
+      'nano-banana-2': withExternalModelEvidence('nano-banana-2', {
         supportsTextToImage: true,
         supportsImageReference: true,
         maxReferences: 6,
         resolutions: ['1k', '2k', '4k'],
-      },
+      }),
     }),
     config.id,
   );
@@ -187,6 +189,7 @@ test('USMercari 道具生图非计费入口也不能绕过分辨率门禁', (t) 
       resolution: '',
       billingEnabled: false,
       schedule() {},
+      evidenceRoots,
     }),
     (error) => error.code === 'IMAGE_RESOLUTION_REQUIRED',
   );

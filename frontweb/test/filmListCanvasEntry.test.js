@@ -62,7 +62,8 @@ test('首页提供紫黑工作台、快速生成器和真实最近项目入口',
 })
 
 test('首页单次生成由后端模型目录驱动且一键进入真实生成', () => {
-  assert.match(filmListSource, /listGenerationCatalog/)
+  assert.match(filmListSource, /request\.get\('\/canvas\/model-catalog'\)/)
+  assert.doesNotMatch(filmListSource, /listGenerationCatalog/)
   assert.match(filmListSource, /getCreditAccount/)
   assert.match(filmListSource, /v-model="homeModel"/)
   assert.match(filmListSource, /v-for="item in homeModelOptions"/)
@@ -72,7 +73,7 @@ test('首页单次生成由后端模型目录驱动且一键进入真实生成',
   assert.match(filmListSource, /@change="onHomeReferenceChange"/)
   assert.match(filmListSource, /estimateGenerationCredits/)
   assert.match(filmListSource, /autoStart:\s*true/)
-  assert.match(filmListSource, /referenceImageUrl:\s*homeMediaType\.value[\s\S]*homeReferenceImageUrl\.value/)
+  assert.match(filmListSource, /referenceImageUrl:\s*homeSupportsReferenceImage\.value \? homeReferenceImageUrl\.value : ''/)
   assert.match(filmListSource, /sessionStorage\.setItem\('moli_quick_create_draft'/)
   assert.match(filmListSource, /name:\s*'free-create'/)
   const startFromComposer = filmListSource.match(/function startFromComposer\(\) \{[\s\S]*?\n\}/)?.[0] || ''
