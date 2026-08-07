@@ -108,7 +108,7 @@
 
 - `passed`：用户已在 2026-08-07 明确回复“真实付费验收”，付费调用授权这一项已满足。
 - `blocked`：用户尚未提供目标供应商、Key 的安全注入位置、隔离测试租户和预算上限，无法确定本次验收的目标环境与成本边界。
-- `blocked`：目标工作树 `backend-node/data/drama_generator.db` 不存在；`config.yaml` 只配置 `./data/drama_generator.db` 和本地 storage，不含 AI Key。
+- `blocked`：目标工作树 `backend-node/data/drama_generator.db` 不存在；`backend-node/configs/config.yaml` 只配置 `./data/drama_generator.db` 和本地 storage，不含 AI Key。
 - `blocked`：当前进程环境按变量名检查，没有 `AIHUBCC`、`OPENAI`、`RUNWAY`、`KLING`、`VEO`、`VOLC`、`ARK`、`SEED`、`ELEVEN`、`FISH`、`MINIMAX` 等本任务相关 Key；只有与本任务无关的 `XAGENT_DEEPSEEK_API_KEY`，不得使用。
 - `blocked`：同一项目其他四个本地 `drama_generator.db` 的 `ai_service_configs` 为空。
 - `blocked`：`research/libtv-open-source-audit/repos/LocalMiniDrama` 的数据库虽有 text/image/video 配置和 Key，但 `verification_status` 均为 `null`，且它不是目标验收 worktree 或隔离租户；不得搬用，也不得视为已验证目标环境。
