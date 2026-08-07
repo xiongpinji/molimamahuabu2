@@ -38,8 +38,9 @@ const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { createModelGenerationGuard } = require('../middleware/modelGenerationGuard');
 const { PERMISSIONS, createPlatformPermissionMiddleware } = require('../middleware/platformRbac');
 const textGenerationBilling = require('../services/text-generation-billing-service');
+const { createRedrawProviderAdapters } = require('../services/redrawProviderAdapters');
 
-function setupRouter(cfg, db, log) {
+function setupRouter(cfg, db, log, options = {}) {
   const r = express.Router();
   const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
   const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
@@ -203,7 +204,23 @@ function setupRouter(cfg, db, log) {
   const directorExport = directorExportRoutes(db, cfg, log);
   const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
-  const redraw = redrawRoutes(db, log, { cfg });
+  const redrawAdapters = options.providerAdapters || createRedrawProviderAdapters({
+    db,
+    log,
+    cfg,
+    aiClient: options.aiClient,
+    imageClient: options.imageClient,
+    uploadService: options.uploadService,
+    assetService: options.assetService,
+    ttsService: options.ttsService,
+    ttsConfig: options.ttsConfig,
+  });
+  const redraw = redrawRoutes(db, log, {
+    cfg,
+    ...options.redrawOptions,
+    localizationProvider: options.localizationProvider || redrawAdapters.localize,
+    assetGenerationProvider: options.assetGenerationProvider || redrawAdapters.generateAsset,
+  });
   r.get('/voice-catalog', voiceCatalog.list);
 
   // ---------- script analysis ----------

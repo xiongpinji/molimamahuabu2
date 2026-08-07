@@ -36,7 +36,19 @@ function createApp() {
 
   const taskService = require('./services/taskService');
   redrawResume
-    .finally(() => taskService.failOrphanedAsyncTasksOnStartup(db, log))
+    .finally(() => {
+      try {
+        require('./services/redrawLocalizationOrchestrator').reconcileOrphanedTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw localization reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawAssetBatchService').reconcileOrphanedBatches(db, log);
+      } catch (error) {
+        log.error('Startup redraw asset batch reconcile failed', { error: error.message });
+      }
+      taskService.failOrphanedAsyncTasksOnStartup(db, log);
+    })
     .catch((error) => {
       log.error('Startup orphan cleanup failed', { error: error.message });
     });
