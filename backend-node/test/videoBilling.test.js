@@ -55,6 +55,90 @@ test('视频任务按每秒单价乘用户选择时长预扣积分', () => {
   db.close();
 });
 
+test('视频任务持久化参考图、参考视频与参考音频供异步生成读取', () => {
+  const db = setup();
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    model: 'seedance 2.0',
+    prompt: '全能参考链路',
+    duration: 5,
+    reference_image_urls: ['/static/reference.png'],
+    reference_video_url: '/static/reference.mp4',
+    reference_audio_url: '/static/reference.mp3',
+  }, { billingEnabled: true, userId: 'user-1', schedule() {} });
+
+  const row = db.prepare(`SELECT first_frame_url, reference_image_urls, reference_video_url, reference_audio_url
+    FROM video_generations WHERE id = ?`).get(created.id);
+  assert.equal(row.first_frame_url, '/static/reference.png');
+  assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference.png']);
+  assert.equal(row.reference_video_url, '/static/reference.mp4');
+  assert.equal(row.reference_audio_url, '/static/reference.mp3');
+  assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['/static/reference.png']);
+  db.close();
+});
+
+test('USMercari 多图参考入库时不混入首帧字段', () => {
+  const db = setup();
+  const originalGetDefaultVideoConfig = videoClient.getDefaultVideoConfig;
+  try {
+    videoClient.getDefaultVideoConfig = () => ({
+      provider: 'usmercari',
+      api_protocol: 'usmercari_media',
+      default_model: 'MiniMax H3',
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      model: 'MiniMax H3',
+      prompt: '多图参考链路',
+      duration: 5,
+      reference_image_urls: ['/static/reference-1.png', '/static/reference-2.png'],
+    }, { billingEnabled: false, schedule() {} });
+
+    const row = db.prepare('SELECT first_frame_url, reference_image_urls FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.first_frame_url, null);
+    assert.deepEqual(JSON.parse(row.reference_image_urls), ['/static/reference-1.png', '/static/reference-2.png']);
+  } finally {
+    videoClient.getDefaultVideoConfig = originalGetDefaultVideoConfig;
+    db.close();
+  }
+});
+
+test('视频任务按所选 480P 或 720P 分辨率预扣积分并记录对应成本', () => {
+  const db = setup();
+  prices.set(db, 'seedance 2.0', 3, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  });
+
+  const amounts = [];
+  for (const [userId, resolution] of [['user-1', '480P'], ['user-2', '720p']]) {
+    const created = videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance 2.0',
+      prompt: `${resolution} 视频计费测试`,
+      duration: 5,
+      resolution,
+    }, { billingEnabled: true, userId, schedule() {} });
+    const row = db.prepare('SELECT credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    amounts.push(credits.getReservation(db, row.credit_reservation_id).amount);
+  }
+
+  assert.deepEqual(amounts, [15, 25]);
+  assert.deepEqual(
+    db.prepare('SELECT resolution, cost_micros FROM generation_cost_records ORDER BY resolution').all(),
+    [
+      { resolution: '480p', cost_micros: 250000 },
+      { resolution: '720p', cost_micros: 600000 },
+    ],
+  );
+  db.close();
+});
+
 test('视频任务缺少显式时长时按 5 秒入库并计费', () => {
   const db = setup();
   prices.set(db, 'seedance 2.0', 2);

@@ -4,6 +4,17 @@ const FREE_NODE_KINDS = new Set(['text', 'image', 'video', 'audio'])
 const FREE_NODE_STATUSES = new Set(['idle', 'queued', 'running', 'success', 'failed'])
 const FREE_NODE_ASSET_SAVE_STATUSES = new Set(['idle', 'running', 'success', 'failed'])
 const IMAGE_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const VIDEO_TOOL_STATUSES = new Set(['running', 'success', 'failed'])
+const FREE_VIDEO_REFERENCE_MODES = new Set(['first-last', 'multi', 'omni'])
+const VIDEO_TOOL_OPERATIONS = new Set([
+  'crop',
+  'upscale',
+  'analyze',
+  'remove_subtitles',
+  'extract_audio',
+  'mute',
+  'edit',
+])
 const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   crop: ['left', 'top', 'width', 'height'],
   compress: ['format', 'quality'],
@@ -24,11 +35,44 @@ const IMAGE_TOOL_RETRY_PARAMETERS = Object.freeze({
   narrative_grid: ['description'],
   frame_forward: ['description'],
   frame_backward: ['description'],
+  portrait_texture: ['preset', 'intensity', 'description'],
+  portrait_emotion: ['emotion', 'intensity', 'faceRegion'],
+})
+const VIDEO_TOOL_RETRY_PARAMETERS = Object.freeze({
+  crop: ['x', 'y', 'width', 'height'],
+  upscale: ['resolution', 'interpolate', 'slowMotion'],
+  analyze: ['sceneThreshold', 'maxShots'],
+  remove_subtitles: ['x', 'y', 'width', 'height'],
+  extract_audio: [],
+  mute: [],
+  edit: ['transform', 'brightness', 'contrast', 'saturation', 'speed'],
 })
 const ASSET_TYPES = new Set(['image', 'video', 'audio'])
 
 function cleanString(value) {
   return String(value ?? '').trim()
+}
+
+export function normalizeFreeCanvasVideoReferenceMode(value, references = []) {
+  const mode = cleanString(value)
+  if (FREE_VIDEO_REFERENCE_MODES.has(mode)) return mode
+  const enabledReferences = (Array.isArray(references) ? references : [])
+    .filter((reference) => reference?.enabled !== false)
+  if (enabledReferences.some((reference) => ['video', 'audio'].includes(cleanString(reference?.kind)))) {
+    return 'omni'
+  }
+  return enabledReferences.some((reference) => (
+    ['first-frame', 'last-frame'].includes(cleanString(reference?.slot ?? reference?.input))
+  )) ? 'first-last' : 'multi'
+}
+
+export function resolveFreeCanvasVideoReferenceInput(mode, index) {
+  const normalizedMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  if (normalizedMode === 'omni') return index === 0 ? 'first-frame' : 'reference-image'
+  if (normalizedMode !== 'first-last') return 'reference-image'
+  if (index === 0) return 'first-frame'
+  if (index === 1) return 'last-frame'
+  return 'reference-image'
 }
 
 function positiveNumber(value) {
@@ -174,7 +218,7 @@ function normalizeImageToolRetryParameters(operation, value) {
   if (!keys) return undefined
   if (keys.length === 0) return {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const stringLimits = operation === 'cinematic_relight'
+  const stringLimits = ['cinematic_relight', 'portrait_texture'].includes(operation)
     ? { preset: 32, description: 300 }
     : (
       [
@@ -201,7 +245,108 @@ function normalizeImageToolRetryParameters(operation, value) {
       parameters[key] = candidate
     }
   }
+  if (operation === 'portrait_emotion') {
+    if (
+      !Number.isInteger(parameters.intensity)
+      || parameters.intensity < 1
+      || parameters.intensity > 5
+      || value.faceRegion === undefined
+    ) {
+      return undefined
+    }
+    const region = value.faceRegion
+    const faceRegion = region && typeof region === 'object' && !Array.isArray(region)
+      ? {
+        x: Number(region.x),
+        y: Number(region.y),
+        width: Number(region.width),
+        height: Number(region.height),
+      }
+      : null
+    if (
+      !faceRegion
+      || Object.values(faceRegion).some((item) => !Number.isFinite(item))
+      || faceRegion.x < 0
+      || faceRegion.y < 0
+      || faceRegion.width <= 0
+      || faceRegion.height <= 0
+      || faceRegion.x + faceRegion.width > 1
+      || faceRegion.y + faceRegion.height > 1
+    ) {
+      return undefined
+    }
+    parameters.faceRegion = faceRegion
+  }
   return Object.keys(parameters).length ? parameters : undefined
+}
+
+function normalizeVideoToolRetryParameters(operation, value) {
+  const keys = VIDEO_TOOL_RETRY_PARAMETERS[operation]
+  if (!keys) return undefined
+  if (keys.length === 0) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const parameters = {}
+  for (const key of keys) {
+    const candidate = value[key]
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'boolean' && key === 'interpolate') {
+      parameters[key] = candidate
+    } else if (typeof candidate === 'string' && candidate.length <= 32) {
+      parameters[key] = candidate
+    }
+  }
+  return Object.keys(parameters).length ? parameters : undefined
+}
+
+function normalizeVideoToolHistory(value) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 20).map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const taskId = cleanString(item.taskId)
+    const operation = cleanString(item.operation)
+    if (!taskId || !VIDEO_TOOL_OPERATIONS.has(operation)) return null
+    return withoutEmptyFields({
+      taskId,
+      operation,
+      status: cleanString(item.status),
+      resultAssetId: positiveInteger(item.resultAssetId),
+      resultUrl: cleanString(item.resultUrl),
+      createdAt: cleanString(item.createdAt),
+    })
+  }).filter(Boolean)
+}
+
+function normalizeVideoStory(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const shots = (Array.isArray(value.shots) ? value.shots : []).slice(0, 120).map((shot) => {
+    if (!shot || typeof shot !== 'object') return null
+    const index = positiveInteger(shot.index)
+    const startTime = finiteNumber(shot.startTime)
+    const endTime = finiteNumber(shot.endTime)
+    const duration = positiveNumber(shot.duration)
+    if (!index || startTime == null || endTime == null || !duration) return null
+    return withoutEmptyFields({
+      index,
+      startTime,
+      endTime,
+      duration,
+      keyframeAssetId: positiveInteger(shot.keyframeAssetId),
+      keyframeUrl: cleanString(shot.keyframeUrl),
+      visualDescription: cleanString(shot.visualDescription).slice(0, 500),
+      narrative: cleanString(shot.narrative).slice(0, 500),
+      camera: cleanString(shot.camera).slice(0, 200),
+    })
+  }).filter(Boolean)
+  return {
+    width: positiveInteger(value.width),
+    height: positiveInteger(value.height),
+    duration: positiveNumber(value.duration),
+    hasAudio: booleanValue(value.hasAudio),
+    fps: positiveNumber(value.fps),
+    sceneThreshold: positiveNumber(value.sceneThreshold),
+    shots,
+  }
 }
 
 export function normalizeFreeCanvasNodeData(data = {}) {
@@ -248,17 +393,62 @@ export function normalizeFreeCanvasNodeData(data = {}) {
   if (Object.hasOwn(data, 'progress')) {
     normalized.progress = Math.min(100, Math.max(0, finiteNumber(data.progress)))
   }
+  if (Object.hasOwn(data, 'progressKnown')) normalized.progressKnown = booleanValue(data.progressKnown)
+  if (Object.hasOwn(data, 'generationActive')) normalized.generationActive = booleanValue(data.generationActive)
+  if (Object.hasOwn(data, 'generationBatchSize')) {
+    normalized.generationBatchSize = positiveInteger(data.generationBatchSize)
+  }
+  if (Object.hasOwn(data, 'generationTaskBaseCount')) {
+    const taskBaseCount = Number(data.generationTaskBaseCount)
+    if (Number.isInteger(taskBaseCount) && taskBaseCount >= 0) normalized.generationTaskBaseCount = taskBaseCount
+  }
   if (Object.hasOwn(data, 'status')) {
     const status = cleanString(data.status)
     if (FREE_NODE_STATUSES.has(status)) normalized.status = status
   }
   if (Object.hasOwn(data, 'error')) normalized.error = cleanString(data.error)
   if (Object.hasOwn(data, 'savedAssetId')) normalized.savedAssetId = cleanString(data.savedAssetId)
+  if (Object.hasOwn(data, 'savedAssetLocalPath')) {
+    normalized.savedAssetLocalPath = cleanString(data.savedAssetLocalPath)
+  }
   if (Object.hasOwn(data, 'assetSaveStatus')) {
     const assetSaveStatus = cleanString(data.assetSaveStatus)
     if (FREE_NODE_ASSET_SAVE_STATUSES.has(assetSaveStatus)) normalized.assetSaveStatus = assetSaveStatus
   }
   if (Object.hasOwn(data, 'assetSaveError')) normalized.assetSaveError = cleanString(data.assetSaveError)
+  if (Object.hasOwn(data, 'sourceVideoToolNodeId')) {
+    normalized.sourceVideoToolNodeId = cleanString(data.sourceVideoToolNodeId)
+  }
+  const videoToolOperation = cleanString(data.videoToolOperation)
+  if (VIDEO_TOOL_OPERATIONS.has(videoToolOperation)) normalized.videoToolOperation = videoToolOperation
+  if (Object.hasOwn(data, 'videoToolTaskId')) {
+    normalized.videoToolTaskId = cleanString(data.videoToolTaskId)
+  }
+  if (kind === 'text' && Object.hasOwn(data, 'videoStory')) {
+    const videoStory = normalizeVideoStory(data.videoStory)
+    if (videoStory) normalized.videoStory = videoStory
+  }
+  if (kind === 'video') {
+    const videoReferenceMode = cleanString(data.videoReferenceMode)
+    if (FREE_VIDEO_REFERENCE_MODES.has(videoReferenceMode)) {
+      normalized.videoReferenceMode = videoReferenceMode
+    }
+    const videoToolStatus = cleanString(data.videoToolStatus)
+    if (VIDEO_TOOL_STATUSES.has(videoToolStatus)) normalized.videoToolStatus = videoToolStatus
+    if (Object.hasOwn(data, 'videoToolError')) normalized.videoToolError = cleanString(data.videoToolError)
+    const retryOperation = cleanString(data.videoToolRetryOperation)
+    const retryParameters = normalizeVideoToolRetryParameters(
+      retryOperation,
+      data.videoToolRetryParameters,
+    )
+    if (retryParameters) {
+      normalized.videoToolRetryOperation = retryOperation
+      normalized.videoToolRetryParameters = retryParameters
+    }
+    if (Object.hasOwn(data, 'videoToolHistory')) {
+      normalized.videoToolHistory = normalizeVideoToolHistory(data.videoToolHistory)
+    }
+  }
   if (kind === 'image') {
     const markerColor = cleanString(data.imageMarkerColor)
     if (/^#[0-9a-f]{6}$/i.test(markerColor)) normalized.imageMarkerColor = markerColor
@@ -320,11 +510,12 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
   const references = (Array.isArray(options.upstreamReferences) ? options.upstreamReferences : [])
     .filter((reference) => reference?.enabled !== false && reference?.url)
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || Number(b.weight || 1) - Number(a.weight || 1))
-    .slice(0, maxReferences)
-  const upstreamUrls = uniqueStrings([
-    ...(references.length ? [] : (options.upstreamUrls || [])),
-    ...references.map((reference) => reference.url),
-  ])
+  const imageReferences = references.filter((reference) => !reference.kind || reference.kind === 'image').slice(0, maxReferences)
+  const videoReferences = references.filter((reference) => reference.kind === 'video').slice(0, 1)
+  const audioReferences = references.filter((reference) => reference.kind === 'audio').slice(0, 1)
+  const upstreamUrls = uniqueStrings(references.length
+    ? imageReferences.map((reference) => reference.url)
+    : (options.upstreamUrls || []))
   const referenceUrls = uniqueStrings([
     ...upstreamUrls,
     ...(nodeData.characterReferenceUrls || []),
@@ -355,8 +546,14 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
 
   if (nodeData.kind === 'video') {
     const dramaId = requirePositiveDramaId(options.dramaId, '自由节点生成缺少有效项目 ID')
-    const firstFrameUrl = references.find((reference) => reference.slot === 'first-frame')?.url || referenceUrls[0] || ''
-    const lastFrameUrl = references.find((reference) => reference.slot === 'last-frame')?.url || ''
+    const explicitFirstFrame = imageReferences.find((reference) => reference.slot === 'first-frame')?.url || ''
+    const firstFrameUrl = explicitFirstFrame
+      || (videoReferences.length ? imageReferences[0]?.url : '')
+      || (!references.length ? referenceUrls[0] : '')
+    const lastFrameUrl = imageReferences.find((reference) => reference.slot === 'last-frame')?.url || ''
+    const referenceImageUrls = !references.length
+      ? referenceUrls
+      : uniqueStrings([...imageReferences.map((reference) => reference.url), ...(nodeData.characterReferenceUrls || [])])
     return withoutEmptyFields({
       drama_id: dramaId,
       prompt: decoratedVideoPrompt({ ...nodeData, content }),
@@ -364,7 +561,9 @@ export function buildFreeCanvasGenerationRequest(data = {}, options = {}) {
       image_url: firstFrameUrl,
       first_frame_url: firstFrameUrl,
       last_frame_url: lastFrameUrl,
-      reference_image_urls: referenceUrls,
+      reference_image_urls: referenceImageUrls,
+      reference_video_url: videoReferences[0]?.url,
+      reference_audio_url: audioReferences[0]?.url,
       aspect_ratio: nodeData.aspectRatio,
       duration: nodeData.duration,
       style: nodeData.style,
@@ -396,7 +595,7 @@ export function collectDirectUpstreamResultUrls(nodes = [], edges = [], targetNo
     .filter(Boolean))
 }
 
-export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
+export function collectDirectUpstreamMediaReferences(nodes = [], edges = [], targetNodeId = '') {
   const target = String(targetNodeId || '')
   if (!target) return []
   const byId = new Map((Array.isArray(nodes) ? nodes : [])
@@ -409,23 +608,45 @@ export function collectDirectUpstreamImageReferences(nodes = [], edges = [], tar
     const sourceId = String(edge?.source || '')
     const source = byId.get(sourceId)
     const sourceKind = getFreeCanvasNodeResultKind(source)
-    if (sourceKind !== 'image' || !sourceId || seen.has(sourceId)) continue
+    if (!['image', 'video', 'audio'].includes(sourceKind) || !sourceId || seen.has(sourceId)) continue
     seen.add(sourceId)
     const contract = edge?.data?.contract || {}
     const url = getFreeCanvasNodeResultUrl(source)
     references.push({
       nodeId: String(source.id),
       edgeId: String(edge?.id || ''),
-      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name) || '图片节点',
+      title: cleanString(source.data?.title || source.data?.label || source.data?.asset?.name)
+        || ({ image: '图片节点', video: '视频节点', audio: '音频节点' }[sourceKind]),
       url,
+      kind: sourceKind,
       ready: Boolean(url),
-      slot: cleanString(contract.input) || 'reference-image',
+      slot: cleanString(contract.input) || ({ image: 'reference-image', video: 'reference-video', audio: 'reference-audio' }[sourceKind]),
       enabled: contract.enabled !== false,
       order: Number.isFinite(Number(contract.order)) ? Number(contract.order) : references.length,
       weight: Number.isFinite(Number(contract.weight)) ? Number(contract.weight) : 1,
     })
   }
   return references.sort((a, b) => a.order - b.order)
+}
+
+export function collectDirectUpstreamImageReferences(nodes = [], edges = [], targetNodeId = '') {
+  return collectDirectUpstreamMediaReferences(nodes, edges, targetNodeId)
+    .filter((reference) => reference.kind === 'image')
+    .map(({ kind: _kind, ...reference }) => reference)
+}
+
+export function buildFreeCanvasReferenceMentionCandidates(references = []) {
+  return (Array.isArray(references) ? references : [])
+    .map((reference, index) => ({
+      nodeId: String(reference?.nodeId || ''),
+      title: reference?.title || '图片节点',
+      label: `图片${index + 1}`,
+      mentionToken: `@图片${index + 1}`,
+      url: reference?.url,
+      ready: reference?.ready,
+      enabled: reference?.enabled,
+    }))
+    .filter((reference) => reference.nodeId && reference.ready && reference.enabled !== false)
 }
 
 export function collectDirectUpstreamTextInputs(nodes = [], edges = [], targetNodeId = '') {

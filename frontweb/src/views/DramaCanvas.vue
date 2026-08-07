@@ -432,6 +432,15 @@
             <span v-else class="run-action">定位</span>
           </div>
         </div>
+        <CanvasAssetHistoryPanel
+          v-if="assetHistoryPanel && drama"
+          :mode="assetHistoryPanel"
+          :drama-id="dramaId"
+          :nodes="allGraphNodes"
+          @close="assetHistoryPanel = ''"
+          @locate="locateAssetHistoryNode"
+          @apply="applyAssetHistoryItem"
+        />
         <CanvasFloatingToolbar
           v-if="drama && (isStandaloneCanvas || allGraphNodes.length)"
           :standalone="isStandaloneCanvas"
@@ -613,6 +622,7 @@ import { dramaAPI } from '@/api/drama'
 import { assetsAPI } from '@/api/assets'
 import { imagesAPI } from '@/api/images'
 import { imageToolsAPI } from '@/api/imageTools'
+import { videoToolsAPI } from '@/api/videoTools'
 import { taskAPI } from '@/api/task'
 import { storyboardsAPI } from '@/api/storyboards'
 import { characterAPI } from '@/api/characters'
@@ -639,7 +649,7 @@ import {
   getStoryboardRefFromNode,
   stampEdgeBaseStyles,
 } from '@/utils/dramaCanvasAdapter'
-import { virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
+import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
   buildCanvasLayoutPayload,
   parseCanvasLayout,
@@ -651,11 +661,23 @@ import {
 import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
+  buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import {
+  calculateBatchGenerationProgress,
+  normalizeGenerationProgress,
+} from '@/utils/canvasGenerationProgress'
+import {
+  collectDroppedImageFiles,
+  createDroppedImageNodeSpecs,
+  hasDraggedFilePayload,
+  stripLocalImagePreviewsForPersistence,
+} from '@/utils/canvasImageDrop'
 import {
   canvasModelServiceType,
   canvasNodeKind,
@@ -743,6 +765,7 @@ import LibTvCanvasEdge from '@/components/dramaCanvas/LibTvCanvasEdge.vue'
 import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
 import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
 import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
+import CanvasAssetHistoryPanel from '@/components/dramaCanvas/CanvasAssetHistoryPanel.vue'
 import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
 import CanvasSelectionToolbar from '@/components/dramaCanvas/CanvasSelectionToolbar.vue'
 import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
@@ -791,6 +814,7 @@ const layoutPersistence = createCanvasLayoutPersistence(({ canvasLayout, workflo
 let canvasPersistQueue = Promise.resolve()
 const freeCanvasAssetSaveFlights = new Map()
 const freeCanvasTaskResumeFlights = new Map()
+const localPreviewUrls = new Set()
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
 const sidebarVisible = ref(false)
@@ -867,6 +891,7 @@ const contextMenuNode = ref(null)
 const contextMenuConnectionSource = ref(null)
 const connectionDragState = ref(null)
 const canvasAssetPickerVisible = ref(false)
+const assetHistoryPanel = ref('')
 const canvasAssetPickerFlowPos = ref(null)
 const canvasAssetPickerRetryNodeId = ref('')
 const canvasAssetPickerTargetStoryboardId = ref(null)
@@ -958,8 +983,8 @@ function getFreeNodeModelCapability(kind, model) {
   return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
 }
 
-function getFreeNodeEstimatedCredits(kind, model, quantity, duration) {
-  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration)
+function getFreeNodeEstimatedCredits(kind, model, quantity, duration, resolution) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration, resolution)
 }
 
 async function loadFreeCanvasModelConfigs() {
@@ -1054,6 +1079,8 @@ let savedHintTimer = null
 let pollTimer = null
 let paneClickSuppressTimer = null
 let virtualizationFrame = null
+let freeNodeSequence = 0
+let canvasAlive = true
 let runQueueTimer = null
 
 const nodeTypes = {
@@ -1960,6 +1987,18 @@ function rebuildGraph() {
       }
     })
   }
+  const projectAssetPositionRepair = repairCollidingProjectAssetPositions(nextNodes)
+  nextNodes = projectAssetPositionRepair.nodes
+  if (Object.keys(projectAssetPositionRepair.repairedPositions).length) {
+    layoutCache.value = {
+      ...(layoutCache.value || { version: 1 }),
+      nodes: {
+        ...(layoutCache.value?.nodes || {}),
+        ...projectAssetPositionRepair.repairedPositions,
+      },
+    }
+  }
+  if (Object.keys(projectAssetPositionRepair.repairedPositions).length) scheduleLayoutSave()
   allGraphNodes.value = nextNodes
   allGraphEdges.value = nextEdges
   applyVirtualizedGraph()
@@ -1973,6 +2012,52 @@ function currentInteractionState() {
     allGraphEdges.value,
     [...suppressedEdgeIds.value],
   )
+}
+
+function repairCollidingProjectAssetPositions(graphNodes) {
+  const assetNodes = graphNodes.filter((node) => node.type === 'canvasProjectAsset')
+  if (assetNodes.length < 2) return { nodes: graphNodes, repairedPositions: {} }
+  const nodeWidth = 210
+  const nodeHeight = 300
+  const columnGap = 288
+  const rowGap = 320
+  const anchorX = Math.min(...assetNodes.map((node) => Number(node.position?.x || 0)))
+  const anchorY = Math.min(...assetNodes.map((node) => Number(node.position?.y || 0)))
+  const keptPositions = []
+  const repairedPositions = {}
+  const overlaps = (left, right) => (
+    left.x < right.x + nodeWidth
+    && left.x + nodeWidth > right.x
+    && left.y < right.y + nodeHeight
+    && left.y + nodeHeight > right.y
+  )
+
+  const nodes = graphNodes.map((node) => {
+    if (node.type !== 'canvasProjectAsset') return node
+    const original = {
+      x: Number(node.position?.x || 0),
+      y: Number(node.position?.y || 0),
+    }
+    if (!keptPositions.some((position) => overlaps(original, position))) {
+      keptPositions.push(original)
+      return node
+    }
+
+    let slot = 0
+    let position
+    do {
+      position = {
+        x: anchorX + (slot % 3) * columnGap,
+        y: anchorY + Math.floor(slot / 3) * rowGap,
+      }
+      slot += 1
+    } while (keptPositions.some((kept) => overlaps(position, kept)))
+    keptPositions.push(position)
+    repairedPositions[String(node.id)] = position
+    return { ...node, position }
+  })
+
+  return { nodes, repairedPositions }
 }
 
 function commitInteractionHistory(previousState) {
@@ -2040,7 +2125,7 @@ function syncRenderedNodesToGraph() {
 
 function refreshLayoutCacheFromGraph() {
   layoutCache.value = withCanvasPersistedState(buildCanvasLayoutPayload(
-    allGraphNodes.value,
+    stripLocalImagePreviewsForPersistence(allGraphNodes.value),
     currentViewport.value,
     layoutCache.value,
     allGraphEdges.value,
@@ -2096,7 +2181,7 @@ function applyVirtualizedGraph() {
       pinnedIds: focusedNodeId.value ? [focusedNodeId.value] : [],
     },
   )
-  nodes.value = result.nodes
+  nodes.value = preserveCanvasNodeRuntimeMeasurements(result.nodes, nodes.value)
   edges.value = result.edges
   canvasVirtualized.value = result.virtualized
 }
@@ -2191,46 +2276,75 @@ function screenToFlowPosition(clientX, clientY) {
   }
 }
 
-function panCanvasForNodeEditor(overflowY) {
-  const distance = Math.max(0, Number(overflowY) || 0)
-  const api = canvasFlowApi.value
-  const viewport = api?.getViewport?.() || currentViewport.value
-  if (!distance || !api?.setViewport || !viewport) return false
-  const nextViewport = {
-    x: Number(viewport.x || 0),
-    y: Number(viewport.y || 0) - distance,
-    zoom: Number(viewport.zoom || 1),
-  }
-  currentViewport.value = nextViewport
-  api.setViewport(nextViewport, { duration: 0 })
-  scheduleLayoutSave()
-  return true
-}
-
 function canvasCenterFlowPosition() {
   const rect = canvasMainRef.value?.getBoundingClientRect?.()
   if (!rect) return { x: 80, y: 80 }
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2) || { x: 80, y: 80 }
 }
 
-function droppedCanvasImageFile(event) {
-  return [...(event.dataTransfer?.files || [])].find((file) => file.type?.startsWith('image/')) || null
-}
-
 function onCanvasImageDragOver(event) {
-  if (!isStandaloneCanvas.value || !droppedCanvasImageFile(event)) return
+  if (!isStandaloneCanvas.value || !hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 async function onCanvasImageDrop(event) {
-  const file = droppedCanvasImageFile(event)
-  if (!isStandaloneCanvas.value || !file) return
+  if (!isStandaloneCanvas.value || !hasDraggedFilePayload(event.dataTransfer)) return
   event.preventDefault()
   event.stopPropagation()
-  const position = screenToFlowPosition(event.clientX, event.clientY)
-  const nodeId = await createFreeCanvasNode('image', position)
-  if (nodeId) await uploadFreeCanvasNodeFile(nodeId, file)
+  const files = collectDroppedImageFiles(event.dataTransfer)
+  if (!files.length) return
+  const origin = screenToFlowPosition(event.clientX, event.clientY)
+  const specs = createDroppedImageNodeSpecs(files, origin, (file) => {
+    const previewUrl = URL.createObjectURL(file)
+    localPreviewUrls.add(previewUrl)
+    return previewUrl
+  })
+  const droppedNodes = []
+  for (const spec of specs) {
+    const nodeId = await createFreeCanvasNode('image', spec.position, spec.data)
+    if (!nodeId) {
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+      continue
+    }
+    droppedNodes.push({ spec, nodeId })
+  }
+  for (const { spec, nodeId } of droppedNodes) {
+    try {
+      const asset = await uploadAPI.uploadMedia(spec.file, { dramaId: drama.value.id })
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
+      const url = assetDisplayUrl(asset)
+      if (!url) throw new Error('素材上传成功但未返回可用地址')
+      await patchFreeCanvasNodeData(nodeId, {
+        url,
+        status: 'success',
+        error: '',
+        savedAssetId: String(asset?.id || ''),
+        assetSaveStatus: 'success',
+        assetSaveError: '',
+        localPreview: false,
+      })
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+    } catch (error) {
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
+      await patchFreeCanvasNodeData(nodeId, {
+        url: spec.previewUrl,
+        status: 'failed',
+        error: error?.message || '节点素材上传失败',
+        localPreview: true,
+      })
+    }
+  }
 }
 
 function resetFreeNodeDialog() {
@@ -2265,7 +2379,7 @@ async function createFreeCanvasNode(kind, flowPosition = null, initialData = {})
   const kindDefaults = defaults[kind] || {}
   closeContextMenu()
   const previousState = currentInteractionState()
-  const id = `free:${kind}:${Date.now()}`
+  const id = `free:${kind}:${Date.now()}:${freeNodeSequence++}`
   const title = {
     text: '文本',
     image: '图片',
@@ -2516,10 +2630,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 } = {}) {
+async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000, onProgress } = {}) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) await sleep(intervalMs)
     const task = await taskAPI.get(taskId)
+    const progress = normalizeGenerationProgress(task?.progress)
+    if (progress !== null) await onProgress?.(progress)
     if (task?.status === 'completed') return task
     if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
   }
@@ -2624,6 +2740,7 @@ async function saveFreeCanvasResultAsset(node, kind, resultUrl, requestPayload, 
         assetSaveStatus: 'success',
         assetSaveError: '',
         savedAssetId: String(savedAsset?.id || ''),
+        savedAssetLocalPath: String(savedAsset?.local_path || ''),
       })
       return savedAsset
     } catch (error) {
@@ -2657,6 +2774,8 @@ async function completeFreeCanvasNodeGeneration({
   requestPayload,
   taskId,
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   const resolved = await resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult })
   return commitFreeCanvasNodeGeneration({
@@ -2666,6 +2785,8 @@ async function completeFreeCanvasNodeGeneration({
     requestPayload,
     taskId,
     notify,
+    progress,
+    progressKnown,
   })
 }
 
@@ -2687,15 +2808,21 @@ async function commitFreeCanvasNodeGeneration({
   taskId,
   resultUrls = [],
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   await patchFreeCanvasNodeData(node.id, {
     status: 'success',
+    generationActive: false,
+    generationBatchSize: undefined,
+    generationTaskBaseCount: undefined,
     url: resultUrl,
     resultUrls: resultUrls.length ? resultUrls : [resultUrl],
     ...boundaryFrames,
     ...(kind === 'video' && generationId ? { videoGenerationId: generationId } : {}),
     taskId,
-    progress: 100,
+    progress,
+    progressKnown,
     error: '',
     savedAssetId: '',
     assetSaveStatus: 'running',
@@ -2714,19 +2841,17 @@ async function commitFreeCanvasNodeGeneration({
 function freeCanvasNodeInputReferences(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!node || !['image', 'video'].includes(node.data?.kind)) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+  return node.data?.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+    : collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
 }
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
-    .filter((reference) => reference.ready && reference.enabled !== false)
-    .map((reference) => ({
-      nodeId: String(reference.nodeId),
-      title: reference.title || '画布图片',
-      url: reference.url,
-    }))
+  return buildFreeCanvasReferenceMentionCandidates(
+    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+  )
 }
 
 function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
@@ -2734,7 +2859,8 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   const sourceNode = freeCanvasNodeById(sourceNodeOrId)
   if (!targetNode || !sourceNode) return false
   if (!['image', 'video'].includes(targetNode.data?.kind)) return false
-  if (sourceNode.data?.kind !== 'image' || !getFreeCanvasNodeResultUrl(sourceNode)) return false
+  const sourceKind = canvasNodeKind(sourceNode)
+  if (!resolveCanvasNodeConnection(sourceKind, targetNode.data?.kind).allowed || !getFreeCanvasNodeResultUrl(sourceNode)) return false
   if (String(sourceNode.id) === String(targetNode.id)) return false
   onConnect({ source: sourceNode.id, target: targetNode.id })
   allGraphNodes.value = allGraphNodes.value.map((node) => ({
@@ -2747,14 +2873,14 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   return true
 }
 
-async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAssetId = '' }) {
+async function createFreeCanvasReferenceNode({ targetNode, kind = 'image', url, title, savedAssetId = '' }) {
   const inputCount = freeCanvasNodeInputReferences(targetNode).length
-  const nodeId = await createFreeCanvasNode('image', {
+  const nodeId = await createFreeCanvasNode(kind, {
     x: Number(targetNode.position?.x || 0) - 700,
     y: Number(targetNode.position?.y || 0) + inputCount * 48,
   })
   await patchFreeCanvasNodeData(nodeId, {
-    title: title || '参考图',
+    title: title || ({ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]),
     url,
     status: 'success',
     savedAssetId,
@@ -2765,11 +2891,18 @@ async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAsse
   return nodeId
 }
 
-async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
+async function uploadFreeCanvasReferenceMedia(nodeOrId, file) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
-  if (!file?.type?.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
+  const kind = file?.type?.startsWith('image/')
+    ? 'image'
+    : file?.type?.startsWith('video/')
+      ? 'video'
+      : file?.type?.startsWith('audio/')
+        ? 'audio'
+        : ''
+  if (!kind || !resolveCanvasNodeConnection(kind, targetNode.data?.kind).allowed) {
+    ElMessage.warning(targetNode.data?.kind === 'video' ? '请选择图片、视频或音频文件' : '请选择图片文件')
     return
   }
   try {
@@ -2778,13 +2911,14 @@ async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
     if (!url) throw new Error('参考图上传成功但未返回可用地址')
     await createFreeCanvasReferenceNode({
       targetNode,
+      kind,
       url,
-      title: file.name || '参考图',
+      title: file.name || ({ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]),
       savedAssetId: String(asset?.id || ''),
     })
-    ElMessage.success('参考图已上传并连接')
+    ElMessage.success(`${{ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]}已上传并连接`)
   } catch (error) {
-    ElMessage.error(error?.message || '参考图上传失败')
+    ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
 
@@ -2907,7 +3041,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedAt: new Date().toISOString(),
       error: errorMessage,
     })
-    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: errorMessage })
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', generationActive: false, error: errorMessage })
     ElMessage.error(errorMessage)
     return { ok: false, nodeId: String(node.id), error: errorMessage }
   }
@@ -2925,7 +3059,19 @@ async function runFreeCanvasNode(nodeOrId) {
     requestedAt: new Date().toISOString(),
     error: '',
   })
-  await patchFreeCanvasNodeData(node.id, { status: 'running', progress: 0, taskId: '', error: '' })
+  const quantity = ['image', 'video'].includes(kind)
+    ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
+    : 1
+  await patchFreeCanvasNodeData(node.id, {
+    status: 'running',
+    generationActive: true,
+    generationBatchSize: quantity,
+    generationTaskBaseCount: 0,
+    progress: 0,
+    progressKnown: false,
+    taskId: '',
+    error: '',
+  })
   let taskId = ''
   try {
     if (kind === 'text') {
@@ -2935,7 +3081,11 @@ async function runFreeCanvasNode(nodeOrId) {
       await patchFreeCanvasNodeData(node.id, {
         content,
         status: 'success',
+        generationActive: false,
+        generationBatchSize: undefined,
+        generationTaskBaseCount: undefined,
         progress: 100,
+        progressKnown: true,
         error: '',
       })
       await updateFreeCanvasGenerationHistory(node.id, historyId, {
@@ -2946,9 +3096,6 @@ async function runFreeCanvasNode(nodeOrId) {
       return { ok: true, nodeId: String(node.id) }
     }
 
-    const quantity = ['image', 'video'].includes(kind)
-      ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
-      : 1
     for (let index = 0; index < quantity; index += 1) {
       let submitResult = null
       let taskResult = null
@@ -2959,8 +3106,23 @@ async function runFreeCanvasNode(nodeOrId) {
 
       taskId = freeCanvasTaskId(submitResult)
       if (taskId) {
-        await patchFreeCanvasNodeData(node.id, { taskId })
-        taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+        await patchFreeCanvasNodeData(node.id, {
+          taskId,
+          generationTaskBaseCount: completedResults.length,
+        })
+        taskResult = await pollFreeCanvasTask(taskId, {
+          ...freeCanvasTaskPollOptions(kind),
+          onProgress: async (currentProgress) => {
+            const progress = calculateBatchGenerationProgress(
+              completedResults.length,
+              quantity,
+              currentProgress
+            )
+            if (progress !== null) {
+              await patchFreeCanvasNodeData(node.id, { progress, progressKnown: true })
+            }
+          },
+        })
       }
       const resolvedResult = await resolveFreeCanvasNodeGeneration({
         kind,
@@ -2970,6 +3132,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedResults.push(resolvedResult)
       await patchFreeCanvasNodeData(node.id, {
         progress: Math.round((completedResults.length / quantity) * 100),
+        progressKnown: true,
       })
     }
     const completedResultUrls = completedResults.map((result) => result.resultUrl)
@@ -3002,6 +3165,9 @@ async function runFreeCanvasNode(nodeOrId) {
     })
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
+      generationActive: false,
+      generationBatchSize: undefined,
+      generationTaskBaseCount: undefined,
       url: previousUrl,
       resultUrls: previousResultUrls,
       taskId,
@@ -3084,7 +3250,31 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
 
   const resumePromise = (async () => {
     try {
-      const taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      const persistedBatchSize = Number(node.data?.generationBatchSize)
+      const quantity = Number.isInteger(persistedBatchSize) && persistedBatchSize > 0
+        ? Math.min(4, persistedBatchSize)
+        : (kind === 'audio' ? 1 : null)
+      const persistedBaseCount = Number(node.data?.generationTaskBaseCount)
+      const completedCount = quantity !== null && Number.isInteger(persistedBaseCount) && persistedBaseCount >= 0
+        ? Math.min(quantity - 1, persistedBaseCount)
+        : (quantity === 1 ? 0 : null)
+      await patchFreeCanvasNodeData(node.id, {
+        generationActive: true,
+        ...(completedCount === null ? { progressKnown: false } : {}),
+      })
+      const taskResult = await pollFreeCanvasTask(taskId, {
+        ...freeCanvasTaskPollOptions(kind),
+        onProgress: (currentProgress) => {
+          if (completedCount === null) return undefined
+          return patchFreeCanvasNodeData(node.id, {
+            progress: calculateBatchGenerationProgress(completedCount, quantity, currentProgress),
+            progressKnown: true,
+          })
+        },
+      })
+      const recoveredProgress = completedCount === null
+        ? 100
+        : Math.round(((completedCount + 1) / quantity) * 100)
       await completeFreeCanvasNodeGeneration({
         node,
         kind,
@@ -3093,6 +3283,8 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
         requestPayload: null,
         taskId,
         notify: false,
+        progress: recoveredProgress,
+        progressKnown: completedCount !== null,
       })
       ElMessage.success('已恢复自由节点生成结果')
     } catch (error) {
@@ -3101,6 +3293,7 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
       const errorMessage = error?.message || '自由节点生成失败'
       await patchFreeCanvasNodeData(node.id, {
         status: 'failed',
+        generationActive: false,
         url: latestNode?.data?.url || '',
         taskId,
         error: errorMessage,
@@ -3335,6 +3528,315 @@ function resumePendingImageToolOperations() {
         await patchFreeCanvasNodeData(node.id, {
           imageToolStatus: 'failed',
           imageToolError: error?.message || '图片处理失败',
+        })
+      })
+  }
+}
+
+const VIDEO_TOOL_POLL_INTERVAL_MS = 2000
+const VIDEO_TOOL_POLL_MAX_ATTEMPTS = 2400
+const resumedVideoToolTasks = new Set()
+let videoToolPollSession = 0
+
+function invalidateVideoToolPolling() {
+  videoToolPollSession += 1
+  resumedVideoToolTasks.clear()
+}
+
+function videoToolPollCancelledError() {
+  const error = new Error('视频处理轮询已取消')
+  error.code = 'VIDEO_TOOL_POLL_CANCELLED'
+  return error
+}
+
+function currentVideoToolOperationNode(session, expectedDramaId, nodeId) {
+  if (!canvasAlive
+    || session !== videoToolPollSession
+    || String(dramaId.value || '') !== expectedDramaId) return null
+  const node = freeCanvasNodeById(nodeId)
+  return node?.type === 'homeCanvasNode' && node.data?.kind === 'video' ? node : null
+}
+
+function currentVideoToolSourceNode(pollToken) {
+  if (!pollToken
+    || !canvasAlive
+    || pollToken.session !== videoToolPollSession
+    || String(dramaId.value || '') !== pollToken.dramaId) return null
+  const node = freeCanvasNodeById(pollToken.nodeId)
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'video') return null
+  if (String(node.data?.videoToolTaskId || '') !== pollToken.taskId) return null
+  return node
+}
+
+function requireCurrentVideoToolSourceNode(pollToken) {
+  const node = currentVideoToolSourceNode(pollToken)
+  if (!node) throw videoToolPollCancelledError()
+  return node
+}
+
+function releaseVideoToolPolling(pollToken) {
+  if (pollToken?.session === videoToolPollSession) {
+    resumedVideoToolTasks.delete(pollToken.taskId)
+  }
+}
+
+function parseVideoToolTaskResult(task) {
+  if (task?.result && typeof task.result === 'object') return task.result
+  if (typeof task?.result === 'string' && task.result.trim()) {
+    try {
+      return JSON.parse(task.result)
+    } catch {
+      throw new Error('视频处理任务返回了无效结果')
+    }
+  }
+  throw new Error('视频处理任务未返回结果')
+}
+
+async function waitForVideoToolOperation(taskId, pollToken) {
+  for (let attempt = 0; attempt < VIDEO_TOOL_POLL_MAX_ATTEMPTS; attempt += 1) {
+    requireCurrentVideoToolSourceNode(pollToken)
+    const task = await videoToolsAPI.getOperation(taskId)
+    requireCurrentVideoToolSourceNode(pollToken)
+    if (task?.status === 'completed') return parseVideoToolTaskResult(task)
+    if (task?.status === 'failed') throw new Error(task.error || task.message || '视频处理失败')
+    await new Promise((resolve) => setTimeout(resolve, VIDEO_TOOL_POLL_INTERVAL_MS))
+  }
+  const error = new Error('视频仍在后台处理中，请稍后刷新查看')
+  error.code = 'VIDEO_TOOL_POLL_TIMEOUT'
+  throw error
+}
+
+function videoStoryContent(story) {
+  const shots = Array.isArray(story?.shots) ? story.shots : []
+  const rows = shots.map((shot) => (
+    `镜头 ${shot.index}｜${Number(shot.startTime).toFixed(2)}s–${Number(shot.endTime).toFixed(2)}s｜`
+    + `时长 ${Number(shot.duration).toFixed(2)}s｜关键帧 ${shot.keyframeUrl || ''}`
+  ))
+  return [
+    `视频时长：${Number(story?.duration || 0).toFixed(2)}s`,
+    `画面尺寸：${story?.width || 0} × ${story?.height || 0}`,
+    `音频轨道：${story?.hasAudio ? '有' : '无'}`,
+    '',
+    ...rows,
+  ].join('\n')
+}
+
+async function completeVideoToolOperation(nodeId, operation, result, previousHistory = [], pollToken) {
+  if (String(result?.taskId || '') !== pollToken?.taskId) throw videoToolPollCancelledError()
+  const sourceNode = requireCurrentVideoToolSourceNode(pollToken)
+
+  if (result.resultType === 'video_story') {
+    const existingStoryNode = allGraphNodes.value.find((node) => (
+      node.type === 'homeCanvasNode'
+      && node.data?.kind === 'text'
+      && String(node.data?.sourceVideoToolNodeId || '') === String(sourceNode.id)
+      && String(node.data?.videoToolTaskId || '') === String(result.taskId || '')
+    ))
+    if (!existingStoryNode) {
+      requireCurrentVideoToolSourceNode(pollToken)
+      await createFreeCanvasNode('text', {
+        x: Number(sourceNode.position?.x || 0) + 700,
+        y: Number(sourceNode.position?.y || 0),
+      }, {
+        title: `${sourceNode.data?.title || '视频'} · 视频故事`,
+        content: videoStoryContent(result.story),
+        status: 'success',
+        sourceVideoToolNodeId: String(sourceNode.id),
+        videoToolOperation: operation,
+        videoToolTaskId: result.taskId,
+        videoStory: result.story,
+      })
+    }
+  } else {
+    const resultKind = result.resultType === 'audio' ? 'audio' : 'video'
+    if (!result.resultAssetId || !result.resultUrl) {
+      throw new Error('视频处理完成，但未返回可展示的新素材')
+    }
+    const existingResultNode = allGraphNodes.value.find((node) => (
+      node.type === 'homeCanvasNode'
+      && node.data?.kind === resultKind
+      && String(node.data?.sourceVideoToolNodeId || '') === String(sourceNode.id)
+      && String(node.data?.videoToolTaskId || '') === String(result.taskId || '')
+      && String(node.data?.savedAssetId || '') === String(result.resultAssetId)
+    ))
+    if (!existingResultNode) {
+      if (resultKind === 'video') {
+        requireCurrentVideoToolSourceNode(pollToken)
+        await createFreeCanvasNode('video', {
+          x: Number(sourceNode.position?.x || 0) + 700,
+          y: Number(sourceNode.position?.y || 0),
+        }, {
+          title: `${sourceNode.data?.title || '视频'} · 编辑结果`,
+          content: sourceNode.data?.content || '',
+          url: result.resultUrl,
+          resultUrls: [result.resultUrl],
+          status: 'success',
+          savedAssetId: String(result.resultAssetId),
+          assetSaveStatus: 'success',
+          assetSaveError: '',
+          sourceVideoToolNodeId: String(sourceNode.id),
+          videoToolOperation: operation,
+          videoToolTaskId: result.taskId,
+          videoToolStatus: 'success',
+          videoToolError: '',
+        })
+      } else {
+        requireCurrentVideoToolSourceNode(pollToken)
+        await createFreeCanvasNode('audio', {
+          x: Number(sourceNode.position?.x || 0) + 700,
+          y: Number(sourceNode.position?.y || 0),
+        }, {
+          title: `${sourceNode.data?.title || '视频'} · 分离音频`,
+          url: result.resultUrl,
+          resultUrls: [result.resultUrl],
+          status: 'success',
+          savedAssetId: String(result.resultAssetId),
+          assetSaveStatus: 'success',
+          assetSaveError: '',
+          sourceVideoToolNodeId: String(sourceNode.id),
+          videoToolOperation: operation,
+          videoToolTaskId: result.taskId,
+        })
+      }
+    }
+  }
+
+  const historyItem = {
+    taskId: result.taskId,
+    operation,
+    status: result.status,
+    resultAssetId: result.resultAssetId || null,
+    resultUrl: result.resultUrl || '',
+    createdAt: new Date().toISOString(),
+  }
+  requireCurrentVideoToolSourceNode(pollToken)
+  await patchFreeCanvasNodeData(nodeId, {
+    videoToolTaskId: result.taskId,
+    videoToolStatus: 'success',
+    videoToolError: '',
+    videoToolRetryOperation: '',
+    videoToolRetryParameters: null,
+    videoToolHistory: [historyItem, ...previousHistory].slice(0, 20),
+  })
+}
+
+async function runVideoNodeTool(nodeOrId, operation, parameters = {}) {
+  let node = freeCanvasNodeById(nodeOrId)
+  if (node?.type !== 'homeCanvasNode' || node.data?.kind !== 'video') {
+    throw new Error('该节点不是可处理的视频节点')
+  }
+  const sourceUrl = String(nodeResultUrl(node) || '')
+  if (!sourceUrl) throw new Error('视频节点暂无可处理结果')
+  const operationSession = videoToolPollSession
+  const operationDramaId = String(dramaId.value || '')
+  const operationNodeId = String(node.id)
+
+  let sourceAssetId = node.data?.savedAssetId
+  if (!sourceAssetId) {
+    const savedAsset = await saveFreeCanvasResultAsset(node, 'video', sourceUrl, null, node.data?.taskId || '')
+    sourceAssetId = savedAsset?.id
+    node = freeCanvasNodeById(node.id) || node
+  }
+  if (!sourceAssetId) throw new Error('视频尚未存入素材库，无法执行处理')
+  node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+  if (!node) throw videoToolPollCancelledError()
+
+  const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
+  await patchFreeCanvasNodeData(node.id, {
+    videoToolStatus: 'running',
+    videoToolError: '',
+    videoToolRetryOperation: operation,
+    videoToolRetryParameters: parameters,
+  })
+  let activeTaskId = ''
+  let pollToken = null
+  try {
+    node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!node) throw videoToolPollCancelledError()
+    const accepted = await videoToolsAPI.createOperation({
+      dramaId: Number(operationDramaId),
+      assetId: node.data?.savedAssetId || sourceAssetId,
+      sourceNodeId: String(node.id),
+      operation,
+      parameters,
+    })
+    activeTaskId = String(accepted?.taskId || '')
+    if (!activeTaskId) throw new Error('视频处理服务未返回任务编号')
+    node = currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!node) throw videoToolPollCancelledError()
+    pollToken = {
+      session: operationSession,
+      dramaId: operationDramaId,
+      nodeId: operationNodeId,
+      taskId: activeTaskId,
+    }
+    resumedVideoToolTasks.add(activeTaskId)
+    await patchFreeCanvasNodeData(node.id, {
+      videoToolTaskId: activeTaskId,
+      videoToolStatus: 'running',
+    })
+    requireCurrentVideoToolSourceNode(pollToken)
+    const result = accepted?.status === 'processing'
+      ? await waitForVideoToolOperation(activeTaskId, pollToken)
+      : accepted
+    await completeVideoToolOperation(node.id, operation, result, previousHistory, pollToken)
+    releaseVideoToolPolling(pollToken)
+    return result
+  } catch (error) {
+    releaseVideoToolPolling(pollToken)
+    if (error?.code === 'VIDEO_TOOL_POLL_CANCELLED') throw error
+    const currentNode = pollToken
+      ? currentVideoToolSourceNode(pollToken)
+      : currentVideoToolOperationNode(operationSession, operationDramaId, operationNodeId)
+    if (!currentNode) throw videoToolPollCancelledError()
+    if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') {
+      await patchFreeCanvasNodeData(currentNode.id, {
+        videoToolStatus: 'running',
+        videoToolError: error.message,
+      })
+      throw error
+    }
+    await patchFreeCanvasNodeData(currentNode.id, {
+      videoToolStatus: 'failed',
+      videoToolError: error?.message || '视频处理失败',
+      videoToolRetryOperation: operation,
+      videoToolRetryParameters: parameters,
+    })
+    throw error
+  }
+}
+
+function resumePendingVideoToolOperations() {
+  for (const node of allGraphNodes.value) {
+    const taskId = String(node.data?.videoToolTaskId || '')
+    if (node.type !== 'homeCanvasNode'
+      || node.data?.kind !== 'video'
+      || node.data?.videoToolStatus !== 'running'
+      || !taskId
+      || resumedVideoToolTasks.has(taskId)) continue
+    resumedVideoToolTasks.add(taskId)
+    const operation = String(node.data?.videoToolRetryOperation || '')
+    const previousHistory = Array.isArray(node.data?.videoToolHistory) ? node.data.videoToolHistory : []
+    const pollToken = {
+      session: videoToolPollSession,
+      dramaId: String(dramaId.value || ''),
+      nodeId: String(node.id),
+      taskId,
+    }
+    waitForVideoToolOperation(taskId, pollToken)
+      .then(async (result) => {
+        await completeVideoToolOperation(node.id, operation, result, previousHistory, pollToken)
+        releaseVideoToolPolling(pollToken)
+      })
+      .catch(async (error) => {
+        releaseVideoToolPolling(pollToken)
+        if (error?.code === 'VIDEO_TOOL_POLL_CANCELLED') return
+        if (error?.code === 'VIDEO_TOOL_POLL_TIMEOUT') return
+        const currentNode = currentVideoToolSourceNode(pollToken)
+        if (!currentNode) return
+        await patchFreeCanvasNodeData(node.id, {
+          videoToolStatus: 'failed',
+          videoToolError: error?.message || '视频处理失败',
         })
       })
   }
@@ -3614,7 +4116,8 @@ async function appendDownstreamStoryboard(node, options = {}) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已追加下游分镜并连线')
   return targetNodeId
 }
@@ -3727,7 +4230,8 @@ async function insertDownstreamStoryboard(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已插入下游分镜并重连')
 }
 
@@ -3778,7 +4282,8 @@ async function duplicateStoryboardNode(node) {
   await persistCanvasState({ layoutOnly: true })
   if (filterEpisodeId.value !== episodeId) filterEpisodeId.value = episodeId
   await refreshCanvas(false)
-  await focusCanvasNode(targetNodeId)
+  focusedNodeId.value = null
+  scheduleVirtualization()
   ElMessage.success('已复制分镜到画布')
   return targetNodeId
 }
@@ -4692,6 +5197,7 @@ async function pasteCanvasClipboard(flowPosition = null) {
 async function onCanvasAssetLibraryPick(asset) {
   let nodeId = ''
   let projectAsset = null
+  let succeeded = false
   const retryNodeId = canvasAssetPickerRetryNodeId.value
   const targetFreeNodeId = canvasAssetPickerTargetFreeNodeId.value
   const targetStoryboardId = canvasAssetPickerTargetStoryboardId.value || selectedStoryboardIdForAssetAttach()
@@ -4711,6 +5217,7 @@ async function onCanvasAssetLibraryPick(asset) {
         status: 'success',
         error: '',
         savedAssetId: String(projectAssetId(projectAsset) || ''),
+        savedAssetLocalPath: String(projectAsset.local_path || ''),
         assetSaveStatus: 'success',
         assetSaveError: '',
         taskId: '',
@@ -4720,7 +5227,8 @@ async function onCanvasAssetLibraryPick(asset) {
         imageToolRetryParameters: null,
       })
       ElMessage.success('素材已挂载到当前节点')
-      return
+      succeeded = true
+      return succeeded
     }
     projectAsset = await ensureProjectMediaAsset(asset)
     nodeId = await placeProjectAssetNode(projectAsset, canvasAssetPickerFlowPos.value)
@@ -4742,10 +5250,11 @@ async function onCanvasAssetLibraryPick(asset) {
         }),
       })
     }
+    succeeded = true
   } catch (e) {
     if (targetFreeNodeId) {
       ElMessage.error(e?.message || '素材挂载失败')
-      return
+      return false
     }
     if (!nodeId) nodeId = canvasAssetFailureNode(e?.message || '素材库素材加入画布失败', canvasAssetPickerFlowPos.value, asset, targetStoryboardId)
     if (nodeId) {
@@ -4766,6 +5275,41 @@ async function onCanvasAssetLibraryPick(asset) {
     canvasAssetPickerTargetStoryboardId.value = null
     canvasAssetPickerTargetFreeNodeId.value = ''
   }
+  return succeeded
+}
+
+function toggleAssetHistoryPanel(mode) {
+  assetHistoryPanel.value = assetHistoryPanel.value === mode ? '' : mode
+  if (assetHistoryPanel.value) {
+    contextMenuVisible.value = false
+    focusedNodeId.value = null
+  }
+}
+
+async function locateAssetHistoryNode(nodeId) {
+  assetHistoryPanel.value = ''
+  await focusNodeOrWarn(nodeId, '该资产尚未关联当前画布节点')
+}
+
+async function applyAssetHistoryItem(item) {
+  if (item?.source === 'canvas' && item?.nodeId) {
+    await locateAssetHistoryNode(item.nodeId)
+    return
+  }
+  const raw = item?.raw || {}
+  const applied = await onCanvasAssetLibraryPick({
+    ...raw,
+    id: item?.source === 'library' ? raw.id : undefined,
+    raw_id: item?.rawId ?? raw.id,
+    name: item?.name || raw.name,
+    type: item?.type || raw.type,
+    category: raw.category || item?.category,
+    url: item?.url || raw.url,
+    display_url: item?.url || raw.display_url,
+    source_kind: item?.source === 'library' ? 'project' : raw.source_kind,
+    picker_source: item?.source || 'history',
+  })
+  if (applied) assetHistoryPanel.value = ''
 }
 
 async function focusNodeResult(node) {
@@ -5688,10 +6232,10 @@ provide(CANVAS_CONTEXT_KEY, {
   registerCanvasFlowApi: (api) => {
     canvasFlowApi.value = api
   },
-  panCanvasForNodeEditor,
   sidebarVisible,
   showWorkflowPanel,
   directorStageVisible,
+  assetHistoryPanel,
   canvasGridVisible,
   canvasMiniMapVisible,
   canvasSnapEnabled,
@@ -5705,6 +6249,7 @@ provide(CANVAS_CONTEXT_KEY, {
   openDirectorStage,
   toggleSidebar,
   toggleWorkflowPanel,
+  toggleAssetHistoryPanel,
   focusScript: focusScriptNode,
   goListMode,
   alignNodes: onAlignNodes,
@@ -5748,7 +6293,7 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
-  uploadFreeCanvasReferenceImage,
+  uploadFreeCanvasReferenceMedia,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
@@ -5764,6 +6309,7 @@ provide(CANVAS_CONTEXT_KEY, {
   translateFreeCanvasNode,
   retryFreeCanvasAssetSave,
   runImageNodeTool,
+  runVideoNodeTool,
   replaceFreeCanvasNodeImage,
   setFreeCanvasNodeMarker,
 })
@@ -6085,11 +6631,12 @@ function onConnect(connection) {
   scheduleLayoutSave()
   if (
     sourceNode?.type === 'homeCanvasNode'
-    && sourceNode.data?.kind === 'image'
+    && ['image', 'video', 'audio'].includes(sourceNode.data?.kind)
     && targetNode?.type === 'homeCanvasNode'
     && targetNode.data?.kind === 'video'
   ) {
-    ElMessage.success(sourceNode.data?.url ? '视频节点已自动采用该图片作为参考图' : '图片已连接，生成完成后会自动作为视频参考图')
+    const mediaLabel = { image: '图片', video: '视频', audio: '音频' }[sourceNode.data?.kind]
+    ElMessage.success(sourceNode.data?.url ? `视频节点已采用该${mediaLabel}作为参考素材` : `${mediaLabel}已连接，生成完成后会自动作为视频参考素材`)
   } else {
     ElMessage.success('已添加画布连线')
   }
@@ -6257,12 +6804,32 @@ async function fitCanvasView() {
 
 async function focusCanvasNode(nodeId) {
   if (!nodeId) return
+  const node = findGraphNode(nodeId)
   focusedNodeId.value = nodeId
   scheduleVirtualization()
   await nextTick()
   const api = canvasFlowApi.value
-  if (!api?.fitView) return
-  await api.fitView({ nodes: [{ id: nodeId }], padding: 0.55, duration: 320, includeHiddenNodes: false })
+  if (!api?.fitView && !api?.setCenter) return
+  if (!node) {
+    await api.fitView?.({ nodes: [String(nodeId)], padding: 0.55, duration: 320, includeHiddenNodes: false })
+    await nextTick()
+    api.updateNodeInternals?.([String(nodeId)])
+    const missingViewport = api.getViewport?.()
+    if (missingViewport) {
+      currentViewport.value = { x: missingViewport.x, y: missingViewport.y, zoom: missingViewport.zoom }
+      scheduleVirtualization()
+    }
+    return
+  }
+  const zoom = Number(api.getViewport?.()?.zoom || currentViewport.value?.zoom || 1)
+  const width = Number(node?.dimensions?.width || node?.measured?.width || node?.width || 220)
+  const height = Number(node?.dimensions?.height || node?.measured?.height || node?.height || 180)
+  const centerX = Number(node?.position?.x || 0) + width / 2
+  const centerY = Number(node?.position?.y || 0) + height / 2
+  if (node && api.setCenter) await api.setCenter(centerX, centerY, { zoom, duration: 320 })
+  else await api.fitView({ nodes: [String(node.id)], padding: 0.55, duration: 320, includeHiddenNodes: false })
+  await nextTick()
+  api.updateNodeInternals?.([String(node.id)])
   const viewport = api.getViewport?.()
   if (viewport) {
     currentViewport.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
@@ -6574,8 +7141,9 @@ async function persistCanvasStateNow({ layoutOnly = false, groupsOnly = false } 
   let layoutPayload = null
   if (!groupsOnly) {
     syncRenderedNodesToGraph()
+    const persistedGraphNodes = stripLocalImagePreviewsForPersistence(allGraphNodes.value)
     layoutPayload = withCanvasPersistedState(buildCanvasLayoutPayload(
-      allGraphNodes.value,
+      persistedGraphNodes,
       currentViewport.value,
       layoutCache.value,
       allGraphEdges.value,
@@ -7203,6 +7771,7 @@ watch(focusedNodeId, () => scheduleVirtualization())
 
 watch(allGraphNodes, () => {
   resumePendingImageToolOperations()
+  resumePendingVideoToolOperations()
 })
 
 watch(() => dramaId.value, () => {
@@ -7224,6 +7793,7 @@ watch(liveRunQueueItems, (items) => {
 }, { deep: true })
 
 watch(() => route.params.id, () => {
+  invalidateVideoToolPolling()
   highlightAssetId.value = null
   layoutCache.value = null
   activeGroupId.value = null
@@ -7247,6 +7817,7 @@ watch(drama, () => {
 })
 
 onMounted(() => {
+  canvasAlive = true
   scheduleVirtualization()
   runQueueTimer = setInterval(() => {
     queueNow.value = Date.now()
@@ -7260,6 +7831,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  invalidateVideoToolPolling()
+  canvasAlive = false
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
@@ -7276,6 +7849,8 @@ onBeforeUnmount(() => {
     window.removeEventListener('keyup', onCanvasKeyup)
     window.removeEventListener('blur', onCanvasBlur)
   }
+  for (const previewUrl of localPreviewUrls) URL.revokeObjectURL(previewUrl)
+  localPreviewUrls.clear()
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })

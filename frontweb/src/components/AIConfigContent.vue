@@ -351,6 +351,7 @@
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="DeepWL Grok（统一 JSON / Imagine / OpenAI 兼容）" value="deepwl_grok" />
             <el-option label="iCreat Seedance（提交 / 状态 / 结果三段式任务）" value="icreat_task" />
+            <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1432,6 +1433,7 @@ const providerConfigs = {
   ],
   video: [
     { id: 'aihubcc', name: 'AIHubCC 视频', models: AIHUBCC_VIDEO_MODELS },
+    { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1491,6 +1493,8 @@ const providerProtocolMap = {
   deepwl_grok: 'deepwl_grok',
   icreat: 'icreat_task',
   icreat_task: 'icreat_task',
+  usmercari: 'usmercari_media',
+  usmercari_media: 'usmercari_media',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1525,6 +1529,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
+  if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1662,7 +1667,10 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
   } else if (service_type === 'video') {
-    if (proto === 'icreat_task' || p === 'icreat') {
+    if (proto === 'usmercari_media' || p === 'usmercari') {
+      submitPath = endpoint || '/cpa-file/submit/video'
+      queryPath = '/cpa-file/fetch'
+    } else if (proto === 'icreat_task' || p === 'icreat') {
       submitPath = endpoint || '/v1/task/submit/{model}'
     } else if (proto === 'aihubcc' || p === 'aihubcc') {
       submitPath = endpoint || '/videos'
@@ -1843,6 +1851,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'icreat_task'
     form.value.endpoint = '/v1/task/submit/{model}'
     form.value.query_endpoint = '/v1/task/query-status'
+  }
+  if (st === 'video' && (providerId === 'usmercari' || providerId === 'usmercari_media')) {
+    form.value.api_protocol = 'usmercari_media'
+    form.value.endpoint = '/cpa-file/submit/video'
+    form.value.query_endpoint = '/cpa-file/fetch'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'

@@ -157,6 +157,20 @@ test('自动整理后同步 VueFlow 内部节点仓库避免界面坐标停留',
   assert.match(canvasSource, /applyVirtualizedGraph\(\)\s*\n\s*canvasFlowApi\.value\?\.setNodes\?\.\(nodes\.value\)/)
 })
 
+test('自由画布自动展开相互遮挡的项目素材并持久化修复位置', () => {
+  assert.match(canvasSource, /function repairCollidingProjectAssetPositions\(graphNodes\)/)
+  assert.match(canvasSource, /const assetNodes = graphNodes\.filter\(\(node\) => node\.type === 'canvasProjectAsset'\)/)
+  assert.match(canvasSource, /const nodeWidth = 210/)
+  assert.match(canvasSource, /const nodeHeight = 300/)
+  assert.match(canvasSource, /const rowGap = 320/)
+  assert.match(canvasSource, /if \(!keptPositions\.some\(\(position\) => overlaps\(original, position\)\)\) \{[\s\S]*keptPositions\.push\(original\)[\s\S]*return node/)
+  assert.match(canvasSource, /x: anchorX \+ \(slot % 3\) \* columnGap/)
+  assert.match(canvasSource, /y: anchorY \+ Math\.floor\(slot \/ 3\) \* rowGap/)
+  assert.match(canvasSource, /while \(keptPositions\.some\(\(kept\) => overlaps\(position, kept\)\)\)/)
+  assert.match(canvasSource, /\.\.\.projectAssetPositionRepair\.repairedPositions/)
+  assert.match(canvasSource, /if \(Object\.keys\(projectAssetPositionRepair\.repairedPositions\)\.length\) scheduleLayoutSave\(\)/)
+})
+
 test('画布加号节点新建内容时沿用加号所在画布落点', () => {
   assert.match(adapterSource, /const addPosition = resolveNodePosition\(savedLayout, addId, \{ x: ASSET_X, y \}\)/)
   assert.match(adapterSource, /data: \{ assetType: sec\.kind, label: '\+ 新建', flowPosition: addPosition \}/)

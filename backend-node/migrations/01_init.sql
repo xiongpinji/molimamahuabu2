@@ -204,6 +204,8 @@ CREATE TABLE IF NOT EXISTS video_generations (
   output_first_frame_url TEXT,
   output_last_frame_url TEXT,
   reference_image_urls TEXT,
+  reference_video_url TEXT,
+  reference_audio_url TEXT,
   video_url TEXT,
   local_path TEXT,
   status TEXT,

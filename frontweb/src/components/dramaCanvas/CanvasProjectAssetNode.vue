@@ -1,7 +1,7 @@
 <template>
   <div class="project-asset-node" :class="{ focused: data.focused }">
     <Handle
-      v-if="assetType === 'image'"
+      v-if="['image', 'video', 'audio'].includes(assetType)"
       class="node-handle node-handle-output"
       type="source"
       :position="Position.Right"
@@ -9,7 +9,7 @@
     <CanvasNodeStatusOverlay :node-id="id" />
     <div class="node-drag-hint">
       <span class="tag">{{ typeLabel }}</span>
-      <span>{{ assetType === 'image' ? '拖动 · 连线作为参考' : '拖动 · 预览/指派' }}</span>
+      <span>拖动 · 连线作为参考</span>
     </div>
     <div v-if="assetBadges.length" class="asset-badges">
       <span v-for="badge in assetBadges" :key="badge" class="asset-badge">{{ badge }}</span>
@@ -57,6 +57,25 @@
         </button>
       </div>
     </div>
+    <Teleport to="body">
+      <div
+        v-if="previewVisible"
+        class="project-asset-preview nodrag nopan"
+        role="dialog"
+        aria-modal="true"
+        aria-label="素材预览"
+        @click.self="closeAssetPreview"
+      >
+        <button type="button" aria-label="关闭素材预览" title="关闭" @click="closeAssetPreview">×</button>
+        <img
+          v-if="assetType === 'image'"
+          :src="url"
+          :alt="data.asset?.name || '项目素材预览'"
+        />
+        <video v-else-if="assetType === 'video'" :src="url" controls autoplay playsinline />
+        <audio v-else :src="url" controls autoplay />
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -75,6 +94,7 @@ const props = defineProps({
 })
 const ctx = useCanvasContext()
 const assigning = ref(false)
+const previewVisible = ref(false)
 const assetType = computed(() => normalizeAssetNodeType(props.data.asset))
 const typeLabel = computed(() => ({ image: '图片素材', video: '视频素材', audio: '音频素材' }[assetType.value] || '项目素材'))
 const url = computed(() => assetMediaUrl(props.data.asset))
@@ -160,7 +180,11 @@ function assetPurposeLabel(asset, slot = '') {
 
 function openAsset() {
   if (!url.value) return
-  window.open(url.value, '_blank', 'noopener,noreferrer')
+  previewVisible.value = true
+}
+
+function closeAssetPreview() {
+  previewVisible.value = false
 }
 
 async function copyReference() {
@@ -228,4 +252,33 @@ function closePanel() {
 .panel-actions { display: grid; gap: 6px; }
 .panel-actions button { border: 1px solid rgba(125,211,252,.32); border-radius: 7px; background: rgba(14,165,233,.13); color: #e0f2fe; font-size: 10px; line-height: 24px; cursor: pointer; }
 .panel-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.project-asset-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 3300;
+  display: grid;
+  padding: 28px;
+  place-items: center;
+  background: rgba(0, 0, 0, .9);
+  box-sizing: border-box;
+}
+.project-asset-preview > button {
+  position: absolute;
+  top: 22px;
+  right: 22px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #52525b;
+  border-radius: 50%;
+  background: #18181b;
+  color: #f4f4f5;
+  font-size: 24px;
+  cursor: pointer;
+}
+.project-asset-preview > img,
+.project-asset-preview > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.project-asset-preview > audio { width: min(680px, 90vw); }
 </style>

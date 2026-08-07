@@ -76,6 +76,30 @@ const generatedMentionHomeCanvasState = {
       : node
   )),
 }
+const numberedMentionHomeCanvasState = {
+  ...mentionHomeCanvasState,
+  nodes: [
+    mentionHomeCanvasState.nodes[0],
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-2',
+      position: { x: 360, y: 680 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '雨夜街道' },
+    },
+    {
+      ...mentionHomeCanvasState.nodes[0],
+      id: 'e2e:image-reference-3',
+      position: { x: 360, y: 940 },
+      data: { ...mentionHomeCanvasState.nodes[0].data, title: '跑车侧面' },
+    },
+    mentionHomeCanvasState.nodes[1],
+  ],
+  edges: [
+    { id: 'e2e:reference-1', source: 'e2e:image-reference', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 0 } } },
+    { id: 'e2e:reference-2', source: 'e2e:image-reference-2', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 1 } } },
+    { id: 'e2e:reference-3', source: 'e2e:image-reference-3', target: 'e2e:video-target', type: 'smoothstep', data: { contract: { input: 'reference-image', order: 2 } } },
+  ],
+}
 const editorFitHomeCanvasState = {
   version: 1,
   nodes: [
@@ -189,7 +213,11 @@ test('节点编辑器锚定节点、完整保持在视口内并支持提示词�
   const editorAfter = await editor.boundingBox()
   expect(nodeAfter).not.toBeNull()
   expect(editorAfter).not.toBeNull()
-  expect(Math.abs((editorAfter.x - editorBefore.x) - (nodeAfter.x - nodeBefore.x))).toBeLessThan(5)
+  const expectedEditorLeftAfter = Math.min(
+    Math.max(16, nodeAfter.x + nodeAfter.width / 2 - editorAfter.width / 2),
+    Math.max(16, viewport.width - editorAfter.width - 16),
+  )
+  expect(Math.abs(editorAfter.x - expectedEditorLeftAfter)).toBeLessThan(5)
   expect(Math.abs((editorAfter.y - editorBefore.y) - (nodeAfter.y - nodeBefore.y))).toBeLessThan(5)
   expect(editorAfter.x).toBeGreaterThanOrEqual(0)
   expect(editorAfter.y).toBeGreaterThanOrEqual(0)
@@ -235,16 +263,69 @@ test('节点靠近视口底部时编辑器仍固定在节点下方', async ({ pa
   await page.setViewportSize({ width: 900, height: 1000 })
   await loadHomeCanvasState(page, {
     ...seededHomeCanvasState,
-    viewport: { x: 0, y: 350, zoom: 0.75 },
+    viewport: { x: 0, y: 250, zoom: 0.75 },
   })
 
   const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
   await node.click()
 
   const editor = page.locator('.node-expanded-editor')
   await expect(editor).toBeVisible()
   await expect(editor).toHaveAttribute('data-editor-dock', 'bottom')
+  await page.evaluate(() => new Promise((resolve) => {
+    let frameCount = 0
+    const waitForFrames = () => {
+      frameCount += 1
+      if (frameCount >= 6) resolve()
+      else window.requestAnimationFrame(waitForFrames)
+    }
+    window.requestAnimationFrame(waitForFrames)
+  }))
+  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
 
+  const [nodeBox, editorBox, documentLayout] = await Promise.all([
+    node.locator('.home-canvas-node').boundingBox(),
+    editor.boundingBox(),
+    page.evaluate(() => ({
+      bodyClientHeight: document.body.clientHeight,
+      bodyClientWidth: document.body.clientWidth,
+      bodyScrollHeight: document.body.scrollHeight,
+      bodyScrollWidth: document.body.scrollWidth,
+      rootClientHeight: document.documentElement.clientHeight,
+      rootClientWidth: document.documentElement.clientWidth,
+      rootScrollHeight: document.documentElement.scrollHeight,
+      rootScrollWidth: document.documentElement.scrollWidth,
+    })),
+  ])
+  const viewport = page.viewportSize()
+
+  expect(nodeBox).not.toBeNull()
+  expect(editorBox).not.toBeNull()
+  expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
+  expect(documentLayout.bodyScrollHeight).toBeLessThanOrEqual(documentLayout.bodyClientHeight + 1)
+  expect(documentLayout.bodyScrollWidth).toBeLessThanOrEqual(documentLayout.bodyClientWidth + 1)
+  expect(documentLayout.rootScrollHeight).toBeLessThanOrEqual(documentLayout.rootClientHeight + 1)
+  expect(documentLayout.rootScrollWidth).toBeLessThanOrEqual(documentLayout.rootClientWidth + 1)
+})
+
+test('节点贴住视口底边时编辑器钉在视口内且不缩成不可操作尺寸', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, {
+    ...seededHomeCanvasState,
+    viewport: { x: 0, y: 450, zoom: 0.75 },
+  })
+
+  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
+  await node.locator('.node-icon').click()
+
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor).toHaveAttribute('data-editor-dock', 'viewport')
   const [nodeBox, editorBox] = await Promise.all([
     node.locator('.home-canvas-node').boundingBox(),
     editor.boundingBox(),
@@ -253,8 +334,119 @@ test('节点靠近视口底部时编辑器仍固定在节点下方', async ({ pa
 
   expect(nodeBox).not.toBeNull()
   expect(editorBox).not.toBeNull()
-  expect(Math.abs((editorBox.y - nodeBox.y - nodeBox.height) - 12)).toBeLessThan(5)
+  expect(editorBox.width).toBeGreaterThanOrEqual(258)
+  expect(editorBox.x).toBeGreaterThanOrEqual(0)
+  expect(editorBox.y).toBeGreaterThanOrEqual(0)
+  expect(editorBox.x + editorBox.width).toBeLessThanOrEqual(viewport.width)
   expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
+  const overlapWidth = Math.max(0, Math.min(editorBox.x + editorBox.width, nodeBox.x + nodeBox.width) - Math.max(editorBox.x, nodeBox.x))
+  const overlapHeight = Math.max(0, Math.min(editorBox.y + editorBox.height, nodeBox.y + nodeBox.height) - Math.max(editorBox.y, nodeBox.y))
+  expect(overlapWidth * overlapHeight).toBeLessThan(1)
+  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
+})
+
+test('节点水平居中且贴底时编辑器使用上方空隙且不覆盖节点', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, {
+    ...seededHomeCanvasState,
+    viewport: { x: -320, y: 280, zoom: 1 },
+  })
+
+  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  const transformBeforeSelection = await transformationPane.evaluate((element) => element.style.transform)
+  await node.locator('.node-icon').click()
+
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor).toHaveAttribute('data-editor-dock', 'viewport')
+  const [nodeBox, editorBox] = await Promise.all([
+    node.locator('.home-canvas-node').boundingBox(),
+    editor.boundingBox(),
+  ])
+  const viewport = page.viewportSize()
+
+  expect(nodeBox).not.toBeNull()
+  expect(editorBox).not.toBeNull()
+  expect(editorBox.width).toBeGreaterThanOrEqual(258)
+  expect(editorBox.x).toBeGreaterThanOrEqual(0)
+  expect(editorBox.y).toBeGreaterThanOrEqual(0)
+  expect(editorBox.x + editorBox.width).toBeLessThanOrEqual(viewport.width)
+  expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height)
+  expect(Math.abs((nodeBox.y - editorBox.y - editorBox.height) - 12)).toBeLessThan(5)
+  expect(await transformationPane.evaluate((element) => element.style.transform)).toBe(transformBeforeSelection)
+})
+
+test('图片工具栏菜单展开时编辑器避让全部可见控件', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, {
+    ...mentionHomeCanvasState,
+    viewport: { x: -200, y: 400, zoom: 0.75 },
+  })
+
+  const node = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
+  await node.click()
+  const toolbar = node.locator('.image-node-toolbar')
+  await expect(toolbar).toBeVisible()
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+
+  await expect.poll(async () => {
+    const [editorBox, toolbarBox] = await Promise.all([
+      editor.boundingBox(),
+      toolbar.boundingBox(),
+    ])
+    if (!editorBox || !toolbarBox) return Number.POSITIVE_INFINITY
+    const overlapWidth = Math.max(0, Math.min(editorBox.x + editorBox.width, toolbarBox.x + toolbarBox.width) - Math.max(editorBox.x, toolbarBox.x))
+    const overlapHeight = Math.max(0, Math.min(editorBox.y + editorBox.height, toolbarBox.y + toolbarBox.height) - Math.max(editorBox.y, toolbarBox.y))
+    return overlapWidth * overlapHeight
+  }).toBeLessThan(1)
+
+  await toolbar.getByRole('button', { name: /工具/ }).hover()
+  await expect(toolbar.locator('.toolbar-menu')).toBeVisible()
+  await expect(editor).toHaveCount(0)
+
+  const documentLayout = await page.evaluate(() => ({
+    rootClientWidth: document.documentElement.clientWidth,
+    rootScrollWidth: document.documentElement.scrollWidth,
+    rootClientHeight: document.documentElement.clientHeight,
+    rootScrollHeight: document.documentElement.scrollHeight,
+  }))
+  expect(documentLayout.rootScrollWidth).toBeLessThanOrEqual(documentLayout.rootClientWidth + 1)
+  expect(documentLayout.rootScrollHeight).toBeLessThanOrEqual(documentLayout.rootClientHeight + 1)
+})
+
+test('节点完全移出视口时编辑器隐藏且节点移回后自动恢复', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 1000 })
+  await loadHomeCanvasState(page, {
+    ...seededHomeCanvasState,
+    viewport: { x: 0, y: 120, zoom: 0.75 },
+  })
+
+  const node = page.locator('.vue-flow__node[data-id="e2e:seed"]')
+  await node.locator('.node-icon').click()
+  const editor = page.locator('.node-expanded-editor')
+  await expect(editor).toBeVisible()
+
+  const viewport = page.viewportSize()
+  const pane = page.locator('.vue-flow__pane')
+  await pane.hover({ position: { x: 24, y: 420 } })
+  await page.mouse.wheel(0, 2400)
+  await expect.poll(async () => {
+    const box = await node.locator('.home-canvas-node').boundingBox()
+    return box && (box.y + box.height <= 16 || box.y >= viewport.height - 16)
+  }).toBeTruthy()
+  await expect(editor).toHaveAttribute('data-editor-dock', 'hidden')
+  await expect(editor).toHaveCSS('visibility', 'hidden')
+  await expect(editor).toHaveCSS('pointer-events', 'none')
+
+  await page.mouse.wheel(0, -2400)
+  await expect.poll(async () => {
+    const box = await node.locator('.home-canvas-node').boundingBox()
+    return box && box.y + box.height > 16 && box.y < viewport.height - 16
+  }).toBeTruthy()
+  await expect(editor).toBeVisible()
+  await expect(editor).not.toHaveAttribute('data-editor-dock', 'hidden')
 })
 
 test('节点编辑器在不同画布缩放下完整显示且根容器不产生滚动条', async ({ page }) => {
@@ -287,6 +479,16 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
         }
       }),
       footerBox: await editor.locator('.editor-footer').boundingBox(),
+      documentLayout: await page.evaluate(() => ({
+        bodyClientHeight: document.body.clientHeight,
+        bodyClientWidth: document.body.clientWidth,
+        bodyScrollHeight: document.body.scrollHeight,
+        bodyScrollWidth: document.body.scrollWidth,
+        rootClientHeight: document.documentElement.clientHeight,
+        rootClientWidth: document.documentElement.clientWidth,
+        rootScrollHeight: document.documentElement.scrollHeight,
+        rootScrollWidth: document.documentElement.scrollWidth,
+      })),
     }
   }
 
@@ -305,6 +507,10 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
   expect(compactEditor.layout.scrollWidth).toBeLessThanOrEqual(compactEditor.layout.clientWidth + 1)
   expect(compactEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
   expect(compactEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
+  expect(compactEditor.documentLayout.bodyScrollHeight).toBeLessThanOrEqual(compactEditor.documentLayout.bodyClientHeight + 1)
+  expect(compactEditor.documentLayout.bodyScrollWidth).toBeLessThanOrEqual(compactEditor.documentLayout.bodyClientWidth + 1)
+  expect(compactEditor.documentLayout.rootScrollHeight).toBeLessThanOrEqual(compactEditor.documentLayout.rootClientHeight + 1)
+  expect(compactEditor.documentLayout.rootScrollWidth).toBeLessThanOrEqual(compactEditor.documentLayout.rootClientWidth + 1)
   expect(compactEditor.footerBox).not.toBeNull()
   expect(compactEditor.footerBox.y).toBeGreaterThanOrEqual(compactEditor.box.y)
   expect(compactEditor.footerBox.y + compactEditor.footerBox.height)
@@ -317,6 +523,10 @@ test('节点编辑器在不同画布缩放下完整显示且根容器不产生�
   expect(normalEditor.layout.scrollWidth).toBeLessThanOrEqual(normalEditor.layout.clientWidth + 1)
   expect(normalEditor.layout.overflowX).not.toMatch(/^(auto|scroll)$/)
   expect(normalEditor.layout.overflowY).not.toMatch(/^(auto|scroll)$/)
+  expect(normalEditor.documentLayout.bodyScrollHeight).toBeLessThanOrEqual(normalEditor.documentLayout.bodyClientHeight + 1)
+  expect(normalEditor.documentLayout.bodyScrollWidth).toBeLessThanOrEqual(normalEditor.documentLayout.bodyClientWidth + 1)
+  expect(normalEditor.documentLayout.rootScrollHeight).toBeLessThanOrEqual(normalEditor.documentLayout.rootClientHeight + 1)
+  expect(normalEditor.documentLayout.rootScrollWidth).toBeLessThanOrEqual(normalEditor.documentLayout.rootClientWidth + 1)
 })
 
 test('所有节点类型和节点宽度都使用完整无滚动的编辑框', async ({ page }) => {
@@ -380,17 +590,8 @@ test('视频提示词输入 @ 不会列出未连线的图片节点', async ({ pa
   await expect(page.locator('.vue-flow__edge')).toHaveCount(0)
 })
 
-test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', async ({ page }) => {
-  const connectedState = {
-    ...mentionHomeCanvasState,
-    edges: [{
-      id: 'e2e:image-reference-to-video',
-      source: 'e2e:image-reference',
-      target: 'e2e:video-target',
-      type: 'smoothstep',
-    }],
-  }
-  await loadHomeCanvasState(page, connectedState)
+test('视频节点三张已连接参考图按序显示并插入带序号的 @ 引用', async ({ page }) => {
+  await loadHomeCanvasState(page, numberedMentionHomeCanvasState)
 
   const videoNode = page.locator('.vue-flow__node[data-id="e2e:video-target"]')
   await videoNode.click()
@@ -400,11 +601,15 @@ test('视频节点已连接的图片仍可被 @ 引用且不会重复连线', as
 
   const mentionMenu = page.getByLabel('@选择参考图')
   await expect(mentionMenu).toBeVisible()
-  await expect(mentionMenu.getByRole('button', { name: '女主角定妆照' })).toBeVisible()
-  await mentionMenu.getByRole('button', { name: '女主角定妆照' }).click()
+  const candidates = mentionMenu.getByRole('button')
+  await expect(candidates).toHaveCount(3)
+  await expect(candidates.nth(0)).toHaveAccessibleName('图片1')
+  await expect(candidates.nth(1)).toHaveAccessibleName('图片2')
+  await expect(candidates.nth(2)).toHaveAccessibleName('图片3')
+  await mentionMenu.getByRole('button', { name: '图片3' }).click()
 
-  await expect(promptInput).toHaveValue('沿用参考角色 @女主角定妆照 ')
-  await expect(page.locator('.vue-flow__edge')).toHaveCount(1)
+  await expect(promptInput).toHaveValue('沿用参考角色 @图片3 ')
+  await expect(page.locator('.vue-flow__edge')).toHaveCount(3)
 })
 
 test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览', async ({ page }) => {
@@ -484,7 +689,7 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
   await expect(editor.getByRole('tab', { name: '多图参考' })).toHaveAttribute('aria-selected', 'true')
   await expect(editor.locator('.reference-card figcaption')).toHaveText('图片1')
   await expect(editor.getByRole('tab', { name: '动作模仿' })).toBeDisabled()
-  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeDisabled()
+  await expect(editor.getByRole('tab', { name: '全能参考' })).toBeEnabled()
   await expect(editor.getByRole('tab', { name: '视频编辑' })).toBeDisabled()
 
   const promptInput = editor.getByRole('textbox', { name: '生成提示词' })
@@ -502,6 +707,9 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
 
   await editor.getByRole('tab', { name: '首尾帧' }).click()
   await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
   await expect.poll(async () => page.evaluate((storageKey) => {
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.[0]?.data?.contract?.input || ''
@@ -512,6 +720,73 @@ test('视频节点展示参考模式与图片序列，并将模式切换写回�
     const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
     return state.edges?.[0]?.data?.contract?.input || ''
   }, homeCanvasStorageKey)).toBe('reference-image')
+})
+
+test('视频节点无参考图时保存首尾帧模式，并在新增两张参考图后恢复首尾帧槽位', async ({ page }) => {
+  await loadHomeCanvasState(page, mentionHomeCanvasState)
+
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  let editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await editor.getByRole('tab', { name: '首尾帧' }).click()
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 未设置')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 未设置')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.nodes?.find((node) => node.id === 'e2e:video-target')?.data?.videoReferenceMode || ''
+  }, homeCanvasStorageKey)).toBe('first-last')
+
+  const firstLastState = {
+    ...mentionHomeCanvasState,
+    nodes: [
+      ...mentionHomeCanvasState.nodes.map((node) => (
+        node.id === 'e2e:video-target'
+          ? { ...node, data: { ...node.data, videoReferenceMode: 'first-last' } }
+          : node
+      )),
+      {
+        id: 'e2e:image-reference-last',
+        type: 'homeCanvasNode',
+        position: { x: 360, y: 720 },
+        data: {
+          kind: 'image',
+          title: '尾帧参考图',
+          content: '',
+          url: mentionHomeCanvasState.nodes[0].data.url,
+        },
+      },
+    ],
+    edges: [
+      {
+        id: 'e2e:first-reference-to-video',
+        source: 'e2e:image-reference',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 0, weight: 1 } },
+      },
+      {
+        id: 'e2e:last-reference-to-video',
+        source: 'e2e:image-reference-last',
+        target: 'e2e:video-target',
+        type: 'smoothstep',
+        data: { contract: { input: 'reference-image', enabled: true, order: 1, weight: 1 } },
+      },
+    ],
+  }
+  await loadHomeCanvasState(page, firstLastState)
+  await page.locator('.vue-flow__node[data-id="e2e:video-target"]').click()
+  editor = page.getByRole('region', { name: '视频节点编辑器' })
+  await expect(editor.getByRole('tab', { name: '首尾帧' })).toHaveAttribute('aria-selected', 'true')
+  await expect(editor.locator('.first-last-frame-slot')).toHaveCount(2)
+  await expect(editor.locator('[data-frame-slot="first"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="last"] img')).toHaveCount(1)
+  await expect(editor.locator('[data-frame-slot="first"] figcaption')).toHaveText('首帧 · 图片1')
+  await expect(editor.locator('[data-frame-slot="last"] figcaption')).toHaveText('尾帧 · 图片2')
+  await expect.poll(async () => page.evaluate((storageKey) => {
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    return state.edges?.map((edge) => edge.data?.contract?.input).join(',') || ''
+  }, homeCanvasStorageKey)).toBe('first-frame,last-frame')
 })
 
 test('选中节点后按 Delete 删除，编辑输入时不会误删', async ({ page }) => {

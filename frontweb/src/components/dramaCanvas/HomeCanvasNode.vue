@@ -2,7 +2,7 @@
   <article
     ref="nodeRoot"
     class="home-canvas-node"
-    :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected }]"
+    :class="[`kind-${data.kind}`, `state-${data.status || 'idle'}`, { 'is-selected': isSelected, 'is-video-story': Boolean(data.videoStory) }]"
     :style="data.imageMarkerColor ? { '--image-node-marker': data.imageMarkerColor } : undefined"
   >
     <header class="node-heading">
@@ -39,8 +39,48 @@
     <Handle class="node-handle node-handle-input" type="target" :position="Position.Left" />
     <Handle class="node-handle node-handle-output" type="source" :position="Position.Right" />
     <section v-if="data.kind === 'text'" class="text-preview">
-      <span class="text-preview-icon" aria-hidden="true">☰</span>
-      <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
+      <div v-if="data.videoStory" class="video-story-table-wrap">
+        <p class="video-story-summary">
+          {{ Number(data.videoStory.duration || 0).toFixed(2) }} 秒 ·
+          {{ data.videoStory.width }} × {{ data.videoStory.height }} ·
+          {{ data.videoStory.hasAudio ? '含音频' : '无音频' }}
+        </p>
+        <table class="video-story-table">
+          <thead>
+            <tr><th>镜号</th><th>关键帧</th><th>开始</th><th>结束</th><th>时长</th><th>画面 / 叙事 / 镜头</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="shot in data.videoStory.shots" :key="shot.index">
+              <td>{{ shot.index }}</td>
+              <td><img v-if="shot.keyframeUrl" :src="shot.keyframeUrl" :alt="`镜头 ${shot.index} 关键帧`" /></td>
+              <td>{{ Number(shot.startTime).toFixed(2) }}s</td>
+              <td>{{ Number(shot.endTime).toFixed(2) }}s</td>
+              <td>{{ Number(shot.duration).toFixed(2) }}s</td>
+              <td>{{ shot.visualDescription || shot.narrative || shot.camera || '未接入视觉描述模型' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template v-else>
+        <span class="text-preview-icon" aria-hidden="true">☰</span>
+        <p>{{ draft.content || '点击节点展开文本编辑器' }}</p>
+      </template>
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <section v-else class="media-stage">
@@ -76,12 +116,36 @@
         <button type="button" aria-label="复制结果引用" title="复制结果引用" @click="copyResultReference">⧉</button>
       </div>
       <input ref="fileInput" class="file-input" type="file" :accept="accept" @change="uploadFile" />
+      <div
+        v-if="isGenerationRunning"
+        class="node-generation-state"
+        role="progressbar"
+        aria-label="节点生成进度"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+        :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
+      >
+        <span class="node-generation-spinner" aria-hidden="true" />
+        <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+        <span class="node-generation-progress-track" :class="{ 'is-indeterminate': !hasActualGenerationProgress }">
+          <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+        </span>
+      </div>
     </section>
 
     <ImageNodeToolbar
       v-if="data.kind === 'image' && data.url"
       :node-id="id"
       :data="data"
+      @suspend-editor="closeEditor"
+    />
+
+    <VideoNodeToolbar
+      v-if="data.kind === 'video' && primaryResultUrl && data.savedAssetId && isLocalVideoSource"
+      :node-id="id"
+      :data="data"
+      :source-url="primaryResultUrl"
       @suspend-editor="closeEditor"
     />
 
@@ -129,7 +193,13 @@
               多图参考
             </button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放动作模仿">动作模仿</button>
-            <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放全能参考">全能参考</button>
+            <button
+              type="button"
+              :class="{ active: videoReferenceMode === 'omni' }"
+              role="tab"
+              :aria-selected="videoReferenceMode === 'omni'"
+              @click="setVideoReferenceMode('omni')"
+            >全能参考</button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
           </div>
           <label class="camera-pill">
@@ -146,46 +216,77 @@
           </label>
         </div>
 
-        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" aria-label="自动参考图">
+        <section v-if="['image', 'video'].includes(data.kind)" class="reference-panel" :aria-label="data.kind === 'video' ? '自动参考素材' : '自动参考图'">
           <div class="reference-heading">
-            <strong>参考图 · 连线自动采用</strong>
+            <strong>{{ data.kind === 'video' ? '参考图 / 视频 / 音频 · 连线自动采用' : '参考图 · 连线自动采用' }}</strong>
             <span v-if="inputReferences.length">{{ readyReferenceCount }}/{{ inputReferences.length }} 已就绪</span>
           </div>
           <div class="reference-actions">
-            <button v-if="canUpload" type="button" aria-label="上传参考图" @click="chooseReferenceFile">+ 上传参考图</button>
+            <button v-if="canUploadReference" type="button" :aria-label="data.kind === 'video' ? '上传参考素材' : '上传参考图'" @click="chooseReferenceFile">+ {{ data.kind === 'video' ? '上传参考素材' : '上传参考图' }}</button>
             <input
-              v-if="canUpload"
+              v-if="canUploadReference"
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              accept="image/*"
+              :accept="data.kind === 'video' ? 'image/*,video/*,audio/*' : 'image/*'"
               @change="uploadReferenceFile"
             />
           </div>
-          <div v-if="inputReferences.length" class="reference-list">
+          <div v-if="data.kind === 'video' && videoReferenceMode === 'first-last'" class="first-last-slots" aria-label="首尾帧卡槽">
             <figure
-              v-for="(reference, index) in inputReferences"
-              :key="reference.nodeId"
-              class="reference-card"
-              :data-reference-state="reference.ready ? 'ready' : 'pending'"
-              :title="`右键引用为 @图片${index + 1}`"
+              v-for="frameSlot in firstLastFrameSlots"
+              :key="frameSlot.key"
+              class="reference-card first-last-frame-slot"
+              :data-frame-slot="frameSlot.key"
+              :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
+              :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
+              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="insertReferenceToken(index)"
+              @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
             >
-              <span class="reference-index">{{ index + 1 }}</span>
+              <span class="frame-slot-label">{{ frameSlot.label }}</span>
               <button
+                v-if="frameSlot.reference"
                 class="reference-remove"
                 type="button"
                 aria-label="取消参考图"
                 title="取消参考图"
-                @click.stop="removeReference(reference)"
+                @click.stop="removeReference(frameSlot.reference)"
               >×</button>
-              <img v-if="reference.url" :src="reference.url" :alt="reference.title" />
-              <span v-else class="reference-placeholder">等待图片</span>
-              <figcaption :title="reference.title">图片{{ index + 1 }}</figcaption>
+              <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
+              <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
+              <figcaption :title="frameSlot.reference?.title || frameSlot.label">
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+              </figcaption>
             </figure>
           </div>
-          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片节点连接到视频节点，生成时会自动采用为首帧和参考图。</p>
+          <div v-else-if="inputReferences.length" class="reference-list">
+            <figure
+              v-for="reference in inputReferences"
+              :key="reference.nodeId"
+              class="reference-card"
+              :data-reference-state="reference.ready ? 'ready' : 'pending'"
+              :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
+              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
+              @mousedown.right.prevent
+              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
+            >
+              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
+              <button
+                class="reference-remove"
+                type="button"
+                :aria-label="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
+                :title="reference.kind === 'image' ? '取消参考图' : '取消参考素材'"
+                @click.stop="removeReference(reference)"
+              >×</button>
+              <img v-if="reference.url && reference.kind === 'image'" :src="reference.url" :alt="reference.title" />
+              <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
+              <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
+              <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
+            </figure>
+          </div>
+          <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
           <p v-else class="reference-empty">把图片节点连接到图片节点，生成时会自动采用为参考图。</p>
         </section>
 
@@ -213,14 +314,16 @@
             class="reference-mention-menu"
             aria-label="@选择参考图"
           >
+            <!-- canvas-reference-numbered-mentions-v1 -->
             <button
               v-for="candidate in filteredReferenceCandidates"
               :key="candidate.nodeId"
               type="button"
+              :title="candidate.title"
               @mousedown.prevent="selectReferenceMention(candidate)"
             >
               <img :src="candidate.url" alt="" />
-              <span>{{ candidate.title }}</span>
+              <span>{{ candidate.label }}</span>
             </button>
             <p v-if="!filteredReferenceCandidates.length">没有可引用的图片节点</p>
           </div>
@@ -342,21 +445,33 @@
         </div>
 
         <div
-          v-if="data.status === 'running'"
+          v-if="isGenerationRunning"
           class="generation-progress"
+          :class="{ 'is-indeterminate': !hasActualGenerationProgress }"
           role="progressbar"
           aria-label="生成进度"
           aria-valuemin="0"
           aria-valuemax="100"
-          :aria-valuenow="generationProgress"
+          :aria-valuenow="hasActualGenerationProgress ? generationProgress : undefined"
+          :aria-valuetext="hasActualGenerationProgress ? `${generationProgress}%` : '生成中'"
         >
-          <div><span>生成进度</span><strong>{{ generationProgress }}%</strong></div>
-          <span class="generation-progress-track"><i :style="{ width: `${generationProgress}%` }" /></span>
+          <div>
+            <span>生成进度</span>
+            <strong v-if="hasActualGenerationProgress">{{ generationProgress }}%</strong>
+            <span v-else class="generation-inline-spinner" aria-hidden="true" />
+          </div>
+          <span class="generation-progress-track">
+            <i :style="hasActualGenerationProgress ? { width: `${generationProgress}%` } : undefined" />
+          </span>
         </div>
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <span v-if="canGenerate" class="billing-note">{{ estimatedCredits ? `本次预计扣除 ${estimatedCredits} 积分` : '本次消耗以实际结算为准' }} · {{ draft.quantity || 1 }} 次</span>
+          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
+            <template v-else>积分待管理员配置</template>
+            <small>· {{ draft.quantity || 1 }} 次</small>
+          </span>
           <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
@@ -367,10 +482,11 @@
             type="button"
             class="run-button"
             :disabled="data.status === 'running' || !draft.content.trim()"
-            :aria-label="data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成')"
+            :aria-label="isGenerationRunning ? '节点生成进行中' : (data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成'))"
             @click.stop="runNode"
           >
-            {{ data.status === 'running' ? '生成中…' : '↑' }}
+            <span v-if="isGenerationRunning" class="run-spinner" aria-hidden="true" />
+            <span v-else aria-hidden="true">↑</span>
           </button>
         </div>
       </section>
@@ -408,7 +524,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
+import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
+import {
+  normalizeFreeCanvasVideoReferenceMode,
+  resolveFreeCanvasVideoReferenceInput,
+} from '@/utils/freeCanvasGeneration'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
+import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
 const props = defineProps({
   id: { type: String, default: '' },
@@ -455,6 +577,7 @@ const draft = reactive({
   cameraMovement: '',
   effect: '',
   includeAudio: false,
+  videoReferenceMode: '',
 })
 const kindIcon = computed(() => ({ text: 'T', image: '▧', video: '▣', audio: '♫' }[props.data.kind] || '◈'))
 const mediaEmptyLabel = computed(() => {
@@ -476,6 +599,7 @@ const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入�
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
+const canUploadReference = computed(() => typeof ctx?.uploadFreeCanvasReferenceMedia === 'function')
 const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
 const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
 const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
@@ -484,18 +608,33 @@ const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   draft.model,
   draft.quantity,
   draft.duration,
+  draft.resolution,
 ) || null)
-const generationProgress = computed(() => Math.min(100, Math.max(0, Math.round(Number(props.data.progress) || 0))))
+const actualGenerationProgress = computed(() => (
+  props.data.progressKnown === true ? normalizeGenerationProgress(props.data.progress) : null
+))
+const isGenerationRunning = computed(() => (
+  props.data.status === 'running'
+  && props.data.generationActive === true
+))
+const hasActualGenerationProgress = computed(() => actualGenerationProgress.value !== null)
+const generationProgress = computed(() => actualGenerationProgress.value ?? 0)
 const voiceOptions = computed(() => ctx?.getFreeNodeVoiceOptions?.() || [])
 const inputReferences = computed(() => (
   ['image', 'video'].includes(props.data.kind)
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
-const videoReferenceMode = computed(() => (
-  inputReferences.value.some((reference) => ['first-frame', 'last-frame'].includes(reference.slot))
-    ? 'first-last'
-    : 'multi'
+const firstLastFrameSlots = computed(() => {
+  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  return [
+    { key: 'first', label: '首帧', reference: imageReferences[0] || null },
+    { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
+  ]
+})
+const videoReferenceMode = computed(() => normalizeFreeCanvasVideoReferenceMode(
+  draft.videoReferenceMode,
+  inputReferences.value,
 ))
 const referenceCandidates = computed(() => (
   props.data.kind === 'video'
@@ -505,7 +644,10 @@ const referenceCandidates = computed(() => (
 const filteredReferenceCandidates = computed(() => {
   const query = mentionQuery.value.trim().toLowerCase()
   if (!query) return referenceCandidates.value
-  return referenceCandidates.value.filter((candidate) => String(candidate.title || '').toLowerCase().includes(query))
+  return referenceCandidates.value.filter((candidate) => (
+    String(candidate.label || '').toLowerCase().includes(query)
+    || String(candidate.title || '').toLowerCase().includes(query)
+  ))
 })
 const showReferenceMention = computed(() => props.data.kind === 'video' && mentionStart.value >= 0)
 const readyReferenceCount = computed(() => inputReferences.value.filter((reference) => reference.ready).length)
@@ -516,6 +658,10 @@ const resultUrls = computed(() => [...new Set([
   props.data.url,
 ].filter(Boolean))])
 const primaryResultUrl = computed(() => String(props.data.url || resultUrls.value[0] || ''))
+const isLocalVideoSource = computed(() => Boolean(
+  props.data.savedAssetLocalPath
+  || primaryResultUrl.value.startsWith('/static/'),
+))
 const extractingLastFrame = ref(false)
 const canExtractLastFrame = computed(() => (
   props.data.kind === 'video'
@@ -552,6 +698,7 @@ function syncDraft() {
   draft.cameraMovement = props.data.cameraMovement || ''
   draft.effect = props.data.effect || ''
   draft.includeAudio = props.data.includeAudio === true
+  draft.videoReferenceMode = props.data.videoReferenceMode || ''
 }
 
 async function saveDraft() {
@@ -581,6 +728,7 @@ async function saveDraft() {
     cameraMovement: draft.cameraMovement,
     effect: draft.effect,
     includeAudio: draft.includeAudio === true,
+    ...(props.data.kind === 'video' ? { videoReferenceMode: videoReferenceMode.value } : {}),
   })
   draftDirty = false
 }
@@ -669,9 +817,10 @@ function handleContentBlur(event) {
 
 async function selectReferenceMention(candidate) {
   const sourceNodeId = String(candidate?.nodeId || '')
-  if (!sourceNodeId || mentionStart.value < 0) return
-  const cursor = mentionStart.value + String(candidate.title || '').length + 2
-  draft.content = `${draft.content.slice(0, mentionStart.value)}@${candidate.title} ${draft.content.slice(mentionEnd.value)}`
+  const mentionToken = String(candidate?.mentionToken || '')
+  if (!sourceNodeId || !mentionToken || mentionStart.value < 0) return
+  const cursor = mentionStart.value + mentionToken.length + 1
+  draft.content = `${draft.content.slice(0, mentionStart.value)}${mentionToken} ${draft.content.slice(mentionEnd.value)}`
   mentionStart.value = -1
   mentionEnd.value = -1
   mentionQuery.value = ''
@@ -682,7 +831,12 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-async function insertReferenceToken(index) {
+function referenceOrdinal(reference) {
+  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
+  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+}
+
+async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
   const input = contentInput.value
   const value = String(draft.content || '')
@@ -696,7 +850,7 @@ async function insertReferenceToken(index) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${index + 1}`
+  const token = `@图片${referenceOrdinal(reference)}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -737,13 +891,21 @@ function closeEditor() {
 function updateEditorPosition() {
   if (!isSelected.value || editorHidden.value || editorFullscreen.value || !nodeRoot.value || !editorPanel.value) return
   const nodeBounds = nodeRoot.value.getBoundingClientRect()
-  let anchorBottom = nodeBounds.bottom
+  const anchorBounds = {
+    left: nodeBounds.left,
+    right: nodeBounds.right,
+    top: nodeBounds.top,
+    bottom: nodeBounds.bottom,
+  }
   nodeRoot.value
     .querySelectorAll('.image-node-toolbar, .toolbar-menu, .toolbar-history')
     .forEach((element) => {
       const bounds = element.getBoundingClientRect()
       if (!bounds.width || !bounds.height) return
-      anchorBottom = Math.max(anchorBottom, bounds.bottom)
+      anchorBounds.left = Math.min(anchorBounds.left, bounds.left)
+      anchorBounds.right = Math.max(anchorBounds.right, bounds.right)
+      anchorBounds.top = Math.min(anchorBounds.top, bounds.top)
+      anchorBounds.bottom = Math.max(anchorBounds.bottom, bounds.bottom)
     })
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
@@ -759,24 +921,71 @@ function updateEditorPosition() {
     ? nodeBounds.width / nodeRoot.value.offsetWidth
     : 1
   const desiredScale = Math.min(1, Math.max(0.6, canvasScale))
-  const editorScale = Math.max(0.01, Math.min(
+  const desiredTop = anchorBounds.bottom + nodeGap
+  const maximumViewportScale = Math.max(0.01, Math.min(
     desiredScale,
-    (viewportWidth - viewportPadding * 2) / panelWidth,
-    (viewportHeight - viewportPadding * 2) / panelHeight,
+    Math.max(1, viewportWidth - viewportPadding * 2) / panelWidth,
+    Math.max(1, viewportHeight - viewportPadding * 2) / panelHeight,
   ))
+  const anchorIntersectsViewport = anchorBounds.right > viewportPadding
+    && anchorBounds.left < viewportWidth - viewportPadding
+    && anchorBounds.bottom > viewportPadding
+    && anchorBounds.top < viewportHeight - viewportPadding
+  const availableBelowHeight = Math.max(0, viewportHeight - viewportPadding - desiredTop)
+  const fitBelowScale = Math.min(maximumViewportScale, availableBelowHeight / panelHeight)
+  const minimumUsableScale = 0.3
+  const canDockBelow = anchorIntersectsViewport
+    && desiredTop >= viewportPadding
+    && fitBelowScale >= minimumUsableScale
+  const availableLeftWidth = Math.max(
+    0,
+    Math.min(anchorBounds.left, viewportWidth - viewportPadding) - nodeGap - viewportPadding,
+  )
+  const availableRightWidth = Math.max(
+    0,
+    viewportWidth - viewportPadding - nodeGap - Math.max(anchorBounds.right, viewportPadding),
+  )
+  const preferredSide = availableRightWidth >= availableLeftWidth ? 'right' : 'left'
+  const availableSideWidth = Math.max(availableLeftWidth, availableRightWidth)
+  const sideScale = Math.min(maximumViewportScale, availableSideWidth / panelWidth)
+  const canDockBeside = anchorIntersectsViewport
+    && !canDockBelow
+    && sideScale >= minimumUsableScale
+  const availableAboveHeight = Math.max(
+    0,
+    Math.min(anchorBounds.top, viewportHeight - viewportPadding) - nodeGap - viewportPadding,
+  )
+  const fitAboveScale = Math.min(maximumViewportScale, availableAboveHeight / panelHeight)
+  const canDockAbove = anchorIntersectsViewport
+    && !canDockBelow
+    && !canDockBeside
+    && fitAboveScale >= minimumUsableScale
+  const hasUsableDock = canDockBelow || canDockBeside || canDockAbove
+  const editorScale = canDockBelow
+    ? fitBelowScale
+    : (canDockBeside ? sideScale : (canDockAbove ? fitAboveScale : maximumViewportScale))
   const scaledWidth = panelWidth * editorScale
   const scaledHeight = panelHeight * editorScale
-  const desiredLeft = nodeBounds.left + nodeBounds.width / 2 - scaledWidth / 2
-  const panelLeft = Math.min(
+  const desiredLeft = (anchorBounds.left + anchorBounds.right) / 2 - scaledWidth / 2
+  const maximumTop = Math.max(viewportPadding, viewportHeight - scaledHeight - viewportPadding)
+  let panelLeft = Math.min(
     Math.max(viewportPadding, desiredLeft),
     Math.max(viewportPadding, viewportWidth - scaledWidth - viewportPadding),
   )
-  const desiredTop = anchorBottom + nodeGap
-  const overflowY = desiredTop + scaledHeight + viewportPadding - viewportHeight
-  if (overflowY > 1 && ctx?.panCanvasForNodeEditor?.(Math.ceil(overflowY))) return
-  const panelTop = Math.max(viewportPadding, desiredTop)
+  let panelTop = desiredTop
+  if (canDockBeside) {
+    panelLeft = preferredSide === 'right'
+      ? anchorBounds.right + nodeGap
+      : anchorBounds.left - nodeGap - scaledWidth
+    const desiredSideTop = (anchorBounds.top + anchorBounds.bottom) / 2 - scaledHeight / 2
+    panelTop = Math.min(Math.max(viewportPadding, desiredSideTop), maximumTop)
+  } else if (canDockAbove) {
+    panelTop = anchorBounds.top - nodeGap - scaledHeight
+  } else if (!canDockBelow) {
+    panelTop = anchorBounds.top > viewportHeight / 2 ? viewportPadding : maximumTop
+  }
 
-  editorDock.value = 'bottom'
+  editorDock.value = canDockBelow ? 'bottom' : (hasUsableDock ? 'viewport' : 'hidden')
   const nextStyle = {
     top: `${Math.round(panelTop)}px`,
     right: 'auto',
@@ -786,6 +995,8 @@ function updateEditorPosition() {
     maxHeight: 'none',
     transform: `scale(${editorScale})`,
     transformOrigin: 'top left',
+    visibility: hasUsableDock ? 'visible' : 'hidden',
+    pointerEvents: hasUsableDock ? 'auto' : 'none',
   }
   if (Object.entries(nextStyle).some(([key, value]) => editorPanelStyle.value[key] !== value)) {
     editorPanelStyle.value = nextStyle
@@ -846,7 +1057,7 @@ async function uploadFile(event) {
 async function uploadReferenceFile(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
-  if (file) await ctx?.uploadFreeCanvasReferenceImage?.(props.id, file)
+  if (file) await ctx?.uploadFreeCanvasReferenceMedia?.(props.id, file)
 }
 
 async function deleteNode() {
@@ -871,13 +1082,22 @@ function updateReference(reference, patch) {
   ctx?.updateFreeCanvasReference?.(reference.edgeId, patch)
 }
 
-function setVideoReferenceMode(mode) {
+async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
-  inputReferences.value.forEach((reference, index) => {
-    const input = mode === 'first-last'
-      ? (index === 0 ? 'first-frame' : index === 1 ? 'last-frame' : 'reference-image')
-      : 'reference-image'
-    updateReference(reference, { input })
+  draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
+  await saveDraft()
+  let imageIndex = 0
+  inputReferences.value.forEach((reference) => {
+    if (reference.kind === 'image') {
+      const index = imageIndex++
+      const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
+      const enabled = draft.videoReferenceMode === 'multi'
+        || index === 0
+        || (draft.videoReferenceMode === 'first-last' && index === 1)
+      updateReference(reference, { input, enabled })
+      return
+    }
+    updateReference(reference, { enabled: draft.videoReferenceMode === 'omni' })
   })
 }
 
@@ -955,6 +1175,30 @@ onBeforeUnmount(() => {
 watch(() => props.data, () => {
   if (!draftDirty) syncDraft()
 }, { deep: true, immediate: true })
+watch(
+  () => `${videoReferenceMode.value}|${inputReferences.value.map((reference) => `${reference.edgeId}:${reference.kind}:${reference.slot}:${reference.enabled !== false}`).join('|')}`,
+  () => {
+    if (props.data.kind !== 'video') return
+    let imageIndex = 0
+    inputReferences.value.forEach((reference) => {
+      const isImage = reference.kind === 'image'
+      const index = isImage ? imageIndex++ : -1
+      const input = isImage
+        ? resolveFreeCanvasVideoReferenceInput(videoReferenceMode.value, index)
+        : reference.slot
+      const enabled = isImage
+        ? videoReferenceMode.value === 'multi'
+          || index === 0
+          || (videoReferenceMode.value === 'first-last' && index === 1)
+        : videoReferenceMode.value === 'omni'
+      const patch = {}
+      if (reference.slot !== input) patch.input = input
+      if (reference.enabled !== enabled) patch.enabled = enabled
+      if (Object.keys(patch).length) updateReference(reference, patch)
+    })
+  },
+  { flush: 'post', immediate: true },
+)
 watch(isSelected, (selected) => {
   if (selected) {
     editorHidden.value = false
@@ -980,6 +1224,7 @@ watch(isSelected, (selected) => {
 .home-canvas-node.kind-video {
   width: 640px;
 }
+.home-canvas-node.is-video-story { width: 720px; }
 .home-canvas-node::before {
   content: '';
   position: absolute;
@@ -1053,11 +1298,56 @@ watch(isSelected, (selected) => {
 .node-handle-input { left: -15px; }
 .node-handle-output { right: -15px; }
 .text-preview, .media-stage { margin: 10px; border: 1px solid #35353a; border-radius: 16px; background: #18181b; }
+.node-generation-state {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  padding: 26px;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  border-radius: inherit;
+  background: rgba(24, 24, 27, 0.88);
+  box-sizing: border-box;
+}
+.node-generation-spinner,
+.run-spinner,
+.generation-inline-spinner {
+  display: inline-block;
+  border: 2px solid rgba(251, 123, 59, 0.22);
+  border-top-color: #fb7b3b;
+  border-radius: 50%;
+  animation: generation-spin 0.75s linear infinite;
+  box-sizing: border-box;
+}
+.node-generation-spinner { width: 34px; height: 34px; }
+.node-generation-state strong { color: #e4e4e7; font-size: 16px; font-weight: 600; }
+.node-generation-progress-track {
+  width: min(220px, 72%);
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #303036;
+}
+.node-generation-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #fb7b3b;
+  transition: width 180ms ease;
+}
+.node-generation-progress-track.is-indeterminate i,
+.generation-progress.is-indeterminate .generation-progress-track i {
+  width: 34%;
+  animation: generation-progress-slide 1.15s ease-in-out infinite;
+}
 .home-canvas-node.is-selected .text-preview,
 .home-canvas-node.is-selected .media-stage { cursor: grab; }
 .home-canvas-node.is-selected .text-preview:active,
 .home-canvas-node.is-selected .media-stage:active { cursor: grabbing; }
 .text-preview {
+  position: relative;
   display: grid;
   min-height: 220px;
   padding: 26px;
@@ -1079,6 +1369,19 @@ watch(isSelected, (selected) => {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
 }
+.is-video-story .text-preview {
+  display: block;
+  min-height: 0;
+  padding: 14px;
+  text-align: left;
+}
+.video-story-table-wrap { overflow-x: auto; }
+.video-story-summary { max-width: none !important; margin: 0 0 10px !important; color: #d4d4d8 !important; }
+.video-story-table { width: 100%; border-collapse: collapse; color: #d4d4d8; font-size: 11px; }
+.video-story-table th,
+.video-story-table td { padding: 7px; border: 1px solid #3f3f46; vertical-align: middle; }
+.video-story-table th { background: #27272a; color: #fafafa; white-space: nowrap; }
+.video-story-table img { display: block; width: 88px; height: 50px; border-radius: 5px; object-fit: cover; }
 .node-expanded-editor {
   position: fixed;
   top: 16px;
@@ -1204,6 +1507,12 @@ watch(isSelected, (selected) => {
   color: #d4d4d8;
 }
 .reference-actions select { min-width: 190px; }
+.first-last-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 94px));
+  gap: 10px;
+  margin-top: 12px;
+}
 .reference-list { display: flex; gap: 10px; margin-top: 12px; overflow-x: auto; }
 .reference-card {
   position: relative;
@@ -1211,7 +1520,7 @@ watch(isSelected, (selected) => {
   flex: 0 0 94px;
   margin: 0;
 }
-.reference-card img, .reference-placeholder {
+.reference-card img, .reference-card video, .reference-card audio, .reference-placeholder {
   display: grid;
   width: 94px;
   height: 72px;
@@ -1223,6 +1532,22 @@ watch(isSelected, (selected) => {
   object-fit: cover;
   font-size: 11px;
 }
+.first-last-frame-slot[data-reference-state='empty'] .reference-placeholder {
+  border-style: dashed;
+}
+.frame-slot-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(9, 9, 11, 0.84);
+  color: #f4f4f5;
+  font-size: 10px;
+}
+.reference-card audio { padding: 6px; }
+.reference-card[data-reference-enabled='false'] { opacity: 0.45; }
 .reference-card[data-reference-state='ready'] img { border-color: #60a5fa; }
 .reference-index {
   position: absolute;
@@ -1421,10 +1746,27 @@ watch(isSelected, (selected) => {
   gap: 10px;
   margin-top: 18px;
 }
-.billing-note, .editor-footer .local-draft-note { margin-right: auto; color: #71717a; font-size: 11px; }
+.billing-cost {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-right: auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 177, 92, 0.65);
+  border-radius: 10px;
+  background: rgba(124, 64, 20, 0.42);
+  color: #ffd09a;
+  font-size: 13px;
+  font-weight: 800;
+}
+.billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
+.billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
+.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
-.generation-progress > div { display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
+.generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }
 .generation-progress strong { color: #d4d4d8; font-weight: 600; }
+.generation-inline-spinner { width: 14px; height: 14px; }
 .generation-progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: #303036; }
 .generation-progress-track i { display: block; height: 100%; border-radius: inherit; background: #fb7b3b; transition: width 180ms ease; }
 .editor-error { margin: 14px 0 0; padding: 10px 12px; border: 1px solid rgba(248, 113, 113, 0.32); border-radius: 10px; background: rgba(127, 29, 29, 0.22); color: #fca5a5; font-size: 12px; line-height: 1.5; }
@@ -1457,6 +1799,7 @@ watch(isSelected, (selected) => {
 .image-lightbox > img,
 .image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .run-button {
+  display: grid;
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
@@ -1465,8 +1808,10 @@ watch(isSelected, (selected) => {
   background: #7c3f26;
   color: #fff;
   font-size: 22px;
+  place-items: center;
   cursor: pointer;
 }
+.run-spinner { width: 19px; height: 19px; border-color: rgba(255, 255, 255, 0.24); border-top-color: #fff; }
 .advanced-button {
   min-width: 54px;
   height: 34px;
@@ -1486,6 +1831,13 @@ watch(isSelected, (selected) => {
 .state-running::before { border-color: #60a5fa; }
 .state-success::before { border-color: #34d399; }
 .state-failed::before { border-color: #f87171; }
+@keyframes generation-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes generation-progress-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(300%); }
+}
 @media (max-width: 760px) {
   .node-expanded-editor { right: 12px; bottom: 12px; left: 12px; width: auto; padding: 16px; }
   .editor-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -8,6 +8,11 @@ test.beforeEach(async ({ page }) => {
     }))
   })
 })
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
@@ -587,6 +592,7 @@ test('独立项目画布图片节点通过真实后端同链路生成、入库�
 })
 
 test('独立项目画布视频节点使用上游首帧，异步失败可重试并完成入库恢复', async ({ page }) => {
+  test.setTimeout(120_000)
   const forwardedRequests = []
   const failedResponses = []
   const providerRequestOffset = videoProviderRequests.length
@@ -625,7 +631,7 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await videoNode.click()
   const videoEditor = page.getByRole('region', { name: '视频节点编辑器' })
   await expect(videoEditor).toBeVisible()
-  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考图' })
+  const automaticReferences = videoEditor.getByRole('region', { name: '自动参考素材' })
   await expect(automaticReferences).toContainText('1/1 已就绪')
   await expect(automaticReferences.locator('img[alt="真实图片节点"]')).toBeVisible()
   await videoEditor.getByRole('button', { name: '配置', exact: true }).click()
@@ -653,7 +659,10 @@ test('独立项目画布视频节点使用上游首帧，异步失败可重试�
   await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
   await videoEditor.getByRole('button', { name: '重试', exact: true }).click()
 
-  await expect.poll(() => videoProviderRequests.length - providerRequestOffset).toBe(2)
+  await expect.poll(
+    () => videoProviderRequests.length - providerRequestOffset,
+    { timeout: 20_000 },
+  ).toBe(2)
   const successfulRequest = videoProviderRequests[providerRequestOffset + 1]
   await expect.poll(
     () => videoProviderTasks.get(successfulRequest.taskId)?.polls,

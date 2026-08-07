@@ -17,9 +17,9 @@ const canvasSource = readFileSync(
   'utf8',
 )
 
-test('项目素材以正式节点进入两类画布且只为图片暴露参考输出端口', () => {
+test('项目素材以正式节点进入两类画布且图片、视频、音频均暴露参考输出端口', () => {
   assert.match(nodeSource, /import \{ Handle, Position \} from '@vue-flow\/core'/)
-  assert.match(nodeSource, /<Handle[\s\S]{0,180}?v-if="assetType === 'image'"[\s\S]{0,180}?type="source"[\s\S]{0,180}?:position="Position\.Right"/)
+  assert.match(nodeSource, /<Handle[\s\S]{0,220}?\['image', 'video', 'audio'\]\.includes\(assetType\)[\s\S]{0,180}?type="source"[\s\S]{0,180}?:position="Position\.Right"/)
   assert.doesNotMatch(nodeSource, /<Handle[^>]*type="target"/)
 
   const projectAssetDefinitions = adapterSource.match(/type: 'canvasProjectAsset',[\s\S]{0,220}?data: \{ asset \},/g) || []
@@ -37,6 +37,17 @@ test('素材预览不劫持节点拖动且连线素材会进入下游生成参�
   assert.match(nodeSource, /class="asset-actions" @pointerdown\.stop @mousedown\.stop/)
   assert.match(canvasSource, /function nodeInputReferenceUrls\(node\)[\s\S]*nodeResultUrl\(sourceNode\)/)
   assert.match(canvasSource, /upstreamReferenceUrls: upstreamReferenceUrlsForNode/)
+})
+
+test('项目素材预览在站内产生可见且可关闭的图片视频音频结果', () => {
+  assert.match(nodeSource, /<Teleport to="body">/)
+  assert.match(nodeSource, /v-if="previewVisible"[\s\S]*role="dialog"[\s\S]*aria-label="素材预览"/)
+  assert.match(nodeSource, /<img[\s\S]*v-if="assetType === 'image'"/)
+  assert.match(nodeSource, /<video v-else-if="assetType === 'video'"[^>]*controls/)
+  assert.match(nodeSource, /<audio v-else[^>]*controls/)
+  assert.match(nodeSource, /function openAsset\(\) \{[\s\S]*previewVisible\.value = true/)
+  assert.match(nodeSource, /function closeAssetPreview\(\) \{[\s\S]*previewVisible\.value = false/)
+  assert.doesNotMatch(nodeSource, /window\.open\(url\.value/)
 })
 
 test('项目图片素材连线后会成为可用的下游参考图', () => {

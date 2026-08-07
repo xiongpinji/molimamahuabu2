@@ -5,6 +5,21 @@
     <span v-else class="spinner" />
     <span class="step-label">{{ stepLabel }}</span>
     <span class="msg">{{ status.message }}</span>
+    <div
+      v-if="isGenerating"
+      class="status-progress"
+      role="progressbar"
+      aria-label="节点生成进度"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="actualProgress === null ? undefined : actualProgress"
+      :aria-valuetext="actualProgress === null ? '生成中' : `${actualProgress}%`"
+    >
+      <strong v-if="actualProgress !== null">{{ actualProgress }}%</strong>
+      <span class="status-progress-track" :class="{ 'is-indeterminate': actualProgress === null }">
+        <i :style="actualProgress === null ? undefined : { width: `${actualProgress}%` }" />
+      </span>
+    </div>
     <span v-if="metaText" class="meta">{{ metaText }}</span>
     <span v-if="failedHint" class="failed-hint">{{ failedHint }}</span>
     <span v-if="resultText" class="result-text">{{ resultText }}</span>
@@ -91,6 +106,7 @@ import { imagesAPI } from '@/api/images'
 import { storyboardsAPI } from '@/api/storyboards'
 import { videosAPI } from '@/api/videos'
 import { storyboardIdFromNodeId } from '@/utils/canvasWorkflow'
+import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import { assetMediaUrl } from '@/utils/mediaUrl'
 
 const props = defineProps({
@@ -113,6 +129,12 @@ const status = computed(() => {
 
 const isFailed = computed(() => status.value?.step === 'failed')
 const isSuccess = computed(() => status.value?.step === 'success')
+const generationSteps = new Set([
+  'image', 'video', 'audio', 'prompt', 'polish', 'ref_image', 'panorama', 'multi_view',
+  'generate_sb', 'extract_chars', 'extract_scenes', 'extract_props', 'extract_all',
+])
+const isGenerating = computed(() => generationSteps.has(status.value?.step))
+const actualProgress = computed(() => normalizeGenerationProgress(status.value?.progress))
 
 const stepLabel = computed(() => {
   const map = {
@@ -152,7 +174,6 @@ const metaText = computed(() => {
   if (status.value?.stepIndex && status.value?.stepTotal) parts.push(`步骤 ${status.value.stepIndex}/${status.value.stepTotal}`)
   if (status.value?.restored) parts.push(status.value?.stale ? '已恢复中断状态' : '已恢复运行状态')
   if (elapsedText.value) parts.push(`耗时 ${elapsedText.value}`)
-  if (Number.isFinite(Number(status.value?.progress))) parts.push(`${Number(status.value.progress)}%`)
   if (status.value?.taskId) parts.push(`任务 ${status.value.taskId}`)
   if (status.value?.videoGenerationId) parts.push(`记录 ${status.value.videoGenerationId}`)
   if (status.value?.model) parts.push(`模型 ${status.value.model}`)
@@ -737,6 +758,35 @@ onBeforeUnmount(() => {
   padding: 0 8px;
   line-height: 1.3;
 }
+.status-progress {
+  display: grid;
+  width: min(78%, 220px);
+  justify-items: end;
+  gap: 4px;
+}
+.status-progress strong {
+  color: #e4e4e7;
+  font-size: 9px;
+  font-weight: 600;
+}
+.status-progress-track {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.status-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #818cf8;
+  transition: width 180ms ease;
+}
+.status-progress-track.is-indeterminate i {
+  width: 34%;
+  animation: status-progress-slide 1.15s ease-in-out infinite;
+}
 .meta,
 .result-text,
 .failed-result-text,
@@ -877,5 +927,9 @@ onBeforeUnmount(() => {
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+@keyframes status-progress-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(300%); }
 }
 </style>

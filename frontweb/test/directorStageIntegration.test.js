@@ -6,13 +6,15 @@ import { fileURLToPath } from 'node:url'
 const stageSource = readFileSync(fileURLToPath(new URL('../src/components/dramaCanvas/CanvasDirectorStage.vue', import.meta.url)), 'utf8')
 const canvasSource = readFileSync(fileURLToPath(new URL('../src/views/DramaCanvas.vue', import.meta.url)), 'utf8')
 const adapterSource = readFileSync(fileURLToPath(new URL('../src/utils/dramaCanvasAdapter.js', import.meta.url)), 'utf8')
+const timelineSource = readFileSync(fileURLToPath(new URL('../src/utils/directorTimeline.js', import.meta.url)), 'utf8')
 
 test('DR-005 镜头可绑定持久化相机并驱动主相机', () => {
   assert.match(stageSource, /selectedShot\.cameraId/)
   assert.match(stageSource, /timeline\.value\.cameras\.find\(\(camera\) => camera\.id === shot\.cameraId\)/)
   assert.match(stageSource, /camera\.fov = Number\(boundCamera\.fov\)/)
-  assert.match(stageSource, /const position = cameraObject\.transform\.position/)
-  assert.match(stageSource, /setCamera\(position, target, lookAtObject \? null : boundCamera\.quaternion\)/)
+  assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, boundCamera\)/)
+  assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
+  assert.match(timelineSource, /const keepsTargetLocked = Boolean\(lookAtObject\) \|\| boundCamera\.lookAtMode === 'manual'/)
   assert.match(stageSource, /camera\.quaternion\.set\(\.\.\.quaternion\)/)
 })
 
@@ -119,7 +121,9 @@ test('G005 自动关键帧驱动对象与绑定相机的插值运动', () => {
   assert.match(stageSource, /upsertMotionKeyframe/)
   assert.match(stageSource, /interpolateMotionTransform/)
   assert.match(stageSource, /object\.position\.set\(\.\.\.transform\.position\)/)
-  assert.match(stageSource, /activeCamera.*setCamera\(transform\.position/)
+  assert.match(stageSource, /resolveDirectorCameraFrame\(timeline\.value, activeCamera, transform\.position\)/)
+  assert.match(stageSource, /setCamera\(frame\.position, frame\.target, frame\.quaternion\)/)
+  assert.doesNotMatch(stageSource, /if \(activeCamera\) setCamera\(transform\.position, \[0, 0\.8, 0\]\)/)
   assert.match(stageSource, /class="motion-keyframe"/)
 })
 
@@ -170,11 +174,13 @@ test('G005 场景树支持搜索、显隐和持久化锁定', () => {
 })
 
 test('G005 相机支持跟随、注视目标、构图线和机位截图', () => {
-  for (const label of ['相机跟随目标', '相机注视模式', '相机注视目标', '构图辅助线', '机位截图回写画布']) {
+  for (const label of ['相机跟随目标', '相机注视模式', '相机注视目标', '不锁定', '手动坐标', '构图辅助线', '机位截图回写画布']) {
     assert.ok(stageSource.includes(label), `缺少相机交互：${label}`)
   }
-  assert.match(stageSource, /boundCamera\.followTargetId/)
-  assert.match(stageSource, /boundCamera\.lookAtTargetId/)
+  assert.match(timelineSource, /boundCamera\.followTargetId/)
+  assert.match(timelineSource, /boundCamera\.lookAtTargetId/)
+  assert.match(stageSource, /function updateCameraLookAtSelection\(value\)/)
+  assert.match(stageSource, /function updateCameraTarget\(index, value\)/)
   assert.match(stageSource, /class="composition-guides"/)
   assert.match(stageSource, /@click="captureToCanvasAsset"/)
 })

@@ -29,6 +29,11 @@ jobs:
           cache: npm
           cache-dependency-path: backend-node/package-lock.json
 
+      - name: Install ffmpeg test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Install backend dependencies
         working-directory: backend-node
         run: npm ci

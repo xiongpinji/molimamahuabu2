@@ -19,12 +19,14 @@ const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
 const imageToolRoutes = require('./imageTools');
+const videoToolRoutes = require('./videoTools');
 const audioRoutes = require('./audio');
 const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const scriptAnalysisRoutes = require('./scriptAnalysis');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
+const directorReferenceRoutes = require('./directorReference');
 const sceneModelMapRoutes = require('./sceneModelMap');
 const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
@@ -205,10 +207,16 @@ function setupRouter(cfg, db, log) {
     cfg,
     backgroundOperations: true,
   });
+  const videoTools = videoToolRoutes(db, log, {
+    publicPlatformEnabled,
+    cfg,
+    backgroundOperations: true,
+  });
   const audio = audioRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const canvasText = canvasTextRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const promptOverrides = promptOverridesRoutes.routes(db, log);
   const directorExport = directorExportRoutes(db, cfg, log);
+  const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
   r.get('/voice-catalog', voiceCatalog.list);
 
@@ -269,6 +277,7 @@ function setupRouter(cfg, db, log) {
     }
   });
   r.post('/dramas/:id/director/export', directorExport.upload, directorExport.create);
+  r.post('/dramas/:id/director/reference-analysis', directorReference.analyze);
   r.get('/dramas/examples', drama.listExamples);
   r.post('/dramas/import-example', drama.importExample);
   r.put('/dramas/:id/outline', drama.saveOutline);
@@ -506,6 +515,9 @@ function setupRouter(cfg, db, log) {
   r.get('/image-tools/capabilities', imageTools.capabilities);
   r.post('/image-tools/operations', imageTools.createOperation);
   r.get('/image-tools/operations/:taskId', imageTools.getOperation);
+  r.get('/video-tools/capabilities', videoTools.capabilities);
+  r.post('/video-tools/operations', videoTools.createOperation);
+  r.get('/video-tools/operations/:taskId', videoTools.getOperation);
 
   // ---------- storyboards ----------
   r.get('/storyboards/episode/:episode_id/generate', storyboards.episodeStoryboardsGenerate);

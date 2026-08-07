@@ -12,6 +12,7 @@ export function normalizeCanvasModelCatalog(items = []) {
     kind: String(item.kind),
     credits: Number.isFinite(Number(item.credits)) && Number(item.credits) > 0 ? Number(item.credits) : null,
     billingUnit: String(item.billing_unit || item.billingUnit || '').trim(),
+    resolutionPrices: item.resolution_prices || item.resolutionPrices || {},
     capabilities: {
       ...(DEFAULTS[item.kind] || {}),
       ...(item.capabilities || {}),
@@ -25,11 +26,15 @@ export function canvasModelCapability(catalog, kind, model) {
     || { ...(DEFAULTS[kind] || {}) }
 }
 
-export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {
+export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
   const entry = normalizeCanvasModelCatalog(catalog).find((item) => item.kind === kind && item.model === model)
-  if (!entry?.credits) return null
+  const tierCredits = kind === 'video'
+    ? Number(entry?.resolutionPrices?.[String(resolution).trim().toLowerCase()]?.credits)
+    : NaN
+  const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0 ? tierCredits : entry?.credits
+  if (!credits) return null
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)
     : 1
-  return entry.credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
+  return credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
 }

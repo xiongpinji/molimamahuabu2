@@ -12,6 +12,7 @@ function ensureSchema(db) {
     CREATE TABLE IF NOT EXISTS generation_cost_records (
       reservation_id TEXT PRIMARY KEY,
       model TEXT NOT NULL,
+      resolution TEXT,
       cost_unit TEXT NOT NULL,
       quantity REAL NOT NULL DEFAULT 1,
       cost_micros INTEGER NOT NULL DEFAULT 0,
@@ -30,6 +31,10 @@ function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_generation_cost_model_created
       ON generation_cost_records(model, created_at DESC);
   `);
+  const columns = db.prepare('PRAGMA table_info(generation_cost_records)').all();
+  if (!columns.some((column) => column.name === 'resolution')) {
+    db.exec('ALTER TABLE generation_cost_records ADD COLUMN resolution TEXT');
+  }
 }
 
 function record(db, input) {
@@ -39,14 +44,16 @@ function record(db, input) {
     inputTokens: input.inputTokens,
     outputTokens: input.outputTokens,
     reasoningTokens: input.reasoningTokens,
+    resolution: input.resolution,
   });
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO generation_cost_records
-      (reservation_id, model, cost_unit, quantity, cost_micros, input_tokens,
+      (reservation_id, model, resolution, cost_unit, quantity, cost_micros, input_tokens,
        output_tokens, reasoning_tokens, usage_source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(reservation_id) DO UPDATE SET
       model = excluded.model,
+      resolution = excluded.resolution,
       cost_unit = excluded.cost_unit,
       quantity = excluded.quantity,
       cost_micros = excluded.cost_micros,
@@ -58,6 +65,7 @@ function record(db, input) {
     .run(
       String(input.reservationId),
       quote.model,
+      quote.resolution || null,
       quote.cost_unit,
       quote.quantity,
       quote.cost_micros,
@@ -117,6 +125,7 @@ function report(db, period = 'day') {
     SELECT substr(u.occurred_at, 1, ?) AS period,
       u.model,
       u.resource_type,
+      c.resolution,
       COUNT(*) AS usage_count,
       SUM(u.amount) AS credits_consumed,
       SUM(COALESCE(c.cost_micros, 0)) AS cost_micros,
@@ -127,8 +136,8 @@ function report(db, period = 'day') {
         AS uncosted_usage_count
     FROM confirmed_usage u
     LEFT JOIN generation_cost_records c ON c.reservation_id = u.reservation_id
-    GROUP BY substr(u.occurred_at, 1, ?), u.model, u.resource_type
-    ORDER BY period DESC, u.model COLLATE NOCASE
+    GROUP BY substr(u.occurred_at, 1, ?), u.model, u.resource_type, c.resolution
+    ORDER BY period DESC, u.model COLLATE NOCASE, c.resolution
   `).all(length, length).map((row) => {
     const revenueMicros = row.credits_consumed * settings.credit_value_micros;
     return {

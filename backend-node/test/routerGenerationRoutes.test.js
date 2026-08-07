@@ -26,6 +26,7 @@ test('keeps primary image and video generation endpoints registered', () => {
     assert.equal(routes.has('GET /audio-models'), true);
     assert.equal(routes.has('GET /voice-catalog'), true);
     assert.equal(routes.has('GET /voice-catalog/:id/preview'), true);
+    assert.equal(routes.has('POST /dramas/:id/director/reference-analysis'), true);
     assert.equal(routes.has('POST /characters/:id/sd2-voice-catalog'), true);
   } finally {
     db.close();
@@ -86,4 +87,16 @@ test('registers redeem operations routes before tenant context', () => {
     source,
     /r\.get\('\/billing\/admin\/redeem-codes\/:codeId\/usages', requireAdmin,/,
   );
+});
+
+test('registers director reference analysis behind tenant ownership and model generation guard', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/routes/index.js'), 'utf8');
+  const ownershipIndex = source.indexOf('r.use(createResourceOwnershipMiddleware');
+  const guardIndex = source.indexOf('r.use(modelGenerationGuard)');
+  const routeIndex = source.indexOf("r.post('/dramas/:id/director/reference-analysis'");
+  assert.notEqual(ownershipIndex, -1);
+  assert.notEqual(guardIndex, -1);
+  assert.notEqual(routeIndex, -1);
+  assert.equal(routeIndex > ownershipIndex, true);
+  assert.equal(routeIndex > guardIndex, true);
 });

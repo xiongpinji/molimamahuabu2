@@ -18,6 +18,8 @@ test('covers GPT, image, and video generation routes', () => {
     ['POST', '/storyboards/8/polish-prompt'],
     ['POST', '/scenes/8/generate-panorama-image'],
     ['POST', '/image-tools/operations'],
+    ['POST', '/video-tools/operations'],
+    ['POST', '/dramas/42/director/reference-analysis'],
     ['GET', '/storyboards/episode/3/generate'],
   ];
   for (const [method, path] of guarded) {
@@ -29,9 +31,12 @@ test('calls the shared limiter only for model generation routes', () => {
   let limited = 0;
   const guard = createModelGenerationGuard((_req, _res, next) => { limited += 1; next(); });
   assert.equal(call(guard, 'POST', '/generation/characters').next, true);
+  assert.equal(call(guard, 'POST', '/video-tools/operations').next, true);
+  assert.equal(call(guard, 'GET', '/video-tools/capabilities').next, true);
+  assert.equal(call(guard, 'GET', '/video-tools/operations/123').next, true);
   assert.equal(call(guard, 'POST', '/dramas').next, true);
   assert.equal(call(guard, 'POST', '/upload/image').next, true);
-  assert.equal(limited, 1);
+  assert.equal(limited, 2);
 });
 
 test('does not treat unsupported methods or ordinary updates as generation', () => {

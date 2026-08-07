@@ -450,16 +450,20 @@
                 </select>
               </label>
               <label>注视模式
-                <select aria-label="相机注视模式" :value="selectedCamera.lookAtMode" @change="updateSelectedCamera('lookAtMode', $event.target.value)">
-                  <option value="origin">场景中心</option><option value="object">指定对象</option>
+                <select aria-label="相机注视模式" title="相机注视目标" :value="cameraLookAtSelection" @change="updateCameraLookAtSelection($event.target.value)">
+                  <option value="none">不锁定</option>
+                  <option value="manual">手动坐标</option>
+                  <option v-for="object in cameraLookAtObjects" :key="`look-mode-${object.id}`" :value="`object:${object.id}`">{{ object.name }}</option>
                 </select>
               </label>
-              <label v-if="selectedCamera.lookAtMode === 'object'">注视目标
-                <select aria-label="相机注视目标" :value="selectedCamera.lookAtTargetId" @change="updateSelectedCamera('lookAtTargetId', $event.target.value)">
-                  <option value="">请选择对象</option>
-                  <option v-for="object in cameraTargetObjects" :key="`look-${object.id}`" :value="object.id">{{ object.name }}</option>
-                </select>
-              </label>
+              <div v-if="selectedCamera.lookAtMode === 'manual'" class="inspector-group">
+                <strong>注视坐标</strong>
+                <div class="vector-row">
+                  <label v-for="(axis, index) in axes" :key="`camera-target-${axis}`">{{ axis }}
+                    <input type="number" step="0.1" :value="selectedCamera.target[index]" @change="updateCameraTarget(index, $event.target.value)" />
+                  </label>
+                </div>
+              </div>
               <label class="visibility-row"><input type="checkbox" :checked="selectedCamera.showGuides" @change="updateSelectedCamera('showGuides', $event.target.checked)" /> 构图辅助线</label>
               <button type="button" class="small-button" @click="captureCurrentViewToCamera">从当前视角更新机位</button>
               <button type="button" class="small-button" @click="captureToCanvasAsset">机位截图回写画布</button>
@@ -563,6 +567,18 @@
         <label>识别类型<select v-model="aiImportType"><option value="scene">场景</option><option value="character">角色</option><option value="prop">道具</option></select></label>
         <label>参考图片<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择识图图片" @change="onAIImportFile" /></label>
         <img v-if="aiImportPreview" class="ai-import-preview" :src="aiImportPreview" alt="AI 识图参考预览" />
+        <div class="director-reference-actions" aria-label="AI站位参考">
+          <button type="button" :disabled="!aiImportFile || directorReferenceBusy || !drama?.id" @click="analyzeDirectorReference">{{ directorReferenceBusy ? '分析中…' : 'AI站位参考' }}</button>
+          <select v-model="directorReferenceMode" aria-label="站位应用方式">
+            <option value="insert">插入</option>
+            <option value="override">覆盖（保留灯光）</option>
+          </select>
+          <button type="button" :disabled="!directorReferenceAnalysis || directorReferenceBusy" @click="applyDirectorReference">应用站位</button>
+        </div>
+        <div v-if="directorReferenceStatus" class="resource-status">{{ directorReferenceStatus }}</div>
+        <div v-if="directorReferenceHistory.length" class="director-reference-history" aria-label="AI站位参考历史">
+          <button v-for="item in directorReferenceHistory" :key="item.id" type="button" @click="selectDirectorReferenceHistory(item)">{{ item.title }}</button>
+        </div>
         <button type="button" :disabled="!aiImportFile || aiImportBusy" @click="analyzeAIImport">{{ aiImportBusy ? '识别中…' : '开始识图' }}</button>
         <label>识别描述<textarea v-model="aiImportDescription" rows="5" placeholder="识别结果也可手动修订" /></label>
         <div v-if="aiImportStatus" class="resource-status">{{ aiImportStatus }}</div>
@@ -615,6 +631,7 @@ import {
 } from 'threepipe'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { assetsAPI } from '@/api/assets'
+import { directorReferenceAPI } from '@/api/directorReference'
 import { directorExportAPI } from '@/api/directorExport'
 import { taskAPI } from '@/api/task'
 import { uploadAPI } from '@/api/upload'
@@ -639,6 +656,7 @@ import {
   proportionalScaleFromAxis,
   removeActionClip,
   removeDirectorObject,
+  resolveDirectorCameraFrame,
   splitShotAtTime,
   interpolateMotionTransform,
   upsertMotionKeyframe,
@@ -649,6 +667,10 @@ import {
   applyVisualDirectionGuidance,
   formatVisualDirectionSummary,
 } from '@/utils/visualDirectionDirectorBridge'
+import {
+  applyDirectorReferenceAnalysis,
+  isCurrentDirectorReferenceRequest,
+} from '@/utils/directorReference'
 
 const CAMERA_ASPECTS = [
   { label: 'Auto', value: 0 }, { label: '21:9', value: 21 / 9 }, { label: '16:9', value: 16 / 9 },
@@ -755,6 +777,7 @@ const TRANSFORM_TOOLS = [
   { mode: 'rotate', label: '旋转工具', icon: '⟳' },
   { mode: 'scale', label: '缩放工具', icon: '⤢' },
 ]
+const DIRECTOR_REFERENCE_SOURCE = 'director_reference_analysis'
 import {
   DIRECTOR_VALIDATION_ASSET_URL,
   createDirectorResourceState,
@@ -833,6 +856,12 @@ const aiImportStatus = ref('')
 const aiImportBusy = ref(false)
 const aiImportUploadedUrl = ref('')
 const aiImportAssetId = ref(null)
+const directorReferenceBusy = ref(false)
+const directorReferenceMode = ref('insert')
+const directorReferenceStatus = ref('')
+const directorReferenceAnalysis = ref(null)
+const directorReferenceAnalysisDramaId = ref(null)
+const directorReferenceHistory = ref([])
 const axes = ['X', 'Y', 'Z']
 const undoStack = ref([])
 const redoStack = ref([])
@@ -844,6 +873,7 @@ let transformControls = null
 let transformStartScale = null
 let shiftPressed = false
 let pickingPlugin = null
+let directorReferenceRequestId = 0
 
 const scenes = computed(() => props.drama?.scenes || [])
 const characters = computed(() => props.drama?.characters || [])
@@ -938,9 +968,13 @@ const selectedInspectorTransform = computed(() => selectedDirectorObject.value
   ? (interpolateMotionTransform(timeline.value, selectedDirectorObject.value.id, currentTime.value) || selectedDirectorObject.value.transform)
   : { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] })
 const selectedCamera = computed(() => timeline.value.cameras.find((camera) => camera.objectId === selectedObjectId.value) || null)
+const cameraLookAtSelection = computed(() => selectedCamera.value?.lookAtMode === 'object' && selectedCamera.value.lookAtTargetId
+  ? `object:${selectedCamera.value.lookAtTargetId}`
+  : (selectedCamera.value?.lookAtMode || 'none'))
 const lightObjects = computed(() => timeline.value.objects.filter((object) => object.type === 'light'))
 const selectedLightObject = computed(() => selectedDirectorObject.value?.type === 'light' ? selectedDirectorObject.value : null)
 const cameraTargetObjects = computed(() => timeline.value.objects.filter((object) => object.id !== selectedCamera.value?.objectId && object.type !== 'camera'))
+const cameraLookAtObjects = computed(() => cameraTargetObjects.value)
 const activeCompositionGuides = computed(() => {
   if (viewMode.value !== 'camera') return false
   const camera = timeline.value.cameras.find((entry) => entry.id === selectedShot.value?.cameraId)
@@ -1208,6 +1242,155 @@ function onAIImportFile(event) {
   aiImportStatus.value = ''
   aiImportUploadedUrl.value = ''
   aiImportAssetId.value = null
+  directorReferenceRequestId += 1
+  directorReferenceBusy.value = false
+  directorReferenceStatus.value = ''
+  directorReferenceAnalysis.value = null
+  directorReferenceAnalysisDramaId.value = null
+}
+
+function isCurrentDirectorReference(requestId, dramaId) {
+  return isCurrentDirectorReferenceRequest({
+    currentRequestId: directorReferenceRequestId,
+    requestId,
+    currentDramaId: Number(props.drama?.id),
+    dramaId,
+  })
+}
+
+async function analyzeDirectorReference() {
+  const file = aiImportFile.value
+  const dramaId = Number(props.drama?.id)
+  if (!file || !dramaId || directorReferenceBusy.value) return
+  const requestId = ++directorReferenceRequestId
+  const capturedDramaId = dramaId
+  const referenceMode = directorReferenceMode.value
+  let referenceAsset = null
+  directorReferenceBusy.value = true
+  directorReferenceStatus.value = '正在分析站位参考…'
+  try {
+    const imageUrl = await fileToDataUrl(file)
+    const uploaded = await uploadAPI.uploadImage(file, { dramaId })
+    referenceAsset = await assetsAPI.create({
+      drama_id: dramaId,
+      name: file.name || 'AI站位参考',
+      type: 'image',
+      category: 'director-ai-reference',
+      url: uploaded?.url || '',
+      local_path: uploaded?.local_path || uploaded?.path || null,
+      file_size: file.size,
+      mime_type: file.type || 'image/png',
+      metadata: {
+        status: 'running',
+        source: 'director_reference_analysis',
+        mode: directorReferenceMode.value,
+      },
+    })
+    const result = await directorReferenceAPI.analyze(dramaId, { image_url: imageUrl })
+    const analysis = result?.analysis || result
+    let completedPersistError = null
+    try {
+      await assetsAPI.update(referenceAsset.id, {
+        metadata: {
+          status: 'completed',
+          source: DIRECTOR_REFERENCE_SOURCE,
+          mode: referenceMode,
+          analysis,
+          model: result?.model || null,
+        },
+      })
+    } catch (error) {
+      completedPersistError = error
+    }
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) {
+      directorReferenceAnalysis.value = analysis
+      directorReferenceAnalysisDramaId.value = capturedDramaId
+      if (!completedPersistError) {
+        await loadDirectorReferenceHistory()
+        if (!isCurrentDirectorReference(requestId, capturedDramaId)) return
+      }
+      directorReferenceStatus.value = completedPersistError
+        ? `站位已生成，但历史保存失败：${completedPersistError?.message || '未知错误'}`
+        : '站位参考已生成，可选择插入或覆盖'
+    }
+  } catch (error) {
+    let failurePersistError = null
+    if (referenceAsset?.id) {
+      try {
+        await assetsAPI.update(referenceAsset.id, {
+          metadata: {
+            status: 'failed',
+            source: DIRECTOR_REFERENCE_SOURCE,
+            mode: referenceMode,
+            error: error?.message || '站位参考分析失败',
+          },
+        })
+      } catch (updateError) {
+        failurePersistError = updateError
+      }
+    }
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) {
+      directorReferenceStatus.value = failurePersistError
+        ? `${error?.message || '站位参考分析失败'}；分析失败；失败状态回写失败：${failurePersistError?.message || '未知错误'}`
+        : (error?.message || '站位参考分析失败')
+    }
+  } finally {
+    if (isCurrentDirectorReference(requestId, capturedDramaId)) directorReferenceBusy.value = false
+  }
+}
+
+function directorReferenceAssetTitle(asset) {
+  const analysis = asset?.metadata?.analysis || {}
+  return `${asset?.name || '参考图'} · ${(analysis.people?.length || 0)}人/${(analysis.props?.length || 0)}物/${(analysis.cameras?.length || 0)}机位`
+}
+
+async function loadDirectorReferenceHistory() {
+  const dramaId = Number(props.drama?.id)
+  if (!dramaId) {
+    directorReferenceHistory.value = []
+    return
+  }
+  try {
+    const result = await assetsAPI.list({ drama_id: dramaId, type: 'image', category: 'director-ai-reference', page_size: 100 })
+    const assets = Array.isArray(result) ? result : (result?.items || [])
+    if (Number(props.drama?.id) !== dramaId) return
+    directorReferenceHistory.value = assets
+      .filter((asset) => asset?.metadata?.status === 'completed'
+        && asset?.metadata?.source === DIRECTOR_REFERENCE_SOURCE
+        && asset?.metadata?.analysis)
+      .map((asset) => ({ ...asset, title: directorReferenceAssetTitle(asset) }))
+  } catch (error) {
+    if (Number(props.drama?.id) !== dramaId) return
+    directorReferenceHistory.value = []
+    directorReferenceStatus.value = error?.message || '站位参考历史读取失败'
+  }
+}
+
+function resetDirectorReferenceForDramaChange() {
+  directorReferenceRequestId += 1
+  directorReferenceBusy.value = false
+  directorReferenceStatus.value = ''
+  directorReferenceAnalysis.value = null
+  directorReferenceAnalysisDramaId.value = null
+  directorReferenceHistory.value = []
+}
+
+function selectDirectorReferenceHistory(item) {
+  directorReferenceAnalysis.value = item.metadata.analysis
+  directorReferenceAnalysisDramaId.value = Number(props.drama?.id)
+  directorReferenceMode.value = item.metadata.mode || directorReferenceMode.value
+  directorReferenceStatus.value = '已选择历史站位参考'
+}
+
+function applyDirectorReference() {
+  if (!directorReferenceAnalysis.value) return
+  const dramaId = Number(props.drama?.id)
+  if (directorReferenceAnalysisDramaId.value !== dramaId) return
+  const next = applyDirectorReferenceAnalysis(timeline.value, directorReferenceAnalysis.value, directorReferenceMode.value)
+  mutateTimeline(next)
+  buildStage()
+  aiImportOpen.value = false
+  directorReferenceStatus.value = 'AI站位参考已应用'
 }
 
 async function analyzeAIImport() {
@@ -1815,6 +1998,30 @@ function cycleCameraAspect() {
   const current = cameraAspectLabel(selectedCamera.value.aspect)
   const index = CAMERA_ASPECTS.findIndex((ratio) => ratio.label === current)
   applyCameraAspect(CAMERA_ASPECTS[(index + 1) % CAMERA_ASPECTS.length].label)
+}
+
+function updateCameraLookAtSelection(value) {
+  if (!selectedCamera.value) return
+  const selection = String(value || 'none')
+  const objectId = selection.startsWith('object:') ? selection.slice(7) : ''
+  const lookAtMode = objectId ? 'object' : (selection === 'manual' ? 'manual' : 'none')
+  const cameras = timeline.value.cameras.map((camera) => camera.id === selectedCamera.value.id ? {
+    ...camera,
+    lookAtMode,
+    lookAtTargetId: objectId,
+  } : camera)
+  mutateTimeline({ ...timeline.value, cameras })
+  if (selectedShot.value?.cameraId === selectedCamera.value.id) setCameraForShot(selectedShot.value)
+}
+
+function updateCameraTarget(index, value) {
+  if (!selectedCamera.value || !selectedDirectorObject.value) return
+  const target = [...selectedCamera.value.target]
+  target[index] = Number(value) || 0
+  persistSelectedCameraView(selectedDirectorObject.value.transform.position, target, {
+    lookAtMode: 'manual',
+    lookAtTargetId: '',
+  })
 }
 
 async function toggleFullscreen() {
@@ -2596,13 +2803,10 @@ function setCameraForShot(shot) {
       camera.aspect = Number(boundCamera.aspect) || camera.aspect
       camera.updateProjectionMatrix?.()
     }
-    const followObject = timeline.value.objects.find((object) => object.id === boundCamera.followTargetId)
-    const lookAtObject = boundCamera.lookAtMode === 'object' ? timeline.value.objects.find((object) => object.id === boundCamera.lookAtTargetId) : null
-    const follow = followObject?.transform?.position || [0, 0, 0]
-    const position = cameraObject.transform.position.map((value, index) => value + follow[index])
-    const target = lookAtObject?.transform?.position || boundCamera.target || [0, 0.8, 0]
-    setCamera(position, target, lookAtObject ? null : boundCamera.quaternion)
-    if (camera && (lookAtObject || !boundCamera.quaternion)) camera.rotation.z = Number(boundCamera.roll || 0) * Math.PI / 180
+    const frame = resolveDirectorCameraFrame(timeline.value, boundCamera)
+    if (!frame) return
+    setCamera(frame.position, frame.target, frame.quaternion)
+    if (camera && frame.applyRoll) camera.rotation.z = frame.roll * Math.PI / 180
     return
   }
   const firstCharacter = characterObjects.values().next().value
@@ -2807,7 +3011,14 @@ function applyTimelineFrame() {
     object.rotation.set(...transform.rotation)
     object.scale.set(...transform.scale)
     const activeCamera = timeline.value.cameras.find((camera) => camera.id === activeShot.value?.cameraId && camera.objectId === track.objectId)
-    if (activeCamera) setCamera(transform.position, [0, 0.8, 0])
+    if (activeCamera) {
+      const frame = resolveDirectorCameraFrame(timeline.value, activeCamera, transform.position)
+      if (frame) {
+        const camera = viewer.value?.scene?.mainCamera
+        setCamera(frame.position, frame.target, frame.quaternion)
+        if (camera && frame.applyRoll) camera.rotation.z = frame.roll * Math.PI / 180
+      }
+    }
   }
   for (const object of characterObjects.values()) {
     const base = object.userData?.directorBasePosition
@@ -2945,6 +3156,7 @@ onMounted(async () => {
 })
 
 watch(() => props.drama?.id, () => {
+  resetDirectorReferenceForDramaChange()
   void loadProjectAssets()
 })
 
@@ -2957,7 +3169,10 @@ watch(selectedCharacterId, (characterId) => {
 
 watch(aiImportOpen, async (open) => {
   await nextTick()
-  if (open) aiImportModalRef.value?.querySelector('button')?.focus()
+  if (open) void loadDirectorReferenceHistory()
+  if (open) {
+    aiImportModalRef.value?.querySelector('button')?.focus()
+  }
   else if (props.visible) aiImportButtonRef.value?.focus()
 })
 
@@ -2987,7 +3202,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.director-stage { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #101014; color: #e4e4e7; }
+.director-stage { position: fixed; inset: 0; z-index: 3600; display: flex; flex-direction: column; background: #101014; color: #e4e4e7; }
 .director-stage__header, .director-stage__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-bottom: 1px solid #343438; background: #202020; }
 .director-stage__header { position: relative; min-height: 62px; box-sizing: border-box; }
 .director-stage__view-switch { position: absolute; left: 50%; display: flex; padding: 4px; border: 1px solid #3a3a3d; border-radius: 22px; transform: translateX(-50%); background: #171719; }
@@ -3036,6 +3251,9 @@ onBeforeUnmount(() => {
 .director-modal__panel button { border: 1px solid #4f46e5; border-radius: 8px; padding: 8px 12px; background: #312e81; color: #e0e7ff; cursor: pointer; }
 .director-modal__panel button:disabled { opacity: .5; cursor: default; }
 .ai-import-preview { max-width: 100%; max-height: 240px; justify-self: center; border-radius: 8px; object-fit: contain; }
+.director-reference-actions { display: grid; grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1fr); gap: 8px; }
+.director-reference-history { display: grid; gap: 6px; max-height: 130px; overflow-y: auto; }
+.director-reference-history button { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-group { margin: 16px 0; padding-top: 12px; border-top: 1px solid #303036; }
 .inspector-group > strong { color: #d4d4d8; font-size: 12px; }
 .vector-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
@@ -3160,7 +3378,7 @@ onBeforeUnmount(() => {
 @media (max-width: 680px) {
   .director-stage__header, .director-stage__footer { padding: 10px 12px; }
   .director-stage__sidebar { width: 210px; flex-basis: 210px; }
-  .director-stage__inspector { display: none; }
+  .director-stage__inspector { position: absolute; top: 0; right: 0; bottom: 0; z-index: 12; display: block; width: min(280px, calc(100% - 210px)); min-width: 220px; box-sizing: border-box; box-shadow: -14px 0 32px rgba(0, 0, 0, .35); }
   .director-stage__footer span { display: none; }
 }
 </style>

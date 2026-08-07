@@ -89,3 +89,41 @@ test('经营台账拒绝未知统计周期', () => {
     (error) => error.code === 'INVALID_LEDGER_PERIOD',
   );
 });
+
+test('经营台账按视频分辨率分别记录和汇总成本', () => {
+  const db = new Database(':memory:');
+  credits.ensureSchema(db);
+  credits.setAccountBalance(db, 'user-1', 100);
+  prices.set(db, 'resolution-video', 2, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 50000 },
+      '720p': { credits: 4, cost_micros_per_second: 120000 },
+    },
+  });
+
+  for (const [resolution, amount] of [['480p', 10], ['720p', 20]]) {
+    const reservation = reserveConfirmed(db, {
+      userId: 'user-1',
+      operationKey: `video:${resolution}`,
+      model: 'resolution-video',
+      resourceType: 'video',
+      resourceId: resolution,
+      amount,
+    });
+    costs.record(db, {
+      reservationId: reservation.id,
+      model: 'resolution-video',
+      quantity: 5,
+      resolution,
+      usageSource: 'configured',
+    });
+  }
+
+  const rows = costs.report(db, 'day').rows;
+  assert.deepEqual(rows.map((row) => ({ resolution: row.resolution, cost_micros: row.cost_micros })), [
+    { resolution: '480p', cost_micros: 250000 },
+    { resolution: '720p', cost_micros: 600000 },
+  ]);
+});

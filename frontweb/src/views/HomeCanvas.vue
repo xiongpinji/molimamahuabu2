@@ -40,6 +40,8 @@
         class="canvas-main"
         :class="{ 'quick-start-visible': showStarterPanel }"
         @wheel.capture="onCanvasWheel"
+        @dragover="onCanvasImageDragOver"
+        @drop="onCanvasImageDrop"
       >
         <VueFlow
           v-model:nodes="nodes"
@@ -202,6 +204,7 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { dramaAPI } from '@/api/drama'
+import { uploadAPI } from '@/api/upload'
 import CanvasWorkspaceSwitcher from '@/components/CanvasWorkspaceSwitcher.vue'
 import HomeCanvasNode from '@/components/dramaCanvas/HomeCanvasNode.vue'
 import HomeCanvasFlowAligner from '@/components/dramaCanvas/HomeCanvasFlowAligner.vue'
@@ -226,7 +229,15 @@ import {
 import { parseCanvasLayout } from '@/utils/canvasLayout'
 import { mergeLocalCanvasIntoProjectLayout } from '@/utils/localCanvasBinding'
 import {
+  collectDroppedImageFiles,
+  createDroppedImageNodeSpecs,
+  hasDraggedFilePayload,
+  stripLocalImagePreviewsForPersistence,
+} from '@/utils/canvasImageDrop'
+import {
+  buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   getFreeCanvasNodeResultUrl,
 } from '@/utils/freeCanvasGeneration'
 
@@ -250,7 +261,10 @@ const dragHistorySnapshot = ref(null)
 const edgeHistorySnapshot = ref(null)
 const canvasClipboard = ref(null)
 let canvasPasteSequence = 0
+let canvasNodeSequence = 0
 let saveTimer = null
+let canvasAlive = true
+const localPreviewUrls = new Set()
 const bindingProjects = ref([])
 const bindingProjectId = ref('')
 const bindingProject = ref(false)
@@ -333,7 +347,7 @@ function persistState() {
   if (typeof localStorage === 'undefined') return
   try {
     localStorage.setItem(HOME_CANVAS_STORAGE_KEY, serializeHomeCanvasState({
-      nodes: nodes.value,
+      nodes: stripLocalImagePreviewsForPersistence(nodes.value),
       edges: edges.value,
       viewport: currentViewport.value,
     }))
@@ -406,13 +420,9 @@ function onConnect(connection) {
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetId = String(nodeOrId || '')
-  return collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId)
-    .filter((reference) => reference.ready && reference.enabled !== false)
-    .map((reference) => ({
-      nodeId: String(reference.nodeId),
-      title: reference.title || '未命名图片',
-      url: reference.url,
-    }))
+  return buildFreeCanvasReferenceMentionCandidates(
+    collectDirectUpstreamImageReferences(nodes.value, edges.value, targetId),
+  )
 }
 
 function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
@@ -423,7 +433,10 @@ function attachFreeCanvasReference(targetNodeId, sourceNodeId) {
 }
 
 function freeCanvasNodeInputReferences(nodeId) {
-  return collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
+  const node = nodeById(nodeId)
+  return node?.data?.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(nodes.value, edges.value, String(nodeId || ''))
+    : collectDirectUpstreamImageReferences(nodes.value, edges.value, String(nodeId || ''))
 }
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
@@ -518,22 +531,6 @@ function registerCanvasFlowApi(api) {
   canvasFlowApi.value = api
 }
 
-function panCanvasForNodeEditor(overflowY) {
-  const distance = Math.max(0, Number(overflowY) || 0)
-  const api = canvasFlowApi.value
-  const viewport = api?.getViewport?.() || currentViewport.value
-  if (!distance || !api?.setViewport || !viewport) return false
-  const nextViewport = {
-    x: Number(viewport.x || 0),
-    y: Number(viewport.y || 0) - distance,
-    zoom: Number(viewport.zoom || 1),
-  }
-  currentViewport.value = nextViewport
-  api.setViewport(nextViewport, { duration: 0 })
-  scheduleSave()
-  return true
-}
-
 function screenToFlowPosition(clientX, clientY) {
   const el = canvasMainRef.value
   if (!el) return null
@@ -550,6 +547,62 @@ function centerFlowPosition() {
   if (!el) return { x: 0, y: 0 }
   const rect = el.getBoundingClientRect()
   return screenToFlowPosition(rect.left + rect.width / 2, rect.top + rect.height / 2)
+}
+
+function onCanvasImageDragOver(event) {
+  if (!hasDraggedFilePayload(event.dataTransfer)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+async function onCanvasImageDrop(event) {
+  if (!hasDraggedFilePayload(event.dataTransfer)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const files = collectDroppedImageFiles(event.dataTransfer)
+  if (!files.length) return
+  const origin = screenToFlowPosition(event.clientX, event.clientY) || centerFlowPosition()
+  const specs = createDroppedImageNodeSpecs(files, origin, (file) => {
+    const previewUrl = URL.createObjectURL(file)
+    localPreviewUrls.add(previewUrl)
+    return previewUrl
+  })
+  const droppedNodes = specs.map((spec) => ({
+    spec,
+    nodeId: openNodeEditor('image', spec.position, spec.data),
+  }))
+  for (const { spec, nodeId } of droppedNodes) {
+    try {
+      const uploaded = await uploadAPI.uploadImage(spec.file)
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
+      const stableUrl = String(uploaded?.url || '')
+      if (!stableUrl) throw new Error('图片上传成功但未返回可用地址')
+      await updateFreeCanvasNode(nodeId, {
+        url: String(uploaded?.url || ''),
+        status: 'success',
+        error: '',
+        localPreview: false,
+      })
+      URL.revokeObjectURL(spec.previewUrl)
+      localPreviewUrls.delete(spec.previewUrl)
+    } catch (error) {
+      if (!canvasAlive) {
+        URL.revokeObjectURL(spec.previewUrl)
+        localPreviewUrls.delete(spec.previewUrl)
+        continue
+      }
+      await updateFreeCanvasNode(nodeId, {
+        url: spec.previewUrl,
+        status: 'failed',
+        error: error?.message || '本地图片上传失败',
+        localPreview: true,
+      })
+    }
+  }
 }
 
 function onPaneContextMenu(payload) {
@@ -582,7 +635,7 @@ function openNodeEditor(kind, position = null, initial = null) {
   closeContextMenu()
   const previousState = currentCanvasState()
   const titles = { text: '文本', image: '图片', video: '视频', audio: '音频' }
-  const nodeId = `home:${kind}:${Date.now()}`
+  const nodeId = `home:${kind}:${Date.now()}:${canvasNodeSequence++}`
   nodes.value = nodes.value
     .filter((node) => node.id !== 'home:welcome')
     .map((node) => ({ ...node, selected: false }))
@@ -596,12 +649,14 @@ function openNodeEditor(kind, position = null, initial = null) {
       title: initial?.title || titles[kind] || '节点',
       content: initial?.content || '',
       url: initial?.url || '',
+      ...(initial || {}),
     },
   })
   activeNodeId.value = nodeId
   pendingFlowPosition.value = null
   commitHistory(previousState)
   scheduleSave()
+  return nodeId
 }
 
 function openStarter(preset) {
@@ -906,17 +961,20 @@ provide(CANVAS_CONTEXT_KEY, {
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
-  panCanvasForNodeEditor,
 })
 
 onMounted(() => {
+  canvasAlive = true
   window.addEventListener('keydown', onCanvasKeydown)
   void loadBindingProjects()
 })
 
 onBeforeUnmount(() => {
+  canvasAlive = false
   window.removeEventListener('keydown', onCanvasKeydown)
   if (saveTimer) clearTimeout(saveTimer)
+  for (const previewUrl of localPreviewUrls) URL.revokeObjectURL(previewUrl)
+  localPreviewUrls.clear()
   persistState()
 })
 </script>
@@ -982,6 +1040,9 @@ onBeforeUnmount(() => {
 .ctx-title { padding: 4px 12px 6px; color: #71717a; font-size: 10px; }
 .ctx-item { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-size: 13px; text-align: left; cursor: pointer; }
 .ctx-item:hover { background: rgba(255, 113, 57, 0.13); color: #ff9b75; }
+@media (max-width: 920px) {
+  .page-title { display: none; }
+}
 @media (max-width: 820px) {
   .header-inner { margin: 8px 10px 0; padding: 7px 8px; }
   .brand-copy, .breadcrumb-sep, .canvas-name, .layout-status, .btn-theme { display: none; }
