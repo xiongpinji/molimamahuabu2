@@ -1015,6 +1015,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       const localizationTask = findOwnedLocalizationTask(work, currentVersion, currentOwner);
       const assetBatch = findCurrentAssetBatch(currentVersion, currentOwner);
       const projectedWork = { ...work };
+      projectedWork.current_version = currentVersion ? Number(currentVersion.version) : 0;
       if (
         Number(projectedWork.current_step) === 2
         && !currentVersion

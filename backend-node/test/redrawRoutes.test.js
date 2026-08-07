@@ -1183,8 +1183,31 @@ test('作品详情隐藏 draft 当前版本并回退到已提升版本', () => {
 
     assert.equal(result.statusCode, 200);
     assert.equal(result.body.data.version_id, promotedVersionId);
+    assert.equal(result.body.data.current_version, 1);
     assert.equal(result.body.data.shots.length, 1);
     assert.equal(result.body.data.shots[0].prompt, 'promoted shot');
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情只有 draft 版本时不泄漏隐藏 current_version', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 2, current_step: 1 });
+    const draftVersionId = insertVersion(db, workId, { version: 2, status: 'draft' });
+    insertShot(db, draftVersionId, { prompt: 'draft only shot' });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.version_id, null);
+    assert.notEqual(result.body.data.current_version, 2);
+    assert.equal(result.body.data.current_version, 0);
+    assert.equal(result.body.data.shots.length, 0);
   } finally {
     db.close();
   }
