@@ -27,12 +27,24 @@ function storageRootFrom(cfg = {}) {
   return path.join(process.cwd(), 'data', 'storage');
 }
 
-function assertSafeRelativePath(localPath) {
+function assertScopedAssetPath(localPath, versionDir) {
   const rel = trim(localPath).replace(/\\/g, '/');
   if (!rel || path.isAbsolute(rel) || rel.split('/').includes('..')) {
-    throw codedError('REDRAW_PROVIDER_UNSAFE_LOCAL_PATH', 'provider returned unsafe local asset path');
+    throw codedError('REDRAW_ASSET_STORAGE_SCOPE_INVALID', 'provider returned redraw asset outside version storage scope');
+  }
+  const expectedPrefix = `redraw-assets/${versionDir}/`;
+  if (!rel.startsWith(expectedPrefix)) {
+    throw codedError('REDRAW_ASSET_STORAGE_SCOPE_INVALID', 'provider returned redraw asset outside version storage scope');
   }
   return rel;
+}
+
+function requirePositiveDimension(value, name) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw codedError('REDRAW_IMAGE_DIMENSIONS_REQUIRED', `redraw image ${name} must be a positive finite number`);
+  }
+  return number;
 }
 
 function mimeFromPath(localPath, fallback) {
@@ -184,18 +196,24 @@ function createRedrawProviderAdapters(deps = {}) {
     }
     const imageUrl = imageUrlOf(imageResult);
     if (!imageUrl) throw codedError('REDRAW_IMAGE_PROVIDER_EMPTY_RESULT', 'image provider returned no image url');
-    const localPath = assertSafeRelativePath(await downloadImageToLocal(
+    const localPath = assertScopedAssetPath(await downloadImageToLocal(
       storageRoot,
       imageUrl,
       versionDir,
       log,
       `redraw_${kind}_${request.taskId || asset.id || 'asset'}`,
       'redraw-assets',
-    ));
+    ), versionDir);
     const absolutePath = path.join(storageRoot, localPath);
     if (!fs.existsSync(absolutePath)) throw codedError('ASSET_NOT_READABLE', 'downloaded redraw asset is not readable');
-    const width = Number(imageResult.width || imageResult.metadata?.width || imageResult.quality?.width) || null;
-    const height = Number(imageResult.height || imageResult.metadata?.height || imageResult.quality?.height) || null;
+    const width = requirePositiveDimension(
+      imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width,
+      'width',
+    );
+    const height = requirePositiveDimension(
+      imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height,
+      'height',
+    );
     const providerTaskId = providerTaskIdOf(imageResult);
     const metadata = {
       source: 'redraw_provider_adapter',
@@ -272,7 +290,7 @@ function createRedrawProviderAdapters(deps = {}) {
     if (!Number.isFinite(duration) || duration <= 0) {
       throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw voice provider returned no positive duration');
     }
-    const localPath = assertSafeRelativePath(result.local_path);
+    const localPath = assertScopedAssetPath(result.local_path, versionDir);
     if (!fs.existsSync(path.join(storageRoot, localPath))) {
       throw codedError('ASSET_NOT_READABLE', 'downloaded redraw voice asset is not readable');
     }

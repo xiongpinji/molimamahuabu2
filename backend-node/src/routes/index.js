@@ -204,22 +204,31 @@ function setupRouter(cfg, db, log, options = {}) {
   const directorExport = directorExportRoutes(db, cfg, log);
   const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
-  const redrawAdapters = options.providerAdapters || createRedrawProviderAdapters({
-    db,
-    log,
-    cfg,
-    aiClient: options.aiClient,
-    imageClient: options.imageClient,
-    uploadService: options.uploadService,
-    assetService: options.assetService,
-    ttsService: options.ttsService,
-    ttsConfig: options.ttsConfig,
-  });
+  const redrawOptions = options.redrawOptions || {};
+  const explicitLocalizationProvider = options.localizationProvider || redrawOptions.localizationProvider;
+  const explicitAssetGenerationProvider = options.assetGenerationProvider
+    || options.assetProvider
+    || redrawOptions.assetGenerationProvider
+    || redrawOptions.assetProvider;
+  const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider;
+  const redrawAdapters = needsRedrawAdapters
+    ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
+        db,
+        log,
+        cfg,
+        aiClient: options.aiClient,
+        imageClient: options.imageClient,
+        uploadService: options.uploadService,
+        assetService: options.assetService,
+        ttsService: options.ttsService,
+        ttsConfig: options.ttsConfig,
+      }))
+    : null;
   const redraw = redrawRoutes(db, log, {
     cfg,
-    ...options.redrawOptions,
-    localizationProvider: options.localizationProvider || redrawAdapters.localize,
-    assetGenerationProvider: options.assetGenerationProvider || redrawAdapters.generateAsset,
+    ...redrawOptions,
+    localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
+    assetGenerationProvider: explicitAssetGenerationProvider || redrawAdapters.generateAsset,
   });
   r.get('/voice-catalog', voiceCatalog.list);
 

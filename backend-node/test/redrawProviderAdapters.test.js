@@ -159,6 +159,97 @@ test('generateAsset registers readable clean plate image without fabricating mis
   assert.equal(downloadCalls[0][5], 'redraw-assets');
 });
 
+test('generateAsset rejects downloaded image outside exact redraw version storage scope before registration', async () => {
+  const cases = [
+    'other/v1/a.png',
+    'redraw-assets/v70/a.png',
+    'redraw-assets/v7/../v7/a.png',
+    path.join(tempStorage(), 'redraw-assets', 'v7', 'absolute.png'),
+  ];
+  for (const localPath of cases) {
+    const storageRoot = tempStorage();
+    const created = [];
+    const adapters = createRedrawProviderAdapters({
+      db: {},
+      log: createLog(),
+      cfg: { storage: { local_path: storageRoot } },
+      imageClient: {
+        async callImageApi() {
+          return {
+            image_url: 'https://provider.example/scene.png',
+            width: 640,
+            height: 360,
+          };
+        },
+      },
+      uploadService: {
+        async downloadImageToLocal() {
+          if (!path.isAbsolute(localPath) && !localPath.includes('..')) {
+            makeReadableFile(storageRoot, localPath, 'png');
+          }
+          return localPath;
+        },
+      },
+      assetService: {
+        create(_db, _log, payload) {
+          created.push(payload);
+          return { id: 1, ...payload };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => adapters.generateAsset({
+        taskId: 9,
+        versionId: 7,
+        model: 'verified-image-model',
+        asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+      }),
+      (error) => error.code === 'REDRAW_ASSET_STORAGE_SCOPE_INVALID',
+    );
+    assert.equal(created.length, 0);
+  }
+});
+
+test('generateAsset requires positive finite image dimensions before registration', async () => {
+  for (const imageResult of [
+    { image_url: 'https://provider.example/scene.png' },
+    { image_url: 'https://provider.example/scene.png', width: 0, height: 360 },
+    { image_url: 'https://provider.example/scene.png', width: -1, height: 360 },
+  ]) {
+    const storageRoot = tempStorage();
+    const created = [];
+    const adapters = createRedrawProviderAdapters({
+      db: {},
+      log: createLog(),
+      cfg: { storage: { local_path: storageRoot } },
+      imageClient: { async callImageApi() { return imageResult; } },
+      uploadService: {
+        async downloadImageToLocal() {
+          return makeReadableFile(storageRoot, 'redraw-assets/v7/scene.png', 'png');
+        },
+      },
+      assetService: {
+        create(_db, _log, payload) {
+          created.push(payload);
+          return { id: 1, ...payload };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => adapters.generateAsset({
+        taskId: 9,
+        versionId: 7,
+        model: 'verified-image-model',
+        asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+      }),
+      (error) => error.code === 'REDRAW_IMAGE_DIMENSIONS_REQUIRED',
+    );
+    assert.equal(created.length, 0);
+  }
+});
+
 test('generateAsset voice uses verified model and refuses unknown duration before registration', async () => {
   const storageRoot = tempStorage();
   const calls = [];
@@ -299,6 +390,113 @@ test('setupRouter injects fake redraw provider adapters into redraw routes', () 
     setupRouter({ storage: {} }, {}, createLog(), { providerAdapters: fakeAdapters });
     assert.equal(seen.some((entry) => entry.localizationProvider === fakeAdapters.localize), true);
     assert.equal(seen.some((entry) => entry.assetGenerationProvider === fakeAdapters.generateAsset), true);
+  } finally {
+    delete require.cache[routesPath];
+    if (originalRedraw) require.cache[redrawPath] = originalRedraw;
+    else delete require.cache[redrawPath];
+    if (originalAdapters) require.cache[adaptersPath] = originalAdapters;
+    else delete require.cache[adaptersPath];
+    for (const [resolved, original] of mocked) {
+      if (original) require.cache[resolved] = original;
+      else delete require.cache[resolved];
+    }
+  }
+});
+
+test('setupRouter uses explicit redraw providers without creating default adapters', () => {
+  const routesPath = require.resolve('../src/routes');
+  const redrawPath = require.resolve('../src/routes/redraw');
+  const adaptersPath = require.resolve('../src/services/redrawProviderAdapters');
+  const mocked = new Map();
+  const noop = (_req, _res, next) => { if (typeof next === 'function') next(); };
+  const handlerBag = new Proxy({}, { get: () => noop });
+  function mock(rel, exports) {
+    const resolved = require.resolve(rel);
+    mocked.set(resolved, require.cache[resolved]);
+    require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
+  }
+  function mockRoute(rel) {
+    mock(rel, () => handlerBag);
+  }
+  delete require.cache[routesPath];
+  const originalRedraw = require.cache[redrawPath];
+  const originalAdapters = require.cache[adaptersPath];
+  const seen = [];
+  const localizationProvider = async () => ({});
+  const assetGenerationProvider = async () => ({});
+  require.cache[redrawPath] = {
+    id: redrawPath,
+    filename: redrawPath,
+    loaded: true,
+    exports: (_db, _log, options) => {
+      seen.push(options);
+      return handlerBag;
+    },
+  };
+  require.cache[adaptersPath] = {
+    id: adaptersPath,
+    filename: adaptersPath,
+    loaded: true,
+    exports: {
+      createRedrawProviderAdapters() {
+        throw new Error('default factory must not be called');
+      },
+    },
+  };
+  [
+    '../src/routes/drama',
+    '../src/routes/task',
+    '../src/routes/settings',
+    '../src/routes/aiConfig',
+    '../src/routes/prop',
+    '../src/routes/stub',
+    '../src/routes/characterLibrary',
+    '../src/routes/sceneLibrary',
+    '../src/routes/propLibrary',
+    '../src/routes/characters',
+    '../src/routes/scenes',
+    '../src/routes/storyboards',
+    '../src/routes/storyboards_tail_link',
+    '../src/routes/images',
+    '../src/routes/videos',
+    '../src/routes/videoMerges',
+    '../src/routes/assets',
+    '../src/routes/imageTools',
+    '../src/routes/videoTools',
+    '../src/routes/audio',
+    '../src/routes/canvas-text',
+    '../src/routes/voiceCatalog',
+    '../src/routes/scriptAnalysis',
+    '../src/routes/directorExport',
+    '../src/routes/directorReference',
+    '../src/routes/sceneModelMap',
+    '../src/routes/auth',
+    '../src/routes/billing',
+    '../src/routes/tenants',
+    '../src/routes/platformAccounts',
+  ].forEach(mockRoute);
+  mock('../src/routes/upload', { routes: () => handlerBag, multerSingle: noop, multerAudioSingle: noop });
+  mock('../src/routes/promptOverrides', { routes: () => handlerBag });
+  mock('../src/middleware/adminAuth', { createAdminAuthMiddleware: () => noop });
+  mock('../src/middleware/userAuth', { createUserAuthMiddleware: () => noop });
+  mock('../src/middleware/rateLimit', { createRateLimitMiddleware: () => noop });
+  mock('../src/middleware/modelGenerationGuard', { createModelGenerationGuard: () => noop });
+  mock('../src/middleware/platformRbac', {
+    PERMISSIONS: new Proxy({}, { get: (_target, prop) => prop }),
+    createPlatformPermissionMiddleware: () => noop,
+  });
+  mock('../src/services/emailService', { createEmailService: () => ({}) });
+  mock('../src/services/text-generation-billing-service', { createMiddleware: () => noop });
+  mock('../src/services/uploadService', {});
+  mock('../src/services/promptI18n', { loadOverridesIntoCache() {} });
+  mock('../src/services/promptOverridesService', { listOverrides: () => [] });
+  try {
+    const { setupRouter } = require('../src/routes');
+    setupRouter({ storage: {} }, {}, createLog(), {
+      redrawOptions: { localizationProvider, assetGenerationProvider },
+    });
+    assert.equal(seen.some((entry) => entry.localizationProvider === localizationProvider), true);
+    assert.equal(seen.some((entry) => entry.assetGenerationProvider === assetGenerationProvider), true);
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;
