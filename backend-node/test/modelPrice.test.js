@@ -208,3 +208,59 @@ test('iCreat Seedance 2.0 Mini 和 Fast 接受官方支持的 4 秒并按秒计�
     assert.equal(prices.calculateCharge(db, model, { duration: 4 }), 240);
   }
 });
+
+test('图片模型按 1K/2K/4K 分别计算每张积分与人民币微元成本', () => {
+  const db = makeDb();
+  const gpt = prices.set(db, 'gpt-image-2-2-4k', 70, {
+    category: 'image',
+    cost_unit: 'image',
+    resolution_prices: {
+      '1K': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+    },
+  });
+  const nano = prices.set(db, 'nano-banana-2', 70, {
+    category: 'image',
+    cost_unit: 'image',
+    resolution_prices: {
+      '1k': { credits: 70, cost_micros_per_unit: 80000 },
+      '2k': { credits: 87, cost_micros_per_unit: 100000 },
+      '4k': { credits: 105, cost_micros_per_unit: 120000 },
+    },
+  });
+
+  assert.deepEqual(gpt.resolution_prices, {
+    '1k': { credits: 70, cost_micros_per_unit: 80000 },
+    '2k': { credits: 87, cost_micros_per_unit: 100000 },
+  });
+  assert.equal(prices.calculateCharge(db, gpt.model, { resolution: '1k', quantity: 2 }), 140);
+  assert.equal(prices.calculateCharge(db, gpt.model, { resolution: '2K', quantity: 2 }), 174);
+  assert.equal(prices.quoteCost(db, nano.model, { resolution: '4k', quantity: 3 }).cost_micros, 360000);
+  assert.throws(
+    () => prices.calculateCharge(db, gpt.model, { resolution: '4k', quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+});
+
+test('图片分辨率价格拒绝视频档位且有分档时必须明确选择已定价档位', () => {
+  const db = makeDb();
+  assert.throws(
+    () => prices.set(db, 'bad-image', 70, {
+      category: 'image',
+      resolution_prices: { '1080p': { credits: 70, cost_micros_per_unit: 80000 } },
+    }),
+    (error) => error.code === 'INVALID_MODEL_PRICE' && /图片分辨率/.test(error.message),
+  );
+  prices.set(db, 'tiered-image', 70, {
+    category: 'image',
+    resolution_prices: { '1k': { credits: 70, cost_micros_per_unit: 80000 } },
+  });
+  assert.throws(
+    () => prices.calculateCharge(db, 'tiered-image', { quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+  assert.throws(
+    () => prices.quoteCost(db, 'tiered-image', { resolution: '2k', quantity: 1 }),
+    (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+  );
+});
