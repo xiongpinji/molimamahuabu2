@@ -39,26 +39,32 @@ function formatTimestamp(ms, separator) {
   ].join(':') + separator + String(millis).padStart(3, '0');
 }
 
+function clampLimit(value, fallback, ceiling) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return Math.max(1, Math.min(numeric, ceiling));
+}
+
 function effectiveLimits(options = {}) {
   return {
-    maxCharsPerSecond: Math.min(
-      Number(options.maxCharsPerSecond) || MAX_CODE_POINTS_PER_SECOND,
-      MAX_CODE_POINTS_PER_SECOND,
-    ),
-    maxLineCodePoints: Math.min(
-      Number(options.maxLineCodePoints) || MAX_LINE_CODE_POINTS,
-      MAX_LINE_CODE_POINTS,
-    ),
-    maxLines: Math.min(Number(options.maxLines) || MAX_LINES, MAX_LINES),
+    maxCharsPerSecond: clampLimit(options.maxCharsPerSecond, MAX_CODE_POINTS_PER_SECOND, MAX_CODE_POINTS_PER_SECOND),
+    maxLineCodePoints: clampLimit(options.maxLineCodePoints, MAX_LINE_CODE_POINTS, MAX_LINE_CODE_POINTS),
+    maxLines: clampLimit(options.maxLines, MAX_LINES, MAX_LINES),
   };
+}
+
+function normalizeTimelineMs(value) {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+    ? value
+    : NaN;
 }
 
 function normalizeCue(segment, index) {
   const text = String(segment?.text ?? segment?.localized_text ?? segment?.subtitle_text ?? '');
   return {
     segment_id: String(segment?.segment_id ?? segment?.id ?? index),
-    start_ms: Number(segment?.start_ms),
-    end_ms: Number(segment?.end_ms),
+    start_ms: normalizeTimelineMs(segment?.start_ms),
+    end_ms: normalizeTimelineMs(segment?.end_ms),
     text,
     source_index: index,
   };

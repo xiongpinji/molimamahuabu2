@@ -84,6 +84,31 @@ test('validateSubtitles rejects overlaps, empty text, and invalid durations with
   ]);
 });
 
+test('validateSubtitles rejects non-number and non-integer raw time values', () => {
+  const invalidStartValues = [null, '', [], false, '0', NaN, Infinity, 0.5];
+  const invalidEndValues = [null, '', [], false, '1000', NaN, Infinity, 1000.5];
+
+  for (const [index, start_ms] of invalidStartValues.entries()) {
+    const result = buildSubtitles([
+      { segment_id: `bad-start-${index}`, start_ms, end_ms: 1000, text: 'Valid text' },
+    ], { locale: 'en-US' });
+    assert.equal(result.status, 'needs_rewrite');
+    assert.equal(result.srt, null);
+    assert.equal(result.vtt, null);
+    assert.ok(result.errors.some((error) => error.reason === 'subtitle_time_invalid'));
+  }
+
+  for (const [index, end_ms] of invalidEndValues.entries()) {
+    const result = buildSubtitles([
+      { segment_id: `bad-end-${index}`, start_ms: 0, end_ms, text: 'Valid text' },
+    ], { locale: 'en-US' });
+    assert.equal(result.status, 'needs_rewrite');
+    assert.equal(result.srt, null);
+    assert.equal(result.vtt, null);
+    assert.ok(result.errors.some((error) => error.reason === 'subtitle_time_invalid'));
+  }
+});
+
 test('English P0 limits 20 cps, 42 code points per line, two lines, and never truncates text', () => {
   const longWords = 'Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda';
   const tooFast = 'This subtitle has way too many characters for one second.';
@@ -115,6 +140,26 @@ test('reading speed counts spaces and client options cannot relax 20 cps', () =>
     error.segment_id === 'spaces-count'
     && error.reason === 'subtitle_reading_speed_exceeded'
   )));
+});
+
+test('subtitle limit options clamp to safe bounds without relaxing server caps', () => {
+  for (const options of [
+    { maxCharsPerSecond: 0, maxLineCodePoints: 0, maxLines: 0 },
+    { maxCharsPerSecond: -1, maxLineCodePoints: -1, maxLines: -1 },
+    { maxCharsPerSecond: NaN, maxLineCodePoints: NaN, maxLines: NaN },
+  ]) {
+    const valid = buildSubtitles([
+      { segment_id: 'valid', start_ms: 0, end_ms: 1000, text: 'OK' },
+    ], { locale: 'en-US', ...options });
+    assert.equal(valid.status, 'ready');
+    assert.deepEqual(valid.errors, []);
+  }
+
+  const tooFast = buildSubtitles([
+    { segment_id: 'server-cap', start_ms: 0, end_ms: 1000, text: 'a a a a a a a a a a a' },
+  ], { locale: 'en-US', maxCharsPerSecond: 999, maxLineCodePoints: 999, maxLines: 999 });
+  assert.equal(tooFast.status, 'needs_rewrite');
+  assert.ok(tooFast.errors.some((error) => error.reason === 'subtitle_reading_speed_exceeded'));
 });
 
 test('RTL locale marks direction and serializers escape HTML while preserving safe line breaks', () => {
