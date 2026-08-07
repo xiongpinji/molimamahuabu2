@@ -76,6 +76,11 @@ function rowToItem(r) {
     reference_video_urls: parseReferenceUrls(r.reference_video_urls),
     output_first_frame_url: r.output_first_frame_url,
     output_last_frame_url: r.output_last_frame_url,
+    reference_video_url: r.reference_video_url,
+    reference_audio_url: r.reference_audio_url,
+    reference_mode: r.reference_mode,
+    generate_audio: r.generate_audio === 1 || r.generate_audio === true,
+    request_snapshot: parseJsonValue(r.request_snapshot, null),
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
@@ -123,9 +128,11 @@ function findActiveForStoryboard(db, storyboardId, options = {}) {
 
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
+const { TOAPIS_VIDEO_MODELS } = require('./toapisVideoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
@@ -144,6 +151,15 @@ function parseReferenceUrls(value) {
     return Array.isArray(parsed) ? parsed : [];
   } catch (_) {
     return [];
+  }
+}
+
+function parseJsonValue(value, fallback = null) {
+  if (!value) return fallback;
+  try {
+    return typeof value === 'string' ? JSON.parse(value) : value;
+  } catch (_) {
+    return fallback;
   }
 }
 
@@ -207,6 +223,313 @@ function configuredVideoDuration(config, minimum = 5) {
   }
 }
 
+function videoRequestError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function cleanUrlList(...values) {
+  const result = [];
+  for (const value of values) {
+    const list = Array.isArray(value) ? value : [value];
+    for (const item of list) {
+      const text = String(item || '').trim();
+      if (text) result.push(text);
+    }
+  }
+  return [...new Set(result)];
+}
+
+function normalizeHostname(hostname) {
+  return String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+}
+
+function parseIpv4Address(hostname) {
+  const parts = String(hostname || '').split('.');
+  if (parts.length !== 4) return null;
+  const octets = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null;
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) return null;
+    octets.push(value);
+  }
+  return octets;
+}
+
+function isPrivateIpv4(octets) {
+  if (!octets) return false;
+  const [a, b] = octets;
+  return a === 10
+    || a === 127
+    || a === 0
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254);
+}
+
+function parseIpv4MappedIpv6(hostname) {
+  const match = String(hostname || '').toLowerCase().match(/^(?:::)?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  return match ? parseIpv4Address(match[1]) : null;
+}
+
+function expandIpv6Address(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  if (!value.includes(':') || value.includes('.')) return null;
+  const sections = value.split('::');
+  if (sections.length > 2) return null;
+  const left = sections[0] ? sections[0].split(':') : [];
+  const right = sections[1] ? sections[1].split(':') : [];
+  if ([...left, ...right].some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 0 || (sections.length === 1 && missing !== 0)) return null;
+  const hextets = [
+    ...left,
+    ...Array(sections.length === 2 ? missing : 0).fill('0'),
+    ...right,
+  ].map((part) => Number.parseInt(part, 16));
+  return hextets.length === 8 && hextets.every((part) => Number.isInteger(part)) ? hextets : null;
+}
+
+function isPrivateIpv6(hostname) {
+  const mappedIpv4 = parseIpv4MappedIpv6(hostname);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4);
+  const hextets = expandIpv6Address(hostname);
+  if (!hextets) return false;
+  const isHexMappedIpv4 = hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff;
+  if (isHexMappedIpv4) {
+    return isPrivateIpv4([
+      (hextets[6] >> 8) & 0xff,
+      hextets[6] & 0xff,
+      (hextets[7] >> 8) & 0xff,
+      hextets[7] & 0xff,
+    ]);
+  }
+  const first = hextets[0];
+  const isLoopback = hextets.slice(0, 7).every((part) => part === 0) && hextets[7] === 1;
+  return isLoopback
+    || (first >= 0xfc00 && first <= 0xfdff)
+    || (first >= 0xfe80 && first <= 0xfebf);
+}
+
+function assertPublicHttpsStorageOrigin(parsed) {
+  const hostname = normalizeHostname(parsed.hostname);
+  const ipVersion = net.isIP(hostname);
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+    || (ipVersion === 4 && isPrivateIpv4(parseIpv4Address(hostname)))
+    || (ipVersion === 6 && isPrivateIpv6(hostname))
+  ) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 参考素材要求配置公网 HTTPS 存储地址');
+  }
+}
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function parseRequestSnapshotForProcessing(value) {
+  if (!value) return { valid: true, present: false, snapshot: {} };
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { valid: true, present: true, snapshot: parsed };
+    }
+  } catch (_) {}
+  return { valid: false, present: true, snapshot: {} };
+}
+
+function keepVideoProcessing(db, row, videoGenId, message, now = new Date().toISOString()) {
+  db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('processing', String(message || '').slice(0, 500), now, videoGenId);
+  if (row?.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+}
+
+function toapisStorageContext() {
+  const cfg = require('../config').loadConfig();
+  const rawBase = String(cfg.storage?.base_url || '').trim().replace(/\/+$/, '');
+  let parsed = null;
+  try {
+    parsed = new URL(rawBase);
+  } catch (_) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 参考素材要求配置公网 HTTPS 存储地址');
+  }
+  assertPublicHttpsStorageOrigin(parsed);
+  const prefix = parsed.pathname.replace(/\/+$/, '') || '';
+  return {
+    origin: parsed.origin,
+    staticPrefix: prefix.endsWith('/static') ? prefix : '/static',
+  };
+}
+
+function normalizeToapisReferenceUrl(ref, context) {
+  const raw = String(ref || '').trim();
+  if (!raw) return null;
+  let pathname = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    let parsed = null;
+    try {
+      parsed = new URL(raw);
+    } catch (_) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材地址非法');
+    }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.origin !== context.origin) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 只允许使用平台自身存储的公网 HTTPS 素材');
+    }
+    pathname = parsed.pathname;
+  } else if (!raw.startsWith('/static/')) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 只允许使用平台自身存储的公网 HTTPS 素材');
+  }
+  let decoded = pathname;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch (_) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材路径非法');
+    }
+  }
+  if (decoded.includes('\\')) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材路径非法');
+  }
+  const normalized = path.posix.normalize(decoded);
+  if (normalized !== decoded || !normalized.startsWith('/static/projects/')) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材路径非法');
+  }
+  const relativePath = normalized.replace(/^\/static\/+/, '');
+  return {
+    url: `${context.origin}/static/${relativePath}`,
+    relativePath,
+  };
+}
+
+function findVideoPlatformReference(db, kind, relativePath, publicUrl) {
+  const asset = db.prepare(`SELECT id, drama_id, metadata FROM assets
+    WHERE deleted_at IS NULL AND type = ? AND (local_path = ? OR url = ? OR url = ?)
+    ORDER BY id DESC LIMIT 1`).get(kind, relativePath, `/static/${relativePath}`, publicUrl);
+  if (asset) return { source: 'asset', drama_id: asset.drama_id, metadata: parseJsonObject(asset.metadata) };
+  if (kind === 'image') {
+    const generated = db.prepare(`SELECT id, drama_id FROM image_generations
+      WHERE deleted_at IS NULL AND status = 'completed' AND (local_path = ? OR image_url = ? OR image_url = ?)
+      ORDER BY id DESC LIMIT 1`).get(relativePath, `/static/${relativePath}`, publicUrl);
+    if (generated) return { source: 'image_generation', drama_id: generated.drama_id, metadata: {} };
+  }
+  if (kind === 'video') {
+    const generated = db.prepare(`SELECT id, drama_id FROM video_generations
+      WHERE deleted_at IS NULL AND status = 'completed' AND (local_path = ? OR video_url = ? OR video_url = ?)
+      ORDER BY id DESC LIMIT 1`).get(relativePath, `/static/${relativePath}`, publicUrl);
+    if (generated) return { source: 'video_generation', drama_id: generated.drama_id, metadata: {} };
+  }
+  return null;
+}
+
+function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
+  const inputImageUrls = cleanUrlList(references.imageUrls);
+  const inputVideoUrls = cleanUrlList(references.videoUrls);
+  const inputAudioUrls = cleanUrlList(references.audioUrls);
+  const inputFirstFrameUrl = cleanUrlList(references.firstFrameUrl)[0] || null;
+  const inputLastFrameUrl = cleanUrlList(references.lastFrameUrl)[0] || null;
+  const inputImageUrl = cleanUrlList(references.imageUrl)[0] || null;
+  const allRefs = [
+    ...inputImageUrls.map((url) => ({ kind: 'image', url })),
+    ...inputVideoUrls.map((url) => ({ kind: 'video', url })),
+    ...inputAudioUrls.map((url) => ({ kind: 'audio', url })),
+    ...cleanUrlList(inputFirstFrameUrl, inputLastFrameUrl, inputImageUrl)
+      .map((url) => ({ kind: 'image', url })),
+  ];
+  if (allRefs.length === 0) {
+    return {
+      imageUrls: [],
+      videoUrls: [],
+      audioUrls: [],
+      firstFrameUrl: null,
+      lastFrameUrl: null,
+      imageUrl: null,
+    };
+  }
+  const targetDramaId = Number(dramaId);
+  if (!Number.isSafeInteger(targetDramaId) || targetDramaId <= 0) {
+    throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材所属项目不存在');
+  }
+  const drama = db.prepare('SELECT id, tenant_id, user_id FROM dramas WHERE id = ? AND deleted_at IS NULL').get(targetDramaId);
+  if (!drama) throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材所属项目不存在');
+  if (options.billingEnabled) {
+    if (options.tenantId) {
+      if (!drama.tenant_id || String(drama.tenant_id) !== String(options.tenantId)) {
+        throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材请求租户与当前项目不一致');
+      }
+    } else if (!options.userId || String(drama.user_id || '') !== String(options.userId)) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材请求用户与当前项目不一致');
+    }
+  }
+  const context = toapisStorageContext();
+  const normalized = {
+    imageUrls: [],
+    videoUrls: [],
+    audioUrls: [],
+    firstFrameUrl: null,
+    lastFrameUrl: null,
+    imageUrl: null,
+  };
+  for (const item of allRefs) {
+    const ref = normalizeToapisReferenceUrl(item.url, context);
+    const row = findVideoPlatformReference(db, item.kind, ref.relativePath, ref.url);
+    if (!row) throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材不是当前项目可用素材');
+    const metadata = row.metadata || {};
+    if (!(row.drama_id == null && metadata.system_shared === true) && Number(row.drama_id) !== targetDramaId) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材不属于当前项目');
+    }
+    if (item.kind === 'image' && item.url === inputFirstFrameUrl) normalized.firstFrameUrl = ref.url;
+    if (item.kind === 'image' && item.url === inputLastFrameUrl) normalized.lastFrameUrl = ref.url;
+    if (item.kind === 'image' && item.url === inputImageUrl) normalized.imageUrl = ref.url;
+    if (item.kind === 'image' && inputImageUrls.includes(item.url)) normalized.imageUrls.push(ref.url);
+    if (item.kind === 'video') normalized.videoUrls.push(ref.url);
+    if (item.kind === 'audio') normalized.audioUrls.push(ref.url);
+  }
+  normalized.imageUrls = [...new Set(normalized.imageUrls)];
+  normalized.videoUrls = [...new Set(normalized.videoUrls)];
+  normalized.audioUrls = [...new Set(normalized.audioUrls)];
+  return normalized;
+}
+
+function buildVideoRequestSnapshot(input) {
+  return {
+    model: input.model || null,
+    prompt: input.prompt || '',
+    duration: input.duration,
+    aspect_ratio: input.aspectRatio || null,
+    resolution: input.resolution ?? null,
+    seed: input.seed ?? null,
+    camera_fixed: input.cameraFixed ?? null,
+    watermark: input.watermark === true,
+    reference_mode: input.referenceMode,
+    generate_audio: input.generateAudio === true,
+    image_url: input.imageUrl || null,
+    first_frame_url: input.firstFrameUrl || null,
+    last_frame_url: input.lastFrameUrl || null,
+    reference_image_urls: input.referenceImageUrls || [],
+    reference_video_urls: input.referenceVideoUrls || [],
+    reference_audio_urls: input.referenceAudioUrls || [],
+  };
+}
+
+function snapshotField(snapshot, key, fallback) {
+  return Object.prototype.hasOwnProperty.call(snapshot || {}, key) ? snapshot[key] : fallback;
+}
+
 function create(db, log, req, options = {}) {
   const body = req || {};
   const billingEnabled = Boolean(options.billingEnabled);
@@ -220,17 +543,37 @@ function create(db, log, req, options = {}) {
   const effectiveModel = videoConfig?.canvas_selected_model
     || selectedModel || videoConfig?.default_model || videoConfig?.model || '';
   const minimumDuration = minimumVideoDuration(effectiveModel);
+  const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
+  const isToapisVideo = videoProtocol === 'toapis_video' || videoProtocol === 'toapis';
+  const toapisSpec = isToapisVideo ? TOAPIS_VIDEO_MODELS[String(effectiveModel || '').trim()] : null;
+  const inputReferenceImageUrls = cleanUrlList(body.reference_image_urls);
+  if (toapisSpec && inputReferenceImageUrls.length > toapisSpec.maxReferences) {
+    throw videoRequestError(
+      'VIDEO_REFERENCE_FORBIDDEN',
+      `ToAPIs 模型 ${effectiveModel} 最多支持 ${toapisSpec.maxReferences} 张参考图`
+    );
+  }
   const storyboardDuration = Number(storyboardDefaults?.duration);
   const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= minimumDuration && storyboardDuration <= 15
     ? storyboardDuration
     : configuredVideoDuration(videoConfig, minimumDuration) || 5;
   const duration = normalizeVideoDuration(body.duration, fallbackDuration, minimumDuration);
+  const resolvedCapabilities = videoReferenceCapability.resolve(videoConfig || {}, effectiveModel);
+  const effectiveCapabilities = toapisSpec
+    ? {
+        ...resolvedCapabilities,
+        referenceTypes: ['image', 'video', 'audio'],
+        maxImageReferences: toapisSpec.maxReferences,
+        maxVideoReferences: toapisSpec.maxVideoReferences,
+        maxAudioReferences: toapisSpec.maxAudioReferences,
+      }
+    : resolvedCapabilities;
   const normalizedReferences = videoReferenceCapability.validateAndNormalize({
     model: effectiveModel,
-    capabilities: videoReferenceCapability.resolve(videoConfig || {}, effectiveModel),
-    referenceImageUrls: body.reference_image_urls,
-    referenceAudioUrls: body.reference_audio_urls,
-    referenceVideoUrls: body.reference_video_urls,
+    capabilities: effectiveCapabilities,
+    referenceImageUrls: inputReferenceImageUrls,
+    referenceAudioUrls: cleanUrlList(body.reference_audio_urls, body.reference_audio_url),
+    referenceVideoUrls: cleanUrlList(body.reference_video_urls, body.reference_video_url),
   });
 
   const active = findActiveForStoryboard(db, storyboardId, {
@@ -266,13 +609,89 @@ function create(db, log, req, options = {}) {
       billingModel = videoConfig?.default_model || videoConfig?.model || null;
     }
     billingModel = modelPrice.canonicalModel(billingModel);
-    price = modelPrice.calculateCharge(db, billingModel, { duration });
+    price = modelPrice.calculateCharge(db, billingModel, {
+      duration,
+      resolution: body.resolution,
+    });
   }
 
   const persistedPrompt = storyboardId
     ? voicePrompt.ensureStoryboardVoicePrompt(db, storyboardId)
     : null;
   const storyboardPrompt = String(persistedPrompt || storyboardDefaults?.video_prompt || '').trim();
+  let prompt = String(body.prompt ?? '').trim();
+  if (!prompt) prompt = storyboardPrompt;
+  const style = String(body.style || '').trim();
+  if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
+    prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
+  }
+  const model = videoConfig?.canvas_selected_model || selectedModel || videoConfig?.default_model || null;
+  prompt = voicePrompt.appendVoiceAnchors({
+    db,
+    dramaId,
+    storyboardId,
+    prompt,
+    protocol: body.api_protocol,
+    model,
+  });
+  let aspectRatio = body.aspect_ratio ? videoClient.normalizeAspectRatioForApi(body.aspect_ratio) : null;
+  if (!aspectRatio && dramaId) {
+    try {
+      const drama = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(dramaId);
+      const metadata = drama?.metadata ? JSON.parse(drama.metadata) : null;
+      if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
+    } catch (_) {}
+  }
+  let referenceImageUrls = cleanUrlList(normalizedReferences.referenceImageUrls);
+  let referenceVideoUrls = cleanUrlList(normalizedReferences.referenceVideoUrls);
+  let referenceAudioUrls = cleanUrlList(normalizedReferences.referenceAudioUrls);
+  let imageUrl = cleanUrlList(body.image_url)[0] || null;
+  let firstFrameUrl = cleanUrlList(body.first_frame_url, body.first_frame_local_path, body.image_url)[0] || null;
+  let lastFrameUrl = cleanUrlList(body.last_frame_url, body.last_frame_local_path)[0] || null;
+  const hasFrameRefs = !!(firstFrameUrl || lastFrameUrl);
+  const hasOmniRefs = referenceImageUrls.length > 0 || referenceVideoUrls.length > 0 || referenceAudioUrls.length > 0;
+  if (isToapisVideo) {
+    if (lastFrameUrl && !firstFrameUrl) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 尾帧参考必须同时提供首帧');
+    }
+    if (hasFrameRefs && hasOmniRefs) {
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', 'ToAPIs 首尾帧和全能参考不能混用');
+    }
+    const normalizedRefs = assertToapisReferencesAllowed(db, {
+      imageUrls: referenceImageUrls,
+      videoUrls: referenceVideoUrls,
+      audioUrls: referenceAudioUrls,
+      imageUrl,
+      firstFrameUrl,
+      lastFrameUrl,
+    }, dramaId, options);
+    referenceImageUrls = normalizedRefs.imageUrls;
+    referenceVideoUrls = normalizedRefs.videoUrls;
+    referenceAudioUrls = normalizedRefs.audioUrls;
+    imageUrl = normalizedRefs.imageUrl || imageUrl;
+    firstFrameUrl = normalizedRefs.firstFrameUrl || (hasFrameRefs ? null : firstFrameUrl);
+    lastFrameUrl = normalizedRefs.lastFrameUrl || (hasFrameRefs ? null : lastFrameUrl);
+  }
+  const referenceMode = hasOmniRefs ? 'omni' : hasFrameRefs ? 'frame' : 'text';
+  const generateAudio = body.generate_audio === true;
+  const requestSnapshot = buildVideoRequestSnapshot({
+    model,
+    prompt,
+    duration,
+    aspectRatio,
+    resolution: body.resolution,
+    seed: body.seed != null ? Number(body.seed) : null,
+    cameraFixed: body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null,
+    watermark: body.watermark ? true : false,
+    referenceMode,
+    generateAudio,
+    imageUrl,
+    firstFrameUrl,
+    lastFrameUrl,
+    referenceImageUrls,
+    referenceVideoUrls,
+    referenceAudioUrls,
+  });
 
   const now = new Date().toISOString();
   const result = db.transaction(() => {
@@ -281,43 +700,24 @@ function create(db, log, req, options = {}) {
       db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
         .run(options.tenantId, options.userId, task.id);
     }
-    let prompt = String(body.prompt ?? '').trim();
-    if (!prompt) prompt = storyboardPrompt;
-    const style = String(body.style || '').trim();
-    if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
-      prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
-    }
-    const model = videoConfig?.canvas_selected_model || selectedModel || videoConfig?.default_model || null;
-    prompt = voicePrompt.appendVoiceAnchors({
-      db,
-      dramaId,
-      storyboardId,
-      prompt,
-      protocol: body.api_protocol,
-      model,
-    });
-    let aspectRatio = body.aspect_ratio ? videoClient.normalizeAspectRatioForApi(body.aspect_ratio) : null;
-    if (!aspectRatio && dramaId) {
-      try {
-        const drama = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(dramaId);
-        const metadata = drama?.metadata ? JSON.parse(drama.metadata) : null;
-        if (metadata?.aspect_ratio) aspectRatio = videoClient.normalizeAspectRatioForApi(metadata.aspect_ratio);
-      } catch (_) {}
-    }
-    const refs = normalizedReferences.referenceImageUrls.length ? JSON.stringify(normalizedReferences.referenceImageUrls) : null;
-    const audioRefs = normalizedReferences.referenceAudioUrls.length ? JSON.stringify(normalizedReferences.referenceAudioUrls) : null;
-    const videoRefs = normalizedReferences.referenceVideoUrls.length ? JSON.stringify(normalizedReferences.referenceVideoUrls) : null;
+    const refs = referenceImageUrls.length ? JSON.stringify(referenceImageUrls) : null;
+    const persistedFirstFrameUrl = firstFrameUrl;
+    const referenceVideoUrl = referenceVideoUrls[0] || null;
+    const referenceAudioUrl = referenceAudioUrls[0] || null;
     db.prepare(`INSERT INTO video_generations
       (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark,
-       image_url, first_frame_url, last_frame_url, reference_image_urls, reference_audio_urls, reference_video_urls,
+       image_url, first_frame_url, last_frame_url, reference_image_urls, reference_video_url, reference_audio_url,
+       reference_mode, generate_audio, reference_video_urls, reference_audio_urls, request_snapshot,
        status, task_id, tenant_id, user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, billingModel || model, duration,
+        dramaId, storyboardId, body.provider || 'chatfire', prompt, model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
-        body.image_url ?? null, body.first_frame_url ?? body.first_frame_local_path ?? null,
-        body.last_frame_url ?? body.last_frame_local_path ?? null, refs, audioRefs, videoRefs, task.id,
+        imageUrl ?? null, persistedFirstFrameUrl,
+        lastFrameUrl ?? null, refs, referenceVideoUrl, referenceAudioUrl,
+        referenceMode, generateAudio ? 1 : 0, JSON.stringify(referenceVideoUrls), JSON.stringify(referenceAudioUrls),
+        JSON.stringify(requestSnapshot), task.id,
         billingEnabled ? options.tenantId || null : null,
         billingEnabled ? String(options.userId) : null, now, now
       );
@@ -337,6 +737,7 @@ function create(db, log, req, options = {}) {
         reservationId: reservation.id,
         model: billingModel,
         quantity: duration,
+        resolution: body.resolution,
         usageSource: 'configured',
       });
       db.prepare('UPDATE video_generations SET credit_reservation_id = ? WHERE id = ?').run(reservation.id, id);
@@ -798,9 +1199,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
 
   const config = videoClient.getDefaultVideoConfig(db, row.model);
   if (!config) {
-    const now = new Date().toISOString();
-    setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
+    keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询');
     return;
   }
 
@@ -829,11 +1228,24 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
 
 /** 启动时恢复 processing 视频任务；无 provider_task_id 的视为中断 */
 function resumeProcessingVideoGenerations(db, log) {
+  const indeterminate = db
+    .prepare(
+      `SELECT id, task_id, error_msg FROM video_generations
+       WHERE status = 'processing' AND deleted_at IS NULL
+         AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')
+         AND error_msg LIKE 'VIDEO_SUBMISSION_INDETERMINATE:%'`
+    )
+    .all();
+  for (const s of indeterminate) {
+    if (s.task_id) taskService.updateTaskStatus(db, s.task_id, 'processing', 90, s.error_msg);
+    log.warn('Video generation submission indeterminate; keep for manual reconciliation', { videoGenId: s.id });
+  }
   const stuck = db
     .prepare(
       `SELECT id, task_id FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
          AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')`
+        + ` AND (error_msg IS NULL OR error_msg NOT LIKE 'VIDEO_SUBMISSION_INDETERMINATE:%')`
     )
     .all();
   const stuckMsg = '服务重启后无法恢复轮询（缺少厂商任务 ID），请重新生成';
@@ -891,26 +1303,54 @@ async function processVideoGeneration(db, log, videoGenId) {
     const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const existingProviderTaskId = row.provider_task_id && String(row.provider_task_id).trim();
     const config = videoClient.getDefaultVideoConfig(db, row.model);
     if (!config) {
-      setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
-      if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
+      if (existingProviderTaskId) {
+        keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
+      } else {
+        setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
+        if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
+      }
       return;
     }
-    const reference_urls = parseReferenceUrls(row.reference_image_urls);
-    const reference_audio_urls = parseReferenceUrls(row.reference_audio_urls);
-    const reference_video_urls = parseReferenceUrls(row.reference_video_urls);
+    const parsedSnapshot = parseRequestSnapshotForProcessing(row.request_snapshot);
+    if (!existingProviderTaskId && !parsedSnapshot.valid) {
+      keepVideoProcessing(db, row, videoGenId, 'VIDEO_SUBMISSION_INDETERMINATE: request_snapshot 损坏或格式非法，请人工对账后处理', now);
+      log.warn('Video generation request_snapshot invalid; supplier submit skipped', { id: videoGenId });
+      return;
+    }
+    const snapshot = parsedSnapshot.snapshot;
+    const snapshotHas = (key) => Object.prototype.hasOwnProperty.call(snapshot, key);
+    let reference_urls = snapshotHas('reference_image_urls')
+      ? cleanUrlList(Array.isArray(snapshot.reference_image_urls) ? snapshot.reference_image_urls : [])
+      : null;
+    if (!snapshotHas('reference_image_urls') && row.reference_image_urls) {
+      try {
+        reference_urls = JSON.parse(row.reference_image_urls);
+        if (!Array.isArray(reference_urls)) reference_urls = null;
+      } catch (_) {}
+    }
+    if (Array.isArray(reference_urls)) reference_urls = cleanUrlList(reference_urls);
+    const referenceVideoUrls = snapshotHas('reference_video_urls')
+      ? cleanUrlList(Array.isArray(snapshot.reference_video_urls) ? snapshot.reference_video_urls : [])
+      : cleanUrlList(parseReferenceUrls(row.reference_video_urls), row.reference_video_url);
+    const referenceAudioUrls = snapshotHas('reference_audio_urls')
+      ? cleanUrlList(Array.isArray(snapshot.reference_audio_urls) ? snapshot.reference_audio_urls : [])
+      : cleanUrlList(parseReferenceUrls(row.reference_audio_urls), row.reference_audio_url);
+    const processingModel = snapshot.model ?? row.model;
     const effectiveDuration = normalizeVideoDuration(
-      row.duration,
+      snapshot.duration ?? row.duration,
       5,
-      minimumVideoDuration(config.canvas_selected_model || row.model),
+      minimumVideoDuration(config.canvas_selected_model || processingModel),
     );
-    let aspectForVideo = row.aspect_ratio;
+    const snapshotHasAspectRatio = snapshotHas('aspect_ratio');
+    let aspectForVideo = snapshotHasAspectRatio ? snapshot.aspect_ratio : row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);
       if (n) aspectForVideo = n;
     }
-    if (!aspectForVideo && row.drama_id) {
+    if (!snapshotHasAspectRatio && !aspectForVideo && row.drama_id) {
       try {
         const dramaRow = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(row.drama_id);
         if (dramaRow && dramaRow.metadata) {
@@ -922,9 +1362,17 @@ async function processVideoGeneration(db, log, videoGenId) {
         }
       } catch (_) {}
     }
-    const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
-    const referenceCount = reference_urls.length + reference_audio_urls.length + reference_video_urls.length;
-    const hasOmniRefs = referenceCount > 0;
+    const rowForAspect = { ...row, aspect_ratio: aspectForVideo };
+    if (existingProviderTaskId) {
+      await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, existingProviderTaskId, config);
+      return;
+    }
+    const referenceCount = (reference_urls?.length || 0) + referenceVideoUrls.length + referenceAudioUrls.length;
+    const hasOmniRefs = !!(
+      (reference_urls && reference_urls.length > 0)
+      || referenceVideoUrls.length > 0
+      || referenceAudioUrls.length > 0
+    );
     if (row.task_id && hasOmniRefs) {
       const task = taskService.getTask(db, row.task_id);
       if (task && (task.status === 'pending' || task.status === 'processing')) {
@@ -938,30 +1386,39 @@ async function processVideoGeneration(db, log, videoGenId) {
       }
     }
     const result = await videoClient.callVideoApi(db, log, {
-      prompt: row.prompt,
-      model: row.model,
+      prompt: snapshot.prompt ?? row.prompt,
+      model: snapshot.model ?? row.model,
       duration: effectiveDuration,
       aspect_ratio: rowForAspect.aspect_ratio,
-      resolution: row.resolution,
-      seed: row.seed,
-      camera_fixed: row.camera_fixed,
-      watermark: row.watermark,
+      resolution: snapshot.resolution ?? row.resolution,
+      seed: snapshot.seed ?? row.seed,
+      camera_fixed: snapshot.camera_fixed ?? row.camera_fixed,
+      watermark: snapshot.watermark ?? row.watermark,
       provider: row.provider,
       drama_id: row.drama_id,
       storyboard_id: row.storyboard_id || undefined,
-      image_url: row.image_url,
-      first_frame_url: row.first_frame_url,
-      last_frame_url: row.last_frame_url,
+      image_url: snapshotField(snapshot, 'image_url', row.image_url),
+      first_frame_url: snapshotField(snapshot, 'first_frame_url', row.first_frame_url),
+      last_frame_url: snapshotField(snapshot, 'last_frame_url', row.last_frame_url),
       reference_urls,
-      reference_audio_urls,
-      reference_video_urls,
-      voice_reference_url: reference_audio_urls[0] || undefined,
-      video_url: reference_video_urls[0] || undefined,
+      reference_video_urls: referenceVideoUrls,
+      reference_audio_urls: referenceAudioUrls,
+      voice_reference_url: referenceAudioUrls[0] || undefined,
+      video_url: referenceVideoUrls[0] || undefined,
+      generate_audio: snapshot.generate_audio ?? (row.generate_audio === 1),
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
     });
     const now2 = new Date().toISOString();
+    if (result.indeterminate) {
+      const message = `VIDEO_SUBMISSION_INDETERMINATE: ${String(result.error || '供应商提交结果未知，请人工对账').slice(0, 450)}`;
+      db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+        .run('processing', message, now2, videoGenId);
+      if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+      log.warn('Video submission indeterminate; reservation remains held', { id: videoGenId });
+      return;
+    }
     if (result.error) {
       setVideoGenFailed(db, videoGenId, result.error, now2);
       if (row.task_id) taskService.updateTaskError(db, row.task_id, result.error);
