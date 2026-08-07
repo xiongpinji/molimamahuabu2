@@ -30,7 +30,8 @@ function routes(db, log, options = {}) {
         response.created(res, item);
       } catch (err) {
         log.error('videos create', { error: err.message });
-        if (['MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
+        if (['MODEL_NOT_VERIFIED', 'MODEL_RESOLUTION_PRICE_REQUIRED',
+          'MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(err.code)) {
           return response.error(res, 503, err.code, err.message);
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {
@@ -39,8 +40,9 @@ function routes(db, log, options = {}) {
         if (err.code === 'UNSUPPORTED_BILLING_MODEL') {
           return response.badRequest(res, err.message);
         }
-        if (err.code === 'INVALID_VIDEO_DURATION' || err.code === 'VIDEO_GENERATION_ACTIVE') {
-          return response.badRequest(res, err.message);
+        if (['INVALID_VIDEO_DURATION', 'INVALID_VIDEO_REQUEST',
+          'VIDEO_REFERENCE_FORBIDDEN', 'VIDEO_GENERATION_ACTIVE'].includes(err.code)) {
+          return response.error(res, 400, err.code, err.message);
         }
         response.internalError(res, err.message);
       }

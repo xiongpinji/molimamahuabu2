@@ -2,6 +2,7 @@ const aiConfigService = require('./aiConfigService');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const modelPriceService = require('./modelPriceService');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
+const toapisVideoClient = require('./toapisVideoClient');
 
 const KIND_BY_SERVICE = {
   text: 'text',
@@ -10,6 +11,29 @@ const KIND_BY_SERVICE = {
   video: 'video',
   tts: 'audio',
 };
+
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
+
+const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
+  durations: Object.freeze([5]),
+  aspectRatios: Object.freeze(['16:9']),
+  maxReferences: 4,
+  maxVideoReferences: 1,
+  maxAudioReferences: 1,
+  supportsFirstFrame: true,
+  supportsLastFrame: true,
+  supportsImageReference: true,
+  supportsVideoReference: true,
+  supportsAudioReference: true,
+  supportsAudio: true,
+});
+
+function providerCapabilities(provider, model) {
+  if (!['usmercari', 'usmercari_media'].includes(String(provider || '').toLowerCase())) return {};
+  if (!['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'].includes(String(model))) return {};
+  const resolutions = String(model) === 'MiniMax H3' ? ['480p'] : ['480p', '720p'];
+  return { ...USMERCARI_VIDEO_CAPABILITIES, resolutions };
+}
 
 function parseModels(value, fallback) {
   if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
@@ -88,38 +112,85 @@ function safeCapabilities(settings, config = {}, model = '') {
   }
 }
 
-function isUsmercariImageConfig(config) {
-  return KIND_BY_SERVICE[config.service_type] === 'image'
-    && (String(config.provider || '').toLowerCase() === 'usmercari_image'
-      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image');
+function strictVerifiedProtocol(config) {
+  const values = [config.api_protocol, config.provider]
+    .map((value) => String(value || '').trim().toLowerCase());
+  if (values.includes('usmercari_image')) return 'usmercari_image';
+  if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
+  return null;
 }
 
-function verifiedImageCapabilities(config, model, price) {
-  if (!isUsmercariImageConfig(config)) return null;
+function verifiedModelCapabilities(config, model, price) {
+  const protocol = strictVerifiedProtocol(config);
+  if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return null;
   if (config.verification_status !== 'verified' || !aiConfigService.hasConnectionCredential(config)) return false;
   const target = String(model || '').trim().toLowerCase();
   const capabilityKey = Object.keys(config.verified_capabilities || {})
     .find((item) => String(item).trim().toLowerCase() === target);
   const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
   if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
+  const allowedResolutions = protocol === 'usmercari_image'
+    ? modelPriceService.IMAGE_RESOLUTIONS
+    : modelPriceService.VIDEO_RESOLUTIONS;
   const resolutions = Array.isArray(capabilities.resolutions)
-    ? [...new Set(capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
+    ? [...new Set(capabilities.resolutions
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter((resolution) => allowedResolutions.includes(resolution)))]
     : [];
-  if (!capabilities.supportsTextToImage || !resolutions.length || !price) return false;
+  let publicCapabilities = { ...capabilities, resolutions };
+  if (protocol === 'toapis_video') {
+    const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[target];
+    const verifiedDurations = new Set(Array.isArray(capabilities.durations)
+      ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+      : []);
+    const durations = official
+      ? official.durations.filter((duration) => verifiedDurations.has(duration))
+      : [];
+    if (!durations.length) return false;
+    publicCapabilities = { ...publicCapabilities, durations };
+  }
+  if ((protocol === 'usmercari_image' && capabilities.supportsTextToImage !== true)
+      || !resolutions.length || !price) return false;
   const allPriced = resolutions.every((resolution) => {
     const credits = price.resolution_prices?.[resolution]?.credits;
     return Number.isSafeInteger(credits) && credits > 0;
   });
-  return allPriced ? { ...capabilities, resolutions } : false;
+  return allPriced ? publicCapabilities : false;
 }
 
 function list(db, options = {}) {
   const prices = new Map(modelPriceService.list(db)
     .filter((row) => row.status === 'enabled')
     .map((row) => [String(row.model).toLowerCase(), row]));
-  const seen = new Set();
   const configs = aiConfigService.listConfigs(db);
-  const mediaEntries = mediaModelSelection.listEntries(configs);
+  const configuredModelEntries = configs
+    .filter((config) => KIND_BY_SERVICE[config.service_type])
+    .flatMap((config) => orderedModels(config).map((model) => ({
+      config,
+      model,
+      key: `${KIND_BY_SERVICE[config.service_type]}:${model.toLowerCase()}`,
+    })));
+  const strictKeys = new Set(configuredModelEntries
+    .filter(({ config }) => strictVerifiedProtocol(config))
+    .map(({ key }) => key));
+
+  const mediaCandidates = mediaModelSelection.listEntries(configs)
+    .filter((entry) => {
+      const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+      return !strictKeys.has(upstreamKey) || !!strictVerifiedProtocol(entry.config);
+    });
+  const mediaCounts = new Map();
+  for (const entry of mediaCandidates) {
+    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+    mediaCounts.set(upstreamKey, (mediaCounts.get(upstreamKey) || 0) + 1);
+  }
+  const mediaEntries = mediaCandidates.map((entry) => {
+    const upstreamKey = `${entry.kind}:${entry.upstreamModel.toLowerCase()}`;
+    const model = mediaCounts.get(upstreamKey) > 1
+      ? `cfg-${entry.config.id}::${entry.upstreamModel}`
+      : entry.upstreamModel;
+    return { ...entry, model };
+  });
   const nonMediaEntries = configs
     .filter((config) => !mediaModelSelection.KIND_BY_SERVICE[config.service_type])
     .flatMap((config) => orderedModels(config).map((model) => ({
@@ -128,6 +199,7 @@ function list(db, options = {}) {
       model,
       upstreamModel: model,
     })));
+  const seen = new Set();
   const configured = [...mediaEntries, ...nonMediaEntries]
     .filter((entry) => entry.config.is_active !== false
       && entry.kind
@@ -139,7 +211,7 @@ function list(db, options = {}) {
       if (seen.has(key)) return null;
       const price = prices.get(model.toLowerCase());
       if (!Number.isSafeInteger(price?.credits) || price.credits <= 0) return null;
-      const verifiedCapabilities = verifiedImageCapabilities(config, upstreamModel, price);
+      const verifiedCapabilities = verifiedModelCapabilities(config, upstreamModel, price);
       if (verifiedCapabilities === false) return null;
       const resolutionPrices = verifiedCapabilities
         ? Object.fromEntries(verifiedCapabilities.resolutions.map((resolution) => [
@@ -162,9 +234,12 @@ function list(db, options = {}) {
         resolution_prices: resolutionPrices,
         verification_status: config.verification_status || 'pending',
         protocol: config.api_protocol || config.provider || '',
-        capabilities: kind === 'video'
-          ? videoReferenceCapabilityService.resolve(config, upstreamModel)
-          : (verifiedCapabilities || safeCapabilities(config.settings, config, upstreamModel)),
+        capabilities: verifiedCapabilities || (kind === 'video'
+          ? {
+            ...videoReferenceCapabilityService.resolve(config, upstreamModel),
+            ...providerCapabilities(config.provider, upstreamModel),
+          }
+          : safeCapabilities(config.settings, config, upstreamModel)),
       };
     })
     .filter(Boolean);

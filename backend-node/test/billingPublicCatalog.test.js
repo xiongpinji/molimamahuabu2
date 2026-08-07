@@ -158,3 +158,69 @@ test('公共计费目录识别 USMercari 图片专用环境 Key', () => {
     db.close();
   }
 });
+
+test('公共计费目录对 ToAPIs 视频复用真实验证、凭据和完整档位价格门禁', () => {
+  const db = new Database(':memory:');
+  const previousKey = process.env.TOAPIS_API_KEY;
+  delete process.env.TOAPIS_API_KEY;
+  try {
+    db.exec(`CREATE TABLE ai_service_configs (
+      id INTEGER PRIMARY KEY,
+      service_type TEXT,
+      provider TEXT,
+      api_protocol TEXT,
+      api_key TEXT,
+      model TEXT,
+      default_model TEXT,
+      is_active INTEGER DEFAULT 1,
+      verification_status TEXT DEFAULT 'pending',
+      verified_capabilities TEXT DEFAULT '{}',
+      deleted_at TEXT
+    )`);
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, api_key, model, is_active, verification_status, verified_capabilities)
+      VALUES ('video', 'toapis', 'toapis_video', 'stored-key', ?, 1, 'verified', ?)`)
+      .run(JSON.stringify(['seedance-2-fast']), JSON.stringify({
+        'seedance-2-fast': { durations: [4, 5], resolutions: ['480p', '720p'] },
+      }));
+    modelPrice.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    const handlers = billingRoutes(db, log);
+    let captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.deepEqual(captured.result.body.data, []);
+
+    modelPrice.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.equal(captured.result.body.data.length, 1);
+    assert.deepEqual(Object.keys(captured.result.body.data[0].resolution_prices), ['480p', '720p']);
+
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'pending'").run();
+    captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.deepEqual(captured.result.body.data, []);
+
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified', verified_capabilities = ?")
+      .run(JSON.stringify({
+        'seedance-2-fast': { durations: [99], resolutions: ['480p', '720p'] },
+      }));
+    captured = capture();
+    handlers.listPublicCatalog({}, captured.res);
+    assert.deepEqual(captured.result.body.data, []);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});

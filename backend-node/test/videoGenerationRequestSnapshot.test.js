@@ -61,12 +61,37 @@ function setup(t, options = {}) {
   db.prepare(`INSERT INTO storyboards (episode_id, storyboard_number, title, created_at, updated_at) VALUES (1, 1, '分镜', ?, ?)`).run(now, now);
   db.prepare(
     `INSERT INTO ai_service_configs
-      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, is_active, is_default, priority, created_at, updated_at)
-     VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs 测试', 'https://toapis.com/v1', 'test-key', ?, 'seedance-2-mini', 1, 1, 0, ?, ?)`
-  ).run(JSON.stringify(['seedance-2-mini']), now, now);
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, is_default, priority, verification_status, verified_capabilities, created_at, updated_at)
+     VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs 测试', 'https://toapis.com/v1', 'test-key', ?,
+       'seedance-2-mini', 1, 1, 0, 'verified', ?, ?, ?)`
+  ).run(
+    JSON.stringify(['seedance-2-mini']),
+    JSON.stringify({
+      'seedance-2-mini': {
+        durations: [4, 8, 10, 12, 15], resolutions: ['480p', '720p'],
+        supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
+        supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
+      },
+      'seedance-2-fast': {
+        durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['480p', '720p'],
+        supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
+        supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
+      },
+    }),
+    now,
+    now
+  );
   credits.setAccountBalance(db, 'user-1', 10000);
   credits.setTenantAccountBalance(db, 'tenant-1', 10000);
-  prices.set(db, 'seedance-2-mini', 2, { category: 'video', cost_unit: 'second' });
+  prices.set(db, 'seedance-2-mini', 2, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 1 },
+      '720p': { credits: 2, cost_micros_per_second: 1 },
+    },
+  });
   t.after(() => db.close());
   return { db, now, drama1, drama2, drama3 };
 }
@@ -88,6 +113,10 @@ function insertAsset(db, dramaId, type, relPath, metadata = {}) {
   ).lastInsertRowid);
 }
 
+function createVideo(db, body, options) {
+  return videoService.create(db, log, { resolution: '480p', ...body }, options);
+}
+
 function sideEffectCounts(db) {
   return {
     tasks: db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count,
@@ -103,7 +132,7 @@ test('ToAPIs create stores normalized omni arrays and request snapshot before pr
   insertAsset(db, drama1, 'video', 'projects/0001/assets/ref-video.mp4');
   insertAsset(db, drama1, 'audio', 'projects/0001/assets/ref-audio.mp3');
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -153,7 +182,7 @@ test('ToAPIs process uses request_snapshot arrays and does not rebuild from muta
   };
   t.after(() => { videoClient.callVideoApi = originalCall; });
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -186,7 +215,7 @@ test('ToAPIs snapshot empty arrays and null aspect ratio stay authoritative duri
   };
   t.after(() => { videoClient.callVideoApi = originalCall; });
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -230,7 +259,7 @@ test('ToAPIs rejects forbidden references before task row or credit reservation'
     if (item.setupAsset === true) insertAsset(db, drama1, 'image', 'projects/0001/assets/ref-image.png');
     if (item.setupAsset === 'other-project') insertAsset(db, drama2, 'image', 'projects/0002/assets/ref-image.png');
     if (item.setupAsset === 'other-tenant') insertAsset(db, drama3, 'image', 'projects/0003/assets/ref-image.png');
-    assert.throws(() => videoService.create(db, log, {
+    assert.throws(() => createVideo(db, {
       drama_id: drama1,
       storyboard_id: 1,
       model: 'seedance-2-mini',
@@ -253,7 +282,7 @@ test('ToAPIs cleans blank duplicate reference image entries before snapshot and 
   };
   t.after(() => { videoClient.callVideoApi = originalCall; });
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -279,7 +308,7 @@ test('ToAPIs cleans blank duplicate reference image entries before snapshot and 
 test('ToAPIs explicit frame mode and omni references are mutually exclusive before side effects', (t) => {
   const { db, drama1 } = setup(t);
   insertAsset(db, drama1, 'image', 'projects/0001/assets/ref-image.png');
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -291,10 +320,24 @@ test('ToAPIs explicit frame mode and omni references are mutually exclusive befo
   assert.deepEqual(sideEffectCounts(db), { tasks: 0, videos: 0, reservations: 0, tenantReservations: 0 });
 });
 
+test('ToAPIs client validation rejects standalone reference audio before side effects', (t) => {
+  const { db, drama1 } = setup(t);
+  insertAsset(db, drama1, 'audio', 'projects/0001/assets/ref-audio.mp3');
+  assert.throws(() => createVideo(db, {
+    drama_id: drama1,
+    storyboard_id: 1,
+    model: 'seedance-2-mini',
+    prompt: '音频不能单独作为全能参考',
+    duration: 8,
+    reference_audio_urls: ['/static/projects/0001/assets/ref-audio.mp3'],
+  }, { billingEnabled: false, schedule() {} }), (error) => error.code === 'VIDEO_REFERENCE_FORBIDDEN');
+  assert.deepEqual(sideEffectCounts(db), { tasks: 0, videos: 0, reservations: 0, tenantReservations: 0 });
+});
+
 test('ToAPIs rejects last frame without first frame before side effects', (t) => {
   const { db, drama1 } = setup(t);
   insertAsset(db, drama1, 'image', 'projects/0001/assets/last.png');
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -308,7 +351,7 @@ test('ToAPIs rejects last frame without first frame before side effects', (t) =>
 test('ToAPIs rejects platform references when storage base URL is not HTTPS', (t) => {
   const { db, drama1 } = setup(t, { baseUrl: 'http://molimama.vip/static' });
   insertAsset(db, drama1, 'image', 'projects/0001/assets/ref-image.png');
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -322,7 +365,7 @@ test('ToAPIs rejects platform references when storage base URL is not HTTPS', (t
 test('ToAPIs rejects private HTTPS storage base URL before side effects', (t) => {
   const { db, drama1 } = setup(t, { baseUrl: 'https://127.0.0.1/static' });
   insertAsset(db, drama1, 'image', 'projects/0001/assets/ref-image.png');
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -343,7 +386,7 @@ test('ToAPIs rejects bracketed IPv6 and IPv4-mapped private storage base URL bef
   for (const baseUrl of cases) {
     const { db, drama1 } = setup(t, { baseUrl });
     insertAsset(db, drama1, 'image', 'projects/0001/assets/ref-image.png');
-    assert.throws(() => videoService.create(db, log, {
+    assert.throws(() => createVideo(db, {
       drama_id: drama1,
       storyboard_id: 1,
       model: 'seedance-2-mini',
@@ -358,7 +401,7 @@ test('ToAPIs rejects bracketed IPv6 and IPv4-mapped private storage base URL bef
 test('ToAPIs local non-billing mode still rejects references from another project before side effects', (t) => {
   const { db, drama1, drama2 } = setup(t);
   insertAsset(db, drama2, 'image', 'projects/0002/assets/ref-image.png');
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -376,7 +419,7 @@ test('ToAPIs allows system_shared platform assets for references', (t) => {
      VALUES (NULL, 'shared-ref.png', 'image', '/static/projects/shared/assets/shared-ref.png', 'projects/shared/assets/shared-ref.png', ?, ?, ?)`
   ).run(JSON.stringify({ system_shared: true }), new Date().toISOString(), new Date().toISOString());
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -392,14 +435,21 @@ test('ToAPIs rejects reference images over target model limit before side effect
   const { db, drama1, now } = setup(t);
   db.prepare('UPDATE ai_service_configs SET model = ?, updated_at = ? WHERE service_type = ?')
     .run(JSON.stringify(['seedance-2-mini', 'seedance-2-fast']), now, 'video');
-  prices.set(db, 'seedance-2-fast', 2, { category: 'video', cost_unit: 'second' });
+  prices.set(db, 'seedance-2-fast', 2, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 1 },
+      '720p': { credits: 2, cost_micros_per_second: 1 },
+    },
+  });
   const refs = [];
   for (let i = 1; i <= 10; i += 1) {
     const rel = `projects/0001/assets/ref-${i}.png`;
     insertAsset(db, drama1, 'image', rel);
     refs.push(`/static/${rel}`);
   }
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -407,7 +457,7 @@ test('ToAPIs rejects reference images over target model limit before side effect
     duration: 8,
     reference_image_urls: refs,
   }, { billingEnabled: false, schedule() {} }), /最多支持 9 张参考图/);
-  assert.throws(() => videoService.create(db, log, {
+  assert.throws(() => createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-fast',
@@ -429,7 +479,7 @@ test('indeterminate provider submission keeps reservation and duplicate guard wi
   };
   t.after(() => { videoClient.callVideoApi = originalCall; });
 
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -445,7 +495,7 @@ test('indeterminate provider submission keeps reservation and duplicate guard wi
   assert.match(row.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
   assert.equal(reservation.status, 'held');
 
-  const reused = videoService.create(db, log, {
+  const reused = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -470,7 +520,7 @@ test('damaged request_snapshot keeps manual reconciliation state and never calls
   let calls = 0;
   videoClient.callVideoApi = async () => { calls += 1; return { error: 'must not submit' }; };
   t.after(() => { videoClient.callVideoApi = originalCall; });
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -529,7 +579,7 @@ test('direct existing provider_task_id keeps held reservation when config is dis
     videoClient.pollVideoTask = originalPoll;
     videoClient.callVideoApi = originalCall;
   });
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',
@@ -556,7 +606,7 @@ test('resume existing provider_task_id keeps held reservation when config is dis
   let pollCalls = 0;
   videoClient.pollVideoTask = async () => { pollCalls += 1; return { error: 'must not poll' }; };
   t.after(() => { videoClient.pollVideoTask = originalPoll; });
-  const created = videoService.create(db, log, {
+  const created = createVideo(db, {
     drama_id: drama1,
     storyboard_id: 1,
     model: 'seedance-2-mini',

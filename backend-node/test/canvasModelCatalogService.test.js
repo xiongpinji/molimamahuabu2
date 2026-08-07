@@ -5,7 +5,11 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigService = require('../src/services/aiConfigService');
 const aiConfigRoutes = require('../src/routes/aiConfig');
 const modelPriceService = require('../src/services/modelPriceService');
-const { list, parseModels, safeCapabilities } = require('../src/services/canvasModelCatalogService');
+const catalog = require('../src/services/canvasModelCatalogService');
+const prices = require('../src/services/modelPriceService');
+const canvasProviderConfigService = require('../src/services/canvasProviderConfigService');
+const aiConfig = require('../src/services/aiConfigService');
+const { list, parseModels, safeCapabilities } = catalog;
 
 const log = { info() {}, error() {}, errorw() {} };
 
@@ -272,4 +276,188 @@ test('新增真实验证列不会隐藏已验证且已定价的既有非 USMerca
   modelPriceService.set(db, 'existing-image', 12, { category: 'image' });
   assert.equal(list(db).some((item) => item.model === 'existing-image'), true);
   db.close();
+});
+
+test('ToAPIs 视频目录同时要求启用、真实验证、凭据、模型能力和完整公开档位价格', () => {
+  const db = new Database(':memory:');
+  const previousKey = process.env.TOAPIS_API_KEY;
+  delete process.env.TOAPIS_API_KEY;
+  runMigrationsAndEnsure(db);
+  try {
+    const now = new Date().toISOString();
+    const capabilities = {
+      'seedance-2-fast': {
+        durations: [4, 5, 6, 99],
+        resolutions: ['480P', '720p', '1080p'],
+        maxReferences: 1,
+        supportsImageReference: true,
+      },
+    };
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, verification_status, verified_capabilities, settings, created_at, updated_at)
+      VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs 视频', 'https://toapis.com', '', ?,
+        'seedance-2-fast', 1, 'pending', ?, ?, ?, ?)`)
+      .run(JSON.stringify(['seedance-2-fast']), JSON.stringify(capabilities), JSON.stringify({
+        canvas_capabilities: { durations: [99], maxReferences: 99, unsafeFallback: true },
+      }), now, now);
+    prices.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      status: 'enabled',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+
+    const toapisItems = () => catalog.list(db).filter((item) => item.protocol === 'toapis_video');
+    assert.deepEqual(toapisItems(), []);
+
+    db.prepare("UPDATE ai_service_configs SET api_key = 'stored-key' WHERE provider = 'toapis'").run();
+    assert.deepEqual(toapisItems(), []);
+
+    db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE provider = 'toapis'").run();
+    assert.deepEqual(toapisItems(), []);
+
+    prices.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      status: 'disabled',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    assert.deepEqual(toapisItems(), []);
+
+    prices.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      status: 'enabled',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    const [item] = toapisItems();
+    assert.equal(item.model, 'seedance-2-fast');
+    assert.deepEqual(item.capabilities, {
+      durations: [4, 5, 6],
+      resolutions: ['480p', '720p'],
+      maxReferences: 1,
+      supportsImageReference: true,
+    });
+    assert.deepEqual(Object.keys(item.resolution_prices), ['480p', '720p']);
+
+    db.prepare("UPDATE ai_service_configs SET api_key = '' WHERE provider = 'toapis'").run();
+    assert.deepEqual(toapisItems(), []);
+
+    db.prepare("UPDATE ai_service_configs SET api_key = 'stored-key', verified_capabilities = ? WHERE provider = 'toapis'")
+      .run(JSON.stringify({
+        'seedance-2-fast': { resolutions: ['480p', '720p'], maxReferences: 1 },
+      }));
+    assert.deepEqual(toapisItems(), []);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('ToAPIs Mini 目录时长只发布验证证据与官方模型矩阵的交集', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+     is_active, verification_status, verified_capabilities, created_at, updated_at)
+    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs Mini', 'https://toapis.com', 'stored-key', ?,
+      'seedance-2-mini', 1, 'verified', ?, ?, ?)`)
+    .run(JSON.stringify(['seedance-2-mini']), JSON.stringify({
+      'seedance-2-mini': {
+        durations: [99, 15, 12, 10, 8, 5, 4],
+        resolutions: ['480p'],
+        supportsImageReference: false,
+      },
+    }), now, now);
+  prices.set(db, 'seedance-2-mini', 294, {
+    category: 'video',
+    resolution_prices: {
+      '480p': { credits: 294, cost_micros_per_second: 335800 },
+    },
+  });
+
+  const item = catalog.list(db).find((row) => row.model === 'seedance-2-mini');
+  assert.deepEqual(item.capabilities, {
+    durations: [4, 8, 10, 12, 15],
+    resolutions: ['480p'],
+    supportsImageReference: false,
+  });
+  db.close();
+});
+
+test('受保护环境 Key 是有效 credential，但 pending ToAPIs 仍阻断同模型 generic 配置', () => {
+  const db = new Database(':memory:');
+  const previousKey = process.env.TOAPIS_API_KEY;
+  process.env.TOAPIS_API_KEY = 'protected-env-key';
+  runMigrationsAndEnsure(db);
+  try {
+    const now = new Date().toISOString();
+    const insert = db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, verification_status, verified_capabilities, created_at, updated_at)
+      VALUES ('video', ?, ?, ?, ?, ?, ?, 'seedance-2-fast', 1, ?, ?, ?, ?)`);
+    insert.run('openai', 'openai', 'Generic Video', 'https://example.invalid', 'generic-key',
+      JSON.stringify(['seedance-2-fast']), 'verified', '{}', now, now);
+    insert.run('toapis', 'toapis_video', 'ToAPIs Video', 'https://toapis.com', '',
+      JSON.stringify([]), 'pending', JSON.stringify({
+        'seedance-2-fast': { durations: [4, 5], resolutions: ['480p', '720p'] },
+      }), now, now);
+    prices.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+
+    const strictConfig = aiConfig.listConfigs(db, 'video').find((config) => config.provider === 'toapis');
+    assert.equal(aiConfig.hasConnectionCredential(strictConfig), true);
+    assert.deepEqual(catalog.list(db).filter((item) => item.kind === 'video'
+      && item.model === 'seedance-2-fast'), []);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('pending ToAPIs strict key 阻止 canvas provider fallback 重新注入同模型', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const originalListSafe = canvasProviderConfigService.listSafe;
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
+       is_active, verification_status, verified_capabilities, created_at, updated_at)
+      VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs Video', 'https://toapis.com', 'stored-key', ?,
+        'seedance-2-fast', 1, 'pending', ?, ?, ?)`)
+      .run(JSON.stringify(['seedance-2-fast']), JSON.stringify({
+        'seedance-2-fast': { durations: [4, 5], resolutions: ['480p', '720p'] },
+      }), now, now);
+    prices.set(db, 'seedance-2-fast', 511, {
+      category: 'video',
+      resolution_prices: {
+        '480p': { credits: 511, cost_micros_per_second: 584000 },
+        '720p': { credits: 511, cost_micros_per_second: 584000 },
+      },
+    });
+    canvasProviderConfigService.listSafe = () => [{
+      kind: 'video', model: 'seedance-2-fast', label: 'Unsafe fallback', capabilities: { durations: [5] },
+    }];
+
+    assert.deepEqual(catalog.list(db).filter((item) => item.kind === 'video'
+      && item.model === 'seedance-2-fast'), []);
+  } finally {
+    canvasProviderConfigService.listSafe = originalListSafe;
+    db.close();
+  }
 });

@@ -1,4 +1,5 @@
 const aiConfigService = require('../services/aiConfigService');
+const canvasModelCatalogService = require('../services/canvasModelCatalogService');
 const modelPriceService = require('../services/modelPriceService');
 const response = require('../response');
 
@@ -11,11 +12,33 @@ function list(db) {
 
 function listPublicVideoModels(db) {
   return (req, res) => {
-    const list = modelPriceService.listPublic(db)
+    const publicModels = modelPriceService.listPublic(db)
       .filter((item) => item.category === 'video')
       .map((item) => item.model);
+    const strictCatalog = canvasModelCatalogService.list(db)
+      .filter((item) => item.kind === 'video'
+        && ['toapis', 'toapis_video'].includes(String(item.protocol || '').toLowerCase()));
+    const allowedStrictModels = new Set(strictCatalog
+      .map((item) => String(item.upstream_model || item.model).toLowerCase()));
+    const allConfigs = aiConfigService.listConfigs(db, 'video');
+    const strictModels = new Set(allConfigs.filter(isStrictToapisVideoConfig)
+      .flatMap((config) => [config.default_model, ...(Array.isArray(config.model) ? config.model : [config.model])])
+      .map((model) => String(model || '').trim().toLowerCase())
+      .filter(Boolean));
+    const list = [...new Set([
+      ...publicModels.filter((model) => {
+        const key = String(model || '').trim().toLowerCase().split('::').pop();
+        return !strictModels.has(key) || allowedStrictModels.has(key);
+      }),
+      ...strictCatalog.map((item) => item.model),
+    ])];
     response.success(res, list);
   };
+}
+
+function isStrictToapisVideoConfig(config) {
+  return ['toapis', 'toapis_video'].includes(String(config.provider || '').toLowerCase())
+    || String(config.api_protocol || '').toLowerCase() === 'toapis_video';
 }
 
 function listPublicImageModels(db) {
@@ -186,11 +209,12 @@ function testConnection(db, log) {
         service_type: body.service_type,
         settings: body.settings,
       });
-      const verified = savedConfigId == null
+      const connectivityOnly = body.service_type === 'video' && isStrictToapisVideoConfig(body);
+      const verified = savedConfigId == null || connectivityOnly
         ? null
         : aiConfigService.setVerificationResult(db, savedConfigId, 'verified');
       response.success(res, {
-        message: '连接测试成功',
+        message: connectivityOnly ? '连接测试成功（仅验证连通性，真实生成验证状态未变更）' : '连接测试成功',
         ...(verified ? {
           verification_status: verified.verification_status,
           verification_checked_at: verified.verification_checked_at,

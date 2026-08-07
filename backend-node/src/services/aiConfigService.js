@@ -5,6 +5,7 @@ const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
 const token6688Client = require('./token6688Client');
 const usmercariVideoClient = require('./usmercariVideoClient');
+const toapisVideoClient = require('./toapisVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -18,6 +19,10 @@ function hasConnectionCredential(opts = {}) {
   if (['usmercari', 'usmercari_image'].includes(String(opts.provider || '').toLowerCase())
       || String(opts.api_protocol || '').toLowerCase() === 'usmercari_image') {
     return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
+  }
+  if (['toapis', 'toapis_video'].includes(String(opts.provider || '').toLowerCase())
+      || String(opts.api_protocol || '').toLowerCase() === 'toapis_video') {
+    return !!toapisVideoClient.resolveToapisApiKey(opts);
   }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
@@ -86,7 +91,19 @@ function getConfig(db, id) {
   return row ? rowToConfig(row) : null;
 }
 
-function parseVideoSettings(settings) {
+function resolveVideoSettingsDurations(context = {}) {
+  if (Array.isArray(context.allowedDurations) && context.allowedDurations.length) {
+    return [...new Set(context.allowedDurations.map(Number).filter(Number.isSafeInteger))];
+  }
+  const protocols = [context.api_protocol, context.protocol, context.provider]
+    .map((value) => String(value || '').trim().toLowerCase());
+  if (!protocols.some((protocol) => ['toapis', 'toapis_video'].includes(protocol))) return null;
+  const configuredModel = context.default_model
+    || (Array.isArray(context.model) ? context.model[0] : context.model);
+  return toapisVideoClient.TOAPIS_VIDEO_MODELS[String(configuredModel || '').trim().toLowerCase()]?.durations || null;
+}
+
+function parseVideoSettings(settings, context = {}) {
   let parsed;
   try {
     parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
@@ -102,8 +119,13 @@ function parseVideoSettings(settings) {
   }
   if (Object.prototype.hasOwnProperty.call(parsed, 'video_duration')) {
     const duration = Number(parsed.video_duration);
-    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-      const error = new Error('视频默认时长必须是 5 到 15 秒之间的整数');
+    const allowedDurations = resolveVideoSettingsDurations(context);
+    const invalidDuration = !Number.isSafeInteger(duration)
+      || (allowedDurations ? !allowedDurations.includes(duration) : duration < 5 || duration > 15);
+    if (invalidDuration) {
+      const error = new Error(allowedDurations
+        ? `视频默认时长必须是 ${allowedDurations.join('、')} 秒之一`
+        : '视频默认时长必须是 5 到 15 秒之间的整数');
       error.code = 'INVALID_VIDEO_DURATION';
       throw error;
     }
@@ -112,23 +134,23 @@ function parseVideoSettings(settings) {
   return parsed;
 }
 
-function normalizeCreateSettings(serviceType, settings) {
+function normalizeCreateSettings(serviceType, settings, context = {}) {
   if (serviceType !== 'video' || settings == null) return settings || null;
-  return JSON.stringify(parseVideoSettings(settings));
+  return JSON.stringify(parseVideoSettings(settings, context));
 }
 
-function mergeVideoSettings(existingSettings, incomingSettings) {
+function mergeVideoSettings(existingSettings, incomingSettings, context = {}) {
   let existing = {};
   try {
     const parsed = typeof existingSettings === 'string' ? JSON.parse(existingSettings) : existingSettings;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
   } catch (_) {}
-  const incoming = parseVideoSettings(incomingSettings);
+  const incoming = parseVideoSettings(incomingSettings, context);
   for (const [key, value] of Object.entries(incoming)) {
     if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase()) && (value == null || value === '')) continue;
     existing[key] = value;
   }
-  return JSON.stringify(parseVideoSettings(existing));
+  return JSON.stringify(parseVideoSettings(existing, context));
 }
 
 function verificationSettingsFingerprint(settings) {
@@ -150,7 +172,7 @@ function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
   const serviceType = req.service_type || 'text';
-  const settings = normalizeCreateSettings(serviceType, req.settings);
+  const settings = normalizeCreateSettings(serviceType, req.settings, req);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
   if (!endpoint && req.provider) {
@@ -211,11 +233,21 @@ function createConfig(db, log, req) {
         endpoint = '/v1/task/submit/{model}';
         queryEndpoint = '/v1/task/query-status';
       }
+    } else if (p === 'usmercari' || p === 'usmercari_media') {
+      if (st === 'video') {
+        endpoint = '/cpa-file/submit/video';
+        queryEndpoint = '/cpa-file/fetch';
+      }
     } else if (p === 'token6688' || p === 'tokengo') {
       if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
       else if (st === 'video') {
         endpoint = '/v1/videos/generations';
         queryEndpoint = '/v1/tasks/{taskId}';
+      }
+    } else if (p === 'toapis' || p === 'toapis_video') {
+      if (st === 'video') {
+        endpoint = '/v1/videos/generations';
+        queryEndpoint = '/v1/videos/generations/{taskId}';
       }
     } else if (p === 'usmercari_image') {
       if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
@@ -251,6 +283,19 @@ function createConfig(db, log, req) {
 function updateConfig(db, log, id, req) {
   const existing = getConfig(db, id);
   if (!existing) return null;
+  const videoContextChanged = req.provider != null
+    || req.api_protocol != null
+    || req.model != null
+    || req.default_model !== undefined;
+  if (existing.service_type === 'video' && req.settings == null
+      && existing.settings != null && videoContextChanged) {
+    parseVideoSettings(existing.settings, {
+      provider: req.provider ?? existing.provider,
+      api_protocol: req.api_protocol ?? existing.api_protocol,
+      model: req.model ?? existing.model,
+      default_model: req.default_model !== undefined ? req.default_model : existing.default_model,
+    });
+  }
   const updates = [];
   const params = [];
   let connectivityChanged = false;
@@ -311,7 +356,12 @@ function updateConfig(db, log, id, req) {
   if (req.settings != null) {
     updates.push('settings = ?');
     const nextSettings = existing.service_type === 'video'
-      ? mergeVideoSettings(existing.settings, req.settings)
+      ? mergeVideoSettings(existing.settings, req.settings, {
+        provider: req.provider ?? existing.provider,
+        api_protocol: req.api_protocol ?? existing.api_protocol,
+        model: req.model ?? existing.model,
+        default_model: req.default_model !== undefined ? req.default_model : existing.default_model,
+      })
       : req.settings;
     params.push(nextSettings);
     connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
@@ -462,10 +512,7 @@ function toPublicConfig(config) {
   const { api_key, ...safe } = config;
   return {
     ...safe,
-    has_api_key: !!String(api_key || '').trim()
-      || ((['usmercari', 'usmercari_image'].includes(String(config.provider || '').toLowerCase())
-        || String(config.api_protocol || '').toLowerCase() === 'usmercari_image')
-        && !!usmercariVideoClient.resolveUsmercariApiKey(config)),
+    has_api_key: hasConnectionCredential(config),
     settings: redactSettings(config.settings),
   };
 }
@@ -611,6 +658,30 @@ async function testConnection(opts) {
     const missing = models.map((item) => String(item || '').trim()).filter(Boolean)
       .filter((item) => !available.has(item));
     if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
+  // ToAPIs 连接测试只读取官方模型目录，禁止提交可能计费的视频生成请求。
+  if ((provider === 'toapis' || provider === 'toapis_video' || protocol === 'toapis_video')
+      && serviceType === 'video') {
+    const apiKey = toapisVideoClient.resolveToapisApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${toapisVideoClient.normalizeToapisBaseUrl(base)}/v1/models?type=video`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`ToAPIs API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`ToAPIs 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : Object.keys(toapisVideoClient.TOAPIS_VIDEO_MODELS))
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`ToAPIs 模型目录缺少: ${missing.join(', ')}`);
     return;
   }
 

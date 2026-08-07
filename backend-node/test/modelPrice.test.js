@@ -209,6 +209,52 @@ test('iCreat Seedance 2.0 Mini 和 Fast 接受官方支持的 4 秒并按秒计�
   }
 });
 
+test('视频分档存在时必须明确选择已定价分辨率且不回退基础价格', () => {
+  const db = makeDb();
+  prices.set(db, 'tiered-video', 3, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_unit: 90000,
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 90000 },
+      '720p': { credits: 5, cost_micros_per_second: 140000 },
+    },
+  });
+
+  for (const resolution of [undefined, '1080p']) {
+    assert.throws(
+      () => prices.calculateCharge(db, 'tiered-video', { duration: 5, resolution }),
+      (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    );
+    assert.throws(
+      () => prices.quoteCost(db, 'tiered-video', { quantity: 5, resolution }),
+      (error) => error.code === 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    );
+  }
+});
+
+test('调用方可显式允许 ToAPIs 4 秒而旧模型仍保持 5 到 15 秒', () => {
+  const db = makeDb();
+  prices.set(db, 'seedance-2-fast', 511, {
+    category: 'video',
+    resolution_prices: {
+      '480p': { credits: 511, cost_micros_per_second: 584000 },
+      '720p': { credits: 511, cost_micros_per_second: 584000 },
+    },
+  });
+  prices.set(db, 'legacy-video', 3, { category: 'video' });
+
+  assert.equal(prices.calculateCharge(db, 'seedance-2-fast', {
+    duration: 4,
+    resolution: '480p',
+    allowedDurations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  }), 2044);
+  assert.throws(
+    () => prices.calculateCharge(db, 'legacy-video', { duration: 4 }),
+    (error) => error.code === 'INVALID_VIDEO_DURATION' && /5 到 15 秒/.test(error.message),
+  );
+});
+
 test('图片模型按 1K/2K/4K 分别计算每张积分与人民币微元成本', () => {
   const db = makeDb();
   const gpt = prices.set(db, 'gpt-image-2-2-4k', 70, {

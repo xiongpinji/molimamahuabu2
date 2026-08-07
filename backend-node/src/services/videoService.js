@@ -132,7 +132,9 @@ const net = require('net');
 const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
-const { TOAPIS_VIDEO_MODELS } = require('./toapisVideoClient');
+const aiConfigService = require('./aiConfigService');
+const toapisVideoClient = require('./toapisVideoClient');
+const { TOAPIS_VIDEO_MODELS } = toapisVideoClient;
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
@@ -202,22 +204,33 @@ function minimumVideoDuration(model) {
   return /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(String(model || '').trim().toLowerCase()) ? 4 : 5;
 }
 
-function normalizeVideoDuration(value, fallback = 5, minimum = 5) {
+function normalizeVideoDuration(value, fallback = 5, allowedDurationsOrMinimum = null) {
   const duration = value == null || value === '' ? Number(fallback) : Number(value);
-  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
-    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
+  const allowed = Array.isArray(allowedDurationsOrMinimum) && allowedDurationsOrMinimum.length
+    ? [...new Set(allowedDurationsOrMinimum.map(Number).filter(Number.isSafeInteger))]
+    : null;
+  const minimum = Number.isSafeInteger(allowedDurationsOrMinimum) ? allowedDurationsOrMinimum : 5;
+  if (!Number.isSafeInteger(duration) || (allowed ? !allowed.includes(duration) : duration < minimum || duration > 15)) {
+    const error = new Error(allowed
+      ? `视频时长必须是 ${allowed.join('、')} 秒之一`
+      : `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }
   return duration;
 }
 
-function configuredVideoDuration(config, minimum = 5) {
+function configuredVideoDuration(config, allowedDurationsOrMinimum = null) {
   if (!config?.settings) return null;
   try {
     const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
     const duration = Number(settings?.video_duration);
-    return Number.isSafeInteger(duration) && duration >= minimum && duration <= 15 ? duration : null;
+    if (!Number.isSafeInteger(duration)) return null;
+    if (Array.isArray(allowedDurationsOrMinimum) && allowedDurationsOrMinimum.length) {
+      return allowedDurationsOrMinimum.includes(duration) ? duration : null;
+    }
+    const minimum = Number.isSafeInteger(allowedDurationsOrMinimum) ? allowedDurationsOrMinimum : 5;
+    return duration >= minimum && duration <= 15 ? duration : null;
   } catch (_) {
     return null;
   }
@@ -227,6 +240,121 @@ function videoRequestError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function configModels(config) {
+  const values = Array.isArray(config?.model) ? config.model : [config?.model];
+  return [...new Set([
+    ...values,
+    config?.default_model,
+  ].map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function isToapisVideoConfig(config) {
+  return [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .some((value) => value === 'toapis' || value === 'toapis_video');
+}
+
+function matchingToapisConfigs(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  if (!TOAPIS_VIDEO_MODELS[target]) return [];
+  return aiConfigService.listConfigs(db, 'video').filter((config) => (
+    isToapisVideoConfig(config)
+    && configModels(config).some((value) => value.toLowerCase() === target)
+  ));
+}
+
+function verifiedCapabilitiesForModel(config, model) {
+  const target = String(model || '').trim().toLowerCase();
+  const capabilities = config?.verified_capabilities;
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return null;
+  const key = Object.keys(capabilities).find((value) => value.toLowerCase() === target);
+  const result = key ? capabilities[key] : null;
+  return result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+}
+
+function toapisReadyState(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  const official = TOAPIS_VIDEO_MODELS[target];
+  if (!official) return null;
+  const candidates = matchingToapisConfigs(db, target);
+  for (const config of candidates) {
+    const capabilities = verifiedCapabilitiesForModel(config, target);
+    const verifiedDurations = new Set(Array.isArray(capabilities?.durations)
+      ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+      : []);
+    const verifiedResolutions = new Set(Array.isArray(capabilities?.resolutions)
+      ? capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase())
+      : []);
+    const durations = official.durations.filter((duration) => verifiedDurations.has(duration));
+    const resolutions = official.resolutions.filter((resolution) => verifiedResolutions.has(resolution));
+    if (config.is_active
+        && config.verification_status === 'verified'
+        && aiConfigService.hasConnectionCredential(config)
+        && durations.length
+        && resolutions.length) {
+      return { config, capabilities, official, durations, resolutions, model: target };
+    }
+  }
+  throw videoRequestError('MODEL_NOT_VERIFIED', `${target} 尚未完成真实生成验证或凭据不可用`);
+}
+
+function processingVideoConfig(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  if (!TOAPIS_VIDEO_MODELS[target]) return videoClient.getDefaultVideoConfig(db, model);
+  return matchingToapisConfigs(db, target)
+    .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
+}
+
+function requireVerifiedToapisReferenceCapabilities(state, refs) {
+  if (!state) return;
+  const required = [
+    [refs.firstFrameUrl, 'supportsFirstFrame', '首帧参考'],
+    [refs.lastFrameUrl, 'supportsLastFrame', '尾帧参考'],
+    [refs.referenceImageUrls.length, 'supportsImageReference', '参考图'],
+    [refs.referenceVideoUrls.length, 'supportsVideoReference', '参考视频'],
+    [refs.referenceAudioUrls.length, 'supportsAudioReference', '参考音频'],
+    [refs.generateAudio, 'supportsAudio', '同步音频'],
+  ];
+  const missing = required.find(([used, capability]) => used && state.capabilities?.[capability] !== true);
+  if (missing) {
+    throw videoRequestError('MODEL_NOT_VERIFIED', `${state.model} 尚未验证${missing[2]}能力`);
+  }
+}
+
+function reuseActiveGeneration(db, active, duration, billingEnabled, options, expected = {}) {
+  const activeModel = String(active.model || '').trim().toLowerCase();
+  const expectedModel = String(expected.model || '').trim().toLowerCase();
+  const activeResolution = String(active.resolution || '').trim().toLowerCase();
+  const expectedResolution = String(expected.resolution || '').trim().toLowerCase();
+  if (Number(active.duration) !== duration
+      || (expectedModel && activeModel !== expectedModel)
+      || (expectedResolution && activeResolution !== expectedResolution)) {
+    const error = new Error('该分镜已有不同模型、分辨率或时长的视频正在生成，请完成后再修改参数');
+    error.code = 'VIDEO_GENERATION_ACTIVE';
+    throw error;
+  }
+  if (billingEnabled) {
+    auditEvent.record(db, {
+      userId: options.userId,
+      tenantId: options.tenantId,
+      eventType: 'generation.video.reused',
+      resourceType: 'video',
+      resourceId: active.id,
+      outcome: 'success',
+      code: 'REUSED',
+    });
+  }
+  return { ...getById(db, active.id), reused: true };
+}
+
+function requireToapisResolutionPrice(db, model, resolution) {
+  const target = String(model || '').trim().toLowerCase();
+  const price = modelPrice.list(db).find((row) => String(row.model || '').trim().toLowerCase() === target);
+  if (price && (price.category !== 'video' || !price.resolution_prices?.[resolution])) {
+    throw videoRequestError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
+  }
 }
 
 function cleanUrlList(...values) {
@@ -539,26 +667,57 @@ function create(db, log, req, options = {}) {
   const storyboardDefaults = loadStoryboardVideoDefaults(db, storyboardId);
   if (!dramaId && storyboardDefaults?.drama_id) dramaId = Number(storyboardDefaults.drama_id) || 0;
   const selectedModel = body.model || storyboardDefaults?.video_model || null;
-  const videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
-  const effectiveModel = videoConfig?.canvas_selected_model
-    || selectedModel || videoConfig?.default_model || videoConfig?.model || '';
-  const minimumDuration = minimumVideoDuration(effectiveModel);
+  let videoConfig = videoClient.getDefaultVideoConfig(db, selectedModel);
+  let model = String(videoConfig?.canvas_selected_model
+    || selectedModel
+    || videoConfig?.default_model
+    || configModels(videoConfig)[0]
+    || '').trim() || null;
+  const toapisState = TOAPIS_VIDEO_MODELS[String(model || '').toLowerCase()]
+    ? toapisReadyState(db, model)
+    : null;
+  if (toapisState) {
+    videoConfig = toapisState.config;
+    model = toapisState.model;
+  }
   const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
-  const isToapisVideo = videoProtocol === 'toapis_video' || videoProtocol === 'toapis';
-  const toapisSpec = isToapisVideo ? TOAPIS_VIDEO_MODELS[String(effectiveModel || '').trim()] : null;
+  const isToapisVideo = Boolean(toapisState)
+    || videoProtocol === 'toapis_video'
+    || videoProtocol === 'toapis';
+  const toapisSpec = toapisState?.official
+    || (isToapisVideo ? TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()] : null);
   const inputReferenceImageUrls = cleanUrlList(body.reference_image_urls);
   if (toapisSpec && inputReferenceImageUrls.length > toapisSpec.maxReferences) {
     throw videoRequestError(
       'VIDEO_REFERENCE_FORBIDDEN',
-      `ToAPIs 模型 ${effectiveModel} 最多支持 ${toapisSpec.maxReferences} 张参考图`
+      `ToAPIs 模型 ${model} 最多支持 ${toapisSpec.maxReferences} 张参考图`
     );
   }
+  const requestedResolution = String(body.resolution || '').trim().toLowerCase();
+  if (toapisState && (!requestedResolution || !toapisState.resolutions.includes(requestedResolution))) {
+    throw videoRequestError(
+      'MODEL_RESOLUTION_PRICE_REQUIRED',
+      `${toapisState.model} 当前只开放已验证且已定价的 ${toapisState.resolutions.join('、')}`
+    );
+  }
+  const allowedDurations = toapisState?.durations || null;
+  const minimumDuration = minimumVideoDuration(model);
   const storyboardDuration = Number(storyboardDefaults?.duration);
-  const fallbackDuration = Number.isSafeInteger(storyboardDuration) && storyboardDuration >= minimumDuration && storyboardDuration <= 15
+  const storyboardDurationAllowed = Number.isSafeInteger(storyboardDuration)
+    && (allowedDurations
+      ? allowedDurations.includes(storyboardDuration)
+      : storyboardDuration >= minimumDuration && storyboardDuration <= 15);
+  const fallbackDuration = storyboardDurationAllowed
     ? storyboardDuration
-    : configuredVideoDuration(videoConfig, minimumDuration) || 5;
-  const duration = normalizeVideoDuration(body.duration, fallbackDuration, minimumDuration);
-  const resolvedCapabilities = videoReferenceCapability.resolve(videoConfig || {}, effectiveModel);
+    : configuredVideoDuration(videoConfig, allowedDurations || minimumDuration)
+      || allowedDurations?.[0]
+      || minimumDuration;
+  const duration = normalizeVideoDuration(
+    body.duration,
+    fallbackDuration,
+    allowedDurations || minimumDuration,
+  );
+  const resolvedCapabilities = videoReferenceCapability.resolve(videoConfig || {}, model);
   const effectiveCapabilities = toapisSpec
     ? {
         ...resolvedCapabilities,
@@ -569,41 +728,33 @@ function create(db, log, req, options = {}) {
       }
     : resolvedCapabilities;
   const normalizedReferences = videoReferenceCapability.validateAndNormalize({
-    model: effectiveModel,
+    model,
     capabilities: effectiveCapabilities,
     referenceImageUrls: inputReferenceImageUrls,
     referenceAudioUrls: cleanUrlList(body.reference_audio_urls, body.reference_audio_url),
     referenceVideoUrls: cleanUrlList(body.reference_video_urls, body.reference_video_url),
   });
 
+  let billingModel = toapisState ? model : (selectedModel || model);
+  let price = null;
+  if (toapisState) {
+    billingModel = modelPrice.canonicalModel(billingModel);
+    requireToapisResolutionPrice(db, billingModel, requestedResolution);
+    price = modelPrice.calculateCharge(db, billingModel, {
+      duration,
+      resolution: requestedResolution,
+      allowedDurations,
+    });
+  }
+
   const active = findActiveForStoryboard(db, storyboardId, {
     billingEnabled,
     userId: options.userId,
     tenantId: options.tenantId,
   });
-  if (active) {
-    if (Number(active.duration) !== duration) {
-      const error = new Error(`该分镜已有 ${active.duration} 秒视频正在生成，请完成后再更改时长`);
-      error.code = 'VIDEO_GENERATION_ACTIVE';
-      throw error;
-    }
-    if (billingEnabled) {
-      auditEvent.record(db, {
-        userId: options.userId,
-        tenantId: options.tenantId,
-        eventType: 'generation.video.reused',
-        resourceType: 'video',
-        resourceId: active.id,
-        outcome: 'success',
-        code: 'REUSED',
-      });
-    }
-    return { ...getById(db, active.id), reused: true };
-  }
+  if (active && !toapisState) return reuseActiveGeneration(db, active, duration, billingEnabled, options);
 
-  let billingModel = selectedModel;
-  let price = null;
-  if (billingEnabled) {
+  if (billingEnabled && !toapisState) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
     if (!billingModel) {
       billingModel = videoConfig?.default_model || videoConfig?.model || null;
@@ -625,7 +776,6 @@ function create(db, log, req, options = {}) {
   if (style && !String(prompt).toLowerCase().includes(style.toLowerCase())) {
     prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
   }
-  const model = videoConfig?.canvas_selected_model || selectedModel || videoConfig?.default_model || null;
   prompt = voicePrompt.appendVoiceAnchors({
     db,
     dramaId,
@@ -674,6 +824,46 @@ function create(db, log, req, options = {}) {
   }
   const referenceMode = hasOmniRefs ? 'omni' : hasFrameRefs ? 'frame' : 'text';
   const generateAudio = body.generate_audio === true;
+  if (toapisState) {
+    requireVerifiedToapisReferenceCapabilities(toapisState, {
+      firstFrameUrl,
+      lastFrameUrl,
+      referenceImageUrls,
+      referenceVideoUrls,
+      referenceAudioUrls,
+      generateAudio,
+    });
+    try {
+      toapisVideoClient.validateToapisVideoOptions({
+        model,
+        prompt,
+        duration,
+        resolution: requestedResolution,
+        aspect_ratio: aspectRatio || '16:9',
+        image_url: imageUrl,
+        first_frame_url: firstFrameUrl,
+        last_frame_url: lastFrameUrl,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: referenceVideoUrls,
+        reference_audio_urls: referenceAudioUrls,
+        generate_audio: generateAudio,
+      });
+    } catch (error) {
+      const message = String(error?.message || 'ToAPIs 视频请求参数无效');
+      if (/不支持.*秒|时长/.test(message)) throw videoRequestError('INVALID_VIDEO_DURATION', message);
+      if (/不支持.*(?:480|720|1080)p|分辨率/.test(message)) {
+        throw videoRequestError('MODEL_RESOLUTION_PRICE_REQUIRED', message);
+      }
+      if (/提示词/.test(message)) throw videoRequestError('INVALID_VIDEO_REQUEST', message);
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', message);
+    }
+    if (active) {
+      return reuseActiveGeneration(db, active, duration, billingEnabled, options, {
+        model,
+        resolution: requestedResolution,
+      });
+    }
+  }
   const requestSnapshot = buildVideoRequestSnapshot({
     model,
     prompt,
@@ -711,7 +901,7 @@ function create(db, log, req, options = {}) {
        status, task_id, tenant_id, user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)`)
       .run(
-        dramaId, storyboardId, body.provider || 'chatfire', prompt, model, duration,
+        dramaId, storyboardId, body.provider || videoConfig?.provider || 'chatfire', prompt, model, duration,
         aspectRatio, body.resolution ?? null, body.seed != null ? Number(body.seed) : null,
         body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null, body.watermark ? 1 : 0,
         imageUrl ?? null, persistedFirstFrameUrl,
@@ -1197,7 +1387,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
 
-  const config = videoClient.getDefaultVideoConfig(db, row.model);
+  const config = processingVideoConfig(db, row.model);
   if (!config) {
     keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询');
     return;
@@ -1304,7 +1494,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
     const existingProviderTaskId = row.provider_task_id && String(row.provider_task_id).trim();
-    const config = videoClient.getDefaultVideoConfig(db, row.model);
+    const config = processingVideoConfig(db, row.model);
     if (!config) {
       if (existingProviderTaskId) {
         keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
@@ -1338,11 +1528,14 @@ async function processVideoGeneration(db, log, videoGenId) {
     const referenceAudioUrls = snapshotHas('reference_audio_urls')
       ? cleanUrlList(Array.isArray(snapshot.reference_audio_urls) ? snapshot.reference_audio_urls : [])
       : cleanUrlList(parseReferenceUrls(row.reference_audio_urls), row.reference_audio_url);
-    const processingModel = snapshot.model ?? row.model;
+    const processingModel = String(snapshot.model ?? row.model ?? '').trim();
+    const normalizedProcessingModel = processingModel.toLowerCase();
+    const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations || null;
+    const processingMinimumDuration = minimumVideoDuration(config.canvas_selected_model || processingModel);
     const effectiveDuration = normalizeVideoDuration(
       snapshot.duration ?? row.duration,
-      5,
-      minimumVideoDuration(config.canvas_selected_model || processingModel),
+      processingAllowedDurations?.[0] || processingMinimumDuration,
+      processingAllowedDurations || processingMinimumDuration,
     );
     const snapshotHasAspectRatio = snapshotHas('aspect_ratio');
     let aspectForVideo = snapshotHasAspectRatio ? snapshot.aspect_ratio : row.aspect_ratio;
@@ -1385,6 +1578,7 @@ async function processVideoGeneration(db, log, videoGenId) {
         );
       }
     }
+    if (TOAPIS_VIDEO_MODELS[normalizedProcessingModel]) toapisReadyState(db, normalizedProcessingModel);
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,
       model: snapshot.model ?? row.model,

@@ -7,6 +7,8 @@ const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
 const VIDEO_RESOLUTIONS = ['480p', '720p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
+const toapisVideoClient = require('./toapisVideoClient');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -275,7 +277,7 @@ function listPublic(db) {
   for (const entry of mediaModelSelection.listEntries(rows)) {
     const row = entry.config;
     if (!row.is_active) continue;
-    if (row.verification_status !== 'verified') continue;
+    if (!isStrictPublicConfig(row) && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     addConfig(entry.model, entry.upstreamModel, row);
   }
@@ -298,7 +300,7 @@ function listPublic(db) {
     const matched = candidates.find((entry) => isPublicConfigReady(entry.config, row, entry.upstreamModel));
     if (!matched) return [];
     if (!isStrictPublicConfig(matched.config)) return [row];
-    const resolutions = verifiedImageResolutions(matched.config, matched.upstreamModel);
+    const resolutions = verifiedPublicResolutions(matched.config, matched.upstreamModel);
     return [{
       ...row,
       resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
@@ -308,11 +310,18 @@ function listPublic(db) {
 }
 
 function isStrictPublicConfig(config) {
-  return String(config.provider || '').toLowerCase() === 'usmercari_image'
-    || String(config.api_protocol || '').toLowerCase() === 'usmercari_image';
+  return Boolean(strictPublicProtocol(config));
 }
 
-function verifiedImageCapabilities(config, model) {
+function strictPublicProtocol(config) {
+  const values = [config.api_protocol, config.provider]
+    .map((value) => String(value || '').trim().toLowerCase());
+  if (values.includes('usmercari_image')) return 'usmercari_image';
+  if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
+  return null;
+}
+
+function verifiedPublicCapabilities(config, model) {
   let capabilities = config.verified_capabilities || {};
   try {
     if (typeof capabilities === 'string') capabilities = JSON.parse(capabilities || '{}');
@@ -325,20 +334,36 @@ function verifiedImageCapabilities(config, model) {
   return key ? capabilities[key] || {} : {};
 }
 
-function verifiedImageResolutions(config, model) {
-  const capabilities = verifiedImageCapabilities(config, model);
+function verifiedPublicResolutions(config, model) {
+  const capabilities = verifiedPublicCapabilities(config, model);
+  const allowed = strictPublicProtocol(config) === 'toapis_video'
+    ? VIDEO_RESOLUTIONS
+    : IMAGE_RESOLUTIONS;
   return Array.isArray(capabilities.resolutions)
-    ? capabilities.resolutions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    ? [...new Set(capabilities.resolutions
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter((resolution) => allowed.includes(resolution)))]
     : [];
 }
 
 function isPublicConfigReady(config, price, model = price.model) {
-  if (!isStrictPublicConfig(config)) return true;
+  const protocol = strictPublicProtocol(config);
+  if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return true;
+  if ((protocol === 'usmercari_image' && price.category !== 'image')
+      || (protocol === 'toapis_video' && price.category !== 'video')) return false;
   if (config.verification_status !== 'verified'
       || !hasConnectionCredential(config)) return false;
-  const modelCapabilities = verifiedImageCapabilities(config, model);
-  const resolutions = verifiedImageResolutions(config, model);
-  return modelCapabilities?.supportsTextToImage === true
+  const modelCapabilities = verifiedPublicCapabilities(config, model);
+  const resolutions = verifiedPublicResolutions(config, model);
+  if (protocol === 'toapis_video') {
+    const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()];
+    const durations = Array.isArray(modelCapabilities?.durations) && official
+      ? modelCapabilities.durations.map(Number)
+        .filter((duration) => Number.isSafeInteger(duration) && official.durations.includes(duration))
+      : [];
+    if (!durations.length) return false;
+  }
+  return (protocol !== 'usmercari_image' || modelCapabilities?.supportsTextToImage === true)
     && resolutions.length > 0
     && resolutions.every((resolution) => Number.isSafeInteger(price.resolution_prices?.[resolution]?.credits)
       && price.resolution_prices[resolution].credits > 0);
@@ -465,8 +490,8 @@ function quoteCost(db, value, usage = {}) {
     ? normalizeResolution(usage.resolution, row.category)
     : null;
   const tier = resolution ? row.resolution_prices[resolution] : null;
-  if (row.category === 'image' && hasResolutionPrices && !tier) {
-    throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前图片分辨率积分待管理员配置');
+  if (['image', 'video'].includes(row.category) && hasResolutionPrices && !tier) {
+    throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
   }
   const costUnit = tier ? (row.category === 'video' ? 'second' : 'image') : row.cost_unit;
   if (costUnit === 'image' && !Number.isSafeInteger(requestedQuantity)) {
@@ -508,8 +533,10 @@ function calculateCharge(db, value, usage = {}) {
     ? normalizeResolution(usage.resolution, row.category)
     : null;
   const tier = resolution ? row.resolution_prices[resolution] : null;
+  if (['image', 'video'].includes(row.category) && hasResolutionPrices && !tier) {
+    throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
+  }
   if (row.category === 'image' && hasResolutionPrices) {
-    if (!tier) throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前图片分辨率积分待管理员配置');
     const quantity = Number(usage.quantity ?? 1);
     if (!Number.isSafeInteger(quantity) || quantity <= 0) {
       throw priceError('INVALID_MODEL_PRICE', '图片数量必须是正整数');
@@ -519,6 +546,9 @@ function calculateCharge(db, value, usage = {}) {
   const price = tier && row.category === 'video' ? tier.credits : row.credits;
   if (billingUnit(model, row?.category, row?.billing_unit) !== 'second') return price;
   const duration = Number(usage.duration);
+  const allowedDurations = Array.isArray(usage.allowedDurations) && usage.allowedDurations.length
+    ? [...new Set(usage.allowedDurations.map(Number).filter(Number.isSafeInteger))]
+    : null;
   const normalizedModel = String(
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
   ).toLowerCase();
@@ -526,8 +556,12 @@ function calculateCharge(db, value, usage = {}) {
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
     : 5;
-  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
-    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
+  const invalidDuration = !Number.isSafeInteger(duration)
+    || (allowedDurations ? !allowedDurations.includes(duration) : duration < minimum || duration > 15);
+  if (invalidDuration) {
+    const error = new Error(allowedDurations
+      ? `视频时长必须是 ${allowedDurations.join('、')} 秒之一`
+      : `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }

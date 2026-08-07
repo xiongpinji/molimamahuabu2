@@ -1200,6 +1200,19 @@ function parseKlingOmniPollVideoUrl(data) {
 function getDefaultVideoConfig(db, preferredModel) {
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
+  const preferred = String(preferredModel || '').trim().toLowerCase();
+  if (preferred && toapisVideoClient.TOAPIS_VIDEO_MODELS[preferred]) {
+    return active.find((config) => {
+      const protocols = [config.provider, config.api_protocol]
+        .map((value) => String(value || '').trim().toLowerCase());
+      if (!protocols.some((value) => value === 'toapis' || value === 'toapis_video')) return false;
+      const models = Array.isArray(config.model) ? config.model : [config.model];
+      return config.verification_status === 'verified'
+        && aiConfigService.hasConnectionCredential(config)
+        && [...models, config.default_model]
+          .some((value) => String(value || '').trim().toLowerCase() === preferred);
+    }) || null;
+  }
   if (active.length === 0) {
     return preferredModel
       ? canvasProviderConfigService.getConfig('video', preferredModel)

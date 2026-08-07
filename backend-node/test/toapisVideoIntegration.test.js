@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   callVideoApi,
+  getDefaultVideoConfig,
   inferVideoProtocol,
   pollVideoTask,
   resolveVideoProtocol,
@@ -30,22 +31,29 @@ function makeVideoConfig(overrides = {}) {
     default_model: 'seedance-2-mini',
     is_active: 1,
     is_default: 1,
+    verification_status: 'verified',
     ...overrides,
   };
 }
 
 function makeDb(config) {
+  const configs = Array.isArray(config) ? config : [config];
   return {
     prepare(sql) {
       return {
         all() {
-          if (/FROM ai_service_configs/i.test(sql)) return [config];
+          if (/FROM ai_service_configs/i.test(sql)) {
+            return /is_default\s*=\s*1/i.test(sql)
+              ? configs.filter((item) => item.is_default)
+              : configs;
+          }
           return [];
         },
         get() {
-          if (/FROM ai_service_configs/i.test(sql)) return config;
+          if (/FROM ai_service_configs/i.test(sql)) return configs[0];
           return undefined;
         },
+        run() { return { changes: 0 }; },
       };
     },
   };
@@ -56,6 +64,26 @@ test('ToAPIs video protocol resolves from provider and explicit api_protocol', (
   assert.equal(inferVideoProtocol('toapis_video'), 'toapis_video');
   assert.equal(resolveVideoProtocol(makeVideoConfig({ provider: 'toapis', api_protocol: '' })), 'toapis_video');
   assert.equal(resolveVideoProtocol(makeVideoConfig({ provider: 'custom', api_protocol: 'toapis_video' })), 'toapis_video');
+});
+
+test('official ToAPIs model always resolves strict config and never same-model generic fallback', () => {
+  const generic = makeVideoConfig({
+    id: 1,
+    provider: 'openai',
+    api_protocol: 'openai',
+    base_url: 'https://example.invalid',
+    model: ['seedance-2-fast'],
+    default_model: 'seedance-2-fast',
+    is_default: 1,
+  });
+  const strict = makeVideoConfig({
+    id: 2,
+    model: ['seedance-2-fast'],
+    default_model: 'seedance-2-fast',
+    is_default: 0,
+  });
+  assert.equal(getDefaultVideoConfig(makeDb([generic, strict]), 'seedance-2-fast').id, 2);
+  assert.equal(getDefaultVideoConfig(makeDb(generic), 'seedance-2-fast'), null);
 });
 
 test('ToAPIs callVideoApi keeps multimodal references and never degrades them into first_frame', async () => {
