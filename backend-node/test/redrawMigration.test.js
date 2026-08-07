@@ -350,3 +350,43 @@ test('转绘风格目录只种入 37 个未验证真人风格草稿且迁移幂�
     WHERE category = 'free'
   `).get().count, 0);
 });
+
+test('转绘本地化任务与资产批次迁移可重复执行并保留幂等唯一约束', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  runMigrationsAndEnsure(db);
+
+  const versionColumns = columnNames(db, 'redraw_versions');
+  for (const name of [
+    'localization_task_id',
+    'localization_credit_reservation_id',
+    'localization_input_hash',
+    'localization_idempotency_key',
+    'localization_model_snapshot_json',
+  ]) {
+    assert.ok(versionColumns.includes(name), name);
+  }
+
+  const batchColumns = columnNames(db, 'redraw_asset_batches');
+  for (const name of [
+    'version_id',
+    'tenant_id',
+    'user_id',
+    'task_id',
+    'idempotency_key',
+    'quote_snapshot_json',
+    'asset_ids_json',
+    'status',
+    'total_count',
+    'success_count',
+    'failed_count',
+    'created_at',
+    'updated_at',
+    'completed_at',
+  ]) {
+    assert.ok(batchColumns.includes(name), name);
+  }
+
+  const versionIndexes = db.prepare('PRAGMA index_list(redraw_versions)').all();
+  assert.ok(versionIndexes.some((index) => index.name === 'uq_redraw_localization_idempotency'));
+});
