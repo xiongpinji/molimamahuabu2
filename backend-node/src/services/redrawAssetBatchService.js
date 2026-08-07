@@ -7,7 +7,10 @@ const {
   createAssetAttempt,
   finalizeAssetAttempt,
   failAssetAttempt,
+  validateCleanPlateQuality,
 } = require('./redrawAssetService');
+
+const trackedBatchCompletions = new Map();
 
 function codedError(code, message, extra = {}) {
   return Object.assign(new Error(message), { code, ...extra });
@@ -77,6 +80,50 @@ function canReadAsset(ctx, assetId) {
   if (typeof ctx.assetReader?.canRead === 'function') return ctx.assetReader.canRead(asset) === true;
   if (typeof ctx.canReadArtifact === 'function') return ctx.canReadArtifact(assetId) === true;
   return asset.readable === true;
+}
+
+function isTerminalBatchStatus(status) {
+  return ['completed', 'partial_failed', 'failed', 'needs_attention'].includes(String(status));
+}
+
+function providerTaskIdOf(result) {
+  return result?.provider_task_id || result?.providerTaskId || result?.task_id || result?.taskId || '';
+}
+
+function isUnknownProviderResult(result) {
+  const status = String(result?.status || '').toLowerCase();
+  const code = String(result?.code || result?.error_code || '').toUpperCase();
+  return result?.unknown === true
+    || ['pending', 'processing', 'indeterminate', 'needs_attention', 'unknown'].includes(status)
+    || ['UNKNOWN', 'PROVIDER_UNKNOWN', 'TASK_UNKNOWN', 'STATUS_UNKNOWN', 'INDETERMINATE'].includes(code);
+}
+
+function isCompletedProviderResult(result) {
+  return ['completed', 'complete', 'succeeded', 'success', 'done'].includes(String(result?.status || '').toLowerCase());
+}
+
+function isSystemError(error) {
+  return error instanceof TypeError
+    || String(error?.code || '').startsWith('SQLITE_')
+    || /database|constraint|readonly|transaction|connection/i.test(String(error?.message || ''));
+}
+
+function markAssetNeedsAttention(ctx, attemptId, message, code = 'REDRAW_ASSET_PROVIDER_UNKNOWN') {
+  const base = assertContext(ctx);
+  const row = base.db.prepare(`
+    SELECT * FROM redraw_assets
+    WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+  `).get(Number(attemptId), base.tenantId, base.userId);
+  if (!row) throw codedError('REDRAW_ASSET_NOT_FOUND', '转绘资产尝试不存在');
+  if (String(row.status) === 'needs_attention') return row;
+  const now = new Date().toISOString();
+  base.db.prepare(`
+    UPDATE redraw_assets
+    SET status = 'needs_attention', approval_status = 'pending',
+        error_code = ?, error_message = ?, updated_at = ?
+    WHERE id = ?
+  `).run(code, message, now, Number(row.id));
+  return base.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(row.id));
 }
 
 function hasReadableSuccess(ctx, row) {
@@ -166,6 +213,31 @@ function quoteAssetBatch(db, input = {}) {
   const ctx = { ...input, db };
   const rows = selectAssets(db, ctx, input.assetIds ?? input.asset_ids);
   const items = rows.map((row) => rowToItem(row, version, ctx));
+  if (items.length === 0) {
+    const emptyQuote = {
+      priced: false,
+      version_id: Number(version.id),
+      tenant_id: String(version.tenant_id),
+      user_id: String(version.user_id),
+      locale: version.locale || '',
+      market: version.market || '',
+      total_credits: 0,
+      items: [],
+      blocked: [{
+        code: 'REDRAW_ASSET_BATCH_EMPTY',
+        message: '没有可批量生成的转绘资产',
+      }],
+    };
+    emptyQuote.quote_hash = hash({
+      version_id: emptyQuote.version_id,
+      locale: emptyQuote.locale,
+      market: emptyQuote.market,
+      items: [],
+      blocked: emptyQuote.blocked,
+      priced: false,
+    });
+    return emptyQuote;
+  }
   const blocked = items
     .filter((item) => !item.priced)
     .map((item) => ({
@@ -213,10 +285,14 @@ function quoteAssetBatch(db, input = {}) {
 
 function rowToBatch(row) {
   if (!row) return null;
+  const quoteSnapshot = parseJson(row.quote_snapshot_json, {});
+  const attemptIds = parseJson(row.asset_ids_json, []);
   return {
     ...row,
-    quote_snapshot: parseJson(row.quote_snapshot_json, {}),
-    asset_ids: parseJson(row.asset_ids_json, []),
+    quote_snapshot: quoteSnapshot,
+    selected_asset_ids: Array.isArray(quoteSnapshot.items) ? quoteSnapshot.items.map((item) => item.asset_id) : [],
+    attempt_ids: attemptIds,
+    asset_ids: attemptIds,
   };
 }
 
@@ -233,6 +309,11 @@ function batchStatus(success, failed, total) {
   if (total > 0 && failed === total) return 'failed';
   if (success > 0 && failed > 0) return 'partial_failed';
   return 'processing';
+}
+
+function batchStatusFromCounts(success, failed, unknown, total) {
+  if (unknown > 0) return 'needs_attention';
+  return batchStatus(success, failed, total);
 }
 
 function createOwnedTask(db, log, type, resourceId, ctx) {
@@ -259,7 +340,7 @@ async function runPool(items, concurrency, worker) {
       await worker(current);
     }
   });
-  await Promise.allSettled(workers);
+  await Promise.all(workers);
 }
 
 function startAssetBatch(ctx = {}, input = {}, options = {}) {
@@ -276,14 +357,20 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
     `).get(base.versionId, base.tenantId, base.userId, idempotencyKey);
     options.trace?.({ event: 'idempotency_read', inImmediateTransaction: base.db.inTransaction === true, existing: Boolean(existing) });
     if (existing) {
+      const existingBatch = rowToBatch(existing);
+      const tracked = trackedBatchCompletions.get(Number(existing.id));
+      const completion = tracked
+        || (isTerminalBatchStatus(existing.status) ? Promise.resolve(existingBatch) : null);
       created = {
         replay: true,
-        batch: rowToBatch(existing),
+        batch: existingBatch,
         task: taskService.getTask(base.db, existing.task_id),
+        completion,
       };
       return;
     }
     const quote = quoteAssetBatch(base.db, { ...ctx, assetIds: input.assetIds ?? input.asset_ids });
+    if (!quote.items.length) throw codedError('REDRAW_ASSET_BATCH_EMPTY', '没有可批量生成的转绘资产', { quote });
     if (!quote.priced) throw codedError('REDRAW_ASSET_BATCH_UNPRICED', '批量资产存在未验证能力或未配置价格', { quote });
     if (String(input.quoteHash || input.quote_hash || '') !== quote.quote_hash) {
       throw codedError('REDRAW_ASSET_BATCH_QUOTE_CHANGED', '批量报价已变化，请刷新后重试', { quote });
@@ -301,7 +388,7 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         parentTask.id,
         idempotencyKey,
         JSON.stringify(quote),
-        JSON.stringify(quote.items.map((item) => item.asset_id)),
+        JSON.stringify([]),
         quote.items.length,
         now,
         now,
@@ -358,60 +445,106 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
       `).get(base.versionId, base.tenantId, base.userId, idempotencyKey);
       if (existing) {
         const batch = rowToBatch(existing);
-        return { batch, task: taskService.getTask(base.db, existing.task_id), completion: Promise.resolve(batch) };
+        const tracked = trackedBatchCompletions.get(Number(existing.id));
+        return {
+          batch,
+          task: taskService.getTask(base.db, existing.task_id),
+          completion: tracked || (isTerminalBatchStatus(existing.status) ? Promise.resolve(batch) : null),
+        };
       }
     }
     throw error;
   }
   if (created?.replay) {
-    return { batch: created.batch, task: created.task, completion: Promise.resolve(created.batch) };
+    return { batch: created.batch, task: created.task, completion: created.completion };
   }
 
   const work = async () => {
     const now = new Date().toISOString();
-    base.db.prepare("UPDATE redraw_asset_batches SET status = 'processing', updated_at = ? WHERE id = ?")
-      .run(now, created.batch.id);
-    taskService.updateTaskStatus(base.db, created.task.id, 'processing', 5, '正在批量生成转绘资产');
-    await runPool(created.childTasks, Number(options.concurrency || ctx.concurrency || 3), async ({ item, childTask, attemptId }) => {
-      const asset = base.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attemptId));
-      try {
-        taskService.updateTaskStatus(base.db, childTask.id, 'processing', 10, '正在生成转绘资产');
-        if (typeof ctx.provider !== 'function') throw codedError('REDRAW_ASSET_PROVIDER_REQUIRED', '缺少资产生成 provider');
-        const result = await ctx.provider({
-          taskId: childTask.id,
-          batchId: created.batch.id,
-          asset,
-          model: item.model,
-          capability: item.capability,
-          locale: created.quote.locale,
-          market: created.quote.market,
-        });
-        const providerTaskId = result?.provider_task_id || result?.task_id;
-        if (providerTaskId) {
-          updateProviderTask(base.db, childTask.id, providerTaskId);
-          base.db.prepare('UPDATE redraw_assets SET generation_task_id = ?, updated_at = ? WHERE id = ?')
-            .run(String(providerTaskId), new Date().toISOString(), Number(attemptId));
+    try {
+      base.db.prepare("UPDATE redraw_asset_batches SET status = 'processing', updated_at = ? WHERE id = ?")
+        .run(now, created.batch.id);
+      taskService.updateTaskStatus(base.db, created.task.id, 'processing', 5, '正在批量生成转绘资产');
+      await runPool(created.childTasks, Number(options.concurrency || ctx.concurrency || 3), async ({ item, childTask, attemptId }) => {
+        const asset = base.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attemptId));
+        let result;
+        try {
+          taskService.updateTaskStatus(base.db, childTask.id, 'processing', 10, '正在生成转绘资产');
+          if (typeof ctx.provider !== 'function') throw codedError('REDRAW_ASSET_PROVIDER_REQUIRED', '缺少资产生成 provider');
+          result = await ctx.provider({
+            taskId: childTask.id,
+            batchId: created.batch.id,
+            asset,
+            model: item.model,
+            capability: item.capability,
+            locale: created.quote.locale,
+            market: created.quote.market,
+          });
+        } catch (error) {
+          if (isUnknownProviderResult(error)) {
+            const providerTaskId = providerTaskIdOf(error);
+            if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
+            markAssetNeedsAttention(ctx, attemptId, error.message || '供应商任务状态未知');
+            taskService.updateTaskStatus(base.db, childTask.id, 'needs_attention', 90, error.message || '供应商任务状态未知');
+            return;
+          }
+          failAssetAttempt(ctx, attemptId, error);
+          taskService.updateTaskError(base.db, childTask.id, String(error.message || error));
+          return;
         }
-        const finalized = finalizeAssetAttempt(ctx, attemptId, {
-          ...(result || {}),
-          clean_plate: item.kind === 'scene' && item.capability === 'clean_plate_image',
-        });
-        taskService.updateTaskResult(base.db, childTask.id, { asset_id: finalized.id, status: finalized.status });
-      } catch (error) {
-        failAssetAttempt(ctx, attemptId, error);
-        taskService.updateTaskError(base.db, childTask.id, String(error.message || error));
-      }
-    });
+        const providerTaskId = providerTaskIdOf(result);
+        if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
+        if (isUnknownProviderResult(result)) {
+          markAssetNeedsAttention(ctx, attemptId, result?.error || '供应商任务状态未知');
+          taskService.updateTaskStatus(base.db, childTask.id, 'needs_attention', 90, result?.error || '供应商任务状态未知');
+          return;
+        }
+        if (!isCompletedProviderResult(result)) {
+          const error = codedError('REDRAW_ASSET_GENERATION_FAILED', result?.error || '资产生成失败');
+          failAssetAttempt(ctx, attemptId, error);
+          taskService.updateTaskError(base.db, childTask.id, error.message);
+          return;
+        }
+        try {
+          if (item.kind === 'scene' && item.capability === 'clean_plate_image') {
+            validateCleanPlateQuality(asset, {}, result || {});
+          }
+          const finalized = finalizeAssetAttempt(ctx, attemptId, {
+            ...(result || {}),
+            clean_plate: item.kind === 'scene' && item.capability === 'clean_plate_image',
+          });
+          taskService.updateTaskResult(base.db, childTask.id, { asset_id: finalized.id, status: finalized.status });
+        } catch (error) {
+          if (isSystemError(error)) throw error;
+          failAssetAttempt(ctx, attemptId, error);
+          taskService.updateTaskError(base.db, childTask.id, String(error.message || error));
+        }
+      });
+    } catch (error) {
+      try {
+        const timestamp = new Date().toISOString();
+        base.db.prepare(`
+          UPDATE redraw_asset_batches
+          SET status = 'needs_attention', error_code = 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
+              error_message = ?, updated_at = ?
+          WHERE id = ?
+        `).run(String(error.message || error), timestamp, created.batch.id);
+        taskService.updateTaskStatus(base.db, created.task.id, 'needs_attention', 90, '批量资产生成状态未知，请人工确认');
+      } catch (_) {}
+      throw error;
+    }
     const counts = base.db.prepare(`
       SELECT
         SUM(CASE WHEN status IN ('generated', 'needs_attention') AND error_code IS NULL THEN 1 ELSE 0 END) AS success,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN status = 'needs_attention' AND error_code IS NOT NULL THEN 1 ELSE 0 END) AS unknown
       FROM redraw_assets
       WHERE id IN (${created.childTasks.map(() => '?').join(',')})
     `).get(...created.childTasks.map((entry) => Number(entry.attemptId)));
     const success = Number(counts.success || 0);
     const failed = Number(counts.failed || 0);
-    const status = batchStatus(success, failed, created.childTasks.length);
+    const unknown = Number(counts.unknown || 0);
+    const status = batchStatusFromCounts(success, failed, unknown, created.childTasks.length);
     const completedAt = ['completed', 'partial_failed', 'failed'].includes(status) ? new Date().toISOString() : null;
     base.db.prepare(`
       UPDATE redraw_asset_batches
@@ -421,13 +554,14 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
       status,
       success,
       failed,
-      failed > 0 ? '部分资产生成失败' : null,
+      unknown > 0 ? '部分资产生成状态未知' : failed > 0 ? '部分资产生成失败' : null,
       new Date().toISOString(),
       completedAt,
       created.batch.id,
     );
     const finalBatch = rowToBatch(base.db.prepare('SELECT * FROM redraw_asset_batches WHERE id = ?').get(created.batch.id));
     if (status === 'completed') taskService.updateTaskResult(base.db, created.task.id, { batch_id: created.batch.id, success_count: success, failed_count: failed });
+    else if (status === 'needs_attention') taskService.updateTaskStatus(base.db, created.task.id, 'needs_attention', 90, finalBatch.error_message || '批量资产生成状态未知');
     else taskService.updateTaskError(base.db, created.task.id, finalBatch.error_message || '批量资产生成失败');
     return finalBatch;
   };
@@ -435,6 +569,11 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
     ? ctx.schedule
     : (job) => taskService.trackInFlightTask(created.task.id, Promise.resolve().then(job));
   const completion = Promise.resolve(scheduler(work)).then((value) => value);
+  trackedBatchCompletions.set(Number(created.batch.id), completion);
+  const removeTracked = () => {
+    if (trackedBatchCompletions.get(Number(created.batch.id)) === completion) trackedBatchCompletions.delete(Number(created.batch.id));
+  };
+  completion.then(removeTracked, removeTracked);
   return { batch: created.batch, task: created.task, completion };
 }
 

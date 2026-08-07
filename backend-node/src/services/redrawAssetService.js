@@ -271,6 +271,15 @@ function validateCleanPlateQuality(sceneAsset, options, providerResult) {
   }
 }
 
+function cleanPlateQualityOptions(attempt, providerResult = {}) {
+  const snapshot = parseJson(attempt.source_ref_json, {}).snapshot || {};
+  return {
+    width: providerResult.width ?? providerResult.source_width ?? snapshot.width ?? snapshot.source_width,
+    height: providerResult.height ?? providerResult.source_height ?? snapshot.height ?? snapshot.source_height,
+    nonMaskSimilarityMin: providerResult.nonMaskSimilarityMin ?? providerResult.non_mask_similarity_min,
+  };
+}
+
 function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
   const { db, tenantId, userId } = assertContext(ctx);
   const attempt = db.prepare(`
@@ -295,9 +304,19 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
     ? ctx.assetReader.canRead(asset)
     : providerResult.readable === true;
   if (!asset || !canRead) return fail('生成图片不可读取', 'ASSET_NOT_READABLE');
+  if (attempt.kind === 'voice' && asset.type !== 'audio' && !String(asset.mime_type || '').startsWith('audio/')) {
+    return fail('语音资产类型不是音频', 'VOICE_ASSET_TYPE_INVALID');
+  }
   if (attempt.kind === 'character' && providerResult.metadata?.views
     && (!Array.isArray(providerResult.metadata.views) || providerResult.metadata.views.length < 3)) {
     return fail('角色资产缺少正面、侧面、背面三视图', 'CHARACTER_VIEWS_INCOMPLETE');
+  }
+  if (attempt.kind === 'scene' && providerResult.clean_plate === true) {
+    try {
+      validateCleanPlateQuality(asset, cleanPlateQualityOptions(attempt, providerResult), providerResult);
+    } catch (error) {
+      return fail(error.message, error.code || 'CLEAN_PLATE_QUALITY_FAILED');
+    }
   }
   const now = new Date().toISOString();
   if (attempt.kind === 'voice') {
@@ -335,6 +354,7 @@ function failAssetAttempt(ctx, attemptId, error) {
   if (!attempt) throw codedError('REDRAW_ASSET_NOT_FOUND', '转绘资产尝试不存在');
   const message = String(error?.message || error || '资产生成失败');
   const code = String(error?.code || 'REDRAW_ASSET_GENERATION_FAILED');
+  if (String(attempt.status) === 'failed') return rowToAsset(attempt);
   const now = new Date().toISOString();
   db.prepare('UPDATE redraw_assets SET status = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
     .run('failed', code, message, now, Number(attempt.id));
@@ -454,4 +474,5 @@ module.exports = {
   listAssetVersions,
   generateAsset,
   generateCleanPlate,
+  validateCleanPlateQuality,
 };

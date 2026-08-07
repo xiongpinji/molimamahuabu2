@@ -175,6 +175,49 @@ test('quoteAssetBatch blocks the whole batch with per-item reasons when capabili
   cleanup(state);
 });
 
+test('quoteAssetBatch returns empty when no eligible selected or default assets remain', () => {
+  const defaultState = setupBatchState();
+  defaultState.db.prepare(`
+    UPDATE redraw_assets
+    SET status = 'generated', asset_id = 101
+    WHERE kind = 'character'
+  `).run();
+  defaultState.db.prepare(`
+    UPDATE redraw_assets
+    SET status = 'needs_attention', clean_plate_asset_id = 102
+    WHERE kind = 'scene'
+  `).run();
+  defaultState.db.prepare(`
+    UPDATE redraw_assets
+    SET status = 'generated', asset_id = 103
+    WHERE kind = 'prop'
+  `).run();
+  defaultState.db.prepare(`
+    UPDATE redraw_assets
+    SET status = 'generated', voice_asset_id = 104
+    WHERE kind = 'voice'
+  `).run();
+  const defaultQuote = quoteAssetBatch(defaultState.db, defaultState.ctx);
+  assert.equal(defaultQuote.priced, false);
+  assert.equal(defaultQuote.blocked[0].code, 'REDRAW_ASSET_BATCH_EMPTY');
+  assert.throws(
+    () => startAssetBatch(defaultState.ctx, { quoteHash: defaultQuote.quote_hash, idempotencyKey: 'empty-default' }),
+    (error) => error.code === 'REDRAW_ASSET_BATCH_EMPTY',
+  );
+  assert.equal(defaultState.db.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count, 0);
+  assert.equal(defaultState.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0);
+  cleanup(defaultState);
+
+  const selectedState = setupBatchState();
+  selectedState.db.prepare("UPDATE redraw_assets SET status = 'generated', asset_id = 101 WHERE id = ?")
+    .run(selectedState.assetIds.character);
+  const selectedQuote = quoteAssetBatch(selectedState.db, { ...selectedState.ctx, assetIds: [selectedState.assetIds.character] });
+  assert.equal(selectedQuote.priced, false);
+  assert.equal(selectedQuote.blocked[0].code, 'REDRAW_ASSET_BATCH_EMPTY');
+  assert.equal(selectedState.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  cleanup(selectedState);
+});
+
 test('startAssetBatch fails before dispatch on insufficient balance without residual rows', () => {
   const state = setupBatchState({ balance: 19 });
   const quote = quoteAssetBatch(state.db, state.ctx);
@@ -257,6 +300,87 @@ test('startAssetBatch dispatches after commit, settles partial failure, and retr
   cleanup(state);
 });
 
+test('startAssetBatch keeps unknown provider state held, needs attention, and out of retry quote', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.scene] });
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async () => ({
+      status: 'processing',
+      provider_task_id: 'provider-scene-unknown',
+      unknown: true,
+    }),
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'unknown-scene', assetIds: [state.assetIds.scene] });
+  await started.completion;
+
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const attempt = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+  const parentTask = taskService.getTask(state.db, started.task.id);
+
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(batch.success_count, 0);
+  assert.equal(batch.failed_count, 0);
+  assert.equal(attempt.status, 'needs_attention');
+  assert.equal(attempt.error_code, 'REDRAW_ASSET_PROVIDER_UNKNOWN');
+  assert.equal(attempt.generation_task_id, childTask.id);
+  assert.equal(childTask.provider_task_id, 'provider-scene-unknown');
+  assert.equal(childTask.status, 'needs_attention');
+  assert.equal(parentTask.status, 'needs_attention');
+  assert.equal(state.db.prepare("SELECT status FROM tenant_usage_reservations WHERE id = ?").get(attempt.credit_reservation_id).status, 'held');
+  assert.deepEqual(credits.getTenantAccount(state.db, 'tenant-a'), {
+    tenant_id: 'tenant-a',
+    available: 25,
+    held: 5,
+    spent: 0,
+  });
+  assert.deepEqual(quoteAssetBatch(state.db, state.ctx).items.map((item) => item.kind), ['character', 'prop', 'voice']);
+  cleanup(state);
+});
+
+test('startAssetBatch stores internal child task id on asset and provider id only on async task', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async () => ({ status: 'completed', asset_id: 103, provider_task_id: 'provider-prop-1' }),
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'provider-id-columns', assetIds: [state.assetIds.prop] });
+  await started.completion;
+
+  const attempt = state.db.prepare('SELECT generation_task_id FROM redraw_assets WHERE id = ?').get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+  assert.equal(attempt.generation_task_id, childTask.id);
+  assert.equal(childTask.provider_task_id, 'provider-prop-1');
+  assert.notEqual(attempt.generation_task_id, 'provider-prop-1');
+  cleanup(state);
+});
+
+test('startAssetBatch escalates system failures to parent needs_attention without refunding held reservations', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  const started = startAssetBatch({
+    ...state.ctx,
+    assetReader: {
+      canRead() {
+        throw new TypeError('reader crashed');
+      },
+    },
+    provider: async () => ({ status: 'completed', asset_id: 103 }),
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'system-write-failure', assetIds: [state.assetIds.prop] });
+
+  await assert.rejects(started.completion, /reader crashed/);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const parentTask = taskService.getTask(state.db, started.task.id);
+  const attempt = state.db.prepare('SELECT credit_reservation_id FROM redraw_assets WHERE id = ?').get(started.batch.asset_ids[0]);
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(parentTask.status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(attempt.credit_reservation_id).status, 'held');
+  cleanup(state);
+});
+
 test('startAssetBatch reports completed and failed for all-success and all-failed batches with per-attempt snapshots', async () => {
   const success = setupBatchState();
   const successQuote = quoteAssetBatch(success.db, success.ctx);
@@ -265,12 +389,21 @@ test('startAssetBatch reports completed and failed for all-success and all-faile
     provider: async (job) => ({
       status: 'completed',
       asset_id: job.asset.kind === 'voice' ? 104 : job.asset.kind === 'prop' ? 103 : job.asset.kind === 'scene' ? 102 : 101,
+      quality: job.asset.kind === 'scene' ? {
+        width: 1280,
+        height: 720,
+        mask_area_changed: true,
+        non_mask_similarity: 0.97,
+      } : undefined,
       metadata: job.asset.kind === 'character' ? { views: ['front', 'side', 'back'] } : {},
     }),
     schedule: (job) => job(),
   }, { quoteHash: successQuote.quote_hash, idempotencyKey: 'all-success' });
   await successStarted.completion;
   assert.equal(getAssetBatch(success.db, success.ctx, successStarted.batch.id).status, 'completed');
+  const completedBatch = getAssetBatch(success.db, success.ctx, successStarted.batch.id);
+  assert.deepEqual(completedBatch.selected_asset_ids, successQuote.items.map((item) => item.asset_id));
+  assert.deepEqual(completedBatch.attempt_ids, successStarted.batch.asset_ids);
   const rows = success.db.prepare(`
     SELECT id, kind, source_ref_json, asset_id, clean_plate_asset_id, voice_asset_id, status
     FROM redraw_assets
@@ -318,14 +451,22 @@ test('startAssetBatch idempotency replays the existing batch without refreezing 
   const state = setupBatchState();
   const quote = quoteAssetBatch(state.db, state.ctx);
   const batchReads = [];
+  let releaseProvider;
   let calls = 0;
   const first = startAssetBatch({
     ...state.ctx,
     provider: async (job) => {
       calls += 1;
+      if (calls === 1) await new Promise((resolve) => { releaseProvider = resolve; });
       return {
         status: 'completed',
         asset_id: job.asset.kind === 'voice' ? 104 : job.asset.kind === 'prop' ? 103 : job.asset.kind === 'scene' ? 102 : 101,
+        quality: job.asset.kind === 'scene' ? {
+          width: 1280,
+          height: 720,
+          mask_area_changed: true,
+          non_mask_similarity: 0.97,
+        } : undefined,
         metadata: job.asset.kind === 'character' ? { views: ['front', 'side', 'back'] } : {},
       };
     },
@@ -345,6 +486,8 @@ test('startAssetBatch idempotency replays the existing batch without refreezing 
       if (event.event === 'idempotency_read') batchReads.push(event);
     },
   });
+  assert.equal(replay.completion, first.completion);
+  releaseProvider();
   await first.completion;
 
   assert.equal(replay.batch.id, first.batch.id);
@@ -355,6 +498,30 @@ test('startAssetBatch idempotency replays the existing batch without refreezing 
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 4);
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM redraw_asset_batches').get().count, 1);
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 1);
+  cleanup(state);
+});
+
+test('startAssetBatch returns null completion for untracked non-terminal replay after restart', () => {
+  const state = setupBatchState();
+  const now = new Date().toISOString();
+  const parentTask = taskService.createTask(state.db, { info() {} }, 'redraw_asset_batch', 'redraw_asset_batch:restart');
+  state.db.prepare('UPDATE async_tasks SET tenant_id = ?, user_id = ? WHERE id = ?')
+    .run(state.ctx.tenantId, state.ctx.userId, parentTask.id);
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  const result = state.db.prepare(`INSERT INTO redraw_asset_batches
+    (version_id, tenant_id, user_id, task_id, idempotency_key, quote_snapshot_json,
+     asset_ids_json, status, total_count, success_count, failed_count, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'restart-key', ?, '[]', 'processing', 1, 0, 0, ?, ?)`)
+    .run(state.versionId, state.ctx.tenantId, state.ctx.userId, parentTask.id, JSON.stringify(quote), now, now);
+
+  const replay = startAssetBatch(state.ctx, {
+    quoteHash: quote.quote_hash,
+    idempotencyKey: 'restart-key',
+    assetIds: [state.assetIds.prop],
+  });
+
+  assert.equal(replay.batch.id, Number(result.lastInsertRowid));
+  assert.equal(replay.completion, null);
   cleanup(state);
 });
 
@@ -379,8 +546,10 @@ test('reconcileOrphanedBatches refunds unsubmitted pending children and flags po
     schedule: () => new Promise(() => {}),
     provider: async () => ({ status: 'completed', asset_id: 102 }),
   }, { quoteHash: dispatchedQuote.quote_hash, idempotencyKey: 'orphan-dispatched' });
-  dispatched.db.prepare("UPDATE redraw_assets SET generation_task_id = 'provider-task-live' WHERE id = ?")
-    .run(dispatchedStarted.batch.asset_ids[0]);
+  const generationTaskId = dispatched.db.prepare('SELECT generation_task_id FROM redraw_assets WHERE id = ?')
+    .get(dispatchedStarted.batch.asset_ids[0]).generation_task_id;
+  dispatched.db.prepare('UPDATE async_tasks SET provider_task_id = ? WHERE id = ?')
+    .run('provider-task-live', generationTaskId);
   const dispatchedCount = reconcileOrphanedBatches(dispatched.db, { warn() {}, info() {} });
   assert.equal(dispatchedCount, 1);
   assert.equal(getAssetBatch(dispatched.db, dispatched.ctx, dispatchedStarted.batch.id).status, 'needs_attention');

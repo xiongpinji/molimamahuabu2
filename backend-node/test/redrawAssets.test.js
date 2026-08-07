@@ -48,6 +48,13 @@ function addAsset(db, id, localPath) {
     .run(id, localPath, now, now);
 }
 
+function addTypedAsset(db, id, localPath, type, mimeType) {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO assets (id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+    VALUES (?, '生成资产', ?, 'redraw', '', ?, ?, ?, ?)`)
+    .run(id, type, localPath, mimeType, now, now);
+}
+
 function addDraftPlaceholder(db, state, input = {}) {
   const now = new Date().toISOString();
   const result = db.prepare(`INSERT INTO redraw_assets
@@ -364,7 +371,7 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-finalize-kind-'));
   for (const file of ['voice.mp3', 'clean.png']) fs.writeFileSync(path.join(root, file), file);
-  addAsset(state.db, 501, 'voice.mp3');
+  addTypedAsset(state.db, 501, 'voice.mp3', 'audio', 'audio/mpeg');
   addAsset(state.db, 502, 'clean.png');
   const ctx = context(state, root);
   addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'v1' } });
@@ -373,7 +380,17 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   const sceneAttempt = createAssetAttempt(ctx, { kind: 'scene', sourceRef: { id: 's-clean' } });
 
   const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 501 });
-  const scene = finalizeAssetAttempt(ctx, sceneAttempt.id, { status: 'completed', clean_plate_asset_id: 502, clean_plate: true });
+  const scene = finalizeAssetAttempt(ctx, sceneAttempt.id, {
+    status: 'completed',
+    clean_plate_asset_id: 502,
+    clean_plate: true,
+    quality: {
+      width: 1280,
+      height: 720,
+      mask_area_changed: true,
+      non_mask_similarity: 0.97,
+    },
+  });
 
   assert.equal(voice.voice_asset_id, 501);
   assert.equal(voice.asset_id, null);
@@ -382,6 +399,52 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   assert.equal(scene.asset_id, null);
   assert.equal(scene.status, 'needs_attention');
   assert.equal(scene.review_status, 'needs_review');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt rejects non-audio assets for voice output without confirming credits', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-type-'));
+  fs.writeFileSync(path.join(root, 'not-audio.png'), 'not-audio');
+  addAsset(state.db, 503, 'not-audio.png');
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'voice-image' } });
+  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'voice-image' } });
+
+  assert.throws(
+    () => finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 503 }),
+    (error) => error.code === 'VOICE_ASSET_TYPE_INVALID',
+  );
+  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(voiceAttempt.id);
+  assert.equal(row.status, 'failed');
+  assert.equal(row.error_code, 'VOICE_ASSET_TYPE_INVALID');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  fs.rmSync(root, { recursive: true, force: true });
+  state.db.close();
+});
+
+test('finalizeAssetAttempt requires clean plate quality before settlement', () => {
+  const state = setup();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-clean-quality-'));
+  fs.writeFileSync(path.join(root, 'clean.png'), 'clean');
+  addAsset(state.db, 504, 'clean.png');
+  const ctx = context(state, root);
+  addDraftPlaceholder(state.db, state, { kind: 'scene', sourceRef: { id: 'scene-clean-quality' } });
+  const sceneAttempt = createAssetAttempt(ctx, {
+    kind: 'scene',
+    sourceRef: { id: 'scene-clean-quality' },
+    snapshot: { width: 1280, height: 720 },
+  });
+
+  assert.throws(
+    () => finalizeAssetAttempt(ctx, sceneAttempt.id, { status: 'completed', clean_plate_asset_id: 504, clean_plate: true }),
+    (error) => error.code === 'CLEAN_PLATE_QUALITY_UNVERIFIED',
+  );
+  const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(sceneAttempt.id);
+  assert.equal(row.status, 'failed');
+  assert.equal(row.error_code, 'CLEAN_PLATE_QUALITY_UNVERIFIED');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });
@@ -399,6 +462,9 @@ test('failAssetAttempt 标记失败并复用生成结算退款', () => {
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error_code, 'FAKE_FAILED');
   assert.equal(failed.error_message, 'provider rejected');
+  assert.equal(credits.getReservation(state.db, reservation.credit_reservation_id).status, 'refunded');
+  const failedAgain = failAssetAttempt(ctx, attempt.id, Object.assign(new Error('provider rejected again'), { code: 'FAKE_FAILED_AGAIN' }));
+  assert.equal(failedAgain.status, 'failed');
   assert.equal(credits.getReservation(state.db, reservation.credit_reservation_id).status, 'refunded');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
