@@ -52,6 +52,17 @@ async function pngBuffer(width = 640, height = 360) {
   }).png().toBuffer();
 }
 
+async function jpegBuffer(width = 640, height = 360) {
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 200, g: 80, b: 40 },
+    },
+  }).jpeg().toBuffer();
+}
+
 function setupAssetContractState() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
@@ -756,6 +767,122 @@ test('generateAsset rejects non-image downloaded artifact before registration', 
     (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID',
   );
   assert.equal(created.length, 0);
+});
+
+test('generateAsset registers mime type from actual image magic', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/prop.jpg', width: 320, height: 180 };
+      },
+    },
+    publicImageDownloader: async () => ({ bytes: await jpegBuffer(320, 180), mimeType: 'image/jpeg' }),
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  const result = await adapters.generateAsset({
+    taskId: 9,
+    versionId: 7,
+    model: 'verified-image-model',
+    asset: { id: 5, kind: 'prop', prompt: 'prop' },
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(created[0].mime_type, 'image/jpeg');
+  assert.equal(created[0].width, 320);
+  assert.equal(created[0].height, 180);
+});
+
+test('generateAsset rejects image magic that conflicts with extension or declared mime', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/prop.png', width: 320, height: 180 };
+      },
+    },
+    publicImageDownloader: async () => ({ bytes: await jpegBuffer(320, 180), mimeType: 'image/png' }),
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'prop', prompt: 'prop' },
+    }),
+    (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID' && !String(error.message).includes(storageRoot),
+  );
+  assert.equal(created.length, 0);
+});
+
+test('generateAsset rejects realpath escaping the redraw version directory before probing', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const calls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png', width: 640, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makePngFile(storageRoot, 'redraw-assets/v7/scene.png', 640, 360);
+      },
+    },
+    realpathSync(target) {
+      calls.push(target);
+      if (target.endsWith(path.join('redraw-assets', 'v7', 'scene.png'))) {
+        return path.join(storageRoot, 'outside', 'scene.png');
+      }
+      return path.resolve(target);
+    },
+    imageMetadataProbe() {
+      throw new Error('probe must not run after containment failure');
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+    }),
+    (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID' && !String(error.message).includes(storageRoot),
+  );
+  assert.equal(created.length, 0);
+  assert.equal(calls.length >= 3, true);
 });
 
 test('generateAsset default image download uses public downloader and rejects private URLs before registration', async () => {

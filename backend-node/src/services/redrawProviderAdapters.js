@@ -71,13 +71,44 @@ async function defaultImageMetadataProbe(absolutePath) {
   return sharp(absolutePath).metadata();
 }
 
-function mimeFromPath(localPath, fallback) {
+function defaultRealpathSync(targetPath) {
+  return fs.realpathSync.native ? fs.realpathSync.native(targetPath) : fs.realpathSync(targetPath);
+}
+
+function pathIsInside(parent, child) {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function assertRealpathInsideVersion(storageRoot, versionDir, absolutePath, realpathSync) {
+  try {
+    const storageReal = realpathSync(storageRoot);
+    const versionReal = realpathSync(path.join(storageRoot, 'redraw-assets', versionDir));
+    const fileReal = realpathSync(absolutePath);
+    if (!pathIsInside(storageReal, versionReal) || !pathIsInside(versionReal, fileReal)) {
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact failed storage containment validation');
+    }
+    return fileReal;
+  } catch (error) {
+    if (error?.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID') throw error;
+    throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact failed storage containment validation');
+  }
+}
+
+function mimeFromImageFormat(format) {
+  const normalized = String(format || '').toLowerCase();
+  if (normalized === 'png') return 'image/png';
+  if (normalized === 'jpeg' || normalized === 'jpg') return 'image/jpeg';
+  if (normalized === 'webp') return 'image/webp';
+  throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact uses an unsupported image format');
+}
+
+function imageMimeFromPath(localPath) {
   const ext = path.extname(localPath).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
   if (ext === '.webp') return 'image/webp';
-  if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.png') return 'image/png';
-  return fallback;
+  return null;
 }
 
 function extensionFromMime(mimeType) {
@@ -214,6 +245,7 @@ function createRedrawProviderAdapters(deps = {}) {
   const log = deps.log || { info() {}, warn() {}, error() {} };
   const cfg = deps.cfg || {};
   const imageMetadataProbe = deps.imageMetadataProbe || defaultImageMetadataProbe;
+  const realpathSync = deps.realpathSync || defaultRealpathSync;
 
   async function localize(request = {}) {
     const model = trim(request.model);
@@ -326,13 +358,19 @@ function createRedrawProviderAdapters(deps = {}) {
     let localPath = null;
     localPath = await downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, normalized.taskId || attempt.id);
     const { abs: absolutePath } = scopedAbsolutePath(storageRoot, localPath, versionDir);
-    if (!fs.existsSync(absolutePath)) throw codedError('ASSET_NOT_READABLE', 'downloaded redraw asset is not readable');
     let width;
     let height;
+    let mimeType;
     try {
-      const metadata = await imageMetadataProbe(absolutePath);
-      width = requirePositiveDimension(metadata?.width, 'width');
-      height = requirePositiveDimension(metadata?.height, 'height');
+      const containedPath = assertRealpathInsideVersion(storageRoot, versionDir, absolutePath, realpathSync);
+      const probed = await imageMetadataProbe(containedPath);
+      width = requirePositiveDimension(probed?.width, 'width');
+      height = requirePositiveDimension(probed?.height, 'height');
+      mimeType = mimeFromImageFormat(probed?.format);
+      const extensionMime = imageMimeFromPath(localPath);
+      if (extensionMime && extensionMime !== mimeType) {
+        throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact format conflicts with file extension');
+      }
       const providerWidth = optionalPositiveDimension(imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width);
       const providerHeight = optionalPositiveDimension(imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height);
       if ((providerWidth != null && providerWidth !== width) || (providerHeight != null && providerHeight !== height)) {
@@ -368,7 +406,7 @@ function createRedrawProviderAdapters(deps = {}) {
         category: `redraw_${kind}`,
         url: imageUrl,
         local_path: localPath,
-        mime_type: mimeFromPath(localPath, 'image/png'),
+        mime_type: mimeType,
         width,
         height,
         image_gen_id: normalized.taskId,
