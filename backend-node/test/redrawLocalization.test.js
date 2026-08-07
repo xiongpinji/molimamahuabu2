@@ -59,8 +59,8 @@ function localizedFacts(overrides = {}) {
   };
 }
 
-function createDb() {
-  const db = new Database(':memory:');
+function createDb(options = {}) {
+  const db = new Database(':memory:', options);
   db.exec(`
     CREATE TABLE redraw_works (
       id INTEGER PRIMARY KEY,
@@ -344,6 +344,30 @@ test('第二次确认只创建隐藏草稿且不推进作品步骤', () => {
   db.close();
 });
 
+test('创建本地化草稿使用 immediate 事务并为不同幂等键分配不同版本', () => {
+  const sqlTrace = [];
+  const db = createDb({ verbose: (sql) => sqlTrace.push(sql) });
+  const first = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'd'.repeat(64),
+    idempotencyKey: 'confirm-en-us-4',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  const second = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'e'.repeat(64),
+    idempotencyKey: 'confirm-en-us-5',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  assert.equal(sqlTrace.some((sql) => /^BEGIN IMMEDIATE\b/i.test(sql)), true);
+  assert.deepEqual([first.version, second.version], [2, 3]);
+  db.close();
+});
+
 test('物化草稿在全部分镜、四类资产和引用写入成功后推进作品', () => {
   const db = createDb();
   const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
@@ -409,6 +433,21 @@ test('物化草稿失败时回滚且草稿保持隐藏', () => {
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 0);
   db.close();
+});
+
+test('兼容物化固定 Date.now 时连续两次仍创建不同版本', () => {
+  const db = createDb();
+  const originalNow = Date.now;
+  Date.now = () => 1234567890;
+  try {
+    const first = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, localizationPayload());
+    const second = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, localizationPayload());
+    assert.deepEqual([first.version, second.version], [2, 3]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions WHERE work_id = 1').get().count, 3);
+  } finally {
+    Date.now = originalNow;
+    db.close();
+  }
 });
 
 test('物化任一步失败时回滚版本、分镜、资产并保持当前版本指针', () => {

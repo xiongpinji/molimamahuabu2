@@ -1,4 +1,4 @@
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -223,7 +223,7 @@ function createLocalizationDraftRecord(db, owner, workId, input) {
 }
 
 function createLocalizationDraft(db, owner, workId, input = {}) {
-  return db.transaction(() => createLocalizationDraftRecord(db, owner, workId, input))();
+  return db.transaction(() => createLocalizationDraftRecord(db, owner, workId, input)).immediate();
 }
 
 function findOwnedDraftVersion(db, owner, draftVersionId, workId) {
@@ -345,7 +345,7 @@ function createLocalizationVersion(db, owner, workId, input) {
         market: input.market,
         localizationLevel: input.localizationLevel || input.localization_level || 'faithful',
         inputHash: expectedFactsHash,
-        idempotencyKey: `compat-${workId}-${expectedFactsHash}-${Date.now()}`,
+        idempotencyKey: `compat-${workId}-${expectedFactsHash}-${randomUUID()}`,
         modelSnapshot: input.modelSnapshot || input.model_snapshot || {},
       });
     const versionId = Number(draft.id);
@@ -496,7 +496,7 @@ function createLocalizationVersion(db, owner, workId, input) {
       asset_count: assetByStableId.size,
     };
   });
-  return transaction();
+  return transaction.immediate();
 }
 
 function materializeLocalizationDraft(db, owner, draftVersionId, input) {
