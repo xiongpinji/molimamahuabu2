@@ -505,6 +505,102 @@ function fakeGateway() {
   };
 }
 
+test('主动查单确认支付成功后原子入账且重复查单不重复增加积分', async () => {
+  const { db, tenant } = setup();
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    amountYuan: '10',
+    clientOrderKey: 'reconcile-order-001',
+  });
+  let queryCalls = 0;
+  const gateway = {
+    ...fakeGateway(),
+    async queryTrade(outTradeNo) {
+      queryCalls += 1;
+      return {
+        code: '10000',
+        tradeStatus: 'TRADE_SUCCESS',
+        outTradeNo,
+        tradeNo: '2026080722000000000300',
+        totalAmount: '10.00',
+      };
+    },
+  };
+
+  const first = await recharge.reconcileOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    orderId: order.id,
+  }, gateway);
+  const repeated = await recharge.reconcileOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    orderId: order.id,
+  }, gateway);
+
+  assert.equal(first.credited, true);
+  assert.equal(first.order.status, 'paid');
+  assert.equal(first.order.alipay_trade_no, '2026080722000000000300');
+  assert.equal(repeated.credited, false);
+  assert.equal(queryCalls, 1);
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 1000);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM tenant_credit_adjustments
+    WHERE tenant_id = ? AND reference_type = 'alipay_recharge_order'
+      AND reference_id = ?`).get(tenant.id, order.id).count, 1);
+});
+
+test('主动查单未支付、金额不符或越权时不会入账', async () => {
+  const { db, tenant } = setup();
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    amountYuan: '10',
+    clientOrderKey: 'reconcile-order-invalid',
+  });
+  const pending = await recharge.reconcileOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    orderId: order.id,
+  }, {
+    ...fakeGateway(),
+    async queryTrade(outTradeNo) {
+      return { code: '40004', subCode: 'ACQ.TRADE_NOT_EXIST', outTradeNo };
+    },
+  });
+  assert.equal(pending.credited, false);
+  assert.equal(pending.order.status, 'pending');
+
+  await assert.rejects(
+    recharge.reconcileOrder(db, {
+      tenantId: tenant.id,
+      userId: 'user-1',
+      orderId: order.id,
+    }, {
+      ...fakeGateway(),
+      async queryTrade(outTradeNo) {
+        return {
+          code: '10000',
+          tradeStatus: 'TRADE_SUCCESS',
+          outTradeNo,
+          tradeNo: '2026080722000000000301',
+          totalAmount: '9.99',
+        };
+      },
+    }),
+    (error) => error.code === 'ALIPAY_AMOUNT_MISMATCH',
+  );
+  await assert.rejects(
+    recharge.reconcileOrder(db, {
+      tenantId: tenant.id,
+      userId: 'other-user',
+      orderId: order.id,
+    }, { ...fakeGateway(), async queryTrade() { throw new Error('不应查询'); } }),
+    (error) => error.code === 'RECHARGE_ORDER_NOT_FOUND',
+  );
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 0);
+});
+
 test('合法支付宝成功通知原子入账且重复通知不重复增加积分', () => {
   const { db, tenant } = setup();
   const order = recharge.createOrder(db, {

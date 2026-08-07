@@ -147,6 +147,7 @@ import {
   getAlipayRechargeConfig,
   listAlipayRechargeOrders,
   listRechargePackages,
+  reconcileAlipayRechargeOrder,
 } from '@/api/billing'
 import CustomRechargePanel from '@/components/CustomRechargePanel.vue'
 import RechargePackageCard from '@/components/RechargePackageCard.vue'
@@ -154,6 +155,7 @@ import { normalizeCreditAccount } from '@/utils/billingDisplay'
 import { normalizePaymentRedirectUrl } from '@/utils/rechargePresentation'
 
 const router = useRouter()
+const PENDING_RECHARGE_ORDER_KEY = 'pending-alipay-recharge-order-id'
 const mode = ref('packages')
 const loadState = ref('loading')
 const loadError = ref('')
@@ -171,6 +173,7 @@ const payingTarget = ref('')
 let loadRequest = null
 let loadController = null
 let loadGeneration = 0
+let reconcileController = null
 let isMounted = false
 
 function backToWorkspace() {
@@ -224,6 +227,24 @@ function loadRechargeCenter() {
   return loadRequest
 }
 
+async function reconcilePendingRechargeOrder() {
+  const orderId = sessionStorage.getItem(PENDING_RECHARGE_ORDER_KEY)
+  if (!orderId) return
+  const controller = new AbortController()
+  const requestConfig = { silentError: true, signal: controller.signal }
+  reconcileController = controller
+  try {
+    const result = await reconcileAlipayRechargeOrder(orderId, requestConfig)
+    if (result?.order?.status === 'paid') {
+      sessionStorage.removeItem(PENDING_RECHARGE_ORDER_KEY)
+    }
+  } catch (error) {
+    if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError') return
+  } finally {
+    if (reconcileController === controller) reconcileController = null
+  }
+}
+
 async function beginRecharge(payload, target) {
   if (loadState.value !== 'ready') return
   if (!rechargeConfig.value.configured) return
@@ -236,6 +257,9 @@ async function beginRecharge(payload, target) {
     })
     const paymentUrl = normalizePaymentRedirectUrl(result?.payment_url)
     if (!paymentUrl) return ElMessage.warning('订单已创建，但支付地址不安全或不可用')
+    if (result?.order?.id) {
+      sessionStorage.setItem(PENDING_RECHARGE_ORDER_KEY, String(result?.order?.id))
+    }
     window.location.assign(paymentUrl)
   } finally {
     payingTarget.value = ''
@@ -262,8 +286,10 @@ function statusLabel(status) {
   return ({ pending: '待支付', paid: '已到账', closed: '已关闭', failed: '失败' })[status] || status || '-'
 }
 
-onMounted(() => {
+onMounted(async () => {
   isMounted = true
+  await reconcilePendingRechargeOrder()
+  if (!isMounted) return
   loadRechargeCenter()
 })
 
@@ -271,7 +297,9 @@ onBeforeUnmount(() => {
   isMounted = false
   loadGeneration += 1
   loadController?.abort()
+  reconcileController?.abort()
   loadController = null
+  reconcileController = null
   loadRequest = null
 })
 </script>

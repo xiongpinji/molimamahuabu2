@@ -14,6 +14,11 @@ class FakeAlipaySdk {
     return FakeAlipaySdk.nextPageUrl;
   }
 
+  async exec(method, params, options) {
+    this.execRequest = { method, params, options };
+    return FakeAlipaySdk.nextQueryResult;
+  }
+
   checkNotifySignV2(payload) {
     this.notifyPayload = payload;
     return payload.sign === 'valid';
@@ -21,6 +26,13 @@ class FakeAlipaySdk {
 }
 
 FakeAlipaySdk.nextPageUrl = 'https://openapi.alipay.com/gateway.do?signed=1';
+FakeAlipaySdk.nextQueryResult = {
+  code: '10000',
+  tradeStatus: 'TRADE_SUCCESS',
+  outTradeNo: 'MOLI123',
+  tradeNo: '2026080722000000000001',
+  totalAmount: '12.34',
+};
 
 const configuredEnv = {
   ALIPAY_APP_ID: 'app-123',
@@ -118,4 +130,17 @@ test('支付宝 SDK 返回非官方支付地址时拒绝跳转', () => {
     (error) => error.code === 'ALIPAY_PAYMENT_URL_INVALID',
   );
   FakeAlipaySdk.nextPageUrl = 'https://openapi.alipay.com/gateway.do?signed=1';
+});
+
+test('支付宝适配器可主动查询指定商户订单', async () => {
+  const gateway = createAlipayGateway(configuredEnv, { AlipaySdk: FakeAlipaySdk });
+  const result = await gateway.queryTrade('MOLI123');
+  const sdk = FakeAlipaySdk.lastInstance;
+
+  assert.deepEqual(sdk.execRequest, {
+    method: 'alipay.trade.query',
+    params: { bizContent: { out_trade_no: 'MOLI123' } },
+    options: { validateSign: true },
+  });
+  assert.deepEqual(result, FakeAlipaySdk.nextQueryResult);
 });

@@ -51,6 +51,15 @@ function setup() {
       return `https://openapi.alipay.com/gateway.do?out_trade_no=${encodeURIComponent(order.out_trade_no)}`;
     },
     verifyNotification(payload) { return payload.sign === 'valid'; },
+    async queryTrade(outTradeNo) {
+      return {
+        code: '10000',
+        tradeStatus: 'TRADE_SUCCESS',
+        outTradeNo,
+        tradeNo: '2026080722000000000400',
+        totalAmount: '10.00',
+      };
+    },
   };
   return { db, tenant, gateway };
 }
@@ -215,6 +224,55 @@ test('支付宝异步通知返回纯文本 success 且无效通知返回 failure
   assert.equal(rejected.result.body, 'failure');
 });
 
+test('用户可主动查单补偿丢失的支付宝通知', async () => {
+  const { db, tenant, gateway } = setup();
+  const handlers = rechargeRoutes(db, log, gateway);
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    amountYuan: '10',
+    clientOrderKey: 'reconcile-route-order',
+  });
+  const reconciled = capture();
+
+  await handlers.reconcileOrder({
+    user: { id: 'user-1' },
+    tenant,
+    params: { orderId: order.id },
+  }, reconciled.res);
+
+  assert.equal(reconciled.result.status, 200);
+  assert.equal(reconciled.result.body.data.credited, true);
+  assert.equal(reconciled.result.body.data.order.status, 'paid');
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 1000);
+});
+
+test('支付宝主动查单验签失败时返回 502 且不入账', async () => {
+  const { db, tenant, gateway } = setup();
+  const handlers = rechargeRoutes(db, log, gateway);
+  const order = recharge.createOrder(db, {
+    tenantId: tenant.id,
+    userId: 'user-1',
+    amountYuan: '10',
+    clientOrderKey: 'reconcile-signature-failure',
+  });
+  gateway.queryTrade = async () => {
+    throw new Error('支付宝响应验签失败');
+  };
+  const reconciled = capture();
+
+  await handlers.reconcileOrder({
+    user: { id: 'user-1' },
+    tenant,
+    params: { orderId: order.id },
+  }, reconciled.res);
+
+  assert.equal(reconciled.result.status, 502);
+  assert.equal(reconciled.result.body.error.code, 'ALIPAY_QUERY_FAILED');
+  assert.equal(recharge.listOrders(db, tenant.id, 'user-1', 10)[0].status, 'pending');
+  assert.equal(creditLedger.getTenantAccount(db, tenant.id).available, 0);
+});
+
 test('未配置支付宝时公开配置可读但创建订单返回 503', () => {
   const { db, tenant } = setup();
   const handlers = rechargeRoutes(db, log, { configured: false });
@@ -288,6 +346,7 @@ test('充值路由保持通知公开、管理员套餐受保护和用户订单�
   const authIndex = source.indexOf('r.use(requireUser)');
   const tenantIndex = source.indexOf('r.use(createTenantContextMiddleware');
   const userOrderIndex = source.indexOf("r.post('/billing/recharge/alipay/orders'");
+  const reconcileOrderIndex = source.indexOf("r.post('/billing/recharge/alipay/orders/:orderId/reconcile'");
   const imageUploadIndex = source.indexOf("r.post('/billing/admin/recharge-packages/image'");
   const reorderIndex = source.indexOf("r.put('/billing/admin/recharge-packages/order'");
   const updateIndex = source.indexOf("r.put('/billing/admin/recharge-packages/:packageId'");
@@ -295,6 +354,7 @@ test('充值路由保持通知公开、管理员套餐受保护和用户订单�
   const uploadHandlersIndex = source.indexOf(uploadHandlersDeclaration);
   assert.ok(notifyIndex >= 0 && notifyIndex < authIndex);
   assert.ok(userOrderIndex > tenantIndex);
+  assert.ok(reconcileOrderIndex > tenantIndex);
   assert.ok(uploadHandlersIndex >= 0 && uploadHandlersIndex < imageUploadIndex);
   assert.equal(source.split(uploadHandlersDeclaration).length - 1, 1);
   assert.ok(imageUploadIndex >= 0 && imageUploadIndex < tenantIndex);

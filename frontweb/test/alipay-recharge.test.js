@@ -24,6 +24,20 @@ test('用户充值与管理员套餐统一使用支付宝充值接口', () => {
   ]) {
     assert.match(billingApi, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
+  assert.match(billingApi, /function\s+reconcileAlipayRechargeOrder\(orderId,\s*config\)/)
+  assert.match(billingApi, /\/billing\/recharge\/alipay\/orders\/\$\{encodeURIComponent\(orderId\)\}\/reconcile/)
+})
+
+test('支付跳转前记住订单并在返回充值页时主动查单刷新余额', () => {
+  const rechargeCenter = fs.readFileSync(rechargeCenterPath, 'utf8')
+  assert.match(rechargeCenter, /sessionStorage\.setItem\(PENDING_RECHARGE_ORDER_KEY,\s*String\(result\?\.order\?\.id/)
+  assert.match(rechargeCenter, /reconcileAlipayRechargeOrder\(orderId,\s*requestConfig\)/)
+  assert.match(rechargeCenter, /sessionStorage\.removeItem\(PENDING_RECHARGE_ORDER_KEY\)/)
+  assert.match(rechargeCenter, /await\s+reconcilePendingRechargeOrder\(\)/)
+  assert.match(
+    rechargeCenter,
+    /onMounted\(async\s*\(\)\s*=>\s*\{[\s\S]*await\s+reconcilePendingRechargeOrder\(\)[\s\S]*loadRechargeCenter\(\)/,
+  )
 })
 
 test('工作区只保留充值中心入口，兑换码和积分流水不受影响', () => {

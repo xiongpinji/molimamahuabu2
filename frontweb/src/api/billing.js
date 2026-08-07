@@ -41,6 +41,14 @@ export function createAlipayRechargeOrder(data) {
   return request.post('/billing/recharge/alipay/orders', data)
 }
 
+export function reconcileAlipayRechargeOrder(orderId, config) {
+  return request.post(
+    `/billing/recharge/alipay/orders/${encodeURIComponent(orderId)}/reconcile`,
+    undefined,
+    config,
+  )
+}
+
 export function listAuditEvents(limit = 30) {
   return request.get('/billing/audit-events', { params: { limit } })
 }

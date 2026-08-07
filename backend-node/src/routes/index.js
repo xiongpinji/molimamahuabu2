@@ -182,6 +182,7 @@ function setupRouter(cfg, db, log) {
   r.get('/billing/recharge/packages', alipayRecharge.listPackages);
   r.get('/billing/recharge/alipay/orders', alipayRecharge.listOrders);
   r.post('/billing/recharge/alipay/orders', alipayRecharge.createOrder);
+  r.post('/billing/recharge/alipay/orders/:orderId/reconcile', alipayRecharge.reconcileOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
   r.get('/canvas/model-catalog', (req, res) => {
