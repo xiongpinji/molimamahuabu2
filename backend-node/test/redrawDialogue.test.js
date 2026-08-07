@@ -105,6 +105,13 @@ function addCharacter(db, versionId, id, speakerId, snapshot) {
   );
 }
 
+function updateCharacterVoiceSnapshot(db, id, mutate) {
+  const row = db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = ?').get(id);
+  const payload = JSON.parse(row.source_ref_json);
+  payload.snapshot.voice_snapshot = mutate({ ...payload.snapshot.voice_snapshot });
+  db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?').run(JSON.stringify(payload), id);
+}
+
 function addShot(db, versionId, input) {
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO redraw_shots
@@ -207,6 +214,7 @@ test('synthesizeDialogueForVersion reserves, calls provider with snapshot voice,
   assert.equal(providerCalls[0].voice_id, 'voice-c1');
   assert.equal(providerCalls[0].voice_snapshot.voice_id, 'voice-c1');
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('confirmed').count, 3);
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations ORDER BY created_at LIMIT 1').get().status, 'confirmed');
   const shotOne = state.db.prepare('SELECT audio_asset_id, draft_json FROM redraw_shots WHERE id = 801').get();
   assert.equal(shotOne.audio_asset_id, 901);
   assert.equal(JSON.parse(shotOne.draft_json).dialogue_generation.segments[0].reservation_status, 'confirmed');
@@ -230,6 +238,81 @@ test('explicit provider failure refunds only that segment reservation and record
     }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-fail' }),
     (error) => error.code === 'PROVIDER_FAILED',
   );
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
+  const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
+  assert.equal(draft.dialogue_generation.segments[0].status, 'failed');
+  assert.equal(draft.dialogue_generation.segments[0].reservation_status, 'refunded');
+  state.db.close();
+});
+
+test('refunded same idempotency fails closed without provider replay or new reservation', async () => {
+  const state = setup();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw Object.assign(new Error('provider rejected'), { code: 'PROVIDER_FAILED' });
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-refunded' }),
+    (error) => error.code === 'PROVIDER_FAILED',
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw Object.assign(new Error('must not run'), { code: 'PROVIDER_REPLAYED' });
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-refunded' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_RETRY_REQUIRED',
+  );
+
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations LIMIT 1').get().status, 'refunded');
+  const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+    .dialogue_generation.segments[0];
+  assert.equal(audit.status, 'failed');
+  assert.equal(audit.reservation_status, 'refunded');
+  assert.notEqual(audit.status, 'completed');
+
+  const retry = await synthesizeDialogueForVersion(ctx(state, {
+    synthesizeSegment: async (segment) => {
+      calls += 1;
+      addAudioAsset(state.db, 932 + calls, 1.1);
+      return { asset_id: 932 + calls, provider_task_id: `provider-retry-${segment.segment_id}` };
+    },
+  }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-refunded-retry' });
+  assert.equal(retry.status, 'completed');
+  assert.equal(calls, 4);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 4);
+  state.db.close();
+});
+
+test('missing audio readability validator fails closed and refunds generated segment', async () => {
+  const state = setup();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+  let nextAssetId = 941;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      canReadAudioAsset: undefined,
+      synthesizeSegment: async () => {
+        calls += 1;
+        addAudioAsset(state.db, nextAssetId, 1.1);
+        return { asset_id: nextAssetId++, provider_task_id: 'provider-audio' };
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-no-reader' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_AUDIO_INVALID',
+  );
+
+  assert.equal(calls, 1);
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
   const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
   assert.equal(draft.dialogue_generation.segments[0].status, 'failed');
@@ -273,6 +356,31 @@ test('unknown provider result stays held, needs_attention, and same idempotency 
     (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
   );
   assert.equal(calls, firstCalls);
+  state.db.close();
+});
+
+test('quote hash binds full fixed voice snapshot and rejects stale quote before provider call', async () => {
+  const state = setup();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+  updateCharacterVoiceSnapshot(state.db, 701, (snapshot) => ({
+    ...snapshot,
+    task_id: 'verified-voice-c1-drifted',
+  }));
+  const drifted = quoteDialoguePlan(state.db, ctx(state));
+
+  assert.notEqual(drifted.quote_hash, quote.quote_hash);
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not run');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-drift' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_QUOTE_MISMATCH',
+  );
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   state.db.close();
 });
 

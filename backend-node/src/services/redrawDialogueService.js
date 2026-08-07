@@ -33,6 +33,25 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function canonicalVoiceSnapshot(snapshot = {}) {
+  return {
+    locale: String(snapshot.locale || ''),
+    market: String(snapshot.market || ''),
+    provider: String(snapshot.provider || ''),
+    model: String(snapshot.model || ''),
+    voice_id: String(snapshot.voice_id || ''),
+    task_id: String(snapshot.task_id || ''),
+    terminal_status: String(snapshot.terminal_status || ''),
+    audio_asset_id: Number(snapshot.audio_asset_id),
+    duration_ms: Number(snapshot.duration_ms),
+    real_generation_verified: snapshot.real_generation_verified === true,
+    language_verified: snapshot.language_verified === true,
+    detected_locale: snapshot.detected_locale == null ? null : String(snapshot.detected_locale),
+    is_cloned: snapshot.is_cloned === true,
+    authorization_asset_id: snapshot.authorization_asset_id == null ? null : Number(snapshot.authorization_asset_id),
+  };
+}
+
 function getVersion(db, input) {
   const versionId = Number(input.versionId ?? input.version_id);
   const tenantId = String(input.tenantId ?? input.tenant_id ?? '');
@@ -160,7 +179,7 @@ function buildDialoguePlan(db, input = {}) {
       provider: request.provider,
       model: request.model,
       voice_id: request.voice_id,
-      voice_snapshot: request.voice_snapshot,
+      voice_snapshot: canonicalVoiceSnapshot(request.voice_snapshot),
     };
   });
 
@@ -202,6 +221,8 @@ function quoteDialoguePlan(db, input = {}) {
   const totalCredits = models.reduce((sum, item) => sum + item.credits * item.segments, 0);
   const snapshot = {
     version_id: plan.version.id,
+    version_locale: plan.version.locale,
+    version_market: plan.version.market,
     status: plan.status,
     segment_count: plan.segments.length,
     total_credits: totalCredits,
@@ -211,6 +232,7 @@ function quoteDialoguePlan(db, input = {}) {
       model: segment.voice_snapshot.model,
       credits: modelPrice.requirePrice(db, segment.voice_snapshot.model),
       voice_id: segment.voice_snapshot.voice_id,
+      voice_snapshot: segment.voice_snapshot,
       text_hash: sha256(segment.text),
       start_ms: segment.start_ms,
       end_ms: segment.end_ms,
@@ -233,7 +255,8 @@ function getAsset(db, assetId) {
 
 function canReadAsset(ctx, asset) {
   return Boolean(asset && Number(asset.duration) > 0
-    && (typeof ctx.canReadAudioAsset !== 'function' || ctx.canReadAudioAsset(asset) === true));
+    && typeof ctx.canReadAudioAsset === 'function'
+    && ctx.canReadAudioAsset(asset) === true);
 }
 
 function readShotDraft(shot) {
@@ -337,6 +360,9 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
     if (audit.status === 'needs_attention') {
       throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '配音结果未知，需要人工处理');
     }
+    if (audit.status === 'failed' || audit.reservation_status === 'refunded') {
+      throw codedError('REDRAW_DIALOGUE_RETRY_REQUIRED', '配音已明确失败，请使用新的幂等键重试');
+    }
     if (audit.status === 'completed' && canReadAsset(ctx, getAsset(db, audit.audio_asset_id))) continue;
   }
 
@@ -364,6 +390,12 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
       continue;
     }
     const reservation = reserveSegment(db, ctx, quoteHash, idempotencyKey, segment);
+    if (reservation.status !== 'held') {
+      const code = reservation.status === 'refunded'
+        ? 'REDRAW_DIALOGUE_RETRY_REQUIRED'
+        : 'REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT';
+      throw codedError(code, '配音幂等状态不可重投');
+    }
     try {
       const output = await ctx.synthesizeSegment({
         ...segment,
@@ -377,6 +409,9 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
         throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
       }
       const confirmed = creditLedger.confirm(db, reservation.id);
+      if (confirmed.status !== 'confirmed') {
+        throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+      }
       holder.segments.set(segment.segment_id, safeAudit(segment, {
         status: 'completed',
         idempotency_key: idempotencyKey,
