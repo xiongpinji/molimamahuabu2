@@ -224,11 +224,17 @@ function setupRouter(cfg, db, log, options = {}) {
         ttsConfig: options.ttsConfig,
       }))
     : null;
+  const defaultAssetGenerationProvider = explicitAssetGenerationProvider
+    ? null
+    : async (request = {}) => redrawAdapters.generateAsset({
+        ...request,
+        model: request.model ?? request.input?.model,
+      });
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
-    assetGenerationProvider: explicitAssetGenerationProvider || redrawAdapters.generateAsset,
+    assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
   });
   r.get('/voice-catalog', voiceCatalog.list);
 

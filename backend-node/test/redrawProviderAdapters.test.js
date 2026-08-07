@@ -803,7 +803,7 @@ test('generateAsset voice cleans scoped TTS file if registration fails', async (
   assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
 });
 
-test('setupRouter injects fake redraw provider adapters into redraw routes', () => {
+test('setupRouter bridges fake redraw asset adapters with trusted input model', async () => {
   const routesPath = require.resolve('../src/routes');
   const redrawPath = require.resolve('../src/routes/redraw');
   const adaptersPath = require.resolve('../src/services/redrawProviderAdapters');
@@ -822,9 +822,13 @@ test('setupRouter injects fake redraw provider adapters into redraw routes', () 
   const originalRedraw = require.cache[redrawPath];
   const originalAdapters = require.cache[adaptersPath];
   const seen = [];
+  const adapterRequests = [];
   const fakeAdapters = {
     localize: async () => ({}),
-    generateAsset: async () => ({}),
+    generateAsset: async (request) => {
+      adapterRequests.push(request);
+      return { status: 'completed' };
+    },
   };
   require.cache[redrawPath] = {
     id: redrawPath,
@@ -897,7 +901,18 @@ test('setupRouter injects fake redraw provider adapters into redraw routes', () 
     const { setupRouter } = require('../src/routes');
     setupRouter({ storage: {} }, {}, createLog(), { providerAdapters: fakeAdapters });
     assert.equal(seen.some((entry) => entry.localizationProvider === fakeAdapters.localize), true);
-    assert.equal(seen.some((entry) => entry.assetGenerationProvider === fakeAdapters.generateAsset), true);
+    const redrawOptions = seen.find((entry) => typeof entry.assetGenerationProvider === 'function'
+      && !entry.factoryDeps);
+    assert.notEqual(redrawOptions.assetGenerationProvider, fakeAdapters.generateAsset);
+    await redrawOptions.assetGenerationProvider({
+      attempt: { id: 1, kind: 'prop' },
+      input: { model: 'server-verified-model', provider: 'ignored-input-provider' },
+      versionId: 7,
+    });
+    assert.equal(adapterRequests.length, 1);
+    assert.equal(adapterRequests[0].model, 'server-verified-model');
+    assert.equal(adapterRequests[0].provider, undefined);
+    assert.equal(adapterRequests[0].input.model, 'server-verified-model');
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;
