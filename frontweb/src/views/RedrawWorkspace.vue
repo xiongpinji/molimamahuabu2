@@ -45,6 +45,12 @@
           :version-id="work?.version_id"
           @work-updated="onWorkUpdated"
         />
+        <RedrawEditStep
+          v-else-if="allowedStep === 4"
+          :work="work"
+          :version-id="work?.version_id"
+          @work-updated="onWorkUpdated"
+        />
         <div v-else class="redraw-placeholder">
           当前步骤由后端门禁控制。
         </div>
@@ -60,6 +66,7 @@ import PlatformHeader from '@/components/PlatformHeader.vue'
 import RedrawSourceStep from '@/components/redraw/RedrawSourceStep.vue'
 import RedrawAssetStep from '@/components/redraw/RedrawAssetStep.vue'
 import RedrawShotStep from '@/components/redraw/RedrawShotStep.vue'
+import RedrawEditStep from '@/components/redraw/RedrawEditStep.vue'
 import { redrawAPI } from '@/api/redraw'
 import {
   isExistingWorkId,

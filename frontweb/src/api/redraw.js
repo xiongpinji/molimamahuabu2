@@ -101,4 +101,25 @@ export const redrawAPI = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  quoteDialogue(versionId, body = {}) {
+    return request.post(`/redraw/versions/${versionId}/dialogue/quote`, body)
+  },
+  startDialogue(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/dialogue/start`, body)
+  },
+  getDialogueTask(versionId, taskId) {
+    return request.get(`/redraw/versions/${versionId}/dialogue/tasks/${taskId}`)
+  },
+  composeVersion(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/compose`, body)
+  },
+  listExports(versionId) {
+    return request.get(`/redraw/versions/${versionId}/exports`)
+  },
+  getExport(versionId, exportId) {
+    return request.get(`/redraw/versions/${versionId}/exports/${exportId}`)
+  },
+  downloadExport(versionId, exportId) {
+    return request.get(`/redraw/versions/${versionId}/exports/${exportId}/download`, { responseType: 'blob' })
+  },
 }

@@ -493,6 +493,74 @@ async function installFixtures(page, state) {
       }))
       return
     }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/dialogue/quote') {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      await route.fulfill(apiData({
+        priced: true,
+        credits: 7,
+        quote_hash: 'b'.repeat(64),
+      }))
+      return
+    }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/dialogue/start') {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      state.dialogueTask = {
+        id: 'task-dialogue-812',
+        status: 'completed',
+        progress: 100,
+        message: '英文配音完成',
+      }
+      await route.fulfill(apiData({ task: state.dialogueTask }))
+      return
+    }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/dialogue/tasks/task-dialogue-812') {
+      await route.fulfill(apiData(state.dialogueTask || { id: 'task-dialogue-812', status: 'completed' }))
+      return
+    }
+    if (method === 'POST' && pathname === '/api/v1/redraw/versions/812/compose') {
+      const body = request.postDataJSON()
+      state.requests.push({ method, pathname, body })
+      state.compositionPolls = 0
+      state.compositionTask = {
+        id: 'task-compose-812',
+        status: 'processing',
+        progress: 40,
+        message: '合成处理中',
+      }
+      await route.fulfill(apiData({ task: state.compositionTask }))
+      return
+    }
+    if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/exports') {
+      state.exportGets = (state.exportGets || 0) + 1
+      if (state.compositionTask?.status === 'processing') {
+        state.compositionPolls = (state.compositionPolls || 0) + 1
+        state.compositionTask = { ...state.compositionTask, status: 'completed', progress: 100 }
+        state.exports = [
+          { id: 901, kind: 'mp4', status: 'completed', sha256: '1'.repeat(64) },
+          { id: 902, kind: 'srt', status: 'completed', sha256: '2'.repeat(64) },
+          { id: 903, kind: 'vtt', status: 'completed', sha256: '3'.repeat(64) },
+        ]
+      }
+      await route.fulfill(apiData(state.exports || []))
+      return
+    }
+    if (method === 'GET' && /^\/api\/v1\/redraw\/versions\/812\/exports\/\d+$/.test(pathname)) {
+      const exportId = Number(pathname.split('/').at(-1))
+      await route.fulfill(apiData((state.exports || []).find((item) => item.id === exportId) || null))
+      return
+    }
+    if (method === 'GET' && /^\/api\/v1\/redraw\/versions\/812\/exports\/\d+\/download$/.test(pathname)) {
+      state.requests.push({ method, pathname })
+      const exportId = Number(pathname.split('/').at(-2))
+      if (exportId === 901) {
+        await route.fulfill({ path: fixtureVideoPath, contentType: 'video/mp4' })
+      } else {
+        await route.fulfill({ body: 'WEBVTT\n\n00:00.000 --> 00:01.000\nYou finally made it.', contentType: 'text/vtt' })
+      }
+      return
+    }
     if (method === 'POST' && pathname === `/api/v1/redraw/works/${workBase.id}/analyze`) {
       const contentType = request.headers()['content-type'] || ''
       const bodyText = request.postDataBuffer().toString('utf8')
@@ -586,6 +654,34 @@ function generationFixtureState() {
     },
     assets: structuredClone(approvedRedrawAssets),
     gate: { ok: true, missing: [], current_step: 3 },
+    requests: [],
+  }
+}
+
+function editFixtureState() {
+  const shots = structuredClone(redrawShots).map((shot) => ({
+    ...shot,
+    status: 'completed',
+    generation: { task_id: `task-completed-${shot.id}`, status: 'completed', progress: 100, message: '完成' },
+    new_video_ref: { video_url: 'https://fixtures.example/generated.mp4' },
+  }))
+  return {
+    projects: [project],
+    quoteReady: true,
+    assetQuoteReady: true,
+    work: {
+      ...workBase,
+      current_step: 4,
+      current_version: 1,
+      version_id: 812,
+      status: 'ready_to_export',
+      source_video_ref: { url: 'https://fixtures.example/source.mp4' },
+      shots,
+      batches: shotBatches(shots),
+    },
+    assets: structuredClone(approvedRedrawAssets),
+    gate: { ok: true, missing: [], current_step: 4 },
+    exports: [],
     requests: [],
   }
 }
@@ -1044,5 +1140,41 @@ test.describe('一键转绘输入与分析流程', () => {
     await expect(page.getByText('建议保持 10–15 秒')).toBeVisible()
     await assertNoPageHorizontalScroll(page)
     await assertTextFits(page, '本次预计扣除 4 积分')
+  })
+
+  test('第四步英文配音后合成并通过鉴权 blob 下载交付文件', async ({ page }) => {
+    const state = editFixtureState()
+    await installFixtures(page, state)
+    await page.setViewportSize({ width: 1440, height: 1000 })
+
+    await page.goto('/redraw/projects/41/works/710?step=4')
+    await expect(page.getByRole('heading', { name: '英文配音、合成预览与下载' })).toBeVisible()
+    await expect(page.getByText('固定源片顺序')).toBeVisible()
+    await expect(page.getByText('本次预计扣除 7 积分')).toBeVisible()
+    await expect(page.getByRole('button', { name: /镜头 1/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /镜头 2/ })).toBeVisible()
+
+    await page.getByRole('button', { name: '生成英文配音' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/dialogue/start')).toBe(true)
+    const dialogue = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/versions/812/dialogue/start')
+    expectOnlyKeys(dialogue.body, ['quote_hash', 'idempotency_key'])
+    expect(forbiddenClientFields(dialogue.body)).toEqual([])
+    await expect(page.getByText('任务 task-dialogue-812 · 完成')).toBeVisible()
+
+    await page.getByRole('button', { name: '合成成片' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/compose')).toBe(true)
+    const compose = state.requests.find((entry) => entry.pathname === '/api/v1/redraw/versions/812/compose')
+    expectOnlyKeys(compose.body, ['idempotency_key', 'audio_mode'])
+    expect(compose.body.audio_mode).toBe('replace')
+    expect(forbiddenClientFields(compose.body)).toEqual([])
+
+    await expect(page.getByText('MP4')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('1111111111111111111111111111111111111111111111111111111111111111')).toBeVisible()
+    await expect(page.getByRole('button', { name: '剪映导入不可用' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '工厂导入不可用' })).toBeDisabled()
+
+    await page.getByRole('button', { name: '新成片' }).click()
+    await expect.poll(() => state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/exports/901/download')).toBe(true)
+    await assertNoPageHorizontalScroll(page)
   })
 })
