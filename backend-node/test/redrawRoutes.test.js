@@ -733,6 +733,126 @@ test('提交分析返回异步任务、厂商任务与 billing 三键，并保�
   }
 });
 
+test('同步原生分析完成时接口直接返回步骤 2 和已结算账单', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      orchestrator: {
+        startAnalysis: async () => ({
+          task_id: 'task-native-complete',
+          provider_task_id: 'response-native-complete',
+          status: 'completed',
+          current_step: 2,
+          facts_hash: 'a'.repeat(64),
+          billing: { charged: 6, held: 0, released: 0 },
+        }),
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        aspect_ratio: '9:16',
+        style_preset_id: 1,
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    assert.equal(submitted.body.data.current_step, 2);
+    assert.equal(submitted.body.data.status, 'completed');
+    assert.equal(submitted.body.data.facts_hash, 'a'.repeat(64));
+    assert.deepEqual(submitted.body.data.billing, { charged: 6, held: 0, released: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test('未注入外部分析器时路由使用原生视觉服务完成真实编排合同', async () => {
+  const db = createDb();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-route-'));
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    fs.mkdirSync(path.join(tempRoot, 'redraw-sources'), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, 'redraw-analysis'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'redraw-sources', 'source.mp4'), 'source');
+    fs.writeFileSync(path.join(tempRoot, 'redraw-analysis', 'result.json'), '{}');
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, created_at, updated_at)
+      VALUES (101, 'source', 'video', 'redraw_source', 'redraw-sources/source.mp4', ?, ?)`)
+      .run(NOW, NOW);
+    db.prepare(`INSERT INTO assets
+      (id, name, type, category, local_path, created_at, updated_at)
+      VALUES (102, 'analysis', 'json', 'redraw_source_analysis', 'redraw-analysis/result.json', ?, ?)`)
+      .run(NOW, NOW);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let nativeInput;
+    const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      cfg: { storage: { local_path: tempRoot } },
+      uploadLimits: { storageRoot: tempRoot },
+      orchestrator: realRedrawOrchestrator,
+      nativeSourceAnalysis: async (_ctx, input) => {
+        nativeInput = input;
+        return {
+          status: 'completed',
+          provider_task_id: 'response-native-route',
+          result_asset_id: 102,
+          facts: {
+            duration_ms: 90_000,
+            characters: [{ id: 'c1', source_name: '小满', relationships: [] }],
+            scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 90_000 }] }],
+            props: [{ id: 'p1', name: '手机', evidence_ranges: [{ start_ms: 500, end_ms: 1_500 }] }],
+            shots: [{
+              id: 'shot-1',
+              start_ms: 0,
+              end_ms: 90_000,
+              dialogue: [{ speaker_id: 'c1', text: '别回头', start_ms: 500, end_ms: 2_500 }],
+              opening_state: '小满站在天台边',
+              continuous_action: '小满查看手机',
+              ending_state: '小满转身',
+            }],
+            causal_chain: ['手机消息促使小满转身'],
+            locked_facts: ['小满在天台查看手机'],
+            reversals: ['消息来自未来'],
+            episode_hook: '发信人是谁',
+          },
+        };
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        aspect_ratio: '9:16',
+        style_preset_id: 1,
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    assert.equal(submitted.body.data.current_step, 2);
+    assert.equal(submitted.body.data.provider_task_id, 'response-native-route');
+    assert.equal(nativeInput.workId, workId);
+    assert.equal(nativeInput.tenantId, 'tenant-a');
+    assert.equal(nativeInput.userId, 'user-a');
+    assert.equal(nativeInput.model, 'GPT-5.5');
+    assert.match(nativeInput.taskId, /^[0-9a-f-]{36}$/);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions WHERE work_id = ?').get(workId).count, 1);
+  } finally {
+    db.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('提交分析支持完整输出比例白名单并拒绝未知比例', async () => {
   const db = createDb();
   try {

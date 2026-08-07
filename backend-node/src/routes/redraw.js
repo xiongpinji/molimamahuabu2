@@ -19,6 +19,7 @@ const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
+const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -869,6 +870,33 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     assetUrlPrefix: '/static/redraw-sources',
     ...(options.uploadLimits || {}),
   };
+  const analysisOptions = { ...(options.analysisOptions || {}) };
+  if (!analysisOptions.assetReader) {
+    analysisOptions.assetReader = redrawOrchestrator.createAssetReader({ storageRoot: uploadLimits.storageRoot });
+  }
+  if (!analysisOptions.provider) {
+    const nativeSourceAnalysis = options.nativeSourceAnalysis
+      || redrawNativeSourceAnalysisService.analyzeNativeSource;
+    analysisOptions.provider = {
+      startAnalysis: (request) => nativeSourceAnalysis({
+        db,
+        log,
+        storageRoot: uploadLimits.storageRoot,
+        assetService: options.assetService || assetService,
+        visionDetailed: options.visionDetailed,
+        serviceType: options.nativeAnalysisServiceType || 'video_understanding',
+      }, {
+        taskId: request.taskId,
+        workId: request.workId,
+        tenantId: request.tenantId,
+        userId: request.userId,
+        model: request.model,
+        probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
+        ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
+        maxTokens: options.nativeAnalysisMaxTokens,
+      }),
+    };
+  }
 
   function findOwnedProject(id, currentOwner) {
     return db.prepare(`
@@ -2337,12 +2365,14 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         tenantId: currentOwner.tenantId,
         sourceAssetId: work.source_asset_id,
         analysisSettings,
-      }, options.analysisOptions || {});
+      }, analysisOptions);
       return response.created(res, {
         task_id: result.task_id,
         provider_task_id: result.provider_task_id || null,
         billing: billingPayload(result.billing),
-        current_step: 1,
+        current_step: Number(result.current_step || 1),
+        status: result.status || 'processing',
+        facts_hash: result.facts_hash || null,
       });
     } catch (error) {
       cleanupReferenceImage(db, log, referenceAsset, uploadLimits.storageRoot);

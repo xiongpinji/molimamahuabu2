@@ -183,7 +183,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
   const visionDetailed = ctx.visionDetailed || ((payload) => aiClient.generateTextWithVisionDetailed(
     db,
     log,
-    'text',
+    ctx.serviceType || 'video_understanding',
     payload.userPrompt,
     payload.systemPrompt,
     { imageSources: payload.imageSources },

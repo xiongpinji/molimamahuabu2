@@ -352,6 +352,75 @@ test('runAnalyzeTask writes facts and draft shots once, then confirms credits', 
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM credit_ledger WHERE event_type = 'confirm'").get().n, 1);
 });
 
+test('startAnalysis immediately finalizes a synchronous native result with the real provider id', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 6);
+  let providerInput;
+
+  const started = await redraw.startAnalysis(db, log, {
+    workId: 'work-1',
+    userId: 'user-1',
+  }, {
+    provider: {
+      startAnalysis: async (input) => {
+        providerInput = input;
+        return {
+          status: 'completed',
+          provider_task_id: 'response-real-1',
+          result_asset_id: 'asset-result',
+          facts: validFacts(),
+        };
+      },
+    },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+
+  assert.equal(providerInput.taskId, started.task_id);
+  assert.equal(providerInput.workId, 'work-1');
+  assert.equal(providerInput.userId, 'user-1');
+  assert.equal(providerInput.model, 'GPT-5.5');
+  assert.equal(started.status, 'completed');
+  assert.equal(started.current_step, 2);
+  assert.equal(started.provider_task_id, 'response-real-1');
+  assert.match(started.facts_hash, /^[a-f0-9]{64}$/);
+
+  const task = db.prepare('SELECT * FROM async_tasks WHERE id = ?').get(started.task_id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.provider_task_id, 'response-real-1');
+  assert.equal(JSON.parse(task.result).result_asset_id, 'asset-result');
+  assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = ?').get('work-1').current_step, 2);
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(started.reservation_id).status, 'confirmed');
+});
+
+test('startAnalysis refunds a synchronous native result whose artifact is unreadable', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  addWorkAndAssets(db);
+  prices.set(db, 'GPT-5.5', 6);
+
+  await assert.rejects(
+    () => redraw.startAnalysis(db, log, { workId: 'work-1', userId: 'user-1' }, {
+      provider: {
+        startAnalysis: async () => ({
+          status: 'completed',
+          provider_task_id: 'response-real-unreadable',
+          result_asset_id: 'asset-result',
+          facts: validFacts(),
+        }),
+      },
+      assetReader: { canRead: () => false },
+    }),
+    (error) => error.code === 'REDRAW_ANALYSIS_RESULT_INVALID',
+  );
+
+  const task = db.prepare("SELECT * FROM async_tasks WHERE type = 'redraw_analysis'").get();
+  assert.equal(task.status, 'failed');
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(task.credit_reservation_id).status, 'refunded');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM redraw_versions WHERE work_id = ?').get('work-1').n, 0);
+});
+
 test('runAnalyzeTask rejects unreadable assets before confirmation', async () => {
   const db = createDb();
   addVerifiedConfig(db);

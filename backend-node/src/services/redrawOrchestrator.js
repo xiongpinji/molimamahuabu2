@@ -310,6 +310,12 @@ async function startAnalysis(db, log, input, options = {}) {
   try {
     providerResult = options.provider?.startAnalysis
       ? await options.provider.startAnalysis({
+        taskId: created.task_id,
+        reservationId: created.reservation_id,
+        workId: work.id,
+        tenantId: tenantId == null ? null : String(tenantId),
+        userId,
+        model,
         work,
         sourceAssetId,
         config,
@@ -333,7 +339,39 @@ async function startAnalysis(db, log, input, options = {}) {
     db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), work.id);
   }
-  return { ...created, provider_task_id: providerTaskId || null };
+  const normalizedResult = normalizeProviderResult(providerResult);
+  if (normalizedResult.status === 'failed') {
+    const message = normalizedResult.error || '供应商源片分析失败';
+    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), message);
+    throw codedError('REDRAW_ANALYSIS_PROVIDER_FAILED', message);
+  }
+  if (normalizedResult.status === 'completed') {
+    const completion = finalizeCompletedAnalysis(
+      db,
+      log,
+      getTask(db, created.task_id),
+      getWork(db, work.id),
+      normalizedResult,
+      options,
+    );
+    if (completion.status !== 'completed') {
+      const error = codedError(
+        'REDRAW_ANALYSIS_RESULT_INVALID',
+        completion.error || '源片分析结果不可用',
+      );
+      error.analysis_status = completion.status;
+      throw error;
+    }
+    return {
+      ...created,
+      ...completion,
+      provider_task_id: String(providerTaskId),
+      result_asset_id: normalizedResult.result_asset_id || null,
+      current_step: 2,
+      billing: { charged: price, held: 0, released: 0 },
+    };
+  }
+  return { ...created, status: 'processing', provider_task_id: providerTaskId || null, current_step: 1 };
 }
 
 function markFailure(db, log, task, work, message) {
@@ -436,6 +474,39 @@ function writeFactsOnce(db, work, normalized) {
   return { version, changed };
 }
 
+function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
+  try {
+    assertAssetReadable(db, options.assetReader, work.source_asset_id, '源片');
+    const resultAssetId = result.result_asset_id || result.result_asset?.id;
+    assertAssetReadable(db, options.assetReader, resultAssetId, '分析结果');
+    const normalized = normalizeSourceFacts(result.facts || result.source_facts);
+    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized))();
+    if (changed || task.status !== 'completed') {
+      taskService.updateTaskResult(db, task.id, {
+        status: 'completed',
+        work_id: work.id,
+        version_id: version.id,
+        result_asset_id: resultAssetId,
+        facts_hash: normalized.facts_hash,
+      });
+      creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
+    }
+    return {
+      status: 'completed',
+      facts_hash: normalized.facts_hash,
+      version_id: version.id,
+      result_asset_id: resultAssetId,
+    };
+  } catch (error) {
+    if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
+      markNeedsAttention(db, task, work, error.message);
+      return { status: 'needs_attention', error: error.message };
+    }
+    markFailure(db, log, task, work, error.message);
+    return { status: 'failed', error: error.message };
+  }
+}
+
 async function runAnalyzeTask(db, log, taskId, options = {}) {
   const task = getTask(db, taskId);
   if (!task || task.type !== 'redraw_analysis') return null;
@@ -468,29 +539,7 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
     return { status: 'needs_attention' };
   }
 
-  try {
-    assertAssetReadable(db, options.assetReader, work.source_asset_id, '源片');
-    assertAssetReadable(db, options.assetReader, result.result_asset_id || result.result_asset?.id, '分析结果');
-    const normalized = normalizeSourceFacts(result.facts || result.source_facts);
-    const { version, changed } = db.transaction(() => writeFactsOnce(db, work, normalized))();
-    if (changed || task.status !== 'completed') {
-      taskService.updateTaskResult(db, task.id, {
-        status: 'completed',
-        work_id: work.id,
-        version_id: version.id,
-        facts_hash: normalized.facts_hash,
-      });
-      creditLedger.settleGeneration(db, task.credit_reservation_id || work.credit_reservation_id, 'completed');
-    }
-    return { status: 'completed', facts_hash: normalized.facts_hash };
-  } catch (error) {
-    if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
-      markNeedsAttention(db, task, work, error.message);
-      return { status: 'needs_attention', error: error.message };
-    }
-    markFailure(db, log, task, work, error.message);
-    return { status: 'failed', error: error.message };
-  }
+  return finalizeCompletedAnalysis(db, log, task, work, result, options);
 }
 
 async function resumeRedrawTasks(db, log, options = {}) {
