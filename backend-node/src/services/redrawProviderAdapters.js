@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
 function codedError(code, message, extra = {}) {
   return Object.assign(new Error(message), { code, ...extra });
@@ -39,6 +40,19 @@ function assertScopedAssetPath(localPath, versionDir) {
   return rel;
 }
 
+function scopedAbsolutePath(storageRoot, localPath, versionDir) {
+  const rel = assertScopedAssetPath(localPath, versionDir);
+  return { rel, abs: path.join(storageRoot, rel) };
+}
+
+function cleanupScopedFile(storageRoot, localPath, versionDir) {
+  if (!localPath) return;
+  try {
+    const { abs } = scopedAbsolutePath(storageRoot, localPath, versionDir);
+    fs.rmSync(abs, { force: true });
+  } catch (_) {}
+}
+
 function requirePositiveDimension(value, name) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
@@ -54,6 +68,14 @@ function mimeFromPath(localPath, fallback) {
   if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.png') return 'image/png';
   return fallback;
+}
+
+function extensionFromMime(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime === 'image/jpeg' || mime === 'image/jpg') return 'jpg';
+  if (mime === 'image/webp') return 'webp';
+  if (mime === 'image/png') return 'png';
+  return 'png';
 }
 
 function requireMethod(deps, key, modulePath, method) {
@@ -93,15 +115,45 @@ function qualityOf(result, width, height) {
   return quality;
 }
 
-function sourceRefOf(asset = {}) {
-  return parseJson(asset.source_ref_json || asset.sourceRefJson, {}).source_ref
-    || parseJson(asset.source_ref_json || asset.sourceRefJson, {}).source
+function sourcePayloadOf(attempt = {}) {
+  return parseJson(attempt.source_ref_json || attempt.sourceRefJson, {});
+}
+
+function sourceRefOf(attempt = {}, input = {}) {
+  const payload = sourcePayloadOf(attempt);
+  return attempt.source_ref
+    || attempt.sourceRef
+    || input.sourceRef
+    || input.source_ref
+    || payload.source_ref
+    || payload.source
     || {};
 }
 
-function buildImagePrompt(asset = {}, sourceRef = {}) {
-  return trim(asset.prompt)
-    || [asset.localized_name, asset.localized_description, sourceRef.prompt, sourceRef.description]
+function snapshotOf(attempt = {}, input = {}) {
+  const payload = sourcePayloadOf(attempt);
+  return attempt.snapshot
+    || payload.snapshot
+    || input.snapshot
+    || input.generationSnapshot
+    || input.generation_snapshot
+    || {};
+}
+
+function inputText(input = {}, ...keys) {
+  for (const key of keys) {
+    const value = trim(input[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function buildImagePrompt(attempt = {}, input = {}, sourceRef = {}) {
+  return trim(attempt.prompt)
+    || inputText(input, 'prompt')
+    || [attempt.localized_name, attempt.localizedName, input.localizedName, input.localized_name,
+      attempt.localized_description, attempt.localizedDescription, input.localizedDescription,
+      input.localized_description, sourceRef.prompt, sourceRef.description]
       .map(trim)
       .filter(Boolean)
       .join('\n');
@@ -110,6 +162,35 @@ function buildImagePrompt(asset = {}, sourceRef = {}) {
 function defaultNegativePrompt(kind) {
   if (kind === 'scene') return 'people, characters, watermark, text overlays, split panels, grids';
   return 'watermark, text overlays, split panels, grids';
+}
+
+function normalizeAssetRequest(request = {}) {
+  const input = request.input || {};
+  const attempt = request.attempt || request.asset || input.asset || {};
+  const sourceRef = sourceRefOf(attempt, input);
+  const snapshot = snapshotOf(attempt, input);
+  const snapshotModel = trim(snapshot.model);
+  const requestModel = trim(request.model);
+  const inputModel = trim(input.model);
+  const model = requestModel || snapshotModel || inputModel;
+  const kind = trim(attempt.kind || input.kind || request.kind);
+  const versionId = request.versionId || request.version_id || attempt.version_id || attempt.versionId;
+  return {
+    input,
+    attempt,
+    sourceRef,
+    snapshot,
+    model,
+    kind,
+    versionId,
+    locale: request.locale || input.locale || null,
+    market: request.market || input.market || null,
+    prompt: buildImagePrompt(attempt, input, sourceRef),
+    localizedName: trim(attempt.localized_name || attempt.localizedName || input.localizedName || input.localized_name),
+    localizedDescription: trim(attempt.localized_description || attempt.localizedDescription
+      || input.localizedDescription || input.localized_description),
+    taskId: request.taskId || request.task_id || input.taskId || input.task_id || null,
+  };
 }
 
 function createRedrawProviderAdapters(deps = {}) {
@@ -153,33 +234,62 @@ function createRedrawProviderAdapters(deps = {}) {
     return { provider_task_id: null, result: parsed, model };
   }
 
-  async function generateImageAsset(request, model, storageRoot, versionDir) {
-    const asset = request.asset || request.input?.asset || {};
-    const kind = trim(asset.kind || request.kind);
-    const sourceRef = sourceRefOf(asset);
-    const prompt = buildImagePrompt(asset, sourceRef);
+  async function downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, taskId) {
+    if (deps.uploadService?.downloadImageToLocal) {
+      return assertScopedAssetPath(await deps.uploadService.downloadImageToLocal(
+        storageRoot,
+        imageUrl,
+        versionDir,
+        log,
+        `redraw_${kind}_${taskId || 'asset'}`,
+        'redraw-assets',
+      ), versionDir);
+    }
+    const downloadPublicImage = deps.publicImageDownloader || require('./videoClient').downloadPublicImage;
+    let downloaded;
+    try {
+      downloaded = await downloadPublicImage(imageUrl);
+    } catch (error) {
+      throw codedError('REDRAW_IMAGE_DOWNLOAD_FAILED', error.message || 'redraw image download failed');
+    }
+    const bytes = downloaded?.bytes;
+    const mimeType = String(downloaded?.mimeType || '').toLowerCase();
+    if (!Buffer.isBuffer(bytes) || bytes.length <= 0 || !mimeType.startsWith('image/')) {
+      throw codedError('REDRAW_IMAGE_DOWNLOAD_FAILED', 'redraw image downloader returned invalid image bytes');
+    }
+    const dirRel = `redraw-assets/${versionDir}`;
+    const dirAbs = path.join(storageRoot, dirRel);
+    fs.mkdirSync(dirAbs, { recursive: true });
+    const filename = `redraw_${kind}_${taskId || 'asset'}_${randomUUID().slice(0, 8)}.${extensionFromMime(mimeType)}`;
+    const localPath = assertScopedAssetPath(`${dirRel}/${filename}`, versionDir);
+    fs.writeFileSync(path.join(storageRoot, localPath), bytes);
+    return localPath;
+  }
+
+  async function generateImageAsset(request, normalized, storageRoot, versionDir) {
+    const { attempt, input, kind, sourceRef, snapshot, model, prompt } = normalized;
     if (!prompt) throw codedError('REDRAW_PROVIDER_PROMPT_REQUIRED', 'redraw image prompt is required');
     const callImageApi = requireMethod(deps, 'imageClient', './imageClient', 'callImageApi');
-    const downloadImageToLocal = requireMethod(deps, 'uploadService', './uploadService', 'downloadImageToLocal');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
     const imageResult = await callImageApi(db, log, {
       prompt,
       model,
+      preferred_provider: snapshot.provider || undefined,
       imageServiceType: `redraw_${kind}`,
       image_type: `redraw_${kind}`,
-      image_gen_id: request.taskId || null,
-      drama_id: asset.drama_id || asset.dramaId || null,
-      character_id: asset.character_id || asset.characterId || null,
+      image_gen_id: normalized.taskId,
+      drama_id: attempt.drama_id || attempt.dramaId || input.dramaId || input.drama_id || null,
+      character_id: attempt.character_id || attempt.characterId || input.characterId || input.character_id || null,
       reference_image_urls: sourceRef.reference_image_urls || sourceRef.references || undefined,
       system_prompt: JSON.stringify({
         context: {
-          locale: request.locale || null,
-          market: request.market || null,
+          locale: normalized.locale,
+          market: normalized.market,
           kind,
           source_ref: sourceRef,
         },
       }),
-      user_negative_prompt: sourceRef.negative_prompt || asset.negative_prompt || defaultNegativePrompt(kind),
+      user_negative_prompt: sourceRef.negative_prompt || attempt.negative_prompt || input.negative_prompt || defaultNegativePrompt(kind),
     });
     if (isUnknownProviderResult(imageResult)) {
       return {
@@ -196,31 +306,33 @@ function createRedrawProviderAdapters(deps = {}) {
     }
     const imageUrl = imageUrlOf(imageResult);
     if (!imageUrl) throw codedError('REDRAW_IMAGE_PROVIDER_EMPTY_RESULT', 'image provider returned no image url');
-    const localPath = assertScopedAssetPath(await downloadImageToLocal(
-      storageRoot,
-      imageUrl,
-      versionDir,
-      log,
-      `redraw_${kind}_${request.taskId || asset.id || 'asset'}`,
-      'redraw-assets',
-    ), versionDir);
+    let localPath = null;
+    localPath = await downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, normalized.taskId || attempt.id);
     const absolutePath = path.join(storageRoot, localPath);
     if (!fs.existsSync(absolutePath)) throw codedError('ASSET_NOT_READABLE', 'downloaded redraw asset is not readable');
-    const width = requirePositiveDimension(
-      imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width,
-      'width',
-    );
-    const height = requirePositiveDimension(
-      imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height,
-      'height',
-    );
+    let width;
+    let height;
+    try {
+      width = requirePositiveDimension(
+        imageResult.width ?? imageResult.metadata?.width ?? imageResult.quality?.width,
+        'width',
+      );
+      height = requirePositiveDimension(
+        imageResult.height ?? imageResult.metadata?.height ?? imageResult.quality?.height,
+        'height',
+      );
+    } catch (error) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw error;
+    }
     const providerTaskId = providerTaskIdOf(imageResult);
     const metadata = {
       source: 'redraw_provider_adapter',
       kind,
       model,
-      locale: request.locale || null,
-      market: request.market || null,
+      provider: snapshot.provider || null,
+      locale: normalized.locale,
+      market: normalized.market,
       provider_task_id: providerTaskId,
       source_ref: sourceRef,
       quality: qualityOf(imageResult, width, height),
@@ -228,20 +340,26 @@ function createRedrawProviderAdapters(deps = {}) {
     if (kind === 'character' && Array.isArray(imageResult.views || imageResult.metadata?.views)) {
       metadata.views = imageResult.views || imageResult.metadata.views;
     }
-    const registered = createAsset(db, log, {
-      drama_id: asset.drama_id || asset.dramaId || null,
-      storyboard_id: asset.storyboard_id || asset.storyboardId || null,
-      name: asset.localized_name || asset.name || `redraw ${kind}`,
-      type: 'image',
-      category: `redraw_${kind}`,
-      url: imageUrl,
-      local_path: localPath,
-      mime_type: mimeFromPath(localPath, 'image/png'),
-      width,
-      height,
-      image_gen_id: request.taskId || null,
-      metadata,
-    });
+    let registered;
+    try {
+      registered = createAsset(db, log, {
+        drama_id: attempt.drama_id || attempt.dramaId || input.dramaId || input.drama_id || null,
+        storyboard_id: attempt.storyboard_id || attempt.storyboardId || input.storyboardId || input.storyboard_id || null,
+        name: normalized.localizedName || attempt.name || input.name || `redraw ${kind}`,
+        type: 'image',
+        category: `redraw_${kind}`,
+        url: imageUrl,
+        local_path: localPath,
+        mime_type: mimeFromPath(localPath, 'image/png'),
+        width,
+        height,
+        image_gen_id: normalized.taskId,
+        metadata,
+      });
+    } catch (error) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw error;
+    }
     const result = {
       status: 'completed',
       asset_id: registered.id,
@@ -257,26 +375,31 @@ function createRedrawProviderAdapters(deps = {}) {
     return result;
   }
 
-  async function generateVoiceAsset(request, model, storageRoot, versionDir) {
-    const asset = request.asset || request.input?.asset || {};
-    const sourceRef = sourceRefOf(asset);
-    const text = trim(asset.prompt || asset.localized_description || sourceRef.text || sourceRef.prompt);
+  function probeDuration(absolutePath) {
+    const probe = deps.audioProbe || require('./mergedEpisodePostProcess').ffprobeDurationSec;
+    return Number(probe(absolutePath));
+  }
+
+  async function generateVoiceAsset(request, normalized, storageRoot, versionDir) {
+    const { attempt, input, sourceRef, model } = normalized;
+    const text = trim(attempt.prompt || input.prompt || attempt.localized_description || attempt.localizedDescription
+      || input.localizedDescription || input.localized_description || sourceRef.text || sourceRef.prompt);
     if (!text) throw codedError('REDRAW_PROVIDER_PROMPT_REQUIRED', 'redraw voice text is required');
     const synthesize = requireMethod(deps, 'ttsService', './ttsService', 'synthesize');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
-    const voiceId = trim(sourceRef.voice_id || sourceRef.voiceId || asset.voice_id || asset.voiceId);
+    const voiceId = trim(sourceRef.voice_id || sourceRef.voiceId || attempt.voice_id || attempt.voiceId || input.voice_id || input.voiceId);
     const config = deps.ttsConfig || (() => {
       const { selectTtsConfig } = require('./ttsConfigSelectionService');
       return selectTtsConfig(db, model);
     })();
     const result = await synthesize(db, log, {
       text,
-      storyboard_id: asset.storyboard_id || asset.storyboardId || request.taskId || null,
+      storyboard_id: attempt.storyboard_id || attempt.storyboardId || input.storyboardId || input.storyboard_id || normalized.taskId,
       config: { ...config, default_model: model, model },
       storage_base: storageRoot,
       storage_subdir: `redraw-assets/${versionDir}`,
       voice_id: voiceId || undefined,
-      locale: request.locale || null,
+      locale: normalized.locale,
     });
     if (isUnknownProviderResult(result)) {
       return {
@@ -286,35 +409,46 @@ function createRedrawProviderAdapters(deps = {}) {
         error: result?.error || 'voice provider task status unknown',
       };
     }
-    const duration = Number(result?.duration ?? result?.metadata?.duration);
-    if (!Number.isFinite(duration) || duration <= 0) {
-      throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw voice provider returned no positive duration');
-    }
     const localPath = assertScopedAssetPath(result.local_path, versionDir);
-    if (!fs.existsSync(path.join(storageRoot, localPath))) {
+    const absolutePath = path.join(storageRoot, localPath);
+    if (!fs.existsSync(absolutePath)) {
       throw codedError('ASSET_NOT_READABLE', 'downloaded redraw voice asset is not readable');
+    }
+    let duration = Number(result?.duration ?? result?.metadata?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      duration = probeDuration(absolutePath);
+    }
+    if (!Number.isFinite(duration) || duration <= 0) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw voice provider returned no positive duration');
     }
     const providerTaskId = providerTaskIdOf(result);
     const metadata = {
       source: 'redraw_provider_adapter',
-      locale: request.locale || null,
+      locale: normalized.locale,
       voice_id: voiceId || null,
       duration,
       provider_task_id: providerTaskId,
       model,
     };
-    const registered = createAsset(db, log, {
-      drama_id: asset.drama_id || asset.dramaId || null,
-      storyboard_id: asset.storyboard_id || asset.storyboardId || null,
-      name: asset.localized_name || asset.name || 'redraw voice',
-      type: 'audio',
-      category: 'redraw_voice',
-      url: result.audio_url || result.url || '',
-      local_path: localPath,
-      mime_type: 'audio/mpeg',
-      duration,
-      metadata,
-    });
+    let registered;
+    try {
+      registered = createAsset(db, log, {
+        drama_id: attempt.drama_id || attempt.dramaId || input.dramaId || input.drama_id || null,
+        storyboard_id: attempt.storyboard_id || attempt.storyboardId || input.storyboardId || input.storyboard_id || null,
+        name: normalized.localizedName || attempt.name || input.name || 'redraw voice',
+        type: 'audio',
+        category: 'redraw_voice',
+        url: result.audio_url || result.url || '',
+        local_path: localPath,
+        mime_type: 'audio/mpeg',
+        duration,
+        metadata,
+      });
+    } catch (error) {
+      cleanupScopedFile(storageRoot, localPath, versionDir);
+      throw error;
+    }
     return {
       status: 'completed',
       asset_id: registered.id,
@@ -327,17 +461,17 @@ function createRedrawProviderAdapters(deps = {}) {
   }
 
   async function generateAsset(request = {}) {
-    const model = trim(request.model);
+    const normalized = normalizeAssetRequest(request);
+    const model = trim(normalized.model);
     if (!model) throw codedError('REDRAW_PROVIDER_MODEL_REQUIRED', 'verified asset model is required');
-    const asset = request.asset || request.input?.asset || {};
-    const kind = trim(asset.kind || request.kind);
-    const versionId = request.versionId || request.version_id || asset.version_id || asset.versionId;
+    const kind = normalized.kind;
+    const versionId = normalized.versionId;
     if (!versionId) throw codedError('REDRAW_PROVIDER_VERSION_REQUIRED', 'redraw version id is required');
     const versionDir = `v${Number(versionId) || trim(versionId)}`;
     const storageRoot = storageRootFrom(cfg);
-    if (kind === 'voice') return generateVoiceAsset(request, model, storageRoot, versionDir);
+    if (kind === 'voice') return generateVoiceAsset(request, normalized, storageRoot, versionDir);
     if (['character', 'scene', 'prop'].includes(kind)) {
-      return generateImageAsset(request, model, storageRoot, versionDir);
+      return generateImageAsset(request, normalized, storageRoot, versionDir);
     }
     throw codedError('REDRAW_PROVIDER_KIND_UNSUPPORTED', `unsupported redraw asset kind: ${kind || 'unknown'}`);
   }

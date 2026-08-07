@@ -3,7 +3,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const Database = require('better-sqlite3');
 
+const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const realAssetService = require('../src/services/assetService');
+const redrawAssetService = require('../src/services/redrawAssetService');
 const { createRedrawProviderAdapters } = require('../src/services/redrawProviderAdapters');
 
 function createLog() {
@@ -19,6 +23,42 @@ function makeReadableFile(root, rel, contents = 'x') {
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, contents);
   return rel.replace(/\\/g, '/');
+}
+
+function setupAssetContractState() {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const storageRoot = tempStorage();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO redraw_projects
+    (tenant_id, user_id, title, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', 'Project', ?, ?)`).run(now, now);
+  db.prepare(`INSERT INTO assets
+    (id, name, type, category, url, local_path, mime_type, width, height, created_at, updated_at)
+    VALUES (101, 'source', 'image', 'source', '', 'source.png', 'image/png', 640, 360, ?, ?)`).run(now, now);
+  makeReadableFile(storageRoot, 'source.png', 'png');
+  db.prepare(`INSERT INTO redraw_works
+    (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
+    VALUES (1, 'tenant-a', 'user-a', 'Work', 101, ?, 15000, ?, ?)`).run('f'.repeat(64), now, now);
+  const workId = db.prepare('SELECT id FROM redraw_works LIMIT 1').get().id;
+  db.prepare(`INSERT INTO redraw_versions
+    (work_id, tenant_id, user_id, version, locale, market, source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', '{}', 'facts', 'asset_review', ?, ?)`)
+    .run(workId, now, now);
+  const versionId = db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id;
+  const ctx = {
+    db,
+    versionId,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    allowUnmaterializedDraft: true,
+    assetReader: {
+      canRead(asset) {
+        return Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path)));
+      },
+    },
+  };
+  return { db, storageRoot, versionId, ctx };
 }
 
 test('localize calls text client with verified model and parses JSON result', async () => {
@@ -159,6 +199,164 @@ test('generateAsset registers readable clean plate image without fabricating mis
   assert.equal(downloadCalls[0][5], 'redraw-assets');
 });
 
+test('redrawAssetService.generateAsset contract reaches image adapter with snapshot provider and model', async () => {
+  const state = setupAssetContractState();
+  const imageCalls = [];
+  const createCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: state.db,
+    log: createLog(),
+    cfg: { storage: { local_path: state.storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return {
+          image_url: 'https://provider.example/prop.png',
+          provider_task_id: 'img-provider-task',
+          width: 640,
+          height: 360,
+        };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(state.storageRoot, `redraw-assets/v${state.versionId}/prop.png`, 'png');
+      },
+    },
+    assetService: {
+      create(db, log, payload) {
+        createCalls.push(payload);
+        return realAssetService.create(db, log, payload);
+      },
+    },
+  });
+  try {
+    const result = await redrawAssetService.generateAsset({
+      ...state.ctx,
+      provider: adapters.generateAsset,
+    }, {
+      kind: 'prop',
+      sourceRef: { id: 'prop-1', prompt: 'source prop prompt' },
+      prompt: 'localized prop prompt',
+      localizedName: 'Localized prop',
+      localizedDescription: 'Localized description',
+      model: 'conflicting-input-model',
+      snapshot: { model: 'snapshot-image-model', provider: 'snapshot-provider' },
+    });
+
+    assert.equal(result.status, 'generated');
+    assert.equal(createCalls.length, 1);
+    assert.equal(imageCalls[0][2].model, 'snapshot-image-model');
+    assert.equal(imageCalls[0][2].preferred_provider, 'snapshot-provider');
+    assert.match(imageCalls[0][2].prompt, /localized prop prompt/);
+  } finally {
+    state.db.close();
+    fs.rmSync(state.storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('generateAsset prefers persisted attempt snapshot over conflicting input model hints', async () => {
+  const storageRoot = tempStorage();
+  const imageCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi(...args) {
+        imageCalls.push(args);
+        return {
+          image_url: 'https://provider.example/prop.png',
+          provider_task_id: 'img-provider-task',
+          width: 640,
+          height: 360,
+        };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return makeReadableFile(storageRoot, 'redraw-assets/v7/prop.png', 'png');
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await adapters.generateAsset({
+      versionId: 7,
+      attempt: {
+        id: 5,
+        kind: 'prop',
+        prompt: 'prop',
+        source_ref_json: JSON.stringify({
+          source_ref: { id: 'prop-1' },
+          snapshot: { model: 'persisted-model', provider: 'persisted-provider' },
+        }),
+      },
+      input: {
+        model: 'input-model',
+        snapshot: { model: 'input-snapshot-model', provider: 'input-provider' },
+      },
+    });
+
+    assert.equal(imageCalls[0][2].model, 'persisted-model');
+    assert.equal(imageCalls[0][2].preferred_provider, 'persisted-provider');
+  } finally {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('redrawAssetService.generateAsset contract reaches voice adapter and probes duration', async () => {
+  const state = setupAssetContractState();
+  const synthCalls = [];
+  const createCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: state.db,
+    log: createLog(),
+    cfg: { storage: { local_path: state.storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'snapshot-tts-model' },
+    ttsService: {
+      async synthesize(...args) {
+        synthCalls.push(args);
+        return { local_path: makeReadableFile(state.storageRoot, `redraw-assets/v${state.versionId}/voice.mp3`, 'mp3') };
+      },
+    },
+    audioProbe: () => 0.144,
+    assetService: {
+      create(db, log, payload) {
+        createCalls.push(payload);
+        return realAssetService.create(db, log, payload);
+      },
+    },
+  });
+  try {
+    const result = await redrawAssetService.generateAsset({
+      ...state.ctx,
+      provider: adapters.generateAsset,
+    }, {
+      kind: 'voice',
+      sourceRef: { id: 'voice-1', voice_id: 'voice-from-source' },
+      prompt: 'Hello from real contract',
+      model: 'input-tts-model',
+      snapshot: { model: 'snapshot-tts-model', provider: 'tts-provider' },
+    });
+
+    assert.equal(result.status, 'generated');
+    assert.equal(createCalls.length, 1);
+    assert.equal(createCalls[0].mime_type, 'audio/mpeg');
+    assert.equal(createCalls[0].duration, 0.144);
+    assert.equal(synthCalls[0][2].config.model, 'snapshot-tts-model');
+    assert.equal(synthCalls[0][2].voice_id, 'voice-from-source');
+  } finally {
+    state.db.close();
+    fs.rmSync(state.storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('generateAsset rejects downloaded image outside exact redraw version storage scope before registration', async () => {
   const cases = [
     'other/v1/a.png',
@@ -250,6 +448,72 @@ test('generateAsset requires positive finite image dimensions before registratio
   }
 });
 
+test('generateAsset default image download uses public downloader and rejects private URLs before registration', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'http://localhost/private.png', width: 640, height: 360 };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'prop', prompt: 'prop' },
+    }),
+    (error) => error.code === 'REDRAW_IMAGE_DOWNLOAD_FAILED',
+  );
+  assert.equal(created.length, 0);
+});
+
+test('generateAsset writes public image bytes into scoped storage and cleans them if registration fails', async () => {
+  const storageRoot = tempStorage();
+  let writtenPath = null;
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/prop.png', width: 640, height: 360 };
+      },
+    },
+    publicImageDownloader: async () => ({ bytes: Buffer.from('png-bytes'), mimeType: 'image/png' }),
+    assetService: {
+      create(_db, _log, payload) {
+        writtenPath = payload.local_path;
+        throw Object.assign(new Error('asset insert failed'), { code: 'ASSET_CREATE_FAILED' });
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      taskId: 9,
+      versionId: 7,
+      model: 'verified-image-model',
+      asset: { id: 5, kind: 'prop', prompt: 'prop' },
+    }),
+    /asset insert failed/,
+  );
+  assert.ok(writtenPath);
+  assert.equal(fs.existsSync(path.join(storageRoot, writtenPath)), false);
+});
+
 test('generateAsset voice uses verified model and refuses unknown duration before registration', async () => {
   const storageRoot = tempStorage();
   const calls = [];
@@ -293,6 +557,77 @@ test('generateAsset voice uses verified model and refuses unknown duration befor
   assert.equal(calls[0][2].config.model, 'verified-tts-model');
   assert.equal(calls[0][2].storage_base, storageRoot);
   assert.equal(calls[0][2].storage_subdir, 'redraw-assets/v8');
+});
+
+test('generateAsset voice probes duration when synthesize omits it and cleans failed probes', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  let voicePath = '';
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-tts-model' },
+    ttsService: {
+      async synthesize() {
+        voicePath = makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3');
+        return { local_path: voicePath };
+      },
+    },
+    audioProbe: () => null,
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-tts-model',
+      locale: 'en-US',
+      asset: { id: 6, kind: 'voice', prompt: 'Hello' },
+    }),
+    (error) => error.code === 'REDRAW_VOICE_DURATION_REQUIRED',
+  );
+  assert.equal(created.length, 0);
+  assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
+});
+
+test('generateAsset voice cleans scoped TTS file if registration fails', async () => {
+  const storageRoot = tempStorage();
+  let voicePath = '';
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-tts-model' },
+    ttsService: {
+      async synthesize() {
+        voicePath = makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3');
+        return { local_path: voicePath };
+      },
+    },
+    audioProbe: () => 0.25,
+    assetService: {
+      create() {
+        throw Object.assign(new Error('asset insert failed'), { code: 'ASSET_CREATE_FAILED' });
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-tts-model',
+      locale: 'en-US',
+      asset: { id: 6, kind: 'voice', prompt: 'Hello' },
+    }),
+    /asset insert failed/,
+  );
+  assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
 });
 
 test('setupRouter injects fake redraw provider adapters into redraw routes', () => {
