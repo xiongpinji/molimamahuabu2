@@ -645,12 +645,10 @@ function createRedrawProviderAdapters(deps = {}) {
       locale: normalized.locale,
     });
     if (isUnknownProviderResult(result)) {
-      return {
-        status: 'unknown',
+      throw codedError('PROVIDER_STATUS_UNKNOWN', result?.error || 'dialogue provider task status unknown', {
         unknown: true,
         provider_task_id: providerTaskIdOf(result),
-        error: result?.error || 'dialogue provider task status unknown',
-      };
+      });
     }
     const localPath = assertScopedAssetPath(result.local_path, versionDir);
     const absolutePath = path.join(storageRoot, localPath);
@@ -666,10 +664,7 @@ function createRedrawProviderAdapters(deps = {}) {
       throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw dialogue provider returned no positive duration');
     }
     const providerTaskId = providerTaskIdOf(result);
-    if (!trim(providerTaskId)) {
-      cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw codedError('REDRAW_DIALOGUE_PROVIDER_TASK_REQUIRED', 'redraw dialogue provider task id is required');
-    }
+    const invocationId = randomUUID();
     const dialogueMetadata = {
       tenant_id: ctx.tenant_id,
       user_id: ctx.user_id,
@@ -678,10 +673,12 @@ function createRedrawProviderAdapters(deps = {}) {
       idempotency_key: ctx.idempotency_key,
       reservation_id: ctx.reservation_id,
       provider_task_id: providerTaskId,
+      invocation_id: invocationId,
     };
     const metadata = {
       source: 'redraw_provider_adapter',
       kind: 'dialogue',
+      invocation_id: invocationId,
       locale: normalized.locale,
       voice_id: ctx.voice_id || null,
       duration,

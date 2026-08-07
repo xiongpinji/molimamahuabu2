@@ -143,6 +143,93 @@ test('startDialogue creates an owned async task, completes in scheduled work, an
   }
 });
 
+test('startDialogue reuses an existing pending task without scheduling duplicate provider work', () => {
+  const state = setup();
+  const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+  const scheduled = [];
+  try {
+    const first = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-pending',
+    }, {
+      schedule: (job) => {
+        scheduled.push(job);
+        return new Promise(() => {});
+      },
+      synthesizeSegment: async () => {
+        throw new Error('provider should not run in this test');
+      },
+      canReadAudioAsset: () => true,
+    });
+    const replay = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-pending',
+    }, {
+      schedule: () => {
+        throw new Error('replay must not schedule');
+      },
+      synthesizeSegment: async () => {
+        throw new Error('replay must not call provider');
+      },
+      canReadAudioAsset: () => true,
+    });
+
+    assert.equal(first.task_id, replay.task_id);
+    assert.equal(replay.status, 'pending');
+    assert.equal(replay.completion, null);
+    assert.equal(scheduled.length, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('startDialogue persists request metadata and rejects same idempotency key with changed quote', async () => {
+  const state = setup();
+  const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+  try {
+    const started = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-quote-change',
+    }, {
+      schedule: (job) => Promise.resolve().then(job),
+      synthesizeSegment: async (segment) => insertDialogueAsset(state.db, 902, segment),
+      canReadAudioAsset: (asset) => Number(asset.duration) > 0,
+    });
+    await started.completion;
+    const task = taskService.getTask(state.db, started.task_id);
+    const metadata = JSON.parse(task.metadata);
+    assert.equal(metadata.quote_hash, quote.quote_hash);
+    assert.equal(typeof metadata.request_hash, 'string');
+    assert.equal(metadata.request_hash.includes('idem-quote-change'), false);
+
+    prices.set(state.db, 'speech-2.8-turbo', 5, { category: 'audio', billingUnit: 'request' });
+    const changedQuote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+    assert.notEqual(changedQuote.quote_hash, quote.quote_hash);
+
+    assert.throws(
+      () => startDialogue(state.db, log(), ctx(state), {
+        quoteHash: changedQuote.quote_hash,
+        idempotencyKey: 'idem-quote-change',
+      }, {
+        schedule: () => {
+          throw new Error('conflict must not schedule');
+        },
+        synthesizeSegment: async () => {
+          throw new Error('conflict must not call provider');
+        },
+        canReadAudioAsset: () => true,
+      }),
+      (error) => error.code === 'REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT',
+    );
+    assert.equal(
+      state.db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_dialogue'").get().count,
+      1,
+    );
+  } finally {
+    state.db.close();
+  }
+});
+
 test('startDialogue maps unknown provider result to needs_attention and keeps held credits', async () => {
   const state = setup();
   const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
@@ -228,6 +315,46 @@ test('reconcileOrphanedDialogueTasks marks owner processing audits needs_attenti
   assert.equal(task.status, 'needs_attention');
   assert.equal(draft.dialogue_generation.status, 'needs_attention');
   assert.equal(draft.dialogue_generation.segments[0].status, 'needs_attention');
+  assert.equal(creditLedger.getReservation(state.db, reservation.id).status, 'held');
+  state.db.close();
+});
+
+test('generic startup cleanup skips redraw dialogue tasks after dialogue reconcile keeps reservations held', () => {
+  const state = setup();
+  const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+  const reservation = creditLedger.reserve(state.db, {
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    actorUserId: 'user-a',
+    operationKey: 'startup-orphan-dialogue',
+    model: 'speech-2.8-turbo',
+    resourceType: 'redraw_dialogue',
+    resourceId: `${state.versionId}:801:0`,
+    amount: 4,
+  });
+  state.db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+    VALUES ('task-startup-dialogue', 'redraw_dialogue', 'processing', 50, 'running', ?, 'tenant-a', 'user-a', ?, ?, ?)`)
+    .run(`redraw_dialogue:${state.versionId}:startup`, reservation.id, new Date().toISOString(), new Date().toISOString());
+  state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = 801').run(JSON.stringify({
+    dialogue_generation: {
+      status: 'processing',
+      segments: [{
+        segment_id: '801:0',
+        status: 'processing',
+        idempotency_key: 'idem-startup-orphan',
+        quote_hash: quote.quote_hash,
+        reservation_id: reservation.id,
+      }],
+    },
+  }));
+
+  const reconciled = reconcileOrphanedDialogueTasks(state.db, log());
+  const genericCount = taskService.failOrphanedAsyncTasksOnStartup(state.db, log());
+
+  assert.equal(reconciled.needs_attention, 1);
+  assert.equal(genericCount, 0);
+  assert.equal(taskService.getTask(state.db, 'task-startup-dialogue').status, 'needs_attention');
   assert.equal(creditLedger.getReservation(state.db, reservation.id).status, 'held');
   state.db.close();
 });

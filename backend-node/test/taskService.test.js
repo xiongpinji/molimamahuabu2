@@ -187,6 +187,28 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
   });
 
+  it('skips redraw dialogue tasks in generic orphan cleanup', () => {
+    const db = createTestDb();
+    db.exec(`
+      ALTER TABLE async_tasks ADD COLUMN tenant_id TEXT;
+      ALTER TABLE async_tasks ADD COLUMN user_id TEXT;
+      ALTER TABLE async_tasks ADD COLUMN credit_reservation_id TEXT;
+    `);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO async_tasks
+        (id, type, status, progress, message, resource_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+       VALUES (?, 'redraw_dialogue', 'processing', 50, 'running', ?, 'tenant-a', 'user-a', 'reservation-held', ?, ?)`
+    ).run('task-redraw-dialogue', 'redraw_dialogue:12:hash', now, now);
+
+    const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
+
+    assert.equal(count, 0);
+    const task = taskService.getTask(db, 'task-redraw-dialogue');
+    assert.equal(task.status, 'processing');
+    assert.equal(task.error, null);
+  });
+
   it('keeps a redraw analysis task processing when analyzing work has provider_task_id', () => {
     const db = createTestDb();
     db.exec(`

@@ -52,6 +52,13 @@ function resourceIdFor(ctx, input) {
   return `${TASK_TYPE}:${ctx.versionId}:${hash(`${ctx.tenantId}:${ctx.userId}:${ctx.versionId}:${input.idempotencyKey}`)}`;
 }
 
+function taskMetadata(ctx, input) {
+  return {
+    request_hash: hash(`${ctx.tenantId}:${ctx.userId}:${ctx.versionId}:${input.idempotencyKey}`),
+    quote_hash: input.quoteHash,
+  };
+}
+
 function quoteDialogue(db, ctx = {}) {
   const normalized = normalizeContext(ctx);
   return dialogueService.quoteDialoguePlan(db, normalized);
@@ -69,22 +76,29 @@ function existingTask(db, ctx, resourceId) {
 
 function createOrReuseTask(db, log, ctx, input) {
   const resourceId = resourceIdFor(ctx, input);
+  const metadata = taskMetadata(ctx, input);
   let selected;
+  let created = false;
   db.transaction(() => {
     const existing = existingTask(db, ctx, resourceId);
     if (existing) {
+      const existingMetadata = parseJson(existing.metadata, {});
+      if (existingMetadata.quote_hash !== input.quoteHash) {
+        throw codedError('REDRAW_DIALOGUE_IDEMPOTENCY_CONFLICT', '配音幂等键已绑定其他报价');
+      }
       selected = existing;
       return;
     }
     const task = taskService.createTask(db, log, TASK_TYPE, resourceId);
     db.prepare(`
       UPDATE async_tasks
-      SET tenant_id = ?, user_id = ?, status = 'pending', progress = 0, message = ?, updated_at = ?
+      SET tenant_id = ?, user_id = ?, status = 'pending', progress = 0, message = ?, metadata = ?, updated_at = ?
       WHERE id = ?
-    `).run(ctx.tenantId, ctx.userId, '配音任务已创建', new Date().toISOString(), task.id);
+    `).run(ctx.tenantId, ctx.userId, '配音任务已创建', JSON.stringify(metadata), new Date().toISOString(), task.id);
     selected = taskService.getTask(db, task.id);
+    created = true;
   }).immediate();
-  return selected;
+  return { task: selected, created };
 }
 
 function setTaskStatus(db, taskId, status, progress, message) {
@@ -177,13 +191,13 @@ function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
     throw codedError('REDRAW_DIALOGUE_READER_REQUIRED', '缺少配音音频读取器');
   }
 
-  const task = createOrReuseTask(db, log, normalizedCtx, normalizedInput);
-  if (task.status !== 'pending') {
+  const { task, created } = createOrReuseTask(db, log, normalizedCtx, normalizedInput);
+  if (!created) {
     return {
       task_id: task.id,
       status: task.status,
       quote,
-      completion: ['completed', 'failed', 'needs_attention'].includes(task.status) ? Promise.resolve(task) : null,
+      completion: null,
     };
   }
 

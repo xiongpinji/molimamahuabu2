@@ -1237,7 +1237,6 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
         synthCalls.push(args);
         return {
           local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue.mp3', 'mp3'),
-          provider_task_id: 'provider-dialogue-1',
           duration: 1.25,
         };
       },
@@ -1270,7 +1269,7 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
   assert.equal(result.status, 'completed');
   assert.equal(result.asset_id, 188);
   assert.equal(result.duration, 1.25);
-  assert.equal(result.provider_task_id, 'provider-dialogue-1');
+  assert.equal(result.provider_task_id, null);
   assert.equal(synthCalls.length, 1);
   assert.equal(synthCalls[0][2].text, 'Come with me.');
   assert.equal(synthCalls[0][2].voice_id, 'voice-c1');
@@ -1278,6 +1277,8 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
   assert.equal(created[0].type, 'audio');
   assert.equal(created[0].category, 'redraw_dialogue');
   assert.equal(created[0].metadata.kind, 'dialogue');
+  assert.equal(created[0].metadata.provider_task_id, null);
+  assert.equal(typeof created[0].metadata.invocation_id, 'string');
   assert.deepEqual(created[0].metadata.redraw_dialogue, {
     tenant_id: 'tenant-a',
     user_id: 'user-a',
@@ -1285,8 +1286,50 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
     segment_id: '801:0',
     idempotency_key: 'idem-dialogue',
     reservation_id: 'reservation-dialogue',
-    provider_task_id: 'provider-dialogue-1',
+    provider_task_id: null,
+    invocation_id: created[0].metadata.invocation_id,
   });
+});
+
+test('generateAsset dialogue throws unknown provider result for needs_attention handling', async () => {
+  const storageRoot = tempStorage();
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-dialogue-model' },
+    ttsService: {
+      async synthesize() {
+        return { status: 'unknown', provider_task_id: 'provider-unknown' };
+      },
+    },
+    assetService: {
+      create() {
+        throw new Error('unknown result must not register asset');
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-dialogue-model',
+      locale: 'en-US',
+      kind: 'dialogue',
+      segment: {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: 8,
+        segment_id: '801:0',
+        text: 'Come with me.',
+        idempotency_key: 'idem-dialogue',
+        reservation_id: 'reservation-dialogue',
+      },
+    }),
+    (error) => error.code === 'PROVIDER_STATUS_UNKNOWN'
+      && error.unknown === true
+      && error.provider_task_id === 'provider-unknown',
+  );
 });
 
 test('generateAsset dialogue fails closed without server segment bindings before TTS', async () => {
@@ -1596,6 +1639,9 @@ test('createApp reconciles redraw localization and asset batches after analysis 
   mock('../src/services/redrawAssetBatchService', {
     reconcileOrphanedBatches: () => { order.push('batch'); return 0; },
   });
+  mock('../src/services/redrawDialogueOrchestrator', {
+    reconcileOrphanedDialogueTasks: () => { order.push('dialogue'); return { needs_attention: 0 }; },
+  });
   mock('../src/services/taskService', {
     failOrphanedAsyncTasksOnStartup: () => { order.push('generic'); return 0; },
   });
@@ -1606,7 +1652,7 @@ test('createApp reconciles redraw localization and asset batches after analysis 
     resumeResolve();
     await resumePromise;
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(order, ['analysis', 'localization', 'batch', 'generic']);
+    assert.deepEqual(order, ['analysis', 'localization', 'batch', 'dialogue', 'generic']);
   } finally {
     delete require.cache[appPath];
     for (const [resolved, original] of moduleMocks) {

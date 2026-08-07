@@ -101,6 +101,7 @@ function rowToTask(r) {
     model: r.model,
     credit_reservation_id: r.credit_reservation_id,
     provider_task_id: r.provider_task_id,
+    metadata: r.metadata,
     created_at: r.created_at,
     updated_at: r.updated_at,
     completed_at: r.completed_at,
@@ -211,7 +212,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   reconcileOrphanedRedrawLocalizationTasks(db, log);
   rows = rows.filter((row) => {
     const kind = String(row.type || row.task_type || '');
-    return !['redraw_localization', 'redraw_asset_batch'].includes(kind);
+    return !['redraw_localization', 'redraw_asset_batch', 'redraw_dialogue'].includes(kind);
   });
   try {
     const resumableVideoTaskIds = new Set(

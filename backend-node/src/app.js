@@ -47,6 +47,11 @@ function createApp() {
       } catch (error) {
         log.error('Startup redraw asset batch reconcile failed', { error: error.message });
       }
+      try {
+        require('./services/redrawDialogueOrchestrator').reconcileOrphanedDialogueTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw dialogue reconcile failed', { error: error.message });
+      }
       taskService.failOrphanedAsyncTasksOnStartup(db, log);
     })
     .catch((error) => {
