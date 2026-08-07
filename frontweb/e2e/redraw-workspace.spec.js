@@ -90,6 +90,25 @@ const assetBatchQuote = {
   })),
 }
 
+const materializedDraftAssets = redrawAssets.map((asset) => {
+  const {
+    asset_id,
+    clean_plate_asset_id,
+    voice_asset_id,
+    ...draft
+  } = asset
+  return {
+    ...draft,
+    status: 'draft',
+    approval_status: 'pending',
+    prompt: `${asset.localized_name} faithful localized ${asset.kind} draft`,
+    source_facts: {
+      localized_name: asset.localized_name,
+      localized_description: asset.localized_description,
+    },
+  }
+})
+
 const approvedRedrawAssets = [
   {
     id: 1201,
@@ -325,8 +344,8 @@ async function installFixtures(page, state) {
         status: 'localizing',
         workflow_phase: 'localizing',
         current_step: 1,
-        version_id: 812,
-        current_version: 2,
+        version_id: null,
+        current_version: 0,
         localization_quote: { ...localizationQuote },
         localization_task: {
           id: 'task-localization-812',
@@ -387,10 +406,12 @@ async function installFixtures(page, state) {
       return
     }
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/assets') {
+      state.requests.push({ method, pathname })
       await route.fulfill(apiData(state.assets))
       return
     }
     if (method === 'GET' && pathname === '/api/v1/redraw/versions/812/generation-gate') {
+      state.requests.push({ method, pathname })
       await route.fulfill(apiData(state.gate))
       return
     }
@@ -404,6 +425,7 @@ async function installFixtures(page, state) {
         quote_hash: assetIds.length && state.nextAssetBatchQuoteHash ? state.nextAssetBatchQuoteHash : assetBatchQuote.quote_hash,
         items,
       }
+      state.assetBatchQuotes = [...(state.assetBatchQuotes || []), { body, quote }]
       state.requests.push({ method, pathname, body })
       await route.fulfill(apiData(quote))
       return
@@ -689,10 +711,12 @@ test.describe('一键转绘输入与分析流程', () => {
       quoteReady: true,
       assetQuoteReady: true,
       work: analysisReviewWork(),
-      assets: structuredClone(redrawAssets),
-      gate: buildAssetGate(redrawAssets),
+      assets: structuredClone(materializedDraftAssets),
+      gate: buildAssetGate(materializedDraftAssets),
       requests: [],
     }
+    expect(state.assets.every((asset) => asset.status === 'draft')).toBe(true)
+    expect(state.assets.every((asset) => !asset.asset_id && !asset.clean_plate_asset_id && !asset.voice_asset_id)).toBe(true)
     await installFixtures(page, state)
     await page.setViewportSize({ width: 1440, height: 900 })
 
@@ -707,6 +731,11 @@ test.describe('一键转绘输入与分析流程', () => {
     expectOnlyKeys(versionCreate.body, ['locale', 'market', 'localization_level', 'quote_hash', 'idempotency_key'])
     expect(versionCreate.body.quote_hash).toBe(localizationQuote.quote_hash)
     expect(forbiddenClientFields(versionCreate.body)).toEqual([])
+    expect(state.work.version_id).toBeNull()
+    expect(state.work.current_version).toBe(0)
+    expect(state.work.current_step).toBe(1)
+    expect(state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets')).toBe(false)
+    expect(state.requests.some((entry) => entry.pathname === '/api/v1/redraw/versions/812/generation-gate')).toBe(false)
     await expect(page.getByText('本地化任务 task-localization-812')).toBeVisible()
     await expect(page.locator('.task-card')).toContainText('processing')
     await expect(page.locator('.task-card')).toContainText('33%')
@@ -732,6 +761,10 @@ test.describe('一键转绘输入与分析流程', () => {
     }
     await expect(page.getByText('确认本地化资产后再进入批量转绘')).toBeVisible()
     await expect(page.getByText('本次预计扣除 18 积分')).toBeVisible()
+    const fullQuote = state.assetBatchQuotes.find((entry) => !Array.isArray(entry.body?.asset_ids))
+    expect(fullQuote.quote.items.map((item) => item.asset_id).sort()).toEqual([1201, 1202, 1203])
+    expect(state.assets.every((asset) => asset.status === 'draft')).toBe(true)
+    expect(state.assets.every((asset) => !asset.asset_id && !asset.clean_plate_asset_id && !asset.voice_asset_id)).toBe(true)
 
     await page.getByRole('button', { name: '一键批量生成全部资产' }).click()
     await expect.poll(() => state.requests.filter((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches').length).toBe(1)
@@ -740,16 +773,20 @@ test.describe('一键转绘输入与分析流程', () => {
     expect(firstBatch.body.quote_hash).toBe(assetBatchQuote.quote_hash)
     expect(forbiddenClientFields(firstBatch.body)).toEqual([])
 
+    const beforePartialWorkGets = state.workGets || 0
     state.work.asset_batch = { id: 501, status: 'partial_failed', total_count: 3, success_count: 2, failed_count: 1 }
     state.assets = state.assets.map((asset) => asset.id === 1202
       ? { ...asset, status: 'failed', approval_status: 'pending', error_message: '净景失败' }
-      : { ...asset, status: 'generated', approval_status: 'pending' })
-    await page.waitForTimeout(3200)
+      : { ...asset, status: 'generated', approval_status: 'pending', asset_id: asset.id === 1201 ? 2201 : 2203 })
+    await expect.poll(() => state.workGets || 0, { timeout: 8000 }).toBeGreaterThan(beforePartialWorkGets)
     await expect(page.getByText('2 成功 / 1 失败 / 3 总数')).toBeVisible()
     await expect(page.getByRole('button', { name: '一键重试失败项' })).toBeVisible()
 
     state.nextAssetBatchQuoteHash = 'c'.repeat(64)
     await page.getByRole('button', { name: '一键重试失败项' }).click()
+    const retryQuote = state.assetBatchQuotes.at(-1)
+    expect(retryQuote.body.asset_ids).toEqual([1202])
+    expect(retryQuote.quote.items.map((item) => item.asset_id)).toEqual([1202])
     await expect(page.getByRole('button', { name: '一键重试失败项' })).toBeEnabled()
     await page.getByRole('button', { name: '一键重试失败项' }).click()
     await expect.poll(() => state.requests.filter((entry) => entry.pathname === '/api/v1/redraw/versions/812/assets/batches').length).toBe(2)
@@ -761,9 +798,12 @@ test.describe('一键转绘输入与分析流程', () => {
     expect(retryBatch.body.quote_hash).toBe('c'.repeat(64))
     expect(forbiddenClientFields(retryBatch.body)).toEqual([])
 
+    const beforeRetryWorkGets = state.workGets || 0
     state.work.asset_batch = { id: 502, status: 'completed', total_count: 1, success_count: 1, failed_count: 0 }
-    state.assets = state.assets.map((asset) => ({ ...asset, status: 'generated', approval_status: 'pending' }))
-    await page.waitForTimeout(3200)
+    state.assets = state.assets.map((asset) => asset.id === 1202
+      ? { ...asset, status: 'generated', approval_status: 'pending', clean_plate_asset_id: 2202 }
+      : { ...asset, status: 'generated', approval_status: 'pending' })
+    await expect.poll(() => state.workGets || 0, { timeout: 8000 }).toBeGreaterThan(beforeRetryWorkGets)
     for (const kind of ['角色', '场景', '物品']) {
       await page.getByRole('button', { name: kind }).click()
       await page.getByRole('button', { name: '批准' }).click()

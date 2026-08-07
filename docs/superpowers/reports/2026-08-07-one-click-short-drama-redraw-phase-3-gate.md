@@ -23,9 +23,13 @@
 - analysis task `completed` 且 `workflow_phase=analysis_review` 时仍停在 Step1，并显示服务端本地化报价 9 积分。
 - 点击“确认英文 1:1 本地化”会二次请求 `/redraw/works/710/localization-quote`，再用服务端 `quote_hash` 创建 `/redraw/works/710/versions`。
 - 本地化 `localizing` 显示独立 `task-localization-812` 和 33% 进度；页面 reload 后可从 GET work 恢复。
+- create version 响应只用于提交本地化任务；localizing 期间 GET work 公开状态保持 `version_id=null/current_version=0/current_step=1`，promotion 前未请求 `/redraw/versions/812/assets` 或 `/generation-gate`，hidden draft version 未泄漏到资产审核。
 - 后续 GET work 返回 `current_step=2/version_id=812/workflow_phase=asset_review` 后，页面经轮询自动进入 Step2。
+- 主闭环初始资产使用独立 `materializedDraftAssets`：全部为 `status=draft`，且无 `asset_id/clean_plate_asset_id/voice_asset_id` 等生成产物；首轮 batch quote items 精确覆盖 draft ids `1201/1202/1203`。
 - Step2 显示资产批量总价 18；首次批量创建后轮询 GET work/listAssets，恢复 `partial_failed` 的 2 成功 / 1 失败 / 3 总数。
+- partial_failed 后才把成功项转为 `generated` 并写入 fixture artifact id，失败项 `1202` 保持 `failed` 且无成功产物；retry completed 后才把 `1202` 转为 `generated` 并写入 `clean_plate_asset_id=2202`。
 - “一键重试失败项”在 subset quote hash 变化时要求再次确认；最终 `/assets/batches` 请求的 `asset_ids` 只含失败资产 `1202`，不含成功项 `1201/1203`。
+- retry quote items 也只覆盖 `1202`，create body 只包含 `1202`。
 - 重试成功后资产可批准；全部批准后 gate 推进 `current_step=3`，`03 批量转绘` 开放。
 - create version 与两次 asset batch 请求正文断言只含允许字段；不含 `model/provider/credits/credit_amount/dialogue/localized_dialogue/characters/maps`。
 - Desktop 1440 和 390px 关键页面继续执行无横向滚动检查；所有 Playwright 用例沿用 `pageerror` 和 console error 归零门禁。
@@ -33,10 +37,13 @@
 ## 自动化证据
 
 - 首红：`cd frontweb; $env:PLAYWRIGHT_REUSE_SERVER='0'; npx playwright test e2e/redraw-workspace.spec.js` 首次有效运行 `10 passed / 2 failed`。新增场景失败于未返回“本地化报价 9 积分”；既有 Step2 因 fixture 扩为 3 项资产后旧断言仍按 2 项失败。
-- 定向 Playwright：同命令，`12 passed`，耗时约 1.3 分钟。
+- 回修首红：`cd frontweb; $env:PLAYWRIGHT_REUSE_SERVER='0'; npx playwright test e2e/redraw-workspace.spec.js -g "本地化确认后资产批次部分失败只重试失败项并开放第三步"` 失败于新增断言 `Expected: true / Received: false`，捕获当前主闭环初始资产不是 draft。
+- 回修定向单测：同 `-g` 命令，`1 passed`，耗时约 18.9 秒。
+- 定向 Playwright：`cd frontweb; $env:PLAYWRIGHT_REUSE_SERVER='0'; npx playwright test e2e/redraw-workspace.spec.js`，`12 passed`，耗时约 1.0 分钟。
 - 后端全量：`cd backend-node; npm test`。第一次 180 秒超时且无统计；延长后 exit 0，`962 tests / 961 pass / 0 fail / 1 skipped / 0 todo`，`duration_ms 197193.3268`。skip 名称：`verifyVideoArtifact 使用 realpath 阻止指向根外的 symlink 但允许根内 symlink`，原因 `symlink unavailable: EPERM`。
 - 前端 Node 全量：`cd frontweb; node --test test/*.test.js`，exit 1，`615 tests / 605 pass / 10 fail / 0 skipped / 0 todo`，`duration_ms 27545.574`。
 - 前端构建：`cd frontweb; npm run build` exit 0，Vite `built in 28.73s`，仅有大 chunk 警告。
+- 语法检查：`node --check frontweb\e2e\redraw-workspace.spec.js` exit 0。
 - Diff 检查：`git diff --check` exit 0；仅提示 `frontweb/e2e/redraw-workspace.spec.js` 下次 Git 触碰时 LF 会替换为 CRLF。
 
 ## 前端既有失败比较
@@ -64,7 +71,7 @@
 
 ## 证据分级
 
-- `passed`：本地实现与 Playwright fake-provider/fixture 合同，覆盖本地化确认、资产批量部分失败、只重试失败项、审核开放 Step3、请求体禁止客户端控制字段、桌面/移动无横向滚动和 console/pageerror 归零。
+- `passed`：本地实现与 Playwright fake-provider/fixture 合同，覆盖本地化确认、hidden draft 未泄漏、materialized draft 资产批量生成、部分失败、只重试失败项、审核开放 Step3、请求体禁止客户端控制字段、桌面/移动无横向滚动和 console/pageerror 归零。
 - `passed`：恢复逻辑，本地化 reload 恢复、轮询 GET work 推进 Step2、资产批次轮询 GET work/listAssets 恢复 partial_failed/completed。
 - `passed`：SQLite 账本相关后端自动化随 `backend-node npm test` 全量通过，后端全量 `962 / 961 pass / 0 fail / 1 skipped`。
 - `blocked`：真实文本本地化。缺少付费授权、目标 Key、已验证目标模型、真实供应商任务和可读本地化产物。
