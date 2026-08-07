@@ -4,16 +4,17 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
 
 const { loadConfig } = require('../config');
 const { getFfmpegPath, getFfprobePath } = require('../utils/ffmpegPath');
 const redrawGenerationService = require('./redrawGenerationService');
 const redrawSubtitleService = require('./redrawSubtitleService');
 
-const execFileAsync = promisify(execFile);
 const VIDEO_TOLERANCE_MS = 250;
 const VIDEO_TOLERANCE_RATIO = 0.03;
+const FFMPEG_TIMEOUT_MIN_MS = 30_000;
+const FFMPEG_TIMEOUT_MAX_MS = 1_800_000;
+const PROBE_TIMEOUT_MS = 30_000;
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -47,6 +48,16 @@ function stableStringify(value) {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex');
+}
+
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 function requestHash(input) {
@@ -121,7 +132,7 @@ function resolveReadableContained(root, localPath, label) {
     if (!stat.isFile()) {
       throw codedError('REDRAW_COMPOSITION_PATH_UNREADABLE', `${label} is not a regular file`);
     }
-    return { relative, absolute: abs, real: realAbs, bytes: fs.readFileSync(realAbs) };
+    return { relative, absolute: abs, real: realAbs };
   } catch (error) {
     if (error.code && String(error.code).startsWith('REDRAW_COMPOSITION_')) throw error;
     throw codedError('REDRAW_COMPOSITION_PATH_UNREADABLE', `${label} file unreadable`);
@@ -170,7 +181,7 @@ async function verifyVideo(ctx, root, shot, videoRow, expectedSize) {
     duration_ms: actualMs,
     width,
     height,
-    hash: sha256(file.bytes),
+    hash: await sha256File(file.real),
   };
 }
 
@@ -210,7 +221,7 @@ function collectSubtitleSegments(shots) {
   });
 }
 
-function validateAudioSegment(ctx, root, shot, segment) {
+async function validateAudioSegment(ctx, root, shot, segment) {
   if (segment?.status !== 'completed' || segment?.reservation_status !== 'confirmed') {
     throw codedError('REDRAW_COMPOSITION_AUDIO_INVALID', 'dialogue audio not completed and confirmed');
   }
@@ -261,11 +272,11 @@ function validateAudioSegment(ctx, root, shot, segment) {
     duration_ms: durationMs,
     reservation_id: segment.reservation_id,
     idempotency_key: segment.idempotency_key,
-    hash: sha256(file.bytes),
+    hash: await sha256File(file.real),
   };
 }
 
-function collectAudio(ctx, root, shots) {
+async function collectAudio(ctx, root, shots) {
   const audio = [];
   for (const shot of shots) {
     const draft = parseJson(shot.draft_json, {}, 'draft_json');
@@ -274,7 +285,7 @@ function collectAudio(ctx, root, shots) {
       throw codedError('REDRAW_COMPOSITION_AUDIO_INVALID', 'dialogue segments invalid');
     }
     for (const segment of segments) {
-      audio.push(validateAudioSegment(ctx, root, shot, segment));
+      audio.push(await validateAudioSegment(ctx, root, shot, segment));
     }
   }
   if (!audio.length) throw codedError('REDRAW_COMPOSITION_AUDIO_INVALID', 'dialogue audio missing');
@@ -308,7 +319,7 @@ async function buildCompositionPlan(ctx, input) {
     expectedSize ||= { width: verified.width, height: verified.height };
     videoInputs.push(verified);
   }
-  const audioInputs = collectAudio(ctx, root, shots);
+  const audioInputs = await collectAudio(ctx, root, shots);
   const subtitleSegments = collectSubtitleSegments(shots);
   const subtitles = redrawSubtitleService.buildSubtitles(subtitleSegments, { locale: version.locale || 'en-US' });
   if (subtitles.status !== 'ready') {
@@ -374,7 +385,7 @@ async function createComposition(ctx, input) {
       if (existingManifest.request_hash !== hash) {
         throw codedError('REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT', 'idempotency key reused with different request');
       }
-      return existing;
+      return { ...existing, created: false };
     }
     const active = ctx.db.prepare(`
       SELECT id FROM redraw_exports
@@ -393,7 +404,7 @@ async function createComposition(ctx, input) {
         (version_id, tenant_id, user_id, export_type, version_number, manifest_json, status, created_at, updated_at)
       VALUES (?, ?, ?, 'video', ?, ?, 'pending', ?, ?)
     `).run(versionId, String(ctx.tenantId), String(ctx.userId), versionNumber, JSON.stringify(manifest), createdAt, createdAt);
-    return ctx.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(info.lastInsertRowid);
+    return { ...ctx.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(info.lastInsertRowid), created: true };
   });
 }
 
@@ -482,17 +493,58 @@ function ffmpegArgs(plan, outputs) {
   return args;
 }
 
-async function defaultCompositionRunner(job) {
-  await execFileAsync(job.bin, job.args, { windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
-async function defaultProbeRunner(filePath) {
-  const { stdout } = await execFileAsync(getFfprobePath(), [
+function ffmpegTimeoutMs(plan) {
+  const durationMs = Number(plan?.total_duration_ms) || 0;
+  return clamp(Math.ceil(durationMs * 10 + 30_000), FFMPEG_TIMEOUT_MIN_MS, FFMPEG_TIMEOUT_MAX_MS);
+}
+
+function isExecTimeout(error) {
+  return error?.code === 'ETIMEDOUT' || error?.killed === true || /timed out/i.test(String(error?.message || ''));
+}
+
+function execFileWithTimeout(execFileImpl, bin, args, options, timeoutCode) {
+  return new Promise((resolve, reject) => {
+    execFileImpl(bin, args, options, (error, stdout, stderr) => {
+      if (error) {
+        if (isExecTimeout(error)) {
+          reject(codedError(timeoutCode, timeoutCode === 'REDRAW_COMPOSITION_TIMEOUT'
+            ? 'ffmpeg composition timed out'
+            : 'ffprobe timed out'));
+          return;
+        }
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function defaultCompositionRunner(job) {
+  await execFileWithTimeout(job.execFile || execFile, job.bin, job.args, {
+    windowsHide: true,
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: job.timeoutMs,
+    killSignal: 'SIGKILL',
+  }, 'REDRAW_COMPOSITION_TIMEOUT');
+}
+
+async function defaultProbeRunner(filePath, options = {}) {
+  const { stdout } = await execFileWithTimeout(options.execFile || execFile, getFfprobePath(), [
     '-v', 'error',
     '-show_entries', 'format=duration:stream=codec_type,width,height',
     '-of', 'json',
     filePath,
-  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  ], {
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+    timeout: PROBE_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  }, 'REDRAW_COMPOSITION_PROBE_TIMEOUT');
   const parsed = JSON.parse(stdout);
   const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
   const video = streams.find((stream) => stream.codec_type === 'video');
@@ -503,7 +555,6 @@ async function defaultProbeRunner(filePath) {
     height: Number(video?.height),
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
-    hash: sha256(fs.readFileSync(filePath)),
   };
 }
 
@@ -589,8 +640,17 @@ async function runComposition(ctx, exportId) {
     fs.writeFileSync(outputs.vtt.absolute, plan.subtitles.vtt, 'utf8');
     const args = ffmpegArgs(plan, outputs);
     const runner = ctx.compositionRunner || defaultCompositionRunner;
-    await runner({ bin: getFfmpegPath(), args, outputPath: outputs.mp4.absolute, plan });
-    const probe = ctx.probeRunner ? await ctx.probeRunner(outputs.mp4.absolute) : await defaultProbeRunner(outputs.mp4.absolute);
+    await runner({
+      bin: getFfmpegPath(),
+      args,
+      outputPath: outputs.mp4.absolute,
+      plan,
+      timeoutMs: ffmpegTimeoutMs(plan),
+      execFile: ctx.execFile,
+    });
+    const probe = ctx.probeRunner
+      ? await ctx.probeRunner(outputs.mp4.absolute)
+      : await defaultProbeRunner(outputs.mp4.absolute, { execFile: ctx.execFile });
     const actualMs = Math.round(Number(probe?.duration) * 1000);
     const tolerance = Math.max(VIDEO_TOLERANCE_MS, Math.round(plan.total_duration_ms * VIDEO_TOLERANCE_RATIO));
     if (!probe?.hasVideo || !probe?.hasAudio || !Number.isFinite(actualMs) || Math.abs(actualMs - plan.total_duration_ms) > tolerance
@@ -598,6 +658,11 @@ async function runComposition(ctx, exportId) {
       throw codedError('REDRAW_COMPOSITION_OUTPUT_INVALID', 'composition output probe invalid');
     }
     const completedAt = now(ctx);
+    const outputHashes = {
+      mp4: await sha256File(outputs.mp4.absolute),
+      srt: await sha256File(outputs.srt.absolute),
+      vtt: await sha256File(outputs.vtt.absolute),
+    };
     return runImmediate(db, () => {
       const baseMetadata = {
         tenant_id: String(ctx.tenantId),
@@ -618,11 +683,6 @@ async function runComposition(ctx, exportId) {
         ...baseMetadata,
         kind: 'subtitle_vtt',
       }, null);
-      const outputHashes = {
-        mp4: probe.hash || sha256(fs.readFileSync(outputs.mp4.absolute)),
-        srt: sha256(fs.readFileSync(outputs.srt.absolute)),
-        vtt: sha256(fs.readFileSync(outputs.vtt.absolute)),
-      };
       const manifest = {
         idempotency_key: existingManifest.idempotency_key,
         request_hash: existingManifest.request_hash,

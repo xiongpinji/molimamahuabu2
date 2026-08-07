@@ -46,7 +46,13 @@ function touch(root, relative, body = 'media') {
 }
 
 function fileSha256(filePath) {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 function addVideo(state, id, relative, overrides = {}) {
@@ -372,6 +378,8 @@ test('createComposition serializes active exports and enforces idempotency key r
     });
     assert.equal(hasAbsoluteString(JSON.parse(first.manifest_json)), false);
     assert.equal(replay.id, first.id);
+    assert.equal(first.created, true);
+    assert.equal(replay.created, false);
     state.db.prepare('UPDATE video_generations SET local_path = ? WHERE id = 102')
       .run(touch(state.root, 'videos/shot-2-changed.mp4', 'changed-video-bytes'));
     await assert.rejects(
@@ -468,6 +476,52 @@ test('runComposition uses ffmpeg args for concat plus delayed replacement audio 
     assert.equal(calls.length, 1);
   } finally {
     cleanup(state);
+  }
+});
+
+test('runComposition applies default process timeouts and marks ffmpeg/probe timeouts failed', async () => {
+  for (const mode of ['ffmpeg', 'probe']) {
+    const state = setup();
+    const optionsSeen = [];
+    try {
+      addReadyVersion(state);
+      const created = await createComposition(ctx(state), {
+        versionId: state.versionId,
+        idempotencyKey: `compose-timeout-${mode}`,
+        audioMode: 'replace',
+      });
+      const fakeExecFile = (_bin, _args, options, callback) => {
+        optionsSeen.push(options);
+        const error = new Error('timed out');
+        error.killed = true;
+        error.signal = options.killSignal;
+        error.code = 'ETIMEDOUT';
+        callback(error);
+      };
+      const overrides = mode === 'ffmpeg'
+        ? { compositionRunner: undefined, probeRunner: undefined, execFile: fakeExecFile }
+        : {
+          compositionRunner: async ({ outputPath }) => fs.writeFileSync(outputPath, 'mp4'),
+          probeRunner: undefined,
+          execFile: fakeExecFile,
+        };
+
+      await assert.rejects(
+        () => runComposition(ctx(state, overrides), created.id),
+        (error) => error.code === (mode === 'ffmpeg' ? 'REDRAW_COMPOSITION_TIMEOUT' : 'REDRAW_COMPOSITION_PROBE_TIMEOUT'),
+      );
+
+      const row = state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id);
+      assert.equal(row.status, 'failed');
+      assert.equal(row.error_code, mode === 'ffmpeg' ? 'REDRAW_COMPOSITION_TIMEOUT' : 'REDRAW_COMPOSITION_PROBE_TIMEOUT');
+      assert.equal(optionsSeen.length, 1);
+      assert.equal(optionsSeen[0].killSignal, 'SIGKILL');
+      assert.equal(Number.isSafeInteger(optionsSeen[0].timeout), true);
+      assert.ok(optionsSeen[0].timeout >= 30000);
+      assert.ok(optionsSeen[0].timeout <= 1800000);
+    } finally {
+      cleanup(state);
+    }
   }
 });
 
@@ -569,8 +623,10 @@ test('runComposition completes atomically with three assets, version number, rel
     assert.equal(manifest.audio_mode, 'replace');
     assert.equal(manifest.idempotency_key, 'compose-success');
     assert.equal(manifest.outputs.srt_asset_id, row.subtitle_asset_id);
-    assert.equal(manifest.outputs.hashes.srt, fileSha256(path.join(state.root, manifest.outputs.srt_path)));
-    assert.equal(manifest.outputs.hashes.vtt, fileSha256(path.join(state.root, manifest.outputs.vtt_path)));
+    assert.notEqual(manifest.outputs.hashes.mp4, 'final-hash');
+    assert.equal(manifest.outputs.hashes.mp4, await fileSha256(path.join(state.root, manifest.outputs.mp4_path)));
+    assert.equal(manifest.outputs.hashes.srt, await fileSha256(path.join(state.root, manifest.outputs.srt_path)));
+    assert.equal(manifest.outputs.hashes.vtt, await fileSha256(path.join(state.root, manifest.outputs.vtt_path)));
     assert.equal(hasAbsoluteString(manifest), false);
   } finally {
     cleanup(state);
