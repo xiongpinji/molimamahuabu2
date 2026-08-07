@@ -6,6 +6,8 @@ const {
   buildLocalizationInput,
   normalizeLocalizationResult,
   validateLocalizedFacts,
+  createLocalizationDraft,
+  materializeLocalizationDraft,
   createLocalizationVersion,
   validateLocalizedDialogue,
 } = require('../src/services/localizationService');
@@ -65,6 +67,8 @@ function createDb() {
       tenant_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       current_version INTEGER NOT NULL DEFAULT 0,
+      current_step INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'fact_confirmed',
       updated_at TEXT
     );
     CREATE TABLE redraw_versions (
@@ -82,6 +86,9 @@ function createDb() {
       culture_map_json TEXT NOT NULL DEFAULT '{}',
       style_snapshot_json TEXT NOT NULL DEFAULT '{}',
       capability_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      localization_input_hash TEXT,
+      localization_idempotency_key TEXT,
+      localization_model_snapshot_json TEXT NOT NULL DEFAULT '{}',
       facts_hash TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL,
@@ -89,6 +96,9 @@ function createDb() {
       deleted_at TEXT
     );
     CREATE UNIQUE INDEX uq_redraw_version_number ON redraw_versions(work_id, version);
+    CREATE UNIQUE INDEX uq_redraw_version_localization_key
+      ON redraw_versions(work_id, tenant_id, user_id, localization_idempotency_key)
+      WHERE deleted_at IS NULL AND localization_idempotency_key IS NOT NULL;
     CREATE TABLE redraw_assets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       version_id INTEGER NOT NULL,
@@ -151,8 +161,8 @@ function createDb() {
   const now = new Date().toISOString();
   const facts = sourceFacts();
   const sourceFactsHash = buildLocalizationInput(facts, { locale: 'source' }).source_facts_hash;
-  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id, current_version, updated_at) VALUES (1, ?, ?, 1, ?)')
-    .run('tenant-a', 'user-a', now);
+  db.prepare('INSERT INTO redraw_works (id, tenant_id, user_id, current_version, current_step, status, updated_at) VALUES (1, ?, ?, 1, 1, ?, ?)')
+    .run('tenant-a', 'user-a', 'fact_confirmed', now);
   const sourceVersionId = Number(db.prepare(`
     INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, localization_level,
@@ -181,6 +191,25 @@ function createDb() {
     now,
   ));
   return db;
+}
+
+function localizationPayload(overrides = {}) {
+  const facts = sourceFacts();
+  return {
+    locale: 'en-US',
+    market: 'US',
+    sourceFacts: facts,
+    sourceFactsHash: buildLocalizationInput(facts, { locale: 'en-US' }).source_facts_hash,
+    nameMap: { 小满: 'Maya' },
+    cultureMap: { currency: 'USD' },
+    glossary: { 旧手机: 'old phone' },
+    styleSnapshot: { stable_key: 'style-1', version: 1 },
+    dialogue: [{
+      shot_id: 'shot-1',
+      turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
+    }],
+    ...overrides,
+  };
 }
 
 test('本地化不得改变人物关系、因果、反转和钩子', () => {
@@ -232,20 +261,7 @@ test('本地化结果事实哈希不匹配时拒绝写入', () => {
 test('创建本地化版本原子物化目标分镜与同版本资产引用且不改写源事实', () => {
   const db = createDb();
   const facts = sourceFacts();
-  const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
-    locale: 'en-US',
-    market: 'US',
-    sourceFacts: facts,
-    sourceFactsHash: buildLocalizationInput(facts, { locale: 'en-US' }).source_facts_hash,
-    nameMap: { 小满: 'Maya' },
-    cultureMap: { currency: 'USD' },
-    glossary: { 旧手机: 'old phone' },
-    styleSnapshot: { stable_key: 'style-1', version: 1 },
-    dialogue: [{
-      shot_id: 'shot-1',
-      turns: [{ speaker_id: 'c1', localized_text: "Don't look back" }],
-    }],
-  });
+  const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, localizationPayload());
   assert.equal(result.version, 2);
   assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 2);
   const row = db.prepare('SELECT * FROM redraw_versions WHERE id = ?').get(result.id);
@@ -254,8 +270,8 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 2);
 
   const assets = db.prepare('SELECT * FROM redraw_assets WHERE version_id = ? ORDER BY id').all(result.id);
-  assert.equal(assets.length, 4);
-  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'character', 'scene', 'prop']);
+  assert.equal(assets.length, 6);
+  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'voice', 'character', 'voice', 'scene', 'prop']);
   assert.equal(assets.every((asset) => asset.status === 'draft' && asset.approval_status === 'pending'), true);
   assert.deepEqual(JSON.parse(assets[0].source_ref_json).source_ref, {
     kind: 'character',
@@ -263,7 +279,7 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
     stable_id: 'c1',
   });
   assert.equal(assets[0].localized_name, 'Maya');
-  assert.equal(assets[3].localized_name, 'old phone');
+  assert.equal(assets[5].localized_name, 'old phone');
 
   const targetShots = db.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(result.id);
   assert.equal(targetShots.length, 2);
@@ -275,25 +291,123 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
   assert.equal(targetShots[0].continuous_action, facts.shots[0].continuous_action);
   assert.equal(targetShots[0].ending_state, facts.shots[0].ending_state);
 
-  const assetByStableId = new Map(assets.map((asset) => [JSON.parse(asset.source_ref_json).source_ref.stable_id, asset]));
+  const assetByStableId = new Map(assets.map((asset) => {
+    const sourceRef = JSON.parse(asset.source_ref_json).source_ref;
+    return [`${sourceRef.kind}:${sourceRef.stable_id}`, asset];
+  }));
   const firstReferences = JSON.parse(targetShots[0].references_json);
-  assert.deepEqual(firstReferences.map((reference) => reference.kind), ['character', 'scene', 'prop']);
+  assert.deepEqual(firstReferences.map((reference) => reference.kind), ['character', 'voice', 'scene', 'prop']);
   assert.equal(firstReferences.every((reference) => Number.isInteger(reference.asset_id)), true);
   assert.deepEqual(firstReferences.map((reference) => reference.asset_id), [
-    assetByStableId.get('c1').id,
-    assetByStableId.get('s1').id,
-    assetByStableId.get('p1').id,
+    assetByStableId.get('character:c1').id,
+    assetByStableId.get('voice:c1').id,
+    assetByStableId.get('scene:s1').id,
+    assetByStableId.get('prop:p1').id,
   ]);
   assert.deepEqual(JSON.parse(targetShots[1].references_json), [{
     kind: 'scene',
-    asset_id: assetByStableId.get('s1').id,
+    asset_id: assetByStableId.get('scene:s1').id,
     anchor: 'scene:s1',
   }]);
-  assert.equal(firstReferences.some((reference) => reference.asset_id === assetByStableId.get('c2').id), false);
+  assert.equal(firstReferences.some((reference) => reference.asset_id === assetByStableId.get('character:c2').id), false);
 
   const sourceShots = db.prepare('SELECT * FROM redraw_shots WHERE version_id != ? ORDER BY shot_index').all(result.id);
   assert.equal(sourceShots[0].localized_dialogue_json, '[]');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id != ?').get(result.id).count, 0);
+  db.close();
+});
+
+test('第二次确认只创建隐藏草稿且不推进作品步骤', () => {
+  const db = createDb();
+  const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'a'.repeat(64),
+    idempotencyKey: 'confirm-en-us-1',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  assert.equal(draft.status, 'draft');
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
+  assert.equal(db.prepare('SELECT current_step FROM redraw_works WHERE id = 1').get().current_step, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 0);
+
+  const retried = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'a'.repeat(64),
+    idempotencyKey: 'confirm-en-us-1',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  assert.equal(retried.id, draft.id);
+  db.close();
+});
+
+test('物化草稿在全部分镜、四类资产和引用写入成功后推进作品', () => {
+  const db = createDb();
+  const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'b'.repeat(64),
+    idempotencyKey: 'confirm-en-us-2',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  const result = materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
+    ...localizationPayload(),
+    workId: 1,
+  });
+
+  assert.equal(result.id, draft.id);
+  assert.equal(result.version, 2);
+  const work = db.prepare('SELECT current_version, current_step, status FROM redraw_works WHERE id = 1').get();
+  assert.deepEqual(work, { current_version: 2, current_step: 2, status: 'asset_review' });
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(draft.id).status, 'asset_review');
+  assert.deepEqual(
+    db.prepare('SELECT kind, COUNT(*) AS count FROM redraw_assets WHERE version_id = ? GROUP BY kind ORDER BY kind').all(draft.id),
+    [
+      { kind: 'character', count: 2 },
+      { kind: 'prop', count: 1 },
+      { kind: 'scene', count: 1 },
+      { kind: 'voice', count: 2 },
+    ],
+  );
+  const firstShot = db.prepare('SELECT references_json FROM redraw_shots WHERE version_id = ? AND shot_index = 1').get(draft.id);
+  assert.deepEqual(JSON.parse(firstShot.references_json).map((reference) => reference.kind), ['character', 'voice', 'scene', 'prop']);
+  db.close();
+});
+
+test('物化草稿失败时回滚且草稿保持隐藏', () => {
+  const db = createDb();
+  const draft = createLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, {
+    locale: 'en-US',
+    market: 'US',
+    localizationLevel: 'faithful',
+    inputHash: 'c'.repeat(64),
+    idempotencyKey: 'confirm-en-us-3',
+    modelSnapshot: { provider: 'provider-a', model: 'model-a' },
+  });
+  db.exec(`
+    CREATE TRIGGER fail_localized_shot
+    BEFORE INSERT ON redraw_shots
+    WHEN NEW.version_id = ${draft.id}
+    BEGIN
+      SELECT RAISE(ABORT, 'forced shot failure');
+    END;
+  `);
+
+  assert.throws(
+    () => materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
+      ...localizationPayload(),
+      workId: 1,
+    }),
+    /forced shot failure/,
+  );
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(draft.id).status, 'draft');
+  assert.equal(db.prepare('SELECT current_version FROM redraw_works WHERE id = 1').get().current_version, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 0);
   db.close();
 });
 

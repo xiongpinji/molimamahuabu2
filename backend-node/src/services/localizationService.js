@@ -158,6 +158,86 @@ function parseJson(value, fallback) {
   }
 }
 
+function trimValue(value) {
+  return String(value ?? '').trim();
+}
+
+function findExistingLocalizationDraft(db, tenantId, userId, workId, idempotencyKey) {
+  return db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      AND localization_idempotency_key = ? AND deleted_at IS NULL
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(Number(workId), String(tenantId), String(userId), idempotencyKey);
+}
+
+function createLocalizationDraftRecord(db, owner, workId, input) {
+  const { tenantId, userId } = normalizeOwner(owner);
+  assertObject(input, 'localization_draft_input');
+  const idempotencyKey = trimValue(input.idempotencyKey ?? input.idempotency_key);
+  if (!tenantId || !userId || !idempotencyKey) {
+    throw Object.assign(new Error('缺少本地化草稿幂等参数'), { code: 'LOCALIZATION_DRAFT_INVALID' });
+  }
+  const locale = assertLocale(input.locale);
+  const existing = findExistingLocalizationDraft(db, tenantId, userId, workId, idempotencyKey);
+  if (existing) return existing;
+
+  const work = db.prepare(`
+    SELECT id
+    FROM redraw_works
+    WHERE id = ? AND tenant_id = ? AND user_id = ?
+  `).get(Number(workId), String(tenantId), String(userId));
+  if (!work) throw Object.assign(new Error('转绘作品不存在'), { code: 'LOCALIZATION_WORK_NOT_FOUND' });
+
+  const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) AS value FROM redraw_versions WHERE work_id = ?').get(Number(workId)).value) + 1;
+  const now = new Date().toISOString();
+  try {
+    const result = db.prepare(`
+      INSERT INTO redraw_versions
+        (work_id, tenant_id, user_id, version, locale, market, localization_level,
+         localization_input_hash, localization_idempotency_key, localization_model_snapshot_json,
+         status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+    `).run(
+      Number(workId),
+      String(tenantId),
+      String(userId),
+      nextVersion,
+      locale,
+      trimValue(input.market),
+      trimValue(input.localizationLevel ?? input.localization_level) || 'faithful',
+      trimValue(input.inputHash ?? input.input_hash),
+      idempotencyKey,
+      JSON.stringify(input.modelSnapshot ?? input.model_snapshot ?? {}),
+      now,
+      now,
+    );
+    return db.prepare('SELECT * FROM redraw_versions WHERE id = ?').get(Number(result.lastInsertRowid));
+  } catch (error) {
+    const concurrent = findExistingLocalizationDraft(db, tenantId, userId, workId, idempotencyKey);
+    if (concurrent) return concurrent;
+    throw error;
+  }
+}
+
+function createLocalizationDraft(db, owner, workId, input = {}) {
+  return db.transaction(() => createLocalizationDraftRecord(db, owner, workId, input))();
+}
+
+function findOwnedDraftVersion(db, owner, draftVersionId, workId) {
+  const { tenantId, userId } = normalizeOwner(owner);
+  const draft = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ?
+      AND status = 'draft' AND deleted_at IS NULL
+  `).get(Number(draftVersionId), Number(workId), String(tenantId), String(userId));
+  if (!draft) throw Object.assign(new Error('本地化草稿不存在'), { code: 'LOCALIZATION_DRAFT_NOT_FOUND' });
+  return draft;
+}
+
 function localizedDialogueByShot(input) {
   const rows = input.dialogue || input.localizedDialogue || input.localized_dialogue || [];
   if (!Array.isArray(rows)) {
@@ -229,8 +309,8 @@ function createLocalizationVersion(db, owner, workId, input) {
     });
   }
   const dialogueByShot = localizedDialogueByShot(input);
-  const now = new Date().toISOString();
   const transaction = db.transaction(() => {
+    const now = new Date().toISOString();
     const work = db.prepare(`
       SELECT id, current_version
       FROM redraw_works
@@ -258,6 +338,18 @@ function createLocalizationVersion(db, owner, workId, input) {
         received: expectedFactsHash,
       });
     }
+    const draft = input.draftVersionId != null
+      ? findOwnedDraftVersion(db, owner, input.draftVersionId, workId)
+      : createLocalizationDraftRecord(db, owner, workId, {
+        locale,
+        market: input.market,
+        localizationLevel: input.localizationLevel || input.localization_level || 'faithful',
+        inputHash: expectedFactsHash,
+        idempotencyKey: `compat-${workId}-${expectedFactsHash}-${Date.now()}`,
+        modelSnapshot: input.modelSnapshot || input.model_snapshot || {},
+      });
+    const versionId = Number(draft.id);
+    const nextVersion = Number(draft.version);
     const sourceShots = db.prepare(`
       SELECT *
       FROM redraw_shots
@@ -267,22 +359,6 @@ function createLocalizationVersion(db, owner, workId, input) {
     if (sourceShots.length === 0) {
       throw Object.assign(new Error('源片事实版本没有可物化分镜'), { code: 'LOCALIZATION_SOURCE_SHOTS_REQUIRED' });
     }
-    const nextVersion = Number(db.prepare('SELECT COALESCE(MAX(version), 0) AS value FROM redraw_versions WHERE work_id = ?').get(Number(workId)).value) + 1;
-    const result = db.prepare(`
-      INSERT INTO redraw_versions
-        (work_id, tenant_id, user_id, version, locale, market, localization_level,
-         source_facts_json, glossary_json, name_map_json, culture_map_json,
-         style_snapshot_json, facts_hash, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
-    `).run(
-      Number(workId), String(tenantId), String(userId), nextVersion, locale,
-      String(input.market || ''), String(input.localizationLevel || input.localization_level || 'faithful'),
-      sourceVersion.source_facts_json, JSON.stringify(input.glossary || input.glossaryMap || {}),
-      JSON.stringify(input.nameMap || input.name_map || {}), JSON.stringify(input.cultureMap || input.culture_map || {}),
-      JSON.stringify(input.styleSnapshot || input.style_snapshot || {}),
-      persistedFactsHash, now, now,
-    );
-    const versionId = Number(result.lastInsertRowid);
     const assetByStableId = new Map();
     const insertAsset = db.prepare(`
       INSERT INTO redraw_assets
@@ -290,8 +366,25 @@ function createLocalizationVersion(db, owner, workId, input) {
          localized_description, prompt, version_number, approval_status, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, 'pending', 'draft', ?, ?)
     `);
+    for (const character of Array.isArray(persistedSourceFacts.characters) ? persistedSourceFacts.characters : []) {
+      const stableId = String(character?.id || '').trim();
+      if (!stableId) continue;
+      for (const kind of ['character', 'voice']) {
+        const asset = insertAsset.run(
+          versionId,
+          String(tenantId),
+          String(userId),
+          kind,
+          JSON.stringify({ source_ref: { kind, id: stableId, stable_id: stableId }, snapshot: character }),
+          localizedAssetName('character', character, input),
+          sourceAssetDescription('character', character),
+          now,
+          now,
+        );
+        assetByStableId.set(`${kind}:${stableId}`, Number(asset.lastInsertRowid));
+      }
+    }
     for (const [kind, items] of [
-      ['character', persistedSourceFacts.characters],
       ['scene', persistedSourceFacts.scenes],
       ['prop', persistedSourceFacts.props],
     ]) {
@@ -333,10 +426,12 @@ function createLocalizationVersion(db, owner, workId, input) {
       const seen = new Set();
       for (const turn of Array.isArray(sourceDialogue) ? sourceDialogue : []) {
         const stableId = String(turn?.speaker_id || '').trim();
-        const assetId = assetByStableId.get(`character:${stableId}`);
-        if (!assetId || seen.has(`character:${assetId}`)) continue;
-        seen.add(`character:${assetId}`);
-        references.push({ kind: 'character', asset_id: assetId, anchor: `character:${stableId}` });
+        for (const kind of ['character', 'voice']) {
+          const assetId = assetByStableId.get(`${kind}:${stableId}`);
+          if (!assetId || seen.has(`${kind}:${assetId}`)) continue;
+          seen.add(`${kind}:${assetId}`);
+          references.push({ kind, asset_id: assetId, anchor: `${kind}:${stableId}` });
+        }
       }
       for (const scene of Array.isArray(persistedSourceFacts.scenes) ? persistedSourceFacts.scenes : []) {
         const assetId = assetByStableId.get(`scene:${scene.id}`);
@@ -369,8 +464,29 @@ function createLocalizationVersion(db, owner, workId, input) {
         now,
       );
     }
-    db.prepare('UPDATE redraw_works SET current_version = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ?')
-      .run(nextVersion, now, Number(workId), String(tenantId), String(userId));
+    const finalized = db.prepare(`
+      UPDATE redraw_versions
+      SET source_facts_json = ?, glossary_json = ?, name_map_json = ?, culture_map_json = ?,
+        style_snapshot_json = ?, facts_hash = ?, status = 'asset_review', updated_at = ?
+      WHERE id = ? AND status = 'draft'
+    `).run(
+      sourceVersion.source_facts_json,
+      JSON.stringify(input.glossary || input.glossaryMap || {}),
+      JSON.stringify(input.nameMap || input.name_map || {}),
+      JSON.stringify(input.cultureMap || input.culture_map || {}),
+      JSON.stringify(input.styleSnapshot || input.style_snapshot || {}),
+      persistedFactsHash,
+      now,
+      versionId,
+    );
+    if (finalized.changes !== 1) {
+      throw Object.assign(new Error('本地化草稿状态冲突'), { code: 'LOCALIZATION_DRAFT_CONFLICT' });
+    }
+    db.prepare(`
+      UPDATE redraw_works
+      SET current_version = ?, current_step = 2, status = 'asset_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(nextVersion, now, Number(workId), String(tenantId), String(userId));
     return {
       id: versionId,
       version: nextVersion,
@@ -381,6 +497,13 @@ function createLocalizationVersion(db, owner, workId, input) {
     };
   });
   return transaction();
+}
+
+function materializeLocalizationDraft(db, owner, draftVersionId, input) {
+  return createLocalizationVersion(db, owner, input.workId || input.work_id, {
+    ...input,
+    draftVersionId: Number(draftVersionId),
+  });
 }
 
 const RTL_LOCALES = new Set(['ar', 'ar-SA', 'ar-EG', 'fa', 'he', 'ur']);
@@ -464,6 +587,9 @@ module.exports = {
   buildLocalizationInput,
   normalizeLocalizationResult,
   validateLocalizedFacts,
+  createLocalizationDraft,
+  findOwnedDraftVersion,
+  materializeLocalizationDraft,
   createLocalizationVersion,
   validateLocalizedDialogue,
 };
