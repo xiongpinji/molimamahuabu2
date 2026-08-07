@@ -19,7 +19,9 @@
     "audit:canvas-credit-contract": "node scripts/audit-canvas-credit-contract.js",
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
-    "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js"
+    "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
+    "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
+    "audit:toapis-video": "node scripts/verify-toapis-video-release-contract.js"
   },
   "engines": {
     "node": ">=20.9.0"

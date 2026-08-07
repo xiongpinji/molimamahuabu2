@@ -315,6 +315,9 @@ async function callToapisVideoApi(config, log, opts = {}, requestOpts = {}) {
   }
   const { raw, payload } = await readJsonResponse(response);
   if (!response.ok) {
+    if (response.status === 408 || response.status >= 500) {
+      return indeterminateCreateError(`HTTP ${response.status}。`);
+    }
     if (!payload) return indeterminateCreateError(`HTTP ${response.status} 返回非 JSON 响应。`);
     const message = sanitizeProviderMessage(extractError(payload));
     return { error: `ToAPIs 创建视频任务失败 (${response.status})${message ? `: ${message}` : ''}` };

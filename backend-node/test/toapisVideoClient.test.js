@@ -293,6 +293,24 @@ test('ToAPIs POST 和 GET 供应商错误会统一脱敏，不回显 Key、URL �
   assert.match(created.error, /ToAPIs 创建视频任务失败 \(400\)/);
   assert.doesNotMatch(created.error, /secret-key|Bearer|https?:\/\/|signed\.example|request/);
 
+  for (const status of [408, 500, 502, 503, 504]) {
+    const uncertain = await callToapisVideoApi(
+      { api_key: 'secret-key' },
+      null,
+      { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
+      {
+        fetchImpl: async () => ({
+          ok: false,
+          status,
+          async text() { return JSON.stringify(noisyError); },
+        }),
+      },
+    );
+    assert.equal(uncertain.indeterminate, true, `HTTP ${status}`);
+    assert.match(uncertain.error, /不得自动重试/);
+    assert.doesNotMatch(uncertain.error, /secret-key|signed\.example/);
+  }
+
   const queried = await fetchToapisTask(
     { api_key: 'secret-key' },
     'tsk_2',

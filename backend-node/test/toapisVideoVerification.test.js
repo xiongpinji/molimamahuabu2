@@ -1,0 +1,426 @@
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { describe, it } = require('node:test');
+
+const {
+  buildRequiredMatrix,
+  buildVerificationRequest,
+  buildVerifiedCapabilities,
+  assertMoliPublicAssetBaseUrl,
+  acquireVerificationLock,
+  calculateBalanceDelta,
+  canConfirmCostReview,
+  decideResumeAction,
+  hasCompletePricing,
+  hasCompleteRequiredMatrix,
+  assertPublicArtifact,
+  parseFfprobeJson,
+  redactEvidence,
+  requireDedicatedVerificationToken,
+  requiredPriceFloors,
+  safeChildProcessEnv,
+  selectVerificationCases,
+  verifyAllStoredResults,
+} = require('../scripts/verify-toapis-video-models');
+
+function completedEvidence() {
+  return buildRequiredMatrix().map((item, index) => ({
+    id: item.id,
+    model: item.model,
+    mode: item.mode,
+    requested_resolution: item.resolution,
+    requested_duration: item.duration,
+    status: 'completed',
+    provider_task_id: `task-${item.id}`,
+    request: buildVerificationRequest(item, {
+      firstFrameUrl: 'https://assets.example/first.png',
+      lastFrameUrl: 'https://assets.example/last.png',
+      referenceImageUrl: 'https://assets.example/ref.png',
+      referenceVideoUrl: 'https://assets.example/ref.mp4',
+      referenceAudioUrl: 'https://assets.example/ref.mp3',
+    }),
+    artifact: {
+      public_url: `https://molimama.vip/static/verification/${item.id}.mp4`,
+      output_file: `${item.id}.mp4`,
+      bytes: 1024,
+      sha256: crypto.createHash('sha256').update(item.id).digest('hex'),
+      ffprobe: {
+        width: item.resolution === '720p' ? 1280 : 864,
+        height: item.resolution === '720p' ? 720 : 496,
+        duration_seconds: item.duration,
+        video_codec: 'h264',
+        has_audio: item.generateAudio === true,
+      },
+    },
+    billing: {
+      before: {
+        used_balance: Number((2.3 + index * 0.1).toFixed(1)),
+        used_credits: 460 + index * 20,
+        credits_per_usd: 200,
+        captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2)).toISOString(),
+      },
+      after: {
+        used_balance: Number((2.4 + index * 0.1).toFixed(1)),
+        used_credits: 480 + index * 20,
+        credits_per_usd: 200,
+        captured_at: new Date(Date.UTC(2026, 7, 7, 0, index * 2 + 1)).toISOString(),
+      },
+      debited_balance: 0.1,
+      debited_credits: 20,
+      usd_cny_rate: 7.2,
+      cost_yuan: 0.72,
+      reviewed: true,
+      review_run_id: 'review-run-1',
+      reviewed_at: '2026-08-07T01:00:00.000Z',
+    },
+  }));
+}
+
+function baselinePricing() {
+  return [
+    { model: 'seedance-2-fast', resolution: '480p', cost_yuan_per_second: 0.584, credits_per_second: 511, reviewed: true },
+    { model: 'seedance-2-fast', resolution: '720p', cost_yuan_per_second: 0.584, credits_per_second: 511, reviewed: true },
+    { model: 'seedance-2-mini', resolution: '480p', cost_yuan_per_second: 0.3358, credits_per_second: 294, reviewed: true },
+    { model: 'seedance-2-mini', resolution: '720p', cost_yuan_per_second: 0.6789, credits_per_second: 595, reviewed: true },
+  ];
+}
+
+describe('ToAPIs real video verification contract', () => {
+  it('builds exactly the eight required release cases', () => {
+    assert.deepEqual(buildRequiredMatrix().map((item) => item.id), [
+      'fast-t2v-480', 'fast-t2v-720', 'mini-t2v-480', 'mini-t2v-720',
+      'fast-first-last-480', 'mini-first-last-480',
+      'fast-omni-480', 'mini-omni-480',
+    ]);
+    assert.equal(buildRequiredMatrix().every((item) => ['480p', '720p'].includes(item.resolution)), true);
+  });
+
+  it('selects only named missing cases and rejects duplicates or unknown cases', () => {
+    assert.deepEqual(selectVerificationCases('mini-t2v-720;fast-omni-480').map((item) => item.id), [
+      'mini-t2v-720', 'fast-omni-480',
+    ]);
+    assert.throws(() => selectVerificationCases('unknown-case'), /未知验证用例/);
+    assert.throws(() => selectVerificationCases('mini-t2v-720,mini-t2v-720'), /不能重复/);
+  });
+
+  it('builds explicit first-last and omni roles without mixing modes', () => {
+    const refs = {
+      firstFrameUrl: 'https://assets.example/first.png',
+      lastFrameUrl: 'https://assets.example/last.png',
+      referenceImageUrl: 'https://assets.example/ref.png',
+      referenceVideoUrl: 'https://assets.example/ref.mp4',
+      referenceAudioUrl: 'https://assets.example/ref.mp3',
+    };
+    const firstLast = buildVerificationRequest(
+      buildRequiredMatrix().find((item) => item.id === 'fast-first-last-480'), refs,
+    );
+    assert.deepEqual(firstLast.image_with_roles, [
+      { url: refs.firstFrameUrl, role: 'first_frame' },
+      { url: refs.lastFrameUrl, role: 'last_frame' },
+    ]);
+    assert.equal(firstLast.video_with_roles, undefined);
+    assert.equal(firstLast.audio_with_roles, undefined);
+    assert.equal(firstLast.generate_audio, false);
+
+    const audioProof = buildVerificationRequest(
+      buildRequiredMatrix().find((item) => item.id === 'fast-t2v-480'), refs,
+    );
+    assert.equal(audioProof.generate_audio, true);
+
+    const omni = buildVerificationRequest(
+      buildRequiredMatrix().find((item) => item.id === 'mini-omni-480'), refs,
+    );
+    assert.deepEqual(omni.image_with_roles, [{ url: refs.referenceImageUrl, role: 'reference_image' }]);
+    assert.deepEqual(omni.video_with_roles, [{ url: refs.referenceVideoUrl, role: 'reference_video' }]);
+    assert.deepEqual(omni.audio_with_roles, [{ url: refs.referenceAudioUrl, role: 'reference_audio' }]);
+    assert.equal(omni.generate_audio, false);
+  });
+
+  it('never retries an uncertain submission and only polls a persisted task id', () => {
+    assert.equal(decideResumeAction(null), 'submit');
+    assert.equal(decideResumeAction({ submission_state: 'rejected' }), 'submit');
+    assert.equal(decideResumeAction({ submission_state: 'submitting' }), 'stop-indeterminate');
+    assert.equal(decideResumeAction({ submission_state: 'indeterminate' }), 'stop-indeterminate');
+    assert.equal(decideResumeAction({ provider_task_id: 'tsk_1', status: 'processing' }), 'poll');
+    assert.equal(decideResumeAction({
+      status: 'completed',
+      artifact: { sha256: 'a'.repeat(64) },
+      billing: { debited_balance: 0.1, debited_credits: 20, cost_yuan: 0.72 },
+    }), 'complete');
+    assert.equal(decideResumeAction({
+      status: 'completed',
+      provider_task_id: 'tsk_1',
+      artifact: { sha256: 'a'.repeat(64) },
+      billing: { before: { used_balance: 1, used_credits: 200 } },
+    }), 'finalize');
+  });
+
+  it('redacts credentials and request headers while retaining supplier task ids', () => {
+    const redacted = redactEvidence({
+      apiKey: 'secret-value',
+      Authorization: 'Bearer secret-value',
+      nested: { token: 'secret-value', request_headers: { authorization: 'Bearer secret-value' } },
+      provider_task_id: 'tsk_safe',
+      error: 'Authorization: Bearer secret-value',
+    });
+    const serialized = JSON.stringify(redacted);
+    assert.doesNotMatch(serialized, /secret-value|Authorization|apiKey|request_headers/i);
+    assert.match(serialized, /tsk_safe/);
+  });
+
+  it('parses ffprobe media evidence and rejects missing video streams', () => {
+    assert.deepEqual(parseFfprobeJson(JSON.stringify({
+      format: { duration: '4.041667', format_name: 'mov,mp4,m4a,3gp,3g2,mj2' },
+      streams: [
+        { codec_type: 'video', codec_name: 'h264', width: 864, height: 496, duration: '4.041667' },
+        { codec_type: 'audio', codec_name: 'aac', duration: '4.096' },
+      ],
+    })), {
+      format: 'mov,mp4,m4a,3gp,3g2,mj2',
+      width: 864,
+      height: 496,
+      duration_seconds: 4.041667,
+      video_codec: 'h264',
+      has_audio: true,
+      audio_codec: 'aac',
+    });
+    assert.throws(() => parseFfprobeJson('{"streams":[]}'), /视频流/);
+  });
+
+  it('binds the public long-term asset bytes to the locally inspected SHA-256', async () => {
+    const bytes = Buffer.from('public-video-bytes');
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    const fetchImpl = async () => ({ status: 200, arrayBuffer: async () => bytes });
+    await assert.doesNotReject(() => assertPublicArtifact('https://molimama.vip/static/test.mp4', sha256, fetchImpl));
+    await assert.rejects(
+      () => assertPublicArtifact('https://molimama.vip/static/test.mp4', 'a'.repeat(64), fetchImpl),
+      /哈希不一致/,
+    );
+  });
+
+  it('requires the long-term public asset base to stay on the molimama.vip site', () => {
+    assert.equal(
+      assertMoliPublicAssetBaseUrl('https://molimama.vip/static/verification/toapis'),
+      'https://molimama.vip/static/verification/toapis',
+    );
+    assert.equal(
+      assertMoliPublicAssetBaseUrl('https://assets.molimama.vip/toapis/'),
+      'https://assets.molimama.vip/toapis',
+    );
+    assert.throws(() => assertMoliPublicAssetBaseUrl('https://example.com/toapis'), /molimama\.vip/);
+  });
+
+  it('calculates real supplier debit from before and after balance snapshots', () => {
+    assert.deepEqual(calculateBalanceDelta(
+      { used_balance: 2.3, used_credits: 460, credits_per_usd: 200 },
+      { used_balance: 2.8, used_credits: 560, credits_per_usd: 200 },
+    ), {
+      debited_balance: 0.5,
+      debited_credits: 100,
+      credits_per_usd: 200,
+    });
+    assert.throws(() => calculateBalanceDelta(
+      { used_balance: 2.3, used_credits: 460 },
+      { used_balance: 2.3, used_credits: 460 },
+    ), /扣费证据/);
+  });
+
+  it('requires an isolated verification token before any paid call', () => {
+    assert.throws(() => requireDedicatedVerificationToken({}), /专用验证 Token/);
+    assert.doesNotThrow(() => requireDedicatedVerificationToken({ TOAPIS_VERIFY_DEDICATED_TOKEN: '1' }));
+  });
+
+  it('allows cost confirmation only in a later run that starts with all cases complete and submits nothing', () => {
+    const completedBeforeRun = buildRequiredMatrix().map((item) => item.id);
+    assert.equal(canConfirmCostReview({
+      confirmCostReview: true,
+      completedBeforeRun,
+      submittedCaseIds: [],
+    }), true);
+    assert.equal(canConfirmCostReview({
+      confirmCostReview: true,
+      completedBeforeRun,
+      submittedCaseIds: ['fast-t2v-480'],
+    }), false);
+    assert.equal(canConfirmCostReview({
+      confirmCostReview: true,
+      completedBeforeRun: completedBeforeRun.slice(1),
+      submittedCaseIds: [],
+    }), false);
+  });
+
+  it('binds pricing to the higher of the public floor and observed real cost', () => {
+    const results = completedEvidence();
+    assert.deepEqual(requiredPriceFloors(results), {
+      'seedance-2-fast|480p': 0.584,
+      'seedance-2-fast|720p': 0.584,
+      'seedance-2-mini|480p': 0.3358,
+      'seedance-2-mini|720p': 0.6789,
+    });
+    assert.equal(hasCompletePricing(baselinePricing(), results), true);
+
+    const tooCheap = baselinePricing();
+    tooCheap[3] = { ...tooCheap[3], cost_yuan_per_second: 0.1, credits_per_second: 88 };
+    assert.equal(hasCompletePricing(tooCheap, results), false);
+
+    const tooExpensive = baselinePricing();
+    tooExpensive[0] = { ...tooExpensive[0], cost_yuan_per_second: 1000, credits_per_second: 875000 };
+    assert.equal(hasCompletePricing(tooExpensive, results), false);
+
+    const fractionalBoundary = baselinePricing();
+    fractionalBoundary[0] = {
+      ...fractionalBoundary[0],
+      cost_yuan_per_second: 0.5840000001,
+      credits_per_second: 511,
+    };
+    assert.equal(hasCompletePricing(fractionalBoundary, results), false);
+
+    const observedHigher = completedEvidence();
+    const miniOmni = observedHigher.find((item) => item.id === 'mini-omni-480');
+    miniOmni.billing.after = {
+      ...miniOmni.billing.after,
+      used_balance: Number((miniOmni.billing.before.used_balance + 0.6).toFixed(1)),
+      used_credits: miniOmni.billing.before.used_credits + 120,
+    };
+    miniOmni.billing.debited_balance = 0.6;
+    miniOmni.billing.debited_credits = 120;
+    miniOmni.billing.cost_yuan = 4.32;
+    const raisedPricing = baselinePricing();
+    raisedPricing[2] = { ...raisedPricing[2], cost_yuan_per_second: 1.08, credits_per_second: 945 };
+    assert.equal(hasCompleteRequiredMatrix(observedHigher), true);
+    assert.equal(hasCompletePricing(baselinePricing(), observedHigher), false);
+    assert.equal(hasCompletePricing(raisedPricing, observedHigher), true);
+  });
+
+  it('holds an exclusive process lock across the entire paid verification run', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-lock-'));
+    const lockPath = path.join(directory, '.verification.lock');
+    try {
+      const release = acquireVerificationLock(lockPath);
+      assert.throws(() => acquireVerificationLock(lockPath), /已有验证进程/);
+      release();
+      const releaseAgain = acquireVerificationLock(lockPath);
+      releaseAgain();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('re-inspects all eight stored artifacts before recording verified, even for a subset resume', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'toapis-reinspect-'));
+    const statePath = path.join(outputDir, 'state.json');
+    const results = completedEvidence();
+    fs.writeFileSync(path.join(outputDir, results[0].artifact.output_file), results[0].id);
+    const context = {
+      outputDir,
+      statePath,
+      state: { state_version: 'toapis-video-verification-state-v1', cases: Object.fromEntries(results.map((item) => [item.id, item])) },
+      confirmCostReview: true,
+    };
+    try {
+      await assert.rejects(() => verifyAllStoredResults(context, {
+        runFfprobe(filePath) {
+          const item = buildRequiredMatrix().find((entry) => filePath.includes(entry.id));
+          return {
+            width: item.resolution === '720p' ? 1280 : 864,
+            height: item.resolution === '720p' ? 720 : 496,
+            duration_seconds: item.duration,
+            video_codec: 'h264',
+            has_audio: item.generateAudio === true,
+          };
+        },
+        async assertPublicArtifact() {},
+      }), /ENOENT|找不到/);
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not pass supplier credentials or authorization variables to ffprobe', () => {
+    const env = safeChildProcessEnv({
+      PATH: 'C:\\bin', SystemRoot: 'C:\\Windows', TEMP: 'C:\\Temp',
+      TOAPIS_API_KEY: 'secret', Authorization: 'Bearer secret', OTHER_SECRET: 'hidden',
+    });
+    assert.equal(env.PATH, 'C:\\bin');
+    assert.equal(env.SystemRoot, 'C:\\Windows');
+    assert.equal(env.TEMP, 'C:\\Temp');
+    assert.equal(Object.hasOwn(env, 'TOAPIS_API_KEY'), false);
+    assert.equal(Object.hasOwn(env, 'Authorization'), false);
+    assert.equal(Object.hasOwn(env, 'OTHER_SECRET'), false);
+  });
+
+  it('upgrades only a complete inspected and cost-reviewed matrix', () => {
+    const results = completedEvidence();
+    assert.equal(hasCompleteRequiredMatrix(results), true);
+    assert.deepEqual(buildVerifiedCapabilities(results), {
+      'seedance-2-fast': {
+        durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        resolutions: ['480p', '720p'],
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsImageReference: true,
+        supportsVideoReference: true,
+        supportsAudioReference: true,
+        supportsAudio: true,
+        maxReferences: 1,
+        maxVideoReferences: 1,
+        maxAudioReferences: 1,
+      },
+      'seedance-2-mini': {
+        durations: [4, 8, 10, 12, 15],
+        resolutions: ['480p', '720p'],
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsImageReference: true,
+        supportsVideoReference: true,
+        supportsAudioReference: true,
+        supportsAudio: true,
+        maxReferences: 1,
+        maxVideoReferences: 1,
+        maxAudioReferences: 1,
+      },
+    });
+    assert.equal(hasCompleteRequiredMatrix(results.slice(1)), false);
+    assert.equal(hasCompleteRequiredMatrix(results.map((item, index) => (
+      index === 0 ? { ...item, billing: { ...item.billing, reviewed: false } } : item
+    ))), false);
+  });
+
+  it('rejects forged, mismatched, duplicated or role-less evidence before DB verification', () => {
+    const wrong720 = completedEvidence();
+    wrong720.find((item) => item.id === 'mini-t2v-720').artifact.ffprobe = {
+      ...wrong720.find((item) => item.id === 'mini-t2v-720').artifact.ffprobe,
+      width: 864,
+      height: 496,
+    };
+    assert.equal(hasCompleteRequiredMatrix(wrong720), false);
+
+    const missingRole = completedEvidence();
+    missingRole.find((item) => item.id === 'fast-omni-480').request.audio_with_roles = [];
+    assert.equal(hasCompleteRequiredMatrix(missingRole), false);
+
+    const duplicateTask = completedEvidence();
+    duplicateTask[1].provider_task_id = duplicateTask[0].provider_task_id;
+    assert.equal(hasCompleteRequiredMatrix(duplicateTask), false);
+
+    const duplicateBalanceWindow = completedEvidence();
+    duplicateBalanceWindow[1].billing = JSON.parse(JSON.stringify(duplicateBalanceWindow[0].billing));
+    assert.equal(hasCompleteRequiredMatrix(duplicateBalanceWindow), false);
+
+    const driftingBalanceChain = completedEvidence();
+    driftingBalanceChain[1].billing.before.used_balance += 0.0000001;
+    driftingBalanceChain[1].billing.before.used_credits += 0.0000001;
+    assert.equal(hasCompleteRequiredMatrix(driftingBalanceChain), false);
+
+    const wrongDuration = completedEvidence();
+    wrongDuration[0].request.duration = 15;
+    assert.equal(hasCompleteRequiredMatrix(wrongDuration), false);
+
+    const forgedBilling = completedEvidence();
+    forgedBilling[0].billing.debited_balance = 0.2;
+    assert.equal(hasCompleteRequiredMatrix(forgedBilling), false);
+  });
+});
