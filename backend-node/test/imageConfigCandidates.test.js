@@ -87,6 +87,11 @@ test('redraw image service types prefer dedicated config then storyboard_image t
     model: 'storyboard-image',
     priority: 80,
   });
+  const differentPriceImageId = addConfig(db, {
+    serviceType: 'image',
+    model: 'different-price-image',
+    priority: 85,
+  });
   const dedicatedId = addConfig(db, {
     serviceType: 'redraw_scene',
     model: 'redraw-scene-image',
@@ -95,23 +100,26 @@ test('redraw image service types prefer dedicated config then storyboard_image t
   prices.set(db, 'redraw-scene-image', 40, { category: 'image' });
   prices.set(db, 'storyboard-image', 40, { category: 'image' });
   prices.set(db, 'base-image', 40, { category: 'image' });
+  prices.set(db, 'different-price-image', 80, { category: 'image' });
 
+  const redrawSceneCandidates = imageClient.getImageConfigCandidates(db, null, null, 'redraw_scene');
   assert.deepEqual(
-    imageClient.getImageConfigCandidates(db, null, null, 'redraw_scene')
-      .map((config) => [config.id, config.service_type]),
+    redrawSceneCandidates.map((config) => [config.id, config.service_type]),
     [
       [dedicatedId, 'redraw_scene'],
       [storyboardId, 'storyboard_image'],
       [imageId, 'image'],
     ],
   );
+  assert.equal(redrawSceneCandidates.some((config) => config.id === differentPriceImageId), false);
 
+  const redrawCharacterCandidates = imageClient.getImageConfigCandidates(db, null, null, 'redraw_character');
   assert.deepEqual(
-    imageClient.getImageConfigCandidates(db, null, null, 'redraw_character')
-      .map((config) => [config.id, config.service_type]),
+    redrawCharacterCandidates.map((config) => [config.id, config.service_type]),
     [
       [storyboardId, 'storyboard_image'],
       [imageId, 'image'],
     ],
   );
+  assert.equal(redrawCharacterCandidates.some((config) => config.id === differentPriceImageId), false);
 });
