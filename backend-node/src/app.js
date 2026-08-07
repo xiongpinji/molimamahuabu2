@@ -52,6 +52,11 @@ function createApp() {
       } catch (error) {
         log.error('Startup redraw dialogue reconcile failed', { error: error.message });
       }
+      try {
+        require('./services/redrawCompositionService').recoverInterruptedCompositions(db);
+      } catch (error) {
+        log.error('Startup redraw composition recover failed', { error: error.message });
+      }
       taskService.failOrphanedAsyncTasksOnStartup(db, log);
     })
     .catch((error) => {

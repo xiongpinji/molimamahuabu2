@@ -17,6 +17,8 @@ const redrawGenerationService = require('../services/redrawGenerationService');
 const redrawBillingService = require('../services/redrawBillingService');
 const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
+const redrawCompositionService = require('../services/redrawCompositionService');
+const redrawExportService = require('../services/redrawExportService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -83,6 +85,37 @@ function createCanReadArtifact(db, cfg) {
     const row = db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(assetId);
     return reader.canRead(row);
   };
+}
+
+function sanitizeExportValue(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^(?:[a-zA-Z]:[\\/]|\/|\\\\|file:\/\/|https?:\/\/)/i.test(trimmed)) return undefined;
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(sanitizeExportValue).filter((item) => item !== undefined);
+  if (value && typeof value === 'object') {
+    const entries = [];
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (normalized === 'manifestjson'
+        || normalized === 'absolutepath'
+        || normalized === 'localpath'
+        || normalized.endsWith('path')
+        || normalized.endsWith('url')) {
+        continue;
+      }
+      const sanitized = sanitizeExportValue(item);
+      if (sanitized !== undefined) entries.push([key, sanitized]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function safeExportErrorMessage(value) {
+  const sanitized = sanitizeExportValue(String(value || '').slice(0, 500));
+  return sanitized === undefined ? 'export failed' : sanitized;
 }
 
 function mapProject(row) {
@@ -826,6 +859,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }),
   };
   const dialogueOrchestrator = options.dialogueOrchestrator || redrawDialogueOrchestrator;
+  const compositionService = options.compositionService || redrawCompositionService;
+  const exportService = options.exportService || redrawExportService;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -921,6 +956,33 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     };
   }
 
+  function compositionContext(version, currentOwner) {
+    return {
+      db,
+      log,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(version.id),
+      storageRoot: storageRootFromConfig(cfg),
+      config: cfg,
+      compositionRunner: options.compositionRunner,
+      probeRunner: options.compositionProbeRunner || options.probeRunner,
+      execFile: options.execFile,
+      artifactVerifier: options.artifactVerifier,
+      clock: options.clock,
+    };
+  }
+
+  function exportContext(currentOwner) {
+    return {
+      db,
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      storageRoot: storageRootFromConfig(cfg),
+      config: cfg,
+    };
+  }
+
   function findOwnedShot(id, currentOwner) {
     return db.prepare(`
       SELECT s.*
@@ -1000,6 +1062,112 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       updated_at: row.updated_at,
     };
   }
+
+const COMPOSITION_ALLOWED_FIELDS = new Set(['idempotency_key', 'audio_mode']);
+const COMPOSITION_CLIENT_CONTROL_FIELDS = new Set([
+  'model',
+  'provider',
+  'credits',
+  'credit_amount',
+  'reservation',
+  'reservation_id',
+  'asset_id',
+  'subtitle_asset_id',
+  'manifest',
+  'manifest_json',
+  'outputs',
+  'mp4_path',
+  'srt_path',
+  'vtt_path',
+  'local_path',
+  'absolute_path',
+]);
+
+function compositionStartInput(body) {
+  const input = body == null ? {} : body;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw codedRouteError('REDRAW_COMPOSITION_INPUT_INVALID', '合成参数必须是对象');
+  }
+  for (const key of Object.keys(input)) {
+    if (!COMPOSITION_ALLOWED_FIELDS.has(key) || COMPOSITION_CLIENT_CONTROL_FIELDS.has(key)) {
+      throw codedRouteError(
+        'REDRAW_COMPOSITION_CLIENT_CONTROL_FORBIDDEN',
+        '合成模型、积分、产物与路径只能由服务端决定',
+      );
+    }
+  }
+  const idempotencyKey = String(input.idempotency_key || '').trim();
+  if (!idempotencyKey) {
+    throw codedRouteError('REDRAW_COMPOSITION_IDEMPOTENCY_REQUIRED', 'idempotency_key required');
+  }
+  const audioMode = String(input.audio_mode || 'replace').trim();
+  if (audioMode !== 'replace') {
+    throw codedRouteError('REDRAW_COMPOSITION_AUDIO_MODE_UNSUPPORTED', 'audio_mode 目前只能为 replace');
+  }
+  return { idempotencyKey, audioMode };
+}
+
+function parseManifestSafe(row) {
+  return parseJSON(row?.manifest_json, {});
+}
+
+function exportSummary(row) {
+  const manifest = parseManifestSafe(row);
+  const inputs = manifest.plan || manifest.inputs || {};
+  const outputs = manifest.outputs || {};
+  return {
+    id: Number(row.id),
+    version_id: Number(row.version_id),
+    export_type: row.export_type,
+    version_number: Number(row.version_number),
+    status: row.status,
+    asset_id: row.asset_id == null ? null : Number(row.asset_id),
+    subtitle_asset_id: row.subtitle_asset_id == null ? null : Number(row.subtitle_asset_id),
+    project_asset_id: row.project_asset_id == null ? null : Number(row.project_asset_id),
+    request_hash: manifest.request_hash || null,
+    audio_mode: manifest.audio_mode || null,
+    input_hash: inputs.input_hash || outputs.input_hash || null,
+    timeline: sanitizeExportValue(inputs.timeline || []),
+    video_generation_ids: sanitizeExportValue(inputs.video_generation_ids || []),
+    audio_asset_ids: sanitizeExportValue(inputs.audio_asset_ids || []),
+    output_asset_ids: sanitizeExportValue({
+      mp4: outputs.mp4_asset_id ?? row.asset_id ?? null,
+      srt: outputs.srt_asset_id ?? row.subtitle_asset_id ?? null,
+      vtt: outputs.vtt_asset_id ?? null,
+    }),
+    hashes: sanitizeExportValue(outputs.hashes || (outputs.hash ? { mp4: outputs.hash } : {})),
+    probe: sanitizeExportValue(outputs.probe || null),
+    error_code: row.error_code || null,
+    error_message: row.error_message ? safeExportErrorMessage(row.error_message) : null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
+  const code = String(error?.code || '');
+  if (code === 'REDRAW_EXPORT_NOT_FOUND' || code === 'REDRAW_COMPOSITION_EXPORT_NOT_FOUND') {
+    return response.notFound(res, '转绘导出不存在');
+  }
+  if (code === 'REDRAW_EXPORT_NOT_READY') {
+    return response.error(res, 409, code, '导出尚未完成');
+  }
+  if (code === 'REDRAW_EXPORT_KIND_INVALID' || code === 'REDRAW_EXPORT_CHECKSUM_MISMATCH') {
+    return response.error(res, 422, code, '导出产物校验失败');
+  }
+  if (code.startsWith('REDRAW_EXPORT_')) {
+    return response.error(res, 409, code, '导出产物不可用');
+  }
+  if (code === 'REDRAW_COMPOSITION_ACTIVE_CONFLICT'
+    || code === 'REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT') {
+    return response.error(res, 409, code, error.message || fallbackMessage);
+  }
+  if (code.startsWith('REDRAW_COMPOSITION_')) {
+    return response.badRequest(res, error.message || fallbackMessage);
+  }
+  log?.error?.({ err: error, ...meta }, fallbackMessage);
+  return response.internalError(res, fallbackMessage);
+}
 
   function taskMetadata(row) {
     try {
@@ -1829,6 +1997,111 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     return response.success(res, dialogueTaskPayload(row));
   }
 
+  function scheduleCompositionRun(ctx, exportId) {
+    const job = () => Promise.resolve()
+      .then(() => compositionService.runComposition(ctx, Number(exportId)))
+      .catch((error) => {
+        log?.error?.({ err: error, exportId }, 'redraw composition background run failed');
+      });
+    if (typeof options.compositionSchedule === 'function') {
+      try {
+        return options.compositionSchedule(job, { exportId: Number(exportId), versionId: ctx.versionId });
+      } catch (error) {
+        db.prepare(`
+          UPDATE redraw_exports
+          SET status = 'failed',
+              error_code = 'REDRAW_COMPOSITION_SCHEDULE_FAILED',
+              error_message = 'composition scheduler failed',
+              updated_at = ?
+          WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'pending'
+        `).run(new Date().toISOString(), Number(exportId), String(ctx.tenantId), String(ctx.userId));
+        throw error;
+      }
+    }
+    queueMicrotask(job);
+    return undefined;
+  }
+
+  async function composeVersion(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    let input;
+    try {
+      input = compositionStartInput(req.body || {});
+    } catch (error) {
+      return sendCompositionError(res, error, '合成参数无效', log, { versionId: req.params.id });
+    }
+    try {
+      const ctx = compositionContext(version, currentOwner);
+      const exportRow = await compositionService.createComposition(ctx, {
+        versionId: Number(version.id),
+        idempotencyKey: input.idempotencyKey,
+        audioMode: input.audioMode,
+      });
+      if (exportRow?.created === true) {
+        scheduleCompositionRun(ctx, Number(exportRow.id));
+      }
+      return response.accepted(res, {
+        export_id: Number(exportRow.id),
+        status: exportRow.status,
+        version_number: Number(exportRow.version_number),
+        created: exportRow.created === true,
+      });
+    } catch (error) {
+      return sendCompositionError(res, error, '提交合成任务失败', log, { versionId: version.id });
+    }
+  }
+
+  function listVersionExports(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    const rows = db.prepare(`
+      SELECT *
+      FROM redraw_exports
+      WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      ORDER BY version_number DESC, id DESC
+    `).all(Number(version.id), currentOwner.tenantId, currentOwner.userId);
+    return response.success(res, rows.map(exportSummary));
+  }
+
+  function getExport(req, res) {
+    const currentOwner = owner(req);
+    const row = db.prepare(`
+      SELECT *
+      FROM redraw_exports
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(Number(req.params.id), currentOwner.tenantId, currentOwner.userId);
+    if (!row) return response.notFound(res, '转绘导出不存在');
+    return response.success(res, exportSummary(row));
+  }
+
+  async function downloadExport(req, res) {
+    const currentOwner = owner(req);
+    try {
+      const artifact = await exportService.resolveDownloadArtifact(exportContext(currentOwner), {
+        exportId: req.params.id,
+        kind: req.params.kind,
+      });
+      res.setHeader('Content-Type', artifact.mime_type);
+      res.setHeader('Content-Length', String(artifact.size));
+      res.setHeader('X-Content-SHA256', artifact.sha256);
+      res.setHeader('Content-Disposition', `attachment; filename="${String(artifact.filename).replace(/["\\]/g, '')}"`);
+      if (typeof res.sendFile === 'function') {
+        return res.sendFile(artifact.absolute_path, (error) => {
+          if (error && !res.headersSent) {
+            sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
+          }
+        });
+      }
+      return fs.createReadStream(artifact.absolute_path).pipe(res);
+    } catch (error) {
+      return sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
+    }
+  }
+
   function generationGate(req, res) {
     const currentOwner = owner(req);
     try {
@@ -2066,6 +2339,10 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     dialogueQuote,
     startDialogue,
     getDialogueTask,
+    composeVersion,
+    listVersionExports,
+    getExport,
+    downloadExport,
     generationGate,
     assetQuote,
     updateRedrawAsset,
