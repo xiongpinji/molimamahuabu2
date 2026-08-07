@@ -941,6 +941,106 @@ test('generateAsset does not delete external target when version directory link 
   }
 });
 
+test('generateAsset public downloader rejects version directory link before writing bytes outside storage', async () => {
+  const storageRoot = tempStorage();
+  const externalRoot = tempStorage();
+  const versionDir = path.join(storageRoot, 'redraw-assets', 'v7');
+  fs.mkdirSync(path.dirname(versionDir), { recursive: true });
+  fs.symlinkSync(externalRoot, versionDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png', width: 640, height: 360 };
+      },
+    },
+    publicImageDownloader: async () => ({ bytes: await pngBuffer(640, 360), mimeType: 'image/png' }),
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => adapters.generateAsset({
+        taskId: 9,
+        versionId: 7,
+        model: 'verified-image-model',
+        asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID' && !String(error.message).includes(storageRoot),
+    );
+    assert.deepEqual(fs.readdirSync(externalRoot), []);
+    assert.equal(created.length, 0);
+  } finally {
+    fs.rmSync(versionDir, { force: true });
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+    fs.rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
+test('generateAsset rejects upload paths containing a link even when realpath stays inside version', async () => {
+  const storageRoot = tempStorage();
+  const versionDir = path.join(storageRoot, 'redraw-assets', 'v7');
+  const realDir = path.join(versionDir, 'real');
+  const linkedDir = path.join(versionDir, 'linked');
+  fs.mkdirSync(realDir, { recursive: true });
+  fs.symlinkSync(realDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+  await makePngFile(storageRoot, 'redraw-assets/v7/real/scene.png', 640, 360);
+  const targetFile = path.join(realDir, 'scene.png');
+  const created = [];
+  let probeCalls = 0;
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    imageClient: {
+      async callImageApi() {
+        return { image_url: 'https://provider.example/scene.png', width: 640, height: 360 };
+      },
+    },
+    uploadService: {
+      async downloadImageToLocal() {
+        return 'redraw-assets/v7/linked/scene.png';
+      },
+    },
+    imageMetadataProbe() {
+      probeCalls += 1;
+      throw new Error('probe must not run for linked upload path');
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => adapters.generateAsset({
+        taskId: 9,
+        versionId: 7,
+        model: 'verified-image-model',
+        asset: { id: 5, kind: 'scene', prompt: 'clean room' },
+      }),
+      (error) => error.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID' && !String(error.message).includes(storageRoot),
+    );
+    assert.equal(probeCalls, 0);
+    assert.equal(created.length, 0);
+    assert.equal(fs.existsSync(targetFile), true);
+  } finally {
+    fs.rmSync(linkedDir, { force: true });
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('generateAsset default image download uses public downloader and rejects private URLs before registration', async () => {
   const storageRoot = tempStorage();
   const created = [];

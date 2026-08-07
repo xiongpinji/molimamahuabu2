@@ -87,9 +87,64 @@ function defaultRealpathSync(targetPath) {
   return fs.realpathSync.native ? fs.realpathSync.native(targetPath) : fs.realpathSync(targetPath);
 }
 
+function sameResolvedPath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 function pathIsInside(parent, child) {
   const relative = path.relative(parent, child);
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function assertNoReparsePath(absolutePath, expectedType, realpathSync) {
+  try {
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isSymbolicLink()) {
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact path uses unsupported linked storage');
+    }
+    if (expectedType === 'dir' && !stat.isDirectory()) {
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact path is not a directory');
+    }
+    if (expectedType === 'file' && !stat.isFile()) {
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact path is not a regular file');
+    }
+    if (!sameResolvedPath(absolutePath, realpathSync(absolutePath))) {
+      throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact path uses unsupported linked storage');
+    }
+  } catch (error) {
+    if (error?.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID') throw error;
+    throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact path failed storage validation');
+  }
+}
+
+function ensurePlainDirectory(absolutePath, realpathSync) {
+  if (!fs.existsSync(absolutePath)) {
+    fs.mkdirSync(absolutePath, { recursive: true });
+  }
+  assertNoReparsePath(absolutePath, 'dir', realpathSync);
+}
+
+function ensureImageStorageDirectory(storageRoot, versionDir, realpathSync) {
+  ensurePlainDirectory(storageRoot, realpathSync);
+  const redrawRoot = path.join(storageRoot, 'redraw-assets');
+  ensurePlainDirectory(redrawRoot, realpathSync);
+  const versionRoot = path.join(redrawRoot, versionDir);
+  ensurePlainDirectory(versionRoot, realpathSync);
+  return versionRoot;
+}
+
+function assertNoReparsePathComponents(storageRoot, localPath, versionDir, realpathSync) {
+  const rel = assertScopedAssetPath(localPath, versionDir);
+  assertNoReparsePath(storageRoot, 'dir', realpathSync);
+  let current = storageRoot;
+  const parts = rel.split('/');
+  for (let i = 0; i < parts.length; i += 1) {
+    current = path.join(current, parts[i]);
+    assertNoReparsePath(current, i === parts.length - 1 ? 'file' : 'dir', realpathSync);
+  }
+  return path.join(storageRoot, rel);
 }
 
 function assertRealpathInsideVersion(storageRoot, versionDir, absolutePath, realpathSync) {
@@ -297,15 +352,19 @@ function createRedrawProviderAdapters(deps = {}) {
 
   async function downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, taskId) {
     if (deps.uploadService?.downloadImageToLocal) {
-      return assertScopedAssetPath(await deps.uploadService.downloadImageToLocal(
-        storageRoot,
-        imageUrl,
-        versionDir,
-        log,
-        `redraw_${kind}_${taskId || 'asset'}`,
-        'redraw-assets',
-      ), versionDir);
+      return {
+        createdByAdapter: false,
+        localPath: assertScopedAssetPath(await deps.uploadService.downloadImageToLocal(
+          storageRoot,
+          imageUrl,
+          versionDir,
+          log,
+          `redraw_${kind}_${taskId || 'asset'}`,
+          'redraw-assets',
+        ), versionDir),
+      };
     }
+    ensureImageStorageDirectory(storageRoot, versionDir, realpathSync);
     const downloadPublicImage = deps.publicImageDownloader || require('./videoClient').downloadPublicImage;
     let downloaded;
     try {
@@ -319,12 +378,10 @@ function createRedrawProviderAdapters(deps = {}) {
       throw codedError('REDRAW_IMAGE_DOWNLOAD_FAILED', 'redraw image downloader returned invalid image bytes');
     }
     const dirRel = `redraw-assets/${versionDir}`;
-    const dirAbs = path.join(storageRoot, dirRel);
-    fs.mkdirSync(dirAbs, { recursive: true });
     const filename = `redraw_${kind}_${taskId || 'asset'}_${randomUUID().slice(0, 8)}.${extensionFromMime(mimeType)}`;
     const localPath = assertScopedAssetPath(`${dirRel}/${filename}`, versionDir);
     fs.writeFileSync(path.join(storageRoot, localPath), bytes);
-    return localPath;
+    return { createdByAdapter: true, localPath };
   }
 
   async function generateImageAsset(request, normalized, storageRoot, versionDir) {
@@ -368,15 +425,19 @@ function createRedrawProviderAdapters(deps = {}) {
     const imageUrl = imageUrlOf(imageResult);
     if (!imageUrl) throw codedError('REDRAW_IMAGE_PROVIDER_EMPTY_RESULT', 'image provider returned no image url');
     let localPath = null;
-    localPath = await downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, normalized.taskId || attempt.id);
+    let createdByAdapter = false;
+    const downloaded = await downloadImageToScopedFile(imageUrl, storageRoot, versionDir, kind, normalized.taskId || attempt.id);
+    localPath = downloaded.localPath;
+    createdByAdapter = downloaded.createdByAdapter;
     const { abs: absolutePath } = scopedAbsolutePath(storageRoot, localPath, versionDir);
     let width;
     let height;
     let mimeType;
     let cleanupPath = null;
     try {
+      assertNoReparsePathComponents(storageRoot, localPath, versionDir, realpathSync);
       const containedPath = assertRealpathInsideVersion(storageRoot, versionDir, absolutePath, realpathSync);
-      cleanupPath = containedPath;
+      cleanupPath = createdByAdapter ? containedPath : null;
       const probed = await imageMetadataProbe(containedPath);
       width = requirePositiveDimension(probed?.width, 'width');
       height = requirePositiveDimension(probed?.height, 'height');
