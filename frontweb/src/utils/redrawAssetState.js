@@ -27,6 +27,50 @@ export function canGenerateAsset(asset, quote) {
   return Boolean(asset?.id) && Number.isSafeInteger(credits) && credits > 0
 }
 
+export function assetBatchCredits(quote) {
+  const credits = Number(quote?.total_credits)
+  return quote?.priced === true && Number.isSafeInteger(credits) && credits > 0 ? credits : null
+}
+
+function batchBlockers(quote) {
+  if (Array.isArray(quote?.blocked)) return quote.blocked
+  if (Array.isArray(quote?.blocking)) return quote.blocking
+  return null
+}
+
+export function canStartAssetBatch(quote, batch) {
+  const blockers = batchBlockers(quote)
+  const items = Array.isArray(quote?.items) ? quote.items : null
+  const status = String(batch?.status || '')
+  return assetBatchCredits(quote) !== null
+    && Array.isArray(blockers)
+    && blockers.length === 0
+    && (!items || items.length > 0)
+    && !['pending', 'processing'].includes(status)
+}
+
+export function failedAssetIds(source) {
+  const seen = new Set()
+  const ids = []
+  for (const item of Array.isArray(source?.items) ? source.items : []) {
+    const id = Number(item?.asset_id || item?.id)
+    if (item?.status === 'failed' && Number.isSafeInteger(id) && id > 0 && !seen.has(id)) {
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+  return ids
+}
+
+export function assetBatchProgress(batch) {
+  const totalCount = Math.max(0, Number(batch?.total_count || batch?.totalCount || 0))
+  const successCount = Math.max(0, Number(batch?.success_count || batch?.successCount || 0))
+  const failedCount = Math.max(0, Number(batch?.failed_count || batch?.failedCount || 0))
+  const done = successCount + failedCount
+  const percent = totalCount > 0 ? Math.max(0, Math.min(100, Math.round((done / totalCount) * 100))) : 0
+  return { percent, successCount, failedCount, totalCount }
+}
+
 export function reviewLabel(asset) {
   if (isApprovedAsset(asset)) return '已批准'
   if (asset?.approval_status === 'rejected') return '已退回'

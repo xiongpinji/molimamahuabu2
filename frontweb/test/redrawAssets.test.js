@@ -52,3 +52,65 @@ test('资产生成请求不提交客户端模型或积分，生成时由后端�
   assert.doesNotMatch(assetStepSource, /credit_amount/)
   assert.doesNotMatch(assetStepSource, /generateAsset\([^\n]*model/)
 })
+
+test('资产批量按钮要求完整服务端报价且部分失败只重试失败项', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 18, blocking: [] }, null), true)
+  assert.equal(state.canStartAssetBatch({ priced: false, total_credits: null, blocking: ['tts'], items: [{ asset_id: 1 }] }, null), false)
+  assert.deepEqual(state.failedAssetIds({ items: [
+    { asset_id: 1, status: 'generated' },
+    { asset_id: 2, status: 'failed' },
+    { asset_id: 3, status: 'failed' },
+  ]}), [2, 3])
+})
+
+test('资产批量状态纯函数 fail closed 并计算进度', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+
+  assert.equal(state.assetBatchCredits({ priced: true, total_credits: 1 }), 1)
+  assert.equal(state.assetBatchCredits({ priced: true, total_credits: 0 }), null)
+  assert.equal(state.assetBatchCredits({ priced: true, total_credits: 1.5 }), null)
+  assert.equal(state.assetBatchCredits({ priced: true, total_credits: Number.MAX_SAFE_INTEGER + 1 }), null)
+
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, null), true)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: ['asset'], items: [{ asset_id: 1 }] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocking: ['asset'], items: [{ asset_id: 1 }] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [] }, null), true)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'pending' }), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'processing' }), false)
+
+  assert.deepEqual(state.failedAssetIds({ items: [
+    { id: 2, status: 'failed' },
+    { asset_id: 2, status: 'failed' },
+    { asset_id: -1, status: 'failed' },
+    { asset_id: 1.5, status: 'failed' },
+    { asset_id: 3, status: 'generated' },
+    { asset_id: 4, status: 'failed' },
+  ]}), [2, 4])
+
+  assert.deepEqual(state.assetBatchProgress(null), { percent: 0, successCount: 0, failedCount: 0, totalCount: 0 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: 0, success_count: 5, failed_count: 2 }), { percent: 0, successCount: 5, failedCount: 2, totalCount: 0 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: 4, success_count: 1, failed_count: 1 }), { percent: 50, successCount: 1, failedCount: 1, totalCount: 4 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: 4, success_count: 8, failed_count: 1 }), { percent: 100, successCount: 8, failedCount: 1, totalCount: 4 })
+})
+
+test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创建字段', () => {
+  assert.match(apiSource, /quoteAssetBatch\(versionId,\s*body\s*=\s*\{\}\)/)
+  assert.match(apiSource, /assets\/batch-quote/)
+  assert.match(apiSource, /createAssetBatch\(versionId,\s*body\)/)
+  assert.match(apiSource, /assets\/batches/)
+
+  assert.match(assetStepSource, /quoteAssetBatch\(resolvedVersionId\.value,\s*\{\s*\}\s*\)/)
+  assert.match(assetStepSource, /quote_hash/)
+  assert.match(assetStepSource, /idempotency_key/)
+  assert.match(assetStepSource, /failedAssetIds/)
+  assert.match(assetStepSource, /getWork\(props\.work\.id\)/)
+  assert.match(assetStepSource, /canvas-credit-callout-v1/)
+  assert.match(assetStepSource, /积分待管理员配置/)
+  assert.match(assetStepSource, /一键重试失败项/)
+  assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*model/)
+  assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*provider/)
+  assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credits/)
+  assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credit_amount/)
+})

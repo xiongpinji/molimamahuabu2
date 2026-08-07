@@ -64,6 +64,12 @@ export const redrawAPI = {
   getAssetQuote(assetId) {
     return request.get(`/redraw/assets/${assetId}/quote`)
   },
+  quoteAssetBatch(versionId, body = {}) {
+    return request.post(`/redraw/versions/${versionId}/assets/batch-quote`, body)
+  },
+  createAssetBatch(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/assets/batches`, body)
+  },
   updateAsset(assetId, body) {
     return request.put(`/redraw/assets/${assetId}`, body)
   },
