@@ -980,6 +980,28 @@ test('resumeRedrawTasks 先将中断 redraw_shot 降级 needs_attention，避免
   }
 });
 
+test('启动恢复无 provider_task_id 路径会把旧第四步降回第三步', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId);
+    await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    state.db.prepare("UPDATE redraw_versions SET status = 'composing' WHERE id = ?").run(state.versionId);
+    state.db.prepare("UPDATE redraw_works SET status = 'composing', current_step = 4 WHERE id = ?").run(state.workId);
+
+    const changed = markInterruptedShotGenerationsNeedsAttention(state.db, log);
+
+    assert.equal(changed, 1);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
+  } finally {
+    state.db.close();
+  }
+});
+
 test('verifyVideoArtifact 使用 realpath 阻止指向根外的 symlink 但允许根内 symlink', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-symlink-'));
   const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-video-outside-'));
@@ -1691,6 +1713,29 @@ test('旧重试终态不明确时降级 needs_attention 并保持 held，绝不�
     assert.equal(submissions, 0);
     assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('旧重试缺 task/video 的 fallback 也会把旧第四步降回第三步', async () => {
+  const state = setup();
+  try {
+    const shotId = addShot(state.db, state.versionId, { status: 'failed' });
+    state.db.prepare("UPDATE redraw_versions SET status = 'composing' WHERE id = ?").run(state.versionId);
+    state.db.prepare("UPDATE redraw_works SET status = 'composing', current_step = 4 WHERE id = ?").run(state.workId);
+
+    await assert.rejects(
+      () => retryShot(ctx(state.db), { shotId }),
+      (error) => error.code === 'REDRAW_RETRY_UNCERTAIN',
+    );
+
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.deepEqual(workflowState(state.db, state.versionId), {
+      version_status: 'generating',
+      work_status: 'generating',
+      current_step: 3,
+    });
   } finally {
     state.db.close();
   }

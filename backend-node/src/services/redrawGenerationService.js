@@ -999,11 +999,17 @@ function markRetryUncertain(db, shot, task, video, message, timestamp) {
     updateNeedsAttention(db, task.id, shot.id, message, timestamp, video.id);
     return;
   }
-  db.prepare(`
-    UPDATE redraw_shots
-    SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION', error_message = ?, updated_at = ?
-    WHERE id = ?
-  `).run(message, timestamp, shot.id);
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'needs_attention', error_code = 'REDRAW_VIDEO_NEEDS_ATTENTION', error_message = ?, updated_at = ?
+      WHERE id = ?
+    `).run(message, timestamp, shot.id);
+    setVersionGenerationStep(db, {
+      tenantId: shot.tenant_id,
+      userId: shot.user_id,
+    }, shot.version_id, timestamp);
+  })();
 }
 
 async function retryShot(ctx, input = {}) {
@@ -1088,7 +1094,8 @@ function markInterruptedShotGenerationsNeedsAttention(db, log, options = {}) {
   try {
     rows = db.prepare(`
       SELECT t.id AS task_id, t.progress AS task_progress,
-             s.id AS shot_id, v.id AS video_id, v.provider_task_id
+             s.id AS shot_id, s.version_id, s.tenant_id, s.user_id,
+             v.id AS video_id, v.provider_task_id
       FROM async_tasks t
       JOIN redraw_shots s
         ON CAST(s.id AS TEXT) = CAST(t.resource_id AS TEXT)
@@ -1136,6 +1143,10 @@ function markInterruptedShotGenerationsNeedsAttention(db, log, options = {}) {
         SET status = 'needs_attention', error_msg = ?, updated_at = ?
         WHERE id = ?
       `).run(INTERRUPTED_MESSAGE, timestamp, row.video_id);
+      setVersionGenerationStep(db, {
+        tenantId: row.tenant_id,
+        userId: row.user_id,
+      }, row.version_id, timestamp);
     }
   })();
   if (interrupted.length) {
