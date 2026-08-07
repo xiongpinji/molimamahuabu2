@@ -10,6 +10,14 @@ export function resolveAllowedStep(routeStepValue, backendStepValue) {
   return Math.min(routeStep, backendStep)
 }
 
+export function resolveUpdatedStep({ routeStep, previousBackendStep, nextBackendStep }) {
+  const route = normalizeStep(routeStep)
+  const previousBackend = normalizeStep(previousBackendStep)
+  const nextBackend = normalizeStep(nextBackendStep)
+  if (nextBackend > previousBackend && route < nextBackend) return nextBackend
+  return Math.min(route, nextBackend)
+}
+
 export function isExistingWorkId(value) {
   const id = Number.parseInt(String(value ?? ''), 10)
   return Number.isInteger(id) && id > 0
@@ -75,12 +83,8 @@ function normalizedStatus(value) {
   return String(value || '').trim().toLowerCase()
 }
 
-function hasRefundOrReleaseEvidence(task) {
-  return ['refunded', 'refund_confirmed'].includes(normalizedStatus(task?.refund_status))
-    || ['released', 'release_confirmed'].includes(normalizedStatus(task?.credit_hold_status))
-    || task?.refunded === true
-    || task?.credits_refunded === true
-    || task?.credit_released === true
+function hasRefundOrReleaseEvidence(work) {
+  return Number(work?.localization_billing?.released || 0) > 0
 }
 
 export function redrawWorkflowPhase(work) {
@@ -115,13 +119,40 @@ export function canConfirmLocalization(work, expectedQuoteHash) {
   if (phase === 'analysis_review') return true
   if (!['localization_needs_attention', 'failed'].includes(phase)) return false
   const task = work?.localization_task || {}
-  return normalizedStatus(task.status || task.task_status) === 'failed' && hasRefundOrReleaseEvidence(task)
+  return normalizedStatus(task.status || task.task_status) === 'failed' && hasRefundOrReleaseEvidence(work)
 }
 
 export function shouldResetLocalizationIdempotencyKey(work) {
   const task = work?.localization_task || {}
   const status = normalizedStatus(task.status || task.task_status)
-  return status === 'completed' || (status === 'failed' && hasRefundOrReleaseEvidence(task))
+  return status === 'completed' || (status === 'failed' && hasRefundOrReleaseEvidence(work))
+}
+
+export function localizationQuoteRequestKey(input) {
+  return [
+    String(input?.workId || '').trim(),
+    String(input?.locale || '').trim(),
+    String(input?.market || '').trim(),
+    String(input?.localizationLevel || input?.localization_level || 'faithful').trim() || 'faithful',
+  ].join('|')
+}
+
+export function createLocalizationQuoteRequestGate() {
+  const active = new Set()
+  return {
+    begin(input) {
+      const key = localizationQuoteRequestKey(input)
+      if (active.has(key)) return false
+      active.add(key)
+      return true
+    },
+    finish(input) {
+      active.delete(localizationQuoteRequestKey(input))
+    },
+    isActive(input) {
+      return active.has(localizationQuoteRequestKey(input))
+    },
+  }
 }
 
 export function buildLocalizationPayload(body) {

@@ -1260,6 +1260,79 @@ test('作品详情独立返回分析、本地化、资产批次任务和 workflo
   }
 });
 
+test('作品详情按真实本地化 reservation 投影退款证据且隔离错误资源', () => {
+  const db = createDb();
+  try {
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      task_id: 'task-analysis-complete',
+    });
+    const otherWorkId = insertWork(db, projectId, { source_fingerprint: '9'.repeat(64) });
+    const wrongReservation = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'wrong-localization-resource',
+      model: 'gpt-localize',
+      resourceType: 'redraw_localization',
+      resourceId: String(otherWorkId),
+      amount: 7,
+    });
+    const correctReservation = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'correct-localization-resource',
+      model: 'gpt-localize',
+      resourceType: 'redraw_localization',
+      resourceId: String(workId),
+      amount: 9,
+    });
+    insertVersion(db, workId, {
+      localization_task_id: 'task-localization-failed',
+      status: 'draft',
+    });
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
+      VALUES
+        ('task-analysis-complete', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', NULL, ?, ?),
+        ('task-localization-failed', 'redraw_localization', 'failed', 100, '本地化失败', ?, 'tenant-a', 'user-a', ?, ?, ?)
+    `).run(String(workId), NOW, NOW, String(workId), wrongReservation.id, NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const wrong = captureResponse();
+    handlers.getWork(request({ id: workId }), wrong);
+    assert.equal(wrong.statusCode, 200);
+    assert.deepEqual(wrong.body.data.localization_billing, { held: 0, charged: 0, released: 0, quote: null });
+
+    db.prepare('UPDATE async_tasks SET credit_reservation_id = ? WHERE id = ?')
+      .run(correctReservation.id, 'task-localization-failed');
+    const held = captureResponse();
+    handlers.getWork(request({ id: workId }), held);
+    assert.equal(held.statusCode, 200);
+    assert.deepEqual(held.body.data.localization_billing, {
+      held: 9,
+      charged: 0,
+      released: 0,
+      quote: { model: 'gpt-localize', amount: 9 },
+    });
+
+    creditLedger.refund(db, correctReservation.id, 'localization_failed');
+    const refunded = captureResponse();
+    handlers.getWork(request({ id: workId }), refunded);
+    assert.equal(refunded.statusCode, 200);
+    assert.deepEqual(refunded.body.data.localization_billing, {
+      held: 0,
+      charged: 0,
+      released: 9,
+      quote: { model: 'gpt-localize', amount: 9 },
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('分析完成但未本地化时仍停留步骤 1 和 analysis_review phase', () => {
   const db = createDb();
   try {

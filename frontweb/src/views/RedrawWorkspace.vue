@@ -61,7 +61,12 @@ import RedrawSourceStep from '@/components/redraw/RedrawSourceStep.vue'
 import RedrawAssetStep from '@/components/redraw/RedrawAssetStep.vue'
 import RedrawShotStep from '@/components/redraw/RedrawShotStep.vue'
 import { redrawAPI } from '@/api/redraw'
-import { isExistingWorkId, normalizeStep, resolveAllowedStep } from '@/utils/redrawWorkspaceState'
+import {
+  isExistingWorkId,
+  normalizeStep,
+  resolveAllowedStep,
+  resolveUpdatedStep,
+} from '@/utils/redrawWorkspaceState'
 
 const route = useRoute()
 const router = useRouter()
@@ -100,6 +105,7 @@ function goStep(step) {
 }
 
 function onWorkUpdated(nextWork) {
+  const previousBackendStep = work.value?.current_step || 1
   work.value = nextWork
   if (nextWork?.id && String(workId.value) !== String(nextWork.id)) {
     router.replace({
@@ -107,6 +113,15 @@ function onWorkUpdated(nextWork) {
       params: { projectId: projectId.value, workId: nextWork.id },
       query: { ...route.query, step: resolveAllowedStep(route.query.step, nextWork.current_step || 1) },
     })
+    return
+  }
+  const nextStep = resolveUpdatedStep({
+    routeStep: route.query.step,
+    previousBackendStep,
+    nextBackendStep: nextWork?.current_step || 1,
+  })
+  if (String(route.query.step || '1') !== String(nextStep)) {
+    router.replace({ query: { ...route.query, step: nextStep } })
   }
 }
 

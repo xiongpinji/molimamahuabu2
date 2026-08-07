@@ -148,6 +148,8 @@ import {
   canStartRedrawAnalysis,
   localizationQuoteCredits,
   localizationTaskState,
+  createLocalizationQuoteRequestGate,
+  localizationQuoteRequestKey,
   redrawWorkflowPhase,
   shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
@@ -179,11 +181,12 @@ const workState = ref(props.initialWork)
 const uploading = ref(false)
 const submitting = ref(false)
 const localizationSubmitting = ref(false)
-const localizationQuoting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
 const localizationIdempotencyKey = ref('')
+const localizationQuoteGate = createLocalizationQuoteRequestGate()
+const latestLocalizationQuoteKey = ref('')
 let pollTimer = null
 let pollAttempts = 0
 
@@ -210,6 +213,17 @@ function localizationQuoteBody() {
     locale: locale.value || 'en-US',
     market: market.value || 'US',
     localization_level: 'faithful',
+  }
+}
+
+function localizationQuoteRequest(work) {
+  const body = localizationQuoteBody()
+  return {
+    workId: work?.id,
+    locale: body.locale,
+    market: body.market,
+    localizationLevel: body.localization_level,
+    body,
   }
 }
 
@@ -298,17 +312,19 @@ async function refreshWork() {
 
 async function ensureLocalizationQuote(work = workState.value) {
   if (
-    localizationQuoting.value
-      || !work?.id
+    !work?.id
       || work?.localization_quote
       || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
   ) {
     return
   }
-  localizationQuoting.value = true
+  const quoteRequest = localizationQuoteRequest(work)
+  if (!localizationQuoteGate.begin(quoteRequest)) return
+  const requestKey = localizationQuoteRequestKey(quoteRequest)
+  latestLocalizationQuoteKey.value = requestKey
   try {
-    const quote = await redrawAPI.quoteLocalization(work.id, localizationQuoteBody())
-    if (workState.value?.id !== work.id) return
+    const quote = await redrawAPI.quoteLocalization(work.id, quoteRequest.body)
+    if (workState.value?.id !== work.id || latestLocalizationQuoteKey.value !== requestKey) return
     workState.value = {
       ...workState.value,
       localization_quote: quote?.localization_quote || quote,
@@ -316,7 +332,7 @@ async function ensureLocalizationQuote(work = workState.value) {
   } catch (error) {
     ElMessage.error(error.message || '获取本地化报价失败')
   } finally {
-    localizationQuoting.value = false
+    localizationQuoteGate.finish(quoteRequest)
   }
 }
 

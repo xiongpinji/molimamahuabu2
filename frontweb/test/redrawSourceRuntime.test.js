@@ -10,6 +10,8 @@ import {
   localizationQuoteCredits,
   localizationTaskState,
   localeReady,
+  createLocalizationQuoteRequestGate,
+  resolveUpdatedStep,
   redrawWorkflowPhase,
   shouldResetLocalizationIdempotencyKey,
   taskStateFromWork,
@@ -241,14 +243,16 @@ test('本地化重试必须明确失败且明确已退款或释放，否则失�
   }), false)
   assert.equal(canConfirmLocalization({
     workflow_phase: 'localization_needs_attention',
-    localization_task: { id: 'loc-1', status: 'failed', refund_status: 'refunded' },
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_billing: { held: 0, charged: 0, released: 9 },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
   }), true)
   assert.equal(canConfirmLocalization({
     workflow_phase: 'localization_needs_attention',
-    localization_task: { id: 'loc-1', status: 'failed', credit_hold_status: 'released' },
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_billing: { held: 0, charged: 0, released: 0 },
     localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
-  }), true)
+  }), false)
 })
 
 test('本地化幂等键只在完成或明确失败且已退款释放后重置', () => {
@@ -264,6 +268,39 @@ test('本地化幂等键只在完成或明确失败且已退款释放后重置',
     localization_task: { id: 'loc-1', status: 'completed' },
   }), true)
   assert.equal(shouldResetLocalizationIdempotencyKey({
-    localization_task: { id: 'loc-1', status: 'failed', refund_status: 'refunded' },
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_billing: { held: 0, charged: 0, released: 9 },
+  }), true)
+})
+
+test('工作台步骤由后端真实推进自动进入下一步但不覆盖用户回退', () => {
+  assert.equal(resolveUpdatedStep({ routeStep: 1, previousBackendStep: 1, nextBackendStep: 2 }), 2)
+  assert.equal(resolveUpdatedStep({ routeStep: 1, previousBackendStep: 2, nextBackendStep: 2 }), 1)
+  assert.equal(resolveUpdatedStep({ routeStep: 3, previousBackendStep: 1, nextBackendStep: 2 }), 2)
+})
+
+test('本地化报价请求按 work 和目标参数去重且不吞不同作品请求', () => {
+  const gate = createLocalizationQuoteRequestGate()
+  const requestA = { workId: 1, locale: 'en-US', market: 'US', localizationLevel: 'faithful' }
+  const requestB = { workId: 2, locale: 'en-US', market: 'US', localizationLevel: 'faithful' }
+
+  assert.equal(gate.begin(requestA), true)
+  assert.equal(gate.begin(requestA), false)
+  assert.equal(gate.begin(requestB), true)
+  assert.equal(gate.isActive(requestA), true)
+  gate.finish(requestA)
+  assert.equal(gate.begin(requestA), true)
+})
+
+test('真实公开 localization_billing released 是本地化失败重试证据', () => {
+  assert.equal(canConfirmLocalization({
+    workflow_phase: 'localization_needs_attention',
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_billing: { held: 0, charged: 0, released: 9 },
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }), true)
+  assert.equal(shouldResetLocalizationIdempotencyKey({
+    localization_task: { id: 'loc-1', status: 'failed' },
+    localization_billing: { held: 0, charged: 0, released: 9 },
   }), true)
 })

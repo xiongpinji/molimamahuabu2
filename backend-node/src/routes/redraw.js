@@ -1073,6 +1073,23 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       : null);
   }
 
+  function localizationBilling(work, localizationTask, currentOwner) {
+    const reservation = localizationTask?.credit_reservation_id
+      ? db.prepare(`SELECT * FROM tenant_usage_reservations
+        WHERE id = ? AND tenant_id = ? AND actor_user_id = ?
+          AND resource_type = 'redraw_localization' AND resource_id = ?`)
+        .get(
+          String(localizationTask.credit_reservation_id),
+          currentOwner.tenantId,
+          currentOwner.userId,
+          String(work.id),
+        )
+      : null;
+    return billingFromReservation(reservation, reservation
+      ? { model: reservation.model, amount: Number(reservation.amount) }
+      : null);
+  }
+
   function shotRuntime(raw, snapshot, currentOwner, context = {}) {
     const video = raw.video_generation_id
       ? db.prepare(`SELECT * FROM video_generations
@@ -1258,6 +1275,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         asset_batch: publicAssetBatch(assetBatch),
         workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
         analysis_billing: analysisBilling(work, currentOwner),
+        localization_billing: localizationBilling(work, localizationTask, currentOwner),
         shots,
         batches,
       });
