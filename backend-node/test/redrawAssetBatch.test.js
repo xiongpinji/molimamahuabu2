@@ -381,6 +381,34 @@ test('startAssetBatch escalates system failures to parent needs_attention withou
   cleanup(state);
 });
 
+test('startAssetBatch keeps provider system errors unknown without refunding held reservations', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async () => {
+      throw new TypeError('provider runtime crashed');
+    },
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'provider-system-error', assetIds: [state.assetIds.prop] });
+
+  await assert.rejects(started.completion, /provider runtime crashed/);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const parentTask = taskService.getTask(state.db, started.task.id);
+  const attempt = state.db.prepare('SELECT status, error_code, generation_task_id, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(parentTask.status, 'needs_attention');
+  assert.equal(attempt.status, 'needs_attention');
+  assert.equal(attempt.error_code, 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN');
+  assert.equal(childTask.status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(attempt.credit_reservation_id).status, 'held');
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'refunded'").get().count, 0);
+  cleanup(state);
+});
+
 test('startAssetBatch reports completed and failed for all-success and all-failed batches with per-attempt snapshots', async () => {
   const success = setupBatchState();
   const successQuote = quoteAssetBatch(success.db, success.ctx);

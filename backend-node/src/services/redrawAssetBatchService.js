@@ -481,6 +481,7 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
             market: created.quote.market,
           });
         } catch (error) {
+          if (isSystemError(error)) throw error;
           if (isUnknownProviderResult(error)) {
             const providerTaskId = providerTaskIdOf(error);
             if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
@@ -523,6 +524,16 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
     } catch (error) {
       try {
         const timestamp = new Date().toISOString();
+        for (const entry of created.childTasks) {
+          base.db.prepare(`
+            UPDATE redraw_assets
+            SET status = 'needs_attention', approval_status = 'pending',
+                error_code = 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
+                error_message = ?, updated_at = ?
+            WHERE id = ? AND status IN ('pending', 'processing')
+          `).run(String(error.message || error), timestamp, Number(entry.attemptId));
+          taskService.updateTaskStatus(base.db, entry.childTask.id, 'needs_attention', 90, '批量资产生成状态未知，请人工确认');
+        }
         base.db.prepare(`
           UPDATE redraw_asset_batches
           SET status = 'needs_attention', error_code = 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
