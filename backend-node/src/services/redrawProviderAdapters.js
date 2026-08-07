@@ -53,6 +53,18 @@ function cleanupScopedFile(storageRoot, localPath, versionDir) {
   } catch (_) {}
 }
 
+function cleanupVerifiedFile(absolutePath) {
+  if (!absolutePath) return;
+  try {
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isFile()) {
+      fs.rmSync(absolutePath, { force: true });
+    } else if (stat.isSymbolicLink()) {
+      fs.unlinkSync(absolutePath);
+    }
+  } catch (_) {}
+}
+
 function requirePositiveDimension(value, name) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
@@ -361,8 +373,10 @@ function createRedrawProviderAdapters(deps = {}) {
     let width;
     let height;
     let mimeType;
+    let cleanupPath = null;
     try {
       const containedPath = assertRealpathInsideVersion(storageRoot, versionDir, absolutePath, realpathSync);
+      cleanupPath = containedPath;
       const probed = await imageMetadataProbe(containedPath);
       width = requirePositiveDimension(probed?.width, 'width');
       height = requirePositiveDimension(probed?.height, 'height');
@@ -377,7 +391,7 @@ function createRedrawProviderAdapters(deps = {}) {
         throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'redraw image artifact dimensions conflict with provider metadata');
       }
     } catch (error) {
-      cleanupScopedFile(storageRoot, localPath, versionDir);
+      cleanupVerifiedFile(cleanupPath);
       if (error?.code === 'REDRAW_PROVIDER_ARTIFACT_INVALID') throw error;
       throw codedError('REDRAW_PROVIDER_ARTIFACT_INVALID', 'downloaded redraw image artifact is invalid or unreadable');
     }
@@ -413,7 +427,7 @@ function createRedrawProviderAdapters(deps = {}) {
         metadata,
       });
     } catch (error) {
-      cleanupScopedFile(storageRoot, localPath, versionDir);
+      cleanupVerifiedFile(cleanupPath);
       throw error;
     }
     const result = {
