@@ -114,8 +114,8 @@ function sanitizeExportValue(value) {
 }
 
 function safeExportErrorMessage(value) {
-  const sanitized = sanitizeExportValue(String(value || '').slice(0, 500));
-  return sanitized === undefined ? 'export failed' : sanitized;
+  if (!value) return null;
+  return 'export failed';
 }
 
 function mapProject(row) {
@@ -1998,6 +1998,16 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   function scheduleCompositionRun(ctx, exportId) {
+    const failSchedule = () => {
+      db.prepare(`
+        UPDATE redraw_exports
+        SET status = 'failed',
+            error_code = 'REDRAW_COMPOSITION_SCHEDULE_FAILED',
+            error_message = 'composition scheduler failed',
+            updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'pending'
+      `).run(new Date().toISOString(), Number(exportId), String(ctx.tenantId), String(ctx.userId));
+    };
     const job = () => Promise.resolve()
       .then(() => compositionService.runComposition(ctx, Number(exportId)))
       .catch((error) => {
@@ -2005,16 +2015,16 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       });
     if (typeof options.compositionSchedule === 'function') {
       try {
-        return options.compositionSchedule(job, { exportId: Number(exportId), versionId: ctx.versionId });
+        const scheduled = options.compositionSchedule(job, { exportId: Number(exportId), versionId: ctx.versionId });
+        if (scheduled && typeof scheduled.then === 'function') {
+          scheduled.catch((error) => {
+            failSchedule();
+            log?.error?.({ err: error, exportId }, 'redraw composition scheduler rejected');
+          });
+        }
+        return scheduled;
       } catch (error) {
-        db.prepare(`
-          UPDATE redraw_exports
-          SET status = 'failed',
-              error_code = 'REDRAW_COMPOSITION_SCHEDULE_FAILED',
-              error_message = 'composition scheduler failed',
-              updated_at = ?
-          WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'pending'
-        `).run(new Date().toISOString(), Number(exportId), String(ctx.tenantId), String(ctx.userId));
+        failSchedule();
         throw error;
       }
     }
@@ -2085,18 +2095,47 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
         exportId: req.params.id,
         kind: req.params.kind,
       });
-      res.setHeader('Content-Type', artifact.mime_type);
-      res.setHeader('Content-Length', String(artifact.size));
-      res.setHeader('X-Content-SHA256', artifact.sha256);
-      res.setHeader('Content-Disposition', `attachment; filename="${String(artifact.filename).replace(/["\\]/g, '')}"`);
       if (typeof res.sendFile === 'function') {
+        res.setHeader('Content-Type', artifact.mime_type);
+        res.setHeader('Content-Length', String(artifact.size));
+        res.setHeader('X-Content-SHA256', artifact.sha256);
+        res.setHeader('Content-Disposition', `attachment; filename="${String(artifact.filename).replace(/["\\]/g, '')}"`);
         return res.sendFile(artifact.absolute_path, (error) => {
           if (error && !res.headersSent) {
             sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
           }
         });
       }
-      return fs.createReadStream(artifact.absolute_path).pipe(res);
+      return new Promise((resolve) => {
+        const stream = fs.createReadStream(artifact.absolute_path);
+        let headersWritten = false;
+        let resolved = false;
+        const done = () => {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+        };
+        stream.once('error', (error) => {
+          if (!headersWritten && !res.headersSent) {
+            sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
+          } else if (typeof res.destroy === 'function') {
+            res.destroy();
+          } else if (typeof stream.destroy === 'function') {
+            stream.destroy();
+          }
+          done();
+        });
+        stream.once('open', () => {
+          headersWritten = true;
+          res.setHeader('Content-Type', artifact.mime_type);
+          res.setHeader('Content-Length', String(artifact.size));
+          res.setHeader('X-Content-SHA256', artifact.sha256);
+          res.setHeader('Content-Disposition', `attachment; filename="${String(artifact.filename).replace(/["\\]/g, '')}"`);
+          stream.pipe(res);
+          done();
+        });
+      });
     } catch (error) {
       return sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
     }

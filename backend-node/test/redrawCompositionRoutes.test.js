@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
+const { PassThrough } = require('node:stream');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
@@ -32,11 +34,31 @@ function captureResponse() {
     setHeader(name, value) {
       this.headers[name] = value;
     },
+    write(chunk) {
+      this.written = Buffer.concat([this.written || Buffer.alloc(0), Buffer.from(chunk)]);
+    },
+    end(chunk) {
+      if (chunk) this.write(chunk);
+      this.ended = true;
+    },
+    on() {
+      return this;
+    },
+    once() {
+      return this;
+    },
+    emit() {
+      return false;
+    },
     sendFile(filePath, callback) {
       this.sentFile = filePath;
       this.headersSent = true;
       if (callback) callback();
       return this;
+    },
+    destroy(error) {
+      this.destroyed = true;
+      this.destroyError = error;
     },
   };
 }
@@ -289,6 +311,54 @@ test('compose route marks created export failed if injected scheduler throws syn
   }
 });
 
+test('compose route catches rejected scheduler promise and marks created export failed without unhandled rejection', async () => {
+  const db = createDb();
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const { versionId } = fixture(db);
+    const exportId = insertExport(db, versionId, {
+      asset_id: null,
+      subtitle_asset_id: null,
+      status: 'pending',
+      manifest_json: JSON.stringify({ idempotency_key: 'idem-rejected-schedule', request_hash: 'hash', audio_mode: 'replace' }),
+    });
+    const handlers = redrawRoutes(db, { error() {} }, {
+      compositionService: {
+        createComposition: async () => ({
+          id: exportId,
+          version_id: versionId,
+          version_number: 1,
+          status: 'pending',
+          created: true,
+        }),
+        runComposition: async () => {},
+      },
+      compositionSchedule: () => Promise.reject(new Error('C:\\private\\scheduler.log')),
+    });
+
+    const res = captureResponse();
+    await handlers.composeVersion(request({
+      id: versionId,
+      body: { idempotency_key: 'idem-rejected-schedule', audio_mode: 'replace' },
+    }), res);
+    assert.equal(res.statusCode, 202);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const row = db.prepare('SELECT status, error_code, error_message FROM redraw_exports WHERE id = ?').get(exportId);
+    assert.equal(row.status, 'failed');
+    assert.equal(row.error_code, 'REDRAW_COMPOSITION_SCHEDULE_FAILED');
+    assert.equal(row.error_message, 'composition scheduler failed');
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    db.close();
+  }
+});
+
 test('export list/detail routes are owner-scoped and strip manifest paths', () => {
   const db = createDb();
   try {
@@ -326,6 +396,41 @@ test('export list/detail routes are owner-scoped and strip manifest paths', () =
     const crossTenantList = captureResponse();
     handlers.listVersionExports(request({ id: versionId, tenantId: 'tenant-b' }), crossTenantList);
     assert.equal(crossTenantList.statusCode, 404);
+  } finally {
+    db.close();
+  }
+});
+
+test('export list/detail returns generic safe error messages for embedded Windows Linux and URL paths', () => {
+  const db = createDb();
+  try {
+    const { versionId } = fixture(db);
+    const exportIds = [
+      insertExport(db, versionId, { status: 'failed', error_code: 'E_WIN', error_message: 'failed at C:\\private\\clip.mp4' }),
+      insertExport(db, versionId, { status: 'failed', error_code: 'E_LINUX', error_message: 'failed at /srv/private/clip.mp4' }),
+      insertExport(db, versionId, { status: 'failed', error_code: 'E_URL', error_message: 'failed at https://example.com/secret.mp4' }),
+    ];
+    const handlers = redrawRoutes(db, { error() {} }, {});
+
+    const list = captureResponse();
+    handlers.listVersionExports(request({ id: versionId }), list);
+    assert.equal(list.statusCode, 200);
+    const text = JSON.stringify(list.body);
+    assert.equal(text.includes('C:\\private'), false);
+    assert.equal(text.includes('/srv/private'), false);
+    assert.equal(text.includes('https://example.com'), false);
+    for (const item of list.body.data) {
+      if (exportIds.includes(item.id)) {
+        assert.match(item.error_code, /^E_/);
+        assert.equal(item.error_message, 'export failed');
+      }
+    }
+
+    const detail = captureResponse();
+    handlers.getExport(request({ id: exportIds[0] }), detail);
+    assert.equal(detail.statusCode, 200);
+    assert.equal(detail.body.data.error_code, 'E_WIN');
+    assert.equal(detail.body.data.error_message, 'export failed');
   } finally {
     db.close();
   }
@@ -384,6 +489,85 @@ test('download route uses controlled artifact descriptor and maps unsafe states 
       assert.equal(JSON.stringify(res.body).includes('C:\\private'), false);
     }
   } finally {
+    db.close();
+  }
+});
+
+test('download stream fallback maps pre-header file race to safe error body', async () => {
+  const db = createDb();
+  const originalCreateReadStream = fs.createReadStream;
+  try {
+    fixture(db);
+    const stream = new PassThrough();
+    fs.createReadStream = () => stream;
+    const handlers = redrawRoutes(db, { error() {} }, {
+      exportService: {
+        resolveDownloadArtifact: async () => ({
+          export_id: 6,
+          version_id: 1,
+          asset_id: 701,
+          kind: 'mp4',
+          mime_type: 'video/mp4',
+          filename: 'redraw-export-6.mp4',
+          absolute_path: 'C:\\private\\raced.mp4',
+          sha256: 'e'.repeat(64),
+          size: 456,
+        }),
+      },
+    });
+
+    const res = captureResponse();
+    delete res.sendFile;
+    const done = handlers.downloadExport(request({ id: 6, kind: 'mp4' }), res);
+    await Promise.resolve();
+    stream.emit('error', new Error('C:\\private\\raced.mp4 disappeared'));
+    await done;
+
+    assert.equal(res.statusCode, 500);
+    assert.equal(JSON.stringify(res.body).includes('C:\\private'), false);
+    assert.equal(res.headers['Content-Type'], undefined);
+  } finally {
+    fs.createReadStream = originalCreateReadStream;
+    db.close();
+  }
+});
+
+test('download stream fallback safely destroys response on post-header stream error', async () => {
+  const db = createDb();
+  const originalCreateReadStream = fs.createReadStream;
+  try {
+    fixture(db);
+    const stream = new PassThrough();
+    fs.createReadStream = () => stream;
+    const handlers = redrawRoutes(db, { error() {} }, {
+      exportService: {
+        resolveDownloadArtifact: async () => ({
+          export_id: 7,
+          version_id: 1,
+          asset_id: 701,
+          kind: 'mp4',
+          mime_type: 'video/mp4',
+          filename: 'redraw-export-7.mp4',
+          absolute_path: 'C:\\private\\late.mp4',
+          sha256: 'f'.repeat(64),
+          size: 789,
+        }),
+      },
+    });
+
+    const res = captureResponse();
+    delete res.sendFile;
+    const done = handlers.downloadExport(request({ id: 7, kind: 'mp4' }), res);
+    await Promise.resolve();
+    stream.emit('open', 1);
+    await done;
+    assert.equal(res.headers['Content-Type'], 'video/mp4');
+
+    stream.emit('error', new Error('C:\\private\\late.mp4 read failed'));
+    assert.equal(res.destroyed, true);
+    assert.equal(JSON.stringify(res.body || {}).includes('C:\\private'), false);
+  } finally {
+    fs.createReadStream = originalCreateReadStream;
     db.close();
   }
 });
