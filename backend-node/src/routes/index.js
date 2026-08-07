@@ -230,6 +230,7 @@ function setupRouter(cfg, db, log) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);

@@ -9,7 +9,7 @@ const redrawService = require('../services/redrawService');
 const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
-const localizationService = require('../services/localizationService');
+const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawReviewService = require('../services/redrawReviewService');
 const redrawShotService = require('../services/redrawShotService');
@@ -253,6 +253,17 @@ function billingPayload(value) {
   };
 }
 
+function workflowPhase(work, analysisTask, localizationTask, assetBatch) {
+  if (Number(work?.current_step) >= 3) return 'video_generation';
+  if (['pending', 'processing'].includes(String(assetBatch?.status || ''))) return 'asset_generating';
+  if (Number(work?.current_step) === 2) return 'asset_review';
+  if (['pending', 'processing'].includes(String(localizationTask?.status || ''))) return 'localizing';
+  if (String(localizationTask?.status || '') === 'needs_attention') return 'localization_needs_attention';
+  if (String(analysisTask?.status || '') === 'completed') return 'analysis_review';
+  if (['pending', 'processing'].includes(String(analysisTask?.status || ''))) return 'analyzing';
+  return 'source';
+}
+
 function safeStaticAssetUrl(asset) {
   const url = String(asset?.url || '').trim();
   if (url.startsWith('/static/')) {
@@ -292,6 +303,26 @@ const SAFE_GENERATION_FIELDS = new Set([
 const SAFE_BATCH_GENERATION_FIELDS = new Set([
   ...SAFE_GENERATION_FIELDS,
   'shot_ids', 'shotIds', 'version_id', 'versionId', 'count',
+]);
+const LOCALIZATION_CLIENT_CONTROL_FIELDS = new Set([
+  'dialogue',
+  'localized_dialogue',
+  'name_map',
+  'culture_map',
+  'glossary',
+  'source_facts',
+  'model',
+  'provider',
+  'credit_amount',
+  'credits',
+  'reservation_id',
+]);
+const LOCALIZATION_VERSION_FIELDS = new Set([
+  'locale',
+  'market',
+  'localization_level',
+  'quote_hash',
+  'idempotency_key',
 ]);
 
 function generationInputError(message) {
@@ -360,6 +391,93 @@ function batchGenerationInput(body) {
   return sanitized;
 }
 
+function localizationInputError(code, message, details) {
+  return codedRouteError(code, message, details);
+}
+
+function rejectLocalizationClientControl(body) {
+  const input = body || {};
+  for (const field of LOCALIZATION_CLIENT_CONTROL_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, field)) {
+      throw localizationInputError(
+        'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN',
+        '本地化生成内容、模型与积分只能由服务端决定',
+      );
+    }
+  }
+}
+
+function localizationQuoteInput(body, work, currentOwner, canReadArtifact) {
+  const input = body || {};
+  return {
+    workId: Number(work.id),
+    tenantId: currentOwner.tenantId,
+    userId: currentOwner.userId,
+    locale: String(input.locale || '').trim(),
+    market: String(input.market || '').trim(),
+    localizationLevel: String(input.localization_level ?? input.localizationLevel ?? 'faithful').trim() || 'faithful',
+    canReadArtifact,
+  };
+}
+
+function localizationStartInput(body, work, currentOwner, canReadArtifact) {
+  const input = body || {};
+  for (const key of Object.keys(input)) {
+    if (!LOCALIZATION_VERSION_FIELDS.has(key)) {
+      throw localizationInputError(
+        'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN',
+        '本地化版本提交只接受 locale、market、localization_level、quote_hash 和 idempotency_key',
+      );
+    }
+  }
+  return {
+    ...localizationQuoteInput(input, work, currentOwner, canReadArtifact),
+    quoteHash: String(input.quote_hash || '').trim(),
+    idempotencyKey: String(input.idempotency_key || '').trim(),
+  };
+}
+
+function localizationBillingPayload(result) {
+  if (result?.billing) return billingPayload(result.billing);
+  const reservation = result?.reservation || null;
+  if (reservation && typeof reservation === 'object') return billingFromReservation(reservation, null);
+  const held = Number(result?.quote?.credits ?? result?.quote?.amount);
+  return {
+    charged: 0,
+    held: Number.isFinite(held) && held > 0 ? held : 0,
+    released: 0,
+  };
+}
+
+function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
+  const code = String(error?.code || '');
+  const details = error?.quote
+    ? { ...(error?.details || {}), quote: error.quote }
+    : error?.details;
+  if (code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND') {
+    return response.error(res, 404, code, error.message || fallbackMessage, details);
+  }
+  if (code === 'INSUFFICIENT_CREDITS') {
+    return response.error(res, 402, code, error.message || '积分不足', details);
+  }
+  if ([
+    'pricing_unconfigured',
+    'REDRAW_LOCALIZATION_CAPABILITY_UNVERIFIED',
+    'REDRAW_LOCALIZATION_QUOTE_CHANGED',
+    'REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT',
+  ].includes(code)) {
+    return response.error(res, 409, code, error.message || fallbackMessage, details);
+  }
+  if (code === 'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN') {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  if (code.startsWith('REDRAW_LOCALIZATION') || code.startsWith('REDRAW_')) {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  log?.error?.({ err: error, ...context }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
+}
+
 function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   const code = String(error?.code || '');
   if (['REDRAW_WORK_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND', 'REDRAW_SHOT_NOT_FOUND',
@@ -379,6 +497,10 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   }
   log?.error?.({ err: error, ...context }, fallbackMessage);
   return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
+}
+
+function isMissingSchemaError(error) {
+  return /no such (table|column)/i.test(String(error?.message || ''));
 }
 
 function registerSourceAsset(db, log, currentOwner, sourceAsset) {
@@ -433,6 +555,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const orchestrator = options.orchestrator || redrawOrchestrator;
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
+  const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -514,6 +637,56 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND version = ? AND deleted_at IS NULL
       LIMIT 1
     `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber);
+  }
+
+  function findCurrentPromotedVersionForWork(work, currentOwner) {
+    const versionNumber = Number(work.current_version);
+    const exact = Number.isSafeInteger(versionNumber) && versionNumber > 0
+      ? db.prepare(`
+        SELECT * FROM redraw_versions
+        WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+          AND version = ? AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+        LIMIT 1
+      `).get(work.id, currentOwner.tenantId, currentOwner.userId, versionNumber)
+      : null;
+    if (exact) return exact;
+    return db.prepare(`
+      SELECT * FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND COALESCE(status, '') != 'draft' AND deleted_at IS NULL
+      ORDER BY version DESC, id DESC
+      LIMIT 1
+    `).get(work.id, currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function publicTask(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      progress: Number.isFinite(Number(row.progress)) ? Number(row.progress) : null,
+      message: row.message || null,
+      provider_task_id: row.provider_task_id || null,
+      credit_reservation_id: row.credit_reservation_id || null,
+      error: row.error || null,
+    };
+  }
+
+  function publicAssetBatch(row) {
+    if (!row) return null;
+    return {
+      id: Number(row.id),
+      version_id: Number(row.version_id),
+      task_id: row.task_id,
+      status: row.status,
+      total_count: Number(row.total_count || 0),
+      success_count: Number(row.success_count || 0),
+      failed_count: Number(row.failed_count || 0),
+      error_code: row.error_code || null,
+      error_message: row.error_message || null,
+      updated_at: row.updated_at,
+    };
   }
 
   function taskMetadata(row) {
@@ -618,6 +791,49 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
       LIMIT 1`)
       .get(String(work.task_id), String(work.id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function findOwnedLocalizationTask(work, currentVersion, currentOwner) {
+    try {
+      let taskId = currentVersion?.localization_task_id || null;
+      if (!taskId) {
+        const version = db.prepare(`
+          SELECT localization_task_id
+          FROM redraw_versions
+          WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+            AND localization_task_id IS NOT NULL AND TRIM(localization_task_id) != ''
+            AND deleted_at IS NULL
+          ORDER BY id DESC
+          LIMIT 1
+        `).get(work.id, currentOwner.tenantId, currentOwner.userId);
+        taskId = version?.localization_task_id || null;
+      }
+      if (!taskId) return null;
+      return db.prepare(`SELECT * FROM async_tasks
+        WHERE id = ? AND type = 'redraw_localization' AND resource_id = ?
+          AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        LIMIT 1`)
+        .get(String(taskId), String(work.id), currentOwner.tenantId, currentOwner.userId);
+    } catch (error) {
+      if (isMissingSchemaError(error)) return null;
+      throw error;
+    }
+  }
+
+  function findCurrentAssetBatch(currentVersion, currentOwner) {
+    if (!currentVersion) return null;
+    try {
+      return db.prepare(`
+        SELECT *
+        FROM redraw_asset_batches
+        WHERE version_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `).get(currentVersion.id, currentOwner.tenantId, currentOwner.userId);
+    } catch (error) {
+      if (isMissingSchemaError(error)) return null;
+      throw error;
+    }
   }
 
   function analysisBilling(work, currentOwner) {
@@ -793,17 +1009,33 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
     if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
-    const currentVersion = findVersionForWork(work, work.current_version, currentOwner);
     try {
-      const task = findOwnedAnalysisTask(work, currentOwner);
+      const currentVersion = findCurrentPromotedVersionForWork(work, currentOwner);
+      const analysisTask = findOwnedAnalysisTask(work, currentOwner);
+      const localizationTask = findOwnedLocalizationTask(work, currentVersion, currentOwner);
+      const assetBatch = findCurrentAssetBatch(currentVersion, currentOwner);
+      const projectedWork = { ...work };
+      if (
+        Number(projectedWork.current_step) === 2
+        && !currentVersion
+        && !localizationTask
+        && !assetBatch
+        && String(analysisTask?.status || '') === 'completed'
+      ) {
+        projectedWork.current_step = 1;
+      }
       const shots = currentVersion ? listOwnedShotRuntime(currentVersion, currentOwner, work) : [];
       const batches = shotService.groupShotsIntoBatches(shots);
       return response.success(res, {
-        ...mapWork(work, null, {
-          task,
+        ...mapWork(projectedWork, null, {
+          task: analysisTask,
           versionId: currentVersion?.id || null,
           analysisQuote: quoteAnalysis(db, log),
         }),
+        analysis_task: publicTask(analysisTask),
+        localization_task: publicTask(localizationTask),
+        asset_batch: publicAssetBatch(assetBatch),
+        workflow_phase: workflowPhase(projectedWork, analysisTask, localizationTask, assetBatch),
         analysis_billing: analysisBilling(work, currentOwner),
         shots,
         batches,
@@ -1051,40 +1283,58 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }
   }
 
-  function createVersion(req, res) {
+  function localizationQuote(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
-    if (!work) return response.notFound(res, '转绘作品不存在');
-    const sourceVersion = db.prepare(`
-      SELECT source_facts_json, facts_hash
-      FROM redraw_versions
-      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
-        AND source_facts_json IS NOT NULL
-      ORDER BY version ASC
-      LIMIT 1
-    `).get(work.id, currentOwner.tenantId, currentOwner.userId);
-    if (!sourceVersion) return response.badRequest(res, '源片事实尚未确认');
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
     try {
-      const version = localizationService.createLocalizationVersion(db, currentOwner, work.id, {
-        ...req.body,
-        sourceFacts: parseJSON(sourceVersion.source_facts_json, {}),
-        sourceFactsHash: sourceVersion.facts_hash,
-      });
-      const now = new Date().toISOString();
-      db.prepare(`UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?`).run(now, version.id);
-      db.prepare(`UPDATE redraw_works SET status = 'asset_review', current_step = 2, updated_at = ? WHERE id = ?`).run(now, work.id);
-      return response.created(res, {
-        version,
-        work_id: Number(work.id),
-        project_id: Number(work.project_id),
-        status: 'asset_review',
-        current_step: 2,
-        updated_at: now,
+      rejectLocalizationClientControl(req.body || {});
+      const quote = localizationOrchestrator.quoteLocalization(
+        db,
+        localizationQuoteInput(req.body || {}, work, currentOwner, canReadArtifact),
+      );
+      if (!quote?.priced) {
+        return response.error(
+          res,
+          409,
+          quote?.code || 'pricing_unconfigured',
+          '本地化模型暂不可报价',
+          quote ? { quote } : undefined,
+        );
+      }
+      return response.success(res, quote);
+    } catch (error) {
+      return sendLocalizationError(res, error, '读取本地化报价失败', log, { workId: work.id });
+    }
+  }
+
+  async function createVersion(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    try {
+      rejectLocalizationClientControl(req.body || {});
+      const result = localizationOrchestrator.startLocalization(
+        db,
+        log,
+        localizationStartInput(req.body || {}, work, currentOwner, canReadArtifact),
+        {
+          provider: options.localizationProvider,
+          schedule: options.localizationSchedule,
+          canReadArtifact,
+        },
+      );
+      const versionId = result.version_id ?? result.draft_version_id ?? null;
+      const status = result.status ?? result.task?.status ?? 'pending';
+      return response.accepted(res, {
+        task_id: result.task_id,
+        version_id: versionId == null ? null : Number(versionId),
+        status,
+        current_step: 1,
+        billing: localizationBillingPayload(result),
       });
     } catch (error) {
-      if (String(error.code || '').startsWith('LOCALIZATION_')) return response.badRequest(res, error.message);
-      log?.error?.({ err: error, workId: work.id }, 'redraw create version failed');
-      return response.internalError(res, error.message || '创建本地化版本失败');
+      return sendLocalizationError(res, error, '提交本地化任务失败', log, { workId: work.id });
     }
   }
 
@@ -1328,6 +1578,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     updateShot,
     generateShot,
     generateBatch,
+    localizationQuote,
     createVersion,
     listVersionAssets,
     generationGate,
@@ -1340,3 +1591,5 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     analyzeWork,
   };
 };
+
+module.exports.workflowPhase = workflowPhase;

@@ -103,10 +103,10 @@ function insertVersion(db, workId, values = {}) {
   return db.prepare(`
     INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, localization_level,
-       style_snapshot_json, status, created_at, updated_at, deleted_at)
+       style_snapshot_json, localization_task_id, status, created_at, updated_at, deleted_at)
     VALUES
       (@work_id, @tenant_id, @user_id, @version, @locale, @market, @localization_level,
-       @style_snapshot_json, @status, @created_at, @updated_at, @deleted_at)
+       @style_snapshot_json, @localization_task_id, @status, @created_at, @updated_at, @deleted_at)
   `).run({
     work_id: workId,
     tenant_id: 'tenant-a',
@@ -116,6 +116,7 @@ function insertVersion(db, workId, values = {}) {
     market: 'US',
     localization_level: 'faithful',
     style_snapshot_json: '{}',
+    localization_task_id: null,
     status: 'ready_to_generate',
     created_at: NOW,
     updated_at: NOW,
@@ -143,6 +144,33 @@ function insertRedrawAsset(db, versionId, values = {}) {
     version_number: 1,
     approval_status: 'approved',
     status: 'generated',
+    created_at: NOW,
+    updated_at: NOW,
+    deleted_at: null,
+    ...values,
+  }).lastInsertRowid;
+}
+
+function insertAssetBatch(db, versionId, values = {}) {
+  return db.prepare(`
+    INSERT INTO redraw_asset_batches
+      (version_id, tenant_id, user_id, task_id, idempotency_key, quote_snapshot_json,
+       asset_ids_json, status, total_count, success_count, failed_count, created_at, updated_at, deleted_at)
+    VALUES
+      (@version_id, @tenant_id, @user_id, @task_id, @idempotency_key, @quote_snapshot_json,
+       @asset_ids_json, @status, @total_count, @success_count, @failed_count, @created_at, @updated_at, @deleted_at)
+  `).run({
+    version_id: versionId,
+    tenant_id: 'tenant-a',
+    user_id: 'user-a',
+    task_id: 'task-asset-batch',
+    idempotency_key: `asset-batch-${versionId}`,
+    quote_snapshot_json: '{}',
+    asset_ids_json: '[]',
+    status: 'pending',
+    total_count: 1,
+    success_count: 0,
+    failed_count: 0,
     created_at: NOW,
     updated_at: NOW,
     deleted_at: null,
@@ -230,6 +258,16 @@ function routeDeps(overrides = {}) {
         task_id: 'task-redraw',
         provider_task_id: 'provider-redraw',
         billing: { charged: 0, held: 1, released: 0 },
+      }),
+    },
+    localizationOrchestrator: {
+      quoteLocalization: () => ({ priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' }),
+      startLocalization: () => ({
+        task_id: 'task-localize',
+        draft_version_id: 2,
+        status: 'pending',
+        billing: { charged: 0, held: 7, released: 0 },
+        completion: Promise.resolve(),
       }),
     },
     ...overrides,
@@ -843,6 +881,324 @@ test('阶段 2 资产审核路由返回门禁并禁止普通更新接口改审�
   } finally {
     db.close();
   }
+});
+
+test('本地化版本提交拒绝客户端控制字段且不启动任务', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let starts = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        quoteLocalization: () => ({ priced: true, quote_hash: 'quote-ok' }),
+        startLocalization: () => { starts += 1; return {}; },
+      },
+    }));
+
+    for (const body of [
+      { dialogue: [] },
+      { model: 'attacker-model' },
+      { credit_amount: 1 },
+    ]) {
+      const result = captureResponse();
+      await handlers.createVersion(request({ id: workId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(result.body.error.code, 'REDRAW_LOCALIZATION_CLIENT_CONTROL_FORBIDDEN');
+    }
+    assert.equal(starts, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化报价只使用服务端 owner 与能力上下文并按租户隔离', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const canReadArtifact = () => true;
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      canReadArtifact,
+      localizationOrchestrator: {
+        quoteLocalization: (_db, input) => {
+          calls.push(input);
+          return { priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' };
+        },
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const quoted = captureResponse();
+    handlers.localizationQuote(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        localization_level: 'faithful',
+        canReadArtifact: () => false,
+      },
+    }), quoted);
+    assert.equal(quoted.statusCode, 200);
+    assert.equal(quoted.body.data.quote_hash, 'quote-ok');
+    assert.deepEqual(calls[0], {
+      workId,
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      locale: 'en-US',
+      market: 'US',
+      localizationLevel: 'faithful',
+      canReadArtifact,
+    });
+
+    const otherTenant = captureResponse();
+    handlers.localizationQuote(request({ id: workId, tenantId: 'tenant-b', body: { locale: 'en-US' } }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    assert.equal(calls.length, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化报价未配置能力或价格返回 409 且无副作用', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        quoteLocalization: () => ({ priced: false, code: 'pricing_unconfigured' }),
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const result = captureResponse();
+    handlers.localizationQuote(request({ id: workId, body: { locale: 'en-US', market: 'US' } }), result);
+
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'pricing_unconfigured');
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和服务端账单', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const canReadArtifact = () => true;
+    const provider = async () => ({});
+    const schedule = () => {};
+    const calls = [];
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      canReadArtifact,
+      localizationProvider: provider,
+      localizationSchedule: schedule,
+      localizationOrchestrator: {
+        quoteLocalization: () => ({ priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' }),
+        startLocalization: (_db, _log, input, deps) => {
+          calls.push({ input, deps });
+          return {
+            task_id: 'task-localize-1',
+            draft_version_id: 2,
+            task: { status: 'pending' },
+            reservation_id: 'reservation-localize-1',
+            quote: { credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' },
+            completion: new Promise(() => {}),
+          };
+        },
+      },
+    }));
+
+    const result = captureResponse();
+    await handlers.createVersion(request({
+      id: workId,
+      body: {
+        locale: 'en-US',
+        market: 'US',
+        localization_level: 'faithful',
+        quote_hash: 'quote-ok',
+        idempotency_key: 'idem-localize-1',
+      },
+    }), result);
+
+    assert.equal(result.statusCode, 202);
+    assert.deepEqual(result.body.data, {
+      task_id: 'task-localize-1',
+      version_id: 2,
+      status: 'pending',
+      current_step: 1,
+      billing: { charged: 0, held: 7, released: 0 },
+    });
+    assert.deepEqual(calls[0].input, {
+      workId,
+      tenantId: 'tenant-a',
+      userId: 'user-a',
+      locale: 'en-US',
+      market: 'US',
+      localizationLevel: 'faithful',
+      quoteHash: 'quote-ok',
+      idempotencyKey: 'idem-localize-1',
+      canReadArtifact,
+    });
+    assert.equal(calls[0].deps.provider, provider);
+    assert.equal(calls[0].deps.schedule, schedule);
+    assert.equal(calls[0].deps.canReadArtifact, canReadArtifact);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化版本提交映射 quote changed 与余额不足错误', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    for (const [code, expectedStatus] of [
+      ['REDRAW_LOCALIZATION_QUOTE_CHANGED', 409],
+      ['INSUFFICIENT_CREDITS', 402],
+    ]) {
+      const error = Object.assign(new Error(code), {
+        code,
+        quote: { quote_hash: 'fresh-quote', credits: 9 },
+        details: { reason: 'changed' },
+      });
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+        localizationOrchestrator: {
+          quoteLocalization: () => ({ priced: true }),
+          startLocalization: () => { throw error; },
+        },
+      }));
+      const result = captureResponse();
+      await handlers.createVersion(request({
+        id: workId,
+        body: {
+          locale: 'en-US',
+          quote_hash: 'old-quote',
+          idempotency_key: `idem-${code}`,
+        },
+      }), result);
+      assert.equal(result.statusCode, expectedStatus);
+      assert.equal(result.body.error.code, code);
+      if (code === 'REDRAW_LOCALIZATION_QUOTE_CHANGED') {
+        assert.deepEqual(result.body.error.details.quote, error.quote);
+      }
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情独立返回分析、本地化、资产批次任务和 workflow phase', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 2,
+      status: 'asset_review',
+      task_id: 'task-analysis-complete',
+    });
+    const versionId = insertVersion(db, workId, {
+      status: 'asset_review',
+      localization_task_id: 'task-localization-processing',
+    });
+    insertAssetBatch(db, versionId, {
+      task_id: 'task-asset-batch-processing',
+      status: 'processing',
+    });
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES
+        ('task-analysis-complete', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', ?, ?),
+        ('task-localization-processing', 'redraw_localization', 'processing', 33, '本地化中', ?, 'tenant-a', 'user-a', ?, ?),
+        ('task-asset-batch-processing', 'redraw_asset_batch', 'processing', 12, '资产生成中', ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(
+      String(workId), NOW, NOW,
+      String(workId), NOW, NOW,
+      String(versionId), NOW, NOW,
+    );
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.analysis_task.id, 'task-analysis-complete');
+    assert.equal(result.body.data.localization_task.id, 'task-localization-processing');
+    assert.equal(result.body.data.asset_batch.task_id, 'task-asset-batch-processing');
+    assert.equal(result.body.data.workflow_phase, 'asset_generating');
+    assert.equal(result.body.data.task_status, 'completed');
+  } finally {
+    db.close();
+  }
+});
+
+test('分析完成但未本地化时仍停留步骤 1 和 analysis_review phase', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_step: 2,
+      status: 'asset_review',
+      task_id: 'task-analysis-done',
+    });
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES ('task-analysis-done', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(String(workId), NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.current_step, 1);
+    assert.equal(result.body.data.workflow_phase, 'analysis_review');
+    assert.equal(result.body.data.version_id, null);
+  } finally {
+    db.close();
+  }
+});
+
+test('作品详情隐藏 draft 当前版本并回退到已提升版本', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 2, current_step: 2 });
+    const promotedVersionId = insertVersion(db, workId, { version: 1, status: 'asset_review' });
+    const draftVersionId = insertVersion(db, workId, { version: 2, status: 'draft' });
+    insertShot(db, promotedVersionId, { shot_index: 1, prompt: 'promoted shot' });
+    insertShot(db, draftVersionId, { shot_index: 1, prompt: 'draft shot' });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.version_id, promotedVersionId);
+    assert.equal(result.body.data.shots.length, 1);
+    assert.equal(result.body.data.shots[0].prompt, 'promoted shot');
+  } finally {
+    db.close();
+  }
+});
+
+test('workflowPhase 纯函数按阶段优先级返回状态', () => {
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 3 }, null, null, null), 'video_generation');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, { status: 'pending' }), 'asset_generating');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, null), 'asset_review');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'processing' }, null), 'localizing');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'needs_attention' }, null), 'localization_needs_attention');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'completed' }, null, null), 'analysis_review');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'pending' }, null, null), 'analyzing');
+  assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, null, null), 'source');
 });
 
 test('资产报价与生成都使用服务端模型和积分快照', async () => {
@@ -2117,7 +2473,7 @@ test('批量生成显式历史版本返回冲突且零调用零冻结', async ()
   }
 });
 
-test('第三步四个转绘分镜 API 已真实注册在总路由', () => {
+test('第三步和本地化确认 API 已真实注册在总路由', () => {
   const db = createDb();
   try {
     const router = setupRouter({}, db, { error() {}, warn() {}, info() {} });
@@ -2129,6 +2485,8 @@ test('第三步四个转绘分镜 API 已真实注册在总路由', () => {
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
     assert.equal(routes.has('POST /redraw/shots/:id/generate'), true);
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
+    assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
+    assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
   } finally {
     db.close();
   }
