@@ -75,6 +75,9 @@ test('资产批量状态纯函数 fail closed 并计算进度', async () => {
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, null), true)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: ['asset'], items: [{ asset_id: 1 }] }, null), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocking: ['asset'], items: [{ asset_id: 1 }] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], blocking: ['asset'] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: ['asset'], blocking: [] }, null), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12 }, null), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [] }, null), true)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [] }, null), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'pending' }), false)
@@ -93,6 +96,22 @@ test('资产批量状态纯函数 fail closed 并计算进度', async () => {
   assert.deepEqual(state.assetBatchProgress({ total_count: 0, success_count: 5, failed_count: 2 }), { percent: 0, successCount: 5, failedCount: 2, totalCount: 0 })
   assert.deepEqual(state.assetBatchProgress({ total_count: 4, success_count: 1, failed_count: 1 }), { percent: 50, successCount: 1, failedCount: 1, totalCount: 4 })
   assert.deepEqual(state.assetBatchProgress({ total_count: 4, success_count: 8, failed_count: 1 }), { percent: 100, successCount: 8, failedCount: 1, totalCount: 4 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: 4, success_count: 'bad', failed_count: 1 }), { percent: 25, successCount: 0, failedCount: 1, totalCount: 4 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: Infinity, success_count: -1, failed_count: Infinity }), { percent: 0, successCount: 0, failedCount: 0, totalCount: 0 })
+  assert.deepEqual(state.assetBatchProgress({ total_count: -4, success_count: 2, failed_count: -1 }), { percent: 0, successCount: 2, failedCount: 0, totalCount: 0 })
+})
+
+test('资产批量跨版本异步响应必须按版本上下文丢弃', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+
+  assert.equal(state.isAssetVersionContextCurrent('A', 'A'), true)
+  assert.equal(state.isAssetVersionContextCurrent('A', 'B'), false)
+  assert.equal(state.isAssetVersionContextCurrent(1, '1'), true)
+
+  assert.match(assetStepSource, /isAssetVersionContextCurrent/)
+  assert.match(assetStepSource, /listAssets\(versionId\)/)
+  assert.match(assetStepSource, /getGenerationGate\(versionId\)/)
+  assert.match(assetStepSource, /getAssetQuote\(asset\.id\)/)
 })
 
 test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创建字段', () => {
@@ -101,7 +120,7 @@ test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创
   assert.match(apiSource, /createAssetBatch\(versionId,\s*body\)/)
   assert.match(apiSource, /assets\/batches/)
 
-  assert.match(assetStepSource, /quoteAssetBatch\(resolvedVersionId\.value,\s*\{\s*\}\s*\)/)
+  assert.match(assetStepSource, /quoteAssetBatch\(versionId,\s*\{\s*\}\s*\)/)
   assert.match(assetStepSource, /quote_hash/)
   assert.match(assetStepSource, /idempotency_key/)
   assert.match(assetStepSource, /failedAssetIds/)

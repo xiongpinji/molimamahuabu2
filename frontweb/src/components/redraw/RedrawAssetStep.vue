@@ -47,6 +47,7 @@ import {
   failedAssetIds,
   generationGateOpen,
   groupAssets,
+  isAssetVersionContextCurrent,
 } from '@/utils/redrawAssetState'
 import RedrawAssetCard from './RedrawAssetCard.vue'
 import RedrawReviewGate from './RedrawReviewGate.vue'
@@ -98,6 +99,10 @@ function nextIdempotencyKey() {
   return batchIdempotencyKey.value
 }
 
+function isCurrentVersion(versionId) {
+  return isAssetVersionContextCurrent(versionId, resolvedVersionId.value)
+}
+
 async function loadAssetBatchQuote(assetIds = null) {
   if (!resolvedVersionId.value) return null
   const versionId = resolvedVersionId.value
@@ -105,30 +110,36 @@ async function loadAssetBatchQuote(assetIds = null) {
   const context = quoteContext(versionId, ids)
   pendingQuoteContext.value = context
   const result = ids.length
-    ? await redrawAPI.quoteAssetBatch(resolvedVersionId.value, { asset_ids: ids })
-    : await redrawAPI.quoteAssetBatch(resolvedVersionId.value, {})
-  if (resolvedVersionId.value !== versionId || pendingQuoteContext.value !== context) return null
+    ? await redrawAPI.quoteAssetBatch(versionId, { asset_ids: ids })
+    : await redrawAPI.quoteAssetBatch(versionId, {})
+  if (!isCurrentVersion(versionId) || pendingQuoteContext.value !== context) return null
   batchQuote.value = result || null
   return batchQuote.value
 }
 
 async function refresh(options = {}) {
   if (!resolvedVersionId.value) return
+  const versionId = resolvedVersionId.value
   const quoteBatch = options.quoteBatch !== false
   loading.value = true
   try {
     const [items, nextGate] = await Promise.all([
-      redrawAPI.listAssets(resolvedVersionId.value),
-      redrawAPI.getGenerationGate(resolvedVersionId.value),
+      redrawAPI.listAssets(versionId),
+      redrawAPI.getGenerationGate(versionId),
     ])
-    assets.value = Array.isArray(items) ? items : []
-    const quoted = await Promise.all(assets.value.map(async (asset) => {
+    if (!isCurrentVersion(versionId)) return
+    const nextAssets = Array.isArray(items) ? items : []
+    const quoted = await Promise.all(nextAssets.map(async (asset) => {
       const nextQuote = await redrawAPI.getAssetQuote(asset.id)
+      if (!isCurrentVersion(versionId)) return null
       return { ...asset, quote_credits: nextQuote?.credits || null }
     }))
+    if (quoted.some((asset) => !asset)) return
+    if (!isCurrentVersion(versionId)) return
     assets.value = quoted
     gate.value = nextGate || { ok: false, missing: [] }
     emit('gate-updated', gate.value)
+    if (!isCurrentVersion(versionId)) return
     if (quoteBatch) await loadAssetBatchQuote()
   } finally {
     loading.value = false
@@ -169,7 +180,7 @@ async function pollBatchWork() {
   const versionId = resolvedVersionId.value
   try {
     const work = await redrawAPI.getWork(props.work.id)
-    if (resolvedVersionId.value !== versionId) return
+    if (!isCurrentVersion(versionId)) return
     emit('work-updated', work)
     batchWork.value = normalizeBatch(work?.asset_batch)
     await refresh({ quoteBatch: false })
@@ -213,7 +224,7 @@ async function startAssetBatch(assetIds = null) {
     }
     if (ids.length) body.asset_ids = ids
     const result = await redrawAPI.createAssetBatch(versionId, body)
-    if (resolvedVersionId.value !== versionId) return
+    if (!isCurrentVersion(versionId)) return
     batchWork.value = normalizeBatch(result)
     startBatchPolling()
     ElMessage.success('资产批量生成任务已创建')

@@ -33,9 +33,13 @@ export function assetBatchCredits(quote) {
 }
 
 function batchBlockers(quote) {
-  if (Array.isArray(quote?.blocked)) return quote.blocked
-  if (Array.isArray(quote?.blocking)) return quote.blocking
-  return null
+  const hasBlocked = Array.isArray(quote?.blocked)
+  const hasBlocking = Array.isArray(quote?.blocking)
+  if (!hasBlocked && !hasBlocking) return null
+  return [
+    ...(hasBlocked ? quote.blocked : []),
+    ...(hasBlocking ? quote.blocking : []),
+  ]
 }
 
 export function canStartAssetBatch(quote, batch) {
@@ -62,13 +66,22 @@ export function failedAssetIds(source) {
   return ids
 }
 
+function nonNegativeFinite(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : 0
+}
+
 export function assetBatchProgress(batch) {
-  const totalCount = Math.max(0, Number(batch?.total_count || batch?.totalCount || 0))
-  const successCount = Math.max(0, Number(batch?.success_count || batch?.successCount || 0))
-  const failedCount = Math.max(0, Number(batch?.failed_count || batch?.failedCount || 0))
+  const totalCount = nonNegativeFinite(batch?.total_count ?? batch?.totalCount)
+  const successCount = nonNegativeFinite(batch?.success_count ?? batch?.successCount)
+  const failedCount = nonNegativeFinite(batch?.failed_count ?? batch?.failedCount)
   const done = successCount + failedCount
   const percent = totalCount > 0 ? Math.max(0, Math.min(100, Math.round((done / totalCount) * 100))) : 0
   return { percent, successCount, failedCount, totalCount }
+}
+
+export function isAssetVersionContextCurrent(expected, current) {
+  return String(expected ?? '') === String(current ?? '')
 }
 
 export function reviewLabel(asset) {
