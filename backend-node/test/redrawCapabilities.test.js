@@ -6,6 +6,7 @@ const {
   listPublicStylePresets,
   summarizeLocaleCapability,
   listLocaleCapabilities,
+  resolveVerifiedLocaleCapability,
 } = require('../src/services/redrawCapabilityService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
@@ -41,6 +42,8 @@ function createDb() {
       name TEXT,
       model TEXT,
       is_active INTEGER DEFAULT 1,
+      is_default INTEGER DEFAULT 0,
+      priority INTEGER DEFAULT 0,
       settings TEXT,
       deleted_at TEXT
     );
@@ -163,10 +166,91 @@ test('listPublicStylePresets skips evidence when artifact read callback throws',
 });
 
 test('summarizeLocaleCapability maps verified outputs to production status', () => {
-  assert.equal(summarizeLocaleCapability({ text: true, subtitles: true, tts: true, video: true }), 'full_output');
-  assert.equal(summarizeLocaleCapability({ text: true, subtitles: true, tts: false, video: true }), 'subtitle_only');
-  assert.equal(summarizeLocaleCapability({ text: true, subtitles: true, tts: false, video: false }), 'voice_pending');
-  assert.equal(summarizeLocaleCapability({ text: true, subtitles: false, tts: true, video: true }), 'blocking');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: true,
+    clean_plate_image: true,
+    tts: true,
+    video: true,
+  }), 'full_output');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: false,
+    clean_plate_image: true,
+    tts: true,
+    video: true,
+  }), 'asset_pending');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: true,
+    clean_plate_image: false,
+    tts: true,
+    video: true,
+  }), 'asset_pending');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: true,
+    clean_plate_image: true,
+    tts: false,
+    video: true,
+  }), 'subtitle_only');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: true,
+    character_image: true,
+    clean_plate_image: true,
+    tts: false,
+    video: false,
+  }), 'voice_pending');
+  assert.equal(summarizeLocaleCapability({
+    text: true,
+    subtitles: false,
+    character_image: true,
+    clean_plate_image: true,
+    tts: true,
+    video: true,
+  }), 'blocking');
+});
+
+test('resolveVerifiedLocaleCapability returns only exact verified readable locale capability', () => {
+  const db = createDb();
+  insertConfig(db, [
+    {
+      locale: 'en-US',
+      market: 'US',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(31),
+      },
+    },
+  ]);
+
+  assert.deepEqual(resolveVerifiedLocaleCapability(db, {
+    locale: 'en-US',
+    market: 'US',
+    capability: 'text',
+    canReadArtifact: (id) => id === 31,
+  }), {
+    provider: 'provider-a',
+    model: 'model-a',
+    evidence: validEvidence(31),
+  });
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'en-GB',
+    market: 'GB',
+    capability: 'text',
+    canReadArtifact: (id) => id === 31,
+  }), null);
+  assert.equal(resolveVerifiedLocaleCapability(db, {
+    locale: 'en-US',
+    market: 'US',
+    capability: 'text',
+    canReadArtifact: () => false,
+  }), null);
 });
 
 test('listLocaleCapabilities ignores unreadable evidence and returns blocking reasons', () => {
@@ -182,6 +266,8 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
       evidence: {
         text: validEvidence(1),
         subtitles: validEvidence(2),
+        character_image: validEvidence(23),
+        clean_plate_image: validEvidence(24),
         tts: validEvidence(3),
         video: validEvidence(4),
       },
@@ -203,6 +289,8 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
       evidence: {
         text: validEvidence(8),
         subtitles: validEvidence(404),
+        character_image: validEvidence(25),
+        clean_plate_image: validEvidence(26),
         tts: validEvidence(9),
         video: validEvidence(10),
       },
@@ -214,6 +302,8 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
       evidence: {
         text: validEvidence('throws'),
         subtitles: validEvidence(20),
+        character_image: validEvidence(27),
+        clean_plate_image: validEvidence(28),
         tts: validEvidence(21),
         video: validEvidence(22),
       },
@@ -238,6 +328,8 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
       evidence: {
         text: validEvidence(15),
         subtitles: validEvidence(16),
+        character_image: validEvidence(29),
+        clean_plate_image: validEvidence(30),
         tts: validEvidence(17),
         video: validEvidence(18),
       },
@@ -252,7 +344,7 @@ test('listLocaleCapabilities ignores unreadable evidence and returns blocking re
   assert.deepEqual(rows, [
     { locale: 'de-DE', market: 'DE', status: 'blocking', blocking: ['text'] },
     { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] },
-    { locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['tts'] },
+    { locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['character_image', 'clean_plate_image', 'tts'] },
     { locale: 'ko-KR', market: 'KR', status: 'blocking', blocking: ['subtitles'] },
   ]);
 });
