@@ -15,6 +15,7 @@ const redrawReviewService = require('../services/redrawReviewService');
 const redrawShotService = require('../services/redrawShotService');
 const redrawGenerationService = require('../services/redrawGenerationService');
 const redrawBillingService = require('../services/redrawBillingService');
+const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const assetService = require('../services/assetService');
 const uploadServiceModule = require('../services/uploadService');
 
@@ -324,6 +325,16 @@ const LOCALIZATION_VERSION_FIELDS = new Set([
   'quote_hash',
   'idempotency_key',
 ]);
+const ASSET_BATCH_CLIENT_CONTROL_FIELDS = new Set([
+  'model',
+  'provider',
+  'credits',
+  'credit_amount',
+  'reservation_id',
+  'asset_results',
+]);
+const ASSET_BATCH_QUOTE_FIELDS = new Set(['asset_ids']);
+const ASSET_BATCH_CREATE_FIELDS = new Set(['asset_ids', 'quote_hash', 'idempotency_key']);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
@@ -449,6 +460,175 @@ function localizationBillingPayload(result) {
   };
 }
 
+function rejectAssetBatchClientControl(body, allowedFields) {
+  const input = body || {};
+  if (input != null && (typeof input !== 'object' || Array.isArray(input))) {
+    throw codedRouteError(
+      'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN',
+      '批量资产参数必须是对象',
+    );
+  }
+  for (const key of Object.keys(input)) {
+    if (!allowedFields.has(key) || ASSET_BATCH_CLIENT_CONTROL_FIELDS.has(key)) {
+      throw codedRouteError(
+        'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN',
+        '批量资产生成模型、供应商、积分与结果只能由服务端决定',
+      );
+    }
+  }
+}
+
+function assetBatchAssetIds(body) {
+  if (!Object.prototype.hasOwnProperty.call(body || {}, 'asset_ids')) return undefined;
+  const value = body.asset_ids;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw codedRouteError('REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN', 'asset_ids 必须是正整数数组');
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const id = Number(raw);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw codedRouteError('REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN', 'asset_ids 必须是正整数数组');
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function assetBatchQuoteInput(body) {
+  rejectAssetBatchClientControl(body, ASSET_BATCH_QUOTE_FIELDS);
+  return { assetIds: assetBatchAssetIds(body || {}) };
+}
+
+function assetBatchCreateInput(body) {
+  rejectAssetBatchClientControl(body, ASSET_BATCH_CREATE_FIELDS);
+  return {
+    assetIds: assetBatchAssetIds(body || {}),
+    quoteHash: String(body?.quote_hash || '').trim(),
+    idempotencyKey: String(body?.idempotency_key || '').trim(),
+  };
+}
+
+function assetBatchResponsePayload(result, billing) {
+  const batch = result?.batch || result?.asset_batch || null;
+  const task = result?.task || null;
+  return {
+    batch_id: Number(batch?.id ?? result?.batch_id ?? result?.id ?? 0) || null,
+    task_id: task?.id ?? result?.task_id ?? batch?.task_id ?? null,
+    status: result?.status ?? batch?.status ?? task?.status ?? 'pending',
+    billing,
+    current_step: 2,
+  };
+}
+
+function reservationBillingFromRows(rows) {
+  return rows.reduce((acc, row) => {
+    const amount = Number(row?.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) return acc;
+    if (row.status === 'confirmed') acc.charged += amount;
+    else if (row.status === 'held') acc.held += amount;
+    else if (row.status === 'refunded') acc.released += amount;
+    return acc;
+  }, { charged: 0, held: 0, released: 0 });
+}
+
+function assetBatchBillingFromReservations(db, result, currentOwner) {
+  const ids = [
+    ...(Array.isArray(result?.batch?.attempt_ids) ? result.batch.attempt_ids : []),
+    ...(Array.isArray(result?.batch?.asset_ids) ? result.batch.asset_ids : []),
+    ...(Array.isArray(result?.attempt_ids) ? result.attempt_ids : []),
+    ...(Array.isArray(result?.asset_ids) ? result.asset_ids : []),
+    ...(Array.isArray(result?.batch?.quote_snapshot?.items)
+      ? result.batch.quote_snapshot.items.map((item) => item.asset_id)
+      : []),
+    ...(Array.isArray(result?.quote_snapshot?.items)
+      ? result.quote_snapshot.items.map((item) => item.asset_id)
+      : []),
+  ]
+    .map((id) => Number(id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  const uniqueIds = [...new Set(ids)];
+  if (!uniqueIds.length) return { charged: 0, held: 0, released: 0 };
+  try {
+    const assets = db.prepare(`
+      SELECT credit_reservation_id
+      FROM redraw_assets
+      WHERE id IN (${uniqueIds.map(() => '?').join(',')})
+        AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+        AND credit_reservation_id IS NOT NULL
+    `).all(...uniqueIds, currentOwner.tenantId, currentOwner.userId);
+    const reservationIds = [...new Set(assets.map((row) => String(row.credit_reservation_id || '').trim()).filter(Boolean))];
+    if (!reservationIds.length) return { charged: 0, held: 0, released: 0 };
+    const rows = [];
+    try {
+      rows.push(...db.prepare(`
+        SELECT id, amount, status
+        FROM tenant_usage_reservations
+        WHERE id IN (${reservationIds.map(() => '?').join(',')})
+          AND tenant_id = ?
+      `).all(...reservationIds, currentOwner.tenantId));
+    } catch (error) {
+      if (!isMissingSchemaError(error)) throw error;
+    }
+    try {
+      rows.push(...db.prepare(`
+        SELECT id, amount, status
+        FROM usage_reservations
+        WHERE id IN (${reservationIds.map(() => '?').join(',')})
+          AND user_id = ?
+      `).all(...reservationIds, currentOwner.userId));
+    } catch (error) {
+      if (!isMissingSchemaError(error)) throw error;
+    }
+    return reservationBillingFromRows(rows);
+  } catch (error) {
+    if (isMissingSchemaError(error)) return { charged: 0, held: 0, released: 0 };
+    throw error;
+  }
+}
+
+function assetBatchBillingPayload(db, result, currentOwner) {
+  if (result?.billing) return billingPayload(result.billing);
+  return assetBatchBillingFromReservations(db, result, currentOwner);
+}
+
+function sendAssetBatchError(res, error, fallbackMessage, log, context = {}) {
+  const code = String(error?.code || '');
+  const details = error?.quote
+    ? { ...(error?.details || {}), quote: error.quote }
+    : (error?.details || error?.quote_snapshot || undefined);
+  if (code === 'REDRAW_VERSION_NOT_FOUND' || code === 'REDRAW_ASSET_NOT_FOUND') {
+    return response.error(res, 404, code, error.message || fallbackMessage, details);
+  }
+  if (code === 'INSUFFICIENT_CREDITS') {
+    return response.error(res, 402, code, error.message || '积分不足', details);
+  }
+  if ([
+    'REDRAW_ASSET_BATCH_QUOTE_CHANGED',
+    'REDRAW_ASSET_QUOTE_CHANGED',
+    'REDRAW_ASSET_BATCH_UNPRICED',
+    'REDRAW_ASSET_BATCH_EMPTY',
+    'REDRAW_ASSET_PROVIDER_REQUIRED',
+    'REDRAW_ASSET_BATCH_CAPABILITY_UNVERIFIED',
+    'REDRAW_ASSET_BATCH_PRICING_UNCONFIGURED',
+    'pricing_unconfigured',
+  ].includes(code)) {
+    return response.error(res, 409, code, error.message || fallbackMessage, details);
+  }
+  if (code === 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN') {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  if (code.startsWith('REDRAW_ASSET') || code.startsWith('REDRAW_')) {
+    return response.error(res, 400, code, error.message || fallbackMessage, details);
+  }
+  log?.error?.({ err: error, ...context }, fallbackMessage);
+  return response.error(res, 500, 'INTERNAL_ERROR', fallbackMessage);
+}
+
 function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
   const code = String(error?.code || '');
   const details = error?.quote
@@ -501,6 +681,16 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
 
 function isMissingSchemaError(error) {
   return /no such (table|column)/i.test(String(error?.message || ''));
+}
+
+function defaultAssetBatchSchedule(job) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      Promise.resolve()
+        .then(job)
+        .then(resolve, reject);
+    });
+  });
 }
 
 function registerSourceAsset(db, log, currentOwner, sourceAsset) {
@@ -556,6 +746,12 @@ module.exports = function redrawRoutes(db, log, options = {}) {
   const shotService = options.shotService || redrawShotService;
   const generationService = options.generationService || redrawGenerationService;
   const localizationOrchestrator = options.localizationOrchestrator || redrawLocalizationOrchestrator;
+  const assetBatchService = options.assetBatchService || {
+    quoteAssetBatch: (ctx, input) => redrawAssetBatchService.quoteAssetBatch(db, { ...ctx, ...input }),
+    startAssetBatch: (ctx, input) => redrawAssetBatchService.startAssetBatch(ctx, input, {
+      concurrency: ctx.concurrency,
+    }),
+  };
   const cfg = options.cfg || {};
   const quoteAnalysis = options.quoteAnalysis || analysisQuote();
   const canReadArtifact = options.canReadArtifact || createCanReadArtifact(db, cfg);
@@ -607,6 +803,23 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function assetBatchContext(version, currentOwner) {
+    return {
+      db,
+      versionId: Number(version.id),
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      canReadArtifact,
+      assetReader: {
+        canRead: (row) => Boolean(row && typeof canReadArtifact === 'function' && canReadArtifact(row.id)),
+      },
+      provider: options.assetGenerationProvider || options.assetProvider,
+      schedule: options.assetBatchSchedule || options.schedule || defaultAssetBatchSchedule,
+      concurrency: Number(options.assetBatchConcurrency || options.assetConcurrency || 3),
+      log,
+    };
   }
 
   function findOwnedShot(id, currentOwner) {
@@ -1353,6 +1566,63 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     }, { kind: req.query?.kind }));
   }
 
+  async function assetBatchQuote(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    let input;
+    try {
+      input = assetBatchQuoteInput(req.body || {});
+    } catch (error) {
+      return sendAssetBatchError(res, error, '批量资产报价参数无效', log, { versionId: req.params.id });
+    }
+    try {
+      const quote = await assetBatchService.quoteAssetBatch(assetBatchContext(version, currentOwner), input);
+      if (quote?.priced === false) {
+        return response.error(
+          res,
+          409,
+          'REDRAW_ASSET_BATCH_UNPRICED',
+          '批量资产存在未验证能力或未配置价格',
+          quote,
+        );
+      }
+      return response.success(res, quote);
+    } catch (error) {
+      return sendAssetBatchError(res, error, '批量资产报价失败', log, { versionId: version.id });
+    }
+  }
+
+  async function createAssetBatch(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    let input;
+    try {
+      input = assetBatchCreateInput(req.body || {});
+    } catch (error) {
+      return sendAssetBatchError(res, error, '批量资产生成参数无效', log, { versionId: req.params.id });
+    }
+    const ctx = assetBatchContext(version, currentOwner);
+    if (typeof ctx.provider !== 'function') {
+      return response.error(
+        res,
+        409,
+        'REDRAW_ASSET_PROVIDER_REQUIRED',
+        '资产生成能力尚未配置',
+      );
+    }
+    try {
+      const result = await assetBatchService.startAssetBatch(ctx, input);
+      return response.accepted(res, assetBatchResponsePayload(
+        result,
+        assetBatchBillingPayload(db, result, currentOwner),
+      ));
+    } catch (error) {
+      return sendAssetBatchError(res, error, '提交批量资产生成失败', log, { versionId: version.id });
+    }
+  }
+
   function generationGate(req, res) {
     const currentOwner = owner(req);
     try {
@@ -1585,6 +1855,8 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     localizationQuote,
     createVersion,
     listVersionAssets,
+    assetBatchQuote,
+    createAssetBatch,
     generationGate,
     assetQuote,
     updateRedrawAsset,

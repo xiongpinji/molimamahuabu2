@@ -270,6 +270,7 @@ function routeDeps(overrides = {}) {
         completion: Promise.resolve(),
       }),
     },
+    assetGenerationProvider: async () => ({ status: 'completed' }),
     ...overrides,
   };
 }
@@ -313,6 +314,43 @@ function insertSourceAsset(db, values = {}) {
     deleted_at: null,
     ...values,
   }).lastInsertRowid;
+}
+
+function setupAssetBatchFixture(db, values = {}) {
+  const projectId = insertProject(db, values.project || {});
+  const workId = insertWork(db, projectId, {
+    current_version: 1,
+    current_step: 2,
+    status: 'asset_review',
+    ...(values.work || {}),
+  });
+  const versionId = insertVersion(db, workId, { status: 'asset_review', ...(values.version || {}) });
+  const assetId = insertRedrawAsset(db, versionId, {
+    source_ref_json: JSON.stringify({ source_ref: { kind: 'character', id: 'character-1' } }),
+    asset_id: null,
+    approval_status: 'pending',
+    status: 'draft',
+    ...(values.asset || {}),
+  });
+  return { projectId, workId, versionId, assetId };
+}
+
+function makeAssetBatchService(overrides = {}) {
+  return {
+    quoteAssetBatch: overrides.quoteAssetBatch || (() => ({
+      priced: true,
+      version_id: 1,
+      total_credits: 7,
+      items: [{ asset_id: 1, credits: 7, model: 'server-model', provider: 'server-provider' }],
+      blocked: [],
+      quote_hash: 'quote-ok',
+    })),
+    startAssetBatch: overrides.startAssetBatch || (() => ({
+      batch: { id: 10, status: 'pending', attempt_ids: [1], asset_ids: [1] },
+      task: { id: 'task-batch', status: 'pending' },
+      completion: new Promise(() => {}),
+    })),
+  };
 }
 
 function insertRedrawLocaleCapabilityConfig(db, entries) {
@@ -1367,6 +1405,382 @@ test('资产报价与生成都使用服务端模型和积分快照', async () =>
       WHERE resource_type = 'redraw_asset'
     `).get();
     assert.deepEqual(reservation, { model: 'verified-image-model', amount: 7, status: 'confirmed' });
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量报价只接受资产 ID 并使用服务端 quote', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let serviceInput = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: (ctx, input) => {
+          serviceInput = { ctx, input };
+          return {
+            priced: true,
+            version_id: versionId,
+            total_credits: 9,
+            items: [{ asset_id: assetId, credits: 9, model: 'server-model', provider: 'server-provider' }],
+            blocked: [],
+            quote_hash: 'hash-server',
+          };
+        },
+      }),
+    }));
+
+    const result = captureResponse();
+    await handlers.assetBatchQuote(request({
+      id: versionId,
+      body: { asset_ids: [assetId, assetId] },
+    }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(serviceInput.input, { assetIds: [assetId] });
+    assert.equal(serviceInput.ctx.db, db);
+    assert.equal(serviceInput.ctx.versionId, versionId);
+    assert.equal(serviceInput.ctx.tenantId, 'tenant-a');
+    assert.equal(serviceInput.ctx.userId, 'user-a');
+    assert.equal(typeof serviceInput.ctx.canReadArtifact, 'function');
+    assert.equal(typeof serviceInput.ctx.provider, 'function');
+    assert.equal(typeof serviceInput.ctx.schedule, 'function');
+    assert.equal('model' in serviceInput.input, false);
+    assert.equal('provider' in serviceInput.input, false);
+    assert.equal(result.body.data.total_credits, 9);
+    assert.equal(result.body.data.quote_hash, 'hash-server');
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量报价未定价返回 409 并保留服务详情', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => {
+          calls += 1;
+          return {
+            priced: false,
+            version_id: versionId,
+            total_credits: 0,
+            items: [{ asset_id: assetId, priced: false }],
+            blocked: [{ asset_id: assetId, code: 'REDRAW_CAPABILITY_UNVERIFIED', message: '未验证' }],
+            quote_hash: 'hash-blocked',
+          };
+        },
+      }),
+    }));
+
+    const result = captureResponse();
+    await handlers.assetBatchQuote(request({ id: versionId, body: { asset_ids: [assetId] } }), result);
+
+    assert.equal(calls, 1);
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'REDRAW_ASSET_BATCH_UNPRICED');
+    assert.deepEqual(result.body.error.details.blocked, [{ asset_id: assetId, code: 'REDRAW_CAPABILITY_UNVERIFIED', message: '未验证' }]);
+    assert.equal(result.body.error.details.quote_hash, 'hash-blocked');
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量创建返回 202 映射真实 service shape 且不等待 completion', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let serviceInput = null;
+    let providerCalls = 0;
+    const never = new Promise(() => {});
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetGenerationProvider: async () => {
+        providerCalls += 1;
+        return { status: 'completed' };
+      },
+      assetBatchService: makeAssetBatchService({
+        startAssetBatch: (ctx, input) => {
+          serviceInput = { ctx, input };
+          return {
+            batch: { id: 44, status: 'pending', attempt_ids: [assetId], asset_ids: [assetId] },
+            task: { id: 'task-real-shape', status: 'pending' },
+            completion: never,
+          };
+        },
+      }),
+    }));
+
+    const startedAt = Date.now();
+    const result = captureResponse();
+    await handlers.createAssetBatch(request({
+      id: versionId,
+      body: { asset_ids: [assetId], quote_hash: 'hash-server', idempotency_key: 'idem-1' },
+    }), result);
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(providerCalls, 0);
+    assert.deepEqual(serviceInput.input, {
+      assetIds: [assetId],
+      quoteHash: 'hash-server',
+      idempotencyKey: 'idem-1',
+    });
+    assert.equal(typeof serviceInput.ctx.provider, 'function');
+    assert.equal(typeof serviceInput.ctx.schedule, 'function');
+    assert.equal(result.statusCode, 202);
+    assert.equal(result.body.data.batch_id, 44);
+    assert.equal(result.body.data.task_id, 'task-real-shape');
+    assert.equal(result.body.data.status, 'pending');
+    assert.deepEqual(result.body.data.billing, { charged: 0, held: 0, released: 0 });
+    assert.equal(result.body.data.current_step, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量创建兼容 stub shape 并支持幂等重放同 batch/task', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        startAssetBatch: () => {
+          calls += 1;
+          return {
+            batch_id: 55,
+            task_id: 'task-stub-shape',
+            status: 'pending',
+            billing: { charged: 0, held: 5, released: 0 },
+            completion: new Promise(() => {}),
+          };
+        },
+      }),
+    }));
+
+    for (let i = 0; i < 2; i += 1) {
+      const result = captureResponse();
+      await handlers.createAssetBatch(request({
+        id: versionId,
+        body: { asset_ids: [assetId], quote_hash: 'hash-server', idempotency_key: 'idem-replay' },
+      }), result);
+      assert.equal(result.statusCode, 202);
+      assert.equal(result.body.data.batch_id, 55);
+      assert.equal(result.body.data.task_id, 'task-stub-shape');
+      assert.deepEqual(result.body.data.billing, { charged: 0, held: 5, released: 0 });
+    }
+    assert.equal(calls, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量两条路径跨租户和跨用户返回 404 且 service 0 调用', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let quoteCalls = 0;
+    let startCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => { quoteCalls += 1; return {}; },
+        startAssetBatch: () => { startCalls += 1; return {}; },
+      }),
+    }));
+
+    for (const req of [
+      request({ id: versionId, tenantId: 'tenant-b', body: { asset_ids: [assetId] } }),
+      request({ id: versionId, userId: 'user-b', body: { asset_ids: [assetId] } }),
+    ]) {
+      const quote = captureResponse();
+      await handlers.assetBatchQuote(req, quote);
+      assert.equal(quote.statusCode, 404);
+
+      const create = captureResponse();
+      await handlers.createAssetBatch({
+        ...req,
+        body: { asset_ids: [assetId], quote_hash: 'hash', idempotency_key: 'idem' },
+      }, create);
+      assert.equal(create.statusCode, 404);
+    }
+    assert.equal(quoteCalls, 0);
+    assert.equal(startCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量接口拒绝客户端控制字段和未知字段且 service/provider 0 调用', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    let quoteCalls = 0;
+    let startCalls = 0;
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetGenerationProvider: async () => { providerCalls += 1; return {}; },
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => { quoteCalls += 1; return {}; },
+        startAssetBatch: () => { startCalls += 1; return {}; },
+      }),
+    }));
+    const forbidden = ['model', 'provider', 'credits', 'credit_amount', 'reservation_id', 'asset_results'];
+    for (const field of forbidden) {
+      for (const handlerName of ['assetBatchQuote', 'createAssetBatch']) {
+        const body = handlerName === 'assetBatchQuote'
+          ? { asset_ids: [assetId], [field]: null }
+          : { asset_ids: [assetId], quote_hash: 'hash', idempotency_key: 'idem', [field]: undefined };
+        const result = captureResponse();
+        await handlers[handlerName](request({ id: versionId, body }), result);
+        assert.equal(result.statusCode, 400, `${handlerName} ${field}`);
+        assert.equal(result.body.error.code, 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN');
+      }
+    }
+    for (const [handlerName, body] of [
+      ['assetBatchQuote', { asset_ids: [assetId], unexpected: true }],
+      ['createAssetBatch', { asset_ids: [assetId], quote_hash: 'hash', idempotency_key: 'idem', unexpected: true }],
+    ]) {
+      const result = captureResponse();
+      await handlers[handlerName](request({ id: versionId, body }), result);
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.body.error.code, 'REDRAW_ASSET_CLIENT_CONTROL_FORBIDDEN');
+    }
+    assert.equal(quoteCalls, 0);
+    assert.equal(startCalls, 0);
+    assert.equal(providerCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量接口拒绝非法 asset_ids 且不调用 service', async () => {
+  const db = createDb();
+  try {
+    const { versionId } = setupAssetBatchFixture(db);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        quoteAssetBatch: () => { calls += 1; return {}; },
+        startAssetBatch: () => { calls += 1; return {}; },
+      }),
+    }));
+    const invalidValues = [[0], [-1], [1.2], ['abc'], 'abc', []];
+    for (const value of invalidValues) {
+      const quote = captureResponse();
+      await handlers.assetBatchQuote(request({ id: versionId, body: { asset_ids: value } }), quote);
+      assert.equal(quote.statusCode, 400);
+      const create = captureResponse();
+      await handlers.createAssetBatch(request({
+        id: versionId,
+        body: { asset_ids: value, quote_hash: 'hash', idempotency_key: 'idem' },
+      }), create);
+      assert.equal(create.statusCode, 400);
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量创建映射报价变化、余额不足和能力缺失错误', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    for (const [code, expectedStatus] of [
+      ['REDRAW_ASSET_BATCH_QUOTE_CHANGED', 409],
+      ['REDRAW_ASSET_QUOTE_CHANGED', 409],
+      ['REDRAW_ASSET_BATCH_UNPRICED', 409],
+      ['REDRAW_ASSET_BATCH_EMPTY', 409],
+      ['REDRAW_ASSET_PROVIDER_REQUIRED', 409],
+      ['INSUFFICIENT_CREDITS', 402],
+    ]) {
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+        assetBatchService: makeAssetBatchService({
+          startAssetBatch: () => {
+            throw Object.assign(new Error(code), {
+              code,
+              quote: { quote_hash: `new-${code}`, total_credits: 8 },
+              details: { marker: code },
+            });
+          },
+        }),
+      }));
+      const result = captureResponse();
+      await handlers.createAssetBatch(request({
+        id: versionId,
+        body: { asset_ids: [assetId], quote_hash: 'old', idempotency_key: `idem-${code}` },
+      }), result);
+      assert.equal(result.statusCode, expectedStatus, code);
+      assert.equal(result.body.error.code, code);
+      if (code.includes('QUOTE_CHANGED')) {
+        assert.equal(result.body.error.details.quote.quote_hash, `new-${code}`);
+      }
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('资产批量创建 billing 从逐项 reservation 真实聚合 confirmed held refunded', async () => {
+  const db = createDb();
+  try {
+    const { versionId, assetId } = setupAssetBatchFixture(db);
+    const heldAssetId = insertRedrawAsset(db, versionId, { localized_name: 'Held', asset_id: null, status: 'pending' });
+    const refundedAssetId = insertRedrawAsset(db, versionId, { localized_name: 'Refunded', asset_id: null, status: 'failed' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const confirmed = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'batch-confirmed',
+      model: 'server-model',
+      resourceType: 'redraw_asset',
+      resourceId: String(assetId),
+      amount: 3,
+    });
+    creditLedger.confirm(db, confirmed.id);
+    const held = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'batch-held',
+      model: 'server-model',
+      resourceType: 'redraw_asset',
+      resourceId: String(heldAssetId),
+      amount: 5,
+    });
+    const refunded = creditLedger.reserve(db, {
+      tenantId: 'tenant-a',
+      actorUserId: 'user-a',
+      operationKey: 'batch-refunded',
+      model: 'server-model',
+      resourceType: 'redraw_asset',
+      resourceId: String(refundedAssetId),
+      amount: 7,
+    });
+    creditLedger.refund(db, refunded.id, 'failed');
+    db.prepare('UPDATE redraw_assets SET credit_reservation_id = ? WHERE id = ?').run(confirmed.id, assetId);
+    db.prepare('UPDATE redraw_assets SET credit_reservation_id = ? WHERE id = ?').run(held.id, heldAssetId);
+    db.prepare('UPDATE redraw_assets SET credit_reservation_id = ? WHERE id = ?').run(refunded.id, refundedAssetId);
+
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetBatchService: makeAssetBatchService({
+        startAssetBatch: () => ({
+          batch: { id: 77, status: 'pending', attempt_ids: [assetId, heldAssetId, refundedAssetId] },
+          task: { id: 'task-billing', status: 'pending' },
+          completion: new Promise(() => {}),
+        }),
+      }),
+    }));
+
+    const result = captureResponse();
+    await handlers.createAssetBatch(request({
+      id: versionId,
+      body: { asset_ids: [assetId, heldAssetId, refundedAssetId], quote_hash: 'hash', idempotency_key: 'idem-billing' },
+    }), result);
+
+    assert.equal(result.statusCode, 202);
+    assert.deepEqual(result.body.data.billing, { charged: 3, held: 5, released: 7 });
   } finally {
     db.close();
   }
@@ -2592,6 +3006,8 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
     assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
   } finally {
     db.close();
   }

@@ -265,6 +265,8 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
+  r.post('/redraw/versions/:id/assets/batches', redraw.createAssetBatch);
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
