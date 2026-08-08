@@ -124,7 +124,7 @@ function parseJson(raw) {
   try { return JSON.parse(raw); } catch (_) { return null; }
 }
 
-async function callFeituoVideoApi(config, log, opts = {}) {
+async function callFeituoVideoApi(config, log, opts = {}, runtime = {}) {
   let body;
   try {
     body = buildFeituoVideoBody(opts);
@@ -143,7 +143,8 @@ async function callFeituoVideoApi(config, log, opts = {}) {
   });
   let response;
   try {
-    response = await fetch(url, {
+    const fetchImpl = runtime.fetchImpl || fetch;
+    response = await fetchImpl(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config?.api_key || ''}`,
