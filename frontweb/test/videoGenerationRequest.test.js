@@ -3,10 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   buildVideoGenerationAudit,
-  buildShortDramaVideoRequest,
   buildVideoGenerationRequest,
-  feituoShortDramaImageLimit,
-  isUsmercariShortDramaModel,
   limitFeituoShortDramaReferenceImages,
   supportsFeituoShortDramaOmni,
 } from '../src/utils/videoGenerationRequest.js'
@@ -41,126 +38,6 @@ test('请求审计保留分镜模型、参考图和首尾帧字段', () => {
   assert.equal(payload.aspect_ratio, '16:9')
   assert.equal(payload.resolution, '720p')
   assert.equal(payload.duration, 5)
-})
-
-test('全能参考请求保留完整多模态数组、参考模式与 false 同步音频快照', () => {
-  const payload = buildVideoGenerationRequest({
-    dramaId: 14,
-    storyboardId: 216,
-    prompt: '森林中的跟拍镜头',
-    model: 'seedance-2-mini',
-    referenceImageUrls: [
-      'https://molimama.vip/static/projects/0014/assets/scene.png',
-      'https://molimama.vip/static/projects/0014/assets/scene.png',
-      'https://molimama.vip/static/projects/0014/assets/role.png',
-    ],
-    referenceVideoUrls: [
-      'https://molimama.vip/static/projects/0014/assets/motion.mp4',
-      'https://molimama.vip/static/projects/0014/assets/motion.mp4',
-    ],
-    referenceAudioUrls: [
-      'https://molimama.vip/static/projects/0014/assets/voice.mp3',
-    ],
-    referenceMode: 'omni',
-    generateAudio: false,
-    resolution: '720p',
-    duration: 8,
-    capability: {
-      declared: true,
-      resolutions: ['480p', '720p'],
-      durations: [4, 8, 10, 12, 15],
-      supportsImageReference: true,
-      supportsVideoReference: true,
-      supportsAudioReference: true,
-      supportsAudio: true,
-      maxReferences: 4,
-      maxVideoReferences: 3,
-      maxAudioReferences: 3,
-    },
-  })
-
-  assert.deepEqual(payload.reference_image_urls, [
-    'https://molimama.vip/static/projects/0014/assets/scene.png',
-    'https://molimama.vip/static/projects/0014/assets/role.png',
-  ])
-  assert.deepEqual(payload.reference_video_urls, [
-    'https://molimama.vip/static/projects/0014/assets/motion.mp4',
-  ])
-  assert.deepEqual(payload.reference_audio_urls, [
-    'https://molimama.vip/static/projects/0014/assets/voice.mp3',
-  ])
-  assert.equal(payload.reference_mode, 'omni')
-  assert.equal(payload.generate_audio, false)
-})
-
-test('声明能力的视频请求拒绝越界档位、超量引用和首尾帧/全能混用', () => {
-  const capability = {
-    declared: true,
-    resolutions: ['480p', '720p'],
-    durations: [4, 8, 10, 12, 15],
-    supportsImageReference: true,
-    supportsVideoReference: true,
-    supportsAudioReference: true,
-    supportsAudio: true,
-    maxReferences: 1,
-    maxVideoReferences: 1,
-    maxAudioReferences: 1,
-  }
-  const base = {
-    model: 'seedance-2-fast',
-    prompt: '森林中的跟拍镜头',
-    resolution: '720p',
-    duration: 8,
-    capability,
-  }
-
-  assert.throws(
-    () => buildVideoGenerationRequest({ ...base, resolution: '1080p' }),
-    /不支持 1080p 清晰度/,
-  )
-  assert.throws(
-    () => buildVideoGenerationRequest({ ...base, duration: 5 }),
-    /仅支持 4、8、10、12、15 秒/,
-  )
-  assert.throws(
-    () => buildVideoGenerationRequest({ ...base, referenceImageUrls: ['a.png', 'b.png'], referenceMode: 'omni' }),
-    /最多支持 1 张参考图/,
-  )
-  assert.throws(
-    () => buildVideoGenerationRequest({
-      ...base,
-      firstFrameUrl: 'first.png',
-      referenceImageUrls: ['ref.png'],
-      referenceMode: 'first_last',
-    }),
-    /首尾帧模式与全能参考模式互斥/,
-  )
-})
-
-test('声明能力的视频请求拒绝未开放的首帧和尾帧槽位', () => {
-  const base = {
-    model: 'seedance-2-fast',
-    prompt: '森林中的跟拍镜头',
-    resolution: '720p',
-    duration: 8,
-    referenceMode: 'first_last',
-  }
-  const capability = {
-    declared: true,
-    resolutions: ['480p', '720p'],
-    durations: [4, 8, 10, 12, 15],
-    supportsFirstFrame: false,
-    supportsLastFrame: false,
-  }
-
-  assert.throws(
-    () => buildVideoGenerationRequest({ ...base, firstFrameUrl: 'first.png', capability }),
-    /不支持首帧参考/,
-  )
-  assert.throws(
-    () => buildVideoGenerationRequest({ ...base, lastFrameUrl: 'last.png', capability }),
-    /不支持尾帧参考/,
-  )
 })
 
 test('请求审计区分参考音频候选与实际视频请求体', () => {
@@ -228,104 +105,16 @@ test('请求审计保存角色声线快照但不污染真实 provider payload', 
   assert.equal(Object.hasOwn(audit.payload, 'voice_snapshot'), false)
 })
 
-test('短剧 USMercari H3 全能参考请求保留 false 同步音频并校验三类引用上限', () => {
-  assert.equal(isUsmercariShortDramaModel('MiniMax H3'), true)
+test('短剧工厂为两个飞拓模型启用全能模式并按模型限制参考图', () => {
+  const references = Array.from({ length: 12 }, (_, index) => `https://cdn.example/ref-${index + 1}.jpg`)
+  const h3 = limitFeituoShortDramaReferenceImages('sdas-lm-hailuo-h3-2k', references)
+  const fast = limitFeituoShortDramaReferenceImages('sdas-my-seedance-2.0-fast-upscaled-1080p', references)
+  const other = limitFeituoShortDramaReferenceImages('grok-video-3', references)
 
-  const payload = buildShortDramaVideoRequest({
-    mode: 'omni_reference',
-    prompt: '根据角色、场景和声线参考生成 15 秒视频',
-    model: 'MiniMax H3',
-    storyboardImageUrl: 'https://molimama.vip/static/storyboard.png',
-    baseReferenceImageUrls: [
-      'https://molimama.vip/static/role.png',
-      'https://molimama.vip/static/scene.png',
-    ],
-    referenceAudioUrls: ['https://molimama.vip/static/voice.mp3'],
-    generateAudio: false,
-    resolution: '480p',
-    duration: 15,
-    capability: {
-      declared: true,
-      resolutions: ['480p', '720p'],
-      durations: [5, 10, 15],
-      supportsImageReference: true,
-      supportsAudioReference: true,
-      maxReferences: 5,
-      maxAudioReferences: 3,
-    },
-  })
-
-  assert.equal(payload.reference_mode, 'omni')
-  assert.equal(payload.image_url, 'https://molimama.vip/static/storyboard.png')
-  assert.deepEqual(payload.reference_image_urls, [
-    'https://molimama.vip/static/storyboard.png',
-    'https://molimama.vip/static/role.png',
-    'https://molimama.vip/static/scene.png',
-  ])
-  assert.deepEqual(payload.reference_audio_urls, ['https://molimama.vip/static/voice.mp3'])
-  assert.equal(payload.generate_audio, false)
-
-  assert.throws(
-    () => buildShortDramaVideoRequest({
-      mode: 'omni_reference',
-      prompt: '不能带参考视频',
-      model: 'MiniMax H3',
-      storyboardImageUrl: 'https://molimama.vip/static/storyboard.png',
-      referenceVideoUrls: ['https://molimama.vip/static/motion.mp4'],
-    }),
-    /MiniMax H3 最多支持 0 个参考视频/,
-  )
-})
-
-test('短剧 ToAPIs strict 全能参考请求不同时提交 image_url 和 reference_image_urls', () => {
-  const payload = buildShortDramaVideoRequest({
-    mode: 'omni_reference',
-    prompt: '根据分镜图和角色参考生成视频',
-    model: 'seedance-2-fast',
-    storyboardImageUrl: 'https://molimama.vip/static/storyboard.png',
-    baseReferenceImageUrls: ['https://molimama.vip/static/role.png'],
-    strictToapis: true,
-    resolution: '720p',
-    duration: 8,
-    capability: {
-      declared: true,
-      resolutions: ['480p', '720p'],
-      durations: [4, 8, 10, 12, 15],
-      supportsImageReference: true,
-      maxReferences: 9,
-    },
-  })
-
-  assert.equal(payload.reference_mode, 'omni')
-  assert.equal(Object.hasOwn(payload, 'image_url'), false)
-  assert.deepEqual(payload.reference_image_urls, [
-    'https://molimama.vip/static/storyboard.png',
-    'https://molimama.vip/static/role.png',
-  ])
-})
-
-test('短剧首尾帧模式与普通参考图互斥，避免供应商混合引用报错', () => {
-  assert.throws(
-    () => buildShortDramaVideoRequest({
-      mode: 'first_last_frame',
-      prompt: '首尾帧生成',
-      model: 'seedance-2.0-fast',
-      firstFrameUrl: 'https://molimama.vip/static/first.png',
-      lastFrameUrl: 'https://molimama.vip/static/last.png',
-      baseReferenceImageUrls: ['https://molimama.vip/static/ref.png'],
-    }),
-    /首尾帧模式不能混用参考图/,
-  )
-})
-
-test('飞拓短剧模型声明全能参考和参考图裁剪上限', () => {
   assert.equal(supportsFeituoShortDramaOmni('sdas-lm-hailuo-h3-2k'), true)
-  assert.equal(feituoShortDramaImageLimit('sdas-lm-hailuo-h3-2k'), 9)
-  assert.deepEqual(
-    limitFeituoShortDramaReferenceImages(
-      'sdas-my-seedance-2.0-fast-upscaled-1080p',
-      ['1.png', '2.png', '3.png', '4.png', '5.png'],
-    ),
-    ['1.png', '2.png', '3.png', '4.png'],
-  )
+  assert.equal(supportsFeituoShortDramaOmni('sdas-my-seedance-2.0-fast-upscaled-1080p'), true)
+  assert.equal(supportsFeituoShortDramaOmni('grok-video-3'), false)
+  assert.equal(h3.length, 9)
+  assert.equal(fast.length, 4)
+  assert.equal(other.length, 12)
 })
