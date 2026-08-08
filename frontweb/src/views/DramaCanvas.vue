@@ -662,7 +662,6 @@ import {
 } from '@/utils/dramaCanvasAdapter'
 import { preserveCanvasNodeRuntimeMeasurements, virtualizeCanvasGraph } from '@/utils/canvasVirtualization'
 import {
-  CANVAS_KEYBOARD_PAN_INITIAL_STEP,
   CANVAS_KEYBOARD_PAN_SPEED,
   canvasKeyboardPanDelta,
   canvasKeyboardPanVector,
@@ -684,6 +683,7 @@ import {
   collectDirectUpstreamMediaReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
+  normalizeFreeCanvasSubmissionReferences,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
 import {
@@ -709,6 +709,8 @@ import {
   canvasModelSelectionDecision,
   createCanvasModelCatalogLoader,
   estimateCanvasCredits,
+  filterCanvasCatalogFallbackModels,
+  normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
 import {
   commitCanvasInteractionHistory,
@@ -1011,7 +1013,16 @@ function getFreeNodeModelOptionEntriesForNode(kind, nodeOrId) {
   const referenceCount = kind === 'image'
     ? freeCanvasNodeInputReferences(nodeOrId).filter((reference) => reference.ready && reference.enabled !== false).length
     : 0
-  return canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
+  const catalogOptions = canvasModelOptions(freeCanvasModelCatalog.value, kind, { referenceCount })
+  if (catalogOptions.length) return catalogOptions
+  const serviceType = canvasModelServiceType(kind)
+  return serviceType
+    ? filterCanvasCatalogFallbackModels(
+      getSelectableModelsAcrossConfigs(freeCanvasModelConfigs.value, serviceType),
+      kind,
+    )
+      .map((model) => ({ value: model, label: model }))
+    : []
 }
 
 const freeNodeSelectedModelEntry = computed(() => getFreeNodeModelOptionEntriesForNode(freeNodeKind.value, freeNodeEditingId.value)
@@ -1027,6 +1038,10 @@ const freeNodeModelUnavailable = computed(() => freeNodeModelDecision.value.code
 
 function getFreeNodeModelCapability(kind, model) {
   return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
+}
+
+function getFreeNodeModelMetadata(kind, model) {
+  return canvasModelEntry(freeCanvasModelCatalog.value, kind, model)
 }
 
 function getFreeNodeEstimatedCredits(kind, model, quantity, duration, resolution) {
@@ -2908,8 +2923,38 @@ function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
   return buildFreeCanvasReferenceMentionCandidates(
-    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+    normalizeFreeCanvasSubmissionReferences(
+      collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+    ),
   )
+}
+
+function canAcceptFreeCanvasVideoReference(targetNode, sourceKind) {
+  const capability = getFreeNodeModelCapability('video', targetNode.data?.model)
+  const supportKey = {
+    image: 'supportsImageReference',
+    audio: 'supportsAudioReference',
+    video: 'supportsVideoReference',
+  }[sourceKind]
+  const declaredSupport = capability[supportKey]
+  const supportsReference = capability.declared === false
+    || declaredSupport === true
+    || (declaredSupport == null && (capability.referenceTypes || ['image']).includes(sourceKind))
+  if (!supportsReference) {
+    ElMessage.warning(`${targetNode.data?.model || '当前视频模型'}不支持${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}参考`)
+    return false
+  }
+  const limitKey = `max${sourceKind[0].toUpperCase()}${sourceKind.slice(1)}References`
+  const limit = capability.declared === false && sourceKind !== 'image'
+    ? 10
+    : Number(capability[limitKey] ?? (sourceKind === 'image' ? capability.maxReferences : 0))
+  const currentCount = collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
+    .filter((reference) => reference.kind === sourceKind).length
+  if (Number.isInteger(limit) && currentCount >= limit) {
+    ElMessage.warning(`${targetNode.data?.model || '当前视频模型'}最多支持 ${limit} 个${{ image: '图片', audio: '音频', video: '视频' }[sourceKind]}参考`)
+    return false
+  }
+  return true
 }
 
 function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
@@ -2949,36 +2994,33 @@ async function createFreeCanvasReferenceNode({ targetNode, kind = 'image', url, 
   return nodeId
 }
 
-async function uploadFreeCanvasReferenceMedia(nodeOrId, file) {
+async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
-  const kind = file?.type?.startsWith('image/')
-    ? 'image'
-    : file?.type?.startsWith('video/')
-      ? 'video'
-      : file?.type?.startsWith('audio/')
-        ? 'audio'
-        : ''
-  if (!kind || !resolveCanvasNodeConnection(kind, targetNode.data?.kind).allowed) {
-    ElMessage.warning(targetNode.data?.kind === 'video' ? '请选择图片、视频或音频文件' : '请选择图片文件')
+  const kind = ['image', 'audio', 'video'].find((type) => file?.type?.startsWith(`${type}/`))
+  if (!kind || (targetNode.data?.kind === 'image' && kind !== 'image')) {
+    ElMessage.warning(targetNode.data?.kind === 'image' ? '请选择图片文件' : '请选择图片、音频或视频文件')
     return
   }
+  if (targetNode.data?.kind === 'video' && !canAcceptFreeCanvasVideoReference(targetNode, kind)) return
   try {
     const asset = await uploadAPI.uploadMedia(file, { dramaId: drama.value.id })
     const url = assetDisplayUrl(asset)
-    if (!url) throw new Error('参考图上传成功但未返回可用地址')
+    if (!url) throw new Error('参考素材上传成功但未返回可用地址')
     await createFreeCanvasReferenceNode({
       targetNode,
       kind,
       url,
-      title: file.name || ({ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]),
+      title: file.name || `参考${{ image: '图', audio: '音频', video: '视频' }[kind]}`,
       savedAssetId: String(asset?.id || ''),
     })
-    ElMessage.success(`${{ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]}已上传并连接`)
+    ElMessage.success('参考素材已上传并连接')
   } catch (error) {
     ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
+
+const uploadFreeCanvasReferenceMedia = uploadFreeCanvasReferenceImage
 
 function updateFreeCanvasReference(edgeId, patch = {}) {
   const mutate = (edge) => {
@@ -3109,8 +3151,8 @@ async function runFreeCanvasNode(nodeOrId) {
       upstreamUrls,
       upstreamReferences,
       upstreamTexts,
-      capability,
       maxReferences: capability.maxReferences,
+      capability,
     })
   } catch (error) {
     const errorMessage = error?.message || '自由节点生成参数不完整'
@@ -4418,6 +4460,38 @@ function nodeInputReferenceUrls(node) {
   return [...new Set(urls)]
 }
 
+function canvasReferenceKind(value, url = '') {
+  const kind = String(value || '').trim().toLowerCase()
+  if (kind.includes('video')) return 'video'
+  if (kind.includes('audio') || kind.includes('voice')) return 'audio'
+  if (/\.(?:mp4|mov|m4v|webm)(?:$|[?#])/i.test(url)) return 'video'
+  if (/\.(?:mp3|wav|m4a|aac|ogg|oga|flac)(?:$|[?#])/i.test(url)) return 'audio'
+  return 'image'
+}
+
+function nodeInputReferences(node) {
+  const targetId = String(node?.id || '')
+  if (!targetId) return []
+  const references = []
+  for (const edge of allGraphEdges.value) {
+    if (String(edge?.target || '') !== targetId) continue
+    const sourceNode = findGraphNode(edge.source)
+    const url = nodeResultUrl(sourceNode)
+      || (sourceNode?.type === 'canvasProjectAsset' ? assetDisplayUrl(sourceNode.data?.asset) : '')
+    if (url) references.push({ kind: canvasReferenceKind(sourceNode?.data?.kind || sourceNode?.data?.asset?.type, url), url })
+  }
+  for (const asset of nodeAssignedAssets(node)) {
+    const url = assetDisplayUrl(asset)
+    if (url) references.push({ kind: canvasReferenceKind(asset?.type || asset?.media_type || asset?.asset_type, url), url })
+  }
+  const seen = new Set()
+  return references.filter((reference) => {
+    if (seen.has(reference.url)) return false
+    seen.add(reference.url)
+    return true
+  })
+}
+
 function nodeAssignedAssets(node) {
   const fromNode = Array.isArray(node?.data?.assignedAssets) ? node.data.assignedAssets : []
   if (fromNode.length) return fromNode
@@ -5715,6 +5789,7 @@ async function runCanvasNodeStep(node, step) {
   const statusMessage = nodeStepStatusLabel(step, node)
   const initialPromptText = nodeStepPromptText(step, sb, node)
   const upstreamReferenceUrlsForNode = nodeInputReferenceUrls(node)
+  const upstreamReferencesForNode = nodeInputReferences(node)
   const previousResultPayload = previousNodeStepResultPayload(statusIds)
   const baseStatusPayload = {
     step,
@@ -5734,6 +5809,7 @@ async function runCanvasNodeStep(node, step) {
     const genOpts = {
       ...getCanvasGenerationOptions(),
       upstreamReferenceUrls: upstreamReferenceUrlsForNode,
+      upstreamReferences: upstreamReferencesForNode,
     }
     let operationResult = null
     if (step === 'image') await runImageStep(drama.value, latestSb, genOpts, node?.data?.frameKind || '', taskStatusOptions)
@@ -6220,6 +6296,7 @@ function getCanvasGenerationOptions() {
     ...getDramaGenerationOptions(drama.value),
     ...generationOverrides.value,
     imagesBySbId: imagesBySbId.value,
+    modelCatalog: freeCanvasModelCatalog.value,
   }
 }
 
@@ -6233,6 +6310,7 @@ function updateGenerationOptions(patch = {}) {
       ...metadata,
       aspect_ratio: current.aspectRatio || '16:9',
       video_resolution: current.videoResolution || '480p',
+      video_duration: current.videoDuration || 5,
     }
     if (Object.hasOwn(patch, 'imageModel')) nextMetadata.image_model = current.imageModel || null
     if (Object.hasOwn(patch, 'videoModel')) nextMetadata.video_model = current.videoModel || null
@@ -6247,6 +6325,7 @@ function updateGenerationOptions(patch = {}) {
       ...(parseDramaMetadata(drama.value?.metadata) || {}),
       aspect_ratio: latest.aspectRatio || '16:9',
       video_resolution: latest.videoResolution || '480p',
+      video_duration: latest.videoDuration || 5,
     }
     try {
       await dramaAPI.saveOutline(dramaId.value, { metadata })
@@ -6374,11 +6453,13 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeModelCatalogStatus: () => freeCanvasModelCatalogState.value.status,
   reloadFreeNodeModelCatalog: loadFreeCanvasModelConfigs,
   getFreeNodeModelCapability,
+  getFreeNodeModelMetadata,
   getFreeNodeEstimatedCredits,
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
   uploadFreeCanvasReferenceMedia,
+  uploadFreeCanvasReferenceImage,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
@@ -6721,7 +6802,10 @@ function onConnect(connection) {
     && targetNode.data?.kind === 'video'
   ) {
     const mediaLabel = { image: '图片', video: '视频', audio: '音频' }[sourceNode.data?.kind]
-    ElMessage.success(sourceNode.data?.url ? `视频节点已采用该${mediaLabel}作为参考素材` : `${mediaLabel}已连接，生成完成后会自动作为视频参考素材`)
+    const message = sourceNode.data?.kind === 'image'
+      ? (sourceNode.data?.url ? '视频节点已自动采用该图片作为参考图' : '图片已连接，生成完成后会自动作为视频参考图')
+      : (sourceNode.data?.url ? `视频节点已采用该${mediaLabel}作为参考素材` : `${mediaLabel}已连接，生成完成后会自动作为视频参考素材`)
+    ElMessage.success(message)
   } else {
     ElMessage.success('已添加画布连线')
   }
@@ -7115,6 +7199,16 @@ function panCanvasByKeyboardDelta(delta) {
   return true
 }
 
+function panCanvasByKeyboard(key) {
+  key = String(key || '').toLowerCase()
+  if (!['w', 'a', 's', 'd'].includes(key)) return false
+  const vector = canvasKeyboardPanVector([key])
+  return panCanvasByKeyboardDelta({
+    x: vector.x * CANVAS_KEYBOARD_PAN_STEP,
+    y: vector.y * CANVAS_KEYBOARD_PAN_STEP,
+  })
+}
+
 function ensureKeyboardPanViewport() {
   if (keyboardPanViewport) return keyboardPanViewport
   const viewport = canvasFlowApi.value?.getViewport?.() || currentViewport.value
@@ -7138,13 +7232,13 @@ function keyboardPanTransformationPane() {
   return keyboardPanPane
 }
 
-function renderKeyboardPanViewport(viewport) {
+function renderKeyboardPanViewport(nextViewport) {
   const pane = keyboardPanTransformationPane()
   if (!pane) {
-    canvasFlowApi.value?.setViewport?.(viewport, { duration: 0 })
+    canvasFlowApi.value?.setViewport?.(nextViewport, { duration: 0 })
     return
   }
-  pane.style.transform = `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.zoom})`
+  pane.style.transform = `translate3d(${nextViewport.x}px, ${nextViewport.y}px, 0) scale(${nextViewport.zoom})`
 }
 
 function settleKeyboardPanAnimation() {
@@ -7241,11 +7335,7 @@ function startKeyboardPan(key) {
   if (!keyboardPanKeys.has(normalizedKey)) {
     settleKeyboardPanAnimation()
     keyboardPanKeys.add(normalizedKey)
-    const vector = canvasKeyboardPanVector([normalizedKey])
-    panCanvasByKeyboardDelta({
-      x: vector.x * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
-      y: vector.y * CANVAS_KEYBOARD_PAN_INITIAL_STEP,
-    })
+    panCanvasByKeyboard(normalizedKey)
   }
   if (keyboardPanLastTime == null) {
     keyboardPanLastTime = typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -8044,8 +8134,8 @@ watch(() => route.params.id, () => {
   loadDrama()
 }, { immediate: true })
 
-watch(isStandaloneCanvas, (standalone) => {
-  if (standalone) void loadFreeCanvasModelConfigs()
+watch(isStandaloneCanvas, () => {
+  void loadFreeCanvasModelConfigs()
 }, { immediate: true })
 
 watch(drama, () => {

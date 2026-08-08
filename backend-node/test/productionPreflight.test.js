@@ -14,6 +14,20 @@ function createDb() {
     password_salt TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
     status TEXT NOT NULL DEFAULT 'active'
+  );
+  CREATE TABLE scenes (
+    id INTEGER PRIMARY KEY,
+    polished_prompt_single TEXT
+  );
+  CREATE TABLE ai_service_configs (
+    id INTEGER PRIMARY KEY,
+    service_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    default_model TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    deleted_at TEXT
   )`);
   db.prepare(`INSERT INTO platform_users
     (id, email, password_hash, password_salt, role, status)
@@ -22,6 +36,12 @@ function createDb() {
   modelPrices.set(db, 'GPT-5.5', 2, { category: 'text' });
   modelPrices.set(db, 'gpt-image-2', 8, { category: 'image' });
   modelPrices.set(db, 'seedance 2.0', 25, { category: 'video' });
+  const insertConfig = db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, model, default_model, is_active, verification_status)
+    VALUES (?, ?, ?, ?, ?, 1, 'verified')`);
+  insertConfig.run(1, 'text', 'openai', '["GPT-5.5"]', 'GPT-5.5');
+  insertConfig.run(2, 'image', 'openai', '["gpt-image-2"]', 'gpt-image-2');
+  insertConfig.run(3, 'video', 'openai', '["seedance 2.0"]', 'seedance 2.0');
   return db;
 }
 

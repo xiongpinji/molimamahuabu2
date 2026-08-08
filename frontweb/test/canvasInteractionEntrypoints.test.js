@@ -15,8 +15,8 @@ const cuttableEdgeSource = readFileSync(fileURLToPath(new URL('../src/components
 test('画布保留 LibTV 式导航、框选和拖拽历史入口', () => {
   assert.match(canvasSource, /pan-activation-key-code="Space"/)
   assert.match(canvasSource, /zoom-activation-key-code="Control"/)
-  assert.match(canvasSource, /:zoom-on-scroll="false"/)
-  assert.match(canvasSource, /:pan-on-scroll="true"/)
+  assert.match(canvasSource, /:zoom-on-scroll="canvasPreferences\.wheel_action === 'zoom'"/)
+  assert.match(canvasSource, /:pan-on-scroll="canvasPreferences\.wheel_action === 'pan'"/)
   assert.match(canvasSource, /:pan-on-drag="spacePanning"/)
   assert.match(canvasSource, /function onCanvasKeyup\(event\)/)
   assert.match(canvasSource, /window\.addEventListener\('keyup', onCanvasKeyup\)/)
@@ -65,7 +65,7 @@ test('自由画布普通点击仅保留当前节点，Ctrl 或 Cmd 才允许多�
 })
 
 test('节点拖拽停止后立即刷新布局缓存并同步视口', () => {
-  assert.match(canvasSource, /function refreshLayoutCacheFromGraph\(\) \{[\s\S]*layoutCache\.value = buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value,[\s\S]*allGraphEdges\.value,/)
+  assert.match(canvasSource, /function refreshLayoutCacheFromGraph\(\) \{[\s\S]*layoutCache\.value = withCanvasPersistedState\(buildCanvasLayoutPayload\([\s\S]*allGraphNodes\.value,[\s\S]*currentViewport\.value,[\s\S]*layoutCache\.value,[\s\S]*allGraphEdges\.value,/)
   assert.match(canvasSource, /function onNodeDragStop\(\) \{\s*\n\s*syncRenderedNodesToGraph\(\)\s*\n\s*syncCanvasViewportFromFlow\(\)\s*\n\s*refreshLayoutCacheFromGraph\(\)/)
   assert.match(canvasSource, /refreshLayoutCacheFromGraph\(\)[\s\S]*if \(dragHistorySnapshot\.value\) commitInteractionHistory\(dragHistorySnapshot\.value\)/)
 })
@@ -136,12 +136,12 @@ test('右键空白画布提供 LibTV 式添加节点入口并使用点击位置'
   assert.match(canvasSource, /contextMenuFlowPos\.value = flowPos/)
   assert.match(canvasSource, /if \(type === 'open-director-stage'\) \{[\s\S]*openDirectorStage\(\)/)
   assert.match(canvasSource, /pendingFlowPosition\.value = flowPosition/)
-  assert.match(canvasSource, /openCreateDialog\(type, flowPosition\)/)
+  assert.match(canvasSource, /void openCreateDialog\(type, flowPosition, connectionSource\)/)
 })
 
 test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
-  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, setCenter, updateNodeInternals, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, setCenter, updateNodeInternals, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
   assert.match(canvasSource, /const api = canvasFlowApi\.value/)
   assert.match(canvasSource, /const viewport = api\?\.getViewport\?\.\(\)/)
   assert.match(canvasSource, /currentViewport\.value = \{ x: viewport\.x, y: viewport\.y, zoom: viewport\.zoom \}/)
@@ -151,8 +151,8 @@ test('右键和上传落点优先使用 VueFlow 原生坐标投影', () => {
 })
 
 test('自动整理后同步 VueFlow 内部节点仓库避免界面坐标停留', () => {
-  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
-  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
+  assert.match(alignerSource, /const \{ fitView, getViewport, setNodes, setViewport, setCenter, updateNodeInternals, zoomIn, zoomOut, screenToFlowPosition, project \} = useVueFlow\(\)/)
+  assert.match(alignerSource, /registerCanvasFlowApi\?\.\(\{ fitView, getViewport, setNodes, setViewport, setCenter, updateNodeInternals, zoomIn, zoomOut, screenToFlowPosition, project \}\)/)
   assert.match(canvasSource, /computedPosition: \{ \.\.\.n\.computedPosition, x: pos\.x, y: pos\.y \}/)
   assert.match(canvasSource, /applyVirtualizedGraph\(\)\s*\n\s*canvasFlowApi\.value\?\.setNodes\?\.\(nodes\.value\)/)
 })
@@ -343,7 +343,7 @@ test('右键节点支持追加下游分镜并自动创建手动连线', () => {
   assert.match(canvasSource, /id: manualEdgeId\(\{ source: node\.id, target: targetNodeId \}\)/)
   assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.allGraphEdges\.value, edge\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
-  assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
+  assert.match(canvasSource, /await refreshCanvas\(false\)\s*\n\s*focusedNodeId\.value = null\s*\n\s*scheduleVirtualization\(\)/)
 })
 
 test('右键节点结果可直接作为下游参考', () => {
@@ -374,7 +374,7 @@ test('右键节点支持在现有下游连线中插入分镜并重连', () => {
   assert.match(canvasSource, /const insertedEdges = \[firstEdge, secondEdge\]\.filter\(\(edge\) => !hasSameEdgeConnection\(edge, remainingEdges\)\)/)
   assert.match(canvasSource, /allGraphEdges\.value = decorateCanvasEdges\(\[\.\.\.remainingEdges, \.\.\.insertedEdges\]\)/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
-  assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
+  assert.match(canvasSource, /await refreshCanvas\(false\)\s*\n\s*focusedNodeId\.value = null\s*\n\s*scheduleVirtualization\(\)/)
   assert.match(canvasSource, /已插入下游分镜并重连/)
   assert.match(canvasSource, /type === 'insert-downstream-storyboard'[\s\S]*await insertDownstreamStoryboard\(node\)/)
 })
@@ -393,7 +393,7 @@ test('右键分镜节点支持克隆到旁边', () => {
   assert.match(canvasSource, /const created = await storyboardsAPI\.create\(cloneStoryboardCreatePayload\(sourceStoryboard, episodeId, maxNum \+ 1\)\)/)
   assert.match(canvasSource, /\[targetNodeId\]: \{ x: sourcePosition\.x \+ 56, y: sourcePosition\.y \+ 56 \}/)
   assert.match(canvasSource, /await persistCanvasState\(\{ layoutOnly: true \}\)/)
-  assert.match(canvasSource, /await focusCanvasNode\(targetNodeId\)/)
+  assert.match(canvasSource, /await refreshCanvas\(false\)\s*\n\s*focusedNodeId\.value = null\s*\n\s*scheduleVirtualization\(\)/)
   assert.match(canvasSource, /已复制分镜到画布/)
   assert.match(canvasSource, /type === 'duplicate-storyboard-node'[\s\S]*await duplicateStoryboardNode\(node\)/)
 })

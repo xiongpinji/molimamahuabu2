@@ -53,3 +53,15 @@ test('模块 Skill 清单只返回已启用且具备目标能力的注册项', (
   assert.equal(listSkillsForModule('factory', 'preview').length, 1);
   assert.equal(listSkillsForModule('factory', 'execute').length, 0);
 });
+
+test('V2 一体化生产导演保留为显式选择能力且不进入默认清单', () => {
+  const skill = getSkillDefinition('short-drama-production-director');
+
+  assert.equal(skill.output_schema_version, '2.0');
+  assert.equal(skill.is_default, false);
+  assert.equal(resolveSkillForModule(skill.id, 'script_analysis', 'execute')?.id, skill.id);
+  assert.equal(
+    listSkillsForModule('script_analysis', 'execute').some((item) => item.id === skill.id),
+    false,
+  );
+});

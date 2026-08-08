@@ -1,15 +1,26 @@
 export const VIDEO_DURATION_OPTIONS = Object.freeze(
   Array.from({ length: 11 }, (_, index) => index + 5),
 )
-const USMERCARI_VIDEO_DURATION_OPTIONS = Object.freeze(
-  Array.from({ length: 12 }, (_, index) => index + 4),
-)
 
-const USMERCARI_VIDEO_MODELS = new Set(['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'])
+function declaredVideoDurations(capability) {
+  if (!Array.isArray(capability?.durations)) return []
+  return [...new Set(capability.durations
+    .map(Number)
+    .filter((duration) => Number.isSafeInteger(duration) && duration > 0))]
+}
 
-export function videoDurationOptionsForModel(model, declaredOptions = VIDEO_DURATION_OPTIONS) {
-  if (USMERCARI_VIDEO_MODELS.has(String(model || '').trim())) return USMERCARI_VIDEO_DURATION_OPTIONS
-  return Array.isArray(declaredOptions) && declaredOptions.length ? declaredOptions : VIDEO_DURATION_OPTIONS
+export function videoDurationOptionsForCapability(capability) {
+  const declared = declaredVideoDurations(capability)
+  return declared.length ? declared : [...VIDEO_DURATION_OPTIONS]
+}
+
+export function assertVideoDurationAllowed(duration, capability) {
+  const value = Number(duration)
+  const allowed = videoDurationOptionsForCapability(capability)
+  if (!Number.isSafeInteger(value) || !allowed.includes(value)) {
+    throw new Error(`当前模型视频时长仅支持 ${allowed.join('、')} 秒`)
+  }
+  return value
 }
 
 function parseSettings(settings) {
@@ -22,17 +33,17 @@ function parseSettings(settings) {
   }
 }
 
-export function readVideoDurationSetting(settings, model = '') {
-  const options = videoDurationOptionsForModel(model)
+export function readVideoDurationSetting(settings, capability) {
   const duration = Number(parseSettings(settings).video_duration)
-  return options.includes(duration) ? duration : 5
+  const allowed = videoDurationOptionsForCapability(capability)
+  return allowed.includes(duration) ? duration : allowed[0]
 }
 
-export function mergeVideoDurationSetting(settings, duration, model = '') {
-  const options = videoDurationOptionsForModel(model)
+export function mergeVideoDurationSetting(settings, duration, capability) {
   const value = Number(duration)
+  const allowed = videoDurationOptionsForCapability(capability)
   return {
     ...parseSettings(settings),
-    video_duration: options.includes(value) ? value : 5,
+    video_duration: allowed.includes(value) ? value : allowed[0],
   }
 }

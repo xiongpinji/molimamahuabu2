@@ -1,3 +1,4 @@
+import { normalizeQuickGenerationCatalog } from './homeQuickGeneration.js'
 import { normalizeModelOption } from './modelSelection.js'
 
 const DEFAULTS = {
@@ -41,21 +42,21 @@ function normalizeCapabilities(kind, value) {
 }
 
 export function normalizeCanvasModelCatalog(items = []) {
-  return items.filter((item) => normalizeModelOption(item?.model) && item?.kind).map((item) => {
-    const model = normalizeModelOption(item.model)
-    return {
-    model,
-    label: String(item.label || item.model),
-    note: String(item.note ?? item.public_note ?? '').trim(),
-    kind: String(item.kind),
+  return normalizeQuickGenerationCatalog(items).map((item) => ({
+    model: item.model,
+    label: item.label,
+    publicNote: item.publicNote,
+    note: item.publicNote,
+    verificationStatus: item.verificationStatus,
+    protocol: item.protocol,
+    kind: item.kind,
     provider: String(item.provider || '').toLowerCase(),
     defaultVoiceId: String(item.default_voice_id || item.defaultVoiceId || '').trim(),
     credits: Number.isFinite(Number(item.credits)) && Number(item.credits) > 0 ? Number(item.credits) : null,
     billingUnit: String(item.billing_unit || item.billingUnit || '').trim(),
-    resolutionPrices: item.resolution_prices || item.resolutionPrices || {},
+    resolutionPrices: item.resolution_prices || {},
     capabilities: normalizeCapabilities(item.kind, item.capabilities),
-  }
-  })
+  }))
 }
 
 export function createCanvasModelCatalogLoader(loadCatalog) {
@@ -110,6 +111,22 @@ export function canvasModelSelectionDecision(catalog, kind, model, catalogStatus
     : { ok: false, code: 'MODEL_UNAVAILABLE', model: normalizedModel }
 }
 
+const CATALOG_ONLY_IMAGE_MODELS = new Set(['gpt-image-2-2-4k', 'nano-banana-2'])
+const CATALOG_ONLY_VIDEO_MODELS = new Set(['seedance-2-fast', 'seedance-2-mini'])
+
+export function filterCanvasCatalogFallbackModels(models = [], kind = '') {
+  const uniqueModels = [...new Set((Array.isArray(models) ? models : [])
+    .map((model) => String(model || '').trim())
+    .filter(Boolean))]
+  if (kind === 'image') {
+    return uniqueModels.filter((model) => !CATALOG_ONLY_IMAGE_MODELS.has(model.toLowerCase()))
+  }
+  if (kind === 'video') {
+    return uniqueModels.filter((model) => !CATALOG_ONLY_VIDEO_MODELS.has(model.toLowerCase()))
+  }
+  return uniqueModels
+}
+
 export function canvasModelCapability(catalog, kind, model) {
   return canvasModelEntry(catalog, kind, model)?.capabilities
     || normalizeCapabilities(kind, {})
@@ -137,7 +154,6 @@ export function canvasModelOptions(catalog, kind, requirements = {}) {
       const option = {
         value: item.model,
         label: disabled ? `${item.label}（不支持参考图）` : item.label,
-        note: item.note,
       }
       if (disabled) option.disabled = true
       return option
@@ -146,13 +162,30 @@ export function canvasModelOptions(catalog, kind, requirements = {}) {
 
 export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
   const entry = canvasModelEntry(catalog, kind, model)
-  const tierCredits = kind === 'video'
-    ? Number(entry?.resolutionPrices?.[String(resolution).trim().toLowerCase()]?.credits)
+  const normalizedResolution = String(resolution).trim().toLowerCase()
+  const hasResolutionPrices = Object.keys(entry?.resolutionPrices || {}).length > 0
+  const tierCredits = ['image', 'video'].includes(kind)
+    ? Number(entry?.resolutionPrices?.[normalizedResolution]?.credits)
     : NaN
+  if (entry?.protocol === 'toapis_video' && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
+  if (hasResolutionPrices && ['image', 'video'].includes(kind)
+      && (!Number.isSafeInteger(tierCredits) || tierCredits <= 0)) return null
   const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0 ? tierCredits : entry?.credits
   if (!credits) return null
+  const normalizedQuantity = Number(quantity)
+  if (!Number.isSafeInteger(normalizedQuantity) || normalizedQuantity < 1 || normalizedQuantity > 4) return null
+  const declaredQuantities = Array.isArray(entry?.capabilities?.quantities)
+    ? entry.capabilities.quantities.map(Number)
+    : []
+  if (entry?.capabilities?.declared && declaredQuantities.length && !declaredQuantities.includes(normalizedQuantity)) return null
+  if (kind === 'video' && entry?.protocol === 'toapis_video') {
+    const durations = Array.isArray(entry.capabilities?.durations)
+      ? entry.capabilities.durations.map(Number)
+      : []
+    if (!durations.includes(Number(duration))) return null
+  }
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)
     : 1
-  return credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
+  return credits * normalizedQuantity * durationMultiplier
 }

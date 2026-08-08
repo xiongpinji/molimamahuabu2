@@ -41,6 +41,7 @@ function record(db, input) {
   ensureSchema(db);
   const quote = modelPrice.quoteCost(db, input.model, {
     quantity: input.quantity,
+    resolution: input.resolution,
     inputTokens: input.inputTokens,
     outputTokens: input.outputTokens,
     reasoningTokens: input.reasoningTokens,

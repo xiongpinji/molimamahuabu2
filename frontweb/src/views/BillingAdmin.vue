@@ -62,7 +62,7 @@
             <div class="panel-heading">
               <div>
                 <h2>模型计费</h2>
-                <p>自动汇总 AI 配置中的实际模型；每个模型单独设置积分、类型和启停状态。</p>
+                <p>自动汇总 AI 配置中的实际模型；连接验证并启用计费后自动进入画布，无需修改前端代码。</p>
               </div>
             </div>
             <div class="model-pricing-summary" aria-label="模型计费状态">
@@ -93,7 +93,7 @@
             </div>
             <div class="model-list">
               <div v-for="item in filteredPrices" :key="item.model" class="model-row">
-                <label class="model-field"><span>展示名称</span><el-input v-model="item.display_name" maxlength="120" show-word-limit /></label>
+                <label class="model-field"><span>前端显示名称</span><el-input v-model="item.display_name" maxlength="120" show-word-limit placeholder="画布下拉中展示的名称" /></label>
                 <label class="model-field">
                   <span>模型类型</span>
                   <el-select v-model="item.category">
@@ -104,11 +104,23 @@
                     <el-option label="其他" value="other" />
                   </el-select>
                 </label>
-                <label v-if="item.category !== 'video'" class="model-field">
+                <label v-if="item.category !== 'video' && !usesImageResolutionPricing(item)" class="model-field">
                   <span>用户收费（积分）</span>
                   <el-input-number v-model="item.credits" :min="1" :step="1" step-strictly />
                 </label>
-                <div v-else class="resolution-pricing-editor">
+                <div v-if="usesImageResolutionPricing(item)" class="resolution-pricing-editor">
+                  <template v-for="resolution in resolutionKeys(item)" :key="resolution">
+                    <label class="model-field">
+                      <span>{{ imageResolutionLabels[resolution].credits }}</span>
+                      <el-input-number v-model="item.resolution_prices[resolution].credits" :min="1" :step="1" step-strictly />
+                    </label>
+                    <label class="model-field">
+                      <span>{{ imageResolutionLabels[resolution].cost }}</span>
+                      <el-input-number v-model="item.resolution_prices[resolution].cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" />
+                    </label>
+                  </template>
+                </div>
+                <div v-else-if="item.category === 'video'" class="resolution-pricing-editor">
                   <label class="model-field">
                     <span>用户计费模式</span>
                     <el-select v-model="item.billing_unit">
@@ -116,9 +128,17 @@
                       <el-option label="按秒计费" value="second" />
                     </el-select>
                   </label>
-                  <label class="model-field"><span>480P 用户收费（积分/{{ billingUnitLabel(item.billing_unit) }}）</span><el-input-number v-model="item.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly /></label>
+                  <label class="model-field">
+                    <span v-if="item.billing_unit === 'request'">480P 用户收费（积分/次）</span>
+                    <span v-else>480P 用户收费（积分/秒）</span>
+                    <el-input-number v-model="item.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly />
+                  </label>
                   <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
-                  <label class="model-field"><span>720P 用户收费（积分/{{ billingUnitLabel(item.billing_unit) }}）</span><el-input-number v-model="item.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly /></label>
+                  <label class="model-field">
+                    <span v-if="item.billing_unit === 'request'">720P 用户收费（积分/次）</span>
+                    <span v-else>720P 用户收费（积分/秒）</span>
+                    <el-input-number v-model="item.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly />
+                  </label>
                   <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
                 </div>
                 <label class="model-field">
@@ -130,7 +150,7 @@
                 </label>
                 <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
                 <label class="model-field model-public-note">
-                  <span>公开备注（可选）</span>
+                  <span>用户公开备注（可选）</span>
                   <el-input
                     v-model="item.public_note"
                     type="textarea"
@@ -147,7 +167,7 @@
                 <small class="model-provider" :title="providerBaseUrl(item)">
                   中转站：{{ providerLabel(item) }}
                 </small>
-                <div v-if="item.category !== 'video'" class="cost-editor">
+                <div v-if="item.category !== 'video' && !usesImageResolutionPricing(item)" class="cost-editor">
                   <span>API 成本</span>
                   <el-select v-model="item.cost_unit">
                     <el-option label="按次" value="request" />
@@ -171,7 +191,7 @@
             </div>
             <div class="new-model">
               <label class="model-field"><span>模型 ID</span><el-input v-model.trim="newModel.model" /></label>
-              <label class="model-field"><span>展示名称</span><el-input v-model.trim="newModel.display_name" maxlength="120" show-word-limit /></label>
+              <label class="model-field"><span>前端显示名称</span><el-input v-model.trim="newModel.display_name" maxlength="120" show-word-limit placeholder="画布下拉中展示的名称" /></label>
               <label class="model-field">
                 <span>模型类型</span>
                 <el-select v-model="newModel.category">
@@ -182,8 +202,20 @@
                   <el-option label="其他" value="other" />
                 </el-select>
               </label>
-              <label v-if="newModel.category !== 'video'" class="model-field"><span>用户收费（积分）</span><el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly /></label>
-              <div v-else class="resolution-pricing-editor">
+              <label v-if="newModel.category !== 'video' && !usesImageResolutionPricing(newModel)" class="model-field"><span>用户收费（积分）</span><el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly /></label>
+              <div v-if="usesImageResolutionPricing(newModel)" class="resolution-pricing-editor">
+                <template v-for="resolution in resolutionKeys(newModel)" :key="resolution">
+                  <label class="model-field">
+                    <span>{{ imageResolutionLabels[resolution].credits }}</span>
+                    <el-input-number v-model="newModel.resolution_prices[resolution].credits" :min="1" :step="1" step-strictly />
+                  </label>
+                  <label class="model-field">
+                    <span>{{ imageResolutionLabels[resolution].cost }}</span>
+                    <el-input-number v-model="newModel.resolution_prices[resolution].cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" />
+                  </label>
+                </template>
+              </div>
+              <div v-else-if="newModel.category === 'video'" class="resolution-pricing-editor">
                 <label class="model-field">
                   <span>用户计费模式</span>
                   <el-select v-model="newModel.billing_unit">
@@ -191,12 +223,20 @@
                     <el-option label="按秒计费" value="second" />
                   </el-select>
                 </label>
-                <label class="model-field"><span>480P 用户收费（积分/{{ billingUnitLabel(newModel.billing_unit) }}）</span><el-input-number v-model="newModel.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly /></label>
+                <label class="model-field">
+                  <span v-if="newModel.billing_unit === 'request'">480P 用户收费（积分/次）</span>
+                  <span v-else>480P 用户收费（积分/秒）</span>
+                  <el-input-number v-model="newModel.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly />
+                </label>
                 <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
-                <label class="model-field"><span>720P 用户收费（积分/{{ billingUnitLabel(newModel.billing_unit) }}）</span><el-input-number v-model="newModel.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly /></label>
+                <label class="model-field">
+                  <span v-if="newModel.billing_unit === 'request'">720P 用户收费（积分/次）</span>
+                  <span v-else>720P 用户收费（积分/秒）</span>
+                  <el-input-number v-model="newModel.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly />
+                </label>
                 <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
               </div>
-              <label v-if="newModel.category !== 'video'" class="model-field">
+              <label v-if="newModel.category !== 'video' && !usesImageResolutionPricing(newModel)" class="model-field">
                 <span>平台成本单位</span>
                 <el-select v-model="newModel.cost_unit">
                   <el-option label="按次成本" value="request" />
@@ -205,15 +245,15 @@
                   <el-option label="按 Token 成本" value="token" />
                 </el-select>
               </label>
-              <template v-if="newModel.category !== 'video' && newModel.cost_unit === 'token'">
+              <template v-if="newModel.category !== 'video' && !usesImageResolutionPricing(newModel) && newModel.cost_unit === 'token'">
                 <label class="model-field"><span>千输入 Token 成本（元）</span><el-input-number v-model="newModel.input_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
                 <label class="model-field"><span>千输出 Token 成本（元）</span><el-input-number v-model="newModel.output_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
               </template>
-              <label v-else-if="newModel.category !== 'video'" class="model-field"><span>单位成本（元）</span><el-input-number v-model="newModel.cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" /></label>
+              <label v-else-if="newModel.category !== 'video' && !usesImageResolutionPricing(newModel)" class="model-field"><span>单位成本（元）</span><el-input-number v-model="newModel.cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" /></label>
               <label class="model-field model-public-note">
-                <span>公开备注（可选）</span>
+                <span>用户公开备注（可选）</span>
                 <el-input
-                  v-model="newModel.public_note"
+                  v-model.trim="newModel.public_note"
                   type="textarea"
                   :rows="2"
                   maxlength="500"
@@ -419,6 +459,18 @@ const emptyLedgerReport = () => ({
   rows: [],
 })
 const ledgerReport = ref(emptyLedgerReport())
+const GPT_IMAGE_MODEL_ID = 'gpt-image-2-2-4k'
+const USMERCARI_IMAGE_MODELS = new Set([GPT_IMAGE_MODEL_ID, 'nano-banana-2'])
+const USMERCARI_IMAGE_TIER_DEFAULTS = {
+  '1k': { credits: 70, cost_yuan_per_unit: 0.08 },
+  '2k': { credits: 87, cost_yuan_per_unit: 0.10 },
+  '4k': { credits: 105, cost_yuan_per_unit: 0.12 },
+}
+const imageResolutionLabels = {
+  '1k': { credits: '1K 用户收费（积分/张）', cost: '1K API 成本（人民币元/张）' },
+  '2k': { credits: '2K 用户收费（积分/张）', cost: '2K API 成本（人民币元/张）' },
+  '4k': { credits: '4K 用户收费（积分/张）', cost: '4K API 成本（人民币元/张）' },
+}
 const newModel = reactive({
   model: '',
   display_name: '',
@@ -487,12 +539,29 @@ function providerBaseUrl(item) {
   return providerEntries(item).map((entry) => entry.provider_base_url).filter(Boolean).join(' / ')
 }
 
+function usesImageResolutionPricing(item) {
+  return item?.category === 'image'
+    && USMERCARI_IMAGE_MODELS.has(String(item?.model || '').toLowerCase())
+}
+
+function resolutionKeys(itemOrCategory) {
+  const category = typeof itemOrCategory === 'string' ? itemOrCategory : itemOrCategory?.category
+  if (category === 'video') return ['480p', '720p']
+  if (!usesImageResolutionPricing(itemOrCategory)) return []
+  const model = String(itemOrCategory?.model || '').toLowerCase()
+  return model === GPT_IMAGE_MODEL_ID ? ['1k', '2k'] : ['1k', '2k', '4k']
+}
+
 function normalizePrice(item) {
   const resolutionPrices = item.resolution_prices || {}
   const fallbackCredits = Number.isSafeInteger(Number(item.credits)) && Number(item.credits) > 0
     ? Number(item.credits)
     : 1
   const fallbackCost = Number(item.cost_micros_per_unit) || 0
+  const emptyPrices = emptyResolutionPrices(item.model)
+  const useUsmercariDefaults = USMERCARI_IMAGE_MODELS.has(String(item.model).toLowerCase())
+    && Object.keys(resolutionPrices).length === 0
+    && item.credits == null
   return {
     ...item,
     display_name: String(item.display_name ?? item.model ?? ''),
@@ -505,31 +574,58 @@ function normalizePrice(item) {
     cost_yuan_per_unit: microsToYuan(item.cost_micros_per_unit),
     input_cost_yuan_per_1k: microsToYuan(item.input_cost_micros_per_1k),
     output_cost_yuan_per_1k: microsToYuan(item.output_cost_micros_per_1k),
-    resolution_prices: Object.fromEntries(['480p', '720p'].map((resolution) => [resolution, {
-      credits: Number(resolutionPrices[resolution]?.credits) || fallbackCredits,
-      cost_yuan_per_second: microsToYuan(
-        resolutionPrices[resolution]?.cost_micros_per_second ?? fallbackCost,
-      ),
-    }])),
+    resolution_prices: Object.fromEntries(Object.keys(emptyPrices).map((resolution) => {
+      const tier = resolutionPrices[resolution]
+      if (resolution.endsWith('p')) {
+        return [resolution, {
+          credits: Number(tier?.credits) || fallbackCredits,
+          cost_yuan_per_second: microsToYuan(tier?.cost_micros_per_second ?? fallbackCost),
+        }]
+      }
+      return [resolution, {
+        credits: Number(tier?.credits) || (useUsmercariDefaults ? emptyPrices[resolution].credits : fallbackCredits),
+        cost_yuan_per_unit: tier
+          ? microsToYuan(tier.cost_micros_per_unit)
+          : useUsmercariDefaults
+            ? emptyPrices[resolution].cost_yuan_per_unit
+            : microsToYuan(fallbackCost),
+      }]
+    })),
   }
 }
 
-function emptyResolutionPrices() {
+function emptyResolutionPrices(model = '') {
+  const imageDefaults = USMERCARI_IMAGE_MODELS.has(String(model).toLowerCase())
+    ? USMERCARI_IMAGE_TIER_DEFAULTS
+    : {
+        '1k': { credits: 1, cost_yuan_per_unit: 0 },
+        '2k': { credits: 1, cost_yuan_per_unit: 0 },
+        '4k': { credits: 1, cost_yuan_per_unit: 0 },
+      }
   return {
+    ...Object.fromEntries(Object.entries(imageDefaults).map(([resolution, tier]) => [resolution, { ...tier }])),
     '480p': { credits: 1, cost_yuan_per_second: 0 },
     '720p': { credits: 1, cost_yuan_per_second: 0 },
   }
 }
 
 function resolutionPricePayload(item) {
-  return Object.fromEntries(['480p', '720p'].map((resolution) => [resolution, {
-    credits: Number(item.resolution_prices[resolution].credits),
-    cost_micros_per_second: yuanToMicros(item.resolution_prices[resolution].cost_yuan_per_second),
-  }]))
+  return Object.fromEntries(resolutionKeys(item).map((resolution) => {
+    const tier = item.resolution_prices[resolution]
+    return item.category === 'image'
+      ? [resolution, {
+          credits: Number(tier.credits),
+          cost_micros_per_unit: yuanToMicros(tier.cost_yuan_per_unit),
+        }]
+      : [resolution, {
+          credits: Number(tier.credits),
+          cost_micros_per_second: yuanToMicros(tier.cost_yuan_per_second),
+        }]
+  }))
 }
 
 function hasValidResolutionPrices(item) {
-  return ['480p', '720p'].every((resolution) => (
+  return resolutionKeys(item).every((resolution) => (
     Number.isSafeInteger(Number(item.resolution_prices?.[resolution]?.credits))
     && Number(item.resolution_prices[resolution].credits) > 0
   ))
@@ -612,29 +708,34 @@ async function unlock() {
 }
 
 async function saveModel(item) {
-  if (item.category === 'video' && !hasValidResolutionPrices(item)) {
-    return ElMessage.warning('请填写 480P 和 720P 的正整数积分')
+  const usesTierPrices = usesImageResolutionPricing(item) || item.category === 'video'
+  if (usesTierPrices && !hasValidResolutionPrices(item)) {
+    return ElMessage.warning(item.category === 'image'
+      ? '请填写当前图片模型已开放档位的正整数积分'
+      : '请填写 480P 和 720P 的正整数积分')
   }
-  if (item.category !== 'video' && (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0)) {
+  if (!usesTierPrices && (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0)) {
     return ElMessage.warning('请填写正整数积分')
   }
   if (!hasValidModelMetadata(item)) return
-  const videoPrices = item.category === 'video' ? resolutionPricePayload(item) : null
+  const tierPrices = usesTierPrices ? resolutionPricePayload(item) : null
+  const firstTier = tierPrices?.[resolutionKeys(item)[0]]
   savingModel.value = item.model
   try {
     const saved = await updateModelPrice(item.model, {
-      credits: videoPrices?.['480p'].credits ?? item.credits,
+      credits: firstTier?.credits ?? item.credits,
       display_name: item.display_name,
       public_note: item.public_note,
       category: item.category,
       status: item.status === 'unconfigured' ? 'enabled' : item.status,
       billing_unit: item.category === 'video' ? item.billing_unit : undefined,
-      cost_unit: item.category === 'video' ? 'second' : item.cost_unit,
-      cost_micros_per_unit: videoPrices?.['480p'].cost_micros_per_second
+      cost_unit: item.category === 'video' ? 'second' : usesImageResolutionPricing(item) ? 'image' : item.cost_unit,
+      cost_micros_per_unit: firstTier?.cost_micros_per_second
+        ?? firstTier?.cost_micros_per_unit
         ?? yuanToMicros(item.cost_yuan_per_unit),
       input_cost_micros_per_1k: yuanToMicros(item.input_cost_yuan_per_1k),
       output_cost_micros_per_1k: yuanToMicros(item.output_cost_yuan_per_1k),
-      ...(videoPrices ? { resolution_prices: videoPrices } : {}),
+      ...(tierPrices ? { resolution_prices: tierPrices } : {}),
     })
     Object.assign(item, normalizePrice(saved), { configured: true })
     ElMessage.success(`${saved.display_name || saved.model} 已保存`)
@@ -645,26 +746,34 @@ async function saveModel(item) {
 
 async function addModel() {
   if (!newModel.model) return ElMessage.warning('请填写模型 ID')
-  if (newModel.category === 'video' && !hasValidResolutionPrices(newModel)) {
-    return ElMessage.warning('请填写 480P 和 720P 的正整数积分')
+  const usesTierPrices = usesImageResolutionPricing(newModel) || newModel.category === 'video'
+  if (usesTierPrices && !hasValidResolutionPrices(newModel)) {
+    return ElMessage.warning(newModel.category === 'image'
+      ? '请填写当前图片模型已开放档位的正整数积分'
+      : '请填写 480P 和 720P 的正整数积分')
+  }
+  if (!usesTierPrices && (!Number.isSafeInteger(Number(newModel.credits)) || Number(newModel.credits) <= 0)) {
+    return ElMessage.warning('请填写正整数积分')
   }
   if (!hasValidModelMetadata(newModel)) return
-  const videoPrices = newModel.category === 'video' ? resolutionPricePayload(newModel) : null
+  const tierPrices = usesTierPrices ? resolutionPricePayload(newModel) : null
+  const firstTier = tierPrices?.[resolutionKeys(newModel)[0]]
   savingModel.value = newModel.model
   try {
     const saved = await updateModelPrice(newModel.model, {
-      credits: videoPrices?.['480p'].credits ?? newModel.credits,
+      credits: firstTier?.credits ?? newModel.credits,
       display_name: newModel.display_name,
       public_note: newModel.public_note,
       category: newModel.category,
       status: 'enabled',
       billing_unit: newModel.category === 'video' ? newModel.billing_unit : undefined,
-      cost_unit: newModel.category === 'video' ? 'second' : newModel.cost_unit,
-      cost_micros_per_unit: videoPrices?.['480p'].cost_micros_per_second
+      cost_unit: newModel.category === 'video' ? 'second' : usesImageResolutionPricing(newModel) ? 'image' : newModel.cost_unit,
+      cost_micros_per_unit: firstTier?.cost_micros_per_second
+        ?? firstTier?.cost_micros_per_unit
         ?? yuanToMicros(newModel.cost_yuan_per_unit),
       input_cost_micros_per_1k: yuanToMicros(newModel.input_cost_yuan_per_1k),
       output_cost_micros_per_1k: yuanToMicros(newModel.output_cost_yuan_per_1k),
-      ...(videoPrices ? { resolution_prices: videoPrices } : {}),
+      ...(tierPrices ? { resolution_prices: tierPrices } : {}),
     })
     const index = prices.value.findIndex((item) => item.model === saved.model)
     if (index >= 0) prices.value[index] = { ...normalizePrice(saved), configured: true }

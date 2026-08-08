@@ -29,6 +29,10 @@ function normalizeUsmercariBaseUrl(value) {
 }
 
 function resolveUsmercariApiKey(config = {}, env = process.env) {
+  if (String(config.provider || '').toLowerCase() === 'usmercari_image'
+      || String(config.api_protocol || '').toLowerCase() === 'usmercari_image') {
+    return String(env.USMERCARI_IMAGE_API_KEY || env.USMERCARI_API_KEY || config.api_key || '').trim();
+  }
   return String(env.USMERCARI_API_KEY || config.api_key || '').trim();
 }
 

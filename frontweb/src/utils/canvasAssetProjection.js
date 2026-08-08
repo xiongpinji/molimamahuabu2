@@ -1,3 +1,13 @@
+const AUTO_RESULT_CATEGORIES = new Set([
+  'canvas-result',
+  'director-ai-reference',
+])
+
+const AUTO_RESULT_SOURCES = new Set([
+  'canvas_node_result',
+  'director_reference_analysis',
+])
+
 const EXPLICIT_CANVAS_CATEGORIES = new Set([
   'canvas-library-pick',
   'canvas-upload',
@@ -28,9 +38,12 @@ export function shouldProjectCanvasAsset(asset) {
   const metadata = parseAssetMetadata(asset?.metadata)
   const source = String(metadata.source || '').toLowerCase()
 
-  return metadata.canvas_added === true
-    || EXPLICIT_CANVAS_CATEGORIES.has(category)
-    || EXPLICIT_CANVAS_SOURCES.has(source)
+  if (AUTO_RESULT_CATEGORIES.has(category) || AUTO_RESULT_SOURCES.has(source)) return false
+  if (metadata.auto_saved === true || metadata.canvas_node_id) return false
+  if ((metadata.sourceNodeId || metadata.source_node_id) && metadata.operation) return false
+  if (metadata.canvas_added === true) return true
+  if (EXPLICIT_CANVAS_CATEGORIES.has(category) || EXPLICIT_CANVAS_SOURCES.has(source)) return true
+  return true
 }
 
 export function canvasAssetProjectionPayload(asset, addSource) {

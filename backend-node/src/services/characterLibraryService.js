@@ -620,6 +620,7 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
       billingEnabled: Boolean(options.billingEnabled),
       userId: options.userId,
       tenantId: options.tenantId,
+      resolution: options.resolution,
     });
   } catch (err) {
     textGenerationBilling.settle(db, log, textBilling, 'failed', err.message);

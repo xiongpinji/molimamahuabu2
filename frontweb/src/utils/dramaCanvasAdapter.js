@@ -76,7 +76,6 @@ function makeNode(base) {
 }
 
 function isProjectMediaAsset(asset) {
-  if (!shouldProjectCanvasAsset(asset)) return false
   if (isCanvasGeneratedResultAsset(asset)) return false
   return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
 }
@@ -91,7 +90,7 @@ function resolveProjectAssetPosition(savedLayout, id, legacyPosition, fallback) 
 function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
   const nodes = resolveFreeCanvasNodes(savedLayout)
   const edges = []
-  const mediaAssets = projectAssets.filter(isProjectMediaAsset)
+  const mediaAssets = projectAssets.filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
 
   mediaAssets.forEach((asset, index) => {
     const id = `project-asset:${asset.id}`
@@ -486,7 +485,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
-  const projectAssets = (options.projectAssets || []).filter(isProjectMediaAsset)
+  const projectAssets = (options.projectAssets || []).filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
   if (projectAssets.length) {
     nodes.push(sectionLabel('label:project-assets', `🗂 项目素材 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
     projectAssets.forEach((asset, index) => {

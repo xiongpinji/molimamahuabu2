@@ -6,6 +6,10 @@ const MODEL_STATUSES = ['enabled', 'disabled'];
 const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
 const VIDEO_RESOLUTIONS = ['480p', '720p'];
+const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
+const toapisVideoClient = require('./toapisVideoClient');
+const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -14,6 +18,10 @@ const SERVICE_CATEGORIES = {
   tts: 'audio',
   audio: 'audio',
 };
+
+function hasConnectionCredential(config) {
+  return require('./aiConfigService').hasConnectionCredential(config);
+}
 
 function priceError(code, message) {
   const error = new Error(message);
@@ -43,9 +51,9 @@ function isToken6688PerRequestVideo(value) {
 }
 
 function billingUnit(value, category = '', configuredUnit = '') {
+  if (isToken6688PerRequestVideo(value)) return 'request';
   const explicit = String(configuredUnit || '').trim().toLowerCase();
   if (BILLING_UNITS.includes(explicit)) return explicit;
-  if (isToken6688PerRequestVideo(value)) return 'request';
   return String(category || '').toLowerCase() === 'video' || canonicalModel(value) === 'seedance 2.0'
     ? 'second'
     : 'request';
@@ -79,14 +87,31 @@ function ensureSchema(db) {
     updated_at TEXT NOT NULL,
     PRIMARY KEY (model, resolution)
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS model_image_resolution_prices (
+    model TEXT NOT NULL COLLATE NOCASE,
+    resolution TEXT NOT NULL CHECK (resolution IN ('1k', '2k', '4k')),
+    credits INTEGER NOT NULL CHECK (credits > 0),
+    cost_micros_per_unit INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_unit >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (model, resolution)
+  )`);
 }
 
-function normalizeResolution(value) {
+function normalizeResolution(value, category = 'video') {
   const resolution = String(value || '').trim().toLowerCase();
-  return VIDEO_RESOLUTIONS.includes(resolution) ? resolution : null;
+  const allowed = category === 'image' ? IMAGE_RESOLUTIONS : VIDEO_RESOLUTIONS;
+  return allowed.includes(resolution) ? resolution : null;
 }
 
-function readResolutionPrices(db, model) {
+function readResolutionPrices(db, model, category) {
+  if (category === 'image') {
+    return Object.fromEntries(db.prepare(`SELECT resolution, credits, cost_micros_per_unit
+      FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE ORDER BY resolution`).all(model)
+      .map((row) => [row.resolution, {
+        credits: row.credits,
+        cost_micros_per_unit: row.cost_micros_per_unit,
+      }]));
+  }
   return Object.fromEntries(db.prepare(`SELECT resolution, credits, cost_micros_per_second
     FROM model_resolution_prices WHERE model = ? COLLATE NOCASE ORDER BY resolution`).all(model)
     .map((row) => [row.resolution, {
@@ -96,7 +121,7 @@ function readResolutionPrices(db, model) {
 }
 
 function withResolutionPrices(db, row) {
-  return row ? { ...row, resolution_prices: readResolutionPrices(db, row.model) } : null;
+  return row ? { ...row, resolution_prices: readResolutionPrices(db, row.model, row.category) } : null;
 }
 
 function readRow(db, model) {
@@ -279,38 +304,124 @@ function list(db) {
     });
 }
 
-function listPublic(db) {
+function listPublic(db, options = {}) {
   if (!hasTable(db, 'ai_service_configs')) return [];
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
-  const activeModels = new Set();
-  const displayModels = new Map();
+  const configsByModel = new Map();
+  const strictUpstreamKeys = new Set();
+  const addConfig = (model, upstreamModel, config) => {
+    const key = String(model || '').trim().toLowerCase();
+    if (!key) return;
+    const entries = configsByModel.get(key) || [];
+    entries.push({ config, upstreamModel: String(upstreamModel || model).trim() });
+    configsByModel.set(key, entries);
+  };
   for (const entry of mediaModelSelection.listEntries(rows)) {
     const row = entry.config;
     if (!row.is_active) continue;
-    if (row.verification_status !== 'verified') continue;
+    if (!isStrictPublicConfig(row) && row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
-    activeModels.add(entry.model.toLowerCase());
-    displayModels.set(entry.model.toLowerCase(), entry.model);
+    if (isStrictPublicConfig(row)) {
+      strictUpstreamKeys.add(`${entry.kind}:${entry.upstreamModel.toLowerCase()}`);
+    }
+    addConfig(entry.model, entry.upstreamModel, row);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
     if (row.verification_status !== 'verified') continue;
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
-      if (model && isRealGenerationVerified(row, model)) {
-        activeModels.add(model.toLowerCase());
-        displayModels.set(model.toLowerCase(), model);
-      }
+      if (model && isRealGenerationVerified(row, model)) addConfig(model, model, row);
     }
   }
-  return list(db)
-    .filter((row) => (
-      row.status === 'enabled'
-      && Number.isSafeInteger(row.credits)
-      && row.credits > 0
-      && activeModels.has(row.model.toLowerCase())
-    ))
-    .map((row) => ({ ...row, model: displayModels.get(row.model.toLowerCase()) || row.model }));
+  return list(db).flatMap((row) => {
+    if (row.status !== 'enabled' || !Number.isSafeInteger(row.credits) || row.credits <= 0) return [];
+    const entries = configsByModel.get(row.model.toLowerCase()) || [];
+    const selected = mediaModelSelection.parseQualifiedSelection(row.model);
+    const upstreamModel = selected?.upstreamModel || entries[0]?.upstreamModel || row.model;
+    const strictUpstreamKey = `${row.category}:${String(upstreamModel).toLowerCase()}`;
+    if (strictUpstreamKeys.has(strictUpstreamKey)
+        && !entries.some((entry) => isStrictPublicConfig(entry.config))) return [];
+    const protectedUsmercariModel = ['gpt-image-2-2-4k', 'nano-banana-2']
+      .includes(String(upstreamModel).toLowerCase());
+    const strictEntries = entries.filter((entry) => isStrictPublicConfig(entry.config));
+    const candidates = protectedUsmercariModel || strictEntries.length ? strictEntries : entries;
+    const matched = candidates.find((entry) => isPublicConfigReady(
+      entry.config,
+      row,
+      entry.upstreamModel,
+      options.evidenceRoots,
+    ));
+    if (!matched) return [];
+    if (!isStrictPublicConfig(matched.config)) return [row];
+    const resolutions = verifiedPublicResolutions(matched.config, matched.upstreamModel);
+    return [{
+      ...row,
+      resolution_prices: Object.fromEntries(Object.entries(row.resolution_prices || {})
+        .filter(([resolution]) => resolutions.includes(String(resolution).toLowerCase()))),
+    }];
+  });
+}
+
+function isStrictPublicConfig(config) {
+  return Boolean(strictPublicProtocol(config));
+}
+
+function strictPublicProtocol(config) {
+  const values = [config.api_protocol, config.provider]
+    .map((value) => String(value || '').trim().toLowerCase());
+  if (values.includes('usmercari_image')) return 'usmercari_image';
+  if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
+  return null;
+}
+
+function verifiedPublicCapabilities(config, model) {
+  let capabilities = config.verified_capabilities || {};
+  try {
+    if (typeof capabilities === 'string') capabilities = JSON.parse(capabilities || '{}');
+  } catch (_) {
+    capabilities = {};
+  }
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return {};
+  const target = String(model || '').toLowerCase();
+  const key = Object.keys(capabilities).find((item) => item.toLowerCase() === target);
+  return key ? capabilities[key] || {} : {};
+}
+
+function verifiedPublicResolutions(config, model) {
+  const capabilities = verifiedPublicCapabilities(config, model);
+  const allowed = strictPublicProtocol(config) === 'toapis_video'
+    ? VIDEO_RESOLUTIONS
+    : IMAGE_RESOLUTIONS;
+  return Array.isArray(capabilities.resolutions)
+    ? [...new Set(capabilities.resolutions
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter((resolution) => allowed.includes(resolution)))]
+    : [];
+}
+
+function isPublicConfigReady(config, price, model = price.model, evidenceRoots) {
+  const protocol = strictPublicProtocol(config);
+  if (!STRICT_VERIFIED_PROTOCOLS.has(protocol)) return true;
+  if ((protocol === 'usmercari_image' && price.category !== 'image')
+      || (protocol === 'toapis_video' && price.category !== 'video')) return false;
+  if (config.verification_status !== 'verified'
+      || !hasConnectionCredential(config)) return false;
+  const modelCapabilities = verifiedPublicCapabilities(config, model);
+  if (!hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots)) return false;
+  const resolutions = verifiedPublicResolutions(config, model);
+  if (protocol === 'toapis_video') {
+    const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()];
+    const durations = Array.isArray(modelCapabilities?.durations) && official
+      ? modelCapabilities.durations.map(Number)
+        .filter((duration) => Number.isSafeInteger(duration) && official.durations.includes(duration))
+      : [];
+    if (!durations.length) return false;
+  }
+  return (protocol !== 'usmercari_image' || modelCapabilities?.supportsTextToImage === true)
+    && resolutions.length > 0
+    && resolutions.every((resolution) => Number.isSafeInteger(price.resolution_prices?.[resolution]?.credits)
+      && price.resolution_prices[resolution].credits > 0);
 }
 
 function set(db, value, creditsValue, options = {}) {
@@ -353,19 +464,18 @@ function set(db, value, creditsValue, options = {}) {
   const resolutionPrices = options.resolution_prices == null
     ? null
     : Object.entries(options.resolution_prices).map(([value, tier]) => {
-      const resolution = normalizeResolution(value);
+      const resolution = normalizeResolution(value, category);
       const tierCredits = Number(tier?.credits);
       if (!resolution || !Number.isSafeInteger(tierCredits) || tierCredits <= 0) {
-        throw priceError('INVALID_MODEL_PRICE', '视频分辨率价格只支持 480P、720P 的正整数积分');
+        const label = category === 'image' ? '图片分辨率价格只支持 1K、2K、4K' : '视频分辨率价格只支持 480P、720P';
+        throw priceError('INVALID_MODEL_PRICE', `${label} 的正整数积分`);
       }
-      return {
-        resolution,
-        credits: tierCredits,
-        cost_micros_per_second: parseCost(tier?.cost_micros_per_second ?? 0),
-      };
+      return category === 'image'
+        ? { resolution, credits: tierCredits, cost_micros_per_unit: parseCost(tier?.cost_micros_per_unit ?? 0) }
+        : { resolution, credits: tierCredits, cost_micros_per_second: parseCost(tier?.cost_micros_per_second ?? 0) };
     });
-  if (resolutionPrices?.length && category !== 'video') {
-    throw priceError('INVALID_MODEL_PRICE', '只有视频模型可以配置分辨率价格');
+  if (resolutionPrices?.length && !['image', 'video'].includes(category)) {
+    throw priceError('INVALID_MODEL_PRICE', '只有图片或视频模型可以配置分辨率价格');
   }
   const updatedAt = new Date().toISOString();
   db.transaction(() => {
@@ -388,11 +498,20 @@ function set(db, value, creditsValue, options = {}) {
       .run(model, displayName, publicNote, category, credits, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
         inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
     if (resolutionPrices != null) {
-      db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
-      const insert = db.prepare(`INSERT INTO model_resolution_prices
-        (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
-      for (const tier of resolutionPrices) {
-        insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
+      if (category === 'image') {
+        db.prepare('DELETE FROM model_image_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+        const insert = db.prepare(`INSERT INTO model_image_resolution_prices
+          (model, resolution, credits, cost_micros_per_unit, updated_at) VALUES (?, ?, ?, ?, ?)`);
+        for (const tier of resolutionPrices) {
+          insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_unit, updatedAt);
+        }
+      } else {
+        db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+        const insert = db.prepare(`INSERT INTO model_resolution_prices
+          (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
+        for (const tier of resolutionPrices) {
+          insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
+        }
       }
     }
   })();
@@ -421,14 +540,23 @@ function quoteCost(db, value, usage = {}) {
   const inputTokens = Math.max(0, Math.trunc(Number(usage.inputTokens) || 0));
   const outputTokens = Math.max(0, Math.trunc(Number(usage.outputTokens) || 0));
   const reasoningTokens = Math.max(0, Math.trunc(Number(usage.reasoningTokens) || 0));
-  const resolution = row.category === 'video' ? normalizeResolution(usage.resolution) : null;
+  const hasResolutionPrices = Object.keys(row.resolution_prices || {}).length > 0;
+  const resolution = ['image', 'video'].includes(row.category)
+    ? normalizeResolution(usage.resolution, row.category)
+    : null;
   const tier = resolution ? row.resolution_prices[resolution] : null;
-  const costUnit = tier ? 'second' : row.cost_unit;
+  if (['image', 'video'].includes(row.category) && hasResolutionPrices && !tier) {
+    throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
+  }
+  const costUnit = tier ? (row.category === 'video' ? 'second' : 'image') : row.cost_unit;
+  if (costUnit === 'image' && !Number.isSafeInteger(requestedQuantity)) {
+    throw priceError('INVALID_MODEL_PRICE', '图片数量必须是正整数');
+  }
   const quantity = costUnit === 'request' ? 1 : requestedQuantity;
   const costMicros = costUnit === 'token'
     ? Math.ceil((inputTokens * row.input_cost_micros_per_1k
       + outputTokens * row.output_cost_micros_per_1k) / 1000)
-    : Math.ceil(quantity * (tier?.cost_micros_per_second ?? row.cost_micros_per_unit));
+    : Math.ceil(quantity * (tier?.cost_micros_per_second ?? tier?.cost_micros_per_unit ?? row.cost_micros_per_unit));
   return {
     model: row.model,
     cost_unit: costUnit,
@@ -437,7 +565,7 @@ function quoteCost(db, value, usage = {}) {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     reasoning_tokens: reasoningTokens,
-    ...(resolution ? { resolution } : {}),
+    ...(tier ? { resolution } : {}),
   };
 }
 
@@ -455,12 +583,27 @@ function calculateCharge(db, value, usage = {}) {
   const row = readRow(db, model);
   if (!row) throw priceError('MODEL_PRICE_NOT_CONFIGURED', `${model} 尚未配置积分价格，已禁止生成`);
   if (row.status !== 'enabled') throw priceError('MODEL_DISABLED', `${row.model} 已被管理员停用`);
-  const resolution = normalizeResolution(usage.resolution);
-  const price = resolution && row.category === 'video'
-    ? row.resolution_prices[resolution]?.credits ?? row.credits
-    : row.credits;
+  const hasResolutionPrices = Object.keys(row.resolution_prices || {}).length > 0;
+  const resolution = ['image', 'video'].includes(row.category)
+    ? normalizeResolution(usage.resolution, row.category)
+    : null;
+  const tier = resolution ? row.resolution_prices[resolution] : null;
+  if (['image', 'video'].includes(row.category) && hasResolutionPrices && !tier) {
+    throw priceError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
+  }
+  if (row.category === 'image' && hasResolutionPrices) {
+    const quantity = Number(usage.quantity ?? 1);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      throw priceError('INVALID_MODEL_PRICE', '图片数量必须是正整数');
+    }
+    return tier.credits * quantity;
+  }
+  const price = tier && row.category === 'video' ? tier.credits : row.credits;
   if (billingUnit(model, row?.category, row?.billing_unit) !== 'second') return price;
   const duration = Number(usage.duration);
+  const allowedDurations = Array.isArray(usage.allowedDurations) && usage.allowedDurations.length
+    ? [...new Set(usage.allowedDurations.map(Number).filter(Number.isSafeInteger))]
+    : null;
   const normalizedModel = String(
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
   ).toLowerCase();
@@ -468,8 +611,12 @@ function calculateCharge(db, value, usage = {}) {
     || /^bytedance\/seedance-2-0-(?:mini|fast)$/.test(normalizedModel)
     ? 4
     : 5;
-  if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
-    const error = new Error(`视频时长必须是 ${minimum} 到 15 秒之间的整数`);
+  const invalidDuration = !Number.isSafeInteger(duration)
+    || (allowedDurations ? !allowedDurations.includes(duration) : duration < minimum || duration > 15);
+  if (invalidDuration) {
+    const error = new Error(allowedDurations
+      ? `视频时长必须是 ${allowedDurations.join('、')} 秒之一`
+      : `视频时长必须是 ${minimum} 到 15 秒之间的整数`);
     error.code = 'INVALID_VIDEO_DURATION';
     throw error;
   }
@@ -483,6 +630,7 @@ module.exports = {
   COST_UNITS,
   BILLING_UNITS,
   VIDEO_RESOLUTIONS,
+  IMAGE_RESOLUTIONS,
   ensureSchema,
   list,
   listPublic,
@@ -492,6 +640,7 @@ module.exports = {
   quoteCost,
   canonicalModel,
   billingUnit,
+  normalizeResolution,
   isToken6688PerRequestVideo,
   normalizeResolution,
 };

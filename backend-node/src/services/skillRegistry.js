@@ -141,7 +141,7 @@ const SKILLS = Object.freeze([
     module: 'script_analysis',
     module_capabilities: Object.freeze({ script_analysis: 'execute' }),
     output_schema_version: '1.0',
-    is_default: false,
+    is_default: true,
     enabled: true,
     system_prompt: SHORT_DRAMA_DIRECTOR_PROMPT,
     ...COMMON_GOVERNANCE,
@@ -176,7 +176,8 @@ const SKILLS = Object.freeze([
       canvas: 'consume',
     }),
     output_schema_version: '2.0',
-    is_default: true,
+    is_default: false,
+    listed: false,
     enabled: true,
     require_production_direction: true,
     default_strategy_preset: 'fusion',
@@ -213,6 +214,7 @@ function listSkillsForModule(module, capability) {
   return SKILLS
     .filter((skill) => (
       skill.enabled
+      && skill.listed !== false
       && skill.module_capabilities[module] === capability
     ))
     .map(publicRegistrySkill);

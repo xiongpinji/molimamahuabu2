@@ -322,23 +322,19 @@ test('工具栏提供替换、下载、全屏、历史与标记色入口', () =>
   assert.match(nodeSource, /var\(--image-node-marker/)
 })
 
-test('宫格裁剪只提交用户选中的格子且保留全选与取消入口', () => {
-  assert.match(toolbarSource, /gridSelectedCells = ref\(\[\]\)/)
-  assert.match(toolbarSource, /const gridCells = computed/)
-  assert.match(toolbarSource, /toggleGridCell\(cell\.key\)/)
-  assert.match(toolbarSource, /selectAllGridCells/)
-  assert.match(toolbarSource, /gridSelectedCells = \[\]/)
-  assert.match(toolbarSource, /selectedCells: \[\.\.\.gridSelectedCells\.value\]/)
+test('宫格裁剪提交全部独立裁剪框且每个框可移动和八向缩放', () => {
+  assert.match(toolbarSource, /gridCropBoxes = ref\(createGridCropBoxes\(2, 3\)\)/)
+  assert.match(toolbarSource, /v-for="\(box, index\) in gridCropBoxes"/)
+  assert.match(toolbarSource, /@pointerdown="beginGridCropMove\(\$event, box\.id\)"/)
+  assert.match(toolbarSource, /@pointerdown\.stop="beginGridCropResize\(\$event, box\.id, handle\)"/)
+  assert.match(toolbarSource, /const gridResizeHandles = Object\.freeze\(\['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'\]\)/)
+  assert.match(toolbarSource, /boxes: gridCropBoxes\.value\.map\(\(box\) => \(\{ \.\.\.box \}\)\)/)
 })
 
-test('宫格裁剪提供 2x2 至 7x7、间距、反选、复制、识别和吸附控制', () => {
-  assert.match(toolbarSource, /v-for="size in gridQuickSizes"/)
-  assert.match(toolbarSource, /const gridQuickSizes = Object\.freeze\(\[2, 3, 4, 5, 6, 7\]\)/)
-  assert.match(toolbarSource, /gridForm = ref\(\{ rows: 3, columns: 3, spacing: 0 \}\)/)
-  assert.match(toolbarSource, /v-model="gridForm\.spacing"/)
-  assert.match(toolbarSource, /invertGridSelection/)
-  assert.match(toolbarSource, /duplicateGridSelection/)
-  assert.match(toolbarSource, /redetectGrid/)
-  assert.match(toolbarSource, /gridSnapEnabled/)
-  assert.match(toolbarSource, /spacing: gridForm\.value\.spacing/)
+test('宫格裁剪支持 1x1 至 7x7 并可重置为均分布局', () => {
+  assert.match(toolbarSource, /gridForm = ref\(\{ rows: 2, columns: 3 \}\)/)
+  assert.match(toolbarSource, /v-model="gridForm\.rows" :min="1" :max="7" @change="resetGridBoxes"/)
+  assert.match(toolbarSource, /v-model="gridForm\.columns" :min="1" :max="7" @change="resetGridBoxes"/)
+  assert.match(toolbarSource, /function resetGridBoxes\(\) \{[\s\S]*createGridCropBoxes\(gridForm\.value\.rows, gridForm\.value\.columns\)/)
+  assert.match(toolbarSource, /可独立移动和缩放 \{\{ gridCropBoxes\.length \}\} 个裁剪框/)
 })

@@ -177,8 +177,10 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'first-last' }"
+              :disabled="!supportsFirstLastMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'first-last'"
+              :title="supportsFirstLastMode ? '使用首帧或首尾帧生成' : '当前模型未开放首尾帧参考'"
               @click="setVideoReferenceMode('first-last')"
             >
               首尾帧
@@ -186,8 +188,10 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'multi' }"
+              :disabled="!supportsImageReferenceMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'multi'"
+              :title="supportsImageReferenceMode ? '使用多张参考图生成' : '当前模型未开放多图参考'"
               @click="setVideoReferenceMode('multi')"
             >
               多图参考
@@ -196,8 +200,10 @@
             <button
               type="button"
               :class="{ active: videoReferenceMode === 'omni' }"
+              :disabled="!supportsOmniReferenceMode"
               role="tab"
               :aria-selected="videoReferenceMode === 'omni'"
+              :title="supportsOmniReferenceMode ? '使用图片、视频或音频参考' : '当前模型未开放全能参考'"
               @click="setVideoReferenceMode('omni')"
             >全能参考</button>
             <button type="button" role="tab" aria-selected="false" disabled title="当前生成链路尚未开放视频编辑">视频编辑</button>
@@ -228,7 +234,7 @@
               ref="referenceFileInput"
               class="file-input"
               type="file"
-              :accept="data.kind === 'video' ? 'image/*,video/*,audio/*' : 'image/*'"
+              :accept="referenceMediaAccept"
               @change="uploadReferenceFile"
             />
           </div>
@@ -240,7 +246,7 @@
               :data-frame-slot="frameSlot.key"
               :data-reference-state="frameSlot.reference?.ready ? 'ready' : 'empty'"
               :data-reference-enabled="frameSlot.reference?.enabled !== false ? 'true' : 'false'"
-              :title="frameSlot.reference?.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(frameSlot.reference)}` : frameSlot.label"
+              :title="frameSlot.reference ? `右键引用为 @图片${referenceSubmissionOrdinal(frameSlot.reference)}` : frameSlot.label"
               @mousedown.right.prevent
               @contextmenu.prevent.stop="frameSlot.reference?.kind === 'image' && insertReferenceToken(frameSlot.reference)"
             >
@@ -256,7 +262,7 @@
               <img v-if="frameSlot.reference?.url" :src="frameSlot.reference.url" :alt="frameSlot.reference.title" />
               <span v-else class="reference-placeholder">等待{{ frameSlot.label }}图片</span>
               <figcaption :title="frameSlot.reference?.title || frameSlot.label">
-                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceOrdinal(frameSlot.reference)}` : '未设置' }}
+                {{ frameSlot.label }} · {{ frameSlot.reference ? `图片${referenceSubmissionOrdinal(frameSlot.reference)}` : '未设置' }}
               </figcaption>
             </figure>
           </div>
@@ -267,11 +273,11 @@
               class="reference-card"
               :data-reference-state="reference.ready ? 'ready' : 'pending'"
               :data-reference-enabled="reference.enabled !== false ? 'true' : 'false'"
-              :title="reference.kind === 'image' ? `右键引用为 @图片${referenceOrdinal(reference)}` : reference.title"
+              :title="canInsertReferenceToken(reference) ? `右键引用为 @${referenceTypeLabel(reference.kind)}${referenceSubmissionOrdinal(reference)}` : reference.title"
               @mousedown.right.prevent
-              @contextmenu.prevent.stop="reference.kind === 'image' && insertReferenceToken(reference)"
+              @contextmenu.prevent.stop="canInsertReferenceToken(reference) && insertReferenceToken(reference)"
             >
-              <span class="reference-index">{{ referenceOrdinal(reference) }}</span>
+              <span class="reference-index">{{ referenceSubmissionOrdinal(reference) || '—' }}</span>
               <button
                 class="reference-remove"
                 type="button"
@@ -283,7 +289,7 @@
               <video v-else-if="reference.url && reference.kind === 'video'" :src="reference.url" muted preload="metadata" />
               <audio v-else-if="reference.url && reference.kind === 'audio'" :src="reference.url" controls preload="metadata" />
               <span v-else class="reference-placeholder">等待{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}</span>
-              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceOrdinal(reference) }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
+              <figcaption :title="reference.title">{{ { image: '图片', video: '视频', audio: '音频' }[reference.kind] || '素材' }}{{ referenceSubmissionOrdinal(reference) || '未采用' }}{{ reference.enabled === false ? '（未启用）' : '' }}</figcaption>
             </figure>
           </div>
           <p v-else-if="data.kind === 'video'" class="reference-empty">把图片、视频或音频节点连接到视频节点；首尾帧、多图参考和全能参考会按当前模式真实提交。</p>
@@ -335,24 +341,22 @@
         </div>
 
         <div class="editor-options">
-          <label v-if="canGenerate" class="editor-field field-model">
+          <label v-if="canGenerate || modelOptions.length" class="editor-field field-model">
             <span>模型</span>
             <select
               v-model="draft.model"
               aria-label="生成模型"
-              @change="saveDraft"
+              @change="onModelChange"
             >
               <option value="">{{ defaultModelLabel }}</option>
-              <option v-for="model in modelSelectOptions" :key="model.value" :value="model.value">{{ model.label }}</option>
+              <option v-for="option in modelOptions" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
             </select>
-            <p v-if="modelCatalogLoading" class="model-public-note">模型目录加载中…</p>
-            <p v-else-if="modelCatalogError" class="model-unavailable-note">
-              模型目录加载失败，请重试
-              <button type="button" class="model-retry-button" @click.prevent.stop="retryModelCatalog">重试</button>
-            </p>
-            <p v-else-if="selectedModelNote" class="model-public-note">{{ selectedModelNote }}</p>
-            <p v-else-if="selectedModelUnavailable" class="model-unavailable-note">当前模型已不可用，请重新选择</p>
           </label>
+          <p v-if="currentModelMetadata?.publicNote || currentModelMetadata?.label" class="model-metadata">
+            <strong>{{ currentModelMetadata.label || currentModelMetadata.model }}</strong>
+            <span v-if="currentModelMetadata.publicNote">{{ currentModelMetadata.publicNote }}</span>
+            <em v-if="currentModelMetadata.verificationStatus === 'verified'">已验证</em>
+          </p>
 
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>风格</span>
@@ -367,7 +371,7 @@
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
             <span>清晰度</span>
             <select v-model="draft.resolution" aria-label="清晰度" @change="saveDraft">
-              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ value }}</option>
+              <option v-for="value in capability.resolutions || []" :key="value" :value="value">{{ String(value).toUpperCase() }}</option>
             </select>
           </label>
           <label v-if="['image', 'video'].includes(data.kind)" class="editor-field">
@@ -396,7 +400,7 @@
               <option value="light-leak">漏光</option>
             </select>
           </label>
-          <label v-if="data.kind === 'video' && capability.supportsAudio !== false" class="editor-check">
+          <label v-if="data.kind === 'video' && capability.supportsAudio === true" class="editor-check">
             <input v-model="draft.includeAudio" type="checkbox" aria-label="生成音频" @change="saveDraft" />
             <span>同步音频</span>
           </label>
@@ -472,22 +476,22 @@
         <p v-if="data.status === 'failed' && data.error" class="editor-error" role="alert">{{ data.error }}</p>
 
         <div class="editor-footer">
-          <div v-if="canGenerate" class="billing-cost" aria-live="polite">
-            <span class="canvas-credit-callout-v1">
-              <template v-if="estimatedCredits != null">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
-              <template v-else>积分待管理员配置</template>
-            </span>
-          </div>
-          <span v-if="canGenerate && capability.declared === false" class="capability-note">保守参数 · 最终由供应商校验</span>
+          <!-- canvas-credit-callout-v1 -->
+          <span v-if="canGenerate" class="billing-cost" aria-live="polite">
+            <template v-if="estimatedCredits">本次预计扣除 <strong>{{ estimatedCredits }}</strong> 积分</template>
+            <template v-else>积分待管理员配置</template>
+            <small>· {{ draft.quantity || 1 }} 次</small>
+          </span>
+          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
-          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" @click.stop="runSubgraph">运行下游</button>
+          <button v-if="canGenerate" type="button" class="advanced-button" aria-label="运行下游" title="按依赖顺序运行当前节点及其下游" :disabled="estimatedCredits == null" @click.stop="runSubgraph">运行下游</button>
           <button
             v-if="canGenerate"
             type="button"
             class="run-button"
-            :disabled="isGenerationRunning || !draft.content.trim()"
+            :disabled="data.status === 'running' || !draft.content.trim() || estimatedCredits == null"
             :aria-label="isGenerationRunning ? '节点生成进行中' : (data.kind === 'text' ? 'AI 生成文本' : (data.status === 'failed' ? '重试' : '生成'))"
             @click.stop="runNode"
           >
@@ -533,9 +537,10 @@ import { useCanvasContext } from '@/composables/useCanvasContext'
 import { normalizeGenerationProgress } from '@/utils/canvasGenerationProgress'
 import {
   normalizeFreeCanvasVideoReferenceMode,
+  normalizeFreeCanvasSubmissionReferences,
   resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
-import { normalizeModelOption } from '@/utils/modelSelection'
+import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -606,31 +611,47 @@ const promptPlaceholder = computed(() => props.data.kind === 'audio' ? '输入�
 const canGenerate = computed(() => typeof ctx?.runFreeCanvasNode === 'function')
 const canTranslate = computed(() => typeof ctx?.translateFreeCanvasNode === 'function' && Boolean(draft.content.trim()))
 const canUpload = computed(() => typeof ctx?.uploadFreeCanvasNodeFile === 'function')
-const canUploadReference = computed(() => typeof ctx?.uploadFreeCanvasReferenceMedia === 'function')
-const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
-const modelOptions = computed(() => (
-  (ctx?.getFreeNodeModelOptions?.(props.data.kind) || [])
-    .map((model) => normalizeModelOption(model))
-    .filter(Boolean)
+function capabilityAllows(name, fallback = true) {
+  if (capability.value?.declared === false) return fallback
+  return capability.value?.[name] === true
+}
+const supportsFirstLastMode = computed(() => (
+  capabilityAllows('supportsFirstFrame') || capabilityAllows('supportsLastFrame')
 ))
-const modelOptionEntries = computed(() => {
-  const entries = ctx?.getFreeNodeModelOptionEntries?.(props.data.kind) || []
-  if (entries.length) return entries
-  return modelOptions.value.map((model) => ({ value: model, label: model, note: '' }))
+const supportsImageReferenceMode = computed(() => capabilityAllows('supportsImageReference'))
+const supportsOmniReferenceMode = computed(() => (
+  capability.value.supportsImageReference === true
+  || capability.value.supportsVideoReference === true
+  || capability.value.supportsAudioReference === true
+  || capability.value?.declared === false
+))
+const canUploadReference = computed(() => {
+  if (typeof ctx?.uploadFreeCanvasReferenceMedia !== 'function') return false
+  if (props.data.kind !== 'video') return true
+  if (videoReferenceMode.value === 'first-last') return supportsFirstLastMode.value
+  if (videoReferenceMode.value === 'multi') return supportsImageReferenceMode.value
+  return supportsOmniReferenceMode.value
 })
-const modelSelectOptions = computed(() => modelOptionEntries.value)
-const selectedModelEntry = computed(() => modelOptionEntries.value
-  .find((entry) => entry.value === normalizeModelOption(draft.model)) || null)
-const selectedModelNote = computed(() => String(selectedModelEntry.value?.note || '').trim())
-const modelCatalogStatus = computed(() => ctx?.getFreeNodeModelCatalogStatus?.() || 'loaded')
-const modelCatalogLoading = computed(() => ['idle', 'loading'].includes(modelCatalogStatus.value))
-const modelCatalogError = computed(() => modelCatalogStatus.value === 'error')
-const selectedModelUnavailable = computed(() => (
-  modelCatalogStatus.value === 'loaded'
-  && Boolean(normalizeModelOption(draft.model))
-  && !selectedModelEntry.value
+const referenceMediaAccept = computed(() => {
+  if (props.data.kind !== 'video') return 'image/*'
+  if (videoReferenceMode.value === 'first-last' || videoReferenceMode.value === 'multi') return 'image/*'
+  const accepted = []
+  if (capabilityAllows('supportsImageReference')) accepted.push('image/*')
+  if (capabilityAllows('supportsVideoReference')) accepted.push('video/*')
+  if (capabilityAllows('supportsAudioReference')) accepted.push('audio/*')
+  return accepted.join(',') || 'image/*'
+})
+const canMountAsset = computed(() => typeof ctx?.openFreeNodeAssetLibrary === 'function')
+const modelOptions = computed(() => ctx?.getFreeNodeModelOptions?.(props.data.kind, props.id) || [])
+const currentModelMetadata = computed(() => (
+  ctx?.getFreeNodeModelMetadata?.(props.data.kind, draft.model)
+  || null
 ))
-const capability = computed(() => ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model) || {})
+const capability = computed(() => (
+  ctx?.getFreeNodeModelCapability?.(props.data.kind, draft.model)
+  || currentModelMetadata.value?.capabilities
+  || {}
+))
 const estimatedCredits = computed(() => ctx?.getFreeNodeEstimatedCredits?.(
   props.data.kind,
   draft.model,
@@ -653,8 +674,9 @@ const inputReferences = computed(() => (
     ? (ctx?.getFreeNodeInputReferences?.(props.id) || [])
     : []
 ))
+const submittedInputReferences = computed(() => normalizeFreeCanvasSubmissionReferences(inputReferences.value))
 const firstLastFrameSlots = computed(() => {
-  const imageReferences = inputReferences.value.filter((reference) => reference.kind === 'image')
+  const imageReferences = submittedInputReferences.value.filter((reference) => reference.kind === 'image')
   return [
     { key: 'first', label: '首帧', reference: imageReferences[0] || null },
     { key: 'last', label: '尾帧', reference: imageReferences[1] || null },
@@ -707,11 +729,11 @@ const statusLabel = computed(() => ({ running: '运行中', success: '已生成'
 function syncDraft() {
   draft.title = props.data.title || ''
   draft.content = props.data.content || ''
-  draft.model = normalizeModelOption(props.data.model)
+  draft.model = props.data.model || ''
   draft.aspectRatio = props.data.aspectRatio || '16:9'
   draft.duration = Number(props.data.duration) || 5
   draft.style = props.data.style || ''
-  draft.resolution = props.data.resolution || (props.data.kind === 'image' ? '2K' : '720p')
+  draft.resolution = String(props.data.resolution || (props.data.kind === 'image' ? '1k' : '720p')).toLowerCase()
   draft.quantity = Math.min(4, Math.max(1, Number(props.data.quantity) || 1))
   draft.negativePrompt = props.data.negativePrompt || ''
   draft.voiceId = props.data.voiceId || ''
@@ -728,6 +750,42 @@ function syncDraft() {
   draft.videoReferenceMode = props.data.videoReferenceMode || ''
 }
 
+async function onModelChange() {
+  draft.model = draft.model.trim()
+  const resolutions = Array.isArray(capability.value.resolutions) ? capability.value.resolutions : []
+  const normalizedResolution = String(draft.resolution || '').trim().toLowerCase()
+  if (resolutions.length && !resolutions.includes(normalizedResolution)) draft.resolution = resolutions[0]
+  else if (normalizedResolution) draft.resolution = normalizedResolution
+  const quantities = Array.isArray(capability.value.quantities) && capability.value.quantities.length
+    ? capability.value.quantities.map(Number)
+    : [1]
+  if (!quantities.includes(Number(draft.quantity))) draft.quantity = quantities[0]
+  const durations = videoDurationOptionsForCapability(capability.value)
+  if (props.data.kind === 'video' && !durations.includes(Number(draft.duration))) {
+    draft.duration = durations[0]
+  }
+  if (props.data.kind === 'video' && capability.value.supportsAudio !== true) {
+    draft.includeAudio = false
+  }
+  if (props.data.kind === 'video') {
+    const currentModeSupported = (
+      (videoReferenceMode.value === 'first-last' && supportsFirstLastMode.value)
+      || (videoReferenceMode.value === 'multi' && supportsImageReferenceMode.value)
+      || (videoReferenceMode.value === 'omni' && supportsOmniReferenceMode.value)
+    )
+    if (!currentModeSupported) {
+      draft.videoReferenceMode = supportsFirstLastMode.value
+        ? 'first-last'
+        : supportsImageReferenceMode.value
+          ? 'multi'
+          : supportsOmniReferenceMode.value
+            ? 'omni'
+            : ''
+    }
+  }
+  await saveDraft()
+}
+
 async function saveDraft() {
   if (draftSaveTimer) {
     window.clearTimeout(draftSaveTimer)
@@ -736,7 +794,7 @@ async function saveDraft() {
   await ctx?.updateFreeCanvasNode?.(props.id, {
     title: draft.title.trim() || '未命名节点',
     content: draft.content,
-    model: normalizeModelOption(draft.model),
+    model: draft.model.trim(),
     aspectRatio: draft.aspectRatio,
     duration: Number(draft.duration) || 5,
     style: draft.style.trim(),
@@ -858,13 +916,27 @@ async function selectReferenceMention(candidate) {
   contentInput.value?.setSelectionRange(cursor, cursor)
 }
 
-function referenceOrdinal(reference) {
-  const matchingReferences = inputReferences.value.filter((item) => item.kind === reference.kind)
-  return Math.max(1, matchingReferences.findIndex((item) => item.edgeId === reference.edgeId) + 1)
+function referenceSubmissionOrdinal(reference) {
+  const matchingReferences = submittedInputReferences.value.filter((item) => item.kind === reference?.kind)
+  return matchingReferences.findIndex((item) => (
+    item === reference
+    || (reference?.edgeId && item.edgeId === reference.edgeId)
+    || (reference?.nodeId && item.nodeId === reference.nodeId)
+  )) + 1
+}
+
+function canInsertReferenceToken(reference) {
+  return referenceSubmissionOrdinal(reference) > 0
+}
+
+function referenceTypeLabel(kind) {
+  return ({ image: '图片', video: '视频', audio: '音频' }[kind] || '素材')
 }
 
 async function insertReferenceToken(reference) {
   if (props.data.kind !== 'video') return
+  const ordinal = referenceSubmissionOrdinal(reference)
+  if (ordinal < 1) return
   const input = contentInput.value
   const value = String(draft.content || '')
   const liveSelection = input && document.activeElement === input
@@ -877,7 +949,7 @@ async function insertReferenceToken(reference) {
   const end = liveSelection ? liveSelection.end : start
   const before = value.slice(0, start)
   const after = value.slice(end)
-  const token = `@图片${referenceOrdinal(reference)}`
+  const token = `@${referenceTypeLabel(reference?.kind)}${ordinal}`
   const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
   const trailingSpace = after && !/^\s/.test(after) ? ' ' : ''
   const insertion = `${leadingSpace}${token}${trailingSpace || (after ? '' : ' ')}`
@@ -1096,10 +1168,6 @@ async function runNode() {
   await ctx?.runFreeCanvasNode?.(props.id)
 }
 
-function retryModelCatalog() {
-  void ctx?.reloadFreeNodeModelCatalog?.()
-}
-
 function retryAssetSave() {
   ctx?.retryFreeCanvasAssetSave?.(props.id)
 }
@@ -1115,6 +1183,9 @@ function updateReference(reference, patch) {
 
 async function setVideoReferenceMode(mode) {
   if (props.data.kind !== 'video') return
+  if (mode === 'first-last' && !supportsFirstLastMode.value) return
+  if (mode === 'multi' && !supportsImageReferenceMode.value) return
+  if (mode === 'omni' && !supportsOmniReferenceMode.value) return
   draft.videoReferenceMode = normalizeFreeCanvasVideoReferenceMode(mode)
   await saveDraft()
   let imageIndex = 0
@@ -1123,12 +1194,18 @@ async function setVideoReferenceMode(mode) {
       const index = imageIndex++
       const input = resolveFreeCanvasVideoReferenceInput(draft.videoReferenceMode, index)
       const enabled = draft.videoReferenceMode === 'multi'
-        || index === 0
+        || (draft.videoReferenceMode === 'omni' && capabilityAllows('supportsImageReference'))
+        || (draft.videoReferenceMode === 'first-last' && index === 0)
         || (draft.videoReferenceMode === 'first-last' && index === 1)
       updateReference(reference, { input, enabled })
       return
     }
-    updateReference(reference, { enabled: draft.videoReferenceMode === 'omni' })
+    updateReference(reference, {
+      enabled: draft.videoReferenceMode === 'omni'
+        && (reference.kind === 'video'
+          ? capabilityAllows('supportsVideoReference')
+          : capabilityAllows('supportsAudioReference')),
+    })
   })
 }
 
@@ -1219,9 +1296,13 @@ watch(
         : reference.slot
       const enabled = isImage
         ? videoReferenceMode.value === 'multi'
-          || index === 0
+          || (videoReferenceMode.value === 'omni' && capabilityAllows('supportsImageReference'))
+          || (videoReferenceMode.value === 'first-last' && index === 0)
           || (videoReferenceMode.value === 'first-last' && index === 1)
         : videoReferenceMode.value === 'omni'
+          && (reference.kind === 'video'
+            ? capabilityAllows('supportsVideoReference')
+            : capabilityAllows('supportsAudioReference'))
       const patch = {}
       if (reference.slot !== input) patch.input = input
       if (reference.enabled !== enabled) patch.enabled = enabled
@@ -1768,17 +1849,19 @@ watch(isSelected, (selected) => {
   font: inherit;
 }
 .field-model { grid-column: span 2; }
-.model-public-note, .model-unavailable-note { margin: 0; font-size: 11px; line-height: 1.5; }
-.model-public-note { color: #9ca3af; }
-.model-unavailable-note { color: #f59e0b; }
-.model-retry-button {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-decoration: underline;
+.model-metadata {
+  display: flex;
+  grid-column: span 2;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: #a1a1aa;
+  font-size: 11px;
 }
+.model-metadata strong { color: #e4e4e7; font-weight: 600; }
+.model-metadata span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-metadata em { color: #86efac; font-style: normal; white-space: nowrap; }
 .field-wide { grid-column: span 2; }
 .editor-check { display: flex; align-items: flex-end; gap: 8px; padding: 0 4px 9px; color: #d4d4d8; font-size: 11px; }
 .editor-footer {
@@ -1788,9 +1871,22 @@ watch(isSelected, (selected) => {
   gap: 10px;
   margin-top: 18px;
 }
-.billing-cost { margin-right: auto; color: #f59e0b; font-size: 12px; font-weight: 800; border: 1px solid rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.08); padding: 4px 7px; }
-.billing-cost strong { font-weight: 900; }
-.capability-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.billing-cost {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-right: auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 177, 92, 0.65);
+  border-radius: 10px;
+  background: rgba(124, 64, 20, 0.42);
+  color: #ffd09a;
+  font-size: 13px;
+  font-weight: 800;
+}
+.billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
+.billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
+.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
 .editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }

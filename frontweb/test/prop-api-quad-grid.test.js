@@ -37,8 +37,10 @@ test('短剧工厂批量生成道具图也传递四视图开关', () => {
     fileURLToPath(new URL('../src/views/FilmCreate.vue', import.meta.url)),
     'utf8'
   )
-  const calls = source.match(/propAPI\.generateImage\(\s*prop\.id,[\s\S]*?\)/g) || []
+  const calls = source.match(/request\.post\(`\/props\/\$\{prop\.id\}\/generate`,\s*\{[\s\S]*?\}\)/g) || []
 
-  assert.equal(calls.length, 2)
-  assert.ok(calls.every((call) => call.includes('propUseQuadGrid.value')))
+  assert.equal(calls.length, 3)
+  assert.ok(calls.every((call) => call.includes('...imageOptions')))
+  assert.ok(calls.every((call) => call.includes('use_quad_grid')))
+  assert.ok(calls.filter((call) => call.includes('propUseQuadGrid.value')).length >= 2)
 })

@@ -2,14 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const videoService = require('../src/services/videoService');
+const rawVideoService = require('../src/services/videoService');
 const videoClient = require('../src/services/videoClient');
+const aiConfig = require('../src/services/aiConfigService');
 const taskService = require('../src/services/taskService');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { evidenceRoots, withExternalModelEvidence } = require('./helpers/externalModelEvidenceFixture');
 
 const log = { info() {}, warn() {}, error() {} };
+const videoService = {
+  ...rawVideoService,
+  create(db, logger, request, options = {}) {
+    return rawVideoService.create(db, logger, request, { ...options, evidenceRoots });
+  },
+  processVideoGeneration(db, logger, id, runtime = {}) {
+    return rawVideoService.processVideoGeneration(db, logger, id, { ...runtime, evidenceRoots });
+  },
+};
 
 function setup() {
   const db = new Database(':memory:');
@@ -23,6 +34,349 @@ function setup() {
   prices.set(db, 'seedance 2.0', 12);
   return db;
 }
+
+function configureToapis(db, {
+  model = 'seedance-2-fast',
+  verificationStatus = 'verified',
+  apiKey = 'test-key',
+  durations,
+  resolutions = ['480p', '720p'],
+  pricedResolutions = resolutions,
+} = {}) {
+  const officialDurations = durations || (model === 'seedance-2-mini'
+    ? [4, 8, 10, 12, 15]
+    : [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'video',
+    provider: 'toapis',
+    api_protocol: 'toapis_video',
+    name: 'ToAPIs 视频测试',
+    base_url: 'https://toapis.com',
+    api_key: apiKey,
+    model: [model],
+    default_model: model,
+    is_active: true,
+    is_default: true,
+  });
+  if (verificationStatus !== 'pending') {
+    aiConfig.recordVerification(db, config.id, {
+      status: verificationStatus,
+      capabilities: {
+        [model]: withExternalModelEvidence(model, {
+          durations: officialDurations,
+          resolutions,
+          supportsFirstFrame: true,
+          supportsLastFrame: true,
+          supportsImageReference: true,
+          supportsVideoReference: true,
+          supportsAudioReference: true,
+          supportsAudio: true,
+        }),
+      },
+    });
+  }
+  const resolutionPrices = Object.fromEntries(pricedResolutions.map((resolution) => [
+    resolution,
+    {
+      credits: model === 'seedance-2-mini' && resolution === '720p' ? 595 : model === 'seedance-2-mini' ? 294 : 511,
+      cost_micros_per_second: model === 'seedance-2-mini' && resolution === '720p'
+        ? 678900
+        : model === 'seedance-2-mini' ? 335800 : 584000,
+    },
+  ]));
+  prices.set(db, model, Object.values(resolutionPrices)[0]?.credits || 1, {
+    category: 'video',
+    cost_unit: 'second',
+    resolution_prices: resolutionPrices,
+  });
+  credits.setAccountBalance(db, 'user-1', 100000);
+  return config;
+}
+
+function generationSideEffects(db) {
+  const hasCostTable = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'generation_cost_records'"
+  ).get());
+  return {
+    tasks: db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count,
+    videos: db.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count,
+    reservations: db.prepare('SELECT COUNT(*) AS count FROM usage_reservations').get().count,
+    costs: hasCostTable
+      ? db.prepare('SELECT COUNT(*) AS count FROM generation_cost_records').get().count
+      : 0,
+  };
+}
+
+test('ToAPIs pending strict config blocks generic same-model fallback before every side effect', () => {
+  for (const billingEnabled of [false, true]) {
+    const db = setup();
+    let scheduled = 0;
+    aiConfig.createConfig(db, log, {
+      service_type: 'video', provider: 'openai', api_protocol: 'openai',
+      name: 'generic fallback', base_url: 'https://example.invalid', api_key: 'generic-key',
+      model: ['seedance-2-fast'], default_model: 'seedance-2-fast', is_active: true,
+    });
+    configureToapis(db, { verificationStatus: 'pending' });
+
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      model: 'seedance-2-fast',
+      prompt: 'pending config must not submit',
+      duration: 4,
+      resolution: '480p',
+    }, {
+      billingEnabled,
+      userId: billingEnabled ? 'user-1' : undefined,
+      schedule() { scheduled += 1; },
+    }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+    db.close();
+  }
+});
+
+test('ToAPIs missing protected credential fails before task, reservation, cost record or schedule', () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  delete process.env.TOAPIS_API_KEY;
+  const db = setup();
+  let scheduled = 0;
+  try {
+    configureToapis(db, { apiKey: '' });
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'missing key', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+    }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('ToAPIs rejects missing price tier, Mini 5 seconds, 1080P and omitted resolution before side effects', () => {
+  const cases = [
+    {
+      configure: { model: 'seedance-2-fast', pricedResolutions: [] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '480p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast', pricedResolutions: ['480p'] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '720p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-mini' },
+      body: { model: 'seedance-2-mini', duration: 5, resolution: '480p' },
+      code: 'INVALID_VIDEO_DURATION',
+    },
+    {
+      configure: { model: 'seedance-2-fast', durations: [4] },
+      body: { model: 'seedance-2-fast', duration: 5, resolution: '480p' },
+      code: 'INVALID_VIDEO_DURATION',
+    },
+    {
+      configure: { model: 'seedance-2-fast', resolutions: ['480p'], pricedResolutions: ['480p', '720p'] },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '720p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', duration: 4, resolution: '1080p' },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', duration: 4 },
+      code: 'MODEL_RESOLUTION_PRICE_REQUIRED',
+    },
+    {
+      configure: { model: 'seedance-2-fast' },
+      body: { model: 'seedance-2-fast', prompt: '', duration: 4, resolution: '480p' },
+      code: 'INVALID_VIDEO_REQUEST',
+    },
+  ];
+  for (const scenario of cases) {
+    const db = setup();
+    let scheduled = 0;
+    configureToapis(db, scenario.configure);
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1,
+      storyboard_id: 1,
+      prompt: 'strict request validation',
+      ...scenario.body,
+    }, {
+      billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+    }), (error) => error.code === scenario.code, `${scenario.body.model}:${scenario.body.duration}:${scenario.body.resolution}`);
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+    assert.equal(scheduled, 0);
+    db.close();
+  }
+});
+
+test('verified ToAPIs Fast 480P 4-second request reserves exact credits and cost once', () => {
+  const db = setup();
+  let scheduled = 0;
+  const config = configureToapis(db, { model: 'seedance-2-fast' });
+
+  const created = videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'verified four second request',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  });
+
+  const row = db.prepare('SELECT duration, resolution, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+  assert.deepEqual({ duration: row.duration, resolution: row.resolution }, { duration: 4, resolution: '480p' });
+  assert.equal(credits.getReservation(db, row.credit_reservation_id).amount, 2044);
+  assert.deepEqual(
+    db.prepare('SELECT model, quantity, resolution, cost_micros FROM generation_cost_records').get(),
+    { model: 'seedance-2-fast', quantity: 4, resolution: '480p', cost_micros: 2336000 },
+  );
+  assert.equal(scheduled, 1);
+
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'different resolution must not reuse',
+    duration: 4,
+    resolution: '720p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  }), (error) => error.code === 'VIDEO_GENERATION_ACTIVE');
+  assert.deepEqual(generationSideEffects(db), { tasks: 1, videos: 1, reservations: 1, costs: 1 });
+  assert.equal(scheduled, 1);
+
+  aiConfig.recordVerification(db, config.id, { status: 'pending', capabilities: {} });
+  assert.throws(() => videoService.create(db, log, {
+    drama_id: 1,
+    storyboard_id: 1,
+    model: 'seedance-2-fast',
+    prompt: 'active task must not bypass downgraded verification',
+    duration: 4,
+    resolution: '480p',
+  }, {
+    billingEnabled: true, userId: 'user-1', schedule() { scheduled += 1; },
+  }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+  assert.deepEqual(generationSideEffects(db), { tasks: 1, videos: 1, reservations: 1, costs: 1 });
+  assert.equal(scheduled, 1);
+  db.close();
+});
+
+test('ToAPIs protected environment credential is valid but cannot replace model capability evidence', () => {
+  const previousKey = process.env.TOAPIS_API_KEY;
+  process.env.TOAPIS_API_KEY = 'environment-test-key';
+  const db = setup();
+  try {
+    const config = configureToapis(db, { apiKey: '' });
+    aiConfig.recordVerification(db, config.id, {
+      status: 'verified',
+      capabilities: {
+        'another-model': { durations: [4], resolutions: ['480p'] },
+      },
+    });
+    assert.throws(() => videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'wrong capability object', duration: 4, resolution: '480p',
+    }, { billingEnabled: false, schedule() {} }), (error) => error.code === 'MODEL_NOT_VERIFIED');
+    assert.deepEqual(generationSideEffects(db), { tasks: 0, videos: 0, reservations: 0, costs: 0 });
+
+    aiConfig.recordVerification(db, config.id, {
+      status: 'verified',
+      capabilities: {
+        'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
+          durations: [4], resolutions: ['480p'],
+          supportsFirstFrame: true, supportsLastFrame: true,
+          supportsImageReference: true, supportsVideoReference: true,
+          supportsAudioReference: true, supportsAudio: true,
+        }),
+      },
+    });
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'environment credential accepted', duration: 4, resolution: '480p',
+    }, { billingEnabled: false, schedule() {} });
+    assert.ok(created.id);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOAPIS_API_KEY;
+    else process.env.TOAPIS_API_KEY = previousKey;
+    db.close();
+  }
+});
+
+test('scheduled ToAPIs Fast 4-second task reaches provider adapter without legacy duration rejection', async () => {
+  const db = setup();
+  configureToapis(db, { model: 'seedance-2-fast' });
+  let scheduled;
+  let submitted;
+  const originalCall = videoClient.callVideoApi;
+  videoClient.callVideoApi = async (_db, _log, options) => {
+    submitted = options;
+    return { indeterminate: true, error: 'test indeterminate result' };
+  };
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'four second async path', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule(callback) { scheduled = callback; },
+    });
+    assert.equal(typeof scheduled, 'function');
+    await scheduled();
+    assert.equal(submitted.model, 'seedance-2-fast');
+    assert.equal(submitted.duration, 4);
+    assert.equal(submitted.resolution, '480p');
+    const row = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.status, 'processing');
+    assert.match(row.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
+  } finally {
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});
+
+test('ToAPIs verification downgrade after reservation prevents supplier POST and refunds locally', async () => {
+  const db = setup();
+  const config = configureToapis(db, { model: 'seedance-2-fast' });
+  let scheduled;
+  let supplierCalls = 0;
+  const originalCall = videoClient.callVideoApi;
+  videoClient.callVideoApi = async () => {
+    supplierCalls += 1;
+    return { task_id: 'must-not-exist' };
+  };
+  try {
+    const created = videoService.create(db, log, {
+      drama_id: 1, storyboard_id: 1, model: 'seedance-2-fast',
+      prompt: 'downgrade before submit', duration: 4, resolution: '480p',
+    }, {
+      billingEnabled: true,
+      userId: 'user-1',
+      schedule(callback) { scheduled = callback; },
+    });
+    aiConfig.recordVerification(db, config.id, { status: 'pending', capabilities: {} });
+    await scheduled();
+    assert.equal(supplierCalls, 0);
+    const row = db.prepare('SELECT status, credit_reservation_id FROM video_generations WHERE id = ?').get(created.id);
+    assert.equal(row.status, 'failed');
+    assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'refunded');
+  } finally {
+    videoClient.callVideoApi = originalCall;
+    db.close();
+  }
+});
 
 function create(db, userId) {
   return videoService.create(db, log, {

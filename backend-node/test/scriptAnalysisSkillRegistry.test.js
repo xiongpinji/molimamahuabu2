@@ -63,3 +63,20 @@ test('电影化视觉导演是可选增强且不会替换现有默认 Skill', ()
     output_schema_version: '1.0',
   });
 });
+
+test('一体化生产导演可显式选择但不会替换 V1 默认合同', () => {
+  const selected = resolveScriptAnalysisSkill('short-drama-production-director');
+  assert.equal(selected.id, 'short-drama-production-director');
+  assert.equal(selected.is_default, false);
+  assert.equal(selected.require_production_direction, true);
+  assert.equal(selected.output_schema_version, '2.0');
+  assert.match(selected.system_prompt, /creative_strategy/);
+  assert.match(selected.user_prompt_addendum, /prompt_ir/);
+  assert.deepEqual(snapshotScriptAnalysisSkill(selected), {
+    id: 'short-drama-production-director',
+    name: '短剧一体化生产导演',
+    version: '2.0.0',
+    module: 'script_analysis',
+    output_schema_version: '2.0',
+  });
+});
