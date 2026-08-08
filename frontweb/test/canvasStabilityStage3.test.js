@@ -35,9 +35,9 @@ test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时�
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
   assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
   assert.match(canvasSource, /@drop="onCanvasImageDrop"/)
-  assert.match(canvasSource, /file\.type\?\.startsWith\('image\/'\)/)
+  assert.match(canvasSource, /collectDroppedImageFiles\(event\.dataTransfer\)/)
   assert.match(canvasSource, /screenToFlowPosition\(event\.clientX, event\.clientY\)/)
-  assert.match(canvasSource, /createFreeCanvasNode\('image', position\)/)
+  assert.match(canvasSource, /createFreeCanvasNode\('image', spec\.position, spec\.data\)/)
   assert.match(canvasSource, /uploadFreeCanvasNodeFile\(nodeId, file\)/)
 })
 

@@ -3037,7 +3037,7 @@ function updateFreeCanvasReference(edgeId, patch = {}) {
   }
   allGraphEdges.value = allGraphEdges.value.map(mutate)
   edges.value = edges.value.map(mutate)
-  scheduleSave()
+  void persistCanvasState({ layoutOnly: true })
 }
 
 function detachFreeCanvasReference(edgeId) {

@@ -198,6 +198,11 @@ test('画布保存使用串行队列并在执行时构造最新布局', () => {
   assert.match(canvasSource, /async function persistCanvasStateNow[\s\S]*const updated = await layoutPersistence\.update/)
 })
 
+test('更新自由节点参考素材后使用现有持久化队列保存，不调用不存在的 scheduleSave', () => {
+  assert.match(canvasSource, /function updateFreeCanvasReference\(edgeId, patch = \{\}\)[\s\S]*void persistCanvasState\(\{ layoutOnly: true \}\)/)
+  assert.doesNotMatch(canvasSource, /\bscheduleSave\s*\(/)
+})
+
 test('自由节点素材入库使用 single-flight 并在 create 前检查已入库状态', () => {
   assert.match(canvasSource, /const freeCanvasAssetSaveFlights = new Map\(\)/)
   assert.match(canvasSource, /const saveKey = `\$\{nodeId\}::\$\{url\}`/)
