@@ -16,6 +16,7 @@ const usmercariVideoClient = require('./usmercariVideoClient');
 const token6688Client = require('./token6688Client');
 const mediaModelSelection = require('./mediaModelSelectionService');
 const toapisVideoClient = require('./toapisVideoClient');
+const providerAssetUrl = require('./providerAssetUrlService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const modelPriceService = require('./modelPriceService');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
@@ -4990,6 +4991,10 @@ async function callVideoApi(db, log, opts, runtime = {}) {
   }
 
   if (protocol === 'toapis_video') {
+    const signAsset = (value) => providerAssetUrl.signProviderAssetUrl(value, {
+      filesBaseUrl: opts.files_base_url,
+    });
+    const signAssets = (values) => Array.isArray(values) ? values.map(signAsset) : values;
     const hasMultimodalReferences = [
       opts.reference_urls,
       opts.reference_video_urls,
@@ -5003,13 +5008,13 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       duration: opts.duration,
       aspect_ratio,
       resolution,
-      image_url: hasMultimodalReferences ? '' : opts.image_url,
-      first_frame_url: opts.first_frame_url,
-      last_frame_url: opts.last_frame_url,
-      reference_urls: opts.reference_urls,
-      reference_video_urls: opts.reference_video_urls,
-      reference_audio_urls: opts.reference_audio_urls,
-      voice_reference_url: opts.voice_reference_url,
+      image_url: hasMultimodalReferences ? '' : signAsset(opts.image_url),
+      first_frame_url: signAsset(opts.first_frame_url),
+      last_frame_url: signAsset(opts.last_frame_url),
+      reference_urls: signAssets(opts.reference_urls),
+      reference_video_urls: signAssets(opts.reference_video_urls),
+      reference_audio_urls: signAssets(opts.reference_audio_urls),
+      voice_reference_url: signAsset(opts.voice_reference_url),
       generate_audio: opts.generate_audio,
       client_business_id: opts.client_business_id || (video_gen_id ? `video-${video_gen_id}` : ''),
       video_gen_id,

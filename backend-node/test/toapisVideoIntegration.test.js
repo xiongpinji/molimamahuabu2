@@ -9,6 +9,7 @@ const {
   pollVideoTask,
   resolveVideoProtocol,
 } = require('../src/services/videoClient');
+const providerAssetUrl = require('../src/services/providerAssetUrlService');
 
 function makeLog() {
   const entries = [];
@@ -18,6 +19,17 @@ function makeLog() {
     warn(message, data) { entries.push({ level: 'warn', message, data }); },
     error(message, data) { entries.push({ level: 'error', message, data }); },
   };
+}
+
+function assertSignedProviderAsset(value, expectedPath, secret) {
+  const url = new URL(value);
+  assert.equal(url.pathname, expectedPath);
+  assert.equal(providerAssetUrl.verifyProviderAssetRequest({
+    pathname: url.pathname,
+    expires: url.searchParams.get(providerAssetUrl.EXPIRES_PARAM),
+    signature: url.searchParams.get(providerAssetUrl.SIGNATURE_PARAM),
+    secret,
+  }), true);
 }
 
 function makeVideoConfig(overrides = {}) {
@@ -187,7 +199,13 @@ test('official ToAPIs model never selects a strict config whose evidence binding
   assert.equal(getDefaultVideoConfig(makeDb(stale), 'seedance-2-fast', evidenceRoots), null);
 });
 
-test('ToAPIs callVideoApi keeps multimodal references and never degrades them into first_frame', async () => {
+test('ToAPIs callVideoApi signs protected multimodal references and never degrades them into first_frame', async (t) => {
+  const originalSecret = process.env.PLATFORM_JWT_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'test-provider-asset-secret-at-least-32-characters';
+  t.after(() => {
+    if (originalSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = originalSecret;
+  });
   const config = makeVideoConfig();
   const db = makeDb(config);
   const log = makeLog();
@@ -207,10 +225,11 @@ test('ToAPIs callVideoApi keeps multimodal references and never degrades them in
     duration: 8,
     resolution: '480p',
     aspect_ratio: '16:9',
-    image_url: 'https://cdn.example.com/cover.png',
-    reference_urls: ['https://cdn.example.com/ref.png'],
-    reference_video_urls: ['https://cdn.example.com/ref.mp4'],
-    reference_audio_urls: ['https://cdn.example.com/ref.mp3'],
+    image_url: 'https://molimama.vip/static/projects/0039/cover.png',
+    reference_urls: ['https://molimama.vip/static/projects/0039/ref.png'],
+    reference_video_urls: ['https://molimama.vip/static/projects/0039/ref.mp4'],
+    reference_audio_urls: ['https://molimama.vip/static/projects/0039/ref.mp3'],
+    files_base_url: 'https://molimama.vip/static',
     generate_audio: false,
     client_business_id: 'video-70',
     fetchImpl,
@@ -221,15 +240,12 @@ test('ToAPIs callVideoApi keeps multimodal references and never degrades them in
   assert.equal(calls[0].url, 'https://toapis.com/v1/videos/generations');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
   assert.equal(calls[0].body.generate_audio, false);
-  assert.deepEqual(calls[0].body.image_with_roles, [
-    { url: 'https://cdn.example.com/ref.png', role: 'reference_image' },
-  ]);
-  assert.deepEqual(calls[0].body.video_with_roles, [
-    { url: 'https://cdn.example.com/ref.mp4', role: 'reference_video' },
-  ]);
-  assert.deepEqual(calls[0].body.audio_with_roles, [
-    { url: 'https://cdn.example.com/ref.mp3', role: 'reference_audio' },
-  ]);
+  assert.equal(calls[0].body.image_with_roles[0].role, 'reference_image');
+  assertSignedProviderAsset(calls[0].body.image_with_roles[0].url, '/static/projects/0039/ref.png', process.env.PLATFORM_JWT_SECRET);
+  assert.equal(calls[0].body.video_with_roles[0].role, 'reference_video');
+  assertSignedProviderAsset(calls[0].body.video_with_roles[0].url, '/static/projects/0039/ref.mp4', process.env.PLATFORM_JWT_SECRET);
+  assert.equal(calls[0].body.audio_with_roles[0].role, 'reference_audio');
+  assertSignedProviderAsset(calls[0].body.audio_with_roles[0].url, '/static/projects/0039/ref.mp3', process.env.PLATFORM_JWT_SECRET);
   assert.equal(calls[0].body.image_with_roles.some((item) => item.role === 'first_frame'), false);
 });
 
@@ -260,7 +276,13 @@ test('ToAPIs explicit first and last frame are sent as frame roles when no multi
   ]);
 });
 
-test('ToAPIs short-drama frame request does not auto-inject character voice when audio generation is disabled', async () => {
+test('ToAPIs short-drama frame request signs the protected platform asset without auto-injecting character voice', async (t) => {
+  const originalSecret = process.env.PLATFORM_JWT_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'test-provider-asset-secret-at-least-32-characters';
+  t.after(() => {
+    if (originalSecret == null) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = originalSecret;
+  });
   const db = makeDb(makeVideoConfig());
   const basePrepare = db.prepare.bind(db);
   db.prepare = (sql) => {
@@ -301,7 +323,7 @@ test('ToAPIs short-drama frame request does not auto-inject character voice when
     aspect_ratio: '16:9',
     drama_id: 39,
     storyboard_id: 48,
-    first_frame_url: 'https://molimama.vip/static/projects/0039/images/frame.jpg',
+    first_frame_url: 'https://molimama.vip/static/projects/0039_[全流程实测]/images/frame.jpg',
     generate_audio: false,
     files_base_url: 'https://molimama.vip/static',
     fetchImpl: async (url, init = {}) => {
@@ -316,9 +338,16 @@ test('ToAPIs short-drama frame request does not auto-inject character voice when
 
   assert.deepEqual(result, { task_id: 'tsk_short_drama_frame', status: 'queued' });
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].body.image_with_roles, [
-    { url: 'https://molimama.vip/static/projects/0039/images/frame.jpg', role: 'first_frame' },
-  ]);
+  assert.equal(calls[0].body.image_with_roles.length, 1);
+  const signedFrame = new URL(calls[0].body.image_with_roles[0].url);
+  assert.equal(signedFrame.pathname, '/static/projects/0039_[%E5%85%A8%E6%B5%81%E7%A8%8B%E5%AE%9E%E6%B5%8B]/images/frame.jpg');
+  assert.equal(providerAssetUrl.verifyProviderAssetRequest({
+    pathname: signedFrame.pathname,
+    expires: signedFrame.searchParams.get(providerAssetUrl.EXPIRES_PARAM),
+    signature: signedFrame.searchParams.get(providerAssetUrl.SIGNATURE_PARAM),
+    secret: process.env.PLATFORM_JWT_SECRET,
+  }), true);
+  assert.equal(calls[0].body.image_with_roles[0].role, 'first_frame');
   assert.equal(Object.hasOwn(calls[0].body, 'audio_with_roles'), false);
 });
 
