@@ -7,13 +7,16 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
+import redraw_locale_worker.server as server_module
 from redraw_locale_worker.server import (
     LocaleUnixServer,
     build_ready_payload,
     is_ready_expired,
     make_test_server,
     safe_unlink_socket,
+    run_server,
     write_ready,
     write_ready_after_startup_checks,
 )
@@ -218,13 +221,48 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(ready_path.exists())
 
     def test_startup_ready_requires_exactly_two_smoke_checks(self):
-        with self.assertRaisesRegex(ValueError, "LOCALE_STARTUP_CHECK_INVALID"):
+        with self.assertRaisesRegex(TypeError, "LOCALE_STARTUP_CHECK_INVALID"):
             write_ready_after_startup_checks(
                 self.root / "worker.ready.json",
                 self.pack,
                 model_hash_check=lambda pack: None,
                 smoke_checks=(lambda: None,),
             )
+
+    def test_run_server_does_not_publish_ready_when_unix_bind_fails(self):
+        ready_path = self.root / "worker.ready.json"
+        socket_path = self.root / "worker.sock"
+        order = []
+
+        def model_hash_check(pack):
+            order.append(("hash", pack["id"]))
+
+        def asr_smoke():
+            order.append(("smoke", "asr"))
+
+        def accent_smoke():
+            order.append(("smoke", "accent"))
+
+        def fail_create(socket_path_arg, **kwargs):
+            self.assertEqual(Path(socket_path_arg), socket_path)
+            raise OSError
+
+        with patch.object(server_module, "create_unix_server", side_effect=fail_create):
+            with self.assertRaises(OSError):
+                run_server(
+                    socket_path,
+                    pack=self.pack,
+                    allowed_root=self.root,
+                    asr=object(),
+                    accent=object(),
+                    ready_path=ready_path,
+                    model_hash_check=model_hash_check,
+                    smoke_checks=(asr_smoke, accent_smoke),
+                )
+
+        self.assertEqual(order, [("hash", "en-US@1"), ("smoke", "asr"), ("smoke", "accent")])
+        self.assertFalse(ready_path.exists())
+        self.assertFalse(socket_path.exists())
 
     def test_safe_unlink_socket_does_not_remove_unexpected_files(self):
         regular = self.root / "worker.sock"

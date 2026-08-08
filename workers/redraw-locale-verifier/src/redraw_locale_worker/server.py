@@ -99,7 +99,7 @@ class LocaleRequestHandler(socketserver.StreamRequestHandler):
         except LocaleWorkerError as exc:
             self._write_error(exc.code)
             return
-        except Exception:
+        except Exception:  # noqa: BLE001 - keep the JSONL protocol stable for verifier crashes.
             self._write_error("LOCALE_VERIFY_FAILED")
             return
         self._write_json({"ok": True, "result": result})
@@ -128,7 +128,7 @@ def make_test_server(verifier, *, pack, allowed_root, asr=None, accent=None):
 
 def build_ready_payload(pack, *, now=None, pid=None, ttl_seconds=READY_TTL_SECONDS):
     if not isinstance(pack, dict):
-        raise ValueError("LOCALE_READY_ATTESTATION_INVALID")
+        raise TypeError("LOCALE_READY_ATTESTATION_INVALID")
     locale_pack = pack.get("id") if "id" in pack else pack.get("locale_pack")
     model_hash = pack.get("model_manifest_sha256")
     calibration_hash = pack.get("calibration_manifest_sha256")
@@ -162,15 +162,19 @@ def write_ready(path, pack, *, now=None, pid=None):
 
 
 def write_ready_after_startup_checks(path, pack, *, model_hash_check, smoke_checks, now=None, pid=None):
+    run_startup_checks(pack, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
+    write_ready(path, pack, now=now, pid=pid)
+
+
+def run_startup_checks(pack, *, model_hash_check, smoke_checks):
     if not callable(model_hash_check) or not isinstance(smoke_checks, (list, tuple)) or len(smoke_checks) != 2:
-        raise ValueError("LOCALE_STARTUP_CHECK_INVALID")
+        raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
     if not all(callable(check) for check in smoke_checks):
-        raise ValueError("LOCALE_STARTUP_CHECK_INVALID")
+        raise TypeError("LOCALE_STARTUP_CHECK_INVALID")
 
     model_hash_check(pack)
     for check in smoke_checks:
         check()
-    write_ready(path, pack, now=now, pid=pid)
 
 
 def is_ready_expired(payload, *, now=None):
@@ -233,15 +237,22 @@ def create_unix_server(socket_path, *, pack, allowed_root, asr, accent, ready_pa
 
 
 def run_server(socket_path, *, pack, allowed_root, asr, accent, ready_path, model_hash_check, smoke_checks):
-    write_ready_after_startup_checks(ready_path, pack, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
-    refresher = ReadyRefresher(ready_path, pack)
-    server = create_unix_server(socket_path, pack=pack, allowed_root=allowed_root, asr=asr, accent=accent, ready_path=ready_path)
-    refresher.start()
+    server = None
+    refresher = None
     try:
+        run_startup_checks(pack, model_hash_check=model_hash_check, smoke_checks=smoke_checks)
+        server = create_unix_server(socket_path, pack=pack, allowed_root=allowed_root, asr=asr, accent=accent, ready_path=ready_path)
+        write_ready(ready_path, pack)
+        refresher = ReadyRefresher(ready_path, pack)
+        refresher.start()
         server.serve_forever()
     finally:
-        refresher.stop()
-        server.server_close()
+        if refresher is not None:
+            refresher.stop()
+        if server is not None:
+            server.server_close()
+        else:
+            safe_unlink_socket(socket_path)
         _safe_unlink_file(ready_path)
 
 
@@ -285,7 +296,7 @@ def _default_verifier():
 
 
 def main():
-    raise SystemExit("redraw locale worker server requires explicit local model configuration")
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":
