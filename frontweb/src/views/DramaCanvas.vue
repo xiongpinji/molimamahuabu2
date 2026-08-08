@@ -1002,7 +1002,7 @@ function persistFreeCanvasNodeDefaults(kind, data) {
 }
 
 function getFreeNodeModelOptions(kind) {
-  return getFreeNodeModelOptionEntries(kind).map((item) => item.value)
+  return getFreeNodeModelOptionEntries(kind)
 }
 
 function getFreeNodeModelOptionEntries(kind) {

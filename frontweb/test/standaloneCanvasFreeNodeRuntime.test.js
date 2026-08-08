@@ -38,6 +38,13 @@ test('自由节点配置面板保存并回填模型、比例和时长字段，�
   assert.doesNotMatch(nodeSource, /<datalist v-if="modelOptions\.length"/)
 })
 
+test('首页与项目画布向节点提供带 value 和 label 的模型选项', () => {
+  assert.match(homeCanvasSource, /canvasModelOptions,/)
+  assert.match(homeCanvasSource, /function getFreeNodeModelOptions\(kind\) \{\s*return canvasModelOptions\(homeCanvasModelCatalog\.value, kind\)\s*\}/)
+  assert.match(canvasSource, /function getFreeNodeModelOptions\(kind\) \{\s*return getFreeNodeModelOptionEntries\(kind\)\s*\}/)
+  assert.doesNotMatch(canvasSource, /getFreeNodeModelOptionEntries\(kind\)\.map\(\(item\) => item\.value\)/)
+})
+
 test('每种自由生成节点在底部醒目显示随参数变化的本次积分', () => {
   assert.match(nodeSource, /v-if="canGenerate" class="billing-cost" aria-live="polite"/)
   assert.match(nodeSource, /本次预计扣除/)

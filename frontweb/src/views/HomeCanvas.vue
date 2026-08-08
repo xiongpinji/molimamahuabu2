@@ -245,6 +245,7 @@ import {
 import {
   canvasModelCapability,
   canvasModelEntry,
+  canvasModelOptions,
   estimateCanvasCredits,
   normalizeCanvasModelCatalog,
 } from '@/utils/canvasModelCapabilities'
@@ -451,7 +452,7 @@ function freeCanvasNodeInputReferences(nodeId) {
 }
 
 function getFreeNodeModelOptions(kind) {
-  return homeCanvasModelCatalog.value.filter((item) => item.kind === kind)
+  return canvasModelOptions(homeCanvasModelCatalog.value, kind)
 }
 
 function getFreeNodeModelCapability(kind, model) {
