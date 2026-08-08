@@ -493,12 +493,16 @@ test('自定义充值金额使用紧凑深色输入框且不展示增减按钮',
       backgroundColor: wrapperStyle.backgroundColor,
       color: inputStyle.color,
       fontSize: Number.parseFloat(inputStyle.fontSize),
+      inputHeight: input.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(inputStyle.lineHeight),
     }
   })
   expect(styles.height).toBeLessThanOrEqual(72)
   expect(styles.backgroundColor).toBe('rgb(16, 16, 16)')
   expect(styles.color).toBe('rgb(255, 255, 255)')
   expect(styles.fontSize).toBeLessThanOrEqual(42)
+  expect(styles.inputHeight).toBeGreaterThanOrEqual(styles.fontSize * 1.15)
+  expect(styles.lineHeight).toBeGreaterThanOrEqual(styles.fontSize * 1.15)
 })
 
 test('用户充值任一关键数据加载失败时零误导零下单，单在途重试后原子恢复', async ({ page }) => {
