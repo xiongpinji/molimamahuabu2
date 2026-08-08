@@ -168,7 +168,8 @@ test('重绘语言验证 worker systemd 单元离线且资源受限', () => {
   assert.match(unit, /^Group=moli-drama$/m);
   assert.match(unit, /^Environment=HF_HUB_OFFLINE=1$/m);
   assert.match(unit, /^Environment=TRANSFORMERS_OFFLINE=1$/m);
-  assert.match(unit, /^ExecStart=\/opt\/moli-drama\/shared\/redraw-locale-verifier\/venv\/bin\/python -m moli_redraw_locale_verifier$/m);
+  assert.match(unit, /^EnvironmentFile=-\/opt\/moli-drama\/shared\/redraw-locale-verifier\/verifier\.env$/m);
+  assert.match(unit, /^ExecStart=\/opt\/moli-drama\/shared\/redraw-locale-verifier\/venv\/bin\/python -m redraw_locale_worker\.server$/m);
   assert.match(unit, /^Restart=on-failure$/m);
   assert.match(unit, /^MemoryMax=5G$/m);
   assert.match(unit, /^CPUQuota=300%$/m);
@@ -188,8 +189,8 @@ test('重绘语言验证 worker 发布材料保持 shared verifier 与付费 can
   const readme = read('deploy/redraw-locale-verifier/README.md');
   const scope = JSON.parse(read('deploy/release-scopes/redraw-locale-verifier.json'));
 
-  assert.match(readme, /worker source 和 venv 必须预置/);
-  assert.match(readme, /release 只携带 sandbox materials、systemd unit 和 release scope/);
+  assert.match(readme, /其余 worker source、模型权重和 venv 必须预置/);
+  assert.match(readme, /release 允许携带受审计的 `server\.py` 入口源码/);
   assert.match(readme, /先完成基准、签名和 disabled 部署/);
   assert.match(readme, /再批准付费 canary/);
   assert.match(readme, /不能替代 Worker evidence/);
@@ -199,8 +200,18 @@ test('重绘语言验证 worker 发布材料保持 shared verifier 与付费 can
     'deploy/redraw-locale-verifier/README.md',
     'deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service',
     'deploy/release-scopes/redraw-locale-verifier.json',
+    'docs/superpowers/reports/2026-08-08-redraw-locale-worker-gate.md',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/server.py',
   ]);
   assert.doesNotMatch(JSON.stringify(scope), /secret|key|token|password|credential/i);
   assert.doesNotMatch(JSON.stringify(scope), /(^|\/)(weights?|models?|venv)(\/|$)/i);
   assert.doesNotMatch(JSON.stringify(scope), /production.*db|current|shared\/release-guard/i);
+});
+
+test('重绘语言验证 worker entrypoint 真实调用 run_server 且缺配置时 fail closed', () => {
+  const source = read('workers/redraw-locale-verifier/src/redraw_locale_worker/server.py');
+
+  assert.match(source, /def main\(\):/);
+  assert.match(source, /run_server\(/);
+  assert.match(source, /LOCALE_SERVER_STARTUP_FAILED/);
 });

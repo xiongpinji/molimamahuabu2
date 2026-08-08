@@ -18,7 +18,7 @@
 | Node 核心五组回归 | `cd backend-node && node --test --test-concurrency=1 test/redrawAssetBatch.test.js test/redrawAssets.test.js test/redrawDialogue.test.js test/redrawDialogueOrchestrator.test.js test/redrawRoutes.test.js` | `exit 1; TAP 150 ok, 7 not ok；失败集中于既有 batch 旧状态断言` |
 | Backend 全量 | `cd backend-node && npm test -- --test-concurrency=1` | `exit 1；在本地 dirty worktree 中存在既有回归失败，未作为生产通过依据` |
 | 前端测试脚本 | `cd frontweb && npm test` | `NOT_RUN/未配置 test script` |
-| 合同静态检查 | `node --check`、`git diff --check`、systemd/scope 合同测试 | `通过；无生产写入` |
+| 合同静态检查 | `cd backend-node && node --test --test-concurrency=1 test/webProductionDeploymentContract.test.js test/incrementalReleaseScope.test.js`、`git diff --check` | `16/16 pass；无生产写入` |
 
 Node 目标组失败不被隐藏，也不把历史 dirty fixture 失败改写成 Worker 通过。当前 Worker 纯函数与 socket/registry/adapter 的已覆盖目标测试仍分别由前序任务证据支撑；本报告只记录本轮新鲜命令结果。
 
@@ -29,6 +29,7 @@ Node 目标组失败不被隐藏，也不把历史 dirty fixture 失败改写成
 | `backend-node/package-lock.json` | `LOCAL_STATIC` | `65e3471058d7f61b453e9033f9abd99022d32834ccbfac94dce5468620bce2c9` |
 | `frontweb/package-lock.json` | `LOCAL_STATIC` | `c1221a846ea495e9c5614b3e669e208ea8e4f8fca5cf569ff70fbdb791d3539d` |
 | `desktop/package-lock.json` | `LOCAL_STATIC` | `3da8dd64f8db84c34933079ccea04e1a51304eecabe2ba9e6cdb77e189317b46` |
+| Worker `server.py` entrypoint | `LOCAL_STATIC` | `python -S -m py_compile` exit 0；systemd 使用 `redraw_locale_worker.server` |
 | 模型 revision/tree hash | `BLOCKED` | 当前 worktree 无目标机 staged model manifest；不伪造 |
 | calibration manifest/signature | `BLOCKED` | 无 200 条授权 tune/eval 音频与生产签名材料 |
 

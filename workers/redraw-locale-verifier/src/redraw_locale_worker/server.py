@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import socketserver
 import stat
@@ -297,7 +298,55 @@ def _default_verifier():
 
 
 def main():
-    raise SystemExit(2)
+    try:
+        socket_path = _required_env("REDRAW_LOCALE_VERIFIER_SOCKET")
+        ready_path = _required_env("REDRAW_LOCALE_VERIFIER_READY_PATH")
+        allowed_root = _required_env("REDRAW_LOCALE_VERIFIER_ALLOWED_ROOT")
+        pack_path = _required_env("REDRAW_LOCALE_VERIFIER_PACK_PATH")
+        model_manifest_path = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH")
+        expected_model_hash = _required_env("REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256")
+        smoke_audio = _required_env("REDRAW_LOCALE_VERIFIER_SMOKE_AUDIO")
+        asr_model_dir = _required_env("REDRAW_LOCALE_VERIFIER_ASR_MODEL_DIR")
+        accent_runtime_dir = _required_env("REDRAW_LOCALE_VERIFIER_ACCENT_RUNTIME_DIR")
+
+        pack = json.loads(Path(pack_path).read_text(encoding="utf-8"))
+        if not isinstance(pack, dict):
+            raise ValueError("LOCALE_PACK_INVALID")
+        pack.setdefault("locale_pack", pack.get("id"))
+        manifest_bytes = Path(model_manifest_path).read_bytes()
+        actual_model_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_model_hash != expected_model_hash or pack.get("model_manifest_sha256") != expected_model_hash:
+            raise ValueError("LOCALE_MODEL_MANIFEST_HASH_INVALID")
+
+        from .engines import CommonAccentEngine, FasterWhisperEngine
+
+        asr = FasterWhisperEngine(asr_model_dir)
+        accent = CommonAccentEngine(accent_runtime_dir)
+        smoke_path = Path(smoke_audio).resolve(strict=True)
+
+        def model_hash_check(_pack):
+            if hashlib.sha256(Path(model_manifest_path).read_bytes()).hexdigest() != expected_model_hash:
+                raise ValueError("LOCALE_MODEL_MANIFEST_HASH_INVALID")
+
+        run_server(
+            socket_path,
+            pack=pack,
+            allowed_root=allowed_root,
+            asr=asr,
+            accent=accent,
+            ready_path=ready_path,
+            model_hash_check=model_hash_check,
+            smoke_checks=[lambda: asr.infer(smoke_path), lambda: accent.infer(smoke_path)],
+        )
+    except Exception as exc:  # noqa: BLE001 - startup must fail closed without secret details.
+        raise SystemExit(f"LOCALE_SERVER_STARTUP_FAILED:{type(exc).__name__}") from None
+
+
+def _required_env(name):
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"{name}_REQUIRED")
+    return value
 
 
 if __name__ == "__main__":

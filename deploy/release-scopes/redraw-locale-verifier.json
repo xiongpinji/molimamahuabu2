@@ -5,6 +5,8 @@
     "backend-node/test/webProductionDeploymentContract.test.js",
     "deploy/redraw-locale-verifier/README.md",
     "deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service",
-    "deploy/release-scopes/redraw-locale-verifier.json"
+    "deploy/release-scopes/redraw-locale-verifier.json",
+    "docs/superpowers/reports/2026-08-08-redraw-locale-worker-gate.md",
+    "workers/redraw-locale-verifier/src/redraw_locale_worker/server.py"
   ]
 }
