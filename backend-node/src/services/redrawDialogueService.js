@@ -44,8 +44,26 @@ function sha256(value) {
 
 function canonicalVoiceSnapshot(snapshot = {}) {
   return {
+    source: String(snapshot.source || ''),
     locale: String(snapshot.locale || ''),
     market: String(snapshot.market || ''),
+    locale_pack: String(snapshot.locale_pack || snapshot.localePack || ''),
+    audio_sha256: String(snapshot.audio_sha256 || snapshot.audioSha256 || ''),
+    transcript_sha256: snapshot.transcript_sha256 == null && snapshot.transcriptSha256 == null
+      ? null
+      : String(snapshot.transcript_sha256 ?? snapshot.transcriptSha256),
+    model_manifest_sha256: String(snapshot.model_manifest_sha256 || snapshot.modelManifestSha256 || ''),
+    calibration_manifest_sha256: String(
+      snapshot.calibration_manifest_sha256 || snapshot.calibrationManifestSha256 || '',
+    ),
+    asr_model_revision: String(snapshot.asr_model_revision || snapshot.asrModelRevision || snapshot.asr_revision || ''),
+    accent_model_revision: String(
+      snapshot.accent_model_revision || snapshot.accentModelRevision || snapshot.accent_revision || '',
+    ),
+    metrics: snapshot.metrics && typeof snapshot.metrics === 'object' && !Array.isArray(snapshot.metrics)
+      ? snapshot.metrics
+      : {},
+    completed_at: String(snapshot.completed_at || snapshot.completedAt || ''),
     provider: String(snapshot.provider || ''),
     model: String(snapshot.model || ''),
     ai_service_config_id: Number(snapshot.ai_service_config_id),
@@ -165,6 +183,8 @@ function buildDialoguePlan(db, input = {}) {
     canReadArtifact: input.canReadArtifact,
     assetReader: input.assetReader,
     localeVerifier: input.localeVerifier,
+    localeRegistry: input.localeRegistry || input.locale_registry
+      || input.evidenceRegistry || input.evidence_registry,
   });
   issues.push(...tts.issues.map((issue) => {
     const ref = turnRefs[issue.turn_index] || {};
@@ -368,6 +388,8 @@ function validateCurrentDialogueSegment(ctx, segment) {
     canReadArtifact: ctx.canReadArtifact,
     assetReader: ctx.assetReader,
     localeVerifier: ctx.localeVerifier,
+    localeRegistry: ctx.localeRegistry || ctx.locale_registry
+      || ctx.evidenceRegistry || ctx.evidence_registry,
   });
   const current = validation.requests[0];
   const sameSnapshot = current

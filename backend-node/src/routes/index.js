@@ -41,6 +41,8 @@ const textGenerationBilling = require('../services/text-generation-billing-servi
 const { createRedrawProviderAdapters } = require('../services/redrawProviderAdapters');
 const { REDRAW_LOCALE_DEFAULTS, createRedrawLocaleRegistryFromEnv } = require('../services/productionPreflightService');
 const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVerifierClient');
+const redrawAssetService = require('../services/redrawAssetService');
+const redrawVoiceService = require('../services/redrawVoiceService');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
   if (options.localeVerifier) return options.localeVerifier;
@@ -224,7 +226,13 @@ function setupRouter(cfg, db, log, options = {}) {
     || redrawOptions.assetProvider;
   const explicitDialogueProvider = options.dialogueProvider || redrawOptions.dialogueProvider;
   const needsRedrawAdapters = !explicitLocalizationProvider || !explicitAssetGenerationProvider || !explicitDialogueProvider;
-  const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier || createDefaultRedrawLocaleVerifier(options);
+  const localeRegistry = options.localeRegistry || redrawOptions.localeRegistry
+    || options.evidenceRegistry || redrawOptions.evidenceRegistry
+    || createRedrawLocaleRegistryFromEnv(process.env);
+  redrawAssetService.setDefaultEvidenceRegistry(localeRegistry);
+  redrawVoiceService.setDefaultEvidenceRegistry(localeRegistry);
+  const localeVerifier = options.localeVerifier || redrawOptions.localeVerifier
+    || createDefaultRedrawLocaleVerifier({ ...options, localeRegistry });
   const redrawAdapters = needsRedrawAdapters
     ? (options.providerAdapters || (options.createRedrawProviderAdapters || createRedrawProviderAdapters)({
         db,
@@ -290,6 +298,8 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
+  r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
+  r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
   r.post('/redraw/versions/:id/assets/batches', redraw.createAssetBatch);
   r.post('/redraw/versions/:id/dialogue/quote', redraw.dialogueQuote);
@@ -302,6 +312,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/versions/:id/generation-gate', redraw.generationGate);
   r.get('/redraw/assets/:id/quote', redraw.assetQuote);
   r.put('/redraw/assets/:id', redraw.updateRedrawAsset);
+  r.post('/redraw/assets/:id/voice', redraw.assignVoice);
   r.post('/redraw/assets/:id/generate', redraw.generateRedrawAsset);
   r.post('/redraw/assets/:id/review', redraw.reviewRedrawAsset);
 

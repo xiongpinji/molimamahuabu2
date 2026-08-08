@@ -6,12 +6,20 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const dialogueService = require('../src/services/redrawDialogueService');
+const redrawVoiceService = require('../src/services/redrawVoiceService');
 const taskService = require('../src/services/taskService');
 const {
   quoteDialogue,
   startDialogue,
   reconcileOrphanedDialogueTasks,
 } = require('../src/services/redrawDialogueOrchestrator');
+
+const TTS_CONFIG_ID = 41;
+const TTS_CONFIG_UPDATED_AT = '2026-08-08T00:00:00.000Z';
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
 
 function log() {
   return { info() {}, warn() {}, error() {} };
@@ -20,9 +28,14 @@ function log() {
 function setup(options = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
+  redrawVoiceService.setDefaultEvidenceRegistry(trustedRegistry());
   creditLedger.setTenantAccountBalance(db, 'tenant-a', options.balance ?? 100);
   prices.set(db, 'speech-2.8-turbo', 4, { category: 'audio', billingUnit: 'request' });
   const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
+    VALUES (?, 'tts', 'minimax', 'dialogue TTS', ?, 'speech-2.8-turbo', 1, ?, ?)`)
+    .run(TTS_CONFIG_ID, JSON.stringify(['speech-2.8-turbo']), TTS_CONFIG_UPDATED_AT, TTS_CONFIG_UPDATED_AT);
   db.prepare("INSERT INTO redraw_projects (tenant_id, user_id, title, created_at, updated_at) VALUES ('tenant-a', 'user-a', 'P', ?, ?)")
     .run(now, now);
   const projectId = db.prepare('SELECT id FROM redraw_projects LIMIT 1').get().id;
@@ -34,10 +47,22 @@ function setup(options = {}) {
   db.prepare("INSERT INTO assets (id, name, type, category, local_path, mime_type, duration, created_at, updated_at) VALUES (501, 'voice', 'audio', 'voice', 'voice.mp3', 'audio/mpeg', 1, ?, ?)")
     .run(now, now);
   const voiceSnapshot = {
+    source: 'offline-worker',
     locale: 'en-US',
     market: 'US',
+    locale_pack: 'en-US@fixture',
+    audio_sha256: AUDIO_SHA256,
+    transcript_sha256: TRANSCRIPT_SHA256,
+    model_manifest_sha256: MODEL_MANIFEST_SHA256,
+    calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+    asr_model_revision: 'asr-en-20260808',
+    accent_model_revision: 'accent-en-20260808',
+    metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+    completed_at: '2026-08-08T00:00:01.000Z',
     provider: 'minimax',
     model: 'speech-2.8-turbo',
+    ai_service_config_id: TTS_CONFIG_ID,
+    config_updated_at: TTS_CONFIG_UPDATED_AT,
     voice_id: 'voice-c1',
     task_id: 'verified-voice',
     terminal_status: 'completed',
@@ -45,6 +70,7 @@ function setup(options = {}) {
     duration_ms: 1000,
     real_generation_verified: true,
     language_verified: true,
+    detected_locale: 'en-US',
   };
   db.prepare(`INSERT INTO redraw_assets
     (version_id, tenant_id, user_id, kind, source_ref_json, localized_name, asset_id, version_number, approval_status, status, created_at, updated_at)
@@ -63,7 +89,38 @@ function ctx(state, overrides = {}) {
     tenantId: 'tenant-a',
     userId: 'user-a',
     versionId: state.versionId,
+    canReadAudioAsset: () => true,
+    localeRegistry: trustedRegistry(),
+    localeVerifier: readyLocaleVerifier(),
     ...overrides,
+  };
+}
+
+function trustedRegistry() {
+  return {
+    assertEvidenceTrusted(evidence) {
+      if (evidence.source !== 'offline-worker'
+        || evidence.locale_pack !== 'en-US@fixture'
+        || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+        || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+        const error = new Error('worker evidence not trusted');
+        error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+        throw error;
+      }
+      return evidence;
+    },
+  };
+}
+
+function readyLocaleVerifier() {
+  return {
+    assertReady(locale) {
+      return {
+        id: `${locale}@fixture`,
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      };
+    },
   };
 }
 
@@ -81,6 +138,11 @@ function insertDialogueAsset(db, id, segment, providerTaskId = 'provider-dialogu
         idempotency_key: segment.idempotency_key,
         reservation_id: segment.reservation_id,
         provider_task_id: providerTaskId,
+        provider: segment.voice_snapshot.provider,
+        model: segment.voice_snapshot.model,
+        ai_service_config_id: segment.voice_snapshot.ai_service_config_id,
+        config_updated_at: segment.voice_snapshot.config_updated_at,
+        voice_snapshot: segment.voice_snapshot,
       },
     }), now, now);
   return { asset_id: id, provider_task_id: providerTaskId, duration: 1.1 };
@@ -242,13 +304,110 @@ test('startDialogue maps unknown provider result to needs_attention and keeps he
       synthesizeSegment: async () => {
         throw Object.assign(new Error('opaque provider state'), { unknown: true, provider_task_id: 'provider-unknown' });
       },
-      canReadAudioAsset: () => false,
+      canReadAudioAsset: () => true,
     });
     await assert.rejects(started.completion, /opaque provider state/);
     const task = taskService.getTask(state.db, started.task_id);
     assert.equal(task.status, 'needs_attention');
     assert.equal(task.provider_task_id, 'provider-unknown');
     assert.equal(creditLedger.getTenantAccount(state.db, 'tenant-a').held, 4);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('startDialogue maps post-provider confirmation failure to needs_attention without replay', async () => {
+  const state = setup();
+  const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+  const originalConfirm = creditLedger.confirm;
+  let providerCalls = 0;
+  try {
+    creditLedger.confirm = () => {
+      throw new Error('dialogue ledger confirm crashed');
+    };
+    const started = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-confirm-unknown',
+    }, {
+      schedule: (job) => Promise.resolve().then(job),
+      synthesizeSegment: async (segment) => {
+        providerCalls += 1;
+        return insertDialogueAsset(state.db, 905, segment, 'provider-confirm-unknown');
+      },
+      canReadAudioAsset: () => true,
+    });
+    await assert.rejects(started.completion, /dialogue ledger confirm crashed/);
+
+    const task = taskService.getTask(state.db, started.task_id);
+    const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+      .dialogue_generation.segments[0];
+    assert.equal(providerCalls, 1);
+    assert.equal(task.status, 'needs_attention');
+    assert.equal(task.provider_task_id, 'provider-confirm-unknown');
+    assert.equal(audit.status, 'provider_completed');
+    assert.equal(creditLedger.getReservation(state.db, audit.reservation_id).status, 'held');
+
+    const replay = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-confirm-unknown',
+    }, {
+      schedule: () => { throw new Error('must not schedule'); },
+      synthesizeSegment: async () => { providerCalls += 1; },
+      canReadAudioAsset: () => true,
+    });
+    assert.equal(replay.status, 'needs_attention');
+    assert.equal(replay.completion, null);
+    assert.equal(providerCalls, 1);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  } finally {
+    creditLedger.confirm = originalConfirm;
+    state.db.close();
+  }
+});
+
+test('startDialogue maps the first provider-completed audit write failure to needs_attention across keys', async () => {
+  const state = setup();
+  const quote = dialogueService.quoteDialoguePlan(state.db, ctx(state));
+  let providerCalls = 0;
+  try {
+    state.db.exec(`CREATE TRIGGER fail_dialogue_provider_completed_audit
+      BEFORE UPDATE OF draft_json ON redraw_shots
+      WHEN NEW.draft_json LIKE '%"status":"provider_completed"%'
+      BEGIN
+        SELECT RAISE(FAIL, 'provider completed audit write crashed');
+      END`);
+    const deps = {
+      schedule: (job) => Promise.resolve().then(job),
+      synthesizeSegment: async (segment) => {
+        providerCalls += 1;
+        return insertDialogueAsset(state.db, 906, segment, 'provider-audit-write-unknown');
+      },
+      canReadAudioAsset: () => true,
+    };
+    const first = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-audit-write-first',
+    }, deps);
+    await assert.rejects(first.completion, /provider completed audit write crashed/);
+    const firstTask = taskService.getTask(state.db, first.task_id);
+    const firstAudit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+      .dialogue_generation.segments[0];
+    assert.equal(firstTask.status, 'needs_attention');
+    assert.equal(firstTask.provider_task_id, 'provider-audit-write-unknown');
+    assert.equal(firstAudit.status, 'processing');
+    assert.equal(creditLedger.getReservation(state.db, firstAudit.reservation_id).status, 'held');
+
+    const second = startDialogue(state.db, log(), ctx(state), {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'idem-audit-write-second',
+    }, deps);
+    await assert.rejects(
+      second.completion,
+      (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+    );
+    assert.equal(taskService.getTask(state.db, second.task_id).status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
   } finally {
     state.db.close();
   }
@@ -266,7 +425,7 @@ test('startDialogue maps explicit provider failure to failed and refunded credit
       synthesizeSegment: async () => {
         throw Object.assign(new Error('provider rejected'), { code: 'PROVIDER_FAILED' });
       },
-      canReadAudioAsset: () => false,
+      canReadAudioAsset: () => true,
     });
     await assert.rejects(started.completion, /provider rejected/);
     assert.equal(taskService.getTask(state.db, started.task_id).status, 'failed');

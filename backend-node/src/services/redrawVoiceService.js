@@ -1,6 +1,8 @@
 const { readOwnedAuthorizationAsset } = require('./redrawAssetService');
 const aiConfigService = require('./aiConfigService');
 
+let defaultEvidenceRegistry = null;
+
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -24,8 +26,26 @@ function evidenceFromPayload(value) {
 function normalizeEvidence(input = {}) {
   const source = input.evidence && typeof input.evidence === 'object' ? input.evidence : input;
   return {
+    source: String(source.source || ''),
     locale: String(source.locale || ''),
     market: String(source.market || ''),
+    locale_pack: String(source.locale_pack || source.localePack || ''),
+    audio_sha256: String(source.audio_sha256 || source.audioSha256 || ''),
+    transcript_sha256: source.transcript_sha256 == null && source.transcriptSha256 == null
+      ? null
+      : String(source.transcript_sha256 ?? source.transcriptSha256),
+    model_manifest_sha256: String(source.model_manifest_sha256 || source.modelManifestSha256 || ''),
+    calibration_manifest_sha256: String(
+      source.calibration_manifest_sha256 || source.calibrationManifestSha256 || '',
+    ),
+    asr_model_revision: String(source.asr_model_revision || source.asrModelRevision || source.asr_revision || ''),
+    accent_model_revision: String(
+      source.accent_model_revision || source.accentModelRevision || source.accent_revision || '',
+    ),
+    metrics: source.metrics && typeof source.metrics === 'object' && !Array.isArray(source.metrics)
+      ? source.metrics
+      : {},
+    completed_at: String(source.completed_at || source.completedAt || ''),
     provider: String(source.provider || ''),
     model: String(source.model || ''),
     ai_service_config_id: Number(source.ai_service_config_id ?? source.aiServiceConfigId),
@@ -47,10 +67,35 @@ function isCompleted(status) {
   return ['completed', 'complete', 'succeeded', 'success', 'done'].includes(status);
 }
 
+function isHexSha256(value) {
+  return /^[0-9a-f]{64}$/.test(String(value || ''));
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function isVerifiedEvidence(evidence) {
   return Boolean(
-    evidence.locale
+    evidence.source === 'offline-worker'
+    && evidence.locale
     && evidence.market
+    && evidence.locale_pack
+    && isHexSha256(evidence.audio_sha256)
+    && isHexSha256(evidence.transcript_sha256)
+    && isHexSha256(evidence.model_manifest_sha256)
+    && isHexSha256(evidence.calibration_manifest_sha256)
+    && evidence.asr_model_revision
+    && evidence.accent_model_revision
+    && evidence.metrics
+    && typeof evidence.metrics === 'object'
+    && Object.keys(evidence.metrics).length > 0
+    && evidence.completed_at
     && evidence.provider
     && evidence.model
     && Number.isSafeInteger(evidence.ai_service_config_id)
@@ -67,6 +112,29 @@ function isVerifiedEvidence(evidence) {
     && evidence.language_verified
     && evidence.detected_locale === evidence.locale
   );
+}
+
+function evidenceRegistry(options = {}) {
+  return options.localeRegistry || options.locale_registry
+    || options.evidenceRegistry || options.evidence_registry
+    || options.registry || defaultEvidenceRegistry;
+}
+
+function assertEvidenceTrusted(options, evidence) {
+  const registry = evidenceRegistry(options);
+  if (!registry || typeof registry.assertEvidenceTrusted !== 'function') {
+    throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', '语言验证 Worker 未就绪');
+  }
+  registry.assertEvidenceTrusted(evidence);
+  return true;
+}
+
+function isTrustedEvidence(options, evidence) {
+  try {
+    return isVerifiedEvidence(evidence) && assertEvidenceTrusted(options, evidence);
+  } catch (_) {
+    return false;
+  }
 }
 
 function hasExactActiveTtsConfig(db, evidence) {
@@ -140,7 +208,7 @@ function listProductionVoices(db, filters = {}, canReadAudio) {
     if (filters.versionId != null && Number(row.version_id) !== Number(filters.versionId)) continue;
     const payload = parseJson(row.source_ref_json);
     const evidence = normalizeEvidence(evidenceFromPayload(payload));
-    if (!isVerifiedEvidence(evidence) || !hasCloneAuthorization(evidence)) continue;
+    if (!isTrustedEvidence(filters, evidence) || !hasCloneAuthorization(evidence)) continue;
     if (!hasExactActiveTtsConfig(db, evidence)) continue;
     if (Number(row.voice_asset_id) !== evidence.audio_asset_id || evidence.audio_asset_id <= 0) continue;
     if (filters.locale && evidence.locale !== String(filters.locale)) continue;
@@ -178,6 +246,16 @@ function sameVoice(left, right) {
 
 function sameEvidence(left, right) {
   return sameVoice(left, right)
+    && left.source === right.source
+    && left.locale_pack === right.locale_pack
+    && left.audio_sha256 === right.audio_sha256
+    && left.transcript_sha256 === right.transcript_sha256
+    && left.model_manifest_sha256 === right.model_manifest_sha256
+    && left.calibration_manifest_sha256 === right.calibration_manifest_sha256
+    && left.asr_model_revision === right.asr_model_revision
+    && left.accent_model_revision === right.accent_model_revision
+    && stableJson(left.metrics) === stableJson(right.metrics)
+    && left.completed_at === right.completed_at
     && left.task_id === right.task_id
     && left.terminal_status === right.terminal_status
     && Number(left.duration_ms) === Number(right.duration_ms)
@@ -235,7 +313,8 @@ function assignVoice(db, assetId, verifiedVoice, options = {}) {
   `).get(owner.voiceAssetId, owner.versionId, owner.tenantId, owner.userId);
   if (!voiceRow) throw codedError('REDRAW_VOICE_ASSET_NOT_FOUND', '音色资产不存在');
   const evidence = normalizeEvidence(evidenceFromPayload(voiceRow.source_ref_json));
-  if (!isVerifiedEvidence(evidence) || !sameEvidence(evidence, requestedEvidence)
+  if (!isTrustedEvidence(options, evidence) || !isTrustedEvidence(options, requestedEvidence)
+    || !sameEvidence(evidence, requestedEvidence)
     || Number(voiceRow.voice_asset_id) !== evidence.audio_asset_id) {
     throw codedError('REDRAW_VOICE_NOT_VERIFIED', '音色缺少真实 TTS 或语言验证证据');
   }
@@ -279,6 +358,16 @@ function assignVoice(db, assetId, verifiedVoice, options = {}) {
   const snapshot = {
     locale: evidence.locale,
     market: evidence.market,
+    source: evidence.source,
+    locale_pack: evidence.locale_pack,
+    audio_sha256: evidence.audio_sha256,
+    transcript_sha256: evidence.transcript_sha256,
+    model_manifest_sha256: evidence.model_manifest_sha256,
+    calibration_manifest_sha256: evidence.calibration_manifest_sha256,
+    asr_model_revision: evidence.asr_model_revision,
+    accent_model_revision: evidence.accent_model_revision,
+    metrics: evidence.metrics,
+    completed_at: evidence.completed_at,
     provider: evidence.provider,
     model: evidence.model,
     ai_service_config_id: evidence.ai_service_config_id,
@@ -362,16 +451,19 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
   const issues = [];
   const requests = [];
   let verifierPack = null;
-  try {
-    verifierPack = assertLocaleVerifierReady(options, version.locale);
-  } catch (error) {
-    issues.push({
-      turn_index: null,
-      speaker_id: null,
-      reason: 'locale_verifier_not_ready',
-      code: error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY',
-      message: error.message || '语言验证 Worker 未就绪',
-    });
+  if (Object.prototype.hasOwnProperty.call(options, 'localeVerifier')
+    || Object.prototype.hasOwnProperty.call(options, 'locale_verifier')) {
+    try {
+      verifierPack = assertLocaleVerifierReady(options, version.locale);
+    } catch (error) {
+      issues.push({
+        turn_index: null,
+        speaker_id: null,
+        reason: 'locale_verifier_not_ready',
+        code: error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+        message: error.message || '语言验证 Worker 未就绪',
+      });
+    }
   }
   for (const [index, turn] of turns.entries()) {
     const speakerId = String(turn?.speaker_id || '');
@@ -381,7 +473,7 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
       continue;
     }
     const evidence = normalizeEvidence(assigned.snapshot);
-    if (!isVerifiedEvidence(evidence)) {
+    if (!isTrustedEvidence(options, evidence)) {
       issues.push({ turn_index: index, speaker_id: speakerId, reason: 'voice_not_verified' });
       continue;
     }
@@ -433,7 +525,9 @@ function validateTtsBatch(db, versionId, turns = [], options = {}) {
       end_ms: Number(turn.end_ms),
       expected_duration_ms: durationMs,
       voice_snapshot: assigned.snapshot,
-      ...(verifierPack || {}),
+      locale_pack: verifierPack?.locale_pack || evidence.locale_pack,
+      model_manifest_sha256: verifierPack?.model_manifest_sha256 || evidence.model_manifest_sha256,
+      calibration_manifest_sha256: verifierPack?.calibration_manifest_sha256 || evidence.calibration_manifest_sha256,
     });
   }
   return {
@@ -448,5 +542,8 @@ module.exports = {
   assignVoice,
   evidenceFromPayload,
   listProductionVoices,
+  setDefaultEvidenceRegistry(registry) {
+    defaultEvidenceRegistry = registry || null;
+  },
   validateTtsBatch,
 };

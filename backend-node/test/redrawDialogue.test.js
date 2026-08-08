@@ -13,6 +13,10 @@ const {
 
 const TTS_CONFIG_ID = 41;
 const TTS_CONFIG_UPDATED_AT = '2026-08-08T00:00:00.000Z';
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
 
 function setup(options = {}) {
   const db = new Database(':memory:');
@@ -111,8 +115,18 @@ function addAudioAsset(db, id, segment, options = {}) {
 
 function voiceSnapshot(audioAssetId, voiceId) {
   return {
+    source: 'offline-worker',
     locale: 'en-US',
     market: 'US',
+    locale_pack: 'en-US@fixture',
+    audio_sha256: AUDIO_SHA256,
+    transcript_sha256: TRANSCRIPT_SHA256,
+    model_manifest_sha256: MODEL_MANIFEST_SHA256,
+    calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+    asr_model_revision: 'asr-en-20260808',
+    accent_model_revision: 'accent-en-20260808',
+    metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+    completed_at: '2026-08-08T00:00:01.000Z',
     provider: 'minimax',
     model: 'speech-2.8-turbo',
     ai_service_config_id: TTS_CONFIG_ID,
@@ -180,8 +194,25 @@ function ctx(state, overrides = {}) {
     userId: 'user-a',
     versionId: state.versionId,
     canReadAudioAsset: (asset) => Number(asset.duration) > 0,
+    localeRegistry: trustedRegistry(),
     localeVerifier: readyLocaleVerifier(),
     ...overrides,
+  };
+}
+
+function trustedRegistry() {
+  return {
+    assertEvidenceTrusted(evidence) {
+      if (evidence.source !== 'offline-worker'
+        || evidence.locale_pack !== 'en-US@fixture'
+        || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+        || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+        const error = new Error('worker evidence not trusted');
+        error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+        throw error;
+      }
+      return evidence;
+    },
   };
 }
 
@@ -191,8 +222,8 @@ function readyLocaleVerifier(calls = []) {
       calls.push(locale);
       return {
         id: `${locale}@fixture`,
-        model_manifest_sha256: 'a'.repeat(64),
-        calibration_manifest_sha256: 'b'.repeat(64),
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
       };
     },
   };

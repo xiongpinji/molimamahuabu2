@@ -61,7 +61,15 @@ function taskMetadata(ctx, input) {
 
 function quoteDialogue(db, ctx = {}) {
   const normalized = normalizeContext(ctx);
-  return dialogueService.quoteDialoguePlan(db, normalized);
+  return dialogueService.quoteDialoguePlan(db, {
+    ...normalized,
+    canReadAudioAsset: ctx.canReadAudioAsset,
+    canReadAsset: ctx.canReadAsset,
+    canReadArtifact: ctx.canReadArtifact,
+    assetReader: ctx.assetReader,
+    localeRegistry: ctx.localeRegistry,
+    localeVerifier: ctx.localeVerifier,
+  });
 }
 
 function existingTask(db, ctx, resourceId) {
@@ -153,6 +161,8 @@ function runDialogueJob(db, log, ctx, input, taskId, deps) {
         versionId: ctx.versionId,
         synthesizeSegment: deps.synthesizeSegment,
         canReadAudioAsset: deps.canReadAudioAsset,
+        localeRegistry: deps.localeRegistry,
+        localeVerifier: deps.localeVerifier,
       }, input);
       taskService.updateTaskResult(db, taskId, {
         status: 'completed',
@@ -177,7 +187,15 @@ function runDialogueJob(db, log, ctx, input, taskId, deps) {
 function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
   const normalizedCtx = normalizeContext(ctx);
   const normalizedInput = normalizeInput(input);
-  const quote = quoteDialogue(db, normalizedCtx);
+  const quote = quoteDialogue(db, {
+    ...normalizedCtx,
+    canReadAudioAsset: deps.canReadAudioAsset,
+    canReadAsset: deps.canReadAsset,
+    canReadArtifact: deps.canReadArtifact,
+    assetReader: deps.assetReader,
+    localeRegistry: deps.localeRegistry || ctx.localeRegistry,
+    localeVerifier: deps.localeVerifier || ctx.localeVerifier,
+  });
   if (quote.status !== 'ready') {
     throw codedError('REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划需要重写', { quote });
   }
@@ -202,8 +220,13 @@ function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
   }
 
   const schedule = typeof deps.schedule === 'function' ? deps.schedule : defaultSchedule;
+  const dialogueDeps = {
+    ...deps,
+    localeRegistry: deps.localeRegistry || ctx.localeRegistry,
+    localeVerifier: deps.localeVerifier || ctx.localeVerifier,
+  };
   let scheduled;
-  const job = () => runDialogueJob(db, log, normalizedCtx, normalizedInput, task.id, deps);
+  const job = () => runDialogueJob(db, log, normalizedCtx, normalizedInput, task.id, dialogueDeps);
   try {
     scheduled = schedule(job);
   } catch (error) {
