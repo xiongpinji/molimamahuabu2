@@ -153,6 +153,7 @@ function setupBatchState(options = {}) {
         return Boolean(asset?.local_path && fs.existsSync(path.join(root, asset.local_path)));
       },
     },
+    localeVerifier: readyLocaleVerifier(),
   };
   return { db, root, versionId, assetIds, ctx, ttsConfigId, ttsConfigUpdatedAt: now };
 }
@@ -228,6 +229,11 @@ test('voice quote requires ready locale verifier and binds worker pack manifests
   const calls = [];
   const readyCtx = { ...state.ctx, localeVerifier: readyLocaleVerifier(calls), assetIds: [state.assetIds.voice] };
   const ready = quoteAssetBatch(state.db, readyCtx);
+  const { localeVerifier: _missing, ...ctxWithoutVerifier } = state.ctx;
+  const missing = quoteAssetBatch(state.db, {
+    ...ctxWithoutVerifier,
+    assetIds: [state.assetIds.voice],
+  });
   const blocked = quoteAssetBatch(state.db, {
     ...state.ctx,
     assetIds: [state.assetIds.voice],
@@ -243,12 +249,43 @@ test('voice quote requires ready locale verifier and binds worker pack manifests
   assert.equal(ready.items[0].locale_pack, 'en-US@fixture');
   assert.equal(ready.items[0].model_manifest_sha256, 'a'.repeat(64));
   assert.equal(ready.items[0].calibration_manifest_sha256, 'b'.repeat(64));
+  assert.equal(missing.priced, false);
+  assert.equal(missing.total_credits, 0);
+  assert.equal(missing.items[0].credits, undefined);
+  assert.equal(missing.blocked[0].code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
   assert.equal(blocked.priced, false);
   assert.equal(blocked.total_credits, 0);
   assert.equal(blocked.items[0].credits, undefined);
   assert.equal(blocked.blocked[0].code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
   assert.notEqual(blocked.quote_hash, ready.quote_hash);
   assert.deepEqual(calls, ['en-US', 'en-US']);
+  cleanup(state);
+});
+
+test('startAssetBatch rejects missing locale verifier before voice billing or provider dispatch', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, {
+    ...state.ctx,
+    assetIds: [state.assetIds.voice],
+  });
+  const { localeVerifier: _missing, ...ctxWithoutVerifier } = state.ctx;
+  let providerCalls = 0;
+
+  assert.throws(
+    () => startAssetBatch({
+      ...ctxWithoutVerifier,
+      provider: async () => { providerCalls += 1; },
+      schedule: (job) => job(),
+    }, {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'voice-locale-verifier-missing',
+      assetIds: [state.assetIds.voice],
+    }),
+    (error) => error.code === 'REDRAW_ASSET_BATCH_UNPRICED'
+      && error.quote?.blocked?.[0]?.code === 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   cleanup(state);
 });
 

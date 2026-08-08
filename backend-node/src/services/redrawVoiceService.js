@@ -104,16 +104,22 @@ function hasReadableOwnedCloneAuthorization(db, evidence, owner, canReadAsset) {
 
 function assertLocaleVerifierReady(options, locale) {
   const verifier = options?.localeVerifier || options?.locale_verifier;
-  if (!verifier || typeof verifier.assertReady !== 'function') return null;
+  if (!verifier || typeof verifier.assertReady !== 'function') {
+    throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', '语言验证 Worker 未就绪');
+  }
   try {
     const pack = verifier.assertReady(locale);
-    return pack && typeof pack === 'object' ? {
+    const normalized = pack && typeof pack === 'object' ? {
       locale_pack: String(pack.id || pack.locale_pack || ''),
       model_manifest_sha256: String(pack.model_manifest_sha256 || ''),
       calibration_manifest_sha256: String(pack.calibration_manifest_sha256 || ''),
     } : null;
+    if (!normalized?.locale_pack || !normalized.model_manifest_sha256 || !normalized.calibration_manifest_sha256) {
+      throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', '语言验证 Worker 未就绪');
+    }
+    return normalized;
   } catch (error) {
-    throw codedError(error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY', error.message || '语言验证 Worker 未就绪');
+    throw codedError('REDRAW_LOCALE_VERIFIER_NOT_READY', error.message || '语言验证 Worker 未就绪');
   }
 }
 

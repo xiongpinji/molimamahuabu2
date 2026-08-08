@@ -180,6 +180,7 @@ function ctx(state, overrides = {}) {
     userId: 'user-a',
     versionId: state.versionId,
     canReadAudioAsset: (asset) => Number(asset.duration) > 0,
+    localeVerifier: readyLocaleVerifier(),
     ...overrides,
   };
 }
@@ -216,6 +217,7 @@ test('dialogue quote requires ready locale verifier and binds worker pack manife
   const state = setup();
   const calls = [];
   const ready = quoteDialoguePlan(state.db, ctx(state, { localeVerifier: readyLocaleVerifier(calls) }));
+  const missing = quoteDialoguePlan(state.db, ctx(state, { localeVerifier: null }));
   const blocked = quoteDialoguePlan(state.db, ctx(state, {
     localeVerifier: {
       assertReady(locale) {
@@ -226,10 +228,34 @@ test('dialogue quote requires ready locale verifier and binds worker pack manife
   }));
 
   assert.equal(ready.status, 'ready');
+  assert.equal(missing.status, 'needs_rewrite');
+  assert.equal(missing.total_credits, 0);
+  assert.notEqual(missing.quote_hash, ready.quote_hash);
+  assert.equal(buildDialoguePlan(state.db, ctx(state, { localeVerifier: null })).issues[0].code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
   assert.equal(blocked.status, 'needs_rewrite');
   assert.equal(blocked.total_credits, 0);
   assert.notEqual(blocked.quote_hash, ready.quote_hash);
   assert.deepEqual(calls, ['en-US', 'en-US']);
+  state.db.close();
+});
+
+test('dialogue start rejects missing locale verifier before reservation or provider dispatch', async () => {
+  const state = setup();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let providerCalls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      localeVerifier: null,
+      synthesizeSegment: async () => {
+        providerCalls += 1;
+        throw new Error('must not dispatch');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-locale-verifier-missing' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_PLAN_NOT_READY',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   state.db.close();
 });
 
