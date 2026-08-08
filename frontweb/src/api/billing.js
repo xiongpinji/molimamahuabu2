@@ -21,6 +21,26 @@ export function listCreditTransactions() {
   return request.get('/billing/credit-transactions')
 }
 
+export function getCreditAccount(config) {
+  return request.get('/billing/account', config)
+}
+
+export function getAlipayRechargeConfig(config) {
+  return request.get('/billing/recharge/alipay/config', config)
+}
+
+export function listRechargePackages(config) {
+  return request.get('/billing/recharge/packages', config)
+}
+
+export function listAlipayRechargeOrders(config) {
+  return request.get('/billing/recharge/alipay/orders', config)
+}
+
+export function createAlipayRechargeOrder(data) {
+  return request.post('/billing/recharge/alipay/orders', data)
+}
+
 export function listAuditEvents(limit = 30) {
   return request.get('/billing/audit-events', { params: { limit } })
 }
@@ -59,6 +79,22 @@ export function getLedgerReport(period = 'day') {
 
 export function listRedeemCodes() {
   return request.get('/billing/admin/redeem-codes')
+}
+
+export function listAdminRechargePackages() {
+  return request.get('/billing/admin/recharge-packages')
+}
+
+export function createRechargePackage(data) {
+  return request.post('/billing/admin/recharge-packages', data)
+}
+
+export function updateRechargePackage(packageId, data) {
+  return request.put(`/billing/admin/recharge-packages/${encodeURIComponent(packageId)}`, data)
+}
+
+export function reorderRechargePackages(packageIds) {
+  return request.put('/billing/admin/recharge-packages/order', { package_ids: packageIds })
 }
 
 export function createRedeemCode(data) {

@@ -13,6 +13,19 @@ test('首页三种生成模式共享同一计费估算规则', () => {
   assert.equal(estimateGenerationCredits({ credits: null, billing_unit: 'request' }), null)
 })
 
+test('首页视频预计积分随 480P 和 720P 分辨率切换', () => {
+  const model = {
+    credits: 3,
+    billing_unit: 'second',
+    resolution_prices: {
+      '480p': { credits: 3, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 120000 },
+    },
+  }
+  assert.equal(estimateGenerationCredits(model, { duration: 8, resolution: '480P' }), 24)
+  assert.equal(estimateGenerationCredits(model, { duration: 8, resolution: '720p' }), 40)
+})
+
 test('首页草稿只接受文字、图片和视频并携带一次性自动生成标记', () => {
   assert.deepEqual(normalizeQuickGenerationDraft({
     mode: 'text',

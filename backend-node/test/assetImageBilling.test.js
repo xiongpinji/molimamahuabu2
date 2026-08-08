@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
+const aiConfig = require('../src/services/aiConfigService');
 const imageClient = require('../src/services/imageClient');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
@@ -110,4 +111,56 @@ test('场景全景图任务与场景主参考图任务独立去重', () => {
   assert.notEqual(panorama.id, reference.id);
   assert.equal(panoramaAgain.id, panorama.id);
   assert.equal(panoramaAgain.reused, true);
+});
+
+test('人物、场景和全景图未显式传模型时统一使用已验证的默认图片模型', () => {
+  const db = setup(200);
+  if (!db.prepare('PRAGMA table_info(ai_service_configs)').all().some((column) => column.name === 'verification_status')) {
+    db.exec('ALTER TABLE ai_service_configs ADD COLUMN verification_status TEXT');
+  }
+  const config = aiConfig.createConfig(db, log, {
+    service_type: 'image',
+    provider: 'openai',
+    api_protocol: 'openai',
+    name: '默认图片模型',
+    base_url: 'https://example.invalid/v1',
+    api_key: 'test-key',
+    model: ['gpt-image-2-2k'],
+    default_model: 'gpt-image-2-2k',
+    is_default: true,
+  });
+  db.prepare("UPDATE ai_service_configs SET verification_status = 'verified' WHERE id = ?").run(config.id);
+  prices.set(db, 'gpt-image-2-2k', 40, { category: 'image' });
+
+  const createWithoutModel = (asset) => imageClient.createAndGenerateImage(db, log, {
+    drama_id: 1,
+    character_id: asset.characterId ?? null,
+    scene_id: asset.sceneId ?? null,
+    image_type: asset.imageType,
+    prompt: 'test only',
+    provider: 'openai',
+    billingEnabled: true,
+    userId: 'user-1',
+    schedule() {},
+  });
+
+  const character = createWithoutModel({ characterId: 41, imageType: 'character_reference' });
+  const scene = createWithoutModel({ sceneId: 51, imageType: 'scene_reference' });
+  const panorama = createWithoutModel({ sceneId: 51, imageType: 'scene_panorama' });
+  const ids = [character.id, scene.id, panorama.id];
+  const rows = db.prepare(`SELECT ig.model, t.model AS task_model
+    FROM image_generations ig
+    JOIN async_tasks t ON t.id = ig.task_id
+    WHERE ig.id IN (?, ?, ?)
+    ORDER BY ig.id`).all(...ids);
+
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((row) => row.model), Array(3).fill('gpt-image-2-2k'));
+  assert.deepEqual(rows.map((row) => row.task_model), Array(3).fill('gpt-image-2-2k'));
+  assert.deepEqual(credits.getAccount(db, 'user-1'), {
+    user_id: 'user-1',
+    available: 80,
+    held: 120,
+    spent: 0,
+  });
 });

@@ -10,6 +10,27 @@ const KIND_BY_SERVICE = {
   tts: 'audio',
 };
 
+const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
+  durations: Object.freeze([5]),
+  aspectRatios: Object.freeze(['16:9']),
+  maxReferences: 4,
+  maxVideoReferences: 1,
+  maxAudioReferences: 1,
+  supportsFirstFrame: true,
+  supportsLastFrame: true,
+  supportsImageReference: true,
+  supportsVideoReference: true,
+  supportsAudioReference: true,
+  supportsAudio: true,
+});
+
+function providerCapabilities(provider, model) {
+  if (!['usmercari', 'usmercari_media'].includes(String(provider || '').toLowerCase())) return {};
+  if (!['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'].includes(String(model))) return {};
+  const resolutions = String(model) === 'MiniMax H3' ? ['480p'] : ['480p', '720p'];
+  return { ...USMERCARI_VIDEO_CAPABILITIES, resolutions };
+}
+
 function parseModels(value, fallback) {
   if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
   if (typeof value === 'string') {
@@ -22,11 +43,15 @@ function parseModels(value, fallback) {
   return fallback ? [String(fallback).trim()].filter(Boolean) : [];
 }
 
-function safeCapabilities(settings) {
+function safeCapabilities(settings, model) {
   try {
     const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
     const value = parsed?.canvas_capabilities;
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const base = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const perModel = model && parsed?.canvas_capabilities_by_model?.[model];
+    return perModel && typeof perModel === 'object' && !Array.isArray(perModel)
+      ? { ...base, ...perModel }
+      : base;
   } catch (_) {
     return {};
   }
@@ -50,7 +75,11 @@ function list(db) {
         label: price?.display_name || model,
         credits: price?.credits || null,
         billing_unit: price?.billing_unit || null,
-        capabilities: safeCapabilities(config.settings),
+        resolution_prices: price?.resolution_prices || {},
+        capabilities: {
+          ...providerCapabilities(config.provider, model),
+          ...safeCapabilities(config.settings, model),
+        },
       };
     }))
     .filter(Boolean);
@@ -64,4 +93,4 @@ function list(db) {
   return configured;
 }
 
-module.exports = { list, parseModels, safeCapabilities };
+module.exports = { list, parseModels, safeCapabilities, providerCapabilities };

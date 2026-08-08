@@ -197,3 +197,61 @@ test('视频金额只接受 5 到 15 秒整数并按秒相乘', () => {
     );
   }
 });
+
+test('按条计费的视频模型不会再乘视频时长且供应商成本只记录一次', () => {
+  const db = makeDb();
+  const saved = prices.set(db, 'sdas-my-seedance-2.0-fast-upscaled-1080p', 860, {
+    display_name: 'Seedance 2.0 Fast 480P 超分 1080P',
+    category: 'video',
+    billing_unit: 'request',
+    cost_unit: 'request',
+    cost_micros_per_unit: 2800000,
+  });
+
+  assert.equal(saved.billing_unit, 'request');
+  assert.equal(prices.calculateCharge(db, saved.model, { duration: 15 }), 860);
+  assert.deepEqual(prices.quoteCost(db, saved.model, { quantity: 15 }), {
+    model: 'sdas-my-seedance-2.0-fast-upscaled-1080p',
+    cost_unit: 'request',
+    quantity: 1,
+    cost_micros: 2800000,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+  });
+});
+
+test('视频模型按 480P 和 720P 分别计算积分与每秒成本', () => {
+  const db = makeDb();
+  const saved = prices.set(db, 'resolution-video', 2, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_unit: 80000,
+    resolution_prices: {
+      '480p': { credits: 2, cost_micros_per_second: 50000 },
+      '720p': { credits: 5, cost_micros_per_second: 140000 },
+    },
+  });
+
+  assert.deepEqual(saved.resolution_prices, {
+    '480p': { credits: 2, cost_micros_per_second: 50000 },
+    '720p': { credits: 5, cost_micros_per_second: 140000 },
+  });
+  assert.equal(prices.calculateCharge(db, 'resolution-video', { duration: 8, resolution: '480P' }), 16);
+  assert.equal(prices.calculateCharge(db, 'resolution-video', { duration: 8, resolution: '720p' }), 40);
+  assert.equal(prices.quoteCost(db, 'resolution-video', { quantity: 8, resolution: '480p' }).cost_micros, 400000);
+  assert.equal(prices.quoteCost(db, 'resolution-video', { quantity: 8, resolution: '720P' }).cost_micros, 1120000);
+  assert.deepEqual(prices.list(db).find((row) => row.model === 'resolution-video').resolution_prices, saved.resolution_prices);
+});
+
+test('未配置分辨率档位的视频模型继续使用原有按秒积分与成本', () => {
+  const db = makeDb();
+  prices.set(db, 'legacy-video', 3, {
+    category: 'video',
+    cost_unit: 'second',
+    cost_micros_per_unit: 90000,
+  });
+
+  assert.equal(prices.calculateCharge(db, 'legacy-video', { duration: 6, resolution: '720p' }), 18);
+  assert.equal(prices.quoteCost(db, 'legacy-video', { quantity: 6, resolution: '720p' }).cost_micros, 540000);
+});

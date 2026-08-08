@@ -1,3 +1,22 @@
+const FEITUO_SHORT_DRAMA_IMAGE_LIMITS = Object.freeze({
+  'sdas-lm-hailuo-h3-2k': 9,
+  'sdas-my-seedance-2.0-fast-upscaled-1080p': 4,
+})
+
+function feituoShortDramaImageLimit(model) {
+  return FEITUO_SHORT_DRAMA_IMAGE_LIMITS[String(model || '').trim().toLowerCase()] || null
+}
+
+function supportsFeituoShortDramaOmni(model) {
+  return feituoShortDramaImageLimit(model) != null
+}
+
+function limitFeituoShortDramaReferenceImages(model, value) {
+  if (!Array.isArray(value)) return value
+  const limit = feituoShortDramaImageLimit(model)
+  return limit ? value.slice(0, limit) : value
+}
+
 function normalizeReferenceUrls(value) {
   if (!Array.isArray(value)) return undefined
   const urls = [...new Set(value.map((url) => String(url || '').trim()).filter(Boolean))]
@@ -105,4 +124,10 @@ function buildVideoGenerationAudit({
   }
 }
 
-export { buildVideoGenerationAudit, buildVideoGenerationRequest }
+export {
+  buildVideoGenerationAudit,
+  buildVideoGenerationRequest,
+  feituoShortDramaImageLimit,
+  limitFeituoShortDramaReferenceImages,
+  supportsFeituoShortDramaOmni,
+}

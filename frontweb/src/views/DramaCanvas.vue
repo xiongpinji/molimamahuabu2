@@ -661,11 +661,17 @@ import {
 import {
   buildFreeCanvasGenerationRequest,
   buildFreeCanvasProjectAssetPayload,
+  buildFreeCanvasReferenceMentionCandidates,
   collectDirectUpstreamImageReferences,
+  collectDirectUpstreamMediaReferences,
   collectDirectUpstreamTextInputs,
   getFreeCanvasNodeResultUrl,
   resolveFreeCanvasResultUrl,
 } from '@/utils/freeCanvasGeneration'
+import {
+  calculateBatchGenerationProgress,
+  normalizeGenerationProgress,
+} from '@/utils/canvasGenerationProgress'
 import {
   collectDroppedImageFiles,
   createDroppedImageNodeSpecs,
@@ -977,8 +983,8 @@ function getFreeNodeModelCapability(kind, model) {
   return canvasModelCapability(freeCanvasModelCatalog.value, kind, model)
 }
 
-function getFreeNodeEstimatedCredits(kind, model, quantity, duration) {
-  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration)
+function getFreeNodeEstimatedCredits(kind, model, quantity, duration, resolution) {
+  return estimateCanvasCredits(freeCanvasModelCatalog.value, kind, model, quantity, duration, resolution)
 }
 
 async function loadFreeCanvasModelConfigs() {
@@ -2624,10 +2630,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000 } = {}) {
+async function pollFreeCanvasTask(taskId, { maxAttempts = 60, intervalMs = 3000, onProgress } = {}) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) await sleep(intervalMs)
     const task = await taskAPI.get(taskId)
+    const progress = normalizeGenerationProgress(task?.progress)
+    if (progress !== null) await onProgress?.(progress)
     if (task?.status === 'completed') return task
     if (task?.status === 'failed') throw new Error(task?.error || task?.message || '自由节点生成失败')
   }
@@ -2766,6 +2774,8 @@ async function completeFreeCanvasNodeGeneration({
   requestPayload,
   taskId,
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   const resolved = await resolveFreeCanvasNodeGeneration({ kind, submitResult, taskResult })
   return commitFreeCanvasNodeGeneration({
@@ -2775,6 +2785,8 @@ async function completeFreeCanvasNodeGeneration({
     requestPayload,
     taskId,
     notify,
+    progress,
+    progressKnown,
   })
 }
 
@@ -2796,15 +2808,21 @@ async function commitFreeCanvasNodeGeneration({
   taskId,
   resultUrls = [],
   notify = true,
+  progress = 100,
+  progressKnown = true,
 }) {
   await patchFreeCanvasNodeData(node.id, {
     status: 'success',
+    generationActive: false,
+    generationBatchSize: undefined,
+    generationTaskBaseCount: undefined,
     url: resultUrl,
     resultUrls: resultUrls.length ? resultUrls : [resultUrl],
     ...boundaryFrames,
     ...(kind === 'video' && generationId ? { videoGenerationId: generationId } : {}),
     taskId,
-    progress: 100,
+    progress,
+    progressKnown,
     error: '',
     savedAssetId: '',
     assetSaveStatus: 'running',
@@ -2823,19 +2841,17 @@ async function commitFreeCanvasNodeGeneration({
 function freeCanvasNodeInputReferences(nodeOrId) {
   const node = freeCanvasNodeById(nodeOrId)
   if (!node || !['image', 'video'].includes(node.data?.kind)) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+  return node.data?.kind === 'video'
+    ? collectDirectUpstreamMediaReferences(allGraphNodes.value, allGraphEdges.value, node.id)
+    : collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, node.id)
 }
 
 function freeCanvasReferenceCandidates(nodeOrId) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode) return []
-  return collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id)
-    .filter((reference) => reference.ready && reference.enabled !== false)
-    .map((reference) => ({
-      nodeId: String(reference.nodeId),
-      title: reference.title || '画布图片',
-      url: reference.url,
-    }))
+  return buildFreeCanvasReferenceMentionCandidates(
+    collectDirectUpstreamImageReferences(allGraphNodes.value, allGraphEdges.value, targetNode.id),
+  )
 }
 
 function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
@@ -2843,7 +2859,8 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   const sourceNode = freeCanvasNodeById(sourceNodeOrId)
   if (!targetNode || !sourceNode) return false
   if (!['image', 'video'].includes(targetNode.data?.kind)) return false
-  if (sourceNode.data?.kind !== 'image' || !getFreeCanvasNodeResultUrl(sourceNode)) return false
+  const sourceKind = canvasNodeKind(sourceNode)
+  if (!resolveCanvasNodeConnection(sourceKind, targetNode.data?.kind).allowed || !getFreeCanvasNodeResultUrl(sourceNode)) return false
   if (String(sourceNode.id) === String(targetNode.id)) return false
   onConnect({ source: sourceNode.id, target: targetNode.id })
   allGraphNodes.value = allGraphNodes.value.map((node) => ({
@@ -2856,14 +2873,14 @@ function attachFreeCanvasReference(targetNodeOrId, sourceNodeOrId) {
   return true
 }
 
-async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAssetId = '' }) {
+async function createFreeCanvasReferenceNode({ targetNode, kind = 'image', url, title, savedAssetId = '' }) {
   const inputCount = freeCanvasNodeInputReferences(targetNode).length
-  const nodeId = await createFreeCanvasNode('image', {
+  const nodeId = await createFreeCanvasNode(kind, {
     x: Number(targetNode.position?.x || 0) - 700,
     y: Number(targetNode.position?.y || 0) + inputCount * 48,
   })
   await patchFreeCanvasNodeData(nodeId, {
-    title: title || '参考图',
+    title: title || ({ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]),
     url,
     status: 'success',
     savedAssetId,
@@ -2874,11 +2891,18 @@ async function createFreeCanvasReferenceNode({ targetNode, url, title, savedAsse
   return nodeId
 }
 
-async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
+async function uploadFreeCanvasReferenceMedia(nodeOrId, file) {
   const targetNode = freeCanvasNodeById(nodeOrId)
   if (!targetNode || !['image', 'video'].includes(targetNode.data?.kind)) return
-  if (!file?.type?.startsWith('image/')) {
-    ElMessage.warning('请选择图片文件')
+  const kind = file?.type?.startsWith('image/')
+    ? 'image'
+    : file?.type?.startsWith('video/')
+      ? 'video'
+      : file?.type?.startsWith('audio/')
+        ? 'audio'
+        : ''
+  if (!kind || !resolveCanvasNodeConnection(kind, targetNode.data?.kind).allowed) {
+    ElMessage.warning(targetNode.data?.kind === 'video' ? '请选择图片、视频或音频文件' : '请选择图片文件')
     return
   }
   try {
@@ -2887,13 +2911,14 @@ async function uploadFreeCanvasReferenceImage(nodeOrId, file) {
     if (!url) throw new Error('参考图上传成功但未返回可用地址')
     await createFreeCanvasReferenceNode({
       targetNode,
+      kind,
       url,
-      title: file.name || '参考图',
+      title: file.name || ({ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]),
       savedAssetId: String(asset?.id || ''),
     })
-    ElMessage.success('参考图已上传并连接')
+    ElMessage.success(`${{ image: '参考图', video: '参考视频', audio: '参考音频' }[kind]}已上传并连接`)
   } catch (error) {
-    ElMessage.error(error?.message || '参考图上传失败')
+    ElMessage.error(error?.message || '参考素材上传失败')
   }
 }
 
@@ -3016,7 +3041,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedAt: new Date().toISOString(),
       error: errorMessage,
     })
-    await patchFreeCanvasNodeData(node.id, { status: 'failed', error: errorMessage })
+    await patchFreeCanvasNodeData(node.id, { status: 'failed', generationActive: false, error: errorMessage })
     ElMessage.error(errorMessage)
     return { ok: false, nodeId: String(node.id), error: errorMessage }
   }
@@ -3034,7 +3059,19 @@ async function runFreeCanvasNode(nodeOrId) {
     requestedAt: new Date().toISOString(),
     error: '',
   })
-  await patchFreeCanvasNodeData(node.id, { status: 'running', progress: 0, taskId: '', error: '' })
+  const quantity = ['image', 'video'].includes(kind)
+    ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
+    : 1
+  await patchFreeCanvasNodeData(node.id, {
+    status: 'running',
+    generationActive: true,
+    generationBatchSize: quantity,
+    generationTaskBaseCount: 0,
+    progress: 0,
+    progressKnown: false,
+    taskId: '',
+    error: '',
+  })
   let taskId = ''
   try {
     if (kind === 'text') {
@@ -3044,7 +3081,11 @@ async function runFreeCanvasNode(nodeOrId) {
       await patchFreeCanvasNodeData(node.id, {
         content,
         status: 'success',
+        generationActive: false,
+        generationBatchSize: undefined,
+        generationTaskBaseCount: undefined,
         progress: 100,
+        progressKnown: true,
         error: '',
       })
       await updateFreeCanvasGenerationHistory(node.id, historyId, {
@@ -3055,9 +3096,6 @@ async function runFreeCanvasNode(nodeOrId) {
       return { ok: true, nodeId: String(node.id) }
     }
 
-    const quantity = ['image', 'video'].includes(kind)
-      ? Math.min(4, Math.max(1, Number(node.data?.quantity) || 1))
-      : 1
     for (let index = 0; index < quantity; index += 1) {
       let submitResult = null
       let taskResult = null
@@ -3068,8 +3106,23 @@ async function runFreeCanvasNode(nodeOrId) {
 
       taskId = freeCanvasTaskId(submitResult)
       if (taskId) {
-        await patchFreeCanvasNodeData(node.id, { taskId })
-        taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+        await patchFreeCanvasNodeData(node.id, {
+          taskId,
+          generationTaskBaseCount: completedResults.length,
+        })
+        taskResult = await pollFreeCanvasTask(taskId, {
+          ...freeCanvasTaskPollOptions(kind),
+          onProgress: async (currentProgress) => {
+            const progress = calculateBatchGenerationProgress(
+              completedResults.length,
+              quantity,
+              currentProgress
+            )
+            if (progress !== null) {
+              await patchFreeCanvasNodeData(node.id, { progress, progressKnown: true })
+            }
+          },
+        })
       }
       const resolvedResult = await resolveFreeCanvasNodeGeneration({
         kind,
@@ -3079,6 +3132,7 @@ async function runFreeCanvasNode(nodeOrId) {
       completedResults.push(resolvedResult)
       await patchFreeCanvasNodeData(node.id, {
         progress: Math.round((completedResults.length / quantity) * 100),
+        progressKnown: true,
       })
     }
     const completedResultUrls = completedResults.map((result) => result.resultUrl)
@@ -3111,6 +3165,9 @@ async function runFreeCanvasNode(nodeOrId) {
     })
     await patchFreeCanvasNodeData(node.id, {
       status: 'failed',
+      generationActive: false,
+      generationBatchSize: undefined,
+      generationTaskBaseCount: undefined,
       url: previousUrl,
       resultUrls: previousResultUrls,
       taskId,
@@ -3193,7 +3250,31 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
 
   const resumePromise = (async () => {
     try {
-      const taskResult = await pollFreeCanvasTask(taskId, freeCanvasTaskPollOptions(kind))
+      const persistedBatchSize = Number(node.data?.generationBatchSize)
+      const quantity = Number.isInteger(persistedBatchSize) && persistedBatchSize > 0
+        ? Math.min(4, persistedBatchSize)
+        : (kind === 'audio' ? 1 : null)
+      const persistedBaseCount = Number(node.data?.generationTaskBaseCount)
+      const completedCount = quantity !== null && Number.isInteger(persistedBaseCount) && persistedBaseCount >= 0
+        ? Math.min(quantity - 1, persistedBaseCount)
+        : (quantity === 1 ? 0 : null)
+      await patchFreeCanvasNodeData(node.id, {
+        generationActive: true,
+        ...(completedCount === null ? { progressKnown: false } : {}),
+      })
+      const taskResult = await pollFreeCanvasTask(taskId, {
+        ...freeCanvasTaskPollOptions(kind),
+        onProgress: (currentProgress) => {
+          if (completedCount === null) return undefined
+          return patchFreeCanvasNodeData(node.id, {
+            progress: calculateBatchGenerationProgress(completedCount, quantity, currentProgress),
+            progressKnown: true,
+          })
+        },
+      })
+      const recoveredProgress = completedCount === null
+        ? 100
+        : Math.round(((completedCount + 1) / quantity) * 100)
       await completeFreeCanvasNodeGeneration({
         node,
         kind,
@@ -3202,6 +3283,8 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
         requestPayload: null,
         taskId,
         notify: false,
+        progress: recoveredProgress,
+        progressKnown: completedCount !== null,
       })
       ElMessage.success('已恢复自由节点生成结果')
     } catch (error) {
@@ -3210,6 +3293,7 @@ async function resumeFreeCanvasNodeTask(nodeOrId) {
       const errorMessage = error?.message || '自由节点生成失败'
       await patchFreeCanvasNodeData(node.id, {
         status: 'failed',
+        generationActive: false,
         url: latestNode?.data?.url || '',
         taskId,
         error: errorMessage,
@@ -6209,7 +6293,7 @@ provide(CANVAS_CONTEXT_KEY, {
   getFreeNodeVoiceOptions: () => freeCanvasVoiceOptions.value,
   getFreeNodeInputReferences: freeCanvasNodeInputReferences,
   getFreeNodeReferenceCandidates: freeCanvasReferenceCandidates,
-  uploadFreeCanvasReferenceImage,
+  uploadFreeCanvasReferenceMedia,
   attachFreeCanvasReference,
   updateFreeCanvasReference,
   detachFreeCanvasReference,
@@ -6547,11 +6631,12 @@ function onConnect(connection) {
   scheduleLayoutSave()
   if (
     sourceNode?.type === 'homeCanvasNode'
-    && sourceNode.data?.kind === 'image'
+    && ['image', 'video', 'audio'].includes(sourceNode.data?.kind)
     && targetNode?.type === 'homeCanvasNode'
     && targetNode.data?.kind === 'video'
   ) {
-    ElMessage.success(sourceNode.data?.url ? '视频节点已自动采用该图片作为参考图' : '图片已连接，生成完成后会自动作为视频参考图')
+    const mediaLabel = { image: '图片', video: '视频', audio: '音频' }[sourceNode.data?.kind]
+    ElMessage.success(sourceNode.data?.url ? `视频节点已采用该${mediaLabel}作为参考素材` : `${mediaLabel}已连接，生成完成后会自动作为视频参考素材`)
   } else {
     ElMessage.success('已添加画布连线')
   }

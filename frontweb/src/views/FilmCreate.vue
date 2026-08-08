@@ -2864,7 +2864,13 @@ import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
-import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+import {
+  buildVideoGenerationAudit,
+  buildVideoGenerationRequest,
+  feituoShortDramaImageLimit,
+  limitFeituoShortDramaReferenceImages,
+  supportsFeituoShortDramaOmni,
+} from '@/utils/videoGenerationRequest'
 import {
   buildFactoryGenerationPreflight,
   buildScriptAnalysisProvenance,
@@ -6469,7 +6475,8 @@ function getSbUniversalOmniRefSlots(sb) {
       })
     }
   }
-  return out
+  const limit = feituoShortDramaImageLimit(getStoryboardVideoModel(sb))
+  return limit ? out.slice(0, limit) : out
 }
 
 /** 全能模式：场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；供可灵 Omni / 火山多图参考，最多 10，方舟侧最多取 9 张） */
@@ -6491,7 +6498,7 @@ function collectSbOmniReferenceAbsoluteUrls(sb, model = getStoryboardVideoModel(
   for (const p of getSbSelectedProps(sb.id)) {
     if (hasAssetImage(p)) pushAbs(assetImageUrl(p))
   }
-  return urls.slice(0, 10)
+  return urls.slice(0, feituoShortDramaImageLimit(model) || 10)
 }
 
 /** 非 Seedance2 全能降级：仅场景参考图（若有） */
@@ -6665,7 +6672,7 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     imageUrl: firstFrameUrl || (!useOmni ? (absoluteUrl || undefined) : undefined),
     firstFrameUrl,
     lastFrameUrl,
-    referenceImageUrls: referenceUrls,
+    referenceImageUrls: limitFeituoShortDramaReferenceImages(sbModel, referenceUrls),
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
     resolution: videoResolution.value || undefined,
@@ -6760,7 +6767,8 @@ function isSeedance2VideoModel(modelName) {
 function canUseUniversalOmniVideoApi(cfg) {
   if (!cfg) return false
   const model = videoModelNameFromAiConfig(cfg).toLowerCase()
-  return isSeedance2VideoModel(model)
+  return supportsFeituoShortDramaOmni(model)
+    || isSeedance2VideoModel(model)
     || /grok.*video|video.*grok/.test(model)
     || /kling.*omni|omni.*kling/.test(model)
     || /agnes-video/.test(model)

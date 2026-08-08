@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "release": "usmercari-model-integration",
+  "allowedPaths": [
+    "backend-node/migrations/01_init.sql",
+    "backend-node/package.json",
+    "backend-node/scripts/verify-canvas-reference-sequence-contract.js",
+    "backend-node/src/db/migrate.js",
+    "backend-node/src/services/aiConfigService.js",
+    "backend-node/src/services/canvasModelCatalogService.js",
+    "backend-node/src/services/usmercariVideoClient.js",
+    "backend-node/src/services/videoClient.js",
+    "backend-node/src/services/videoService.js",
+    "deploy/release-scopes/usmercari-model-integration.json",
+    "frontweb/src/components/AIConfigContent.vue",
+    "frontweb/src/components/dramaCanvas/CanvasProjectAssetNode.vue",
+    "frontweb/src/components/dramaCanvas/HomeCanvasNode.vue",
+    "frontweb/src/utils/canvasNodeContracts.js",
+    "frontweb/src/utils/freeCanvasGeneration.js",
+    "frontweb/src/views/DramaCanvas.vue",
+    "frontweb/src/views/HomeCanvas.vue"
+  ]
+}

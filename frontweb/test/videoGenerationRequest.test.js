@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import {
   buildVideoGenerationAudit,
   buildVideoGenerationRequest,
+  limitFeituoShortDramaReferenceImages,
+  supportsFeituoShortDramaOmni,
 } from '../src/utils/videoGenerationRequest.js'
 
 test('请求审计保留分镜模型、参考图和首尾帧字段', () => {
@@ -101,4 +103,18 @@ test('请求审计保存角色声线快照但不污染真实 provider payload', 
     source: 'character_voice_style',
   })
   assert.equal(Object.hasOwn(audit.payload, 'voice_snapshot'), false)
+})
+
+test('短剧工厂为两个飞拓模型启用全能模式并按模型限制参考图', () => {
+  const references = Array.from({ length: 12 }, (_, index) => `https://cdn.example/ref-${index + 1}.jpg`)
+  const h3 = limitFeituoShortDramaReferenceImages('sdas-lm-hailuo-h3-2k', references)
+  const fast = limitFeituoShortDramaReferenceImages('sdas-my-seedance-2.0-fast-upscaled-1080p', references)
+  const other = limitFeituoShortDramaReferenceImages('grok-video-3', references)
+
+  assert.equal(supportsFeituoShortDramaOmni('sdas-lm-hailuo-h3-2k'), true)
+  assert.equal(supportsFeituoShortDramaOmni('sdas-my-seedance-2.0-fast-upscaled-1080p'), true)
+  assert.equal(supportsFeituoShortDramaOmni('grok-video-3'), false)
+  assert.equal(h3.length, 9)
+  assert.equal(fast.length, 4)
+  assert.equal(other.length, 12)
 })

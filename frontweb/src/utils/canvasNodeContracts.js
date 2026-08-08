@@ -16,6 +16,12 @@ const CONNECTION_CONTRACTS = {
     image: { output: 'image', input: 'reference-image', label: '图片 → 图片参考图', slots: ['reference-image', 'character-reference', 'style-reference'] },
     video: { output: 'image', input: 'reference-image', label: '图片 → 视频参考图', slots: ['reference-image', 'first-frame', 'last-frame', 'character-reference', 'style-reference'] },
   },
+  video: {
+    video: { output: 'video', input: 'reference-video', label: '视频 → 视频参考', slots: ['reference-video'] },
+  },
+  audio: {
+    video: { output: 'audio', input: 'reference-audio', label: '音频 → 视频参考', slots: ['reference-audio'] },
+  },
 }
 
 export function canvasModelServiceType(kind) {

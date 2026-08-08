@@ -2,7 +2,7 @@
   <AdminWorkspaceShell
     title="工作区与积分"
     eyebrow="团队与用量"
-    description="切换团队空间、管理成员、兑换积分，并核对当前工作区的积分流水。"
+    description="切换团队空间、管理成员、支付宝充值或兑换积分，并核对当前工作区的积分流水。"
   >
     <template v-if="publicMode" #actions>
       <el-button type="primary" @click="showCreate = true">新建工作区</el-button>
@@ -40,8 +40,11 @@
         </article>
         <article class="info-card">
           <span>积分获取</span>
-          <strong>兑换码</strong>
-          <small>平台管理员发放，兑换后立即进入当前工作区</small>
+          <strong>支付宝 / 兑换码</strong>
+          <small>充值成功或兑换后，积分立即进入当前工作区</small>
+          <el-button type="primary" @click="router.push({ name: 'recharge-center' })">
+            前往充值中心
+          </el-button>
         </article>
         <article class="info-card">
           <span>当前工作区</span>
@@ -169,7 +172,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import { getCreditAccount } from '@/api/auth'
@@ -193,6 +196,7 @@ import {
 import { normalizeCreditAccount } from '@/utils/billingDisplay'
 
 const route = useRoute()
+const router = useRouter()
 const redeemSection = ref(null)
 const publicMode = /^(1|true|yes)$/i.test(String(import.meta.env.VITE_PUBLIC_PLATFORM_MODE || ''))
 const loading = ref(false)
@@ -230,7 +234,6 @@ const consumptionTransactions = computed(() => transactionsWithBalance.value.fil
 const redemptionTransactions = computed(() => transactionsWithBalance.value.filter(
   (item) => item.event_type === 'redeem',
 ))
-
 function canChangeMemberRole(row) {
   return Boolean(row && row.user_id !== sessionUserId && currentTenant.value?.role === 'owner')
 }

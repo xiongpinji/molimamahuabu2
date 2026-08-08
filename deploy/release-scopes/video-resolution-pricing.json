@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "release": "video-resolution-pricing",
+  "allowedPaths": [
+    "backend-node/migrations/48_video_resolution_pricing.sql",
+    "backend-node/package.json",
+    "backend-node/scripts/verify-incremental-release-scope.js",
+    "backend-node/src/services/canvasModelCatalogService.js",
+    "backend-node/src/services/generationCostLedgerService.js",
+    "backend-node/src/services/modelPriceService.js",
+    "backend-node/src/services/videoService.js",
+    "deploy/release-scopes/video-resolution-pricing.json",
+    "frontweb/src/components/dramaCanvas/HomeCanvasNode.vue",
+    "frontweb/src/utils/billingDisplay.js",
+    "frontweb/src/utils/canvasModelCapabilities.js",
+    "frontweb/src/utils/homeQuickGeneration.js",
+    "frontweb/src/views/BillingAdmin.vue",
+    "frontweb/src/views/DramaCanvas.vue",
+    "frontweb/src/views/FilmList.vue",
+    "frontweb/src/views/FreeCreate.vue"
+  ]
+}

@@ -24,7 +24,11 @@ export function normalizeQuickGenerationDraft(value = {}) {
 }
 
 export function estimateGenerationCredits(model = {}, options = {}) {
-  const credits = Number(model?.credits)
+  const resolution = String(options.resolution || '').trim().toLowerCase()
+  const tierCredits = Number(model?.resolution_prices?.[resolution]?.credits)
+  const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0
+    ? tierCredits
+    : Number(model?.credits)
   if (!Number.isSafeInteger(credits) || credits <= 0) return null
   if (model?.billing_unit !== 'second') return credits
   const duration = Number(options.duration)
