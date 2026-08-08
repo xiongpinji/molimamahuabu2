@@ -72,6 +72,7 @@
 - 创建：`workers/redraw-locale-verifier/requirements.in`
 - 创建：`workers/redraw-locale-verifier/requirements.lock`
 - 创建：`workers/redraw-locale-verifier/THIRD_PARTY_NOTICES.md`
+- 创建：`workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py`
 - 创建：`workers/redraw-locale-verifier/scripts/stage_models.py`
 - 创建：`workers/redraw-locale-verifier/scripts/model_compat_smoke.py`
 - 创建：`workers/redraw-locale-verifier/tests/test_model_staging.py`
@@ -89,6 +90,13 @@ def test_stage_manifest_requires_exact_revisions_and_hashes(self):
     self.assertRegex(manifest["models"]["asr"]["tree_sha256"], r"^[0-9a-f]{64}$")
     self.assertRegex(manifest["models"]["accent"]["tree_sha256"], r"^[0-9a-f]{64}$")
     self.assertNotIn("main", json.dumps(manifest))
+
+def test_commonaccent_loader_uses_only_the_vendored_local_interface(self):
+    source = Path(MODEL_COMPAT_SMOKE).read_text(encoding="utf-8")
+    self.assertIn("CommonAccentClassifier", source)
+    self.assertNotIn("EncoderClassifier", source)
+    self.assertNotIn("foreign_class", source)
+    self.assertNotIn("trust_remote_code", source)
 ```
 
 - [ ] **步骤 2：运行测试确认失败**
@@ -123,6 +131,14 @@ transformers==4.57.6
 生成确定性 tree hash。对 CommonAccent 的工作副本只允许两项确定性改写：把
 `wav2vec2_hub` 改为本地固定目录，把 `pretrained_path` 改为本地 CommonAccent 目录；改写前必须断言
 原始两行与固定 revision 内容一致。
+
+固定 CommonAccent snapshot 的模块集合是 `wav2vec2/avg_pool/output_mlp`，不能用要求
+`compute_features/mean_var_norm/embedding_model/classifier` 的通用 `EncoderClassifier`。任务 1 先实现并
+审计仓库内 `CommonAccentClassifier(Pretrained)`，仅保留该固定模型需要的
+`wav2vec2 -> avg_pool -> output_mlp` 推理路径；通过 SpeechBrain 1.1 的
+`pretrained_from_hparams(cls=CommonAccentClassifier, source=<local-runtime>)` 加载。禁止动态导入模型
+snapshot 的 `custom_interface.py`、`foreign_class` 和 `trust_remote_code`。vendored interface 的文件
+SHA-256 必须进入 runtime manifest，HyperPyYAML 可实例化的类路径必须与固定模板逐项 allowlist 比对。
 
 ```python
 REVISIONS = {
@@ -179,6 +195,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 git add workers/redraw-locale-verifier/requirements.in \
   workers/redraw-locale-verifier/requirements.lock \
   workers/redraw-locale-verifier/THIRD_PARTY_NOTICES.md \
+  workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py \
   workers/redraw-locale-verifier/scripts/stage_models.py \
   workers/redraw-locale-verifier/scripts/model_compat_smoke.py \
   workers/redraw-locale-verifier/tests/test_model_staging.py
@@ -279,7 +296,7 @@ git commit -m "feat: 定义语言验证协议与台词评分"
 ## 任务 3：实现离线模型适配器与联合判定
 
 **文件：**
-- 创建：`workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py`
+- 修改：`workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py`
 - 创建：`workers/redraw-locale-verifier/src/redraw_locale_worker/engines.py`
 - 创建：`workers/redraw-locale-verifier/src/redraw_locale_worker/verifier.py`
 - 创建：`workers/redraw-locale-verifier/tests/test_verifier.py`
@@ -328,7 +345,8 @@ class FasterWhisperEngine:
         return {"language": info.language, "probability": float(info.language_probability), "text": text}
 ```
 
-CommonAccent 使用仓库内审计过的兼容接口和本地 `runtime-hyperparams.yaml`；`FetchConfig` 明确禁止网络。
+CommonAccent 沿用任务 1 已通过真实兼容性门禁的本地接口和 `runtime-hyperparams.yaml`，补充业务级
+engine 封装；`FetchConfig` 明确禁止网络。
 输出概率由 log posterior 做 `exp()`，不得把原始 log score 当概率。
 
 ```python
