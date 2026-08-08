@@ -98,7 +98,7 @@ function assertResolutionBand(resolution, ffprobe) {
   const longEdge = Math.max(width, height);
   if (resolution === '480p' && shortEdge >= 400 && shortEdge <= 576) return;
   if (resolution === '720p' && shortEdge >= 640 && shortEdge <= 800) return;
-  if (resolution === '2k' && longEdge >= 1800 && longEdge <= 2304) return;
+  if (resolution === '2k' && longEdge >= 1800 && longEdge <= 2560) return;
   throw new Error(`${resolution} 结果尺寸不在对应档位: ${width}x${height}`);
 }
 

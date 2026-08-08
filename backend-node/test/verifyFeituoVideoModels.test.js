@@ -94,6 +94,13 @@ test('ffprobe parser and result validator enforce exact output bands', () => {
   assert.equal(validateCompletedResult(completed(item, {
     artifact: { ...completed(item).artifact, ffprobe: { ...parsed, width: 864, height: 480 } },
   })), false);
+  const h3 = buildRequiredMatrix()[0];
+  assert.equal(validateCompletedResult(completed(h3, {
+    artifact: {
+      ...completed(h3).artifact,
+      ffprobe: { width: 2560, height: 1440, duration_seconds: 15, video_codec: 'h264' },
+    },
+  })), true);
 });
 
 test('release evidence requires three unique completed tasks and records measured speed', () => {
