@@ -25,7 +25,6 @@ const canvasTextRoutes = require('./canvas-text');
 const voiceCatalogRoutes = require('./voiceCatalog');
 const scriptAnalysisRoutes = require('./scriptAnalysis');
 const redrawRoutes = require('./redraw');
-const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 const promptOverridesRoutes = require('./promptOverrides');
 const directorExportRoutes = require('./directorExport');
 const directorReferenceRoutes = require('./directorReference');
@@ -56,13 +55,6 @@ function createDefaultRedrawLocaleVerifier(options = {}) {
 function setupRouter(cfg, db, log, options = {}) {
   const r = express.Router();
   const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
-  const configuredRedrawOptions = options.redrawOptions || {};
-  const configuredGenerationOptions = configuredRedrawOptions.generationOptions || {};
-  const providerAssetSecret = options.providerAssetSecret
-    || configuredGenerationOptions.providerAssetSecret
-    || process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
-  const providerAssetStorageBaseUrl = configuredGenerationOptions.storageBaseUrl || cfg.storage?.base_url;
-  const providerAssetStorageRoot = configuredGenerationOptions.storageRoot;
   const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
@@ -137,12 +129,6 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
-  r.use('/redraw-provider-assets', createRedrawProviderAssetsRouter({
-    cfg,
-    signingSecret: providerAssetSecret,
-    storageBaseUrl: providerAssetStorageBaseUrl,
-    storageRoot: providerAssetStorageRoot,
-  }));
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);
@@ -230,12 +216,7 @@ function setupRouter(cfg, db, log, options = {}) {
   const directorExport = directorExportRoutes(db, cfg, log);
   const directorReference = directorReferenceRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const scriptAnalysis = scriptAnalysisRoutes(db, log);
-  const redrawOptions = configuredRedrawOptions;
-  const generationOptions = {
-    ...configuredGenerationOptions,
-    storageBaseUrl: providerAssetStorageBaseUrl,
-    providerAssetSecret,
-  };
+  const redrawOptions = options.redrawOptions || {};
   const explicitLocalizationProvider = options.localizationProvider || redrawOptions.localizationProvider;
   const explicitAssetGenerationProvider = options.assetGenerationProvider
     || options.assetProvider
@@ -276,7 +257,6 @@ function setupRouter(cfg, db, log, options = {}) {
   const redraw = redrawRoutes(db, log, {
     cfg,
     ...redrawOptions,
-    generationOptions,
     localizationProvider: explicitLocalizationProvider || redrawAdapters.localize,
     assetGenerationProvider: explicitAssetGenerationProvider || defaultAssetGenerationProvider,
     dialogueProvider: explicitDialogueProvider || defaultDialogueProvider,
@@ -312,9 +292,6 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/versions/:id/assets', redraw.listVersionAssets);
   r.post('/redraw/versions/:id/assets/batch-quote', redraw.assetBatchQuote);
   r.post('/redraw/versions/:id/assets/batches', redraw.createAssetBatch);
-  r.get('/redraw/versions/:id/voices', redraw.listProductionVoices);
-  r.get('/redraw/versions/:versionId/voices/:voiceAssetId/preview', redraw.previewProductionVoice);
-  r.post('/redraw/assets/:id/voice', redraw.assignVoice);
   r.post('/redraw/versions/:id/dialogue/quote', redraw.dialogueQuote);
   r.post('/redraw/versions/:id/dialogue/start', redraw.startDialogue);
   r.get('/redraw/versions/:id/dialogue/tasks/:taskId', redraw.getDialogueTask);
