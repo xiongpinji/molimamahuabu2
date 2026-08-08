@@ -1,4 +1,5 @@
 import hashlib
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,15 +21,20 @@ REQUIRED_MODELS = {
 }
 
 
-def verify_audio(request, pack, *, asr, accent):
-    audio_sha256 = _sha256_file(request.get("audio_path"))
-    asr_evidence = _safe_infer(asr, request.get("audio_path"))
-    accent_evidence = _safe_infer(accent, request.get("audio_path"))
+def verify_audio(request, pack, *, allowed_root, asr, accent):
+    audio_path = _resolve_audio_path(request.get("audio_path"), allowed_root)
+    audio_sha256 = _sha256_file(audio_path) if audio_path is not None else None
+    if audio_path is None:
+        asr_evidence = {"ok": False, "error_code": "INFERENCE_SKIPPED"}
+        accent_evidence = {"ok": False, "error_code": "INFERENCE_SKIPPED"}
+    else:
+        asr_evidence = _safe_infer(asr, audio_path)
+        accent_evidence = _safe_infer(accent, audio_path)
     approved_text = _text_or_empty(request.get("approved_text"))
     transcript_text = _text_or_empty(asr_evidence.get("text"))
     metrics = score_text(approved_text, transcript_text)
 
-    thresholds = _thresholds(pack)
+    thresholds, thresholds_valid = _thresholds(pack)
     us_label = str(pack.get("us_accent_label", "us")).casefold()
     asr_probability = _strict_float(asr_evidence.get("probability"))
     accent_probability = _strict_float(accent_evidence.get("probability"))
@@ -37,7 +43,11 @@ def verify_audio(request, pack, *, asr, accent):
 
     checks = {
         "locale_pack": request.get("locale_pack") == SUPPORTED_LOCALE_PACK == pack.get("locale_pack"),
+        "audio_path": audio_path is not None,
         "audio_sha256_matches_request": audio_sha256 is not None and request.get("audio_sha256") == audio_sha256,
+        "asr_inference": asr_evidence.get("ok") is True,
+        "accent_inference": accent_evidence.get("ok") is True,
+        "calibration_thresholds": thresholds_valid,
         "language": asr_language == "en",
         "language_probability": asr_probability is not None and asr_probability >= thresholds["language_probability_min"],
         "word_error_rate": metrics["word_error_rate"] <= thresholds["word_error_rate_max"],
@@ -61,14 +71,8 @@ def verify_audio(request, pack, *, asr, accent):
         "model_manifest_sha256": pack.get("model_manifest_sha256"),
         "calibration_manifest_sha256": pack.get("calibration_manifest_sha256"),
         "models": dict(pack.get("models") or {}),
-        "asr": {
-            "language": asr_evidence.get("language"),
-            "probability": asr_probability,
-        },
-        "accent": {
-            "label": accent_evidence.get("label"),
-            "probability": accent_probability,
-        },
+        "asr": _asr_response(asr_evidence, asr_probability),
+        "accent": _accent_response(accent_evidence, accent_probability),
         "metrics": {
             "word_error_rate": metrics["word_error_rate"],
             "character_error_rate": metrics["character_error_rate"],
@@ -80,34 +84,82 @@ def verify_audio(request, pack, *, asr, accent):
     }
 
 
+def _asr_response(evidence, probability):
+    if evidence.get("ok") is not True:
+        return {"ok": False, "error_code": evidence.get("error_code", "INFERENCE_FAILED")}
+    return {
+        "ok": True,
+        "language": evidence.get("language"),
+        "probability": probability,
+    }
+
+
+def _accent_response(evidence, probability):
+    if evidence.get("ok") is not True:
+        return {"ok": False, "error_code": evidence.get("error_code", "INFERENCE_FAILED")}
+    return {
+        "ok": True,
+        "label": evidence.get("label"),
+        "probability": probability,
+    }
+
+
+def _resolve_audio_path(audio_path, allowed_root):
+    try:
+        root_input = Path(allowed_root)
+        path_input = Path(audio_path)
+    except TypeError:
+        return None
+    if not root_input.is_absolute() or not path_input.is_absolute():
+        return None
+    try:
+        root = root_input.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir():
+        return None
+    if path_input.is_symlink():
+        return None
+    try:
+        path = path_input.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
 def _safe_infer(engine, audio_path):
     try:
-        result = engine.infer(Path(audio_path))
+        result = engine.infer(audio_path)
     except Exception:
-        return {}
-    return result if isinstance(result, dict) else {}
+        return {"ok": False, "error_code": "INFERENCE_FAILED"}
+    if not isinstance(result, dict):
+        return {"ok": False, "error_code": "INFERENCE_INVALID"}
+    return {**result, "ok": True}
 
 
 def _thresholds(pack):
     thresholds = pack.get("thresholds") if isinstance(pack, dict) else None
-    result = {}
+    closed = {
+        "language_probability_min": 1.0,
+        "word_error_rate_max": 0.0,
+        "character_error_rate_max": 0.0,
+        "us_accent_probability_min": 1.0,
+    }
     if not isinstance(thresholds, dict) or set(thresholds) != REQUIRED_THRESHOLDS:
-        return {
-            "language_probability_min": 1.0,
-            "word_error_rate_max": 0.0,
-            "character_error_rate_max": 0.0,
-            "us_accent_probability_min": 1.0,
-        }
+        return closed, False
+    result = {}
     for key in REQUIRED_THRESHOLDS:
         value = _strict_float(thresholds.get(key))
-        result[key] = value if value is not None else _closed_threshold(key)
-    return result
-
-
-def _closed_threshold(key):
-    if key.endswith("_max"):
-        return 0.0
-    return 1.0
+        if value is None or not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return closed, False
+        result[key] = value
+    return result, True
 
 
 def _strict_float(value):
@@ -118,7 +170,7 @@ def _strict_float(value):
 
 def _sha256_file(path):
     try:
-        with Path(path).resolve(strict=True).open("rb") as handle:
+        with Path(path).open("rb") as handle:
             digest = hashlib.sha256()
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
