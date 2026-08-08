@@ -17,6 +17,7 @@ const redrawGenerationService = require('../services/redrawGenerationService');
 const redrawBillingService = require('../services/redrawBillingService');
 const redrawAssetBatchService = require('../services/redrawAssetBatchService');
 const redrawDialogueOrchestrator = require('../services/redrawDialogueOrchestrator');
+const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
@@ -389,6 +390,7 @@ const DIALOGUE_CLIENT_CONTROL_FIELDS = new Set([
   'reservationId',
 ]);
 const DIALOGUE_START_FIELDS = new Set(['quote_hash', 'idempotency_key']);
+const VOICE_ASSIGN_FIELDS = new Set(['voice_asset_id', 'expected_updated_at']);
 
 function generationInputError(message) {
   return codedRouteError('REDRAW_GENERATION_INPUT_INVALID', message);
@@ -616,6 +618,33 @@ function dialogueTaskPayload(row) {
     updated_at: row.updated_at,
     completed_at: row.completed_at || null,
   };
+}
+
+function voiceAssignmentInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_VOICE_ASSIGN_INPUT_INVALID', '音色绑定参数无效');
+  }
+  const invalidField = Object.keys(body).find((field) => !VOICE_ASSIGN_FIELDS.has(field));
+  if (invalidField) {
+    throw codedRouteError(
+      'REDRAW_VOICE_ASSIGN_INPUT_INVALID',
+      `音色绑定不接受字段 ${invalidField}`,
+    );
+  }
+  const voiceAssetId = numericId(body.voice_asset_id);
+  if (!voiceAssetId) {
+    throw codedRouteError('REDRAW_VOICE_ASSIGN_INPUT_INVALID', '缺少有效的 voice_asset_id');
+  }
+  let expectedUpdatedAt;
+  if (Object.prototype.hasOwnProperty.call(body, 'expected_updated_at')) {
+    expectedUpdatedAt = typeof body.expected_updated_at === 'string'
+      ? body.expected_updated_at.trim()
+      : '';
+    if (!expectedUpdatedAt) {
+      throw codedRouteError('REDRAW_VOICE_ASSIGN_INPUT_INVALID', 'expected_updated_at 无效');
+    }
+  }
+  return { voiceAssetId, expectedUpdatedAt };
 }
 
 function sendDialogueError(res, error, fallbackMessage, log, context = {}) {
@@ -955,6 +984,46 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
   }
 
+  function productionVoiceRowsForVersion(version, currentOwner) {
+    const rows = db.prepare(`
+      SELECT id, localized_name
+      FROM redraw_assets
+      WHERE version_id = ?
+        AND tenant_id = ?
+        AND user_id = ?
+        AND kind = 'voice'
+        AND deleted_at IS NULL
+    `).all(Number(version.id), currentOwner.tenantId, currentOwner.userId);
+    const rowsById = new Map(rows.map((row) => [Number(row.id), row]));
+    return redrawVoiceService.listProductionVoices(db, {
+      tenantId: currentOwner.tenantId,
+      userId: currentOwner.userId,
+      versionId: Number(version.id),
+      locale: version.locale,
+      market: version.market,
+    }, (asset) => Boolean(asset && canReadArtifact(asset.id)))
+      .filter((voice) => rowsById.has(Number(voice.id))
+        && String(voice.locale) === String(version.locale)
+        && String(voice.market) === String(version.market))
+      .map((voice) => ({ ...voice, localized_name: rowsById.get(Number(voice.id)).localized_name || '' }));
+  }
+
+  function productionVoicesForVersion(version, currentOwner) {
+    return productionVoiceRowsForVersion(version, currentOwner)
+      .map((voice) => ({
+        id: Number(voice.id),
+        localized_name: voice.localized_name,
+        voice_id: voice.voice_id,
+        locale: voice.locale,
+        market: voice.market,
+        audio_asset_id: Number(voice.audio_asset_id),
+        duration_ms: Number(voice.duration_ms),
+        preview_url: `/api/v1/redraw/versions/${Number(version.id)}/voices/${Number(voice.id)}/preview`,
+        provider_verified: true,
+        audio_readable: true,
+      }));
+  }
+
   function assetBatchContext(version, currentOwner) {
     const ctx = {
       db,
@@ -967,6 +1036,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       },
       provider: options.assetGenerationProvider || options.assetProvider,
       concurrency: Number(options.assetBatchConcurrency || options.assetConcurrency || 3),
+      localeVerifier: options.localeVerifier,
       log,
     };
     if (typeof options.assetBatchSchedule === 'function') ctx.schedule = options.assetBatchSchedule;
@@ -981,6 +1051,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       userId: currentOwner.userId,
       versionId: Number(version.id),
       canReadAudioAsset: (asset) => reader.canRead(asset),
+      localeVerifier: options.localeVerifier,
     };
   }
 
@@ -1879,6 +1950,133 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }, { kind: req.query?.kind }));
   }
 
+  function listProductionVoices(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+    return response.success(res, productionVoicesForVersion(version, currentOwner));
+  }
+
+  function previewProductionVoice(req, res) {
+    const currentOwner = owner(req);
+    const version = findOwnedVersion(req.params.versionId, currentOwner);
+    if (!version) return response.notFound(res, '音色预览不存在');
+    const voice = productionVoiceRowsForVersion(version, currentOwner)
+      .find((item) => Number(item.id) === Number(req.params.voiceAssetId));
+    if (!voice) return response.notFound(res, '音色预览不存在');
+    const root = storageRootFromConfig(cfg);
+    const candidate = safeStoragePath(root, voice.audio_asset?.local_path);
+    let absolutePath;
+    try {
+      const realRoot = fs.realpathSync(root);
+      const realCandidate = candidate ? fs.realpathSync(candidate) : null;
+      const relative = realCandidate ? path.relative(realRoot, realCandidate) : '';
+      if (!realCandidate || !relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        return response.notFound(res, '音色预览不存在');
+      }
+      absolutePath = realCandidate;
+    } catch (_) {
+      return response.notFound(res, '音色预览不存在');
+    }
+    const mime = String(voice.audio_asset.mime_type || 'audio/mpeg');
+    if (!mime.startsWith('audio/')) return response.notFound(res, '音色预览不存在');
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    if (typeof res.sendFile === 'function') {
+      return res.sendFile(absolutePath, (error) => {
+        if (error && !res.headersSent) response.notFound(res, '音色预览不存在');
+      });
+    }
+    const stream = fs.createReadStream(absolutePath);
+    stream.once('error', () => {
+      if (!res.headersSent) response.notFound(res, '音色预览不存在');
+      else if (typeof res.destroy === 'function') res.destroy();
+    });
+    return stream.pipe(res);
+  }
+
+  function assignVoice(req, res) {
+    const currentOwner = owner(req);
+    const character = findOwnedAsset(req.params.id, currentOwner);
+    if (!character || character.kind !== 'character') {
+      return response.error(res, 404, 'REDRAW_CHARACTER_ASSET_NOT_FOUND', '角色资产不存在');
+    }
+    const version = findOwnedVersion(character.version_id, currentOwner);
+    if (!version) return response.notFound(res, '本地化版本不存在');
+
+    let input;
+    try {
+      input = voiceAssignmentInput(req.body);
+    } catch (error) {
+      return response.error(res, 400, error.code, error.message);
+    }
+    const voiceRow = db.prepare(`
+      SELECT *
+      FROM redraw_assets
+      WHERE id = ?
+        AND version_id = ?
+        AND tenant_id = ?
+        AND user_id = ?
+        AND kind = 'voice'
+        AND deleted_at IS NULL
+    `).get(
+      input.voiceAssetId,
+      Number(version.id),
+      currentOwner.tenantId,
+      currentOwner.userId,
+    );
+    if (!voiceRow) {
+      return response.error(res, 404, 'REDRAW_VOICE_ASSET_NOT_FOUND', '音色资产不存在');
+    }
+    const productionVoice = productionVoicesForVersion(version, currentOwner)
+      .find((voice) => Number(voice.id) === input.voiceAssetId);
+    if (!productionVoice) {
+      return response.error(res, 409, 'REDRAW_VOICE_NOT_PRODUCTION', '音色未通过真实生成或产物可读验证');
+    }
+    if (input.expectedUpdatedAt !== undefined
+      && String(character.updated_at || '') !== input.expectedUpdatedAt) {
+      return response.error(res, 409, 'REDRAW_VOICE_BIND_CONFLICT', '角色资产已被更新，请刷新后重试');
+    }
+
+    try {
+      const evidence = redrawVoiceService.evidenceFromPayload(voiceRow.source_ref_json);
+      const assigned = redrawVoiceService.assignVoice(db, character.id, evidence, {
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        versionId: Number(version.id),
+        voiceAssetId: Number(voiceRow.id),
+        canReadAsset: (asset) => Boolean(asset && canReadArtifact(asset.id)),
+      });
+      if (assigned.conflict) {
+        return response.error(res, 409, 'REDRAW_VOICE_BIND_CONFLICT', '角色已绑定其他音色');
+      }
+      const asset = redrawAssetService.listAssets(db, {
+        versionId: version.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+      }, { kind: 'character' }).find((item) => Number(item.id) === Number(character.id));
+      return response.success(res, {
+        conflict: false,
+        asset,
+        voice_snapshot: assigned.snapshot,
+      });
+    } catch (error) {
+      if (String(error.code || '').startsWith('REDRAW_VOICE_')) {
+        return response.error(res, 409, error.code, error.message);
+      }
+      if (error.code === 'REDRAW_CHARACTER_ASSET_NOT_FOUND') {
+        return response.error(res, 404, error.code, error.message);
+      }
+      log?.error?.({ err: error, assetId: character.id }, 'redraw voice assignment failed');
+      return response.internalError(res, error.message || '绑定音色失败');
+    }
+  }
+
   async function assetBatchQuote(req, res) {
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
@@ -1984,6 +2182,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       const result = dialogueOrchestrator.startDialogue(db, log, ctx, input, {
         schedule: options.dialogueSchedule,
         canReadAudioAsset: ctx.canReadAudioAsset,
+        localeVerifier: options.localeVerifier,
         synthesizeSegment: (segment) => provider({
           taskId: segment.task_id,
           versionId: Number(version.id),
@@ -2180,6 +2379,36 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   async function resolveAssetQuote(asset, currentOwner) {
+    if (asset.kind === 'voice') {
+      const batchQuote = await assetBatchService.quoteAssetBatch({
+        db,
+        versionId: Number(asset.version_id),
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        canReadArtifact,
+        assetReader: {
+          canRead: (row) => Boolean(row && canReadArtifact(row.id)),
+        },
+        localeVerifier: options.localeVerifier,
+      }, { assetIds: [Number(asset.id)] });
+      const item = batchQuote.items?.find((entry) => Number(entry.asset_id) === Number(asset.id));
+      return {
+        asset_id: Number(asset.id),
+        capability: item?.capability || 'tts',
+        provider: item?.provider || null,
+        model: item?.model || null,
+        evidence: item?.evidence || null,
+        ai_service_config_id: item?.ai_service_config_id || null,
+        config_updated_at: item?.config_updated_at || null,
+        locale_pack: item?.locale_pack || null,
+        model_manifest_sha256: item?.model_manifest_sha256 || null,
+        calibration_manifest_sha256: item?.calibration_manifest_sha256 || null,
+        credits: item?.priced ? Number(item.credits) : null,
+        priced: batchQuote.priced === true && item?.priced === true,
+        quote_hash: batchQuote.quote_hash,
+        blocking: item?.blocking || batchQuote.blocked?.[0] || null,
+      };
+    }
     const quoteProvider = options.assetQuoteProvider;
     const quote = typeof quoteProvider === 'function'
       ? await quoteProvider({ asset, tenantId: currentOwner.tenantId, userId: currentOwner.userId })
@@ -2200,7 +2429,14 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     const asset = findOwnedAsset(req.params.id, currentOwner);
     if (!asset) return response.notFound(res, '转绘资产不存在');
     try {
-      return response.success(res, await resolveAssetQuote(asset, currentOwner));
+      const quote = await resolveAssetQuote(asset, currentOwner);
+      return response.success(res, {
+        asset_id: quote.asset_id,
+        model: quote.model,
+        credits: quote.credits,
+        priced: quote.priced,
+        ...(quote.quote_hash ? { quote_hash: quote.quote_hash } : {}),
+      });
     } catch (error) {
       if (String(error.code || '').startsWith('MODEL_') || error.code === 'INVALID_MODEL_PRICE') {
         return response.success(res, { asset_id: Number(asset.id), model: null, credits: null, priced: false });
@@ -2239,6 +2475,12 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       'credit_amount',
       'creditAmount',
       'credits',
+      'provider',
+      'capability',
+      'evidence',
+      'snapshot',
+      'ai_service_config_id',
+      'config_updated_at',
       'quote',
       'reservation',
       'reservation_id',
@@ -2257,6 +2499,31 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     if (typeof provider !== 'function') return response.badRequest(res, '资产生成能力尚未配置');
     try {
       const quote = await resolveAssetQuote(asset, currentOwner);
+      const voiceInputChanged = asset.kind === 'voice' && [
+        ['prompt', asset.prompt],
+        ['localized_name', asset.localized_name],
+        ['localizedName', asset.localized_name],
+        ['localized_description', asset.localized_description],
+        ['localizedDescription', asset.localized_description],
+      ].some(([field, persisted]) => Object.prototype.hasOwnProperty.call(req.body || {}, field)
+        && String(req.body[field] ?? '') !== String(persisted ?? ''));
+      if (asset.kind === 'voice'
+        && (String(req.body?.quote_hash || '').trim() !== String(quote.quote_hash || '').trim()
+          || voiceInputChanged)) {
+        return response.error(
+          res,
+          409,
+          'REDRAW_ASSET_QUOTE_CHANGED',
+          '音色生成报价已变化，请重新确认',
+          { quote: {
+            asset_id: quote.asset_id,
+            model: quote.model,
+            credits: quote.credits,
+            priced: quote.priced,
+            quote_hash: quote.quote_hash,
+          } },
+        );
+      }
       if (!quote.priced) {
         return response.error(res, 409, 'pricing_unconfigured', '资产生成积分待管理员配置');
       }
@@ -2274,11 +2541,24 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
       }, {
         kind: asset.kind,
         sourceRef: sourcePayload.source_ref || sourcePayload.source || {},
-        localizedName: req.body?.localized_name ?? asset.localized_name,
-        localizedDescription: req.body?.localized_description ?? asset.localized_description,
-        prompt: req.body?.prompt ?? asset.prompt,
+        localizedName: asset.kind === 'voice' ? asset.localized_name : req.body?.localized_name ?? asset.localized_name,
+        localizedDescription: asset.kind === 'voice' ? asset.localized_description : req.body?.localized_description ?? asset.localized_description,
+        prompt: asset.kind === 'voice' ? asset.prompt : req.body?.prompt ?? asset.prompt,
         model: quote.model,
         creditAmount: quote.credits,
+        snapshot: {
+          capability: quote.capability,
+          provider: quote.provider,
+          model: quote.model,
+          evidence: quote.evidence,
+          ai_service_config_id: quote.ai_service_config_id,
+          config_updated_at: quote.config_updated_at,
+          locale_pack: quote.locale_pack,
+          model_manifest_sha256: quote.model_manifest_sha256,
+          calibration_manifest_sha256: quote.calibration_manifest_sha256,
+          credits: quote.credits,
+          quote_hash: quote.quote_hash,
+        },
       });
       return response.accepted(res, {
         asset: generated,
@@ -2403,6 +2683,9 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     localizationQuote,
     createVersion,
     listVersionAssets,
+    listProductionVoices,
+    previewProductionVoice,
+    assignVoice,
     assetBatchQuote,
     createAssetBatch,
     dialogueQuote,

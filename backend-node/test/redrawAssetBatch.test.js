@@ -8,6 +8,7 @@ const Database = require('better-sqlite3');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
+const aiConfigService = require('../src/services/aiConfigService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
   quoteAssetBatch,
@@ -63,6 +64,7 @@ function setupBatchState(options = {}) {
     terminal_status: 'completed',
     artifact_id: 900,
   });
+  let ttsConfigId = null;
   if (options.capabilities !== false) {
     db.prepare(`INSERT INTO ai_service_configs
       (service_type, provider, name, model, default_model, priority, is_default, is_active, settings, created_at, updated_at)
@@ -78,13 +80,30 @@ function setupBatchState(options = {}) {
             evidence: {
               character_image: evidence('fake-character', models.character_image, 'ev-character'),
               clean_plate_image: evidence('fake-clean', models.clean_plate_image, 'ev-clean'),
-              tts: evidence('fake-tts', models.tts, 'ev-tts'),
             },
           }],
         }),
         now,
         now,
       );
+    ttsConfigId = Number(db.prepare(`INSERT INTO ai_service_configs
+      (service_type, provider, name, model, default_model, priority, is_default, is_active, settings, created_at, updated_at)
+      VALUES ('tts', 'fake-tts', 'verified fake TTS', ?, ?, 9, 0, 1, '{}', ?, ?)`)
+      .run(JSON.stringify([models.tts]), models.tts, now, now).lastInsertRowid);
+    db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+      redraw_locale_capabilities: [{
+        locale: 'en-US',
+        market: 'US',
+        status: 'verified',
+        evidence: {
+          tts: {
+            ...evidence('fake-tts', models.tts, 'ev-tts'),
+            ai_service_config_id: ttsConfigId,
+            config_updated_at: now,
+          },
+        },
+      }],
+    }), ttsConfigId);
   }
   const assetIds = {};
   for (const [kind, name] of [
@@ -100,7 +119,13 @@ function setupBatchState(options = {}) {
       .run(
         versionId,
         kind,
-        JSON.stringify({ source_ref: { id: `${kind}-1`, kind } }),
+        JSON.stringify({
+          source_ref: {
+            id: `${kind}-1`,
+            kind,
+            ...(kind === 'voice' ? { voice_id: 'fixture-voice', is_cloned: false } : {}),
+          },
+        }),
         name,
         `${name} description`,
         `${name} prompt`,
@@ -129,12 +154,52 @@ function setupBatchState(options = {}) {
       },
     },
   };
-  return { db, root, versionId, assetIds, ctx };
+  return { db, root, versionId, assetIds, ctx, ttsConfigId, ttsConfigUpdatedAt: now };
+}
+
+function voiceCompletionEvidence(state, job) {
+  if (job.asset.kind !== 'voice') return {};
+  const providerTaskId = `voice-provider-${job.taskId}`;
+  return {
+    provider_task_id: providerTaskId,
+    duration: 3.2,
+    voice_evidence: {
+      locale: 'en-US',
+      market: 'US',
+      provider: 'fake-tts',
+      model: 'model-tts',
+      ai_service_config_id: state.ttsConfigId,
+      config_updated_at: state.ttsConfigUpdatedAt,
+      voice_id: 'fixture-voice',
+      task_id: providerTaskId,
+      terminal_status: 'completed',
+      audio_asset_id: 104,
+      duration_ms: 3200,
+      real_generation_verified: true,
+      language_verified: true,
+      detected_locale: 'en-US',
+      is_cloned: false,
+      authorization_asset_id: null,
+    },
+  };
 }
 
 function cleanup(state) {
   fs.rmSync(state.root, { recursive: true, force: true });
   state.db.close();
+}
+
+function readyLocaleVerifier(calls = []) {
+  return {
+    assertReady(locale) {
+      calls.push(locale);
+      return {
+        id: `${locale}@fixture`,
+        model_manifest_sha256: 'a'.repeat(64),
+        calibration_manifest_sha256: 'b'.repeat(64),
+      };
+    },
+  };
 }
 
 test('quoteAssetBatch returns a stable four item total for eligible drafts', () => {
@@ -155,6 +220,112 @@ test('quoteAssetBatch returns a stable four item total for eligible drafts', () 
       ['voice', 'tts', 3],
     ],
   );
+  cleanup(state);
+});
+
+test('voice quote requires ready locale verifier and binds worker pack manifests into the hash', () => {
+  const state = setupBatchState();
+  const calls = [];
+  const readyCtx = { ...state.ctx, localeVerifier: readyLocaleVerifier(calls), assetIds: [state.assetIds.voice] };
+  const ready = quoteAssetBatch(state.db, readyCtx);
+  const blocked = quoteAssetBatch(state.db, {
+    ...state.ctx,
+    assetIds: [state.assetIds.voice],
+    localeVerifier: {
+      assertReady(locale) {
+        calls.push(locale);
+        throw Object.assign(new Error('worker not ready'), { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' });
+      },
+    },
+  });
+
+  assert.equal(ready.priced, true);
+  assert.equal(ready.items[0].locale_pack, 'en-US@fixture');
+  assert.equal(ready.items[0].model_manifest_sha256, 'a'.repeat(64));
+  assert.equal(ready.items[0].calibration_manifest_sha256, 'b'.repeat(64));
+  assert.equal(blocked.priced, false);
+  assert.equal(blocked.total_credits, 0);
+  assert.equal(blocked.items[0].credits, undefined);
+  assert.equal(blocked.blocked[0].code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
+  assert.notEqual(blocked.quote_hash, ready.quote_hash);
+  assert.deepEqual(calls, ['en-US', 'en-US']);
+  cleanup(state);
+});
+
+test('startAssetBatch rejects stale voice quote when locale verifier readiness changes before billing', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, {
+    ...state.ctx,
+    assetIds: [state.assetIds.voice],
+    localeVerifier: readyLocaleVerifier(),
+  });
+  let providerCalls = 0;
+
+  assert.throws(
+    () => startAssetBatch({
+      ...state.ctx,
+      localeVerifier: {
+        assertReady() {
+          throw Object.assign(new Error('worker not ready'), { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' });
+        },
+      },
+      provider: async () => { providerCalls += 1; },
+      schedule: (job) => job(),
+    }, {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'voice-locale-not-ready-before-billing',
+      assetIds: [state.assetIds.voice],
+    }),
+    (error) => error.code === 'REDRAW_ASSET_BATCH_UNPRICED'
+      && error.quote?.blocked?.[0]?.code === 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  cleanup(state);
+});
+
+test('startAssetBatch rechecks voice locale verifier before provider and refunds deterministic failure', async () => {
+  const state = setupBatchState();
+  let verifierCalls = 0;
+  let providerCalls = 0;
+  const context = {
+    ...state.ctx,
+    assetIds: [state.assetIds.voice],
+    localeVerifier: {
+      assertReady(locale) {
+        verifierCalls += 1;
+        if (verifierCalls >= 3) {
+          throw Object.assign(new Error('worker not ready before provider'), { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' });
+        }
+        return {
+          id: `${locale}@fixture`,
+          model_manifest_sha256: 'a'.repeat(64),
+          calibration_manifest_sha256: 'b'.repeat(64),
+        };
+      },
+    },
+    provider: async () => {
+      providerCalls += 1;
+      throw new Error('must not dispatch');
+    },
+    schedule: (job) => job(),
+  };
+  const quote = quoteAssetBatch(state.db, context);
+  const started = startAssetBatch(context, {
+    quoteHash: quote.quote_hash,
+    idempotencyKey: 'voice-locale-not-ready-provider',
+    assetIds: [state.assetIds.voice],
+  });
+
+  const completed = await started.completion;
+  const attempt = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(started.batch.asset_ids[0]);
+  assert.equal(completed.status, 'failed');
+  assert.equal(providerCalls, 0);
+  assert.equal(attempt.status, 'failed');
+  assert.equal(attempt.error_code, 'REDRAW_LOCALE_VERIFIER_NOT_READY');
+  assert.equal(credits.getReservation(state.db, attempt.credit_reservation_id).status, 'refunded');
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 0);
   cleanup(state);
 });
 
@@ -267,6 +438,7 @@ test('startAssetBatch dispatches after commit, settles partial failure, and retr
     return {
       status: 'completed',
       asset_id: assetId,
+      ...voiceCompletionEvidence(state, job),
       metadata: job.asset.kind === 'character' ? { views: ['front', 'side', 'back'] } : {},
     };
   };
@@ -336,6 +508,45 @@ test('startAssetBatch keeps unknown provider state held, needs attention, and ou
     spent: 0,
   });
   assert.deepEqual(quoteAssetBatch(state.db, state.ctx).items.map((item) => item.kind), ['character', 'prop', 'voice']);
+  cleanup(state);
+});
+
+test('startAssetBatch keeps post-provider local failure held and blocks replay', async () => {
+  const state = setupBatchState();
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: [state.assetIds.prop] });
+  let providerCalls = 0;
+  const request = {
+    quoteHash: quote.quote_hash,
+    idempotencyKey: 'post-provider-local-failure',
+    assetIds: [state.assetIds.prop],
+  };
+  const context = {
+    ...state.ctx,
+    provider: async () => {
+      providerCalls += 1;
+      throw Object.assign(new Error('asset registration failed after provider completion'), {
+        code: 'ASSET_CREATE_FAILED',
+        provider_completed: true,
+        provider_task_id: 'provider-post-local',
+      });
+    },
+    schedule: (job) => job(),
+  };
+  const started = startAssetBatch(context, request);
+  const completed = await started.completion;
+  const attempt = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+  const parentTask = taskService.getTask(state.db, started.task.id);
+
+  assert.equal(completed.status, 'needs_attention');
+  assert.equal(attempt.status, 'needs_attention');
+  assert.equal(childTask.status, 'needs_attention');
+  assert.equal(childTask.provider_task_id, 'provider-post-local');
+  assert.equal(parentTask.status, 'needs_attention');
+  assert.equal(credits.getReservation(state.db, attempt.credit_reservation_id).status, 'held');
+  const replay = startAssetBatch(context, request);
+  await replay.completion;
+  assert.equal(providerCalls, 1);
   cleanup(state);
 });
 
@@ -409,6 +620,114 @@ test('startAssetBatch keeps provider system errors unknown without refunding hel
   cleanup(state);
 });
 
+test('startAssetBatch refunds a voice child when authorization reading crashes before provider dispatch', async () => {
+  const state = setupBatchState();
+  const now = new Date().toISOString();
+  const dramaId = Number(state.db.prepare(`INSERT INTO dramas
+    (title, tenant_id, user_id, created_at, updated_at)
+    VALUES ('Voice authorization owner', 'tenant-a', 'user-a', ?, ?)`)
+    .run(now, now).lastInsertRowid);
+  fs.writeFileSync(path.join(state.root, 'artifacts', 'voice-authorization.txt'), 'voice authorization');
+  const authorizationAssetId = Number(state.db.prepare(`INSERT INTO assets
+    (drama_id, name, type, category, url, local_path, mime_type, created_at, updated_at)
+    VALUES (?, 'Voice authorization', 'text', 'voice_authorization', '',
+      'artifacts/voice-authorization.txt', 'text/plain', ?, ?)`)
+    .run(dramaId, now, now).lastInsertRowid);
+  state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?').run(JSON.stringify({
+    source_ref: {
+      id: 'voice-1',
+      kind: 'voice',
+      voice_id: 'fixture-voice',
+      is_cloned: true,
+      authorization_asset_id: authorizationAssetId,
+    },
+  }), state.assetIds.voice);
+
+  let authorizationReads = 0;
+  let providerCalls = 0;
+  const context = {
+    ...state.ctx,
+    assetReader: {
+      canRead(asset) {
+        if (asset?.category === 'voice_authorization') {
+          authorizationReads += 1;
+          if (authorizationReads >= 4) throw new TypeError('authorization reader crashed before dispatch');
+        }
+        return state.ctx.assetReader.canRead(asset);
+      },
+    },
+    provider: async () => {
+      providerCalls += 1;
+      return { status: 'failed', error: 'must not dispatch' };
+    },
+    schedule: (job) => job(),
+  };
+  const quote = quoteAssetBatch(state.db, { ...context, assetIds: [state.assetIds.voice] });
+  const started = startAssetBatch(context, {
+    quoteHash: quote.quote_hash,
+    idempotencyKey: 'voice-pre-dispatch-system-refund',
+    assetIds: [state.assetIds.voice],
+  });
+
+  await assert.rejects(started.completion, /authorization reader crashed before dispatch/);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const attempt = state.db.prepare(`SELECT status, error_code, generation_task_id, credit_reservation_id
+    FROM redraw_assets WHERE id = ?`).get(started.batch.asset_ids[0]);
+  const childTask = taskService.getTask(state.db, attempt.generation_task_id);
+  assert.equal(providerCalls, 0);
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(batch.success_count, 0);
+  assert.equal(batch.failed_count, 1);
+  assert.equal(attempt.status, 'failed');
+  assert.equal(attempt.error_code, 'REDRAW_ASSET_BATCH_NOT_DISPATCHED');
+  assert.equal(childTask.status, 'failed');
+  assert.equal(credits.getReservation(state.db, attempt.credit_reservation_id).status, 'refunded');
+  cleanup(state);
+});
+
+test('startAssetBatch refunds a voice child when its exact config reload crashes before provider dispatch', async () => {
+  const state = setupBatchState();
+  const originalGetConfig = aiConfigService.getConfig;
+  let configReads = 0;
+  let providerCalls = 0;
+  try {
+    aiConfigService.getConfig = (...args) => {
+      configReads += 1;
+      if (configReads >= 4) throw new TypeError('TTS config reload crashed before dispatch');
+      return originalGetConfig(...args);
+    };
+    const context = {
+      ...state.ctx,
+      provider: async () => {
+        providerCalls += 1;
+        return { status: 'failed', error: 'must not dispatch' };
+      },
+      schedule: (job) => job(),
+    };
+    const quote = quoteAssetBatch(state.db, { ...context, assetIds: [state.assetIds.voice] });
+    const started = startAssetBatch(context, {
+      quoteHash: quote.quote_hash,
+      idempotencyKey: 'voice-config-pre-dispatch-system-refund',
+      assetIds: [state.assetIds.voice],
+    });
+
+    await assert.rejects(started.completion, /TTS config reload crashed before dispatch/);
+    const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+    const attempt = state.db.prepare(`SELECT status, error_code, generation_task_id, credit_reservation_id
+      FROM redraw_assets WHERE id = ?`).get(started.batch.asset_ids[0]);
+    assert.equal(providerCalls, 0);
+    assert.equal(batch.status, 'needs_attention');
+    assert.equal(batch.failed_count, 1);
+    assert.equal(attempt.status, 'failed');
+    assert.equal(attempt.error_code, 'REDRAW_ASSET_BATCH_NOT_DISPATCHED');
+    assert.equal(taskService.getTask(state.db, attempt.generation_task_id).status, 'failed');
+    assert.equal(credits.getReservation(state.db, attempt.credit_reservation_id).status, 'refunded');
+  } finally {
+    aiConfigService.getConfig = originalGetConfig;
+    cleanup(state);
+  }
+});
+
 test('startAssetBatch drains started workers after fatal and prevents late settlement side effects', async () => {
   const state = setupBatchState();
   const selected = [state.assetIds.character, state.assetIds.prop];
@@ -452,6 +771,40 @@ test('startAssetBatch drains started workers after fatal and prevents late settl
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'confirmed'").get().count, 0);
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'refunded'").get().count, 0);
   assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 2);
+  cleanup(state);
+});
+
+test('startAssetBatch refunds queued children that were never dispatched after a fatal worker error', async () => {
+  const state = setupBatchState();
+  const selected = [state.assetIds.character, state.assetIds.scene, state.assetIds.prop];
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: selected });
+  let providerCalls = 0;
+  const started = startAssetBatch({
+    ...state.ctx,
+    provider: async () => {
+      providerCalls += 1;
+      throw new TypeError('provider fatal before queued siblings');
+    },
+    schedule: (job) => job(),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'fatal-queued-refund', assetIds: selected }, { concurrency: 1 });
+
+  await assert.rejects(started.completion, /provider fatal before queued siblings/);
+  assert.equal(providerCalls, 1);
+  const batch = getAssetBatch(state.db, state.ctx, started.batch.id);
+  const attempts = state.db.prepare(`SELECT id, status, generation_task_id, credit_reservation_id
+    FROM redraw_assets WHERE id IN (${started.batch.asset_ids.map(() => '?').join(',')}) ORDER BY id ASC`)
+    .all(...started.batch.asset_ids);
+  assert.equal(batch.status, 'needs_attention');
+  assert.equal(batch.success_count, 0);
+  assert.equal(batch.failed_count, 2);
+  assert.equal(attempts[0].status, 'needs_attention');
+  assert.equal(taskService.getTask(state.db, attempts[0].generation_task_id).status, 'needs_attention');
+  assert.equal(credits.getReservation(state.db, attempts[0].credit_reservation_id).status, 'held');
+  for (const attempt of attempts.slice(1)) {
+    assert.equal(attempt.status, 'failed');
+    assert.equal(taskService.getTask(state.db, attempt.generation_task_id).status, 'failed');
+    assert.equal(credits.getReservation(state.db, attempt.credit_reservation_id).status, 'refunded');
+  }
   cleanup(state);
 });
 
@@ -583,6 +936,7 @@ test('startAssetBatch reports completed and failed for all-success and all-faile
     provider: async (job) => ({
       status: 'completed',
       asset_id: job.asset.kind === 'voice' ? 104 : job.asset.kind === 'prop' ? 103 : job.asset.kind === 'scene' ? 102 : 101,
+      ...voiceCompletionEvidence(success, job),
       quality: job.asset.kind === 'scene' ? {
         width: 1280,
         height: 720,
@@ -655,6 +1009,7 @@ test('startAssetBatch idempotency replays the existing batch without refreezing 
       return {
         status: 'completed',
         asset_id: job.asset.kind === 'voice' ? 104 : job.asset.kind === 'prop' ? 103 : job.asset.kind === 'scene' ? 102 : 101,
+        ...voiceCompletionEvidence(state, job),
         quality: job.asset.kind === 'scene' ? {
           width: 1280,
           height: 720,
@@ -727,10 +1082,15 @@ test('reconcileOrphanedBatches refunds unsubmitted pending children and flags po
     schedule: () => new Promise(() => {}),
     provider: async () => ({ status: 'completed', asset_id: 102 }),
   }, { quoteHash: quote.quote_hash, idempotencyKey: 'orphan-pending' });
+  pending.db.prepare("UPDATE redraw_asset_batches SET status = 'processing' WHERE id = ?").run(started.batch.id);
   const count = reconcileOrphanedBatches(pending.db, { warn() {}, info() {} });
   assert.equal(count, 1);
   assert.equal(getAssetBatch(pending.db, pending.ctx, started.batch.id).status, 'failed');
   assert.equal(credits.getTenantAccount(pending.db, 'tenant-a').held, 0);
+  const pendingAttempt = pending.db.prepare('SELECT status, generation_task_id FROM redraw_assets WHERE id = ?')
+    .get(started.batch.asset_ids[0]);
+  assert.equal(pendingAttempt.status, 'failed');
+  assert.equal(taskService.getTask(pending.db, pendingAttempt.generation_task_id).status, 'failed');
   cleanup(pending);
 
   const dispatched = setupBatchState({ failedOnly: true });
@@ -749,4 +1109,73 @@ test('reconcileOrphanedBatches refunds unsubmitted pending children and flags po
   assert.equal(getAssetBatch(dispatched.db, dispatched.ctx, dispatchedStarted.batch.id).status, 'needs_attention');
   assert.equal(credits.getTenantAccount(dispatched.db, 'tenant-a').held, 5);
   cleanup(dispatched);
+});
+
+test('reconcileOrphanedBatches refunds provably pending children while holding a dispatched sibling', () => {
+  const state = setupBatchState();
+  const selected = [state.assetIds.character, state.assetIds.scene];
+  const quote = quoteAssetBatch(state.db, { ...state.ctx, assetIds: selected });
+  const started = startAssetBatch({
+    ...state.ctx,
+    schedule: () => new Promise(() => {}),
+    provider: async () => ({ status: 'completed', asset_id: 102 }),
+  }, { quoteHash: quote.quote_hash, idempotencyKey: 'orphan-mixed', assetIds: selected });
+  state.db.prepare("UPDATE redraw_asset_batches SET status = 'processing' WHERE id = ?").run(started.batch.id);
+  const [dispatchedAttemptId, pendingAttemptId] = started.batch.asset_ids;
+  const dispatchedAttempt = state.db.prepare('SELECT generation_task_id FROM redraw_assets WHERE id = ?')
+    .get(dispatchedAttemptId);
+  state.db.prepare("UPDATE redraw_assets SET status = 'processing' WHERE id = ?").run(dispatchedAttemptId);
+  taskService.updateTaskStatus(state.db, dispatchedAttempt.generation_task_id, 'processing', 10, 'worker entered');
+
+  assert.equal(reconcileOrphanedBatches(state.db, { warn() {}, info() {} }), 1);
+  const reconciled = getAssetBatch(state.db, state.ctx, started.batch.id);
+  assert.equal(reconciled.status, 'needs_attention');
+  assert.equal(reconciled.success_count, 0);
+  assert.equal(reconciled.failed_count, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(dispatchedAttemptId).status, 'needs_attention');
+  assert.equal(taskService.getTask(state.db, dispatchedAttempt.generation_task_id).status, 'needs_attention');
+  const pendingAttempt = state.db.prepare('SELECT status, generation_task_id FROM redraw_assets WHERE id = ?')
+    .get(pendingAttemptId);
+  assert.equal(pendingAttempt.status, 'failed');
+  assert.equal(taskService.getTask(state.db, pendingAttempt.generation_task_id).status, 'failed');
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, quote.items[0].credits);
+  cleanup(state);
+});
+
+test('reconcileOrphanedBatches keeps processing or unknown-no-id children held without replay', async (t) => {
+  for (const stage of ['worker processing', 'unknown without id']) {
+    await t.test(stage, async () => {
+      const state = setupBatchState({ failedOnly: true });
+      const quote = quoteAssetBatch(state.db, state.ctx);
+      let providerCalls = 0;
+      const request = { quoteHash: quote.quote_hash, idempotencyKey: `orphan-${stage}` };
+      const context = {
+        ...state.ctx,
+        schedule: () => new Promise(() => {}),
+        provider: async () => { providerCalls += 1; },
+      };
+      const started = startAssetBatch(context, request);
+      const attempt = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(started.batch.asset_ids[0]);
+      state.db.prepare("UPDATE redraw_asset_batches SET status = 'processing' WHERE id = ?").run(started.batch.id);
+      if (stage === 'worker processing') {
+        state.db.prepare("UPDATE redraw_assets SET status = 'processing' WHERE id = ?").run(attempt.id);
+        taskService.updateTaskStatus(state.db, attempt.generation_task_id, 'processing', 10, 'worker entered');
+      } else {
+        state.db.prepare("UPDATE redraw_assets SET status = 'needs_attention', error_code = 'REDRAW_ASSET_PROVIDER_UNKNOWN' WHERE id = ?")
+          .run(attempt.id);
+        taskService.updateTaskStatus(state.db, attempt.generation_task_id, 'needs_attention', 90, 'unknown without provider id');
+      }
+
+      assert.equal(taskService.getTask(state.db, attempt.generation_task_id).provider_task_id, null);
+      assert.equal(reconcileOrphanedBatches(state.db, { warn() {}, info() {} }), 1);
+      assert.equal(getAssetBatch(state.db, state.ctx, started.batch.id).status, 'needs_attention');
+      assert.equal(state.db.prepare('SELECT status FROM redraw_assets WHERE id = ?').get(attempt.id).status, 'needs_attention');
+      assert.equal(taskService.getTask(state.db, attempt.generation_task_id).status, 'needs_attention');
+      assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 5);
+      const replay = startAssetBatch(context, request);
+      await replay.completion;
+      assert.equal(providerCalls, 0);
+      cleanup(state);
+    });
+  }
 });

@@ -6,8 +6,17 @@ const redrawVoiceService = require('./redrawVoiceService');
 
 const RESOURCE_TYPE = 'redraw_dialogue';
 
-function codedError(code, message) {
-  return Object.assign(new Error(message), { code });
+function codedError(code, message, extra = {}) {
+  return Object.assign(new Error(message), { code, ...extra });
+}
+
+function postProviderError(error, providerTaskId) {
+  const value = error instanceof Error ? error : new Error(String(error || '配音供应商完成后的本地状态未知'));
+  if (!value.code) value.code = 'REDRAW_DIALOGUE_POST_PROVIDER_UNKNOWN';
+  value.unknown = true;
+  value.provider_completed = true;
+  if (!value.provider_task_id && providerTaskId) value.provider_task_id = String(providerTaskId);
+  return value;
 }
 
 function parseJson(value, fallback) {
@@ -39,6 +48,8 @@ function canonicalVoiceSnapshot(snapshot = {}) {
     market: String(snapshot.market || ''),
     provider: String(snapshot.provider || ''),
     model: String(snapshot.model || ''),
+    ai_service_config_id: Number(snapshot.ai_service_config_id),
+    config_updated_at: String(snapshot.config_updated_at || ''),
     voice_id: String(snapshot.voice_id || ''),
     task_id: String(snapshot.task_id || ''),
     terminal_status: String(snapshot.terminal_status || ''),
@@ -50,6 +61,21 @@ function canonicalVoiceSnapshot(snapshot = {}) {
     is_cloned: snapshot.is_cloned === true,
     authorization_asset_id: snapshot.authorization_asset_id == null ? null : Number(snapshot.authorization_asset_id),
   };
+}
+
+function assertLocaleVerifierReady(ctx, locale) {
+  const verifier = ctx?.localeVerifier || ctx?.locale_verifier;
+  if (!verifier || typeof verifier.assertReady !== 'function') return null;
+  try {
+    const pack = verifier.assertReady(locale);
+    return pack && typeof pack === 'object' ? {
+      locale_pack: String(pack.id || pack.locale_pack || ''),
+      model_manifest_sha256: String(pack.model_manifest_sha256 || ''),
+      calibration_manifest_sha256: String(pack.calibration_manifest_sha256 || ''),
+    } : null;
+  } catch (error) {
+    throw codedError(error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY', error.message || '语言验证 Worker 未就绪');
+  }
 }
 
 function getVersion(db, input) {
@@ -126,7 +152,14 @@ function buildDialoguePlan(db, input = {}) {
     });
   }
 
-  const tts = redrawVoiceService.validateTtsBatch(db, version.id, turns);
+  const tts = redrawVoiceService.validateTtsBatch(db, version.id, turns, {
+    tenantId: version.tenant_id,
+    userId: version.user_id,
+    canReadAsset: input.canReadAudioAsset || input.canReadAsset,
+    canReadArtifact: input.canReadArtifact,
+    assetReader: input.assetReader,
+    localeVerifier: input.localeVerifier,
+  });
   issues.push(...tts.issues.map((issue) => {
     const ref = turnRefs[issue.turn_index] || {};
     return {
@@ -181,6 +214,9 @@ function buildDialoguePlan(db, input = {}) {
       provider: request.provider,
       model: request.model,
       voice_id: request.voice_id,
+      locale_pack: request.locale_pack || null,
+      model_manifest_sha256: request.model_manifest_sha256 || null,
+      calibration_manifest_sha256: request.calibration_manifest_sha256 || null,
       voice_snapshot: canonicalVoiceSnapshot(request.voice_snapshot),
     };
   });
@@ -214,8 +250,20 @@ function quoteDialoguePlan(db, input = {}) {
   const modelsByName = new Map();
   for (const segment of plan.segments) {
     const credits = modelPrice.requirePrice(db, segment.voice_snapshot.model);
-    const key = String(segment.voice_snapshot.model);
-    const current = modelsByName.get(key) || { model: key, credits, segments: 0 };
+    const key = [
+      segment.voice_snapshot.ai_service_config_id,
+      segment.voice_snapshot.config_updated_at,
+      segment.voice_snapshot.provider,
+      segment.voice_snapshot.model,
+    ].join(':');
+    const current = modelsByName.get(key) || {
+      model: segment.voice_snapshot.model,
+      provider: segment.voice_snapshot.provider,
+      ai_service_config_id: segment.voice_snapshot.ai_service_config_id,
+      config_updated_at: segment.voice_snapshot.config_updated_at,
+      credits,
+      segments: 0,
+    };
     current.segments += 1;
     modelsByName.set(key, current);
   }
@@ -234,6 +282,9 @@ function quoteDialoguePlan(db, input = {}) {
       model: segment.voice_snapshot.model,
       credits: modelPrice.requirePrice(db, segment.voice_snapshot.model),
       voice_id: segment.voice_snapshot.voice_id,
+      locale_pack: segment.locale_pack || null,
+      model_manifest_sha256: segment.model_manifest_sha256 || null,
+      calibration_manifest_sha256: segment.calibration_manifest_sha256 || null,
       voice_snapshot: segment.voice_snapshot,
       text_hash: sha256(segment.text),
       start_ms: segment.start_ms,
@@ -251,12 +302,14 @@ function quoteDialoguePlan(db, input = {}) {
 }
 
 function getAsset(db, assetId) {
-  return db.prepare('SELECT * FROM assets WHERE id = ? AND type = ? AND deleted_at IS NULL')
+  return db.prepare("SELECT * FROM assets WHERE id = ? AND type = ? AND mime_type LIKE 'audio/%' AND deleted_at IS NULL")
     .get(Number(assetId), 'audio') || null;
 }
 
 function canReadAsset(ctx, asset) {
-  return Boolean(asset && Number(asset.duration) > 0
+  return Boolean(asset && String(asset.type || '') === 'audio'
+    && String(asset.mime_type || '').toLowerCase().startsWith('audio/')
+    && Number(asset.duration) > 0
     && typeof ctx.canReadAudioAsset === 'function'
     && ctx.canReadAudioAsset(asset) === true);
 }
@@ -283,9 +336,47 @@ function validateDialogueAudioAsset(ctx, segment, asset, output, idempotencyKey,
   if (String(metadata.segment_id) !== expected.segment_id) return false;
   if (String(metadata.idempotency_key) !== expected.idempotency_key) return false;
   if (String(metadata.reservation_id) !== expected.reservation_id) return false;
-  if (output?.provider_task_id != null
-    && String(metadata.provider_task_id || '') !== String(output.provider_task_id)) return false;
+  const providerTaskId = String(output?.provider_task_id || '').trim();
+  if (!providerTaskId || String(metadata.provider_task_id || '').trim() !== providerTaskId) return false;
+  const snapshot = canonicalVoiceSnapshot(segment.voice_snapshot);
+  if (String(metadata.provider || '') !== snapshot.provider) return false;
+  if (String(metadata.model || '') !== snapshot.model) return false;
+  if (Number(metadata.ai_service_config_id) !== snapshot.ai_service_config_id) return false;
+  if (String(metadata.config_updated_at || '') !== snapshot.config_updated_at) return false;
+  if (stableJson(canonicalVoiceSnapshot(metadata.voice_snapshot)) !== stableJson(snapshot)) return false;
   return true;
+}
+
+function validateCurrentDialogueSegment(ctx, segment) {
+  assertLocaleVerifierReady(ctx, segment.voice_snapshot.locale);
+  const validation = redrawVoiceService.validateTtsBatch(ctx.db, segment.version_id, [{
+    speaker_id: segment.speaker_id,
+    localized_text: segment.text,
+    start_ms: segment.start_ms,
+    end_ms: segment.end_ms,
+    estimated_duration_ms: segment.expected_duration_ms,
+  }], {
+    tenantId: segment.tenant_id,
+    userId: segment.user_id,
+    canReadAsset: ctx.canReadAudioAsset || ctx.canReadAsset,
+    canReadArtifact: ctx.canReadArtifact,
+    assetReader: ctx.assetReader,
+    localeVerifier: ctx.localeVerifier,
+  });
+  const current = validation.requests[0];
+  const sameSnapshot = current
+    && stableJson(canonicalVoiceSnapshot(current.voice_snapshot))
+      === stableJson(canonicalVoiceSnapshot(segment.voice_snapshot));
+  if (!validation.ok || !current
+    || Number(current.character_asset_id) !== Number(segment.character_asset_id)
+    || String(current.locale_pack || '') !== String(segment.locale_pack || '')
+    || String(current.model_manifest_sha256 || '') !== String(segment.model_manifest_sha256 || '')
+    || String(current.calibration_manifest_sha256 || '') !== String(segment.calibration_manifest_sha256 || '')
+    || !sameSnapshot) {
+    throw codedError('REDRAW_DIALOGUE_VOICE_INVALID', '配音音色、授权、样音或 TTS 配置已变化', {
+      reason: validation.issues[0]?.reason || 'voice_snapshot_changed',
+    });
+  }
 }
 
 function readShotDraft(shot) {
@@ -334,13 +425,17 @@ function writeShotAudit(db, shotId, draft, segments) {
 }
 
 function safeAudit(segment, patch) {
+  const voiceSnapshot = canonicalVoiceSnapshot(segment.voice_snapshot);
   return {
     segment_id: segment.segment_id,
     shot_id: segment.shot_id,
     turn_index: segment.turn_index,
     speaker_id: segment.speaker_id,
-    provider: segment.provider,
-    model: segment.model,
+    provider: voiceSnapshot.provider,
+    model: voiceSnapshot.model,
+    ai_service_config_id: voiceSnapshot.ai_service_config_id,
+    config_updated_at: voiceSnapshot.config_updated_at,
+    voice_snapshot: voiceSnapshot,
     voice_id: segment.voice_id,
     start_ms: segment.start_ms,
     end_ms: segment.end_ms,
@@ -388,8 +483,28 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
   for (const segment of plan.segments) {
     const holder = shotAudits.get(segment.shot_row_id);
     const existing = holder.segments.get(segment.segment_id);
-    if (existing?.idempotency_key === idempotencyKey
-      && existing?.quote_hash === quoteHash) {
+    const sameSubmission = existing?.idempotency_key === idempotencyKey
+      && existing?.quote_hash === quoteHash;
+    if (existing && !sameSubmission) {
+      const existingReservationStatus = reservationStatus(db, existing.reservation_id);
+      if (existing.status === 'completed' && existingReservationStatus === 'confirmed') {
+        const asset = getAsset(db, existing.audio_asset_id);
+        if (validateDialogueAudioAsset(
+          ctx,
+          segment,
+          asset,
+          existing,
+          existing.idempotency_key,
+          existing.reservation_id,
+        )) {
+          continue;
+        }
+      }
+      if (existing.status !== 'failed' && existingReservationStatus !== 'refunded') {
+        throw codedError('REDRAW_DIALOGUE_NEEDS_ATTENTION', '该配音片段已有未决生成结果，需要人工处理');
+      }
+    }
+    if (sameSubmission) {
       if (existing.status === 'needs_attention' || existing.status === 'processing') {
         if (existing.status === 'processing') {
           holder.segments.set(segment.segment_id, safeAudit(segment, {
@@ -416,32 +531,37 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
         const asset = getAsset(db, existing.audio_asset_id);
         if (!validateDialogueAudioAsset(ctx, segment, asset, existing, idempotencyKey, existing.reservation_id)) {
           const currentStatus = reservationStatus(db, existing.reservation_id);
-          const refunded = currentStatus === 'held'
-            ? creditLedger.refund(db, existing.reservation_id, 'audio_invalid')
-            : creditLedger.getReservation(db, existing.reservation_id);
           holder.segments.set(segment.segment_id, safeAudit(segment, {
             ...existing,
-            status: 'failed',
-            reservation_status: refunded?.status || currentStatus,
+            status: 'needs_attention',
+            reservation_status: currentStatus,
             error_code: 'REDRAW_DIALOGUE_AUDIO_INVALID',
           }));
           writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
-          throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
+          throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读', {
+            unknown: true,
+            provider_completed: true,
+            provider_task_id: existing.provider_task_id || null,
+          });
         }
-        const currentStatus = reservationStatus(db, existing.reservation_id);
-        const confirmed = currentStatus === 'confirmed'
-          ? creditLedger.getReservation(db, existing.reservation_id)
-          : creditLedger.confirm(db, existing.reservation_id);
-        if (confirmed.status !== 'confirmed') {
-          throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+        try {
+          const currentStatus = reservationStatus(db, existing.reservation_id);
+          const confirmed = currentStatus === 'confirmed'
+            ? creditLedger.getReservation(db, existing.reservation_id)
+            : creditLedger.confirm(db, existing.reservation_id);
+          if (confirmed.status !== 'confirmed') {
+            throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+          }
+          holder.segments.set(segment.segment_id, safeAudit(segment, {
+            ...existing,
+            status: 'completed',
+            reservation_status: confirmed.status,
+            audio_duration: Number(asset.duration),
+          }));
+          writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+        } catch (error) {
+          throw postProviderError(error, existing.provider_task_id);
         }
-        holder.segments.set(segment.segment_id, safeAudit(segment, {
-          ...existing,
-          status: 'completed',
-          reservation_status: confirmed.status,
-          audio_duration: Number(asset.duration),
-        }));
-        writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
         continue;
       }
     }
@@ -489,19 +609,37 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
     let asset;
     let assetId;
     try {
+      validateCurrentDialogueSegment(ctx, segment);
+      assertLocaleVerifierReady(ctx, segment.voice_snapshot.locale);
       output = await ctx.synthesizeSegment({
         ...segment,
         quote_hash: quoteHash,
         idempotency_key: idempotencyKey,
         reservation_id: reservation.id,
       });
+      const providerTaskId = String(output?.provider_task_id || '').trim();
+      if (!providerTaskId) {
+        throw codedError('PROVIDER_STATUS_UNKNOWN', '配音供应商完成响应缺少任务 ID', {
+          unknown: true,
+          provider_completed: true,
+          provider_task_id: null,
+        });
+      }
       assetId = Number(output?.asset_id ?? output?.audio_asset_id);
       asset = getAsset(db, assetId);
       if (!validateDialogueAudioAsset(ctx, segment, asset, output, idempotencyKey, reservation.id)) {
-        throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读');
+        throw codedError('REDRAW_DIALOGUE_AUDIO_INVALID', '配音音频不可读', {
+          provider_completed: true,
+          provider_task_id: providerTaskId,
+        });
       }
     } catch (error) {
-      if (error?.unknown === true || error?.code === 'PROVIDER_STATUS_UNKNOWN') {
+      const providerTaskId = String(error?.provider_task_id || output?.provider_task_id || '').trim() || null;
+      const postProvider = error?.provider_completed === true || Boolean(output && providerTaskId);
+      if (error?.unknown === true || error?.code === 'PROVIDER_STATUS_UNKNOWN' || postProvider) {
+        error.unknown = true;
+        if (postProvider) error.provider_completed = true;
+        if (!error.provider_task_id && providerTaskId) error.provider_task_id = providerTaskId;
         holder.segments.set(segment.segment_id, safeAudit(segment, {
           status: 'needs_attention',
           idempotency_key: idempotencyKey,
@@ -510,7 +648,7 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
           reservation_status: reservation.status,
           operation_key: opKey,
           provider_task_id: error.provider_task_id || null,
-          error_code: 'PROVIDER_STATUS_UNKNOWN',
+          error_code: error.code || 'PROVIDER_STATUS_UNKNOWN',
         }));
         writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
         throw error;
@@ -528,40 +666,44 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
       writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
       throw error;
     }
-    holder.segments.set(segment.segment_id, safeAudit(segment, {
-      status: 'provider_completed',
-      idempotency_key: idempotencyKey,
-      quote_hash: quoteHash,
-      reservation_id: reservation.id,
-      reservation_status: reservation.status,
-      operation_key: opKey,
-      provider_task_id: output?.provider_task_id || null,
-      audio_asset_id: assetId,
-      audio_duration: Number(asset.duration),
-    }));
-    writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
-    if (typeof ctx.afterProviderCompletedAuditWrite === 'function') {
-      await ctx.afterProviderCompletedAuditWrite({ segment, reservation, output, asset });
+    try {
+      holder.segments.set(segment.segment_id, safeAudit(segment, {
+        status: 'provider_completed',
+        idempotency_key: idempotencyKey,
+        quote_hash: quoteHash,
+        reservation_id: reservation.id,
+        reservation_status: reservation.status,
+        operation_key: opKey,
+        provider_task_id: output?.provider_task_id || null,
+        audio_asset_id: assetId,
+        audio_duration: Number(asset.duration),
+      }));
+      writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+      if (typeof ctx.afterProviderCompletedAuditWrite === 'function') {
+        await ctx.afterProviderCompletedAuditWrite({ segment, reservation, output, asset });
+      }
+      const confirmed = creditLedger.confirm(db, reservation.id);
+      if (confirmed.status !== 'confirmed') {
+        throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
+      }
+      if (typeof ctx.afterConfirmBeforeCompletedAuditWrite === 'function') {
+        await ctx.afterConfirmBeforeCompletedAuditWrite({ segment, reservation: confirmed, output, asset });
+      }
+      holder.segments.set(segment.segment_id, safeAudit(segment, {
+        status: 'completed',
+        idempotency_key: idempotencyKey,
+        quote_hash: quoteHash,
+        reservation_id: reservation.id,
+        reservation_status: confirmed.status,
+        operation_key: opKey,
+        provider_task_id: output?.provider_task_id || null,
+        audio_asset_id: assetId,
+        audio_duration: Number(asset.duration),
+      }));
+      writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
+    } catch (error) {
+      throw postProviderError(error, output?.provider_task_id);
     }
-    const confirmed = creditLedger.confirm(db, reservation.id);
-    if (confirmed.status !== 'confirmed') {
-      throw codedError('REDRAW_DIALOGUE_CONFIRM_FAILED', '配音扣费确认失败');
-    }
-    if (typeof ctx.afterConfirmBeforeCompletedAuditWrite === 'function') {
-      await ctx.afterConfirmBeforeCompletedAuditWrite({ segment, reservation: confirmed, output, asset });
-    }
-    holder.segments.set(segment.segment_id, safeAudit(segment, {
-      status: 'completed',
-      idempotency_key: idempotencyKey,
-      quote_hash: quoteHash,
-      reservation_id: reservation.id,
-      reservation_status: confirmed.status,
-      operation_key: opKey,
-      provider_task_id: output?.provider_task_id || null,
-      audio_asset_id: assetId,
-      audio_duration: Number(asset.duration),
-    }));
-    writeShotAudit(db, segment.shot_row_id, holder.draft, holder.segments);
   }
 
   return { status: 'completed', segment_count: plan.segments.length, quote_hash: quoteHash };

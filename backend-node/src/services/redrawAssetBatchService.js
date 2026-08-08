@@ -2,11 +2,14 @@ const crypto = require('node:crypto');
 
 const taskService = require('./taskService');
 const modelPrice = require('./modelPriceService');
+const aiConfigService = require('./aiConfigService');
 const redrawCapability = require('./redrawCapabilityService');
 const {
   createAssetAttempt,
   finalizeAssetAttempt,
   failAssetAttempt,
+  validateVoiceAuthorizationInput,
+  validateVoiceTtsConfigPin,
   validateCleanPlateQuality,
 } = require('./redrawAssetService');
 
@@ -68,6 +71,50 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function exactTtsConfigPin(db, resolved) {
+  const evidence = resolved?.evidence || {};
+  const configId = Number(evidence.ai_service_config_id ?? evidence.aiServiceConfigId);
+  const evidenceUpdatedAt = String(evidence.config_updated_at ?? evidence.configUpdatedAt ?? '').trim();
+  if (!Number.isSafeInteger(configId) || configId <= 0 || !evidenceUpdatedAt
+    || Number(resolved?.carrier_config_id) !== configId
+    || String(resolved?.carrier_service_type || '') !== 'tts'
+    || String(resolved?.carrier_provider || '') !== String(evidence.provider || '')
+    || String(resolved?.carrier_updated_at || '') !== evidenceUpdatedAt) return null;
+  const config = aiConfigService.getConfig(db, configId);
+  if (!config || config.service_type !== 'tts' || !config.is_active || !String(config.updated_at || '').trim()) return null;
+  if (String(config.provider || '') !== String(resolved.provider || '')
+    || String(config.provider || '') !== String(evidence.provider || '')
+    || String(config.updated_at || '') !== evidenceUpdatedAt
+    || String(evidence.model || '') !== String(resolved.model || '')) return null;
+  const models = Array.isArray(config.model) ? config.model.map(String) : [];
+  if (String(config.default_model || '') !== String(resolved.model || '')
+    && !models.includes(String(resolved.model || ''))) return null;
+  return {
+    ai_service_config_id: Number(config.id),
+    config_updated_at: String(config.updated_at || ''),
+    provider: String(config.provider),
+    model: String(resolved.model),
+  };
+}
+
+function localeVerifierPack(ctx, locale) {
+  const verifier = ctx?.localeVerifier;
+  if (!verifier || typeof verifier.assertReady !== 'function') return null;
+  try {
+    const pack = verifier.assertReady(locale);
+    return pack && typeof pack === 'object' ? {
+      locale_pack: String(pack.id || pack.locale_pack || ''),
+      model_manifest_sha256: String(pack.model_manifest_sha256 || ''),
+      calibration_manifest_sha256: String(pack.calibration_manifest_sha256 || ''),
+    } : null;
+  } catch (error) {
+    throw codedError(
+      error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+      error.message || '语言验证 Worker 未就绪',
+    );
+  }
+}
+
 function dimensionsFromSnapshot(snapshot = {}) {
   const sourceWidth = positiveNumber(snapshot.source_width);
   const sourceHeight = positiveNumber(snapshot.source_height);
@@ -123,9 +170,12 @@ function providerTaskIdOf(result) {
 function isUnknownProviderResult(result) {
   const status = String(result?.status || '').toLowerCase();
   const code = String(result?.code || result?.error_code || '').toUpperCase();
-  return result?.unknown === true
+  return result?.unknown === true || result?.provider_completed === true
     || ['pending', 'processing', 'indeterminate', 'needs_attention', 'unknown'].includes(status)
-    || ['UNKNOWN', 'PROVIDER_UNKNOWN', 'TASK_UNKNOWN', 'STATUS_UNKNOWN', 'INDETERMINATE'].includes(code);
+    || ['UNKNOWN', 'PROVIDER_UNKNOWN', 'PROVIDER_STATUS_UNKNOWN', 'TASK_UNKNOWN', 'STATUS_UNKNOWN', 'INDETERMINATE',
+      'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNABORTED', 'EAI_AGAIN',
+      'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(code)
+    || /timed?\s*out|timeout|network|socket hang up|connection reset/i.test(String(result?.message || result?.error || ''));
 }
 
 function isCompletedProviderResult(result) {
@@ -137,6 +187,13 @@ function isSystemError(error) {
     || error instanceof TypeError
     || String(error?.code || '').startsWith('SQLITE_')
     || /database|constraint|readonly|transaction|connection/i.test(String(error?.message || ''));
+}
+
+function withDispatchContext(error, attemptId, providerSubmissionStarted) {
+  const value = error instanceof Error ? error : new Error(String(error || '批量资产生成失败'));
+  value.redraw_attempt_id = Number(attemptId);
+  value.provider_submission_started = providerSubmissionStarted === true;
+  return value;
 }
 
 function markAssetNeedsAttention(ctx, attemptId, message, code = 'REDRAW_ASSET_PROVIDER_UNKNOWN') {
@@ -190,6 +247,8 @@ function rowToItem(row, version, ctx) {
   const capabilityName = capabilityForKind(row.kind);
   const sourcePayload = parseJson(row.source_ref_json, {});
   const prompt = String(row.prompt || '');
+  const localizedName = String(row.localized_name || '');
+  const localizedDescription = String(row.localized_description || '');
   const cleanPlateDimensions = row.kind === 'scene' && capabilityName === 'clean_plate_image'
     ? trustedSourceDimensions(ctx.db, row, version)
     : null;
@@ -199,12 +258,37 @@ function rowToItem(row, version, ctx) {
     version_number: Number(row.version_number || 1),
     kind: row.kind,
     prompt_hash: hash(prompt),
+    provider_input_hash: hash({
+      prompt,
+      localized_name: localizedName,
+      localized_description: localizedDescription,
+    }),
     capability: capabilityName,
     ...(cleanPlateDimensions ? {
       expected_width: cleanPlateDimensions.width,
       expected_height: cleanPlateDimensions.height,
     } : {}),
   };
+  if (row.kind === 'voice') {
+    try {
+      validateVoiceAuthorizationInput({
+        ...ctx,
+        versionId: Number(version.id),
+        tenantId: String(version.tenant_id),
+        userId: String(version.user_id),
+      }, { kind: row.kind, sourceRef: sourcePayload.source_ref || {} });
+    } catch (error) {
+      return {
+        ...base,
+        source_ref: sourcePayload.source_ref || {},
+        priced: false,
+        blocking: {
+          code: error.code || 'REDRAW_VOICE_AUTHORIZATION_REQUIRED',
+          message: error.message || '克隆音色缺少授权资产',
+        },
+      };
+    }
+  }
   if (row.kind === 'scene' && capabilityName === 'clean_plate_image' && !cleanPlateDimensions) {
     return {
       ...base,
@@ -227,17 +311,54 @@ function rowToItem(row, version, ctx) {
       blocking: { code: 'REDRAW_CAPABILITY_UNVERIFIED', message: `${capabilityName} 能力未验证` },
     };
   }
+  const ttsPin = capabilityName === 'tts' ? exactTtsConfigPin(ctx.db, resolved) : null;
+  if (capabilityName === 'tts' && !ttsPin) {
+    return {
+      ...base,
+      source_ref: sourcePayload.source_ref || {},
+      provider: resolved.provider,
+      model: resolved.model,
+      evidence: resolved.evidence,
+      priced: false,
+      blocking: {
+        code: 'REDRAW_TTS_CONFIG_PIN_INVALID',
+        message: 'TTS 能力证据未绑定同 provider/model 的已启用配置',
+      },
+    };
+  }
+  let verifierPack = null;
+  if (capabilityName === 'tts') {
+    try {
+      verifierPack = localeVerifierPack(ctx, version.locale);
+    } catch (error) {
+      return {
+        ...base,
+        source_ref: sourcePayload.source_ref || {},
+        provider: resolved.provider,
+        model: resolved.model,
+        evidence: resolved.evidence,
+        ...(ttsPin || {}),
+        priced: false,
+        blocking: {
+          code: error.code || 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+          message: error.message || '语言验证 Worker 未就绪',
+        },
+      };
+    }
+  }
   try {
     const credits = modelPrice.requirePrice(ctx.db, resolved.model);
     return {
       ...base,
       source_ref: sourcePayload.source_ref || {},
-      localized_name: row.localized_name || '',
-      localized_description: row.localized_description || '',
+      localized_name: localizedName,
+      localized_description: localizedDescription,
       prompt,
       provider: resolved.provider,
       model: resolved.model,
       evidence: resolved.evidence,
+      ...(ttsPin || {}),
+      ...(verifierPack || {}),
       credits,
       priced: true,
     };
@@ -248,6 +369,7 @@ function rowToItem(row, version, ctx) {
       provider: resolved.provider,
       model: resolved.model,
       evidence: resolved.evidence,
+      ...(ttsPin || {}),
       priced: false,
       blocking: { code: error.code || 'MODEL_PRICE_NOT_CONFIGURED', message: error.message },
     };
@@ -300,10 +422,16 @@ function quoteAssetBatch(db, input = {}) {
     version_number: item.version_number,
     kind: item.kind,
     prompt_hash: item.prompt_hash,
+    provider_input_hash: item.provider_input_hash,
     capability: item.capability,
     provider: item.provider || null,
     model: item.model || null,
     evidence: item.evidence || null,
+    ai_service_config_id: item.ai_service_config_id || null,
+    config_updated_at: item.config_updated_at || null,
+    locale_pack: item.locale_pack || null,
+    model_manifest_sha256: item.model_manifest_sha256 || null,
+    calibration_manifest_sha256: item.calibration_manifest_sha256 || null,
     credits: item.credits || 0,
     source_ref: item.source_ref,
     expected_width: item.expected_width,
@@ -362,6 +490,24 @@ function batchStatus(success, failed, total) {
 function batchStatusFromCounts(success, failed, unknown, total) {
   if (unknown > 0) return 'needs_attention';
   return batchStatus(success, failed, total);
+}
+
+function attemptCounts(db, attemptIds) {
+  const ids = attemptIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (!ids.length) return { success: 0, failed: 0, unknown: 0 };
+  const counts = db.prepare(`
+    SELECT
+      SUM(CASE WHEN status IN ('generated', 'needs_attention') AND error_code IS NULL THEN 1 ELSE 0 END) AS success,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+      SUM(CASE WHEN status = 'needs_attention' AND error_code IS NOT NULL THEN 1 ELSE 0 END) AS unknown
+    FROM redraw_assets
+    WHERE id IN (${ids.map(() => '?').join(',')})
+  `).get(...ids);
+  return {
+    success: Number(counts.success || 0),
+    failed: Number(counts.failed || 0),
+    unknown: Number(counts.unknown || 0),
+  };
 }
 
 function createOwnedTask(db, log, type, resourceId, ctx) {
@@ -478,10 +624,16 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         version_number: item.version_number,
         kind: item.kind,
         prompt_hash: item.prompt_hash,
+        provider_input_hash: item.provider_input_hash,
         capability: item.capability,
         provider: item.provider,
         model: item.model,
         evidence: item.evidence,
+        ai_service_config_id: item.ai_service_config_id || null,
+        config_updated_at: item.config_updated_at || null,
+        locale_pack: item.locale_pack || null,
+        model_manifest_sha256: item.model_manifest_sha256 || null,
+        calibration_manifest_sha256: item.calibration_manifest_sha256 || null,
         credits: item.credits,
         quote_hash: quote.quote_hash,
         expected_width: item.expected_width,
@@ -502,6 +654,8 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         generationTaskId: childTask.id,
         operationKey: `redraw_asset_batch:${base.tenantId}:${base.userId}:${base.versionId}:${item.asset_id}:${item.version_number}:${item.prompt_hash}:${idempotencyKey}`,
       });
+      base.db.prepare("UPDATE redraw_assets SET status = 'pending', updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), attempt.id);
       childTasks.push({ item, childTask, attemptId: attempt.id });
     }
     base.db.prepare('UPDATE redraw_asset_batches SET asset_ids_json = ?, updated_at = ? WHERE id = ?')
@@ -547,20 +701,38 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         if (pool.hasFatal()) return;
         const asset = base.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(Number(attemptId));
         let result;
+        let providerSubmissionStarted = false;
         try {
+          base.db.prepare("UPDATE redraw_assets SET status = 'processing', updated_at = ? WHERE id = ? AND status = 'pending'")
+            .run(new Date().toISOString(), attemptId);
           taskService.updateTaskStatus(base.db, childTask.id, 'processing', 10, '正在生成转绘资产');
           if (typeof ctx.provider !== 'function') throw codedError('REDRAW_ASSET_PROVIDER_REQUIRED', '缺少资产生成 provider');
+          const sourcePayload = parseJson(asset.source_ref_json, {});
+          const persistedInput = {
+            kind: asset.kind,
+            sourceRef: sourcePayload.source_ref || {},
+            snapshot: sourcePayload.snapshot || {},
+          };
+          validateVoiceTtsConfigPin(ctx, persistedInput);
+          validateVoiceAuthorizationInput({ ...ctx, versionId: base.versionId }, persistedInput);
+          if (item.kind === 'voice') localeVerifierPack(ctx, created.quote.locale);
+          providerSubmissionStarted = true;
           result = await ctx.provider({
             taskId: childTask.id,
             batchId: created.batch.id,
             asset,
             model: item.model,
+            provider: item.provider,
+            ai_service_config_id: item.ai_service_config_id,
+            config_updated_at: item.config_updated_at,
             capability: item.capability,
             locale: created.quote.locale,
             market: created.quote.market,
           });
         } catch (error) {
-          if (isSystemError(error)) throw error;
+          if (isSystemError(error) && error?.provider_completed !== true) {
+            throw withDispatchContext(error, attemptId, providerSubmissionStarted);
+          }
           if (pool.hasFatal()) return;
           if (isUnknownProviderResult(error)) {
             const providerTaskId = providerTaskIdOf(error);
@@ -575,7 +747,13 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
         }
         if (pool.hasFatal()) return;
         const providerTaskId = providerTaskIdOf(result);
-        if (providerTaskId) updateProviderTask(base.db, childTask.id, providerTaskId);
+        if (providerTaskId) {
+          try {
+            updateProviderTask(base.db, childTask.id, providerTaskId);
+          } catch (error) {
+            throw withDispatchContext(error, attemptId, providerSubmissionStarted);
+          }
+        }
         if (pool.hasFatal()) return;
         if (isUnknownProviderResult(result)) {
           markAssetNeedsAttention(ctx, attemptId, result?.error || '供应商任务状态未知');
@@ -600,9 +778,19 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
             ...(result || {}),
             clean_plate: item.kind === 'scene' && item.capability === 'clean_plate_image',
           });
-          taskService.updateTaskResult(base.db, childTask.id, { asset_id: finalized.id, status: finalized.status });
+          if (finalized.status === 'needs_attention') {
+            taskService.updateTaskStatus(
+              base.db,
+              childTask.id,
+              'needs_attention',
+              90,
+              finalized.error_message || '语音生成证据不完整，请人工确认',
+            );
+          } else {
+            taskService.updateTaskResult(base.db, childTask.id, { asset_id: finalized.id, status: finalized.status });
+          }
         } catch (error) {
-          if (isSystemError(error)) throw error;
+          if (isSystemError(error)) throw withDispatchContext(error, attemptId, providerSubmissionStarted);
           failAssetAttempt(ctx, attemptId, error);
           taskService.updateTaskError(base.db, childTask.id, String(error.message || error));
         }
@@ -611,36 +799,47 @@ function startAssetBatch(ctx = {}, input = {}, options = {}) {
       try {
         const timestamp = new Date().toISOString();
         for (const entry of created.childTasks) {
-          base.db.prepare(`
-            UPDATE redraw_assets
-            SET status = 'needs_attention', approval_status = 'pending',
-                error_code = 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
-                error_message = ?, updated_at = ?
-            WHERE id = ? AND status IN ('pending', 'processing')
-          `).run(String(error.message || error), timestamp, Number(entry.attemptId));
-          taskService.updateTaskStatus(base.db, entry.childTask.id, 'needs_attention', 90, '批量资产生成状态未知，请人工确认');
+          const asset = base.db.prepare('SELECT * FROM redraw_assets WHERE id = ? AND deleted_at IS NULL')
+            .get(Number(entry.attemptId));
+          const childTask = taskService.getTask(base.db, entry.childTask.id);
+          const fatalBeforeDispatch = Number(error?.redraw_attempt_id) === Number(entry.attemptId)
+            && error?.provider_submission_started === false;
+          const provablyUnsubmitted = fatalBeforeDispatch || (asset?.status === 'pending'
+            && childTask?.status === 'pending'
+            && !String(childTask.provider_task_id || '').trim());
+          if (provablyUnsubmitted) {
+            failAssetAttempt(ctx, entry.attemptId, codedError(
+              'REDRAW_ASSET_BATCH_NOT_DISPATCHED',
+              '批量任务中止前该资产尚未派发',
+            ));
+            taskService.updateTaskError(base.db, entry.childTask.id, '批量任务中止前该资产尚未派发');
+            continue;
+          }
+          if (asset && ['pending', 'processing'].includes(String(asset.status))) {
+            markAssetNeedsAttention(
+              ctx,
+              entry.attemptId,
+              String(error.message || error),
+              'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
+            );
+          }
+          if (childTask && ['pending', 'processing'].includes(String(childTask.status))) {
+            taskService.updateTaskStatus(base.db, entry.childTask.id, 'needs_attention', 90, '批量资产生成状态未知，请人工确认');
+          }
         }
+        const counts = attemptCounts(base.db, created.childTasks.map((entry) => entry.attemptId));
         base.db.prepare(`
           UPDATE redraw_asset_batches
           SET status = 'needs_attention', error_code = 'REDRAW_ASSET_BATCH_SYSTEM_UNKNOWN',
-              error_message = ?, updated_at = ?
+              error_message = ?, success_count = ?, failed_count = ?, updated_at = ?
           WHERE id = ?
-        `).run(String(error.message || error), timestamp, created.batch.id);
+        `).run(String(error.message || error), counts.success, counts.failed, timestamp, created.batch.id);
         taskService.updateTaskStatus(base.db, created.task.id, 'needs_attention', 90, '批量资产生成状态未知，请人工确认');
       } catch (_) {}
       throw error;
     }
-    const counts = base.db.prepare(`
-      SELECT
-        SUM(CASE WHEN status IN ('generated', 'needs_attention') AND error_code IS NULL THEN 1 ELSE 0 END) AS success,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-        SUM(CASE WHEN status = 'needs_attention' AND error_code IS NOT NULL THEN 1 ELSE 0 END) AS unknown
-      FROM redraw_assets
-      WHERE id IN (${created.childTasks.map(() => '?').join(',')})
-    `).get(...created.childTasks.map((entry) => Number(entry.attemptId)));
-    const success = Number(counts.success || 0);
-    const failed = Number(counts.failed || 0);
-    const unknown = Number(counts.unknown || 0);
+    const counts = attemptCounts(base.db, created.childTasks.map((entry) => entry.attemptId));
+    const { success, failed, unknown } = counts;
     const status = batchStatusFromCounts(success, failed, unknown, created.childTasks.length);
     const completedAt = ['completed', 'partial_failed', 'failed'].includes(status) ? new Date().toISOString() : null;
     base.db.prepare(`
@@ -681,38 +880,67 @@ function reconcileOrphanedBatches(db, log = { warn() {}, info() {} }) {
   `).all();
   let changed = 0;
   for (const batch of rows) {
+    trackedBatchCompletions.delete(Number(batch.id));
     const quote = parseJson(batch.quote_snapshot_json, {});
     const ids = parseJson(batch.asset_ids_json, []);
     const taskIds = ids.length ? ids : (quote.items?.map((item) => item.asset_id) || []);
     const assets = taskIds.length ? db.prepare(`
       SELECT * FROM redraw_assets WHERE id IN (${taskIds.map(() => '?').join(',')}) AND deleted_at IS NULL
     `).all(...taskIds) : [];
-    const maybeDispatched = assets.some((asset) => {
+    const childStates = assets.map((asset) => {
       const generationTaskId = String(asset.generation_task_id || '').trim();
-      if (!generationTaskId) return false;
-      const childTask = db.prepare(`
-        SELECT provider_task_id FROM async_tasks
+      const childTask = generationTaskId ? db.prepare(`
+        SELECT * FROM async_tasks
         WHERE id = ? AND type = 'redraw_asset' AND deleted_at IS NULL
-      `).get(generationTaskId);
-      if (childTask) return String(childTask.provider_task_id || '').trim() !== '';
-      return true;
+      `).get(generationTaskId) : null;
+      const maybeDispatched = !generationTaskId || !childTask
+        || ['processing', 'needs_attention', 'generated'].includes(String(asset.status))
+        || String(childTask.provider_task_id || '').trim() !== ''
+        || ['processing', 'needs_attention', 'completed'].includes(String(childTask.status));
+      return { asset, generationTaskId, childTask, maybeDispatched };
     });
+    const maybeDispatched = childStates.some((entry) => entry.maybeDispatched);
     const timestamp = new Date().toISOString();
-    if (maybeDispatched) {
-      db.prepare(`
-        UPDATE redraw_asset_batches
-        SET status = 'needs_attention', error_code = 'REDRAW_ASSET_BATCH_NEEDS_ATTENTION',
-            error_message = ?, updated_at = ?
-        WHERE id = ?
-      `).run('服务重启后批量资产可能已派发，请人工确认供应商状态', timestamp, batch.id);
-      taskService.updateTaskStatus(db, batch.task_id, 'needs_attention', 90, '服务重启后批量资产可能已派发');
-    } else {
-      for (const asset of assets) {
+    for (const entry of childStates) {
+      const { asset, generationTaskId, childTask } = entry;
+      if (entry.maybeDispatched) {
+        if (['pending', 'processing'].includes(String(asset.status))) {
+          markAssetNeedsAttention(
+            { db, tenantId: batch.tenant_id, userId: batch.user_id, versionId: batch.version_id },
+            asset.id,
+            '服务重启后资产可能已派发，请人工确认供应商状态',
+            'REDRAW_ASSET_BATCH_NEEDS_ATTENTION',
+          );
+        }
+        if (childTask && ['pending', 'processing'].includes(String(childTask.status))) {
+          taskService.updateTaskStatus(db, generationTaskId, 'needs_attention', 90, '服务重启后资产可能已派发');
+        }
+      } else {
         failAssetAttempt({ db, tenantId: batch.tenant_id, userId: batch.user_id, versionId: batch.version_id }, asset.id, {
           code: 'REDRAW_ASSET_BATCH_ORPHANED',
           message: taskService.ORPHAN_ASYNC_TASK_MSG,
         });
+        if (childTask && ['pending', 'processing'].includes(String(childTask.status))) {
+          taskService.updateTaskError(db, generationTaskId, taskService.ORPHAN_ASYNC_TASK_MSG);
+        }
       }
+    }
+    const counts = attemptCounts(db, assets.map((asset) => asset.id));
+    if (maybeDispatched) {
+      db.prepare(`
+        UPDATE redraw_asset_batches
+        SET status = 'needs_attention', error_code = 'REDRAW_ASSET_BATCH_NEEDS_ATTENTION',
+            error_message = ?, success_count = ?, failed_count = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        '服务重启后批量资产可能已派发，请人工确认供应商状态',
+        counts.success,
+        counts.failed,
+        timestamp,
+        batch.id,
+      );
+      taskService.updateTaskStatus(db, batch.task_id, 'needs_attention', 90, '服务重启后批量资产可能已派发');
+    } else {
       db.prepare(`
         UPDATE redraw_asset_batches
         SET status = 'failed', failed_count = total_count,

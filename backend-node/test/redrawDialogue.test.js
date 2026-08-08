@@ -11,6 +11,9 @@ const {
   synthesizeDialogueForVersion,
 } = require('../src/services/redrawDialogueService');
 
+const TTS_CONFIG_ID = 41;
+const TTS_CONFIG_UPDATED_AT = '2026-08-08T00:00:00.000Z';
+
 function setup(options = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
@@ -19,6 +22,10 @@ function setup(options = {}) {
   prices.set(db, 'speech-2.8-turbo', 4, { category: 'audio', billingUnit: 'request' });
   prices.set(db, 'client-fake-model', 99, { category: 'audio', billingUnit: 'request' });
   const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
+    VALUES (?, 'tts', 'minimax', 'dialogue TTS', ?, 'speech-2.8-turbo', 1, ?, ?)`)
+    .run(TTS_CONFIG_ID, JSON.stringify(['speech-2.8-turbo']), TTS_CONFIG_UPDATED_AT, TTS_CONFIG_UPDATED_AT);
   db.prepare(`INSERT INTO redraw_projects
     (tenant_id, user_id, title, created_at, updated_at)
     VALUES ('tenant-a', 'user-a', '配音项目', ?, ?)`).run(now, now);
@@ -78,16 +85,22 @@ function addAudioAsset(db, id, segment, options = {}) {
       idempotency_key: segment.idempotency_key,
       reservation_id: segment.reservation_id,
       provider_task_id: providerTaskId,
+      provider: segment.voice_snapshot.provider,
+      model: segment.voice_snapshot.model,
+      ai_service_config_id: segment.voice_snapshot.ai_service_config_id,
+      config_updated_at: segment.voice_snapshot.config_updated_at,
+      voice_snapshot: segment.voice_snapshot,
       ...(options.metadata || {}),
     },
   };
   db.prepare(`INSERT INTO assets
     (id, name, type, category, local_path, mime_type, duration, metadata, created_at, updated_at)
-    VALUES (?, '生成配音', 'audio', ?, ?, 'audio/mpeg', ?, ?, ?, ?)`)
+    VALUES (?, '生成配音', 'audio', ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
       options.category || 'redraw_dialogue',
       `dialogue-${id}.mp3`,
+      options.mimeType || 'audio/mpeg',
       options.duration ?? 1.1,
       JSON.stringify(metadata),
       now,
@@ -102,6 +115,8 @@ function voiceSnapshot(audioAssetId, voiceId) {
     market: 'US',
     provider: 'minimax',
     model: 'speech-2.8-turbo',
+    ai_service_config_id: TTS_CONFIG_ID,
+    config_updated_at: TTS_CONFIG_UPDATED_AT,
     voice_id: voiceId,
     task_id: `verified-${voiceId}`,
     terminal_status: 'completed',
@@ -109,6 +124,9 @@ function voiceSnapshot(audioAssetId, voiceId) {
     duration_ms: 1200,
     real_generation_verified: true,
     language_verified: true,
+    detected_locale: 'en-US',
+    is_cloned: false,
+    authorization_asset_id: null,
   };
 }
 
@@ -166,6 +184,19 @@ function ctx(state, overrides = {}) {
   };
 }
 
+function readyLocaleVerifier(calls = []) {
+  return {
+    assertReady(locale) {
+      calls.push(locale);
+      return {
+        id: `${locale}@fixture`,
+        model_manifest_sha256: 'a'.repeat(64),
+        calibration_manifest_sha256: 'b'.repeat(64),
+      };
+    },
+  };
+}
+
 test('buildDialoguePlan fixes speaker voices from server snapshots and orders constrained segments', () => {
   const state = setup();
   const plan = buildDialoguePlan(state.db, ctx(state));
@@ -178,6 +209,61 @@ test('buildDialoguePlan fixes speaker voices from server snapshots and orders co
   assert.equal(plan.segments[1].voice_snapshot.voice_id, 'voice-c1');
   assert.equal(plan.segments[2].voice_snapshot.voice_id, 'voice-c2');
   assert.equal(plan.segments[0].start_ms >= 0 && plan.segments[0].end_ms <= 3000, true);
+  state.db.close();
+});
+
+test('dialogue quote requires ready locale verifier and binds worker pack manifests into quote hash', () => {
+  const state = setup();
+  const calls = [];
+  const ready = quoteDialoguePlan(state.db, ctx(state, { localeVerifier: readyLocaleVerifier(calls) }));
+  const blocked = quoteDialoguePlan(state.db, ctx(state, {
+    localeVerifier: {
+      assertReady(locale) {
+        calls.push(locale);
+        throw Object.assign(new Error('worker not ready'), { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' });
+      },
+    },
+  }));
+
+  assert.equal(ready.status, 'ready');
+  assert.equal(blocked.status, 'needs_rewrite');
+  assert.equal(blocked.total_credits, 0);
+  assert.notEqual(blocked.quote_hash, ready.quote_hash);
+  assert.deepEqual(calls, ['en-US', 'en-US']);
+  state.db.close();
+});
+
+test('dialogue start rechecks locale verifier before provider and refunds the held segment on deterministic failure', async () => {
+  const state = setup();
+  let verifierCalls = 0;
+  const localeVerifier = {
+    assertReady(locale) {
+      verifierCalls += 1;
+      if (verifierCalls >= 4) {
+        throw Object.assign(new Error('worker not ready before provider'), { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' });
+      }
+      return {
+        id: `${locale}@fixture`,
+        model_manifest_sha256: 'a'.repeat(64),
+        calibration_manifest_sha256: 'b'.repeat(64),
+      };
+    },
+  };
+  const quote = quoteDialoguePlan(state.db, ctx(state, { localeVerifier }));
+  let providerCalls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      localeVerifier,
+      synthesizeSegment: async () => {
+        providerCalls += 1;
+        throw new Error('must not dispatch');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-locale-not-ready' }),
+    (error) => error.code === 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 0);
   state.db.close();
 });
 
@@ -212,8 +298,169 @@ test('quoteDialoguePlan prices only server-side voice snapshot models', () => {
   assert.equal(quote.total_credits, 12);
   assert.equal(quote.segment_count, 3);
   assert.match(quote.quote_hash, /^[a-f0-9]{64}$/);
-  assert.deepEqual(quote.models, [{ model: 'speech-2.8-turbo', credits: 4, segments: 3 }]);
+  assert.deepEqual(quote.models, [{
+    model: 'speech-2.8-turbo',
+    provider: 'minimax',
+    ai_service_config_id: TTS_CONFIG_ID,
+    config_updated_at: TTS_CONFIG_UPDATED_AT,
+    credits: 4,
+    segments: 3,
+  }]);
   state.db.close();
+});
+
+test('dialogue quote and start recheck bound voice audio and clone authorization before billing', async (t) => {
+  await t.test('audio soft-delete', async () => {
+    const state = setup();
+    state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+    const ready = quoteDialoguePlan(state.db, ctx(state));
+    state.db.prepare('UPDATE assets SET deleted_at = ? WHERE id = 501').run(new Date().toISOString());
+    const revoked = quoteDialoguePlan(state.db, ctx(state));
+    assert.equal(revoked.status, 'needs_rewrite');
+    assert.equal(buildDialoguePlan(state.db, ctx(state)).issues[0].reason, 'voice_audio_missing');
+    let providerCalls = 0;
+    await assert.rejects(
+      synthesizeDialogueForVersion(ctx(state, {
+        synthesizeSegment: async () => { providerCalls += 1; },
+      }), { quoteHash: ready.quote_hash, idempotencyKey: 'audio-revoked' }),
+      (error) => error.code === 'REDRAW_DIALOGUE_PLAN_NOT_READY',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+    state.db.close();
+  });
+
+  await t.test('clone authorization soft-delete', async () => {
+    const state = setup();
+    state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+    const now = new Date().toISOString();
+    const dramaId = Number(state.db.prepare(`INSERT INTO dramas
+      (title, tenant_id, user_id, created_at, updated_at)
+      VALUES ('Voice consent', 'tenant-a', 'user-a', ?, ?)`)
+      .run(now, now).lastInsertRowid);
+    const authorizationAssetId = Number(state.db.prepare(`INSERT INTO assets
+      (drama_id, name, type, category, local_path, mime_type, created_at, updated_at)
+      VALUES (?, 'Voice consent', 'text', 'voice_authorization', 'consent.txt', 'text/plain', ?, ?)`)
+      .run(dramaId, now, now).lastInsertRowid);
+    updateCharacterVoiceSnapshot(state.db, 701, (snapshot) => ({
+      ...snapshot,
+      is_cloned: true,
+      authorization_asset_id: authorizationAssetId,
+    }));
+    const readable = (asset) => asset?.category === 'voice_authorization' || Number(asset?.duration) > 0;
+    const ready = quoteDialoguePlan(state.db, ctx(state, { canReadAudioAsset: readable }));
+    assert.equal(ready.status, 'ready');
+    state.db.prepare('UPDATE assets SET deleted_at = ? WHERE id = ?').run(now, authorizationAssetId);
+    const revokedPlan = buildDialoguePlan(state.db, ctx(state, { canReadAudioAsset: readable }));
+    assert.equal(revokedPlan.status, 'needs_rewrite');
+    assert.equal(revokedPlan.issues[0].reason, 'voice_authorization_missing');
+    let providerCalls = 0;
+    await assert.rejects(
+      synthesizeDialogueForVersion(ctx(state, {
+        canReadAudioAsset: readable,
+        synthesizeSegment: async () => { providerCalls += 1; },
+      }), { quoteHash: ready.quote_hash, idempotencyKey: 'authorization-revoked' }),
+      (error) => error.code === 'REDRAW_DIALOGUE_PLAN_NOT_READY',
+    );
+    assert.equal(providerCalls, 0);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+    state.db.close();
+  });
+});
+
+test('dialogue exact TTS config version is pinned and drift blocks quote/start before billing', async (t) => {
+  for (const mode of ['rewritten', 'disabled']) {
+    await t.test(mode, async () => {
+      const state = setup();
+      state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+      const now = new Date().toISOString();
+      state.db.prepare(`INSERT INTO ai_service_configs
+        (service_type, provider, name, model, default_model, priority, is_default, is_active, created_at, updated_at)
+        VALUES ('tts', 'provider-a', 'higher priority same model', ?, 'speech-2.8-turbo', 100, 1, 1, ?, ?)`)
+        .run(JSON.stringify(['speech-2.8-turbo']), now, now);
+      const ready = quoteDialoguePlan(state.db, ctx(state));
+      assert.equal(ready.status, 'ready');
+      assert.equal(ready.models[0].provider, 'minimax');
+      assert.equal(ready.models[0].ai_service_config_id, TTS_CONFIG_ID);
+      if (mode === 'rewritten') {
+        state.db.prepare('UPDATE ai_service_configs SET updated_at = ? WHERE id = ?')
+          .run('2026-08-08T00:00:01.000Z', TTS_CONFIG_ID);
+      } else {
+        state.db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = ?').run(TTS_CONFIG_ID);
+      }
+      const driftedPlan = buildDialoguePlan(state.db, ctx(state));
+      assert.equal(driftedPlan.status, 'needs_rewrite');
+      assert.equal(driftedPlan.issues[0].reason, 'voice_tts_config_invalid');
+      let providerCalls = 0;
+      await assert.rejects(
+        synthesizeDialogueForVersion(ctx(state, {
+          synthesizeSegment: async () => { providerCalls += 1; },
+        }), { quoteHash: ready.quote_hash, idempotencyKey: `config-${mode}` }),
+        (error) => error.code === 'REDRAW_DIALOGUE_PLAN_NOT_READY',
+      );
+      assert.equal(providerCalls, 0);
+      assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+      state.db.close();
+    });
+  }
+});
+
+test('dialogue revalidates voice authorization and exact config immediately before provider dispatch', async (t) => {
+  for (const mode of ['authorization revoked', 'config rewritten']) {
+    await t.test(mode, async () => {
+      const state = setup();
+      state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+      const now = new Date().toISOString();
+      let authorizationAssetId = null;
+      let canReadAudioAsset = (asset) => Number(asset?.duration) > 0;
+      if (mode === 'authorization revoked') {
+        const dramaId = Number(state.db.prepare(`INSERT INTO dramas
+          (title, tenant_id, user_id, created_at, updated_at)
+          VALUES ('Voice consent', 'tenant-a', 'user-a', ?, ?)`)
+          .run(now, now).lastInsertRowid);
+        authorizationAssetId = Number(state.db.prepare(`INSERT INTO assets
+          (drama_id, name, type, category, local_path, mime_type, created_at, updated_at)
+          VALUES (?, 'Voice consent', 'text', 'voice_authorization', 'consent.txt', 'text/plain', ?, ?)`)
+          .run(dramaId, now, now).lastInsertRowid);
+        updateCharacterVoiceSnapshot(state.db, 701, (snapshot) => ({
+          ...snapshot,
+          is_cloned: true,
+          authorization_asset_id: authorizationAssetId,
+        }));
+        canReadAudioAsset = (asset) => asset?.category === 'voice_authorization' || Number(asset?.duration) > 0;
+      }
+      const quote = quoteDialoguePlan(state.db, ctx(state, { canReadAudioAsset }));
+      assert.equal(quote.status, 'ready');
+      let providerCalls = 0;
+
+      await assert.rejects(
+        synthesizeDialogueForVersion(ctx(state, {
+          canReadAudioAsset,
+          afterProcessingAuditWrite: () => {
+            if (mode === 'authorization revoked') {
+              state.db.prepare('UPDATE assets SET deleted_at = ? WHERE id = ?').run(now, authorizationAssetId);
+            } else {
+              state.db.prepare('UPDATE ai_service_configs SET updated_at = ? WHERE id = ?')
+                .run('2026-08-08T00:00:01.000Z', TTS_CONFIG_ID);
+            }
+          },
+          synthesizeSegment: async () => {
+            providerCalls += 1;
+            return {};
+          },
+        }), { quoteHash: quote.quote_hash, idempotencyKey: `pre-dispatch-${mode}` }),
+        (error) => error.code === 'REDRAW_DIALOGUE_VOICE_INVALID',
+      );
+
+      assert.equal(providerCalls, 0);
+      const reservation = state.db.prepare('SELECT status FROM tenant_usage_reservations').get();
+      assert.equal(reservation.status, 'refunded');
+      const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
+      assert.equal(draft.dialogue_generation.segments[0].status, 'failed');
+      assert.equal(draft.dialogue_generation.segments[0].reservation_status, 'refunded');
+      state.db.close();
+    });
+  }
 });
 
 test('synthesizeDialogueForVersion reserves, calls provider with snapshot voice, validates asset, confirms, and writes audit draft', async () => {
@@ -239,7 +486,13 @@ test('synthesizeDialogueForVersion reserves, calls provider with snapshot voice,
   assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations ORDER BY created_at LIMIT 1').get().status, 'confirmed');
   const shotOne = state.db.prepare('SELECT audio_asset_id, draft_json FROM redraw_shots WHERE id = 801').get();
   assert.equal(shotOne.audio_asset_id, 901);
-  assert.equal(JSON.parse(shotOne.draft_json).dialogue_generation.segments[0].reservation_status, 'confirmed');
+  const audit = JSON.parse(shotOne.draft_json).dialogue_generation.segments[0];
+  assert.equal(audit.reservation_status, 'confirmed');
+  assert.equal(audit.provider, 'minimax');
+  assert.equal(audit.model, 'speech-2.8-turbo');
+  assert.equal(audit.ai_service_config_id, TTS_CONFIG_ID);
+  assert.equal(audit.config_updated_at, TTS_CONFIG_UPDATED_AT);
+  assert.deepEqual(audit.voice_snapshot, voiceSnapshot(501, 'voice-c1'));
   const shotTwo = state.db.prepare('SELECT audio_asset_id, draft_json FROM redraw_shots WHERE id = 802').get();
   assert.equal(shotTwo.audio_asset_id, null);
   assert.equal(JSON.parse(shotTwo.draft_json).dialogue_generation.segments.length, 2);
@@ -317,7 +570,7 @@ test('refunded same idempotency fails closed without provider replay or new rese
   state.db.close();
 });
 
-test('missing audio readability validator fails closed and refunds generated segment', async () => {
+test('missing audio readability validator fails before reservation and provider dispatch', async () => {
   const state = setup();
   const quote = quoteDialoguePlan(state.db, ctx(state));
   let calls = 0;
@@ -332,14 +585,11 @@ test('missing audio readability validator fails closed and refunds generated seg
         return { asset_id: nextAssetId++, provider_task_id: providerTaskId };
       },
     }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-no-reader' }),
-    (error) => error.code === 'REDRAW_DIALOGUE_AUDIO_INVALID',
+    (error) => error.code === 'REDRAW_DIALOGUE_PLAN_NOT_READY',
   );
 
-  assert.equal(calls, 1);
-  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
-  const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json);
-  assert.equal(draft.dialogue_generation.segments[0].status, 'failed');
-  assert.equal(draft.dialogue_generation.segments[0].reservation_status, 'refunded');
+  assert.equal(calls, 0);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   state.db.close();
 });
 
@@ -525,7 +775,7 @@ test('confirmed reservation recovers completed audit without provider replay', a
   state.db.close();
 });
 
-test('generated audio must be redraw dialogue asset bound to current segment and reservation', async () => {
+test('post-provider dialogue asset binding failures stay held and block provider replay', async () => {
   const cases = [
     {
       name: 'wrong category',
@@ -538,6 +788,14 @@ test('generated audio must be redraw dialogue asset bound to current segment and
     {
       name: 'wrong provider task',
       options: { providerTaskId: 'metadata-task', outputProviderTaskId: 'output-task' },
+    },
+    {
+      name: 'wrong config pin',
+      options: { metadata: { ai_service_config_id: TTS_CONFIG_ID + 1 } },
+    },
+    {
+      name: 'non-audio MIME',
+      options: { mimeType: 'image/png' },
     },
   ];
 
@@ -564,13 +822,87 @@ test('generated audio must be redraw dialogue asset bound to current segment and
     );
 
     assert.equal(calls, 1);
-    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 1);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('held').count, 1);
+    assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('refunded').count, 0);
     const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
       .dialogue_generation.segments[0];
-    assert.equal(audit.status, 'failed');
-    assert.equal(audit.reservation_status, 'refunded');
+    assert.equal(audit.status, 'needs_attention');
+    assert.equal(audit.reservation_status, 'held');
+    const dispatchedCalls = calls;
+    await assert.rejects(
+      () => synthesizeDialogueForVersion(ctx(state, {
+        synthesizeSegment: async () => { calls += 1; },
+      }), { quoteHash: quote.quote_hash, idempotencyKey: `idem-asset-${item.name}` }),
+      (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+    );
+    assert.equal(calls, dispatchedCalls);
     state.db.close();
   }
+});
+
+test('adapter-reported post-provider dialogue failure stays held and blocks replay', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+  const idempotencyKey = 'idem-post-provider-register';
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw Object.assign(new Error('asset registration failed after synthesis'), {
+          code: 'ASSET_CREATE_FAILED',
+          provider_completed: true,
+          provider_task_id: 'dialogue-provider-registered',
+        });
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey }),
+    (error) => error.code === 'ASSET_CREATE_FAILED' && error.unknown === true,
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 1);
+  const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+    .dialogue_generation.segments[0];
+  assert.equal(audit.status, 'needs_attention');
+  assert.equal(audit.provider_task_id, 'dialogue-provider-registered');
+  assert.equal(audit.error_code, 'ASSET_CREATE_FAILED');
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => { calls += 1; },
+    }), { quoteHash: quote.quote_hash, idempotencyKey }),
+    (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+  );
+  assert.equal(calls, 1);
+  state.db.close();
+});
+
+test('completed-looking dialogue audio without provider task id stays held and needs_attention', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async (segment) => {
+        calls += 1;
+        addAudioAsset(state.db, 910, segment, { duration: 1.2, providerTaskId: 'metadata-only-task' });
+        return { status: 'completed', asset_id: 910, provider_task_id: null };
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-missing-provider-task' }),
+    (error) => error.code === 'PROVIDER_STATUS_UNKNOWN' && error.unknown === true,
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('held').count, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = ?').get('confirmed').count, 0);
+  const audit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+    .dialogue_generation.segments[0];
+  assert.equal(audit.status, 'needs_attention');
+  assert.equal(audit.reservation_status, 'held');
+  assert.equal(audit.error_code, 'PROVIDER_STATUS_UNKNOWN');
+  state.db.close();
 });
 
 test('unknown provider result stays held, needs_attention, and same idempotency does not resubmit completed segments', async () => {
@@ -612,6 +944,41 @@ test('unknown provider result stays held, needs_attention, and same idempotency 
   state.db.close();
 });
 
+test('unknown dialogue segment blocks provider replay under a different idempotency key', async () => {
+  const state = setup();
+  state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+  const quote = quoteDialoguePlan(state.db, ctx(state));
+  let calls = 0;
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw Object.assign(new Error('provider status unknown'), {
+          code: 'PROVIDER_STATUS_UNKNOWN',
+          unknown: true,
+          provider_task_id: 'provider-cross-key-unknown',
+        });
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-unknown-first' }),
+    (error) => error.code === 'PROVIDER_STATUS_UNKNOWN',
+  );
+
+  await assert.rejects(
+    () => synthesizeDialogueForVersion(ctx(state, {
+      synthesizeSegment: async () => {
+        calls += 1;
+        throw new Error('must not replay');
+      },
+    }), { quoteHash: quote.quote_hash, idempotencyKey: 'idem-unknown-second' }),
+    (error) => error.code === 'REDRAW_DIALOGUE_NEEDS_ATTENTION',
+  );
+  assert.equal(calls, 1);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE status = 'held'").get().count, 1);
+  state.db.close();
+});
+
 test('quote hash binds full fixed voice snapshot and rejects stale quote before provider call', async () => {
   const state = setup();
   const quote = quoteDialoguePlan(state.db, ctx(state));
@@ -635,6 +1002,50 @@ test('quote hash binds full fixed voice snapshot and rejects stale quote before 
   assert.equal(calls, 0);
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   state.db.close();
+});
+
+test('completed dialogue keeps its exact voice/config audit after character or config drift without resubmission', async (t) => {
+  for (const drift of ['character', 'config']) {
+    await t.test(drift, async () => {
+      const state = setup();
+      state.db.prepare('DELETE FROM redraw_shots WHERE id = 802').run();
+      const quote = quoteDialoguePlan(state.db, ctx(state));
+      let calls = 0;
+      const idempotencyKey = `idem-completed-audit-${drift}`;
+      await synthesizeDialogueForVersion(ctx(state, {
+        synthesizeSegment: async (segment) => {
+          calls += 1;
+          const providerTaskId = addAudioAsset(state.db, 980, segment, { providerTaskId: 'provider-audited' });
+          return { asset_id: 980, provider_task_id: providerTaskId };
+        },
+      }), { quoteHash: quote.quote_hash, idempotencyKey });
+      const originalAudit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+        .dialogue_generation.segments[0];
+
+      if (drift === 'character') {
+        updateCharacterVoiceSnapshot(state.db, 701, (snapshot) => ({ ...snapshot, task_id: 'new-character-voice-task' }));
+      } else {
+        state.db.prepare('UPDATE ai_service_configs SET updated_at = ? WHERE id = ?')
+          .run('2026-08-08T00:00:01.000Z', TTS_CONFIG_ID);
+      }
+      await assert.rejects(
+        () => synthesizeDialogueForVersion(ctx(state, {
+          synthesizeSegment: async () => { calls += 1; },
+        }), { quoteHash: quote.quote_hash, idempotencyKey }),
+        (error) => ['REDRAW_DIALOGUE_QUOTE_MISMATCH', 'REDRAW_DIALOGUE_PLAN_NOT_READY'].includes(error.code),
+      );
+      assert.equal(calls, 1);
+      assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+      const persistedAudit = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = 801').get().draft_json)
+        .dialogue_generation.segments[0];
+      assert.equal(persistedAudit.provider_task_id, 'provider-audited');
+      assert.equal(persistedAudit.ai_service_config_id, TTS_CONFIG_ID);
+      assert.equal(persistedAudit.config_updated_at, TTS_CONFIG_UPDATED_AT);
+      assert.equal(persistedAudit.voice_snapshot.task_id, 'verified-voice-c1');
+      assert.deepEqual(persistedAudit, originalAudit);
+      state.db.close();
+    });
+  }
 });
 
 test('same idempotency returns completed readable segments without duplicate provider calls or reservations', async () => {
