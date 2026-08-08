@@ -336,6 +336,11 @@ function requireVerifiedToapisReferenceCapabilities(state, refs) {
   }
 }
 
+function verifiedReferenceLimit(value) {
+  const limit = Number(value);
+  return Number.isSafeInteger(limit) && limit >= 0 ? limit : 0;
+}
+
 function reuseActiveGeneration(db, active, duration, billingEnabled, options, expected = {}) {
   const activeModel = String(active.model || '').trim().toLowerCase();
   const expectedModel = String(expected.model || '').trim().toLowerCase();
@@ -697,12 +702,18 @@ function create(db, log, req, options = {}) {
   const isToapisVideo = Boolean(toapisState)
     || videoProtocol === 'toapis_video'
     || videoProtocol === 'toapis';
-  const toapisSpec = toapisState?.official
-    || (isToapisVideo ? TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()] : null);
+  const toapisSpec = toapisState
+    ? {
+        ...toapisState.official,
+        maxReferences: verifiedReferenceLimit(toapisState.capabilities?.maxReferences),
+        maxVideoReferences: verifiedReferenceLimit(toapisState.capabilities?.maxVideoReferences),
+        maxAudioReferences: verifiedReferenceLimit(toapisState.capabilities?.maxAudioReferences),
+      }
+    : (isToapisVideo ? TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()] : null);
   const inputReferenceImageUrls = cleanUrlList(body.reference_image_urls);
   if (toapisSpec && inputReferenceImageUrls.length > toapisSpec.maxReferences) {
     throw videoRequestError(
-      'VIDEO_REFERENCE_FORBIDDEN',
+      'VIDEO_REFERENCE_LIMIT_EXCEEDED',
       `ToAPIs 模型 ${model} 最多支持 ${toapisSpec.maxReferences} 张参考图`
     );
   }

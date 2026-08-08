@@ -41,7 +41,8 @@ function routes(db, log, options = {}) {
           return response.badRequest(res, err.message);
         }
         if (['INVALID_VIDEO_DURATION', 'INVALID_VIDEO_REQUEST',
-          'VIDEO_REFERENCE_FORBIDDEN', 'VIDEO_GENERATION_ACTIVE'].includes(err.code)) {
+          'VIDEO_REFERENCE_FORBIDDEN', 'VIDEO_REFERENCE_LIMIT_EXCEEDED',
+          'VIDEO_GENERATION_ACTIVE'].includes(err.code)) {
           return response.error(res, 400, err.code, err.message);
         }
         response.internalError(res, err.message);

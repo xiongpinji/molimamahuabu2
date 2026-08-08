@@ -82,11 +82,13 @@ function setup(t, options = {}) {
         durations: [4, 8, 10, 12, 15], resolutions: ['480p', '720p'],
         supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
         supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
+        maxReferences: 1, maxVideoReferences: 1, maxAudioReferences: 1,
       }),
       'seedance-2-fast': withExternalModelEvidence('seedance-2-fast', {
         durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['480p', '720p'],
         supportsFirstFrame: true, supportsLastFrame: true, supportsImageReference: true,
         supportsVideoReference: true, supportsAudioReference: true, supportsAudio: true,
+        maxReferences: 1, maxVideoReferences: 1, maxAudioReferences: 1,
       }),
     }),
     now,
@@ -441,41 +443,56 @@ test('ToAPIs allows system_shared platform assets for references', (t) => {
   assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['https://molimama.vip/static/projects/shared/assets/shared-ref.png']);
 });
 
-test('ToAPIs rejects reference images over target model limit before side effects', (t) => {
-  const { db, drama1, now } = setup(t);
-  db.prepare('UPDATE ai_service_configs SET model = ?, updated_at = ? WHERE service_type = ?')
-    .run(JSON.stringify(['seedance-2-mini', 'seedance-2-fast']), now, 'video');
-  prices.set(db, 'seedance-2-fast', 2, {
-    category: 'video',
-    cost_unit: 'second',
-    resolution_prices: {
-      '480p': { credits: 2, cost_micros_per_second: 1 },
-      '720p': { credits: 2, cost_micros_per_second: 1 },
-    },
-  });
-  const refs = [];
-  for (let i = 1; i <= 10; i += 1) {
-    const rel = `projects/0001/assets/ref-${i}.png`;
-    insertAsset(db, drama1, 'image', rel);
-    refs.push(`/static/${rel}`);
+test('ToAPIs direct create rejects references over verified limits before side effects', (t) => {
+  const { db, drama1 } = setup(t);
+  for (const [type, ext] of [['image', 'png'], ['video', 'mp4'], ['audio', 'mp3']]) {
+    for (let i = 1; i <= 2; i += 1) {
+      insertAsset(db, drama1, type, `projects/0001/assets/${type}-${i}.${ext}`);
+    }
   }
-  assert.throws(() => createVideo(db, {
-    drama_id: drama1,
-    storyboard_id: 1,
-    model: 'seedance-2-mini',
-    prompt: 'mini 超过参考图上限',
-    duration: 8,
-    reference_image_urls: refs,
-  }, { billingEnabled: false, schedule() {} }), /最多支持 9 张参考图/);
-  assert.throws(() => createVideo(db, {
-    drama_id: drama1,
-    storyboard_id: 1,
-    model: 'seedance-2-fast',
-    prompt: 'fast 超过参考图上限',
-    duration: 8,
-    reference_image_urls: refs.slice(0, 2),
-  }, { billingEnabled: false, schedule() {} }), /最多支持 1 张参考图/);
-  assert.deepEqual(sideEffectCounts(db), { tasks: 0, videos: 0, reservations: 0, tenantReservations: 0 });
+  const cases = [
+    {
+      label: '参考图',
+      body: { reference_image_urls: [
+        '/static/projects/0001/assets/image-1.png',
+        '/static/projects/0001/assets/image-2.png',
+      ] },
+    },
+    {
+      label: '参考视频',
+      body: { reference_video_urls: [
+        '/static/projects/0001/assets/video-1.mp4',
+        '/static/projects/0001/assets/video-2.mp4',
+      ] },
+    },
+    {
+      label: '参考音频',
+      body: {
+        reference_image_urls: ['/static/projects/0001/assets/image-1.png'],
+        reference_audio_urls: [
+          '/static/projects/0001/assets/audio-1.mp3',
+          '/static/projects/0001/assets/audio-2.mp3',
+        ],
+      },
+    },
+  ];
+  for (const item of cases) {
+    assert.throws(() => createVideo(db, {
+      drama_id: drama1,
+      storyboard_id: 1,
+      model: 'seedance-2-mini',
+      prompt: `${item.label}超过已验证上限`,
+      duration: 8,
+      ...item.body,
+    }, {
+      billingEnabled: true,
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      schedule() {},
+    }), (error) => error.code === 'VIDEO_REFERENCE_LIMIT_EXCEEDED'
+      && /最多支持 1/.test(error.message));
+    assert.deepEqual(sideEffectCounts(db), { tasks: 0, videos: 0, reservations: 0, tenantReservations: 0 });
+  }
 });
 
 test('indeterminate provider submission keeps reservation and duplicate guard without refund or retry', async (t) => {
