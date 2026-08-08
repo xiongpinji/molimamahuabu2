@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -30,6 +32,11 @@ EXPECTED_MODEL_REVISIONS = {
     "accent": "cc5dc6a56db647149d9e52856d6e55114c1045a8",
     "wav2vec": "b61310a3ecdfdc01af29ef1c203d708047a51184",
 }
+EXPECTED_MODEL_REPOS = {
+    "asr": "Systran/faster-whisper-small",
+    "accent": "Jzuluaga/accent-id-commonaccent_xlsr-en-english",
+    "wav2vec": "facebook/wav2vec2-large-xlsr-53",
+}
 
 
 class CalibrationError(ValueError):
@@ -53,14 +60,15 @@ def load_rows(path):
 
 def load_model_manifest(path):
     try:
-        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = Path(path).read_bytes()
+        manifest = json.loads(raw.decode("utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID") from exc
-    return manifest
+    return {"manifest": manifest, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 def calibrate(rows, *, model_manifest=None):
-    models = _validate_model_manifest(model_manifest)
+    model_binding = _validate_model_manifest(model_manifest)
     normalized = _normalize_rows(rows)
     tune = [row for row in normalized if row["split"] == "tune"]
     eval_rows = [row for row in normalized if row["split"] == "eval"]
@@ -78,6 +86,7 @@ def calibrate(rows, *, model_manifest=None):
         "schema_version": 1,
         "locale_pack": LOCALE_PACK,
         "normalization_version": NORMALIZATION_VERSION,
+        "model_manifest_sha256": model_binding["sha256"],
         "sample_counts": {
             "tune": len(tune),
             "eval": len(eval_rows),
@@ -86,7 +95,7 @@ def calibrate(rows, *, model_manifest=None):
         },
         "thresholds": thresholds,
         "eval": eval_result,
-        "models": models,
+        "models": model_binding["models"],
     }
 
 
@@ -103,26 +112,60 @@ def main(argv=None):
 
 
 def _validate_model_manifest(manifest):
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1 or not isinstance(manifest.get("models"), dict):
+    if not isinstance(manifest, dict):
+        raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    manifest_sha256 = manifest.get("sha256")
+    payload = manifest.get("manifest")
+    if not isinstance(manifest_sha256, str) or not HEX_SHA256_RE.fullmatch(manifest_sha256):
+        raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(payload.get("models"), dict):
         raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
     flattened = {}
     for name, expected_revision in EXPECTED_MODEL_REVISIONS.items():
-        model = manifest["models"].get(name)
+        model = payload["models"].get(name)
         if not isinstance(model, dict):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         revision = model.get("revision")
         tree_sha256 = model.get("tree_sha256")
+        repo_id = model.get("repo_id")
+        files = model.get("files")
+        if repo_id != EXPECTED_MODEL_REPOS[name]:
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         if revision != expected_revision or not isinstance(revision, str):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         if not isinstance(tree_sha256, str) or not HEX_SHA256_RE.fullmatch(tree_sha256) or _obvious_placeholder_hash(tree_sha256):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        _validate_model_files(files)
         flattened[f"{name}_revision"] = revision
         flattened[f"{name}_tree_sha256"] = tree_sha256
-    return flattened
+    return {"sha256": manifest_sha256, "models": flattened}
 
 
 def _obvious_placeholder_hash(value):
     return len(set(value)) == 1
+
+
+def _validate_model_files(files):
+    if not isinstance(files, list) or not files:
+        raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    for item in files:
+        if not isinstance(item, dict):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        path = item.get("path")
+        sha256 = item.get("sha256")
+        size = item.get("size")
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        if not isinstance(sha256, str) or not HEX_SHA256_RE.fullmatch(sha256) or _obvious_placeholder_hash(sha256):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        if type(size) is not int or size <= 0:
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
 
 
 def _normalize_rows(rows):
@@ -155,12 +198,39 @@ def _search_thresholds(tune):
     positives = [row for row in tune if _is_positive(row)]
     if not positives:
         raise CalibrationError("CALIBRATION_TUNE_INVALID")
-    return {
-        "language_probability_min": _round(max(row["language_probability"] for row in positives)),
-        "word_error_rate_max": _round(max(row["word_error_rate"] for row in positives)),
-        "character_error_rate_max": _round(max(row["character_error_rate"] for row in positives)),
-        "us_accent_probability_min": _round(max(row["us_accent_probability"] for row in positives)),
+    candidates = {
+        "language_probability_min": sorted({0.0, 1.0, *(row["language_probability"] for row in tune)}),
+        "word_error_rate_max": sorted({0.0, 1.0, *(row["word_error_rate"] for row in tune)}),
+        "character_error_rate_max": sorted({0.0, 1.0, *(row["character_error_rate"] for row in tune)}),
+        "us_accent_probability_min": sorted({0.0, 1.0, *(row["us_accent_probability"] for row in tune)}),
     }
+    best = None
+    for language_probability_min in candidates["language_probability_min"]:
+        for word_error_rate_max in candidates["word_error_rate_max"]:
+            for character_error_rate_max in candidates["character_error_rate_max"]:
+                for us_accent_probability_min in candidates["us_accent_probability_min"]:
+                    thresholds = {
+                        "language_probability_min": _round(language_probability_min),
+                        "word_error_rate_max": _round(word_error_rate_max),
+                        "character_error_rate_max": _round(character_error_rate_max),
+                        "us_accent_probability_min": _round(us_accent_probability_min),
+                    }
+                    result = _evaluate(tune, thresholds)
+                    if result["false_accept_rate"] > 0.01 or result["false_reject_rate"] >= 1.0:
+                        continue
+                    key = (
+                        result["false_reject_rate"],
+                        result["false_accept_rate"],
+                        -thresholds["language_probability_min"],
+                        thresholds["word_error_rate_max"],
+                        thresholds["character_error_rate_max"],
+                        -thresholds["us_accent_probability_min"],
+                    )
+                    if best is None or key < best[0]:
+                        best = (key, thresholds)
+    if best is None:
+        raise CalibrationError("CALIBRATION_TUNE_OPERATING_POINT_INVALID")
+    return best[1]
 
 
 def _evaluate(rows, thresholds):
@@ -194,7 +264,7 @@ def _metric(value, field):
         number = float(value)
     except (TypeError, ValueError) as exc:
         raise CalibrationError("CALIBRATION_METRIC_INVALID") from exc
-    if number < 0 or number > 1:
+    if not math.isfinite(number) or number < 0 or number > 1:
         raise CalibrationError("CALIBRATION_METRIC_INVALID")
     return number
 
@@ -223,7 +293,7 @@ def _atomic_write_json(path, value):
     parent = path.parent if path.parent != Path("") else Path(".")
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as handle:
         tmp_name = handle.name
-        json.dump(value, handle, ensure_ascii=True, sort_keys=True, indent=2)
+        json.dump(value, handle, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False)
         handle.write("\n")
     os.replace(tmp_name, path)
 

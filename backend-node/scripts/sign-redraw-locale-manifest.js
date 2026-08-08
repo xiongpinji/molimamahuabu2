@@ -27,8 +27,7 @@ function main(argv = process.argv.slice(2), streams = process) {
     const manifest = JSON.parse(fs.readFileSync(args.manifest, 'utf8'));
     const privateKey = fs.readFileSync(args.privateKey);
     const signature = crypto.sign(null, canonicalPayload(manifest), privateKey);
-    fs.mkdirSync(path.dirname(args.signature), { recursive: true });
-    fs.writeFileSync(args.signature, `${signature.toString('base64')}\n`, { mode: 0o600 });
+    writeSignatureFile(args.signature, `${signature.toString('base64')}\n`);
     if (streams.stdout && typeof streams.stdout.write === 'function') {
       streams.stdout.write('SIGN_REDRAW_LOCALE_MANIFEST_OK\n');
     }
@@ -69,6 +68,25 @@ function codedError(code) {
   return error;
 }
 
+function writeSignatureFile(signaturePath, value) {
+  const directory = path.dirname(signaturePath);
+  fs.mkdirSync(directory, { recursive: true });
+  const temporaryPath = path.join(directory, `.${path.basename(signaturePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temporaryPath, value, { mode: 0o600 });
+    fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, signaturePath);
+    fs.chmodSync(signaturePath, 0o600);
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // Best effort cleanup; the stable error code is emitted by main().
+    }
+    throw error;
+  }
+}
+
 if (require.main === module) {
   main();
 }
@@ -77,4 +95,5 @@ module.exports = {
   canonicalize,
   canonicalPayload,
   main,
+  writeSignatureFile,
 };

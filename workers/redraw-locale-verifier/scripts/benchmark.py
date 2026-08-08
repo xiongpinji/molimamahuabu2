@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -57,7 +58,7 @@ def _validate_sample(sample):
     for key in ("latency_ms", "peak_rss_bytes"):
         if type(result[key]) is not int or result[key] < 0:
             raise BenchmarkError("BENCHMARK_SAMPLE_INVALID")
-    if type(result["cpu_seconds"]) not in {int, float} or result["cpu_seconds"] < 0:
+    if type(result["cpu_seconds"]) not in {int, float} or not math.isfinite(result["cpu_seconds"]) or result["cpu_seconds"] < 0:
         raise BenchmarkError("BENCHMARK_SAMPLE_INVALID")
     return result
 
@@ -90,7 +91,7 @@ def _atomic_write_json(path, value):
     parent = path.parent if path.parent != Path("") else Path(".")
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=parent, delete=False) as handle:
         tmp_name = handle.name
-        json.dump(value, handle, ensure_ascii=True, sort_keys=True, indent=2)
+        json.dump(value, handle, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False)
         handle.write("\n")
     os.replace(tmp_name, path)
 

@@ -73,3 +73,25 @@ test('private key content is not written to logs or manifest', () => {
   assert.equal(fs.readFileSync(manifestPath, 'utf8').includes(privatePem.trim()), false);
   assert.equal(fs.readFileSync(signaturePath, 'utf8').includes(privatePem.trim()), false);
 });
+
+test('overwriting an existing signature keeps private file mode', () => {
+  if (process.platform === 'win32') {
+    return;
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-overwrite-'));
+  const { privateKey } = crypto.generateKeyPairSync('ed25519');
+  const privateKeyPath = path.join(tmp, 'private.pem');
+  const manifestPath = path.join(tmp, 'manifest.json');
+  const signaturePath = path.join(tmp, 'manifest.sig');
+  fs.writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest()));
+  fs.writeFileSync(signaturePath, 'old\n', { mode: 0o644 });
+  fs.chmodSync(signaturePath, 0o644);
+
+  signer.main(['--manifest', manifestPath, '--private-key', privateKeyPath, '--signature', signaturePath], {
+    stdout: { write() {} },
+    stderr: { write(value) { throw new Error(`unexpected stderr: ${value}`); } },
+  });
+
+  assert.equal((fs.statSync(signaturePath).mode & 0o777), 0o600);
+});
