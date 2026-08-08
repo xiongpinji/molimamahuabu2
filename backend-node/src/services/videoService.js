@@ -1152,8 +1152,14 @@ function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
   }
 }
 
+function shouldNormalizeVideoAfterDownload(row = {}) {
+  const model = String(row.model || '').trim().split('::').pop();
+  return !Object.prototype.hasOwnProperty.call(toapisVideoClient.TOAPIS_VIDEO_MODELS, model);
+}
+
 function maybeNormalizeVideoAfterDownload(storagePath, localPath, row, videoGenId, log) {
   if (!localPath) return;
+  if (!shouldNormalizeVideoAfterDownload(row)) return;
   const abs = path.join(storagePath, localPath);
   const dim = targetVideoPixelsForAspect(row.aspect_ratio);
   normalizeVideoFileToTargetPixels(abs, dim.w, dim.h, log, videoGenId);
@@ -1766,6 +1772,7 @@ module.exports = {
   resumeProcessingVideoGenerations,
   localVideoDeliveryWarning,
   settleVideoCredit,
+  shouldNormalizeVideoAfterDownload,
   extractVideoBoundaryFrames,
   ensureBoundaryFrames,
 };
