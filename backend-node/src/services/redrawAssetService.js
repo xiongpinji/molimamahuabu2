@@ -423,6 +423,7 @@ function markAssetNeedsAttention(
   code = 'REDRAW_VOICE_EVIDENCE_INCOMPLETE',
   voiceAssetId = null,
   providerTaskId = null,
+  options = {},
 ) {
   const now = new Date().toISOString();
   const current = ctx.db.prepare(`
@@ -437,6 +438,7 @@ function markAssetNeedsAttention(
         snapshot: {
           ...(sourcePayload.snapshot && typeof sourcePayload.snapshot === 'object' ? sourcePayload.snapshot : {}),
           provider_task_id: taskId,
+          ...(options.providerCompleted ? { provider_completed: true } : {}),
         },
       }
     : sourcePayload;
@@ -725,6 +727,19 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
         'REDRAW_VOICE_EVIDENCE_INCOMPLETE',
         asset.id,
         providerTaskId,
+      );
+    }
+    try {
+      validateVoiceTtsConfigPin(ctx, attempt);
+    } catch (error) {
+      return markAssetNeedsAttention(
+        ctx,
+        attempt,
+        error.message || '语音生成的 TTS 配置快照已失效',
+        error.code || 'REDRAW_TTS_CONFIG_PIN_INVALID',
+        asset.id,
+        providerTaskId,
+        { providerCompleted: true },
       );
     }
     const nextSourcePayload = { ...sourcePayload, snapshot: { ...snapshot, voice_evidence: evidence } };

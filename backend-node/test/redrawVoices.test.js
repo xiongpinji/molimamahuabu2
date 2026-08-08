@@ -5,7 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 
+const credits = require('../src/services/creditLedgerService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const {
+  createAssetAttempt,
+  finalizeAssetAttempt,
+} = require('../src/services/redrawAssetService');
 const {
   assignVoice,
   evidenceFromPayload,
@@ -274,6 +279,56 @@ test('type audio with a non-audio MIME is rejected by list, bind, and dialogue v
   }], validationOptions());
   assert.equal(validation.ok, false);
   assert.equal(validation.issues[0].reason, 'voice_audio_missing');
+  state.db.close();
+});
+
+test('completed voice provider result rechecks exact TTS config before confirming credits', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  credits.setTenantAccountBalance(state.db, 'tenant-a', 10);
+  addAudioAsset(state.db, 514, 'stale-config.mp3', now);
+  state.db.prepare('UPDATE assets SET duration = 1.2 WHERE id = 514').run();
+  const sourceRef = { id: 'voice-stale-config', voice_id: 'stale-config-voice' };
+  const ctx = {
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    allowUnmaterializedDraft: true,
+    creditAmount: 2,
+    assetReader: { canRead: () => true },
+    localeRegistry: trustedRegistry(),
+  };
+  const attempt = createAssetAttempt(ctx, {
+    kind: 'voice',
+    sourceRef,
+    snapshot: {
+      provider: 'verified-tts',
+      model: 'voice-model-1',
+      ai_service_config_id: TTS_CONFIG_ID,
+      config_updated_at: TTS_CONFIG_UPDATED_AT,
+    },
+  });
+  state.db.prepare('UPDATE ai_service_configs SET is_active = 0, updated_at = ? WHERE id = ?')
+    .run('2026-08-08T00:00:02.000Z', TTS_CONFIG_ID);
+
+  const result = finalizeAssetAttempt(ctx, attempt.id, {
+    status: 'completed',
+    provider_task_id: 'provider-stale-config',
+    voice_asset_id: 514,
+    duration: 1.2,
+    voice_evidence: { ...verifiedVoice(514, 'stale-config-voice'), task_id: 'provider-stale-config' },
+  });
+  const stored = state.db.prepare('SELECT status, error_code, credit_reservation_id, source_ref_json FROM redraw_assets WHERE id = ?')
+    .get(attempt.id);
+  const snapshot = JSON.parse(stored.source_ref_json).snapshot;
+
+  assert.equal(result.status, 'needs_attention');
+  assert.equal(stored.status, 'needs_attention');
+  assert.equal(stored.error_code, 'REDRAW_TTS_CONFIG_PIN_INVALID');
+  assert.equal(credits.getReservation(state.db, stored.credit_reservation_id).status, 'held');
+  assert.equal(snapshot.provider_completed, true);
+  assert.equal(snapshot.provider_task_id, 'provider-stale-config');
   state.db.close();
 });
 
