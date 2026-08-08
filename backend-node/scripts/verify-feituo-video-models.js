@@ -327,6 +327,51 @@ async function verifyStoredArtifact(entry, item, context, deps = {}) {
   entry.artifact.ffprobe = ffprobe;
 }
 
+async function recoverDownloadedArtifact(entry, item, context, deps = {}) {
+  if (entry.status !== 'completed' || entry.submission_state !== 'accepted' || !entry.provider_task_id || entry.artifact) return null;
+  const fileName = `${item.id}-${entry.provider_task_id}.mp4`.replace(/[^A-Za-z0-9._~-]+/g, '-');
+  const filePath = path.join(context.publicDir, fileName);
+  let stat;
+  try {
+    stat = await fs.promises.lstat(filePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1024) throw new Error(`${item.id} 已下载成品无效`);
+  const started = Date.now();
+  const buffer = await fs.promises.readFile(filePath);
+  const ffprobe = (deps.runFfprobe || runFfprobe)(filePath);
+  assertResolutionBand(item.resolution, ffprobe);
+  if (Math.abs(ffprobe.duration_seconds - item.duration) > 2) throw new Error('飞拓成品时长与请求不符');
+  const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+  const publicUrl = `${context.publicBaseUrl}/${fileName}`;
+  await (deps.assertPublicArtifact || assertPublicArtifact)(publicUrl, sha256, deps.fetchImpl || fetch);
+  const completedAt = stat.mtime;
+  const startedAtMs = Date.parse(entry.started_at);
+  if (!Number.isFinite(startedAtMs) || completedAt.getTime() < startedAtMs) throw new Error(`${item.id} 已下载成品时间无效`);
+  const validationLatencyMs = Date.now() - started;
+  const generationElapsedSeconds = round((completedAt.getTime() - startedAtMs) / 1000);
+  entry.artifact = {
+    public_url: publicUrl,
+    output_file: fileName,
+    content_type: 'video/mp4',
+    bytes: buffer.length,
+    sha256,
+    ffprobe,
+  };
+  entry.completed_at = completedAt.toISOString();
+  entry.speed = {
+    ...entry.speed,
+    generation_elapsed_seconds: generationElapsedSeconds,
+    download_latency_ms: validationLatencyMs,
+    total_elapsed_seconds: round(generationElapsedSeconds + (validationLatencyMs / 1000)),
+    artifact_reused_after_validation_failure: true,
+  };
+  writeJsonAtomic(context.statePath, context.state);
+  return entry;
+}
+
 async function processCase(item, context, deps = {}) {
   let entry = context.state.cases[item.id];
   const action = decideResumeAction(entry);
@@ -371,6 +416,8 @@ async function processCase(item, context, deps = {}) {
     entry.speed = { submit_latency_ms: acceptedAt.getTime() - startedAt.getTime() };
     writeJsonAtomic(context.statePath, context.state);
   }
+  const recovered = await recoverDownloadedArtifact(entry, item, context, deps);
+  if (recovered) return recovered;
   const videoUrl = await waitForTask(context.config, entry.provider_task_id, (status) => {
     entry.status = status.state;
     writeJsonAtomic(context.statePath, context.state);

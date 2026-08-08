@@ -154,3 +154,55 @@ test('indeterminate create is persisted and cannot cause a second paid POST', as
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('completed task reuses the existing downloaded artifact without provider fetch', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'feituo-verify-artifact-resume-'));
+  const publicDir = path.join(root, 'public');
+  fs.mkdirSync(publicDir);
+  const item = buildRequiredMatrix()[0];
+  const providerTaskId = 'task-existing-h3';
+  const fileName = `${item.id}-${providerTaskId}.mp4`;
+  const filePath = path.join(publicDir, fileName);
+  fs.writeFileSync(filePath, Buffer.alloc(4096, 3));
+  const completedAt = new Date('2026-08-08T01:06:00.000Z');
+  fs.utimesSync(filePath, completedAt, completedAt);
+  const context = {
+    config: { base_url: 'https://feituokuajing.com', api_key: 'test-secret' },
+    state: {
+      state_version: 'feituo-video-verification-state-v1',
+      cases: {
+        [item.id]: {
+          id: item.id,
+          model: item.model,
+          requested_resolution: item.resolution,
+          requested_duration: item.duration,
+          status: 'completed',
+          submission_state: 'accepted',
+          provider_task_id: providerTaskId,
+          started_at: '2026-08-08T01:00:00.000Z',
+          speed: { submit_latency_ms: 200 },
+        },
+      },
+    },
+    statePath: path.join(root, 'state.json'),
+    publicDir,
+    publicBaseUrl: 'https://molimama.vip/verification-assets/feituo',
+  };
+  let fetchCalls = 0;
+  try {
+    const result = await require('../scripts/verify-feituo-video-models').processCase(item, context, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error('provider URL expired');
+      },
+      runFfprobe: () => ({ width: 2560, height: 1440, duration_seconds: 15, video_codec: 'h264' }),
+      assertPublicArtifact: async () => {},
+    });
+    assert.equal(fetchCalls, 0);
+    assert.equal(result.artifact.output_file, fileName);
+    assert.equal(result.speed.artifact_reused_after_validation_failure, true);
+    assert.equal(result.speed.generation_elapsed_seconds, 360);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
