@@ -54,7 +54,7 @@ function completed(caseItem, overrides = {}) {
 test('real verification matrix contains only approved upstream model ids and both Seedance tiers', () => {
   const matrix = buildRequiredMatrix();
   assert.deepEqual(matrix.map(({ id, model, resolution, duration }) => ({ id, model, resolution, duration })), [
-    { id: 'h3-2k', model: 'xuan-video-v1-6e7b4763634e6206', resolution: '2k', duration: 5 },
+    { id: 'h3-2k', model: 'xuan-video-v1-6e7b4763634e6206', resolution: '2k', duration: 15 },
     { id: 'seedance25-480', model: 'xuan-seedance-2.5', resolution: '480p', duration: 4 },
     { id: 'seedance25-720', model: 'xuan-seedance-2.5', resolution: '720p', duration: 4 },
   ]);
@@ -65,7 +65,7 @@ test('verification requests are conservative text-only exact requests', () => {
   const [h3, seed480, seed720] = buildRequiredMatrix().map(buildVerificationRequest);
   assert.deepEqual(
     [h3.model, h3.resolution, h3.duration, h3.imageUrls.length, h3.videoUrls.length, h3.audioUrls.length],
-    ['xuan-video-v1-6e7b4763634e6206', '2k', 5, 0, 0, 0],
+    ['xuan-video-v1-6e7b4763634e6206', '2k', 15, 0, 0, 0],
   );
   assert.deepEqual([seed480.resolution, seed720.resolution], ['480p', '720p']);
   assert.equal(seed480.model, 'xuan-seedance-2.5');

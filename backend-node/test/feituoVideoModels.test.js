@@ -131,7 +131,7 @@ test('飞拓新视频模型使用精确上游 ID 和独立分辨率时长能力'
   );
   assert.deepEqual(
     FEITUO_MODELS['xuan-video-v1-6e7b4763634e6206'].durations,
-    [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [15],
   );
   assert.deepEqual(FEITUO_MODELS['xuan-seedance-2.5'].resolutions, ['480p', '720p']);
   assert.deepEqual(
@@ -146,19 +146,19 @@ test('MiniMax H3-2K 请求只接受固定 2K 档位', () => {
     model: 'xuan-video-v1-6e7b4763634e6206',
     prompt: '森林中的人物镜头',
     resolution: '2K',
-    duration: 5,
+    duration: 15,
     aspect_ratio: '16:9',
   });
 
   assert.equal(body.model, 'xuan-video-v1-6e7b4763634e6206');
   assert.equal(body.resolution, '2k');
-  assert.equal(body.duration, 5);
+  assert.equal(body.duration, 15);
   assert.throws(
     () => buildFeituoVideoBody({
       model: 'xuan-video-v1-6e7b4763634e6206',
       prompt: 'x',
       resolution: '720p',
-      duration: 5,
+      duration: 15,
     }),
     /不支持分辨率 720p/,
   );
@@ -167,9 +167,9 @@ test('MiniMax H3-2K 请求只接受固定 2K 档位', () => {
       model: 'xuan-video-v1-6e7b4763634e6206',
       prompt: 'x',
       resolution: '2k',
-      duration: 4,
+      duration: 5,
     }),
-    /不支持 4 秒/,
+    /不支持 5 秒/,
   );
 });
 
@@ -275,7 +275,7 @@ test('飞拓 H3 固定 2K 按次只预扣 1313 积分', (t) => {
     model: H3_MODEL,
     prompt: '测试 H3 2K',
     resolution: '2k',
-    duration: 5,
+    duration: 15,
     aspect_ratio: '16:9',
   }, {
     billingEnabled: true,

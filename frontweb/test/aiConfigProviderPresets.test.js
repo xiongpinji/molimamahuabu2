@@ -20,6 +20,6 @@ test('管理员飞拓预设同步协议、Base URL、端点和模型时长能力
   assert.match(source, /p === 'feituo'[\s\S]*?https:\/\/feituokuajing\.com/)
   assert.match(source, /providerId === 'feituo'[\s\S]*?\/api\/open\/v1\/video\/generate/)
   assert.match(source, /providerId === 'feituo'[\s\S]*?\/api\/open\/v1\/video\/status\?jobId=\{taskId\}/)
-  assert.match(source, /xuan-video-v1-6e7b4763634e6206'[\s\S]*?index \+ 5/)
+  assert.match(source, /xuan-video-v1-6e7b4763634e6206'[\s\S]*?durations:\s*Object\.freeze\(\[15\]\)/)
   assert.match(source, /xuan-seedance-2\.5'[\s\S]*?index \+ 4/)
 })

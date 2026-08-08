@@ -88,7 +88,7 @@ function verifiedCapabilities(evidence) {
     aspectRatios: ['16:9'],
   };
   return {
-    [H3_MODEL]: { ...noReferences, resolutions: ['2k'], durations: [5] },
+    [H3_MODEL]: { ...noReferences, resolutions: ['2k'], durations: [15] },
     [SEEDANCE_MODEL]: { ...noReferences, resolutions: ['480p', '720p'], durations: [4] },
   };
 }

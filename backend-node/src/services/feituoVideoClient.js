@@ -1,7 +1,7 @@
 const FEITUO_MODELS = Object.freeze({
   'xuan-video-v1-6e7b4763634e6206': Object.freeze({
     resolutions: Object.freeze(['2k']),
-    durations: Object.freeze([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    durations: Object.freeze([15]),
     ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
     maxImages: 9,
     maxVideos: 0,

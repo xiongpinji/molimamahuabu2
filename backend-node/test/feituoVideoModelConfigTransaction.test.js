@@ -89,6 +89,7 @@ test('transaction creates a new exact Feituo config, reuses the secret without e
     assert.ok(!rows[1].model.includes('"seedance-2.5"'));
     const caps = JSON.parse(rows[1].verified_capabilities);
     assert.deepEqual(caps['xuan-video-v1-6e7b4763634e6206'].resolutions, ['2k']);
+    assert.deepEqual(caps['xuan-video-v1-6e7b4763634e6206'].durations, [15]);
     assert.deepEqual(caps['xuan-seedance-2.5'].resolutions, ['480p', '720p']);
     assert.deepEqual(caps['xuan-seedance-2.5'].durations, [4]);
     assert.equal(caps['xuan-seedance-2.5'].supportsImageReference, false);

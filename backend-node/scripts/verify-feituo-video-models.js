@@ -16,7 +16,7 @@ const STATE_VERSION = 'feituo-video-verification-state-v1';
 const EVIDENCE_VERSION = 'feituo-video-real-verification-v1';
 const LOG = { info() {}, warn() {}, error() {} };
 const REQUIRED_MATRIX = Object.freeze([
-  Object.freeze({ id: 'h3-2k', model: 'xuan-video-v1-6e7b4763634e6206', resolution: '2k', duration: 5 }),
+  Object.freeze({ id: 'h3-2k', model: 'xuan-video-v1-6e7b4763634e6206', resolution: '2k', duration: 15 }),
   Object.freeze({ id: 'seedance25-480', model: 'xuan-seedance-2.5', resolution: '480p', duration: 4 }),
   Object.freeze({ id: 'seedance25-720', model: 'xuan-seedance-2.5', resolution: '720p', duration: 4 }),
 ]);
@@ -176,7 +176,7 @@ function buildReleaseEvidence(results, now = new Date()) {
     verification_scope: {
       models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'],
       resolutions: { 'xuan-video-v1-6e7b4763634e6206': ['2k'], 'xuan-seedance-2.5': ['480p', '720p'] },
-      durations: { 'xuan-video-v1-6e7b4763634e6206': [5], 'xuan-seedance-2.5': [4] },
+      durations: { 'xuan-video-v1-6e7b4763634e6206': [15], 'xuan-seedance-2.5': [4] },
       reference_inputs: 'not_verified_text_only',
     },
     pricing_basis: {

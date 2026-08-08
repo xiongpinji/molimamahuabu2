@@ -1337,7 +1337,7 @@ const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
 })
 const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
-  'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze(Array.from({ length: 11 }, (_, index) => index + 5)) }),
+  'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze([15]) }),
   'xuan-seedance-2.5': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
 })
 function adminVideoCapabilityFor(config = {}) {
