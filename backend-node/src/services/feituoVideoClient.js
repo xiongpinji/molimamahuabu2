@@ -1,4 +1,20 @@
 const FEITUO_MODELS = Object.freeze({
+  'xuan-video-v1-6e7b4763634e6206': Object.freeze({
+    resolutions: Object.freeze(['2k']),
+    durations: Object.freeze([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
+    maxImages: 9,
+    maxVideos: 0,
+    maxAudio: 3,
+  }),
+  'xuan-seedance-2.5': Object.freeze({
+    resolutions: Object.freeze(['480p', '720p']),
+    durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    ratios: Object.freeze(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']),
+    maxImages: 4,
+    maxVideos: 3,
+    maxAudio: 1,
+  }),
   'sdas-lm-hailuo-h3-2k': Object.freeze({
     ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
     maxImages: 9,
@@ -34,8 +50,18 @@ function buildFeituoVideoBody(opts = {}) {
   if (!spec) throw new Error(`飞拓模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
 
   const duration = Number(opts.duration ?? 5);
-  if (!Number.isSafeInteger(duration) || duration < 4 || duration > 15) {
+  if (!Number.isSafeInteger(duration)) {
+    throw new Error('飞拓视频时长必须是整数');
+  }
+  if (spec.durations && !spec.durations.includes(duration)) {
+    throw new Error(`飞拓模型 ${model} 不支持 ${duration} 秒`);
+  }
+  if (!spec.durations && (duration < 4 || duration > 15)) {
     throw new Error('飞拓视频时长必须是 4 到 15 秒之间的整数');
+  }
+  const resolution = String(opts.resolution || '').trim().toLowerCase();
+  if (spec.resolutions && !spec.resolutions.includes(resolution)) {
+    throw new Error(`飞拓模型 ${model} 不支持分辨率 ${resolution || '(empty)'}`);
   }
   const ratio = String(opts.aspect_ratio || opts.ratio || '16:9').trim().replace('：', ':');
   if (!spec.ratios.includes(ratio)) throw new Error(`飞拓模型 ${model} 不支持画幅 ${ratio}`);
@@ -55,7 +81,7 @@ function buildFeituoVideoBody(opts = {}) {
   assertMaterialLimit('视频', videoUrls, spec.maxVideos);
   assertMaterialLimit('音频', audioUrls, spec.maxAudio);
 
-  return {
+  const body = {
     model,
     prompt: String(opts.prompt || ''),
     ratio,
@@ -64,6 +90,8 @@ function buildFeituoVideoBody(opts = {}) {
     videoUrls,
     audioUrls,
   };
+  if (spec.resolutions) body.resolution = resolution;
+  return body;
 }
 
 function buildFeituoStatusUrl(baseUrl, jobId, timestamp = Date.now()) {
