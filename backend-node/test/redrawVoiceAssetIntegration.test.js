@@ -22,6 +22,11 @@ const LOCALE = 'en-US';
 const MARKET = 'US';
 const MODEL = 'verified-tts-model';
 const PROVIDER = 'verified-tts-provider';
+const LOCALE_PACK = `${LOCALE}@1`;
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
 
 function createState() {
   const db = new Database(':memory:');
@@ -63,6 +68,8 @@ function createState() {
     tenantId: TENANT_ID,
     userId: USER_ID,
     assetReader: { canRead },
+    localeRegistry: trustedRegistry(),
+    localeVerifier: createLocaleVerifier(),
     canReadArtifact(assetId) {
       return canRead(db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(Number(assetId)));
     },
@@ -109,6 +116,11 @@ function createLocaleVerifier(calls = [], overrides = {}) {
     assertReady(locale) {
       if (overrides.readyError) throw overrides.readyError;
       calls.push({ type: 'ready', locale });
+      return {
+        locale_pack: LOCALE_PACK,
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      };
     },
     async verify(input) {
       calls.push({ type: 'verify', input });
@@ -117,11 +129,37 @@ function createLocaleVerifier(calls = [], overrides = {}) {
         languageVerified: true,
         detectedLocale: input.locale,
         source: 'offline-worker',
-        localePack: `${input.locale}@1`,
-        modelManifestSha256: 'a'.repeat(64),
-        calibrationManifestSha256: 'b'.repeat(64),
+        audioSha256: AUDIO_SHA256,
+        transcriptSha256: TRANSCRIPT_SHA256,
+        localePack: LOCALE_PACK,
+        modelManifestSha256: MODEL_MANIFEST_SHA256,
+        calibrationManifestSha256: CALIBRATION_MANIFEST_SHA256,
+        asrModelRevision: 'asr-en-20260808',
+        accentModelRevision: 'accent-en-20260808',
+        metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+        completedAt: '2026-08-08T00:00:01.000Z',
         ...overrides.evidence,
       };
+    },
+  };
+}
+
+function trustedRegistry() {
+  return {
+    assertEvidenceTrusted(evidence) {
+      if (evidence.source && evidence.source !== 'offline-worker') {
+        const error = new Error('worker evidence not trusted');
+        error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+        throw error;
+      }
+      if (evidence.locale_pack !== LOCALE_PACK
+        || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+        || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+        const error = new Error('worker evidence not trusted');
+        error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+        throw error;
+      }
+      return evidence;
     },
   };
 }
@@ -133,6 +171,7 @@ function createVoiceAdapter(state, providerTaskId, calls, resultOverrides = {}, 
     log: { info() {}, warn() {}, error() {} },
     cfg: { storage: { local_path: state.root } },
     localeVerifier: options.localeVerifier || createLocaleVerifier(verifierCalls),
+    localeRegistry: state.ctx.localeRegistry,
     ttsService: {
       async synthesize(_db, _log, options) {
         calls.push(options);
@@ -195,6 +234,9 @@ function addVerifiedTtsCapability(state, options = {}) {
         artifact_id: 900,
         ai_service_config_id: evidenceConfigId,
         config_updated_at: options.configUpdatedAt || evidenceConfig?.updated_at,
+        locale_pack: LOCALE_PACK,
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
       },
     },
   }];
@@ -221,6 +263,7 @@ function assertProductionVoiceAndBind(state, voiceAttemptId, characterAssetId, p
     userId: USER_ID,
     locale: LOCALE,
     market: MARKET,
+    localeRegistry: state.ctx.localeRegistry,
   }, state.canRead);
   assert.equal(voices.length, 1);
   assert.equal(Number(voices[0].id), Number(voiceAttemptId));
@@ -231,6 +274,7 @@ function assertProductionVoiceAndBind(state, voiceAttemptId, characterAssetId, p
     versionId: state.versionId,
     voiceAssetId: voiceAttemptId,
     canReadAsset: state.canRead,
+    localeRegistry: state.ctx.localeRegistry,
   });
   assert.equal(assigned.conflict, false);
   assert.equal(assigned.snapshot.task_id, providerTaskId);
@@ -851,6 +895,7 @@ test('tenant A cannot use tenant B authorization asset to create clone voice evi
       locale: LOCALE,
       market: MARKET,
       versionId: state.versionId,
+      localeRegistry: state.ctx.localeRegistry,
     }, state.canRead), []);
   } finally {
     state.db.close();
@@ -1090,6 +1135,7 @@ test('deleted or unreadable clone authorization is rejected again by list and bi
           locale: LOCALE,
           market: MARKET,
           versionId: state.versionId,
+          localeRegistry: state.ctx.localeRegistry,
         }, state.canRead);
         assert.ok(voice);
 
@@ -1105,6 +1151,7 @@ test('deleted or unreadable clone authorization is rejected again by list and bi
           locale: LOCALE,
           market: MARKET,
           versionId: state.versionId,
+          localeRegistry: state.ctx.localeRegistry,
         }, state.canRead), []);
         assert.throws(
           () => redrawVoiceService.assignVoice(state.db, characterAssetId, voice, {
@@ -1113,6 +1160,7 @@ test('deleted or unreadable clone authorization is rejected again by list and bi
             versionId: state.versionId,
             voiceAssetId,
             canReadAsset: state.canRead,
+            localeRegistry: state.ctx.localeRegistry,
           }),
           (error) => error.code === 'REDRAW_VOICE_AUTHORIZATION_REQUIRED',
         );
