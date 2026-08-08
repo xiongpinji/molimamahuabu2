@@ -199,6 +199,36 @@ function providerTaskIdOf(result) {
   return result?.provider_task_id || result?.providerTaskId || result?.task_id || result?.taskId || null;
 }
 
+function providerCompletedError(error, providerTaskId) {
+  const value = error instanceof Error ? error : new Error(String(error || 'post-provider processing failed'));
+  value.provider_completed = true;
+  value.provider_task_id = trim(value.provider_task_id || providerTaskId) || null;
+  return value;
+}
+
+function localeVerifyUnknown(error, providerTaskId) {
+  const value = providerCompletedError(
+    error instanceof Error ? error : new Error(String(error || 'redraw locale verification is unknown')),
+    providerTaskId,
+  );
+  value.code = 'REDRAW_LOCALE_VERIFY_UNKNOWN';
+  value.unknown = true;
+  return value;
+}
+
+function requireProviderTaskId(result, kind) {
+  const providerTaskId = trim(providerTaskIdOf(result));
+  if (!providerTaskId) {
+    const code = kind === 'voice' ? 'REDRAW_VOICE_EVIDENCE_INCOMPLETE' : 'PROVIDER_STATUS_UNKNOWN';
+    throw codedError(code, `${kind} provider completion is missing a provider task id`, {
+      unknown: true,
+      provider_completed: true,
+      provider_task_id: null,
+    });
+  }
+  return providerTaskId;
+}
+
 function imageUrlOf(result) {
   return result?.image_url || result?.imageUrl || result?.url || result?.asset_url || result?.assetUrl || null;
 }
@@ -209,6 +239,92 @@ function isUnknownProviderResult(result) {
   return result?.unknown === true
     || ['pending', 'processing', 'indeterminate', 'needs_attention', 'unknown'].includes(status)
     || ['UNKNOWN', 'PROVIDER_UNKNOWN', 'TASK_UNKNOWN', 'STATUS_UNKNOWN', 'INDETERMINATE'].includes(code);
+}
+
+function completedProviderStatus(status) {
+  return ['completed', 'complete', 'succeeded', 'success', 'done'].includes(String(status || '').toLowerCase());
+}
+
+function configSupportsModel(config, model) {
+  const models = Array.isArray(config?.model) ? config.model.map(String) : [];
+  return String(config?.default_model || '') === String(model || '') || models.includes(String(model || ''));
+}
+
+function selectPinnedTtsConfig(db, normalized, injectedConfig, requirePin = false) {
+  const pinnedId = Number(normalized.snapshot?.ai_service_config_id ?? normalized.snapshot?.aiServiceConfigId);
+  const pinnedUpdatedAt = trim(normalized.snapshot?.config_updated_at ?? normalized.snapshot?.configUpdatedAt);
+  if (requirePin && (!Number.isSafeInteger(pinnedId) || pinnedId <= 0 || !pinnedUpdatedAt)) {
+    throw codedError('REDRAW_TTS_CONFIG_PIN_INVALID', 'TTS generation requires an exact persisted config pin');
+  }
+  let config;
+  if (Number.isSafeInteger(pinnedId) && pinnedId > 0) {
+    const aiConfigService = require('./aiConfigService');
+    config = aiConfigService.getConfig(db, pinnedId);
+  } else if (injectedConfig) {
+    config = injectedConfig;
+  } else {
+    const { selectTtsConfig } = require('./ttsConfigSelectionService');
+    config = selectTtsConfig(db, normalized.model);
+  }
+  const expectedProvider = trim(normalized.provider);
+  if (!config || config.service_type && config.service_type !== 'tts' || config.is_active === false
+    || expectedProvider && trim(config.provider) !== expectedProvider
+    || !configSupportsModel(config, normalized.model)) {
+    throw codedError('REDRAW_TTS_CONFIG_PIN_INVALID', 'TTS generation config does not match the persisted provider/model pin');
+  }
+  if (Number.isSafeInteger(pinnedId) && pinnedId > 0 && Number(config.id) !== pinnedId) {
+    throw codedError('REDRAW_TTS_CONFIG_PIN_INVALID', 'TTS generation config id does not match the persisted pin');
+  }
+  if (Number.isSafeInteger(pinnedId) && pinnedId > 0
+    && (!pinnedUpdatedAt || trim(config.updated_at) !== pinnedUpdatedAt)) {
+    throw codedError('REDRAW_TTS_CONFIG_PIN_INVALID', 'TTS generation config version does not match the persisted pin');
+  }
+  return config;
+}
+
+function assertLocaleVerifierReady(localeVerifier, locale) {
+  if (!localeVerifier || typeof localeVerifier.assertReady !== 'function') return;
+  try {
+    localeVerifier.assertReady(locale);
+  } catch (error) {
+    const value = codedError('REDRAW_LOCALE_VERIFY_UNKNOWN', error?.message || 'redraw locale verifier is not ready', {
+      unknown: true,
+    });
+    value.cause = error;
+    throw value;
+  }
+}
+
+async function verifyCompletedLocale(localeVerifier, {
+  requestId,
+  audioPath,
+  approvedText,
+  locale,
+  ttsInvocation,
+}, providerTaskId) {
+  if (!localeVerifier || typeof localeVerifier.verify !== 'function') {
+    return { languageVerified: false, detectedLocale: null, evidence: null };
+  }
+  try {
+    const evidence = await localeVerifier.verify({
+      requestId,
+      audioPath,
+      approvedText,
+      locale,
+      ttsInvocation,
+    });
+    const detectedLocale = trim(evidence?.detectedLocale || evidence?.detected_locale);
+    if (evidence?.languageVerified !== true && evidence?.language_verified !== true) {
+      throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID', 'redraw locale verifier returned untrusted evidence');
+    }
+    return {
+      languageVerified: true,
+      detectedLocale: detectedLocale || locale,
+      evidence,
+    };
+  } catch (error) {
+    throw localeVerifyUnknown(error, providerTaskId);
+  }
 }
 
 function qualityOf(result, width, height) {
@@ -517,17 +633,15 @@ function createRedrawProviderAdapters(deps = {}) {
   }
 
   async function generateVoiceAsset(request, normalized, storageRoot, versionDir) {
-    const { attempt, input, sourceRef, model } = normalized;
+    const { attempt, input, sourceRef, model, provider } = normalized;
     const text = trim(attempt.prompt || input.prompt || attempt.localized_description || attempt.localizedDescription
       || input.localizedDescription || input.localized_description || sourceRef.text || sourceRef.prompt);
     if (!text) throw codedError('REDRAW_PROVIDER_PROMPT_REQUIRED', 'redraw voice text is required');
     const synthesize = requireMethod(deps, 'ttsService', './ttsService', 'synthesize');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
     const voiceId = trim(sourceRef.voice_id || sourceRef.voiceId || attempt.voice_id || attempt.voiceId || input.voice_id || input.voiceId);
-    const config = deps.ttsConfig || (() => {
-      const { selectTtsConfig } = require('./ttsConfigSelectionService');
-      return selectTtsConfig(db, model);
-    })();
+    const config = selectPinnedTtsConfig(db, normalized, deps.ttsConfig);
+    assertLocaleVerifierReady(deps.localeVerifier, normalized.locale);
     const result = await synthesize(db, log, {
       text,
       storyboard_id: attempt.storyboard_id || attempt.storyboardId || input.storyboardId || input.storyboard_id || normalized.taskId,
@@ -536,6 +650,7 @@ function createRedrawProviderAdapters(deps = {}) {
       storage_subdir: `redraw-assets/${versionDir}`,
       voice_id: voiceId || undefined,
       locale: normalized.locale,
+      market: normalized.market,
     });
     if (isUnknownProviderResult(result)) {
       return {
@@ -545,27 +660,97 @@ function createRedrawProviderAdapters(deps = {}) {
         error: result?.error || 'voice provider task status unknown',
       };
     }
-    const localPath = assertScopedAssetPath(result.local_path, versionDir);
-    const absolutePath = path.join(storageRoot, localPath);
-    if (!fs.existsSync(absolutePath)) {
-      throw codedError('ASSET_NOT_READABLE', 'downloaded redraw voice asset is not readable');
+    if ((result?.status && !completedProviderStatus(result.status)) || result?.error) {
+      throw codedError('REDRAW_VOICE_PROVIDER_FAILED', result?.error || 'voice provider did not complete successfully', {
+        provider_task_id: providerTaskIdOf(result),
+      });
     }
-    let duration = Number(result?.duration ?? result?.metadata?.duration);
-    if (!Number.isFinite(duration) || duration <= 0) {
-      duration = probeDuration(absolutePath);
+    const providerTaskId = requireProviderTaskId(result, 'voice');
+    let localPath;
+    let absolutePath;
+    let duration;
+    try {
+      localPath = assertScopedAssetPath(result.local_path, versionDir);
+      absolutePath = path.join(storageRoot, localPath);
+      if (!fs.existsSync(absolutePath)) {
+        throw codedError('ASSET_NOT_READABLE', 'downloaded redraw voice asset is not readable');
+      }
+      duration = Number(result?.duration ?? result?.metadata?.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        duration = probeDuration(absolutePath);
+      }
+      if (!Number.isFinite(duration) || duration <= 0) {
+        cleanupScopedFile(storageRoot, localPath, versionDir);
+        throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw voice provider returned no positive duration');
+      }
+    } catch (error) {
+      throw providerCompletedError(error, providerTaskId);
     }
-    if (!Number.isFinite(duration) || duration <= 0) {
-      cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw voice provider returned no positive duration');
-    }
-    const providerTaskId = providerTaskIdOf(result);
+    const providerStatus = trim(result.status).toLowerCase();
+    const detectedLocale = trim(result.detected_locale || result.detectedLocale
+      || result.metadata?.detected_locale || result.metadata?.detectedLocale);
+    const languageVerified = result.language_verified === true || result.languageVerified === true
+      || result.metadata?.language_verified === true || result.metadata?.languageVerified === true;
+    const isCloned = result.is_cloned === true || result.cloned === true || result.voice_type === 'clone'
+      || sourceRef.is_cloned === true || sourceRef.cloned === true || sourceRef.voice_type === 'clone';
+    const authorizationAssetId = result.authorization_asset_id ?? result.authorizationAssetId
+      ?? result.metadata?.authorization_asset_id ?? result.metadata?.authorizationAssetId
+      ?? sourceRef.authorization_asset_id ?? sourceRef.authorizationAssetId ?? null;
+    const actualProvider = trim(config?.provider || provider);
+    const aiServiceConfigId = Number(config?.id);
+    const configUpdatedAt = trim(config?.updated_at);
+    const localeEvidence = await verifyCompletedLocale(deps.localeVerifier, {
+      requestId: providerTaskId,
+      audioPath: absolutePath,
+      approvedText: text,
+      locale: normalized.locale,
+      ttsInvocation: {
+        provider: actualProvider,
+        model,
+        aiServiceConfigId: Number.isSafeInteger(aiServiceConfigId) && aiServiceConfigId > 0 ? aiServiceConfigId : null,
+        configUpdatedAt: configUpdatedAt || null,
+        providerTaskId,
+      },
+    }, providerTaskId);
+    const voiceEvidence = {
+      locale: normalized.locale,
+      market: normalized.market,
+      provider: actualProvider,
+      model,
+      ai_service_config_id: Number.isSafeInteger(aiServiceConfigId) && aiServiceConfigId > 0
+        ? aiServiceConfigId
+        : null,
+      config_updated_at: configUpdatedAt || null,
+      voice_id: trim(result.voice_id || result.voiceId || voiceId),
+      task_id: providerTaskId,
+      terminal_status: providerStatus,
+      audio_asset_id: null,
+      duration_ms: Math.round(duration * 1000),
+      real_generation_verified: completedProviderStatus(providerStatus) && Boolean(providerTaskId),
+      language_verified: localeEvidence.languageVerified,
+      detected_locale: localeEvidence.detectedLocale || null,
+      locale_verifier: localeEvidence.evidence,
+      is_cloned: isCloned,
+      authorization_asset_id: authorizationAssetId,
+    };
     const metadata = {
       source: 'redraw_provider_adapter',
       locale: normalized.locale,
+      market: normalized.market,
       voice_id: voiceId || null,
       duration,
       provider_task_id: providerTaskId,
       model,
+      provider: actualProvider,
+      ai_service_config_id: Number.isSafeInteger(aiServiceConfigId) && aiServiceConfigId > 0
+        ? aiServiceConfigId
+        : null,
+      config_updated_at: configUpdatedAt || null,
+      detected_locale: localeEvidence.detectedLocale || null,
+      language_verified: localeEvidence.languageVerified,
+      locale_verifier: localeEvidence.evidence,
+      is_cloned: isCloned,
+      authorization_asset_id: authorizationAssetId,
     };
     let registered;
     try {
@@ -583,8 +768,9 @@ function createRedrawProviderAdapters(deps = {}) {
       });
     } catch (error) {
       cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw error;
+      throw providerCompletedError(error, providerTaskId);
     }
+    voiceEvidence.audio_asset_id = Number(registered.id);
     return {
       status: 'completed',
       asset_id: registered.id,
@@ -592,6 +778,7 @@ function createRedrawProviderAdapters(deps = {}) {
       readable: true,
       provider_task_id: providerTaskId,
       metadata,
+      voice_evidence: voiceEvidence,
       duration,
     };
   }
@@ -627,6 +814,7 @@ function createRedrawProviderAdapters(deps = {}) {
       ...ctx,
       text,
       voice_id: trim(segment.voice_id || segment.voiceId),
+      voice_snapshot: segment.voice_snapshot || segment.voiceSnapshot || {},
       shot_id: segment.shot_id || segment.shotId || null,
       turn_index: segment.turn_index ?? segment.turnIndex ?? null,
     };
@@ -636,10 +824,15 @@ function createRedrawProviderAdapters(deps = {}) {
     const ctx = dialogueContext(request, normalized);
     const synthesize = requireMethod(deps, 'ttsService', './ttsService', 'synthesize');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
-    const config = deps.ttsConfig || (() => {
-      const { selectTtsConfig } = require('./ttsConfigSelectionService');
-      return selectTtsConfig(db, normalized.model);
-    })();
+    const voiceSnapshot = ctx.voice_snapshot && typeof ctx.voice_snapshot === 'object'
+      ? ctx.voice_snapshot
+      : {};
+    const config = selectPinnedTtsConfig(db, {
+      ...normalized,
+      provider: voiceSnapshot.provider,
+      snapshot: voiceSnapshot,
+    }, deps.ttsConfig, true);
+    assertLocaleVerifierReady(deps.localeVerifier, normalized.locale);
     const result = await synthesize(db, log, {
       text: ctx.text,
       storyboard_id: normalized.taskId || ctx.segment_id,
@@ -648,6 +841,7 @@ function createRedrawProviderAdapters(deps = {}) {
       storage_subdir: `redraw-assets/${versionDir}`,
       voice_id: ctx.voice_id || undefined,
       locale: normalized.locale,
+      market: normalized.market,
     });
     if (isUnknownProviderResult(result)) {
       throw codedError('PROVIDER_STATUS_UNKNOWN', result?.error || 'dialogue provider task status unknown', {
@@ -655,20 +849,27 @@ function createRedrawProviderAdapters(deps = {}) {
         provider_task_id: providerTaskIdOf(result),
       });
     }
-    const localPath = assertScopedAssetPath(result.local_path, versionDir);
-    const absolutePath = path.join(storageRoot, localPath);
-    if (!fs.existsSync(absolutePath)) {
-      throw codedError('ASSET_NOT_READABLE', 'downloaded redraw dialogue asset is not readable');
+    const providerTaskId = requireProviderTaskId(result, 'dialogue');
+    let localPath;
+    let absolutePath;
+    let duration;
+    try {
+      localPath = assertScopedAssetPath(result.local_path, versionDir);
+      absolutePath = path.join(storageRoot, localPath);
+      if (!fs.existsSync(absolutePath)) {
+        throw codedError('ASSET_NOT_READABLE', 'downloaded redraw dialogue asset is not readable');
+      }
+      duration = Number(result?.duration ?? result?.metadata?.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        duration = probeDuration(absolutePath);
+      }
+      if (!Number.isFinite(duration) || duration <= 0) {
+        cleanupScopedFile(storageRoot, localPath, versionDir);
+        throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw dialogue provider returned no positive duration');
+      }
+    } catch (error) {
+      throw providerCompletedError(error, providerTaskId);
     }
-    let duration = Number(result?.duration ?? result?.metadata?.duration);
-    if (!Number.isFinite(duration) || duration <= 0) {
-      duration = probeDuration(absolutePath);
-    }
-    if (!Number.isFinite(duration) || duration <= 0) {
-      cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw codedError('REDRAW_VOICE_DURATION_REQUIRED', 'redraw dialogue provider returned no positive duration');
-    }
-    const providerTaskId = providerTaskIdOf(result);
     const invocationId = randomUUID();
     const dialogueMetadata = {
       tenant_id: ctx.tenant_id,
@@ -678,8 +879,26 @@ function createRedrawProviderAdapters(deps = {}) {
       idempotency_key: ctx.idempotency_key,
       reservation_id: ctx.reservation_id,
       provider_task_id: providerTaskId,
+      provider: trim(config.provider),
+      model: normalized.model,
+      ai_service_config_id: Number(config.id),
+      config_updated_at: trim(config.updated_at),
+      voice_snapshot: voiceSnapshot,
       invocation_id: invocationId,
     };
+    const localeEvidence = await verifyCompletedLocale(deps.localeVerifier, {
+      requestId: providerTaskId,
+      audioPath: absolutePath,
+      approvedText: ctx.text,
+      locale: normalized.locale,
+      ttsInvocation: {
+        provider: trim(config.provider),
+        model: normalized.model,
+        aiServiceConfigId: Number(config.id),
+        configUpdatedAt: trim(config.updated_at),
+        providerTaskId,
+      },
+    }, providerTaskId);
     const metadata = {
       source: 'redraw_provider_adapter',
       kind: 'dialogue',
@@ -689,6 +908,13 @@ function createRedrawProviderAdapters(deps = {}) {
       duration,
       provider_task_id: providerTaskId,
       model: normalized.model,
+      provider: trim(config.provider),
+      ai_service_config_id: Number(config.id),
+      config_updated_at: trim(config.updated_at),
+      detected_locale: localeEvidence.detectedLocale || null,
+      language_verified: localeEvidence.languageVerified,
+      locale_verifier: localeEvidence.evidence,
+      voice_snapshot: voiceSnapshot,
       redraw_dialogue: dialogueMetadata,
     };
     let registered;
@@ -705,7 +931,7 @@ function createRedrawProviderAdapters(deps = {}) {
       });
     } catch (error) {
       cleanupScopedFile(storageRoot, localPath, versionDir);
-      throw error;
+      throw providerCompletedError(error, providerTaskId);
     }
     return {
       status: 'completed',

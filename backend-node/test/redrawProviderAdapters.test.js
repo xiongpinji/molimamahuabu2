@@ -15,6 +15,45 @@ function createLog() {
   return { info() {}, warn() {}, error() {} };
 }
 
+const DIALOGUE_TTS_CONFIG = {
+  id: 88,
+  service_type: 'tts',
+  provider: 'openai',
+  name: 'pinned dialogue TTS',
+  model: ['verified-dialogue-model'],
+  default_model: 'verified-dialogue-model',
+  is_active: true,
+  created_at: '2026-08-08T00:00:00.000Z',
+  updated_at: '2026-08-08T00:00:00.000Z',
+};
+
+function fakeTtsConfigDb(config = DIALOGUE_TTS_CONFIG) {
+  return {
+    prepare() {
+      return {
+        get(id) {
+          if (Number(id) !== Number(config.id)) return null;
+          return {
+            ...config,
+            model: JSON.stringify(config.model),
+            is_active: config.is_active ? 1 : 0,
+            settings: '{}',
+          };
+        },
+      };
+    },
+  };
+}
+
+function dialogueVoiceSnapshot() {
+  return {
+    provider: DIALOGUE_TTS_CONFIG.provider,
+    model: DIALOGUE_TTS_CONFIG.default_model,
+    ai_service_config_id: DIALOGUE_TTS_CONFIG.id,
+    config_updated_at: DIALOGUE_TTS_CONFIG.updated_at,
+  };
+}
+
 function tempStorage() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-adapters-'));
 }
@@ -24,6 +63,21 @@ function makeReadableFile(root, rel, contents = 'x') {
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, contents);
   return rel.replace(/\\/g, '/');
+}
+
+function verifiedLocaleVerifier(calls = []) {
+  return {
+    assertReady() {},
+    async verify(input) {
+      calls.push(input);
+      return {
+        languageVerified: true,
+        detectedLocale: input.locale,
+        source: 'offline-worker',
+        localePack: `${input.locale}@1`,
+      };
+    },
+  };
 }
 
 async function makePngFile(root, rel, width = 640, height = 360) {
@@ -526,20 +580,38 @@ test('generateAsset trusted request model is not affected by input snapshot mode
 
 test('redrawAssetService.generateAsset contract reaches voice adapter and probes duration', async () => {
   const state = setupAssetContractState();
+  state.db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, model, default_model, is_active, settings, created_at, updated_at)
+    VALUES (77, 'tts', 'tts-provider', 'contract TTS', ?, 'snapshot-tts-model', 1, '{}', ?, ?)`)
+    .run(JSON.stringify(['snapshot-tts-model']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z');
   const synthCalls = [];
   const createCalls = [];
   const adapters = createRedrawProviderAdapters({
     db: state.db,
     log: createLog(),
     cfg: { storage: { local_path: state.storageRoot } },
-    ttsConfig: { provider: 'openai', default_model: 'snapshot-tts-model' },
+    ttsConfig: {
+      id: 77,
+      service_type: 'tts',
+      provider: 'tts-provider',
+      default_model: 'snapshot-tts-model',
+      is_active: true,
+      updated_at: '2026-08-08T00:00:00.000Z',
+    },
     ttsService: {
       async synthesize(...args) {
         synthCalls.push(args);
-        return { local_path: makeReadableFile(state.storageRoot, `redraw-assets/v${state.versionId}/voice.mp3`, 'mp3') };
+        return {
+          status: 'completed',
+          provider_task_id: 'voice-contract-task',
+          local_path: makeReadableFile(state.storageRoot, `redraw-assets/v${state.versionId}/voice.mp3`, 'mp3'),
+          detected_locale: 'en-US',
+          language_verified: true,
+        };
       },
     },
     audioProbe: () => 0.144,
+    localeVerifier: verifiedLocaleVerifier(),
     assetService: {
       create(db, log, payload) {
         createCalls.push(payload);
@@ -556,7 +628,12 @@ test('redrawAssetService.generateAsset contract reaches voice adapter and probes
       sourceRef: { id: 'voice-1', voice_id: 'voice-from-source' },
       prompt: 'Hello from real contract',
       model: 'input-tts-model',
-      snapshot: { model: 'snapshot-tts-model', provider: 'tts-provider' },
+      snapshot: {
+        model: 'snapshot-tts-model',
+        provider: 'tts-provider',
+        ai_service_config_id: 77,
+        config_updated_at: '2026-08-08T00:00:00.000Z',
+      },
     });
 
     assert.equal(result.status, 'generated');
@@ -1122,7 +1199,12 @@ test('generateAsset voice uses verified model and refuses unknown duration befor
     ttsService: {
       async synthesize(...args) {
         calls.push(args);
-        return { local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3'), duration: 0 };
+        return {
+          status: 'completed',
+          provider_task_id: 'voice-duration-task',
+          local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3'),
+          duration: 0,
+        };
       },
     },
     assetService: {
@@ -1145,7 +1227,9 @@ test('generateAsset voice uses verified model and refuses unknown duration befor
         source_ref_json: JSON.stringify({ source_ref: { voice_id: 'voice-a' } }),
       },
     }),
-    (error) => error.code === 'REDRAW_VOICE_DURATION_REQUIRED',
+    (error) => error.code === 'REDRAW_VOICE_DURATION_REQUIRED'
+      && error.provider_completed === true
+      && error.provider_task_id === 'voice-duration-task',
   );
   assert.equal(created.length, 0);
   assert.equal(calls[0][2].text, 'Hello');
@@ -1153,6 +1237,65 @@ test('generateAsset voice uses verified model and refuses unknown duration befor
   assert.equal(calls[0][2].config.model, 'verified-tts-model');
   assert.equal(calls[0][2].storage_base, storageRoot);
   assert.equal(calls[0][2].storage_subdir, 'redraw-assets/v8');
+});
+
+test('generateAsset voice rejects provider self-reported language without worker evidence', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  let readyLocale = null;
+  const verifyCalls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-tts-model' },
+    ttsService: {
+      async synthesize() {
+        return {
+          status: 'completed',
+          provider_task_id: 'voice-provider-self-report',
+          local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/self-report.mp3', 'mp3'),
+          duration: 1,
+          detected_locale: 'en-US',
+          language_verified: true,
+        };
+      },
+    },
+    localeVerifier: {
+      assertReady(locale) {
+        readyLocale = locale;
+      },
+      async verify(input) {
+        verifyCalls.push(input);
+        throw Object.assign(new Error('worker timeout'), { code: 'REDRAW_LOCALE_VERIFIER_TIMEOUT' });
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 1, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-tts-model',
+      locale: 'en-US',
+      asset: { id: 6, kind: 'voice', prompt: 'Hello' },
+    }),
+    (error) => error.code === 'REDRAW_LOCALE_VERIFY_UNKNOWN'
+      && error.provider_completed === true
+      && error.provider_task_id === 'voice-provider-self-report',
+  );
+  assert.equal(readyLocale, 'en-US');
+  assert.equal(verifyCalls.length, 1);
+  assert.equal(verifyCalls[0].requestId, 'voice-provider-self-report');
+  assert.equal(verifyCalls[0].approvedText, 'Hello');
+  assert.equal(verifyCalls[0].ttsInvocation.providerTaskId, 'voice-provider-self-report');
+  assert.equal(created.length, 0);
+  assert.equal(fs.existsSync(path.join(storageRoot, 'redraw-assets/v8/self-report.mp3')), true);
 });
 
 test('generateAsset voice probes duration when synthesize omits it and cleans failed probes', async () => {
@@ -1167,7 +1310,7 @@ test('generateAsset voice probes duration when synthesize omits it and cleans fa
     ttsService: {
       async synthesize() {
         voicePath = makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3');
-        return { local_path: voicePath };
+        return { status: 'completed', provider_task_id: 'voice-probe-task', local_path: voicePath };
       },
     },
     audioProbe: () => null,
@@ -1186,7 +1329,9 @@ test('generateAsset voice probes duration when synthesize omits it and cleans fa
       locale: 'en-US',
       asset: { id: 6, kind: 'voice', prompt: 'Hello' },
     }),
-    (error) => error.code === 'REDRAW_VOICE_DURATION_REQUIRED',
+    (error) => error.code === 'REDRAW_VOICE_DURATION_REQUIRED'
+      && error.provider_completed === true
+      && error.provider_task_id === 'voice-probe-task',
   );
   assert.equal(created.length, 0);
   assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
@@ -1203,7 +1348,7 @@ test('generateAsset voice cleans scoped TTS file if registration fails', async (
     ttsService: {
       async synthesize() {
         voicePath = makeReadableFile(storageRoot, 'redraw-assets/v8/voice.mp3', 'mp3');
-        return { local_path: voicePath };
+        return { status: 'completed', provider_task_id: 'voice-register-task', local_path: voicePath };
       },
     },
     audioProbe: () => 0.25,
@@ -1221,9 +1366,44 @@ test('generateAsset voice cleans scoped TTS file if registration fails', async (
       locale: 'en-US',
       asset: { id: 6, kind: 'voice', prompt: 'Hello' },
     }),
-    /asset insert failed/,
+    (error) => error.code === 'ASSET_CREATE_FAILED'
+      && error.provider_completed === true
+      && error.provider_task_id === 'voice-register-task',
   );
   assert.equal(fs.existsSync(path.join(storageRoot, voicePath)), false);
+});
+
+test('generateAsset voice marks scoped-path failure as post-provider with the real task id', async () => {
+  const storageRoot = tempStorage();
+  const adapters = createRedrawProviderAdapters({
+    db: {},
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsConfig: { provider: 'openai', default_model: 'verified-tts-model' },
+    ttsService: {
+      async synthesize() {
+        return {
+          status: 'completed',
+          provider_task_id: 'voice-scope-task',
+          local_path: '../outside.mp3',
+          duration: 1,
+        };
+      },
+    },
+    assetService: { create() { throw new Error('must not register'); } },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-tts-model',
+      locale: 'en-US',
+      asset: { id: 6, kind: 'voice', prompt: 'Hello' },
+    }),
+    (error) => error.code === 'REDRAW_ASSET_STORAGE_SCOPE_INVALID'
+      && error.provider_completed === true
+      && error.provider_task_id === 'voice-scope-task',
+  );
 });
 
 test('generateAsset dialogue reuses TTS storage but writes isolated category and server metadata', async () => {
@@ -1231,7 +1411,7 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
   const synthCalls = [];
   const created = [];
   const adapters = createRedrawProviderAdapters({
-    db: {},
+    db: fakeTtsConfigDb(),
     log: createLog(),
     cfg: { storage: { local_path: storageRoot } },
     ttsConfig: { provider: 'openai', default_model: 'verified-dialogue-model' },
@@ -1241,6 +1421,7 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
         return {
           local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue.mp3', 'mp3'),
           duration: 1.25,
+          provider_task_id: 'dialogue-provider-task',
         };
       },
     },
@@ -1264,6 +1445,7 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
       segment_id: '801:0',
       text: 'Come with me.',
       voice_id: 'voice-c1',
+      voice_snapshot: dialogueVoiceSnapshot(),
       idempotency_key: 'idem-dialogue',
       reservation_id: 'reservation-dialogue',
     },
@@ -1272,7 +1454,7 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
   assert.equal(result.status, 'completed');
   assert.equal(result.asset_id, 188);
   assert.equal(result.duration, 1.25);
-  assert.equal(result.provider_task_id, null);
+  assert.equal(result.provider_task_id, 'dialogue-provider-task');
   assert.equal(synthCalls.length, 1);
   assert.equal(synthCalls[0][2].text, 'Come with me.');
   assert.equal(synthCalls[0][2].voice_id, 'voice-c1');
@@ -1280,7 +1462,12 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
   assert.equal(created[0].type, 'audio');
   assert.equal(created[0].category, 'redraw_dialogue');
   assert.equal(created[0].metadata.kind, 'dialogue');
-  assert.equal(created[0].metadata.provider_task_id, null);
+  assert.equal(created[0].metadata.provider_task_id, 'dialogue-provider-task');
+  assert.equal(created[0].metadata.provider, DIALOGUE_TTS_CONFIG.provider);
+  assert.equal(created[0].metadata.model, DIALOGUE_TTS_CONFIG.default_model);
+  assert.equal(created[0].metadata.ai_service_config_id, DIALOGUE_TTS_CONFIG.id);
+  assert.equal(created[0].metadata.config_updated_at, DIALOGUE_TTS_CONFIG.updated_at);
+  assert.deepEqual(created[0].metadata.voice_snapshot, dialogueVoiceSnapshot());
   assert.equal(typeof created[0].metadata.invocation_id, 'string');
   assert.deepEqual(created[0].metadata.redraw_dialogue, {
     tenant_id: 'tenant-a',
@@ -1289,15 +1476,225 @@ test('generateAsset dialogue reuses TTS storage but writes isolated category and
     segment_id: '801:0',
     idempotency_key: 'idem-dialogue',
     reservation_id: 'reservation-dialogue',
-    provider_task_id: null,
+    provider_task_id: 'dialogue-provider-task',
+    provider: DIALOGUE_TTS_CONFIG.provider,
+    model: DIALOGUE_TTS_CONFIG.default_model,
+    ai_service_config_id: DIALOGUE_TTS_CONFIG.id,
+    config_updated_at: DIALOGUE_TTS_CONFIG.updated_at,
+    voice_snapshot: dialogueVoiceSnapshot(),
     invocation_id: created[0].metadata.invocation_id,
   });
+});
+
+test('generateAsset dialogue treats a completed-looking audio without provider task id as unknown', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const adapters = createRedrawProviderAdapters({
+    db: fakeTtsConfigDb(),
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsService: {
+      async synthesize() {
+        return {
+          status: 'completed',
+          local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue-no-task.mp3', 'mp3'),
+          duration: 1.25,
+        };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 189, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-dialogue-model',
+      locale: 'en-US',
+      market: 'US',
+      kind: 'dialogue',
+      segment: {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: 8,
+        segment_id: '801:1',
+        text: 'Do not confirm this charge.',
+        voice_id: 'voice-c1',
+        voice_snapshot: dialogueVoiceSnapshot(),
+        idempotency_key: 'idem-dialogue-no-task',
+        reservation_id: 'reservation-dialogue-no-task',
+      },
+    }),
+    (error) => error.code === 'PROVIDER_STATUS_UNKNOWN' && error.unknown === true,
+  );
+  assert.equal(created.length, 0);
+});
+
+test('dialogue post-provider storage and registration failures retain the provider completion trace', async (t) => {
+  const cases = [
+    {
+      name: 'scoped path',
+      localPath: '../outside.mp3',
+      create() { throw new Error('must not register'); },
+      code: 'REDRAW_ASSET_STORAGE_SCOPE_INVALID',
+    },
+    {
+      name: 'registration',
+      localPath: 'redraw-assets/v8/register-failure.mp3',
+      create() { throw Object.assign(new Error('asset insert failed'), { code: 'ASSET_CREATE_FAILED' }); },
+      code: 'ASSET_CREATE_FAILED',
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const storageRoot = tempStorage();
+      const localPath = item.localPath.startsWith('redraw-assets/')
+        ? makeReadableFile(storageRoot, item.localPath, 'mp3')
+        : item.localPath;
+      try {
+        const adapters = createRedrawProviderAdapters({
+          db: fakeTtsConfigDb(),
+          log: createLog(),
+          cfg: { storage: { local_path: storageRoot } },
+          ttsService: {
+            async synthesize() {
+              return {
+                status: 'completed',
+                provider_task_id: `dialogue-${item.name}-task`,
+                local_path: localPath,
+                duration: 1,
+              };
+            },
+          },
+          assetService: { create: item.create },
+        });
+        await assert.rejects(
+          adapters.generateAsset({
+            versionId: 8,
+            model: 'verified-dialogue-model',
+            locale: 'en-US',
+            market: 'US',
+            kind: 'dialogue',
+            segment: {
+              tenant_id: 'tenant-a',
+              user_id: 'user-a',
+              version_id: 8,
+              segment_id: '801:2',
+              text: 'Retain the provider trace.',
+              voice_id: 'voice-c1',
+              voice_snapshot: dialogueVoiceSnapshot(),
+              idempotency_key: `dialogue-${item.name}`,
+              reservation_id: `reservation-${item.name}`,
+            },
+          }),
+          (error) => error.code === item.code
+            && error.provider_completed === true
+            && error.provider_task_id === `dialogue-${item.name}-task`,
+        );
+      } finally {
+        fs.rmSync(storageRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('dialogue adapter uses the exact pinned provider/config and rejects rewritten or inactive pins before TTS', async (t) => {
+  const pinned = {
+    ...DIALOGUE_TTS_CONFIG,
+    id: 89,
+    provider: 'provider-b',
+    name: 'provider B exact pin',
+  };
+  const request = {
+    versionId: 8,
+    model: pinned.default_model,
+    locale: 'en-US',
+    market: 'US',
+    kind: 'dialogue',
+    segment: {
+      tenant_id: 'tenant-a',
+      user_id: 'user-a',
+      version_id: 8,
+      segment_id: '801:0',
+      text: 'Pinned provider.',
+      voice_id: 'voice-b',
+      voice_snapshot: {
+        provider: pinned.provider,
+        model: pinned.default_model,
+        ai_service_config_id: pinned.id,
+        config_updated_at: pinned.updated_at,
+      },
+      idempotency_key: 'pinned-provider-b',
+      reservation_id: 'reservation-provider-b',
+    },
+  };
+
+  await t.test('provider B wins over injected provider A with the same model', async () => {
+    const storageRoot = tempStorage();
+    const synthCalls = [];
+    try {
+      const adapters = createRedrawProviderAdapters({
+        db: fakeTtsConfigDb(pinned),
+        log: createLog(),
+        cfg: { storage: { local_path: storageRoot } },
+        ttsConfig: { ...pinned, id: 90, provider: 'provider-a' },
+        ttsService: {
+          async synthesize(_db, _log, options) {
+            synthCalls.push(options);
+            return {
+              status: 'completed',
+              provider_task_id: 'dialogue-provider-b',
+              local_path: makeReadableFile(storageRoot, 'redraw-assets/v8/pinned-b.mp3', 'mp3'),
+              duration: 1,
+            };
+          },
+        },
+        assetService: { create(_db, _log, payload) { return { id: 190, ...payload }; } },
+      });
+      await adapters.generateAsset(request);
+      assert.equal(synthCalls.length, 1);
+      assert.equal(synthCalls[0].config.id, pinned.id);
+      assert.equal(synthCalls[0].config.provider, 'provider-b');
+    } finally {
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  for (const invalid of [
+    { name: 'rewritten', config: { ...pinned, updated_at: '2026-08-08T00:00:01.000Z' } },
+    { name: 'inactive', config: { ...pinned, is_active: false } },
+  ]) {
+    await t.test(invalid.name, async () => {
+      const storageRoot = tempStorage();
+      let synthCalls = 0;
+      try {
+        const adapters = createRedrawProviderAdapters({
+          db: fakeTtsConfigDb(invalid.config),
+          log: createLog(),
+          cfg: { storage: { local_path: storageRoot } },
+          ttsService: { async synthesize() { synthCalls += 1; } },
+          assetService: { create() { throw new Error('must not register'); } },
+        });
+        await assert.rejects(
+          adapters.generateAsset(request),
+          (error) => error.code === 'REDRAW_TTS_CONFIG_PIN_INVALID',
+        );
+        assert.equal(synthCalls, 0);
+      } finally {
+        fs.rmSync(storageRoot, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test('generateAsset dialogue throws unknown provider result for needs_attention handling', async () => {
   const storageRoot = tempStorage();
   const adapters = createRedrawProviderAdapters({
-    db: {},
+    db: fakeTtsConfigDb(),
     log: createLog(),
     cfg: { storage: { local_path: storageRoot } },
     ttsConfig: { provider: 'openai', default_model: 'verified-dialogue-model' },
@@ -1325,6 +1722,7 @@ test('generateAsset dialogue throws unknown provider result for needs_attention 
         version_id: 8,
         segment_id: '801:0',
         text: 'Come with me.',
+        voice_snapshot: dialogueVoiceSnapshot(),
         idempotency_key: 'idem-dialogue',
         reservation_id: 'reservation-dialogue',
       },
@@ -1392,6 +1790,7 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
   const originalAdapters = require.cache[adaptersPath];
   const seen = [];
   const adapterRequests = [];
+  const localeVerifier = { assertReady() {}, async verify() {} };
   const fakeAdapters = {
     localize: async () => ({}),
     generateAsset: async (request) => {
@@ -1468,13 +1867,13 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
   mock('../src/services/promptOverridesService', { listOverrides: () => [] });
   try {
     const { setupRouter } = require('../src/routes');
-    setupRouter({ storage: {} }, {}, createLog(), { providerAdapters: fakeAdapters });
+    setupRouter({ storage: {} }, {}, createLog(), { localeVerifier });
     assert.equal(seen.some((entry) => entry.localizationProvider === fakeAdapters.localize), true);
     const redrawOptions = seen.find((entry) => typeof entry.assetGenerationProvider === 'function'
       && !entry.factoryDeps);
     assert.notEqual(redrawOptions.assetGenerationProvider, fakeAdapters.generateAsset);
     assert.equal(typeof redrawOptions.dialogueProvider, 'function');
-    await redrawOptions.assetGenerationProvider({
+  await redrawOptions.assetGenerationProvider({
       attempt: { id: 1, kind: 'prop' },
       input: { model: 'server-verified-model', provider: 'ignored-input-provider' },
       versionId: 7,
@@ -1491,6 +1890,10 @@ test('setupRouter bridges fake redraw asset adapters with trusted input model', 
     assert.equal(adapterRequests.length, 2);
     assert.equal(adapterRequests[1].kind, 'dialogue');
     assert.equal(adapterRequests[1].model, 'server-dialogue-model');
+    const factoryDeps = seen.find((entry) => entry.factoryDeps).factoryDeps;
+    assert.equal(factoryDeps.localeVerifier, localeVerifier);
+    assert.equal(adapterRequests[0].localeVerifier, factoryDeps.localeVerifier);
+    assert.equal(adapterRequests[1].localeVerifier, factoryDeps.localeVerifier);
   } finally {
     delete require.cache[routesPath];
     if (originalRedraw) require.cache[redrawPath] = originalRedraw;
