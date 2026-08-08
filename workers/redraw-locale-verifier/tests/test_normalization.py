@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import tempfile
 import unittest
 import wave
@@ -96,6 +98,34 @@ class NormalizationTests(unittest.TestCase):
                 normalize_audio(audio_path, allowed_root, temp_root)
             self.assertEqual(list(temp_root.glob("*.wav")), [])
 
+    def test_audio_rejects_input_without_audio_stream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            allowed_root = root / "allowed"
+            temp_root = root / "temp"
+            allowed_root.mkdir()
+            temp_root.mkdir()
+            video_path = allowed_root / "video-only.mp4"
+            _write_video_without_audio(video_path, self)
+
+            with self.assertRaisesRegex(AudioInputError, "LOCALE_AUDIO_STREAM_INVALID"):
+                normalize_audio(video_path, allowed_root, temp_root)
+            self.assertEqual(list(temp_root.glob("*.wav")), [])
+
+    def test_audio_rejects_input_longer_than_sixty_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            allowed_root = root / "allowed"
+            temp_root = root / "temp"
+            allowed_root.mkdir()
+            temp_root.mkdir()
+            audio_path = allowed_root / "too-long.wav"
+            _write_wav(audio_path, seconds=61)
+
+            with self.assertRaisesRegex(AudioInputError, "LOCALE_AUDIO_DURATION_INVALID"):
+                normalize_audio(audio_path, allowed_root, temp_root)
+            self.assertEqual(list(temp_root.glob("*.wav")), [])
+
 
 def _write_wav(path, seconds):
     sample_rate = 16000
@@ -105,6 +135,27 @@ def _write_wav(path, seconds):
         wav.setsampwidth(2)
         wav.setframerate(sample_rate)
         wav.writeframes(b"\0\0" * frames)
+
+
+def _write_video_without_audio(path, test_case):
+    if shutil.which("ffmpeg") is None:
+        test_case.skipTest("ffmpeg unavailable")
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:d=1",
+        "-an",
+        str(path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    if completed.returncode != 0:
+        test_case.skipTest(f"ffmpeg video fixture unavailable: {completed.stderr}")
 
 
 if __name__ == "__main__":

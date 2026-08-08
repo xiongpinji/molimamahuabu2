@@ -58,7 +58,8 @@ def _validate_tts_invocation(value):
         raise ProtocolError("LOCALE_TTS_INVOCATION_INVALID")
     for key in ("provider", "model", "config_updated_at", "provider_task_id"):
         _require_non_empty_string(value.get(key), "LOCALE_TTS_INVOCATION_INVALID")
-    if not isinstance(value.get("ai_service_config_id"), int) or value["ai_service_config_id"] <= 0:
+    config_id = value.get("ai_service_config_id")
+    if type(config_id) is not int or config_id <= 0:
         raise ProtocolError("LOCALE_TTS_INVOCATION_INVALID")
     try:
         parsed = datetime.fromisoformat(value["config_updated_at"].replace("Z", "+00:00"))

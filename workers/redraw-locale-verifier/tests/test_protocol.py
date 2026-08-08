@@ -60,6 +60,7 @@ class ProtocolTests(unittest.TestCase):
             {"model": ""},
             {"provider_task_id": ""},
             {"ai_service_config_id": 0},
+            {"ai_service_config_id": True},
             {"ai_service_config_id": "7"},
             {"config_updated_at": "2026-08-08T12:30:00"},
             {"extra": "ignored"},
