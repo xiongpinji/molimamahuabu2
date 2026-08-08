@@ -22,6 +22,7 @@
     "verify:usmercari-image": "node scripts/verify-usmercari-image-models.js",
     "audit:usmercari-image": "node scripts/verify-usmercari-image-release-contract.js",
     "verify:toapis-video": "node scripts/verify-toapis-video-models.js",
+    "verify:feituo-video": "node scripts/verify-feituo-video-models.js",
     "audit:toapis-video": "node scripts/verify-toapis-video-release-contract.js"
   },
   "engines": {

@@ -14,7 +14,9 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-evidence-assets-'));
   const publicRoot = path.join(root, 'public');
   fs.mkdirSync(path.join(publicRoot, 'bootstrap'), { recursive: true });
+  fs.mkdirSync(path.join(publicRoot, 'feituo'), { recursive: true });
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', 'proof.mp4'), 'verified artifact');
+  fs.writeFileSync(path.join(publicRoot, 'feituo', 'proof.mp4'), 'verified feituo artifact');
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', 'unsafe.html'), '<script>alert(1)</script>');
   fs.writeFileSync(path.join(publicRoot, 'bootstrap', '.secret.mp4'), 'hidden');
   return { root, publicRoot };
@@ -55,6 +57,9 @@ test('verification assets are anonymously readable without exposing dotfiles', a
     assert.equal(proof.status, 200);
     assert.equal(await proof.text(), 'verified artifact');
     assert.match(String(proof.headers.get('cache-control')), /immutable/);
+    const feituo = await fetch(`${base}/verification-assets/feituo/proof.mp4`);
+    assert.equal(feituo.status, 200);
+    assert.equal(await feituo.text(), 'verified feituo artifact');
     const hidden = await fetch(`${base}/verification-assets/bootstrap/.secret.mp4`);
     assert.equal(hidden.status, 404);
     const unsafeHtml = await fetch(`${base}/verification-assets/bootstrap/unsafe.html`);
