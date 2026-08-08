@@ -189,6 +189,7 @@ class ModelStagingTests(unittest.TestCase):
     def test_smoke_forces_offline_env_rejects_relative_stage_dir_and_reports_runtime_hash(self):
         smoke_source = SMOKE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("setdefault", smoke_source)
+        self.assertIn('parser.add_argument("--stage-dir", "--models", dest="stage_dir", required=True)', smoke_source)
         self.assertIn('os.environ["HF_HUB_OFFLINE"] = "1"', smoke_source)
         self.assertIn('os.environ["TRANSFORMERS_OFFLINE"] = "1"', smoke_source)
         self.assertIn('os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"', smoke_source)

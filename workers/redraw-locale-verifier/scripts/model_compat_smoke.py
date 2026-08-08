@@ -90,7 +90,7 @@ def timed(label, fn, timings):
 
 def main():
     parser = argparse.ArgumentParser(description="Offline model compatibility smoke.")
-    parser.add_argument("--stage-dir", required=True)
+    parser.add_argument("--stage-dir", "--models", dest="stage_dir", required=True)
     parser.add_argument("--audio", required=True)
     parser.add_argument("--max-rss-bytes", type=int, required=True)
     args = parser.parse_args()
