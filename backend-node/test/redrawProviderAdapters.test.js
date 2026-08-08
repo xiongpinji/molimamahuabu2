@@ -1534,6 +1534,60 @@ test('generateAsset dialogue treats a completed-looking audio without provider t
   assert.equal(created.length, 0);
 });
 
+test('generateAsset dialogue rejects failed provider result before registration and retains task id', async () => {
+  const storageRoot = tempStorage();
+  const created = [];
+  const localPath = makeReadableFile(storageRoot, 'redraw-assets/v8/dialogue-failed.mp3', 'mp3');
+  const adapters = createRedrawProviderAdapters({
+    db: fakeTtsConfigDb(),
+    log: createLog(),
+    cfg: { storage: { local_path: storageRoot } },
+    ttsService: {
+      async synthesize() {
+        return {
+          status: 'failed',
+          error: 'provider rejected dialogue',
+          provider_task_id: 'dialogue-failed-task',
+          local_path: localPath,
+          duration: 1.25,
+        };
+      },
+    },
+    assetService: {
+      create(_db, _log, payload) {
+        created.push(payload);
+        return { id: 190, ...payload };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => adapters.generateAsset({
+      versionId: 8,
+      model: 'verified-dialogue-model',
+      locale: 'en-US',
+      market: 'US',
+      kind: 'dialogue',
+      segment: {
+        tenant_id: 'tenant-a',
+        user_id: 'user-a',
+        version_id: 8,
+        segment_id: '801:2',
+        text: 'Do not register this failed dialogue.',
+        voice_id: 'voice-c1',
+        voice_snapshot: dialogueVoiceSnapshot(),
+        idempotency_key: 'idem-dialogue-failed',
+        reservation_id: 'reservation-dialogue-failed',
+      },
+    }),
+    (error) => error.code === 'REDRAW_DIALOGUE_PROVIDER_FAILED'
+      && error.provider_completed === true
+      && error.provider_task_id === 'dialogue-failed-task',
+  );
+  assert.equal(created.length, 0);
+  assert.equal(fs.existsSync(path.join(storageRoot, localPath)), true);
+});
+
 test('dialogue post-provider storage and registration failures retain the provider completion trace', async (t) => {
   const cases = [
     {

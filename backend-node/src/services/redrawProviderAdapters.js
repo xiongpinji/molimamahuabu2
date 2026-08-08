@@ -849,6 +849,12 @@ function createRedrawProviderAdapters(deps = {}) {
         provider_task_id: providerTaskIdOf(result),
       });
     }
+    if ((result?.status && !completedProviderStatus(result.status)) || result?.error) {
+      throw providerCompletedError(
+        codedError('REDRAW_DIALOGUE_PROVIDER_FAILED', result?.error || 'dialogue provider did not complete successfully'),
+        providerTaskIdOf(result),
+      );
+    }
     const providerTaskId = requireProviderTaskId(result, 'dialogue');
     let localPath;
     let absolutePath;
