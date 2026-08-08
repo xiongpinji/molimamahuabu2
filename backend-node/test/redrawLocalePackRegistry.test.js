@@ -23,6 +23,7 @@ function writeFixture(options = {}) {
       calibration_manifest_sha256: 'b'.repeat(64),
     }],
   };
+  const socketPath = options.socketPath || path.join(tmp, 'verifier.sock');
   const ready = {
     locale_pack: 'en-US@1',
     model_manifest_sha256: 'a'.repeat(64),
@@ -30,7 +31,6 @@ function writeFixture(options = {}) {
     manifest_sha256: sha256(signer.canonicalPayload(manifest)),
     expires_at: 2_000,
     pid: process.pid,
-    socket_path: path.join(tmp, 'verifier.sock'),
     ...options.ready,
   };
   const registryPath = path.join(tmp, 'enabled-packs.json');
@@ -41,7 +41,7 @@ function writeFixture(options = {}) {
   fs.writeFileSync(signaturePath, `${crypto.sign(null, signer.canonicalPayload(manifest), privateKey).toString('base64')}\n`);
   fs.writeFileSync(publicKeyPath, publicKey.export({ type: 'spki', format: 'pem' }));
   fs.writeFileSync(readyPath, JSON.stringify(ready, null, 2));
-  return { tmp, manifest, registryPath, signaturePath, publicKeyPath, readyPath, socketPath: ready.socket_path };
+  return { tmp, manifest, registryPath, signaturePath, publicKeyPath, readyPath, socketPath };
 }
 
 function registryFor(fixture, overrides = {}) {
@@ -65,6 +65,13 @@ test('registry accepts a signed en-US ready attestation', () => {
   assert.equal(pack.id, 'en-US@1');
   assert.equal(pack.locale, 'en-US');
   assert.equal(pack.model_manifest_sha256, 'a'.repeat(64));
+});
+
+test('registry accepts Task4 ready payload without socket_path', () => {
+  const fixture = writeFixture();
+  const ready = JSON.parse(fs.readFileSync(fixture.readyPath, 'utf8'));
+  assert.equal(Object.hasOwn(ready, 'socket_path'), false);
+  assert.equal(registryFor(fixture).assertReady('en-US').id, 'en-US@1');
 });
 
 test('registry rejects expired and hash-mismatched ready attestations', () => {
@@ -91,7 +98,7 @@ test('registry rejects invalid signatures, dead pids, non-socket paths, and unsu
     code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
   });
 
-  const notSocket = writeFixture();
+  const notSocket = writeFixture({ socketPath: path.join(os.tmpdir(), 'wrong-redraw-locale.sock') });
   assert.throws(() => registryFor(notSocket, { isSocketPath: () => false }).assertReady('en-US'), {
     code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
   });

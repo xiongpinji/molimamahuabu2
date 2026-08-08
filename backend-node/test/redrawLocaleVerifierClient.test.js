@@ -39,6 +39,25 @@ function makeAudio() {
   return { tmp, audioPath };
 }
 
+function okResponse(request, overrides = {}) {
+  return {
+    ok: true,
+    result: {
+      request_id: request.request_id,
+      audio_sha256: request.audio_sha256,
+      locale_pack: 'en-US@1',
+      language_verified: true,
+      detected_locale: 'en-US',
+      transcript_sha256: 'c'.repeat(64),
+      model_manifest_sha256: 'a'.repeat(64),
+      calibration_manifest_sha256: 'b'.repeat(64),
+      metrics: { word_error_rate: 0 },
+      completed_at: '2026-08-08T00:00:01.000Z',
+      ...overrides,
+    },
+  };
+}
+
 async function withServer(handler, fn) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-sock-'));
   const socketPath = process.platform === 'win32'
@@ -86,18 +105,12 @@ function clientFor(socketPath, options = {}) {
 test('client maps camelCase request fields, hashes audio, and returns camelCase evidence', async () => {
   const audio = makeAudio();
   await withServer((socket, request) => {
-    socket.end(`${JSON.stringify({
-      request_id: request.request_id,
-      audio_sha256: request.audio_sha256,
-      locale_pack: 'en-US@1',
-      language_verified: true,
-      detected_locale: 'en-US',
-      transcript_sha256: 'c'.repeat(64),
-      model_manifest_sha256: 'a'.repeat(64),
-      calibration_manifest_sha256: 'b'.repeat(64),
-      metrics: { word_error_rate: 0 },
-      completed_at: '2026-08-08T00:00:01.000Z',
-    })}\n`);
+    socket.end(`${JSON.stringify(okResponse(request, {
+      raw: { should_not_leak: true },
+      transcript: 'Anna did not pay 50 dollars.',
+      transcript_text: 'Anna did not pay 50 dollars.',
+      approved_text: request.approved_text,
+    }))}\n`);
   }, async ({ socketPath, state }) => {
     const result = await clientFor(socketPath).verify(validRequest(audio.audioPath));
     assert.equal(state.requestCount, 1);
@@ -115,20 +128,45 @@ test('client maps camelCase request fields, hashes audio, and returns camelCase 
     assert.equal(result.audioSha256, state.requests[0].audio_sha256);
     assert.equal(result.modelManifestSha256, 'a'.repeat(64));
     assert.equal(result.calibrationManifestSha256, 'b'.repeat(64));
+    assert.equal(Object.hasOwn(result, 'raw'), false);
+    assert.equal(Object.hasOwn(result, 'transcript'), false);
+    assert.equal(Object.hasOwn(result, 'transcriptText'), false);
+    assert.equal(Object.hasOwn(result, 'approvedText'), false);
   });
 });
 
 test('client rejects response drift and does not retry', async () => {
   const audio = makeAudio();
   await withServer((socket, request) => {
+    socket.end(`${JSON.stringify(okResponse(request, { audio_sha256: 'd'.repeat(64) }))}\n`);
+  }, async ({ socketPath, state }) => {
+    await assert.rejects(() => clientFor(socketPath).verify(validRequest(audio.audioPath)), {
+      code: 'REDRAW_LOCALE_EVIDENCE_INVALID',
+    });
+    assert.equal(state.requestCount, 1);
+  });
+});
+
+test('client maps worker ok:false error_code without retry', async () => {
+  const audio = makeAudio();
+  await withServer((socket) => {
     socket.end(`${JSON.stringify({
-      request_id: request.request_id,
-      audio_sha256: 'd'.repeat(64),
-      locale_pack: 'en-US@1',
-      language_verified: true,
-      model_manifest_sha256: 'a'.repeat(64),
-      calibration_manifest_sha256: 'b'.repeat(64),
+      ok: false,
+      error_code: 'LOCALE_VERIFY_REQUEST_INVALID',
+      message: 'worker rejected request',
     })}\n`);
+  }, async ({ socketPath, state }) => {
+    await assert.rejects(() => clientFor(socketPath).verify(validRequest(audio.audioPath)), {
+      code: 'LOCALE_VERIFY_REQUEST_INVALID',
+    });
+    assert.equal(state.requestCount, 1);
+  });
+});
+
+test('client rejects malformed worker wrapper', async () => {
+  const audio = makeAudio();
+  await withServer((socket, request) => {
+    socket.end(`${JSON.stringify({ result: okResponse(request).result })}\n`);
   }, async ({ socketPath, state }) => {
     await assert.rejects(() => clientFor(socketPath).verify(validRequest(audio.audioPath)), {
       code: 'REDRAW_LOCALE_EVIDENCE_INVALID',

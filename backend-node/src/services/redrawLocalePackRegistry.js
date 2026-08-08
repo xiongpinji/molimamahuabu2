@@ -32,7 +32,6 @@ function createRedrawLocalePackRegistry(options = {}) {
       || ready.calibration_manifest_sha256 !== pack.calibration_manifest_sha256
       || (ready.manifest_sha256 && ready.manifest_sha256 !== manifestHash())
       || !deps.isProcessAlive(Number(ready.pid))
-      || String(ready.socket_path || '') !== paths.socketPath
       || !deps.isSocketPath(paths.socketPath)) {
       throw notReady();
     }

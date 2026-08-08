@@ -23,7 +23,7 @@ function createRedrawLocaleVerifierClient(options = {}) {
       throw codedError('REDRAW_LOCALE_REQUEST_TOO_LARGE');
     }
     const response = await roundTrip(socketPath, line, timeoutMs);
-    return validateResponse(response, request, pack);
+    return validateWrapper(response, request, pack);
   }
 
   return { verify };
@@ -112,31 +112,43 @@ function roundTrip(socketPath, line, timeoutMs) {
   });
 }
 
-function validateResponse(response, request, pack) {
-  if (!response || typeof response !== 'object'
-    || response.request_id !== request.request_id
-    || response.audio_sha256 !== request.audio_sha256
-    || response.locale_pack !== pack.id
-    || response.model_manifest_sha256 !== pack.model_manifest_sha256
-    || response.calibration_manifest_sha256 !== pack.calibration_manifest_sha256
-    || response.language_verified !== true) {
+function validateWrapper(response, request, pack) {
+  if (!response || typeof response !== 'object') {
     throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
   }
-  if (!isOptionalSha(response.transcript_sha256)) {
+  if (response.ok === false) {
+    throw codedError(String(response.error_code || 'REDRAW_LOCALE_VERIFY_FAILED'));
+  }
+  if (response.ok !== true || !response.result || typeof response.result !== 'object') {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  return validateEvidence(response.result, request, pack);
+}
+
+function validateEvidence(evidence, request, pack) {
+  if (!evidence || typeof evidence !== 'object'
+    || evidence.request_id !== request.request_id
+    || evidence.audio_sha256 !== request.audio_sha256
+    || evidence.locale_pack !== pack.id
+    || evidence.model_manifest_sha256 !== pack.model_manifest_sha256
+    || evidence.calibration_manifest_sha256 !== pack.calibration_manifest_sha256
+    || evidence.language_verified !== true) {
+    throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
+  }
+  if (!isOptionalSha(evidence.transcript_sha256)) {
     throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
   }
   return {
-    requestId: response.request_id,
+    requestId: evidence.request_id,
     audioSha256: request.audio_sha256,
-    localePack: response.locale_pack,
+    localePack: evidence.locale_pack,
     languageVerified: true,
-    detectedLocale: response.detected_locale || null,
-    transcriptSha256: response.transcript_sha256 || null,
-    modelManifestSha256: response.model_manifest_sha256,
-    calibrationManifestSha256: response.calibration_manifest_sha256,
-    metrics: response.metrics || {},
-    completedAt: response.completed_at || null,
-    raw: response,
+    detectedLocale: evidence.detected_locale || null,
+    transcriptSha256: evidence.transcript_sha256 || null,
+    modelManifestSha256: evidence.model_manifest_sha256,
+    calibrationManifestSha256: evidence.calibration_manifest_sha256,
+    metrics: evidence.metrics || {},
+    completedAt: evidence.completed_at || null,
   };
 }
 
