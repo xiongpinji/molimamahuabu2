@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "release": "redraw-locale-verifier",
+  "allowedPaths": [
+    "backend-node/test/webProductionDeploymentContract.test.js",
+    "deploy/redraw-locale-verifier/README.md",
+    "deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service",
+    "deploy/release-scopes/redraw-locale-verifier.json"
+  ]
+}
