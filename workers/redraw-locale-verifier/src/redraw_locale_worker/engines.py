@@ -52,7 +52,13 @@ def _score_to_probability(score):
     value = score[0] if hasattr(score, "__getitem__") else score
     if hasattr(value, "item"):
         value = value.item()
+    if type(value) not in (int, float):
+        return None
     value = float(value)
+    if not math.isfinite(value):
+        return None
     if value <= 0.0:
-        return float(math.exp(value))
+        value = float(math.exp(value))
+    if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        return None
     return value

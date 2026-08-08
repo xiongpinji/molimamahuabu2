@@ -36,8 +36,8 @@ def verify_audio(request, pack, *, allowed_root, asr, accent):
 
     thresholds, thresholds_valid = _thresholds(pack)
     us_label = str(pack.get("us_accent_label", "us")).casefold()
-    asr_probability = _strict_float(asr_evidence.get("probability"))
-    accent_probability = _strict_float(accent_evidence.get("probability"))
+    asr_probability = _strict_probability(asr_evidence.get("probability"))
+    accent_probability = _strict_probability(accent_evidence.get("probability"))
     asr_language = str(asr_evidence.get("language") or "").casefold()
     accent_label = str(accent_evidence.get("label") or "").casefold()
 
@@ -166,6 +166,13 @@ def _strict_float(value):
     if type(value) not in (int, float):
         return None
     return float(value)
+
+
+def _strict_probability(value):
+    probability = _strict_float(value)
+    if probability is None or not math.isfinite(probability) or probability < 0.0 or probability > 1.0:
+        return None
+    return probability
 
 
 def _sha256_file(path):

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from redraw_locale_worker.engines import _score_to_probability
 from redraw_locale_worker.verifier import verify_audio
 
 
@@ -44,6 +45,18 @@ class InvalidEngine:
     def infer(self, audio_path):
         self.seen_audio_path = audio_path
         return "not evidence"
+
+
+class FakeScore:
+    def __init__(self, value):
+        self.value = value
+
+    def __getitem__(self, index):
+        self.index = index
+        return self
+
+    def item(self):
+        return self.value
 
 
 class VerifierTests(unittest.TestCase):
@@ -170,6 +183,33 @@ class VerifierTests(unittest.TestCase):
         self.assertFalse(result["language_verified"])
         self.assertIsNone(result["detected_locale"])
 
+    def test_inference_probability_must_be_finite_unit_interval_number(self):
+        invalid_values = [float("inf"), float("nan"), 2.0, -0.1, True]
+        for probability in invalid_values:
+            with self.subTest(engine="asr", probability=probability):
+                result = verify_audio(
+                    self.request,
+                    self.pack,
+                    allowed_root=self.allowed_root,
+                    asr=FakeAsr("en", probability, self.text),
+                    accent=FakeAccent("us", 0.99),
+                )
+                self.assertFalse(result["language_verified"])
+                self.assertIsNone(result["detected_locale"])
+                self.assertIsNone(result["asr"]["probability"])
+
+            with self.subTest(engine="accent", probability=probability):
+                result = verify_audio(
+                    self.request,
+                    self.pack,
+                    allowed_root=self.allowed_root,
+                    asr=FakeAsr("en", 0.99, self.text),
+                    accent=FakeAccent("us", probability),
+                )
+                self.assertFalse(result["language_verified"])
+                self.assertIsNone(result["detected_locale"])
+                self.assertIsNone(result["accent"]["probability"])
+
     def test_client_threshold_override_and_audio_hash_are_not_trusted(self):
         request = {
             **self.request,
@@ -281,6 +321,13 @@ class VerifierTests(unittest.TestCase):
                     self.assertFalse(result["language_verified"])
                     self.assertIsNone(result["detected_locale"])
                     self.assertFalse(result["checks"]["calibration_thresholds"])
+
+    def test_commonaccent_score_to_probability_never_returns_invalid_probability(self):
+        for value in (2.0, float("inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertIsNone(_score_to_probability(FakeScore(value)))
+
+        self.assertAlmostEqual(_score_to_probability(FakeScore(-0.1)), 0.9048374180359595)
 
 
 if __name__ == "__main__":
