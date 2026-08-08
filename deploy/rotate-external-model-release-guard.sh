@@ -9,6 +9,7 @@ unset NODE_OPTIONS NODE_PATH BASH_ENV ENV CDPATH GLOBIGNORE
 umask 077
 
 readonly EXPECTED_OLD_ACTIVATOR_SHA256='ddd106c9f3e5d66537687e45d98d89b8c9112dd0038ab5d2e1daad61e5de0cf4'
+readonly EXPECTED_INSTALLED_ACTIVATOR_SHA256='363ae14ae924b666f0cb9841de3d819a1ac6993e0a9b990b04382152e11cc752'
 readonly EXPECTED_UI_VERIFIER_SHA256='6ba3d9c34bebd27e96f7c431cc1eeb606bb9c624982e687632d16eccf6609b8b'
 readonly EXPECTED_SEQUENCE_VERIFIER_SHA256='b0fce00c3155cb14c59962239abea8bdf6eb876b7f3b490458fc018be3c6adfe'
 readonly EXPECTED_NEW_ACTIVATOR_SHA256='363ae14ae924b666f0cb9841de3d819a1ac6993e0a9b990b04382152e11cc752'
@@ -92,6 +93,17 @@ require_exact_sha256() {
   if [[ "$actual" != "$expected" ]]; then
     fail "$label hash mismatch: expected=$expected actual=$actual"
   fi
+}
+
+require_reviewed_existing_activator() {
+  local file="$1"
+  local actual
+  assert_root_owned_regular_file "$file" 'activate-protected-release.sh'
+  actual="$(sha256_file "$file")"
+  if [[ "$actual" != "$EXPECTED_OLD_ACTIVATOR_SHA256" && "$actual" != "$EXPECTED_INSTALLED_ACTIVATOR_SHA256" ]]; then
+    fail "activate-protected-release.sh hash mismatch: expected one reviewed version actual=$actual"
+  fi
+  OLD_ACTIVATOR_ORIGINAL_SHA256="$actual"
 }
 
 tree_content_hash() {
@@ -202,7 +214,8 @@ if ! flock -n 9; then
 fi
 
 assert_current_matches
-require_exact_sha256 "$OLD_ACTIVATOR" "$EXPECTED_OLD_ACTIVATOR_SHA256" 'activate-protected-release.sh'
+OLD_ACTIVATOR_ORIGINAL_SHA256=''
+require_reviewed_existing_activator "$OLD_ACTIVATOR"
 require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
 require_exact_sha256 "$NEW_ACTIVATOR_SOURCE" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'reviewed new activator'
@@ -239,7 +252,7 @@ printf 'source_release=%s\ncandidate=%s\nexpected_current=%s\nreviewed_evidence_
 install -o root -g root -m 0555 "$OLD_ACTIVATOR" "$BACKUP_ROOT/activate-protected-release.sh"
 install -o root -g root -m 0555 "$UI_VERIFIER" "$BACKUP_ROOT/verify-protected-release.js"
 install -o root -g root -m 0555 "$SEQUENCE_VERIFIER" "$BACKUP_ROOT/verify-canvas-reference-sequence-contract.js"
-require_exact_sha256 "$BACKUP_ROOT/activate-protected-release.sh" "$EXPECTED_OLD_ACTIVATOR_SHA256" 'backed-up old activator'
+require_exact_sha256 "$BACKUP_ROOT/activate-protected-release.sh" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'backed-up old activator'
 require_exact_sha256 "$BACKUP_ROOT/verify-protected-release.js" "$EXPECTED_UI_VERIFIER_SHA256" 'backed-up UI verifier'
 require_exact_sha256 "$BACKUP_ROOT/verify-canvas-reference-sequence-contract.js" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'backed-up sequence verifier'
 if [[ "$EXTERNAL_EXISTED" -eq 1 ]]; then
@@ -290,7 +303,7 @@ cleanup_rotation() {
       mv -T "$EVIDENCE_BACKUP" "$EVIDENCE_TARGET" || rollback_failed=1
     fi
 
-    if [[ ! -f "$OLD_ACTIVATOR" || -L "$OLD_ACTIVATOR" || "$(stat -c '%u:%g' -- "$OLD_ACTIVATOR" 2>/dev/null)" != '0:0' || "$(sha256_file "$OLD_ACTIVATOR" 2>/dev/null)" != "$EXPECTED_OLD_ACTIVATOR_SHA256" ]]; then
+    if [[ ! -f "$OLD_ACTIVATOR" || -L "$OLD_ACTIVATOR" || "$(stat -c '%u:%g' -- "$OLD_ACTIVATOR" 2>/dev/null)" != '0:0' || "$(sha256_file "$OLD_ACTIVATOR" 2>/dev/null)" != "$OLD_ACTIVATOR_ORIGINAL_SHA256" ]]; then
       rollback_failed=1
     fi
     if [[ ! -f "$UI_VERIFIER" || -L "$UI_VERIFIER" || "$(stat -c '%u:%g' -- "$UI_VERIFIER" 2>/dev/null)" != '0:0' || "$(sha256_file "$UI_VERIFIER" 2>/dev/null)" != "$EXPECTED_UI_VERIFIER_SHA256" ]]; then
@@ -380,7 +393,7 @@ env -i \
   /bin/bash -p "$ACTIVATOR_HARNESS" "$CANDIDATE" "$EXPECTED_CURRENT"
 
 assert_current_matches
-require_exact_sha256 "$OLD_ACTIVATOR" "$EXPECTED_OLD_ACTIVATOR_SHA256" 'activate-protected-release.sh'
+require_exact_sha256 "$OLD_ACTIVATOR" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'activate-protected-release.sh'
 require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
 require_exact_sha256 "$NEW_ACTIVATOR_SOURCE" "$EXPECTED_NEW_ACTIVATOR_SHA256" 'reviewed new activator'
@@ -412,7 +425,7 @@ assert_root_owned_tree "$EVIDENCE_TARGET" 'post-verifier installed evidence'
 [[ "$(tree_content_hash "$EVIDENCE_TARGET")" == "$REVIEWED_EVIDENCE_HASH" ]] || fail 'installed evidence changed during final verifier execution'
 
 assert_current_matches
-require_exact_sha256 "$OLD_ACTIVATOR" "$EXPECTED_OLD_ACTIVATOR_SHA256" 'activate-protected-release.sh'
+require_exact_sha256 "$OLD_ACTIVATOR" "$OLD_ACTIVATOR_ORIGINAL_SHA256" 'activate-protected-release.sh'
 require_exact_sha256 "$UI_VERIFIER" "$EXPECTED_UI_VERIFIER_SHA256" 'verify-protected-release.js'
 require_exact_sha256 "$SEQUENCE_VERIFIER" "$EXPECTED_SEQUENCE_VERIFIER_SHA256" 'verify-canvas-reference-sequence-contract.js'
 ACTIVATOR_REPLACED=1

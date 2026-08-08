@@ -261,6 +261,10 @@ function makeRotationFixture(t) {
       `EXPECTED_NEW_ACTIVATOR_SHA256='${sha256(candidateActivator)}'`,
     );
     rotationSource = rotationSource.replace(
+      /EXPECTED_INSTALLED_ACTIVATOR_SHA256='[a-f0-9]{64}'/,
+      `EXPECTED_INSTALLED_ACTIVATOR_SHA256='${sha256(candidateActivator)}'`,
+    );
+    rotationSource = rotationSource.replace(
       /EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='[a-f0-9]{64}'/,
       `EXPECTED_NEW_EXTERNAL_VERIFIER_SHA256='${sha256(candidateExternalVerifier)}'`,
     );
@@ -960,6 +964,27 @@ test('manual rotation atomically replaces existing evidence and retains its exac
   assert.doesNotMatch(installedActivator.toString('utf8'), /verify-only-harness|\.external-model-release-guard-rotation\./);
   const leakedStaging = runLinux('find', [fixture.sharedRoot, '-maxdepth', '1', '-name', '.external-model-release-guard-rotation.*', '-print'], { root: true });
   assert.equal(leakedStaging.stdout.trim(), '');
+});
+
+test('manual rotation refreshes evidence when the reviewed activator is already installed', { skip: !rootBashAvailable }, (t) => {
+  const fixture = makeRotationFixture(t);
+  const installedEvidence = `${fixture.sharedRoot}/release-evidence/external-models-v1`;
+  const reviewedActivator = readLinuxFile(`${fixture.source}/deploy/release-guard/activate-protected-release.sh`);
+  const reviewedExternal = readLinuxFile(`${fixture.source}/deploy/release-guard/verify-external-model-release.js`);
+  writeLinuxFile(`${fixture.guardRoot}/activate-protected-release.sh`, reviewedActivator, '0555');
+  writeLinuxFile(`${fixture.guardRoot}/verify-external-model-release.js`, reviewedExternal, '0555');
+  writeLinuxFile(`${installedEvidence}/old-marker.txt`, 'previous-reviewed-evidence\n', '0444');
+
+  const result = runRotation(fixture);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(runLinux('test', ['-f', `${installedEvidence}/manifest.json`], { root: true }).status, 0);
+  assert.equal(runLinux('test', ['-e', `${installedEvidence}/old-marker.txt`], { root: true }).status, 1);
+  const backupRoot = result.stdout.match(/external_model_release_guard_backup=(.+)/)?.[1]?.trim();
+  assert.ok(backupRoot, result.stdout);
+  assert.equal(
+    sha256(readLinuxFile(`${backupRoot}/activate-protected-release.sh`)),
+    sha256(reviewedActivator),
+  );
 });
 
 test('manual rotation rolls back a partial install and leaves the old activator exact', { skip: !rootBashAvailable }, (t) => {
