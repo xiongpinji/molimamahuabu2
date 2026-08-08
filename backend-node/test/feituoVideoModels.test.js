@@ -16,12 +16,13 @@ const videoService = require('../src/services/videoService');
 const log = { info() {}, warn() {}, error() {} };
 const H3_MODEL = 'xuan-video-v1-6e7b4763634e6206';
 const SEEDANCE_MODEL = 'xuan-seedance-2.5';
+const SEEDANCE_DURATIONS = Array.from({ length: 27 }, (_, index) => index + 4);
 
 function verifiedCapabilities() {
   return {
     [H3_MODEL]: {
       resolutions: ['2k'],
-      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      durations: [15],
       aspectRatios: ['16:9'],
       supportsFirstFrame: false,
       supportsLastFrame: false,
@@ -35,17 +36,19 @@ function verifiedCapabilities() {
     },
     [SEEDANCE_MODEL]: {
       resolutions: ['480p', '720p'],
-      durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      durations: SEEDANCE_DURATIONS,
       aspectRatios: ['16:9'],
       supportsFirstFrame: false,
       supportsLastFrame: false,
-      supportsImageReference: false,
-      supportsVideoReference: false,
-      supportsAudioReference: false,
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
       supportsAudio: false,
-      maxReferences: 0,
-      maxVideoReferences: 0,
-      maxAudioReferences: 0,
+      referenceTypes: ['image', 'video', 'audio'],
+      maxReferences: 30,
+      maxImageReferences: 30,
+      maxVideoReferences: 10,
+      maxAudioReferences: 10,
     },
   };
 }
@@ -136,8 +139,11 @@ test('飞拓新视频模型使用精确上游 ID 和独立分辨率时长能力'
   assert.deepEqual(FEITUO_MODELS['xuan-seedance-2.5'].resolutions, ['480p', '720p']);
   assert.deepEqual(
     FEITUO_MODELS['xuan-seedance-2.5'].durations,
-    [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    SEEDANCE_DURATIONS,
   );
+  assert.equal(FEITUO_MODELS['xuan-seedance-2.5'].maxImages, 30);
+  assert.equal(FEITUO_MODELS['xuan-seedance-2.5'].maxVideos, 10);
+  assert.equal(FEITUO_MODELS['xuan-seedance-2.5'].maxAudio, 10);
   assert.equal(FEITUO_MODELS['seedance-2.5'], undefined);
 });
 
@@ -203,6 +209,82 @@ test('Seedance 2.5 仅接受 xuan 渠道的 480P/720P', () => {
     }),
     /不支持分辨率 1080p/,
   );
+});
+
+test('Seedance 2.5 完整透传 30 秒与 30 图 10 视频 10 音频并拒绝任一超限', () => {
+  const referenceUrls = Array.from({ length: 30 }, (_, index) => `https://cdn.example/image-${index + 1}.jpg`);
+  const referenceVideoUrls = Array.from({ length: 10 }, (_, index) => `https://cdn.example/video-${index + 1}.mp4`);
+  const referenceAudioUrls = Array.from({ length: 10 }, (_, index) => `https://cdn.example/audio-${index + 1}.mp3`);
+  const body = buildFeituoVideoBody({
+    model: SEEDANCE_MODEL,
+    prompt: '满参考能力验证',
+    resolution: '720p',
+    duration: 30,
+    aspect_ratio: '16:9',
+    reference_urls: referenceUrls,
+    reference_video_urls: referenceVideoUrls,
+    reference_audio_urls: referenceAudioUrls,
+  });
+
+  assert.equal(body.duration, 30);
+  assert.deepEqual(body.imageUrls, referenceUrls);
+  assert.deepEqual(body.videoUrls, referenceVideoUrls);
+  assert.deepEqual(body.audioUrls, referenceAudioUrls);
+  assert.throws(
+    () => buildFeituoVideoBody({ ...body, model: SEEDANCE_MODEL, reference_urls: [...referenceUrls, 'https://cdn.example/image-31.jpg'] }),
+    /最多支持 30 个图片素材/,
+  );
+  assert.throws(
+    () => buildFeituoVideoBody({ ...body, model: SEEDANCE_MODEL, reference_video_urls: [...referenceVideoUrls, 'https://cdn.example/video-11.mp4'] }),
+    /最多支持 10 个视频素材/,
+  );
+  assert.throws(
+    () => buildFeituoVideoBody({ ...body, model: SEEDANCE_MODEL, reference_audio_urls: [...referenceAudioUrls, 'https://cdn.example/audio-11.mp3'] }),
+    /最多支持 10 个音频素材/,
+  );
+  assert.throws(
+    () => buildFeituoVideoBody({ model: SEEDANCE_MODEL, prompt: 'x', resolution: '720p', duration: 31 }),
+    /不支持 31 秒/,
+  );
+});
+
+test('Seedance 2.5 参考素材超限在任务和积分副作用前拒绝', (t) => {
+  const { db, dramaId, storyboardId } = setupDb(t);
+  let scheduled = 0;
+  const base = {
+    drama_id: dramaId,
+    storyboard_id: storyboardId,
+    model: SEEDANCE_MODEL,
+    prompt: '测试满参考创建门禁',
+    resolution: '720p',
+    duration: 30,
+    aspect_ratio: '16:9',
+  };
+  const options = {
+    billingEnabled: true,
+    tenantId: 'tenant-1',
+    userId: 'user-1',
+    schedule() { scheduled += 1; },
+  };
+  const cases = [
+    { reference_image_urls: Array.from({ length: 31 }, (_, index) => `https://cdn.example/image-${index + 1}.jpg`) },
+    { reference_video_urls: Array.from({ length: 11 }, (_, index) => `https://cdn.example/video-${index + 1}.mp4`) },
+    { reference_audio_urls: Array.from({ length: 11 }, (_, index) => `https://cdn.example/audio-${index + 1}.mp3`) },
+  ];
+
+  for (const refs of cases) {
+    assert.throws(
+      () => videoService.create(db, log, { ...base, ...refs }, options),
+      (error) => error.code === 'VIDEO_REFERENCE_LIMIT_EXCEEDED',
+    );
+    assert.deepEqual(generationSideEffects(db), {
+      tasks: 0,
+      videos: 0,
+      reservations: 0,
+      tenantReservations: 0,
+    });
+  }
+  assert.equal(scheduled, 0);
 });
 
 test('飞拓模型未真实验证时在任务和积分副作用前拒绝', (t) => {

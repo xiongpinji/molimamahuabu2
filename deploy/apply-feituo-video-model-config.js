@@ -13,11 +13,14 @@ const {
   hasCompleteRequiredMatrix,
 } = require('../backend-node/scripts/verify-feituo-video-models');
 
-const CONTRACT = 'feituo-h3-seedance25-config-v1';
+const LEGACY_CONTRACT = 'feituo-h3-seedance25-config-v1';
+const CONTRACT = 'feituo-h3-seedance25-config-v2';
 const PROVIDER_ORIGIN = 'https://feituokuajing.com';
 const H3_MODEL = 'xuan-video-v1-6e7b4763634e6206';
 const SEEDANCE_MODEL = 'xuan-seedance-2.5';
 const TARGET_MODELS = Object.freeze([H3_MODEL, SEEDANCE_MODEL]);
+const LEGACY_SEEDANCE_PUBLIC_NOTE = '已实测 480P、720P；按秒计费';
+const SEEDANCE_PUBLIC_NOTE = '已实测 480P、720P、4 秒；供应商确认支持 4–30 秒及最多 30 图/10 视频/10 音频；按秒计费';
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -89,6 +92,40 @@ function verifiedCapabilities(evidence) {
   };
   return {
     [H3_MODEL]: { ...noReferences, resolutions: ['2k'], durations: [15] },
+    [SEEDANCE_MODEL]: {
+      ...noReferences,
+      referenceTypes: ['image', 'video', 'audio'],
+      maxReferences: 30,
+      maxImageReferences: 30,
+      maxVideoReferences: 10,
+      maxAudioReferences: 10,
+      supportsImageReference: true,
+      supportsVideoReference: true,
+      supportsAudioReference: true,
+      resolutions: ['480p', '720p'],
+      durations: Array.from({ length: 27 }, (_, index) => index + 4),
+    },
+  };
+}
+
+function legacyVerifiedCapabilities() {
+  const noReferences = {
+    referenceTypes: [],
+    maxReferences: 0,
+    maxImageReferences: 0,
+    maxVideoReferences: 0,
+    maxAudioReferences: 0,
+    supportsFirstFrame: false,
+    supportsLastFrame: false,
+    supportsImageReference: false,
+    supportsVideoReference: false,
+    supportsAudioReference: false,
+    supportsAudio: false,
+    quantities: [1],
+    aspectRatios: ['16:9'],
+  };
+  return {
+    [H3_MODEL]: { ...noReferences, resolutions: ['2k'], durations: [15] },
     [SEEDANCE_MODEL]: { ...noReferences, resolutions: ['480p', '720p'], durations: [4] },
   };
 }
@@ -127,6 +164,29 @@ function expectedSettings(evidence) {
     evidence_sha256: evidence.sha256,
     real_generation_verified_models: [...TARGET_MODELS],
     canvas_capabilities_by_model: Object.fromEntries(TARGET_MODELS.map((model) => [model, caps[model]])),
+    capability_provenance_by_model: {
+      [H3_MODEL]: {
+        source: 'real_generation',
+        durations: [15],
+        resolutions: ['2k'],
+        reference_inputs: 'not_tested',
+      },
+      [SEEDANCE_MODEL]: {
+        source: 'mixed_real_generation_and_supplier_confirmation',
+        real_generation: {
+          durations: [4],
+          resolutions: ['480p', '720p'],
+          reference_inputs: 'not_tested',
+        },
+        supplier_confirmed: {
+          duration_range: [4, 30],
+          maxReferences: 30,
+          maxVideoReferences: 10,
+          maxAudioReferences: 10,
+          confirmed_at: '2026-08-09',
+        },
+      },
+    },
   };
 }
 
@@ -143,9 +203,34 @@ function assertExactTargetConfig(row, evidence) {
       || JSON.stringify(parseModels(row.model)) !== JSON.stringify(TARGET_MODELS)
       || row.default_model !== SEEDANCE_MODEL
       || settings.integration_contract !== CONTRACT
+      || settings.evidence_contract !== EVIDENCE_VERSION
       || settings.evidence_sha256 !== evidence.sha256
+      || JSON.stringify(settings.canvas_capabilities_by_model) !== JSON.stringify(verifiedCapabilities(evidence))
+      || JSON.stringify(settings.capability_provenance_by_model) !== JSON.stringify(expectedSettings(evidence).capability_provenance_by_model)
       || JSON.stringify(caps) !== JSON.stringify(verifiedCapabilities(evidence))) {
     throw new Error('现有飞拓新模型配置与已审查事务不一致，禁止覆盖');
+  }
+}
+
+function assertLegacyTargetConfig(row) {
+  if (!row) throw new Error('飞拓旧模型配置不存在');
+  const settings = readSettings(row.settings);
+  const caps = readSettings(row.verified_capabilities);
+  if (row.service_type !== 'video' || row.provider !== 'feituo' || row.api_protocol !== 'feituo_open'
+      || row.name !== '飞拓 H3-2K / Seedance 2.5'
+      || String(row.base_url || '').replace(/\/+$/, '') !== PROVIDER_ORIGIN
+      || row.endpoint !== '/api/open/v1/video/generate'
+      || row.query_endpoint !== '/api/open/v1/video/status?jobId={taskId}'
+      || row.verification_status !== 'verified' || Number(row.is_active) !== 1
+      || JSON.stringify(parseModels(row.model)) !== JSON.stringify(TARGET_MODELS)
+      || row.default_model !== SEEDANCE_MODEL
+      || settings.integration_contract !== LEGACY_CONTRACT
+      || settings.evidence_contract !== 'feituo-video-real-verification-v1'
+      || !/^[a-f0-9]{64}$/.test(String(settings.evidence_sha256 || ''))
+      || JSON.stringify(settings.real_generation_verified_models) !== JSON.stringify(TARGET_MODELS)
+      || JSON.stringify(settings.canvas_capabilities_by_model) !== JSON.stringify(legacyVerifiedCapabilities())
+      || JSON.stringify(caps) !== JSON.stringify(legacyVerifiedCapabilities())) {
+    throw new Error('现有飞拓配置不是允许原位升级的精确 v1 配置，禁止覆盖');
   }
 }
 
@@ -153,7 +238,7 @@ function readSettings(value) {
   try { return typeof value === 'string' ? JSON.parse(value || '{}') : (value || {}); } catch (_) { return {}; }
 }
 
-function assertPrices(db) {
+function assertPrices(db, seedancePublicNote = SEEDANCE_PUBLIC_NOTE) {
   const h3 = db.prepare('SELECT * FROM model_credit_prices WHERE model = ? COLLATE NOCASE').get(H3_MODEL);
   const seedance = db.prepare('SELECT * FROM model_credit_prices WHERE model = ? COLLATE NOCASE').get(SEEDANCE_MODEL);
   if (!h3 || h3.display_name !== 'MiniMax H3-2K（飞拓）'
@@ -163,7 +248,7 @@ function assertPrices(db) {
     throw new Error('MiniMax H3-2K 积分价格与管理员批准值不一致');
   }
   if (!seedance || seedance.display_name !== 'Seedance 2.5（飞拓）'
-      || seedance.public_note !== '已实测 480P、720P；按秒计费'
+      || seedance.public_note !== seedancePublicNote
       || seedance.credits !== 350 || seedance.status !== 'enabled' || seedance.category !== 'video'
       || seedance.billing_unit !== 'second' || seedance.cost_unit !== 'second' || seedance.cost_micros_per_unit !== 400000) {
     throw new Error('Seedance 2.5 积分价格与管理员批准值不一致');
@@ -193,9 +278,69 @@ async function applyConfiguration(db, evidence, options = {}) {
   const existing = targetConfigs(db);
   if (existing.length) {
     if (existing.length !== 1) throw new Error('检测到多个飞拓新模型配置，禁止自动修复');
-    assertExactTargetConfig(existing[0], evidence);
-    assertPrices(db);
-    return { created: false, configId: existing[0].id };
+    const row = existing[0];
+    const settings = readSettings(row.settings);
+    if (settings.integration_contract === CONTRACT) {
+      assertExactTargetConfig(row, evidence);
+      assertPrices(db);
+      return { created: false, updated: false, configId: row.id };
+    }
+    assertLegacyTargetConfig(row);
+    assertPrices(db, LEGACY_SEEDANCE_PUBLIC_NOTE);
+    if (!options.backupPath || !path.isAbsolute(options.backupPath)) throw new Error('应用前必须指定绝对数据库备份路径');
+    if (!options.receiptPath || !path.isAbsolute(options.receiptPath)) throw new Error('应用前必须指定绝对事务回执路径');
+    await db.backup(options.backupPath);
+    const now = new Date().toISOString();
+    const caps = verifiedCapabilities(evidence);
+    const nextSettings = expectedSettings(evidence);
+    const seedancePrice = db.prepare('SELECT updated_at FROM model_credit_prices WHERE model = ? COLLATE NOCASE')
+      .get(SEEDANCE_MODEL);
+    const before = {
+      verification_checked_at: row.verification_checked_at,
+      verified_capabilities: row.verified_capabilities,
+      verified_at: row.verified_at,
+      settings: row.settings,
+      updated_at: row.updated_at,
+      seedance_public_note: LEGACY_SEEDANCE_PUBLIC_NOTE,
+      seedance_price_updated_at: seedancePrice.updated_at,
+    };
+    db.transaction(() => {
+      const changed = db.prepare(`UPDATE ai_service_configs
+        SET verification_checked_at = ?, verified_capabilities = ?, verified_at = ?,
+            verification_error = NULL, settings = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ?`).run(
+        evidence.generatedAt,
+        JSON.stringify(caps),
+        evidence.generatedAt,
+        JSON.stringify(nextSettings),
+        now,
+        row.id,
+        row.updated_at,
+      );
+      if (changed.changes !== 1) throw new Error('飞拓配置在升级前已发生变化，禁止覆盖');
+      const priceChanged = db.prepare(`UPDATE model_credit_prices
+        SET public_note = ?, updated_at = ?
+        WHERE model = ? COLLATE NOCASE AND public_note = ?`).run(
+        SEEDANCE_PUBLIC_NOTE,
+        now,
+        SEEDANCE_MODEL,
+        LEGACY_SEEDANCE_PUBLIC_NOTE,
+      );
+      if (priceChanged.changes !== 1) throw new Error('Seedance 2.5 公开备注在升级前已发生变化，禁止覆盖');
+      writeJsonAtomic(options.receiptPath, {
+        contract: CONTRACT,
+        operation: 'updated',
+        applied_at: now,
+        database_backup: options.backupPath,
+        evidence_sha256: evidence.sha256,
+        config_id: row.id,
+        config_updated_at: now,
+        models: TARGET_MODELS,
+        before,
+      });
+    })();
+    verifyConfiguration(db, evidence);
+    return { created: false, updated: true, configId: row.id, backupPath: options.backupPath, receiptPath: options.receiptPath };
   }
   const source = findSourceConfig(db);
   const conflictingPrices = TARGET_MODELS.filter((model) => db.prepare(
@@ -238,7 +383,7 @@ async function applyConfiguration(db, evidence, options = {}) {
     });
     modelPriceService.set(db, SEEDANCE_MODEL, 350, {
       category: 'video', status: 'enabled', displayName: 'Seedance 2.5（飞拓）',
-      publicNote: '已实测 480P、720P；按秒计费', billingUnit: 'second',
+      publicNote: SEEDANCE_PUBLIC_NOTE, billingUnit: 'second',
       costUnit: 'second', cost_micros_per_unit: 400000,
       resolution_prices: {
         '480p': { credits: 350, cost_micros_per_second: 400000 },
@@ -247,6 +392,7 @@ async function applyConfiguration(db, evidence, options = {}) {
     });
     writeJsonAtomic(options.receiptPath, {
       contract: CONTRACT,
+      operation: 'created',
       applied_at: now,
       database_backup: options.backupPath,
       evidence_sha256: evidence.sha256,
@@ -272,6 +418,38 @@ function rollbackConfiguration(db, receiptPath) {
     throw new Error('飞拓配置已被修改，禁止自动回滚');
   }
   assertPrices(db);
+  if (receipt.operation === 'updated') {
+    const before = receipt.before || {};
+    if (readSettings(before.settings).integration_contract !== LEGACY_CONTRACT
+        || before.seedance_public_note !== LEGACY_SEEDANCE_PUBLIC_NOTE) {
+      throw new Error('飞拓配置升级回执缺少可信 v1 快照');
+    }
+    db.transaction(() => {
+      const restored = db.prepare(`UPDATE ai_service_configs
+        SET verification_checked_at = ?, verified_capabilities = ?, verified_at = ?,
+            settings = ?, updated_at = ?
+        WHERE id = ? AND updated_at = ?`).run(
+        before.verification_checked_at,
+        before.verified_capabilities,
+        before.verified_at,
+        before.settings,
+        before.updated_at,
+        Number(receipt.config_id),
+        receipt.config_updated_at,
+      );
+      if (restored.changes !== 1) throw new Error('飞拓配置升级后已发生变化，禁止自动回滚');
+      const priceRestored = db.prepare(`UPDATE model_credit_prices
+        SET public_note = ?, updated_at = ?
+        WHERE model = ? COLLATE NOCASE AND public_note = ?`).run(
+        before.seedance_public_note,
+        before.seedance_price_updated_at,
+        SEEDANCE_MODEL,
+        SEEDANCE_PUBLIC_NOTE,
+      );
+      if (priceRestored.changes !== 1) throw new Error('Seedance 2.5 公开备注升级后已发生变化，禁止自动回滚');
+    })();
+    return { restored: true, configId: Number(receipt.config_id) };
+  }
   db.transaction(() => {
     db.prepare('DELETE FROM model_resolution_prices WHERE model IN (?, ?)').run(...TARGET_MODELS);
     db.prepare('DELETE FROM model_credit_prices WHERE model IN (?, ?)').run(...TARGET_MODELS);

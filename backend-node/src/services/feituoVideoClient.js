@@ -9,11 +9,11 @@ const FEITUO_MODELS = Object.freeze({
   }),
   'xuan-seedance-2.5': Object.freeze({
     resolutions: Object.freeze(['480p', '720p']),
-    durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    durations: Object.freeze(Array.from({ length: 27 }, (_, index) => index + 4)),
     ratios: Object.freeze(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']),
-    maxImages: 4,
-    maxVideos: 3,
-    maxAudio: 1,
+    maxImages: 30,
+    maxVideos: 10,
+    maxAudio: 10,
   }),
   'sdas-lm-hailuo-h3-2k': Object.freeze({
     ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
