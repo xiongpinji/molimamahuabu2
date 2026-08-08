@@ -9,11 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-from faster_whisper import WhisperModel
-import psutil
-from speechbrain.inference.interfaces import pretrained_from_hparams
-from speechbrain.utils.fetching import FetchConfig
-
 
 def _load_stage_models_module():
     import importlib.util
@@ -28,7 +23,6 @@ def _load_stage_models_module():
 stage_models = _load_stage_models_module()
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_ROOT))
-from redraw_locale_worker.commonaccent_interface import CommonAccentClassifier
 
 
 class NetworkBlocked(RuntimeError):
@@ -74,6 +68,8 @@ def verify_manifest(stage_dir, manifest):
     hyperparams = stage_dir / hyperparams_entry
     if hyperparams.is_symlink():
         raise RuntimeError("CommonAccent hyperparams manifest path symlink rejected")
+    if not hyperparams.exists() or not hyperparams.is_file():
+        raise RuntimeError("CommonAccent hyperparams manifest path must be a regular file")
     runtime_root_resolved = runtime_root.resolve()
     hyperparams_resolved = hyperparams.resolve()
     try:
@@ -92,6 +88,8 @@ def verify_manifest(stage_dir, manifest):
 
 
 def current_peak_rss():
+    import psutil
+
     rss = psutil.Process().memory_info().rss
     maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     return max(rss, maxrss)
@@ -119,6 +117,17 @@ def resolve_stage_dir(stage_dir):
     if stage_arg.is_symlink():
         raise SystemExit("--stage-dir symlink rejected")
     return stage_arg.resolve()
+
+
+def resolve_audio_path(audio):
+    audio_arg = Path(audio)
+    if not audio_arg.is_absolute():
+        raise SystemExit("--audio must be absolute")
+    if audio_arg.is_symlink():
+        raise SystemExit("--audio symlink rejected")
+    if not audio_arg.exists() or not audio_arg.is_file():
+        raise SystemExit("--audio must be a regular file")
+    return audio_arg.resolve()
 
 
 def build_asr_evidence(segments, info):
@@ -156,7 +165,7 @@ def main():
     block_network()
 
     stage_dir = resolve_stage_dir(args.stage_dir)
-    audio_path = Path(args.audio).resolve()
+    audio_path = resolve_audio_path(args.audio)
     manifest = json.loads((stage_dir / "manifest.json").read_text(encoding="utf-8"))
     verify_manifest(stage_dir, manifest)
     timings = {}
@@ -166,11 +175,18 @@ def main():
     commonaccent_runtime = stage_dir / "runtime" / "commonaccent"
 
     def run_asr():
+        from faster_whisper import WhisperModel
+
         model = WhisperModel(str(asr_root), device="cpu", compute_type="int8", local_files_only=True)
         segments, info = model.transcribe(str(audio_path), beam_size=1, vad_filter=False)
         return build_asr_evidence(segments, info)
 
     def run_accent():
+        from speechbrain.inference.interfaces import pretrained_from_hparams
+        from speechbrain.utils.fetching import FetchConfig
+
+        from redraw_locale_worker.commonaccent_interface import CommonAccentClassifier
+
         classifier = pretrained_from_hparams(
             cls=CommonAccentClassifier,
             source=str(commonaccent_runtime),

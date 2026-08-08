@@ -253,6 +253,18 @@ class ModelStagingTests(unittest.TestCase):
         self.assertNotIn("foreign_class", interface_source)
         self.assertNotIn("trust_remote_code", interface_source)
 
+    def test_smoke_imports_provider_dependencies_only_after_offline_block(self):
+        smoke_source = SMOKE_PATH.read_text(encoding="utf-8")
+        top_level = smoke_source[: smoke_source.index("def _load_stage_models_module")]
+        self.assertNotIn("from faster_whisper import WhisperModel", top_level)
+        self.assertNotIn("import psutil", top_level)
+        self.assertNotIn("from speechbrain.inference.interfaces import pretrained_from_hparams", top_level)
+        self.assertNotIn("from redraw_locale_worker.commonaccent_interface import CommonAccentClassifier", top_level)
+        self.assertIn("def run_asr(", smoke_source)
+        self.assertIn("from faster_whisper import WhisperModel", smoke_source[smoke_source.index("def run_asr("):])
+        self.assertIn("from speechbrain.inference.interfaces import pretrained_from_hparams", smoke_source[smoke_source.index("def run_accent("):])
+        self.assertIn("from redraw_locale_worker.commonaccent_interface import CommonAccentClassifier", smoke_source[smoke_source.index("def run_accent("):])
+
     def test_commonaccent_runtime_manifest_binds_vendored_interface_sha_and_allowlist(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -307,6 +319,30 @@ class ModelStagingTests(unittest.TestCase):
         self.assertEqual(smoke.parse_args(["--models", "/tmp/models", "--audio", "/tmp/a.wav", "--max-rss-bytes", "1"]).stage_dir, "/tmp/models")
         with self.assertRaises(SystemExit):
             smoke.resolve_stage_dir("relative-stage")
+
+    def test_smoke_rejects_relative_missing_directory_and_symlink_audio(self):
+        smoke = load_smoke_module_with_fakes()
+        with self.assertRaises(SystemExit):
+            smoke.resolve_audio_path("relative.wav")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "audio-dir"
+            directory.mkdir()
+            missing = root / "missing.wav"
+            regular = root / "audio.wav"
+            regular.write_bytes(b"RIFF")
+            with self.assertRaises(SystemExit):
+                smoke.resolve_audio_path(str(missing))
+            with self.assertRaises(SystemExit):
+                smoke.resolve_audio_path(str(directory))
+            self.assertEqual(smoke.resolve_audio_path(str(regular)), regular.resolve())
+            link = root / "audio-link.wav"
+            try:
+                link.symlink_to(regular)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(SystemExit):
+                smoke.resolve_audio_path(str(link))
 
     def test_smoke_rejects_symlink_stage_dir_before_resolve(self):
         smoke = load_smoke_module_with_fakes()
@@ -413,6 +449,20 @@ class ModelStagingTests(unittest.TestCase):
                     (stage_dir.parent / "outside.yaml").write_text(COMMONACCENT_TEST_HYPERPARAMS, encoding="utf-8")
                 with self.assertRaises(RuntimeError):
                     smoke.verify_manifest(stage_dir, manifest)
+
+    def test_manifest_hyperparams_path_must_exist_and_be_regular_file(self):
+        smoke = load_smoke_module_with_fakes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage_dir = root / "stage"
+            missing_manifest = self._build_smoke_manifest_fixture(stage_dir, hyperparams_manifest="runtime/commonaccent/missing.yaml")
+            with self.assertRaises(RuntimeError):
+                smoke.verify_manifest(stage_dir, missing_manifest)
+
+            directory_manifest = self._build_smoke_manifest_fixture(stage_dir, hyperparams_manifest="runtime/commonaccent/subdir")
+            (stage_dir / "runtime" / "commonaccent" / "subdir").mkdir(exist_ok=True)
+            with self.assertRaises(RuntimeError):
+                smoke.verify_manifest(stage_dir, directory_manifest)
 
     @unittest.skipIf(not hasattr(Path, "symlink_to"), "symlinks are not supported")
     def test_stage_output_rejects_symlink_before_resolve(self):
