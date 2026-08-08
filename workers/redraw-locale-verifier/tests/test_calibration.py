@@ -210,12 +210,26 @@ class CalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_TUNE_OPERATING_POINT_INVALID"):
             self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
 
-    def test_eval_all_positive_false_reject_rate_one_is_rejected(self):
+    def test_eval_split_requires_positive_and_negative_samples(self):
+        rows = [self.tune_positive(i) for i in range(1, 5)]
+        for index in range(1, 5):
+            rows.append(self.eval_positive(index))
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_EVAL_SPLIT_INVALID"):
+            self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
+
+        rows = [self.tune_positive(i) for i in range(1, 5)]
+        for index in range(1, 5):
+            rows.append(self.eval_negative(index))
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_EVAL_SPLIT_INVALID"):
+            self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
+
+    def test_eval_false_reject_rate_one_is_rejected_when_both_classes_exist(self):
         rows = [self.tune_positive(i) for i in range(1, 5)]
         for index in range(1, 5):
             row = self.eval_positive(index)
             row["language_probability"] = "0.10"
             rows.append(row)
+        rows.append(self.eval_negative(1))
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_FALSE_REJECT_RATE_TOO_HIGH"):
             self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
 

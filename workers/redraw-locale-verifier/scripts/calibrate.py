@@ -76,14 +76,17 @@ def calibrate(rows, *, model_manifest=None):
         raise CalibrationError("CALIBRATION_SPLIT_INVALID")
 
     thresholds = _search_thresholds(tune)
+    eval_positive = sum(1 for row in eval_rows if _is_positive(row))
+    eval_negative = len(eval_rows) - eval_positive
+    if eval_positive == 0 or eval_negative == 0:
+        raise CalibrationError("CALIBRATION_EVAL_SPLIT_INVALID")
+
     eval_result = _evaluate(eval_rows, thresholds)
     if eval_result["false_accept_rate"] > 0.01:
         raise CalibrationError("CALIBRATION_FALSE_ACCEPT_RATE_TOO_HIGH")
     if eval_result["false_reject_rate"] >= 1.0:
         raise CalibrationError("CALIBRATION_FALSE_REJECT_RATE_TOO_HIGH")
 
-    eval_positive = sum(1 for row in eval_rows if _is_positive(row))
-    eval_negative = len(eval_rows) - eval_positive
     return {
         "schema_version": 1,
         "locale_pack": LOCALE_PACK,

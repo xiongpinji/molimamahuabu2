@@ -71,8 +71,10 @@ function codedError(code) {
 function writeSignatureFile(signaturePath, value) {
   const directory = path.dirname(signaturePath);
   fs.mkdirSync(directory, { recursive: true });
-  const temporaryPath = path.join(directory, `.${path.basename(signaturePath)}.${process.pid}.${Date.now()}.tmp`);
+  const temporaryDirectory = fs.mkdtempSync(path.join(directory, `.${path.basename(signaturePath)}.`));
+  const temporaryPath = path.join(temporaryDirectory, 'signature.tmp');
   try {
+    fs.chmodSync(temporaryDirectory, 0o700);
     fs.writeFileSync(temporaryPath, value, { mode: 0o600 });
     fs.chmodSync(temporaryPath, 0o600);
     fs.renameSync(temporaryPath, signaturePath);
@@ -84,6 +86,12 @@ function writeSignatureFile(signaturePath, value) {
       // Best effort cleanup; the stable error code is emitted by main().
     }
     throw error;
+  } finally {
+    try {
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    } catch {
+      // Best effort cleanup; the signature file has already been atomically moved.
+    }
   }
 }
 

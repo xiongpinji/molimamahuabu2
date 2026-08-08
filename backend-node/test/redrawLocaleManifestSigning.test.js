@@ -95,3 +95,41 @@ test('overwriting an existing signature keeps private file mode', () => {
 
   assert.equal((fs.statSync(signaturePath).mode & 0o777), 0o600);
 });
+
+test('signature writer does not use predictable pid timestamp temp path', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-collision-'));
+  const signaturePath = path.join(tmp, 'manifest.sig');
+  const collisionPath = path.join(tmp, `.manifest.sig.${process.pid}.123456.tmp`);
+  fs.writeFileSync(collisionPath, 'collision');
+  const originalNow = Date.now;
+  Date.now = () => 123456;
+  try {
+    signer.writeSignatureFile(signaturePath, 'new-signature\n');
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(fs.readFileSync(signaturePath, 'utf8'), 'new-signature\n');
+  assert.equal(fs.readFileSync(collisionPath, 'utf8'), 'collision');
+});
+
+test('signature writer does not follow predictable temp symlink', () => {
+  if (process.platform === 'win32') {
+    return;
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-symlink-'));
+  const signaturePath = path.join(tmp, 'manifest.sig');
+  const victimPath = path.join(tmp, 'victim.txt');
+  const symlinkPath = path.join(tmp, `.manifest.sig.${process.pid}.789.tmp`);
+  fs.writeFileSync(victimPath, 'victim');
+  fs.symlinkSync(victimPath, symlinkPath);
+  const originalNow = Date.now;
+  Date.now = () => 789;
+  try {
+    signer.writeSignatureFile(signaturePath, 'new-signature\n');
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(fs.readFileSync(signaturePath, 'utf8'), 'new-signature\n');
+  assert.equal(fs.readFileSync(victimPath, 'utf8'), 'victim');
+  assert.equal(fs.lstatSync(symlinkPath).isSymbolicLink(), true);
+});
