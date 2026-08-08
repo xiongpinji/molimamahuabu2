@@ -24,30 +24,60 @@ def sha(value):
 
 
 def staged_model_manifest_payload():
+    asr_files = [
+        {
+            "path": "config.json",
+            "sha256": "3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012",
+            "size": 17,
+        }
+    ]
+    accent_files = [
+        {
+            "path": "hyperparams.yaml",
+            "sha256": "456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123",
+            "size": 23,
+        }
+    ]
+    wav2vec_files = [
+        {
+            "path": "preprocessor_config.json",
+            "sha256": "56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234",
+            "size": 31,
+        }
+    ]
     manifest = {
         "schema_version": 1,
         "models": {
             "asr": {
                 "repo_id": "Systran/faster-whisper-small",
                 "revision": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
-                "tree_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "files": [{"path": "config.json", "sha256": "3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012", "size": 17}],
+                "tree_sha256": staged_tree_sha256(asr_files),
+                "files": asr_files,
             },
             "accent": {
                 "repo_id": "Jzuluaga/accent-id-commonaccent_xlsr-en-english",
                 "revision": "cc5dc6a56db647149d9e52856d6e55114c1045a8",
-                "tree_sha256": "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
-                "files": [{"path": "hyperparams.yaml", "sha256": "456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123", "size": 23}],
+                "tree_sha256": staged_tree_sha256(accent_files),
+                "files": accent_files,
             },
             "wav2vec": {
                 "repo_id": "facebook/wav2vec2-large-xlsr-53",
                 "revision": "b61310a3ecdfdc01af29ef1c203d708047a51184",
-                "tree_sha256": "23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01",
-                "files": [{"path": "preprocessor_config.json", "sha256": "56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234", "size": 31}],
+                "tree_sha256": staged_tree_sha256(wav2vec_files),
+                "files": wav2vec_files,
             },
         },
     }
     return manifest
+
+
+def staged_tree_sha256(files):
+    digest = hashlib.sha256()
+    for item in sorted(files, key=lambda value: value["path"]):
+        digest.update(item["path"].encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(item["sha256"]))
+    return digest.hexdigest()
 
 
 def staged_model_manifest():
@@ -115,7 +145,9 @@ class CalibrationTests(unittest.TestCase):
             row["word_error_rate"] = "0.20"
             row["character_error_rate"] = "0.20"
             negatives.append(row)
-        eval_rows = [self.eval_positive(1), self.eval_negative(1)]
+        eval_positive = self.eval_positive(1)
+        eval_positive.update({"word_error_rate": "0.01", "character_error_rate": "0.01"})
+        eval_rows = [eval_positive, self.eval_negative(1)]
         return [positive_strict, positive_loose] + negatives + eval_rows
 
     def test_calibration_rejects_overlap_and_far_over_one_percent(self):
@@ -178,6 +210,15 @@ class CalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_TUNE_OPERATING_POINT_INVALID"):
             self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
 
+    def test_eval_all_positive_false_reject_rate_one_is_rejected(self):
+        rows = [self.tune_positive(i) for i in range(1, 5)]
+        for index in range(1, 5):
+            row = self.eval_positive(index)
+            row["language_probability"] = "0.10"
+            rows.append(row)
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_FALSE_REJECT_RATE_TOO_HIGH"):
+            self.calibrate_mod.calibrate(rows, model_manifest=staged_model_manifest())
+
     def test_model_manifest_missing_mismatch_and_placeholders_are_rejected(self):
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
             self.calibrate_mod.calibrate(self.valid_rows())
@@ -201,6 +242,16 @@ class CalibrationTests(unittest.TestCase):
         empty_files["manifest"]["models"]["asr"]["files"] = []
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
             self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=empty_files)
+
+        duplicate_path = staged_model_manifest()
+        duplicate_path["manifest"]["models"]["asr"]["files"].append(dict(duplicate_path["manifest"]["models"]["asr"]["files"][0]))
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=duplicate_path)
+
+        tampered_tree = staged_model_manifest()
+        tampered_tree["manifest"]["models"]["accent"]["files"][0]["sha256"] = "6789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345"
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=tampered_tree)
 
         missing_hash = {"manifest": staged_model_manifest_payload()}
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):

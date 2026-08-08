@@ -79,6 +79,8 @@ def calibrate(rows, *, model_manifest=None):
     eval_result = _evaluate(eval_rows, thresholds)
     if eval_result["false_accept_rate"] > 0.01:
         raise CalibrationError("CALIBRATION_FALSE_ACCEPT_RATE_TOO_HIGH")
+    if eval_result["false_reject_rate"] >= 1.0:
+        raise CalibrationError("CALIBRATION_FALSE_REJECT_RATE_TOO_HIGH")
 
     eval_positive = sum(1 for row in eval_rows if _is_positive(row))
     eval_negative = len(eval_rows) - eval_positive
@@ -135,7 +137,8 @@ def _validate_model_manifest(manifest):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         if not isinstance(tree_sha256, str) or not HEX_SHA256_RE.fullmatch(tree_sha256) or _obvious_placeholder_hash(tree_sha256):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
-        _validate_model_files(files)
+        if _model_files_tree_sha256(files) != tree_sha256:
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         flattened[f"{name}_revision"] = revision
         flattened[f"{name}_tree_sha256"] = tree_sha256
     return {"sha256": manifest_sha256, "models": flattened}
@@ -145,9 +148,11 @@ def _obvious_placeholder_hash(value):
     return len(set(value)) == 1
 
 
-def _validate_model_files(files):
+def _model_files_tree_sha256(files):
     if not isinstance(files, list) or not files:
         raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    seen_paths = set()
+    digest = hashlib.sha256()
     for item in files:
         if not isinstance(item, dict):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
@@ -160,12 +165,19 @@ def _validate_model_files(files):
             or path.startswith("/")
             or "\\" in path
             or any(part in {"", ".", ".."} for part in path.split("/"))
+            or path in seen_paths
         ):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        seen_paths.add(path)
         if not isinstance(sha256, str) or not HEX_SHA256_RE.fullmatch(sha256) or _obvious_placeholder_hash(sha256):
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
         if type(size) is not int or size <= 0:
             raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    for item in sorted(files, key=lambda value: value["path"]):
+        digest.update(item["path"].encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(item["sha256"]))
+    return digest.hexdigest()
 
 
 def _normalize_rows(rows):
