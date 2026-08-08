@@ -150,7 +150,7 @@ def _extract_yaml_tags(text):
     tags = set()
     for line in text.splitlines():
         body = line.split("#", 1)[0]
-        for match in re.finditer(r"(?:^|[\s\[{,])(!{1,2}[A-Za-z][^\s\]\},#]*)", body):
+        for match in re.finditer(r"(?:^|[\s\[{,])(!<[^>\r\n]+>|!{1,2}[A-Za-z][^\s\]\},#]*)", body):
             tags.add(match.group(1))
     return tags
 

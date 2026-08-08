@@ -228,6 +228,17 @@ class ModelStagingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     prepare_commonaccent_runtime(bad_source, bad_runtime, wav2vec)
 
+            angle_source = root / "angle"
+            angle_runtime = root / "angle-runtime"
+            angle_source.mkdir()
+            (angle_source / "hyperparams.yaml").write_text(
+                COMMONACCENT_TEST_HYPERPARAMS
+                + "bad: !<tag:yaml.org,2002:python/object/apply:os.system> []\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                prepare_commonaccent_runtime(angle_source, angle_runtime, wav2vec)
+
     def test_smoke_uses_vendored_commonaccent_classifier_and_forbids_remote_code(self):
         smoke_source = SMOKE_PATH.read_text(encoding="utf-8")
         self.assertIn("CommonAccentClassifier", smoke_source)
@@ -357,7 +368,7 @@ class ModelStagingTests(unittest.TestCase):
 
     def test_prepare_and_manifest_verify_reject_all_secondary_yaml_dangerous_tags(self):
         smoke = load_smoke_module_with_fakes()
-        for tag in ("!apply:os.system", "!!python/object/apply:os.system", "!new:unexpected.RemoteClass"):
+        for tag in ("!apply:os.system", "!!python/object/apply:os.system", "!new:unexpected.RemoteClass", "!<tag:yaml.org,2002:python/object/apply:os.system>"):
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 source = root / "source"
@@ -374,6 +385,20 @@ class ModelStagingTests(unittest.TestCase):
                 manifest = self._build_smoke_manifest_fixture(stage_dir, secondary_yaml=f"bad: {tag}\n")
                 with self.assertRaises(RuntimeError):
                     smoke.verify_manifest(stage_dir, manifest)
+
+    def test_yaml_tag_scanner_covers_angle_and_core_tag_forms(self):
+        tags = stage_models._extract_yaml_tags(
+            "safe: !ref <x>\n"
+            "local: !local value\n"
+            "new: !new:unexpected.RemoteClass {}\n"
+            "core: !!python/object/apply:os.system []\n"
+            "angle: !<tag:yaml.org,2002:python/object/apply:os.system> []\n"
+        )
+        self.assertIn("!ref", tags)
+        self.assertIn("!local", tags)
+        self.assertIn("!new:unexpected.RemoteClass", tags)
+        self.assertIn("!!python/object/apply:os.system", tags)
+        self.assertIn("!<tag:yaml.org,2002:python/object/apply:os.system>", tags)
 
     def test_manifest_hyperparams_path_must_stay_inside_runtime_commonaccent(self):
         smoke = load_smoke_module_with_fakes()
