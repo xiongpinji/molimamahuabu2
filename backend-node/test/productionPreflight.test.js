@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 
 const modelPrices = require('../src/services/modelPriceService');
 const { runProductionPreflight } = require('../src/services/productionPreflightService');
+const packageJson = require('../package.json');
 
 function createDb() {
   const db = new Database(':memory:');
@@ -226,4 +227,58 @@ test('关闭新用户注册时仍要求邮箱服务可用于已有用户找回�
   } finally {
     db.close();
   }
+});
+
+test('语言验证预检默认关闭时通过，启用后必须阻止过期 ready 且不泄露路径', () => {
+  const db = createDb();
+  try {
+    const disabledEnv = productionEnv();
+    disabledEnv.REDRAW_LOCALE_VERIFIER_ENABLED = 'false';
+    const disabled = runProductionPreflight({
+      config: productionConfig(),
+      env: disabledEnv,
+      db,
+    });
+    const disabledCheck = disabled.checks.find((check) => check.id === 'redraw_locale_verifier');
+    assert.equal(disabledCheck?.status, 'pass');
+    assert.match(disabledCheck?.message || '', /disabled|关闭/);
+
+    const sensitiveManifestPath = 'C:\\secure\\enabled-packs.json';
+    const enabledEnv = {
+      ...productionEnv(),
+      REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+      REDRAW_LOCALE_PACK_REGISTRY_PATH: sensitiveManifestPath,
+      REDRAW_LOCALE_PACK_SIGNATURE_PATH: 'C:\\secure\\enabled-packs.sig',
+      REDRAW_LOCALE_PACK_PUBLIC_KEY_PATH: 'C:\\secure\\ed25519-public.pem',
+      REDRAW_LOCALE_VERIFIER_READY_PATH: 'C:\\secure\\ready.json',
+      REDRAW_LOCALE_VERIFIER_SOCKET: 'C:\\secure\\redraw-locale.sock',
+      REDRAW_LOCALE_VERIFIER_TIMEOUT_MS: '180000',
+    };
+    const stale = runProductionPreflight({
+      config: productionConfig(),
+      env: enabledEnv,
+      db,
+      localeRegistry: {
+        assertReady(locale) {
+          assert.equal(locale, 'en-US');
+          const error = new Error(`${sensitiveManifestPath} expired`);
+          error.code = 'REDRAW_LOCALE_VERIFIER_NOT_READY';
+          throw error;
+        },
+      },
+    });
+    const staleCheck = stale.checks.find((check) => check.id === 'redraw_locale_verifier');
+    assert.equal(staleCheck?.status, 'fail');
+    assert.match(staleCheck?.message || '', /REDRAW_LOCALE_VERIFIER_NOT_READY/);
+    assert.equal(JSON.stringify(stale).includes(sensitiveManifestPath), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('package exposes a read-only redraw locale preflight command', () => {
+  assert.equal(
+    packageJson.scripts['preflight:redraw-locale'],
+    'node scripts/preproduction-check.js --redraw-locale',
+  );
 });
