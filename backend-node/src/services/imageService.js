@@ -2459,12 +2459,12 @@ function getBackgroundsForEpisode(db, episodeId) {
   return rows;
 }
 
-function upload(db, log, req) {
+function upload(db, log, req, options = {}) {
   const now = new Date().toISOString();
   const frameType = req.frame_type ?? null;
   const info = db.prepare(
-    `INSERT INTO image_generations (storyboard_id, drama_id, provider, prompt, image_url, local_path, frame_type, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)`
+    `INSERT INTO image_generations (storyboard_id, drama_id, provider, prompt, image_url, local_path, frame_type, status, user_id, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)`
   ).run(
     req.storyboard_id ?? null,
     Number(req.drama_id) || 0,
@@ -2473,6 +2473,8 @@ function upload(db, log, req) {
     req.image_url || '',
     req.local_path ?? null,
     frameType,
+    options.userId || req.user_id || null,
+    options.tenantId || req.tenant_id || null,
     now,
     now
   );

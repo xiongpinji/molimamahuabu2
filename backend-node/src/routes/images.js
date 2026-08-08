@@ -136,7 +136,11 @@ function routes(db, cfg, log, options = {}) {
     upload: (req, res) => {
       try {
         const body = req.body || {};
-        const item = imageService.upload(db, log, body);
+        const item = imageService.upload(db, log, body, {
+          billingEnabled: options.billingEnabled,
+          userId: req.user?.id,
+          tenantId: req.tenant?.id,
+        });
         response.created(res, item);
       } catch (err) {
         log.error('images upload', { error: err.message });
