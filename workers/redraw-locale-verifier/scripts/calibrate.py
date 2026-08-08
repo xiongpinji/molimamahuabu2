@@ -25,19 +25,10 @@ METRIC_FIELDS = {
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 LOCALE_PACK = "en-US@1"
 NORMALIZATION_VERSION = "english-text-v1"
-MODELS = {
-    "asr": {
-        "revision": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
-        "tree_sha256": "0" * 64,
-    },
-    "accent": {
-        "revision": "cc5dc6a56db647149d9e52856d6e55114c1045a8",
-        "tree_sha256": "1" * 64,
-    },
-    "wav2vec": {
-        "revision": "b61310a3ecdfdc01af29ef1c203d708047a51184",
-        "tree_sha256": "2" * 64,
-    },
+EXPECTED_MODEL_REVISIONS = {
+    "asr": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
+    "accent": "cc5dc6a56db647149d9e52856d6e55114c1045a8",
+    "wav2vec": "b61310a3ecdfdc01af29ef1c203d708047a51184",
 }
 
 
@@ -60,7 +51,16 @@ def load_rows(path):
         return list(reader)
 
 
-def calibrate(rows):
+def load_model_manifest(path):
+    try:
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID") from exc
+    return manifest
+
+
+def calibrate(rows, *, model_manifest=None):
+    models = _validate_model_manifest(model_manifest)
     normalized = _normalize_rows(rows)
     tune = [row for row in normalized if row["split"] == "tune"]
     eval_rows = [row for row in normalized if row["split"] == "eval"]
@@ -86,19 +86,43 @@ def calibrate(rows):
         },
         "thresholds": thresholds,
         "eval": eval_result,
-        "models": MODELS,
+        "models": models,
     }
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Calibrate redraw locale verifier thresholds.")
     parser.add_argument("--input", required=True, help="CSV or JSON rows with calibration metrics.")
+    parser.add_argument("--model-manifest", required=True, help="Task1 staged model manifest.json.")
     parser.add_argument("--output", required=True, help="Manifest output path.")
     args = parser.parse_args(argv)
     output = _safe_output_path(args.output)
-    manifest = calibrate(load_rows(args.input))
+    manifest = calibrate(load_rows(args.input), model_manifest=load_model_manifest(args.model_manifest))
     _atomic_write_json(output, manifest)
     return 0
+
+
+def _validate_model_manifest(manifest):
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1 or not isinstance(manifest.get("models"), dict):
+        raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+    flattened = {}
+    for name, expected_revision in EXPECTED_MODEL_REVISIONS.items():
+        model = manifest["models"].get(name)
+        if not isinstance(model, dict):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        revision = model.get("revision")
+        tree_sha256 = model.get("tree_sha256")
+        if revision != expected_revision or not isinstance(revision, str):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        if not isinstance(tree_sha256, str) or not HEX_SHA256_RE.fullmatch(tree_sha256) or _obvious_placeholder_hash(tree_sha256):
+            raise CalibrationError("CALIBRATION_MODEL_MANIFEST_INVALID")
+        flattened[f"{name}_revision"] = revision
+        flattened[f"{name}_tree_sha256"] = tree_sha256
+    return flattened
+
+
+def _obvious_placeholder_hash(value):
+    return len(set(value)) == 1
 
 
 def _normalize_rows(rows):

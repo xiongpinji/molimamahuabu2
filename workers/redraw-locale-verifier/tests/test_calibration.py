@@ -22,6 +22,29 @@ def sha(value):
     return f"{value:064x}"
 
 
+def staged_model_manifest():
+    return {
+        "schema_version": 1,
+        "models": {
+            "asr": {
+                "revision": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
+                "tree_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "files": [],
+            },
+            "accent": {
+                "revision": "cc5dc6a56db647149d9e52856d6e55114c1045a8",
+                "tree_sha256": "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
+                "files": [],
+            },
+            "wav2vec": {
+                "revision": "b61310a3ecdfdc01af29ef1c203d708047a51184",
+                "tree_sha256": "23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01",
+                "files": [],
+            },
+        },
+    }
+
+
 class CalibrationTests(unittest.TestCase):
     def setUp(self):
         self.calibrate_mod = load_script("calibrate")
@@ -69,20 +92,22 @@ class CalibrationTests(unittest.TestCase):
         return rows
 
     def test_calibration_rejects_overlap_and_far_over_one_percent(self):
+        model_manifest = staged_model_manifest()
         duplicate = [self.tune_positive(1), self.eval_positive(2)]
         duplicate[1]["audio_sha256"] = duplicate[0]["audio_sha256"]
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_SPLIT_INVALID"):
-            self.calibrate_mod.calibrate(duplicate)
+            self.calibrate_mod.calibrate(duplicate, model_manifest=model_manifest)
 
         rows = [self.tune_positive(i) for i in range(1, 5)]
         rows += [self.eval_positive(i) for i in range(1, 5)]
         rows += [self.eval_negative(i, accepted=i <= 2) for i in range(1, 101)]
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_FALSE_ACCEPT_RATE_TOO_HIGH"):
-            self.calibrate_mod.calibrate(rows)
+            self.calibrate_mod.calibrate(rows, model_manifest=model_manifest)
 
     def test_manifest_thresholds_are_deterministic_and_eval_only_reports(self):
-        first = self.calibrate_mod.calibrate(reversed(self.valid_rows()))
-        second = self.calibrate_mod.calibrate(self.valid_rows())
+        model_manifest = staged_model_manifest()
+        first = self.calibrate_mod.calibrate(reversed(self.valid_rows()), model_manifest=model_manifest)
+        second = self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=model_manifest)
         self.assertEqual(first, second)
         self.assertEqual(first["schema_version"], 1)
         self.assertEqual(first["locale_pack"], "en-US@1")
@@ -94,21 +119,72 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(first["thresholds"]["us_accent_probability_min"], 0.95)
         self.assertEqual(first["eval"]["false_accept_rate"], 0.0)
         self.assertEqual(first["eval"]["false_reject_rate"], 0.0)
-        self.assertEqual(set(first["models"]), {"asr", "accent", "wav2vec"})
-        for model in first["models"].values():
-            self.assertRegex(model["revision"], r"^[0-9a-f]{40}$")
-            self.assertRegex(model["tree_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            first["models"],
+            {
+                "asr_revision": model_manifest["models"]["asr"]["revision"],
+                "accent_revision": model_manifest["models"]["accent"]["revision"],
+                "wav2vec_revision": model_manifest["models"]["wav2vec"]["revision"],
+                "asr_tree_sha256": model_manifest["models"]["asr"]["tree_sha256"],
+                "accent_tree_sha256": model_manifest["models"]["accent"]["tree_sha256"],
+                "wav2vec_tree_sha256": model_manifest["models"]["wav2vec"]["tree_sha256"],
+            },
+        )
+
+    def test_model_manifest_missing_mismatch_and_placeholders_are_rejected(self):
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows())
+
+        missing = staged_model_manifest()
+        del missing["models"]["wav2vec"]
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=missing)
+
+        mismatch = staged_model_manifest()
+        mismatch["models"]["asr"]["revision"] = "f" * 40
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=mismatch)
+
+        placeholder = staged_model_manifest()
+        placeholder["models"]["accent"]["tree_sha256"] = "1" * 64
+        with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_MODEL_MANIFEST_INVALID"):
+            self.calibrate_mod.calibrate(self.valid_rows(), model_manifest=placeholder)
+
+    def test_calibration_cli_requires_model_manifest_and_copies_real_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "rows.json"
+            manifest_path = root / "model-manifest.json"
+            output_path = root / "calibration.json"
+            model_manifest = staged_model_manifest()
+            input_path.write_text(json.dumps(self.valid_rows()), encoding="utf-8")
+            manifest_path.write_text(json.dumps(model_manifest), encoding="utf-8")
+
+            self.calibrate_mod.main([
+                "--input",
+                str(input_path),
+                "--model-manifest",
+                str(manifest_path),
+                "--output",
+                str(output_path),
+            ])
+
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["models"]["asr_tree_sha256"], model_manifest["models"]["asr"]["tree_sha256"])
+            self.assertEqual(result["models"]["accent_tree_sha256"], model_manifest["models"]["accent"]["tree_sha256"])
+            self.assertEqual(result["models"]["wav2vec_tree_sha256"], model_manifest["models"]["wav2vec"]["tree_sha256"])
 
     def test_invalid_csv_hash_and_empty_text_use_stable_errors(self):
+        model_manifest = staged_model_manifest()
         bad_hash = [self.tune_positive(1), self.eval_positive(1)]
         bad_hash[0]["audio_sha256"] = "not-a-hash"
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_AUDIO_HASH_INVALID"):
-            self.calibrate_mod.calibrate(bad_hash)
+            self.calibrate_mod.calibrate(bad_hash, model_manifest=model_manifest)
 
         empty = [self.tune_positive(1), self.eval_positive(1)]
         empty[0]["approved_text"] = " "
         with self.assertRaisesRegex(self.calibrate_mod.CalibrationError, "CALIBRATION_TEXT_EMPTY"):
-            self.calibrate_mod.calibrate(empty)
+            self.calibrate_mod.calibrate(empty, model_manifest=model_manifest)
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.csv"
