@@ -11,7 +11,7 @@ MANIFEST_FIELDS = {
 def validate_manifest(value):
     if not isinstance(value, dict) or set(value) != MANIFEST_FIELDS:
         raise ValueError("LOCALE_MANIFEST_INVALID")
-    if value["schema_version"] != 1 or value["locale_pack"] != SUPPORTED_LOCALE_PACK:
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or value["locale_pack"] != SUPPORTED_LOCALE_PACK:
         raise ValueError("LOCALE_MANIFEST_INVALID")
     for key in ("model_manifest_sha256", "calibration_manifest_sha256"):
         if not isinstance(value[key], str) or not HEX_SHA256_RE.fullmatch(value[key]):

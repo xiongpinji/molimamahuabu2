@@ -52,9 +52,9 @@ def score_text(approved_text, transcript_text):
     normalized_transcript = normalize_english_text(transcript)
     approved_critical = _critical_tokens(approved)
     observed_critical = _critical_tokens(transcript)
-    observed_match_keys = {_match_key(token) for token in observed_critical}
+    observed_match_keys = {_critical_match_key(token) for token in observed_critical}
     observed_match_keys.update(normalize_english_text(transcript).split())
-    missing = sorted(token for token in approved_critical if _match_key(token) not in observed_match_keys)
+    missing = sorted(token for token in approved_critical if _critical_match_key(token) not in observed_match_keys)
     return {
         "word_error_rate": float(jiwer.wer(normalized_approved, normalized_transcript)),
         "character_error_rate": float(jiwer.cer(normalized_approved, normalized_transcript)),
@@ -82,6 +82,8 @@ def _critical_tokens(value):
         compact = folded.replace("'", "")
         if raw.isdigit():
             tokens.add(raw)
+        elif folded in NUMBER_WORDS:
+            tokens.add(folded)
         elif folded in NEGATION_TOKENS or compact in NEGATION_TOKENS:
             tokens.add(compact)
         elif raw[:1].isupper() and not raw.isupper():
@@ -93,8 +95,8 @@ def _normalize_number_token(token):
     return NUMBER_WORDS.get(token, token)
 
 
-def _match_key(token):
-    return str(token).casefold().replace("'", "")
+def _critical_match_key(token):
+    return _normalize_number_token(str(token).casefold().replace("'", ""))
 
 
 def _coerce_text(value):

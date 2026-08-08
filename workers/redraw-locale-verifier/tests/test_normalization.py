@@ -31,6 +31,15 @@ class NormalizationTests(unittest.TestCase):
         self.assertFalse(metrics["critical_tokens_match"])
         self.assertIn("50", metrics["critical_tokens"]["missing"])
 
+    def test_critical_tokens_reject_number_word_value_drift(self):
+        metrics = score_text("Anna paid fifty dollars.", "Anna paid sixty dollars")
+        self.assertFalse(metrics["critical_tokens_match"])
+        self.assertIn("fifty", metrics["critical_tokens"]["missing"])
+
+    def test_critical_tokens_match_number_words_to_digit_literals(self):
+        metrics = score_text("Anna paid fifty dollars.", "Anna paid 50 dollars")
+        self.assertTrue(metrics["critical_tokens_match"])
+
     def test_empty_approved_text_never_passes(self):
         metrics = score_text("", "")
         self.assertEqual(metrics["word_error_rate"], 1)
@@ -49,6 +58,8 @@ class NormalizationTests(unittest.TestCase):
             validate_manifest({**manifest, "extra": True})
         with self.assertRaisesRegex(ValueError, "LOCALE_MANIFEST_INVALID"):
             validate_manifest({**manifest, "model_manifest_sha256": "A" * 64})
+        with self.assertRaisesRegex(ValueError, "LOCALE_MANIFEST_INVALID"):
+            validate_manifest({**manifest, "schema_version": True})
 
     def test_audio_path_rejects_symlink_escape(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,6 +123,20 @@ class NormalizationTests(unittest.TestCase):
                 normalize_audio(video_path, allowed_root, temp_root)
             self.assertEqual(list(temp_root.glob("*.wav")), [])
 
+    def test_audio_rejects_input_with_multiple_audio_streams(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            allowed_root = root / "allowed"
+            temp_root = root / "temp"
+            allowed_root.mkdir()
+            temp_root.mkdir()
+            audio_path = allowed_root / "two-audio-streams.mkv"
+            _write_two_audio_streams(audio_path, self)
+
+            with self.assertRaisesRegex(AudioInputError, "LOCALE_AUDIO_STREAM_INVALID"):
+                normalize_audio(audio_path, allowed_root, temp_root)
+            self.assertEqual(list(temp_root.glob("*.wav")), [])
+
     def test_audio_rejects_input_longer_than_sixty_seconds(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -156,6 +181,34 @@ def _write_video_without_audio(path, test_case):
     completed = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
     if completed.returncode != 0:
         test_case.skipTest(f"ffmpeg video fixture unavailable: {completed.stderr}")
+
+
+def _write_two_audio_streams(path, test_case):
+    if shutil.which("ffmpeg") is None:
+        test_case.skipTest("ffmpeg unavailable")
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:duration=1",
+        "-map",
+        "0:a:0",
+        "-map",
+        "1:a:0",
+        str(path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    if completed.returncode != 0:
+        test_case.skipTest(f"ffmpeg two-audio fixture unavailable: {completed.stderr}")
 
 
 if __name__ == "__main__":

@@ -78,7 +78,7 @@ def _probe_audio(path, timeout):
 
 def _validated_duration(probe):
     streams = [stream for stream in probe.get("streams", []) if stream.get("codec_type") == "audio"]
-    if not streams:
+    if len(streams) != 1:
         raise AudioInputError("LOCALE_AUDIO_STREAM_INVALID")
     duration = probe.get("format", {}).get("duration") or streams[0].get("duration")
     try:
@@ -99,6 +99,8 @@ def _run_ffmpeg(source, target, timeout):
         "-y",
         "-i",
         str(source),
+        "-map",
+        "0:a:0",
         "-ac",
         "1",
         "-ar",
