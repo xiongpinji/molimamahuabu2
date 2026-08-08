@@ -7,8 +7,9 @@ const COST_UNITS = ['request', 'image', 'second', 'token'];
 const BILLING_UNITS = ['request', 'second'];
 const VIDEO_RESOLUTIONS = ['480p', '720p'];
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
-const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open']);
 const toapisVideoClient = require('./toapisVideoClient');
+const feituoVideoClient = require('./feituoVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const SERVICE_CATEGORIES = {
   text: 'text',
@@ -155,7 +156,10 @@ function isToken6688Config(row) {
 }
 
 function isRealGenerationVerified(row, model) {
-  if (!isToken6688Config(row)) return true;
+  const provider = String(row.provider || '').trim().toLowerCase();
+  const protocol = String(row.api_protocol || '').trim().toLowerCase();
+  const feituo = provider === 'feituo' || protocol === 'feituo_open';
+  if (!isToken6688Config(row) && !feituo) return true;
   try {
     const settings = typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
     const verified = Array.isArray(settings?.real_generation_verified_models)
@@ -372,6 +376,7 @@ function strictPublicProtocol(config) {
     .map((value) => String(value || '').trim().toLowerCase());
   if (values.includes('usmercari_image')) return 'usmercari_image';
   if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
+  if (values.some((value) => value === 'feituo' || value === 'feituo_open')) return 'feituo_open';
   return null;
 }
 
@@ -390,9 +395,13 @@ function verifiedPublicCapabilities(config, model) {
 
 function verifiedPublicResolutions(config, model) {
   const capabilities = verifiedPublicCapabilities(config, model);
-  const allowed = strictPublicProtocol(config) === 'toapis_video'
+  const protocol = strictPublicProtocol(config);
+  const target = String(model || '').trim().toLowerCase();
+  const allowed = protocol === 'toapis_video'
     ? VIDEO_RESOLUTIONS
-    : IMAGE_RESOLUTIONS;
+    : protocol === 'feituo_open'
+      ? (feituoVideoClient.FEITUO_MODELS[target]?.resolutions || [])
+      : IMAGE_RESOLUTIONS;
   return Array.isArray(capabilities.resolutions)
     ? [...new Set(capabilities.resolutions
       .map((item) => String(item || '').trim().toLowerCase())
@@ -408,15 +417,33 @@ function isPublicConfigReady(config, price, model = price.model, evidenceRoots) 
   if (config.verification_status !== 'verified'
       || !hasConnectionCredential(config)) return false;
   const modelCapabilities = verifiedPublicCapabilities(config, model);
-  if (!hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots)) return false;
+  if (protocol !== 'feituo_open'
+      && !hasTrustedEvidenceBinding(model, modelCapabilities, evidenceRoots)) return false;
   const resolutions = verifiedPublicResolutions(config, model);
-  if (protocol === 'toapis_video') {
-    const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()];
+  const target = String(model || '').trim().toLowerCase();
+  const official = protocol === 'toapis_video'
+    ? toapisVideoClient.TOAPIS_VIDEO_MODELS[target]
+    : protocol === 'feituo_open'
+      ? feituoVideoClient.FEITUO_MODELS[target]
+      : null;
+  if (protocol === 'feituo_open' && (!target.startsWith('xuan-') || !official)) return false;
+  if (protocol === 'toapis_video' || protocol === 'feituo_open') {
     const durations = Array.isArray(modelCapabilities?.durations) && official
       ? modelCapabilities.durations.map(Number)
         .filter((duration) => Number.isSafeInteger(duration) && official.durations.includes(duration))
       : [];
     if (!durations.length) return false;
+  }
+  if (protocol === 'feituo_open' && official.resolutions.length === 1) {
+    return price.category === 'video'
+      && resolutions.length === 1
+      && resolutions[0] === official.resolutions[0]
+      && price.billing_unit === 'request'
+      && price.cost_unit === 'request'
+      && Number.isSafeInteger(price.credits)
+      && price.credits > 0
+      && Number.isSafeInteger(price.cost_micros_per_unit)
+      && price.cost_micros_per_unit > 0;
   }
   return (protocol !== 'usmercari_image' || modelCapabilities?.supportsTextToImage === true)
     && resolutions.length > 0

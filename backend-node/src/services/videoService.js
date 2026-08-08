@@ -146,6 +146,8 @@ const usmercariVideoClient = require('./usmercariVideoClient');
 const aiConfigService = require('./aiConfigService');
 const toapisVideoClient = require('./toapisVideoClient');
 const { TOAPIS_VIDEO_MODELS } = toapisVideoClient;
+const feituoVideoClient = require('./feituoVideoClient');
+const { FEITUO_MODELS } = feituoVideoClient;
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const creditLedger = require('./creditLedgerService');
@@ -268,6 +270,12 @@ function isToapisVideoConfig(config) {
     .some((value) => value === 'toapis' || value === 'toapis_video');
 }
 
+function isFeituoVideoConfig(config) {
+  return [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .some((value) => value === 'feituo' || value === 'feituo_open');
+}
+
 function matchingToapisConfigs(db, model) {
   const target = String(model || '').trim().toLowerCase();
   if (!TOAPIS_VIDEO_MODELS[target]) return [];
@@ -284,6 +292,55 @@ function verifiedCapabilitiesForModel(config, model) {
   const key = Object.keys(capabilities).find((value) => value.toLowerCase() === target);
   const result = key ? capabilities[key] : null;
   return result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+}
+
+function hasVerifiedFeituoGeneration(config, model) {
+  let settings = config?.settings;
+  try {
+    if (typeof settings === 'string') settings = JSON.parse(settings || '{}');
+  } catch (_) {
+    return false;
+  }
+  const target = String(model || '').trim().toLowerCase();
+  return Array.isArray(settings?.real_generation_verified_models)
+    && settings.real_generation_verified_models
+      .some((value) => String(value || '').trim().toLowerCase() === target);
+}
+
+function matchingFeituoConfigs(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  if (!FEITUO_MODELS[target] || !target.startsWith('xuan-')) return [];
+  return aiConfigService.listConfigs(db, 'video').filter((config) => (
+    isFeituoVideoConfig(config)
+    && configModels(config).some((value) => value.toLowerCase() === target)
+  ));
+}
+
+function feituoReadyState(db, model) {
+  const target = String(model || '').trim().toLowerCase();
+  const official = FEITUO_MODELS[target];
+  if (!official || !target.startsWith('xuan-')) return null;
+  const candidates = matchingFeituoConfigs(db, target);
+  for (const config of candidates) {
+    const capabilities = verifiedCapabilitiesForModel(config, target);
+    const verifiedDurations = new Set(Array.isArray(capabilities?.durations)
+      ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+      : []);
+    const verifiedResolutions = new Set(Array.isArray(capabilities?.resolutions)
+      ? capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase())
+      : []);
+    const durations = official.durations.filter((duration) => verifiedDurations.has(duration));
+    const resolutions = official.resolutions.filter((resolution) => verifiedResolutions.has(resolution));
+    if (config.is_active
+        && config.verification_status === 'verified'
+        && aiConfigService.hasConnectionCredential(config)
+        && hasVerifiedFeituoGeneration(config, target)
+        && durations.length
+        && resolutions.length) {
+      return { config, capabilities, official, durations, resolutions, model: target };
+    }
+  }
+  throw videoRequestError('MODEL_NOT_VERIFIED', `${target} 尚未完成真实生成验证或凭据不可用`);
 }
 
 function toapisReadyState(db, model, evidenceRoots) {
@@ -315,6 +372,10 @@ function toapisReadyState(db, model, evidenceRoots) {
 
 function processingVideoConfig(db, model) {
   const target = String(model || '').trim().toLowerCase();
+  if (FEITUO_MODELS[target] && target.startsWith('xuan-')) {
+    return matchingFeituoConfigs(db, target)
+      .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
+  }
   if (!TOAPIS_VIDEO_MODELS[target]) return videoClient.getDefaultVideoConfig(db, model);
   return matchingToapisConfigs(db, target)
     .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
@@ -334,6 +395,20 @@ function requireVerifiedToapisReferenceCapabilities(state, refs) {
   if (missing) {
     throw videoRequestError('MODEL_NOT_VERIFIED', `${state.model} 尚未验证${missing[2]}能力`);
   }
+}
+
+function requireVerifiedFeituoReferenceCapabilities(state, refs) {
+  if (!state) return;
+  const required = [
+    [refs.firstFrameUrl, 'supportsFirstFrame', '首帧参考'],
+    [refs.lastFrameUrl, 'supportsLastFrame', '尾帧参考'],
+    [refs.referenceImageUrls.length, 'supportsImageReference', '参考图'],
+    [refs.referenceVideoUrls.length, 'supportsVideoReference', '参考视频'],
+    [refs.referenceAudioUrls.length, 'supportsAudioReference', '参考音频'],
+    [refs.generateAudio, 'supportsAudio', '同步音频'],
+  ];
+  const missing = required.find(([used, capability]) => used && state.capabilities?.[capability] !== true);
+  if (missing) throw videoRequestError('MODEL_NOT_VERIFIED', `${state.model} 尚未验证${missing[2]}能力`);
 }
 
 function verifiedReferenceLimit(value) {
@@ -698,6 +773,15 @@ function create(db, log, req, options = {}) {
     videoConfig = toapisState.config;
     model = toapisState.model;
   }
+  const feituoState = FEITUO_MODELS[String(model || '').toLowerCase()]
+    && String(model || '').toLowerCase().startsWith('xuan-')
+    ? feituoReadyState(db, model)
+    : null;
+  if (feituoState) {
+    videoConfig = feituoState.config;
+    model = feituoState.model;
+  }
+  const strictVideoState = toapisState || feituoState;
   const videoProtocol = String(videoConfig?.api_protocol || videoConfig?.provider || '').trim().toLowerCase();
   const isToapisVideo = Boolean(toapisState)
     || videoProtocol === 'toapis_video'
@@ -710,6 +794,14 @@ function create(db, log, req, options = {}) {
         maxAudioReferences: verifiedReferenceLimit(toapisState.capabilities?.maxAudioReferences),
       }
     : (isToapisVideo ? TOAPIS_VIDEO_MODELS[String(model || '').trim().toLowerCase()] : null);
+  const feituoSpec = feituoState
+    ? {
+        ...feituoState.official,
+        maxReferences: verifiedReferenceLimit(feituoState.capabilities?.maxReferences),
+        maxVideoReferences: verifiedReferenceLimit(feituoState.capabilities?.maxVideoReferences),
+        maxAudioReferences: verifiedReferenceLimit(feituoState.capabilities?.maxAudioReferences),
+      }
+    : null;
   const inputReferenceImageUrls = cleanUrlList(body.reference_image_urls);
   if (toapisSpec && inputReferenceImageUrls.length > toapisSpec.maxReferences) {
     throw videoRequestError(
@@ -718,13 +810,13 @@ function create(db, log, req, options = {}) {
     );
   }
   const requestedResolution = String(body.resolution || '').trim().toLowerCase();
-  if (toapisState && (!requestedResolution || !toapisState.resolutions.includes(requestedResolution))) {
+  if (strictVideoState && (!requestedResolution || !strictVideoState.resolutions.includes(requestedResolution))) {
     throw videoRequestError(
       'MODEL_RESOLUTION_PRICE_REQUIRED',
-      `${toapisState.model} 当前只开放已验证且已定价的 ${toapisState.resolutions.join('、')}`
+      `${strictVideoState.model} 当前只开放已验证且已定价的 ${strictVideoState.resolutions.join('、')}`
     );
   }
-  const allowedDurations = toapisState?.durations || null;
+  const allowedDurations = strictVideoState?.durations || null;
   const minimumDuration = minimumVideoDuration(model);
   const storyboardDuration = Number(storyboardDefaults?.duration);
   const storyboardDurationAllowed = Number.isSafeInteger(storyboardDuration)
@@ -742,13 +834,18 @@ function create(db, log, req, options = {}) {
     allowedDurations || minimumDuration,
   );
   const resolvedCapabilities = videoReferenceCapability.resolve(videoConfig || {}, model);
-  const effectiveCapabilities = toapisSpec
+  const strictReferenceSpec = toapisSpec || feituoSpec;
+  const effectiveCapabilities = strictReferenceSpec
     ? {
         ...resolvedCapabilities,
-        referenceTypes: ['image', 'video', 'audio'],
-        maxImageReferences: toapisSpec.maxReferences,
-        maxVideoReferences: toapisSpec.maxVideoReferences,
-        maxAudioReferences: toapisSpec.maxAudioReferences,
+        referenceTypes: [
+          strictVideoState?.capabilities?.supportsImageReference === true ? 'image' : null,
+          strictVideoState?.capabilities?.supportsVideoReference === true ? 'video' : null,
+          strictVideoState?.capabilities?.supportsAudioReference === true ? 'audio' : null,
+        ].filter(Boolean),
+        maxImageReferences: strictReferenceSpec.maxReferences,
+        maxVideoReferences: strictReferenceSpec.maxVideoReferences,
+        maxAudioReferences: strictReferenceSpec.maxAudioReferences,
       }
     : resolvedCapabilities;
   const normalizedReferences = videoReferenceCapability.validateAndNormalize({
@@ -759,11 +856,12 @@ function create(db, log, req, options = {}) {
     referenceVideoUrls: cleanUrlList(body.reference_video_urls, body.reference_video_url),
   });
 
-  let billingModel = toapisState ? model : (selectedModel || model);
+  let billingModel = strictVideoState ? model : (selectedModel || model);
   let price = null;
-  if (toapisState) {
+  if (strictVideoState) {
     billingModel = modelPrice.canonicalModel(billingModel);
-    requireToapisResolutionPrice(db, billingModel, requestedResolution);
+    if (toapisState) requireToapisResolutionPrice(db, billingModel, requestedResolution);
+    if (feituoState) requireFeituoPrice(db, feituoState, requestedResolution);
     price = modelPrice.calculateCharge(db, billingModel, {
       duration,
       resolution: requestedResolution,
@@ -776,9 +874,9 @@ function create(db, log, req, options = {}) {
     userId: options.userId,
     tenantId: options.tenantId,
   });
-  if (active && !toapisState) return reuseActiveGeneration(db, active, duration, billingEnabled, options);
+  if (active && !strictVideoState) return reuseActiveGeneration(db, active, duration, billingEnabled, options);
 
-  if (billingEnabled && !toapisState) {
+  if (billingEnabled && !strictVideoState) {
     if (!options.userId) throw Object.assign(new Error('公开计费模式缺少用户身份'), { code: 'UNAUTHORIZED' });
     if (!billingModel) {
       billingModel = videoConfig?.default_model || videoConfig?.model || null;
@@ -900,6 +998,42 @@ function create(db, log, req, options = {}) {
         throw videoRequestError('MODEL_RESOLUTION_PRICE_REQUIRED', message);
       }
       if (/提示词/.test(message)) throw videoRequestError('INVALID_VIDEO_REQUEST', message);
+      throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', message);
+    }
+    if (active) {
+      return reuseActiveGeneration(db, active, duration, billingEnabled, options, {
+        model,
+        resolution: requestedResolution,
+      });
+    }
+  }
+  if (feituoState) {
+    requireVerifiedFeituoReferenceCapabilities(feituoState, {
+      firstFrameUrl,
+      lastFrameUrl,
+      referenceImageUrls,
+      referenceVideoUrls,
+      referenceAudioUrls,
+      generateAudio,
+    });
+    try {
+      feituoVideoClient.buildFeituoVideoBody({
+        model,
+        prompt,
+        duration,
+        resolution: requestedResolution,
+        aspect_ratio: aspectRatio || '16:9',
+        image_url: imageUrl,
+        first_frame_url: firstFrameUrl,
+        last_frame_url: lastFrameUrl,
+        reference_urls: referenceImageUrls,
+        reference_video_urls: referenceVideoUrls,
+        reference_audio_urls: referenceAudioUrls,
+      });
+    } catch (error) {
+      const message = String(error?.message || '飞拓视频请求参数无效');
+      if (/不支持.*秒|时长/.test(message)) throw videoRequestError('INVALID_VIDEO_DURATION', message);
+      if (/不支持分辨率/.test(message)) throw videoRequestError('MODEL_RESOLUTION_PRICE_REQUIRED', message);
       throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', message);
     }
     if (active) {
@@ -1149,6 +1283,25 @@ function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
       fs.unlinkSync(tmpOut);
     } catch (_) {}
     return false;
+  }
+}
+
+function requireFeituoPrice(db, state, resolution) {
+  const price = modelPrice.list(db)
+    .find((row) => String(row.model || '').trim().toLowerCase() === state.model);
+  if (!price || price.category !== 'video' || price.status !== 'enabled'
+      || !Number.isSafeInteger(price.credits) || price.credits <= 0) {
+    throw videoRequestError('MODEL_PRICE_NOT_CONFIGURED', `${state.model} 积分待管理员配置`);
+  }
+  if (state.official.resolutions.length > 1) {
+    const tier = price.resolution_prices?.[resolution];
+    if (!Number.isSafeInteger(tier?.credits) || tier.credits <= 0
+        || !Number.isSafeInteger(tier?.cost_micros_per_second) || tier.cost_micros_per_second <= 0) {
+      throw videoRequestError('MODEL_RESOLUTION_PRICE_REQUIRED', '当前分辨率积分待管理员配置');
+    }
+  } else if (price.billing_unit !== 'request' || price.cost_unit !== 'request'
+      || !Number.isSafeInteger(price.cost_micros_per_unit) || price.cost_micros_per_unit <= 0) {
+    throw videoRequestError('MODEL_PRICE_NOT_CONFIGURED', `${state.model} 按次价格待管理员配置`);
   }
 }
 
@@ -1581,7 +1734,9 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       : cleanUrlList(parseReferenceUrls(row.reference_audio_urls), row.reference_audio_url);
     const processingModel = String(snapshot.model ?? row.model ?? '').trim();
     const normalizedProcessingModel = processingModel.toLowerCase();
-    const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations || null;
+    const processingAllowedDurations = TOAPIS_VIDEO_MODELS[normalizedProcessingModel]?.durations
+      || FEITUO_MODELS[normalizedProcessingModel]?.durations
+      || null;
     const processingMinimumDuration = minimumVideoDuration(config.canvas_selected_model || processingModel);
     const effectiveDuration = normalizeVideoDuration(
       snapshot.duration ?? row.duration,
@@ -1631,6 +1786,9 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     }
     if (TOAPIS_VIDEO_MODELS[normalizedProcessingModel]) {
       toapisReadyState(db, normalizedProcessingModel, runtime.evidenceRoots);
+    }
+    if (FEITUO_MODELS[normalizedProcessingModel] && normalizedProcessingModel.startsWith('xuan-')) {
+      feituoReadyState(db, normalizedProcessingModel);
     }
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,

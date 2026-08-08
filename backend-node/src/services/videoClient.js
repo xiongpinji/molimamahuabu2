@@ -1213,6 +1213,28 @@ function getDefaultVideoConfig(db, preferredModel, evidenceRoots) {
           .some((value) => String(value || '').trim().toLowerCase() === preferred);
     }) || null;
   }
+  if (preferred && feituoVideoClient.FEITUO_MODELS[preferred] && preferred.startsWith('xuan-')) {
+    return active.find((config) => {
+      const protocols = [config.provider, config.api_protocol]
+        .map((value) => String(value || '').trim().toLowerCase());
+      if (!protocols.some((value) => value === 'feituo' || value === 'feituo_open')) return false;
+      const models = Array.isArray(config.model) ? config.model : [config.model];
+      const settings = typeof config.settings === 'object' && config.settings
+        ? config.settings
+        : (() => { try { return JSON.parse(config.settings || '{}'); } catch (_) { return {}; } })();
+      const verified = Array.isArray(settings.real_generation_verified_models)
+        ? settings.real_generation_verified_models
+        : [];
+      const capabilityKey = Object.keys(config.verified_capabilities || {})
+        .find((value) => String(value).trim().toLowerCase() === preferred);
+      return config.verification_status === 'verified'
+        && aiConfigService.hasConnectionCredential(config)
+        && verified.some((value) => String(value || '').trim().toLowerCase() === preferred)
+        && Boolean(capabilityKey)
+        && [...models, config.default_model]
+          .some((value) => String(value || '').trim().toLowerCase() === preferred);
+    }) || null;
+  }
   if (active.length === 0) {
     return preferredModel
       ? canvasProviderConfigService.getConfig('video', preferredModel)
@@ -1335,6 +1357,103 @@ function assertToapisVideoSubmitReady(db, config, model, request, evidenceRoots)
       'MODEL_RESOLUTION_PRICE_REQUIRED',
       `${target} 的 ${checked.resolution} 积分待管理员配置`,
     );
+  }
+  return checked;
+}
+
+function assertFeituoVideoSubmitReady(db, config, model, request) {
+  const target = String(model || '').trim().toLowerCase();
+  const official = feituoVideoClient.FEITUO_MODELS[target];
+  const checked = feituoVideoClient.buildFeituoVideoBody({ ...request, model: target });
+  const protocols = [config?.provider, config?.api_protocol]
+    .map((value) => String(value || '').trim().toLowerCase());
+  const configuredModels = [
+    ...(Array.isArray(config?.model) ? config.model : [config?.model]),
+    config?.default_model,
+  ].map((value) => String(value || '').trim().toLowerCase());
+  if (!target.startsWith('xuan-') || !official || config?.service_type !== 'video'
+      || config?.is_active !== true
+      || !protocols.some((value) => value === 'feituo' || value === 'feituo_open')
+      || !configuredModels.includes(target)) {
+    throw toapisGateError('FEITUO_CONFIG_MISMATCH', `${target} 未绑定当前启用的飞拓视频配置`);
+  }
+  if (config.verification_status !== 'verified') {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 尚未通过真实生成验证`);
+  }
+  if (!aiConfigService.hasConnectionCredential(config)) {
+    throw toapisGateError('MODEL_CREDENTIAL_MISSING', `${target} 未配置有效的飞拓 API Key`);
+  }
+  const settings = typeof config.settings === 'object' && config.settings
+    ? config.settings
+    : (() => { try { return JSON.parse(config.settings || '{}'); } catch (_) { return {}; } })();
+  const realVerified = Array.isArray(settings.real_generation_verified_models)
+    ? settings.real_generation_verified_models
+    : [];
+  if (!realVerified.some((value) => String(value || '').trim().toLowerCase() === target)) {
+    throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 尚未写入精确真实生成记录`);
+  }
+  const capabilities = getVerifiedToapisCapabilities(config, target);
+  if (!capabilities) throw toapisGateError('MODEL_NOT_VERIFIED', `${target} 缺少已验证能力`);
+  const resolutions = Array.isArray(capabilities.resolutions)
+    ? capabilities.resolutions.map((value) => String(value || '').trim().toLowerCase())
+    : [];
+  const durations = Array.isArray(capabilities.durations)
+    ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
+    : [];
+  if (!resolutions.includes(checked.resolution)) {
+    throw toapisGateError('VIDEO_RESOLUTION_NOT_VERIFIED', `${target} 的 ${checked.resolution} 尚未通过真实生成验证`);
+  }
+  if (!durations.includes(checked.duration)) {
+    throw toapisGateError('VIDEO_DURATION_NOT_VERIFIED', `${target} 的 ${checked.duration} 秒尚未通过真实生成验证`);
+  }
+  const used = [
+    [request.first_frame_url, 'supportsFirstFrame', '首帧参考'],
+    [request.last_frame_url, 'supportsLastFrame', '尾帧参考'],
+    [checked.imageUrls, 'supportsImageReference', '参考图'],
+    [checked.videoUrls, 'supportsVideoReference', '参考视频'],
+    [checked.audioUrls, 'supportsAudioReference', '参考音频'],
+    [request.generate_audio === true, 'supportsAudio', '同步音频'],
+  ];
+  for (const [value, capability, label] of used) {
+    const present = Array.isArray(value) ? value.length > 0 : Boolean(value);
+    if (present && capabilities[capability] !== true) {
+      throw toapisGateError('VIDEO_REFERENCE_NOT_VERIFIED', `${target} 的${label}尚未通过真实验证`);
+    }
+  }
+  const limits = [
+    [checked.imageUrls, 'maxReferences', '参考图'],
+    [checked.videoUrls, 'maxVideoReferences', '参考视频'],
+    [checked.audioUrls, 'maxAudioReferences', '参考音频'],
+  ];
+  for (const [values, key, label] of limits) {
+    const limit = Number(capabilities[key]);
+    if (!Number.isSafeInteger(limit) || limit < 0 || values.length > limit) {
+      throw toapisGateError('VIDEO_REFERENCE_LIMIT_EXCEEDED', `${target} 的${label}数量超过已验证上限`);
+    }
+  }
+  const price = modelPriceService.list(db)
+    .find((item) => String(item.model || '').trim().toLowerCase() === target);
+  if (!price || price.category !== 'video' || price.status !== 'enabled'
+      || !Number.isSafeInteger(price.credits) || price.credits <= 0) {
+    throw toapisGateError('MODEL_PRICE_NOT_CONFIGURED', `${target} 积分待管理员配置`);
+  }
+  if (official.resolutions.length > 1) {
+    const tier = price.resolution_prices?.[checked.resolution];
+    if (!Number.isSafeInteger(tier?.credits) || tier.credits <= 0
+        || !Number.isSafeInteger(tier?.cost_micros_per_second) || tier.cost_micros_per_second <= 0) {
+      throw toapisGateError('MODEL_RESOLUTION_PRICE_REQUIRED', `${target} 的 ${checked.resolution} 积分待管理员配置`);
+    }
+  } else if (price.billing_unit !== 'request' || price.cost_unit !== 'request'
+      || !Number.isSafeInteger(price.cost_micros_per_unit) || price.cost_micros_per_unit <= 0) {
+    throw toapisGateError('MODEL_PRICE_NOT_CONFIGURED', `${target} 按次价格待管理员配置`);
+  }
+  const credits = modelPriceService.calculateCharge(db, target, {
+    resolution: checked.resolution,
+    duration: checked.duration,
+    allowedDurations: durations,
+  });
+  if (!Number.isSafeInteger(credits) || credits <= 0) {
+    throw toapisGateError('MODEL_PRICE_NOT_CONFIGURED', `${target} 积分待管理员配置`);
   }
   return checked;
 }
@@ -5049,6 +5168,18 @@ async function callVideoApi(db, log, opts, runtime = {}) {
   }
 
   if (protocol === 'feituo_open') {
+    try {
+      assertFeituoVideoSubmitReady(db, config, model, {
+        ...opts,
+        model,
+        prompt,
+        duration: opts.duration,
+        aspect_ratio,
+        resolution,
+      });
+    } catch (error) {
+      return { error: error.message };
+    }
     const rawReferences = [...new Set([
       opts.image_url,
       opts.first_frame_url,
@@ -5076,11 +5207,14 @@ async function callVideoApi(db, log, opts, runtime = {}) {
       prompt,
       duration: opts.duration,
       aspect_ratio,
+      resolution,
       image_url: undefined,
       first_frame_url: undefined,
       last_frame_url: undefined,
       reference_urls: resolvedReferences,
       video_gen_id,
+    }, {
+      fetchImpl: opts.fetchImpl,
     });
   }
 

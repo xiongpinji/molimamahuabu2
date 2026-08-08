@@ -5,6 +5,7 @@ const { IMAGE_REFERENCE_LIMITS } = require('./token6688Client');
 const videoReferenceCapabilityService = require('./videoReferenceCapabilityService');
 const { USMERCARI_VIDEO_DURATIONS } = require('./usmercariVideoClient');
 const toapisVideoClient = require('./toapisVideoClient');
+const feituoVideoClient = require('./feituoVideoClient');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 const KIND_BY_SERVICE = {
@@ -16,7 +17,7 @@ const KIND_BY_SERVICE = {
 };
 
 // 供应商确认的分模型媒体上限；与 usmercariVideoClient.USMERCARI_MODELS 保持一致
-const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video']);
+const STRICT_VERIFIED_PROTOCOLS = new Set(['usmercari_image', 'toapis_video', 'feituo_open']);
 
 const USMERCARI_VIDEO_CAPABILITIES = Object.freeze({
   durations: USMERCARI_VIDEO_DURATIONS,
@@ -107,7 +108,9 @@ const TOKEN6688_IMAGE_CAPABILITIES = Object.freeze({
 function isRealGenerationVerified(config, model) {
   const provider = String(config.provider || '').toLowerCase();
   const protocol = String(config.api_protocol || '').toLowerCase();
-  if (provider !== 'token6688' && provider !== 'tokengo' && protocol !== 'token6688') return true;
+  const token6688 = provider === 'token6688' || provider === 'tokengo' || protocol === 'token6688';
+  const feituo = provider === 'feituo' || protocol === 'feituo_open';
+  if (!token6688 && !feituo) return true;
   try {
     const settings = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
     const verified = Array.isArray(settings?.real_generation_verified_models)
@@ -157,6 +160,7 @@ function strictVerifiedProtocol(config) {
     .map((value) => String(value || '').trim().toLowerCase());
   if (values.includes('usmercari_image')) return 'usmercari_image';
   if (values.some((value) => value === 'toapis' || value === 'toapis_video')) return 'toapis_video';
+  if (values.some((value) => value === 'feituo' || value === 'feituo_open')) return 'feituo_open';
   return null;
 }
 
@@ -169,19 +173,27 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
     .find((item) => String(item).trim().toLowerCase() === target);
   const capabilities = capabilityKey ? config.verified_capabilities[capabilityKey] : null;
   if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
-  if (!hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) return false;
+  if (protocol !== 'feituo_open' && !hasTrustedEvidenceBinding(target, capabilities, evidenceRoots)) return false;
   const { evidence_contract: _evidenceContract, evidence_sha256: _evidenceSha256, ...publicCapabilitySource } = capabilities;
+  const feituoOfficial = protocol === 'feituo_open'
+    ? feituoVideoClient.FEITUO_MODELS[target]
+    : null;
+  if (protocol === 'feituo_open' && (!target.startsWith('xuan-') || !feituoOfficial)) return false;
   const allowedResolutions = protocol === 'usmercari_image'
     ? modelPriceService.IMAGE_RESOLUTIONS
-    : modelPriceService.VIDEO_RESOLUTIONS;
+    : protocol === 'feituo_open'
+      ? feituoOfficial.resolutions
+      : modelPriceService.VIDEO_RESOLUTIONS;
   const resolutions = Array.isArray(capabilities.resolutions)
     ? [...new Set(capabilities.resolutions
       .map((item) => String(item || '').trim().toLowerCase())
       .filter((resolution) => allowedResolutions.includes(resolution)))]
     : [];
   let publicCapabilities = { ...publicCapabilitySource, resolutions };
-  if (protocol === 'toapis_video') {
-    const official = toapisVideoClient.TOAPIS_VIDEO_MODELS[target];
+  if (protocol === 'toapis_video' || protocol === 'feituo_open') {
+    const official = protocol === 'toapis_video'
+      ? toapisVideoClient.TOAPIS_VIDEO_MODELS[target]
+      : feituoOfficial;
     const verifiedDurations = new Set(Array.isArray(capabilities.durations)
       ? capabilities.durations.map(Number).filter(Number.isSafeInteger)
       : []);
@@ -193,6 +205,14 @@ function verifiedModelCapabilities(config, model, price, evidenceRoots) {
   }
   if ((protocol === 'usmercari_image' && capabilities.supportsTextToImage !== true)
       || !resolutions.length || !price) return false;
+  if (protocol === 'feituo_open' && feituoOfficial.resolutions.length === 1) {
+    return price.category === 'video'
+      && price.billing_unit === 'request'
+      && Number.isSafeInteger(price.credits)
+      && price.credits > 0
+      ? publicCapabilities
+      : false;
+  }
   const allPriced = resolutions.every((resolution) => {
     const credits = price.resolution_prices?.[resolution]?.credits;
     return Number.isSafeInteger(credits) && credits > 0;
@@ -256,10 +276,9 @@ function list(db, options = {}) {
       const verifiedCapabilities = verifiedModelCapabilities(config, upstreamModel, price, options.evidenceRoots);
       if (verifiedCapabilities === false) return null;
       const resolutionPrices = verifiedCapabilities
-        ? Object.fromEntries(verifiedCapabilities.resolutions.map((resolution) => [
-          resolution,
-          price.resolution_prices[resolution],
-        ]))
+        ? Object.fromEntries(verifiedCapabilities.resolutions
+          .map((resolution) => [resolution, price.resolution_prices[resolution]])
+          .filter(([, tier]) => tier))
         : price?.resolution_prices || {};
       seen.add(key);
       return {
