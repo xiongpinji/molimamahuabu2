@@ -95,12 +95,15 @@ def main():
     parser.add_argument("--max-rss-bytes", type=int, required=True)
     args = parser.parse_args()
 
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     block_network()
 
-    stage_dir = Path(args.stage_dir).resolve()
+    stage_arg = Path(args.stage_dir)
+    if not stage_arg.is_absolute():
+        raise SystemExit("--stage-dir must be absolute")
+    stage_dir = stage_arg.resolve()
     audio_path = Path(args.audio).resolve()
     manifest = json.loads((stage_dir / "manifest.json").read_text(encoding="utf-8"))
     verify_manifest(stage_dir, manifest)
@@ -142,6 +145,7 @@ def main():
         "audio_sha256": audio_hash,
         "accent": accent,
         "commonaccent_interface_sha256": manifest["runtime"]["commonaccent"]["interface"]["sha256"],
+        "runtime_tree_sha256": manifest["runtime"]["commonaccent"]["tree_sha256"],
         "models": {
             name: {
                 "revision": model["revision"],

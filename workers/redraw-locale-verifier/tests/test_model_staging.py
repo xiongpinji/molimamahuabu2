@@ -186,6 +186,31 @@ class ModelStagingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 prepare_commonaccent_runtime(source, root / "drift-runtime", wav2vec)
 
+    def test_smoke_forces_offline_env_rejects_relative_stage_dir_and_reports_runtime_hash(self):
+        smoke_source = SMOKE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("setdefault", smoke_source)
+        self.assertIn('os.environ["HF_HUB_OFFLINE"] = "1"', smoke_source)
+        self.assertIn('os.environ["TRANSFORMERS_OFFLINE"] = "1"', smoke_source)
+        self.assertIn('os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"', smoke_source)
+        self.assertIn("stage_arg = Path(args.stage_dir)", smoke_source)
+        self.assertIn("if not stage_arg.is_absolute()", smoke_source)
+        self.assertIn('"runtime_tree_sha256"', smoke_source)
+
+    @unittest.skipIf(not hasattr(Path, "symlink_to"), "symlinks are not supported")
+    def test_stage_output_rejects_symlink_before_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            link = root / "link"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            with self.assertRaises(ValueError):
+                stage_models._resolve_output_path(link)
+
 
 if __name__ == "__main__":
     unittest.main()

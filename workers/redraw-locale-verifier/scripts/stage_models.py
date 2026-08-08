@@ -58,6 +58,13 @@ def _safe_resolve(path):
     return Path(path).expanduser().resolve()
 
 
+def _resolve_output_path(path):
+    output = Path(path).expanduser()
+    if output.is_symlink():
+        raise ValueError(f"output directory symlink rejected: {output}")
+    return output.resolve()
+
+
 def _ensure_empty_output(path):
     if path.exists() and any(path.iterdir()):
         raise ValueError(f"output directory already exists and is not empty: {path}")
@@ -231,7 +238,7 @@ def _download_model(name, output):
 
 
 def stage_models(output):
-    output = _safe_resolve(output)
+    output = _resolve_output_path(output)
     _ensure_empty_output(output)
     roots = {name: _download_model(name, output) for name in ("asr", "accent", "wav2vec")}
     runtime_dir = output / "runtime" / "commonaccent"
