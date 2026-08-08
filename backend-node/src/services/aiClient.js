@@ -70,7 +70,7 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
       res.on('error', reject);
     });
 
-    const timer = setTimeout(() => { req.destroy(); reject(new Error(`Vision request timeout after ${timeoutMs}ms`)); }, timeoutMs);
+    const timer = setTimeout(() => { req.destroy(); reject(new Error(`AI non-stream request timeout after ${timeoutMs}ms`)); }, timeoutMs);
     req.on('error', (e) => { clearTimeout(timer); reject(e); });
     req.on('close', () => clearTimeout(timer));
     req.write(bodyStr);
@@ -188,11 +188,15 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
     };
 
     let silenceTimer = null;
+    let receivedTextLength = 0;
     const resetSilenceTimer = () => {
       if (silenceTimer) clearTimeout(silenceTimer);
       silenceTimer = setTimeout(() => {
         req.destroy();
-        reject(new Error(`AI stream silence timeout after ${silenceTimeoutMs}ms`));
+        const error = new Error(`AI stream silence timeout after ${silenceTimeoutMs}ms`);
+        error.code = 'AI_STREAM_SILENCE_TIMEOUT';
+        error.receivedTextLength = receivedTextLength;
+        reject(error);
       }, silenceTimeoutMs);
     };
 
@@ -220,6 +224,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         || null;
       let eventCount = 0;
       let parseErrorCount = 0;
+      let upstreamError = null;
       const eventTypes = new Set();
       const contentShapes = new Set();
       resetSilenceTimer();
@@ -237,6 +242,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
         } else {
           accumulated += text;
         }
+        receivedTextLength = accumulated.length;
         if (firstToken) {
           firstToken = false;
           if (onProgress) onProgress(0, 'first_token', '');
@@ -245,6 +251,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       };
 
       const processLine = (line) => {
+        if (upstreamError) return;
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith(':') || trimmed.startsWith('event:')) return;
         const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
@@ -256,6 +263,27 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
           if (evt.response?.usage) usage = evt.response.usage;
           responseId = responseId || evt.id || evt.response?.id || null;
           if (evt.type) eventTypes.add(String(evt.type));
+          if (evt.error && typeof evt.error === 'object') {
+            const retryableTransient = String(evt.error.type || '').trim() === 'upstream_error';
+            const errorType = String(evt.error.type || evt.error.code || 'upstream_error')
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .trim()
+              .slice(0, 120);
+            const errorMessage = String(evt.error.message || '上游服务返回错误')
+              .replace(/[\u0000-\u001f\u007f]/g, ' ')
+              .trim()
+              .slice(0, 500);
+            upstreamError = new Error(`AI 上游服务错误（${errorType}）：${errorMessage}`);
+            upstreamError.code = 'AI_UPSTREAM_ERROR';
+            upstreamError.upstreamType = errorType;
+            upstreamError.retryableTransient = retryableTransient;
+            upstreamError.usage = usage;
+            upstreamError.receivedTextLength = accumulated.length;
+            clearTimeout(silenceTimer);
+            reject(upstreamError);
+            res.destroy();
+            return;
+          }
           const extracted = extractStreamEventText(evt);
           if (extracted.shape) contentShapes.add(extracted.shape);
           appendText(extracted.text, extracted.mode);
@@ -276,6 +304,10 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
       res.on('end', () => {
         clearTimeout(silenceTimer);
         if (sseBuffer.trim()) processLine(sseBuffer);
+        if (upstreamError) {
+          reject(upstreamError);
+          return;
+        }
         if (!accumulated && reasoningFallback) appendText(reasoningFallback, 'snapshot');
         resolve({
           status: statusCode,
@@ -302,8 +334,18 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
 async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs, onProgress, log, model) {
   let response = null;
+  let combinedUsage = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    try {
+      response = await postJSONStream(url, headers, body, silenceTimeoutMs, onProgress);
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        error.usage = mergeProviderUsage(combinedUsage, error.usage);
+      }
+      throw error;
+    }
+    combinedUsage = mergeProviderUsage(combinedUsage, response.usage);
+    response.usage = combinedUsage;
     if (response.body) return response;
     log.warn('AI stream completed without text', {
       model,
@@ -314,6 +356,28 @@ async function postJSONStreamWithEmptyRetry(url, headers, body, silenceTimeoutMs
     if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return response;
+}
+
+function mergeProviderUsage(total, next) {
+  if (!next) return total;
+  const read = (usage, primary, fallback) => Math.max(
+    0,
+    Math.trunc(Number(usage?.[primary] ?? usage?.[fallback]) || 0),
+  );
+  const reasoning = (usage) => read(
+    usage?.output_tokens_details || usage?.completion_tokens_details,
+    'reasoning_tokens',
+    'reasoning_tokens',
+  );
+  return {
+    input_tokens: read(total, 'input_tokens', 'prompt_tokens')
+      + read(next, 'input_tokens', 'prompt_tokens'),
+    output_tokens: read(total, 'output_tokens', 'completion_tokens')
+      + read(next, 'output_tokens', 'completion_tokens'),
+    output_tokens_details: {
+      reasoning_tokens: reasoning(total) + reasoning(next),
+    },
+  };
 }
 
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
@@ -390,6 +454,17 @@ function resolveTextModel(db, serviceType, preferredModel, sceneKey = null) {
     config = getDefaultConfig(db, 'text');
   }
   return config ? getModelFromConfig(config, routedModelOverride || preferredModel) : '';
+}
+
+function getTextRateLimitRetryDelays(env = process.env) {
+  const configured = String(env.GENERATION_TEXT_RATE_LIMIT_RETRY_DELAYS_MS || '').trim();
+  if (!configured) return [5000, 15000];
+  const delays = configured
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .map((value) => Math.min(Math.floor(value), 120000));
+  return delays.length > 0 ? delays : [5000, 15000];
 }
 
 async function generateText(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
@@ -488,38 +563,147 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       model,
       max_output_tokens: finalMaxTokens ?? '(model default)',
       protocol: 'responses',
-      stream: false,
+      stream: true,
     });
-    const response = await postJSONNonStream(
+    const response = await postJSONStreamWithEmptyRetry(
       url,
       { Authorization: 'Bearer ' + (config.api_key || '') },
       responseBody,
-      240000,
+      120000,
+      (receivedLen, event) => {
+        if (event === 'first_token') {
+          log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+        } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+          log.info('AI stream progress', {
+            model,
+            received_chars: receivedLen,
+            elapsed_ms: Date.now() - startMs,
+          });
+        }
+      },
+      log,
+      model,
     );
-    try {
-      generationUsageContext.capture(JSON.parse(response.raw || '{}').usage);
-    } catch (_) {}
+    generationUsageContext.capture(response.usage);
     if (!response.body) throw new Error('AI 返回内容为空');
+    log.info('AI raw response received', {
+      model,
+      text_length: response.body.length,
+      elapsed_ms: Date.now() - startMs,
+    });
     return response.body;
   }
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
-  const res = await postJSONStreamWithEmptyRetry(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000, (receivedLen, event, accumulated) => {
-    if (event === 'first_token') {
-      log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
-    } else if (receivedLen > 0 && receivedLen % 500 < 20) {
-      // 每积累约 500 字符记录一次进度
-      log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+  const runNonStreamFallback = async (reason, priorUsage, diagnostics = {}) => {
+    log.warn('AI streaming request failed; falling back to non-stream request', {
+      model,
+      reason,
+      elapsed_ms: Date.now() - startMs,
+      ...diagnostics,
+    });
+    const fallback = await postJSONNonStream(
+      url,
+      { Authorization: 'Bearer ' + (config.api_key || '') },
+      { ...body, stream: false },
+      240000,
+    );
+    let fallbackUsage = null;
+    try {
+      fallbackUsage = JSON.parse(fallback.raw || '{}').usage;
+    } catch (_) {}
+    if (!fallback.body) throw new Error('AI 返回内容为空');
+    generationUsageContext.capture(mergeProviderUsage(priorUsage, fallbackUsage));
+    if (streamCallback) streamCallback(fallback.body);
+    log.info('AI non-stream fallback received', {
+      model,
+      reason,
+      text_length: fallback.body.length,
+      elapsed_ms: Date.now() - startMs,
+    });
+    return fallback.body;
+  };
+  let res;
+  let priorStreamUsage = null;
+  const rateLimitRetryDelays = getTextRateLimitRetryDelays();
+  const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
+  for (let rateLimitAttempt = 0; ; ) {
+    try {
+      res = await postJSONStreamWithEmptyRetry(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, silenceMs, (receivedLen, event, accumulated) => {
+        if (event === 'first_token') {
+          log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+        } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+          // 每积累约 500 字符记录一次进度
+          log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+        }
+        // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
+        if (streamCallback && accumulated) streamCallback(accumulated);
+      }, log, model);
+      res.usage = mergeProviderUsage(priorStreamUsage, res.usage);
+      break;
+    } catch (error) {
+      priorStreamUsage = mergeProviderUsage(priorStreamUsage, error?.usage);
+      if (error && typeof error === 'object') error.usage = priorStreamUsage;
+      const isRetryableRateLimit = error?.code === 'AI_UPSTREAM_ERROR'
+        && error.upstreamType === 'rate_limit_error'
+        && Number(error.receivedTextLength || 0) === 0;
+      if (error?.code === 'AI_STREAM_SILENCE_TIMEOUT'
+        && Number(error.receivedTextLength || 0) === 0) {
+        return runNonStreamFallback('initial_stream_silence', error.usage, {
+          silence_timeout_ms: silenceMs,
+        });
+      }
+      if (isRetryableRateLimit && rateLimitAttempt < rateLimitRetryDelays.length) {
+        const delayMs = rateLimitRetryDelays[rateLimitAttempt];
+        rateLimitAttempt += 1;
+        log.warn('AI text request rate limited; retrying after backoff', {
+          model,
+          attempt: rateLimitAttempt,
+          delay_ms: delayMs,
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      if (isRetryableRateLimit) {
+        return runNonStreamFallback('rate_limit_retries_exhausted', error.usage, {
+          upstream_type: error.upstreamType,
+          retry_attempts: rateLimitAttempt,
+        });
+      }
+      const transportErrorCodes = new Set([
+        'ECONNRESET',
+        'EPIPE',
+        'ETIMEDOUT',
+        'ENETRESET',
+        'ECONNREFUSED',
+        'EHOSTUNREACH',
+        'ENOTFOUND',
+        'EAI_AGAIN',
+        'ERR_STREAM_PREMATURE_CLOSE',
+      ]);
+      const isRetryableTransportError = Number(error?.receivedTextLength || 0) === 0
+        && (transportErrorCodes.has(error?.code) || !String(error?.message || '').trim());
+      if (isRetryableTransportError) {
+        return runNonStreamFallback('stream_transport_error', error?.usage, {
+          transport_code: error?.code || 'EMPTY_ERROR',
+        });
+      }
+      if (error?.code === 'AI_UPSTREAM_ERROR'
+        && error.retryableTransient === true
+        && Number(error.receivedTextLength || 0) === 0) {
+        return runNonStreamFallback('transient_upstream_error', error.usage, {
+          upstream_type: error.upstreamType,
+        });
+      }
+      throw error;
     }
-    // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
-    if (streamCallback && accumulated) streamCallback(accumulated);
-  }, log, model);
+  }
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
-  generationUsageContext.capture(res.usage);
   const elapsedMs = Date.now() - startMs;
   if (!content) {
-    throw new Error('AI 返回内容为空');
+    return runNonStreamFallback('empty_stream', res.usage, res.diagnostics || {});
   }
+  generationUsageContext.capture(res.usage);
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs });
   return content;
 }

@@ -66,13 +66,25 @@ test('剧本分析项目通过 API 总路由保存并读取', async () => {
     const skills = await fetch(`${baseUrl}/script-analysis/skills`);
     assert.equal(skills.status, 200);
     const skillsBody = await skills.json();
-    assert.equal(skillsBody.data.skills.length, 2);
+    assert.equal(skillsBody.data.skills.length, 3);
     assert.equal(skillsBody.data.skills[0].id, 'short-drama-director');
-    assert.equal(skillsBody.data.skills[0].is_default, true);
+    assert.equal(skillsBody.data.skills[0].is_default, false);
     assert.equal(Object.hasOwn(skillsBody.data.skills[0], 'system_prompt'), false);
     assert.equal(skillsBody.data.skills[1].id, 'cinematic-visual-director');
     assert.equal(skillsBody.data.skills[1].is_default, false);
     assert.equal(Object.hasOwn(skillsBody.data.skills[1], 'system_prompt'), false);
+    assert.equal(skillsBody.data.skills[2].id, 'short-drama-production-director');
+    assert.equal(skillsBody.data.skills[2].is_default, true);
+    assert.equal(skillsBody.data.skills[2].output_schema_version, '2.0');
+    assert.equal(Object.hasOwn(skillsBody.data.skills[2], 'system_prompt'), false);
+
+    const presets = await fetch(`${baseUrl}/script-analysis/production-presets`);
+    assert.equal(presets.status, 200);
+    const presetsBody = await presets.json();
+    assert.deepEqual(
+      presetsBody.data.presets.map((preset) => preset.id),
+      ['male', 'female', 'fusion', 'custom'],
+    );
 
     const project = {
       title: '验收-剧本分析-20260801',
