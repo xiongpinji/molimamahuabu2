@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const creditLedger = require('../src/services/creditLedgerService');
@@ -34,6 +37,88 @@ test('相同操作号重复预扣只产生一次扣款', () => {
   assert.equal(second.id, first.id);
   assert.equal(creditLedger.getAccount(db, 'user-1').available, 65);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credit_ledger').get().n, 1);
+});
+
+test('claim 原子认领新预扣并标记 created', () => {
+  const db = setup(100);
+  const result = creditLedger.claim(db, {
+    userId: 'user-1', operationKey: 'claim:image:1', amount: 20,
+    model: 'gpt-image-2', resourceType: 'image', resourceId: '1',
+  });
+
+  assert.equal(result.created, true);
+  assert.equal(result.reservation.status, 'held');
+  assert.equal(creditLedger.getAccount(db, 'user-1').available, 80);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credit_ledger').get().n, 1);
+});
+
+test('claim 遇到已存在操作号返回 existing 且不重复扣款', () => {
+  const db = setup(100);
+  const input = {
+    userId: 'user-1', operationKey: 'claim:image:existing', amount: 20,
+    model: 'gpt-image-2', resourceType: 'image', resourceId: 'existing',
+  };
+  const first = creditLedger.claim(db, input);
+  const second = creditLedger.claim(db, input);
+
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.reservation.id, first.reservation.id);
+  assert.equal(creditLedger.getAccount(db, 'user-1').available, 80);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credit_ledger').get().n, 1);
+});
+
+test('tenant claim 按租户和 operation_key 隔离 existing 检查', () => {
+  const db = setup(100);
+  creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+  creditLedger.setTenantAccountBalance(db, 'tenant-b', 100);
+  const base = {
+    userId: 'user-1', operationKey: 'claim:tenant:image', amount: 20,
+    model: 'gpt-image-2', resourceType: 'image', resourceId: 'tenant-image',
+  };
+  const first = creditLedger.claim(db, { ...base, tenantId: 'tenant-a' });
+  const sameTenant = creditLedger.claim(db, { ...base, tenantId: 'tenant-a' });
+  const otherTenant = creditLedger.claim(db, { ...base, tenantId: 'tenant-b' });
+
+  assert.equal(first.created, true);
+  assert.equal(sameTenant.created, false);
+  assert.equal(otherTenant.created, true);
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-a').available, 80);
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-b').available, 80);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tenant_credit_ledger').get().n, 2);
+});
+
+test('tenant claim 在两个 SQLite 连接间串行且不重复扣款', () => {
+  const file = path.join(os.tmpdir(), `credit-claim-${Date.now()}-${process.pid}.db`);
+  const db1 = new Database(file);
+  const db2 = new Database(file);
+  try {
+    creditLedger.ensureSchema(db1);
+    creditLedger.setTenantAccountBalance(db1, 'tenant-a', 100);
+    const input = {
+      tenantId: 'tenant-a',
+      userId: 'user-1',
+      actorUserId: 'user-1',
+      operationKey: 'claim:tenant:shared-file',
+      amount: 20,
+      model: 'gpt-image-2',
+      resourceType: 'image',
+      resourceId: 'shared-file',
+    };
+
+    const first = creditLedger.claim(db1, input);
+    const second = creditLedger.claim(db2, input);
+
+    assert.equal(first.created, true);
+    assert.equal(second.created, false);
+    assert.equal(second.reservation.id, first.reservation.id);
+    assert.equal(creditLedger.getTenantAccount(db2, 'tenant-a').available, 80);
+    assert.equal(db2.prepare('SELECT COUNT(*) AS n FROM tenant_credit_ledger').get().n, 1);
+  } finally {
+    db1.close();
+    db2.close();
+    fs.rmSync(file, { force: true });
+  }
 });
 
 test('余额不足时拒绝预扣且不改变账户', () => {
@@ -90,6 +175,26 @@ test('生成成功时结算预扣积分', () => {
   });
   creditLedger.settleGeneration(db, held.id, 'completed');
   assert.equal(creditLedger.getReservation(db, held.id).status, 'confirmed');
+});
+
+test('相同 id 的租户迁移副本不抢占用户预扣结算', () => {
+  const db = setup(100);
+  const held = creditLedger.reserve(db, {
+    userId: 'user-1', operationKey: 'image:migrated', amount: 20,
+    model: 'gpt-image-2', resourceType: 'image', resourceId: 'migrated',
+  });
+  creditLedger.setTenantAccountBalance(db, 'personal:user-1', 100);
+  db.prepare(`
+    INSERT INTO tenant_usage_reservations
+      (id, tenant_id, operation_key, actor_user_id, model, resource_type, resource_id, amount, status, created_at, updated_at)
+    VALUES (?, 'personal:user-1', 'image:migrated', 'user-1', 'gpt-image-2', 'image', 'migrated', 20, 'held', ?, ?)
+  `).run(held.id, new Date().toISOString(), new Date().toISOString());
+
+  creditLedger.settleGeneration(db, held.id, 'completed');
+
+  assert.equal(db.prepare('SELECT status FROM usage_reservations WHERE id = ?').get(held.id).status, 'confirmed');
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.id).status, 'held');
+  assert.equal(creditLedger.getAccount(db, 'user-1').spent, 20);
 });
 
 test('生成明确失败时退款', () => {
