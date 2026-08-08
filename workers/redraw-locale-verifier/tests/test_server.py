@@ -233,8 +233,11 @@ class ServerTests(unittest.TestCase):
         ready_path = self.root / "worker.ready.json"
         socket_path = self.root / "worker.sock"
         order = []
+        write_ready(ready_path, self.pack, now=datetime(2026, 8, 8, 7, 0, 0, tzinfo=timezone.utc), pid=1234)
+        self.assertTrue(ready_path.exists())
 
         def model_hash_check(pack):
+            self.assertFalse(ready_path.exists())
             order.append(("hash", pack["id"]))
 
         def asr_smoke():
@@ -261,6 +264,31 @@ class ServerTests(unittest.TestCase):
                 )
 
         self.assertEqual(order, [("hash", "en-US@1"), ("smoke", "asr"), ("smoke", "accent")])
+        self.assertFalse(ready_path.exists())
+        self.assertFalse(socket_path.exists())
+
+    def test_run_server_removes_stale_ready_before_startup_check_failure(self):
+        ready_path = self.root / "worker.ready.json"
+        socket_path = self.root / "worker.sock"
+        write_ready(ready_path, self.pack, now=datetime(2026, 8, 8, 7, 0, 0, tzinfo=timezone.utc), pid=1234)
+        self.assertTrue(ready_path.exists())
+
+        def model_hash_check(pack):
+            self.assertFalse(ready_path.exists())
+            raise RuntimeError
+
+        with self.assertRaises(RuntimeError):
+            run_server(
+                socket_path,
+                pack=self.pack,
+                allowed_root=self.root,
+                asr=object(),
+                accent=object(),
+                ready_path=ready_path,
+                model_hash_check=model_hash_check,
+                smoke_checks=(lambda: None, lambda: None),
+            )
+
         self.assertFalse(ready_path.exists())
         self.assertFalse(socket_path.exists())
 

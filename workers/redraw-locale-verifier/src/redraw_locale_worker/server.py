@@ -237,6 +237,7 @@ def create_unix_server(socket_path, *, pack, allowed_root, asr, accent, ready_pa
 
 
 def run_server(socket_path, *, pack, allowed_root, asr, accent, ready_path, model_hash_check, smoke_checks):
+    _safe_unlink_file(ready_path)
     server = None
     refresher = None
     try:
