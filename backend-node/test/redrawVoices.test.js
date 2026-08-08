@@ -332,6 +332,51 @@ test('completed voice provider result rechecks exact TTS config before confirmin
   state.db.close();
 });
 
+test('completed voice provider result with active exact TTS config confirms credits', () => {
+  const state = setup();
+  const now = new Date().toISOString();
+  credits.setTenantAccountBalance(state.db, 'tenant-a', 10);
+  addAudioAsset(state.db, 515, 'active-config.mp3', now);
+  state.db.prepare('UPDATE assets SET duration = 1.2 WHERE id = 515').run();
+  const sourceRef = { id: 'voice-active-config', voice_id: 'active-config-voice' };
+  const ctx = {
+    db: state.db,
+    tenantId: 'tenant-a',
+    userId: 'user-a',
+    versionId: state.versionId,
+    allowUnmaterializedDraft: true,
+    creditAmount: 2,
+    assetReader: { canRead: () => true },
+    localeRegistry: trustedRegistry(),
+  };
+  const attempt = createAssetAttempt(ctx, {
+    kind: 'voice',
+    sourceRef,
+    snapshot: {
+      provider: 'verified-tts',
+      model: 'voice-model-1',
+      ai_service_config_id: TTS_CONFIG_ID,
+      config_updated_at: TTS_CONFIG_UPDATED_AT,
+    },
+  });
+
+  const result = finalizeAssetAttempt(ctx, attempt.id, {
+    status: 'completed',
+    provider_task_id: 'provider-active-config',
+    voice_asset_id: 515,
+    duration: 1.2,
+    voice_evidence: { ...verifiedVoice(515, 'active-config-voice'), task_id: 'provider-active-config' },
+  });
+  const stored = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?')
+    .get(attempt.id);
+
+  assert.equal(result.status, 'generated');
+  assert.equal(stored.status, 'generated');
+  assert.equal(stored.error_code, null);
+  assert.equal(credits.getReservation(state.db, stored.credit_reservation_id).status, 'confirmed');
+  state.db.close();
+});
+
 test('音色证据读取优先使用 voice_evidence 再兼容 legacy evidence', () => {
   const preferred = verifiedVoice(901, 'preferred');
   const legacy = verifiedVoice(902, 'legacy');

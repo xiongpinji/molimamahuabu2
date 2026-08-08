@@ -730,7 +730,7 @@ function finalizeAssetAttempt(ctx, attemptId, providerResult = {}) {
       );
     }
     try {
-      validateVoiceTtsConfigPin(ctx, attempt);
+      validateVoiceTtsConfigPin(ctx, { kind: attempt.kind, snapshot });
     } catch (error) {
       return markAssetNeedsAttention(
         ctx,
