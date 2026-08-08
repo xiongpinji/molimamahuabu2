@@ -25,6 +25,20 @@ build_commonaccent_runtime_manifest = stage_models.build_commonaccent_runtime_ma
 compute_file_sha256 = stage_models.compute_file_sha256
 
 
+COMMONACCENT_TEST_HYPERPARAMS = (
+    'wav2vec2_hub: "facebook/wav2vec2-large-xlsr-53"\n'
+    "pretrained_path: Jzuluaga/accent-id-commonaccent_xlsr-en-english\n"
+    "encoder_dim: !ref <output_neurons>\n"
+    "wav2vec2: !new:speechbrain.lobes.models.huggingface_transformers.wav2vec2.Wav2Vec2\n"
+    "avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling\n"
+    "output_mlp: !new:speechbrain.nnet.linear.Linear\n"
+    "model: !new:torch.nn.ModuleList\n"
+    "softmax: !new:speechbrain.nnet.activations.Softmax\n"
+    "label_encoder: !new:speechbrain.dataio.encoder.CategoricalEncoder\n"
+    "pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer\n"
+)
+
+
 def load_smoke_module_with_fakes():
     names = [
         "faster_whisper",
@@ -309,6 +323,71 @@ class ModelStagingTests(unittest.TestCase):
         evidence = smoke.build_asr_evidence([types.SimpleNamespace(start=0.0, end=1.2, text="hello")], info)
         self.assertEqual(evidence["language"], "en")
         self.assertEqual(evidence["segments"][0]["text"], "hello")
+
+    def _build_smoke_manifest_fixture(self, root, hyperparams_manifest="runtime/commonaccent/hyperparams.yaml", secondary_yaml=None):
+        models = {
+            "asr": root / "models" / "asr",
+            "accent": root / "models" / "accent",
+            "wav2vec": root / "models" / "wav2vec",
+        }
+        for name, model_root in models.items():
+            model_root.mkdir(parents=True, exist_ok=True)
+            (model_root / "config.json").write_text(f'{{"name":"{name}"}}\n', encoding="utf-8")
+        runtime = root / "runtime" / "commonaccent"
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "hyperparams.yaml").write_text(COMMONACCENT_TEST_HYPERPARAMS, encoding="utf-8")
+        if secondary_yaml is not None:
+            (runtime / "secondary.yaml").write_text(secondary_yaml, encoding="utf-8")
+        manifest = build_model_manifest(
+            models,
+            revisions={
+                "asr": ASR_REVISION,
+                "accent": ACCENT_REVISION,
+                "wav2vec": WAV2VEC_REVISION,
+            },
+        )
+        manifest["runtime"] = {
+            "commonaccent": {
+                "hyperparams": hyperparams_manifest,
+                "tree_sha256": compute_tree_sha256(runtime),
+                "interface": {"sha256": compute_file_sha256(INTERFACE_PATH)},
+            }
+        }
+        return manifest
+
+    def test_prepare_and_manifest_verify_reject_all_secondary_yaml_dangerous_tags(self):
+        smoke = load_smoke_module_with_fakes()
+        for tag in ("!apply:os.system", "!!python/object/apply:os.system", "!new:unexpected.RemoteClass"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "source"
+                runtime = root / "runtime"
+                wav2vec = root / "wav2vec"
+                source.mkdir()
+                wav2vec.mkdir()
+                (source / "hyperparams.yaml").write_text(COMMONACCENT_TEST_HYPERPARAMS, encoding="utf-8")
+                (source / "secondary.yaml").write_text(f"bad: {tag}\n", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    prepare_commonaccent_runtime(source, runtime, wav2vec)
+
+                stage_dir = root / "stage"
+                manifest = self._build_smoke_manifest_fixture(stage_dir, secondary_yaml=f"bad: {tag}\n")
+                with self.assertRaises(RuntimeError):
+                    smoke.verify_manifest(stage_dir, manifest)
+
+    def test_manifest_hyperparams_path_must_stay_inside_runtime_commonaccent(self):
+        smoke = load_smoke_module_with_fakes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage_dir = root / "stage"
+            absolute = root / "outside.yaml"
+            absolute.write_text(COMMONACCENT_TEST_HYPERPARAMS, encoding="utf-8")
+            for unsafe in (str(absolute), "../outside.yaml", "runtime/../commonaccent/hyperparams.yaml"):
+                manifest = self._build_smoke_manifest_fixture(stage_dir, hyperparams_manifest=unsafe)
+                if unsafe == "../outside.yaml":
+                    (stage_dir.parent / "outside.yaml").write_text(COMMONACCENT_TEST_HYPERPARAMS, encoding="utf-8")
+                with self.assertRaises(RuntimeError):
+                    smoke.verify_manifest(stage_dir, manifest)
 
     @unittest.skipIf(not hasattr(Path, "symlink_to"), "symlinks are not supported")
     def test_stage_output_rejects_symlink_before_resolve(self):

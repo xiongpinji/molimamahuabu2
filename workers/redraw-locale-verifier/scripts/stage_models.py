@@ -155,15 +155,25 @@ def _extract_yaml_tags(text):
     return tags
 
 
-def _validate_commonaccent_yaml_tags(hyperparams):
+def _validate_commonaccent_yaml_tags(hyperparams, require_class_tags=True):
     text = hyperparams.read_text(encoding="utf-8")
     tags = _extract_yaml_tags(text)
     extra = tags - COMMONACCENT_ALLOWED_CLASS_TAGS - COMMONACCENT_ALLOWED_SAFE_TAGS
-    missing = COMMONACCENT_ALLOWED_CLASS_TAGS - tags
     if extra:
         raise ValueError(f"CommonAccent hyperparams class tag drifted: {sorted(extra)}")
-    if missing:
+    missing = COMMONACCENT_ALLOWED_CLASS_TAGS - tags
+    if require_class_tags and missing:
         raise ValueError(f"CommonAccent hyperparams missing expected class tags: {sorted(missing)}")
+
+
+def validate_commonaccent_runtime_yaml_tags(runtime_dir, hyperparams_path=None):
+    runtime_dir = _safe_resolve(runtime_dir)
+    hyperparams_path = _safe_resolve(hyperparams_path or runtime_dir / "hyperparams.yaml")
+    for path in sorted(runtime_dir.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"symlink rejected: {path}")
+        if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}:
+            _validate_commonaccent_yaml_tags(path, require_class_tags=path.resolve() == hyperparams_path)
 
 
 def prepare_commonaccent_runtime(source_dir, runtime_dir, wav2vec_dir):
@@ -180,13 +190,14 @@ def prepare_commonaccent_runtime(source_dir, runtime_dir, wav2vec_dir):
     text = text.replace(COMMONACCENT_WAV2VEC_LINE, f"wav2vec2_hub: {wav2vec_dir.as_posix()}")
     text = text.replace(COMMONACCENT_PRETRAINED_LINE, f"pretrained_path: {runtime_dir.as_posix()}")
     hyperparams.write_text(text, encoding="utf-8")
-    _validate_commonaccent_yaml_tags(hyperparams)
+    validate_commonaccent_runtime_yaml_tags(runtime_dir, hyperparams)
     return hyperparams
 
 
 def build_commonaccent_runtime_manifest(runtime_dir, interface_path=COMMONACCENT_INTERFACE_PATH):
     runtime_dir = _safe_resolve(runtime_dir)
     interface_path = _safe_resolve(interface_path)
+    validate_commonaccent_runtime_yaml_tags(runtime_dir)
     return {
         "hyperparams": "runtime/commonaccent/hyperparams.yaml",
         "tree_sha256": compute_tree_sha256(runtime_dir),

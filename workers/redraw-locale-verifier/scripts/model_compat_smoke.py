@@ -68,8 +68,22 @@ def verify_manifest(stage_dir, manifest):
     runtime_hash = stage_models.compute_tree_sha256(runtime_root)
     if runtime_hash != manifest["runtime"]["commonaccent"]["tree_sha256"]:
         raise RuntimeError("CommonAccent runtime drift detected")
-    hyperparams = stage_dir / manifest["runtime"]["commonaccent"]["hyperparams"]
-    stage_models._validate_commonaccent_yaml_tags(hyperparams)
+    hyperparams_entry = Path(manifest["runtime"]["commonaccent"]["hyperparams"])
+    if hyperparams_entry.is_absolute():
+        raise RuntimeError("CommonAccent hyperparams manifest path must be relative")
+    hyperparams = stage_dir / hyperparams_entry
+    if hyperparams.is_symlink():
+        raise RuntimeError("CommonAccent hyperparams manifest path symlink rejected")
+    runtime_root_resolved = runtime_root.resolve()
+    hyperparams_resolved = hyperparams.resolve()
+    try:
+        hyperparams_resolved.relative_to(runtime_root_resolved)
+    except ValueError as exc:
+        raise RuntimeError("CommonAccent hyperparams manifest path escapes runtime") from exc
+    try:
+        stage_models.validate_commonaccent_runtime_yaml_tags(runtime_root_resolved, hyperparams_resolved)
+    except ValueError as exc:
+        raise RuntimeError("CommonAccent runtime YAML validation failed") from exc
     interface_path = SRC_ROOT / "redraw_locale_worker" / stage_models.COMMONACCENT_INTERFACE_FILE
     interface_hash = sha256_file(interface_path)
     manifest_hash = manifest["runtime"]["commonaccent"]["interface"]["sha256"]
