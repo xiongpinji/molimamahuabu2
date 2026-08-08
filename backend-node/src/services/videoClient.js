@@ -4847,7 +4847,9 @@ async function callVideoApi(db, log, opts, runtime = {}) {
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
   const isSeedance2 = isSeedance2ModelName(model);
-  if (isSeedance2 && db && opts.drama_id && !opts.voice_reference_url) {
+  // ToAPIs 的首尾帧与多模态参考互斥，且参考音频必须来自已规范化的显式请求。
+  // 不在此处把短剧角色音色隐式混入 ToAPIs 请求；无显式音频时改走下方文字声线锚点。
+  if (isSeedance2 && protocol !== 'toapis_video' && db && opts.drama_id && !opts.voice_reference_url) {
     const chosen = selectStoryboardCharacterVoiceRef(db, opts.drama_id, opts.storyboard_id);
     if (chosen) {
       opts.voice_reference_url = chosen;

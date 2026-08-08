@@ -260,6 +260,68 @@ test('ToAPIs explicit first and last frame are sent as frame roles when no multi
   ]);
 });
 
+test('ToAPIs short-drama frame request does not auto-inject character voice when audio generation is disabled', async () => {
+  const db = makeDb(makeVideoConfig());
+  const basePrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (/seedance2_voice_asset/i.test(sql)) {
+      return {
+        all() {
+          return [{
+            id: 7,
+            seedance2_voice_asset: JSON.stringify({
+              status: 'active',
+              url: '/static/projects/0039/characters/voice/character-7.mp3',
+            }),
+          }];
+        },
+      };
+    }
+    if (/SELECT characters, dialogue FROM storyboards/i.test(sql)) {
+      return { get() { return { characters: '[7]', dialogue: '林溪：别怕。' }; } };
+    }
+    if (/SELECT voice_snapshot FROM storyboards/i.test(sql)) {
+      return { get() { return { voice_snapshot: null }; } };
+    }
+    if (/SELECT id, name FROM characters/i.test(sql)) {
+      return { all() { return [{ id: 7, name: '林溪' }]; } };
+    }
+    if (/SELECT character_id FROM storyboard_characters/i.test(sql)) {
+      return { all() { return []; } };
+    }
+    return basePrepare(sql);
+  };
+
+  const calls = [];
+  const result = await callVideoApi(db, makeLog(), {
+    model: 'seedance-2-mini',
+    prompt: '短剧工厂首帧生成',
+    duration: 4,
+    resolution: '480p',
+    aspect_ratio: '16:9',
+    drama_id: 39,
+    storyboard_id: 48,
+    first_frame_url: 'https://molimama.vip/static/projects/0039/images/frame.jpg',
+    generate_audio: false,
+    files_base_url: 'https://molimama.vip/static',
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), body: init.body ? JSON.parse(init.body) : null });
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ task_id: 'tsk_short_drama_frame', status: 'queued' }); },
+      };
+    },
+  }, { evidenceRoots });
+
+  assert.deepEqual(result, { task_id: 'tsk_short_drama_frame', status: 'queued' });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body.image_with_roles, [
+    { url: 'https://molimama.vip/static/projects/0039/images/frame.jpg', role: 'first_frame' },
+  ]);
+  assert.equal(Object.hasOwn(calls[0].body, 'audio_with_roles'), false);
+});
+
 test('ToAPIs rejects unsupported options before fetch', async () => {
   const db = makeDb(makeVideoConfig());
   let calls = 0;
