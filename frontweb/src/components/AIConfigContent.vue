@@ -361,6 +361,7 @@
             <el-option label="DJPSD 开放 API（图片 / 视频异步任务）" value="djpsd_openapi" />
             <el-option label="USMercari 视频（异步提交 / 批量轮询）" value="usmercari_media" />
             <el-option label="ToAPIs 视频（Seedance 2 异步生成）" value="toapis_video" />
+            <el-option label="飞拓视频（H3-2K / Seedance 2.5）" value="feituo_open" />
             <el-option label="USMercari 图片（文生图 / 公网参考图）" value="usmercari_image" />
             <el-option label="DJPSD Seedance 2.0（异步任务）" value="djpsd" />
             <el-option label="NanoBanana" value="nano_banana" />
@@ -1335,12 +1336,18 @@ const TOAPIS_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
   'seedance-2-fast': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
   'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]) }),
 })
+const FEITUO_ADMIN_VIDEO_CAPABILITIES = Object.freeze({
+  'xuan-video-v1-6e7b4763634e6206': Object.freeze({ durations: Object.freeze(Array.from({ length: 11 }, (_, index) => index + 5)) }),
+  'xuan-seedance-2.5': Object.freeze({ durations: Object.freeze(Array.from({ length: 12 }, (_, index) => index + 4)) }),
+})
 function adminVideoCapabilityFor(config = {}) {
   if (config.service_type !== 'video') return null
   const isToapis = config.api_protocol === 'toapis_video' || config.provider === 'toapis'
+  const isFeituo = config.api_protocol === 'feituo_open' || config.provider === 'feituo'
   const model = normalizeModelOption(config.default_model)
     || (Array.isArray(config.model) ? normalizeModelOption(config.model[0]) : '')
-  return isToapis ? TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null : null
+  if (isToapis) return TOAPIS_ADMIN_VIDEO_CAPABILITIES[model] || null
+  return isFeituo ? FEITUO_ADMIN_VIDEO_CAPABILITIES[model] || null : null
 }
 const adminVideoCapability = computed(() => adminVideoCapabilityFor(form.value))
 const adminVideoDurationOptions = computed(() => videoDurationOptionsForCapability(adminVideoCapability.value))
@@ -1506,6 +1513,7 @@ const providerConfigs = {
     { id: 'token6688', name: 'Token6688 Seedance 特价按次', models: ['seedance-2-0-special-mini-720p', 'seedance-2-0-special-fast-720p', 'seedance-2-0-special-full-720p'] },
     { id: 'usmercari', name: 'USMercari MiniMax H3 / Seedance', models: ['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini'] },
     { id: 'toapis', name: 'ToAPIs Seedance 2', models: ['seedance-2-fast', 'seedance-2-mini'] },
+    { id: 'feituo', name: '飞拓 H3-2K / Seedance 2.5', models: ['xuan-video-v1-6e7b4763634e6206', 'xuan-seedance-2.5'] },
     { id: 'icreat', name: 'iCreat Seedance', models: ['bytedance/seedance-2-0-fast', 'bytedance/seedance-2-0-mini'] },
     { id: 'djpsd_openapi', name: 'DJPSD 开放 API', models: ['video-v1'] },
     { id: 'djpsd', name: 'DJPSD / Seedance 2.0', models: ['seedance 2.0'] },
@@ -1572,6 +1580,7 @@ const providerProtocolMap = {
   usmercari: 'usmercari_media',
   usmercari_media: 'usmercari_media',
   toapis: 'toapis_video',
+  feituo: 'feituo_open',
   djpsd: 'djpsd',
   minimax: 'openai',
   openai: 'openai',
@@ -1610,6 +1619,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
   if (p === 'toapis') return 'https://toapis.com'
+  if (p === 'feituo') return 'https://feituokuajing.com'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
   if (p === 'djpsd_openapi' || p === 'djpsd') return 'https://shiping.djpsd.com'
   return 'https://api.chatfire.site/v1'
@@ -1758,6 +1768,9 @@ const endpointPreviewInfo = computed(() => {
   } else if (service_type === 'video') {
     if (proto === 'toapis_video' || p === 'toapis') {
       submitPath = endpoint || '/v1/videos/generations'
+    } else if (proto === 'feituo_open' || p === 'feituo') {
+      submitPath = endpoint || '/api/open/v1/video/generate'
+      queryPath = query_endpoint || '/api/open/v1/video/status?jobId={taskId}'
     } else if (proto === 'usmercari_media' || p === 'usmercari') {
       submitPath = endpoint || '/cpa-file/submit/video'
       queryPath = '/cpa-file/fetch'
@@ -1977,6 +1990,11 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'toapis_video'
     form.value.endpoint = '/v1/videos/generations'
     form.value.query_endpoint = '/v1/videos/generations/{taskId}'
+  }
+  if (st === 'video' && providerId === 'feituo') {
+    form.value.api_protocol = 'feituo_open'
+    form.value.endpoint = '/api/open/v1/video/generate'
+    form.value.query_endpoint = '/api/open/v1/video/status?jobId={taskId}'
   }
   if ((st === 'image' || st === 'storyboard_image') && providerId === 'kling') {
     form.value.endpoint = '/v1/images/generations'
