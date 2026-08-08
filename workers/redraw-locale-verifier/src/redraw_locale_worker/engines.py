@@ -16,7 +16,7 @@ class FasterWhisperEngine:
         text = " ".join(segment.text.strip() for segment in segments if getattr(segment, "text", "").strip()).strip()
         return {
             "language": getattr(info, "language", None),
-            "probability": float(getattr(info, "language_probability", 0.0)),
+            "probability": _raw_probability(getattr(info, "language_probability", None)),
             "text": text,
         }
 
@@ -59,6 +59,15 @@ def _score_to_probability(score):
         return None
     if value <= 0.0:
         value = float(math.exp(value))
+    return _raw_probability(value)
+
+
+def _raw_probability(value):
+    if type(value) not in (int, float):
+        return None
+    value = float(value)
+    if not math.isfinite(value):
+        return None
     if not math.isfinite(value) or value < 0.0 or value > 1.0:
         return None
     return value

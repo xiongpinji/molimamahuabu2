@@ -1,10 +1,12 @@
 import hashlib
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
-from redraw_locale_worker.engines import _score_to_probability
+from redraw_locale_worker.engines import FasterWhisperEngine, _score_to_probability
 from redraw_locale_worker.verifier import verify_audio
 
 
@@ -57,6 +59,24 @@ class FakeScore:
 
     def item(self):
         return self.value
+
+
+class FakeWhisperModel:
+    language_probability = 0.98
+
+    def __init__(self, model_dir, device, compute_type, local_files_only):
+        self.init_args = {
+            "model_dir": model_dir,
+            "device": device,
+            "compute_type": compute_type,
+            "local_files_only": local_files_only,
+        }
+
+    def transcribe(self, audio_path, beam_size, vad_filter):
+        del audio_path, beam_size, vad_filter
+        segment = types.SimpleNamespace(text="Anna did not pay 50 dollars")
+        info = types.SimpleNamespace(language="en", language_probability=self.language_probability)
+        return [segment], info
 
 
 class VerifierTests(unittest.TestCase):
@@ -323,11 +343,33 @@ class VerifierTests(unittest.TestCase):
                     self.assertFalse(result["checks"]["calibration_thresholds"])
 
     def test_commonaccent_score_to_probability_never_returns_invalid_probability(self):
-        for value in (2.0, float("inf"), float("nan")):
+        for value in (True, 2.0, float("inf"), float("nan")):
             with self.subTest(value=value):
                 self.assertIsNone(_score_to_probability(FakeScore(value)))
 
         self.assertAlmostEqual(_score_to_probability(FakeScore(-0.1)), 0.9048374180359595)
+
+    def test_faster_whisper_engine_rejects_invalid_language_probability(self):
+        module = types.ModuleType("faster_whisper")
+        module.WhisperModel = FakeWhisperModel
+        previous = sys.modules.get("faster_whisper")
+        sys.modules["faster_whisper"] = module
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                model_dir = Path(tmp) / "model"
+                model_dir.mkdir()
+                engine = FasterWhisperEngine(model_dir)
+                for value in (True, float("nan"), float("inf"), 2.0, -0.1):
+                    with self.subTest(value=value):
+                        FakeWhisperModel.language_probability = value
+                        self.assertIsNone(engine.infer(self.audio_path)["probability"])
+                FakeWhisperModel.language_probability = 0.98
+                self.assertEqual(engine.infer(self.audio_path)["probability"], 0.98)
+        finally:
+            if previous is None:
+                sys.modules.pop("faster_whisper", None)
+            else:
+                sys.modules["faster_whisper"] = previous
 
 
 if __name__ == "__main__":
