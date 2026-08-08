@@ -235,6 +235,9 @@ function saveCanvasLayout(db, log) {
       if (!updated) return response.notFound(res, '剧本不存在');
       response.success(res, updated);
     } catch (err) {
+      if (err.code === 'CANVAS_LAYOUT_CONFLICT' || err.code === 'CANVAS_LAYOUT_REVISION_REQUIRED') {
+        return response.error(res, 409, err.code, err.message);
+      }
       if (err.code === 'BAD_REQUEST') return response.badRequest(res, err.message);
       log.error('Save canvas layout failed', { error: err.message });
       response.internalError(res, err.message || '保存画布布局失败');

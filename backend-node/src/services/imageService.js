@@ -1948,61 +1948,14 @@ function upload(db, log, req) {
   return row ? rowToItem(row) : null;
 }
 
-/**
- * 纯文本字符匹配：扫描分镜文本字段，补全 storyboards.characters 中漏掉的角色。
- * 无 AI 调用，速度极快，可在分镜生成后批量调用。
- * @param {object} db
- * @param {object} log
- * @param {number} storyboardId
- * @returns {{ added: string[] }} 本次新增的角色名列表
- */
+/** 兼容旧调用名：统一校验并补全分镜的角色、场景和物品关联。 */
 function syncStoryboardCharacters(db, log, storyboardId) {
-  const added = [];
   try {
-    const sb = db.prepare(
-      'SELECT id, episode_id, characters, action, dialogue, result, description FROM storyboards WHERE id = ? AND deleted_at IS NULL'
-    ).get(Number(storyboardId));
-    if (!sb) return { added };
-
-    // 获取剧集对应的 drama_id
-    let dramaId = null;
-    try {
-      const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sb.episode_id);
-      dramaId = ep?.drama_id ?? null;
-    } catch (_) {}
-    if (!dramaId) return { added };
-
-    // 构造扫描文本
-    const scanText = [sb.action, sb.dialogue, sb.result, sb.description].filter(Boolean).join(' ').toLowerCase();
-    if (!scanText) return { added };
-
-    // 解析已关联角色
-    let charList = [];
-    try { charList = JSON.parse(sb.characters || '[]'); } catch (_) { charList = []; }
-    const coveredIds = new Set(charList.map((c) => Number(typeof c === 'object' && c != null ? c.id : c)));
-
-    // 与剧集全角色做文本匹配
-    const allChars = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(Number(dramaId));
-    let updated = false;
-    for (const ch of allChars) {
-      if (!ch.name) continue;
-      if (coveredIds.has(ch.id)) continue;
-      if (!scanText.includes(ch.name.toLowerCase())) continue;
-      charList.push({ id: ch.id, name: ch.name });
-      coveredIds.add(ch.id);
-      added.push(ch.name);
-      updated = true;
-    }
-
-    if (updated) {
-      db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
-        .run(JSON.stringify(charList), new Date().toISOString(), Number(storyboardId));
-      if (log) log.info('[分镜角色补全] 补全完成', { storyboard_id: storyboardId, added });
-    }
+    return require('./storyboard-asset-matcher').syncStoryboardAssets(db, log, storyboardId);
   } catch (err) {
-    if (log) log.warn('[分镜角色补全] 异常', { storyboard_id: storyboardId, error: err.message });
+    if (log) log.warn('[分镜资产匹配] 异常', { storyboard_id: storyboardId, error: err.message });
+    return { added: [] };
   }
-  return { added };
 }
 
 module.exports = {

@@ -83,9 +83,12 @@
           <div v-if="mode === 'video'" class="form-item">
             <div class="form-label">清晰度</div>
             <el-select v-model="resolution">
-              <el-option label="480P" value="480p" />
-              <el-option label="720P" value="720p" />
-              <el-option label="1080P" value="1080p" />
+              <el-option
+                v-for="value in videoResolutionOptions"
+                :key="value"
+                :label="value.toUpperCase()"
+                :value="value"
+              />
             </el-select>
           </div>
           <div v-if="mode === 'script'" class="form-item">
@@ -107,6 +110,7 @@
                 :value="item.model"
               />
             </el-select>
+            <p v-if="selectedModelNote" class="model-public-note">{{ selectedModelNote }}</p>
           </div>
         </div>
 
@@ -220,6 +224,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationDraft,
 } from '@/utils/homeQuickGeneration'
+import { coerceVideoResolutionForModel, videoResolutionOptionsForModel } from '@/utils/videoResolution'
 import { parseTaskResult, resolveTaskMediaUrl } from '@/utils/taskResult'
 
 const route = useRoute()
@@ -250,9 +255,11 @@ const modelOptions = computed(() => {
 const selectedModel = computed(() => (
   modelOptions.value.find((item) => item.model === model.value) || null
 ))
+const selectedModelNote = computed(() => String(selectedModel.value?.public_note || '').trim())
+const videoResolutionOptions = computed(() => videoResolutionOptionsForModel(model.value))
 const selectedCredits = computed(() => estimateGenerationCredits(
   selectedModel.value,
-  { duration: duration.value },
+  { duration: duration.value, resolution: resolution.value },
 ))
 const insufficientCredits = computed(() => (
   selectedCredits.value != null && creditAccount.value.available < selectedCredits.value
@@ -296,6 +303,7 @@ onMounted(async () => {
   model.value = modelOptions.value.some((item) => item.model === draft?.model)
     ? draft.model
     : (modelOptions.value[0]?.model || '')
+  resolution.value = coerceVideoResolutionForModel(model.value, resolution.value)
   sessionStorage.removeItem('moli_quick_create_draft')
   try {
     const res = await generationSettingsAPI.get()
@@ -311,6 +319,10 @@ watch(mode, () => {
   if (!modelOptions.value.some((item) => item.model === model.value)) {
     model.value = modelOptions.value[0]?.model || ''
   }
+})
+
+watch(model, (value) => {
+  resolution.value = coerceVideoResolutionForModel(value, resolution.value)
 })
 
 function triggerRefImageUpload() {
@@ -644,6 +656,12 @@ async function pollVideoTask(taskId, item) {
 
 .form-item .el-select {
   width: 100%;
+}
+.model-public-note {
+  margin: 6px 0 0;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .ref-image-zone {

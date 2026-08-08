@@ -920,8 +920,13 @@
                 :disabled="videoModelOptions.length === 0 || batchVideoRunning || pipelineRunning"
                 @change="onVideoModelChange"
               >
-                <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+                <el-option v-for="model in videoModelOptions" :key="model.value" :label="model.label" :value="model.value" />
               </el-select>
+              <p
+                v-if="selectedVideoModelNote || videoModelSelectionError(selectedVideoModel)"
+                class="sb-video-model-note"
+                :class="{ 'is-error': !selectedVideoModelNote }"
+              >{{ selectedVideoModelNote || videoModelSelectionError(selectedVideoModel) }}</p>
               <el-button
                 type="success"
                 plain
@@ -1603,8 +1608,13 @@
                   @change="onStoryboardVideoModelChange(sb)"
                 >
                   <el-option label="跟随项目默认" value="" />
-                  <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+                  <el-option v-for="model in videoModelOptions" :key="model.value" :label="model.label" :value="model.value" />
                 </el-select>
+                <p
+                  v-if="getStoryboardVideoModelNote(sb) || videoModelSelectionError(getStoryboardVideoModel(sb))"
+                  class="sb-video-model-note"
+                  :class="{ 'is-error': !getStoryboardVideoModelNote(sb) }"
+                >{{ getStoryboardVideoModelNote(sb) || videoModelSelectionError(getStoryboardVideoModel(sb)) }}</p>
                 <el-tag
                   v-if="getStoryboardVoicePolicy(sb)"
                   size="small"
@@ -1669,14 +1679,22 @@
               :disabled="videoModelOptions.length === 0 || batchVideoRunning || pipelineRunning"
               @change="onVideoModelChange"
             >
-              <el-option v-for="model in videoModelOptions" :key="model" :label="model" :value="model" />
+              <el-option v-for="model in videoModelOptions" :key="model.value" :label="model.label" :value="model.value" />
             </el-select>
+            <p
+              v-if="selectedVideoModelNote || videoModelSelectionError(selectedVideoModel)"
+              class="sb-video-model-note"
+              :class="{ 'is-error': !selectedVideoModelNote }"
+            >{{ selectedVideoModelNote || videoModelSelectionError(selectedVideoModel) }}</p>
           </el-form-item>
           <el-form-item label="分辨率">
             <el-select v-model="videoResolution" style="width: 160px">
-              <el-option label="480p" value="480p" />
-              <el-option label="720p" value="720p" />
-              <el-option label="1080p" value="1080p" />
+              <el-option
+                v-for="value in videoResolutionOptions"
+                :key="value"
+                :label="value"
+                :value="value"
+              />
             </el-select>
           </el-form-item>
           <!--
@@ -2856,7 +2874,13 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import request from '@/utils/request'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
-import { getModelsFromAiConfig } from '@/utils/modelSelection'
+import { getModelsFromAiConfig, parseModelList } from '@/utils/modelSelection'
+import {
+  createFilmCreateModelCatalogLoader,
+  filmCreateVideoModelDecision,
+  intersectFilmCreateVideoModels,
+} from '@/utils/filmCreateModelCatalog'
+import { coerceVideoResolutionForModel, videoResolutionOptionsForModel } from '@/utils/videoResolution'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { tryAcquireGenerationLock, releaseGenerationLock } from '@/utils/generationSubmitLock'
 import { confirmProviderBalanceRetry, confirmUnknownResultRetry } from '@/utils/generationRetryGuard'
@@ -2864,7 +2888,15 @@ import { decidePipelineRetry } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
-import { buildVideoGenerationAudit, buildVideoGenerationRequest } from '@/utils/videoGenerationRequest'
+import {
+  buildVideoGenerationAudit,
+  buildVideoGenerationRequest,
+  buildShortDramaVideoRequest,
+  feituoShortDramaImageLimit,
+  isUsmercariShortDramaModel,
+  limitFeituoShortDramaReferenceImages,
+  supportsFeituoShortDramaOmni,
+} from '@/utils/videoGenerationRequest'
 import {
   buildFactoryGenerationPreflight,
   buildScriptAnalysisProvenance,
@@ -2986,6 +3018,13 @@ const scriptContent = computed({
 const videoResolution = storeVideoResolution
 const selectedVideoModel = ref('')
 const videoModelOptions = ref([])
+const videoModelCatalogStatus = ref('idle')
+const videoModelCatalogError = ref('')
+const videoModelCatalog = ref([])
+const videoResolutionOptions = computed(() => videoResolutionOptionsForModel(
+  selectedVideoModel.value,
+  videoModelCapability(selectedVideoModel.value)?.resolutions,
+))
 const videoVoicePolicyByModel = ref({})
 const videoMusic = ref('')
 const videoSfx = ref('')
@@ -6469,7 +6508,8 @@ function getSbUniversalOmniRefSlots(sb) {
       })
     }
   }
-  return out
+  const limit = feituoShortDramaImageLimit(getStoryboardVideoModel(sb))
+  return limit ? out.slice(0, limit) : out
 }
 
 /** 全能模式：场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；供可灵 Omni / 火山多图参考，最多 10，方舟侧最多取 9 张） */
@@ -6491,7 +6531,7 @@ function collectSbOmniReferenceAbsoluteUrls(sb, model = getStoryboardVideoModel(
   for (const p of getSbSelectedProps(sb.id)) {
     if (hasAssetImage(p)) pushAbs(assetImageUrl(p))
   }
-  return urls.slice(0, 10)
+  return urls.slice(0, feituoShortDramaImageLimit(model) || 10)
 }
 
 /** 非 Seedance2 全能降级：仅场景参考图（若有） */
@@ -6505,15 +6545,72 @@ function collectSbSceneOnlyReferenceAbsoluteUrls(sb) {
   return []
 }
 
+/** USMercari 三模式：全部已匹配场景/角色/物品参考图（去重、绝不裁剪；超限由构造器阻断） */
+function collectSbAllMatchedReferenceAbsoluteUrls(sb) {
+  if (!sb?.id) return []
+  const urls = []
+  const seen = new Set()
+  function pushAbs(u) {
+    const abs = toAbsoluteImageUrl(u)
+    if (!abs || seen.has(abs)) return
+    seen.add(abs)
+    urls.push(abs)
+  }
+  const scene = getSbSelectedScene(sb.id)
+  if (scene && hasAssetImage(scene)) pushAbs(assetImageUrl(scene))
+  for (const c of getSbSelectedCharacters(sb.id)) {
+    if (hasAssetImage(c)) pushAbs(assetImageUrl(c))
+  }
+  for (const p of getSbSelectedProps(sb.id)) {
+    if (hasAssetImage(p)) pushAbs(assetImageUrl(p))
+  }
+  return urls
+}
+
+/**
+ * USMercari 短剧工厂视频请求：经典/首尾帧/全能参考三模式共用全部已匹配素材，
+ * 首尾帧与全能参考互斥，超限在提交前抛错。非 USMercari 模型返回 null，走原有组装。
+ */
+function buildSbUsmercariVideoPayload(sb, {
+  sbModel, universalOmniApi, firstFrameUrl, lastFrameUrl, prompt, style,
+} = {}) {
+  if (!isUsmercariShortDramaModel(sbModel)) return null
+  const storyboardImageUrl = universalOmniApi ? toAbsoluteImageUrl(getSbFirstFrameUrl(sb) || '') : ''
+  const hasFramePair = !universalOmniApi && Boolean(firstFrameUrl && lastFrameUrl)
+  const baseRefs = hasFramePair
+    ? []
+    : collectSbAllMatchedReferenceAbsoluteUrls(sb)
+      .filter((url) => url !== storyboardImageUrl && url !== firstFrameUrl && url !== lastFrameUrl)
+  const mode = universalOmniApi ? 'omni_reference' : (hasFramePair ? 'first_last_frame' : 'classic')
+  return buildShortDramaVideoRequest({
+    dramaId: dramaId.value,
+    storyboardId: sb.id,
+    prompt,
+    model: sbModel || undefined,
+    mode,
+    baseReferenceImageUrls: baseRefs,
+    storyboardImageUrl: storyboardImageUrl || undefined,
+    firstFrameUrl: hasFramePair ? firstFrameUrl : undefined,
+    lastFrameUrl: hasFramePair ? lastFrameUrl : undefined,
+    style: style || undefined,
+    aspectRatio: projectAspectRatio.value || '16:9',
+    resolution: coerceVideoResolutionForModel(
+      sbModel,
+      videoResolution.value,
+      videoModelCapability(sbModel)?.resolutions,
+    ),
+    duration: getSbVideoDurationForApi(sb),
+  })
+}
+
 let activeVideoAiConfigCache = null
 let activeVideoAiConfigsCache = []
 let activeVideoAiConfigCacheAt = 0
 const ACTIVE_VIDEO_AI_CONFIG_TTL_MS = 15000
+const videoModelCatalogLoader = createFilmCreateModelCatalogLoader(() => request.get('/canvas/model-catalog'))
 
 function publicVideoConfigs(rows) {
-  return [...new Set((Array.isArray(rows) ? rows : [])
-    .map((model) => String(model || '').trim())
-    .filter(Boolean))]
+  return parseModelList(rows)
     .map((model, index) => ({
       model: [model],
       default_model: model,
@@ -6527,33 +6624,117 @@ function invalidateActiveVideoAiConfigCache() {
   activeVideoAiConfigCacheAt = 0
 }
 
-async function loadVideoModelOptions() {
-  try {
-    const rows = await aiAPI.listVideoModels()
-    const active = publicVideoConfigs(rows)
-    const models = [...new Set(active.flatMap(getModelsFromAiConfig))]
+function syncVideoModelCatalogState() {
+  const state = videoModelCatalogLoader.snapshot()
+  videoModelCatalogStatus.value = state.status
+  videoModelCatalogError.value = String(state.error?.message || '')
+}
+
+async function loadVideoModelOptions({ forceRefresh = false } = {}) {
+  const catalogRequest = forceRefresh
+    ? videoModelCatalogLoader.forceRefresh()
+    : videoModelCatalogLoader.load()
+  syncVideoModelCatalogState()
+  const [aiResult, catalogResult] = await Promise.allSettled([
+    aiAPI.listVideoModels(),
+    catalogRequest,
+  ])
+  if (aiResult.status === 'fulfilled') {
+    const active = publicVideoConfigs(aiResult.value)
     const voicePolicies = {}
     for (const config of active) {
       const fallback = videoVoicePolicyForConfig(config)
       if (fallback?.model) voicePolicies[String(fallback.model)] = fallback
     }
-    videoModelOptions.value = models
     videoVoicePolicyByModel.value = voicePolicies
-    if (!models.includes(selectedVideoModel.value)) {
-      const preferredConfig = active.find((config) => config.is_default) || active[0]
-      selectedVideoModel.value = videoModelNameFromAiConfig(preferredConfig) || models[0] || ''
-    }
     activeVideoAiConfigsCache = active
     activeVideoAiConfigCache = active.find((config) => config.is_default) || active[0] || null
     activeVideoAiConfigCacheAt = Date.now()
-  } catch {
+  } else if (!activeVideoAiConfigsCache.length) {
+    activeVideoAiConfigCache = null
     videoModelOptions.value = []
     videoVoicePolicyByModel.value = {}
   }
+  syncVideoModelCatalogState()
+  if (catalogResult.status === 'rejected') {
+    videoModelCatalog.value = []
+    videoModelOptions.value = []
+    return false
+  }
+  videoModelCatalog.value = catalogResult.value
+  const models = [...new Set(activeVideoAiConfigsCache.flatMap(getModelsFromAiConfig))]
+  videoModelOptions.value = intersectFilmCreateVideoModels(models, catalogResult.value)
+  if (!selectedVideoModel.value && videoModelOptions.value.length) {
+    const preferredConfig = activeVideoAiConfigsCache.find((config) => config.is_default) || activeVideoAiConfigsCache[0]
+    const preferredModel = videoModelNameFromAiConfig(preferredConfig)
+    selectedVideoModel.value = videoModelOptions.value.some((item) => item.value === preferredModel)
+      ? preferredModel
+      : videoModelOptions.value[0].value
+  }
+  syncVideoResolutionForModel(selectedVideoModel.value)
+  return true
+}
+
+async function refreshVideoModelCatalogBeforeGeneration() {
+  return loadVideoModelOptions({ forceRefresh: true })
+}
+
+function videoModelOption(model) {
+  const value = String(model || '').trim()
+  return videoModelOptions.value.find((item) => item.value === value) || null
+}
+
+function videoModelCapability(model) {
+  const value = String(model || '').trim()
+  return videoModelCatalog.value.find((item) => (
+    item.kind === 'video' && item.model === value
+  ))?.capabilities
+}
+
+const selectedVideoModelNote = computed(() => String(videoModelOption(selectedVideoModel.value)?.note || '').trim())
+
+function getStoryboardVideoModelNote(sb) {
+  return String(videoModelOption(getStoryboardVideoModel(sb))?.note || '').trim()
+}
+
+function videoModelSelectionError(model) {
+  const value = String(model || '').trim()
+  const catalogState = videoModelCatalogLoader.snapshot()
+  const decision = filmCreateVideoModelDecision(
+    { ...catalogState, status: videoModelCatalogStatus.value },
+    videoModelOptions.value,
+    value,
+  )
+  if (decision.ok) return ''
+  if (decision.code === 'CATALOG_ERROR') {
+    return `模型目录加载失败${videoModelCatalogError.value ? `：${videoModelCatalogError.value}` : ''}，本次未提交，请重试`
+  }
+  if (decision.code === 'CATALOG_NOT_READY') return '模型目录加载中…'
+  if (decision.code === 'CATALOG_EMPTY' || decision.code === 'NO_AVAILABLE_MODELS') {
+    return '当前没有公开可用的视频模型，本次未提交，请联系管理员'
+  }
+  if (decision.code === 'MODEL_UNAVAILABLE') return `所选视频模型「${value}」已失效，请重新选择后生成`
+  return '请先选择公开可用的视频模型'
+}
+
+function ensureVideoModelAvailable(model) {
+  const message = videoModelSelectionError(model)
+  if (!message) return true
+  ElMessage.error(message)
+  return false
 }
 
 function onVideoModelChange() {
+  syncVideoResolutionForModel(selectedVideoModel.value)
   saveProjectSettings(false)
+}
+
+function syncVideoResolutionForModel(model) {
+  videoResolution.value = coerceVideoResolutionForModel(
+    model,
+    videoResolution.value,
+    videoModelCapability(model)?.resolutions,
+  )
 }
 
 function getStoryboardVideoModel(sb) {
@@ -6657,7 +6838,15 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceUrls = [...referenceUrls, lastFrameUrl]
   }
   const preferClassicPrompt = universal && !useOmni
-  const payload = buildVideoGenerationRequest({
+  const usmercariPayload = buildSbUsmercariVideoPayload(sb, {
+    sbModel,
+    universalOmniApi: useOmni,
+    firstFrameUrl,
+    lastFrameUrl,
+    prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
+    style: getSelectedStyle(),
+  })
+  const payload = usmercariPayload || buildVideoGenerationRequest({
     dramaId: dramaId.value,
     storyboardId: sb.id,
     prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
@@ -6665,7 +6854,7 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     imageUrl: firstFrameUrl || (!useOmni ? (absoluteUrl || undefined) : undefined),
     firstFrameUrl,
     lastFrameUrl,
-    referenceImageUrls: referenceUrls,
+    referenceImageUrls: limitFeituoShortDramaReferenceImages(sbModel, referenceUrls),
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
     resolution: videoResolution.value || undefined,
@@ -6759,8 +6948,11 @@ function isSeedance2VideoModel(modelName) {
 /** 全能分镜 + 当前视频配置是否可走多图参考（火山 Seedance 2.0、可灵 Omni、Agnes Video 等） */
 function canUseUniversalOmniVideoApi(cfg) {
   if (!cfg) return false
-  const model = videoModelNameFromAiConfig(cfg).toLowerCase()
-  return isSeedance2VideoModel(model)
+  const configuredModel = videoModelNameFromAiConfig(cfg)
+  const model = configuredModel.toLowerCase()
+  return supportsFeituoShortDramaOmni(model)
+    || isUsmercariShortDramaModel(configuredModel)
+    || isSeedance2VideoModel(model)
     || /grok.*video|video.*grok/.test(model)
     || /kling.*omni|omni.*kling/.test(model)
     || /agnes-video/.test(model)
@@ -7042,6 +7234,9 @@ async function onRegenerateLayoutDescription(sb) {
 
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
+  await refreshVideoModelCatalogBeforeGeneration()
+  const sbModel = getStoryboardVideoModel(sb)
+  if (!ensureVideoModelAvailable(sbModel)) return
   const lastVideoError = getSbVideoError(sb.id)
   const balanceRetryAllowed = await confirmProviderBalanceRetry(lastVideoError, () =>
     ElMessageBox.confirm(
@@ -7067,7 +7262,6 @@ async function onGenerateSbVideo(sb) {
     )
   )
   if (!retryAllowed) return
-  const sbModel = getStoryboardVideoModel(sb)
   const universal = isSbUniversalMode(sb.id)
   let universalOmniApi = universal
   if (universal) {
@@ -7434,6 +7628,8 @@ async function startBatchImageGeneration() {
 
 async function startBatchVideoGeneration() {
   if (!currentEpisodeId.value || batchVideoRunning.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
+  if (!ensureVideoModelAvailable(selectedVideoModel.value)) return
   batchVideoErrors.value = []
   batchVideoStopping.value = false
   batchVideoRunning.value = true
@@ -7457,6 +7653,8 @@ async function startBatchVideoGeneration() {
       ElMessage.info('没有需要生成视频的分镜（分镜缺少图片，或视频已全部生成）')
       return
     }
+    const invalidModelStoryboard = todo.find((sb) => videoModelSelectionError(getStoryboardVideoModel(sb)))
+    if (invalidModelStoryboard && !ensureVideoModelAvailable(getStoryboardVideoModel(invalidModelStoryboard))) return
     batchVideoProgress.value = { current: 0, total: todo.length, failed: 0 }
     const contiguity = videoFrameContiguity.value
     // 连贯帧模式强制顺序（concurrency=1），普通模式并发
@@ -7504,7 +7702,15 @@ async function startBatchVideoGeneration() {
           if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
             refUrls = [...refUrls, vLast]
           }
-          const res = await videosAPI.create({
+          const usmercariPayload = buildSbUsmercariVideoPayload(sb, {
+            sbModel,
+            universalOmniApi: universal,
+            firstFrameUrl: vFirst,
+            lastFrameUrl: vLast,
+            prompt: buildSbVideoPromptForApi(sb),
+            style: getSelectedStyle(),
+          })
+          const res = await videosAPI.create(usmercariPayload || {
             drama_id: dramaId.value,
             storyboard_id: sb.id,
             prompt: buildSbVideoPromptForApi(sb),
@@ -7788,6 +7994,8 @@ async function pipelineWithRetry(stepName, fn, maxRetries = 3) {
 
 async function startOneClickPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
+  if (!ensureVideoModelAvailable(selectedVideoModel.value)) return
   trackFilmCreateAction('one_click_generate_start')
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
@@ -8185,6 +8393,8 @@ async function runOneClickPipeline(textOnly = false) {
         }
         return !!getSbFirstFrameUrl(sb)
       })
+      const invalidModelStoryboard = boards2.find((sb) => videoModelSelectionError(getStoryboardVideoModel(sb)))
+      if (invalidModelStoryboard && !ensureVideoModelAvailable(getStoryboardVideoModel(invalidModelStoryboard))) return
       const concurrency = pipelineVideoConcurrency.value
       setPipelineStep(9, `生成分镜视频（${boards2.length} 个，并发 ${concurrency}）...`)
       const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
@@ -8194,6 +8404,7 @@ async function runOneClickPipeline(textOnly = false) {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
           const ok = await pipelineWithRetry(stepName, async () => {
             const universal = isSbUniversalMode(sb.id)
+            const sbModel = getStoryboardVideoModel(sb)
             const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
             const firstFrameUrl = await getMainImageUrlForVideo(sb)
             const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
@@ -8204,10 +8415,19 @@ async function runOneClickPipeline(textOnly = false) {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await videosAPI.create({
+            const usmercariPayload = buildSbUsmercariVideoPayload(sb, {
+              sbModel,
+              universalOmniApi: universal,
+              firstFrameUrl: vFirst,
+              lastFrameUrl: vLast,
+              prompt: buildSbVideoPromptForApi(sb),
+              style,
+            })
+            const res = await videosAPI.create(usmercariPayload || {
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),
+              model: sbModel || undefined,
               image_url: vFirst || undefined,
               first_frame_url: vFirst,
               last_frame_url: vLast,
@@ -8264,6 +8484,8 @@ async function runOneClickPipeline(textOnly = false) {
 
 async function startRepairPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
+  await refreshVideoModelCatalogBeforeGeneration()
+  if (!ensureVideoModelAvailable(selectedVideoModel.value)) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineActiveTasks.clear()
@@ -8530,6 +8752,8 @@ async function runRepairPipeline() {
       }
       return !!getSbFirstFrameUrl(sb)
     })
+    const invalidModelStoryboard = boards2.find((sb) => videoModelSelectionError(getStoryboardVideoModel(sb)))
+    if (invalidModelStoryboard && !ensureVideoModelAvailable(getStoryboardVideoModel(invalidModelStoryboard))) return
     {
       const concurrency = pipelineVideoConcurrency.value
       pipelineCurrentStep.value = `正在生成分镜视频（并发${concurrency}）...`
@@ -8540,6 +8764,7 @@ async function runRepairPipeline() {
           const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
           const ok = await pipelineWithRetry(stepName, async () => {
             const universal = isSbUniversalMode(sb.id)
+            const sbModel = getStoryboardVideoModel(sb)
             const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
             const firstFrameUrl = await getMainImageUrlForVideo(sb)
             const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
@@ -8550,10 +8775,18 @@ async function runRepairPipeline() {
             if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
               refUrls = [...refUrls, vLast]
             }
-            const res = await videosAPI.create({
+            const usmercariPayload = buildSbUsmercariVideoPayload(sb, {
+              sbModel,
+              universalOmniApi: universal,
+              firstFrameUrl: vFirst,
+              lastFrameUrl: vLast,
+              prompt: buildSbVideoPromptForApi(sb),
+            })
+            const res = await videosAPI.create(usmercariPayload || {
               drama_id: dramaIdVal,
               storyboard_id: sb.id,
               prompt: buildSbVideoPromptForApi(sb),
+              model: sbModel || undefined,
               image_url: vFirst || undefined,
               first_frame_url: vFirst,
               last_frame_url: vLast,
@@ -10878,6 +11111,7 @@ html.light .sb-video-placeholder {
 .sb-video-model-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 8px 0;
 }
@@ -10890,6 +11124,14 @@ html.light .sb-video-placeholder {
   flex: 1;
   min-width: 0;
 }
+.sb-video-model-note {
+  flex: 0 0 100%;
+  margin: 2px 0 0;
+  color: #a1a1aa;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.sb-video-model-note.is-error { color: #e6a23c; }
 .sb-voice-preview-title {
   margin-bottom: 8px;
   color: #303133;

@@ -4,6 +4,8 @@ const SUPPORTED_MODELS = ['GPT-5.5', 'gpt-image-2', 'seedance 2.0'];
 const MODEL_CATEGORIES = ['text', 'image', 'video', 'audio', 'other'];
 const MODEL_STATUSES = ['enabled', 'disabled'];
 const COST_UNITS = ['request', 'image', 'second', 'token'];
+const BILLING_UNITS = ['request', 'second'];
+const VIDEO_RESOLUTIONS = ['480p', '720p'];
 const SERVICE_CATEGORIES = {
   text: 'text',
   image: 'image',
@@ -40,7 +42,9 @@ function isToken6688PerRequestVideo(value) {
   );
 }
 
-function billingUnit(value, category = '') {
+function billingUnit(value, category = '', configuredUnit = '') {
+  const explicit = String(configuredUnit || '').trim().toLowerCase();
+  if (BILLING_UNITS.includes(explicit)) return explicit;
   if (isToken6688PerRequestVideo(value)) return 'request';
   return String(category || '').toLowerCase() === 'video' || canonicalModel(value) === 'seedance 2.0'
     ? 'second'
@@ -52,24 +56,55 @@ function ensureSchema(db) {
     model TEXT PRIMARY KEY,
     credits INTEGER NOT NULL CHECK (credits > 0),
     display_name TEXT,
+    public_note TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT 'other',
     status TEXT NOT NULL DEFAULT 'enabled',
+    billing_unit TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`);
   ensureColumn(db, 'display_name', 'ALTER TABLE model_credit_prices ADD COLUMN display_name TEXT');
+  ensureColumn(db, 'public_note', "ALTER TABLE model_credit_prices ADD COLUMN public_note TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'category', "ALTER TABLE model_credit_prices ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
   ensureColumn(db, 'status', "ALTER TABLE model_credit_prices ADD COLUMN status TEXT NOT NULL DEFAULT 'enabled'");
+  ensureColumn(db, 'billing_unit', "ALTER TABLE model_credit_prices ADD COLUMN billing_unit TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'cost_unit', "ALTER TABLE model_credit_prices ADD COLUMN cost_unit TEXT NOT NULL DEFAULT 'request'");
   ensureColumn(db, 'cost_micros_per_unit', 'ALTER TABLE model_credit_prices ADD COLUMN cost_micros_per_unit INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'input_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN input_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'output_cost_micros_per_1k', 'ALTER TABLE model_credit_prices ADD COLUMN output_cost_micros_per_1k INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS model_resolution_prices (
+    model TEXT NOT NULL COLLATE NOCASE,
+    resolution TEXT NOT NULL CHECK (resolution IN ('480p', '720p')),
+    credits INTEGER NOT NULL CHECK (credits > 0),
+    cost_micros_per_second INTEGER NOT NULL DEFAULT 0 CHECK (cost_micros_per_second >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (model, resolution)
+  )`);
+}
+
+function normalizeResolution(value) {
+  const resolution = String(value || '').trim().toLowerCase();
+  return VIDEO_RESOLUTIONS.includes(resolution) ? resolution : null;
+}
+
+function readResolutionPrices(db, model) {
+  return Object.fromEntries(db.prepare(`SELECT resolution, credits, cost_micros_per_second
+    FROM model_resolution_prices WHERE model = ? COLLATE NOCASE ORDER BY resolution`).all(model)
+    .map((row) => [row.resolution, {
+      credits: row.credits,
+      cost_micros_per_second: row.cost_micros_per_second,
+    }]));
+}
+
+function withResolutionPrices(db, row) {
+  return row ? { ...row, resolution_prices: readResolutionPrices(db, row.model) } : null;
 }
 
 function readRow(db, model) {
-  return db.prepare(`SELECT model, display_name, category, credits, status,
+  const row = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
     FROM model_credit_prices WHERE model = ? COLLATE NOCASE`).get(model) || null;
+  return withResolutionPrices(db, row);
 }
 
 function hasTable(db, name) {
@@ -82,11 +117,9 @@ function parseConfiguredModels(value) {
   if (value == null || value === '') return [];
   try {
     const parsed = JSON.parse(value);
-    return (Array.isArray(parsed) ? parsed : [parsed])
-      .map((item) => String(item || '').trim())
-      .filter(Boolean);
+    return mediaModelSelection.parseModels(parsed);
   } catch {
-    return [String(value).trim()].filter(Boolean);
+    return mediaModelSelection.parseModels(value);
   }
 }
 
@@ -110,6 +143,28 @@ function isRealGenerationVerified(row, model) {
   }
 }
 
+function providerInfo(row) {
+  const provider = String(row.provider || '').trim();
+  if (!provider && !row.name && !row.base_url) return null;
+  return {
+    provider,
+    provider_name: String(row.name || provider).trim(),
+    provider_base_url: String(row.base_url || '').trim(),
+  };
+}
+
+function addProvider(item, row) {
+  const info = providerInfo(row);
+  if (!info) return item;
+  const providers = item.providers || (item.providers = []);
+  if (!providers.some((entry) => (
+    entry.provider === info.provider
+    && entry.provider_name === info.provider_name
+    && entry.provider_base_url === info.provider_base_url
+  ))) providers.push(info);
+  return item;
+}
+
 function listConfiguredModels(db) {
   if (!hasTable(db, 'ai_service_configs')) return [];
   const rows = db.prepare(`SELECT *
@@ -117,9 +172,8 @@ function listConfiguredModels(db) {
     WHERE deleted_at IS NULL
     ORDER BY id`).all();
   const models = [];
-  const seen = new Set();
+  const byModel = new Map();
   for (const entry of mediaModelSelection.listEntries(rows)) {
-    const category = entry.kind;
     let model;
     try {
       model = canonicalModel(entry.model);
@@ -127,15 +181,20 @@ function listConfiguredModels(db) {
       continue;
     }
     const key = model.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    models.push({
-      model,
-      display_name: entry.duplicated
-        ? `${entry.config.name || entry.config.provider || `配置 ${entry.config.id}`} · ${entry.upstreamModel}`
-        : model,
-      category,
-    });
+    let item = byModel.get(key);
+    if (!item) {
+      item = {
+        model,
+        display_name: entry.duplicated
+          ? `${entry.config.name || entry.config.provider || `配置 ${entry.config.id}`} · ${entry.upstreamModel}`
+          : model,
+        category: entry.kind,
+        providers: [],
+      };
+      byModel.set(key, item);
+      models.push(item);
+    }
+    addProvider(item, entry.config);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     const category = SERVICE_CATEGORIES[String(row.service_type || '').toLowerCase()] || 'other';
@@ -149,9 +208,13 @@ function listConfiguredModels(db) {
         continue;
       }
       const key = model.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      models.push({ model, display_name: model, category });
+      let item = byModel.get(key);
+      if (!item) {
+        item = { model, display_name: model, category, providers: [] };
+        byModel.set(key, item);
+        models.push(item);
+      }
+      addProvider(item, row);
     }
   }
   return models;
@@ -165,10 +228,13 @@ function defaultCategory(model) {
 
 function list(db) {
   ensureSchema(db);
-  const rows = db.prepare(`SELECT model, display_name, category, credits, status,
+  const rows = db.prepare(`SELECT model, display_name, public_note, category, credits, status, billing_unit,
       cost_unit, cost_micros_per_unit, input_cost_micros_per_1k,
       output_cost_micros_per_1k, updated_at
-    FROM model_credit_prices ORDER BY category, model COLLATE NOCASE`).all();
+    FROM model_credit_prices ORDER BY category, model COLLATE NOCASE`).all()
+    .map((row) => withResolutionPrices(db, row));
+  const configuredModels = listConfiguredModels(db);
+  const providersByModel = new Map(configuredModels.map((item) => [item.model.toLowerCase(), item.providers || []]));
   const byModel = new Map(rows.map((row) => [row.model.toLowerCase(), row]));
   const catalog = [
     ...SUPPORTED_MODELS.map((model) => ({
@@ -176,7 +242,7 @@ function list(db) {
       display_name: model,
       category: defaultCategory(model),
     })),
-    ...listConfiguredModels(db),
+    ...configuredModels,
   ];
   const seen = new Set();
   const defaults = catalog
@@ -187,17 +253,30 @@ function list(db) {
       return true;
     })
     .map((item) => byModel.get(item.model.toLowerCase()) || {
-    ...item,
-    credits: null,
-    status: 'unconfigured',
-    cost_unit: item.category === 'text' ? 'token' : item.category === 'image' ? 'image' : 'request',
-    cost_micros_per_unit: 0,
-    input_cost_micros_per_1k: 0,
-    output_cost_micros_per_1k: 0,
-    updated_at: null,
-  });
+      ...item,
+      public_note: '',
+      credits: null,
+      status: 'unconfigured',
+      billing_unit: item.category === 'video' ? 'second' : 'request',
+      cost_unit: item.category === 'text' ? 'token' : item.category === 'image' ? 'image' : 'request',
+      cost_micros_per_unit: 0,
+      input_cost_micros_per_1k: 0,
+      output_cost_micros_per_1k: 0,
+      resolution_prices: {},
+      updated_at: null,
+    });
   return [...defaults, ...rows.filter((row) => !seen.has(row.model.toLowerCase()))]
-    .map((row) => ({ ...row, billing_unit: billingUnit(row.model, row.category) }));
+    .map((row) => {
+      const providers = row.providers || providersByModel.get(row.model.toLowerCase()) || [];
+      return {
+        ...row,
+        providers,
+        provider: providers[0]?.provider || '',
+        provider_name: providers[0]?.provider_name || '',
+        provider_base_url: providers[0]?.provider_base_url || '',
+        billing_unit: billingUnit(row.model, row.category, row.billing_unit),
+      };
+    });
 }
 
 function listPublic(db) {
@@ -205,26 +284,33 @@ function listPublic(db) {
   const rows = db.prepare(`SELECT * FROM ai_service_configs
     WHERE deleted_at IS NULL`).all();
   const activeModels = new Set();
+  const displayModels = new Map();
   for (const entry of mediaModelSelection.listEntries(rows)) {
     const row = entry.config;
     if (!row.is_active) continue;
     if (row.verification_status !== 'verified') continue;
     if (!isRealGenerationVerified(row, entry.upstreamModel)) continue;
     activeModels.add(entry.model.toLowerCase());
+    displayModels.set(entry.model.toLowerCase(), entry.model);
   }
   for (const row of rows.filter((item) => !mediaModelSelection.KIND_BY_SERVICE[item.service_type])) {
     if (!row.is_active) continue;
-    if (isToken6688Config(row) && row.verification_status !== 'verified') continue;
+    if (row.verification_status !== 'verified') continue;
     for (const model of [...parseConfiguredModels(row.model), String(row.default_model || '').trim()]) {
-      if (model && isRealGenerationVerified(row, model)) activeModels.add(model.toLowerCase());
+      if (model && isRealGenerationVerified(row, model)) {
+        activeModels.add(model.toLowerCase());
+        displayModels.set(model.toLowerCase(), model);
+      }
     }
   }
-  return list(db).filter((row) => (
-    row.status === 'enabled'
-    && Number.isSafeInteger(row.credits)
-    && row.credits > 0
-    && activeModels.has(row.model.toLowerCase())
-  ));
+  return list(db)
+    .filter((row) => (
+      row.status === 'enabled'
+      && Number.isSafeInteger(row.credits)
+      && row.credits > 0
+      && activeModels.has(row.model.toLowerCase())
+    ))
+    .map((row) => ({ ...row, model: displayModels.get(row.model.toLowerCase()) || row.model }));
 }
 
 function set(db, value, creditsValue, options = {}) {
@@ -238,6 +324,9 @@ function set(db, value, creditsValue, options = {}) {
   const category = String(options.category || existing?.category || 'other').trim().toLowerCase();
   const status = String(options.status || existing?.status || 'enabled').trim().toLowerCase();
   const displayName = String(options.displayName || options.display_name || existing?.display_name || model).trim();
+  const publicNote = String(options.publicNote ?? options.public_note ?? existing?.public_note ?? '').trim();
+  const configuredBillingUnit = String(options.billingUnit || options.billing_unit || existing?.billing_unit
+    || billingUnit(model, category)).trim().toLowerCase();
   const costUnit = String(options.costUnit || options.cost_unit || existing?.cost_unit
     || (category === 'text' ? 'token' : category === 'image' ? 'image' : 'request')).trim().toLowerCase();
   const costMicrosPerUnit = parseCost(options.cost_micros_per_unit ?? existing?.cost_micros_per_unit ?? 0);
@@ -252,28 +341,63 @@ function set(db, value, creditsValue, options = {}) {
   if (!COST_UNITS.includes(costUnit)) {
     throw priceError('INVALID_MODEL_PRICE', '成本单位必须是 request、image、second 或 token');
   }
+  if (!BILLING_UNITS.includes(configuredBillingUnit)) {
+    throw priceError('INVALID_MODEL_PRICE', '计费单位必须是 request 或 second');
+  }
   if (!displayName || displayName.length > 120) {
     throw priceError('INVALID_MODEL_PRICE', '模型显示名称必须是 1 到 120 个字符');
   }
+  if (publicNote.length > 500) {
+    throw priceError('INVALID_MODEL_PRICE', '模型公开备注最多允许 500 个字符');
+  }
+  const resolutionPrices = options.resolution_prices == null
+    ? null
+    : Object.entries(options.resolution_prices).map(([value, tier]) => {
+      const resolution = normalizeResolution(value);
+      const tierCredits = Number(tier?.credits);
+      if (!resolution || !Number.isSafeInteger(tierCredits) || tierCredits <= 0) {
+        throw priceError('INVALID_MODEL_PRICE', '视频分辨率价格只支持 480P、720P 的正整数积分');
+      }
+      return {
+        resolution,
+        credits: tierCredits,
+        cost_micros_per_second: parseCost(tier?.cost_micros_per_second ?? 0),
+      };
+    });
+  if (resolutionPrices?.length && category !== 'video') {
+    throw priceError('INVALID_MODEL_PRICE', '只有视频模型可以配置分辨率价格');
+  }
   const updatedAt = new Date().toISOString();
-  db.prepare(`INSERT INTO model_credit_prices
-      (model, display_name, category, credits, status, cost_unit, cost_micros_per_unit,
-       input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(model) DO UPDATE SET
-      display_name = excluded.display_name,
-      category = excluded.category,
-      credits = excluded.credits,
-      status = excluded.status,
-      cost_unit = excluded.cost_unit,
-      cost_micros_per_unit = excluded.cost_micros_per_unit,
-      input_cost_micros_per_1k = excluded.input_cost_micros_per_1k,
-      output_cost_micros_per_1k = excluded.output_cost_micros_per_1k,
-      updated_at = excluded.updated_at`)
-    .run(model, displayName, category, credits, status, costUnit, costMicrosPerUnit,
-      inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
+  db.transaction(() => {
+    db.prepare(`INSERT INTO model_credit_prices
+        (model, display_name, public_note, category, credits, status, billing_unit, cost_unit, cost_micros_per_unit,
+         input_cost_micros_per_1k, output_cost_micros_per_1k, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(model) DO UPDATE SET
+        display_name = excluded.display_name,
+        public_note = excluded.public_note,
+        category = excluded.category,
+        credits = excluded.credits,
+        status = excluded.status,
+        billing_unit = excluded.billing_unit,
+        cost_unit = excluded.cost_unit,
+        cost_micros_per_unit = excluded.cost_micros_per_unit,
+        input_cost_micros_per_1k = excluded.input_cost_micros_per_1k,
+        output_cost_micros_per_1k = excluded.output_cost_micros_per_1k,
+        updated_at = excluded.updated_at`)
+      .run(model, displayName, publicNote, category, credits, status, configuredBillingUnit, costUnit, costMicrosPerUnit,
+        inputCostMicrosPer1k, outputCostMicrosPer1k, updatedAt);
+    if (resolutionPrices != null) {
+      db.prepare('DELETE FROM model_resolution_prices WHERE model = ? COLLATE NOCASE').run(model);
+      const insert = db.prepare(`INSERT INTO model_resolution_prices
+        (model, resolution, credits, cost_micros_per_second, updated_at) VALUES (?, ?, ?, ?, ?)`);
+      for (const tier of resolutionPrices) {
+        insert.run(model, tier.resolution, tier.credits, tier.cost_micros_per_second, updatedAt);
+      }
+    }
+  })();
   const saved = readRow(db, model);
-  return { ...saved, billing_unit: billingUnit(saved.model, saved.category) };
+  return { ...saved, billing_unit: billingUnit(saved.model, saved.category, saved.billing_unit) };
 }
 
 function parseCost(value) {
@@ -290,25 +414,30 @@ function quoteCost(db, value, usage = {}) {
   const row = readRow(db, model);
   if (!row) throw priceError('MODEL_PRICE_NOT_CONFIGURED', `${model} 尚未配置积分价格，已禁止生成`);
   if (row.status !== 'enabled') throw priceError('MODEL_DISABLED', `${row.model} 已被管理员停用`);
-  const quantity = Number(usage.quantity ?? 1);
-  if (!Number.isFinite(quantity) || quantity <= 0) {
+  const requestedQuantity = Number(usage.quantity ?? 1);
+  if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
     throw priceError('INVALID_MODEL_PRICE', '成本数量必须大于零');
   }
   const inputTokens = Math.max(0, Math.trunc(Number(usage.inputTokens) || 0));
   const outputTokens = Math.max(0, Math.trunc(Number(usage.outputTokens) || 0));
   const reasoningTokens = Math.max(0, Math.trunc(Number(usage.reasoningTokens) || 0));
-  const costMicros = row.cost_unit === 'token'
+  const resolution = row.category === 'video' ? normalizeResolution(usage.resolution) : null;
+  const tier = resolution ? row.resolution_prices[resolution] : null;
+  const costUnit = tier ? 'second' : row.cost_unit;
+  const quantity = costUnit === 'request' ? 1 : requestedQuantity;
+  const costMicros = costUnit === 'token'
     ? Math.ceil((inputTokens * row.input_cost_micros_per_1k
       + outputTokens * row.output_cost_micros_per_1k) / 1000)
-    : Math.ceil(quantity * row.cost_micros_per_unit);
+    : Math.ceil(quantity * (tier?.cost_micros_per_second ?? row.cost_micros_per_unit));
   return {
     model: row.model,
-    cost_unit: row.cost_unit,
+    cost_unit: costUnit,
     quantity,
     cost_micros: costMicros,
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     reasoning_tokens: reasoningTokens,
+    ...(resolution ? { resolution } : {}),
   };
 }
 
@@ -323,9 +452,14 @@ function requirePrice(db, value) {
 
 function calculateCharge(db, value, usage = {}) {
   const model = canonicalModel(value);
-  const price = requirePrice(db, model);
   const row = readRow(db, model);
-  if (billingUnit(model, row?.category) !== 'second') return price;
+  if (!row) throw priceError('MODEL_PRICE_NOT_CONFIGURED', `${model} 尚未配置积分价格，已禁止生成`);
+  if (row.status !== 'enabled') throw priceError('MODEL_DISABLED', `${row.model} 已被管理员停用`);
+  const resolution = normalizeResolution(usage.resolution);
+  const price = resolution && row.category === 'video'
+    ? row.resolution_prices[resolution]?.credits ?? row.credits
+    : row.credits;
+  if (billingUnit(model, row?.category, row?.billing_unit) !== 'second') return price;
   const duration = Number(usage.duration);
   const normalizedModel = String(
     mediaModelSelection.parseQualifiedSelection(model)?.upstreamModel || model,
@@ -347,6 +481,8 @@ module.exports = {
   MODEL_CATEGORIES,
   MODEL_STATUSES,
   COST_UNITS,
+  BILLING_UNITS,
+  VIDEO_RESOLUTIONS,
   ensureSchema,
   list,
   listPublic,
@@ -357,4 +493,5 @@ module.exports = {
   canonicalModel,
   billingUnit,
   isToken6688PerRequestVideo,
+  normalizeResolution,
 };

@@ -1,18 +1,21 @@
 // ? Go pkg/video + VideoGenerationService ????????? API??????(????)
 const fs = require('fs');
 const path = require('path');
+const dnsCore = require('dns');
+const dns = require('dns').promises;
+const http = require('http');
+const https = require('https');
+const net = require('net');
 const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
 const aihubccClient = require('./aihubccClient');
-const token6688Client = require('./token6688Client');
-const mediaModelSelection = require('./mediaModelSelectionService');
+const feituoVideoClient = require('./feituoVideoClient');
+const usmercariVideoClient = require('./usmercariVideoClient');
 const canvasProviderConfigService = require('./canvasProviderConfigService');
 const { snapshotVoiceMap } = require('./storyboardVoiceLockService');
 const storyboardVoicePromptService = require('./storyboardVoicePromptService');
-const { readStoredMediaReference, toMediaDataUrl } = require('./mediaReferenceResolver');
-const { assertPublicImageUrl, downloadPublicImage, requestPublicImage } = require('./publicImageDownload');
 const {
   clampToGeminiImageAspectRatio,
   clampToViduAspectRatio,
@@ -31,9 +34,7 @@ const {
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
-  if (p === 'token6688' || p === 'tokengo') return 'token6688';
   if (p === 'aihubcc' || p === 'aihubcc_video') return 'aihubcc';
-  if (p === 'djpsd_openapi') return 'djpsd_openapi';
   if (p === 'djpsd') return 'djpsd';
   if (p === 'dashscope') return 'dashscope';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -44,6 +45,8 @@ function inferVideoProtocol(provider) {
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
   if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') return 'deepwl_grok';
   if (p === 'icreat' || p === 'icreat_ai' || p === 'icreat-seedance') return 'icreat_task';
+  if (p === 'feituo' || p === 'feituo_open') return 'feituo_open';
+  if (p === 'usmercari' || p === 'usmercari_media') return 'usmercari_media';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
   return 'openai';
@@ -138,198 +141,6 @@ async function callDjpsdVideoApi(config, log, opts) {
   return { task_id: taskId, status: 'processing' };
 }
 
-function normalizeDjpsdOpenApiDuration(duration) {
-  const value = Math.round(Number(duration) || 10);
-  return Math.max(5, Math.min(15, value));
-}
-
-function buildDjpsdOpenApiSubmitBody(opts = {}) {
-  return {
-    model: opts.model || 'video-v1',
-    prompt: opts.prompt || '',
-    params: {
-      duration: normalizeDjpsdOpenApiDuration(opts.duration),
-      aspect_ratio: opts.aspect_ratio || '16:9',
-      auto_face_mask: opts.auto_face_mask !== false,
-      images: Array.isArray(opts.images) ? opts.images.filter(Boolean) : [],
-    },
-  };
-}
-
-function parseDjpsdOpenApiSubmitResponse(payload) {
-  const data = payload?.data || payload || {};
-  const taskId = data.task_id ?? data.id;
-  if (taskId == null) return null;
-  return {
-    task_id: String(taskId),
-    status: String(data.task_status || data.status || data.state || 'PENDING'),
-  };
-}
-
-function resolveDjpsdOpenApiResultUrl(baseUrl, value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  if (/^https?:\/\//i.test(raw)) return raw;
-  return new URL(raw, `${normalizeDjpsdBaseUrl(baseUrl)}/`).toString();
-}
-
-function buildDjpsdOpenApiUrl(baseUrl, endpoint, defaultPath) {
-  const root = normalizeDjpsdBaseUrl(baseUrl);
-  const raw = String(endpoint || defaultPath).trim();
-  if (!/^https?:\/\//i.test(raw)) return root + (raw.startsWith('/') ? raw : `/${raw}`);
-  const url = new URL(raw);
-  if (url.origin !== new URL(root).origin) {
-    throw new Error('DJPSD 开放 API 端点必须与 Base URL 同源');
-  }
-  return url.toString();
-}
-
-function parseDjpsdOpenApiPollResponse(payload, baseUrl) {
-  const data = payload?.data || payload || {};
-  const state = String(data.state || data.status || '').toLowerCase();
-  const videoUrl = resolveDjpsdOpenApiResultUrl(baseUrl, data.video_url || data.result_url);
-  if (videoUrl) return { state: 'completed', videoUrl };
-  if (state === 'failed' || state === 'error') {
-    return { state: 'failed', error: data.error || data.message || 'DJPSD 开放 API 视频生成失败' };
-  }
-  if (data.is_final || state === 'success' || state === 'succeeded' || state === 'completed') {
-    return { state: 'failed', error: 'DJPSD 开放 API 任务已结束但未返回视频地址' };
-  }
-  return { state: 'processing' };
-}
-
-function parseDjpsdOpenApiDataImage(value) {
-  const match = String(value || '').match(/^data:([\w/+.-]+);base64,(.+)$/is);
-  if (!match) throw new Error('参考图 data URL 格式无效');
-  const mimeType = match[1].toLowerCase();
-  if (!mimeType.startsWith('image/')) throw new Error('只允许图片 data URL');
-  const bytes = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
-  if (!bytes.length) throw new Error('参考图 data URL 内容为空');
-  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考图超过 20MB 限制');
-  return { bytes, mimeType };
-}
-
-function imageExtensionForMime(mimeType) {
-  if (mimeType === 'image/png') return 'png';
-  if (mimeType === 'image/webp') return 'webp';
-  if (mimeType === 'image/gif') return 'gif';
-  return 'jpg';
-}
-
-async function uploadDjpsdOpenApiImage(config, rawValue, opts, index) {
-  const value = String(rawValue || '').trim();
-  if (!value) return '';
-  const root = normalizeDjpsdBaseUrl(config.base_url);
-  try {
-    const url = new URL(value, `${root}/`);
-    if (url.origin === new URL(root).origin && url.pathname.startsWith('/uploads/')) {
-      return `${url.pathname}${url.search}`;
-    }
-  } catch (_) {
-    // 非 URL，继续按 data URL 或平台相对路径处理。
-  }
-
-  let image = value.startsWith('data:') ? parseDjpsdOpenApiDataImage(value) : null;
-  if (!image) {
-    image = readStoredMediaReference(value, {
-      filesBaseUrl: opts.files_base_url,
-      storageLocalPath: opts.storage_local_path,
-      expectedType: 'image',
-      maxBytes: 20 * 1024 * 1024,
-    });
-  }
-  if (!image) {
-    let publicUrl = value;
-    if (!/^https?:\/\//i.test(publicUrl) && opts.files_base_url) {
-      publicUrl = new URL(publicUrl, `${String(opts.files_base_url).replace(/\/+$/, '')}/`).toString();
-    }
-    if (!/^https?:\/\//i.test(publicUrl)) {
-      throw new Error('参考图不是可上传的 data URL 或公网 HTTP(S) 地址');
-    }
-    image = await downloadPublicImage(publicUrl);
-  }
-
-  const form = new FormData();
-  const extension = imageExtensionForMime(image.mimeType);
-  form.append('file', new Blob([image.bytes], { type: image.mimeType }), `reference-${index + 1}.${extension}`);
-  const res = await fetch(`${root}/v1/media/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${config.api_key || ''}` },
-    body: form,
-  });
-  const raw = await res.text();
-  let data = {};
-  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
-  if (!res.ok) {
-    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
-    throw new Error(`参考图上传失败: ${String(message).slice(0, 300)}`);
-  }
-  const uploadedUrl = String(data.url || data.data?.url || '').trim();
-  if (!uploadedUrl) throw new Error('参考图上传成功但未返回 URL');
-  return uploadedUrl;
-}
-
-function formatDjpsdOpenApiUnknownSubmitError(error) {
-  const detail = error?.message || String(error || '连接中断');
-  return `DJPSD 开放 API 创建请求连接中断，供应商可能已受理或扣费，但本平台未收到任务编号（结果未知）。为避免重复扣费，请先核对供应商任务记录，不要连续重试。原始错误: ${detail}`;
-}
-
-async function callDjpsdOpenApiVideoApi(config, log, opts = {}) {
-  let url;
-  try {
-    url = buildDjpsdOpenApiUrl(config.base_url, config.endpoint, '/v1/media/generate');
-  } catch (error) {
-    return { error: `DJPSD 开放 API 配置错误: ${error.message}` };
-  }
-  const refs = [
-    opts.first_frame_url || opts.image_url,
-    opts.last_frame_url,
-    ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
-  ].filter(Boolean);
-  const uniqueRefs = [...new Set(refs.map((value) => String(value).trim()).filter(Boolean))].slice(0, 10);
-  const images = [];
-  try {
-    for (let index = 0; index < uniqueRefs.length; index += 1) {
-      images.push(await uploadDjpsdOpenApiImage(config, uniqueRefs[index], opts, index));
-    }
-  } catch (error) {
-    return { error: `DJPSD 开放 API ${error.message}` };
-  }
-
-  const body = buildDjpsdOpenApiSubmitBody({ ...opts, images });
-  log.info('[DJPSD OpenAPI video] 创建任务', {
-    video_gen_id: opts.video_gen_id,
-    url,
-    model: body.model,
-    duration: body.params.duration,
-    aspect_ratio: body.params.aspect_ratio,
-    image_count: images.length,
-  });
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.api_key || ''}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    return { error: formatDjpsdOpenApiUnknownSubmitError(error) };
-  }
-  const raw = await res.text();
-  let data = {};
-  try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
-  if (!res.ok) {
-    const message = data.detail || data.message || raw || `HTTP ${res.status}`;
-    return { error: `DJPSD 开放 API 创建视频任务失败: ${String(message).slice(0, 300)}` };
-  }
-  const result = parseDjpsdOpenApiSubmitResponse(data);
-  if (!result) return { error: 'DJPSD 开放 API 创建成功但未返回任务编号' };
-  return result;
-}
-
 /**
  * 显式 api_protocol 优先；未配置时推断。
  * Grok / xAI 官方为 prompt + aspect_ratio + GET /v1/videos/{request_id}，与中转站用的 ratio + content 不同。
@@ -344,6 +155,8 @@ function resolveVideoProtocol(config, modelHint) {
   if (provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance') {
     protocol = 'icreat_task';
   }
+  if (provider === 'feituo' || provider === 'feituo_open') protocol = 'feituo_open';
+  if (provider === 'usmercari' || provider === 'usmercari_media') protocol = 'usmercari_media';
   if (provider === 'aihubcc' || provider === 'aihubcc_video') protocol = 'aihubcc';
   const baseLower = String(config.base_url || '').toLowerCase();
   const modelLower = String(modelHint || '').toLowerCase();
@@ -906,13 +719,24 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
   if (isSeedance2 && opts.voice_reference_url) {
     let voiceUrl = String(opts.voice_reference_url).trim();
     if (voiceUrl) {
-      const localAudio = readStoredMediaReference(voiceUrl, {
-        filesBaseUrl: files_base_url,
-        storageLocalPath: storage_local_path,
-        expectedType: 'audio',
-        maxBytes: 50 * 1024 * 1024,
-      });
-      if (localAudio) voiceUrl = toMediaDataUrl(localAudio);
+      // 复用图片的本地文件转 base64 逻辑
+      if (/localhost|127\.0\.0\.1/i.test(voiceUrl) && storage_local_path && (files_base_url || '').match(/localhost|127\.0\.0\.1/i)) {
+        const baseUrl = (files_base_url || '').replace(/\/$/, '');
+        const afterStatic = voiceUrl.split('/static/')[1] || (baseUrl ? voiceUrl.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
+        const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+        if (relPath) {
+          const filePath = path.join(storage_local_path, relPath);
+          try {
+            if (fs.existsSync(filePath)) {
+              const buf = fs.readFileSync(filePath);
+              const ext = path.extname(filePath).toLowerCase();
+              const mime =
+                { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg' }[ext] || 'audio/mpeg';
+              voiceUrl = 'data:' + mime + ';base64,' + buf.toString('base64');
+            }
+          } catch (_) {}
+        }
+      }
       body.content.push({
         type: 'audio_url',
         audio_url: { url: voiceUrl },
@@ -1202,9 +1026,6 @@ function getDefaultVideoConfig(db, preferredModel) {
       ? canvasProviderConfigService.getConfig('video', preferredModel)
       : null;
   }
-  if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
-    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
-  }
   if (preferredModel) {
     for (const c of active) {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
@@ -1269,6 +1090,7 @@ function buildQueryUrl(config, taskId) {
   else if (proto === 'volcengine_omni') defaultEp = '/v1/videos/generations/async/{taskId}';
   else if (proto === 'agnes') defaultEp = '/videos/{taskId}';
   else if (proto === 'icreat_task') defaultEp = '/v1/task/query-status';
+  else if (proto === 'usmercari_media') defaultEp = '/cpa-file/fetch';
   else defaultEp = '/video/task/{taskId}';
   let ep = config.query_endpoint || defaultEp;
   if (
@@ -1304,7 +1126,6 @@ function normalizeVolcModel(name) {
 }
 
 function getModelFromConfig(config, preferredModel) {
-  if (config?.canvas_selected_model) return config.canvas_selected_model;
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
   if (config.default_model && models.includes(config.default_model)) return config.default_model;
@@ -3941,23 +3762,47 @@ async function resolveIcreatImages(opts, log) {
   return resolved;
 }
 
-async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, filesBaseUrl, log, videoGenId) {
+function audioMimeType(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac',
+  }[ext] || 'audio/mpeg';
+}
+
+function resolveStorageAudioFile(rawUrl, storageLocalPath) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw || !storageLocalPath) return null;
+  let relative = '';
+  if (raw.includes('/static/')) {
+    relative = (raw.split('/static/')[1] || '').split(/[?#]/)[0].replace(/^\/+/, '');
+  } else if (!/^https?:\/\//i.test(raw)) {
+    relative = raw.replace(/^[\\/]+/, '').split(/[?#]/)[0];
+  }
+  if (!relative) return null;
+  const baseResolved = path.resolve(storageLocalPath);
+  const localFile = path.resolve(path.join(baseResolved, relative));
+  if (!localFile.startsWith(baseResolved + path.sep) || !fs.existsSync(localFile)) return null;
+  return localFile;
+}
+
+async function resolveIcreatAudio(rawAudioUrl, storageLocalPath, log, videoGenId) {
   const raw = String(rawAudioUrl || '').trim();
   if (!raw) return null;
   if (/^data:audio\//i.test(raw)) return { kind: 'data', value: raw };
 
-  const localAudio = readStoredMediaReference(raw, {
-    filesBaseUrl,
-    storageLocalPath,
-    expectedType: 'audio',
-    maxBytes: 50 * 1024 * 1024,
-  });
-  if (localAudio) {
+  const localFile = resolveStorageAudioFile(raw, storageLocalPath);
+  if (localFile) {
     try {
-      const value = toMediaDataUrl(localAudio);
+      const buf = fs.readFileSync(localFile);
+      const value = `data:${audioMimeType(localFile)};base64,${buf.toString('base64')}`;
       log?.info?.('[iCreat] 已将本地角色音色转换为音频引用', {
         video_gen_id: videoGenId,
-        local_path: path.relative(storageLocalPath, localAudio.localPath).replace(/\\/g, '/'),
+        local_path: path.relative(storageLocalPath, localFile).replace(/\\/g, '/'),
       });
       return { kind: 'data', value };
     } catch (error) {
@@ -3972,7 +3817,6 @@ async function resolveIcreatAudioReference(opts, log) {
   const resolved = await resolveIcreatAudio(
     opts.voice_reference_url,
     opts.storage_local_path,
-    opts.files_base_url,
     log,
     opts.video_gen_id
   );
@@ -4394,24 +4238,17 @@ async function callAihubccVideoApi(config, log, opts = {}) {
       if (!match) return { error: 'AIHubCC veo-clean 输入视频 data URL 格式无效' };
       mimeType = match[1];
       bytes = Buffer.from(match[2], 'base64');
+    } else if (/^https?:\/\//i.test(input)) {
+      const sourceResponse = await fetch(input);
+      if (!sourceResponse.ok) return { error: `AIHubCC veo-clean 下载输入视频失败: ${sourceResponse.status}` };
+      bytes = Buffer.from(await sourceResponse.arrayBuffer());
+      mimeType = sourceResponse.headers.get('content-type') || mimeType;
     } else {
-      const localVideo = readStoredMediaReference(input, {
-        filesBaseUrl: opts.files_base_url,
-        storageLocalPath: opts.storage_local_path,
-        expectedType: 'video',
-        maxBytes: 20 * 1024 * 1024,
-      });
-      if (localVideo) {
-        bytes = localVideo.bytes;
-        mimeType = localVideo.mimeType;
-      } else if (/^https?:\/\//i.test(input)) {
-        const sourceResponse = await fetch(input);
-        if (!sourceResponse.ok) return { error: `AIHubCC veo-clean 下载输入视频失败: ${sourceResponse.status}` };
-        bytes = Buffer.from(await sourceResponse.arrayBuffer());
-        mimeType = sourceResponse.headers.get('content-type') || mimeType;
-      } else {
-        return { error: 'AIHubCC veo-clean 输入视频文件不存在' };
-      }
+      const localPath = path.isAbsolute(input)
+        ? input
+        : path.resolve(opts.storage_local_path || process.cwd(), input);
+      if (!fs.existsSync(localPath)) return { error: 'AIHubCC veo-clean 输入视频文件不存在' };
+      bytes = fs.readFileSync(localPath);
     }
     if (bytes.length > 20 * 1024 * 1024) return { error: 'AIHubCC veo-clean 输入视频超过 20MB 限制' };
     const form = new FormData();
@@ -4533,6 +4370,120 @@ async function callAihubccVideoApi(config, log, opts = {}) {
   return { task_id: taskId, status: aihubccClient.extractStatus(result.data) || 'processing' };
 }
 
+function isPrivateAddress(address) {
+  address = String(address || '').replace(/^\[|\]$/g, '');
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number);
+    return parts[0] === 10
+      || parts[0] === 127
+      || parts[0] === 0
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 168);
+  }
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith('::ffff:')) return true;
+    const mappedIpv4 = normalized.replace(/^::ffff:/, '');
+    if (net.isIPv4(mappedIpv4)) return isPrivateAddress(mappedIpv4);
+    return normalized === '::1'
+      || normalized === '::'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || normalized.startsWith('fe8')
+      || normalized.startsWith('fe9')
+      || normalized.startsWith('fea')
+      || normalized.startsWith('feb');
+  }
+  return true;
+}
+
+async function assertPublicImageUrl(value) {
+  const url = new URL(value);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('只允许 HTTP(S) 图片');
+  if (url.username || url.password) throw new Error('图片地址不得包含认证信息');
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('拒绝本机图片地址');
+  const addresses = net.isIP(hostname)
+    ? [hostname]
+    : (await dns.lookup(hostname, { all: true })).map((item) => item.address);
+  if (!addresses.length || addresses.some(isPrivateAddress)) throw new Error('拒绝私网图片地址');
+  return url;
+}
+
+async function downloadPublicImage(value, maxBytes = 20 * 1024 * 1024) {
+  let current = String(value || '').trim();
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    const url = await assertPublicImageUrl(current);
+    const response = await requestPublicImage(url, maxBytes);
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.location;
+      if (!location || redirect === 3) throw new Error('图片重定向无效或过多');
+      current = new URL(location, current).toString();
+      continue;
+    }
+    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+    return { bytes: response.bytes, mimeType: response.mimeType };
+  }
+  throw new Error('图片下载失败');
+}
+
+function requestPublicImage(url, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const transport = url.protocol === 'https:' ? https : http;
+    const request = transport.get(url, {
+      timeout: 30_000,
+      lookup(hostname, options, callback) {
+        dnsCore.lookup(hostname, { ...options, all: true }, (error, addresses) => {
+          if (error) return callback(error);
+          if (!addresses.length || addresses.some((item) => isPrivateAddress(item.address))) {
+            return callback(new Error('拒绝私网图片地址'));
+          }
+          if (options?.all) return callback(null, addresses);
+          const selected = addresses[0];
+          callback(null, selected.address, selected.family);
+        });
+      },
+    }, (response) => {
+      const status = response.statusCode || 0;
+      const headers = response.headers;
+      if (status >= 300 && status < 400) {
+        response.resume();
+        return resolve({ status, headers });
+      }
+      const mimeType = String(headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!mimeType.startsWith('image/')) {
+        response.destroy();
+        return reject(new Error('响应不是图片'));
+      }
+      const declaredLength = Number(headers['content-length'] || 0);
+      if (declaredLength > maxBytes) {
+        response.destroy();
+        return reject(new Error('图片超过 20MB 限制'));
+      }
+      const chunks = [];
+      let total = 0;
+      response.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          response.destroy(new Error('图片超过 20MB 限制'));
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      });
+      response.on('end', () => resolve({
+        status,
+        headers,
+        bytes: Buffer.concat(chunks),
+        mimeType,
+      }));
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('图片下载超时')));
+    request.on('error', reject);
+  });
+}
+
 /**
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
@@ -4547,14 +4498,16 @@ async function callVideoApi(db, log, opts) {
     seed,
     camera_fixed,
     watermark,
+    files_base_url,
+    storage_local_path,
+    video_gen_id
+  } = opts;
+  let {
     image_url,
     first_frame_url,
     last_frame_url,
     first_frame_local_path,
     last_frame_local_path,
-    files_base_url,
-    storage_local_path,
-    video_gen_id
   } = opts;
   const config = getDefaultVideoConfig(db, preferredModel);
   if (!config) {
@@ -4566,6 +4519,17 @@ async function callVideoApi(db, log, opts) {
   let prompt = inputPrompt;
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
     opts = applySeedance2CertifiedAssetUrlsToVideoOpts(db, log, opts);
+  }
+  ({ image_url, first_frame_url, last_frame_url, first_frame_local_path, last_frame_local_path } = opts);
+  if (!['usmercari_media', 'icreat_task'].includes(protocol) && !image_url && !first_frame_url) {
+    const firstReferenceUrl = Array.isArray(opts.reference_urls)
+      ? opts.reference_urls.find((value) => String(value || '').trim())
+      : '';
+    if (firstReferenceUrl) {
+      image_url = firstReferenceUrl;
+      first_frame_url = firstReferenceUrl;
+      opts = { ...opts, image_url, first_frame_url };
+    }
   }
 
   // Seedance 2.0 自动注入角色音色参考（仅当模型为 SD2 且未显式指定 voice_reference_url 时）
@@ -4686,6 +4650,62 @@ async function callVideoApi(db, log, opts) {
       image_url,
       first_frame_url,
       last_frame_url,
+      video_gen_id,
+    });
+  }
+
+  if (protocol === 'usmercari_media') {
+    return usmercariVideoClient.callUsmercariVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution,
+      image_url: opts.image_url || opts.first_frame_url,
+      first_frame_url: opts.first_frame_url || opts.image_url,
+      last_frame_url: opts.last_frame_url,
+      // 基础参考与首尾帧可同时提交，总额度由 usmercariVideoClient 按模型能力矩阵校验
+      reference_urls: opts.reference_urls,
+      reference_video_urls: opts.reference_video_urls,
+      reference_audio_urls: opts.reference_audio_urls,
+      voice_reference_url: opts.voice_reference_url,
+      video_gen_id,
+    });
+  }
+
+  if (protocol === 'feituo_open') {
+    const rawReferences = [...new Set([
+      opts.image_url,
+      opts.first_frame_url,
+      opts.last_frame_url,
+      ...(Array.isArray(opts.reference_urls) ? opts.reference_urls : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    const resolvedReferences = [];
+    for (let index = 0; index < rawReferences.length; index++) {
+      const raw = rawReferences[index];
+      const resolved = await resolveVeo3ImageForApi(
+        raw,
+        opts.storage_local_path,
+        log,
+        `${opts.video_gen_id || 0}_feituo_${index}`,
+      );
+      const value = String(resolved?.value || '').trim();
+      if (!value || !/^https?:\/\//i.test(value) || (raw.includes('/static/') && value === raw)) {
+        return { error: `飞拓参考图 @image${index + 1} 无法转存为公网地址，请重新上传后再生成` };
+      }
+      if (!resolvedReferences.includes(value)) resolvedReferences.push(value);
+    }
+    return feituoVideoClient.callFeituoVideoApi(config, log, {
+      ...opts,
+      model,
+      prompt,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: undefined,
+      first_frame_url: undefined,
+      last_frame_url: undefined,
+      reference_urls: resolvedReferences,
       video_gen_id,
     });
   }
@@ -4819,22 +4839,6 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
-  if (protocol === 'djpsd_openapi') {
-    return callDjpsdOpenApiVideoApi(config, log, {
-      prompt,
-      model,
-      duration: opts.duration,
-      aspect_ratio,
-      image_url: opts.image_url,
-      first_frame_url: opts.first_frame_url,
-      last_frame_url: opts.last_frame_url,
-      reference_urls: opts.reference_urls,
-      files_base_url: opts.files_base_url,
-      storage_local_path: opts.storage_local_path,
-      video_gen_id: opts.video_gen_id,
-    });
-  }
-
   if (protocol === 'djpsd') {
     return callDjpsdVideoApi(config, log, {
       prompt,
@@ -4843,16 +4847,6 @@ async function callVideoApi(db, log, opts) {
       image_url: opts.image_url,
       first_frame_url: opts.first_frame_url,
       video_gen_id: opts.video_gen_id,
-    });
-  }
-
-  if (protocol === 'token6688') {
-    return token6688Client.callVideoApi(config, log, {
-      ...opts,
-      model,
-      prompt,
-      aspect_ratio,
-      files_base_url: opts.files_base_url,
     });
   }
 
@@ -5012,7 +5006,6 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isVidu = protocol === 'vidu';
   const isSora = protocol === 'sora';
   const isAgnes = protocol === 'agnes';
-  const isDjpsdOpenApi = protocol === 'djpsd_openapi';
   const isDjpsd = protocol === 'djpsd';
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
@@ -5020,7 +5013,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDeepwlGrok = protocol === 'deepwl_grok';
   const isAihubcc = protocol === 'aihubcc';
   const isIcreat = protocol === 'icreat_task';
-  const isToken6688 = protocol === 'token6688';
+  const isFeituo = protocol === 'feituo_open';
+  const isUsmercari = protocol === 'usmercari_media';
   /** 轮询日志里响应体最大字符数（即梦/方舟等 JSON 可能较长）；0 表示不截断（慎用） */
   const pollLogBodyMax = (() => {
     const v = String(process.env.VIDEO_POLL_LOG_MAX || '16384').trim();
@@ -5087,11 +5081,6 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (!qep.startsWith('/')) qep = '/' + qep;
         url = viduBase + qep;
         headers = { Authorization: (isOfficialVidu ? 'Token ' : 'Bearer ') + (config.api_key || '') };
-      } else if (isDjpsdOpenApi) {
-        const queryEndpoint = String(config.query_endpoint || '/v1/media/status?task_id={taskId}')
-          .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, encodeURIComponent(taskId));
-        url = buildDjpsdOpenApiUrl(config.base_url, queryEndpoint, '/v1/media/status?task_id={taskId}');
-        headers = { Authorization: `Bearer ${config.api_key || ''}` };
       } else if (isDjpsd) {
         url = `${normalizeDjpsdBaseUrl(config.base_url)}/api/v1/video-jobs/${encodeURIComponent(taskId)}`;
         headers = { 'api-key': config.api_key || '' };
@@ -5106,6 +5095,21 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         headers = {
           Authorization: 'Bearer ' + (config.api_key || ''),
           'X-ICREAT-AI-GROUP': String(settings.icreat_group || 'default'),
+          'Content-Type': 'application/json',
+        };
+      } else if (isFeituo) {
+        url = feituoVideoClient.buildFeituoStatusUrl(config.base_url, taskId);
+        headers = {
+          Authorization: 'Bearer ' + (config.api_key || ''),
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        };
+      } else if (isUsmercari) {
+        url = usmercariVideoClient.buildUsmercariFetchUrl(config.base_url);
+        method = 'POST';
+        requestBody = JSON.stringify({ ids: [String(taskId)] });
+        headers = {
+          Authorization: 'Bearer ' + usmercariVideoClient.resolveUsmercariApiKey(config),
           'Content-Type': 'application/json',
         };
       } else {
@@ -5151,9 +5155,9 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         continue;
       }
 
-      if (isDjpsdOpenApi) {
-        const result = parseDjpsdOpenApiPollResponse(data, config.base_url);
-        log.info('[DJPSD OpenAPI poll] 状态', {
+      if (isDjpsd) {
+        const result = parseDjpsdPollResponse(data);
+        log.info('[DJPSD poll] 状态', {
           video_gen_id: videoGenId,
           round: pollRound,
           state: result.state,
@@ -5163,26 +5167,25 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         continue;
       }
 
-      if (isToken6688) {
-        const status = extractPollTaskStatus(data);
-        const videoUrl = data?.result?.videos?.find((item) => isPlausibleHttpVideoUrl(item?.url))?.url
-          || pickProxyVideoUrl(data);
-        if (videoUrl) return { video_url: videoUrl };
-        if (isPollTaskFailed(status) || data.error) {
-          return { error: extractPollFailureMessage(data) || `Token6688 任务失败: ${status || 'unknown'}` };
-        }
-        if (data.is_final === true || ['succeeded', 'completed', 'done', 'success'].includes(status)) {
-          return { error: 'Token6688 任务完成但未返回可下载的视频地址' };
-        }
-        continue;
-      }
-
-      if (isDjpsd) {
-        const result = parseDjpsdPollResponse(data);
-        log.info('[DJPSD poll] 状态', {
+      if (isFeituo) {
+        const result = feituoVideoClient.parseFeituoStatusPayload(data);
+        log.info('[飞拓视频] 轮询状态', {
           video_gen_id: videoGenId,
           round: pollRound,
           state: result.state,
+        });
+        if (result.state === 'completed') return { video_url: result.videoUrl };
+        if (result.state === 'failed') return { error: result.error };
+        continue;
+      }
+
+      if (isUsmercari) {
+        const result = usmercariVideoClient.parseUsmercariFetchPayload(data, taskId, config.base_url);
+        log.info('[USMercari 视频] 轮询状态', {
+          video_gen_id: videoGenId,
+          round: pollRound,
+          state: result.state,
+          progress: result.progress,
         });
         if (result.state === 'completed') return { video_url: result.videoUrl };
         if (result.state === 'failed') return { error: result.error };
@@ -5273,7 +5276,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         if (['SUCCEEDED', 'COMPLETED', 'DONE', 'SUCCESS'].includes(status)) {
           const settings = parseConfigSettingsJson(config);
           const resultUrl = buildIcreatTaskUrl(config, settings.icreat_result_endpoint || '/v1/task/get-result', taskId);
-          const resultResponse = await fetch(resultUrl, {
+          const resultFetchOptions = {
             method: 'POST',
             headers: {
               Authorization: 'Bearer ' + (config.api_key || ''),
@@ -5281,7 +5284,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({ task_id: String(taskId) }),
-          });
+          };
+          if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+            resultFetchOptions.signal = AbortSignal.timeout(30_000);
+          }
+          const resultResponse = await fetch(resultUrl, resultFetchOptions);
           const resultRaw = await resultResponse.text();
           let resultData;
           try { resultData = JSON.parse(resultRaw); } catch (_) { resultData = null; }
@@ -5508,8 +5515,6 @@ module.exports = {
   callXaiVideoApi,
   callVideoApi: (...args) => runWithGenerationLimit('video', () => callVideoApi(...args)),
   pollVideoTask,
-  getSupportedVideoDurationsForModel: aihubccClient.getSupportedVideoDurationsForModel,
-  normalizeVideoDurationForModel: aihubccClient.normalizeVideoDurationForModel,
   normalizeAspectRatioForApi,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,
@@ -5521,11 +5526,6 @@ module.exports = {
   parseDjpsdSubmitResponse,
   parseDjpsdPollResponse,
   formatDjpsdUnknownSubmitError,
-  normalizeDjpsdOpenApiDuration,
-  buildDjpsdOpenApiSubmitBody,
-  parseDjpsdOpenApiSubmitResponse,
-  parseDjpsdOpenApiPollResponse,
-  callDjpsdOpenApiVideoApi,
   callDeepwlGrokVideoApi,
   buildDeepwlGrokVideoBody,
   resolveDeepwlGrokMode,
@@ -5536,8 +5536,6 @@ module.exports = {
   isSeedance2ModelName,
   buildIcreatVideoBody,
   callIcreatVideoApi,
-  buildToken6688VideoBody: token6688Client.buildVideoBody,
-  callToken6688VideoApi: token6688Client.callVideoApi,
   pickIcreatVideoUrl,
   collectActiveCharacterVoiceRefs,
   selectStableCharacterVoiceRef,

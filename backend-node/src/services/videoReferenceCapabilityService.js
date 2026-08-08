@@ -14,6 +14,21 @@ function knownCapabilities(config = {}, model = '') {
   const normalizedModel = String(config.canvas_selected_model || model || config.default_model || '').trim().toLowerCase();
   const protocol = String(config.api_protocol || '').trim().toLowerCase();
   const provider = String(config.provider || '').trim().toLowerCase();
+  if (protocol === 'usmercari_media' || provider === 'usmercari' || provider === 'usmercari_media') {
+    return {
+      referenceTypes: ['image', 'video', 'audio'],
+      maxImageReferences: 4,
+      maxVideoReferences: 1,
+      maxAudioReferences: 1,
+      aspectRatios: ['16:9'],
+      resolutions: normalizedModel === 'minimax h3' ? ['480p'] : ['480p', '720p'],
+      durations: [5],
+      quantities: [1],
+      supportsFirstFrame: true,
+      supportsLastFrame: true,
+      supportsAudio: true,
+    };
+  }
   if (protocol === 'token6688' || provider === 'token6688' || provider === 'tokengo') {
     return {
       referenceTypes: ['image', 'video', 'audio'],

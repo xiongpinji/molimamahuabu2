@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
+const MELOTTS_LANGUAGE_VOICE_IDS = new Set(['ZH', 'EN-US', 'EN-BR', 'JP', 'KR']);
+
 const MPEG1_BITRATES = {
   3: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
   2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
@@ -206,8 +208,12 @@ async function synthesize(db, log, {
   const provider = (ttsConfig.provider || '').toLowerCase();
   let ttsSettings = {};
   try { ttsSettings = JSON.parse(ttsConfig.settings || '{}'); } catch (_) {}
-  // 外部传入的 voice_id / speed 优先（海外化场景），否则取配置值
-  const voiceId = voice_id || ttsConfig.voice_id || ttsSettings.voice_id || '';
+  // 画布旧节点可能保存了 MeloTTS 的语言代码；MiniMax 不接受这类 voice_id。
+  const requestedVoiceId = String(voice_id || '').trim();
+  const configuredVoiceId = String(ttsConfig.voice_id || ttsSettings.voice_id || '').trim();
+  const voiceId = provider === 'minimax' && MELOTTS_LANGUAGE_VOICE_IDS.has(requestedVoiceId.toUpperCase())
+    ? configuredVoiceId
+    : requestedVoiceId || configuredVoiceId;
   const { resolveTtsModel } = require('./ttsConfigSelectionService');
   const ttsModel = resolveTtsModel(ttsConfig);
   const finalSpeed = speed ?? ttsSettings.speed ?? 1;

@@ -434,41 +434,82 @@ async function callDjpsdOpenApiImageApi(config, log, opts = {}) {
  * @param {string} [imageServiceType] - 'image' 文本生成图片（角色/场景/道具），'storyboard_image' 分镜图片生成（支持参考图）；缺省为 'image'
  */
 function getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType) {
+  const candidates = getImageConfigCandidates(
+    db,
+    preferredModel,
+    preferredProvider,
+    imageServiceType,
+  );
+  if (candidates.length > 0) return candidates[0];
+  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .some((column) => column.name === 'verification_status');
+  return preferredModel && !hasVerificationStatus
+    ? canvasProviderConfigService.getConfig('image', preferredModel)
+    : null;
+}
+
+function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (serviceType === 'storyboard_image'
-    && (configs.length === 0 || preferredModel || preferredProvider)) {
-    const knownIds = new Set(configs.map((config) => Number(config.id)));
-    configs = configs.concat(
-      aiConfigService.listConfigs(db, 'image')
-        .filter((config) => !knownIds.has(Number(config.id))),
-    );
+  if (serviceType === 'storyboard_image') {
+    const fallbackConfigs = aiConfigService.listConfigs(db, 'image');
+    const ids = new Set(configs.map((config) => String(config.id)));
+    configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
   }
+  const hasVerificationStatus = db.prepare('PRAGMA table_info(ai_service_configs)').all()
+    .some((column) => column.name === 'verification_status');
   let active = configs.filter((c) => c.is_active);
-  if (active.length === 0) {
-    return preferredModel
-      ? canvasProviderConfigService.getConfig('image', preferredModel)
-      : null;
+  if (hasVerificationStatus) {
+    const verifiedIds = new Set(db.prepare(
+      "SELECT id FROM ai_service_configs WHERE deleted_at IS NULL AND verification_status = 'verified'",
+    ).all().map((row) => String(row.id)));
+    active = active.filter((config) => verifiedIds.has(String(config.id)));
   }
   if (mediaModelSelection.parseQualifiedSelection(preferredModel)) {
-    return mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    const selected = mediaModelSelection.resolveQualifiedConfig(active, preferredModel);
+    return selected ? [selected] : [];
   }
   if (preferredProvider && String(preferredProvider).trim()) {
     const want = String(preferredProvider).trim().toLowerCase();
     const byProvider = active.filter((c) => (c.provider || '').toLowerCase() === want);
-    if (byProvider.length > 0) active = byProvider;
+    if (byProvider.length > 0) {
+      active = [
+        ...byProvider,
+        ...active.filter((c) => (c.provider || '').toLowerCase() !== want),
+      ];
+    }
   }
   if (preferredModel) {
-    for (const c of active) {
+    const matching = active.filter((c) => {
       const models = Array.isArray(c.model) ? c.model : (c.model != null ? [c.model] : []);
-      if (models.includes(preferredModel)) return c;
-    }
-    return canvasProviderConfigService.getConfig('image', preferredModel);
+      return models.includes(preferredModel);
+    });
+    const isDefaultModel = matching.some((config) => config.is_default);
+    active = isDefaultModel
+      ? [...matching, ...active.filter((config) => !matching.includes(config))]
+      : matching;
   }
-  // 显式使用前端设置的「默认」：优先 is_default，再按 priority 降序（listConfigs 已按 is_default DESC, priority DESC 排序，取第一个即可）
-  const defaultOne = active.find((c) => c.is_default);
-  if (defaultOne) return defaultOne;
-  return active[0];
+  if (active.length < 2) return active;
+
+  const hasPrices = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'model_credit_prices'",
+  ).get());
+  if (!hasPrices) return active;
+  const primaryModel = getModelFromConfig(active[0], preferredModel);
+  const primaryPrice = db.prepare(
+    "SELECT credits FROM model_credit_prices WHERE model = ? COLLATE NOCASE AND status = 'enabled'",
+  ).get(primaryModel)?.credits;
+  if (!Number.isSafeInteger(primaryPrice) || primaryPrice <= 0) return [active[0]];
+  return [
+    active[0],
+    ...active.slice(1).filter((config) => {
+      const model = getModelFromConfig(config, preferredModel);
+      const price = db.prepare(
+        "SELECT credits FROM model_credit_prices WHERE model = ? COLLATE NOCASE AND status = 'enabled'",
+      ).get(model)?.credits;
+      return price === primaryPrice;
+    }),
+  ];
 }
 
 function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
@@ -1996,11 +2037,51 @@ async function callImageApi(db, log, opts) {
     schedule,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
-  const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
+  const candidates = getImageConfigCandidates(
+    db,
+    preferredModel,
+    preferredProvider,
+    imageServiceType,
+  );
+  const config = opts._imageConfigOverride
+    || candidates[0]
+    || getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
   if (!config) {
     throw new Error('未配置图片模型，请在「AI 配置」中添加 image 类型且已启用的配置');
   }
   const model = getModelFromConfig(config, preferredModel);
+  const configKey = config.id != null
+    ? `id:${config.id}`
+    : [config.base_url, config.endpoint, config.provider, model].join('|');
+  const attempted = new Set(Array.isArray(opts._attemptedImageConfigKeys)
+    ? opts._attemptedImageConfigKeys.map(String)
+    : []);
+  attempted.add(configKey);
+  const nextConfig = candidates.find((candidate) => {
+    const candidateModel = getModelFromConfig(candidate, preferredModel);
+    const key = candidate.id != null
+      ? `id:${candidate.id}`
+      : [candidate.base_url, candidate.endpoint, candidate.provider, candidateModel].join('|');
+    return !attempted.has(key);
+  });
+  const switchToNextConfig = (error, status) => {
+    if (!nextConfig) return null;
+    log.warn('Image API provider unavailable, switching verified model', {
+      image_gen_id,
+      status,
+      error,
+      from_config_id: config.id,
+      from_model: model,
+      to_config_id: nextConfig.id,
+      to_model: getModelFromConfig(nextConfig, preferredModel),
+    });
+    return callImageApi(db, log, {
+      ...opts,
+      model: preferredModel || undefined,
+      _imageConfigOverride: nextConfig,
+      _attemptedImageConfigKeys: Array.from(attempted),
+    });
+  };
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
@@ -2049,7 +2130,7 @@ async function callImageApi(db, log, opts) {
   });
 
   if (protocol === 'aihubcc') {
-    return callAihubccImageApi(config, log, {
+    const result = await callAihubccImageApi(config, log, {
       prompt: effectivePrompt,
       model,
       size,
@@ -2058,6 +2139,24 @@ async function callImageApi(db, log, opts) {
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
+    });
+    const safeSubmissionFailure = /^AIHubCC 图片请求失败:\s*(?:400|401|403|404|408|413|422|429|500|502|503|504)\b/.test(
+      String(result?.error || ''),
+    );
+    return safeSubmissionFailure && nextConfig
+      ? switchToNextConfig(result.error)
+      : result;
+  }
+
+  if (protocol === 'token6688') {
+    return token6688Client.callImageApi(config, log, {
+      prompt: effectivePrompt,
+      model,
+      size,
+      quality,
+      image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
     });
   }
 
@@ -2072,18 +2171,6 @@ async function callImageApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       poll_interval_ms: opts.poll_interval_ms,
       max_poll_attempts: opts.max_poll_attempts,
-    });
-  }
-
-  if (protocol === 'token6688') {
-    return token6688Client.callImageApi(config, log, {
-      prompt: effectivePrompt,
-      model,
-      size,
-      quality,
-      image_gen_id,
-      reference_image_urls: opts.reference_image_urls,
-      files_base_url: opts.files_base_url,
     });
   }
 
@@ -2218,6 +2305,9 @@ async function callImageApi(db, log, opts) {
     } catch (_) {
       if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
     }
+    if (nextConfig && [400, 401, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504].includes(httpStatus)) {
+      return switchToNextConfig(errMsg, httpStatus);
+    }
     return { error: errMsg };
   }
   let data;
@@ -2321,6 +2411,14 @@ function createAndGenerateImage(db, log, opts) {
   const dramaIdNum = Number(drama_id) || 0;
   const charIdNum = character_id != null ? Number(character_id) : null;
   const sceneIdNum = scene_id != null ? Number(scene_id) : null;
+  let effectiveModel = String(model || '').trim() || null;
+  if (!effectiveModel) {
+    try {
+      effectiveModel = resolveImageModel(db, null, null, 'image');
+    } catch (error) {
+      if (billingEnabled) throw error;
+    }
+  }
 
   let billedModel = null;
   let billedCredits = null;
@@ -2331,7 +2429,7 @@ function createAndGenerateImage(db, log, opts) {
       throw error;
     }
     const modelPriceService = require('./modelPriceService');
-    billedModel = modelPriceService.canonicalModel(model || '');
+    billedModel = modelPriceService.canonicalModel(effectiveModel || '');
     billedCredits = modelPriceService.requirePrice(db, billedModel);
   }
   const active = findActiveAssetImage(db, charIdNum, sceneIdNum, {
@@ -2368,7 +2466,7 @@ function createAndGenerateImage(db, log, opts) {
     const billingColumns = billingEnabled ? ', tenant_id, user_id, credit_reservation_id' : '';
     const billingValues = billingEnabled ? ', ?, ?, NULL' : '';
     const sql = 'INSERT INTO image_generations (drama_id, character_id, scene_id, image_type, provider, prompt, negative_prompt, model, size, quality, status, task_id, created_at, updated_at' + billingColumns + ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'pending\', ?, ?, ?' + billingValues + ')';
-    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, model || null, size || null, quality || null, taskId, now, now];
+    const values = [dramaIdNum, charIdNum, sceneIdNum, imageType, provider || 'openai', prompt || '', negRow, effectiveModel, size || null, quality || null, taskId, now, now];
     if (billingEnabled) values.push(tenantId ? String(tenantId) : null, String(userId));
     const info = db.prepare(sql).run(...values);
     const imageGenId = info.lastInsertRowid;
@@ -2651,6 +2749,7 @@ function refListHasCanonical(list, ref) {
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 module.exports = {
+  getImageConfigCandidates,
   getDefaultImageConfig,
   resolveImageModel,
   getReferenceImageCapability,

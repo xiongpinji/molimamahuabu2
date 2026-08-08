@@ -30,6 +30,7 @@ const directorReferenceRoutes = require('./directorReference');
 const sceneModelMapRoutes = require('./sceneModelMap');
 const authRoutes = require('./auth');
 const billingRoutes = require('./billing');
+const alipayRechargeRoutes = require('./alipay-recharge');
 const tenantRoutes = require('./tenants');
 const platformAccountRoutes = require('./platformAccounts');
 const { createEmailService } = require('../services/emailService');
@@ -76,6 +77,12 @@ function setupRouter(cfg, db, log) {
       : undefined,
   });
   const billing = billingRoutes(db, log);
+  const alipayRecharge = alipayRechargeRoutes(
+    db,
+    log,
+    require('../services/alipay-gateway').createAlipayGateway(process.env),
+  );
+  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const tenants = tenantRoutes(db, log);
   const platformAccounts = platformAccountRoutes(db, log);
   const requirePlatformPermission = (permission) => createPlatformPermissionMiddleware(
@@ -113,6 +120,7 @@ function setupRouter(cfg, db, log) {
   r.post('/auth/logout', auth.logout);
   r.post('/auth/password/code', authRateLimit, auth.requestPasswordResetCode);
   r.post('/auth/password/reset', authRateLimit, auth.resetPassword);
+  r.post('/billing/recharge/alipay/notify', alipayRecharge.notify);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
   r.use(requireUser);
@@ -151,6 +159,11 @@ function setupRouter(cfg, db, log) {
   r.put('/billing/plans/:planId', requireAdmin, requireBillingManager, billing.upsertPlan);
   r.get('/billing/prices', requireAdmin, requireBillingManager, billing.listPrices);
   r.put('/billing/prices/:model', requireAdmin, requireBillingManager, billing.updatePrice);
+  r.get('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.listAdminPackages);
+  r.post('/billing/admin/recharge-packages', requireAdmin, requireBillingManager, alipayRecharge.createAdminPackage);
+  r.post('/billing/admin/recharge-packages/image', requireAdmin, requireBillingManager, uploadHandlers.multerRechargePackageImageSingle, uploadHandlers.uploadRechargePackageImage);
+  r.put('/billing/admin/recharge-packages/order', requireAdmin, requireBillingManager, alipayRecharge.reorderAdminPackages);
+  r.put('/billing/admin/recharge-packages/:packageId', requireAdmin, requireBillingManager, alipayRecharge.updateAdminPackage);
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
@@ -165,6 +178,11 @@ function setupRouter(cfg, db, log) {
   r.get('/billing/orders', billing.listOrders);
   r.post('/billing/orders', billing.createOrder);
   r.delete('/billing/orders/:orderId', billing.cancelOrder);
+  r.get('/billing/recharge/alipay/config', alipayRecharge.getConfig);
+  r.get('/billing/recharge/packages', alipayRecharge.listPackages);
+  r.get('/billing/recharge/alipay/orders', alipayRecharge.listOrders);
+  r.post('/billing/recharge/alipay/orders', alipayRecharge.createOrder);
+  r.post('/billing/recharge/alipay/orders/:orderId/reconcile', alipayRecharge.reconcileOrder);
   r.get('/video-models', aiConfig.listPublicVideoModels);
   r.get('/image-models', aiConfig.listPublicImageModels);
   r.get('/canvas/model-catalog', (req, res) => {
@@ -178,7 +196,6 @@ function setupRouter(cfg, db, log) {
   const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
   const propLibrary = propLibraryRoutes(db, cfg, log);
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
-  const uploadHandlers = uploadModule.routes(cfg, log, db, { publicPlatformEnabled });
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
   const tailFrameLink = tailFrameLinkRoutes(db, cfg, log);

@@ -1,42 +1,72 @@
 <template>
   <div class="generation-options" :class="{ compact }">
     <span class="options-label">{{ label }}</span>
-    <el-select
-      v-if="mode === 'image' || mode === 'both'"
-      :model-value="options.imageModel || ''"
-      size="small"
-      class="model-select"
-      :disabled="!imageModelOptions.length"
-      :placeholder="imageModelOptions.length ? '图像模型' : '平台默认'"
-      @change="update('imageModel', $event)"
-    >
-      <el-option label="跟随项目默认" value="" />
-      <el-option v-for="option in imageModelOptions" :key="`image-${option.value}`" :label="option.label" :value="option.value" />
-    </el-select>
-    <el-select
-      v-if="mode === 'video' || mode === 'both'"
-      :model-value="options.videoModel || ''"
-      size="small"
-      class="model-select"
-      :disabled="!videoModelOptions.length"
-      :placeholder="videoModelOptions.length ? '视频模型' : '平台默认'"
-      @change="update('videoModel', $event)"
-    >
-      <el-option label="跟随项目默认" value="" />
-      <el-option v-for="option in videoModelOptions" :key="`video-${option.value}`" :label="option.label" :value="option.value" />
-    </el-select>
-    <el-select
-      v-if="mode === 'audio' || mode === 'both'"
-      :model-value="options.audioModel || ''"
-      size="small"
-      class="model-select"
-      :disabled="!audioModelOptions.length"
-      :placeholder="audioModelOptions.length ? '音频模型' : '平台默认'"
-      @change="update('audioModel', $event)"
-    >
-      <el-option label="跟随项目默认" value="" />
-      <el-option v-for="option in audioModelOptions" :key="`audio-${option.value}`" :label="option.label" :value="option.value" />
-    </el-select>
+    <div v-if="mode === 'image' || mode === 'both'" class="model-option-group">
+      <el-select
+        :model-value="options.imageModel || ''"
+        size="small"
+        class="model-select"
+        :disabled="modelCatalogStatus !== 'loaded' || !imageModelOptions.length"
+        :placeholder="imageModelOptions.length ? '图像模型' : '平台默认'"
+        teleported
+        popper-class="canvas-model-select-popper"
+        @change="update('imageModel', $event)"
+      >
+        <el-option label="跟随项目默认" value="" />
+        <el-option v-for="model in imageModelOptions" :key="`image-${model.value}`" :label="model.label" :value="model.value" />
+      </el-select>
+      <p v-if="modelCatalogLoading" class="model-public-note">模型目录加载中…</p>
+      <p v-else-if="modelCatalogError" class="model-unavailable-note">
+        模型目录加载失败，请重试
+        <button type="button" class="model-retry-button" @click.stop="retryModelCatalog">重试</button>
+      </p>
+      <p v-else-if="selectedImageModelNote" class="model-public-note">{{ selectedImageModelNote }}</p>
+      <p v-else-if="imageModelUnavailable" class="model-unavailable-note">当前模型已不可用，请重新选择</p>
+    </div>
+    <div v-if="mode === 'video' || mode === 'both'" class="model-option-group">
+      <el-select
+        :model-value="options.videoModel || ''"
+        size="small"
+        class="model-select"
+        :disabled="modelCatalogStatus !== 'loaded' || !videoModelOptions.length"
+        :placeholder="videoModelOptions.length ? '视频模型' : '平台默认'"
+        teleported
+        popper-class="canvas-model-select-popper"
+        @change="update('videoModel', $event)"
+      >
+        <el-option label="跟随项目默认" value="" />
+        <el-option v-for="model in videoModelOptions" :key="`video-${model.value}`" :label="model.label" :value="model.value" />
+      </el-select>
+      <p v-if="modelCatalogLoading" class="model-public-note">模型目录加载中…</p>
+      <p v-else-if="modelCatalogError" class="model-unavailable-note">
+        模型目录加载失败，请重试
+        <button type="button" class="model-retry-button" @click.stop="retryModelCatalog">重试</button>
+      </p>
+      <p v-else-if="selectedVideoModelNote" class="model-public-note">{{ selectedVideoModelNote }}</p>
+      <p v-else-if="videoModelUnavailable" class="model-unavailable-note">当前模型已不可用，请重新选择</p>
+    </div>
+    <div v-if="mode === 'audio' || mode === 'both'" class="model-option-group">
+      <el-select
+        :model-value="options.audioModel || ''"
+        size="small"
+        class="model-select"
+        :disabled="modelCatalogStatus !== 'loaded' || !audioModelOptions.length"
+        :placeholder="audioModelOptions.length ? '音频模型' : '平台默认'"
+        teleported
+        popper-class="canvas-model-select-popper"
+        @change="update('audioModel', $event)"
+      >
+        <el-option label="跟随项目默认" value="" />
+        <el-option v-for="model in audioModelOptions" :key="`audio-${model.value}`" :label="model.label" :value="model.value" />
+      </el-select>
+      <p v-if="modelCatalogLoading" class="model-public-note">模型目录加载中…</p>
+      <p v-else-if="modelCatalogError" class="model-unavailable-note">
+        模型目录加载失败，请重试
+        <button type="button" class="model-retry-button" @click.stop="retryModelCatalog">重试</button>
+      </p>
+      <p v-else-if="selectedAudioModelNote" class="model-public-note">{{ selectedAudioModelNote }}</p>
+      <p v-else-if="audioModelUnavailable" class="model-unavailable-note">当前模型已不可用，请重新选择</p>
+    </div>
     <el-select
       v-if="!modelsOnly && mode !== 'audio'"
       :model-value="options.aspectRatio || '16:9'"
@@ -60,9 +90,12 @@
       placeholder="清晰度"
       @change="update('videoResolution', $event)"
     >
-      <el-option label="480p 标清" value="480p" />
-      <el-option label="720p 高清" value="720p" />
-      <el-option label="1080p 超清" value="1080p" />
+      <el-option
+        v-for="value in videoResolutionOptions"
+        :key="value"
+        :label="value === '480p' ? '480p 标清' : value === '720p' ? '720p 高清' : '1080p 超清'"
+        :value="value"
+      />
     </el-select>
     <el-select
       v-if="!modelsOnly && (mode === 'video' || mode === 'both')"
@@ -73,7 +106,7 @@
       @change="update('videoDuration', $event)"
     >
       <el-option
-        v-for="duration in VIDEO_DURATION_OPTIONS"
+        v-for="duration in videoDurationOptions"
         :key="duration"
         :label="`${duration} 秒`"
         :value="duration"
@@ -94,11 +127,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { aiAPI } from '@/api/ai'
+import { computed } from 'vue'
 import { useCanvasContext } from '@/composables/useCanvasContext'
-import { canvasModelOptions } from '@/utils/canvasModelCapabilities'
-import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
+import { VIDEO_DURATION_OPTIONS, videoDurationOptionsForModel } from '@/utils/videoDuration'
+import { coerceVideoResolutionForModel, videoResolutionOptionsForModel } from '@/utils/videoResolution'
 
 const props = defineProps({
   mode: { type: String, default: 'both' },
@@ -110,15 +142,65 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'change'])
 
 const ctx = useCanvasContext()
-const modelCatalog = ref([])
 const options = computed(() => props.modelValue || ctx?.generationOptions?.value || {})
+const modelCatalogStatus = computed(() => ctx?.getFreeNodeModelCatalogStatus?.() || 'loaded')
+const modelCatalogLoading = computed(() => ['idle', 'loading'].includes(modelCatalogStatus.value))
+const modelCatalogError = computed(() => modelCatalogStatus.value === 'error')
 
-const imageModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'image'))
-const videoModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'video'))
-const audioModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'audio'))
+const imageModelOptions = computed(() => modelOptionEntries('image'))
+const videoModelOptions = computed(() => modelOptionEntries('video'))
+const audioModelOptions = computed(() => modelOptionEntries('audio'))
+const selectedImageModel = computed(() => selectedModelEntry(imageModelOptions.value, options.value.imageModel))
+const selectedVideoModel = computed(() => selectedModelEntry(videoModelOptions.value, options.value.videoModel))
+const selectedAudioModel = computed(() => selectedModelEntry(audioModelOptions.value, options.value.audioModel))
+const selectedImageModelNote = computed(() => String(selectedImageModel.value?.note || '').trim())
+const selectedVideoModelNote = computed(() => String(selectedVideoModel.value?.note || '').trim())
+const selectedAudioModelNote = computed(() => String(selectedAudioModel.value?.note || '').trim())
+const imageModelUnavailable = computed(() => modelUnavailable(imageModelOptions.value, options.value.imageModel))
+const videoModelUnavailable = computed(() => modelUnavailable(videoModelOptions.value, options.value.videoModel))
+const audioModelUnavailable = computed(() => modelUnavailable(audioModelOptions.value, options.value.audioModel))
+const videoDurationOptions = computed(() => {
+  const declared = ctx?.getFreeNodeModelCapability?.('video', options.value.videoModel)?.durations
+  return videoDurationOptionsForModel(options.value.videoModel, declared || VIDEO_DURATION_OPTIONS)
+})
+const videoResolutionOptions = computed(() => {
+  const declared = ctx?.getFreeNodeModelCapability?.('video', options.value.videoModel)?.resolutions
+  return videoResolutionOptionsForModel(options.value.videoModel, declared)
+})
+
+function modelOptionEntries(kind) {
+  return ctx?.getFreeNodeModelOptionEntries?.(kind) || []
+}
+
+function selectedModelEntry(models, current) {
+  const value = String(current || '').trim()
+  return models.find((model) => model.value === value) || null
+}
+
+function modelUnavailable(models, current) {
+  return modelCatalogStatus.value === 'loaded'
+    && Boolean(String(current || '').trim())
+    && !selectedModelEntry(models, current)
+}
+
+function retryModelCatalog() {
+  void ctx?.reloadFreeNodeModelCatalog?.()
+}
 
 function update(field, value) {
   const patch = { [field]: value }
+  if (field === 'videoModel') {
+    const currentDuration = Number(options.value.videoDuration || 5)
+    const declared = ctx?.getFreeNodeModelCapability?.('video', value)?.durations
+    const nextDurations = videoDurationOptionsForModel(value, declared || VIDEO_DURATION_OPTIONS)
+    if (!nextDurations.includes(currentDuration)) patch.videoDuration = nextDurations[0] || 5
+    const declaredResolutions = ctx?.getFreeNodeModelCapability?.('video', value)?.resolutions
+    patch.videoResolution = coerceVideoResolutionForModel(
+      value,
+      options.value.videoResolution,
+      declaredResolutions,
+    )
+  }
   if (props.modelValue) {
     const next = { ...options.value, ...patch }
     emit('update:modelValue', next)
@@ -128,11 +210,6 @@ function update(field, value) {
   ctx?.updateGenerationOptions?.(patch)
   emit('change', patch, { ...options.value, ...patch })
 }
-
-onMounted(async () => {
-  const catalog = await aiAPI.listCanvasModels().catch(() => [])
-  modelCatalog.value = Array.isArray(catalog) ? catalog : []
-})
 </script>
 
 <style scoped>
@@ -146,6 +223,23 @@ onMounted(async () => {
   color: #a1a1aa;
   font-size: 11px;
   white-space: nowrap;
+}
+.model-option-group { display: grid; gap: 4px; }
+.model-public-note, .model-unavailable-note {
+  max-width: 180px;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.model-public-note { color: #9ca3af; }
+.model-unavailable-note { color: #f59e0b; }
+.model-retry-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
 }
 .generation-options :deep(.el-select) { width: 124px; }
 .generation-options :deep(.ratio-select) { width: 116px; }
@@ -164,4 +258,10 @@ onMounted(async () => {
 .compact :deep(.model-select) { width: 128px; }
 .compact :deep(.duration-select) { width: 96px; }
 .compact :deep(.duration-input) { width: 96px; }
+</style>
+
+<style>
+.canvas-model-select-popper {
+  z-index: 4200 !important;
+}
 </style>

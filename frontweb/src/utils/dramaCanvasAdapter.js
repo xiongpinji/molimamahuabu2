@@ -12,12 +12,14 @@ import {
 } from './storyboardMedia'
 import { latestVideoGenerationError, latestVideoGenerationWarning } from './videoGenerationStatus'
 import { filterCanvasAssets, getCanvasEpisodeContext } from './canvasEpisodeContext'
+import { isCanvasGeneratedResultAsset } from './freeCanvasGeneration'
 import { shouldProjectCanvasAsset } from './canvasAssetProjection'
 
 const ASSET_X = 48
 const SCRIPT_OFFSET_X = 248
 const ASSET_SECTION_GAP = 36
 const ASSET_ROW_H = 188
+const PROJECT_ASSET_ROW_H = 320
 const PIPELINE_X = 360
 const EPISODE_ROW_GAP = 48
 const SB_GAP_Y = 280
@@ -74,27 +76,35 @@ function makeNode(base) {
 }
 
 function isProjectMediaAsset(asset) {
+  if (!shouldProjectCanvasAsset(asset)) return false
+  if (isCanvasGeneratedResultAsset(asset)) return false
   return ['image', 'video', 'audio'].includes(asset?.type) || Boolean(assetMediaUrl(asset))
+}
+
+function resolveProjectAssetPosition(savedLayout, id, legacyPosition, fallback) {
+  const position = resolveNodePosition(savedLayout, id, fallback)
+  const usesLegacyGrid = Math.abs(position.x - legacyPosition.x) < 0.5
+    && Math.abs(position.y - legacyPosition.y) < 0.5
+  return usesLegacyGrid ? fallback : position
 }
 
 function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
   const nodes = resolveFreeCanvasNodes(savedLayout)
   const edges = []
-  const mediaAssets = projectAssets.filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
+  const mediaAssets = projectAssets.filter(isProjectMediaAsset)
 
   mediaAssets.forEach((asset, index) => {
     const id = `project-asset:${asset.id}`
     const column = index % 3
     const row = Math.floor(index / 3)
+    const legacyPosition = { x: 48 + column * 288, y: 64 + row * 210 }
+    const fallback = { x: 48 + column * 288, y: 64 + row * PROJECT_ASSET_ROW_H }
     nodes.push(makeNode({
       id,
       type: 'canvasProjectAsset',
       draggable: true,
       connectable: true,
-      position: resolveNodePosition(savedLayout, id, {
-        x: 48 + column * 288,
-        y: 64 + row * 210,
-      }),
+      position: resolveProjectAssetPosition(savedLayout, id, legacyPosition, fallback),
       data: { asset },
     }))
   })
@@ -106,7 +116,7 @@ function buildStandaloneCanvasGraph(savedLayout, projectAssets = []) {
     savedLayout,
     bounds: {
       width: Math.max(1200, 48 + Math.min(mediaAssets.length, 3) * 288),
-      height: Math.max(600, 160 + Math.ceil(mediaAssets.length / 3) * 210),
+      height: Math.max(600, 160 + Math.ceil(mediaAssets.length / 3) * PROJECT_ASSET_ROW_H),
     },
   }
 }
@@ -476,17 +486,19 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   const assetBlock = buildAssetNodes(drama, savedLayout, 80, episodeContext)
   nodes.push(...assetBlock.nodes)
 
-  const projectAssets = (options.projectAssets || []).filter(shouldProjectCanvasAsset).filter(isProjectMediaAsset)
+  const projectAssets = (options.projectAssets || []).filter(isProjectMediaAsset)
   if (projectAssets.length) {
     nodes.push(sectionLabel('label:project-assets', `🗂 项目素材 ${projectAssets.length}`, ASSET_X, assetBlock.nextY))
     projectAssets.forEach((asset, index) => {
       const id = `project-asset:${asset.id}`
+      const legacyPosition = { x: ASSET_X, y: assetBlock.nextY + 36 + index * ASSET_ROW_H }
+      const fallback = { x: ASSET_X, y: assetBlock.nextY + 36 + index * PROJECT_ASSET_ROW_H }
       nodes.push(makeNode({
         id,
         type: 'canvasProjectAsset',
         draggable: true,
         connectable: true,
-        position: resolveNodePosition(savedLayout, id, { x: ASSET_X, y: assetBlock.nextY + 36 + index * ASSET_ROW_H }),
+        position: resolveProjectAssetPosition(savedLayout, id, legacyPosition, fallback),
         data: { asset },
       }))
     })
@@ -519,7 +531,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     savedLayout,
     bounds: {
       width: Math.max(maxPipelineX + SCRIPT_OFFSET_X + 200, 1200),
-      height: Math.max(pipelineY + 80, assetBlock.nextY + projectAssets.length * ASSET_ROW_H + 80, 600),
+      height: Math.max(pipelineY + 80, assetBlock.nextY + projectAssets.length * PROJECT_ASSET_ROW_H + 80, 600),
     },
   }
 }

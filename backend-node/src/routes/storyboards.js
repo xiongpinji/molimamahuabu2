@@ -3,6 +3,7 @@ const path = require('path');
 const response = require('../response');
 const storyboardService = require('../services/storyboardService');
 const episodeStoryboardService = require('../services/episodeStoryboardService');
+const storyboardAssetMatcher = require('../services/storyboard-asset-matcher');
 const framePromptService = require('../services/framePromptService');
 const aiClient = require('../services/aiClient');
 const promptI18n = require('../services/promptI18n');
@@ -464,6 +465,23 @@ function routes(db, log, generationOptions = {}) {
         response.success(res, { storyboards: list, total: list.length });
       } catch (err) {
         log.error('episode storyboards get', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    episodeStoryboardsRematchAssets: (req, res) => {
+      try {
+        const result = storyboardAssetMatcher.rematchEpisodeAssets(
+          db,
+          log,
+          req.params.episode_id,
+        );
+        response.success(res, {
+          ...result,
+          message: `已检查 ${result.total} 个分镜，更新 ${result.updated} 个`,
+        });
+      } catch (err) {
+        log.error('episode storyboards rematch assets', { error: err.message });
+        if (err.code === 'not_found') return response.notFound(res, err.message);
         response.internalError(res, err.message);
       }
     },

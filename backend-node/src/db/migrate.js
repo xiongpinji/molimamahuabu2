@@ -232,7 +232,6 @@ function ensureAllColumns(database) {
     { name: 'time',             type: 'TEXT' },
     { name: 'prompt',           type: 'TEXT' },
     { name: 'polished_prompt',  type: 'TEXT' },  // 文字AI润色后的完整四视图图片提示词，生图时直接使用
-    { name: 'polished_prompt_single', type: 'TEXT' }, // 文字AI润色后的单图图片提示词
     { name: 'image_url',        type: 'TEXT' },
     { name: 'local_path',       type: 'TEXT' },
     { name: 'panorama_image_url', type: 'TEXT' },
@@ -265,6 +264,10 @@ function ensureAllColumns(database) {
     { name: 'created_at',   type: 'TEXT' },
     { name: 'updated_at',   type: 'TEXT' },
     { name: 'deleted_at',   type: 'TEXT' },
+  ]);
+
+  ensureColumns(database, 'model_credit_prices', [
+    { name: 'public_note', type: 'TEXT NOT NULL DEFAULT \'\'' },
   ]);
 
   // --- ai_service_configs ---（兜底建表：旧版 01_init.sql 可能未包含此表）
@@ -387,8 +390,10 @@ function ensureAllColumns(database) {
     { name: 'output_first_frame_url', type: 'TEXT' },
     { name: 'output_last_frame_url',  type: 'TEXT' },
     { name: 'reference_image_urls', type: 'TEXT' },
-    { name: 'reference_audio_urls', type: 'TEXT' },
+    { name: 'reference_video_url',  type: 'TEXT' },
+    { name: 'reference_audio_url',  type: 'TEXT' },
     { name: 'reference_video_urls', type: 'TEXT' },
+    { name: 'reference_audio_urls', type: 'TEXT' },
     { name: 'video_url',            type: 'TEXT' },
     { name: 'local_path',           type: 'TEXT' },
     { name: 'status',               type: 'TEXT' },

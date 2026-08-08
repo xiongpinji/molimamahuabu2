@@ -23,7 +23,38 @@ function routes(db, log, cfg, options = {}) {
         volume, pitch, emotion, pronunciation_tones,
       } = req.body || {};
       if (!text && !storyboard_id) return response.badRequest(res, '请提供 storyboard_id 或 text');
-      const dramaId = Number(drama_id);
+      const hasDramaId = drama_id !== undefined && drama_id !== null && String(drama_id).trim() !== '';
+      let dramaId = Number(drama_id);
+      if (options.billingEnabled && hasDramaId && (!Number.isInteger(dramaId) || dramaId <= 0)) {
+        return response.badRequest(res, 'drama_id 必须是正整数');
+      }
+      let scopedStoryboard = null;
+      if (options.billingEnabled && storyboard_id) {
+        const storyboardId = Number(storyboard_id);
+        if (!Number.isInteger(storyboardId) || storyboardId <= 0) {
+          return response.notFound(res, '资源不存在');
+        }
+        scopedStoryboard = req.tenant?.id
+          ? db.prepare(`SELECT s.id, s.dialogue, s.narration, e.drama_id
+            FROM storyboards s
+            JOIN episodes e ON e.id = s.episode_id
+            JOIN dramas d ON d.id = e.drama_id
+            WHERE s.id = ? AND d.tenant_id = ?
+              AND s.deleted_at IS NULL AND e.deleted_at IS NULL AND d.deleted_at IS NULL`)
+            .get(storyboardId, req.tenant.id)
+          : db.prepare(`SELECT s.id, s.dialogue, s.narration, e.drama_id
+            FROM storyboards s
+            JOIN episodes e ON e.id = s.episode_id
+            JOIN dramas d ON d.id = e.drama_id
+            WHERE s.id = ? AND d.user_id = ?
+              AND s.deleted_at IS NULL AND e.deleted_at IS NULL AND d.deleted_at IS NULL`)
+            .get(storyboardId, req.user?.id);
+        if (!scopedStoryboard) return response.notFound(res, '资源不存在');
+        if (hasDramaId && dramaId !== Number(scopedStoryboard.drama_id)) {
+          return response.notFound(res, '资源不存在');
+        }
+        dramaId = Number(scopedStoryboard.drama_id);
+      }
       if (options.billingEnabled && (!Number.isInteger(dramaId) || dramaId <= 0)) {
         return response.badRequest(res, 'drama_id 必须是正整数');
       }
@@ -52,26 +83,13 @@ function routes(db, log, cfg, options = {}) {
       if (pronunciationTones.length > 100) {
         return response.badRequest(res, 'pronunciation_tones 最多支持 100 条');
       }
-      if (options.billingEnabled) {
+      if (options.billingEnabled && !scopedStoryboard) {
         const owner = req.tenant?.id
           ? db.prepare(`SELECT id FROM dramas
             WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL`).get(dramaId, req.tenant.id)
           : db.prepare(`SELECT id FROM dramas
             WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).get(dramaId, req.user?.id);
         if (!owner) return response.notFound(res, '资源不存在');
-      }
-      let scopedStoryboard = null;
-      if (options.billingEnabled && storyboard_id) {
-        const storyboardId = Number(storyboard_id);
-        if (!Number.isInteger(storyboardId) || storyboardId <= 0) {
-          return response.notFound(res, '资源不存在');
-        }
-        scopedStoryboard = db.prepare(`SELECT s.id, s.dialogue, s.narration
-          FROM storyboards s
-          JOIN episodes e ON e.id = s.episode_id
-          WHERE s.id = ? AND e.drama_id = ?
-            AND s.deleted_at IS NULL AND e.deleted_at IS NULL`).get(storyboardId, dramaId);
-        if (!scopedStoryboard) return response.notFound(res, '资源不存在');
       }
       const kind = String(tts_kind || 'dialogue').toLowerCase() === 'narration' ? 'narration' : 'dialogue';
       let ttsText = text;

@@ -4,7 +4,7 @@
     header-title="平台管理后台"
     eyebrow="平台运营控制台"
     :description="isSuperAdmin
-      ? '统一管理兑换码、积分流水、成本利润、对账和每个模型的独立计费规则。'
+      ? '统一管理充值套餐、兑换码、积分流水、成本利润、对账和每个模型的独立计费规则。'
       : '生成、查询和停用平台兑换码。'"
   >
     <section v-if="requiresAdminToken && !unlocked" class="unlock-panel" aria-labelledby="unlock-title">
@@ -51,12 +51,18 @@
       </section>
 
       <el-tabs v-model="activeTab" class="admin-tabs">
+        <el-tab-pane v-if="isSuperAdmin" label="充值套餐" name="recharge">
+          <section class="panel">
+            <RechargePackageAdminPanel />
+          </section>
+        </el-tab-pane>
+
         <el-tab-pane v-if="isSuperAdmin" label="模型计费" name="models">
           <section class="panel">
             <div class="panel-heading">
               <div>
                 <h2>模型计费</h2>
-                <p>自动汇总 AI 配置中的实际模型；连接验证并启用计费后自动进入画布，无需修改前端代码。</p>
+                <p>自动汇总 AI 配置中的实际模型；每个模型单独设置积分、类型和启停状态。</p>
               </div>
             </div>
             <div class="model-pricing-summary" aria-label="模型计费状态">
@@ -68,7 +74,7 @@
               <el-input
                 v-model.trim="modelSearch"
                 clearable
-                placeholder="搜索模型名称或 ID"
+                placeholder="搜索模型名称、ID 或公开备注"
               />
               <el-select v-model="modelCategory" aria-label="模型类型筛选">
                 <el-option label="全部类型" value="all" />
@@ -87,7 +93,7 @@
             </div>
             <div class="model-list">
               <div v-for="item in filteredPrices" :key="item.model" class="model-row">
-                <label class="model-field"><span>前端显示名称</span><el-input v-model="item.display_name" placeholder="画布下拉中展示的名称" /></label>
+                <label class="model-field"><span>展示名称</span><el-input v-model="item.display_name" maxlength="120" show-word-limit /></label>
                 <label class="model-field">
                   <span>模型类型</span>
                   <el-select v-model="item.category">
@@ -98,10 +104,23 @@
                     <el-option label="其他" value="other" />
                   </el-select>
                 </label>
-                <label class="model-field">
+                <label v-if="item.category !== 'video'" class="model-field">
                   <span>用户收费（积分）</span>
                   <el-input-number v-model="item.credits" :min="1" :step="1" step-strictly />
                 </label>
+                <div v-else class="resolution-pricing-editor">
+                  <label class="model-field">
+                    <span>用户计费模式</span>
+                    <el-select v-model="item.billing_unit">
+                      <el-option label="按次计费" value="request" />
+                      <el-option label="按秒计费" value="second" />
+                    </el-select>
+                  </label>
+                  <label class="model-field"><span>480P 用户收费（积分/{{ billingUnitLabel(item.billing_unit) }}）</span><el-input-number v-model="item.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly /></label>
+                  <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                  <label class="model-field"><span>720P 用户收费（积分/{{ billingUnitLabel(item.billing_unit) }}）</span><el-input-number v-model="item.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly /></label>
+                  <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="item.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                </div>
                 <label class="model-field">
                   <span>计费状态</span>
                   <el-select v-model="item.status">
@@ -110,11 +129,25 @@
                   </el-select>
                 </label>
                 <el-button :loading="savingModel === item.model" @click="saveModel(item)">保存</el-button>
+                <label class="model-field model-public-note">
+                  <span>公开备注（可选）</span>
+                  <el-input
+                    v-model="item.public_note"
+                    type="textarea"
+                    :rows="2"
+                    maxlength="500"
+                    show-word-limit
+                    placeholder="展示给用户的模型说明"
+                  />
+                </label>
                 <small>
                   {{ item.model }} · {{ formatModelPrice(item) }}
                   <el-tag v-if="!item.configured" type="warning" size="small">未定价</el-tag>
                 </small>
-                <div class="cost-editor">
+                <small class="model-provider" :title="providerBaseUrl(item)">
+                  中转站：{{ providerLabel(item) }}
+                </small>
+                <div v-if="item.category !== 'video'" class="cost-editor">
                   <span>API 成本</span>
                   <el-select v-model="item.cost_unit">
                     <el-option label="按次" value="request" />
@@ -138,7 +171,7 @@
             </div>
             <div class="new-model">
               <label class="model-field"><span>模型 ID</span><el-input v-model.trim="newModel.model" /></label>
-              <label class="model-field"><span>前端显示名称</span><el-input v-model.trim="newModel.display_name" placeholder="画布下拉中展示的名称" /></label>
+              <label class="model-field"><span>展示名称</span><el-input v-model.trim="newModel.display_name" maxlength="120" show-word-limit /></label>
               <label class="model-field">
                 <span>模型类型</span>
                 <el-select v-model="newModel.category">
@@ -149,8 +182,21 @@
                   <el-option label="其他" value="other" />
                 </el-select>
               </label>
-              <label class="model-field"><span>用户收费（积分）</span><el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly /></label>
-              <label class="model-field">
+              <label v-if="newModel.category !== 'video'" class="model-field"><span>用户收费（积分）</span><el-input-number v-model="newModel.credits" :min="1" :step="1" step-strictly /></label>
+              <div v-else class="resolution-pricing-editor">
+                <label class="model-field">
+                  <span>用户计费模式</span>
+                  <el-select v-model="newModel.billing_unit">
+                    <el-option label="按次计费" value="request" />
+                    <el-option label="按秒计费" value="second" />
+                  </el-select>
+                </label>
+                <label class="model-field"><span>480P 用户收费（积分/{{ billingUnitLabel(newModel.billing_unit) }}）</span><el-input-number v-model="newModel.resolution_prices['480p'].credits" :min="1" :step="1" step-strictly /></label>
+                <label class="model-field"><span>480P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['480p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+                <label class="model-field"><span>720P 用户收费（积分/{{ billingUnitLabel(newModel.billing_unit) }}）</span><el-input-number v-model="newModel.resolution_prices['720p'].credits" :min="1" :step="1" step-strictly /></label>
+                <label class="model-field"><span>720P API 成本（元/秒）</span><el-input-number v-model="newModel.resolution_prices['720p'].cost_yuan_per_second" :min="0" :precision="6" :step="0.01" /></label>
+              </div>
+              <label v-if="newModel.category !== 'video'" class="model-field">
                 <span>平台成本单位</span>
                 <el-select v-model="newModel.cost_unit">
                   <el-option label="按次成本" value="request" />
@@ -159,11 +205,22 @@
                   <el-option label="按 Token 成本" value="token" />
                 </el-select>
               </label>
-              <template v-if="newModel.cost_unit === 'token'">
+              <template v-if="newModel.category !== 'video' && newModel.cost_unit === 'token'">
                 <label class="model-field"><span>千输入 Token 成本（元）</span><el-input-number v-model="newModel.input_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
                 <label class="model-field"><span>千输出 Token 成本（元）</span><el-input-number v-model="newModel.output_cost_yuan_per_1k" :min="0" :precision="6" :step="0.001" /></label>
               </template>
-              <label v-else class="model-field"><span>单位成本（元）</span><el-input-number v-model="newModel.cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" /></label>
+              <label v-else-if="newModel.category !== 'video'" class="model-field"><span>单位成本（元）</span><el-input-number v-model="newModel.cost_yuan_per_unit" :min="0" :precision="6" :step="0.01" /></label>
+              <label class="model-field model-public-note">
+                <span>公开备注（可选）</span>
+                <el-input
+                  v-model="newModel.public_note"
+                  type="textarea"
+                  :rows="2"
+                  maxlength="500"
+                  show-word-limit
+                  placeholder="展示给用户的模型说明"
+                />
+              </label>
               <el-button type="primary" :loading="savingModel === newModel.model" @click="addModel">
                 新增模型
               </el-button>
@@ -210,6 +267,7 @@
               <el-table-column prop="period" label="周期" width="110" />
               <el-table-column prop="model" label="模型" min-width="180" />
               <el-table-column prop="resource_type" label="类型" width="100" />
+              <el-table-column prop="resolution" label="分辨率" width="90" />
               <el-table-column prop="usage_count" label="调用量" width="90" />
               <el-table-column prop="credits_consumed" label="消耗积分" width="100" />
               <el-table-column prop="input_tokens" label="输入 Token" width="120" />
@@ -307,6 +365,7 @@ import { ElMessage } from 'element-plus'
 import AdminWorkspaceShell from '@/components/AdminWorkspaceShell.vue'
 import RedeemOperationsPanel from '@/components/RedeemOperationsPanel.vue'
 import BillingReconciliationPanel from '@/components/BillingReconciliationPanel.vue'
+import RechargePackageAdminPanel from '@/components/RechargePackageAdminPanel.vue'
 import {
   adjustTenantCredits,
   getLedgerReport,
@@ -332,7 +391,7 @@ const loading = ref(false)
 const unlocked = ref(!requiresAdminToken)
 const requestedTab = String(route.query.tab || '')
 const requestedModel = String(route.query.model || '').trim()
-const activeTab = ref(isSuperAdmin && ['models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
+const activeTab = ref(isSuperAdmin && ['recharge', 'models', 'ledger', 'codes', 'users', 'transactions', 'reconciliation'].includes(requestedTab)
   ? requestedTab
   : (isSuperAdmin ? 'models' : 'codes'))
 const prices = ref([])
@@ -363,12 +422,15 @@ const ledgerReport = ref(emptyLedgerReport())
 const newModel = reactive({
   model: '',
   display_name: '',
+  public_note: '',
   category: 'video',
+  billing_unit: 'second',
   credits: 1,
   cost_unit: 'request',
   cost_yuan_per_unit: 0,
   input_cost_yuan_per_1k: 0,
   output_cost_yuan_per_1k: 0,
+  resolution_prices: emptyResolutionPrices(),
 })
 const creditForm = reactive({
   tenant_id: '',
@@ -396,15 +458,97 @@ function costUnitLabel(value) {
   return { request: '次', image: '张', second: '秒', token: '千 Token' }[value] || '次'
 }
 
+function billingUnitLabel(value) {
+  return value === 'request' ? '次' : '秒'
+}
+
+function providerEntries(item) {
+  if (Array.isArray(item?.providers) && item.providers.length) return item.providers
+  if (item?.provider || item?.provider_name || item?.provider_base_url) {
+    return [{
+      provider: item.provider,
+      provider_name: item.provider_name,
+      provider_base_url: item.provider_base_url,
+    }]
+  }
+  return []
+}
+
+function providerLabel(item) {
+  const labels = providerEntries(item).map((entry) => (
+    [entry.provider_name || entry.provider, entry.provider && entry.provider_name !== entry.provider ? entry.provider : '']
+      .filter(Boolean)
+      .join(' · ')
+  )).filter(Boolean)
+  return labels.length ? [...new Set(labels)].join(' / ') : '未关联中转站'
+}
+
+function providerBaseUrl(item) {
+  return providerEntries(item).map((entry) => entry.provider_base_url).filter(Boolean).join(' / ')
+}
+
 function normalizePrice(item) {
+  const resolutionPrices = item.resolution_prices || {}
+  const fallbackCredits = Number.isSafeInteger(Number(item.credits)) && Number(item.credits) > 0
+    ? Number(item.credits)
+    : 1
+  const fallbackCost = Number(item.cost_micros_per_unit) || 0
   return {
     ...item,
+    display_name: String(item.display_name ?? item.model ?? ''),
+    public_note: String(item.public_note ?? ''),
     configured: item.credits != null && item.status !== 'unconfigured',
     status: item.status === 'unconfigured' ? 'enabled' : item.status,
+    billing_unit: item.category === 'video'
+      ? (item.billing_unit === 'request' ? 'request' : 'second')
+      : 'request',
     cost_yuan_per_unit: microsToYuan(item.cost_micros_per_unit),
     input_cost_yuan_per_1k: microsToYuan(item.input_cost_micros_per_1k),
     output_cost_yuan_per_1k: microsToYuan(item.output_cost_micros_per_1k),
+    resolution_prices: Object.fromEntries(['480p', '720p'].map((resolution) => [resolution, {
+      credits: Number(resolutionPrices[resolution]?.credits) || fallbackCredits,
+      cost_yuan_per_second: microsToYuan(
+        resolutionPrices[resolution]?.cost_micros_per_second ?? fallbackCost,
+      ),
+    }])),
   }
+}
+
+function emptyResolutionPrices() {
+  return {
+    '480p': { credits: 1, cost_yuan_per_second: 0 },
+    '720p': { credits: 1, cost_yuan_per_second: 0 },
+  }
+}
+
+function resolutionPricePayload(item) {
+  return Object.fromEntries(['480p', '720p'].map((resolution) => [resolution, {
+    credits: Number(item.resolution_prices[resolution].credits),
+    cost_micros_per_second: yuanToMicros(item.resolution_prices[resolution].cost_yuan_per_second),
+  }]))
+}
+
+function hasValidResolutionPrices(item) {
+  return ['480p', '720p'].every((resolution) => (
+    Number.isSafeInteger(Number(item.resolution_prices?.[resolution]?.credits))
+    && Number(item.resolution_prices[resolution].credits) > 0
+  ))
+}
+
+function hasValidModelMetadata(item) {
+  const displayName = String(item.display_name ?? '').trim()
+  if (displayName.length < 1 || displayName.length > 120) {
+    ElMessage.warning('请填写 1-120 个字符的展示名称')
+    return false
+  }
+  const publicNote = String(item.public_note ?? '').trim()
+  if (publicNote.length > 500) {
+    ElMessage.warning('公开备注不能超过 500 个字符')
+    return false
+  }
+  item.display_name = displayName
+  item.public_note = publicNote
+  return true
 }
 
 const configuredModelCount = computed(() => prices.value.filter(
@@ -420,6 +564,7 @@ const filteredPrices = computed(() => {
     const matchesSearch = !query
       || String(item.model).toLowerCase().includes(query)
       || String(item.display_name || '').toLowerCase().includes(query)
+      || String(item.public_note || '').toLowerCase().includes(query)
     const matchesCategory = modelCategory.value === 'all' || item.category === modelCategory.value
     const matchesState = modelPricingState.value === 'all'
       || (modelPricingState.value === 'configured' && item.configured && item.status === 'enabled')
@@ -467,20 +612,29 @@ async function unlock() {
 }
 
 async function saveModel(item) {
-  if (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0) {
+  if (item.category === 'video' && !hasValidResolutionPrices(item)) {
+    return ElMessage.warning('请填写 480P 和 720P 的正整数积分')
+  }
+  if (item.category !== 'video' && (!Number.isSafeInteger(Number(item.credits)) || Number(item.credits) <= 0)) {
     return ElMessage.warning('请填写正整数积分')
   }
+  if (!hasValidModelMetadata(item)) return
+  const videoPrices = item.category === 'video' ? resolutionPricePayload(item) : null
   savingModel.value = item.model
   try {
     const saved = await updateModelPrice(item.model, {
-      credits: item.credits,
+      credits: videoPrices?.['480p'].credits ?? item.credits,
       display_name: item.display_name,
+      public_note: item.public_note,
       category: item.category,
       status: item.status === 'unconfigured' ? 'enabled' : item.status,
-      cost_unit: item.cost_unit,
-      cost_micros_per_unit: yuanToMicros(item.cost_yuan_per_unit),
+      billing_unit: item.category === 'video' ? item.billing_unit : undefined,
+      cost_unit: item.category === 'video' ? 'second' : item.cost_unit,
+      cost_micros_per_unit: videoPrices?.['480p'].cost_micros_per_second
+        ?? yuanToMicros(item.cost_yuan_per_unit),
       input_cost_micros_per_1k: yuanToMicros(item.input_cost_yuan_per_1k),
       output_cost_micros_per_1k: yuanToMicros(item.output_cost_yuan_per_1k),
+      ...(videoPrices ? { resolution_prices: videoPrices } : {}),
     })
     Object.assign(item, normalizePrice(saved), { configured: true })
     ElMessage.success(`${saved.display_name || saved.model} 已保存`)
@@ -491,17 +645,26 @@ async function saveModel(item) {
 
 async function addModel() {
   if (!newModel.model) return ElMessage.warning('请填写模型 ID')
+  if (newModel.category === 'video' && !hasValidResolutionPrices(newModel)) {
+    return ElMessage.warning('请填写 480P 和 720P 的正整数积分')
+  }
+  if (!hasValidModelMetadata(newModel)) return
+  const videoPrices = newModel.category === 'video' ? resolutionPricePayload(newModel) : null
   savingModel.value = newModel.model
   try {
     const saved = await updateModelPrice(newModel.model, {
-      credits: newModel.credits,
-      display_name: newModel.display_name || newModel.model,
+      credits: videoPrices?.['480p'].credits ?? newModel.credits,
+      display_name: newModel.display_name,
+      public_note: newModel.public_note,
       category: newModel.category,
       status: 'enabled',
-      cost_unit: newModel.cost_unit,
-      cost_micros_per_unit: yuanToMicros(newModel.cost_yuan_per_unit),
+      billing_unit: newModel.category === 'video' ? newModel.billing_unit : undefined,
+      cost_unit: newModel.category === 'video' ? 'second' : newModel.cost_unit,
+      cost_micros_per_unit: videoPrices?.['480p'].cost_micros_per_second
+        ?? yuanToMicros(newModel.cost_yuan_per_unit),
       input_cost_micros_per_1k: yuanToMicros(newModel.input_cost_yuan_per_1k),
       output_cost_micros_per_1k: yuanToMicros(newModel.output_cost_yuan_per_1k),
+      ...(videoPrices ? { resolution_prices: videoPrices } : {}),
     })
     const index = prices.value.findIndex((item) => item.model === saved.model)
     if (index >= 0) prices.value[index] = { ...normalizePrice(saved), configured: true }
@@ -509,12 +672,15 @@ async function addModel() {
     Object.assign(newModel, {
       model: '',
       display_name: '',
+      public_note: '',
       category: 'video',
+      billing_unit: 'second',
       credits: 1,
       cost_unit: 'request',
       cost_yuan_per_unit: 0,
       input_cost_yuan_per_1k: 0,
       output_cost_yuan_per_1k: 0,
+      resolution_prices: emptyResolutionPrices(),
     })
     ElMessage.success('模型计费规则已新增')
   } finally {
@@ -620,11 +786,14 @@ onMounted(async () => {
 .model-list { display: grid; gap: 10px; }
 .model-row { display: grid; grid-template-columns: 1.2fr 120px 150px 120px auto; gap: 10px; align-items: center; padding: 14px; border: 1px solid #292929; border-radius: 12px; }
 .model-row small { display: flex; grid-column: 1 / -1; gap: 8px; align-items: center; color: #8f9098; }
+.model-row > .model-public-note { grid-column: 1 / -1; }
 .cost-editor { display: grid; grid-column: 1 / -1; grid-template-columns: auto 140px 180px auto 180px auto; gap: 10px; align-items: center; padding-top: 10px; border-top: 1px dashed #353535; color: #9a9a9a; font-size: 12px; }
+.resolution-pricing-editor { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 10px; padding-top: 10px; border-top: 1px dashed #353535; }
 .new-model, .credit-form { display: grid; gap: 10px; align-items: center; margin: 18px 0 8px; padding-top: 18px; border-top: 1px dashed #3f4047; }
 .model-field { display: grid; gap: 6px; color: #a8a9af; font-size: 12px; }
 .model-field :deep(.el-input-number), .model-field :deep(.el-select) { width: 100%; }
 .new-model { grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; }
+.new-model > .model-public-note { grid-column: span 3; }
 .credit-form { grid-template-columns: 1.2fr 160px 1.5fr auto; }
 .ledger-heading { display: flex; justify-content: space-between; gap: 20px; align-items: end; }
 .ledger-controls { display: flex; gap: 8px; align-items: center; color: #929292; font-size: 12px; }
@@ -636,7 +805,8 @@ onMounted(async () => {
 .field-hint { font-size: 12px; }
 @media (max-width: 900px) {
   .billing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .model-row, .model-filters, .new-model, .credit-form, .admin-auth, .cost-editor { grid-template-columns: 1fr; }
+  .model-row, .model-filters, .new-model, .credit-form, .admin-auth, .cost-editor, .resolution-pricing-editor { grid-template-columns: 1fr; }
+  .new-model > .model-public-note { grid-column: auto; }
   .ledger-heading, .ledger-controls { align-items: stretch; flex-direction: column; }
   .ledger-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

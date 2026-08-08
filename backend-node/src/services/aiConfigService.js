@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeMaterialHubToken } = require('./jimengMaterialHubService');
 const { resolveKlingBearerToken } = require('./klingJwt');
-const token6688Client = require('./token6688Client');
+const { buildFeituoStatusUrl } = require('./feituoVideoClient');
+const usmercariVideoClient = require('./usmercariVideoClient');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
@@ -14,6 +15,9 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 
 function hasConnectionCredential(opts = {}) {
   if (String(opts.api_key || '').trim()) return true;
+  if (String(opts.provider || '').toLowerCase() === 'usmercari') {
+    return !!usmercariVideoClient.resolveUsmercariApiKey(opts);
+  }
   if (String(opts.provider || '').toLowerCase() !== 'kling') return false;
   try {
     const settings = typeof opts.settings === 'object' ? opts.settings : JSON.parse(opts.settings || '{}');
@@ -81,7 +85,19 @@ function getConfig(db, id) {
   return row ? rowToConfig(row) : null;
 }
 
-function parseVideoSettings(settings) {
+const USMERCARI_VIDEO_MODELS = new Set(['MiniMax H3', 'seedance-2.0-fast', 'seedance-2.0-mini']);
+
+function allowsUsmercariFourSecondDuration(context = {}) {
+  const provider = String(context.provider || '').trim().toLowerCase();
+  if (!['usmercari', 'usmercari_media'].includes(provider)) return false;
+  const models = [
+    ...(Array.isArray(context.model) ? context.model : [context.model]),
+    context.default_model,
+  ].map((model) => String(model || '').trim());
+  return models.some((model) => USMERCARI_VIDEO_MODELS.has(model));
+}
+
+function parseVideoSettings(settings, context = {}) {
   let parsed;
   try {
     parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
@@ -97,8 +113,9 @@ function parseVideoSettings(settings) {
   }
   if (Object.prototype.hasOwnProperty.call(parsed, 'video_duration')) {
     const duration = Number(parsed.video_duration);
-    if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
-      const error = new Error('视频默认时长必须是 5 到 15 秒之间的整数');
+    const minimum = allowsUsmercariFourSecondDuration(context) ? 4 : 5;
+    if (!Number.isSafeInteger(duration) || duration < minimum || duration > 15) {
+      const error = new Error(`视频默认时长必须是 ${minimum} 到 15 秒之间的整数`);
       error.code = 'INVALID_VIDEO_DURATION';
       throw error;
     }
@@ -107,23 +124,23 @@ function parseVideoSettings(settings) {
   return parsed;
 }
 
-function normalizeCreateSettings(serviceType, settings) {
+function normalizeCreateSettings(serviceType, settings, context) {
   if (serviceType !== 'video' || settings == null) return settings || null;
-  return JSON.stringify(parseVideoSettings(settings));
+  return JSON.stringify(parseVideoSettings(settings, context));
 }
 
-function mergeVideoSettings(existingSettings, incomingSettings) {
+function mergeVideoSettings(existingSettings, incomingSettings, context) {
   let existing = {};
   try {
     const parsed = typeof existingSettings === 'string' ? JSON.parse(existingSettings) : existingSettings;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
   } catch (_) {}
-  const incoming = parseVideoSettings(incomingSettings);
+  const incoming = parseVideoSettings(incomingSettings, context);
   for (const [key, value] of Object.entries(incoming)) {
     if (SENSITIVE_SETTING_KEYS.has(key.toLowerCase()) && (value == null || value === '')) continue;
     existing[key] = value;
   }
-  return JSON.stringify(parseVideoSettings(existing));
+  return JSON.stringify(parseVideoSettings(existing, context));
 }
 
 function verificationSettingsFingerprint(settings) {
@@ -145,7 +162,7 @@ function createConfig(db, log, req) {
   const now = new Date().toISOString();
   const model = modelToDb(req.model);
   const serviceType = req.service_type || 'text';
-  const settings = normalizeCreateSettings(serviceType, req.settings);
+  const settings = normalizeCreateSettings(serviceType, req.settings, req);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
   if (!endpoint && req.provider) {
@@ -191,11 +208,6 @@ function createConfig(db, log, req) {
         endpoint = '/videos';
         queryEndpoint = '/videos/{taskId}';
       }
-    } else if (p === 'djpsd_openapi') {
-      if (st === 'image' || st === 'storyboard_image' || st === 'video') {
-        endpoint = '/v1/media/generate';
-        queryEndpoint = '/v1/media/status?task_id={taskId}';
-      }
     } else if (p === 'deepwl' || p === 'deepwl_grok' || p === 'deepwl-grok') {
       if (st === 'video') {
         endpoint = '/v1/video/create';
@@ -206,11 +218,10 @@ function createConfig(db, log, req) {
         endpoint = '/v1/task/submit/{model}';
         queryEndpoint = '/v1/task/query-status';
       }
-    } else if (p === 'token6688' || p === 'tokengo') {
-      if (st === 'image' || st === 'storyboard_image') endpoint = '/v1/images/generations';
-      else if (st === 'video') {
-        endpoint = '/v1/videos/generations';
-        queryEndpoint = '/v1/tasks/{taskId}';
+    } else if (p === 'usmercari' || p === 'usmercari_media') {
+      if (st === 'video') {
+        endpoint = '/cpa-file/submit/video';
+        queryEndpoint = '/cpa-file/fetch';
       }
     }
   }
@@ -304,7 +315,11 @@ function updateConfig(db, log, id, req) {
   if (req.settings != null) {
     updates.push('settings = ?');
     const nextSettings = existing.service_type === 'video'
-      ? mergeVideoSettings(existing.settings, req.settings)
+      ? mergeVideoSettings(existing.settings, req.settings, {
+        provider: req.provider ?? existing.provider,
+        model: req.model ?? existing.model,
+        default_model: req.default_model ?? existing.default_model,
+      })
       : req.settings;
     params.push(nextSettings);
     connectivityChanged ||= verificationSettingsFingerprint(nextSettings)
@@ -356,7 +371,7 @@ function rowToConfig(r) {
     priority: r.priority ?? 0,
     is_default: !!r.is_default,
     is_active: r.is_active == null ? true : !!r.is_active,
-    verification_status: r.verification_status || 'unverified',
+    verification_status: r.verification_status || null,
     verification_checked_at: r.verification_checked_at || null,
     verified_at: r.verified_at || null,
     verification_error: r.verification_error || null,
@@ -406,13 +421,11 @@ function toPublicConfig(config) {
   const { api_key, ...safe } = config;
   return {
     ...safe,
-    has_api_key: !!String(api_key || '').trim(),
+    has_api_key: !!String(api_key || '').trim()
+      || (String(config.provider || '').toLowerCase() === 'usmercari'
+        && !!usmercariVideoClient.resolveUsmercariApiKey(config)),
     settings: redactSettings(config.settings),
   };
-}
-
-function isVerifiedConfig(config) {
-  return String(config?.verification_status || '').toLowerCase() === 'verified';
 }
 
 function redactVerificationError(config, error) {
@@ -462,15 +475,10 @@ async function testConnection(opts) {
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
-  let isAIHubHost = false;
-  try {
-    const hostname = new URL(base).hostname.toLowerCase();
-    isAIHubHost = hostname === 'aihubcc.cc' || hostname.endsWith('.aihubcc.cc');
-  } catch (_) {}
 
-  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video' || isAIHubHost) {
+  if (provider === 'aihubcc' || provider === 'aihubcc_image' || provider === 'aihubcc_video') {
     if (!opts.api_key) throw new Error('api_key 必填');
-    const queryPath = String(isAIHubHost ? '/videos/{taskId}' : (opts.query_endpoint || '/videos/{taskId}'))
+    const queryPath = String(opts.query_endpoint || '/videos/{taskId}')
       .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'codex-connectivity-check');
     const url = base + (queryPath.startsWith('/') ? queryPath : '/' + queryPath);
     const res = await fetch(url, {
@@ -507,35 +515,44 @@ async function testConnection(opts) {
     return;
   }
 
+  // USMercari 连接测试只读取模型目录，禁止创建会扣费的视频任务。
+  if ((provider === 'usmercari' || provider === 'usmercari_media') && serviceType === 'video') {
+    const apiKey = usmercariVideoClient.resolveUsmercariApiKey(opts);
+    if (!apiKey) throw new Error('api_key 必填');
+    const url = `${usmercariVideoClient.normalizeUsmercariBaseUrl(base)}/v1/models`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+    if (res.status === 401 || res.status === 403) throw new Error(`USMercari API Key 无效 (${res.status})`);
+    if (!res.ok) throw new Error(`USMercari 连接失败 (${res.status})`);
+    const available = new Set((Array.isArray(data?.data) ? data.data : [])
+      .map((item) => String(item?.id || item?.name || '').trim()).filter(Boolean));
+    const requested = (models.length ? models : Object.keys(usmercariVideoClient.USMERCARI_MODELS))
+      .map((item) => String(item || '').trim()).filter(Boolean);
+    const missing = requested.filter((item) => !available.has(item));
+    if (missing.length) throw new Error(`USMercari 模型目录缺少: ${missing.join(', ')}`);
+    return;
+  }
+
   if (!opts.api_key) throw new Error('api_key 必填');
 
-  // Token6688：只读模型目录同时验证密钥和目标模型，禁止连接测试创建计费任务。
-  if (
-    provider === 'token6688'
-    || provider === 'tokengo'
-    || String(opts.api_protocol || '').toLowerCase() === 'token6688'
-  ) {
-    const root = base.replace(/\/v1$/i, '');
-    const res = await fetch(`${root}/v1/models`, {
+  // 飞拓连接测试只查询一个不存在的 jobId，禁止创建付费视频任务。
+  if ((provider === 'feituo' || provider === 'feituo_open') && serviceType === 'video') {
+    const res = await fetch(buildFeituoStatusUrl(base, 'codex-connectivity-check'), {
       method: 'GET',
-      headers: { Authorization: 'Bearer ' + opts.api_key },
+      headers: {
+        Authorization: 'Bearer ' + opts.api_key,
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      },
     });
-    const text = await res.text();
-    let data = {};
-    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
-    if (!res.ok) {
-      const message = data?.error?.message || data?.message || `Token6688 连接失败 (${res.status})`;
-      throw new Error(String(message).slice(0, 300));
-    }
-    const available = new Set((Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [])
-      .map((item) => String(item?.id || item?.model || '').trim())
-      .filter(Boolean));
-    const expected = serviceType === 'video'
-      ? ['seedance-2-0-special']
-      : models.map(token6688Client.normalizeImageModel).filter(Boolean);
-    const missing = expected.filter((item) => !available.has(item));
-    if (missing.length) throw new Error(`Token6688 模型目录未找到已配置模型: ${missing.join(', ')}`);
-    return;
+    if (res.status === 401 || res.status === 403) throw new Error(`飞拓 API Key 无效 (${res.status})`);
+    if (res.ok || res.status === 400 || res.status === 404) return;
+    throw new Error(`飞拓连接失败 (${res.status})`);
   }
 
   // iCreat 采用三段式任务接口；连接测试只查询不存在的任务，避免提交计费任务。
@@ -616,26 +633,6 @@ async function testConnection(opts) {
     return;
   }
 
-  // DJPSD 开放 API：只读查询一个不存在的任务验证 Bearer，不创建付费图片或视频。
-  if (
-    provider === 'djpsd_openapi'
-    || ['djpsd_openapi', 'djpsd_media'].includes(String(opts.api_protocol || '').toLowerCase())
-  ) {
-    const root = base.replace(/\/v1$/i, '');
-    const res = await fetch(root + '/v1/media/status?task_id=0', {
-      method: 'GET',
-      headers: { Authorization: 'Bearer ' + opts.api_key },
-    });
-    const text = await res.text();
-    let data = {};
-    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(data.detail || data.message || `DJPSD 开放 API Key 无效 (${res.status})`);
-    }
-    if (res.ok || res.status === 400 || res.status === 404) return;
-    throw new Error(data.detail || data.message || `DJPSD 开放 API 连接失败 (${res.status})`);
-  }
-
   // DJPSD 视频：只读列表可同时验证网络和密钥，避免连接测试创建付费任务。
   if (provider === 'djpsd') {
     const root = base.replace(/\/v1$/i, '');
@@ -691,8 +688,25 @@ async function testConnection(opts) {
 
   // --- MiniMax TTS 语音合成 ---
   if (serviceType === 'tts' && provider === 'minimax') {
-    const probeUrl = base + '/get_voice';
-    const probeBody = JSON.stringify({ voice_type: 'all' });
+    const probeUrl = base + '/t2a_v2';
+    const probeBody = JSON.stringify({
+      model: model || 'speech-2.8-hd',
+      text: '测试',
+      stream: false,
+      output_format: 'hex',
+      voice_setting: {
+        voice_id: 'male-qn-qingse',
+        speed: 1,
+        vol: 1,
+        pitch: 0,
+      },
+      audio_setting: {
+        sample_rate: 32000,
+        bitrate: 128000,
+        format: 'mp3',
+        channel: 1,
+      },
+    });
     const res = await fetch(probeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },
@@ -970,10 +984,7 @@ function applyVendorLock(db, log, cfg) {
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
   const info = db.prepare(
-    `UPDATE ai_service_configs SET api_key = ?, updated_at = ?,
-       verification_status = 'unverified', verification_checked_at = NULL,
-       verified_at = NULL, verification_error = NULL
-     WHERE deleted_at IS NULL`
+    'UPDATE ai_service_configs SET api_key = ?, updated_at = ? WHERE deleted_at IS NULL'
   ).run(newKey, now);
   log.info('Bulk update api_key', { updated: info.changes });
   return info.changes;
@@ -991,7 +1002,6 @@ module.exports = {
   bulkUpdateApiKey,
   hasConnectionCredential,
   toPublicConfig,
-  isVerifiedConfig,
   redactVerificationError,
   setVerificationResult,
 };

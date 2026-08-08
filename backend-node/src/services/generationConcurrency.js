@@ -1,5 +1,5 @@
 const DEFAULT_LIMITS = {
-  text: 12,
+  text: 2,
   image: 8,
   video: 6,
 };

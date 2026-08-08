@@ -7,6 +7,7 @@ const { loadConfig } = require('./config/index.js');
 const logger = require('./logger.js');
 const { setupRouter } = require('./routes/index.js');
 const { createStaticOwnershipMiddleware } = require('./middleware/resourceOwnership');
+const { mountReleaseEvidenceAssets } = require('./middleware/releaseEvidenceAssets');
 
 function createApp() {
   const config = loadConfig();
@@ -44,6 +45,9 @@ function createApp() {
     });
   }
 
+  // 仅公开 root-owned 的模型验证成品；用户素材仍受 /static 租户鉴权保护。
+  mountReleaseEvidenceAssets(app);
+
   // 静态资源目录：统一转为绝对路径（打包 exe 下相对路径可能解析异常）
   const storageRoot = config.storage?.local_path
     ? (path.isAbsolute(config.storage.local_path)
@@ -57,6 +61,7 @@ function createApp() {
       db,
       enabled: publicPlatformEnabled,
       secret: process.env.PLATFORM_JWT_SECRET,
+      storageRoot,
     }), express.static(storageRoot));
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);

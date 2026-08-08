@@ -1,3 +1,5 @@
+import { normalizeModelOption } from './modelSelection.js'
+
 const DEFAULTS = {
   image: { aspectRatios: ['16:9', '9:16', '1:1'], resolutions: ['1K', '2K'], quantities: [1], maxReferences: 0, declared: false },
   video: {
@@ -39,14 +41,73 @@ function normalizeCapabilities(kind, value) {
 }
 
 export function normalizeCanvasModelCatalog(items = []) {
-  return items.filter((item) => item?.model && item?.kind).map((item) => ({
-    model: String(item.model),
+  return items.filter((item) => normalizeModelOption(item?.model) && item?.kind).map((item) => {
+    const model = normalizeModelOption(item.model)
+    return {
+    model,
     label: String(item.label || item.model),
+    note: String(item.note ?? item.public_note ?? '').trim(),
     kind: String(item.kind),
+    provider: String(item.provider || '').toLowerCase(),
+    defaultVoiceId: String(item.default_voice_id || item.defaultVoiceId || '').trim(),
     credits: Number.isFinite(Number(item.credits)) && Number(item.credits) > 0 ? Number(item.credits) : null,
     billingUnit: String(item.billing_unit || item.billingUnit || '').trim(),
+    resolutionPrices: item.resolution_prices || item.resolutionPrices || {},
     capabilities: normalizeCapabilities(item.kind, item.capabilities),
-  }))
+  }
+  })
+}
+
+export function createCanvasModelCatalogLoader(loadCatalog) {
+  let state = { status: 'idle', catalog: [], error: null }
+  let inFlight = null
+
+  function snapshot() {
+    return { ...state }
+  }
+
+  function load() {
+    if (state.status === 'loaded') return Promise.resolve(state.catalog)
+    if (inFlight) return inFlight
+
+    state = { ...state, status: 'loading', error: null }
+    let response
+    try {
+      response = loadCatalog()
+    } catch (error) {
+      state = { ...state, status: 'error', error }
+      return Promise.reject(error)
+    }
+
+    const request = Promise.resolve(response)
+      .then((items) => {
+        const catalog = normalizeCanvasModelCatalog(Array.isArray(items) ? items : [])
+        state = { status: 'loaded', catalog, error: null }
+        return catalog
+      })
+      .catch((error) => {
+        state = { ...state, status: 'error', error }
+        throw error
+      })
+      .finally(() => {
+        if (inFlight === request) inFlight = null
+      })
+    inFlight = request
+    return request
+  }
+
+  return { load, snapshot }
+}
+
+export function canvasModelSelectionDecision(catalog, kind, model, catalogStatus = 'loaded') {
+  const normalizedModel = normalizeModelOption(model)
+  if (catalogStatus === 'error') return { ok: false, code: 'CATALOG_ERROR', model: normalizedModel }
+  if (catalogStatus !== 'loaded') return { ok: false, code: 'CATALOG_NOT_READY', model: normalizedModel }
+  if (!normalizedModel) return { ok: true, code: 'MODEL_DEFAULT', model: '' }
+  const entry = canvasModelEntry(catalog, kind, normalizedModel)
+  return entry
+    ? { ok: true, code: 'MODEL_AVAILABLE', model: entry.model }
+    : { ok: false, code: 'MODEL_UNAVAILABLE', model: normalizedModel }
 }
 
 export function canvasModelCapability(catalog, kind, model) {
@@ -76,17 +137,22 @@ export function canvasModelOptions(catalog, kind, requirements = {}) {
       const option = {
         value: item.model,
         label: disabled ? `${item.label}（不支持参考图）` : item.label,
+        note: item.note,
       }
       if (disabled) option.disabled = true
       return option
     })
 }
 
-export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1) {
+export function estimateCanvasCredits(catalog, kind, model, quantity = 1, duration = 1, resolution = '') {
   const entry = canvasModelEntry(catalog, kind, model)
-  if (!entry?.credits) return null
+  const tierCredits = kind === 'video'
+    ? Number(entry?.resolutionPrices?.[String(resolution).trim().toLowerCase()]?.credits)
+    : NaN
+  const credits = Number.isSafeInteger(tierCredits) && tierCredits > 0 ? tierCredits : entry?.credits
+  if (!credits) return null
   const durationMultiplier = kind === 'video' && entry.billingUnit === 'second'
     ? Math.max(1, Number(duration) || 1)
     : 1
-  return entry.credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
+  return credits * Math.max(1, Number(quantity) || 1) * durationMultiplier
 }

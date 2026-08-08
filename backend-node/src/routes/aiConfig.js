@@ -51,7 +51,24 @@ function publicModelNames(configs) {
       const models = Array.isArray(config.model) ? config.model : [config.model];
       return [config.default_model, ...models];
     })
-    .map((model) => String(model || '').trim())
+    .flatMap((model) => {
+      if (model && typeof model === 'object') {
+        return [model.value ?? model.model ?? model.id ?? model.name ?? ''];
+      }
+      const value = String(model || '').trim();
+      if (value.startsWith('{') || value.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : [parsed];
+        } catch (_) {}
+      }
+      return [value];
+    })
+    .map((model) => String(
+      model && typeof model === 'object'
+        ? (model.value ?? model.model ?? model.id ?? model.name ?? '')
+        : model || '',
+    ).trim())
     .filter(Boolean);
   return [...new Set(names)];
 }

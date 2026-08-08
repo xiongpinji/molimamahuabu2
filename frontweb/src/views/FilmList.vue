@@ -73,18 +73,21 @@
                       <option value="text">文字</option>
                     </select>
                   </label>
-                  <label class="home-control">
-                    <select v-model="homeModel" aria-label="生成模型">
-                      <option v-if="!homeModelOptions.length" value="">暂无可用模型</option>
-                      <option
-                        v-for="item in homeModelOptions"
-                        :key="item.model"
-                        :value="item.model"
-                      >
-                        {{ item.display_name || item.model }}
-                      </option>
-                    </select>
-                  </label>
+                  <div class="home-model-picker">
+                    <label class="home-control">
+                      <select v-model="homeModel" aria-label="生成模型">
+                        <option v-if="!homeModelOptions.length" value="">暂无可用模型</option>
+                        <option
+                          v-for="item in homeModelOptions"
+                          :key="item.model"
+                          :value="item.model"
+                        >
+                          {{ item.display_name || item.model }}
+                        </option>
+                      </select>
+                    </label>
+                    <p v-if="homeSelectedModelNote" class="home-model-note">{{ homeSelectedModelNote }}</p>
+                  </div>
                   <label v-if="homeMediaType !== 'text'" class="home-control">
                     <select v-model="homeAspectRatio" aria-label="画面比例">
                       <option value="16:9">16:9</option>
@@ -104,9 +107,7 @@
                   </label>
                   <label v-if="homeMediaType === 'video'" class="home-control">
                     <select v-model="homeResolution" aria-label="视频清晰度">
-                      <option value="480p">480P</option>
-                      <option value="720p">720P</option>
-                      <option value="1080p">1080P</option>
+                      <option v-for="value in homeResolutionOptions" :key="value" :value="value">{{ value.toUpperCase() }}</option>
                     </select>
                   </label>
                 </div>
@@ -447,6 +448,7 @@ import {
   estimateGenerationCredits,
   normalizeQuickGenerationDraft,
 } from '@/utils/homeQuickGeneration'
+import { coerceVideoResolutionForModel, videoResolutionOptionsForModel } from '@/utils/videoResolution'
 import {
   normalizeProjectMode,
   projectCanvasPath,
@@ -497,9 +499,11 @@ const homeModelOptions = computed(() => {
 const homeSelectedModel = computed(() => (
   homeModelOptions.value.find((item) => item.model === homeModel.value) || null
 ))
+const homeSelectedModelNote = computed(() => String(homeSelectedModel.value?.public_note || '').trim())
+const homeResolutionOptions = computed(() => videoResolutionOptionsForModel(homeModel.value))
 const homeSelectedPrice = computed(() => estimateGenerationCredits(
   homeSelectedModel.value,
-  { duration: homeDuration.value },
+  { duration: homeDuration.value, resolution: homeResolution.value },
 ))
 const homeInsufficientCredits = computed(() => (
   homeSelectedPrice.value != null && homeBalance.value < homeSelectedPrice.value
@@ -965,6 +969,10 @@ watch(projectMode, () => {
 watch(homeMediaType, () => {
   homeModel.value = homeModelOptions.value[0]?.model || ''
 })
+
+watch(homeModel, (value) => {
+  homeResolution.value = coerceVideoResolutionForModel(value, homeResolution.value)
+})
 </script>
 
 <style scoped>
@@ -1291,6 +1299,18 @@ html.light .btn-import {
 }
 .home-control__icon {
   color: #ff7139;
+}
+.home-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.home-model-note {
+  max-width: 230px;
+  margin: 0;
+  color: #a7a7ad;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .home-control--static {
   color: #bbb;

@@ -3084,6 +3084,69 @@ async function runRotate(sourcePath, parameters) {
   return { source, metadata, format, normalized: { angle } };
 }
 
+function normalizeFreeGridBoxes(boxes, rows, columns, metadata) {
+  if (!Array.isArray(boxes) || boxes.length !== rows * columns) {
+    fail('IMAGE_TOOL_INVALID_INPUT', 'boxes 必须包含与宫格数量相同的裁剪框');
+  }
+  const seenIds = new Set();
+  const seenCells = new Set();
+  const normalized = [];
+  for (const box of boxes) {
+    if (!box || typeof box !== 'object' || Array.isArray(box)) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'boxes 中包含无效裁剪框');
+    }
+    const id = typeof box.id === 'string' ? box.id : '';
+    const row = Number(box.row);
+    const column = Number(box.column);
+    const left = Number(box.left);
+    const top = Number(box.top);
+    const width = Number(box.width);
+    const height = Number(box.height);
+    const cellKey = `${row}:${column}`;
+    if (
+      !id
+      || seenIds.has(id)
+      || !Number.isInteger(row)
+      || !Number.isInteger(column)
+      || row < 0
+      || row >= rows
+      || column < 0
+      || column >= columns
+      || seenCells.has(cellKey)
+      || ![left, top, width, height].every(Number.isFinite)
+      || left < 0
+      || top < 0
+      || width <= 0
+      || height <= 0
+      || left + width > 1
+      || top + height > 1
+    ) {
+      fail('IMAGE_TOOL_INVALID_INPUT', 'boxes 中包含无效裁剪范围');
+    }
+    const pixelLeft = Math.floor(left * metadata.width);
+    const pixelTop = Math.floor(top * metadata.height);
+    const pixelRight = Math.min(metadata.width, Math.ceil((left + width) * metadata.width));
+    const pixelBottom = Math.min(metadata.height, Math.ceil((top + height) * metadata.height));
+    const pixelWidth = pixelRight - pixelLeft;
+    const pixelHeight = pixelBottom - pixelTop;
+    if (pixelWidth < 16 || pixelHeight < 16) {
+      fail('IMAGE_TOOL_INVALID_INPUT', '每个裁剪框至少需要包含源图片 16×16 像素');
+    }
+    seenIds.add(id);
+    seenCells.add(cellKey);
+    normalized.push({
+      row,
+      column,
+      left: pixelLeft,
+      top: pixelTop,
+      width: pixelWidth,
+      height: pixelHeight,
+      box: { id, row, column, left, top, width, height },
+    });
+  }
+  return normalized;
+}
+
 async function runGridCrop(sourcePath, parameters) {
   const metadata = await sharp(sourcePath).metadata();
   const format = FORMAT_INFO[metadata.format];
@@ -3100,6 +3163,15 @@ async function runGridCrop(sourcePath, parameters) {
   if (rows * columns > 49) fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过 49');
   if (rows > metadata.height || columns > metadata.width) {
     fail('IMAGE_TOOL_INVALID_INPUT', '宫格数量不能超过图片像素尺寸');
+  }
+  if (parameters.boxes !== undefined) {
+    const cells = normalizeFreeGridBoxes(parameters.boxes, rows, columns, metadata);
+    return {
+      metadata,
+      format,
+      normalized: { rows, columns, boxes: cells.map(({ box }) => box) },
+      cells,
+    };
   }
   if (
     spacing >= Math.floor(metadata.width / columns)
@@ -3486,13 +3558,19 @@ async function createOperation(db, log, request, context = {}) {
         );
         outputPaths.push(outputPath);
         const outputInfo = await sharp(sourcePath)
-          .extract(cell)
+          .extract({
+            left: cell.left,
+            top: cell.top,
+            width: cell.width,
+            height: cell.height,
+          })
           .toFormat(prepared.metadata.format)
           .toFile(outputPath);
         const parameters = {
           ...prepared.normalized,
           row: cell.row,
           column: cell.column,
+          ...(cell.box ? { box: cell.box } : {}),
         };
         outputRecords.push({
           cell,

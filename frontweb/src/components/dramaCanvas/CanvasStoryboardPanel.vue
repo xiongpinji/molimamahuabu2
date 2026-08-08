@@ -33,7 +33,7 @@
           <el-form-item label="时长" class="meta-item narrow">
             <el-select v-model="form.duration" @change="saveMeta">
               <el-option
-                v-for="duration in VIDEO_DURATION_OPTIONS"
+                v-for="duration in videoDurationOptions"
                 :key="duration"
                 :label="`${duration} 秒`"
                 :value="duration"
@@ -390,6 +390,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiAPI } from '@/api/ai'
+import { parseModelList } from '@/utils/modelSelection'
 import { storyboardsAPI } from '@/api/storyboards'
 import { assetsAPI } from '@/api/assets'
 import { characterAPI } from '@/api/characters'
@@ -416,7 +417,7 @@ import { appendVoicePromptToVideoPrompt, buildVoicePromptPreview, videoVoicePoli
 import { dramaUsesFirstLastFrame } from '@/utils/storyboardMedia'
 import { GRID_LAYOUTS } from '@/utils/gridLayout'
 import { isCanvasNodeBusyStatus } from '@/utils/canvasNodeStatus'
-import { VIDEO_DURATION_OPTIONS } from '@/utils/videoDuration'
+import { videoDurationOptionsForModel } from '@/utils/videoDuration'
 import CanvasStoryboardImageUpload from './CanvasStoryboardImageUpload.vue'
 import CanvasGenerationOptions from './CanvasGenerationOptions.vue'
 import CanvasNodeExecutionStrip from './CanvasNodeExecutionStrip.vue'
@@ -489,6 +490,10 @@ const projectGenerationOptions = computed(() => getDramaGenerationOptions(ctx?.d
 const effectiveVideoModel = computed(() => String(
   videoModel.value || projectGenerationOptions.value.videoModel || '',
 ).trim())
+const videoDurationOptions = computed(() => {
+  const declared = ctx?.getFreeNodeModelCapability?.('video', effectiveVideoModel.value)?.durations
+  return videoDurationOptionsForModel(effectiveVideoModel.value, declared)
+})
 const storyboardGenerationOptions = computed(() => ({
   ...projectGenerationOptions.value,
   imageModel: imageModel.value || getStoryboardImageModel(props.storyboard, ctx?.drama?.value),
@@ -701,9 +706,7 @@ onMounted(async () => {
 async function loadVideoModels() {
   try {
     const rows = await aiAPI.listVideoModels()
-    videoConfigs.value = [...new Set((Array.isArray(rows) ? rows : [])
-      .map((model) => String(model || '').trim())
-      .filter(Boolean))]
+    videoConfigs.value = parseModelList(rows)
   } catch (_) {
     videoConfigs.value = []
   }

@@ -1,4 +1,35 @@
-const { SUPPORTED_MODELS } = require('./modelPriceService');
+const modelPriceService = require('./modelPriceService');
+const mediaModelSelection = require('./mediaModelSelectionService');
+
+const REQUIRED_MODEL_CATEGORIES = [
+  ['text', '文本'],
+  ['image', '图片'],
+  ['video', '视频'],
+];
+
+const CATEGORY_BY_SERVICE = {
+  text: 'text',
+  image: 'image',
+  storyboard_image: 'image',
+  video: 'video',
+};
+
+function configuredModelKeys(db) {
+  const configs = db.prepare(`SELECT * FROM ai_service_configs
+    WHERE deleted_at IS NULL`).all()
+    .filter((config) => config.is_active && config.verification_status === 'verified');
+  const keys = new Set(mediaModelSelection.listEntries(configs)
+    .map((entry) => `${entry.kind}:${entry.model.toLowerCase()}`));
+  for (const config of configs) {
+    const serviceType = String(config.service_type || '').toLowerCase();
+    const category = CATEGORY_BY_SERVICE[serviceType];
+    if (!category || mediaModelSelection.KIND_BY_SERVICE[serviceType]) continue;
+    for (const model of mediaModelSelection.orderedModels(config)) {
+      keys.add(`${category}:${model.toLowerCase()}`);
+    }
+  }
+  return keys;
+}
 
 function isTrue(value) {
   return value === true || value === 1 || String(value || '').trim().toLowerCase() === 'true';
@@ -103,6 +134,20 @@ function runProductionPreflight({ config, env = process.env, db }) {
   }
 
   try {
+    const sceneColumns = new Set(
+      db.prepare('PRAGMA table_info(scenes)').all().map((row) => String(row.name)),
+    );
+    addCheck(
+      checks,
+      'short_drama_schema',
+      sceneColumns.has('polished_prompt_single'),
+      '短剧工厂场景表必须包含单图润色提示词字段',
+    );
+  } catch {
+    addCheck(checks, 'short_drama_schema', false, '短剧工厂场景表结构无法读取');
+  }
+
+  try {
     const row = db.prepare(`SELECT COUNT(*) AS count
       FROM platform_users
       WHERE role = 'admin' AND status = 'active'`).get();
@@ -112,20 +157,22 @@ function runProductionPreflight({ config, env = process.env, db }) {
   }
 
   try {
-    const rows = db.prepare(`SELECT model, credits, status
-      FROM model_credit_prices
-      WHERE status = 'enabled' AND credits > 0`).all();
-    const configured = new Set(rows.map((row) => String(row.model).toLowerCase()));
-    const missing = SUPPORTED_MODELS.filter(
-      (model) => !configured.has(model.toLowerCase()),
-    );
+    const configured = configuredModelKeys(db);
+    const configuredCategories = new Set(modelPriceService.listPublic(db)
+      .filter((row) => configured.has(
+        `${String(row.category).toLowerCase()}:${String(row.model).toLowerCase()}`,
+      ))
+      .map((row) => String(row.category).toLowerCase()));
+    const missing = REQUIRED_MODEL_CATEGORIES
+      .filter(([category]) => !configuredCategories.has(category))
+      .map(([, label]) => label);
     addCheck(
       checks,
       'model_prices',
       missing.length === 0,
       missing.length === 0
-        ? '必需模型均已启用并配置正整数积分价格'
-        : `缺少模型价格：${missing.join('、')}`,
+        ? '文本、图片、视频核心类别均有已验证且已定价的可用模型'
+        : `缺少可用核心模型类别：${missing.join('、')}`,
     );
   } catch {
     addCheck(checks, 'model_prices', false, '模型价格表不存在或无法读取');

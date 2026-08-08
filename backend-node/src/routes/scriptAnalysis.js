@@ -12,6 +12,7 @@ const {
   getProjectInputError,
   normalizeProductionPackage,
   runAnalysis,
+  runRevision,
   validateProductionPackage,
 } = require('../services/scriptAnalysisService');
 const {
@@ -22,6 +23,9 @@ const {
 const {
   importApprovedPackageToFactory,
 } = require('../services/scriptAnalysisFactoryImportService');
+const {
+  listStrategyPresets,
+} = require('../services/shortDramaProductionDirector');
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -87,6 +91,10 @@ module.exports = function scriptAnalysisRoutes(db, log) {
 
   function skills(req, res) {
     return response.success(res, { skills: listScriptAnalysisSkills() });
+  }
+
+  function presets(req, res) {
+    return response.success(res, { presets: listStrategyPresets() });
   }
 
   function get(req, res) {
@@ -216,9 +224,19 @@ module.exports = function scriptAnalysisRoutes(db, log) {
         && currentPackage.visual_direction
         ? { ...packageInput, visual_direction: currentPackage.visual_direction }
         : packageInput;
-      validateProductionPackage(revisionInput);
+      const expectedSchemaVersion = currentPackage.skill_snapshot?.output_schema_version
+        || currentPackage.schema_version
+        || '1.0';
+      const validationOptions = {
+        expectedSchemaVersion,
+        requireVisualDirection: Boolean(currentPackage.visual_direction),
+        requireProductionDirection: expectedSchemaVersion === '2.0',
+      };
       normalizedPackage = validateProductionPackage(
-        normalizeProductionPackage(revisionInput, project),
+        normalizeProductionPackage(revisionInput, project, {
+          schemaVersion: expectedSchemaVersion,
+        }),
+        validationOptions,
       );
     } catch (error) {
       return response.badRequest(res, `校订后的生产包无效：${error.message}`);
@@ -302,6 +320,9 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     if (note.length > 2000) {
       return response.badRequest(res, '审核说明不能超过 2000 字');
     }
+    if (status === 'rejected' && !note) {
+      return response.badRequest(res, '退回修改时请填写审核意见');
+    }
 
     const productionPackage = parseJSON(project.analysis_json, null);
     if (!productionPackage || !project.current_version) {
@@ -320,6 +341,172 @@ module.exports = function scriptAnalysisRoutes(db, log) {
       approval_status: status,
       review: reviewResult,
     };
+    if (status === 'rejected') {
+      const activeRevision = db.prepare(`
+        SELECT id
+        FROM async_tasks
+        WHERE type = 'script_analysis_revision'
+          AND resource_id = ? AND user_id = ?
+          AND status IN ('pending', 'processing')
+          AND deleted_at IS NULL
+        LIMIT 1
+      `).get(`script-analysis:${project.id}`, ownerId);
+      if (activeRevision) {
+        return response.error(
+          res,
+          409,
+          'SCRIPT_ANALYSIS_REVISION_IN_PROGRESS',
+          '当前版本正在根据审核意见修改，请等待任务完成',
+        );
+      }
+      const selectedSkill = resolveScriptAnalysisSkill(productionPackage.skill_snapshot?.id)
+        || resolveScriptAnalysisSkill(
+          productionPackage.schema_version === '2.0'
+            ? 'short-drama-production-director'
+            : 'short-drama-director',
+        );
+      let task;
+      const transaction = db.transaction(() => {
+        task = createTask(db, log, 'script_analysis_revision', `script-analysis:${project.id}`);
+        db.prepare('UPDATE async_tasks SET user_id = ? WHERE id = ?').run(ownerId, task.id);
+        db.prepare(`
+          UPDATE script_analysis_versions
+          SET package_json = ?, approval_status = 'rejected'
+          WHERE project_id = ? AND version = ?
+        `).run(
+          JSON.stringify(reviewedPackage),
+          project.id,
+          project.current_version,
+        );
+        db.prepare(`
+          UPDATE script_analysis_projects
+          SET analysis_json = ?, review_json = ?, status = 'analyzing', updated_at = ?
+          WHERE id = ? AND user_id = ?
+        `).run(
+          JSON.stringify(reviewedPackage),
+          JSON.stringify(reviewResult),
+          now,
+          project.id,
+          ownerId,
+        );
+      });
+      transaction();
+
+      const rejectedVersion = Number(project.current_version);
+      const work = new Promise((resolve) => {
+        setImmediate(() => {
+          const execution = (async () => {
+            try {
+              updateTaskStatus(db, task.id, 'processing', 10, '根据人工审核备注修改中');
+              const revised = await runRevision({
+                db,
+                log,
+                project,
+                currentPackage: reviewedPackage,
+                note,
+                skill: selectedSkill,
+              });
+              const revisedAt = new Date().toISOString();
+              const nextVersion = rejectedVersion + 1;
+              const aiChanges = [
+                ...(Array.isArray(productionPackage.ai_changes)
+                  ? productionPackage.ai_changes
+                  : []),
+                {
+                  source: 'ai',
+                  type: 'review_revision',
+                  description: note,
+                  from_version: rejectedVersion,
+                  created_at: revisedAt,
+                },
+              ];
+              const reviewState = {
+                ...(revised.review || {}),
+                status: 'needs_review',
+                review_note: note,
+                revised_from_version: rejectedVersion,
+                revision_note: note,
+                revised_at: revisedAt,
+              };
+              const reviewablePackage = {
+                ...revised,
+                skill_snapshot: productionPackage.skill_snapshot
+                  || snapshotScriptAnalysisSkill(selectedSkill),
+                version: nextVersion,
+                approval_status: 'needs_review',
+                ai_changes: aiChanges,
+                review: reviewState,
+              };
+
+              updateTaskStatus(db, task.id, 'processing', 90, '保存修订版本');
+              const saveRevision = db.transaction(() => {
+                const current = findOwnedProject(project.id, ownerId);
+                if (!current || Number(current.current_version) !== rejectedVersion) {
+                  throw new Error('当前版本已变化，请基于最新版本重新退回修改');
+                }
+                db.prepare(`
+                  INSERT INTO script_analysis_versions (
+                    project_id, version, source_script, package_json,
+                    ai_changes_json, approval_status, created_at
+                  ) VALUES (?, ?, ?, ?, ?, 'needs_review', ?)
+                `).run(
+                  project.id,
+                  nextVersion,
+                  project.source_script,
+                  JSON.stringify(reviewablePackage),
+                  JSON.stringify(aiChanges),
+                  revisedAt,
+                );
+                db.prepare(`
+                  UPDATE script_analysis_projects
+                  SET analysis_json = ?, review_json = ?, status = 'needs_review',
+                      current_version = ?, updated_at = ?
+                  WHERE id = ? AND user_id = ?
+                `).run(
+                  JSON.stringify(reviewablePackage),
+                  JSON.stringify(reviewState),
+                  nextVersion,
+                  revisedAt,
+                  project.id,
+                  ownerId,
+                );
+              });
+              saveRevision();
+              updateTaskResult(db, task.id, {
+                project_id: project.id,
+                version: nextVersion,
+                package: reviewablePackage,
+              });
+            } catch (error) {
+              log?.error?.({ err: error, projectId: project.id }, 'script analysis revision failed');
+              db.prepare(`
+                UPDATE script_analysis_projects
+                SET analysis_json = ?, review_json = ?, status = 'rejected', updated_at = ?
+                WHERE id = ? AND user_id = ? AND current_version = ?
+              `).run(
+                JSON.stringify(reviewedPackage),
+                JSON.stringify(reviewResult),
+                new Date().toISOString(),
+                project.id,
+                ownerId,
+                rejectedVersion,
+              );
+              updateTaskError(db, task.id, error.message || '根据审核意见修改失败');
+            }
+          })();
+          resolve(execution);
+          return execution;
+        });
+      });
+      trackInFlightTask(task.id, work);
+
+      return response.created(res, {
+        task_id: task.id,
+        project_id: project.id,
+        version: rejectedVersion,
+        status: 'pending',
+      });
+    }
     const transaction = db.transaction(() => {
       db.prepare(`
         UPDATE script_analysis_projects
@@ -356,6 +543,12 @@ module.exports = function scriptAnalysisRoutes(db, log) {
     if (!selectedSkill) {
       return response.badRequest(res, '所选剧本分析 Skill 不存在或不可用');
     }
+    const strategyPreset = selectedSkill.output_schema_version === '2.0'
+      ? String(req.body?.strategy_preset || selectedSkill.default_strategy_preset || 'fusion')
+      : undefined;
+    if (strategyPreset && !listStrategyPresets().some((preset) => preset.id === strategyPreset)) {
+      return response.badRequest(res, '所选创作策略不存在或不可用');
+    }
     const inputError = getProjectInputError({
       sourceScript: project.source_script,
       lockedFacts: parseJSON(project.locked_facts_json, []),
@@ -381,6 +574,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
             log,
             project,
             skill: selectedSkill,
+            strategyPreset,
           });
           const reviewablePackage = {
             ...productionPackage,
@@ -483,6 +677,7 @@ module.exports = function scriptAnalysisRoutes(db, log) {
 
   return {
     skills,
+    presets,
     list,
     get,
     versions,

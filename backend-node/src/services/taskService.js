@@ -140,13 +140,32 @@ async function waitForInFlightTasks(timeoutMs = 60_000) {
 function reconcileOrphanedScriptAnalysisProjects(db, log) {
   const now = new Date().toISOString();
   try {
-    const result = db.prepare(`
+    const rejectedResult = db.prepare(`
+      UPDATE script_analysis_projects
+      SET status = 'rejected', updated_at = ?
+      WHERE status = 'analyzing' AND deleted_at IS NULL
+        AND json_extract(COALESCE(review_json, '{}'), '$.status') = 'rejected'
+        AND EXISTS (
+          SELECT 1 FROM async_tasks
+          WHERE type = 'script_analysis_revision'
+            AND resource_id = 'script-analysis:' || CAST(script_analysis_projects.id AS TEXT)
+            AND status = 'failed'
+            AND deleted_at IS NULL
+        )
+    `).run(now);
+    if (rejectedResult.changes) {
+      log.info('Orphaned script analysis revisions restored to rejected', {
+        count: rejectedResult.changes,
+      });
+    }
+
+    const failedResult = db.prepare(`
       UPDATE script_analysis_projects
       SET status = 'failed', review_json = ?, updated_at = ?
       WHERE status = 'analyzing' AND deleted_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM async_tasks
-          WHERE type = 'script_analysis'
+          WHERE type IN ('script_analysis', 'script_analysis_revision')
             AND resource_id = 'script-analysis:' || CAST(script_analysis_projects.id AS TEXT)
             AND status IN ('pending', 'processing')
             AND deleted_at IS NULL
@@ -155,10 +174,10 @@ function reconcileOrphanedScriptAnalysisProjects(db, log) {
       JSON.stringify({ status: 'failed', issues: [ORPHAN_ASYNC_TASK_MSG] }),
       now,
     );
-    if (result.changes) {
-      log.info('Orphaned script analysis projects marked failed', { count: result.changes });
+    if (failedResult.changes) {
+      log.info('Orphaned script analysis projects marked failed', { count: failedResult.changes });
     }
-    return result.changes;
+    return rejectedResult.changes + failedResult.changes;
   } catch (error) {
     if (/no such (table|column)/i.test(String(error.message || ''))) return 0;
     throw error;
