@@ -44,6 +44,7 @@ COMMONACCENT_ALLOWED_CLASS_TAGS = {
     "!new:speechbrain.dataio.encoder.CategoricalEncoder",
     "!new:speechbrain.utils.parameter_transfer.Pretrainer",
 }
+COMMONACCENT_ALLOWED_SAFE_TAGS = {"!ref"}
 
 
 def _require_exact_revision(revision):
@@ -109,28 +110,30 @@ def compute_file_sha256(path):
 def compute_tree_sha256(root):
     root = _safe_resolve(root)
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise ValueError(f"symlink rejected: {path}")
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(bytes.fromhex(compute_file_sha256(path)))
+        if path.is_file():
+            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(bytes.fromhex(compute_file_sha256(path)))
     return digest.hexdigest()
 
 
 def list_file_hashes(root):
     root = _safe_resolve(root)
     files = []
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise ValueError(f"symlink rejected: {path}")
-        files.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "sha256": compute_file_sha256(path),
-                "size": path.stat().st_size,
-            }
-        )
+        if path.is_file():
+            files.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "sha256": compute_file_sha256(path),
+                    "size": path.stat().st_size,
+                }
+            )
     return files
 
 
@@ -143,21 +146,20 @@ def _find_commonaccent_hyperparams(root):
     raise ValueError("CommonAccent hyperparams with expected original lines not found")
 
 
-def _iter_yaml_tags(node):
-    yield node.tag
-    for child in getattr(node, "value", []):
-        if isinstance(child, tuple):
-            for item in child:
-                yield from _iter_yaml_tags(item)
-        else:
-            yield from _iter_yaml_tags(child)
+def _extract_yaml_tags(text):
+    tags = set()
+    for line in text.splitlines():
+        body = line.split("#", 1)[0]
+        for match in re.finditer(r"(?:^|[\s\[{,])(!{1,2}[A-Za-z][^\s\]\},#]*)", body):
+            tags.add(match.group(1))
+    return tags
 
 
 def _validate_commonaccent_yaml_tags(hyperparams):
     text = hyperparams.read_text(encoding="utf-8")
-    class_tags = set(re.findall(r"!(?:new|name):[A-Za-z0-9_.]+", text))
-    extra = class_tags - COMMONACCENT_ALLOWED_CLASS_TAGS
-    missing = COMMONACCENT_ALLOWED_CLASS_TAGS - class_tags
+    tags = _extract_yaml_tags(text)
+    extra = tags - COMMONACCENT_ALLOWED_CLASS_TAGS - COMMONACCENT_ALLOWED_SAFE_TAGS
+    missing = COMMONACCENT_ALLOWED_CLASS_TAGS - tags
     if extra:
         raise ValueError(f"CommonAccent hyperparams class tag drifted: {sorted(extra)}")
     if missing:

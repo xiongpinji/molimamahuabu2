@@ -68,6 +68,8 @@ def verify_manifest(stage_dir, manifest):
     runtime_hash = stage_models.compute_tree_sha256(runtime_root)
     if runtime_hash != manifest["runtime"]["commonaccent"]["tree_sha256"]:
         raise RuntimeError("CommonAccent runtime drift detected")
+    hyperparams = stage_dir / manifest["runtime"]["commonaccent"]["hyperparams"]
+    stage_models._validate_commonaccent_yaml_tags(hyperparams)
     interface_path = SRC_ROOT / "redraw_locale_worker" / stage_models.COMMONACCENT_INTERFACE_FILE
     interface_hash = sha256_file(interface_path)
     manifest_hash = manifest["runtime"]["commonaccent"]["interface"]["sha256"]
@@ -88,22 +90,58 @@ def timed(label, fn, timings):
     return value
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Offline model compatibility smoke.")
     parser.add_argument("--stage-dir", "--models", dest="stage_dir", required=True)
     parser.add_argument("--audio", required=True)
     parser.add_argument("--max-rss-bytes", type=int, required=True)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def resolve_stage_dir(stage_dir):
+    stage_arg = Path(stage_dir)
+    if not stage_arg.is_absolute():
+        raise SystemExit("--stage-dir must be absolute")
+    if stage_arg.is_symlink():
+        raise SystemExit("--stage-dir symlink rejected")
+    return stage_arg.resolve()
+
+
+def build_asr_evidence(segments, info):
+    language = getattr(info, "language", None)
+    if language != "en":
+        raise RuntimeError(f"ASR language rejected: {language}")
+    evidence_segments = []
+    for segment in segments:
+        text = getattr(segment, "text", "")
+        if not text:
+            continue
+        evidence_segments.append(
+            {
+                "start": float(getattr(segment, "start")),
+                "end": float(getattr(segment, "end")),
+                "text": text,
+            }
+        )
+        break
+    if not evidence_segments:
+        raise RuntimeError("ASR produced no text segments")
+    return {
+        "language": language,
+        "language_probability": float(getattr(info, "language_probability", 0.0)),
+        "segments": evidence_segments,
+    }
+
+
+def main():
+    args = parse_args()
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     block_network()
 
-    stage_arg = Path(args.stage_dir)
-    if not stage_arg.is_absolute():
-        raise SystemExit("--stage-dir must be absolute")
-    stage_dir = stage_arg.resolve()
+    stage_dir = resolve_stage_dir(args.stage_dir)
     audio_path = Path(args.audio).resolve()
     manifest = json.loads((stage_dir / "manifest.json").read_text(encoding="utf-8"))
     verify_manifest(stage_dir, manifest)
@@ -115,9 +153,8 @@ def main():
 
     def run_asr():
         model = WhisperModel(str(asr_root), device="cpu", compute_type="int8", local_files_only=True)
-        segments, _ = model.transcribe(str(audio_path), beam_size=1, vad_filter=False)
-        for _segment in segments:
-            break
+        segments, info = model.transcribe(str(audio_path), beam_size=1, vad_filter=False)
+        return build_asr_evidence(segments, info)
 
     def run_accent():
         classifier = pretrained_from_hparams(
@@ -132,7 +169,7 @@ def main():
         item = index[0] if hasattr(index, "__len__") else index
         return {"index": int(item.item()), "label": label}
 
-    timed("faster_whisper_seconds", run_asr, timings)
+    asr = timed("faster_whisper_seconds", run_asr, timings)
     accent = timed("commonaccent_seconds", run_accent, timings)
     verify_manifest(stage_dir, manifest)
 
@@ -143,6 +180,7 @@ def main():
         "offline": True,
         "network_block": "python_socket_dns_monkeypatch",
         "audio_sha256": audio_hash,
+        "asr": asr,
         "accent": accent,
         "commonaccent_interface_sha256": manifest["runtime"]["commonaccent"]["interface"]["sha256"],
         "runtime_tree_sha256": manifest["runtime"]["commonaccent"]["tree_sha256"],
