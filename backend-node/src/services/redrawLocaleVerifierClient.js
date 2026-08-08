@@ -127,6 +127,7 @@ function validateWrapper(response, request, pack) {
 
 function validateEvidence(evidence, request, pack) {
   if (!evidence || typeof evidence !== 'object'
+    || evidence.source !== 'offline-worker'
     || evidence.request_id !== request.request_id
     || evidence.audio_sha256 !== request.audio_sha256
     || evidence.locale_pack !== pack.id
@@ -140,6 +141,7 @@ function validateEvidence(evidence, request, pack) {
   }
   return {
     requestId: evidence.request_id,
+    source: evidence.source,
     audioSha256: request.audio_sha256,
     localePack: evidence.locale_pack,
     languageVerified: true,

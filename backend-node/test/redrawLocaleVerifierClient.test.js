@@ -46,6 +46,7 @@ function okResponse(request, overrides = {}) {
       request_id: request.request_id,
       audio_sha256: request.audio_sha256,
       locale_pack: 'en-US@1',
+      source: 'offline-worker',
       language_verified: true,
       detected_locale: 'en-US',
       transcript_sha256: 'c'.repeat(64),
@@ -126,6 +127,7 @@ test('client maps camelCase request fields, hashes audio, and returns camelCase 
     assert.equal(state.requests[0].tts_invocation.ai_service_config_id, 7);
     assert.equal(result.requestId, 'voice-1:locale');
     assert.equal(result.audioSha256, state.requests[0].audio_sha256);
+    assert.equal(result.source, 'offline-worker');
     assert.equal(result.modelManifestSha256, 'a'.repeat(64));
     assert.equal(result.calibrationManifestSha256, 'b'.repeat(64));
     assert.equal(Object.hasOwn(result, 'raw'), false);
@@ -145,6 +147,28 @@ test('client rejects response drift and does not retry', async () => {
     });
     assert.equal(state.requestCount, 1);
   });
+});
+
+test('client requires offline-worker evidence source', async () => {
+  const cases = [
+    { name: 'missing', overrides: { source: undefined } },
+    { name: 'wrong', overrides: { source: 'tts-provider' } },
+  ];
+  for (const item of cases) {
+    const audio = makeAudio();
+    await withServer((socket, request) => {
+      const response = okResponse(request, item.overrides);
+      if (item.name === 'missing') {
+        delete response.result.source;
+      }
+      socket.end(`${JSON.stringify(response)}\n`);
+    }, async ({ socketPath, state }) => {
+      await assert.rejects(() => clientFor(socketPath).verify(validRequest(audio.audioPath)), {
+        code: 'REDRAW_LOCALE_EVIDENCE_INVALID',
+      });
+      assert.equal(state.requestCount, 1);
+    });
+  }
 });
 
 test('client maps worker ok:false error_code without retry', async () => {

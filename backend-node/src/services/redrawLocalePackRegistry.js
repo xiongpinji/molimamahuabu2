@@ -76,9 +76,7 @@ function createRedrawLocalePackRegistry(options = {}) {
     return evidence;
   }
 
-  let manifestCache;
   function verifiedManifest() {
-    if (manifestCache) return manifestCache;
     try {
       const manifest = readJson(paths.registryPath);
       const signature = Buffer.from(String(deps.fs.readFileSync(paths.signaturePath, 'utf8')).trim(), 'base64');
@@ -86,11 +84,10 @@ function createRedrawLocalePackRegistry(options = {}) {
       if (!crypto.verify(null, canonicalPayload(manifest), publicKey, signature)) {
         throw notReady();
       }
-      manifestCache = manifest;
+      return manifest;
     } catch {
       throw notReady();
     }
-    return manifestCache;
   }
 
   function manifestHash() {

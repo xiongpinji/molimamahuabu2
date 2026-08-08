@@ -41,7 +41,7 @@ function writeFixture(options = {}) {
   fs.writeFileSync(signaturePath, `${crypto.sign(null, signer.canonicalPayload(manifest), privateKey).toString('base64')}\n`);
   fs.writeFileSync(publicKeyPath, publicKey.export({ type: 'spki', format: 'pem' }));
   fs.writeFileSync(readyPath, JSON.stringify(ready, null, 2));
-  return { tmp, manifest, registryPath, signaturePath, publicKeyPath, readyPath, socketPath };
+  return { tmp, privateKey, manifest, registryPath, signaturePath, publicKeyPath, readyPath, socketPath };
 }
 
 function registryFor(fixture, overrides = {}) {
@@ -72,6 +72,23 @@ test('registry accepts Task4 ready payload without socket_path', () => {
   const ready = JSON.parse(fs.readFileSync(fixture.readyPath, 'utf8'));
   assert.equal(Object.hasOwn(ready, 'socket_path'), false);
   assert.equal(registryFor(fixture).assertReady('en-US').id, 'en-US@1');
+});
+
+test('registry re-reads and re-verifies enabled packs on every ready check', () => {
+  const fixture = writeFixture();
+  const registry = registryFor(fixture);
+  assert.equal(registry.assertReady('en-US').id, 'en-US@1');
+
+  const revoked = { schema_version: 1, enabled_packs: [] };
+  fs.writeFileSync(fixture.registryPath, JSON.stringify(revoked, null, 2));
+  fs.writeFileSync(
+    fixture.signaturePath,
+    `${crypto.sign(null, signer.canonicalPayload(revoked), fixture.privateKey).toString('base64')}\n`,
+  );
+
+  assert.throws(() => registry.assertReady('en-US'), {
+    code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+  });
 });
 
 test('registry rejects expired and hash-mismatched ready attestations', () => {
