@@ -510,6 +510,7 @@
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
         @click.self="closeMediaPreview"
+        @wheel="onMediaPreviewWheel"
       >
         <button
           type="button"
@@ -517,7 +518,13 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <img v-if="mediaPreviewKind === 'image'" :src="mediaPreviewUrl" :alt="data.title || '图片预览'" />
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <img
+          v-if="mediaPreviewKind === 'image'"
+          :src="mediaPreviewUrl"
+          :alt="data.title || '图片预览'"
+          :style="{ transform: `scale(${mediaPreviewScale})` }"
+        />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
     </Teleport>
@@ -562,6 +569,7 @@ const editorDock = ref('bottom')
 const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
+const mediaPreviewScale = ref(1)
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -1126,6 +1134,7 @@ function openMediaPreview(url, kind = 'image') {
   }
   if (!url) return
   openEditor()
+  mediaPreviewScale.value = 1
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1140,7 +1149,18 @@ function scheduleMediaOpen() {
 
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
+  mediaPreviewScale.value = 1
   mediaPreviewKind.value = 'image'
+}
+
+function onMediaPreviewWheel(event) {
+  if (mediaPreviewKind.value !== 'image') return
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  const delta = event.deltaY < 0 ? 0.15 : -0.15
+  mediaPreviewScale.value = Math.min(5, Math.max(0.25,
+    Number((mediaPreviewScale.value + delta).toFixed(2))))
 }
 
 function openAssetLibrary() {
@@ -1923,6 +1943,20 @@ watch(isSelected, (selected) => {
 }
 .image-lightbox > img,
 .image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; }
+.lightbox-zoom-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 1;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.86);
+  color: #d4d4d8;
+  font-size: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 .run-button {
   display: grid;
   width: 40px;
