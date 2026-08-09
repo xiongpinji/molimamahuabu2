@@ -1,9 +1,8 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const {
-  compileNativeDialoguePrompt,
-} = require('../src/services/redrawNativeDialoguePromptService');
+const nativeDialoguePromptService = require('../src/services/redrawNativeDialoguePromptService');
+const { compileNativeDialoguePrompt } = nativeDialoguePromptService;
 
 function validInput(overrides = {}) {
   return {
@@ -39,15 +38,24 @@ test('按服务端对白窗口编译西班牙语多人对白', () => {
   ]);
 });
 
-test('按时间稳定排序且相同语义输入确定', () => {
+test('prompt按时间稳定排序但审计hash保留服务端批准输入顺序', () => {
   const sorted = compileNativeDialoguePrompt(validInput());
   const reversed = compileNativeDialoguePrompt(validInput({
     dialogues: [...validInput().dialogues].reverse(),
   }));
 
   assert.equal(reversed.prompt, sorted.prompt);
-  assert.equal(reversed.prompt_hash, sorted.prompt_hash);
-  assert.equal(reversed.dialogue_snapshot_hash, sorted.dialogue_snapshot_hash);
+  assert.notEqual(reversed.prompt_hash, sorted.prompt_hash);
+  assert.notEqual(reversed.dialogue_snapshot_hash, sorted.dialogue_snapshot_hash);
+  assert.equal(reversed.approved_text, '¿Te has perdido?\nHola, pequeño.');
+  assert.deepEqual(reversed.dialogue_snapshot.dialogues.map((line) => line.text), [
+    '¿Te has perdido?',
+    'Hola, pequeño.',
+  ]);
+});
+
+test('模块只公开compileNativeDialoguePrompt', () => {
+  assert.deepEqual(Object.keys(nativeDialoguePromptService).sort(), ['compileNativeDialoguePrompt']);
 });
 
 test('对白文本、角色、语言、窗口和模型 pin 改变都会改变稳定 hash', () => {

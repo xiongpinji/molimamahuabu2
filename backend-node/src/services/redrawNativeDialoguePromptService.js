@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { stableStringify } = require('./redrawAnalysisService');
 
 const TOP_LEVEL_FIELDS = [
   'basePrompt',
@@ -61,7 +62,7 @@ function compileNativeDialoguePrompt(input) {
     basePrompt,
     language,
     promptLanguageLabel,
-    dialogues,
+    dialogues: sortDialoguesForPrompt(dialogues),
   });
   const promptHash = sha256(stableStringify({
     prompt,
@@ -118,18 +119,22 @@ function normalizeLocalePack(localePack) {
 
 function normalizeDialogues(dialogues, shot, maxCharsPerSecond) {
   if (!Array.isArray(dialogues) || dialogues.length === 0) fail('dialogues invalid');
-  const normalized = dialogues.map((dialogue, index) => normalizeDialogue(dialogue, index, shot, maxCharsPerSecond))
-    .sort((left, right) => left.start_ms - right.start_ms
-      || left.end_ms - right.end_ms
-      || left.speaker_id.localeCompare(right.speaker_id)
-      || left.text.localeCompare(right.text));
+  const normalized = dialogues.map((dialogue, index) => normalizeDialogue(dialogue, index, shot, maxCharsPerSecond));
+  const ordered = sortDialoguesForPrompt(normalized);
 
-  for (let index = 1; index < normalized.length; index += 1) {
-    if (normalized[index].start_ms < normalized[index - 1].end_ms) {
+  for (let index = 1; index < ordered.length; index += 1) {
+    if (ordered[index].start_ms < ordered[index - 1].end_ms) {
       fail('dialogue windows overlap');
     }
   }
   return normalized;
+}
+
+function sortDialoguesForPrompt(dialogues) {
+  return [...dialogues].sort((left, right) => left.start_ms - right.start_ms
+    || left.end_ms - right.end_ms
+    || left.speaker_id.localeCompare(right.speaker_id)
+    || left.text.localeCompare(right.text));
 }
 
 function normalizeDialogue(dialogue, index, shot, maxCharsPerSecond) {
@@ -206,14 +211,6 @@ function assertAllowedFields(value, allowed, name) {
   }
 }
 
-function stableStringify(value) {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function sha256(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
@@ -226,5 +223,4 @@ function fail(message) {
 
 module.exports = {
   compileNativeDialoguePrompt,
-  stableStringify,
 };
