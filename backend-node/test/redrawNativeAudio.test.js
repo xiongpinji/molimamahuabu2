@@ -19,6 +19,11 @@ function makeRoot(t) {
   return root;
 }
 
+function isInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function makeVideo(root, name = 'shot.mp4', options = {}) {
   const output = path.join(root, name);
   const args = [
@@ -136,7 +141,7 @@ test('验证普通 MP4 音轨并输出稳定紧凑证据，Worker 只收到服�
     },
   }));
 
-  assert.ok(workerRequest.audioPath.startsWith(root));
+  assert.equal(isInside(root, workerRequest.audioPath), false, '临时 WAV 不应位于公开 storageRoot');
   assert.equal(fs.existsSync(workerRequest.audioPath), false, '临时 WAV 应在 finally 清理');
   assert.equal(result.contract, 'redraw-native-audio-validation-v1');
   assert.equal(result.artifact_sha256, sha256File(videoPath));
@@ -155,6 +160,63 @@ test('验证普通 MP4 音轨并输出稳定紧凑证据，Worker 只收到服�
   assert.match(result.validation_hash, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(result).includes('Hola, pequeño.'), false);
   assert.equal(JSON.stringify(result).includes('provider-task-1'), false);
+});
+
+test('原生音轨验证临时快照和 WAV 必须写入非静态私有目录并清理', async (t) => {
+  const root = makeRoot(t);
+  const privateTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-private-'));
+  t.after(() => fs.rmSync(privateTempRoot, { recursive: true, force: true }));
+  const videoPath = makeVideo(root);
+  const originalCopyFileSync = fs.copyFileSync;
+  let copiedSnapshot = null;
+  let workerRequest = null;
+  t.after(() => { fs.copyFileSync = originalCopyFileSync; });
+  fs.copyFileSync = function guardedCopyFileSync(src, dest, ...args) {
+    originalCopyFileSync.call(this, src, dest, ...args);
+    if (src === videoPath && path.basename(dest).startsWith('artifact')) copiedSnapshot = dest;
+  };
+
+  await nativeAudio.validateNativeAudio(requestFor(videoPath, {
+    privateTempRoot,
+    localeVerifier: {
+      async verifyNativeAudio(input) {
+        workerRequest = input;
+        return workerEvidence({
+          audioSha256: input.audioSha256,
+          videoInvocation: {
+            provider: input.videoInvocation.provider,
+            model: input.videoInvocation.model,
+            aiServiceConfigId: input.videoInvocation.aiServiceConfigId,
+            configUpdatedAt: input.videoInvocation.configUpdatedAt,
+            artifactSha256: input.videoInvocation.artifactSha256,
+            providerTaskIdSha256: crypto.createHash('sha256').update(input.videoInvocation.providerTaskId).digest('hex'),
+          },
+        });
+      },
+    },
+  }));
+
+  assert.ok(copiedSnapshot, 'must copy video artifact to a private snapshot');
+  assert.equal(isInside(root, copiedSnapshot), false, 'snapshot must not be under public storageRoot');
+  assert.equal(isInside(root, workerRequest.audioPath), false, 'audio.wav must not be under public storageRoot');
+  assert.equal(isInside(privateTempRoot, copiedSnapshot), true, 'snapshot must stay under privateTempRoot');
+  assert.equal(isInside(privateTempRoot, workerRequest.audioPath), true, 'audio.wav must stay under privateTempRoot');
+  assert.equal(fs.existsSync(path.dirname(copiedSnapshot)), false, 'private validation temp dir must be cleaned');
+  assert.deepEqual(fs.readdirSync(privateTempRoot), []);
+});
+
+test('原生音轨验证拒绝位于 storageRoot 内的 privateTempRoot', async (t) => {
+  const root = makeRoot(t);
+  const videoPath = makeVideo(root);
+  const publicSubdir = path.join(root, 'native-private');
+  fs.mkdirSync(publicSubdir);
+  await assert.rejects(
+    () => nativeAudio.validateNativeAudio(requestFor(videoPath, {
+      privateTempRoot: publicSubdir,
+      localeVerifier: { verifyNativeAudio: async () => assert.fail('worker must not run with public privateTempRoot') },
+    })),
+    { code: 'REDRAW_NATIVE_AUDIO_PRIVATE_TEMP_INVALID' },
+  );
 });
 
 test('媒体门禁拒绝路径越界、无音轨、近似静音、损坏音频、时长漂移和 Worker 证据漂移', async (t) => {

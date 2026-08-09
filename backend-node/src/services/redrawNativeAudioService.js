@@ -25,9 +25,10 @@ const DEFAULT_SILENCE_THRESHOLD_DB = -45;
 async function validateNativeAudio(input = {}) {
   const storageRoot = resolveStorageRoot(input.storageRoot);
   const videoPath = resolveSafePath(storageRoot, input.videoPath);
+  const privateTempRoot = resolvePrivateTempRoot(storageRoot, input.privateTempRoot);
   let tempDir = null;
   try {
-    tempDir = fs.mkdtempSync(path.join(storageRoot, 'native-audio-'));
+    tempDir = fs.mkdtempSync(path.join(privateTempRoot, 'native-audio-'));
     const snapshotPath = createPrivateVideoSnapshot(videoPath, tempDir, input);
     const artifactSha256 = await sha256File(snapshotPath);
     const invocation = normalizeInvocation(input.videoInvocation, artifactSha256);
@@ -131,6 +132,27 @@ function resolveStorageRoot(value) {
   const cfg = config.loadConfig();
   const storagePath = cfg.storage?.local_path || './data/storage';
   return path.isAbsolute(storagePath) ? storagePath : path.join(process.cwd(), storagePath);
+}
+
+function resolvePrivateTempRoot(storageRoot, value) {
+  const rawRoot = value && typeof value === 'string'
+    ? value
+    : path.join(os.tmpdir(), 'moli-redraw-native-audio');
+  const tempRoot = path.resolve(rawRoot);
+  try {
+    fs.mkdirSync(tempRoot, { recursive: true });
+    const realStorageRoot = fs.realpathSync.native(storageRoot);
+    const realTempRoot = fs.realpathSync.native(tempRoot);
+    if (isInside(realStorageRoot, realTempRoot)) {
+      throw codedError('REDRAW_NATIVE_AUDIO_PRIVATE_TEMP_INVALID', '原生对白临时目录不能位于公开存储目录内');
+    }
+    return realTempRoot;
+  } catch (error) {
+    if (error.code === 'REDRAW_NATIVE_AUDIO_PRIVATE_TEMP_INVALID') throw error;
+    const wrapped = codedError('REDRAW_NATIVE_AUDIO_PRIVATE_TEMP_INVALID', '原生对白临时目录不可用');
+    wrapped.cause = error;
+    throw wrapped;
+  }
 }
 
 function resolveSafePath(storageRoot, rawPath) {
