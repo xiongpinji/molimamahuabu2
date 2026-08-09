@@ -645,6 +645,58 @@ test('生成结果数组中的图片可被 @ 引用并支持双击全屏预览',
   await expect(mentionMenu.locator('img')).toHaveAttribute('src', /data:image/)
 })
 
+test('图片预览只在放大后允许空格拖动且不移动底层画布', async ({ page }) => {
+  await loadHomeCanvasState(page, generatedMentionHomeCanvasState)
+
+  const imageNode = page.locator('.vue-flow__node[data-id="e2e:image-reference"]')
+  await imageNode.locator('.node-media').dblclick()
+
+  const dialog = page.getByRole('dialog', { name: '图片全屏预览' })
+  const previewImage = dialog.locator('img')
+  const canvasViewport = page.locator('.vue-flow__viewport')
+  await expect(dialog).toBeVisible()
+
+  const dragFromCenter = async (deltaX, deltaY) => {
+    const box = await previewImage.boundingBox()
+    if (!box) throw new Error('图片预览未生成可拖动区域')
+    const centerX = box.x + box.width / 2
+    const centerY = box.y + box.height / 2
+    await page.mouse.move(centerX, centerY)
+    await page.mouse.down()
+    await page.mouse.move(centerX + deltaX, centerY + deltaY, { steps: 4 })
+  }
+
+  const initialImageStyle = await previewImage.getAttribute('style')
+  await page.keyboard.down('Space')
+  await dragFromCenter(60, 35)
+  await page.mouse.up()
+  await page.keyboard.up('Space')
+  await expect(previewImage).toHaveAttribute('style', initialImageStyle || '')
+
+  const canvasStyleBeforePan = await canvasViewport.getAttribute('style')
+  const previewBox = await previewImage.boundingBox()
+  if (!previewBox) throw new Error('图片预览未生成缩放区域')
+  await page.mouse.move(previewBox.x + previewBox.width / 2, previewBox.y + previewBox.height / 2)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -100)
+  await page.keyboard.up('Control')
+  await expect.poll(() => previewImage.getAttribute('style')).toContain('scale(1.15)')
+
+  await page.keyboard.down('Space')
+  await dragFromCenter(80, 45)
+  const draggedStyle = await previewImage.getAttribute('style')
+  expect(draggedStyle).toContain('translate(80px, 45px)')
+
+  await page.keyboard.up('Space')
+  const boxAfterRelease = await previewImage.boundingBox()
+  if (!boxAfterRelease) throw new Error('图片预览在释放空格后消失')
+  await page.mouse.move(boxAfterRelease.x + boxAfterRelease.width / 2 + 40, boxAfterRelease.y + boxAfterRelease.height / 2 + 20)
+  await expect(previewImage).toHaveAttribute('style', draggedStyle || '')
+  await page.mouse.up()
+
+  await expect(canvasViewport).toHaveAttribute('style', canvasStyleBeforePan || '')
+})
+
 test('已连接参考图可以从节点编辑器取消', async ({ page }) => {
   const connectedState = {
     ...mentionHomeCanvasState,

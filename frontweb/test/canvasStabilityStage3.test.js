@@ -32,6 +32,19 @@ test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时�
   assert.match(nodeSource, /mediaPreviewUrl\.value = ''[\s\S]*mediaPreviewScale\.value = 1/)
 })
 
+test('图片预览仅在放大后支持空格拖动并完整清理事件', () => {
+  assert.match(nodeSource, /const mediaPreviewCanPan = computed/)
+  assert.match(nodeSource, /mediaPreviewScale\.value > 1/)
+  assert.match(nodeSource, /@pointerdown\.stop="onMediaPreviewPointerDown"/)
+  assert.match(nodeSource, /@pointermove\.stop="onMediaPreviewPointerMove"/)
+  assert.match(nodeSource, /setPointerCapture\?\.\(event\.pointerId\)/)
+  assert.match(nodeSource, /if \(mediaPreviewScale\.value <= 1\) resetMediaPreviewPan\(\)/)
+  assert.match(nodeSource, /window\.addEventListener\('keyup', onMediaPreviewKeyup\)/)
+  assert.match(nodeSource, /window\.removeEventListener\('keyup', onMediaPreviewKeyup\)/)
+  assert.match(nodeSource, /window\.addEventListener\('blur', onMediaPreviewBlur\)/)
+  assert.match(nodeSource, /window\.removeEventListener\('blur', onMediaPreviewBlur\)/)
+})
+
 test('独立画布支持将本地图片直接拖入并在落点创建图片节点', () => {
   assert.match(canvasSource, /@dragover="onCanvasImageDragOver"/)
   assert.match(canvasSource, /@drop="onCanvasImageDrop"/)
