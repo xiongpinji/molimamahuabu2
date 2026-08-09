@@ -26,6 +26,7 @@ chmod 600 .env.production
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 填写首管理员邮箱。
 - `PLATFORM_EMAIL_VERIFICATION_ENABLED=true`，并填写真实的 `SMTP_HOST`、`SMTP_PORT`、`SMTP_SECURE`、`SMTP_USER`、`SMTP_PASSWORD` 与 `SMTP_FROM`。邮箱服务同时用于注册验证码和已有用户找回密码，即使关闭新用户注册也不能删除。
 - 首次启动保持 `PLATFORM_REGISTRATION_ENABLED=false`。
+- `REDRAW_LOCALE_VERIFIER_ENABLED=false` 保持默认关闭；关闭态只是不阻断其他业务，不代表转绘 en-US production voice 能力可用。启用前必须同时准备签名 registry、签名文件、公钥、ready attestation、Unix socket 和 `REDRAW_LOCALE_VERIFIER_TIMEOUT_MS`。
 
 检查最终 Compose 配置时不要把输出保存到公开日志：
 
@@ -66,7 +67,13 @@ Caddy 会自动申请和续期 HTTPS 证书。证书申请要求域名已正确�
 docker compose --env-file .env.production -f compose.production.yml exec app npm run preflight:production
 ```
 
-只有退出码为 0 且输出 `ready: true` 才可开放业务流量。随后使用隔离测试账号完成一次真实小额生成，核对供应商账单、积分预扣、成功结算和失败退款。
+只有退出码为 0 且输出 `ready: true` 才可开放业务流量。若计划启用转绘离线语言验证，还必须先执行只读专项预检：
+
+```bash
+docker compose --env-file .env.production -f compose.production.yml exec app npm run preflight:redraw-locale
+```
+
+该命令只读取签名 registry、ready attestation、公钥、签名和 socket 状态并执行 `assertReady('en-US')`；它不启动 Worker、不联网、不写数据库或生产数据。失败输出只用于定位稳定错误码，不应记录私钥、完整 manifest 或业务音频内容。随后使用隔离测试账号完成一次真实小额生成，核对供应商账单、积分预扣、成功结算和失败退款；这一步不能用 TTS 自报语言字段替代离线 Worker evidence。
 
 生产预检会先执行 `canvas-credit-callout-v1` 受保护界面合同审计。该审计要求画布文本、图片、视频、音频节点继续显示醒目加粗的“本次预计扣除 X 积分”，并同时检查已构建的前端产物。审计失败表示候选发生功能降级，禁止切换流量。
 

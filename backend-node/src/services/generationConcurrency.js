@@ -2,6 +2,7 @@ const DEFAULT_LIMITS = {
   text: 2,
   image: 8,
   video: 6,
+  redraw_video: 3,
 };
 
 const states = new Map();
@@ -22,8 +23,12 @@ function runWithGenerationLimit(scope, operation, env = process.env) {
   if (!fallback) throw new Error(`Unsupported generation scope: ${scope}`);
   if (typeof operation !== 'function') throw new Error('Generation operation must be a function');
 
-  const limit = positiveInteger(env[`GENERATION_${normalizedScope.toUpperCase()}_CONCURRENCY`], fallback);
-  const maxQueue = positiveInteger(env.GENERATION_MAX_QUEUE_SIZE, 300);
+  const configuredLimit = positiveInteger(env[`GENERATION_${normalizedScope.toUpperCase()}_CONCURRENCY`], fallback);
+  const limit = normalizedScope === 'redraw_video' ? Math.min(configuredLimit, 8) : configuredLimit;
+  const maxQueue = positiveInteger(
+    env[`GENERATION_${normalizedScope.toUpperCase()}_MAX_QUEUE_SIZE`] ?? env.GENERATION_MAX_QUEUE_SIZE,
+    300,
+  );
   const state = getState(normalizedScope);
 
   return new Promise((resolve, reject) => {

@@ -5,6 +5,7 @@ const generationUsageContext = require('./generationUsageContext');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 function extractTextResponseContent(payload) {
   if (!payload || typeof payload !== 'object') return '';
@@ -62,9 +63,9 @@ function postJSONNonStream(url, headers, body, timeoutMs = 120000) {
           const json = JSON.parse(raw);
           // 兼容标准 OpenAI 格式与推理模型
           const content = extractTextResponseContent(json) || null;
-          resolve({ status: res.statusCode, body: content, raw });
+          resolve({ status: res.statusCode, body: content, raw, headers: res.headers });
         } catch (_) {
-          resolve({ status: res.statusCode, body: null, raw });
+          resolve({ status: res.statusCode, body: null, raw, headers: res.headers });
         }
       });
       res.on('error', reject);
@@ -860,36 +861,80 @@ function resolveEntityImageSource(entity, cfg) {
  * 使用 OpenAI vision 消息格式（兼容 GPT-4o / Gemini openai-compat / Qwen-VL 等）。
  */
 async function generateTextWithVision(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
+  const detailed = await generateTextWithVisionDetailed(
+    db,
+    log,
+    serviceType,
+    userPrompt,
+    systemPrompt,
+    imageSource,
+    { ...options, require_provider_response_id: false },
+  );
+  return detailed.text.trim();
+}
+
+function resolveVisionImageSources(imageSource) {
   const fs = require('fs');
   const path = require('path');
 
-  // 解析图片为 base64 data URL 或 HTTP URL
-  let imageUrlForApi;
-  let imageLogInfo = {};
-  if (imageSource.imageUrl) {
-    imageUrlForApi = imageSource.imageUrl;
-    if (imageUrlForApi.startsWith('data:')) {
-      // base64 data URL：只记录类型和大小，不记录内容
-      const mimeMatch = imageUrlForApi.match(/^data:([^;]+);base64,/);
-      const mime = mimeMatch ? mimeMatch[1] : 'unknown';
-      const b64Len = imageUrlForApi.length - (mimeMatch ? mimeMatch[0].length : 0);
-      imageLogInfo = { image_type: 'base64', image_mime: mime, image_size_kb: Math.round(b64Len * 0.75 / 1024) };
-    } else {
-      imageLogInfo = { image_type: 'url', image_url: imageUrlForApi.slice(0, 100) };
-    }
-  } else if (imageSource.localAbsPath) {
-    if (!fs.existsSync(imageSource.localAbsPath)) {
-      throw new Error(`图片文件不存在：${imageSource.localAbsPath}`);
-    }
-    const buf = fs.readFileSync(imageSource.localAbsPath);
-    const ext = path.extname(imageSource.localAbsPath).toLowerCase();
-    const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
-    const mime = mimeMap[ext] || 'image/jpeg';
-    imageUrlForApi = `data:${mime};base64,${buf.toString('base64')}`;
-    imageLogInfo = { image_type: 'local_file', image_path: imageSource.localAbsPath, image_size_kb: Math.round(buf.length / 1024), image_mime: mime };
-  } else {
-    throw new Error('imageSource 必须包含 imageUrl 或 localAbsPath');
+  const sources = Array.isArray(imageSource?.imageSources)
+    ? imageSource.imageSources
+    : Array.isArray(imageSource)
+      ? imageSource
+      : [imageSource];
+  if (sources.length === 0 || sources.some((item) => !item || typeof item !== 'object')) {
+    throw new Error('imageSource 必须包含 imageUrl/localAbsPath，或 imageSources 数组');
   }
+  return sources.map((source) => {
+    let imageUrlForApi;
+    let imageLogInfo = {};
+    if (source.imageUrl) {
+      imageUrlForApi = source.imageUrl;
+      if (imageUrlForApi.startsWith('data:')) {
+        // base64 data URL：只记录类型和大小，不记录内容
+        const mimeMatch = imageUrlForApi.match(/^data:([^;]+);base64,/);
+        const mime = mimeMatch ? mimeMatch[1] : 'unknown';
+        const b64Len = imageUrlForApi.length - (mimeMatch ? mimeMatch[0].length : 0);
+        imageLogInfo = { image_type: 'base64', image_mime: mime, image_size_kb: Math.round(b64Len * 0.75 / 1024) };
+      } else {
+        imageLogInfo = { image_type: 'url', image_url: imageUrlForApi.slice(0, 100) };
+      }
+    } else if (source.localAbsPath) {
+      if (!fs.existsSync(source.localAbsPath)) {
+        throw new Error(`图片文件不存在：${source.localAbsPath}`);
+      }
+      const buf = fs.readFileSync(source.localAbsPath);
+      const ext = path.extname(source.localAbsPath).toLowerCase();
+      const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
+      const mime = mimeMap[ext] || 'image/jpeg';
+      imageUrlForApi = `data:${mime};base64,${buf.toString('base64')}`;
+      imageLogInfo = { image_type: 'local_file', image_path: source.localAbsPath, image_size_kb: Math.round(buf.length / 1024), image_mime: mime };
+    } else {
+      throw new Error('imageSource 必须包含 imageUrl 或 localAbsPath');
+    }
+    return { imageUrlForApi, imageLogInfo };
+  });
+}
+
+function extractProviderResponseId(json, headers = {}) {
+  return json?.id
+    || json?.response?.id
+    || json?.provider_task_id
+    || json?.task_id
+    || headers['x-request-id']
+    || headers['request-id']
+    || headers['x-trace-id']
+    || null;
+}
+
+/**
+ * 使用视觉模型并返回可审计调用元数据。不会返回 raw 响应或密钥。
+ */
+async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, systemPrompt, imageSource, options = {}) {
+  const resolvedImages = resolveVisionImageSources(imageSource);
+  const imageLogInfo = resolvedImages.length === 1
+    ? resolvedImages[0].imageLogInfo
+    : { image_count: resolvedImages.length, image_types: resolvedImages.map((item) => item.imageLogInfo.image_type).slice(0, 8) };
 
   // 复用 generateText 的配置查找逻辑
   const { model: preferredModel, temperature = 0.3, max_tokens = 500 } = options;
@@ -922,6 +967,11 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     ? `${systemPrompt}\n\n${userPrompt}`
     : userPrompt;
 
+  const content = [
+    { type: 'text', text: mergedUserText },
+    ...resolvedImages.map((item) => ({ type: 'image_url', image_url: { url: item.imageUrlForApi } })),
+  ];
+
   // OpenAI vision 消息格式
   // max_tokens 供旧版/普通模型使用；max_completion_tokens 供推理模型（o1/o3/o4）使用
   const body = {
@@ -930,10 +980,7 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
       ...(systemPrompt && !isReasoningModel ? [{ role: systemRole, content: systemPrompt }] : []),
       {
         role: 'user',
-        content: [
-          { type: 'text', text: mergedUserText },
-          { type: 'image_url', image_url: { url: imageUrlForApi } },
-        ],
+        content,
       },
     ],
     // 推理模型用 max_completion_tokens，普通模型用 max_tokens，不能同时传
@@ -951,11 +998,13 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     log.error('[Vision] HTTP 请求失败', { model, url: url.slice(0, 80), error: httpErr.message });
     throw httpErr;
   }
-  const content = res.body;
+  const responseText = res.body;
+  let rawJson = {};
   try {
-    generationUsageContext.capture(JSON.parse(res.raw || '{}').usage);
+    rawJson = JSON.parse(res.raw || '{}');
+    generationUsageContext.capture(rawJson.usage);
   } catch (_) {}
-  if (!content) {
+  if (!responseText) {
     log.error('[Vision] 返回内容为空', {
       model,
       status: res.status,
@@ -963,8 +1012,25 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     });
     throw new Error(`AI vision 返回内容为空（HTTP ${res.status}），原始响应：${(res.raw || '').slice(0, 200)}`);
   }
-  log.info('[Vision] 请求成功', { model, elapsed_ms: Date.now() - startMs, result_len: content.length, result_preview: content.slice(0, 100) });
-  return content.trim();
+  const providerTaskId = extractProviderResponseId(rawJson, res.headers || {});
+  if (!providerTaskId && options.require_provider_response_id !== false) {
+    const error = new Error('AI vision 响应缺少真实 provider response id');
+    error.code = 'VISION_PROVIDER_RESPONSE_ID_MISSING';
+    throw error;
+  }
+  log.info('[Vision] 请求成功', { model, elapsed_ms: Date.now() - startMs, result_len: responseText.length, result_preview: responseText.slice(0, 100) });
+  return {
+    text: responseText.trim(),
+    provider_task_id: providerTaskId ? String(providerTaskId) : null,
+    model,
+    usage: rawJson.usage || null,
+    raw_hash: crypto.createHash('sha256').update(String(res.raw || '')).digest('hex'),
+    diagnostics: {
+      status: res.status,
+      config_id: config.id,
+      image_count: resolvedImages.length,
+    },
+  };
 }
 
 const EXTRACT_PROMPTS = {
@@ -1064,6 +1130,7 @@ module.exports = {
   generateText: (...args) => runWithGenerationLimit('text', () => generateText(...args)),
   streamGenerateText: (...args) => runWithGenerationLimit('text', () => streamGenerateText(...args)),
   generateTextWithVision: (...args) => runWithGenerationLimit('text', () => generateTextWithVision(...args)),
+  generateTextWithVisionDetailed: (...args) => runWithGenerationLimit('text', () => generateTextWithVisionDetailed(...args)),
   resolveEntityImageSource,
   extractDescriptionFromImage,
   EXTRACT_PROMPTS,

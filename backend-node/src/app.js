@@ -20,8 +20,49 @@ function createApp() {
   applyVendorLock(db, logger, config);
   const log = logger;
 
+  const storageRoot = config.storage?.local_path
+    ? (path.isAbsolute(config.storage.local_path)
+        ? config.storage.local_path
+        : path.join(process.cwd(), config.storage.local_path))
+    : path.join(process.cwd(), 'data', 'storage');
+
+  const redrawOrchestrator = require('./services/redrawOrchestrator');
+  const redrawResume = redrawOrchestrator.resumeRedrawTasks(
+    db,
+    log,
+    redrawOrchestrator.createStartupResumeOptions(db, log, { storageRoot })
+  ).catch((error) => {
+    log.error('Resume redraw analysis tasks failed', { error: error.message });
+  });
+
   const taskService = require('./services/taskService');
-  taskService.failOrphanedAsyncTasksOnStartup(db, log);
+  redrawResume
+    .finally(() => {
+      try {
+        require('./services/redrawLocalizationOrchestrator').reconcileOrphanedTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw localization reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawAssetBatchService').reconcileOrphanedBatches(db, log);
+      } catch (error) {
+        log.error('Startup redraw asset batch reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawDialogueOrchestrator').reconcileOrphanedDialogueTasks(db, log);
+      } catch (error) {
+        log.error('Startup redraw dialogue reconcile failed', { error: error.message });
+      }
+      try {
+        require('./services/redrawCompositionService').recoverInterruptedCompositions(db);
+      } catch (error) {
+        log.error('Startup redraw composition recover failed', { error: error.message });
+      }
+      taskService.failOrphanedAsyncTasksOnStartup(db, log);
+    })
+    .catch((error) => {
+      log.error('Startup orphan cleanup failed', { error: error.message });
+    });
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
@@ -49,11 +90,6 @@ function createApp() {
   mountReleaseEvidenceAssets(app);
 
   // 静态资源目录：统一转为绝对路径（打包 exe 下相对路径可能解析异常）
-  const storageRoot = config.storage?.local_path
-    ? (path.isAbsolute(config.storage.local_path)
-        ? config.storage.local_path
-        : path.join(process.cwd(), config.storage.local_path))
-    : path.join(process.cwd(), 'data', 'storage');
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
     const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));

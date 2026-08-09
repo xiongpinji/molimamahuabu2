@@ -25,6 +25,14 @@
       剧本分析
     </RouterLink>
     <RouterLink
+      to="/redraw"
+      class="platform-primary-nav__link"
+      :class="{ 'is-active': redrawActive }"
+      :aria-current="redrawActive ? 'page' : undefined"
+    >
+      一键转绘
+    </RouterLink>
+    <RouterLink
       to="/factory"
       class="platform-primary-nav__link"
       :class="{ 'is-active': factoryActive }"
@@ -44,6 +52,7 @@ const route = useRoute()
 const homeActive = computed(() => route.name === 'list')
 const canvasActive = computed(() => ['canvas-projects', 'standalone-canvas', 'home-canvas-local'].includes(route.name))
 const scriptAnalysisActive = computed(() => route.name === 'script-analysis')
+const redrawActive = computed(() => ['redraw-projects', 'redraw-workspace'].includes(route.name))
 const factoryActive = computed(() => [
   'factory',
   'drama-detail',
