@@ -653,9 +653,14 @@ test('图片预览只在放大后允许空格拖动且不移动底层画布', as
 
   const dialog = page.getByRole('dialog', { name: '图片全屏预览' })
   const previewImage = dialog.locator('img')
-  const canvasViewport = page.locator('.vue-flow__viewport')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
   await expect(dialog).toBeVisible()
 
+  const readCanvasTransform = () => transformationPane.evaluate((element) => getComputedStyle(element).transform)
+  const readPreviewTranslation = () => previewImage.evaluate((image) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(image).transform)
+    return { x: matrix.m41, y: matrix.m42 }
+  })
   const dragFromCenter = async (deltaX, deltaY) => {
     const box = await previewImage.boundingBox()
     if (!box) throw new Error('图片预览未生成可拖动区域')
@@ -666,14 +671,15 @@ test('图片预览只在放大后允许空格拖动且不移动底层画布', as
     await page.mouse.move(centerX + deltaX, centerY + deltaY, { steps: 4 })
   }
 
-  const initialImageStyle = await previewImage.getAttribute('style')
+  const initialCanvasTransform = await readCanvasTransform()
+  const initialImageTransform = await previewImage.evaluate((image) => getComputedStyle(image).transform)
   await page.keyboard.down('Space')
   await dragFromCenter(60, 35)
   await page.mouse.up()
   await page.keyboard.up('Space')
-  await expect(previewImage).toHaveAttribute('style', initialImageStyle || '')
+  expect(await previewImage.evaluate((image) => getComputedStyle(image).transform)).toBe(initialImageTransform)
+  expect(await readCanvasTransform()).toBe(initialCanvasTransform)
 
-  const canvasStyleBeforePan = await canvasViewport.getAttribute('style')
   const previewBox = await previewImage.boundingBox()
   if (!previewBox) throw new Error('图片预览未生成缩放区域')
   await page.mouse.move(previewBox.x + previewBox.width / 2, previewBox.y + previewBox.height / 2)
@@ -684,17 +690,20 @@ test('图片预览只在放大后允许空格拖动且不移动底层画布', as
 
   await page.keyboard.down('Space')
   await dragFromCenter(80, 45)
-  const draggedStyle = await previewImage.getAttribute('style')
-  expect(draggedStyle).toContain('translate(80px, 45px)')
+  const draggedTranslation = await readPreviewTranslation()
+  expect(draggedTranslation.x).toBeCloseTo(80, 1)
+  expect(draggedTranslation.y).toBeCloseTo(45, 1)
 
   await page.keyboard.up('Space')
   const boxAfterRelease = await previewImage.boundingBox()
   if (!boxAfterRelease) throw new Error('图片预览在释放空格后消失')
   await page.mouse.move(boxAfterRelease.x + boxAfterRelease.width / 2 + 40, boxAfterRelease.y + boxAfterRelease.height / 2 + 20)
-  await expect(previewImage).toHaveAttribute('style', draggedStyle || '')
+  const translationAfterRelease = await readPreviewTranslation()
+  expect(translationAfterRelease.x).toBeCloseTo(draggedTranslation.x, 1)
+  expect(translationAfterRelease.y).toBeCloseTo(draggedTranslation.y, 1)
   await page.mouse.up()
 
-  await expect(canvasViewport).toHaveAttribute('style', canvasStyleBeforePan || '')
+  expect(await readCanvasTransform()).toBe(initialCanvasTransform)
 })
 
 test('已连接参考图可以从节点编辑器取消', async ({ page }) => {
