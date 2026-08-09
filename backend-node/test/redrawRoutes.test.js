@@ -10,6 +10,7 @@ const { setupRouter } = require('../src/routes');
 const creditLedger = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
+const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -483,6 +484,90 @@ function verifiedVideoCapability(model = 'seedance 2.0', overrides = {}) {
   };
 }
 
+function nativeDialogueEvidence(configId, configUpdatedAt, artifactId = 771) {
+  return {
+    contract: 'redraw-native-dialogue-audio-v1',
+    provider: 'test-provider',
+    protocol: 'feituo_open',
+    model: 'seedance-2-fast',
+    config_id: configId,
+    config_updated_at: configUpdatedAt,
+    provider_task_id: 'provider-native-dialogue-real',
+    terminal_status: 'completed',
+    artifact_id: artifactId,
+    artifact_sha256: 'd'.repeat(64),
+    media: { video_stream: true, audio_stream: true },
+    locale_verification: {
+      language: 'es',
+      language_verified: true,
+      locale_verified: false,
+    },
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
+  };
+}
+
+function insertNativeDialogueLocaleConfig(db, values = {}) {
+  const now = values.updated_at || NOW;
+  const configId = Number(db.prepare(`
+    INSERT INTO ai_service_configs
+      (service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES ('video', 'test-provider', 'feituo_open', '原生对白能力', 'seedance-2-fast', 'seedance-2-fast', 1, 1, 0, '{}', ?, ?)
+  `).run(NOW, now).lastInsertRowid);
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+    redraw_locale_capabilities: [{
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'text-task',
+          terminal_status: 'completed',
+          artifact_id: 772,
+        },
+        subtitles: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'subtitles-task',
+          terminal_status: 'completed',
+          artifact_id: 773,
+        },
+        character_image: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'character-task',
+          terminal_status: 'completed',
+          artifact_id: 774,
+        },
+        clean_plate_image: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'clean-plate-task',
+          terminal_status: 'completed',
+          artifact_id: 775,
+        },
+        video: {
+          provider: 'test-provider',
+          model: 'seedance-2-fast',
+          task_id: 'video-task',
+          terminal_status: 'completed',
+          artifact_id: 776,
+        },
+        native_dialogue_audio: values.evidence || nativeDialogueEvidence(configId, now),
+      },
+    }],
+  }), configId);
+}
+
 test('转绘项目列表与创建按租户和用户隔离', () => {
   const db = createDb();
   try {
@@ -769,6 +854,35 @@ test('风格和语言目录来自能力服务且仅暴露验证结果', () => {
     handlers.listLocales(request(), locales);
     assert.equal(locales.statusCode, 200);
     assert.deepEqual(locales.body.data, [{ locale: 'en-US', market: 'US', status: 'full_output', blocking: [] }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('语言目录真实响应只暴露已验证原生对白语言级能力', () => {
+  const db = createDb();
+  try {
+    insertNativeDialogueLocaleConfig(db);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: 'native',
+      native_dialogue_audio: true,
+      locale_verified: false,
+      status: 'full_output',
+      blocking: [],
+    }]);
   } finally {
     db.close();
   }
