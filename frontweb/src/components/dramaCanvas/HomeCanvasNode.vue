@@ -496,6 +496,7 @@
       <div
         v-if="mediaPreviewUrl"
         class="image-lightbox nodrag nopan"
+        :class="{ 'is-pan-ready': mediaPreviewCanPan, 'is-panning': mediaPreviewDragging }"
         role="dialog"
         aria-modal="true"
         :aria-label="mediaPreviewKind === 'image' ? '图片全屏预览' : '视频全屏预览'"
@@ -508,12 +509,17 @@
           title="关闭"
           @click="closeMediaPreview"
         >×</button>
-        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
+        <span v-if="mediaPreviewKind === 'image'" class="lightbox-zoom-hint">Ctrl/⌘ + 滚轮缩放 · 放大后按住空格 + 左键拖动 · {{ Math.round(mediaPreviewScale * 100) }}%</span>
         <img
           v-if="mediaPreviewKind === 'image'"
           :src="mediaPreviewUrl"
           :alt="data.title || '图片预览'"
-          :style="{ transform: `scale(${mediaPreviewScale})` }"
+          draggable="false"
+          :style="{ transform: `translate(${mediaPreviewPan.x}px, ${mediaPreviewPan.y}px) scale(${mediaPreviewScale})` }"
+          @pointerdown.stop="onMediaPreviewPointerDown"
+          @pointermove.stop="onMediaPreviewPointerMove"
+          @pointerup.stop="onMediaPreviewPointerUp"
+          @pointercancel.stop="onMediaPreviewPointerUp"
         />
         <video v-else :src="mediaPreviewUrl" controls autoplay playsinline />
       </div>
@@ -558,6 +564,16 @@ const editorPanelStyle = ref({})
 const mediaPreviewUrl = ref('')
 const mediaPreviewKind = ref('image')
 const mediaPreviewScale = ref(1)
+const mediaPreviewPan = reactive({ x: 0, y: 0 })
+const mediaPreviewSpacePressed = ref(false)
+const mediaPreviewDragging = ref(false)
+const mediaPreviewCanPan = computed(() => (
+  mediaPreviewKind.value === 'image'
+  && mediaPreviewScale.value > 1
+  && mediaPreviewSpacePressed.value
+))
+let mediaPreviewDragStart = null
+let mediaPreviewPointerId = null
 let draftSaveTimer = null
 let draftDirty = false
 let editorPositionFrame = null
@@ -1036,6 +1052,7 @@ function openMediaPreview(url, kind = 'image') {
   if (!url) return
   openEditor()
   mediaPreviewScale.value = 1
+  resetMediaPreviewInteraction()
   mediaPreviewUrl.value = String(url)
   mediaPreviewKind.value = kind
 }
@@ -1051,7 +1068,50 @@ function scheduleMediaOpen() {
 function closeMediaPreview() {
   mediaPreviewUrl.value = ''
   mediaPreviewScale.value = 1
+  resetMediaPreviewInteraction()
   mediaPreviewKind.value = 'image'
+}
+
+function stopMediaPreviewDrag() {
+  mediaPreviewDragging.value = false
+  mediaPreviewDragStart = null
+  mediaPreviewPointerId = null
+}
+
+function resetMediaPreviewPan() {
+  mediaPreviewPan.x = 0
+  mediaPreviewPan.y = 0
+  stopMediaPreviewDrag()
+}
+
+function resetMediaPreviewInteraction() {
+  resetMediaPreviewPan()
+  mediaPreviewSpacePressed.value = false
+}
+
+function onMediaPreviewPointerDown(event) {
+  if (event.button !== 0 || !mediaPreviewCanPan.value) return
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  mediaPreviewDragging.value = true
+  mediaPreviewPointerId = event.pointerId
+  mediaPreviewDragStart = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    panX: mediaPreviewPan.x,
+    panY: mediaPreviewPan.y,
+  }
+}
+
+function onMediaPreviewPointerMove(event) {
+  if (!mediaPreviewDragging.value || event.pointerId !== mediaPreviewPointerId || !mediaPreviewDragStart) return
+  mediaPreviewPan.x = mediaPreviewDragStart.panX + event.clientX - mediaPreviewDragStart.clientX
+  mediaPreviewPan.y = mediaPreviewDragStart.panY + event.clientY - mediaPreviewDragStart.clientY
+}
+
+function onMediaPreviewPointerUp(event) {
+  if (event.pointerId !== mediaPreviewPointerId) return
+  stopMediaPreviewDrag()
 }
 
 function onMediaPreviewWheel(event) {
@@ -1062,6 +1122,7 @@ function onMediaPreviewWheel(event) {
   const delta = event.deltaY < 0 ? 0.15 : -0.15
   mediaPreviewScale.value = Math.min(5, Math.max(0.25,
     Number((mediaPreviewScale.value + delta).toFixed(2))))
+  if (mediaPreviewScale.value <= 1) resetMediaPreviewPan()
 }
 
 function openAssetLibrary() {
@@ -1162,6 +1223,11 @@ async function copyResultReference() {
 }
 
 function onEditorKeydown(event) {
+  if (mediaPreviewUrl.value && mediaPreviewKind.value === 'image' && (event.code === 'Space' || event.key === ' ')) {
+    event.preventDefault()
+    mediaPreviewSpacePressed.value = true
+    return
+  }
   if (event.key !== 'Escape') return
   if (mediaOpenTimer) {
     window.clearTimeout(mediaOpenTimer)
@@ -1179,14 +1245,30 @@ function onEditorKeydown(event) {
   else closeEditor()
 }
 
+function onMediaPreviewKeyup(event) {
+  if (event.code !== 'Space' && event.key !== ' ') return
+  mediaPreviewSpacePressed.value = false
+  stopMediaPreviewDrag()
+}
+
+function onMediaPreviewBlur() {
+  mediaPreviewSpacePressed.value = false
+  stopMediaPreviewDrag()
+}
+
 onMounted(() => {
   window.addEventListener('keydown', onEditorKeydown)
+  window.addEventListener('keyup', onMediaPreviewKeyup)
+  window.addEventListener('blur', onMediaPreviewBlur)
   window.addEventListener('resize', updateEditorPosition)
   if (isSelected.value) nextTick(startEditorPositionTracking)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEditorKeydown)
+  window.removeEventListener('keyup', onMediaPreviewKeyup)
+  window.removeEventListener('blur', onMediaPreviewBlur)
   window.removeEventListener('resize', updateEditorPosition)
+  resetMediaPreviewInteraction()
   stopEditorPositionTracking()
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
   if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
@@ -1819,6 +1901,8 @@ watch(isSelected, (selected) => {
 .image-lightbox > img,
 .image-lightbox > video { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
 .image-lightbox > img { transform-origin: center; transition: transform 100ms ease-out; }
+.image-lightbox.is-pan-ready > img { cursor: grab; }
+.image-lightbox.is-panning > img { cursor: grabbing; transition: none; }
 .lightbox-zoom-hint {
   position: absolute;
   left: 50%;

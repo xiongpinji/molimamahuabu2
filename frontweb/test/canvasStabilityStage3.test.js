@@ -27,7 +27,7 @@ test('图片全屏预览支持 Ctrl 或 Command 加滚轮缩放并在开关时�
   assert.match(nodeSource, /@wheel="onMediaPreviewWheel"/)
   assert.match(nodeSource, /if \(!event\.ctrlKey && !event\.metaKey\) return/)
   assert.match(nodeSource, /mediaPreviewScale\.value = Math\.min\(5, Math\.max\(0\.25,/)
-  assert.match(nodeSource, /:style="\{ transform: `scale\(\$\{mediaPreviewScale\}\)` \}"/)
+  assert.match(nodeSource, /:style="\{ transform: `translate\(\$\{mediaPreviewPan\.x\}px, \$\{mediaPreviewPan\.y\}px\) scale\(\$\{mediaPreviewScale\}\)` \}"/)
   assert.match(nodeSource, /mediaPreviewScale\.value = 1[\s\S]*mediaPreviewUrl\.value = String\(url\)/)
   assert.match(nodeSource, /mediaPreviewUrl\.value = ''[\s\S]*mediaPreviewScale\.value = 1/)
 })
