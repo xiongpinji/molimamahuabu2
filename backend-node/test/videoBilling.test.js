@@ -314,7 +314,7 @@ test('ToAPIs protected environment credential is valid but cannot replace model 
   }
 });
 
-test('scheduled ToAPIs Fast 4-second task reaches provider adapter without legacy duration rejection', async () => {
+test('scheduled ToAPIs Fast 4-second task reaches provider adapter and preserves indeterminate submission for review', async () => {
   const db = setup();
   configureToapis(db, { model: 'seedance-2-fast' });
   let scheduled;
@@ -339,7 +339,7 @@ test('scheduled ToAPIs Fast 4-second task reaches provider adapter without legac
     assert.equal(submitted.duration, 4);
     assert.equal(submitted.resolution, '480p');
     const row = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
-    assert.equal(row.status, 'processing');
+    assert.equal(row.status, 'needs_attention');
     assert.match(row.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
   } finally {
     videoClient.callVideoApi = originalCall;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 function readSource(path) {
-  return readFileSync(new URL(path, import.meta.url), 'utf8')
+  return readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 }
 
 function sourceBetween(source, start, end) {

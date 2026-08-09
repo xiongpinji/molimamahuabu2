@@ -482,7 +482,7 @@
             <template v-else>积分待管理员配置</template>
             <small>· {{ draft.quantity || 1 }} 次</small>
           </span>
-          <span v-if="canGenerate && capability.declared === false" class="billing-note">保守参数 · 最终由供应商校验</span>
+          <span v-if="canGenerate && capability.declared === false" class="capability-note">保守参数 · 最终由供应商校验</span>
           <span v-if="!canGenerate" class="local-draft-note">本地草稿仅保存内容；绑定项目后的独立画布才能运行模型与挂载素材。</span>
           <button v-if="canTranslate" type="button" class="advanced-button" aria-label="中英互译" title="中文与英文互译（按文本模型计费）" @click.stop="translateNode">中/英</button>
           <button v-if="canGenerate" type="button" class="advanced-button" aria-label="配置" title="节点完整配置" @click.stop="openConfig">参数</button>
@@ -1906,7 +1906,7 @@ watch(isSelected, (selected) => {
 }
 .billing-cost strong { color: #ffb15c; font-size: 18px; font-weight: 900; }
 .billing-cost small { color: #d6a875; font-size: 11px; font-weight: 600; }
-.billing-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
+.capability-note, .editor-footer .local-draft-note { color: #71717a; font-size: 11px; }
 .editor-footer .local-draft-note { margin-right: auto; }
 .generation-progress { display: grid; gap: 7px; margin-top: 16px; }
 .generation-progress > div { display: flex; align-items: center; justify-content: space-between; color: #a1a1aa; font-size: 11px; }

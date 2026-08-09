@@ -550,8 +550,14 @@ function isUsmercariImageConfig(config, model) {
 function getImageConfigCandidates(db, preferredModel, preferredProvider, imageServiceType, preferredConfigId) {
   const serviceType = imageServiceType || 'image';
   let configs = aiConfigService.listConfigs(db, serviceType);
-  if (serviceType === 'storyboard_image') {
-    const fallbackConfigs = aiConfigService.listConfigs(db, 'image');
+  const redrawServiceTypes = new Set(['redraw_character', 'redraw_scene', 'redraw_prop']);
+  const fallbackServiceTypes = serviceType === 'storyboard_image'
+    ? ['image']
+    : redrawServiceTypes.has(serviceType)
+      ? ['storyboard_image', 'image']
+      : [];
+  for (const fallbackServiceType of fallbackServiceTypes) {
+    const fallbackConfigs = aiConfigService.listConfigs(db, fallbackServiceType);
     const ids = new Set(configs.map((config) => String(config.id)));
     configs = [...configs, ...fallbackConfigs.filter((config) => !ids.has(String(config.id)))];
   }

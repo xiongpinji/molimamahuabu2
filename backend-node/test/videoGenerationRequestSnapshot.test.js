@@ -518,7 +518,7 @@ test('indeterminate provider submission keeps reservation and duplicate guard wi
   const row = db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.id);
   const reservation = credits.getReservation(db, row.credit_reservation_id);
   assert.equal(calls, 1);
-  assert.equal(row.status, 'processing');
+  assert.equal(row.status, 'needs_attention');
   assert.match(row.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
   assert.equal(reservation.status, 'held');
 
@@ -535,7 +535,7 @@ test('indeterminate provider submission keeps reservation and duplicate guard wi
 
   videoService.resumeProcessingVideoGenerations(db, log);
   const afterResume = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
-  assert.equal(afterResume.status, 'processing');
+  assert.equal(afterResume.status, 'needs_attention');
   assert.match(afterResume.error_msg, /^VIDEO_SUBMISSION_INDETERMINATE:/);
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'held');
   assert.equal(calls, 1);
@@ -648,8 +648,8 @@ test('resume existing provider_task_id keeps held reservation when config is dis
   await new Promise((resolve) => setTimeout(resolve, 30));
 
   const after = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(created.id);
-  assert.equal(after.status, 'processing');
-  assert.match(after.error_msg, /视频模型配置暂不可用/);
+  assert.equal(after.status, 'needs_attention');
+  assert.match(after.error_msg, /固定模型配置暂不可用/);
   assert.equal(credits.getReservation(db, row.credit_reservation_id).status, 'held');
   assert.equal(pollCalls, 0);
 });
@@ -681,5 +681,5 @@ test('direct process with existing provider_task_id polls only and never submits
 
   assert.equal(postCalls, 0);
   assert.equal(pollCalls, 1);
-  assert.equal(db.prepare('SELECT status FROM video_generations WHERE id = ?').get(videoId).status, 'processing');
+  assert.equal(db.prepare('SELECT status FROM video_generations WHERE id = ?').get(videoId).status, 'needs_attention');
 });

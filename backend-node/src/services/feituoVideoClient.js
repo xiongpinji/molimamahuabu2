@@ -91,6 +91,7 @@ async function fetchFeituoText(url, fetchOptions = {}, controls = {}) {
   const controller = new AbortController();
   let timedOut = false;
   let timer;
+  const fetchImpl = controls.fetchImpl || fetch;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
@@ -101,7 +102,7 @@ async function fetchFeituoText(url, fetchOptions = {}, controls = {}) {
   });
   try {
     const response = await Promise.race([
-      fetch(url, { ...fetchOptions, signal: controller.signal }),
+      fetchImpl(url, { ...fetchOptions, signal: controller.signal }),
       timeout,
     ]);
     const raw = await Promise.race([
@@ -140,8 +141,18 @@ function buildFeituoVideoBody(opts = {}) {
   if (!spec) throw new Error(`飞拓模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
 
   const duration = Number(opts.duration ?? 5);
-  if (!Number.isSafeInteger(duration) || duration < 4 || duration > 15) {
+  if (!Number.isSafeInteger(duration)) {
+    throw new Error('飞拓视频时长必须是整数');
+  }
+  if (spec.durations && !spec.durations.includes(duration)) {
+    throw new Error(`飞拓模型 ${model} 不支持 ${duration} 秒`);
+  }
+  if (!spec.durations && (duration < 4 || duration > 15)) {
     throw new Error('飞拓视频时长必须是 4 到 15 秒之间的整数');
+  }
+  const resolution = String(opts.resolution || '').trim().toLowerCase();
+  if (spec.resolutions && !spec.resolutions.includes(resolution)) {
+    throw new Error(`飞拓模型 ${model} 不支持分辨率 ${resolution || '(empty)'}`);
   }
   const ratio = String(opts.aspect_ratio || opts.ratio || '16:9').trim().replace('：', ':');
   if (!spec.ratios.includes(ratio)) throw new Error(`飞拓模型 ${model} 不支持画幅 ${ratio}`);
@@ -161,7 +172,7 @@ function buildFeituoVideoBody(opts = {}) {
   assertMaterialLimit('视频', videoUrls, spec.maxVideos);
   assertMaterialLimit('音频', audioUrls, spec.maxAudio);
 
-  return {
+  const body = {
     model,
     prompt: String(opts.prompt || ''),
     ratio,
@@ -170,6 +181,8 @@ function buildFeituoVideoBody(opts = {}) {
     videoUrls,
     audioUrls,
   };
+  if (spec.resolutions) body.resolution = resolution;
+  return body;
 }
 
 function buildFeituoStatusUrl(baseUrl, jobId, timestamp = Date.now()) {
@@ -202,7 +215,7 @@ function parseJson(raw) {
   try { return JSON.parse(raw); } catch (_) { return null; }
 }
 
-async function callFeituoVideoApi(config, log, opts = {}) {
+async function callFeituoVideoApi(config, log, opts = {}, runtime = {}) {
   let body;
   try {
     body = buildFeituoVideoBody(opts);
@@ -236,6 +249,7 @@ async function callFeituoVideoApi(config, log, opts = {}) {
     }, {
       requestTimeoutMs: opts.request_timeout_ms,
       responseMaxBytes: opts.response_max_bytes,
+      fetchImpl: runtime.fetchImpl,
     });
     response = fetched.response;
     raw = fetched.raw;

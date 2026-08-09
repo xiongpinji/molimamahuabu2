@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const packageJson = require('../package.json');
 
 const modelPrices = require('../src/services/modelPriceService');
 const { runProductionPreflight } = require('../src/services/productionPreflightService');
