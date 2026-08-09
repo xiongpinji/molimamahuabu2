@@ -23,6 +23,7 @@ const {
   runShotGeneration,
   verifyVideoArtifact,
   classifyVideoOutcome,
+  reviewNativeAudio,
 } = require('../src/services/redrawGenerationService');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -849,6 +850,263 @@ test('原生对白 post-provider 音轨验证失败保持 candidate、needs_atte
     assert.equal(second.video_generation_id, first.video_generation_id);
     assert.equal(second.status, 'needs_attention');
     assert.equal(providerCalls, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工批准用 validation hash 和 updated_at 做 CAS，一次导入结算且重复同决定幂等', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'settlement blocked');
+      END
+    `).run();
+
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-manual',
+              video_url = 'https://cdn.test/native-manual.mp4', local_path = 'videos/native-manual.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => ({ id: 1000 }),
+    }), { shotId });
+    assert.equal(held.status, 'needs_attention');
+    state.db.prepare('DROP TRIGGER block_native_audio_settlement_once').run();
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'd'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: '2026-08-05T00:00:00.000Z',
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
+
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_manual_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'manual settlement blocked');
+      END
+    `).run();
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, {
+        artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+        assetImporter: () => {
+          importerCalls += 1;
+          return { id: 1100 };
+        },
+      }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      /manual settlement blocked/,
+    );
+    state.db.prepare('DROP TRIGGER block_native_audio_manual_settlement_once').run();
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+    assert.equal(state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at, beforeReview);
+    assert.equal(importerCalls, 1);
+
+    const approved = await reviewNativeAudio(ctx(state.db, {
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      assetImporter: (db, _log, videoId) => {
+        importerCalls += 1;
+        assert.equal(videoId, held.video_generation_id);
+        return { id: 1200 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+
+    assert.equal(approved.status, 'completed');
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 2);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'confirmed');
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.new_video_ref.asset_id, 1200);
+    assert.deepEqual(draft.native_audio_validation.human_review, {
+      status: 'approved',
+      reviewer_id: 'user-a',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+      manual_override: true,
+      reviewed_at: '2026-08-06T00:00:00.000Z',
+    });
+
+    const duplicate = await reviewNativeAudio(ctx(state.db, {
+      assetImporter: () => {
+        importerCalls += 1;
+        return { id: 1300 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+    assert.equal(duplicate.status, 'completed');
+    assert.equal(duplicate.asset_id, 1200);
+    assert.equal(importerCalls, 2);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工驳回只记录审核原因，保留候选和 held 且拒绝不同决定冲突', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-rejected',
+              video_url = 'https://cdn.test/native-rejected.mp4', local_path = 'videos/native-rejected.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => { throw new Error('asset register failed'); },
+    }), { shotId });
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    const rejected = await reviewNativeAudio(ctx(state.db), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'rejected',
+      reason: '对白顺序不可接受',
+    });
+
+    assert.equal(rejected.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    const audit = nativeAudit(state.db, shotId, held.task_id);
+    assert.equal(audit.candidate.provider_task_id_sha256.length, 64);
+    assert.deepEqual(audit.human_review, {
+      status: 'rejected',
+      reviewer_id: 'user-a',
+      reason: '对白顺序不可接受',
+      reviewed_at: '2026-08-06T00:00:00.000Z',
+    });
+
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    );
   } finally {
     state.db.close();
   }

@@ -1167,6 +1167,206 @@ function nativeAudioFailureAudit(row, error, stage, humanReviewStatus, evidence 
   };
 }
 
+function nativeAudioAuditFromShotOrTask(shot, task) {
+  const draft = strictJson(shot.draft_json, 'draft_json');
+  if (draft.native_audio_validation) return { draft, audit: draft.native_audio_validation };
+  const taskResult = strictJson(task.result, 'async_tasks.result');
+  return { draft, audit: taskResult.native_audio_validation || null };
+}
+
+function reviewConflict(message = '原生音轨审核证据已变化，请刷新后重试') {
+  throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT', message);
+}
+
+function sameNativeAudioReview(review, input, reviewerId) {
+  if (!review || review.status !== input.decision) return false;
+  if (String(review.reviewer_id || '') !== String(reviewerId || '')) return false;
+  if (input.decision === 'approved') {
+    return review.speaker_order === 'passed'
+      && review.lip_sync === 'passed'
+      && review.extra_dialogue === 'passed';
+  }
+  return String(review.reason || '') === String(input.reason || '');
+}
+
+function manualOverrideForAudit(audit) {
+  const verification = audit?.verification || {};
+  if (verification.language_verified !== true) return true;
+  if (Object.prototype.hasOwnProperty.call(verification, 'dialogue_similarity')
+    && Number(verification.dialogue_similarity) < 0.8) return true;
+  return false;
+}
+
+async function reviewNativeAudio(ctx, input = {}) {
+  const { db } = ctx;
+  if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  const shot = selectShot(db, ctx, { shotId: input.shotId ?? input.shot_id });
+  const video = shot.video_generation_id
+    ? db.prepare(`SELECT * FROM video_generations
+      WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1`).get(Number(shot.video_generation_id), String(ctx.tenantId), String(ctx.userId))
+    : null;
+  if (!video) throw codedError('REDRAW_VIDEO_NOT_FOUND', '单镜视频记录不存在');
+  const task = video.task_id ? getTask(db, video.task_id, ctx) : null;
+  if (!task || String(task.resource_id) !== String(shot.id)) {
+    throw codedError('REDRAW_SHOT_TASK_NOT_FOUND', '单镜视频任务不存在');
+  }
+  const { draft, audit } = nativeAudioAuditFromShotOrTask(shot, task);
+  const validationHash = String(input.validation_hash || input.validationHash || '').trim().toLowerCase();
+  if (!audit || String(audit.validation_hash || '').toLowerCase() !== validationHash) {
+    reviewConflict();
+  }
+  const decision = String(input.decision || '').trim();
+  const existingReview = audit.human_review || {};
+  if (['approved', 'rejected'].includes(String(existingReview.status || ''))
+    && sameNativeAudioReview(existingReview, { ...input, decision }, ctx.userId)) {
+    const ref = draft.new_video_ref || {};
+    return enrichGenerationResult(db, {
+      status: shot.status,
+      task_id: task.id,
+      video_generation_id: video.id,
+      asset_id: ref.asset_id || null,
+      reservation_id: taskMetadata(task).reservation_id || null,
+    });
+  }
+  if (String(input.expected_updated_at || input.expectedUpdatedAt || '') !== String(shot.updated_at || '')) {
+    reviewConflict('分镜已被其他操作更新，请刷新后重试');
+  }
+  if (['approved', 'rejected'].includes(String(existingReview.status || ''))) {
+    reviewConflict('原生音轨已按不同决定审核，请刷新后重试');
+  }
+  if (decision === 'rejected') {
+    const timestamp = now(ctx);
+    const review = {
+      status: 'rejected',
+      reviewer_id: String(ctx.userId),
+      reason: String(input.reason || '').trim().slice(0, 500),
+      reviewed_at: timestamp,
+    };
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_REJECTED',
+            error_message = ?,
+            draft_json = ?,
+            updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_attention'
+      `).run(
+        review.reason,
+        mergeDraft(draft, { generation: {}, native_audio_validation: { ...audit, human_review: review } }),
+        timestamp,
+        shot.id,
+        String(ctx.tenantId),
+        String(ctx.userId),
+      );
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(review.reason, review.reason, timestamp, task.id, String(ctx.tenantId), String(ctx.userId));
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ?
+      `).run(review.reason, timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+    })();
+    return enrichGenerationResult(db, {
+      status: 'needs_attention',
+      task_id: task.id,
+      video_generation_id: video.id,
+      reservation_id: taskMetadata(task).reservation_id || null,
+    });
+  }
+  if (decision !== 'approved') throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '原生音轨审核决定无效');
+  if (String(existingReview.status || '') !== 'available') {
+    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '当前原生音轨候选不可人工批准');
+  }
+  if (!audit.audio_stream || !audit.candidate || !audit.candidate.artifact_sha256) {
+    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '原生音轨候选缺少可批准的音轨证据');
+  }
+  const verifier = ctx.artifactVerifier || verifyVideoArtifact;
+  const verification = await verifier(ctx, video.id, {});
+  const timestamp = now(ctx);
+  const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
+    assetService.importFromVideo(database, logger, videoGenerationId)
+  ));
+  const metadata = taskMetadata(task);
+  return db.transaction(() => {
+    const claimed = db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'pending', error_code = 'REDRAW_NATIVE_AUDIO_REVIEW_FINALIZING', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+        AND status = 'needs_attention' AND video_generation_id = ?
+    `).run(timestamp, shot.id, String(ctx.tenantId), String(ctx.userId), video.id);
+    if (claimed.changes !== 1) reviewConflict('原生音轨审核正在由其他操作处理，请刷新后重试');
+    const imported = importer(db, ctx.log || logNoop, video.id);
+    if (imported && typeof imported.then === 'function') {
+      throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
+    }
+    if (!imported?.id) {
+      throw codedError('REDRAW_VIDEO_ASSET_IMPORT_FAILED', '视频成片素材入库失败，请人工确认后处理');
+    }
+    const review = {
+      status: 'approved',
+      reviewer_id: String(ctx.userId),
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+      manual_override: manualOverrideForAudit(audit),
+      reviewed_at: timestamp,
+    };
+    const newVideoRef = {
+      asset_id: imported.id,
+      video_generation_id: video.id,
+      video_url: video.video_url || null,
+      local_path: video.local_path,
+      probe: verification,
+    };
+    const approvedAudit = { ...audit, human_review: review };
+    db.prepare(`
+      UPDATE video_generations
+      SET status = 'completed', error_msg = NULL, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(timestamp, video.id, String(ctx.tenantId), String(ctx.userId));
+    db.prepare(`
+      UPDATE redraw_shots
+      SET status = 'completed', error_code = NULL, error_message = NULL,
+          draft_json = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(
+      mergeDraft(draft, {
+        generation: { completed_at: timestamp },
+        native_audio_validation: approvedAudit,
+        new_video_ref: newVideoRef,
+      }),
+      timestamp,
+      shot.id,
+      String(ctx.tenantId),
+      String(ctx.userId),
+    );
+    advanceVersionIfAllShotsCompleted(db, ctx, shot.version_id, timestamp);
+    taskService.updateTaskResult(db, task.id, {
+      status: 'completed',
+      shot_id: shot.id,
+      video_generation_id: video.id,
+      asset_id: imported.id,
+      video_url: video.video_url || null,
+      local_path: video.local_path,
+      probe: verification,
+      native_audio_validation: approvedAudit,
+    });
+    redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
+    return enrichGenerationResult(db, {
+      status: 'completed',
+      task_id: task.id,
+      video_generation_id: video.id,
+      asset_id: imported.id,
+      reservation_id: metadata.reservation_id || null,
+    });
+  })();
+}
+
 function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, options = {}) {
   const safeMessage = String(error?.message || error || '原生对白音轨验证失败').slice(0, 500);
   const audit = options.audit || nativeAudioFailureAudit(
@@ -1863,6 +2063,7 @@ module.exports = {
   runShotGeneration,
   markInterruptedShotGenerationsNeedsAttention,
   verifyVideoArtifact,
+  reviewNativeAudio,
   classifyVideoOutcome,
   resolveVerifiedGenerationModel,
   resolveVerifiedGenerationCapability,

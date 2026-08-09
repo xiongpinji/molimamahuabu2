@@ -3686,6 +3686,76 @@ test('生成接口严格拒绝内部控制字段、未知字段与非 1 count', 
   }
 });
 
+test('原生音轨人工审核接口严格 body、owner 隔离且不需要供应商 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId, { status: 'needs_attention' });
+    const calls = [];
+    const generationService = {
+      reviewNativeAudio: async (ctx, input) => {
+        calls.push({ ctx, input });
+        return { status: 'completed', shot_id: input.shotId, video_generation_id: 77, asset_id: 88 };
+      },
+      resolveVerifiedGenerationModel: () => null,
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ generationService }));
+    const validBody = {
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+
+    for (const body of [
+      { ...validBody, unknown: true },
+      { ...validBody, validation_hash: 'x' },
+      { ...validBody, expected_updated_at: 'not-iso' },
+      { ...validBody, decision: 'accept' },
+      { ...validBody, speaker_order: 'failed' },
+      { ...validBody, lip_sync: 'failed' },
+      { ...validBody, extra_dialogue: 'failed' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected', reason: '' },
+      { validation_hash: 'c'.repeat(64), expected_updated_at: NOW, decision: 'rejected', reason: 'bad', speaker_order: 'passed' },
+    ]) {
+      const result = captureResponse();
+      await handlers.nativeAudioReview(request({ id: shotId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(result.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_INVALID');
+    }
+    assert.equal(calls.length, 0);
+
+    const otherTenant = captureResponse();
+    await handlers.nativeAudioReview(request({ id: shotId, tenantId: 'tenant-b', body: validBody }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    assert.equal(calls.length, 0);
+
+    const approved = captureResponse();
+    await handlers.nativeAudioReview(request({ id: shotId, body: validBody }), approved);
+    assert.equal(approved.statusCode, 202);
+    assert.equal(approved.body.data.status, 'completed');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].ctx.tenantId, 'tenant-a');
+    assert.equal(calls[0].ctx.userId, 'user-a');
+    assert.deepEqual(calls[0].input, {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('processing 等非可编辑状态拒绝 PUT 且不改变生成快照', () => {
   const db = createDb();
   try {
@@ -3868,6 +3938,7 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('GET /redraw/works/:id'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
     assert.equal(routes.has('POST /redraw/shots/:id/generate'), true);
+    assert.equal(routes.has('POST /redraw/shots/:id/native-audio-review'), true);
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
     assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);

@@ -341,6 +341,20 @@ const SAFE_BATCH_GENERATION_FIELDS = new Set([
   ...SAFE_GENERATION_FIELDS,
   'shot_ids', 'shotIds', 'version_id', 'versionId', 'count',
 ]);
+const NATIVE_AUDIO_REVIEW_APPROVE_FIELDS = new Set([
+  'validation_hash',
+  'expected_updated_at',
+  'decision',
+  'speaker_order',
+  'lip_sync',
+  'extra_dialogue',
+]);
+const NATIVE_AUDIO_REVIEW_REJECT_FIELDS = new Set([
+  'validation_hash',
+  'expected_updated_at',
+  'decision',
+  'reason',
+]);
 const LOCALIZATION_CLIENT_CONTROL_FIELDS = new Set([
   'dialogue',
   'localized_dialogue',
@@ -456,6 +470,55 @@ function batchGenerationInput(body) {
   }
   if (Object.prototype.hasOwnProperty.call(sanitized, 'count')) sanitized.count = 1;
   return sanitized;
+}
+
+function nativeAudioReviewInput(body) {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '原生音轨审核参数必须是对象');
+  }
+  const decision = String(body.decision || '').trim();
+  const allowed = decision === 'rejected'
+    ? NATIVE_AUDIO_REVIEW_REJECT_FIELDS
+    : NATIVE_AUDIO_REVIEW_APPROVE_FIELDS;
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) {
+      throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', `原生音轨审核不接受字段 ${key}`);
+    }
+  }
+  const validationHash = String(body.validation_hash || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(validationHash)) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'validation_hash 必须是 64 位 hex');
+  }
+  const expectedUpdatedAt = String(body.expected_updated_at || '').trim();
+  if (!expectedUpdatedAt || Number.isNaN(Date.parse(expectedUpdatedAt))) {
+    throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'expected_updated_at 必须是 ISO 时间');
+  }
+  if (decision === 'approved') {
+    for (const key of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
+      if (body[key] !== 'passed') {
+        throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', `${key} 必须为 passed`);
+      }
+    }
+    return {
+      validation_hash: validationHash,
+      expected_updated_at: expectedUpdatedAt,
+      decision,
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+  }
+  if (decision === 'rejected') {
+    const reason = String(body.reason || '').trim();
+    if (!reason) throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '驳回必须填写 reason');
+    return {
+      validation_hash: validationHash,
+      expected_updated_at: expectedUpdatedAt,
+      decision,
+      reason,
+    };
+  }
+  throw codedRouteError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', 'decision 必须是 approved 或 rejected');
 }
 
 function localizationInputError(code, message, details) {
@@ -815,7 +878,8 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
   }
   if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
     'REDRAW_SHOT_EDIT_CONFLICT', 'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
-    'REDRAW_SHOT_PRICING_UNCONFIGURED'].includes(code)) {
+    'REDRAW_SHOT_PRICING_UNCONFIGURED', 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
+    'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE'].includes(code)) {
     return response.error(res, 409, code, error.message || fallbackMessage, error.details);
   }
   if (code.startsWith('REDRAW_') || code.startsWith('INVALID_')) {
@@ -1881,6 +1945,22 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  async function nativeAudioReview(req, res) {
+    const currentOwner = owner(req);
+    const shot = findOwnedShot(req.params.id, currentOwner);
+    if (!shot) return response.error(res, 404, 'REDRAW_SHOT_NOT_FOUND', '转绘镜头不存在');
+    try {
+      const input = {
+        ...nativeAudioReviewInput(req.body || {}),
+        shotId: shot.id,
+      };
+      const result = await generationService.reviewNativeAudio(generationContext(currentOwner), input);
+      return response.accepted(res, { shot_id: shot.id, ...result });
+    } catch (error) {
+      return sendRedrawError(res, error, '审核原生音轨失败', log, { shotId: shot.id });
+    }
+  }
+
   function localizationQuote(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -2679,6 +2759,7 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
     getWork,
     updateShot,
     generateShot,
+    nativeAudioReview,
     generateBatch,
     localizationQuote,
     createVersion,
