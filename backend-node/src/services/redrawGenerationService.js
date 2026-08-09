@@ -1075,6 +1075,19 @@ function needsNativeAudioValidation(row, _shot) {
   return snapshot.generate_audio === true && !!(snapshot.locale_pack && snapshot.dialogue_snapshot_hash);
 }
 
+function isNativeAudioDownloadFailure(row, message) {
+  return String(row?.error_msg || message || '').includes('REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED');
+}
+
+function nativeAudioDownloadFailureError(row, message) {
+  const clean = String(row?.error_msg || message || '原生对白视频下载失败，请人工确认后处理')
+    .replace(/^REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED:\s*/, '')
+    .slice(0, 500);
+  const error = new Error(clean);
+  error.code = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+  return error;
+}
+
 function compactNativeAudioEvidence(evidence) {
   return {
     contract: evidence.contract,
@@ -1402,6 +1415,14 @@ async function runShotGeneration(ctx, taskId) {
       updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
+  }
+  if (needsNativeAudioValidation(row, shot) && isNativeAudioDownloadFailure(row, outcome.error)) {
+    const error = nativeAudioDownloadFailureError(row, outcome.error);
+    markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+      stage: 'download',
+      humanReviewStatus: 'unavailable',
+    });
+    return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
   }
   updateNeedsAttention(db, task.id, shot.id, outcome.error, timestamp, row.id);
   return { status: 'needs_attention', error: outcome.error, task_id: task.id, video_generation_id: row.id };

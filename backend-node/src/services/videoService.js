@@ -622,6 +622,20 @@ function parseRequestSnapshotForProcessing(value) {
   return { valid: false, present: true, snapshot: {} };
 }
 
+function isPinnedNativeAudioGeneration(row) {
+  if (Number(row?.generate_audio) !== 1) return false;
+  const parsed = parseRequestSnapshotForProcessing(row.request_snapshot);
+  return parsed.valid && parsed.snapshot?.generate_audio === true;
+}
+
+function compactDownloadFailureMessage(error) {
+  const raw = String(error?.message || error || '视频成片下载或保存失败，请人工确认后处理');
+  return raw
+    .replace(/https?:\/\/[^\s"'<>]+/g, '[url]')
+    .replace(/[A-Za-z]:\\[^\s"'<>]+/g, '[path]')
+    .slice(0, 500);
+}
+
 function keepVideoProcessing(db, row, videoGenId, message, now = new Date().toISOString()) {
   db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
     .run('processing', String(message || '').slice(0, 500), now, videoGenId);
@@ -1517,10 +1531,23 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     );
     localPath = downloaded.localPath;
     downloadError = downloaded.error || null;
-    maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
-    boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
-  } catch (_) {}
+    if (!localPath && !downloadError) {
+      downloadError = '视频成片下载或保存失败，请人工确认后处理';
+    }
+    if (!downloadError) {
+      maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
+      boundaryFrames = extractVideoBoundaryFrames(storagePath, localPath, videoGenId, log);
+    }
+  } catch (error) {
+    downloadError = compactDownloadFailureMessage(error);
+  }
   if (downloadError) {
+    if (isPinnedNativeAudioGeneration(row)) {
+      const message = `REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED: ${compactDownloadFailureMessage(downloadError)}`.slice(0, 500);
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
+      log.error('Native audio video artifact download failed after provider completion', { id: videoGenId });
+      return false;
+    }
     setVideoGenFailed(db, videoGenId, downloadError, now);
     if (row.task_id) taskService.updateTaskError(db, row.task_id, downloadError);
     log.error('Video generation failed before completion', { id: videoGenId, error: downloadError });

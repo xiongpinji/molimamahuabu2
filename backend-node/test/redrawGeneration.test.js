@@ -1005,6 +1005,82 @@ test('原生对白 post-provider 故障矩阵均保留 held/attention/candidate/
   }
 });
 
+test('原生对白 provider completed 后下载保存失败保留 held/attention/download candidate 且跨 key 不重提', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalPollVideoTask = videoClient.pollVideoTask;
+  const originalFetch = global.fetch;
+  let providerSubmits = 0;
+  t.after(() => {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.pollVideoTask = originalPollVideoTask;
+    global.fetch = originalFetch;
+    state.db.close();
+  });
+  state.db.prepare('DELETE FROM ai_service_configs').run();
+  addNativeDialogueCapability(state.db);
+  prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 4 } },
+  });
+  state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    startMs: 0,
+    endMs: 5000,
+    compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+  });
+
+  videoClient.callVideoApi = async (_db, _log, input) => {
+    providerSubmits += 1;
+    assert.equal(input.generate_audio, true);
+    assert.equal(input.model, TOAPIS_NATIVE_MODEL);
+    return { task_id: 'provider-native-download-failure' };
+  };
+  videoClient.pollVideoTask = async () => ({
+    video_url: 'https://cdn.test/native-download-failure.mp4?signature=secret',
+  });
+  global.fetch = async () => {
+    throw new Error('provider artifact download failed');
+  };
+
+  const first = await generateShot(ctx(state.db, {
+    awaitCompletion: true,
+    resolveVideoConditioningCapability: undefined,
+    evidenceRoots,
+    nativeAudioValidator: async () => assert.fail('native validator must not run when download failed'),
+    assetImporter: () => assert.fail('asset import must not run when download failed'),
+  }), { shotId });
+
+  assert.equal(first.status, 'needs_attention', first.error);
+  assert.equal(providerSubmits, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
+  const audit = nativeAudit(state.db, shotId, first.task_id);
+  assert.equal(audit.status, 'failed');
+  assert.equal(audit.failure_stage, 'download');
+  assert.equal(audit.human_review.status, 'unavailable');
+  assert.equal(audit.candidate.provider_task_id_sha256.length, 64);
+  assert.equal(audit.candidate.artifact_locator_sha256.length, 64);
+  assert.equal(JSON.stringify(audit).includes('provider-native-download-failure'), false);
+  assert.equal(JSON.stringify(audit).includes('native-download-failure.mp4'), false);
+  assert.equal(JSON.stringify(audit).includes('signature=secret'), false);
+
+  const second = await generateShot(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    videoProcessor: async () => { providerSubmits += 1; },
+  }), { shotId, idempotency_key: 'different-key-after-native-download-failure' });
+  assert.equal(second.status, 'needs_attention');
+  assert.equal(second.video_generation_id, first.video_generation_id);
+  assert.equal(providerSubmits, 1);
+});
+
 test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共同持久化且计费快照不含签名', async () => {
   const state = setup();
   try {
