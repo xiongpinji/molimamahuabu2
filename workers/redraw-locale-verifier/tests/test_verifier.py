@@ -153,6 +153,10 @@ class VerifierTests(unittest.TestCase):
             "scope": "language",
             "model_manifest_sha256": "f" * 64,
             "calibration_manifest_sha256": "9" * 64,
+            "models": {
+                "asr_revision": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
+                "asr_tree_sha256": "8" * 64,
+            },
             "thresholds": {
                 "language_probability_min": 0.80,
                 "dialogue_similarity_min": 0.80,
@@ -454,6 +458,14 @@ class VerifierTests(unittest.TestCase):
         )
         self.assertEqual(result["model_manifest_sha256"], "f" * 64)
         self.assertEqual(result["calibration_manifest_sha256"], "9" * 64)
+        self.assertIn("models", result)
+        self.assertEqual(
+            result["models"],
+            {
+                "asr_revision": "2ec96c5472da50d38d40c0cfe0602af2e94b4c8a",
+                "asr_tree_sha256": "8" * 64,
+            },
+        )
         self.assertEqual(
             result["video_invocation"],
             {
@@ -511,6 +523,36 @@ class VerifierTests(unittest.TestCase):
                 serialized = json.dumps(result, sort_keys=True, ensure_ascii=False)
                 self.assertNotIn(transcript, serialized)
                 self.assertNotIn("provider-real-1", serialized)
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_model_binding_fails_closed_when_asr_model_evidence_is_missing_or_invalid(self):
+        valid_models = self.native_pack["models"]
+        invalid_models = [
+            None,
+            {"asr_tree_sha256": "8" * 64},
+            {**valid_models, "asr_revision": ""},
+            {**valid_models, "asr_revision": 7},
+            {"asr_revision": valid_models["asr_revision"]},
+            {**valid_models, "asr_tree_sha256": "8" * 63},
+            {**valid_models, "asr_tree_sha256": "A" * 64},
+        ]
+        for models in invalid_models:
+            pack = dict(self.native_pack)
+            if models is None:
+                pack.pop("models")
+            else:
+                pack["models"] = models
+            with self.subTest(models=models):
+                result = verify_native_audio(
+                    self.native_request,
+                    pack,
+                    allowed_root=self.allowed_root,
+                    asr=self._native_asr(),
+                    accent=ExplodingAccent(),
+                )
+
+                self.assertFalse(result["language_verified"])
+                self.assertFalse(result["checks"]["models"])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ REQUIRED_NATIVE_THRESHOLDS = {
     "dialogue_similarity_min",
     "speech_chars_per_second_max",
 }
+REQUIRED_NATIVE_MODELS = {
+    "asr_revision",
+    "asr_tree_sha256",
+}
 
 
 def verify_audio(request, pack, *, allowed_root, asr, accent):
@@ -127,6 +131,7 @@ def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
         and speech_chars_per_second <= thresholds["speech_chars_per_second_max"],
         "model_manifest": _valid_hash(pack.get("model_manifest_sha256")) if isinstance(pack, dict) else False,
         "calibration_manifest": _valid_hash(pack.get("calibration_manifest_sha256")) if isinstance(pack, dict) else False,
+        "models": _native_models_valid(pack.get("models")) if isinstance(pack, dict) else False,
     }
     language_verified = all(checks.values())
     return {
@@ -143,6 +148,7 @@ def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
         "segments": segments,
         "model_manifest_sha256": pack.get("model_manifest_sha256") if isinstance(pack, dict) else None,
         "calibration_manifest_sha256": pack.get("calibration_manifest_sha256") if isinstance(pack, dict) else None,
+        "models": _native_models_evidence(pack.get("models")) if isinstance(pack, dict) else {},
         "asr": _asr_response(asr_evidence, probability),
         "checks": checks,
         "video_invocation": _video_invocation_evidence(request.get("video_invocation")),
@@ -348,6 +354,25 @@ def _models_valid(models):
     return all(isinstance(models[key], str) and models[key] for key in ("asr_revision", "accent_revision")) and all(
         _valid_hash(models[key]) for key in ("asr_tree_sha256", "accent_tree_sha256")
     )
+
+
+def _native_models_valid(models):
+    return (
+        isinstance(models, dict)
+        and REQUIRED_NATIVE_MODELS.issubset(models)
+        and isinstance(models.get("asr_revision"), str)
+        and bool(models["asr_revision"].strip())
+        and _valid_hash(models.get("asr_tree_sha256"))
+    )
+
+
+def _native_models_evidence(models):
+    if not _native_models_valid(models):
+        return {}
+    return {
+        "asr_revision": models["asr_revision"],
+        "asr_tree_sha256": models["asr_tree_sha256"],
+    }
 
 
 def _tts_invocation_evidence(value):
