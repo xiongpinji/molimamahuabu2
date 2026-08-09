@@ -28,6 +28,7 @@ REQUIRED_NATIVE_MODELS = {
     "asr_revision",
     "asr_tree_sha256",
 }
+MAX_NATIVE_SEGMENTS = 256
 
 
 def verify_audio(request, pack, *, allowed_root, asr, accent):
@@ -262,10 +263,11 @@ def _native_thresholds(pack):
 
 
 def _native_segments(value):
-    if not isinstance(value, (list, tuple)) or not value:
+    if not isinstance(value, (list, tuple)) or not value or len(value) > MAX_NATIVE_SEGMENTS:
         return [], False, 0.0
     response = []
     speech_seconds = 0.0
+    previous_end = 0.0
     for segment in value:
         if not isinstance(segment, dict):
             return [], False, 0.0
@@ -280,6 +282,7 @@ def _native_segments(value):
             or not math.isfinite(start)
             or not math.isfinite(end)
             or start < 0.0
+            or start < previous_end
             or end <= start
         ):
             return [], False, 0.0
@@ -291,6 +294,7 @@ def _native_segments(value):
             }
         )
         speech_seconds += end - start
+        previous_end = end
     return response, True, speech_seconds
 
 

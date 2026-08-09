@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -13,6 +14,7 @@ import redraw_locale_worker.server as server_module
 from redraw_locale_worker.server import (
     LocaleUnixServer,
     build_ready_payload,
+    create_unix_server,
     is_ready_expired,
     make_test_server,
     safe_unlink_socket,
@@ -94,6 +96,7 @@ class ServerTests(unittest.TestCase):
         self.native_pack = {
             "id": "es@1",
             "language": "es",
+            "scope": "language",
             "model_manifest_sha256": "c" * 64,
             "calibration_manifest_sha256": "d" * 64,
         }
@@ -226,6 +229,11 @@ class ServerTests(unittest.TestCase):
                 "transcript_text": "Anna did not pay 50 dollars",
                 "approved_text": "Anna did not pay 50 dollars",
                 "transcript_sha256": "c" * 64,
+                "video_invocation": {
+                    "provider_task_id": "provider-secret-task",
+                    "task_id": "legacy-secret-task",
+                    "provider_task_id_sha256": "d" * 64,
+                },
             }
 
         self.server = make_test_server(verifier, pack=self.pack, allowed_root=self.root)
@@ -241,6 +249,9 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("transcript_text", response["result"])
         self.assertNotIn("approved_text", response["result"])
         self.assertEqual(response["result"]["transcript_sha256"], "c" * 64)
+        self.assertNotIn("provider-secret-task", serialized)
+        self.assertNotIn("legacy-secret-task", serialized)
+        self.assertEqual(response["result"]["video_invocation"]["provider_task_id_sha256"], "d" * 64)
 
     def test_ready_payload_is_atomic_short_lived_and_expirable(self):
         ready_path = self.root / "run" / "worker.ready.json"
@@ -249,6 +260,17 @@ class ServerTests(unittest.TestCase):
         write_ready(ready_path, self.pack, now=now, pid=1234)
         payload = json.loads(ready_path.read_text(encoding="utf-8"))
 
+        self.assertEqual(
+            set(payload),
+            {
+                "schema_version",
+                "pid",
+                "locale_pack",
+                "model_manifest_sha256",
+                "calibration_manifest_sha256",
+                "expires_at",
+            },
+        )
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["pid"], 1234)
         self.assertEqual(payload["locale_pack"], "en-US@1")
@@ -264,6 +286,231 @@ class ServerTests(unittest.TestCase):
             build_ready_payload({**self.pack, "model_manifest_sha256": "bad"})
         with self.assertRaisesRegex(ValueError, "LOCALE_READY_ATTESTATION_INVALID"):
             build_ready_payload({**self.pack, "id": ""})
+
+    def test_multi_pack_ready_keeps_legacy_fields_and_binds_sorted_pack_attestations(self):
+        pack_by_id = {"es@1": self.native_pack, "en-US@1": self.pack}
+        try:
+            payload = build_ready_payload(
+                self.pack,
+                pack_by_id=pack_by_id,
+                now=datetime(2026, 8, 8, 7, 0, 0, tzinfo=timezone.utc),
+                pid=1234,
+            )
+        except TypeError as exc:
+            self.fail(f"multi-pack ready is not implemented: {exc}")
+
+        self.assertEqual(payload["locale_pack"], "en-US@1")
+        self.assertEqual(payload["model_manifest_sha256"], "a" * 64)
+        self.assertEqual(payload["calibration_manifest_sha256"], "b" * 64)
+        self.assertEqual(payload["enabled_pack_ids"], ["en-US@1", "es@1"])
+        self.assertEqual(
+            payload["pack_attestations"],
+            [
+                {
+                    "id": "en-US@1",
+                    "model_manifest_sha256": "a" * 64,
+                    "calibration_manifest_sha256": "b" * 64,
+                },
+                {
+                    "id": "es@1",
+                    "model_manifest_sha256": "c" * 64,
+                    "calibration_manifest_sha256": "d" * 64,
+                },
+            ],
+        )
+
+    def test_pack_bundle_requires_exact_shape_unique_non_empty_ids_and_legacy_primary(self):
+        parser = getattr(server_module, "_parse_pack_document", None)
+        self.assertTrue(callable(parser), "production pack bundle parser is missing")
+        if not callable(parser):
+            return
+
+        single_pack, single_index = parser(self.pack)
+        self.assertEqual(single_pack["id"], "en-US@1")
+        self.assertIsNone(single_index)
+
+        primary, pack_by_id = parser({"packs": [self.native_pack, self.pack]})
+        self.assertEqual(primary["id"], "en-US@1")
+        self.assertEqual(sorted(pack_by_id), ["en-US@1", "es@1"])
+
+        missing_id = dict(self.native_pack)
+        missing_id.pop("id")
+        invalid_documents = [
+            {"packs": [self.pack, dict(self.pack)]},
+            {"packs": [missing_id]},
+            {"packs": [self.pack], "extra": True},
+            {"packs": []},
+        ]
+        for document in invalid_documents:
+            with self.subTest(document=document), self.assertRaisesRegex(ValueError, "LOCALE_PACK_INVALID"):
+                parser(document)
+
+    def test_main_loads_bundle_and_builds_per_pack_startup_smokes(self):
+        model_manifest_path = self.root / "model-manifest.json"
+        model_manifest_path.write_text('{"models":{}}', encoding="utf-8")
+        expected_model_hash = hashlib.sha256(model_manifest_path.read_bytes()).hexdigest()
+        bundle_path = self.root / "packs.json"
+        en_pack = {**self.pack, "model_manifest_sha256": expected_model_hash}
+        es_pack = {**self.native_pack, "model_manifest_sha256": expected_model_hash}
+        bundle_path.write_text(json.dumps({"packs": [es_pack, en_pack]}), encoding="utf-8")
+        smoke_audio = self.root / "smoke.wav"
+        smoke_audio.write_bytes(b"RIFF")
+        asr_dir = self.root / "asr"
+        accent_dir = self.root / "accent"
+        asr_dir.mkdir()
+        accent_dir.mkdir()
+        calls = []
+        captured = {}
+
+        class FakeAsrEngine:
+            def __init__(self, model_dir):
+                self.model_dir = model_dir
+
+            def infer(self, audio_path):
+                calls.append(("asr", Path(audio_path)))
+                return {}
+
+        class FakeAccentEngine:
+            def __init__(self, runtime_dir):
+                self.runtime_dir = runtime_dir
+
+            def infer(self, audio_path):
+                calls.append(("accent", Path(audio_path)))
+                return {}
+
+        def capture_run_server(socket_path, **kwargs):
+            captured["socket_path"] = socket_path
+            captured.update(kwargs)
+
+        env = {
+            "REDRAW_LOCALE_VERIFIER_SOCKET": str(self.root / "worker.sock"),
+            "REDRAW_LOCALE_VERIFIER_READY_PATH": str(self.root / "worker.ready.json"),
+            "REDRAW_LOCALE_VERIFIER_ALLOWED_ROOT": str(self.root),
+            "REDRAW_LOCALE_VERIFIER_PACK_PATH": str(bundle_path),
+            "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_PATH": str(model_manifest_path),
+            "REDRAW_LOCALE_VERIFIER_MODEL_MANIFEST_SHA256": expected_model_hash,
+            "REDRAW_LOCALE_VERIFIER_SMOKE_AUDIO": str(smoke_audio),
+            "REDRAW_LOCALE_VERIFIER_ASR_MODEL_DIR": str(asr_dir),
+            "REDRAW_LOCALE_VERIFIER_ACCENT_RUNTIME_DIR": str(accent_dir),
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("redraw_locale_worker.engines.FasterWhisperEngine", FakeAsrEngine),
+            patch("redraw_locale_worker.engines.CommonAccentEngine", FakeAccentEngine),
+            patch.object(server_module, "run_server", side_effect=capture_run_server),
+        ):
+            try:
+                server_module.main()
+            except SystemExit as exc:
+                self.fail(f"production main rejected valid pack bundle: {exc}")
+
+        self.assertEqual(captured["pack"]["id"], "en-US@1")
+        self.assertEqual(sorted(captured["pack_by_id"]), ["en-US@1", "es@1"])
+        server_module.run_startup_checks(
+            captured["pack"],
+            pack_by_id=captured["pack_by_id"],
+            model_hash_check=captured["model_hash_check"],
+            smoke_checks=captured["smoke_checks"],
+        )
+        self.assertEqual(calls, [("asr", smoke_audio), ("accent", smoke_audio), ("asr", smoke_audio)])
+
+        native_only_order = []
+        server_module.run_startup_checks(
+            es_pack,
+            pack_by_id={"es@1": es_pack},
+            model_hash_check=lambda checked_pack: native_only_order.append(("hash", checked_pack["id"])),
+            smoke_checks={"asr": lambda: native_only_order.append(("asr", "es@1"))},
+        )
+        self.assertEqual(native_only_order, [("hash", "es@1"), ("asr", "es@1")])
+
+    def test_run_server_and_create_unix_server_preserve_multi_pack_config(self):
+        pack_by_id = {"es@1": self.native_pack, "en-US@1": self.pack}
+        ready_path = self.root / "worker.ready.json"
+        socket_path = self.root / "worker.sock"
+        order = []
+        active_pack = {"id": None}
+
+        def model_hash_check(pack):
+            active_pack["id"] = pack["id"]
+            order.append(("hash", pack["id"]))
+
+        def asr_smoke():
+            order.append(("asr", active_pack["id"]))
+
+        def accent_smoke():
+            order.append(("accent", active_pack["id"]))
+
+        def fail_create(socket_path_arg, **kwargs):
+            self.assertEqual(Path(socket_path_arg), socket_path)
+            self.assertIs(kwargs["pack_by_id"], pack_by_id)
+            raise OSError
+
+        with patch.object(server_module, "create_unix_server", side_effect=fail_create):
+            try:
+                run_server(
+                    socket_path,
+                    pack=self.pack,
+                    pack_by_id=pack_by_id,
+                    allowed_root=self.root,
+                    asr=object(),
+                    accent=object(),
+                    ready_path=ready_path,
+                    model_hash_check=model_hash_check,
+                    smoke_checks={"asr": asr_smoke, "accent": accent_smoke},
+                )
+            except OSError:
+                pass
+            except TypeError as exc:
+                self.fail(f"run_server does not accept production pack_by_id: {exc}")
+            else:
+                self.fail("patched bind failure was not reached")
+
+        self.assertEqual(
+            order,
+            [
+                ("hash", "en-US@1"),
+                ("asr", "en-US@1"),
+                ("accent", "en-US@1"),
+                ("hash", "es@1"),
+                ("asr", "es@1"),
+            ],
+        )
+
+        captured = {}
+
+        class FakeUnixServer:
+            def __init__(self, server_address, handler, config=None):
+                captured.update(address=server_address, handler=handler, config=config)
+
+        with patch.object(server_module, "LocaleUnixServer", FakeUnixServer):
+            try:
+                create_unix_server(
+                    socket_path,
+                    pack=self.pack,
+                    pack_by_id=pack_by_id,
+                    allowed_root=self.root,
+                    asr=object(),
+                    accent=object(),
+                )
+            except TypeError as exc:
+                self.fail(f"create_unix_server does not accept production pack_by_id: {exc}")
+
+        self.assertIs(captured["config"].pack_by_id, pack_by_id)
+        self.server = server_module.LocaleTcpTestServer(
+            ("127.0.0.1", 0),
+            server_module.LocaleRequestHandler,
+            config=captured["config"],
+        )
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        legacy_response = self._send_json(self.request)
+        native_response = self._send_json(self.native_request)
+
+        self.assertTrue(legacy_response["ok"])
+        self.assertEqual(legacy_response["result"]["locale_pack"], "en-US@1")
+        self.assertTrue(native_response["ok"])
+        self.assertEqual(native_response["result"]["locale_pack"], "es@1")
 
     def test_ready_is_written_only_after_model_hash_and_two_engine_smokes(self):
         ready_path = self.root / "worker.ready.json"

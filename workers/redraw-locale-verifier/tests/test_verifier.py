@@ -525,6 +525,37 @@ class VerifierTests(unittest.TestCase):
                 self.assertNotIn("provider-real-1", serialized)
 
     @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
+    def test_native_audio_segments_reject_overlap_order_invalid_numbers_and_excess_count(self):
+        invalid_segments = [
+            [
+                {"start": 0.0, "end": 1.0, "text": self.native_text},
+                {"start": 0.5, "end": 1.5, "text": self.native_text},
+            ],
+            [
+                {"start": 2.0, "end": 3.0, "text": self.native_text},
+                {"start": 1.0, "end": 2.0, "text": self.native_text},
+            ],
+            [{"start": True, "end": 1.0, "text": self.native_text}],
+            [{"start": 0.0, "end": float("nan"), "text": self.native_text}],
+            [
+                {"start": float(index), "end": float(index + 1), "text": self.native_text}
+                for index in range(257)
+            ],
+        ]
+        for segments in invalid_segments:
+            with self.subTest(segment_count=len(segments), first=segments[0]):
+                result = verify_native_audio(
+                    self.native_request,
+                    self.native_pack,
+                    allowed_root=self.allowed_root,
+                    asr=self._native_asr(segments=segments),
+                    accent=ExplodingAccent(),
+                )
+
+                self.assertFalse(result["language_verified"])
+                self.assertFalse(result["checks"]["speech_segments_present"])
+
+    @unittest.skipUnless(callable(verify_native_audio), "native verifier is not implemented yet")
     def test_native_audio_model_binding_fails_closed_when_asr_model_evidence_is_missing_or_invalid(self):
         valid_models = self.native_pack["models"]
         invalid_models = [

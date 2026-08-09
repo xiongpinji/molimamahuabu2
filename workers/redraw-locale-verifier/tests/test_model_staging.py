@@ -1,6 +1,9 @@
+import asyncio
 import hashlib
 import importlib.util
 import json
+import socket
+import ssl
 import sys
 import tempfile
 import types
@@ -269,6 +272,27 @@ class ModelStagingTests(unittest.TestCase):
         self.assertIn("from faster_whisper import WhisperModel", smoke_source[smoke_source.index("def run_asr("):])
         self.assertIn("from speechbrain.inference.interfaces import pretrained_from_hparams", smoke_source[smoke_source.index("def run_accent("):])
         self.assertIn("from redraw_locale_worker.commonaccent_interface import CommonAccentClassifier", smoke_source[smoke_source.index("def run_accent("):])
+
+    def test_smoke_network_block_is_safe_after_ssl_asyncio_import_and_still_blocks_network(self):
+        smoke = load_smoke_module_with_fakes()
+        original_socket = socket.socket
+        original_create_connection = socket.create_connection
+        original_getaddrinfo = socket.getaddrinfo
+        try:
+            self.assertIsNotNone(ssl.SSLSocket)
+            self.assertIsNotNone(asyncio.get_event_loop_policy())
+
+            smoke.block_network()
+
+            self.assertTrue(issubclass(ssl.SSLSocket, original_socket))
+            with self.assertRaises(smoke.NetworkBlocked):
+                socket.getaddrinfo("example.invalid", 443)
+            with self.assertRaises(smoke.NetworkBlocked):
+                socket.create_connection(("example.invalid", 443))
+        finally:
+            socket.socket = original_socket
+            socket.create_connection = original_create_connection
+            socket.getaddrinfo = original_getaddrinfo
 
     def test_commonaccent_runtime_manifest_binds_vendored_interface_sha_and_allowlist(self):
         with tempfile.TemporaryDirectory() as tmp:
