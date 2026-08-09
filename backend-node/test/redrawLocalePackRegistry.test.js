@@ -264,6 +264,52 @@ test('registry lists only the exact sorted signed packs attested by a multi-pack
   assert.equal(registryFor(fixture).assertReady('en-US').id, 'en-US@1');
 });
 
+test('registry keeps manifest hash optional only for a historical single legacy ready payload', () => {
+  const legacy = writeFixture({ ready: { manifest_sha256: undefined } });
+  assert.equal(registryFor(legacy).assertReady('en-US').id, 'en-US@1');
+
+  const attestedLegacy = writeFixture({
+    ready: {
+      manifest_sha256: undefined,
+      enabled_pack_ids: ['en-US@1'],
+      pack_attestations: [{
+        id: 'en-US@1',
+        model_manifest_sha256: 'a'.repeat(64),
+        calibration_manifest_sha256: 'b'.repeat(64),
+      }],
+    },
+  });
+  assert.throws(() => registryFor(attestedLegacy).listReadyPacks(), {
+    code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+  });
+});
+
+test('registry requires the exact signed manifest hash for modern and multi-pack ready payloads', () => {
+  for (const manifestSha256 of [undefined, '0'.repeat(64)]) {
+    const multi = multiPackFixture({ ready: { manifest_sha256: manifestSha256 } });
+    assert.throws(() => registryFor(multi).listReadyPacks(), {
+      code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+    });
+  }
+
+  const modern = writeFixture({
+    manifest: {
+      schema_version: 1,
+      enabled_packs: [spanishPack()],
+    },
+    ready: {
+      locale_pack: 'es@1',
+      model_manifest_sha256: 'c'.repeat(64),
+      calibration_manifest_sha256: 'd'.repeat(64),
+      manifest_sha256: undefined,
+    },
+  });
+  assert.throws(
+    () => registryFor(modern).assertReady({ packId: 'es@1', language: 'es', scope: 'language' }),
+    { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' },
+  );
+});
+
 test('registry keeps the legacy en-US signed pack compatible without trusting legacy extensions', () => {
   const fixture = writeFixture({
     manifest: {

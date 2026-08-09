@@ -89,6 +89,11 @@ function createRedrawLocalePackRegistry(options = {}) {
     const currentSeconds = Math.floor(Number(deps.now()) / 1000);
     const topLevelPack = state.packs.find((pack) => pack.id === SUPPORTED_PACK)
       || (state.packs.length === 1 ? state.packs[0] : null);
+    const hasPackIds = Object.hasOwn(ready || {}, 'enabled_pack_ids');
+    const hasAttestations = Object.hasOwn(ready || {}, 'pack_attestations');
+    const requiresManifestSha256 = hasPackIds
+      || hasAttestations
+      || state.packs.some((pack) => !pack.legacy);
     if (!ready || typeof ready !== 'object' || Array.isArray(ready)
       || typeof ready.expires_at !== 'number'
       || !Number.isFinite(ready.expires_at)
@@ -99,15 +104,13 @@ function createRedrawLocalePackRegistry(options = {}) {
       || ready.locale_pack !== topLevelPack.id
       || ready.model_manifest_sha256 !== topLevelPack.model_manifest_sha256
       || ready.calibration_manifest_sha256 !== topLevelPack.calibration_manifest_sha256
-      || (Object.hasOwn(ready, 'manifest_sha256')
+      || ((requiresManifestSha256 || Object.hasOwn(ready, 'manifest_sha256'))
         && ready.manifest_sha256 !== state.manifestSha256)
       || !safeProbe(deps.isProcessAlive, ready.pid)
       || !safeProbe(deps.isSocketPath, paths.socketPath)) {
       throw notReady();
     }
 
-    const hasPackIds = Object.hasOwn(ready, 'enabled_pack_ids');
-    const hasAttestations = Object.hasOwn(ready, 'pack_attestations');
     if (hasPackIds !== hasAttestations || (!hasPackIds && state.packs.length !== 1)) {
       throw notReady();
     }
