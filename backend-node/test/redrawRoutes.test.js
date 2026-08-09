@@ -888,6 +888,37 @@ test('语言目录真实响应只暴露已验证原生对白语言级能力', ()
   }
 });
 
+test('语言目录真实响应不展示 human review 缺字段的原生对白能力', () => {
+  const db = createDb();
+  try {
+    const evidence = nativeDialogueEvidence(1, NOW);
+    delete evidence.human_review.lip_sync;
+    insertNativeDialogueLocaleConfig(db, { evidence });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      capabilityService: redrawCapabilityService,
+      canReadArtifact: (assetId) => [771, 772, 773, 774, 775, 776].includes(Number(assetId)),
+    }));
+
+    const locales = captureResponse();
+    handlers.listLocales(request(), locales);
+
+    assert.equal(locales.statusCode, 200);
+    assert.deepEqual(locales.body.data, [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }]);
+  } finally {
+    db.close();
+  }
+});
+
 test('提交分析返回异步任务、厂商任务与 billing 三键，并保持步骤 1', async () => {
   const db = createDb();
   try {

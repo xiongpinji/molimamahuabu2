@@ -530,3 +530,47 @@ test('listLocaleCapabilities hides native dialogue audio when evidence drifts or
     { locale: 'pt', market: '', language: 'pt', region_status: 'unverified', audio_mode: null, native_dialogue_audio: false, locale_verified: false, status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] },
   ]);
 });
+
+test('listLocaleCapabilities requires every native human review field to be present and passed', () => {
+  for (const missingField of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
+    const db = createDb();
+    const humanReview = {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+    delete humanReview[missingField];
+    insertConfig(db, [{
+      language: 'es',
+      locale: 'es',
+      target_language: 'es',
+      target_locale: null,
+      market: '',
+      status: 'verified',
+      evidence: {
+        text: validEvidence(1),
+        subtitles: validEvidence(2),
+        character_image: validEvidence(3),
+        clean_plate_image: validEvidence(4),
+        video: validEvidence(5),
+        native_dialogue_audio: {
+          ...validNativeEvidence(1, NOW, 41),
+          human_review: humanReview,
+        },
+      },
+    }]);
+
+    assert.deepEqual(listLocaleCapabilities(db, (id) => id === 41 || (id >= 1 && id <= 5)), [{
+      locale: 'es',
+      market: '',
+      language: 'es',
+      region_status: 'unverified',
+      audio_mode: null,
+      native_dialogue_audio: false,
+      locale_verified: false,
+      status: 'subtitle_only',
+      blocking: ['tts', 'native_dialogue_audio'],
+    }], missingField);
+  }
+});
