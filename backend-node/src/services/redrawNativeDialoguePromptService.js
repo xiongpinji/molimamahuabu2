@@ -36,11 +36,11 @@ function compileNativeDialoguePrompt(input) {
   assertAllowedFields(input, TOP_LEVEL_FIELDS, 'input');
 
   const shot = normalizeShot(input.shot);
-  const language = nonEmptyString(input.language, 'language');
-  const promptLanguageLabel = nonEmptyString(input.promptLanguageLabel, 'promptLanguageLabel');
-  const basePrompt = nonEmptyString(input.basePrompt, 'basePrompt');
   const modelPin = normalizeModelPin(input.modelPin);
   const localePack = normalizeLocalePack(input.localePack);
+  const language = languageCode(input.language, 'language', localePack.language);
+  const promptLanguageLabel = promptSafeString(input.promptLanguageLabel, 'promptLanguageLabel');
+  const basePrompt = promptSafeString(input.basePrompt, 'basePrompt');
   const dialogues = normalizeDialogues(input.dialogues, shot, localePack.thresholds.speech_chars_per_second_max);
 
   const approvedText = dialogues.map((line) => line.text).join('\n');
@@ -111,6 +111,7 @@ function normalizeLocalePack(localePack) {
   }
   return {
     id: nonEmptyString(localePack.id, 'localePack.id'),
+    language: languageCode(localePack.language, 'localePack.language'),
     thresholds: {
       speech_chars_per_second_max: max,
     },
@@ -146,8 +147,8 @@ function normalizeDialogue(dialogue, index, shot, maxCharsPerSecond) {
   if (endMs <= startMs || startMs < shot.start_ms || endMs > shot.end_ms) {
     fail(`${label} window invalid`);
   }
-  const speakerId = nonEmptyString(dialogue.speaker_id, `${label}.speaker_id`);
-  const text = nonEmptyString(dialogue.text, `${label}.text`);
+  const speakerId = promptSafeString(dialogue.speaker_id, `${label}.speaker_id`);
+  const text = promptSafeString(dialogue.text, `${label}.text`);
   const durationSeconds = (endMs - startMs) / 1000;
   const charsPerSecond = Array.from(text).length / durationSeconds;
   if (charsPerSecond > maxCharsPerSecond) {
@@ -196,6 +197,22 @@ function nonEmptyString(value, name) {
     fail(`${name} invalid`);
   }
   return value.trim();
+}
+
+function promptSafeString(value, name) {
+  const text = nonEmptyString(value, name);
+  if (/[\u0000-\u001F\u007F<>]/.test(text)) {
+    fail(`${name} invalid`);
+  }
+  return text;
+}
+
+function languageCode(value, name, expected = null) {
+  const code = nonEmptyString(value, name);
+  if (!/^[a-z]{2,8}$/.test(code) || (expected && code !== expected)) {
+    fail(`${name} invalid`);
+  }
+  return code;
 }
 
 function assertPlainObject(value, name) {

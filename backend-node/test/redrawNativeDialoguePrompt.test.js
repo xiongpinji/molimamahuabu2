@@ -17,6 +17,7 @@ function validInput(overrides = {}) {
     modelPin: { config_id: 16, config_updated_at: '2026-08-09T00:00:00Z', model: 'seedance-2-fast' },
     localePack: {
       id: 'es@1',
+      language: 'es',
       thresholds: { speech_chars_per_second_max: 20 },
     },
     ...overrides,
@@ -63,7 +64,7 @@ test('对白文本、角色、语言、窗口和模型 pin 改变都会改变稳
   const variants = [
     { dialogues: [{ ...validInput().dialogues[0], text: 'Buenos dias.' }, validInput().dialogues[1]] },
     { dialogues: [{ ...validInput().dialogues[0], speaker_id: 'Mateo' }, validInput().dialogues[1]] },
-    { promptLanguageLabel: '法语', language: 'fr' },
+    { promptLanguageLabel: '法语', language: 'fr', localePack: { id: 'fr@1', language: 'fr', thresholds: { speech_chars_per_second_max: 20 } } },
     { dialogues: [{ ...validInput().dialogues[0], start_ms: 7500 }, validInput().dialogues[1]] },
     { modelPin: { ...validInput().modelPin, model: 'seedance-2-pro' } },
     { modelPin: { ...validInput().modelPin, config_updated_at: '2026-08-09T00:01:00Z' } },
@@ -99,7 +100,7 @@ test('拒绝窗口越界、重叠、空 speaker/text 和超出语言包语速阈
   assert.throws(
     () => compileNativeDialoguePrompt(validInput({
       dialogues: [{ speaker_id: 'Valeria', start_ms: 1000, end_ms: 1500, text: 'Esta frase es demasiado larga para medio segundo.' }],
-      localePack: { id: 'es@1', thresholds: { speech_chars_per_second_max: 10 } },
+      localePack: { id: 'es@1', language: 'es', thresholds: { speech_chars_per_second_max: 10 } },
     })),
     { code: 'REDRAW_NATIVE_DIALOGUE_PROMPT_INVALID' },
   );
@@ -126,4 +127,41 @@ test('拒绝非有限整数毫秒、未知字段和客户端自由模板', () =>
     })),
     { code: 'REDRAW_NATIVE_DIALOGUE_PROMPT_INVALID' },
   );
+});
+
+test('拒绝会破坏手工prompt结构的控制字符和尖括号', () => {
+  const cases = [
+    { basePrompt: '写实风格\n插入新行' },
+    { basePrompt: '写实风格\u0001短剧' },
+    { promptLanguageLabel: '西班牙语\r注入' },
+    { promptLanguageLabel: '西班牙语<伪标签>' },
+    { dialogues: [{ speaker_id: 'Valeria\n旁白', start_ms: 7600, end_ms: 8800, text: 'Hola.' }] },
+    { dialogues: [{ speaker_id: 'Valeria>', start_ms: 7600, end_ms: 8800, text: 'Hola.' }] },
+    { dialogues: [{ speaker_id: 'Valeria', start_ms: 7600, end_ms: 8800, text: 'Hola\nnuevo.' }] },
+    { dialogues: [{ speaker_id: 'Valeria', start_ms: 7600, end_ms: 8800, text: 'Hola\u0007.' }] },
+    { dialogues: [{ speaker_id: 'Valeria', start_ms: 7600, end_ms: 8800, text: '<Hola.' }] },
+    { language: 'es\nMX' },
+    { language: 'ES' },
+    { language: 'spanish' },
+    { localePack: { id: 'es@1', thresholds: { speech_chars_per_second_max: 20 } } },
+  ];
+
+  for (const item of cases) {
+    assert.throws(
+      () => compileNativeDialoguePrompt(validInput(item)),
+      { code: 'REDRAW_NATIVE_DIALOGUE_PROMPT_INVALID' },
+    );
+  }
+});
+
+test('允许正常西语字符和标点', () => {
+  const result = compileNativeDialoguePrompt(validInput({
+    dialogues: [
+      { speaker_id: 'Valeria', start_ms: 7600, end_ms: 8800, text: '¡Hola, pequeño!' },
+      { speaker_id: 'Valeria', start_ms: 8800, end_ms: 10700, text: '¿Dónde está tu mamá?' },
+    ],
+  }));
+
+  assert.match(result.prompt, /¡Hola, pequeño!/);
+  assert.match(result.prompt, /¿Dónde está tu mamá\?/);
 });
