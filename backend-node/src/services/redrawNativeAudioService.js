@@ -18,40 +18,42 @@ const DEFAULT_FFPROBE_TIMEOUT_MS = 15_000;
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKER_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_PCM_BYTES = 16_000 * 2 * 16;
+const DEFAULT_MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_DURATION_DELTA_MS = 750;
 const DEFAULT_SILENCE_THRESHOLD_DB = -45;
 
 async function validateNativeAudio(input = {}) {
   const storageRoot = resolveStorageRoot(input.storageRoot);
   const videoPath = resolveSafePath(storageRoot, input.videoPath);
-  const artifactSha256 = await sha256File(videoPath);
-  const invocation = normalizeInvocation(input.videoInvocation, artifactSha256);
-  const probe = await probeMedia(videoPath, input);
-  const videoStream = probe.streams.find((stream) => stream.codec_type === 'video');
-  const audioStream = probe.streams.find((stream) => stream.codec_type === 'audio');
-  if (!videoStream) throw codedError('REDRAW_NATIVE_AUDIO_VIDEO_STREAM_MISSING', '视频缺少视频流');
-  if (!audioStream) throw codedError('REDRAW_NATIVE_AUDIO_STREAM_MISSING', '视频缺少音频流');
-
-  const videoDurationMs = durationMs(probe.format?.duration ?? videoStream.duration);
-  const audioDurationMs = durationMs(audioStream.duration ?? probe.format?.duration);
-  if (input.expectedDurationMs != null) {
-    const delta = Math.abs(videoDurationMs - Number(input.expectedDurationMs));
-    if (!Number.isFinite(delta) || delta > Number(input.maxDurationDeltaMs || DEFAULT_MAX_DURATION_DELTA_MS)) {
-      throw codedError('REDRAW_NATIVE_AUDIO_DURATION_MISMATCH', '视频时长与请求窗口不一致');
-    }
-  }
-  if (audioDurationMs > 0 && videoDurationMs > 0) {
-    const delta = Math.abs(audioDurationMs - videoDurationMs);
-    if (delta > Number(input.maxDurationDeltaMs || DEFAULT_MAX_DURATION_DELTA_MS)) {
-      throw codedError('REDRAW_NATIVE_AUDIO_DURATION_MISMATCH', '音视频时长差超限');
-    }
-  }
-
   let tempDir = null;
   try {
     tempDir = fs.mkdtempSync(path.join(storageRoot, 'native-audio-'));
+    const snapshotPath = createPrivateVideoSnapshot(videoPath, tempDir, input);
+    const artifactSha256 = await sha256File(snapshotPath);
+    const invocation = normalizeInvocation(input.videoInvocation, artifactSha256);
+    const probe = await probeMedia(snapshotPath, input);
+    const videoStream = probe.streams.find((stream) => stream.codec_type === 'video');
+    const audioStream = probe.streams.find((stream) => stream.codec_type === 'audio');
+    if (!videoStream) throw codedError('REDRAW_NATIVE_AUDIO_VIDEO_STREAM_MISSING', '视频缺少视频流');
+    if (!audioStream) throw codedError('REDRAW_NATIVE_AUDIO_STREAM_MISSING', '视频缺少音频流');
+
+    const videoDurationMs = durationMs(probe.format?.duration ?? videoStream.duration);
+    const audioDurationMs = durationMs(audioStream.duration ?? probe.format?.duration);
+    if (input.expectedDurationMs != null) {
+      const delta = Math.abs(videoDurationMs - Number(input.expectedDurationMs));
+      if (!Number.isFinite(delta) || delta > Number(input.maxDurationDeltaMs || DEFAULT_MAX_DURATION_DELTA_MS)) {
+        throw codedError('REDRAW_NATIVE_AUDIO_DURATION_MISMATCH', '视频时长与请求窗口不一致');
+      }
+    }
+    if (audioDurationMs > 0 && videoDurationMs > 0) {
+      const delta = Math.abs(audioDurationMs - videoDurationMs);
+      if (delta > Number(input.maxDurationDeltaMs || DEFAULT_MAX_DURATION_DELTA_MS)) {
+        throw codedError('REDRAW_NATIVE_AUDIO_DURATION_MISMATCH', '音视频时长差超限');
+      }
+    }
+
     const wavPath = path.join(tempDir, 'audio.wav');
-    await extractPcmWav(videoPath, wavPath, input);
+    await extractPcmWav(snapshotPath, wavPath, input);
     const audioSha256 = await sha256File(wavPath);
     const silence = await analyzeWavRms(wavPath, input);
     if (silence.rms_db <= silence.threshold_db) {
@@ -71,6 +73,10 @@ async function validateNativeAudio(input = {}) {
       packId: input.localePack?.id || input.packId,
       thresholds: input.localePack?.thresholds || {},
     });
+    const currentArtifactSha256 = await sha256File(videoPath);
+    if (currentArtifactSha256 !== artifactSha256) {
+      throw codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_CHANGED', '原生对白视频文件验证期间发生变化');
+    }
     const compact = {
       contract: CONTRACT,
       artifact_sha256: artifactSha256,
@@ -85,6 +91,38 @@ async function validateNativeAudio(input = {}) {
     };
   } finally {
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function createPrivateVideoSnapshot(videoPath, tempDir, input) {
+  const maxArtifactBytes = Number(input.maxArtifactBytes || DEFAULT_MAX_ARTIFACT_BYTES);
+  if (!Number.isSafeInteger(maxArtifactBytes) || maxArtifactBytes <= 0) {
+    throw codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_TOO_LARGE', '视频文件大小超限');
+  }
+  let stat;
+  try {
+    stat = fs.statSync(videoPath);
+  } catch (error) {
+    const wrapped = codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_COPY_FAILED', '原生对白视频快照复制失败');
+    wrapped.cause = error;
+    throw wrapped;
+  }
+  if (!stat.isFile() || stat.size <= 0 || stat.size > maxArtifactBytes) {
+    throw codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_TOO_LARGE', '视频文件大小超限');
+  }
+  const snapshotPath = path.join(tempDir, `artifact${path.extname(videoPath) || '.mp4'}`);
+  try {
+    fs.copyFileSync(videoPath, snapshotPath, fs.constants.COPYFILE_EXCL);
+    const copied = fs.statSync(snapshotPath);
+    if (!copied.isFile() || copied.size !== stat.size || copied.size > maxArtifactBytes) {
+      throw codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_COPY_FAILED', '原生对白视频快照复制失败');
+    }
+    return snapshotPath;
+  } catch (error) {
+    if (error.code === 'REDRAW_NATIVE_AUDIO_ARTIFACT_COPY_FAILED') throw error;
+    const wrapped = codedError('REDRAW_NATIVE_AUDIO_ARTIFACT_COPY_FAILED', '原生对白视频快照复制失败');
+    wrapped.cause = error;
+    throw wrapped;
   }
 }
 
@@ -248,26 +286,40 @@ async function verifyWithWorker({ input, wavPath, audioSha256, invocation }) {
     throw codedError('REDRAW_NATIVE_AUDIO_WORKER_UNAVAILABLE', '原生对白 Worker 未配置');
   }
   const timeoutMs = Number(input.workerTimeoutMs || DEFAULT_WORKER_TIMEOUT_MS);
-  return withTimeout(verifier.verifyNativeAudio({
+  const controller = new AbortController();
+  return withTimeout((signal) => verifier.verifyNativeAudio({
     audioPath: wavPath,
     audioSha256,
     approvedText: String(input.approvedText || ''),
     expectedLanguage: String(input.expectedLanguage || ''),
     packId: String(input.localePack?.id || input.packId || ''),
     videoInvocation: invocation,
-  }), timeoutMs);
+    signal,
+  }), timeoutMs, controller);
 }
 
-function withTimeout(promise, timeoutMs) {
+function withTimeout(start, timeoutMs, controller) {
   let timer = null;
-  return Promise.race([
-    Promise.resolve(promise),
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(codedError('REDRAW_NATIVE_AUDIO_WORKER_TIMEOUT', '原生对白 Worker 超时')), timeoutMs);
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn();
+    };
+    timer = setTimeout(() => {
+      const error = codedError('REDRAW_NATIVE_AUDIO_WORKER_TIMEOUT', '原生对白 Worker 超时');
+      settle(() => reject(error));
+      controller.abort();
+    }, timeoutMs);
       timer.unref?.();
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
+    Promise.resolve()
+      .then(() => start(controller.signal))
+      .then(
+        (value) => settle(() => resolve(value)),
+        (error) => settle(() => reject(error)),
+      );
   });
 }
 

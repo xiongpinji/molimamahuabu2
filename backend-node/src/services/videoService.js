@@ -170,6 +170,8 @@ const videoReferenceCapability = require('./videoReferenceCapabilityService');
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 
+const NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+
 function parseReferenceUrls(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -625,7 +627,16 @@ function parseRequestSnapshotForProcessing(value) {
 function isPinnedNativeAudioGeneration(row) {
   if (Number(row?.generate_audio) !== 1) return false;
   const parsed = parseRequestSnapshotForProcessing(row.request_snapshot);
-  return parsed.valid && parsed.snapshot?.generate_audio === true;
+  if (!parsed.valid || parsed.snapshot?.generate_audio !== true) return false;
+  const snapshot = parsed.snapshot;
+  return !!(
+    snapshot.locale_pack
+    && /^[0-9a-f]{64}$/.test(String(snapshot.prompt_hash || ''))
+    && /^[0-9a-f]{64}$/.test(String(snapshot.dialogue_snapshot_hash || ''))
+    && snapshot.config_updated_at
+    && Number(snapshot.ai_service_config_id) === Number(row.ai_service_config_id)
+    && String(snapshot.model || '') === String(row.model || '')
+  );
 }
 
 function compactDownloadFailureMessage(error) {
@@ -1543,7 +1554,7 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   }
   if (downloadError) {
     if (isPinnedNativeAudioGeneration(row)) {
-      const message = `REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED: ${compactDownloadFailureMessage(downloadError)}`.slice(0, 500);
+      const message = `${NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE}: ${compactDownloadFailureMessage(downloadError)}`.slice(0, 500);
       setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
       log.error('Native audio video artifact download failed after provider completion', { id: videoGenId });
       return false;
@@ -2071,6 +2082,7 @@ function attach(db, log, body) {
   return getById(db, id);
 }
 module.exports = {
+  NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE,
   list,
   getById,
   create,

@@ -1076,15 +1076,15 @@ function needsNativeAudioValidation(row, _shot) {
 }
 
 function isNativeAudioDownloadFailure(row, message) {
-  return String(row?.error_msg || message || '').includes('REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED');
+  return String(row?.error_msg || message || '').includes(videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE);
 }
 
 function nativeAudioDownloadFailureError(row, message) {
   const clean = String(row?.error_msg || message || '原生对白视频下载失败，请人工确认后处理')
-    .replace(/^REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED:\s*/, '')
+    .replace(new RegExp(`^${videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE}:\\s*`), '')
     .slice(0, 500);
   const error = new Error(clean);
-  error.code = 'REDRAW_NATIVE_AUDIO_DOWNLOAD_FAILED';
+  error.code = videoService.NATIVE_AUDIO_DOWNLOAD_FAILURE_CODE;
   return error;
 }
 

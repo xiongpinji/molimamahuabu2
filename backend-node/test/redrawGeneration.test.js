@@ -1081,6 +1081,64 @@ test('原生对白 provider completed 后下载保存失败保留 held/attention
   assert.equal(providerSubmits, 1);
 });
 
+test('generate_audio 行但缺少原生快照证据时下载失败仍按 legacy failed/refund', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  const originalPollVideoTask = videoClient.pollVideoTask;
+  const originalFetch = global.fetch;
+  let providerSubmits = 0;
+  t.after(() => {
+    videoClient.callVideoApi = originalCallVideoApi;
+    videoClient.pollVideoTask = originalPollVideoTask;
+    global.fetch = originalFetch;
+    state.db.close();
+  });
+  state.db.prepare('DELETE FROM ai_service_configs').run();
+  addNativeDialogueCapability(state.db);
+  prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+    category: 'video',
+    billing_unit: 'second',
+    resolution_prices: { '480p': { credits: 4 } },
+  });
+  state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+  const shotId = addShot(state.db, state.versionId, {
+    durationMs: 5000,
+    startMs: 0,
+    endMs: 5000,
+    compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+  });
+  const created = await generateShot(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    schedule() {},
+  }), { shotId });
+  state.db.prepare('UPDATE video_generations SET request_snapshot = ? WHERE id = ?')
+    .run(JSON.stringify({ generate_audio: true, model: TOAPIS_NATIVE_MODEL }), created.video_generation_id);
+
+  videoClient.callVideoApi = async (_db, _log, input) => {
+    providerSubmits += 1;
+    assert.equal(input.generate_audio, true);
+    return { task_id: 'provider-body-audio-not-native-snapshot' };
+  };
+  videoClient.pollVideoTask = async () => ({ video_url: 'https://cdn.test/legacy-download-failure.mp4' });
+  global.fetch = async () => { throw new Error('provider artifact download failed'); };
+
+  const result = await runShotGeneration(ctx(state.db, {
+    resolveVideoConditioningCapability: undefined,
+    evidenceRoots,
+  }), created.task_id);
+
+  assert.equal(result.status, 'failed');
+  assert.equal(providerSubmits, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(result.task_id).status, 'failed');
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(result.video_generation_id).status, 'failed');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'refunded');
+  assert.equal(nativeAudit(state.db, shotId, result.task_id), null);
+});
+
 test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共同持久化且计费快照不含签名', async () => {
   const state = setup();
   try {

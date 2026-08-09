@@ -22,7 +22,7 @@ function createRedrawLocaleVerifierClient(options = {}) {
     if (Buffer.byteLength(line, 'utf8') > REQUEST_LIMIT_BYTES) {
       throw codedError('REDRAW_LOCALE_REQUEST_TOO_LARGE');
     }
-    const response = await roundTrip(socketPath, line, timeoutMs);
+    const response = await roundTrip(socketPath, line, timeoutMs, input.signal);
     return validateWrapper(response, request, pack);
   }
 
@@ -42,7 +42,7 @@ function createRedrawLocaleVerifierClient(options = {}) {
     if (Buffer.byteLength(line, 'utf8') > REQUEST_LIMIT_BYTES) {
       throw codedError('REDRAW_LOCALE_REQUEST_TOO_LARGE');
     }
-    const response = await roundTrip(socketPath, line, timeoutMs);
+    const response = await roundTrip(socketPath, line, timeoutMs, input.signal);
     return validateNativeWrapper(response, request, pack);
   }
 
@@ -86,8 +86,12 @@ function toNativeAudioWorkerRequest(input, pack, audioSha256) {
   };
 }
 
-function roundTrip(socketPath, line, timeoutMs) {
+function roundTrip(socketPath, line, timeoutMs, signal = null) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(codedError('REDRAW_LOCALE_VERIFIER_ABORTED'));
+      return;
+    }
     const socket = net.createConnection(socketPath);
     let settled = false;
     let buffer = '';
@@ -95,6 +99,8 @@ function roundTrip(socketPath, line, timeoutMs) {
     const timer = setTimeout(() => {
       fail(codedError('REDRAW_LOCALE_VERIFIER_TIMEOUT'));
     }, timeoutMs);
+    const abort = () => fail(codedError('REDRAW_LOCALE_VERIFIER_ABORTED'));
+    signal?.addEventListener?.('abort', abort, { once: true });
 
     socket.setNoDelay(true);
     socket.on('connect', () => {
@@ -141,6 +147,7 @@ function roundTrip(socketPath, line, timeoutMs) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener?.('abort', abort);
       socket.destroy();
       fn();
     }

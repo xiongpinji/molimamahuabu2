@@ -445,3 +445,58 @@ test('native client reuses bounded single-line timeout and response limits', asy
     });
   }
 });
+
+test('native client timeout and AbortSignal destroy socket and ignore late responses', async () => {
+  {
+    const audio = makeAudio();
+    let closed = false;
+    let lateWriteHadNoLiveSocket = false;
+    await withServer((socket, request) => {
+      socket.on('close', () => { closed = true; });
+      setTimeout(() => {
+        lateWriteHadNoLiveSocket = socket.destroyed || !socket.write(`${JSON.stringify(nativeOkResponse(request))}\n`);
+      }, 80);
+    }, async ({ socketPath, state }) => {
+      const client = createRedrawLocaleVerifierClient({
+        socketPath,
+        timeoutMs: 20,
+        registry: { assertReady: () => nativePack() },
+      });
+      await assert.rejects(
+        () => client.verifyNativeAudio(validNativeRequest(audio.audioPath)),
+        { code: 'REDRAW_LOCALE_VERIFIER_TIMEOUT' },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      assert.equal(state.requestCount, 1);
+      assert.equal(closed, true);
+      assert.equal(lateWriteHadNoLiveSocket, true);
+    });
+  }
+
+  {
+    const audio = makeAudio();
+    let closed = false;
+    await withServer((socket) => {
+      socket.on('close', () => { closed = true; });
+    }, async ({ socketPath, state }) => {
+      const controller = new AbortController();
+      const client = createRedrawLocaleVerifierClient({
+        socketPath,
+        timeoutMs: 500,
+        registry: { assertReady: () => nativePack() },
+      });
+      const promise = client.verifyNativeAudio({
+        ...validNativeRequest(audio.audioPath),
+        signal: controller.signal,
+      });
+      while (state.requestCount === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      controller.abort();
+      await assert.rejects(() => promise, { code: 'REDRAW_LOCALE_VERIFIER_ABORTED' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(state.requestCount, 1);
+      assert.equal(closed, true);
+    });
+  }
+});

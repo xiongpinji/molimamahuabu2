@@ -288,13 +288,21 @@ test('ffprobe、ffmpeg、PCM 字节和 Worker timeout 都 fail closed 且清理�
     })),
     { code: 'REDRAW_NATIVE_AUDIO_PCM_LIMIT_EXCEEDED' },
   );
+  let workerAbortObserved = false;
   await assert.rejects(
     () => nativeAudio.validateNativeAudio(requestFor(videoPath, {
-      localeVerifier: { verifyNativeAudio: () => new Promise(() => {}) },
+      localeVerifier: {
+        verifyNativeAudio(input) {
+          assert.ok(input.signal instanceof AbortSignal);
+          input.signal.addEventListener('abort', () => { workerAbortObserved = true; });
+          return new Promise(() => {});
+        },
+      },
       workerTimeoutMs: 1,
     })),
     { code: 'REDRAW_NATIVE_AUDIO_WORKER_TIMEOUT' },
   );
+  assert.equal(workerAbortObserved, true);
 
   const leftovers = fs.readdirSync(root).filter((name) => name.startsWith('native-audio-'));
   assert.deepEqual(leftovers, []);
@@ -331,4 +339,46 @@ test('WAV RMS 分析使用分块读取，不把抽取文件一次性载入内存
   }));
 
   assert.match(result.validation_hash, /^[0-9a-f]{64}$/);
+});
+
+test('验证前复制受控私有视频快照且完成前重 hash 原 artifact 防 TOCTOU', async (t) => {
+  const root = makeRoot(t);
+  const videoPath = makeVideo(root);
+  const originalCopyFileSync = fs.copyFileSync;
+  let copiedSnapshot = null;
+  t.after(() => { fs.copyFileSync = originalCopyFileSync; });
+  fs.copyFileSync = function guardedCopyFileSync(src, dest, ...args) {
+    originalCopyFileSync.call(this, src, dest, ...args);
+    if (src === videoPath && String(dest).includes(`${path.sep}native-audio-`)) {
+      copiedSnapshot = dest;
+      fs.copyFileSync = originalCopyFileSync;
+      fs.writeFileSync(videoPath, Buffer.from('artifact changed after private snapshot'));
+    }
+  };
+
+  await assert.rejects(
+    () => nativeAudio.validateNativeAudio(requestFor(videoPath, {
+      localeVerifier: {
+        async verifyNativeAudio(input) {
+          if (copiedSnapshot) {
+            assert.equal(input.videoInvocation.artifactSha256, sha256File(copiedSnapshot));
+          }
+          return workerEvidence({
+            audioSha256: input.audioSha256,
+            videoInvocation: {
+              provider: input.videoInvocation.provider,
+              model: input.videoInvocation.model,
+              aiServiceConfigId: input.videoInvocation.aiServiceConfigId,
+              configUpdatedAt: input.videoInvocation.configUpdatedAt,
+              artifactSha256: input.videoInvocation.artifactSha256,
+              providerTaskIdSha256: crypto.createHash('sha256').update(input.videoInvocation.providerTaskId).digest('hex'),
+            },
+          });
+        },
+      },
+    })),
+    { code: 'REDRAW_NATIVE_AUDIO_ARTIFACT_CHANGED' },
+  );
+  assert.ok(copiedSnapshot, 'must copy artifact to a private native-audio snapshot before probing');
+  assert.equal(fs.existsSync(path.dirname(copiedSnapshot)), false, 'snapshot temp dir must be cleaned');
 });
