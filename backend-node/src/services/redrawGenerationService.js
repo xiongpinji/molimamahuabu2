@@ -1282,11 +1282,14 @@ async function reviewNativeAudio(ctx, input = {}) {
   if (String(existingReview.status || '') !== 'available') {
     throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '当前原生音轨候选不可人工批准');
   }
+  if (String(video.status || '') !== 'needs_attention') {
+    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '当前原生音轨候选状态不可人工批准');
+  }
   if (!audit.audio_stream || !audit.candidate || !audit.candidate.artifact_sha256) {
     throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '原生音轨候选缺少可批准的音轨证据');
   }
   const verifier = ctx.artifactVerifier || verifyVideoArtifact;
-  const verification = await verifier(ctx, video.id, {});
+  const verification = await verifier(ctx, video.id, { allowedStatuses: ['needs_attention'] });
   const timestamp = now(ctx);
   const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
     assetService.importFromVideo(database, logger, videoGenerationId)
@@ -2025,9 +2028,12 @@ async function defaultProbe(absPath) {
   };
 }
 
-async function verifyVideoArtifact(ctx, videoGenerationId) {
+async function verifyVideoArtifact(ctx, videoGenerationId, options = {}) {
   const row = ctx.db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(videoGenerationId));
-  if (!row || row.status !== 'completed' || !row.local_path) {
+  const allowedStatuses = Array.isArray(options.allowedStatuses) && options.allowedStatuses.length
+    ? new Set(options.allowedStatuses.map((status) => String(status)))
+    : new Set(['completed']);
+  if (!row || !allowedStatuses.has(String(row.status || '')) || !row.local_path) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片记录不完整');
   }
   const storageRoot = resolveStorageRoot(ctx);

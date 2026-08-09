@@ -3,9 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
+const { getFfmpegPath, hasLocalFfmpeg, hasLocalFfprobe } = require('../src/utils/ffmpegPath');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
@@ -167,6 +169,36 @@ function nativeAudioEvidence(overrides = {}) {
     validation_hash: 'c'.repeat(64),
     ...overrides,
   };
+}
+
+function writeTinyMp4(t, storageRoot, relativePath, options = {}) {
+  if (!hasLocalFfmpeg() || !hasLocalFfprobe()) {
+    t.skip('ffmpeg/ffprobe unavailable');
+    return false;
+  }
+  const output = path.join(storageRoot, relativePath);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const args = options.audio === false
+    ? [
+        '-y',
+        '-f', 'lavfi',
+        '-i', 'testsrc=size=16x16:rate=1:duration=1',
+        '-c:v', 'mpeg4',
+        output,
+      ]
+    : [
+        '-y',
+        '-f', 'lavfi',
+        '-i', 'testsrc=size=16x16:rate=1:duration=1',
+        '-f', 'lavfi',
+        '-i', 'sine=frequency=1000:duration=1',
+        '-shortest',
+        '-c:v', 'mpeg4',
+        '-c:a', 'aac',
+        output,
+      ];
+  execFileSync(getFfmpegPath(), args, { stdio: 'ignore' });
+  return true;
 }
 
 function addNativeDialogueCapability(db, overrides = {}) {
@@ -1021,6 +1053,155 @@ test('原生对白人工批准用 validation hash 和 updated_at 做 CAS，一�
     assert.equal(duplicate.status, 'completed');
     assert.equal(duplicate.asset_id, 1200);
     assert.equal(importerCalls, 2);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白人工批准使用默认本地 MP4 verifier 接受 needs_attention 候选但仍拒绝不可读和无音轨', async (t) => {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-review-'));
+  t.after(() => {
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  });
+  if (!writeTinyMp4(t, storageRoot, 'videos/native-manual-default.mp4')) {
+    state.db.close();
+    return;
+  }
+  let providerCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+    state.db.prepare(`
+      CREATE TRIGGER block_native_audio_default_settlement_once
+      BEFORE UPDATE OF status ON tenant_usage_reservations
+      WHEN NEW.status = 'confirmed'
+      BEGIN
+        SELECT RAISE(ABORT, 'default verifier settlement blocked');
+      END
+    `).run();
+    const held = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-default-review',
+              video_url = 'https://cdn.test/native-manual-default.mp4',
+              local_path = 'videos/native-manual-default.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 1, width: 16, height: 16 }),
+      nativeAudioValidator: async () => nativeAudioEvidence({
+        verification: {
+          detected_language: 'es',
+          detected_locale: null,
+          language_verified: false,
+          locale_verified: false,
+          transcript_sha256: 'b'.repeat(64),
+          dialogue_similarity: 0.61,
+          speech_chars_per_second: 8,
+        },
+      }),
+      assetImporter: () => ({ id: 1000 }),
+    }), { shotId });
+    state.db.prepare('DROP TRIGGER block_native_audio_default_settlement_once').run();
+    assert.equal(held.status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'needs_attention');
+    const beforeReview = state.db.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(shotId).updated_at;
+
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/missing-native-review.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID',
+    );
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'held');
+
+    const draftWithoutAudio = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    const originalAudit = draftWithoutAudio.native_audio_validation;
+    draftWithoutAudio.native_audio_validation = {
+      ...draftWithoutAudio.native_audio_validation,
+      audio_stream: null,
+      candidate: {
+        ...draftWithoutAudio.native_audio_validation.candidate,
+        artifact_sha256: null,
+      },
+    };
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify(draftWithoutAudio), shotId);
+    state.db.prepare("UPDATE video_generations SET local_path = 'videos/native-manual-default.mp4' WHERE id = ?")
+      .run(held.video_generation_id);
+    await assert.rejects(
+      () => reviewNativeAudio(ctx(state.db, { storageRoot }), {
+        shotId,
+        validation_hash: 'c'.repeat(64),
+        expected_updated_at: beforeReview,
+        decision: 'approved',
+        speaker_order: 'passed',
+        lip_sync: 'passed',
+        extra_dialogue: 'passed',
+      }),
+      (error) => error.code === 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE',
+    );
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        ...draftWithoutAudio,
+        native_audio_validation: nativeAudioEvidence({
+          status: 'verified',
+          human_review: { status: 'available' },
+          candidate: originalAudit.candidate,
+        }),
+      }), shotId);
+
+    const approved = await reviewNativeAudio(ctx(state.db, {
+      storageRoot,
+      assetImporter: (db, _log, videoId) => {
+        importerCalls += 1;
+        assert.equal(videoId, held.video_generation_id);
+        return { id: 1400 };
+      },
+    }), {
+      shotId,
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: beforeReview,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    });
+
+    assert.equal(approved.status, 'completed');
+    assert.equal(providerCalls, 1);
+    assert.equal(importerCalls, 1);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(held.video_generation_id).status, 'completed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(held.reservation_id).status, 'confirmed');
   } finally {
     state.db.close();
   }
