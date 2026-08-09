@@ -58,7 +58,7 @@ test('Space 平移结束后抑制空白点击避免清空当前编辑焦点', ()
 
 test('图片预览独占 Space 手势且不触发画布平移结束副作用', () => {
   assert.match(canvasSource, /let mediaPreviewOwnsSpaceGesture = false/)
-  assert.match(canvasSource, /function isImageMediaPreviewOpen\(\) \{\s*\n\s*return Boolean\(document\.querySelector\('\.image-lightbox\[role="dialog"\]'\)\)\s*\n\s*\}/)
+  assert.match(canvasSource, /function isImageMediaPreviewOpen\(\) \{\s*\n\s*return Boolean\(document\.querySelector\('\[role="dialog"\]\[aria-label="图片全屏预览"\]'\)\)\s*\n\s*\}/)
   assert.match(canvasSource, /if \(key === ' ' \|\| key === 'spacebar'\) \{\s*\n\s*if \(isImageMediaPreviewOpen\(\)\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*mediaPreviewOwnsSpaceGesture = true\s*\n\s*return\s*\n\s*\}\s*\n\s*event\.preventDefault\(\)\s*\n\s*setSpacePanning\(true\)/)
   assert.match(canvasSource, /function onCanvasKeyup\(event\) \{[\s\S]*if \(key === ' ' \|\| key === 'spacebar'\) \{\s*\n\s*if \(mediaPreviewOwnsSpaceGesture\) \{\s*\n\s*event\.preventDefault\(\)\s*\n\s*mediaPreviewOwnsSpaceGesture = false\s*\n\s*return\s*\n\s*\}\s*\n\s*event\.preventDefault\(\)\s*\n\s*setSpacePanning\(false\)/)
   assert.match(canvasSource, /function onCanvasBlur\(\) \{\s*\n\s*mediaPreviewOwnsSpaceGesture = false\s*\n\s*setSpacePanning\(false\)/)

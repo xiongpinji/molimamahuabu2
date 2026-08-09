@@ -6970,7 +6970,7 @@ function isEditableTarget(target) {
 }
 
 function isImageMediaPreviewOpen() {
-  return Boolean(document.querySelector('.image-lightbox[role="dialog"]'))
+  return Boolean(document.querySelector('[role="dialog"][aria-label="图片全屏预览"]'))
 }
 
 function setSpacePanning(active) {

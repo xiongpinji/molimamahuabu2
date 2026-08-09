@@ -23,6 +23,17 @@ const projectCanvasLayout = {
       url: projectCanvasImageUrl,
       resultUrls: [projectCanvasImageUrl],
     },
+  }, {
+    id: 'project-video-node',
+    type: 'homeCanvasNode',
+    position: { x: 1280, y: 360 },
+    data: {
+      kind: 'video',
+      title: '项目画布视频节点',
+      content: '',
+      url: '/static/e2e-storyboard.mp4',
+      resultUrls: ['/static/e2e-storyboard.mp4'],
+    },
   }],
 }
 
@@ -208,4 +219,26 @@ test('完整项目画布图片预览独占 Space 拖动且不移动底层画布'
 
   await page.keyboard.up('Space')
   await page.mouse.up()
+})
+
+test('完整项目画布视频预览保持关闭基线且不进入图片平移状态', async ({ page }) => {
+  await page.goto('/canvas/3')
+
+  const videoNode = page.locator('.vue-flow__node[data-id="project-video-node"]')
+  const video = videoNode.locator('.node-media')
+  await expect(video).toBeVisible()
+  await video.dblclick()
+
+  const dialog = page.getByRole('dialog', { name: '视频全屏预览' })
+  const canvasMain = page.locator('.canvas-main')
+  await expect(dialog).toBeVisible()
+  await expect(dialog).not.toHaveClass(/is-pan-ready|is-panning/)
+
+  await page.keyboard.down('Space')
+  await expect(dialog).not.toHaveClass(/is-pan-ready|is-panning/)
+  await expect(canvasMain).toHaveClass(/space-panning/)
+  await page.keyboard.up('Space')
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
 })
