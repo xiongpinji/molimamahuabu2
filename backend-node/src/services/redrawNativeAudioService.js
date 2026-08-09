@@ -171,19 +171,57 @@ async function extractPcmWav(videoPath, wavPath, input) {
 async function analyzeWavRms(wavPath, input) {
   const maxPcmBytes = Number(input.maxPcmBytes || DEFAULT_MAX_PCM_BYTES);
   const thresholdDb = Number(input.silenceThresholdDb || DEFAULT_SILENCE_THRESHOLD_DB);
-  const data = fs.readFileSync(wavPath);
-  const dataOffset = findWavDataOffset(data);
-  const pcmBytes = data.length - dataOffset;
-  if (!Number.isSafeInteger(maxPcmBytes) || maxPcmBytes <= 0 || pcmBytes > maxPcmBytes) {
+  if (!Number.isSafeInteger(maxPcmBytes) || maxPcmBytes <= 0) {
+    throw codedError('REDRAW_NATIVE_AUDIO_PCM_LIMIT_EXCEEDED', 'PCM/WAV 字节数超限');
+  }
+  const maxWavBytes = maxPcmBytes + 4096;
+  const stat = fs.statSync(wavPath);
+  if (stat.size > maxWavBytes) {
     throw codedError('REDRAW_NATIVE_AUDIO_PCM_LIMIT_EXCEEDED', 'PCM/WAV 字节数超限');
   }
   let squares = 0;
   let samples = 0;
-  for (let offset = dataOffset; offset + 1 < data.length; offset += 2) {
-    const sample = data.readInt16LE(offset) / 32768;
-    squares += sample * sample;
-    samples += 1;
+  let pcmBytes = 0;
+  let totalBytes = 0;
+  let header = Buffer.alloc(0);
+  let dataOffset = null;
+  let carry = null;
+  const stream = fs.createReadStream(wavPath, { highWaterMark: 64 * 1024 });
+  for await (const chunk of stream) {
+    totalBytes += chunk.length;
+    if (totalBytes > maxWavBytes) {
+      throw codedError('REDRAW_NATIVE_AUDIO_PCM_LIMIT_EXCEEDED', 'PCM/WAV 字节数超限');
+    }
+    let pcm = chunk;
+    if (dataOffset == null) {
+      header = Buffer.concat([header, chunk]);
+      dataOffset = findWavDataOffset(header, true);
+      if (dataOffset == null) {
+        if (header.length > 4096) throw codedError('REDRAW_NATIVE_AUDIO_PCM_INVALID', 'WAV data chunk 缺失');
+        continue;
+      }
+      pcm = header.subarray(dataOffset);
+      header = null;
+    }
+    if (carry != null) {
+      pcm = Buffer.concat([Buffer.from([carry]), pcm]);
+      carry = null;
+    }
+    if (pcm.length % 2 === 1) {
+      carry = pcm[pcm.length - 1];
+      pcm = pcm.subarray(0, pcm.length - 1);
+    }
+    pcmBytes += pcm.length;
+    if (pcmBytes > maxPcmBytes) {
+      throw codedError('REDRAW_NATIVE_AUDIO_PCM_LIMIT_EXCEEDED', 'PCM/WAV 字节数超限');
+    }
+    for (let offset = 0; offset + 1 < pcm.length; offset += 2) {
+      const sample = pcm.readInt16LE(offset) / 32768;
+      squares += sample * sample;
+      samples += 1;
+    }
   }
+  if (dataOffset == null) throw codedError('REDRAW_NATIVE_AUDIO_PCM_INVALID', 'WAV data chunk 缺失');
   if (samples === 0) throw codedError('REDRAW_NATIVE_AUDIO_PCM_INVALID', 'PCM 音频为空');
   const rms = Math.sqrt(squares / samples);
   const rmsDb = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
@@ -193,13 +231,14 @@ async function analyzeWavRms(wavPath, input) {
   };
 }
 
-function findWavDataOffset(buffer) {
+function findWavDataOffset(buffer, allowIncomplete = false) {
   for (let offset = 12; offset + 8 <= buffer.length;) {
     const chunkId = buffer.toString('ascii', offset, offset + 4);
     const chunkSize = buffer.readUInt32LE(offset + 4);
     if (chunkId === 'data') return offset + 8;
     offset += 8 + chunkSize + (chunkSize % 2);
   }
+  if (allowIncomplete) return null;
   throw codedError('REDRAW_NATIVE_AUDIO_PCM_INVALID', 'WAV data chunk 缺失');
 }
 

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -1086,12 +1087,21 @@ function compactNativeAudioEvidence(evidence) {
   };
 }
 
-function nativeAudioCandidate(row) {
+function sha256Text(value) {
+  return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
+}
+
+function nativeAudioCandidate(row, evidence = null) {
+  const snapshot = strictJson(row.request_snapshot, 'video_generations.request_snapshot');
   return {
     video_generation_id: row.id,
-    provider_task_id: row.provider_task_id || null,
-    video_url: row.video_url || null,
-    local_path: row.local_path || null,
+    provider: String(row.provider || ''),
+    model: String(row.model || ''),
+    config_id: Number(row.ai_service_config_id) || null,
+    config_updated_at: String(snapshot.config_updated_at || ''),
+    provider_task_id_sha256: sha256Text(row.provider_task_id || ''),
+    ...(evidence?.artifact_sha256 ? { artifact_sha256: evidence.artifact_sha256 } : {}),
+    artifact_locator_sha256: sha256Text(`${row.video_url || ''}\n${row.local_path || ''}`),
   };
 }
 
@@ -1131,44 +1141,87 @@ async function validateShotNativeAudio(ctx, row, shot) {
   };
 }
 
-function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp) {
+function nativeAudioFailureAudit(row, error, stage, humanReviewStatus, evidence = null) {
   const safeMessage = String(error?.message || error || '原生对白音轨验证失败').slice(0, 500);
+  return {
+    ...(evidence ? compactNativeAudioEvidence(evidence) : {}),
+    status: evidence ? 'verified' : 'failed',
+    failure_stage: stage,
+    error_code: error?.code || 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+    error_message: safeMessage,
+    candidate: nativeAudioCandidate(row, evidence),
+    human_review: { status: humanReviewStatus },
+  };
+}
+
+function markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, options = {}) {
+  const safeMessage = String(error?.message || error || '原生对白音轨验证失败').slice(0, 500);
+  const audit = options.audit || nativeAudioFailureAudit(
+    row,
+    error,
+    options.stage || 'native_audio_validation',
+    options.humanReviewStatus || 'unavailable',
+    options.evidence || null,
+  );
   const draft = strictJson(shot.draft_json, 'draft_json');
-  db.transaction(() => {
-    db.prepare(`
-      UPDATE redraw_shots
-      SET status = 'needs_attention',
-          error_code = 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
-          error_message = ?,
-          draft_json = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(safeMessage, mergeDraft(draft, {
-      generation: {},
-      native_audio_validation: {
-        status: 'failed',
-        error_code: error?.code || 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
-        error_message: safeMessage,
-        candidate: nativeAudioCandidate(row),
-        human_review: { status: 'unavailable' },
-      },
-    }), timestamp, shot.id);
-    db.prepare(`
-      UPDATE async_tasks
-      SET status = 'needs_attention', progress = 90, message = ?, error = ?,
-          result = NULL, completed_at = NULL, updated_at = ?
-      WHERE id = ?
-    `).run(safeMessage, safeMessage, timestamp, task.id);
-    db.prepare(`
-      UPDATE video_generations
-      SET status = 'needs_attention', error_msg = ?, updated_at = ?
-      WHERE id = ? AND task_id = ?
-    `).run(safeMessage, timestamp, row.id, task.id);
-    setVersionGenerationStep(db, {
-      tenantId: shot.tenant_id,
-      userId: shot.user_id,
-    }, shot.version_id, timestamp);
-  })();
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+            error_message = ?,
+            draft_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, mergeDraft(draft, {
+        generation: {},
+        native_audio_validation: audit,
+      }), timestamp, shot.id);
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+            result = NULL, completed_at = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, safeMessage, timestamp, task.id);
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND task_id = ?
+      `).run(safeMessage, timestamp, row.id, task.id);
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    })();
+    return;
+  } catch (persistError) {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE redraw_shots
+        SET status = 'needs_attention',
+            error_code = 'REDRAW_NATIVE_AUDIO_VALIDATION_FAILED',
+            error_message = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, timestamp, shot.id);
+      db.prepare(`
+        UPDATE async_tasks
+        SET status = 'needs_attention', progress = 90, message = ?, error = ?,
+            result = ?, completed_at = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(safeMessage, safeMessage, JSON.stringify({ native_audio_validation: audit }), timestamp, task.id);
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'needs_attention', error_msg = ?, updated_at = ?
+        WHERE id = ? AND task_id = ?
+      `).run(safeMessage, timestamp, row.id, task.id);
+      setVersionGenerationStep(db, {
+        tenantId: shot.tenant_id,
+        userId: shot.user_id,
+      }, shot.version_id, timestamp);
+    })();
+  }
 }
 
 async function runShotGeneration(ctx, taskId) {
@@ -1217,7 +1270,14 @@ async function runShotGeneration(ctx, taskId) {
       verification = await verifier(ctx, row.id, {});
     } catch (error) {
       const timestamp = now(ctx);
-      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      if (needsNativeAudioValidation(row, shot)) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: 'artifact_verification',
+          humanReviewStatus: 'unavailable',
+        });
+      } else {
+        updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      }
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
   }
@@ -1229,13 +1289,17 @@ async function runShotGeneration(ctx, taskId) {
       try {
         nativeAudioValidation = await validateShotNativeAudio(ctx, row, shot);
       } catch (error) {
-        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp);
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: 'native_audio_validation',
+          humanReviewStatus: 'available',
+        });
         return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
       }
     }
     const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
       assetService.importFromVideo(database, logger, videoGenerationId)
     ));
+    let finalizationStage = 'finalization';
     try {
       return db.transaction(() => {
         const claimed = db.prepare(`
@@ -1253,6 +1317,7 @@ async function runShotGeneration(ctx, taskId) {
         }
         const draft = strictJson(shot.draft_json, 'draft_json');
         if (nativeAudioValidation) {
+          finalizationStage = 'native_audio_evidence_write';
           db.prepare(`
             UPDATE redraw_shots
             SET draft_json = ?, updated_at = ?
@@ -1265,6 +1330,7 @@ async function runShotGeneration(ctx, taskId) {
         const updatedDraft = nativeAudioValidation
           ? strictJson(db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shot.id).draft_json, 'draft_json')
           : draft;
+        finalizationStage = 'asset_register';
         imported = importer(db, ctx.log || logNoop, row.id);
         if (imported && typeof imported.then === 'function') {
           throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
@@ -1298,11 +1364,20 @@ async function runShotGeneration(ctx, taskId) {
           local_path: row.local_path,
           probe: verification,
         });
+        finalizationStage = 'settlement';
         redrawBillingService.settleShotGeneration(db, metadata.reservation_id, 'completed');
         return { status: 'completed', task_id: task.id, video_generation_id: row.id, asset_id: imported.id };
       })();
     } catch (error) {
-      updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      if (nativeAudioValidation) {
+        markNativeAudioNeedsAttention(db, task, shot, row, error, timestamp, {
+          stage: finalizationStage,
+          humanReviewStatus: 'available',
+          evidence: nativeAudioValidation,
+        });
+      } else {
+        updateNeedsAttention(db, task.id, shot.id, error.message, timestamp, row.id);
+      }
       return { status: 'needs_attention', error: error.message, task_id: task.id, video_generation_id: row.id };
     }
   }

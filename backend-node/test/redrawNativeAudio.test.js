@@ -40,6 +40,18 @@ function makeVideo(root, name = 'shot.mp4', options = {}) {
   return output;
 }
 
+function makeAudioOnly(root, name = 'audio-only.mp4') {
+  const output = path.join(root, name);
+  execFileSync(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=44100:duration=1.2',
+    '-map', '0:a:0',
+    '-c:a', 'aac',
+    output,
+  ]);
+  return output;
+}
+
 function workerEvidence(overrides = {}) {
   return {
     requestId: 'worker-request-1',
@@ -150,6 +162,7 @@ test('媒体门禁拒绝路径越界、无音轨、近似静音、损坏音频�
   const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-outside-'));
   const outside = makeVideo(outsideRoot, 'outside.mp4');
   t.after(() => fs.rmSync(outsideRoot, { recursive: true, force: true }));
+  const audioOnly = makeAudioOnly(root);
   const noAudio = makeVideo(root, 'no-audio.mp4', { audio: false });
   const silent = makeVideo(root, 'silent.mp4', { silent: true });
   const normal = makeVideo(root, 'normal.mp4');
@@ -189,6 +202,10 @@ test('媒体门禁拒绝路径越界、无音轨、近似静音、损坏音频�
       { code: 'REDRAW_NATIVE_AUDIO_PATH_INVALID' },
     );
   }
+  await assert.rejects(
+    () => nativeAudio.validateNativeAudio(requestFor(audioOnly, { localeVerifier: baseVerifier })),
+    { code: 'REDRAW_NATIVE_AUDIO_VIDEO_STREAM_MISSING' },
+  );
   await assert.rejects(
     () => nativeAudio.validateNativeAudio(requestFor(noAudio, { localeVerifier: baseVerifier })),
     { code: 'REDRAW_NATIVE_AUDIO_STREAM_MISSING' },
@@ -281,4 +298,37 @@ test('ffprobe、ffmpeg、PCM 字节和 Worker timeout 都 fail closed 且清理�
 
   const leftovers = fs.readdirSync(root).filter((name) => name.startsWith('native-audio-'));
   assert.deepEqual(leftovers, []);
+});
+
+test('WAV RMS 分析使用分块读取，不把抽取文件一次性载入内存', async (t) => {
+  const root = makeRoot(t);
+  const videoPath = makeVideo(root);
+  const originalReadFileSync = fs.readFileSync;
+  t.after(() => { fs.readFileSync = originalReadFileSync; });
+  fs.readFileSync = function guardedReadFileSync(file, ...args) {
+    if (String(file).endsWith(`${path.sep}audio.wav`)) {
+      throw new Error('audio.wav must not be read with readFileSync');
+    }
+    return originalReadFileSync.call(this, file, ...args);
+  };
+
+  const result = await nativeAudio.validateNativeAudio(requestFor(videoPath, {
+    localeVerifier: {
+      async verifyNativeAudio(input) {
+        return workerEvidence({
+          audioSha256: input.audioSha256,
+          videoInvocation: {
+            provider: input.videoInvocation.provider,
+            model: input.videoInvocation.model,
+            aiServiceConfigId: input.videoInvocation.aiServiceConfigId,
+            configUpdatedAt: input.videoInvocation.configUpdatedAt,
+            artifactSha256: input.videoInvocation.artifactSha256,
+            providerTaskIdSha256: crypto.createHash('sha256').update(input.videoInvocation.providerTaskId).digest('hex'),
+          },
+        });
+      },
+    },
+  }));
+
+  assert.match(result.validation_hash, /^[0-9a-f]{64}$/);
 });

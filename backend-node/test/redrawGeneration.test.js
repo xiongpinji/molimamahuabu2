@@ -147,6 +147,27 @@ function nativePack(overrides = {}) {
   };
 }
 
+function nativeAudioEvidence(overrides = {}) {
+  return {
+    contract: 'redraw-native-audio-validation-v1',
+    artifact_sha256: 'a'.repeat(64),
+    audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 4980 },
+    video_duration_ms: 5000,
+    silence: { rms_db: -24.1, threshold_db: -45 },
+    verification: {
+      detected_language: 'es',
+      detected_locale: null,
+      language_verified: true,
+      locale_verified: false,
+      transcript_sha256: 'b'.repeat(64),
+      dialogue_similarity: 0.91,
+      speech_chars_per_second: 8,
+    },
+    validation_hash: 'c'.repeat(64),
+    ...overrides,
+  };
+}
+
 function addNativeDialogueCapability(db, overrides = {}) {
   const now = overrides.updatedAt || new Date('2026-08-06T00:00:00.000Z').toISOString();
   const model = overrides.model || TOAPIS_NATIVE_MODEL;
@@ -270,6 +291,14 @@ function ctx(db, overrides = {}) {
 
 function count(db, table, where = '1=1') {
   return db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
+}
+
+function nativeAudit(db, shotId, taskId) {
+  const draft = JSON.parse(db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+  if (draft.native_audio_validation) return draft.native_audio_validation;
+  const task = db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(taskId);
+  if (!task?.result) return null;
+  return JSON.parse(task.result).native_audio_validation || null;
 }
 
 function workflowState(db, versionId) {
@@ -808,8 +837,10 @@ test('原生对白 post-provider 音轨验证失败保持 candidate、needs_atte
     assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
     const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
     assert.equal(draft.native_audio_validation.status, 'failed');
-    assert.equal(draft.native_audio_validation.human_review.status, 'unavailable');
-    assert.equal(draft.native_audio_validation.candidate.local_path, 'videos/native-bad.mp4');
+    assert.equal(draft.native_audio_validation.human_review.status, 'available');
+    assert.equal(draft.native_audio_validation.candidate.provider_task_id_sha256.length, 64);
+    assert.equal(JSON.stringify(draft.native_audio_validation).includes('provider-native-bad'), false);
+    assert.equal(JSON.stringify(draft.native_audio_validation).includes('videos/native-bad.mp4'), false);
 
     const second = await generateShot(ctx(state.db, {
       resolveVideoConditioningCapability: undefined,
@@ -820,6 +851,157 @@ test('原生对白 post-provider 音轨验证失败保持 candidate、needs_atte
     assert.equal(providerCalls, 1);
   } finally {
     state.db.close();
+  }
+});
+
+test('原生对白 post-provider 故障矩阵均保留 held/attention/candidate/验证证据且跨 key 不重提', async () => {
+  const cases = [
+    {
+      mode: 'artifact_failed',
+      stage: 'artifact_verification',
+      humanReview: 'unavailable',
+      artifactVerifier: async () => {
+        throw Object.assign(new Error('artifact unreadable'), { code: 'REDRAW_VIDEO_ARTIFACT_INVALID' });
+      },
+      expectVerifiedEvidence: false,
+    },
+    {
+      mode: 'native_validator_failed',
+      stage: 'native_audio_validation',
+      humanReview: 'available',
+      nativeAudioValidator: async () => {
+        throw Object.assign(new Error('dialogue mismatch'), { code: 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID' });
+      },
+      expectVerifiedEvidence: false,
+    },
+    {
+      mode: 'evidence_transaction_write_failed',
+      stage: 'native_audio_evidence_write',
+      humanReview: 'available',
+      beforeRun(db) {
+        db.prepare(`
+          CREATE TRIGGER block_native_audio_draft
+          BEFORE UPDATE OF draft_json ON redraw_shots
+          WHEN NEW.draft_json LIKE '%native_audio_validation%'
+          BEGIN
+            SELECT RAISE(ABORT, 'native evidence write blocked');
+          END
+        `).run();
+      },
+      expectVerifiedEvidence: true,
+    },
+    {
+      mode: 'asset_register_failed',
+      stage: 'asset_register',
+      humanReview: 'available',
+      assetImporter: () => {
+        throw new Error('asset register failed');
+      },
+      expectVerifiedEvidence: true,
+    },
+    {
+      mode: 'settlement_failed',
+      stage: 'settlement',
+      humanReview: 'available',
+      assetImporter: (db) => {
+        db.prepare(`
+          CREATE TRIGGER block_native_audio_settlement
+          BEFORE UPDATE OF status ON tenant_usage_reservations
+          WHEN NEW.status = 'confirmed'
+          BEGIN
+            SELECT RAISE(ABORT, 'settlement blocked');
+          END
+        `).run();
+        return { id: 1000 };
+      },
+      expectVerifiedEvidence: true,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const state = setup();
+    let providerCalls = 0;
+    let validationCalls = 0;
+    let importerCalls = 0;
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      addNativeDialogueCapability(state.db);
+      prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+        category: 'video',
+        billing_unit: 'second',
+        resolution_prices: { '480p': { credits: 4 } },
+      });
+      state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+      const shotId = addShot(state.db, state.versionId, {
+        durationMs: 5000,
+        startMs: 0,
+        endMs: 5000,
+        compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+        localized_dialogue_json: JSON.stringify([
+          { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+        ]),
+      });
+      scenario.beforeRun?.(state.db);
+
+      const first = await generateShot(ctx(state.db, {
+        awaitCompletion: true,
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async (db, _log, videoId) => {
+          providerCalls += 1;
+          db.prepare(`UPDATE video_generations
+            SET status = 'completed', provider_task_id = ?,
+                video_url = ?, local_path = ?
+            WHERE id = ?`).run(`provider-${scenario.mode}`, `https://cdn.test/${scenario.mode}.mp4`, `videos/${scenario.mode}.mp4`, videoId);
+        },
+        artifactVerifier: scenario.artifactVerifier || (async () => ({ duration: 5, width: 720, height: 1280 })),
+        nativeAudioValidator: async (...args) => {
+          validationCalls += 1;
+          if (scenario.nativeAudioValidator) return scenario.nativeAudioValidator(...args);
+          return nativeAudioEvidence();
+        },
+        assetImporter: (...args) => {
+          importerCalls += 1;
+          if (scenario.assetImporter) return scenario.assetImporter(...args);
+          return { id: 1000 };
+        },
+      }), { shotId });
+
+      assert.equal(first.status, 'needs_attention', scenario.mode);
+      assert.equal(providerCalls, 1, scenario.mode);
+      assert.equal(validationCalls, scenario.mode === 'artifact_failed' ? 0 : 1, scenario.mode);
+      assert.equal(importerCalls, ['asset_register_failed', 'settlement_failed'].includes(scenario.mode) ? 1 : 0, scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(first.task_id).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention', scenario.mode);
+      assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held', scenario.mode);
+
+      const audit = nativeAudit(state.db, shotId, first.task_id);
+      assert.equal(audit.status, scenario.expectVerifiedEvidence ? 'verified' : 'failed', scenario.mode);
+      assert.equal(audit.failure_stage, scenario.stage, scenario.mode);
+      assert.equal(audit.human_review.status, scenario.humanReview, scenario.mode);
+      assert.equal(audit.candidate.provider_task_id_sha256.length, 64, scenario.mode);
+      assert.equal(audit.candidate.provider, 'toapis', scenario.mode);
+      assert.equal(audit.candidate.model, TOAPIS_NATIVE_MODEL, scenario.mode);
+      assert.equal(audit.candidate.config_id > 0, true, scenario.mode);
+      assert.equal(audit.candidate.artifact_locator_sha256.length, 64, scenario.mode);
+      assert.equal(JSON.stringify(audit).includes(`provider-${scenario.mode}`), false, scenario.mode);
+      assert.equal(JSON.stringify(audit).includes(`videos/${scenario.mode}.mp4`), false, scenario.mode);
+      if (scenario.expectVerifiedEvidence) {
+        assert.equal(audit.validation_hash, 'c'.repeat(64), scenario.mode);
+        assert.equal(audit.candidate.artifact_sha256, 'a'.repeat(64), scenario.mode);
+        assert.equal(audit.verification.transcript_sha256, 'b'.repeat(64), scenario.mode);
+      }
+
+      const second = await generateShot(ctx(state.db, {
+        resolveVideoConditioningCapability: undefined,
+        videoProcessor: async () => { providerCalls += 1; },
+      }), { shotId, idempotency_key: `different-key-${scenario.mode}` });
+      assert.equal(second.status, 'needs_attention', scenario.mode);
+      assert.equal(second.video_generation_id, first.video_generation_id, scenario.mode);
+      assert.equal(providerCalls, 1, scenario.mode);
+    } finally {
+      state.db.close();
+    }
   }
 });
 
