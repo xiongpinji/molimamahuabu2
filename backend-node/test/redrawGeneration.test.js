@@ -738,6 +738,84 @@ test('冻结配置在首次供应商提交前被改写时零提交并保持 held
   assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
 });
 
+test('冻结配置在首次供应商提交前停用或删除时 needs_attention 保持 held 且不重提', async (t) => {
+  const originalCallVideoApi = videoClient.callVideoApi;
+  t.after(() => { videoClient.callVideoApi = originalCallVideoApi; });
+
+  for (const unavailable of ['inactive', 'deleted']) {
+    const state = setup();
+    let providerCalls = 0;
+    let scheduled;
+    try {
+      videoClient.callVideoApi = async () => {
+        providerCalls += 1;
+        return { error: '固定配置不可用时不得调用供应商' };
+      };
+      const shotId = addShot(state.db, state.versionId);
+      const created = await generateShot(ctx(state.db, {
+        schedule(callback) { scheduled = callback; },
+      }), { shotId });
+      const configId = state.db.prepare('SELECT ai_service_config_id FROM video_generations WHERE id = ?')
+        .get(created.video_generation_id).ai_service_config_id;
+      if (unavailable === 'inactive') {
+        state.db.prepare('UPDATE ai_service_configs SET is_active = 0 WHERE id = ?').run(configId);
+      } else {
+        state.db.prepare('UPDATE ai_service_configs SET deleted_at = ? WHERE id = ?').run(state.now, configId);
+      }
+
+      await scheduled();
+
+      assert.equal(providerCalls, 0, unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention', unavailable);
+      assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held', unavailable);
+
+      const rerun = await runShotGeneration(ctx(state.db), created.task_id);
+      assert.equal(rerun.status, 'needs_attention', unavailable);
+      await assert.rejects(
+        () => retryShot(ctx(state.db, {
+          videoProcessor: async () => { providerCalls += 1; },
+        }), { shotId }),
+        (error) => error.code === 'REDRAW_SHOT_RETRY_REQUIRED',
+        unavailable,
+      );
+      assert.equal(providerCalls, 0, unavailable);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('无 pinned config 的旧视频配置缺失仍按明确失败退款路径处理', async () => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let providerCalls = 0;
+  try {
+    videoClient.callVideoApi = async () => {
+      providerCalls += 1;
+      return { error: '缺配置时不得调用供应商' };
+    };
+    const shotId = addShot(state.db, state.versionId);
+    const created = await generateShot(ctx(state.db, { schedule: () => {} }), { shotId });
+    state.db.prepare('UPDATE video_generations SET ai_service_config_id = NULL, source_conditioning_json = NULL WHERE id = ?')
+      .run(created.video_generation_id);
+    state.db.prepare('UPDATE ai_service_configs SET deleted_at = ?').run(state.now);
+
+    const result = await runShotGeneration(ctx(state.db), created.task_id);
+
+    assert.equal(providerCalls, 0);
+    assert.equal(result.status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'failed');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'refunded');
+  } finally {
+    videoClient.callVideoApi = originalCallVideoApi;
+    state.db.close();
+  }
+});
+
 test('冻结配置的 key 或 endpoint 在首次提交前轮换时零提交并保持 held', async (t) => {
   const state = setup();
   const originalCallVideoApi = videoClient.callVideoApi;

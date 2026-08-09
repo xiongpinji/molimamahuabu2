@@ -1763,6 +1763,8 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     if (!config) {
       if (existingProviderTaskId) {
         keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
+      } else if (row.ai_service_config_id) {
+        setVideoGenNeedsAttention(db, videoGenId, row.task_id, '固定模型配置暂不可用，请恢复固定配置后人工处理，拒绝供应商提交', now);
       } else {
         setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
         if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
