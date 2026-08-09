@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
@@ -509,6 +510,93 @@ function nativeDialogueEvidence(configId, configUpdatedAt, artifactId = 771) {
       extra_dialogue: 'passed',
     },
   };
+}
+
+function insertNativeAudioReviewCandidate(db, storageRoot, localPath, values = {}) {
+  creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+  const projectId = insertProject(db);
+  const sourceFingerprint = crypto.createHash('sha256').update(String(localPath || Math.random())).digest('hex');
+  const workId = insertWork(db, projectId, {
+    current_version: 1,
+    current_step: 3,
+    status: 'generating',
+    source_fingerprint: sourceFingerprint,
+  });
+  const versionId = insertVersion(db, workId, { locale: 'es', market: '', status: 'generating' });
+  const artifactSha256 = values.artifactSha256 || 'd'.repeat(64);
+  const audit = {
+    contract: 'redraw-native-audio-validation-v1',
+    artifact_sha256: artifactSha256,
+    audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 5000 },
+    video_duration_ms: 5000,
+    silence: { rms_db: -24, threshold_db: -45 },
+    verification: {
+      detected_language: 'es',
+      detected_locale: null,
+      language_verified: false,
+      locale_verified: false,
+      transcript_sha256: 'b'.repeat(64),
+      dialogue_similarity: 0.61,
+      speech_chars_per_second: 8,
+    },
+    validation_hash: 'c'.repeat(64),
+    status: 'verified',
+    candidate: {
+      video_generation_id: null,
+      artifact_sha256: artifactSha256,
+      artifact_locator_sha256: 'e'.repeat(64),
+    },
+    human_review: { status: 'available' },
+  };
+  const shotId = insertShot(db, versionId, {
+    status: 'needs_attention',
+    localized_dialogue_json: JSON.stringify([
+      { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+    ]),
+    draft_json: JSON.stringify({
+      revision: 1,
+      generation: { reservation_id: null },
+      native_audio_validation: audit,
+    }),
+  });
+  const reservation = creditLedger.reserve(db, {
+    tenantId: 'tenant-a',
+    actorUserId: 'user-a',
+    operationKey: `route-native-review-${shotId}-${String(localPath || 'missing').replace(/[^a-z0-9]/gi, '-')}`,
+    model: 'seedance-2-fast',
+    resourceType: 'redraw_shot',
+    resourceId: String(shotId),
+    amount: 4,
+  });
+  const taskId = `task-native-review-${shotId}`;
+  db.prepare(`INSERT INTO async_tasks
+    (id, type, status, progress, message, resource_id, tenant_id, user_id, metadata, credit_reservation_id, created_at, updated_at)
+    VALUES (?, 'redraw_shot', 'needs_attention', 90, 'manual review', ?, 'tenant-a', 'user-a', ?, ?, ?, ?)`)
+    .run(taskId, String(shotId), JSON.stringify({ redraw_shot: { reservation_id: reservation.id } }), reservation.id, NOW, NOW);
+  const videoId = db.prepare(`INSERT INTO video_generations
+    (status, task_id, tenant_id, user_id, provider, model, ai_service_config_id, duration,
+     generate_audio, request_snapshot, local_path, created_at, updated_at)
+    VALUES ('needs_attention', ?, 'tenant-a', 'user-a', 'test-provider', 'seedance-2-fast', 1, 5,
+            1, ?, ?, ?, ?)`)
+    .run(taskId, JSON.stringify({
+      generate_audio: true,
+      locale_pack: 'es@1',
+      dialogue_snapshot_hash: 'a'.repeat(64),
+      config_updated_at: NOW,
+    }), localPath, NOW, NOW).lastInsertRowid;
+  audit.candidate.video_generation_id = Number(videoId);
+  db.prepare('UPDATE redraw_shots SET video_generation_id = ?, draft_json = ? WHERE id = ?')
+    .run(videoId, JSON.stringify({
+      revision: 1,
+      generation: { reservation_id: reservation.id, task_id: taskId, video_generation_id: videoId },
+      native_audio_validation: audit,
+    }), shotId);
+  if (values.writeFile !== false && localPath) {
+    const file = path.join(storageRoot, localPath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, values.fileBody || 'native route artifact');
+  }
+  return { shotId, videoId, taskId, reservationId: reservation.id };
 }
 
 function insertNativeDialogueLocaleConfig(db, values = {}) {
@@ -3784,6 +3872,54 @@ test('原生音轨人工审核接口严格 body、owner 隔离且不需要供应
     });
   } finally {
     db.close();
+  }
+});
+
+test('原生音轨人工审核真实路由将不可读和无音轨候选映射为 409', async () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-route-native-review-'));
+  try {
+    const missing = insertNativeAudioReviewCandidate(db, storageRoot, 'videos/missing.mp4', { writeFile: false });
+    const noAudioSha256 = crypto.createHash('sha256').update('no audio route artifact').digest('hex');
+    const noAudio = insertNativeAudioReviewCandidate(db, storageRoot, 'videos/no-audio.mp4', {
+      fileBody: 'no audio route artifact',
+      artifactSha256: noAudioSha256,
+    });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      generationOptions: {
+        probeRunner: async (_absPath, _row, options) => ({
+          duration: 5,
+          width: 720,
+          height: 1280,
+          hasAudio: options.requireAudio ? false : undefined,
+        }),
+        assetImporter: () => {
+          throw new Error('asset importer must not run');
+        },
+      },
+    }));
+    const body = {
+      validation_hash: 'c'.repeat(64),
+      expected_updated_at: NOW,
+      decision: 'approved',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    };
+
+    const missingResult = captureResponse();
+    await handlers.nativeAudioReview(request({ id: missing.shotId, body }), missingResult);
+    assert.equal(missingResult.statusCode, 409);
+    assert.equal(missingResult.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE');
+
+    const noAudioResult = captureResponse();
+    await handlers.nativeAudioReview(request({ id: noAudio.shotId, body }), noAudioResult);
+    assert.equal(noAudioResult.statusCode, 409);
+    assert.equal(noAudioResult.body.error.code, 'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
 

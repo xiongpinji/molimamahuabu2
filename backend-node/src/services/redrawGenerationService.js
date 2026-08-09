@@ -78,6 +78,41 @@ function now(ctx) {
   return ctx.clock ? ctx.clock() : new Date().toISOString();
 }
 
+function monotonicTimestamp(base, candidate) {
+  const baseMs = Date.parse(base || '');
+  const candidateMs = Date.parse(candidate || '');
+  if (!Number.isFinite(baseMs) || !Number.isFinite(candidateMs) || candidateMs > baseMs) {
+    return candidate;
+  }
+  return new Date(baseMs + 1).toISOString();
+}
+
+function sha256File(absPath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(absPath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+function sha256FileSync(absPath) {
+  const fd = fs.openSync(absPath, 'r');
+  try {
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    return hash.digest('hex');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function normalizeDuration(value) {
   const duration = Number(value);
   if (!Number.isSafeInteger(duration) || duration < 5 || duration > 15) {
@@ -1178,6 +1213,10 @@ function reviewConflict(message = '原生音轨审核证据已变化，请刷新
   throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT', message);
 }
 
+function reviewUnavailable(message = '当前原生音轨候选不可人工批准') {
+  throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', message);
+}
+
 function sameNativeAudioReview(review, input, reviewerId) {
   if (!review || review.status !== input.decision) return false;
   if (String(review.reviewer_id || '') !== String(reviewerId || '')) return false;
@@ -1235,8 +1274,9 @@ async function reviewNativeAudio(ctx, input = {}) {
   if (['approved', 'rejected'].includes(String(existingReview.status || ''))) {
     reviewConflict('原生音轨已按不同决定审核，请刷新后重试');
   }
+  const expectedUpdatedAt = String(input.expected_updated_at || input.expectedUpdatedAt || '');
   if (decision === 'rejected') {
-    const timestamp = now(ctx);
+    const timestamp = monotonicTimestamp(shot.updated_at, now(ctx));
     const review = {
       status: 'rejected',
       reviewer_id: String(ctx.userId),
@@ -1244,7 +1284,7 @@ async function reviewNativeAudio(ctx, input = {}) {
       reviewed_at: timestamp,
     };
     db.transaction(() => {
-      db.prepare(`
+      const changed = db.prepare(`
         UPDATE redraw_shots
         SET status = 'needs_attention',
             error_code = 'REDRAW_NATIVE_AUDIO_REJECTED',
@@ -1252,6 +1292,8 @@ async function reviewNativeAudio(ctx, input = {}) {
             draft_json = ?,
             updated_at = ?
         WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'needs_attention'
+          AND video_generation_id = ? AND updated_at IS ? AND deleted_at IS NULL
+          AND draft_json IS ?
       `).run(
         review.reason,
         mergeDraft(draft, { generation: {}, native_audio_validation: { ...audit, human_review: review } }),
@@ -1259,7 +1301,11 @@ async function reviewNativeAudio(ctx, input = {}) {
         shot.id,
         String(ctx.tenantId),
         String(ctx.userId),
+        video.id,
+        expectedUpdatedAt,
+        shot.draft_json,
       );
+      if (changed.changes !== 1) reviewConflict('分镜已被其他操作更新，请刷新后重试');
       db.prepare(`
         UPDATE async_tasks
         SET status = 'needs_attention', progress = 90, message = ?, error = ?, updated_at = ?
@@ -1280,29 +1326,76 @@ async function reviewNativeAudio(ctx, input = {}) {
   }
   if (decision !== 'approved') throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_INVALID', '原生音轨审核决定无效');
   if (String(existingReview.status || '') !== 'available') {
-    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '当前原生音轨候选不可人工批准');
+    reviewUnavailable('当前原生音轨候选不可人工批准');
   }
   if (String(video.status || '') !== 'needs_attention') {
-    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '当前原生音轨候选状态不可人工批准');
+    reviewUnavailable('当前原生音轨候选状态不可人工批准');
   }
   if (!audit.audio_stream || !audit.candidate || !audit.candidate.artifact_sha256) {
-    throw codedError('REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', '原生音轨候选缺少可批准的音轨证据');
+    reviewUnavailable('原生音轨候选缺少可批准的音轨证据');
   }
   const verifier = ctx.artifactVerifier || verifyVideoArtifact;
-  const verification = await verifier(ctx, video.id, { allowedStatuses: ['needs_attention'], requireAudio: true });
-  const timestamp = now(ctx);
+  let verification;
+  try {
+    verification = await verifier(ctx, video.id, {
+      allowedStatuses: ['needs_attention'],
+      requireAudio: true,
+      expectedSha256: audit.candidate.artifact_sha256,
+    });
+  } catch (error) {
+    if (error.code === 'REDRAW_VIDEO_ARTIFACT_INVALID') {
+      reviewUnavailable(error.message || '当前原生音轨候选不可人工批准');
+    }
+    throw error;
+  }
+  const timestamp = monotonicTimestamp(shot.updated_at, now(ctx));
   const importer = ctx.assetImporter || ((database, logger, videoGenerationId) => (
     assetService.importFromVideo(database, logger, videoGenerationId)
   ));
   const metadata = taskMetadata(task);
   return db.transaction(() => {
+    const fresh = db.prepare(`
+      SELECT s.*, t.status AS task_status, v.status AS video_status
+      FROM redraw_shots s
+      JOIN video_generations v ON v.id = s.video_generation_id
+        AND v.tenant_id = s.tenant_id AND v.user_id = s.user_id AND v.deleted_at IS NULL
+      JOIN async_tasks t ON t.id = v.task_id
+        AND t.tenant_id = s.tenant_id AND t.user_id = s.user_id AND t.deleted_at IS NULL
+      WHERE s.id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+      LIMIT 1
+    `).get(shot.id, String(ctx.tenantId), String(ctx.userId));
+    if (!fresh || Number(fresh.video_generation_id) !== Number(video.id) || String(fresh.updated_at || '') !== expectedUpdatedAt) {
+      reviewConflict('分镜已被其他操作更新，请刷新后重试');
+    }
+    const freshDraft = strictJson(fresh.draft_json, 'draft_json');
+    const freshAudit = freshDraft.native_audio_validation || {};
+    if (String(freshAudit.validation_hash || '').toLowerCase() !== validationHash
+      || String(freshAudit.candidate?.artifact_sha256 || '').toLowerCase() !== String(audit.candidate.artifact_sha256 || '').toLowerCase()) {
+      reviewConflict();
+    }
     const claimed = db.prepare(`
       UPDATE redraw_shots
       SET status = 'pending', error_code = 'REDRAW_NATIVE_AUDIO_REVIEW_FINALIZING', updated_at = ?
       WHERE id = ? AND tenant_id = ? AND user_id = ?
         AND status = 'needs_attention' AND video_generation_id = ?
-    `).run(timestamp, shot.id, String(ctx.tenantId), String(ctx.userId), video.id);
+        AND updated_at IS ? AND deleted_at IS NULL
+    `).run(timestamp, shot.id, String(ctx.tenantId), String(ctx.userId), video.id, expectedUpdatedAt);
     if (claimed.changes !== 1) reviewConflict('原生音轨审核正在由其他操作处理，请刷新后重试');
+    let actualSha256;
+    let realAbsPath;
+    try {
+      const relativePath = String(video.local_path || '').replace(/^\/static\//, '').replace(/\\/g, '/');
+      const realStorageRoot = fs.realpathSync.native(resolveStorageRoot(ctx));
+      realAbsPath = fs.realpathSync.native(path.resolve(realStorageRoot, relativePath));
+      if (!isInside(realStorageRoot, realAbsPath)) reviewUnavailable('视频成片路径越界');
+      actualSha256 = sha256FileSync(realAbsPath);
+    } catch (error) {
+      if (error.code && String(error.code).startsWith('REDRAW_')) throw error;
+      reviewUnavailable('视频成片文件不可读取');
+    }
+    if (actualSha256 !== String(freshAudit.candidate.artifact_sha256 || '').toLowerCase()) {
+      reviewUnavailable('视频成片哈希与审核候选不一致');
+    }
     const imported = importer(db, ctx.log || logNoop, video.id);
     if (imported && typeof imported.then === 'function') {
       throw codedError('REDRAW_VIDEO_ASSET_IMPORT_INVALID', '视频成片素材入库必须同步完成');
@@ -1326,7 +1419,7 @@ async function reviewNativeAudio(ctx, input = {}) {
       local_path: video.local_path,
       probe: verification,
     };
-    const approvedAudit = { ...audit, human_review: review };
+    const approvedAudit = { ...freshAudit, human_review: review };
     db.prepare(`
       UPDATE video_generations
       SET status = 'completed', error_msg = NULL, updated_at = ?
@@ -2061,6 +2154,21 @@ async function verifyVideoArtifact(ctx, videoGenerationId, options = {}) {
   }
   if (!isInside(realStorageRoot, realAbsPath)) {
     throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片路径越界');
+  }
+  const expectedSha256 = String(options.expectedSha256 || options.expected_sha256 || '').trim().toLowerCase();
+  if (expectedSha256) {
+    if (!/^[a-f0-9]{64}$/.test(expectedSha256)) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片哈希证据无效');
+    }
+    let actualSha256;
+    try {
+      actualSha256 = await sha256File(realAbsPath);
+    } catch (_) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片文件不可读取');
+    }
+    if (actualSha256 !== expectedSha256) {
+      throw codedError('REDRAW_VIDEO_ARTIFACT_INVALID', '视频成片哈希与审核候选不一致');
+    }
   }
   const probe = ctx.probeRunner ? await ctx.probeRunner(absPath, row, options) : await defaultProbe(absPath, options);
   if (!(probe?.duration > 0 && probe?.width > 0 && probe?.height > 0)) {
