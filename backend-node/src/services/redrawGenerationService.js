@@ -660,10 +660,10 @@ async function generateShot(ctx, input = {}) {
   const requiresNativeDialogue = hasNativeDialogueRows(shot);
   const nativeCapability = nativeCapabilityForVersion(db, versionIdentity, ctx.canReadArtifact);
   const language = languageFromLocale(shot.version_locale);
-  const nativePack = (requiresNativeDialogue || nativeCapability) ? assertReadyNativePack(ctx, language) : null;
+  const nativePack = requiresNativeDialogue ? assertReadyNativePack(ctx, language) : null;
   let generation;
   let selectedCapability;
-  if (requiresNativeDialogue || nativeCapability) {
+  if (requiresNativeDialogue) {
     const override = nativeCapability && typeof ctx.resolveVideoConditioningCapability === 'function'
       ? ctx.resolveVideoConditioningCapability(db, nativeCapability?.model, nativeCapability)
       : nativeCapability;

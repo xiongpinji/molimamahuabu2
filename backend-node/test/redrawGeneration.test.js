@@ -575,6 +575,63 @@ test('原生对白生成持久化 generate_audio、prompt/dialogue/config/locale
   }
 });
 
+test('同语言有原生声画能力但当前镜头无对白时走普通视频路径', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    addVerifiedGenerationCapability(state.db, FEITUO_FAST_MODEL, {
+      id: 14,
+      provider: 'feituo',
+      apiProtocol: 'feituo_open',
+      locale: 'es',
+      market: '',
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 6000,
+      startMs: 0,
+      endMs: 6000,
+      compiledPrompt: { text: 'silent cinematic shot', duration: 6, resolution: '720p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([]),
+    });
+
+    const created = await generateShot(ctx(state.db, {
+      schedule() {},
+      videoProcessor: async () => { providerCalls += 1; },
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(created.video_generation_id);
+    const snapshot = JSON.parse(video.request_snapshot);
+
+    assert.equal(providerCalls, 0);
+    assert.equal(video.prompt, 'silent cinematic shot');
+    assert.equal(video.generate_audio, 0);
+    assert.equal(snapshot.generate_audio, false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'prompt_hash'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'dialogue_snapshot_hash'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'locale_pack'), false);
+    assert.equal(state.db.prepare('SELECT amount, status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).amount, 24);
+
+    await runShotGeneration(ctx(state.db, {
+      videoProcessor: async () => { providerCalls += 1; },
+    }), created.task_id);
+    assert.equal(providerCalls, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('同一原生对白/config 快照跨幂等键只保留一条 active generation，快照改变不误复用', async () => {
   const state = setup();
   try {
