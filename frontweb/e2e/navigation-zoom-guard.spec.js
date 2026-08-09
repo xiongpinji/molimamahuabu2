@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 const homeCanvasStorageKey = 'moli-mama.home-canvas.v1'
+const projectCanvasImageUrl = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22120%22%3E%3Crect width=%22200%22 height=%22120%22 fill=%22%23f27645%22/%3E%3C/svg%3E'
 const projectCanvasLayout = {
   version: 1,
   viewport: { x: 0, y: 0, zoom: 0.75 },
@@ -11,6 +12,17 @@ const projectCanvasLayout = {
     type: 'homeCanvasNode',
     position: { x: 480, y: 360 },
     data: { kind: 'text', title: '项目画布缩放节点', content: '验证完整项目画布仍能缩放' },
+  }, {
+    id: 'project-image-node',
+    type: 'homeCanvasNode',
+    position: { x: 880, y: 360 },
+    data: {
+      kind: 'image',
+      title: '项目画布图片节点',
+      content: '',
+      url: projectCanvasImageUrl,
+      resultUrls: [projectCanvasImageUrl],
+    },
   }],
 }
 
@@ -149,4 +161,51 @@ test('完整项目画布导航固定且 Ctrl 滚轮仍只缩放 DramaCanvas', as
   await page.mouse.wheel(0, -240)
   await page.keyboard.up('Control')
   await expect.poll(() => viewport.getAttribute('style')).not.toBe(transformBefore)
+})
+
+test('完整项目画布图片预览独占 Space 拖动且不移动底层画布', async ({ page }) => {
+  await page.goto('/canvas/3')
+
+  const imageNode = page.locator('.vue-flow__node[data-id="project-image-node"]')
+  await imageNode.locator('.node-media').dblclick()
+
+  const dialog = page.getByRole('dialog', { name: '图片全屏预览' })
+  const previewImage = dialog.locator('img')
+  const canvasMain = page.locator('.canvas-main')
+  const transformationPane = page.locator('.vue-flow__transformationpane')
+  await expect(dialog).toBeVisible()
+
+  const initialCanvasTransform = await transformationPane.evaluate((element) => getComputedStyle(element).transform)
+  await page.keyboard.down('Space')
+  await expect(canvasMain).not.toHaveClass(/space-panning/)
+  await page.keyboard.up('Space')
+
+  const previewBox = await previewImage.boundingBox()
+  if (!previewBox) throw new Error('项目画布图片预览未生成缩放区域')
+  await page.mouse.move(previewBox.x + previewBox.width / 2, previewBox.y + previewBox.height / 2)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -100)
+  await page.keyboard.up('Control')
+  await expect.poll(() => previewImage.getAttribute('style')).toContain('scale(1.15)')
+
+  const zoomedBox = await previewImage.boundingBox()
+  if (!zoomedBox) throw new Error('项目画布图片预览未生成拖动区域')
+  const centerX = zoomedBox.x + zoomedBox.width / 2
+  const centerY = zoomedBox.y + zoomedBox.height / 2
+  await page.keyboard.down('Space')
+  await expect(canvasMain).not.toHaveClass(/space-panning/)
+  await page.mouse.move(centerX, centerY)
+  await page.mouse.down()
+  await page.mouse.move(centerX + 80, centerY + 45, { steps: 4 })
+
+  const draggedTranslation = await previewImage.evaluate((image) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(image).transform)
+    return { x: matrix.m41, y: matrix.m42 }
+  })
+  expect(draggedTranslation.x).toBeCloseTo(80, 1)
+  expect(draggedTranslation.y).toBeCloseTo(45, 1)
+  expect(await transformationPane.evaluate((element) => getComputedStyle(element).transform)).toBe(initialCanvasTransform)
+
+  await page.keyboard.up('Space')
+  await page.mouse.up()
 })
