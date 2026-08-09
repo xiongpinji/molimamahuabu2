@@ -399,6 +399,8 @@ function ensureAllColumns(database) {
     { name: 'reference_mode',       type: 'TEXT' },
     { name: 'generate_audio',       type: 'INTEGER NOT NULL DEFAULT 0' },
     { name: 'reference_video_urls', type: 'TEXT' },
+    { name: 'source_conditioning_json', type: 'TEXT' },
+    { name: 'ai_service_config_id', type: 'INTEGER' },
     { name: 'reference_audio_urls', type: 'TEXT' },
     { name: 'request_snapshot',     type: 'TEXT' },
     { name: 'video_url',            type: 'TEXT' },

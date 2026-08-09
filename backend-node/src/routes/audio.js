@@ -114,6 +114,7 @@ function routes(db, log, cfg, options = {}) {
       }
       let reservation = null;
       let selectedModel = null;
+      let providerCompleted = false;
       try {
         const ttsService = require('../services/ttsService');
         const { resolveTtsModel, selectTtsConfig } = require('../services/ttsConfigSelectionService');
@@ -156,6 +157,7 @@ function routes(db, log, cfg, options = {}) {
           emotion: speechEmotion || undefined,
           pronunciation_tones: pronunciationTones,
         });
+        providerCompleted = true;
         if (reservation) {
           creditLedger.settleGeneration(db, reservation.id, 'completed');
           auditEvent.record(db, {
@@ -204,18 +206,34 @@ function routes(db, log, cfg, options = {}) {
           model: selectedModel,
         });
       } catch (err) {
+        const providerUnknown = providerCompleted
+          || err?.unknown === true
+          || err?.provider_completed === true
+          || err?.code === 'PROVIDER_STATUS_UNKNOWN';
         if (reservation) {
           try {
-            creditLedger.settleGeneration(db, reservation.id, 'failed', err.message);
-            auditEvent.record(db, {
-              userId: req.user?.id,
-              tenantId: req.tenant?.id,
-              eventType: 'generation.audio.failed',
-              resourceType: 'audio',
-              resourceId: String(dramaId),
-              outcome: 'failed',
-              code: err.code || 'GENERATION_FAILED',
-            });
+            if (providerUnknown) {
+              auditEvent.record(db, {
+                userId: req.user?.id,
+                tenantId: req.tenant?.id,
+                eventType: 'generation.audio.needs_attention',
+                resourceType: 'audio',
+                resourceId: String(dramaId),
+                outcome: 'needs_attention',
+                code: err.code || 'PROVIDER_STATUS_UNKNOWN',
+              });
+            } else {
+              creditLedger.settleGeneration(db, reservation.id, 'failed', err.message);
+              auditEvent.record(db, {
+                userId: req.user?.id,
+                tenantId: req.tenant?.id,
+                eventType: 'generation.audio.failed',
+                resourceType: 'audio',
+                resourceId: String(dramaId),
+                outcome: 'failed',
+                code: err.code || 'GENERATION_FAILED',
+              });
+            }
           } catch (billingError) {
             log.error('audio extract billing settle', {
               reservation_id: reservation.id,
@@ -232,6 +250,9 @@ function routes(db, log, cfg, options = {}) {
         }
         if (err.code === 'INSUFFICIENT_CREDITS') {
           return response.error(res, 402, err.code, '积分不足，请兑换积分后重试');
+        }
+        if (providerUnknown) {
+          return response.error(res, 502, 'PROVIDER_STATUS_UNKNOWN', '语音供应商最终状态未知，请勿自动重试');
         }
         response.internalError(res, err.message);
       }

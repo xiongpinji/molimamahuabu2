@@ -8,12 +8,14 @@
 PUBLIC_PLATFORM_MODE=true
 PLATFORM_JWT_SECRET=<至少 32 字节的独立随机密钥>
 PLATFORM_ADMIN_TOKEN=<至少 32 字符的独立随机令牌>
+REDRAW_PROVIDER_ASSET_HMAC_SECRET=<至少 32 字符的独立随机密钥>
 PLATFORM_BOOTSTRAP_ADMIN_EMAIL=<首个管理员的已验证邮箱>
 PLATFORM_REGISTRATION_ENABLED=false
 ```
 
 - `PLATFORM_JWT_SECRET` 用于签发用户登录令牌，不能与管理员令牌或模型 API 密钥复用。
 - `PLATFORM_ADMIN_TOKEN` 通过 `X-Platform-Admin-Token` 请求头传递；用户 JWT 始终使用 `Authorization: Bearer ...`，两者不能混用。
+- `REDRAW_PROVIDER_ASSET_HMAC_SECRET` 只用于给视频供应商读取转绘镜头片段的短期 URL 签名，不能复用 JWT、管理员令牌或模型 API 密钥；缺失时转绘视频必须失败关闭。
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 锁定首管理员身份。仅凭邮箱不会自动提权；对应账号登录后还必须携带 `X-Platform-Admin-Token` 调用 `POST /api/v1/auth/bootstrap-admin`。该接口只在数据库从未存在任何 `admin` 账号时成功一次，并返回提升后的新 JWT；管理员即使被停用也不会重新开放引导。
 - 默认关闭公开注册。正式开放前还需要验证码、邮件验证、注册限流和用户协议确认。
 

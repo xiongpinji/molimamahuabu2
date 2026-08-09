@@ -1189,8 +1189,36 @@ function parseKlingOmniPollVideoUrl(data) {
   return null;
 }
 
+function configSupportsVideoModel(config, preferredModel) {
+  const models = [
+    ...(Array.isArray(config?.model) ? config.model : [config?.model]),
+    config?.default_model,
+  ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
+  const requested = String(preferredModel || '').trim().toLowerCase();
+  if (!requested) return true;
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  const normalize = provider === 'icreat' || provider === 'icreat_ai' || provider === 'icreat-seedance'
+    ? normalizeIcreatModel
+    : (provider === 'volces' || provider === 'volcengine' || provider === 'volc')
+      ? normalizeVolcModel
+      : (value) => String(value || '').trim().toLowerCase();
+  return models.some((model) => normalize(model) === normalize(requested));
+}
+
 // ??????????????????listConfigs ?? is_default DESC, priority DESC ??
-function getDefaultVideoConfig(db, preferredModel, evidenceRoots) {
+function getDefaultVideoConfig(db, preferredModel, evidenceRoots, preferredConfigId) {
+  // Compatibility: the redraw path may pass the exact config id as the third
+  // argument, while the historical ToAPIs path uses that slot for evidenceRoots.
+  if (preferredConfigId == null && Number.isSafeInteger(Number(evidenceRoots))
+      && typeof evidenceRoots !== 'object') {
+    preferredConfigId = Number(evidenceRoots);
+    evidenceRoots = undefined;
+  }
+  if (preferredConfigId != null && String(preferredConfigId).trim() !== '') {
+    const exact = aiConfigService.getConfig(db, Number(preferredConfigId));
+    if (!exact || exact.is_active !== true || String(exact.service_type || '') !== 'video') return null;
+    return configSupportsVideoModel(exact, preferredModel) ? exact : null;
+  }
   const configs = aiConfigService.listConfigs(db, 'video');
   const active = configs.filter((c) => c.is_active);
   const preferred = String(preferredModel || '').trim().toLowerCase();
