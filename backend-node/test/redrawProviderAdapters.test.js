@@ -11,6 +11,11 @@ const realAssetService = require('../src/services/assetService');
 const redrawAssetService = require('../src/services/redrawAssetService');
 const { createRedrawProviderAdapters } = require('../src/services/redrawProviderAdapters');
 
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+
 function createLog() {
   return { info() {}, warn() {}, error() {} };
 }
@@ -74,7 +79,15 @@ function verifiedLocaleVerifier(calls = []) {
         languageVerified: true,
         detectedLocale: input.locale,
         source: 'offline-worker',
-        localePack: `${input.locale}@1`,
+        localePack: `${input.locale}@fixture`,
+        audio_sha256: AUDIO_SHA256,
+        transcript_sha256: TRANSCRIPT_SHA256,
+        model_manifest_sha256: MODEL_MANIFEST_SHA256,
+        calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+        asr_model_revision: 'asr-en-20260808',
+        accent_model_revision: 'accent-en-20260808',
+        metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+        completed_at: '2026-08-08T00:00:01.000Z',
       };
     },
   };
@@ -147,6 +160,19 @@ function setupAssetContractState() {
     assetReader: {
       canRead(asset) {
         return Boolean(asset?.local_path && fs.existsSync(path.join(storageRoot, asset.local_path)));
+      },
+    },
+    localeRegistry: {
+      assertEvidenceTrusted(evidence) {
+        if (evidence.source !== 'offline-worker'
+          || evidence.locale_pack !== 'en-US@fixture'
+          || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+          || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+          throw Object.assign(new Error('worker evidence not trusted'), {
+            code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+          });
+        }
+        return evidence;
       },
     },
   };

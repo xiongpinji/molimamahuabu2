@@ -82,6 +82,17 @@ export const redrawAPI = {
       expected_updated_at: body?.expected_updated_at || body?.expectedUpdatedAt,
     })
   },
+  listProductionVoices(versionId) {
+    return request.get(`/redraw/versions/${versionId}/voices`)
+  },
+  getVoicePreview(versionId, voiceAssetId) {
+    return request.get(`/redraw/versions/${versionId}/voices/${voiceAssetId}/preview`, { responseType: 'blob' })
+  },
+  assignVoice(characterAssetId, body) {
+    const payload = { voice_asset_id: body?.voice_asset_id }
+    if (body?.expected_updated_at) payload.expected_updated_at = body.expected_updated_at
+    return request.post(`/redraw/assets/${characterAssetId}/voice`, payload)
+  },
   listStylePresets() {
     return request.get('/redraw/style-presets')
   },

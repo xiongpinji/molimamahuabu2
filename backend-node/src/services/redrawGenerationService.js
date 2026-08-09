@@ -9,10 +9,13 @@ const config = require('../config');
 const { getFfprobePath } = require('../utils/ffmpegPath');
 const taskService = require('./taskService');
 const videoService = require('./videoService');
+const videoClient = require('./videoClient');
 const assetService = require('./assetService');
 const redrawBillingService = require('./redrawBillingService');
 const redrawReviewService = require('./redrawReviewService');
 const redrawCapabilityService = require('./redrawCapabilityService');
+const redrawSourceConditioningService = require('./redrawSourceConditioningService');
+const { FEITUO_MODELS, buildFeituoVideoBody } = require('./feituoVideoClient');
 const { runWithGenerationLimit } = require('./generationConcurrency');
 
 const execFileAsync = promisify(execFile);
@@ -82,17 +85,18 @@ function evidenceForLocaleCapability(entry) {
   return entry?.video_evidence_json || entry?.video_evidence;
 }
 
-function resolveVerifiedGenerationModel(db, version, canReadArtifact = () => false) {
+function listVerifiedGenerationCapabilities(db, version, canReadArtifact = () => false) {
   const locale = String(version?.locale || version?.version_locale || '').trim();
   const market = String(version?.market || '').trim();
-  if (!locale) return null;
+  if (!locale) return [];
   const rows = db.prepare(`
-    SELECT settings
+    SELECT id, provider, api_protocol, model, default_model, settings, updated_at
     FROM ai_service_configs
     WHERE COALESCE(is_active, 1) = 1
       AND deleted_at IS NULL
     ORDER BY id ASC
   `).all();
+  const capabilities = [];
   for (const row of rows) {
     let settings;
     try {
@@ -116,10 +120,61 @@ function resolveVerifiedGenerationModel(db, version, canReadArtifact = () => fal
         continue;
       }
       const model = String(parsed.model || '').trim();
-      if (model) return model;
+      const evidenceProvider = String(parsed.provider || '').trim().toLowerCase();
+      const rowProvider = String(row.provider || '').trim().toLowerCase();
+      if (Number(parsed.config_id) !== Number(row.id)
+        || String(parsed.config_updated_at || '') !== String(row.updated_at || '')
+        || !evidenceProvider || evidenceProvider !== rowProvider) {
+        continue;
+      }
+      const exactConfig = model ? videoClient.getDefaultVideoConfig(db, model, row.id) : null;
+      if (exactConfig && String(exactConfig.provider || '').trim().toLowerCase() === evidenceProvider) {
+        capabilities.push({
+          config_id: row.id,
+          config_updated_at: row.updated_at,
+          provider: String(exactConfig.provider || '').trim(),
+          protocol: videoClient.resolveVideoProtocol(exactConfig, model),
+          model,
+        });
+      }
     }
   }
-  return null;
+  return capabilities;
+}
+
+function supportsVideoConditioning(capability) {
+  const model = String(capability?.model || '').trim();
+  return String(capability?.protocol || '').trim().toLowerCase() === 'feituo_open'
+    && Number(FEITUO_MODELS[model]?.maxVideos || 0) > 0;
+}
+
+function resolveVerifiedGenerationCapability(db, version, canReadArtifact = () => false, options = {}) {
+  const capabilities = listVerifiedGenerationCapabilities(db, version, canReadArtifact);
+  if (options.requireSourceConditioning === true) {
+    return capabilities.find(supportsVideoConditioning) || capabilities[0] || null;
+  }
+  return capabilities[0] || null;
+}
+
+function resolveVerifiedGenerationModel(db, version, canReadArtifact = () => false) {
+  return resolveVerifiedGenerationCapability(db, version, canReadArtifact)?.model || null;
+}
+
+function assertVideoConditioningCapability(capability, options = {}) {
+  const model = String(capability?.model || '').trim();
+  const protocol = String(capability?.protocol || '').trim().toLowerCase();
+  const spec = FEITUO_MODELS[model];
+  const maxVideos = options.allowDeclaredLimit
+    ? Number(capability?.max_videos ?? capability?.maxVideos ?? spec?.maxVideos ?? 0)
+    : Number(spec?.maxVideos || 0);
+  if (protocol !== 'feituo_open' || maxVideos <= 0 || (!options.allowDeclaredLimit && !spec)) {
+    throw codedError('REDRAW_VIDEO_CONDITIONING_UNSUPPORTED', '当前已验证视频模型不支持源片视频 conditioning', {
+      config_id: capability?.config_id ?? null,
+      model: model || null,
+      protocol: protocol || null,
+    });
+  }
+  return { ...capability, model, protocol, max_videos: maxVideos };
 }
 
 function selectShot(db, ctx, shotInput) {
@@ -130,13 +185,18 @@ function selectShot(db, ctx, shotInput) {
   const rows = db.prepare(`
     SELECT s.*, v.work_id, v.style_snapshot_json, v.locale AS version_locale,
            v.market AS version_market,
-           v.status AS version_status, v.deleted_at AS version_deleted_at
+           v.status AS version_status, v.deleted_at AS version_deleted_at,
+           w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms
     FROM redraw_shots s
     JOIN redraw_versions v ON v.id = s.version_id
+    JOIN redraw_works w ON w.id = v.work_id
     WHERE s.deleted_at IS NULL
       AND v.deleted_at IS NULL
+      AND w.deleted_at IS NULL
       AND s.tenant_id = ?
       AND s.user_id = ?
+      AND w.tenant_id = s.tenant_id
+      AND w.user_id = s.user_id
       AND (CAST(s.id AS TEXT) = ? OR s.shot_id = ?)
     ORDER BY s.id ASC
     LIMIT 1
@@ -270,6 +330,22 @@ function collectReferenceImageUrls(db, shot, parsed) {
   return urls;
 }
 
+function preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls) {
+  if (!FEITUO_MODELS[generation.model]) return;
+  try {
+    buildFeituoVideoBody({
+      model: generation.model,
+      prompt: generation.prompt,
+      duration: generation.duration,
+      aspect_ratio: generation.aspect_ratio,
+      reference_urls: referenceImageUrls,
+      reference_video_urls: [sourceConditioning.referenceVideoUrl],
+    });
+  } catch (error) {
+    throw codedError('REDRAW_GENERATION_INPUT_INVALID', error.message);
+  }
+}
+
 function parseShotPayload(shot) {
   return {
     references: strictJsonArray(shot.references_json, 'references_json'),
@@ -290,6 +366,15 @@ function findReusable(db, shot, attempt, expectedGeneration = null) {
     || String(video.aspect_ratio || '') !== String(expectedGeneration.aspect_ratio || '')
     || String(video.prompt || '') !== String(expectedGeneration.prompt || '')
   )) return null;
+  if (expectedGeneration?.sourceConditioning) {
+    let storedConditioning;
+    try {
+      storedConditioning = strictJson(video.source_conditioning_json, 'source_conditioning_json');
+    } catch (_) {
+      return null;
+    }
+    if (!sameConditioning(storedConditioning, expectedGeneration.sourceConditioning)) return null;
+  }
   const draft = strictJson(shot.draft_json, 'draft_json');
   if (Number(draft.generation?.attempt ?? draft.attempt ?? 1) !== Number(attempt)) return null;
   const task = video.task_id
@@ -315,20 +400,90 @@ function mergeDraft(draft, patch) {
   });
 }
 
+const CLIENT_VIDEO_CONDITIONING_FIELDS = [
+  'reference_video_urls',
+  'referenceVideoUrls',
+  'source_video_url',
+  'sourceVideoUrl',
+  'source_video_ref',
+  'sourceVideoRef',
+];
+
+function rejectClientVideoConditioning(input) {
+  for (const field of CLIENT_VIDEO_CONDITIONING_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field) && input[field] != null) {
+      throw codedError('REDRAW_CLIENT_VIDEO_CONDITIONING_FORBIDDEN', '源片视频 conditioning 只能由服务端根据 work 和 shot 边界生成');
+    }
+  }
+}
+
+function conditioningIdentity(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    source_asset_id: Number(value.source_asset_id),
+    source_fingerprint: String(value.source_fingerprint || ''),
+    start_ms: Number(value.start_ms),
+    end_ms: Number(value.end_ms),
+    segment_sha256: String(value.segment_sha256 || ''),
+  };
+}
+
+function sameConditioning(left, right) {
+  return JSON.stringify(conditioningIdentity(left)) === JSON.stringify(conditioningIdentity(right));
+}
+
+async function prepareServerSourceConditioning(ctx, shot) {
+  const prepare = typeof ctx.prepareSourceConditioning === 'function'
+    ? ctx.prepareSourceConditioning
+    : redrawSourceConditioningService.prepareSourceConditioning;
+  const result = await prepare({
+    ...(ctx.sourceConditioningOptions || {}),
+    db: ctx.db,
+    shot,
+    sourceAssetId: shot.source_asset_id,
+    sourceFingerprint: shot.source_fingerprint,
+    startMs: shot.start_ms,
+    endMs: shot.end_ms,
+    storageRoot: ctx.storageRoot,
+    storageBaseUrl: ctx.storageBaseUrl,
+    signingSecret: ctx.providerAssetSecret,
+    nowMs: ctx.clock ? Date.parse(ctx.clock()) : undefined,
+  });
+  if (!result || typeof result.referenceVideoUrl !== 'string'
+    || !result.billingSnapshot || !result.auditSnapshot) {
+    throw codedError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 服务未返回完整的签名 URL 和校验快照');
+  }
+  return result;
+}
+
 async function generateShot(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
   ensureGateOpen(db, ctx, shot.version_id);
-  const verifiedModel = resolveVerifiedGenerationModel(db, {
+  const hasCapabilityOverride = typeof ctx.resolveVideoConditioningCapability === 'function';
+  const verifiedCapability = resolveVerifiedGenerationCapability(db, {
     locale: shot.version_locale,
     market: shot.version_market,
-  }, ctx.canReadArtifact);
-  const generation = buildGenerationInput(shot, input, parsed, verifiedModel);
+  }, ctx.canReadArtifact, { requireSourceConditioning: !hasCapabilityOverride });
+  const generation = buildGenerationInput(shot, input, parsed, verifiedCapability?.model);
+  const conditioningCapability = hasCapabilityOverride
+    ? ctx.resolveVideoConditioningCapability(db, generation.model, verifiedCapability)
+    : verifiedCapability;
+  const selectedCapability = assertVideoConditioningCapability(conditioningCapability, {
+    allowDeclaredLimit: hasCapabilityOverride,
+  });
+  generation.provider = selectedCapability.provider || null;
+  generation.protocol = selectedCapability.protocol || null;
+  generation.aiServiceConfigId = Number(selectedCapability.config_id) || null;
+  generation.aiServiceConfigUpdatedAt = String(selectedCapability.config_updated_at || '');
   if (!Number.isSafeInteger(generation.attempt) || generation.attempt <= 0) {
     throw codedError('INVALID_REDRAW_GENERATION_INPUT', 'attempt 必须是正整数');
   }
+  const sourceConditioning = await prepareServerSourceConditioning(ctx, shot);
+  generation.sourceConditioning = sourceConditioning.billingSnapshot;
   const reusable = findReusable(db, shot, generation.attempt, generation);
   if (reusable) return enrichGenerationResult(db, { ...reusable, attempt: generation.attempt });
   if (shot.video_generation_id) {
@@ -341,6 +496,7 @@ async function generateShot(ctx, input = {}) {
     }
   }
   const referenceImageUrls = collectReferenceImageUrls(db, shot, parsed);
+  preflightVideoGeneration(generation, sourceConditioning, referenceImageUrls);
   if (typeof ctx.beforeCreateTransaction === 'function') {
     await ctx.beforeCreateTransaction({ shot, generation });
   }
@@ -360,6 +516,7 @@ async function generateShot(ctx, input = {}) {
         count: 1,
         locale: generation.locale,
         styleSnapshot: ctx.batchStyleSnapshot ?? parsed.styleSnapshot,
+        sourceConditioning: sourceConditioning.billingSnapshot,
         attempt: generation.attempt,
       });
       if (!reservation.success) {
@@ -385,16 +542,30 @@ async function generateShot(ctx, input = {}) {
         WHERE id = ?
       `).run('单镜视频生成已开始', String(ctx.tenantId), String(ctx.userId), generation.model, JSON.stringify(metadata), timestamp, task.id);
       const videoId = db.prepare(`INSERT INTO video_generations
-        (provider, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
-         status, task_id, tenant_id, user_id, credit_reservation_id, created_at, updated_at)
-        VALUES (NULL, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
+        (provider, ai_service_config_id, prompt, model, duration, aspect_ratio, resolution, reference_image_urls,
+         reference_video_urls, source_conditioning_json, status, task_id, tenant_id, user_id,
+         credit_reservation_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, NULL, ?, ?)`)
         .run(
+          generation.provider,
+          generation.aiServiceConfigId,
           generation.prompt,
           generation.model,
           generation.duration,
           generation.aspect_ratio,
           generation.resolution,
           JSON.stringify(referenceImageUrls),
+          JSON.stringify([sourceConditioning.referenceVideoUrl]),
+          JSON.stringify({
+            ...sourceConditioning.auditSnapshot,
+            video_capability: {
+              config_id: generation.aiServiceConfigId,
+              config_updated_at: generation.aiServiceConfigUpdatedAt,
+              provider: generation.provider,
+              protocol: generation.protocol,
+              model: generation.model,
+            },
+          }),
           task.id,
           String(ctx.tenantId),
           String(ctx.userId),
@@ -417,6 +588,7 @@ async function generateShot(ctx, input = {}) {
           duration: generation.duration,
           resolution: generation.resolution,
           aspect_ratio: generation.aspect_ratio,
+          source_conditioning: sourceConditioning.billingSnapshot,
           count: 1,
           attempt: generation.attempt,
         },
@@ -701,7 +873,12 @@ async function runShotGeneration(ctx, taskId) {
   const processor = ctx.recoverExistingProvider === true
     ? (ctx.videoRecoveryProcessor || waitForRecoveredVideo)
     : (ctx.videoProcessor || ((database, logger, videoGenerationId) => (
-      videoService.processVideoGeneration(database, logger, videoGenerationId)
+      videoService.processVideoGeneration(database, logger, videoGenerationId, {
+        providerAssetSigningSecret: ctx.providerAssetSecret,
+        providerAssetStorageBaseUrl: ctx.storageBaseUrl,
+        providerAssetTtlSeconds: ctx.providerAssetTtlSeconds,
+        providerAssetNowMs: ctx.providerAssetNowMs,
+      })
     )));
   if (!recoveredRemoteTerminal) await processor(db, ctx.log || logNoop, video.id);
   const row = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(video.id);
@@ -908,6 +1085,7 @@ function scheduleBatchDrain(ctx, jobs, concurrency) {
 async function generateBatch(ctx, input = {}) {
   const { db } = ctx;
   if (!db || !ctx.tenantId || !ctx.userId) throw codedError('REDRAW_CONTEXT_INVALID', '缺少转绘生成上下文');
+  rejectClientVideoConditioning(input);
   if (Object.prototype.hasOwnProperty.call(input, 'shot_id')
     || Object.prototype.hasOwnProperty.call(input, 'shotId')) {
     throw codedError('REDRAW_BATCH_INPUT_INVALID', '批量生成不接受单镜 shot_id 或 shotId');
@@ -1242,4 +1420,6 @@ module.exports = {
   verifyVideoArtifact,
   classifyVideoOutcome,
   resolveVerifiedGenerationModel,
+  resolveVerifiedGenerationCapability,
+  assertVideoConditioningCapability,
 };

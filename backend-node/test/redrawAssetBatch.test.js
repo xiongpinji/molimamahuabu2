@@ -17,6 +17,11 @@ const {
   reconcileOrphanedBatches,
 } = require('../src/services/redrawAssetBatchService');
 
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+
 function setupBatchState(options = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
@@ -153,6 +158,7 @@ function setupBatchState(options = {}) {
         return Boolean(asset?.local_path && fs.existsSync(path.join(root, asset.local_path)));
       },
     },
+    localeRegistry: trustedRegistry(),
     localeVerifier: readyLocaleVerifier(),
   };
   return { db, root, versionId, assetIds, ctx, ttsConfigId, ttsConfigUpdatedAt: now };
@@ -165,8 +171,18 @@ function voiceCompletionEvidence(state, job) {
     provider_task_id: providerTaskId,
     duration: 3.2,
     voice_evidence: {
+      source: 'offline-worker',
       locale: 'en-US',
       market: 'US',
+      locale_pack: 'en-US@fixture',
+      audio_sha256: AUDIO_SHA256,
+      transcript_sha256: TRANSCRIPT_SHA256,
+      model_manifest_sha256: MODEL_MANIFEST_SHA256,
+      calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      asr_model_revision: 'asr-en-20260808',
+      accent_model_revision: 'accent-en-20260808',
+      metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+      completed_at: '2026-08-08T00:00:01.000Z',
       provider: 'fake-tts',
       model: 'model-tts',
       ai_service_config_id: state.ttsConfigId,
@@ -181,6 +197,22 @@ function voiceCompletionEvidence(state, job) {
       detected_locale: 'en-US',
       is_cloned: false,
       authorization_asset_id: null,
+    },
+  };
+}
+
+function trustedRegistry() {
+  return {
+    assertEvidenceTrusted(evidence) {
+      if (evidence.source !== 'offline-worker'
+        || evidence.locale_pack !== 'en-US@fixture'
+        || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+        || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+        throw Object.assign(new Error('worker evidence not trusted'), {
+          code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+        });
+      }
+      return evidence;
     },
   };
 }

@@ -69,6 +69,7 @@ function productionEnv() {
     PLATFORM_EMAIL_VERIFICATION_ENABLED: 'true',
     PLATFORM_JWT_SECRET: 'j'.repeat(40),
     PLATFORM_ADMIN_TOKEN: 'a'.repeat(40),
+    REDRAW_PROVIDER_ASSET_HMAC_SECRET: 'r'.repeat(40),
     PLATFORM_BOOTSTRAP_ADMIN_EMAIL: 'admin@example.com',
     SMTP_HOST: 'smtp.example.com',
     SMTP_PORT: '465',
@@ -94,6 +95,7 @@ test('安全生产配置、管理员和模型价格齐全时预检通过且不�
     const serialized = JSON.stringify(report);
     assert.equal(serialized.includes(env.PLATFORM_JWT_SECRET), false);
     assert.equal(serialized.includes(env.PLATFORM_ADMIN_TOKEN), false);
+    assert.equal(serialized.includes(env.REDRAW_PROVIDER_ASSET_HMAC_SECRET), false);
   } finally {
     db.close();
   }
@@ -243,6 +245,36 @@ test('关闭新用户注册时仍要求邮箱服务可用于已有用户找回�
     assert.equal(
       report.checks.find((check) => check.id === 'registration_email_verification')?.status,
       'fail',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('转绘供应商素材必须使用独立 HMAC 密钥且不得复用 JWT 或管理员令牌', () => {
+  const db = createDb();
+  try {
+    const missing = productionEnv();
+    delete missing.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
+    const missingReport = runProductionPreflight({ config: productionConfig(), env: missing, db });
+    assert.equal(
+      missingReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'fail',
+    );
+
+    const reused = productionEnv();
+    reused.REDRAW_PROVIDER_ASSET_HMAC_SECRET = reused.PLATFORM_JWT_SECRET;
+    const reusedReport = runProductionPreflight({ config: productionConfig(), env: reused, db });
+    assert.equal(
+      reusedReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'fail',
+    );
+
+    const ready = productionEnv();
+    const readyReport = runProductionPreflight({ config: productionConfig(), env: ready, db });
+    assert.equal(
+      readyReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
+      'pass',
     );
   } finally {
     db.close();

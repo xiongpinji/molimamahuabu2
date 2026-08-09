@@ -27,6 +27,16 @@ function setVideoGenFailed(db, videoGenId, errorMsg, now) {
   settleVideoCredit(db, null, row, 'failed', errorMsg);
 }
 
+function setVideoGenNeedsAttention(db, videoGenId, taskId, errorMsg, now) {
+  const message = String(errorMsg || '供应商任务状态未知，请勿重新提交').slice(0, 500);
+  db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+    .run('needs_attention', message, now, videoGenId);
+  if (taskId) {
+    taskService.updateTaskStatus(db, taskId, 'needs_attention', 90, message);
+    try { db.prepare('UPDATE async_tasks SET error = ? WHERE id = ?').run(message, taskId); } catch (_) {}
+  }
+}
+
 function list(db, query, options = {}) {
   let sql = 'FROM video_generations WHERE deleted_at IS NULL';
   const params = [];
@@ -131,7 +141,7 @@ function findActiveForStoryboard(db, storyboardId, options = {}) {
     : [Number(storyboardId)];
   return db.prepare(
     `SELECT * FROM video_generations
-     WHERE storyboard_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL${ownerClause}
+     WHERE storyboard_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL${ownerClause}
      ORDER BY created_at DESC, id DESC LIMIT 1`
   ).get(...params) || null;
 }
@@ -142,6 +152,7 @@ const net = require('net');
 const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const videoClient = require('./videoClient');
+const redrawSourceConditioningService = require('./redrawSourceConditioningService');
 const usmercariVideoClient = require('./usmercariVideoClient');
 const aiConfigService = require('./aiConfigService');
 const toapisVideoClient = require('./toapisVideoClient');
@@ -370,7 +381,10 @@ function toapisReadyState(db, model, evidenceRoots) {
   throw videoRequestError('MODEL_NOT_VERIFIED', `${target} 尚未完成真实生成验证或凭据不可用`);
 }
 
-function processingVideoConfig(db, model) {
+function processingVideoConfig(db, model, preferredConfigId) {
+  if (preferredConfigId != null && String(preferredConfigId).trim() !== '') {
+    return videoClient.getDefaultVideoConfig(db, model, undefined, preferredConfigId);
+  }
   const target = String(model || '').trim().toLowerCase();
   if (FEITUO_MODELS[target] && target.startsWith('xuan-')) {
     return matchingFeituoConfigs(db, target)
@@ -379,6 +393,42 @@ function processingVideoConfig(db, model) {
   if (!TOAPIS_VIDEO_MODELS[target]) return videoClient.getDefaultVideoConfig(db, model);
   return matchingToapisConfigs(db, target)
     .find((config) => config.is_active && aiConfigService.hasConnectionCredential(config)) || null;
+}
+
+function pinnedVideoCapability(row) {
+  if (!row?.source_conditioning_json) return null;
+  let parsed;
+  try { parsed = JSON.parse(row.source_conditioning_json); } catch (_) {
+    const error = new Error('固定模型配置与任务创建时不一致：source_conditioning_json 无效');
+    error.code = 'VIDEO_PINNED_CONFIG_MISMATCH';
+    throw error;
+  }
+  return parsed?.video_capability || null;
+}
+
+function assertPinnedVideoConfig(row, config) {
+  if (!row?.ai_service_config_id) return null;
+  const fail = (detail) => {
+    const error = new Error(`固定模型配置与任务创建时不一致：${detail}`);
+    error.code = 'VIDEO_PINNED_CONFIG_MISMATCH';
+    throw error;
+  };
+  if (Number(config?.id) !== Number(row.ai_service_config_id)) fail('config_id 已变化');
+  const expectedProvider = String(row.provider || '').trim().toLowerCase();
+  const actualProvider = String(config?.provider || '').trim().toLowerCase();
+  if (expectedProvider && expectedProvider !== actualProvider) fail('provider 已变化');
+  const snapshot = pinnedVideoCapability(row);
+  if (!snapshot) return null;
+  if (Number(snapshot.config_id) !== Number(row.ai_service_config_id)) fail('能力 config_id 已变化');
+  if (!snapshot.config_updated_at || String(snapshot.config_updated_at) !== String(config.updated_at || '')) {
+    fail('配置版本已变化');
+  }
+  if (String(snapshot.provider || '').trim().toLowerCase() !== actualProvider) fail('能力 provider 已变化');
+  const expectedProtocol = String(snapshot.protocol || '').trim().toLowerCase();
+  const actualProtocol = String(videoClient.resolveVideoProtocol(config, row.model) || '').trim().toLowerCase();
+  if (!expectedProtocol || expectedProtocol !== actualProtocol) fail('api_protocol 已变化');
+  if (String(snapshot.model || '').trim() !== String(row.model || '').trim()) fail('model 已变化');
+  return snapshot;
 }
 
 function requireVerifiedToapisReferenceCapabilities(state, refs) {
@@ -1564,9 +1614,7 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
     );
   } else if (pollResult.indeterminate) {
     const message = String(pollResult.error || '供应商任务仍可能处理中，请勿重新提交').slice(0, 500);
-    db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-      .run('processing', message, now, videoGenId);
-    if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+    setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now);
     log.warn('Video generation final status indeterminate; duplicate guard remains active', {
       id: videoGenId,
       provider_task_id: providerTaskId,
@@ -1591,9 +1639,21 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
   const providerTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   if (!providerTaskId) return;
 
-  const config = processingVideoConfig(db, row.model);
+  const config = processingVideoConfig(db, row.model, row.ai_service_config_id);
   if (!config) {
-    keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询');
+    setVideoGenNeedsAttention(
+      db,
+      videoGenId,
+      row.task_id,
+      '固定模型配置暂不可用，已保留供应商任务 ID；请恢复固定配置后人工继续查询，请勿重新提交',
+      new Date().toISOString(),
+    );
+    return;
+  }
+  try {
+    assertPinnedVideoConfig(row, config);
+  } catch (error) {
+    setVideoGenNeedsAttention(db, videoGenId, row.task_id, `${error.message}；已提交任务状态未知，请勿重新提交`, new Date().toISOString());
     return;
   }
 
@@ -1612,9 +1672,8 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
     await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config);
   } catch (err) {
     const now = new Date().toISOString();
-    setVideoGenFailed(db, videoGenId, err.message, now);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
-    log.error('Video generation resume poll error', { id: videoGenId, error: err.message });
+    setVideoGenNeedsAttention(db, videoGenId, row.task_id, `供应商任务恢复轮询异常，最终状态未知，请勿重新提交：${err.message}`, now);
+    log.error('Video generation resume poll indeterminate', { id: videoGenId, error: err.message });
   } finally {
     activeVideoPolls.delete(videoGenId);
   }
@@ -1631,7 +1690,7 @@ function resumeProcessingVideoGenerations(db, log) {
     )
     .all();
   for (const s of indeterminate) {
-    if (s.task_id) taskService.updateTaskStatus(db, s.task_id, 'processing', 90, s.error_msg);
+    setVideoGenNeedsAttention(db, s.id, s.task_id, s.error_msg, new Date().toISOString());
     log.warn('Video generation submission indeterminate; keep for manual reconciliation', { videoGenId: s.id });
   }
   const stuck = db
@@ -1683,6 +1742,8 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     return;
   }
   const now = new Date().toISOString();
+  let providerSubmissionStarted = false;
+  let knownProviderTaskId = row.provider_task_id && String(row.provider_task_id).trim();
   try {
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
     if (row.task_id) {
@@ -1697,8 +1758,8 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     const storageLocalPath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-    const existingProviderTaskId = row.provider_task_id && String(row.provider_task_id).trim();
-    const config = processingVideoConfig(db, row.model);
+    const existingProviderTaskId = knownProviderTaskId;
+    const config = processingVideoConfig(db, row.model, row.ai_service_config_id);
     if (!config) {
       if (existingProviderTaskId) {
         keepVideoProcessing(db, row, videoGenId, '视频模型配置暂不可用，已保留供应商任务 ID，恢复配置后继续查询', now);
@@ -1706,6 +1767,13 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
         setVideoGenFailed(db, videoGenId, '未配置视频模型', now);
         if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       }
+      return;
+    }
+    let pinnedCapability = null;
+    try {
+      pinnedCapability = assertPinnedVideoConfig(row, config);
+    } catch (error) {
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, `${error.message}；拒绝供应商提交`, now);
       return;
     }
     const parsedSnapshot = parseRequestSnapshotForProcessing(row.request_snapshot);
@@ -1726,9 +1794,40 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       } catch (_) {}
     }
     if (Array.isArray(reference_urls)) reference_urls = cleanUrlList(reference_urls);
-    const referenceVideoUrls = snapshotHas('reference_video_urls')
+    let referenceVideoUrls = snapshotHas('reference_video_urls')
       ? cleanUrlList(Array.isArray(snapshot.reference_video_urls) ? snapshot.reference_video_urls : [])
       : cleanUrlList(parseReferenceUrls(row.reference_video_urls), row.reference_video_url);
+    if (!existingProviderTaskId && row.source_conditioning_json && referenceVideoUrls.length > 0) {
+      let conditioning = null;
+      try {
+        conditioning = JSON.parse(row.source_conditioning_json);
+      } catch (_) {
+        throw videoRequestError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 审计记录无效');
+      }
+      const segmentSha256 = String(conditioning?.segment_sha256 || '').trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(segmentSha256)) {
+        throw videoRequestError('REDRAW_SOURCE_CONDITIONING_INVALID', '源片 conditioning 缺少有效 segment hash');
+      }
+      const signed = redrawSourceConditioningService.createProviderAssetUrl({
+        storageBaseUrl: runtime.providerAssetStorageBaseUrl || filesBaseUrl,
+        segmentSha256,
+        signingSecret: runtime.providerAssetSigningSecret ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET,
+        nowMs: runtime.providerAssetNowMs,
+        ttlSeconds: runtime.providerAssetTtlSeconds,
+      });
+      referenceVideoUrls = [signed.url];
+      const refreshedConditioning = {
+        ...conditioning,
+        provider_asset_path: signed.pathname,
+        provider_asset_expires_at: new Date(signed.expiresAt * 1000).toISOString(),
+      };
+      db.prepare(`UPDATE video_generations
+        SET reference_video_urls = ?, reference_video_url = ?, source_conditioning_json = ?, updated_at = ?
+        WHERE id = ?`).run(
+        JSON.stringify(referenceVideoUrls), referenceVideoUrls[0], JSON.stringify(refreshedConditioning),
+        new Date().toISOString(), videoGenId
+      );
+    }
     const referenceAudioUrls = snapshotHas('reference_audio_urls')
       ? cleanUrlList(Array.isArray(snapshot.reference_audio_urls) ? snapshot.reference_audio_urls : [])
       : cleanUrlList(parseReferenceUrls(row.reference_audio_urls), row.reference_audio_url);
@@ -1790,6 +1889,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     if (FEITUO_MODELS[normalizedProcessingModel] && normalizedProcessingModel.startsWith('xuan-')) {
       feituoReadyState(db, normalizedProcessingModel);
     }
+    providerSubmissionStarted = true;
     const result = await videoClient.callVideoApi(db, log, {
       prompt: snapshot.prompt ?? row.prompt,
       model: snapshot.model ?? row.model,
@@ -1814,13 +1914,17 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
+      ai_service_config_id: config.id,
+      ai_service_config_updated_at: config.updated_at || config.verified_at || null,
+      video_capability: pinnedCapability || undefined,
+      provider_asset_expires_at: (() => {
+        try { return JSON.parse(row.source_conditioning_json || '{}').provider_asset_expires_at || null; } catch (_) { return null; }
+      })(),
     }, runtime);
     const now2 = new Date().toISOString();
     if (result.indeterminate) {
       const message = `VIDEO_SUBMISSION_INDETERMINATE: ${String(result.error || '供应商提交结果未知，请人工对账').slice(0, 450)}`;
-      db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
-        .run('processing', message, now2, videoGenId);
-      if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'processing', 90, message);
+      setVideoGenNeedsAttention(db, videoGenId, row.task_id, message, now2);
       log.warn('Video submission indeterminate; reservation remains held', { id: videoGenId });
       return;
     }
@@ -1851,6 +1955,7 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
       return;
     }
     if (result.task_id) {
+      knownProviderTaskId = String(result.task_id).trim();
       db.prepare(
         'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
       ).run('processing', result.task_id, now2, videoGenId);
@@ -1861,6 +1966,23 @@ async function processVideoGeneration(db, log, videoGenId, runtime = {}) {
     if (row.task_id) taskService.updateTaskError(db, row.task_id, '未返回 task_id 或 video_url');
   } catch (err) {
     const now2 = new Date().toISOString();
+    if (providerSubmissionStarted) {
+      const message = `供应商提交后状态未知，请人工对账：${String(err?.message || err).slice(0, 420)}`;
+      if (knownProviderTaskId) {
+        db.prepare('UPDATE video_generations SET status = ?, provider_task_id = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+          .run('needs_attention', knownProviderTaskId, message, now2, videoGenId);
+      } else {
+        db.prepare('UPDATE video_generations SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?')
+          .run('needs_attention', message, now2, videoGenId);
+      }
+      if (row && row.task_id) taskService.updateTaskStatus(db, row.task_id, 'needs_attention', 90, message);
+      log.error('Video generation post-submit state unknown; reservation remains held', {
+        id: videoGenId,
+        provider_task_id: knownProviderTaskId || null,
+        error: err.message,
+      });
+      return;
+    }
     setVideoGenFailed(db, videoGenId, err.message, now2);
     if (row && row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
     log.error('Video generation error', { id: videoGenId, error: err.message });

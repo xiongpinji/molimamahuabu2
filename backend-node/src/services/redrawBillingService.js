@@ -106,6 +106,31 @@ function normalizeSnapshotResolution(value) {
   return modelPrice.normalizeResolution(trimmed) || trimmed.toLowerCase();
 }
 
+function normalizeSourceConditioning(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', 'sourceConditioning 必须是对象');
+  }
+  const sourceAssetId = assertPositiveInteger(value.source_asset_id ?? value.sourceAssetId, 'source_asset_id');
+  const sourceFingerprint = requiredString(value.source_fingerprint ?? value.sourceFingerprint, 'source_fingerprint').toLowerCase();
+  const segmentSha256 = requiredString(value.segment_sha256 ?? value.segmentSha256, 'segment_sha256').toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(sourceFingerprint) || !/^[a-f0-9]{64}$/.test(segmentSha256)) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', 'source conditioning hash 必须是 SHA-256');
+  }
+  const startMs = Number(value.start_ms ?? value.startMs);
+  const endMs = Number(value.end_ms ?? value.endMs);
+  if (!Number.isSafeInteger(startMs) || startMs < 0 || !Number.isSafeInteger(endMs) || endMs <= startMs) {
+    throw codedError('INVALID_REDRAW_BILLING_INPUT', 'source conditioning shot 边界无效');
+  }
+  return {
+    source_asset_id: sourceAssetId,
+    source_fingerprint: sourceFingerprint,
+    start_ms: startMs,
+    end_ms: endMs,
+    segment_sha256: segmentSha256,
+  };
+}
+
 function buildSnapshot(input, shotIds, count, attempt) {
   const snapshotInput = {
     model: modelPrice.canonicalModel(input.model),
@@ -118,6 +143,8 @@ function buildSnapshot(input, shotIds, count, attempt) {
     shot_ids: shotIds,
     attempt,
   };
+  const sourceConditioning = normalizeSourceConditioning(input.sourceConditioning);
+  if (sourceConditioning) snapshotInput.source_conditioning = sourceConditioning;
   return {
     ...snapshotInput,
     input_hash: stableHash(snapshotInput),

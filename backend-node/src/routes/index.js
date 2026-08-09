@@ -44,6 +44,7 @@ const { REDRAW_LOCALE_DEFAULTS, createRedrawLocaleRegistryFromEnv } = require('.
 const { createRedrawLocaleVerifierClient } = require('../services/redrawLocaleVerifierClient');
 const redrawAssetService = require('../services/redrawAssetService');
 const redrawVoiceService = require('../services/redrawVoiceService');
+const { createRedrawProviderAssetsRouter } = require('./redrawProviderAssets');
 
 function createDefaultRedrawLocaleVerifier(options = {}) {
   if (options.localeVerifier) return options.localeVerifier;
@@ -129,6 +130,9 @@ function setupRouter(cfg, db, log, options = {}) {
     db,
   });
   const voiceCatalog = voiceCatalogRoutes(db, cfg, log);
+  const providerAssetSecret = options.providerAssetSecret
+    ?? options.redrawOptions?.providerAssetSecret
+    ?? process.env.REDRAW_PROVIDER_ASSET_HMAC_SECRET;
 
   r.post('/auth/register/code', authRateLimit, auth.requestRegistrationCode);
   r.post('/auth/register', authRateLimit, auth.register);
@@ -139,6 +143,10 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/billing/recharge/alipay/notify', alipayRecharge.notify);
   // 试听只暴露已生成的固定目录音频，不依赖项目静态资源权限，也不接受任意路径。
   r.get('/voice-catalog/:id/preview', voiceCatalog.preview);
+  r.use('/redraw-provider-assets', createRedrawProviderAssetsRouter({
+    cfg,
+    signingSecret: providerAssetSecret,
+  }));
   r.use(requireUser);
   // 租户列表必须能在浏览器残留了已删除/无权租户 ID 时用于恢复，因此不依赖当前租户上下文。
   r.post('/auth/bootstrap-admin', requireBootstrapAdminToken, auth.bootstrapAdmin);

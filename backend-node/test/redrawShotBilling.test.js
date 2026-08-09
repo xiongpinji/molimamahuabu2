@@ -83,6 +83,37 @@ test('styleSnapshot 对象键顺序不同得到相同 input_hash', () => {
   }
 });
 
+test('源片 fingerprint、shot 边界和 segment hash 进入快照且边界变化会改变 operation key', () => {
+  const db = setup();
+  try {
+    const sourceConditioning = {
+      source_asset_id: 101,
+      source_fingerprint: 'f'.repeat(64),
+      start_ms: 1000,
+      end_ms: 7000,
+      segment_sha256: 'a'.repeat(64),
+    };
+    const first = billing.reserveShotGeneration(db, shotInput({ count: 1, sourceConditioning }));
+    const second = billing.reserveShotGeneration(db, shotInput({
+      count: 1,
+      sourceConditioning: { ...sourceConditioning, start_ms: 1100, end_ms: 7100 },
+    }));
+    const third = billing.reserveShotGeneration(db, shotInput({
+      count: 1,
+      sourceConditioning: { ...sourceConditioning, segment_sha256: 'b'.repeat(64) },
+    }));
+
+    assert.deepEqual(first.quote.snapshot.source_conditioning, sourceConditioning);
+    assert.notEqual(first.quote.snapshot.input_hash, second.quote.snapshot.input_hash);
+    assert.notEqual(first.operation_key, second.operation_key);
+    assert.notEqual(first.reservation_id, second.reservation_id);
+    assert.notEqual(first.operation_key, third.operation_key);
+    assert.notEqual(first.reservation_id, third.reservation_id);
+  } finally {
+    db.close();
+  }
+});
+
 test('model 和 resolution 等价写法得到同一 input_hash 和 reservation', () => {
   const db = setup();
   try {

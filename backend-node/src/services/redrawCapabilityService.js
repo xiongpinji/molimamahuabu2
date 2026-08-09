@@ -71,7 +71,7 @@ function resolveVerifiedLocaleCapability(db, input = {}) {
   if (!tableExists(db, 'ai_service_configs')) return null;
 
   const rows = db.prepare(`
-    SELECT settings
+    SELECT *
     FROM ai_service_configs
     WHERE COALESCE(is_active, 1) = 1
       AND deleted_at IS NULL
@@ -90,6 +90,12 @@ function resolveVerifiedLocaleCapability(db, input = {}) {
         provider: String(evidence.provider),
         model: String(evidence.model),
         evidence,
+        ...(capabilityName === 'tts' ? {
+          carrier_config_id: Number(row.id),
+          carrier_service_type: String(row.service_type || ''),
+          carrier_provider: String(row.provider || ''),
+          carrier_updated_at: String(row.updated_at || ''),
+        } : {}),
       };
     }
   }

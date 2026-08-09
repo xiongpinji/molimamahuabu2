@@ -22,7 +22,7 @@ chmod 600 .env.production
 
 - `APP_DOMAIN` 只填写域名，不带协议和路径。
 - `APP_IMAGE` 使用通过 `Web Production Image` 工作流验证并发布的不可变 `sha-<commit-sha>` 标签，不使用 `latest`。
-- `PLATFORM_JWT_SECRET` 与 `PLATFORM_ADMIN_TOKEN` 分别生成至少 32 字符的随机值，且不得相同。
+- `PLATFORM_JWT_SECRET`、`PLATFORM_ADMIN_TOKEN` 与 `REDRAW_PROVIDER_ASSET_HMAC_SECRET` 分别生成至少 32 字符的随机值，三者不得相同；最后一项只用于转绘供应商素材短期 URL 签名。
 - `PLATFORM_BOOTSTRAP_ADMIN_EMAIL` 填写首管理员邮箱。
 - `PLATFORM_EMAIL_VERIFICATION_ENABLED=true`，并填写真实的 `SMTP_HOST`、`SMTP_PORT`、`SMTP_SECURE`、`SMTP_USER`、`SMTP_PASSWORD` 与 `SMTP_FROM`。邮箱服务同时用于注册验证码和已有用户找回密码，即使关闭新用户注册也不能删除。
 - 首次启动保持 `PLATFORM_REGISTRATION_ENABLED=false`。

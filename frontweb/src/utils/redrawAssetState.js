@@ -27,6 +27,27 @@ export function canGenerateAsset(asset, quote) {
   return Boolean(asset?.id) && Number.isSafeInteger(credits) && credits > 0
 }
 
+export function confirmSingleAssetQuote(asset, quote) {
+  const displayedHash = String(asset?.quote_hash || '')
+  const nextHash = String(quote?.quote_hash || '')
+  return {
+    confirmed: quote?.priced === true && Boolean(displayedHash && nextHash && displayedHash === nextHash),
+    quoteHash: nextHash,
+    asset: {
+      ...asset,
+      quote_credits: quote?.credits || null,
+      quote_hash: nextHash,
+    },
+  }
+}
+
+export function singleAssetGenerationNotice(result) {
+  const status = String(result?.asset?.status || result?.status || '')
+  return status === 'needs_attention'
+    ? { type: 'warning', message: '资产生成结果需要人工确认' }
+    : { type: 'success', message: '资产生成任务已完成' }
+}
+
 export function assetBatchCredits(quote) {
   const credits = Number(quote?.total_credits)
   return quote?.priced === true && Number.isSafeInteger(credits) && credits > 0 ? credits : null
@@ -50,7 +71,7 @@ export function canStartAssetBatch(quote, batch) {
     && Array.isArray(blockers)
     && blockers.length === 0
     && (!items || items.length > 0)
-    && !['pending', 'processing', 'partial_failed'].includes(status)
+    && !['pending', 'processing', 'partial_failed', 'needs_attention'].includes(status)
 }
 
 export function failedAssetIds(source) {

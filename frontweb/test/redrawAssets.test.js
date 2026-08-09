@@ -48,7 +48,7 @@ test('资产状态纯函数不会在前端伪造 approved，且门禁才开放�
 
 test('资产生成请求不提交客户端模型或积分，生成时由后端重新报价', () => {
   assert.match(assetStepSource, /getAssetQuote\(asset\.id\)/)
-  assert.match(assetStepSource, /generateAsset\(asset\.id,\s*\{\s*prompt:\s*asset\.prompt\s*\}\)/)
+  assert.match(assetStepSource, /generateAsset\(asset\.id,\s*\{\s*prompt:\s*asset\.prompt,\s*quote_hash:\s*confirmation\.quoteHash,?\s*\}\)/)
   assert.doesNotMatch(assetStepSource, /credit_amount/)
   assert.doesNotMatch(assetStepSource, /generateAsset\([^\n]*model/)
 })
@@ -83,6 +83,8 @@ test('资产批量状态纯函数 fail closed 并计算进度', async () => {
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'pending' }), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'processing' }), false)
   assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'partial_failed' }), false)
+  assert.equal(state.canStartAssetBatch({ priced: true, total_credits: 12, blocked: [], items: [{ asset_id: 1 }] }, { status: 'needs_attention' }), false)
+  assert.match(assetStepSource, /function batchTerminal[\s\S]*needs_attention/)
 
   assert.deepEqual(state.failedAssetIds({ items: [
     { id: 2, status: 'failed' },
@@ -135,4 +137,45 @@ test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*provider/)
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credits/)
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credit_amount/)
+})
+
+test('单项音色生成只提交用户已看到且再次确认未变化的 quote_hash', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+  let displayed = { id: 1, kind: 'voice', quote_hash: 'H1', quote_credits: 3 }
+  let generateCalls = 0
+  const changed = state.confirmSingleAssetQuote(displayed, { priced: true, quote_hash: 'H2', credits: 4 })
+  if (changed.confirmed) generateCalls += 1
+  displayed = changed.asset
+  assert.equal(changed.confirmed, false)
+  assert.equal(displayed.quote_hash, 'H2')
+  assert.equal(generateCalls, 0)
+  const confirmed = state.confirmSingleAssetQuote(displayed, { priced: true, quote_hash: 'H2', credits: 4 })
+  if (confirmed.confirmed) generateCalls += 1
+  assert.equal(confirmed.confirmed, true)
+  assert.equal(generateCalls, 1)
+
+  assert.match(assetStepSource, /getAssetQuote\(asset\.id\)/)
+  assert.match(assetStepSource, /confirmSingleAssetQuote\(asset,\s*quoteResult\)/)
+  assert.match(assetStepSource, /asset\.kind === 'voice' && !confirmation\.confirmed/)
+  assert.match(assetStepSource, /generateAsset\(asset\.id,\s*\{\s*prompt:\s*asset\.prompt,\s*quote_hash:\s*confirmation\.quoteHash,?\s*\}\)/)
+  assert.doesNotMatch(assetStepSource, /generateAsset\(asset\.id,[^)]*model/)
+  assert.doesNotMatch(assetStepSource, /generateAsset\(asset\.id,[^)]*credits/)
+})
+
+test('单项生成返回 needs_attention 时刷新资产但不误报成功', async () => {
+  const state = await import('../src/utils/redrawAssetState.js')
+  let refreshCalls = 0
+  let successCalls = 0
+  const warnings = []
+  const result = { asset: { status: 'needs_attention' }, status: 'needs_attention' }
+  refreshCalls += 1
+  const notice = state.singleAssetGenerationNotice(result)
+  if (notice.type === 'success') successCalls += 1
+  if (notice.type === 'warning') warnings.push(notice.message)
+
+  assert.equal(refreshCalls, 1)
+  assert.equal(successCalls, 0)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /人工确认/)
+  assert.match(assetStepSource, /const result = await redrawAPI\.generateAsset[\s\S]*await refresh\(\)[\s\S]*singleAssetGenerationNotice\(result\)/)
 })

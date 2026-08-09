@@ -12,15 +12,17 @@
 | 项目 | 命令（均在当前 worktree） | 结果 |
 | --- | --- | --- |
 | Worker 单测 | `$env:PYTHONPATH='workers/redraw-locale-verifier/src'; uv run --with jiwer python -m unittest discover -s workers/redraw-locale-verifier/tests` | `exit 0; 72 passed, 7 Windows symlink skips` |
+| Synthetic benchmark CLI | `uv run python workers/redraw-locale-verifier/scripts/benchmark.py --fixture workers/redraw-locale-verifier/tests/fixtures/synthetic-index.json --output <temp>` | `exit 0; 5 samples, p50 70 ms, p95 120 ms, 1 synthetic TIMEOUT；仅验证脚本，不是模型/生产性能证据` |
 | Python 无第三方依赖回归 | `$env:PYTHONPATH=...; python -S -m unittest discover ...` | `exit 1; 49 tests，jiwer 缺失导致 normalization/verifier 导入错误` |
 | Worker 静态语法 | `python -S -m compileall workers/redraw-locale-verifier` | `exit 0` |
-| Node 语言/计费目标组 | `cd backend-node && node --test --test-concurrency=1 test/redrawLocaleManifestSigning.test.js ... test/webProductionDeploymentContract.test.js` | `exit 1; 当前 dirty fixtures 中仍有 batch 状态断言失败` |
-| Node 核心五组回归 | `cd backend-node && node --test --test-concurrency=1 test/redrawAssetBatch.test.js test/redrawAssets.test.js test/redrawDialogue.test.js test/redrawDialogueOrchestrator.test.js test/redrawRoutes.test.js` | `exit 1; TAP 150 ok, 7 not ok；失败集中于既有 batch 旧状态断言` |
-| Backend 全量 | `cd backend-node && npm test -- --test-concurrency=1` | `exit 1；在本地 dirty worktree 中存在既有回归失败，未作为生产通过依据` |
+| Node 语言/计费目标组 | `cd backend-node && node --test --test-concurrency=1 test/redrawLocaleManifestSigning.test.js ... test/webProductionDeploymentContract.test.js` | `exit 0; TAP 256/256 pass` |
+| Node 核心五组回归 | `cd backend-node && node --test --test-concurrency=1 test/redrawAssetBatch.test.js test/redrawAssets.test.js test/redrawDialogue.test.js test/redrawDialogueOrchestrator.test.js test/redrawRoutes.test.js` | `exit 0; TAP 171/171 pass` |
+| Provider adapter/router 定向回归 | `cd backend-node && node --test --test-concurrency=1 test/redrawProviderAdapters.test.js test/routerGenerationRoutes.test.js` | `exit 0; TAP 51/51 pass` |
+| Backend 全量 | `cd backend-node && npm test -- --test-concurrency=1` | `exit 0；当前 worktree 全量通过` |
 | 前端测试脚本 | `cd frontweb && npm test` | `NOT_RUN/未配置 test script` |
 | 合同静态检查 | `cd backend-node && node --test --test-concurrency=1 test/webProductionDeploymentContract.test.js test/incrementalReleaseScope.test.js`、`git diff --check` | `16/16 pass；无生产写入` |
 
-Node 目标组失败不被隐藏，也不把历史 dirty fixture 失败改写成 Worker 通过。当前 Worker 纯函数与 socket/registry/adapter 的已覆盖目标测试仍分别由前序任务证据支撑；本报告只记录本轮新鲜命令结果。
+Node 目标组与 backend 全量均已在本轮新鲜通过；测试夹具已补齐离线 worker/TTS 精确证据，源片 provider-asset 路由也已在总路由以专用 HMAC secret 挂载。该结果仍只证明本地代码/合同，不替代目标机 benchmark、真实模型和付费验收。
 
 ## 依赖与 hash
 

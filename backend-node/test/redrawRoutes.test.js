@@ -223,6 +223,29 @@ function insertShot(db, versionId, values = {}) {
 }
 
 function routeDeps(overrides = {}) {
+  const generationOptions = {
+    resolveVideoConditioningCapability: (_db, model, verifiedCapability) => verifiedCapability && ({
+      ...verifiedCapability,
+      model,
+      protocol: 'feituo_open',
+      max_videos: 1,
+    }),
+    prepareSourceConditioning: async ({ shot }) => {
+      const billingSnapshot = {
+        source_asset_id: Number(shot.source_asset_id),
+        source_fingerprint: String(shot.source_fingerprint),
+        start_ms: Number(shot.start_ms),
+        end_ms: Number(shot.end_ms),
+        segment_sha256: 'e'.repeat(64),
+      };
+      return {
+        referenceVideoUrl: `https://storage.example.com/api/v1/redraw-provider-assets/${'e'.repeat(64)}.mp4?expires=4102444800&sig=test-only`,
+        billingSnapshot,
+        auditSnapshot: { ...billingSnapshot, relative_path: `redraw-conditioning/${'e'.repeat(64)}.mp4` },
+      };
+    },
+    ...(overrides.generationOptions || {}),
+  };
   return {
     uploadService: {
       expandSourceUpload: async () => [{
@@ -253,6 +276,15 @@ function routeDeps(overrides = {}) {
       }],
     },
     canReadArtifact: () => true,
+    localeVerifier: {
+      assertReady(locale) {
+        return {
+          id: `${locale}@fixture`,
+          model_manifest_sha256: 'a'.repeat(64),
+          calibration_manifest_sha256: 'b'.repeat(64),
+        };
+      },
+    },
     orchestrator: {
       startAnalysis: async () => ({
         task_id: 'task-redraw',
@@ -281,6 +313,7 @@ function routeDeps(overrides = {}) {
       }),
     },
     ...overrides,
+    generationOptions,
   };
 }
 
@@ -325,6 +358,47 @@ function insertSourceAsset(db, values = {}) {
   }).lastInsertRowid;
 }
 
+function insertVerifiedVoiceTtsConfig(db, values = {}) {
+  const provider = values.provider || 'voice-provider-b';
+  const model = values.model || 'voice-model';
+  const updatedAt = values.updated_at || NOW;
+  const configId = Number(db.prepare(`INSERT INTO ai_service_configs
+    (service_type, provider, name, model, default_model, priority, is_default, is_active,
+     settings, created_at, updated_at)
+    VALUES ('tts', ?, ?, ?, ?, ?, ?, 1, '{}', ?, ?)`)
+    .run(
+      provider,
+      values.name || provider,
+      JSON.stringify([model]),
+      model,
+      values.priority ?? 0,
+      values.is_default ? 1 : 0,
+      NOW,
+      updatedAt,
+    ).lastInsertRowid);
+  if (values.capability !== false) {
+    db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(JSON.stringify({
+      redraw_locale_capabilities: [{
+        locale: 'en-US',
+        market: 'US',
+        status: 'verified',
+        evidence: {
+          tts: {
+            provider,
+            model,
+            task_id: values.task_id || 'verified-voice-task',
+            terminal_status: 'completed',
+            artifact_id: 900,
+            ai_service_config_id: configId,
+            config_updated_at: values.evidence_updated_at || updatedAt,
+          },
+        },
+      }],
+    }), configId);
+  }
+  return configId;
+}
+
 function setupAssetBatchFixture(db, values = {}) {
   const projectId = insertProject(db, values.project || {});
   const workId = insertWork(db, projectId, {
@@ -364,17 +438,31 @@ function makeAssetBatchService(overrides = {}) {
 
 function insertRedrawLocaleCapabilityConfig(db, entries) {
   const now = new Date().toISOString();
-  db.prepare(`
+  const inserted = db.prepare(`
     INSERT INTO ai_service_configs
       (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
     VALUES ('video', 'test-provider', '转绘生成能力', ?, ?, 1, 1, 0, ?, ?, ?)
   `).run(
     JSON.stringify(entries.map((entry) => entry.evidence?.video?.model || 'unverified-model')),
     entries[0]?.evidence?.video?.model || 'unverified-model',
-    JSON.stringify({ redraw_locale_capabilities: entries }),
+    '{}',
     now,
     now,
   );
+  const configId = Number(inserted.lastInsertRowid);
+  const boundEntries = entries.map((entry) => ({
+    ...entry,
+    evidence: entry.evidence?.video ? {
+      ...entry.evidence,
+      video: {
+        config_id: configId,
+        config_updated_at: now,
+        ...entry.evidence.video,
+      },
+    } : entry.evidence,
+  }));
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?')
+    .run(JSON.stringify({ redraw_locale_capabilities: boundEntries }), configId);
 }
 
 function verifiedVideoCapability(model = 'seedance 2.0', overrides = {}) {
@@ -1607,6 +1695,232 @@ test('资产报价与生成都使用服务端模型和积分快照', async () =>
       WHERE resource_type = 'redraw_asset'
     `).get();
     assert.deepEqual(reservation, { model: 'verified-image-model', amount: 7, status: 'confirmed' });
+  } finally {
+    db.close();
+  }
+});
+
+test('单项音色生成复用服务端批量报价并固定同模型的精确 TTS 配置', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2, status: 'asset_review' });
+    const versionId = insertVersion(db, workId, { status: 'asset_review' });
+    const assetId = insertRedrawAsset(db, versionId, {
+      kind: 'voice',
+      source_ref_json: JSON.stringify({
+        source_ref: { id: 'single-route-voice', voice_id: 'voice-en-us', is_cloned: false },
+      }),
+      localized_name: 'Maya voice',
+      asset_id: null,
+      approval_status: 'pending',
+      status: 'draft',
+    });
+    db.prepare('UPDATE redraw_assets SET prompt = ? WHERE id = ?').run('Stay with me.', assetId);
+    insertVerifiedVoiceTtsConfig(db, {
+      provider: 'voice-provider-a',
+      name: 'same model first config',
+      model: 'voice-model',
+      priority: 100,
+      is_default: true,
+      capability: false,
+    });
+    const pinnedConfigId = insertVerifiedVoiceTtsConfig(db, {
+      provider: 'voice-provider-b',
+      name: 'verified exact config',
+      model: 'voice-model',
+      priority: 10,
+    });
+    prices.set(db, 'voice-model', 3, { category: 'audio' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 10);
+    let injectedQuoteCalls = 0;
+    let providerCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async () => {
+        injectedQuoteCalls += 1;
+        return { model: 'attacker-model', credits: 1 };
+      },
+      assetGenerationProvider: async ({ attempt, locale, market }) => {
+        providerCalls += 1;
+        assert.equal(attempt.snapshot.ai_service_config_id, pinnedConfigId);
+        assert.equal(attempt.snapshot.provider, 'voice-provider-b');
+        assert.equal(attempt.snapshot.model, 'voice-model');
+        assert.equal(attempt.snapshot.config_updated_at, NOW);
+        assert.equal(locale, 'en-US');
+        assert.equal(market, 'US');
+        return {
+          status: 'unknown',
+          unknown: true,
+          provider_task_id: 'single-route-provider-task',
+          error: 'audit pending',
+        };
+      },
+      canReadArtifact: () => true,
+    }));
+
+    const quoted = captureResponse();
+    await handlers.assetQuote(request({ id: assetId }), quoted);
+    assert.deepEqual(quoted.body.data, {
+      asset_id: assetId,
+      model: 'voice-model',
+      credits: 3,
+      priced: true,
+      quote_hash: quoted.body.data.quote_hash,
+    });
+    assert.match(quoted.body.data.quote_hash, /^[a-f0-9]{64}$/);
+
+    const overridden = captureResponse();
+    await handlers.generateRedrawAsset(request({
+      id: assetId,
+      body: {
+        quote_hash: quoted.body.data.quote_hash,
+        prompt: 'Attacker-controlled text.',
+        localized_description: 'Attacker-controlled fallback.',
+      },
+    }), overridden);
+    assert.equal(overridden.statusCode, 409);
+    assert.equal(overridden.body.error.code, 'REDRAW_ASSET_QUOTE_CHANGED');
+    assert.equal(providerCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+
+    const generated = captureResponse();
+    await handlers.generateRedrawAsset(request({
+      id: assetId,
+      body: { quote_hash: quoted.body.data.quote_hash, prompt: 'Stay with me.' },
+    }), generated);
+    assert.equal(generated.statusCode, 202);
+    assert.equal(generated.body.data.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(injectedQuoteCalls, 0);
+    const row = db.prepare('SELECT source_ref_json, credit_reservation_id FROM redraw_assets WHERE id = ?').get(assetId);
+    const snapshot = JSON.parse(row.source_ref_json).snapshot;
+    assert.equal(snapshot.ai_service_config_id, pinnedConfigId);
+    assert.equal(snapshot.provider_task_id, 'single-route-provider-task');
+    assert.equal(creditLedger.getReservation(db, row.credit_reservation_id).status, 'held');
+  } finally {
+    db.close();
+  }
+});
+
+test('单项音色生成严格校验 GET 报价 hash，缺失或价格/配置/实际文本变化时零冻结零 provider', async (t) => {
+  for (const mode of ['missing', 'price changed', 'config changed', 'description changed']) {
+    await t.test(mode, async () => {
+      const db = createDb();
+      try {
+        const projectId = insertProject(db);
+        const workId = insertWork(db, projectId, { current_version: 1, current_step: 2, status: 'asset_review' });
+        const versionId = insertVersion(db, workId, { status: 'asset_review' });
+        const assetId = insertRedrawAsset(db, versionId, {
+          kind: 'voice',
+          source_ref_json: JSON.stringify({
+            source_ref: { id: `single-quote-${mode}`, voice_id: 'voice-en-us', is_cloned: false },
+          }),
+          localized_name: 'Quoted voice',
+          asset_id: null,
+          approval_status: 'pending',
+          status: 'draft',
+        });
+        db.prepare('UPDATE redraw_assets SET prompt = ?, localized_description = ? WHERE id = ?')
+          .run(mode === 'description changed' ? '' : 'Confirm this quote.', 'Initial fallback text.', assetId);
+        const configId = insertVerifiedVoiceTtsConfig(db, {
+          provider: 'voice-provider-b',
+          model: 'voice-model',
+        });
+        prices.set(db, 'voice-model', 3, { category: 'audio' });
+        creditLedger.setTenantAccountBalance(db, 'tenant-a', 10);
+        let providerCalls = 0;
+        const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+          assetGenerationProvider: async () => {
+            providerCalls += 1;
+            return { status: 'unknown', unknown: true };
+          },
+          canReadArtifact: () => true,
+        }));
+
+        const quoted = captureResponse();
+        await handlers.assetQuote(request({ id: assetId }), quoted);
+        const acceptedHash = quoted.body.data.quote_hash;
+        assert.match(acceptedHash, /^[a-f0-9]{64}$/);
+
+        if (mode === 'price changed') {
+          prices.set(db, 'voice-model', 4, { category: 'audio' });
+        } else if (mode === 'config changed') {
+          const nextUpdatedAt = '2026-08-06T00:00:01.000Z';
+          const row = db.prepare('SELECT settings FROM ai_service_configs WHERE id = ?').get(configId);
+          const settings = JSON.parse(row.settings);
+          settings.redraw_locale_capabilities[0].evidence.tts.config_updated_at = nextUpdatedAt;
+          db.prepare('UPDATE ai_service_configs SET settings = ?, updated_at = ? WHERE id = ?')
+            .run(JSON.stringify(settings), nextUpdatedAt, configId);
+        } else if (mode === 'description changed') {
+          db.prepare('UPDATE redraw_assets SET localized_description = ? WHERE id = ?')
+            .run('Changed fallback text.', assetId);
+        }
+
+        const generated = captureResponse();
+        await handlers.generateRedrawAsset(request({
+          id: assetId,
+          body: mode === 'missing' ? {} : { quote_hash: acceptedHash },
+        }), generated);
+        assert.equal(generated.statusCode, 409);
+        assert.equal(generated.body.error.code, 'REDRAW_ASSET_QUOTE_CHANGED');
+        assert.equal(providerCalls, 0);
+        assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
+
+test('单项音色生成在 capability evidence 配置版本过期时零冻结且零 provider', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 2, status: 'asset_review' });
+    const versionId = insertVersion(db, workId, { status: 'asset_review' });
+    const assetId = insertRedrawAsset(db, versionId, {
+      kind: 'voice',
+      source_ref_json: JSON.stringify({
+        source_ref: { id: 'single-route-stale', voice_id: 'voice-en-us', is_cloned: false },
+      }),
+      asset_id: null,
+      approval_status: 'pending',
+      status: 'draft',
+    });
+    db.prepare('UPDATE redraw_assets SET prompt = ? WHERE id = ?').run('Stale evidence.', assetId);
+    insertVerifiedVoiceTtsConfig(db, {
+      provider: 'voice-provider-b',
+      model: 'voice-model',
+      evidence_updated_at: '2026-01-01T00:00:00.000Z',
+    });
+    prices.set(db, 'voice-model', 3, { category: 'audio' });
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 10);
+    let providerCalls = 0;
+    let injectedQuoteCalls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      assetQuoteProvider: async () => {
+        injectedQuoteCalls += 1;
+        return { model: 'attacker-model', credits: 1 };
+      },
+      assetGenerationProvider: async () => {
+        providerCalls += 1;
+        return { status: 'completed' };
+      },
+      canReadArtifact: () => true,
+    }));
+
+    const quoted = captureResponse();
+    await handlers.assetQuote(request({ id: assetId }), quoted);
+    const result = captureResponse();
+    await handlers.generateRedrawAsset(request({
+      id: assetId,
+      body: { quote_hash: quoted.body.data.quote_hash },
+    }), result);
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.error.code, 'pricing_unconfigured');
+    assert.equal(providerCalls, 0);
+    assert.equal(injectedQuoteCalls, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   } finally {
     db.close();
   }
@@ -3370,6 +3684,9 @@ test('第三步和本地化确认 API 已真实注册在总路由', () => {
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/voices'), true);
+    assert.equal(routes.has('GET /redraw/versions/:versionId/voices/:voiceAssetId/preview'), true);
+    assert.equal(routes.has('POST /redraw/assets/:id/voice'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/dialogue/start'), true);
     assert.equal(routes.has('GET /redraw/versions/:id/dialogue/tasks/:taskId'), true);

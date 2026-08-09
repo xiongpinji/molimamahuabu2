@@ -1,20 +1,4 @@
 const FEITUO_MODELS = Object.freeze({
-  'xuan-video-v1-6e7b4763634e6206': Object.freeze({
-    resolutions: Object.freeze(['2k']),
-    durations: Object.freeze([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
-    ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
-    maxImages: 9,
-    maxVideos: 0,
-    maxAudio: 3,
-  }),
-  'xuan-seedance-2.5': Object.freeze({
-    resolutions: Object.freeze(['480p', '720p']),
-    durations: Object.freeze([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
-    ratios: Object.freeze(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']),
-    maxImages: 4,
-    maxVideos: 3,
-    maxAudio: 1,
-  }),
   'sdas-lm-hailuo-h3-2k': Object.freeze({
     ratios: Object.freeze(['1:1', '16:9', '9:16', '3:4', '4:3', '21:9']),
     maxImages: 9,
@@ -28,6 +12,96 @@ const FEITUO_MODELS = Object.freeze({
     maxAudio: 1,
   }),
 });
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_RESPONSE_MAX_BYTES = 1024 * 1024;
+const MAX_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+
+function boundedPositiveInteger(value, fallback, maximum) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : fallback;
+}
+
+function indeterminateTransportError(message) {
+  return Object.assign(new Error(message), {
+    code: 'FEITUO_STATUS_UNKNOWN',
+    indeterminate: true,
+  });
+}
+
+async function readBoundedResponseText(response, maxBytes, controller) {
+  const declaredLength = Number(response?.headers?.get?.('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    controller.abort();
+    throw indeterminateTransportError(`飞拓响应体超过 ${maxBytes} 字节上限`);
+  }
+  if (!response?.body || typeof response.body.getReader !== 'function') {
+    const raw = await response.text();
+    if (Buffer.byteLength(raw) > maxBytes) {
+      controller.abort();
+      throw indeterminateTransportError(`飞拓响应体超过 ${maxBytes} 字节上限`);
+    }
+    return raw;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    if (total > maxBytes) {
+      controller.abort();
+      try { await reader.cancel(); } catch (_) {}
+      throw indeterminateTransportError(`飞拓响应体超过 ${maxBytes} 字节上限`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total).toString();
+}
+
+async function fetchFeituoText(url, fetchOptions = {}, controls = {}) {
+  const timeoutMs = boundedPositiveInteger(
+    controls.requestTimeoutMs ?? controls.request_timeout_ms,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    MAX_REQUEST_TIMEOUT_MS,
+  );
+  const maxBytes = boundedPositiveInteger(
+    controls.responseMaxBytes ?? controls.response_max_bytes,
+    DEFAULT_RESPONSE_MAX_BYTES,
+    MAX_RESPONSE_MAX_BYTES,
+  );
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = indeterminateTransportError(`飞拓 HTTP 请求在 ${timeoutMs}ms 后超时`);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetch(url, { ...fetchOptions, signal: controller.signal }),
+      timeout,
+    ]);
+    const raw = await Promise.race([
+      readBoundedResponseText(response, maxBytes, controller),
+      timeout,
+    ]);
+    return { response, raw };
+  } catch (error) {
+    if (timedOut && error?.code !== 'FEITUO_STATUS_UNKNOWN') {
+      throw indeterminateTransportError(`飞拓 HTTP 请求在 ${timeoutMs}ms 后超时`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function normalizeFeituoBaseUrl(value) {
   return String(value || 'https://feituokuajing.com')
@@ -50,18 +124,8 @@ function buildFeituoVideoBody(opts = {}) {
   if (!spec) throw new Error(`飞拓模型 ${model || '(empty)'} 未经真实生成验证，禁止提交`);
 
   const duration = Number(opts.duration ?? 5);
-  if (!Number.isSafeInteger(duration)) {
-    throw new Error('飞拓视频时长必须是整数');
-  }
-  if (spec.durations && !spec.durations.includes(duration)) {
-    throw new Error(`飞拓模型 ${model} 不支持 ${duration} 秒`);
-  }
-  if (!spec.durations && (duration < 4 || duration > 15)) {
+  if (!Number.isSafeInteger(duration) || duration < 4 || duration > 15) {
     throw new Error('飞拓视频时长必须是 4 到 15 秒之间的整数');
-  }
-  const resolution = String(opts.resolution || '').trim().toLowerCase();
-  if (spec.resolutions && !spec.resolutions.includes(resolution)) {
-    throw new Error(`飞拓模型 ${model} 不支持分辨率 ${resolution || '(empty)'}`);
   }
   const ratio = String(opts.aspect_ratio || opts.ratio || '16:9').trim().replace('：', ':');
   if (!spec.ratios.includes(ratio)) throw new Error(`飞拓模型 ${model} 不支持画幅 ${ratio}`);
@@ -81,7 +145,7 @@ function buildFeituoVideoBody(opts = {}) {
   assertMaterialLimit('视频', videoUrls, spec.maxVideos);
   assertMaterialLimit('音频', audioUrls, spec.maxAudio);
 
-  const body = {
+  return {
     model,
     prompt: String(opts.prompt || ''),
     ratio,
@@ -90,8 +154,6 @@ function buildFeituoVideoBody(opts = {}) {
     videoUrls,
     audioUrls,
   };
-  if (spec.resolutions) body.resolution = resolution;
-  return body;
 }
 
 function buildFeituoStatusUrl(baseUrl, jobId, timestamp = Date.now()) {
@@ -124,7 +186,7 @@ function parseJson(raw) {
   try { return JSON.parse(raw); } catch (_) { return null; }
 }
 
-async function callFeituoVideoApi(config, log, opts = {}, runtime = {}) {
+async function callFeituoVideoApi(config, log, opts = {}) {
   let body;
   try {
     body = buildFeituoVideoBody(opts);
@@ -141,38 +203,44 @@ async function callFeituoVideoApi(config, log, opts = {}, runtime = {}) {
     video_count: body.videoUrls.length,
     audio_count: body.audioUrls.length,
   });
+  const indeterminate = (detail) => ({
+    indeterminate: true,
+    error: `飞拓创建请求结果未知，供应商可能已受理或扣费但本平台未取得 jobId；为避免重复扣费，不得自动重试。${detail ? `原始错误: ${detail}` : ''}`,
+  });
   let response;
+  let raw;
   try {
-    const fetchImpl = runtime.fetchImpl || fetch;
-    response = await fetchImpl(url, {
+    const fetched = await fetchFeituoText(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config?.api_key || ''}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+    }, {
+      requestTimeoutMs: opts.request_timeout_ms,
+      responseMaxBytes: opts.response_max_bytes,
     });
+    response = fetched.response;
+    raw = fetched.raw;
   } catch (error) {
-    return {
-      indeterminate: true,
-      error: `飞拓创建请求连接中断，供应商可能已受理或扣费但本平台未取得 jobId，结果未知；为避免重复扣费，不得自动重试。原始错误: ${error.message}`,
-    };
+    return indeterminate(error.message);
   }
-  const raw = await response.text();
   const payload = parseJson(raw);
   if (!response.ok) {
     const message = payload?.errorMessage || payload?.message || payload?.error || raw || `HTTP ${response.status}`;
+    if (Number(response.status) >= 500) return indeterminate(`HTTP ${response.status}: ${String(message).slice(0, 300)}`);
     return { error: `飞拓创建视频任务失败 (${response.status}): ${String(message).slice(0, 300)}` };
   }
-  if (!payload) return { error: '飞拓创建视频任务返回了非 JSON 响应' };
+  if (!payload) return indeterminate('供应商返回非 JSON 响应');
 
   const data = flattenPayload(payload);
   const direct = parseFeituoStatusPayload(payload);
   if (direct.state === 'completed') return { video_url: direct.videoUrl };
-  if (data.success === false) return { error: direct.error || '飞拓创建视频任务失败' };
+  if (direct.state === 'failed') return { error: direct.error || '飞拓创建视频任务失败' };
   const jobId = data.jobId ?? data.job_id;
   if (jobId == null || String(jobId).trim() === '') {
-    return { error: '飞拓创建视频任务成功但未返回 jobId' };
+    return indeterminate('供应商响应未包含 jobId');
   }
   log?.info?.('[飞拓视频] 任务已受理', {
     video_gen_id: opts.video_gen_id,
@@ -188,5 +256,6 @@ module.exports = {
   buildFeituoVideoBody,
   buildFeituoStatusUrl,
   parseFeituoStatusPayload,
+  fetchFeituoText,
   callFeituoVideoApi,
 };

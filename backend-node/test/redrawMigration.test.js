@@ -390,3 +390,22 @@ test('转绘本地化任务与资产批次迁移可重复执行并保留幂等�
   const versionIndexes = db.prepare('PRAGMA index_list(redraw_versions)').all();
   assert.ok(versionIndexes.some((index) => index.name === 'uq_redraw_localization_idempotency'));
 });
+
+test('源视频 conditioning 列迁移可重复执行并兼容单列已存在的旧库', () => {
+  const db = new Database(':memory:');
+  runMigrationsAndEnsure(db);
+  const initialColumns = columnNames(db, 'video_generations');
+  if (!initialColumns.includes('reference_video_urls')) {
+    db.exec('ALTER TABLE video_generations ADD COLUMN reference_video_urls TEXT');
+  }
+  if (initialColumns.includes('source_conditioning_json')) {
+    db.exec('ALTER TABLE video_generations DROP COLUMN source_conditioning_json');
+  }
+
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+  assert.doesNotThrow(() => runMigrationsAndEnsure(db));
+
+  const columns = columnNames(db, 'video_generations');
+  assert.ok(columns.includes('reference_video_urls'));
+  assert.ok(columns.includes('source_conditioning_json'));
+});

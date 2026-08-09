@@ -18,6 +18,13 @@ const {
   listAssetVersions,
 } = require('../src/services/redrawAssetService');
 
+const TTS_CONFIG_ID = 41;
+const TTS_CONFIG_UPDATED_AT = '2026-08-08T00:00:00.000Z';
+const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
+const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
+const AUDIO_SHA256 = 'c'.repeat(64);
+const TRANSCRIPT_SHA256 = 'd'.repeat(64);
+
 function setup() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
@@ -38,7 +45,17 @@ function setup() {
     VALUES (?, 'tenant-a', 'user-a', 1, 'en-US', 'US', '{}', 'facts-a', 'asset_review', ?, ?)`)
     .run(workId, now, now);
   const versionId = db.prepare('SELECT id FROM redraw_versions LIMIT 1').get().id;
-  return { db, workId, versionId };
+  db.prepare(`INSERT INTO ai_service_configs
+    (id, service_type, provider, name, model, default_model, is_active, created_at, updated_at)
+    VALUES (?, 'tts', 'fake-tts', '测试 TTS', ?, ?, 1, ?, ?)`)
+    .run(
+      TTS_CONFIG_ID,
+      JSON.stringify(['model-tts']),
+      'model-tts',
+      TTS_CONFIG_UPDATED_AT,
+      TTS_CONFIG_UPDATED_AT,
+    );
+  return { db, workId, versionId, ttsConfigId: TTS_CONFIG_ID, ttsConfigUpdatedAt: TTS_CONFIG_UPDATED_AT };
 }
 
 function addAsset(db, id, localPath) {
@@ -85,7 +102,74 @@ function context(setupResult, root, userId = 'user-a', tenantId = 'tenant-a') {
         return Boolean(asset?.local_path && fs.existsSync(path.join(root, asset.local_path)));
       },
     },
+    localeRegistry: trustedRegistry(),
     creditAmount: 5,
+  };
+}
+
+function trustedRegistry() {
+  return {
+    assertEvidenceTrusted(evidence) {
+      if (evidence.source !== 'offline-worker'
+        || evidence.locale_pack !== 'en-US@fixture'
+        || evidence.model_manifest_sha256 !== MODEL_MANIFEST_SHA256
+        || evidence.calibration_manifest_sha256 !== CALIBRATION_MANIFEST_SHA256) {
+        throw Object.assign(new Error('worker evidence not trusted'), {
+          code: 'REDRAW_LOCALE_VERIFIER_NOT_READY',
+        });
+      }
+      return evidence;
+    },
+  };
+}
+
+function voiceInput(state, sourceRef) {
+  return {
+    kind: 'voice',
+    sourceRef,
+    snapshot: {
+      provider: 'fake-tts',
+      model: 'model-tts',
+      ai_service_config_id: state.ttsConfigId,
+      config_updated_at: state.ttsConfigUpdatedAt,
+    },
+  };
+}
+
+function voiceResult(assetId, providerTaskId = 'provider-voice-1') {
+  return {
+    status: 'completed',
+    provider_task_id: providerTaskId,
+    voice_asset_id: assetId,
+    duration: 3.2,
+    voice_evidence: {
+      source: 'offline-worker',
+      locale: 'en-US',
+      market: 'US',
+      locale_pack: 'en-US@fixture',
+      audio_sha256: AUDIO_SHA256,
+      transcript_sha256: TRANSCRIPT_SHA256,
+      model_manifest_sha256: MODEL_MANIFEST_SHA256,
+      calibration_manifest_sha256: CALIBRATION_MANIFEST_SHA256,
+      asr_model_revision: 'asr-en-20260808',
+      accent_model_revision: 'accent-en-20260808',
+      metrics: { word_error_rate: 0, accent_confidence: 0.99 },
+      completed_at: '2026-08-08T00:00:01.000Z',
+      provider: 'fake-tts',
+      model: 'model-tts',
+      ai_service_config_id: TTS_CONFIG_ID,
+      config_updated_at: TTS_CONFIG_UPDATED_AT,
+      voice_id: 'fixture-voice',
+      task_id: providerTaskId,
+      terminal_status: 'completed',
+      audio_asset_id: assetId,
+      duration_ms: 3200,
+      real_generation_verified: true,
+      language_verified: true,
+      detected_locale: 'en-US',
+      is_cloned: false,
+      authorization_asset_id: null,
+    },
   };
 }
 
@@ -374,12 +458,19 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   addTypedAsset(state.db, 501, 'voice.mp3', 'audio', 'audio/mpeg', 3.2);
   addAsset(state.db, 502, 'clean.png');
   const ctx = context(state, root);
-  addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'v1' } });
+  addDraftPlaceholder(state.db, state, {
+    kind: 'voice',
+    sourceRef: { id: 'v1', voice_id: 'fixture-voice', is_cloned: false },
+  });
   addDraftPlaceholder(state.db, state, { kind: 'scene', sourceRef: { id: 's-clean' } });
-  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'v1' } });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, {
+    id: 'v1',
+    voice_id: 'fixture-voice',
+    is_cloned: false,
+  }));
   const sceneAttempt = createAssetAttempt(ctx, { kind: 'scene', sourceRef: { id: 's-clean' } });
 
-  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 501 });
+  const voice = finalizeAssetAttempt(ctx, voiceAttempt.id, voiceResult(501));
   const scene = finalizeAssetAttempt(ctx, sceneAttempt.id, {
     status: 'completed',
     clean_plate_asset_id: 502,
@@ -403,44 +494,40 @@ test('finalizeAssetAttempt 按资产类型写入 voice 与 clean plate 目标字
   state.db.close();
 });
 
-test('finalizeAssetAttempt rejects non-audio assets for voice output without confirming credits', () => {
+test('finalizeAssetAttempt holds non-audio voice output without confirming credits', () => {
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-type-'));
   fs.writeFileSync(path.join(root, 'not-audio.png'), 'not-audio');
   addAsset(state.db, 503, 'not-audio.png');
   const ctx = context(state, root);
   addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'voice-image' } });
-  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'voice-image' } });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, { id: 'voice-image' }));
 
-  assert.throws(
-    () => finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 503 }),
-    (error) => error.code === 'VOICE_ASSET_TYPE_INVALID',
-  );
+  const finalized = finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 503 });
+  assert.equal(finalized.status, 'needs_attention');
   const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(voiceAttempt.id);
-  assert.equal(row.status, 'failed');
+  assert.equal(row.status, 'needs_attention');
   assert.equal(row.error_code, 'VOICE_ASSET_TYPE_INVALID');
-  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });
 
-test('finalizeAssetAttempt rejects zero-duration voice output without confirming credits', () => {
+test('finalizeAssetAttempt holds zero-duration voice output without confirming credits', () => {
   const state = setup();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-asset-voice-duration-'));
   fs.writeFileSync(path.join(root, 'silent.mp3'), 'silent');
   addTypedAsset(state.db, 505, 'silent.mp3', 'audio', 'audio/mpeg', 0);
   const ctx = context(state, root);
   addDraftPlaceholder(state.db, state, { kind: 'voice', sourceRef: { id: 'voice-zero' } });
-  const voiceAttempt = createAssetAttempt(ctx, { kind: 'voice', sourceRef: { id: 'voice-zero' } });
+  const voiceAttempt = createAssetAttempt(ctx, voiceInput(state, { id: 'voice-zero' }));
 
-  assert.throws(
-    () => finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 505 }),
-    (error) => error.code === 'VOICE_ASSET_DURATION_INVALID',
-  );
+  const finalized = finalizeAssetAttempt(ctx, voiceAttempt.id, { status: 'completed', voice_asset_id: 505 });
+  assert.equal(finalized.status, 'needs_attention');
   const row = state.db.prepare('SELECT status, error_code, credit_reservation_id FROM redraw_assets WHERE id = ?').get(voiceAttempt.id);
-  assert.equal(row.status, 'failed');
+  assert.equal(row.status, 'needs_attention');
   assert.equal(row.error_code, 'VOICE_ASSET_DURATION_INVALID');
-  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'refunded');
+  assert.equal(credits.getReservation(state.db, row.credit_reservation_id).status, 'held');
   fs.rmSync(root, { recursive: true, force: true });
   state.db.close();
 });

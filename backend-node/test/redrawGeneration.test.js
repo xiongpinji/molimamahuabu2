@@ -9,6 +9,7 @@ const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const credits = require('../src/services/creditLedgerService');
 const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
+const videoClient = require('../src/services/videoClient');
 const videoService = require('../src/services/videoService');
 const redrawOrchestrator = require('../src/services/redrawOrchestrator');
 const { resetGenerationConcurrencyForTests } = require('../src/services/generationConcurrency');
@@ -24,6 +25,8 @@ const {
 } = require('../src/services/redrawGenerationService');
 
 const log = { info() {}, warn() {}, error() {} };
+const FEITUO_FAST_MODEL = 'sdas-my-seedance-2.0-fast-upscaled-1080p';
+const SIGNED_SOURCE_VIDEO_URL = 'https://media.example.test/api/redraw-provider-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4?expires=1786147800&signature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function setup(overrides = {}) {
   const db = new Database(':memory:');
@@ -127,6 +130,37 @@ function ctx(db, overrides = {}) {
     userId: 'user-a',
     clock: () => '2026-08-06T00:00:00.000Z',
     canReadArtifact: () => true,
+    resolveVideoConditioningCapability: (_database, model, capability) => ({
+      config_id: capability?.config_id,
+      config_updated_at: capability?.config_updated_at,
+      provider: capability?.provider || 'feituo',
+      model,
+      protocol: 'feituo_open',
+      max_videos: 3,
+    }),
+    storageBaseUrl: 'https://media.example.test/static',
+    providerAssetSecret: 'redraw-generation-test-provider-secret-32-bytes',
+    prepareSourceConditioning: async ({ shot }) => ({
+      referenceVideoUrl: SIGNED_SOURCE_VIDEO_URL,
+      billingSnapshot: {
+        source_asset_id: Number(shot.source_asset_id || 1),
+        source_fingerprint: 'f'.repeat(64),
+        start_ms: Number(shot.start_ms),
+        end_ms: Number(shot.end_ms),
+        segment_sha256: 'a'.repeat(64),
+      },
+      auditSnapshot: {
+        schema_version: '1.0',
+        shot_id: Number(shot.id),
+        source_asset_id: Number(shot.source_asset_id || 1),
+        source_fingerprint: 'f'.repeat(64),
+        start_ms: Number(shot.start_ms),
+        end_ms: Number(shot.end_ms),
+        segment_sha256: 'a'.repeat(64),
+        segment_local_path: `redraw-conditioning/${'a'.repeat(64)}.mp4`,
+        provider_asset_path: `/api/v1/redraw-provider-assets/${'a'.repeat(64)}.mp4`,
+      },
+    }),
     ...overrides,
   };
 }
@@ -146,13 +180,25 @@ function workflowState(db, versionId) {
 
 function addVerifiedGenerationCapability(db, model, overrides = {}) {
   const now = new Date('2026-08-06T00:00:00.000Z').toISOString();
-  db.prepare(`
+  const provider = overrides.provider || 'feituo';
+  const apiProtocol = overrides.apiProtocol || 'feituo_open';
+  const configModel = overrides.configModel || model;
+  const inserted = db.prepare(`
     INSERT INTO ai_service_configs
-      (service_type, provider, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
-    VALUES ('video', 'test-provider', '转绘生成能力', ?, ?, 1, 1, 0, ?, ?, ?)
+      (id, service_type, provider, api_protocol, name, model, default_model, is_active, is_default, priority, settings, created_at, updated_at)
+    VALUES (?, 'video', ?, ?, '转绘生成能力', ?, ?, 1, 1, 0, ?, ?, ?)
   `).run(
-    model,
-    model,
+    overrides.id ?? null,
+    provider,
+    apiProtocol,
+    configModel,
+    configModel,
+    '{}',
+    now,
+    now,
+  );
+  const configId = Number(overrides.id ?? inserted.lastInsertRowid);
+  db.prepare('UPDATE ai_service_configs SET settings = ? WHERE id = ?').run(
     JSON.stringify({
       redraw_locale_capabilities: [{
         locale: overrides.locale || 'zh-CN',
@@ -160,8 +206,10 @@ function addVerifiedGenerationCapability(db, model, overrides = {}) {
         status: 'verified',
         evidence: {
           video: {
-            provider: 'test-provider',
-            model,
+            config_id: overrides.evidenceConfigId ?? configId,
+            config_updated_at: overrides.evidenceConfigUpdatedAt || now,
+            provider: overrides.evidenceProvider || provider,
+            model: overrides.evidenceModel || model,
             task_id: `verified-${model}`,
             terminal_status: 'completed',
             artifact_id: `artifact-${model}`,
@@ -169,10 +217,356 @@ function addVerifiedGenerationCapability(db, model, overrides = {}) {
         },
       }],
     }),
-    now,
-    now,
+    configId,
   );
+  return configId;
 }
+
+test('ID9 iCreat verified 模型在 reserve/video row/provider 前以 conditioning unsupported fail closed', async () => {
+  const state = setup();
+  const model = 'icreat-redraw-video-v1';
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    prices.set(state.db, model, 3, { category: 'video', billing_unit: 'second' });
+    addVerifiedGenerationCapability(state.db, model, {
+      id: 9,
+      provider: 'icreat',
+      apiProtocol: 'icreat_task',
+    });
+    const shotId = addShot(state.db, state.versionId);
+    let conditioningCalls = 0;
+
+    await assert.rejects(
+      () => generateShot(ctx(state.db, {
+        resolveVideoConditioningCapability: null,
+        prepareSourceConditioning: async () => {
+          conditioningCalls += 1;
+          throw new Error('conditioning must not run');
+        },
+        schedule() {},
+      }), { shotId }),
+      (error) => error.code === 'REDRAW_VIDEO_CONDITIONING_UNSUPPORTED',
+    );
+
+    assert.equal(conditioningCalls, 0);
+    assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+    assert.equal(count(state.db, 'video_generations'), 0);
+    assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+    assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('视频能力证据必须绑定 exact config/provider/model 才能在 conditioning 与 reserve 前通过', async () => {
+  for (const mismatch of ['provider', 'model', 'config_id', 'config_updated_at']) {
+    const state = setup();
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      const configUpdatedAt = '2026-08-08T10:00:00.000Z';
+      const rowModel = mismatch === 'model' ? 'another-video-model' : FEITUO_FAST_MODEL;
+      const evidence = {
+        config_id: mismatch === 'config_id' ? 99 : 14,
+        config_updated_at: mismatch === 'config_updated_at' ? '2026-08-08T09:59:59.000Z' : configUpdatedAt,
+        provider: mismatch === 'provider' ? 'icreat' : 'feituo',
+        model: FEITUO_FAST_MODEL,
+        task_id: `mismatch-${mismatch}`,
+        terminal_status: 'completed',
+        artifact_id: `artifact-${mismatch}`,
+      };
+      state.db.prepare(`INSERT INTO ai_service_configs
+        (id, service_type, provider, api_protocol, name, model, default_model, base_url, api_key,
+         is_active, is_default, priority, settings, created_at, updated_at)
+        VALUES (14, 'video', 'feituo', 'feituo_open', 'Feituo', ?, ?, 'https://feituokuajing.com',
+                'secret', 1, 1, 0, ?, ?, ?)`)
+        .run(
+          JSON.stringify([rowModel]),
+          rowModel,
+          JSON.stringify({
+            redraw_locale_capabilities: [{
+              locale: 'zh-CN',
+              market: 'CN',
+              status: 'verified',
+              evidence: { video: evidence },
+            }],
+          }),
+          configUpdatedAt,
+          configUpdatedAt,
+        );
+      prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+        category: 'video',
+        billing_unit: 'second',
+        resolution_prices: { '720p': { credits: 4 } },
+      });
+      const shotId = addShot(state.db, state.versionId, {
+        compiledPrompt: {
+          text: 'verified evidence binding',
+          model: FEITUO_FAST_MODEL,
+          duration: 6,
+          resolution: '720p',
+          aspect_ratio: '9:16',
+        },
+      });
+      let conditioningCalls = 0;
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, {
+          resolveVideoConditioningCapability: null,
+          prepareSourceConditioning: async () => { conditioningCalls += 1; },
+          schedule() {},
+        }), { shotId }),
+        (error) => error.code === 'REDRAW_NO_VERIFIED_VIDEO_MODEL',
+      );
+
+      assert.equal(conditioningCalls, 0, mismatch);
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, mismatch);
+      assert.equal(count(state.db, 'video_generations'), 0, mismatch);
+      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, mismatch);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共同持久化且计费快照不含签名', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    addVerifiedGenerationCapability(state.db, FEITUO_FAST_MODEL, {
+      id: 14,
+      provider: 'feituo',
+      apiProtocol: 'feituo_open',
+    });
+    const imageAssetId = addBaseAsset(state.db, {
+      name: 'approved-character',
+      url: 'https://cdn.example.test/character.png',
+    });
+    const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+      kind: 'character',
+      assetId: imageAssetId,
+    });
+    const shotId = addShot(state.db, state.versionId, {
+      startMs: 2000,
+      endMs: 8000,
+      references: [{ kind: 'character', redraw_asset_id: redrawAssetId }],
+    });
+
+    const result = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: null,
+      schedule() {},
+    }), { shotId });
+    const video = state.db.prepare('SELECT * FROM video_generations WHERE id = ?').get(result.video_generation_id);
+    const task = state.db.prepare('SELECT metadata FROM async_tasks WHERE id = ?').get(result.task_id);
+    const metadata = JSON.parse(task.metadata).redraw_shot;
+
+    assert.equal(video.model, FEITUO_FAST_MODEL);
+    assert.deepEqual(JSON.parse(video.reference_image_urls), ['https://cdn.example.test/character.png']);
+    assert.deepEqual(JSON.parse(video.reference_video_urls), [SIGNED_SOURCE_VIDEO_URL]);
+    assert.equal(JSON.parse(video.source_conditioning_json).start_ms, 2000);
+    assert.equal(JSON.parse(video.source_conditioning_json).end_ms, 8000);
+    assert.equal(JSON.parse(video.source_conditioning_json).shot_id, shotId);
+    assert.equal(metadata.quote.snapshot.source_conditioning.start_ms, 2000);
+    assert.equal(metadata.quote.snapshot.source_conditioning.end_ms, 8000);
+    assert.equal(JSON.stringify(metadata.quote.snapshot).includes('signature='), false);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('同一 locale 同时验证 ID9 与 ID14 时选择支持 source video 的 ID14', async () => {
+  const state = setup();
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    const icreatModel = 'icreat-redraw-video-v1';
+    prices.set(state.db, icreatModel, 3, { category: 'video', billing_unit: 'second' });
+    prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '720p': { credits: 4 } },
+    });
+    addVerifiedGenerationCapability(state.db, icreatModel, {
+      id: 9,
+      provider: 'icreat',
+      apiProtocol: 'icreat_task',
+    });
+    addVerifiedGenerationCapability(state.db, FEITUO_FAST_MODEL, {
+      id: 14,
+      provider: 'feituo',
+      apiProtocol: 'feituo_open',
+    });
+    const shotId = addShot(state.db, state.versionId);
+
+    const result = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: null,
+      schedule() {},
+    }), { shotId });
+
+    assert.equal(result.status, 'processing');
+    const video = state.db.prepare('SELECT model, provider, ai_service_config_id, source_conditioning_json FROM video_generations').get();
+    assert.equal(video.model, FEITUO_FAST_MODEL);
+    assert.equal(video.provider, 'feituo');
+    assert.equal(video.ai_service_config_id, 14);
+    assert.deepEqual(JSON.parse(video.source_conditioning_json).video_capability, {
+      config_id: 14,
+      config_updated_at: '2026-08-06T00:00:00.000Z',
+      provider: 'feituo',
+      protocol: 'feituo_open',
+      model: FEITUO_FAST_MODEL,
+    });
+    assert.equal(state.db.prepare('SELECT model FROM tenant_usage_reservations').get().model, FEITUO_FAST_MODEL);
+  } finally {
+    state.db.close();
+  }
+});
+
+test('冻结配置在首次供应商提交前被改写时零提交并保持 held needs_attention', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let providerCalls = 0;
+  let scheduled;
+  t.after(() => { videoClient.callVideoApi = originalCallVideoApi; });
+  t.after(() => state.db.close());
+  videoClient.callVideoApi = async () => {
+    providerCalls += 1;
+    return { error: '配置已被改写时不得调用供应商' };
+  };
+  const shotId = addShot(state.db, state.versionId);
+  const created = await generateShot(ctx(state.db, {
+    schedule(callback) { scheduled = callback; },
+  }), { shotId });
+  state.db.prepare("UPDATE ai_service_configs SET provider = 'icreat', api_protocol = 'icreat_task' WHERE id = ?")
+    .run(state.db.prepare('SELECT ai_service_config_id FROM video_generations WHERE id = ?').get(created.video_generation_id).ai_service_config_id);
+
+  await scheduled();
+
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM async_tasks WHERE id = ?').get(created.task_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+});
+
+test('冻结配置的 key 或 endpoint 在首次提交前轮换时零提交并保持 held', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let providerCalls = 0;
+  let scheduled;
+  t.after(() => { videoClient.callVideoApi = originalCallVideoApi; });
+  t.after(() => state.db.close());
+  videoClient.callVideoApi = async () => {
+    providerCalls += 1;
+    return { error: '未验证的新 key/endpoint 不得提交' };
+  };
+  const shotId = addShot(state.db, state.versionId);
+  const created = await generateShot(ctx(state.db, {
+    schedule(callback) { scheduled = callback; },
+  }), { shotId });
+  const configId = state.db.prepare('SELECT ai_service_config_id FROM video_generations WHERE id = ?')
+    .get(created.video_generation_id).ai_service_config_id;
+  state.db.prepare(`UPDATE ai_service_configs
+    SET api_key = 'rotated-unverified-key', base_url = 'https://new-endpoint.example.test', updated_at = ?
+    WHERE id = ?`).run('2026-08-08T12:00:00.000Z', configId);
+
+  await scheduled();
+
+  assert.equal(providerCalls, 0);
+  assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(created.video_generation_id).status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(created.reservation_id).status, 'held');
+});
+
+test('Feituo 确定性画幅与图片数量限制在 conditioning 后 reserve 前拒绝', async () => {
+  for (const mode of ['ratio', 'images']) {
+    const state = setup();
+    try {
+      state.db.prepare('DELETE FROM ai_service_configs').run();
+      prices.set(state.db, FEITUO_FAST_MODEL, 4, {
+        category: 'video',
+        billing_unit: 'second',
+        resolution_prices: { '720p': { credits: 4 } },
+      });
+      addVerifiedGenerationCapability(state.db, FEITUO_FAST_MODEL, {
+        id: 14,
+        provider: 'feituo',
+        apiProtocol: 'feituo_open',
+      });
+      const references = [];
+      if (mode === 'images') {
+        for (let index = 0; index < 5; index += 1) {
+          const assetId = addBaseAsset(state.db, {
+            name: `character-${index}`,
+            url: `https://cdn.example.test/character-${index}.png`,
+          });
+          const redrawAssetId = addRedrawAsset(state.db, state.versionId, {
+            kind: 'character',
+            name: `character-${index}`,
+            assetId,
+          });
+          references.push({ kind: 'character', redraw_asset_id: Number(redrawAssetId) });
+        }
+      }
+      const shotId = addShot(state.db, state.versionId, {
+        references,
+        compiledPrompt: {
+          text: 'deterministic preflight',
+          model: FEITUO_FAST_MODEL,
+          duration: 6,
+          resolution: '720p',
+          aspect_ratio: mode === 'ratio' ? '2:1' : '9:16',
+        },
+      });
+      let conditioningCalls = 0;
+
+      await assert.rejects(
+        () => generateShot(ctx(state.db, {
+          resolveVideoConditioningCapability: null,
+          prepareSourceConditioning: async (input) => {
+            conditioningCalls += 1;
+            return ctx(state.db).prepareSourceConditioning(input);
+          },
+          schedule() {},
+        }), { shotId }),
+        (error) => error.code === 'REDRAW_GENERATION_INPUT_INVALID',
+        mode,
+      );
+
+      assert.equal(conditioningCalls, 1, mode);
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0, mode);
+      assert.equal(count(state.db, 'video_generations'), 0, mode);
+      assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0, mode);
+      assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0, mode);
+    } finally {
+      state.db.close();
+    }
+  }
+});
+
+test('客户端提交 reference/source video URL 在任何冻结和行写入前被拒绝', async () => {
+  for (const [field, value] of [
+    ['reference_video_urls', ['https://evil.example.test/source.mp4']],
+    ['referenceVideoUrls', ['https://evil.example.test/source.mp4']],
+    ['source_video_url', 'https://evil.example.test/source.mp4'],
+    ['sourceVideoRef', { url: 'https://evil.example.test/source.mp4' }],
+  ]) {
+    const state = setup();
+    try {
+      const shotId = addShot(state.db, state.versionId);
+      await assert.rejects(
+        () => generateShot(ctx(state.db, { schedule() {} }), { shotId, [field]: value }),
+        (error) => error.code === 'REDRAW_CLIENT_VIDEO_CONDITIONING_FORBIDDEN',
+      );
+      assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+      assert.equal(count(state.db, 'video_generations'), 0);
+      assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
+    } finally {
+      state.db.close();
+    }
+  }
+});
 
 function addRawVideoConfig(db, settings, model = 'raw-config-model') {
   const now = new Date('2026-08-06T00:00:00.000Z').toISOString();
@@ -401,9 +795,8 @@ test('两个 draft 并发生成由 CAS 保证 loser 复用 winner 且只冻结�
       schedule: () => { scheduled += 1; },
     });
     const firstPromise = generateShot(context, { shotId });
-    await Promise.resolve();
-    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
     await firstEntered;
+    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
     const winner = await generateShot(context, { shotId });
     releaseFirst();
     const loser = await firstPromise;
@@ -450,9 +843,8 @@ test('并发 loser 传入不同客户端模型时仍复用 verified 生成链且
       schedule: () => { scheduled += 1; },
     });
     const loserPromise = generateShot(context, { shotId, model: 'other-video-model' });
-    await Promise.resolve();
-    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
     await firstEntered;
+    assert.equal(hookCalls, 1, 'beforeCreateTransaction hook must pause the first creator');
     const winner = await generateShot(context, { shotId, model: 'seedance 2.0' });
     releaseFirst();
     const loser = await loserPromise;
@@ -827,6 +1219,41 @@ test('未知或仍 processing 保持 held 并转 needs_attention，不重提', a
       state.db.close();
     }
   }
+});
+
+test('Feituo 提交结果 indeterminate 优先于 error，保持 held 且禁止重试', async (t) => {
+  const state = setup();
+  const originalCallVideoApi = videoClient.callVideoApi;
+  let providerCalls = 0;
+  t.after(() => { videoClient.callVideoApi = originalCallVideoApi; });
+  t.after(() => state.db.close());
+  videoClient.callVideoApi = async () => {
+    providerCalls += 1;
+    return {
+      indeterminate: true,
+      error: '飞拓提交响应未知，供应商任务可能已创建，不得自动重试',
+    };
+  };
+  const shotId = addShot(state.db, state.versionId);
+
+  const result = await generateShot(ctx(state.db, { awaitCompletion: true }), { shotId });
+
+  assert.equal(result.status, 'needs_attention', JSON.stringify({
+    result,
+    video: state.db.prepare('SELECT status, error_msg, provider, ai_service_config_id, source_conditioning_json FROM video_generations').get(),
+  }));
+  assert.equal(providerCalls, 1);
+  assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+  const videoOutcome = state.db.prepare('SELECT status, error_msg, provider, ai_service_config_id, source_conditioning_json FROM video_generations').get();
+  assert.equal(videoOutcome.status, 'needs_attention', JSON.stringify(videoOutcome));
+  assert.equal(state.db.prepare("SELECT status FROM async_tasks WHERE type = 'redraw_shot'").get().status, 'needs_attention');
+  assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations').get().status, 'held');
+  await assert.rejects(
+    () => retryShot(ctx(state.db, { schedule() {} }), { shotId }),
+    (error) => error.code === 'REDRAW_SHOT_RETRY_REQUIRED',
+  );
+  assert.equal(providerCalls, 1);
+  assert.equal(count(state.db, 'video_generations'), 1);
 });
 
 test('completed 但成片校验或素材导入不完整时 needs_attention 且保持 held', async () => {
