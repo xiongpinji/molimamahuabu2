@@ -672,6 +672,157 @@ test('同一原生对白/config 快照跨幂等键只保留一条 active generat
   }
 });
 
+test('原生对白视频 completed 后先验证音轨，写入 draft evidence 后再入库资产并确认结算', async () => {
+  const state = setup();
+  let validationInput = null;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const result = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-ok',
+              video_url = 'https://cdn.test/native.mp4', local_path = 'videos/native.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async (input) => {
+        validationInput = input;
+        return {
+          contract: 'redraw-native-audio-validation-v1',
+          artifact_sha256: 'a'.repeat(64),
+          audio_stream: { codec: 'aac', channels: 2, sample_rate: 44100, duration_ms: 4980 },
+          video_duration_ms: 5000,
+          silence: { rms_db: -24.1, threshold_db: -45 },
+          verification: {
+            detected_language: 'es',
+            detected_locale: null,
+            language_verified: true,
+            locale_verified: false,
+            transcript_sha256: 'b'.repeat(64),
+            dialogue_similarity: 0.91,
+            speech_chars_per_second: 8,
+          },
+          validation_hash: 'c'.repeat(64),
+        };
+      },
+      assetImporter: () => {
+        importerCalls += 1;
+        const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+        assert.equal(draft.native_audio_validation.status, 'verified');
+        return { id: 818 };
+      },
+    }), { shotId });
+
+    assert.equal(result.status, 'completed', result.error);
+    assert.equal(importerCalls, 1);
+    assert.equal(validationInput.videoPath, 'videos/native.mp4');
+    assert.equal(validationInput.approvedText, 'Hola, pequeño.');
+    assert.equal(validationInput.localePack.id, 'es@1');
+    assert.equal(validationInput.expectedLanguage, 'es');
+    assert.equal(validationInput.videoInvocation.providerTaskId, 'provider-native-ok');
+    assert.equal(validationInput.videoInvocation.model, TOAPIS_NATIVE_MODEL);
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.native_audio_validation.status, 'verified');
+    assert.deepEqual(draft.native_audio_validation.human_review, { status: 'pending' });
+    assert.equal(draft.native_audio_validation.validation_hash, 'c'.repeat(64));
+    assert.equal(draft.new_video_ref.asset_id, 818);
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(result.reservation_id).status, 'confirmed');
+  } finally {
+    state.db.close();
+  }
+});
+
+test('原生对白 post-provider 音轨验证失败保持 candidate、needs_attention 和 held，跨 key 不重提', async () => {
+  const state = setup();
+  let providerCalls = 0;
+  let validationCalls = 0;
+  let importerCalls = 0;
+  try {
+    state.db.prepare('DELETE FROM ai_service_configs').run();
+    addNativeDialogueCapability(state.db);
+    prices.set(state.db, TOAPIS_NATIVE_MODEL, 4, {
+      category: 'video',
+      billing_unit: 'second',
+      resolution_prices: { '480p': { credits: 4 } },
+    });
+    state.db.prepare("UPDATE redraw_versions SET locale = 'es', market = '' WHERE id = ?").run(state.versionId);
+    const shotId = addShot(state.db, state.versionId, {
+      durationMs: 5000,
+      startMs: 0,
+      endMs: 5000,
+      compiledPrompt: { text: 'plano cinematografico', duration: 5, resolution: '480p', aspect_ratio: '16:9' },
+      localized_dialogue_json: JSON.stringify([
+        { speaker_id: 'Valeria', start_ms: 700, end_ms: 1900, text: 'Hola, pequeño.' },
+      ]),
+    });
+
+    const first = await generateShot(ctx(state.db, {
+      awaitCompletion: true,
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async (db, _log, videoId) => {
+        providerCalls += 1;
+        db.prepare(`UPDATE video_generations
+          SET status = 'completed', provider_task_id = 'provider-native-bad',
+              video_url = 'https://cdn.test/native-bad.mp4', local_path = 'videos/native-bad.mp4'
+          WHERE id = ?`).run(videoId);
+      },
+      artifactVerifier: async () => ({ duration: 5, width: 720, height: 1280 }),
+      nativeAudioValidator: async () => {
+        validationCalls += 1;
+        const error = new Error('语言/台词验证失败');
+        error.code = 'REDRAW_NATIVE_AUDIO_WORKER_EVIDENCE_INVALID';
+        throw error;
+      },
+      assetImporter: () => {
+        importerCalls += 1;
+        return { id: 919 };
+      },
+    }), { shotId });
+
+    assert.equal(first.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+    assert.equal(validationCalls, 1);
+    assert.equal(importerCalls, 0);
+    assert.equal(state.db.prepare('SELECT status FROM redraw_shots WHERE id = ?').get(shotId).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM video_generations WHERE id = ?').get(first.video_generation_id).status, 'needs_attention');
+    assert.equal(state.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(first.reservation_id).status, 'held');
+    const draft = JSON.parse(state.db.prepare('SELECT draft_json FROM redraw_shots WHERE id = ?').get(shotId).draft_json);
+    assert.equal(draft.native_audio_validation.status, 'failed');
+    assert.equal(draft.native_audio_validation.human_review.status, 'unavailable');
+    assert.equal(draft.native_audio_validation.candidate.local_path, 'videos/native-bad.mp4');
+
+    const second = await generateShot(ctx(state.db, {
+      resolveVideoConditioningCapability: undefined,
+      videoProcessor: async () => { providerCalls += 1; },
+    }), { shotId, idempotency_key: 'different-client-key-after-validation-failure' });
+    assert.equal(second.video_generation_id, first.video_generation_id);
+    assert.equal(second.status, 'needs_attention');
+    assert.equal(providerCalls, 1);
+  } finally {
+    state.db.close();
+  }
+});
+
 test('ID14 Feituo Fast 将服务端 source segment 与已审批图片引用共同持久化且计费快照不含签名', async () => {
   const state = setup();
   try {
